@@ -1,6 +1,6 @@
 # minimum required CMAKE version
-project(cajeta)
 CMAKE_MINIMUM_REQUIRED(VERSION 3.7 FATAL_ERROR)
+project(cajeta VERSION 1.0.0)
 
 list(APPEND CMAKE_MODULE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/cmake)
 
