@@ -4,6 +4,7 @@
  Copyright (c) 2017 Ivan Kochurkin (upgrade to Java 8)
  Copyright (c) 2021 Michał Lorek (upgrade to Java 11)
  Copyright (c) 2022 Michał Lorek (upgrade to Java 17)
+ Copyright (c) 2022 Julian Klappenbach (conversion to Cajeta 1.0)
  All rights reserved.
 
  Redistribution and use in source and binary forms, with or without
@@ -37,10 +38,8 @@ ABSTRACT:           'abstract';
 ASSERT:             'assert';
 BOOLEAN:            'boolean';
 BREAK:              'break';
-BYTE:               'byte';
 CASE:               'case';
 CATCH:              'catch';
-CHAR:               'char';
 CLASS:              'class';
 CONST:              'const';
 CONTINUE:           'continue';
@@ -51,17 +50,27 @@ ELSE:               'else';
 ENUM:               'enum';
 EXTENDS:            'extends';
 FINAL:              'final';
+CHAR:               'char';
+INT16:              'int16';
+UINT16:             'uint16';
+INT32:              'int32';
+UINT32:             'uint32';
+INT64:              'int64';
+UINT64:             'uint64';
+INT128:             'int128';
+UINT128:            'uint128';
 FINALLY:            'finally';
-FLOAT:              'float';
+FLOAT16:            'float16';
+FLOAT32:            'float32';
+FLOAT64:            'float64';
+FLOAT128:           'float128';
 FOR:                'for';
 IF:                 'if';
 GOTO:               'goto';
 IMPLEMENTS:         'implements';
 IMPORT:             'import';
 INSTANCEOF:         'instanceof';
-INT:                'int';
 INTERFACE:          'interface';
-LONG:               'long';
 NATIVE:             'native';
 NEW:                'new';
 PACKAGE:            'package';
@@ -69,7 +78,6 @@ PRIVATE:            'private';
 PROTECTED:          'protected';
 PUBLIC:             'public';
 RETURN:             'return';
-SHORT:              'short';
 STATIC:             'static';
 STRICTFP:           'strictfp';
 SUPER:              'super';
@@ -172,6 +180,7 @@ BITAND:             '&';
 BITOR:              '|';
 CARET:              '^';
 MOD:                '%';
+REFERENCE:          '#';
 
 ADD_ASSIGN:         '+=';
 SUB_ASSIGN:         '-=';

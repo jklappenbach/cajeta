@@ -1,0 +1,30 @@
+package com.entity.app.component;
+
+import com.blah.OtherClass;
+
+public class TestClass {
+    private int64 alpha = 5;
+    protected int64 beta = 10;
+    protected float64 gamma = 50;
+    protected float16 f;
+    protected OtherClass editableOc;
+    public const String str;
+    protected const OtherClass immutableOc;
+
+    public TestClass() {
+        f = 10.00;
+        OtherClass oc1 = new OtherClass();
+        editableOc = oc1;
+        immutableOc = #oc1;
+    }
+
+    public int64 getAlpha(OtherClass oc) {
+        oc.callMethod();
+        return alpha;
+    }
+
+    public int64 getBeta(OtherClass #oc) {
+        oc.callMethod();
+        return alpha;
+    }
+}

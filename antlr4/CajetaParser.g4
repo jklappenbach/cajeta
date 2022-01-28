@@ -67,6 +67,7 @@ classOrInterfaceModifier
     | PRIVATE
     | STATIC
     | ABSTRACT
+    | CONST
     | FINAL    // FINAL for class only -- does not apply to interfaces
     | STRICTFP
     | SEALED // Java17
@@ -242,6 +243,7 @@ variableDeclarator
 
 variableDeclaratorId
     : identifier ('[' ']')*
+    | REFERENCE identifier ('[' ']')*
     ;
 
 variableInitializer
@@ -640,6 +642,7 @@ primary
     | SUPER
     | literal
     | identifier
+    | REFERENCE identifier
     | typeTypeOrVoid '.' CLASS
     | nonWildcardTypeArguments (explicitGenericInvocationSuffix | THIS arguments)
     ;
@@ -717,18 +720,28 @@ typeList
     ;
 
 typeType
-    : annotation* (classOrInterfaceType | primitiveType) (annotation* '[' ']')*
+    : annotation* (referenceType | classOrInterfaceType | primitiveType) (annotation* '[' ']')*
+    ;
+
+referenceType
+    : REFERENCE classOrInterfaceType
     ;
 
 primitiveType
     : BOOLEAN
     | CHAR
-    | BYTE
-    | SHORT
-    | INT
-    | LONG
-    | FLOAT
-    | DOUBLE
+    | INT16
+    | UINT16
+    | INT32
+    | UINT32
+    | INT64
+    | UINT64
+    | INT128
+    | UINT128
+    | FLOAT16
+    | FLOAT32
+    | FLOAT64
+    | FLOAT128
     ;
 
 typeArguments
