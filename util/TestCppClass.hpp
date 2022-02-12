@@ -5,6 +5,8 @@
 #ifndef CAJETA_TESTCPPCLASS_HPP
 #define CAJETA_TESTCPPCLASS_HPP
 
+#include <string>
+
 class TestCppClass {
 private:
     int alpha;
@@ -12,6 +14,7 @@ public:
     TestCppClass();
 
     int getAlpha();
+    static int main(int argc, char** argv);
 };
 
 #endif //CAJETA_TESTCPPCLASS_HPP

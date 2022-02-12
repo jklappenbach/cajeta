@@ -1,0 +1,71 @@
+#Class Design
+- LLVM Structure for Classes
+  - className: String
+  - Virtual Table
+    - Entry per method
+    - Function pointers to highest superclass entry if no override
+  - Reflection Table
+    - methodName: String
+      - overrides: Array<Array<Type*>>
+        - parameters: Array<Type*>
+          - parameter: Type*
+      - Entries ordered by methodName for quick binary search during compilation
+- Annotations
+  - Like Java, have a version of annotations that act as markers
+    - Example: Spring @Components, which are automatically instantiated by the Spring Framework
+  - Also feature injection annotation classes with the ability to inject llvm IR with the following strategy:
+    - When injection annotation is detected, 
+      - The implementation annotation class will be JIT compiled 
+      - Directly executed as part of the compilation process
+      - Compiler will call the injection code, providing the callback with the current event and injection API object
+        - Events defined below
+        - API object has access to the current module definition, and can call IR generation methods just like the listener
+    - AOP Annotations specifically for
+      - Class
+        - Base interface features a callback method offering an AOP object
+          - Callback Events
+            - Class fields declared
+            - Class methods declared
+            - Class definition complete
+          - AOP Capabilities
+            - Add field
+            - Set field value
+            - Add method
+            - Wrap method
+      - Class field
+        - Callback Events
+          - Class field declared
+        - AOP Capability
+          - Set field value
+          - Add method
+          - Wrap method
+      - Class method
+        - Callback Events
+          - Class method declared
+        - AOP Capability
+          - Wrap method
+      - Class method parameter
+        - Callback Events
+          - Parameter declared
+        - AOP Capability
+          - Set parameter value
+- Runtime Module
+  - [cajeta.lang.Class<T>](https://docs.oracle.com/javase/8/docs/api/java/lang/Class.html)
+  - [cajeta.lang.Object](https://docs.oracle.com/javase/8/docs/api/java/lang/Object.html)
+    - hashCode: default method based on murmur3
+    - equals
+    - toString
+    - finalize
+    - getClass
+    - wait
+    - notify
+    - notifyAll
+    - wait(long timeout)
+    - wait(long timeout, int nanos)
+  - StringLibrary
+    - Entry for each string allocated
+      - All strings allocated at compile time are located inline
+      - Pointers to strings allocated at runtime are to the heap
+    - String Class Interaction
+      - Strings receive argument strings on the stack
+      - GetOrAdd string by hash in the library.

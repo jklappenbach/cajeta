@@ -1,6 +1,7 @@
 #include <iostream>
-#include <CajetaParserBaseVisitor.h>
-#include <cajeta/CajetaParserIRVisitor.h>
+#include <cajeta/CajetaParserIRListener.h>
+#include <llvm/Support/TargetSelect.h>
+#include <filesystem>
 #include "antlr4-runtime.h"
 #include "CajetaLexer.h"
 #include "CajetaParser.h"
@@ -9,10 +10,28 @@ using namespace std;
 using namespace antlr4;
 using namespace cajeta;
 
-int main(int argc, const char* argv[]) {
+
+list<string>* findModulePaths(string rootPath) {
+    list<string>* result = new list<string>;
+
+    using recursive_directory_iterator = __fs::filesystem::recursive_directory_iterator;
+
+    for (const auto& dirEntry : recursive_directory_iterator(rootPath)) {
+        if (dirEntry.is_regular_file() && dirEntry.path().string().find(".cajeta")) {
+            result->push_back(dirEntry.path().string());
+        }
+    }
+
+    return result;
+}
+
+string findTargetPathForModule(string rootSrcPath, string srcPath, string targetRootPath) {
+    return targetRootPath + srcPath.substr(rootSrcPath.length());
+}
+
+llvm::Module* processModule(string srcPath, llvm::LLVMContext* context, string targetPath) {
     ifstream stream;
-    string path = "/Users/julian/code/cpp/cajeta/test/TestClass.cajeta";
-    stream.open(path);
+    stream.open(srcPath);
     ANTLRInputStream input(stream);
 
     CajetaLexer lexer(&input);
@@ -20,17 +39,48 @@ int main(int argc, const char* argv[]) {
 
     tokens.fill();
 
+    CajetaParser parser(&tokens);
+    antlr4::tree::ParseTree* parseTree = parser.compilationUnit();
+
+    //CajetaParserIRVisitor* visitor = new CajetaParserIRVisitor(srcPath, context, targetPath);
+    CajetaParserIRListener* listener = new CajetaParserIRListener(srcPath, context, targetPath);
+    antlr4::tree::ParseTreeWalker::DEFAULT.walk(listener, parseTree); //    std::cout << parseTree->toStringTree(&parser) << std::endl;
+    return 0;
+}
+
+int main(int argc, const char* argv[]) {
+    //cl::ParseCommandLineOptions(argc, argv, " Cajeta compiler, v1.0\n");
+
+    if (argc != 2) {
+
+    }
+
     //    for (auto token : tokens.getTokens()) {
     //        std::cout << token->toString() << std::endl;
     //    }
 
-    CajetaParser parser(&tokens);
-    antlr4::tree::ParseTree* parseTree = parser.compilationUnit();
+//    InitializeNativeTarget();
+//    InitializeNativeTargetAsmPrinter();
+    string rootSrcPath = argv[1];
+    string rootTargetPath = argv[2];
 
-    LLVMContext* llvmContext = new LLVMContext;
-    CajetaParserIRVisitor* visitor = new CajetaParserIRVisitor(path, llvmContext);
-    parseTree->accept(visitor);
-    std::cout << parseTree->toStringTree(&parser) << std::endl;
+    if (rootSrcPath[rootSrcPath.size() - 1] != '/') {
+        rootSrcPath.append("/");
+    }
+
+    if (rootTargetPath[rootTargetPath.size() - 1] != '/') {
+        rootTargetPath.append("/");
+    }
+
+    llvm::LLVMContext* context = new llvm::LLVMContext;
+    list<string>* modulePaths = findModulePaths(argv[1]);
+    string buildRoot = argv[2];
+
+    for (auto itr = modulePaths->begin(); itr != modulePaths->end(); itr++) {
+        string targetPath = findTargetPathForModule(rootSrcPath, *itr, rootTargetPath);
+        llvm::Module* module = processModule(*itr, context, targetPath);
+        //WriteBitcodeToFile(module, *out);
+    }
 
 //    delete visitor;
 //    delete llvmContext;

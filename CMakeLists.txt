@@ -5,7 +5,7 @@ project(cajeta VERSION 1.0.0)
 list(APPEND CMAKE_MODULE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/cmake)
 
 # compiler must be 11 or 14
-set(CMAKE_CXX_STANDARD 14)
+set(CMAKE_CXX_STANDARD 17)
 set(Java_JAVA_EXECUTABLE "java")
 set(ANTLR4_TAG e4c1a74)
 
@@ -32,7 +32,7 @@ add_definitions(${LLVM_DEFINITIONS})
 # Call macro to add lexer and grammar to your build dependencies.
 antlr_target(CajetaGrammarLexer ${CMAKE_CURRENT_SOURCE_DIR}/antlr4/CajetaLexer.g4 LEXER
              PACKAGE cajeta)
-antlr_target(CajetaGrammarParser ${CMAKE_CURRENT_SOURCE_DIR}/antlr4/CajetaParser.g4 PARSER VISITOR
+antlr_target(CajetaGrammarParser ${CMAKE_CURRENT_SOURCE_DIR}/antlr4/CajetaParser.g4 PARSER LISTENER
              PACKAGE cajeta
              DEPENDS_ANTLR CajetaGrammarLexer
              COMPILE_FLAGS -lib ${ANTLR_CajetaGrammarLexer_OUTPUT_DIR})
@@ -46,16 +46,22 @@ include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include)
 add_executable(cajeta
         ${ANTLR_CajetaGrammarLexer_CXX_OUTPUTS}
         ${ANTLR_CajetaGrammarParser_CXX_OUTPUTS}
-        src/main.cpp include/cajeta/CajetaParserIRVisitor.h include/cajeta/Scope.h src/Scope.cpp include/cajeta/Declaration.h)
+        src/main.cpp include/cajeta/CajetaParserIRVisitor.h include/cajeta/Scope.h src/Scope.cpp include/cajeta/Declaration.h include/cajeta/CajetaParserIRListener.h)
 
 message(STATUS "Found LLVM ${LLVM_PACKAGE_VERSION}")
 message(STATUS "Using LLVMConfig.cmake in: ${LLVM_DIR}")
 message(STATUS "Using LLVM includes at: ${LLVM_INCLUDE_DIRS}")
 message(STATUS "Using project includes at: ${CMAKE_INCLUDE_SOURCE_DIR}/include")
+set(LLVM_TARGETS_TO_BUILD ${LLVM_ALL_TARGETS})
+
+foreach(target ${LLVM_TARGETS_TO_BUILD})
+    list(APPEND targets "LLVM${target}CodeGen")
+endforeach()
 
 target_link_libraries(cajeta
         antlr4_static
         pthread
+        LLVMX86CodeGen
         LLVMX86AsmParser # MC, MCParser, Support, X86Desc, X86Info
         LLVMX86Desc # MC, Support, X86AsmPrinter, X86Info
         LLVMX86Info # MC, Support, Target
@@ -65,6 +71,7 @@ target_link_libraries(cajeta
         LLVMTransformUtils
         LLVMAnalysis
         LLVMTarget
+        ${targets}
         LLVMOption # Support
         LLVMMCParser # MC, Support
         LLVMMC # Object, Support
