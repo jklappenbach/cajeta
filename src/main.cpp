@@ -29,7 +29,8 @@ string findTargetPathForModule(string rootSrcPath, string srcPath, string target
     return targetRootPath + srcPath.substr(rootSrcPath.length());
 }
 
-llvm::Module* processModule(string srcPath, llvm::LLVMContext* context, string targetPath) {
+llvm::Module* processModule(string srcPath, llvm::LLVMContext* context, string targetPath, string targetTriple,
+                            llvm::TargetMachine* targetMachine) {
     ifstream stream;
     stream.open(srcPath);
     ANTLRInputStream input(stream);
@@ -43,8 +44,9 @@ llvm::Module* processModule(string srcPath, llvm::LLVMContext* context, string t
     antlr4::tree::ParseTree* parseTree = parser.compilationUnit();
 
     //CajetaParserIRVisitor* visitor = new CajetaParserIRVisitor(srcPath, context, targetPath);
-    CajetaParserIRListener* listener = new CajetaParserIRListener(srcPath, context, targetPath);
-    antlr4::tree::ParseTreeWalker::DEFAULT.walk(listener, parseTree); //    std::cout << parseTree->toStringTree(&parser) << std::endl;
+    CajetaParserIRListener* listener = new CajetaParserIRListener(srcPath, context, targetPath, targetTriple, targetMachine);
+    antlr4::tree::ParseTreeWalker::DEFAULT.walk(listener, parseTree);
+    std::cout << parseTree->toStringTree(&parser) << std::endl;
     return 0;
 }
 
@@ -55,12 +57,23 @@ int main(int argc, const char* argv[]) {
 
     }
 
-    //    for (auto token : tokens.getTokens()) {
-    //        std::cout << token->toString() << std::endl;
-    //    }
+    auto targetTriple = llvm::sys::getDefaultTargetTriple();
+    llvm::InitializeAllTargets();
+    llvm::InitializeAllTargetMCs();
+    llvm::InitializeAllAsmPrinters();
+    string error;
+    auto target = llvm::TargetRegistry::lookupTarget(targetTriple, error);
 
-//    InitializeNativeTarget();
-//    InitializeNativeTargetAsmPrinter();
+    if (!target) {
+        return -1;
+    }
+
+    auto cpu = "generic";
+    auto features = "";
+
+    llvm::TargetOptions opt;
+    auto RM = llvm::Optional<llvm::Reloc::Model>();
+    llvm::TargetMachine* targetMachine = target->createTargetMachine(targetTriple, cpu, features, opt, RM);
     string rootSrcPath = argv[1];
     string rootTargetPath = argv[2];
 
@@ -78,7 +91,7 @@ int main(int argc, const char* argv[]) {
 
     for (auto itr = modulePaths->begin(); itr != modulePaths->end(); itr++) {
         string targetPath = findTargetPathForModule(rootSrcPath, *itr, rootTargetPath);
-        llvm::Module* module = processModule(*itr, context, targetPath);
+        llvm::Module* module = processModule(*itr, context, targetPath, targetTriple, targetMachine);
         //WriteBitcodeToFile(module, *out);
     }
 

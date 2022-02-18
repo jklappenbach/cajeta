@@ -27,21 +27,7 @@ namespace cajeta {
     enum ParseState { DEFINE_CLASS, DEFINE_VARIABLE, DEFINE_METHOD_SIG, DEFINE_METHOD };
     enum AccessModifier { PACKAGE = 0x01, PUBLIC = 0x02, PRIVATE = 0x04, PROTECTED = 0x08, STATIC = 0x0F, FINAL = 0x10 };
 
-    AccessModifier toAccessModifier(string value) {
-        if (value == "public") {
-            return PUBLIC;
-        } else if (value == "private") {
-            return PRIVATE;
-        } else if (value == "protected") {
-            return PROTECTED;
-        } else if (value == "static") {
-            return STATIC;
-        } else if (value == "final") {
-            return FINAL;
-        }
-
-        return PACKAGE;
-    };
+    AccessModifier toAccessModifier(string value);
 
     struct TypeParameter {
         string parameterName;
@@ -66,6 +52,7 @@ namespace cajeta {
     struct ParameterAnnotation {
 
     };
+
     struct ExtendedTypeParameter : TypeParameter {
         string extends;
         llvm::Type* type;
@@ -74,13 +61,74 @@ namespace cajeta {
         }
     };
 
+    struct TypeDefinition;
+
+    struct ParseContext {
+        llvm::LLVMContext* llvmContext;
+        llvm::Module* module;
+        llvm::IRBuilder<>* builder;
+        map<string, TypeDefinition*> types;
+
+        ParseContext(llvm::LLVMContext* llvmContext,
+                     llvm::Module* module,
+                     llvm::IRBuilder<>* builder) {
+            this->llvmContext = llvmContext;
+            this->module = module;
+            this->builder = builder;
+        }
+    };
+
     struct TypeDefinition {
         string name;
         llvm::Module* module;
         llvm::Type* type;
+        bool reference;
+
         virtual void define() = 0;
+
         virtual void allocate() = 0;
+
         virtual void release() = 0;
+
+        TypeDefinition() {
+            reference = false;
+        }
+
+        TypeDefinition(string name, llvm::Module* module, llvm::Type* type, bool reference) {
+            this->name = name;
+            this->module = module;
+            this->type = type;
+            this->reference = reference;
+        }
+
+        static TypeDefinition* fromName(string name, ParseContext* ctxParse);
+        static TypeDefinition* fromContext(CajetaParser::TypeTypeOrVoidContext* ctxTypeType, ParseContext* ctxParse);
+    };
+
+    struct NativeTypeDefinition : TypeDefinition {
+        NativeTypeDefinition(string name, llvm::Module* module, llvm::Type* type) :
+                NativeTypeDefinition(name, module, type, false) {
+        }
+        NativeTypeDefinition(string name, llvm::Module* module, llvm::Type* type, bool reference) {
+            this->name = name;
+            this->module = module;
+            this->type = type;
+            this->reference = reference;
+        }
+
+        virtual void define() {
+
+        }
+
+        virtual void allocate() {
+
+        }
+
+        virtual void release() {
+
+        }
+
+        static TypeDefinition* fromName(string name, ParseContext* ctxParse);
     };
 
     struct Field {
@@ -179,13 +227,8 @@ namespace cajeta {
         }
     };
 
-    class CajetaParserIRListener : public CajetaParserBaseListener {
+    class CajetaParserIRListener : public CajetaParserBaseListener, ParseContext {
     private:
-        unique_ptr<llvm::LLVMContext> llvmContext;
-        unique_ptr<llvm::Module> module;
-        unique_ptr<llvm::IRBuilder<>> builder;
-        map<std::string, llvm::Value*> variables;
-
         // Parsing state
         string srcPath;
         string targetPath;
@@ -203,46 +246,19 @@ namespace cajeta {
     public:
         CajetaParserIRListener(string srcPath,
                               llvm::LLVMContext* llvmContext,
-                              string targetPath) :
-                llvmContext(llvmContext),
-                module(make_unique<llvm::Module>(srcPath, *this->llvmContext)),
-                builder(make_unique<llvm::IRBuilder<>>(*this->llvmContext)),
+                              string targetPath,
+                              string targetTriple,
+                              llvm::TargetMachine* targetMachine) :
+                ParseContext(llvmContext, new llvm::Module(srcPath, *llvmContext),
+                             new llvm::IRBuilder<>(*llvmContext)),
                 moduleScope(NULL, MODULE_SCOPE) {
             parseState = DEFINE_CLASS;
-
-            auto targetTriple = llvm::sys::getDefaultTargetTriple();
-//            targetTriple.setArch(llvm::Triple::ArchType::x86_64);
-//            targetTriple.setOS(llvm::Triple::OSType::Darwin);
-//            targetTriple.setEnvironment(llvm::Triple::EnvironmentType::MacABI);
-            llvm::InitializeAllTargets();
-            llvm::InitializeAllTargetMCs();
-            llvm::InitializeAllAsmPrinters();
-            string error;
-            auto target = llvm::TargetRegistry::lookupTarget(targetTriple, error);
-
-            if (!target) {
-                return;
-            }
-
-            auto cpu = "generic";
-            auto features = "";
-
-            llvm::TargetOptions opt;
-            auto RM = llvm::Optional<llvm::Reloc::Model>();
-            auto targetMachine = target->createTargetMachine(targetTriple, cpu, features, opt, RM);
-
             module->setDataLayout(targetMachine->createDataLayout());
             module->setTargetTriple(targetTriple);
             accessModifiers = 0;
 
             std::error_code ec;
-            string fileName;
-            llvm::raw_fd_ostream dest(fileName, ec, llvm::sys::fs::OF_None);
-
-            if (ec) {
-                error = "Could not open file: " + ec.message();
-                return;
-            }
+            llvm::raw_fd_ostream dest(targetPath, ec, llvm::sys::fs::OF_None);
 
             //llvmContext->pImpl->
 
@@ -335,7 +351,43 @@ namespace cajeta {
         virtual void enterMemberDeclaration(CajetaParser::MemberDeclarationContext * /*ctx*/) override { }
         virtual void exitMemberDeclaration(CajetaParser::MemberDeclarationContext * /*ctx*/) override { }
 
-        virtual void enterMethodDeclaration(CajetaParser::MethodDeclarationContext * /*ctx*/) override { }
+        virtual void enterMethodDeclaration(CajetaParser::MethodDeclarationContext *ctx) override {
+            TypeDefinition* returnType = TypeDefinition::fromContext(ctx->typeTypeOrVoid(), this);
+
+            llvm::FunctionType* functionType = llvm::FunctionType::get(returnType->type, false);
+            string methodIdentifier = ctx->identifier()->getText();
+            llvm::Function* function = llvm::Function::Create(functionType,
+                                                              llvm::Function::ExternalLinkage,
+                                                              methodIdentifier,
+                                                              module);
+
+//
+            CajetaParser::MethodBodyContext* ctxMethodBody = ctx->methodBody();
+            std::vector<CajetaParser::BlockStatementContext *> statements = ctxMethodBody->block()->blockStatement();
+            for (auto itr = statements.begin(); itr != statements.end(); itr++) {
+                CajetaParser::BlockStatementContext* ctxBlockStatement = *itr;
+                string str = ctxBlockStatement->getText();
+                CajetaParser::StatementContext* ctxStatement = ctxBlockStatement->statement();
+                std::vector<CajetaParser::StatementContext *> statements = ctxStatement->statement();
+                for (auto itrStatements = statements.begin(); itrStatements != statements.end(); itrStatements++) {
+                    CajetaParser::StatementContext* ctxStatement = *itrStatements;
+                    string str = ctxStatement->getText();
+                }
+                std::vector<CajetaParser::ExpressionContext *> expressions = ctxStatement->expression();
+                for (auto itrExpressions = expressions.begin(); itrExpressions != expressions.end(); itrExpressions++) {
+                    CajetaParser::ExpressionContext* ctxExpression = *itrExpressions;
+                    string str = ctxExpression->getText();
+                }
+            }
+//            std::vector<antlr4::tree::TerminalNode *> LBRACK();
+//            antlr4::tree::TerminalNode* LBRACK(size_t i);
+//            std::vector<antlr4::tree::TerminalNode *> RBRACK();
+//            antlr4::tree::TerminalNode* RBRACK(size_t i);
+//            antlr4::tree::TerminalNode *THROWS();
+//            QualifiedNameListContext *qualifiedNameList();
+
+        }
+
         virtual void exitMethodDeclaration(CajetaParser::MethodDeclarationContext * /*ctx*/) override { }
 
         virtual void enterMethodBody(CajetaParser::MethodBodyContext * /*ctx*/) override { }

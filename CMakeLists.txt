@@ -46,7 +46,7 @@ include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include)
 add_executable(cajeta
         ${ANTLR_CajetaGrammarLexer_CXX_OUTPUTS}
         ${ANTLR_CajetaGrammarParser_CXX_OUTPUTS}
-        src/main.cpp include/cajeta/CajetaParserIRVisitor.h include/cajeta/Scope.h src/Scope.cpp include/cajeta/Declaration.h include/cajeta/CajetaParserIRListener.h)
+        src/main.cpp include/cajeta/CajetaParserIRVisitor.h include/cajeta/Scope.h src/Scope.cpp include/cajeta/Declaration.h include/cajeta/CajetaParserIRListener.h src/CajetaParserIRListener.cpp)
 
 message(STATUS "Found LLVM ${LLVM_PACKAGE_VERSION}")
 message(STATUS "Using LLVMConfig.cmake in: ${LLVM_DIR}")
