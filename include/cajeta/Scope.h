@@ -4,21 +4,39 @@
 #include "llvm/ADT/StringRef.h"
 #include "Declaration.h"
 
-using namespace llvm;
+#include <cajeta/Field.h>
 
 namespace cajeta {
-    class Scope {
+    enum ScopeType { MODULE_SCOPE, CLASS_SCOPE, METHOD_SCOPE, BLOCK_SCOPE };
+
+    struct Scope {
+        ScopeType scopeType;
         Scope* parent;
-        StringMap<Declaration*> symbols;
-    public:
-        Scope(Scope* parent = nullptr) : parent(parent) {}
+        map<string, Field*> fields;
+        Scope() {
+            parent = NULL;
+            scopeType = CLASS_SCOPE;
+        }
+        Scope(Scope* parent, ScopeType scopeType) {
+            this->parent = parent;
+            this->scopeType = scopeType;
+        }
 
-        bool insert(Declaration* declaration);
 
-        Declaration* lookup(StringRef name);
+        ~Scope() {
+            for (auto itr = fields.begin(); itr != fields.end(); itr++) {
+                Field* field = itr->second;
+            }
+            fields.clear();
+        }
 
-        Scope* getParent() {
-            return parent;
+        Field* findField(string fieldName) {
+            Field* field = fields[fieldName];
+            if (field == NULL && parent != NULL) {
+                return parent->findField(fieldName);
+            }
+            return field;
         }
     };
-} // namespace cajeta
+}
+

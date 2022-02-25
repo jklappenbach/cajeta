@@ -2,6 +2,7 @@
 // Created by James Klappenbach on 2/13/22.
 //
 #include "cajeta/CajetaParserIRListener.h"
+#include "cajeta/AccessModifier.h"
 
 using namespace cajeta;
 
@@ -21,7 +22,7 @@ AccessModifier cajeta::toAccessModifier(string value) {
     return PACKAGE;
 };
 
-TypeDefinition* TypeDefinition::fromContext(CajetaParser::TypeTypeOrVoidContext* ctxTypeOrVoid, ParseContext* ctxParse) {
+TypeDefinition* TypeDefinition::fromContext(CajetaParser::TypeTypeOrVoidContext* ctxTypeOrVoid, cajeta::ParseContext* ctxParse) {
     string name = ctxTypeOrVoid->getText();
     TypeDefinition* result = NativeTypeDefinition::fromName(name, ctxParse);
     if (result && ctxTypeOrVoid->typeType() && ctxTypeOrVoid->typeType()->referenceType() != NULL) {

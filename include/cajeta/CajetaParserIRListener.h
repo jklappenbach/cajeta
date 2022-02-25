@@ -2,8 +2,7 @@
 // Created by James Klappenbach on 2/8/22.
 //
 
-#ifndef CAJETA_CAJETAPARSERIRLISTENER_H
-#define CAJETA_CAJETAPARSERIRLISTENER_H
+#pragma once
 
 #include <llvm/IR/LegacyPassManager.h>
 #include <llvm/IR/Module.h>
@@ -20,212 +19,19 @@
 #include <llvm/Bitcode/BitcodeWriter.h>
 #include <CajetaParserBaseListener.h>
 #include <llvm/ADT/StringRef.h>
+#include <cajeta/Statement.h>
+#include <cajeta/Annotation.h>
+#include <cajeta/Generics.h>
+#include <cajeta/AccessModifier.h>
+#include <cajeta/TypeDefinition.h>
+#include <cajeta/Scope.h>
 
 using namespace std;
 
 namespace cajeta {
     enum ParseState { DEFINE_CLASS, DEFINE_VARIABLE, DEFINE_METHOD_SIG, DEFINE_METHOD };
-    enum AccessModifier { PACKAGE = 0x01, PUBLIC = 0x02, PRIVATE = 0x04, PROTECTED = 0x08, STATIC = 0x0F, FINAL = 0x10 };
 
     AccessModifier toAccessModifier(string value);
-
-    struct TypeParameter {
-        string parameterName;
-        TypeParameter(string parameterName) {
-            this->parameterName = parameterName;
-        }
-    };
-
-    // TODO: Fix me!
-//    struct ClassAnnotation {
-//        void onField(string fieldName, Type* type, Structure);
-//    };
-
-    struct FieldAnnotation {
-
-    };
-
-    struct MethodAnnotation {
-
-    };
-
-    struct ParameterAnnotation {
-
-    };
-
-    struct ExtendedTypeParameter : TypeParameter {
-        string extends;
-        llvm::Type* type;
-        ExtendedTypeParameter(string parameterName, string extends) : TypeParameter(parameterName) {
-            this->extends = extends;
-        }
-    };
-
-    struct TypeDefinition;
-
-    struct ParseContext {
-        llvm::LLVMContext* llvmContext;
-        llvm::Module* module;
-        llvm::IRBuilder<>* builder;
-        map<string, TypeDefinition*> types;
-
-        ParseContext(llvm::LLVMContext* llvmContext,
-                     llvm::Module* module,
-                     llvm::IRBuilder<>* builder) {
-            this->llvmContext = llvmContext;
-            this->module = module;
-            this->builder = builder;
-        }
-    };
-
-    struct TypeDefinition {
-        string name;
-        llvm::Module* module;
-        llvm::Type* type;
-        bool reference;
-
-        virtual void define() = 0;
-
-        virtual void allocate() = 0;
-
-        virtual void release() = 0;
-
-        TypeDefinition() {
-            reference = false;
-        }
-
-        TypeDefinition(string name, llvm::Module* module, llvm::Type* type, bool reference) {
-            this->name = name;
-            this->module = module;
-            this->type = type;
-            this->reference = reference;
-        }
-
-        static TypeDefinition* fromName(string name, ParseContext* ctxParse);
-        static TypeDefinition* fromContext(CajetaParser::TypeTypeOrVoidContext* ctxTypeType, ParseContext* ctxParse);
-    };
-
-    struct NativeTypeDefinition : TypeDefinition {
-        NativeTypeDefinition(string name, llvm::Module* module, llvm::Type* type) :
-                NativeTypeDefinition(name, module, type, false) {
-        }
-        NativeTypeDefinition(string name, llvm::Module* module, llvm::Type* type, bool reference) {
-            this->name = name;
-            this->module = module;
-            this->type = type;
-            this->reference = reference;
-        }
-
-        virtual void define() {
-
-        }
-
-        virtual void allocate() {
-
-        }
-
-        virtual void release() {
-
-        }
-
-        static TypeDefinition* fromName(string name, ParseContext* ctxParse);
-    };
-
-    struct Field {
-        bool reference;
-        string name;
-        string typeName;
-        llvm::AllocaInst* definition;
-        llvm::Type* type;
-        void define() { }
-        void allocate(llvm::IRBuilder<>* builder, llvm::Module* module, llvm::LLVMContext* llvmContext) {
-            // typeDefinition->allocate(builder, module, llvmContext);
-        }
-        void release(llvm::IRBuilder<>* builder, llvm::Module* module, llvm::LLVMContext* llvmContext) {
-            // typeDefinition->free(builder, module, llvmContext);
-        }
-    };
-
-    enum ScopeType { MODULE_SCOPE, CLASS_SCOPE, METHOD_SCOPE, BLOCK_SCOPE };
-
-    struct Scope {
-        ScopeType scopeType;
-        Scope* parent;
-        map<string, Field*> fields;
-        Scope() {
-            parent = NULL;
-            scopeType = CLASS_SCOPE;
-        }
-        Scope(Scope* parent, ScopeType scopeType) {
-            this->parent = parent;
-            this->scopeType = scopeType;
-        }
-
-
-        ~Scope() {
-            for (auto itr = fields.begin(); itr != fields.end(); itr++) {
-                Field* field = itr->second;
-            }
-            fields.clear();
-        }
-
-        Field* findField(string fieldName) {
-            Field* field = fields[fieldName];
-            if (field == NULL && parent != NULL) {
-                return parent->findField(fieldName);
-            }
-            return field;
-        }
-    };
-
-    struct StructureDefinition : TypeDefinition {
-        list<TypeParameter*> typeParameters;
-        llvm::StructType* structType;
-        int accessModifiers;
-        string name;
-        string package;
-        list<string> typeList;  // Inheritance chain
-        map<string, list<pair<string, llvm::Type*>>> methods;
-        std::map<std::string, Field*> fields;
-        llvm::Module* module;
-
-        StructureDefinition() {
-            accessModifiers = 0;
-        }
-        string getCanonicalName() {
-            return package + "." + name;
-        }
-    };
-
-    struct ClassDefinition : StructureDefinition {
-        Scope scope;
-        void createBody() {
-            // TODO build me!
-        }
-
-        virtual void define() { }
-        virtual void allocate() { }
-        virtual void release() { }
-    };
-
-    struct EnumDefinition : StructureDefinition {
-        list<string> constants; // Enum specific,
-        void createBody() {
-            // TODO build me!
-        }
-    };
-
-    struct InterfaceDefinition : StructureDefinition {
-        void createBody() {
-            // TODO build me!
-        }
-    };
-
-    struct RecordDefinition : StructureDefinition {
-        void createBody() {
-            // TODO build me!
-        }
-    };
 
     class CajetaParserIRListener : public CajetaParserBaseListener, ParseContext {
     private:
@@ -260,8 +66,8 @@ namespace cajeta {
             std::error_code ec;
             llvm::raw_fd_ostream dest(targetPath, ec, llvm::sys::fs::OF_None);
 
-            //llvmContext->pImpl->
-
+//            llvmContext->pImpl->
+//
 //            legacy::PassManager pass;
 //            auto FileType = llvm::CGFT_ObjectFile;
 //
@@ -305,7 +111,7 @@ namespace cajeta {
             ClassDefinition* classDefinition = new ClassDefinition;
             classes.push_back(classDefinition);
             classStack.push_front(classDefinition);
-            currentScope = &classDefinition->scope;
+            currentScope = classDefinition->scope;
             classDefinition->structType = llvm::StructType::create(*llvmContext, llvm::StringRef(classDefinition->name));
             classDefinition->accessModifiers = accessModifiers;
             accessModifiers = 0;
@@ -313,6 +119,7 @@ namespace cajeta {
             //structDefinition->typeParameters;
 
         }
+
         virtual void exitClassDeclaration(CajetaParser::ClassDeclarationContext * /*ctx*/) override { }
 
         virtual void enterTypeParameters(CajetaParser::TypeParametersContext * /*ctx*/) override { }
@@ -386,6 +193,14 @@ namespace cajeta {
 //            antlr4::tree::TerminalNode *THROWS();
 //            QualifiedNameListContext *qualifiedNameList();
 
+        }
+
+        void processStatement(CajetaParser::StatementContext* ctxStatement) {
+
+        }
+
+        void processExpression(CajetaParser::ExpressionContext* ctxExpression) {
+            //ctxExpression->
         }
 
         virtual void exitMethodDeclaration(CajetaParser::MethodDeclarationContext * /*ctx*/) override { }
@@ -709,5 +524,3 @@ namespace cajeta {
         virtual void visitErrorNode(antlr4::tree::ErrorNode * /*node*/) override { }
     };
 }
-
-#endif //CAJETA_CAJETAPARSERIRLISTENER_H
