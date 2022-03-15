@@ -25,6 +25,7 @@
 #include <cajeta/AccessModifier.h>
 #include <cajeta/TypeDefinition.h>
 #include <cajeta/Scope.h>
+#include <cajeta/Method.h>
 
 using namespace std;
 
@@ -167,6 +168,10 @@ namespace cajeta {
                                                               llvm::Function::ExternalLinkage,
                                                               methodIdentifier,
                                                               module);
+            Method* method = new Method(accessModifiers, function);
+            accessModifiers = 0;
+            //classStack.front().
+
 
 //
             CajetaParser::MethodBodyContext* ctxMethodBody = ctx->methodBody();
@@ -195,10 +200,120 @@ namespace cajeta {
 
         }
 
-        void processStatement(CajetaParser::StatementContext* ctxStatement) {
+        /**
+         * statement
+            : blockLabel=block
+            | ASSERT expression (':' expression)? ';'
+            | IF parExpression statement (ELSE statement)?
+            | FOR '(' forControl ')' statement
+            | WHILE parExpression statement
+            | DO statement WHILE parExpression ';'
+            | TRY block (catchClause+ finallyBlock? | finallyBlock)
+            | TRY resourceSpecification block catchClause* finallyBlock?
+            | SWITCH parExpression '{' switchBlockStatementGroup* switchLabel* '}'
+            | SYNCHRONIZED parExpression block
+            | RETURN expression? ';'
+            | THROW expression ';'
+            | BREAK identifier? ';'
+            | CONTINUE identifier? ';'
+            | YIELD expression ';' // Java17
+            | SEMI
+            | statementExpression=expression ';'
+            | switchExpression ';'? // Java17
+            | identifierLabel=identifier ':' statement
+            ;
 
+         * @param ctxStatement
+         */
+        void processStatement(CajetaParser::StatementContext* ctxStatement) {
+            std::vector<CajetaParser::StatementContext*> statements = ctxStatement->statement();
+            for (auto itr = statements.begin(); itr != statements.end(); itr++) {
+                CajetaParser::StatementContext* statementContext = *itr;
+                if (statementContext->block()) {
+
+                } else if (statementContext->ASSERT()) {
+
+                } else if (statementContext->IF()) {
+
+                } else if (statementContext->FOR()) {
+
+                } else if (statementContext->WHILE()) {
+
+                } else if (statementContext->DO()) {
+
+                } else if (statementContext->TRY()) {
+
+                } else if (statementContext->SWITCH()) {
+
+                } else if (statementContext->SYNCHRONIZED()) {
+
+                } else if (statementContext->RETURN()) {
+
+                } else if (statementContext->THROW()) {
+
+                } else if (statementContext->BREAK()) {
+
+                } else if (statementContext->CONTINUE()) {
+
+                } else if (statementContext->YIELD()) {
+
+                } else if (statementContext->SEMI()) {
+
+                } else if (statementContext->statementExpression) {
+
+                } else if (statementContext->switchExpression()) {
+
+                } else if (statementContext->identifierLabel) {
+
+                }
+            }
         }
 
+        /**
+         * expression
+    : primary
+    | expression bop='.'
+      (
+         identifier
+       | methodCall
+       | THIS
+       | NEW nonWildcardTypeArguments? innerCreator
+       | SUPER superSuffix
+       | explicitGenericInvocation
+      )
+    | expression '[' expression ']'
+    | methodCall
+    | NEW creator
+    | '(' annotation* typeType ('&' typeType)* ')' expression
+    | expression postfix=('++' | '--')
+    | prefix=('+'|'-'|'++'|'--') expression
+    | prefix=('~'|'!') expression
+    | expression bop=('*'|'/'|'%') expression
+    | expression bop=('+'|'-') expression
+    | expression ('<' '<' | '>' '>' '>' | '>' '>') expression
+    | expression bop=('<=' | '>=' | '>' | '<') expression
+    | expression bop=INSTANCEOF (typeType | pattern)
+    | expression bop=('==' | '!=') expression
+    | expression bop='&' expression
+    | expression bop='^' expression
+    | expression bop='|' expression
+    | expression bop='&&' expression
+    | expression bop='||' expression
+    | <assoc=right> expression bop='?' expression ':' expression
+    | <assoc=right> expression
+      bop=('=' | '+=' | '-=' | '*=' | '/=' | '&=' | '|=' | '^=' | '>>=' | '>>>=' | '<<=' | '%=')
+      expression
+    | lambdaExpression // Java8
+    | switchExpression // Java17
+
+    // Java 8 methodReference
+    | expression '::' typeArguments? identifier
+    | typeType '::' (typeArguments? identifier | NEW)
+    | classType '::' typeArguments? NEW
+    ;
+
+         * @param ctxExpression
+         */
         void processExpression(CajetaParser::ExpressionContext* ctxExpression) {
             //ctxExpression->
         }

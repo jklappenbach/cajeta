@@ -25,6 +25,7 @@ namespace cajeta {
 
     struct Field;
     struct Scope;
+    struct Method;
 
     struct TypeDefinition {
         string name;
@@ -86,8 +87,8 @@ namespace cajeta {
         string name;
         string package;
         list<string> typeList;  // Inheritance chain
-        map<string, list<pair<string, llvm::Type*>>> methods;
-        std::map<std::string, Field*> fields;
+        map<string,Method*> methods;
+        map<string, Field*> fields;
         llvm::Module* module;
 
         StructureDefinition() {

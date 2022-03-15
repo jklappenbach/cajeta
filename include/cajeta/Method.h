@@ -13,8 +13,12 @@ using namespace std;
 namespace cajeta {
     struct Method {
         int accessModifiers;
-        llvm::BasicBlock basicBlock;
+        llvm::Function* function;
+        llvm::BasicBlock* basicBlock;
         std::map<string, TypeDefinition*> types;
+        Method(int accessModifiers, llvm::Function* function) {
+            this->accessModifiers = accessModifiers;
+        }
     };
 }
 
