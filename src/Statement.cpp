@@ -34,46 +34,46 @@ using namespace cajeta;
 Statement* Statement::create(CajetaParser::StatementContext* ctxStatement) {
     Statement* result;
 
-    std::vector<CajetaParser::StatementContext*> statements = ctxStatement->statement();
-    for (auto itr = statements.begin(); itr != statements.end(); itr++) {
-        CajetaParser::StatementContext* statementContext = *itr;
-        if (statementContext->block()) {
-            result = new BlockLabelStatement;
-        } else if (statementContext->ASSERT()) {
-            result = new AssertStatement;
-        } else if (statementContext->IF()) {
-            result = new IfStatement;
-        } else if (statementContext->FOR()) {
-            result = new ForStatement;
-        } else if (statementContext->WHILE()) {
-            result = new WhileStatement;
-        } else if (statementContext->DO()) {
-            result = new DoStatement;
-        } else if (statementContext->TRY()) {
-            result = new TryStatement;
-        } else if (statementContext->SWITCH()) {
-            result = new SwitchStatement;
-        } else if (statementContext->SYNCHRONIZED()) {
-            result = new SynchronizedStatemment;
-        } else if (statementContext->RETURN()) {
-            result = new ReturnStatement;
-        } else if (statementContext->THROW()) {
-            result = new ThrowStatement;
-        } else if (statementContext->BREAK()) {
-            result = new BreakStatement;
-        } else if (statementContext->CONTINUE()) {
-            result = new ContinueStatement;
-        } else if (statementContext->YIELD()) {
-            result = new YieldStatement;
-        } else if (statementContext->SEMI()) {
-            cout << "Hit SEMI statement";
-        } else if (statementContext->statementExpression) {
-            cout << "Hit statementContext->statementExpression";
-        } else if (statementContext->switchExpression()) {
-            result = new SwitchExpression;
-        } else if (statementContext->identifierLabel) {
-            result = new IdentifierLabel;
-        }
+    if (ctxStatement->statementExpression) {
+        cout << "Hit statementExpression in a Statement";
+    }
+
+    if (ctxStatement->block()) {
+        result = new BlockLabelStatement;
+    } else if (ctxStatement->ASSERT()) {
+        result = new AssertStatement;
+    } else if (ctxStatement->IF()) {
+        result = new IfStatement;
+    } else if (ctxStatement->FOR()) {
+        result = new ForStatement;
+    } else if (ctxStatement->WHILE()) {
+        result = new WhileStatement;
+    } else if (ctxStatement->DO()) {
+        result = new DoStatement;
+    } else if (ctxStatement->TRY()) {
+        result = new TryStatement;
+    } else if (ctxStatement->SWITCH()) {
+        result = new SwitchStatement;
+    } else if (ctxStatement->SYNCHRONIZED()) {
+        result = new SynchronizedStatemment;
+    } else if (ctxStatement->RETURN()) {
+        result = new ReturnStatement;
+    } else if (ctxStatement->THROW()) {
+        result = new ThrowStatement;
+    } else if (ctxStatement->BREAK()) {
+        result = new BreakStatement;
+    } else if (ctxStatement->CONTINUE()) {
+        result = new ContinueStatement;
+    } else if (ctxStatement->YIELD()) {
+        result = new YieldStatement;
+    } else if (ctxStatement->SEMI()) {
+        cout << "Hit SEMI statement";
+    } else if (ctxStatement->statementExpression) {
+        cout << "Hit ctxStatement->statementExpression";
+    } else if (ctxStatement->switchExpression()) {
+        result = new SwitchExpression;
+    } else if (ctxStatement->identifierLabel) {
+        result = new IdentifierLabel;
     }
 
     return result;

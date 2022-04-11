@@ -14,7 +14,6 @@
 #include <llvm/MC/TargetRegistry.h>
 #include <llvm/Target/TargetMachine.h>
 #include <llvm/Target/TargetOptions.h>
-#include <CajetaParserBaseVisitor.h>
 #include <CajetaParser.h>
 #include <llvm/Bitcode/BitcodeWriter.h>
 #include <CajetaParserBaseListener.h>
@@ -180,11 +179,7 @@ namespace cajeta {
                 CajetaParser::BlockStatementContext* ctxBlockStatement = *itr;
                 string str = ctxBlockStatement->getText();
                 CajetaParser::StatementContext* ctxStatement = ctxBlockStatement->statement();
-                std::vector<CajetaParser::StatementContext *> statements = ctxStatement->statement();
-                for (auto itrStatements = statements.begin(); itrStatements != statements.end(); itrStatements++) {
-                    CajetaParser::StatementContext* ctxStatement = *itrStatements;
-                    string str = ctxStatement->getText();
-                }
+                Statement* statement = Statement::create(ctxStatement);
                 std::vector<CajetaParser::ExpressionContext *> expressions = ctxStatement->expression();
                 for (auto itrExpressions = expressions.begin(); itrExpressions != expressions.end(); itrExpressions++) {
                     CajetaParser::ExpressionContext* ctxExpression = *itrExpressions;
@@ -201,28 +196,7 @@ namespace cajeta {
         }
 
         /**
-         * statement
-            : blockLabel=block
-            | ASSERT expression (':' expression)? ';'
-            | IF parExpression statement (ELSE statement)?
-            | FOR '(' forControl ')' statement
-            | WHILE parExpression statement
-            | DO statement WHILE parExpression ';'
-            | TRY block (catchClause+ finallyBlock? | finallyBlock)
-            | TRY resourceSpecification block catchClause* finallyBlock?
-            | SWITCH parExpression '{' switchBlockStatementGroup* switchLabel* '}'
-            | SYNCHRONIZED parExpression block
-            | RETURN expression? ';'
-            | THROW expression ';'
-            | BREAK identifier? ';'
-            | CONTINUE identifier? ';'
-            | YIELD expression ';' // Java17
-            | SEMI
-            | statementExpression=expression ';'
-            | switchExpression ';'? // Java17
-            | identifierLabel=identifier ':' statement
-            ;
-
+         *
          * @param ctxStatement
          */
         void processStatement(CajetaParser::StatementContext* ctxStatement) {
@@ -269,8 +243,8 @@ namespace cajeta {
             }
         }
 
-        /**
-         * expression
+    /**
+     * expression
     : primary
     | expression bop='.'
       (
