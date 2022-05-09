@@ -1,6 +1,6 @@
-package com.entity.app.component;
+package cajeta;
 
-public class TestClass {
+public class System {
     public static void main(String[] args) {
         System.out.printf("Hello World!\n");
     }

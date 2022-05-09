@@ -66,11 +66,11 @@ namespace cajeta {
             std::error_code ec;
             llvm::raw_fd_ostream dest(targetPath, ec, llvm::sys::fs::OF_None);
 
-//            llvmContext->pImpl->
-//
+//            CajetaLexer
 //            legacy::PassManager pass;
 //            auto FileType = llvm::CGFT_ObjectFile;
 //
+//            string error;
 //            if (targetMachine->addPassesToEmitFile(pass, dest, nullptr, FileType)) {
 //                error = "TargetMachine can't emit a file of this type";
 //                return;
@@ -82,7 +82,7 @@ namespace cajeta {
 
 
         virtual void enterCompilationUnit(CajetaParser::CompilationUnitContext * /*ctx*/) override {
-            printf("Entering Compiliation Unit");
+            //printf("Entering Compiliation Unit");
         }
         virtual void exitCompilationUnit(CajetaParser::CompilationUnitContext * /*ctx*/) override { }
 

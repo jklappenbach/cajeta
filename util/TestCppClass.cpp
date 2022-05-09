@@ -5,6 +5,7 @@
 #include "TestCppClass.hpp"
 #include <stdio.h>
 
+using namespace std;
 
 TestCppClass::TestCppClass() {
     this->alpha = 50;
@@ -15,7 +16,7 @@ int TestCppClass::getAlpha() {
 }
 
 int TestCppClass::main(int argc, char** argv) {
-    printf("A basic method");
+    //printf("A basic method");
     return 0;
 }
 

@@ -45,6 +45,7 @@ llvm::Module* processModule(string srcPath, llvm::LLVMContext* context, string t
 
     //CajetaParserIRVisitor* visitor = new CajetaParserIRVisitor(srcPath, context, targetPath);
     CajetaParserIRListener* listener = new CajetaParserIRListener(srcPath, context, targetPath, targetTriple, targetMachine);
+    parser.addParseListener(listener);
     antlr4::tree::ParseTreeWalker::DEFAULT.walk(listener, parseTree);
     std::cout << parseTree->toStringTree(&parser) << std::endl;
     return 0;
@@ -52,10 +53,6 @@ llvm::Module* processModule(string srcPath, llvm::LLVMContext* context, string t
 
 int main(int argc, const char* argv[]) {
     //cl::ParseCommandLineOptions(argc, argv, " Cajeta compiler, v1.0\n");
-
-    if (argc != 2) {
-
-    }
 
     auto targetTriple = llvm::sys::getDefaultTargetTriple();
     llvm::InitializeAllTargets();
