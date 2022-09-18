@@ -82,33 +82,59 @@ namespace cajeta {
 
 
         virtual void enterCompilationUnit(CajetaParser::CompilationUnitContext * /*ctx*/) override {
-            //printf("Entering Compiliation Unit");
+            cout << "enterCompilationUnit" << "\n";
         }
-        virtual void exitCompilationUnit(CajetaParser::CompilationUnitContext * /*ctx*/) override { }
+        virtual void exitCompilationUnit(CajetaParser::CompilationUnitContext * /*ctx*/) override {
+            cout << "exitCompilationUnit" << "\n";
+        }
 
-        virtual void enterPackageDeclaration(CajetaParser::PackageDeclarationContext * /*ctx*/) override { }
-        virtual void exitPackageDeclaration(CajetaParser::PackageDeclarationContext * /*ctx*/) override { }
+        virtual void enterPackageDeclaration(CajetaParser::PackageDeclarationContext * /*ctx*/) override {
+            cout << "enterPackageDeclaration" << "\n";
+        }
+        virtual void exitPackageDeclaration(CajetaParser::PackageDeclarationContext * /*ctx*/) override {
+            cout << "exitPackageDeclaration" << "\n";
+        }
 
-        virtual void enterImportDeclaration(CajetaParser::ImportDeclarationContext * /*ctx*/) override { }
-        virtual void exitImportDeclaration(CajetaParser::ImportDeclarationContext * /*ctx*/) override { }
+        virtual void enterImportDeclaration(CajetaParser::ImportDeclarationContext * /*ctx*/) override {
+            cout << "enterImportDeclaration" << "\n";
+        }
+        virtual void exitImportDeclaration(CajetaParser::ImportDeclarationContext * /*ctx*/) override {
+            cout << "exitImportDeclaration" << "\n";
+        }
 
-        virtual void enterTypeDeclaration(CajetaParser::TypeDeclarationContext * /*ctx*/) override { }
-        virtual void exitTypeDeclaration(CajetaParser::TypeDeclarationContext * /*ctx*/) override { }
+        virtual void enterTypeDeclaration(CajetaParser::TypeDeclarationContext * /*ctx*/) override {
+            cout << "enterTypeDeclaration" << "\n";
+        }
+        virtual void exitTypeDeclaration(CajetaParser::TypeDeclarationContext * /*ctx*/) override {
+            cout << "exitTypeDeclaration" << "\n";
+        }
 
-        virtual void enterModifier(CajetaParser::ModifierContext * /*ctx*/) override { }
-        virtual void exitModifier(CajetaParser::ModifierContext * /*ctx*/) override { }
+        virtual void enterModifier(CajetaParser::ModifierContext * /*ctx*/) override {
+            cout << "enterModifier" << "\n";
+        }
+        virtual void exitModifier(CajetaParser::ModifierContext * /*ctx*/) override {
+            cout << "exitModifier" << "\n";
+        }
 
         virtual void enterClassOrInterfaceModifier(CajetaParser::ClassOrInterfaceModifierContext* ctx) override {
+            cout << "enterClassOrInterfaceModifier" << "\n";
             this->accessModifiers |= toAccessModifier(ctx->getText());
         }
+        virtual void exitClassOrInterfaceModifier(CajetaParser::ClassOrInterfaceModifierContext * /*ctx*/) override {
+            cout << "exitClassOrInterfaceModifier" << "\n";
+        }
 
-        virtual void exitClassOrInterfaceModifier(CajetaParser::ClassOrInterfaceModifierContext * /*ctx*/) override { }
+        virtual void enterVariableModifier(CajetaParser::VariableModifierContext * /*ctx*/) override {
+            cout << "/*" << "\n";
+        }
+        virtual void exitVariableModifier(CajetaParser::VariableModifierContext * /*ctx*/) override {
+            cout << "exitVariableModifier" << "\n";
+        }
 
-        virtual void enterVariableModifier(CajetaParser::VariableModifierContext * /*ctx*/) override { }
-        virtual void exitVariableModifier(CajetaParser::VariableModifierContext * /*ctx*/) override { }
-
-        virtual void enterClassDeclaration(CajetaParser::ClassDeclarationContext * /*ctx*/) override {
+        virtual void enterClassDeclaration(CajetaParser::ClassDeclarationContext* ctxClassDecl) override {
+            cout << "enterClassDeclaration" << "\n";
             ClassDefinition* classDefinition = new ClassDefinition;
+            classDefinition->name = ctxClassDecl->identifier()->getText();
             classes.push_back(classDefinition);
             classStack.push_front(classDefinition);
             currentScope = classDefinition->scope;
@@ -120,45 +146,96 @@ namespace cajeta {
 
         }
 
-        virtual void exitClassDeclaration(CajetaParser::ClassDeclarationContext * /*ctx*/) override { }
+        virtual void exitClassDeclaration(CajetaParser::ClassDeclarationContext * /*ctx*/) override {
+            cout << "exitClassDeclaration" << "\n";
+        }
 
-        virtual void enterTypeParameters(CajetaParser::TypeParametersContext * /*ctx*/) override { }
-        virtual void exitTypeParameters(CajetaParser::TypeParametersContext * /*ctx*/) override { }
+        virtual void enterTypeParameters(CajetaParser::TypeParametersContext * /*ctx*/) override {
+            cout << "enterTypeParameters" << "\n";
+        }
+        virtual void exitTypeParameters(CajetaParser::TypeParametersContext * /*ctx*/) override {
+            cout << "exitTypeParameters" << "\n";
+        }
 
-        virtual void enterTypeParameter(CajetaParser::TypeParameterContext * /*ctx*/) override { }
-        virtual void exitTypeParameter(CajetaParser::TypeParameterContext * /*ctx*/) override { }
+        virtual void enterTypeParameter(CajetaParser::TypeParameterContext * /*ctx*/) override {
+            cout << "enterTypeParameter" << "\n";
+        }
+        virtual void exitTypeParameter(CajetaParser::TypeParameterContext * /*ctx*/) override {
+            cout << "exitTypeParameter" << "\n";
+        }
 
-        virtual void enterTypeBound(CajetaParser::TypeBoundContext * /*ctx*/) override { }
-        virtual void exitTypeBound(CajetaParser::TypeBoundContext * /*ctx*/) override { }
+        virtual void enterTypeBound(CajetaParser::TypeBoundContext * /*ctx*/) override {
+            cout << "enterTypeBound" << "\n";
+        }
+        virtual void exitTypeBound(CajetaParser::TypeBoundContext * /*ctx*/) override {
+            cout << "exitTypeBound" << "\n";
+        }
 
-        virtual void enterEnumDeclaration(CajetaParser::EnumDeclarationContext * /*ctx*/) override { }
-        virtual void exitEnumDeclaration(CajetaParser::EnumDeclarationContext * /*ctx*/) override { }
+        virtual void enterEnumDeclaration(CajetaParser::EnumDeclarationContext * /*ctx*/) override {
+            cout << "enterEnumDeclaration" << "\n";
+        }
+        virtual void exitEnumDeclaration(CajetaParser::EnumDeclarationContext * /*ctx*/) override {
+            cout << "exitEnumDeclaration" << "\n";
+        }
 
-        virtual void enterEnumConstants(CajetaParser::EnumConstantsContext * /*ctx*/) override { }
-        virtual void exitEnumConstants(CajetaParser::EnumConstantsContext * /*ctx*/) override { }
+        virtual void enterEnumConstants(CajetaParser::EnumConstantsContext * /*ctx*/) override {
+            cout << "enterEnumConstants" << "\n";
+        }
+        virtual void exitEnumConstants(CajetaParser::EnumConstantsContext * /*ctx*/) override {
+            cout << "exitEnumConstants" << "\n";
+        }
 
-        virtual void enterEnumConstant(CajetaParser::EnumConstantContext * /*ctx*/) override { }
-        virtual void exitEnumConstant(CajetaParser::EnumConstantContext * /*ctx*/) override { }
+        virtual void enterEnumConstant(CajetaParser::EnumConstantContext * /*ctx*/) override {
+            cout << "enterEnumConstant" << "\n";
+        }
+        virtual void exitEnumConstant(CajetaParser::EnumConstantContext * /*ctx*/) override {
+            cout << "exitEnumConstant" << "\n";
+        }
 
-        virtual void enterEnumBodyDeclarations(CajetaParser::EnumBodyDeclarationsContext * /*ctx*/) override { }
-        virtual void exitEnumBodyDeclarations(CajetaParser::EnumBodyDeclarationsContext * /*ctx*/) override { }
+        virtual void enterEnumBodyDeclarations(CajetaParser::EnumBodyDeclarationsContext * /*ctx*/) override {
+            cout << "enterEnumBodyDeclarations" << "\n";
+        }
+        virtual void exitEnumBodyDeclarations(CajetaParser::EnumBodyDeclarationsContext * /*ctx*/) override {
+            cout << "exitEnumBodyDeclarations" << "\n";
+        }
 
-        virtual void enterInterfaceDeclaration(CajetaParser::InterfaceDeclarationContext * /*ctx*/) override { }
-        virtual void exitInterfaceDeclaration(CajetaParser::InterfaceDeclarationContext * /*ctx*/) override { }
+        virtual void enterInterfaceDeclaration(CajetaParser::InterfaceDeclarationContext * /*ctx*/) override {
+            cout << "enterInterfaceDeclaration" << "\n";
+        }
+        virtual void exitInterfaceDeclaration(CajetaParser::InterfaceDeclarationContext * /*ctx*/) override {
+            cout << "exitInterfaceDeclaration" << "\n";
+        }
 
-        virtual void enterClassBody(CajetaParser::ClassBodyContext * /*ctx*/) override { }
-        virtual void exitClassBody(CajetaParser::ClassBodyContext * /*ctx*/) override { }
+        virtual void enterClassBody(CajetaParser::ClassBodyContext * /*ctx*/) override {
+            cout << "enterClassBody" << "\n";
+        }
+        virtual void exitClassBody(CajetaParser::ClassBodyContext * /*ctx*/) override {
+            cout << "exitClassBody" << "\n";
+        }
 
-        virtual void enterInterfaceBody(CajetaParser::InterfaceBodyContext * /*ctx*/) override { }
-        virtual void exitInterfaceBody(CajetaParser::InterfaceBodyContext * /*ctx*/) override { }
+        virtual void enterInterfaceBody(CajetaParser::InterfaceBodyContext * /*ctx*/) override {
+            cout << "enterInterfaceBody" << "\n";
+        }
+        virtual void exitInterfaceBody(CajetaParser::InterfaceBodyContext * /*ctx*/) override {
+            cout << "exitInterfaceBody" << "\n";
+        }
 
-        virtual void enterClassBodyDeclaration(CajetaParser::ClassBodyDeclarationContext * /*ctx*/) override { }
-        virtual void exitClassBodyDeclaration(CajetaParser::ClassBodyDeclarationContext * /*ctx*/) override { }
+        virtual void enterClassBodyDeclaration(CajetaParser::ClassBodyDeclarationContext * /*ctx*/) override {
+            cout << "enterClassBodyDeclaration" << "\n";
+        }
+        virtual void exitClassBodyDeclaration(CajetaParser::ClassBodyDeclarationContext * /*ctx*/) override {
+            cout << "exitClassBodyDeclaration" << "\n";
+        }
 
-        virtual void enterMemberDeclaration(CajetaParser::MemberDeclarationContext * /*ctx*/) override { }
-        virtual void exitMemberDeclaration(CajetaParser::MemberDeclarationContext * /*ctx*/) override { }
+        virtual void enterMemberDeclaration(CajetaParser::MemberDeclarationContext * /*ctx*/) override {
+            cout << "enterMemberDeclaration" << "\n";
+        }
+        virtual void exitMemberDeclaration(CajetaParser::MemberDeclarationContext * /*ctx*/) override {
+            cout << "exitMemberDeclaration" << "\n";
+        }
 
         virtual void enterMethodDeclaration(CajetaParser::MethodDeclarationContext *ctx) override {
+            cout << "enterMethodDeclaration" << "\n";
             TypeDefinition* returnType = TypeDefinition::fromContext(ctx->typeTypeOrVoid(), this);
 
             llvm::FunctionType* functionType = llvm::FunctionType::get(returnType->type, false);
@@ -169,21 +246,24 @@ namespace cajeta {
                                                               module);
             Method* method = new Method(accessModifiers, function);
             accessModifiers = 0;
-            //classStack.front().
 
-
-//
             CajetaParser::MethodBodyContext* ctxMethodBody = ctx->methodBody();
             std::vector<CajetaParser::BlockStatementContext *> statements = ctxMethodBody->block()->blockStatement();
             for (auto itr = statements.begin(); itr != statements.end(); itr++) {
                 CajetaParser::BlockStatementContext* ctxBlockStatement = *itr;
-                string str = ctxBlockStatement->getText();
+                string strBlockStatement = ctxBlockStatement->getText();
                 CajetaParser::StatementContext* ctxStatement = ctxBlockStatement->statement();
+                string strStatement = ctxStatement->getText();
                 Statement* statement = Statement::create(ctxStatement);
                 std::vector<CajetaParser::ExpressionContext *> expressions = ctxStatement->expression();
                 for (auto itrExpressions = expressions.begin(); itrExpressions != expressions.end(); itrExpressions++) {
                     CajetaParser::ExpressionContext* ctxExpression = *itrExpressions;
+                    CajetaParser::PrimaryContext* ctxPrimary = ctxExpression->primary();
                     string str = ctxExpression->getText();
+                    for (auto itrChild = ctxExpression->children.begin(); itrChild != ctxExpression->children.end(); itrChild++) {
+                        auto val = *itrChild;
+                        string str = val->getText();
+                    }
                 }
             }
 //            std::vector<antlr4::tree::TerminalNode *> LBRACK();
@@ -192,7 +272,6 @@ namespace cajeta {
 //            antlr4::tree::TerminalNode* RBRACK(size_t i);
 //            antlr4::tree::TerminalNode *THROWS();
 //            QualifiedNameListContext *qualifiedNameList();
-
         }
 
         /**
@@ -289,327 +368,752 @@ namespace cajeta {
          * @param ctxExpression
          */
         void processExpression(CajetaParser::ExpressionContext* ctxExpression) {
-            //ctxExpression->
+            cout << "Entered processExpression" << "\n";
+        }
+        virtual void exitMethodDeclaration(CajetaParser::MethodDeclarationContext * /*ctx*/) override {
+            cout << "exitMethodDeclaration" << "\n";
         }
 
-        virtual void exitMethodDeclaration(CajetaParser::MethodDeclarationContext * /*ctx*/) override { }
-
-        virtual void enterMethodBody(CajetaParser::MethodBodyContext * /*ctx*/) override { }
-        virtual void exitMethodBody(CajetaParser::MethodBodyContext * /*ctx*/) override { }
-
-        virtual void enterTypeTypeOrVoid(CajetaParser::TypeTypeOrVoidContext * /*ctx*/) override { }
-        virtual void exitTypeTypeOrVoid(CajetaParser::TypeTypeOrVoidContext * /*ctx*/) override { }
-
-        virtual void enterGenericMethodDeclaration(CajetaParser::GenericMethodDeclarationContext * /*ctx*/) override { }
-        virtual void exitGenericMethodDeclaration(CajetaParser::GenericMethodDeclarationContext * /*ctx*/) override { }
-
-        virtual void enterGenericConstructorDeclaration(CajetaParser::GenericConstructorDeclarationContext * /*ctx*/) override { }
-        virtual void exitGenericConstructorDeclaration(CajetaParser::GenericConstructorDeclarationContext * /*ctx*/) override { }
-
-        virtual void enterConstructorDeclaration(CajetaParser::ConstructorDeclarationContext * /*ctx*/) override { }
-        virtual void exitConstructorDeclaration(CajetaParser::ConstructorDeclarationContext * /*ctx*/) override { }
-
-        virtual void enterFieldDeclaration(CajetaParser::FieldDeclarationContext * /*ctx*/) override { }
-        virtual void exitFieldDeclaration(CajetaParser::FieldDeclarationContext * /*ctx*/) override { }
-
-        virtual void enterInterfaceBodyDeclaration(CajetaParser::InterfaceBodyDeclarationContext * /*ctx*/) override { }
-        virtual void exitInterfaceBodyDeclaration(CajetaParser::InterfaceBodyDeclarationContext * /*ctx*/) override { }
-
-        virtual void enterInterfaceMemberDeclaration(CajetaParser::InterfaceMemberDeclarationContext * /*ctx*/) override { }
-        virtual void exitInterfaceMemberDeclaration(CajetaParser::InterfaceMemberDeclarationContext * /*ctx*/) override { }
-
-        virtual void enterConstDeclaration(CajetaParser::ConstDeclarationContext * /*ctx*/) override { }
-        virtual void exitConstDeclaration(CajetaParser::ConstDeclarationContext * /*ctx*/) override { }
-
-        virtual void enterConstantDeclarator(CajetaParser::ConstantDeclaratorContext * /*ctx*/) override { }
-        virtual void exitConstantDeclarator(CajetaParser::ConstantDeclaratorContext * /*ctx*/) override { }
-
-        virtual void enterInterfaceMethodDeclaration(CajetaParser::InterfaceMethodDeclarationContext * /*ctx*/) override { }
-        virtual void exitInterfaceMethodDeclaration(CajetaParser::InterfaceMethodDeclarationContext * /*ctx*/) override { }
-
-        virtual void enterInterfaceMethodModifier(CajetaParser::InterfaceMethodModifierContext * /*ctx*/) override { }
-        virtual void exitInterfaceMethodModifier(CajetaParser::InterfaceMethodModifierContext * /*ctx*/) override { }
-
-        virtual void enterGenericInterfaceMethodDeclaration(CajetaParser::GenericInterfaceMethodDeclarationContext * /*ctx*/) override { }
-        virtual void exitGenericInterfaceMethodDeclaration(CajetaParser::GenericInterfaceMethodDeclarationContext * /*ctx*/) override { }
-
-        virtual void enterInterfaceCommonBodyDeclaration(CajetaParser::InterfaceCommonBodyDeclarationContext * /*ctx*/) override { }
-        virtual void exitInterfaceCommonBodyDeclaration(CajetaParser::InterfaceCommonBodyDeclarationContext * /*ctx*/) override { }
-
-        virtual void enterVariableDeclarators(CajetaParser::VariableDeclaratorsContext * /*ctx*/) override { }
-        virtual void exitVariableDeclarators(CajetaParser::VariableDeclaratorsContext * /*ctx*/) override { }
-
-        virtual void enterVariableDeclarator(CajetaParser::VariableDeclaratorContext * /*ctx*/) override { }
-        virtual void exitVariableDeclarator(CajetaParser::VariableDeclaratorContext * /*ctx*/) override { }
-
-        virtual void enterVariableDeclaratorId(CajetaParser::VariableDeclaratorIdContext * /*ctx*/) override { }
-        virtual void exitVariableDeclaratorId(CajetaParser::VariableDeclaratorIdContext * /*ctx*/) override { }
-
-        virtual void enterVariableInitializer(CajetaParser::VariableInitializerContext * /*ctx*/) override { }
-        virtual void exitVariableInitializer(CajetaParser::VariableInitializerContext * /*ctx*/) override { }
-
-        virtual void enterArrayInitializer(CajetaParser::ArrayInitializerContext * /*ctx*/) override { }
-        virtual void exitArrayInitializer(CajetaParser::ArrayInitializerContext * /*ctx*/) override { }
-
-        virtual void enterClassOrInterfaceType(CajetaParser::ClassOrInterfaceTypeContext * /*ctx*/) override { }
-        virtual void exitClassOrInterfaceType(CajetaParser::ClassOrInterfaceTypeContext * /*ctx*/) override { }
-
-        virtual void enterTypeArgument(CajetaParser::TypeArgumentContext * /*ctx*/) override { }
-        virtual void exitTypeArgument(CajetaParser::TypeArgumentContext * /*ctx*/) override { }
-
-        virtual void enterQualifiedNameList(CajetaParser::QualifiedNameListContext * /*ctx*/) override { }
-        virtual void exitQualifiedNameList(CajetaParser::QualifiedNameListContext * /*ctx*/) override { }
-
-        virtual void enterFormalParameters(CajetaParser::FormalParametersContext * /*ctx*/) override { }
-        virtual void exitFormalParameters(CajetaParser::FormalParametersContext * /*ctx*/) override { }
-
-        virtual void enterReceiverParameter(CajetaParser::ReceiverParameterContext * /*ctx*/) override { }
-        virtual void exitReceiverParameter(CajetaParser::ReceiverParameterContext * /*ctx*/) override { }
-
-        virtual void enterFormalParameterList(CajetaParser::FormalParameterListContext * /*ctx*/) override { }
-        virtual void exitFormalParameterList(CajetaParser::FormalParameterListContext * /*ctx*/) override { }
-
-        virtual void enterFormalParameter(CajetaParser::FormalParameterContext * /*ctx*/) override { }
-        virtual void exitFormalParameter(CajetaParser::FormalParameterContext * /*ctx*/) override { }
-
-        virtual void enterLastFormalParameter(CajetaParser::LastFormalParameterContext * /*ctx*/) override { }
-        virtual void exitLastFormalParameter(CajetaParser::LastFormalParameterContext * /*ctx*/) override { }
-
-        virtual void enterLambdaLVTIList(CajetaParser::LambdaLVTIListContext * /*ctx*/) override { }
-        virtual void exitLambdaLVTIList(CajetaParser::LambdaLVTIListContext * /*ctx*/) override { }
-
-        virtual void enterLambdaLVTIParameter(CajetaParser::LambdaLVTIParameterContext * /*ctx*/) override { }
-        virtual void exitLambdaLVTIParameter(CajetaParser::LambdaLVTIParameterContext * /*ctx*/) override { }
-
-        virtual void enterQualifiedName(CajetaParser::QualifiedNameContext * /*ctx*/) override { }
-        virtual void exitQualifiedName(CajetaParser::QualifiedNameContext * /*ctx*/) override { }
-
-        virtual void enterLiteral(CajetaParser::LiteralContext * /*ctx*/) override { }
-        virtual void exitLiteral(CajetaParser::LiteralContext * /*ctx*/) override { }
-
-        virtual void enterIntegerLiteral(CajetaParser::IntegerLiteralContext * /*ctx*/) override { }
-        virtual void exitIntegerLiteral(CajetaParser::IntegerLiteralContext * /*ctx*/) override { }
-
-        virtual void enterFloatLiteral(CajetaParser::FloatLiteralContext * /*ctx*/) override { }
-        virtual void exitFloatLiteral(CajetaParser::FloatLiteralContext * /*ctx*/) override { }
-
-        virtual void enterAltAnnotationQualifiedName(CajetaParser::AltAnnotationQualifiedNameContext * /*ctx*/) override { }
-        virtual void exitAltAnnotationQualifiedName(CajetaParser::AltAnnotationQualifiedNameContext * /*ctx*/) override { }
-
-        virtual void enterAnnotation(CajetaParser::AnnotationContext * /*ctx*/) override { }
-        virtual void exitAnnotation(CajetaParser::AnnotationContext * /*ctx*/) override { }
-
-        virtual void enterElementValuePairs(CajetaParser::ElementValuePairsContext * /*ctx*/) override { }
-        virtual void exitElementValuePairs(CajetaParser::ElementValuePairsContext * /*ctx*/) override { }
-
-        virtual void enterElementValuePair(CajetaParser::ElementValuePairContext * /*ctx*/) override { }
-        virtual void exitElementValuePair(CajetaParser::ElementValuePairContext * /*ctx*/) override { }
-
-        virtual void enterElementValue(CajetaParser::ElementValueContext * /*ctx*/) override { }
-        virtual void exitElementValue(CajetaParser::ElementValueContext * /*ctx*/) override { }
-
-        virtual void enterElementValueArrayInitializer(CajetaParser::ElementValueArrayInitializerContext * /*ctx*/) override { }
-        virtual void exitElementValueArrayInitializer(CajetaParser::ElementValueArrayInitializerContext * /*ctx*/) override { }
-
-        virtual void enterAnnotationTypeDeclaration(CajetaParser::AnnotationTypeDeclarationContext * /*ctx*/) override { }
-        virtual void exitAnnotationTypeDeclaration(CajetaParser::AnnotationTypeDeclarationContext * /*ctx*/) override { }
-
-        virtual void enterAnnotationTypeBody(CajetaParser::AnnotationTypeBodyContext * /*ctx*/) override { }
-        virtual void exitAnnotationTypeBody(CajetaParser::AnnotationTypeBodyContext * /*ctx*/) override { }
-
-        virtual void enterAnnotationTypeElementDeclaration(CajetaParser::AnnotationTypeElementDeclarationContext * /*ctx*/) override { }
-        virtual void exitAnnotationTypeElementDeclaration(CajetaParser::AnnotationTypeElementDeclarationContext * /*ctx*/) override { }
-
-        virtual void enterAnnotationTypeElementRest(CajetaParser::AnnotationTypeElementRestContext * /*ctx*/) override { }
-        virtual void exitAnnotationTypeElementRest(CajetaParser::AnnotationTypeElementRestContext * /*ctx*/) override { }
-
-        virtual void enterAnnotationMethodOrConstantRest(CajetaParser::AnnotationMethodOrConstantRestContext * /*ctx*/) override { }
-        virtual void exitAnnotationMethodOrConstantRest(CajetaParser::AnnotationMethodOrConstantRestContext * /*ctx*/) override { }
-
-        virtual void enterAnnotationMethodRest(CajetaParser::AnnotationMethodRestContext * /*ctx*/) override { }
-        virtual void exitAnnotationMethodRest(CajetaParser::AnnotationMethodRestContext * /*ctx*/) override { }
-
-        virtual void enterAnnotationConstantRest(CajetaParser::AnnotationConstantRestContext * /*ctx*/) override { }
-        virtual void exitAnnotationConstantRest(CajetaParser::AnnotationConstantRestContext * /*ctx*/) override { }
-
-        virtual void enterDefaultValue(CajetaParser::DefaultValueContext * /*ctx*/) override { }
-        virtual void exitDefaultValue(CajetaParser::DefaultValueContext * /*ctx*/) override { }
-
-        virtual void enterModuleDeclaration(CajetaParser::ModuleDeclarationContext * /*ctx*/) override { }
-        virtual void exitModuleDeclaration(CajetaParser::ModuleDeclarationContext * /*ctx*/) override { }
-
-        virtual void enterModuleBody(CajetaParser::ModuleBodyContext * /*ctx*/) override { }
-        virtual void exitModuleBody(CajetaParser::ModuleBodyContext * /*ctx*/) override { }
-
-        virtual void enterModuleDirective(CajetaParser::ModuleDirectiveContext * /*ctx*/) override { }
-        virtual void exitModuleDirective(CajetaParser::ModuleDirectiveContext * /*ctx*/) override { }
-
-        virtual void enterRequiresModifier(CajetaParser::RequiresModifierContext * /*ctx*/) override { }
-        virtual void exitRequiresModifier(CajetaParser::RequiresModifierContext * /*ctx*/) override { }
-
-        virtual void enterRecordDeclaration(CajetaParser::RecordDeclarationContext * /*ctx*/) override { }
-        virtual void exitRecordDeclaration(CajetaParser::RecordDeclarationContext * /*ctx*/) override { }
-
-        virtual void enterRecordHeader(CajetaParser::RecordHeaderContext * /*ctx*/) override { }
-        virtual void exitRecordHeader(CajetaParser::RecordHeaderContext * /*ctx*/) override { }
-
-        virtual void enterRecordComponentList(CajetaParser::RecordComponentListContext * /*ctx*/) override { }
-        virtual void exitRecordComponentList(CajetaParser::RecordComponentListContext * /*ctx*/) override { }
-
-        virtual void enterRecordComponent(CajetaParser::RecordComponentContext * /*ctx*/) override { }
-        virtual void exitRecordComponent(CajetaParser::RecordComponentContext * /*ctx*/) override { }
-
-        virtual void enterRecordBody(CajetaParser::RecordBodyContext * /*ctx*/) override { }
-        virtual void exitRecordBody(CajetaParser::RecordBodyContext * /*ctx*/) override { }
-
-        virtual void enterBlock(CajetaParser::BlockContext * /*ctx*/) override { }
-        virtual void exitBlock(CajetaParser::BlockContext * /*ctx*/) override { }
-
-        virtual void enterBlockStatement(CajetaParser::BlockStatementContext * /*ctx*/) override { }
-        virtual void exitBlockStatement(CajetaParser::BlockStatementContext * /*ctx*/) override { }
-
-        virtual void enterLocalVariableDeclaration(CajetaParser::LocalVariableDeclarationContext * /*ctx*/) override { }
-        virtual void exitLocalVariableDeclaration(CajetaParser::LocalVariableDeclarationContext * /*ctx*/) override { }
-
-        virtual void enterIdentifier(CajetaParser::IdentifierContext * /*ctx*/) override { }
-        virtual void exitIdentifier(CajetaParser::IdentifierContext * /*ctx*/) override { }
-
-        virtual void enterLocalTypeDeclaration(CajetaParser::LocalTypeDeclarationContext * /*ctx*/) override { }
-        virtual void exitLocalTypeDeclaration(CajetaParser::LocalTypeDeclarationContext * /*ctx*/) override { }
-
-        virtual void enterStatement(CajetaParser::StatementContext * /*ctx*/) override { }
-        virtual void exitStatement(CajetaParser::StatementContext * /*ctx*/) override { }
-
-        virtual void enterCatchClause(CajetaParser::CatchClauseContext * /*ctx*/) override { }
-        virtual void exitCatchClause(CajetaParser::CatchClauseContext * /*ctx*/) override { }
-
-        virtual void enterCatchType(CajetaParser::CatchTypeContext * /*ctx*/) override { }
-        virtual void exitCatchType(CajetaParser::CatchTypeContext * /*ctx*/) override { }
-
-        virtual void enterFinallyBlock(CajetaParser::FinallyBlockContext * /*ctx*/) override { }
-        virtual void exitFinallyBlock(CajetaParser::FinallyBlockContext * /*ctx*/) override { }
-
-        virtual void enterResourceSpecification(CajetaParser::ResourceSpecificationContext * /*ctx*/) override { }
-        virtual void exitResourceSpecification(CajetaParser::ResourceSpecificationContext * /*ctx*/) override { }
-
-        virtual void enterResources(CajetaParser::ResourcesContext * /*ctx*/) override { }
-        virtual void exitResources(CajetaParser::ResourcesContext * /*ctx*/) override { }
-
-        virtual void enterResource(CajetaParser::ResourceContext * /*ctx*/) override { }
-        virtual void exitResource(CajetaParser::ResourceContext * /*ctx*/) override { }
-
-        virtual void enterSwitchBlockStatementGroup(CajetaParser::SwitchBlockStatementGroupContext * /*ctx*/) override { }
-        virtual void exitSwitchBlockStatementGroup(CajetaParser::SwitchBlockStatementGroupContext * /*ctx*/) override { }
-
-        virtual void enterSwitchLabel(CajetaParser::SwitchLabelContext * /*ctx*/) override { }
-        virtual void exitSwitchLabel(CajetaParser::SwitchLabelContext * /*ctx*/) override { }
-
-        virtual void enterForControl(CajetaParser::ForControlContext * /*ctx*/) override { }
-        virtual void exitForControl(CajetaParser::ForControlContext * /*ctx*/) override { }
-
-        virtual void enterForInit(CajetaParser::ForInitContext * /*ctx*/) override { }
-        virtual void exitForInit(CajetaParser::ForInitContext * /*ctx*/) override { }
-
-        virtual void enterEnhancedForControl(CajetaParser::EnhancedForControlContext * /*ctx*/) override { }
-        virtual void exitEnhancedForControl(CajetaParser::EnhancedForControlContext * /*ctx*/) override { }
-
-        virtual void enterParExpression(CajetaParser::ParExpressionContext * /*ctx*/) override { }
-        virtual void exitParExpression(CajetaParser::ParExpressionContext * /*ctx*/) override { }
-
-        virtual void enterExpressionList(CajetaParser::ExpressionListContext * /*ctx*/) override { }
-        virtual void exitExpressionList(CajetaParser::ExpressionListContext * /*ctx*/) override { }
-
-        virtual void enterMethodCall(CajetaParser::MethodCallContext * /*ctx*/) override { }
-        virtual void exitMethodCall(CajetaParser::MethodCallContext * /*ctx*/) override { }
-
-        virtual void enterExpression(CajetaParser::ExpressionContext * /*ctx*/) override { }
-        virtual void exitExpression(CajetaParser::ExpressionContext * /*ctx*/) override { }
-
-        virtual void enterPattern(CajetaParser::PatternContext * /*ctx*/) override { }
-        virtual void exitPattern(CajetaParser::PatternContext * /*ctx*/) override { }
-
-        virtual void enterLambdaExpression(CajetaParser::LambdaExpressionContext * /*ctx*/) override { }
-        virtual void exitLambdaExpression(CajetaParser::LambdaExpressionContext * /*ctx*/) override { }
-
-        virtual void enterLambdaParameters(CajetaParser::LambdaParametersContext * /*ctx*/) override { }
-        virtual void exitLambdaParameters(CajetaParser::LambdaParametersContext * /*ctx*/) override { }
-
-        virtual void enterLambdaBody(CajetaParser::LambdaBodyContext * /*ctx*/) override { }
-        virtual void exitLambdaBody(CajetaParser::LambdaBodyContext * /*ctx*/) override { }
-
-        virtual void enterPrimary(CajetaParser::PrimaryContext * /*ctx*/) override { }
-        virtual void exitPrimary(CajetaParser::PrimaryContext * /*ctx*/) override { }
-
-        virtual void enterSwitchExpression(CajetaParser::SwitchExpressionContext * /*ctx*/) override { }
-        virtual void exitSwitchExpression(CajetaParser::SwitchExpressionContext * /*ctx*/) override { }
-
-        virtual void enterSwitchLabeledRule(CajetaParser::SwitchLabeledRuleContext * /*ctx*/) override { }
-        virtual void exitSwitchLabeledRule(CajetaParser::SwitchLabeledRuleContext * /*ctx*/) override { }
-
-        virtual void enterGuardedPattern(CajetaParser::GuardedPatternContext * /*ctx*/) override { }
-        virtual void exitGuardedPattern(CajetaParser::GuardedPatternContext * /*ctx*/) override { }
-
-        virtual void enterSwitchRuleOutcome(CajetaParser::SwitchRuleOutcomeContext * /*ctx*/) override { }
-        virtual void exitSwitchRuleOutcome(CajetaParser::SwitchRuleOutcomeContext * /*ctx*/) override { }
-
-        virtual void enterClassType(CajetaParser::ClassTypeContext * /*ctx*/) override { }
-        virtual void exitClassType(CajetaParser::ClassTypeContext * /*ctx*/) override { }
-
-        virtual void enterCreator(CajetaParser::CreatorContext * /*ctx*/) override { }
-        virtual void exitCreator(CajetaParser::CreatorContext * /*ctx*/) override { }
-
-        virtual void enterCreatedName(CajetaParser::CreatedNameContext * /*ctx*/) override { }
-        virtual void exitCreatedName(CajetaParser::CreatedNameContext * /*ctx*/) override { }
-
-        virtual void enterInnerCreator(CajetaParser::InnerCreatorContext * /*ctx*/) override { }
-        virtual void exitInnerCreator(CajetaParser::InnerCreatorContext * /*ctx*/) override { }
-
-        virtual void enterArrayCreatorRest(CajetaParser::ArrayCreatorRestContext * /*ctx*/) override { }
-        virtual void exitArrayCreatorRest(CajetaParser::ArrayCreatorRestContext * /*ctx*/) override { }
-
-        virtual void enterClassCreatorRest(CajetaParser::ClassCreatorRestContext * /*ctx*/) override { }
-        virtual void exitClassCreatorRest(CajetaParser::ClassCreatorRestContext * /*ctx*/) override { }
-
-        virtual void enterExplicitGenericInvocation(CajetaParser::ExplicitGenericInvocationContext * /*ctx*/) override { }
-        virtual void exitExplicitGenericInvocation(CajetaParser::ExplicitGenericInvocationContext * /*ctx*/) override { }
-
-        virtual void enterTypeArgumentsOrDiamond(CajetaParser::TypeArgumentsOrDiamondContext * /*ctx*/) override { }
-        virtual void exitTypeArgumentsOrDiamond(CajetaParser::TypeArgumentsOrDiamondContext * /*ctx*/) override { }
-
-        virtual void enterNonWildcardTypeArgumentsOrDiamond(CajetaParser::NonWildcardTypeArgumentsOrDiamondContext * /*ctx*/) override { }
-        virtual void exitNonWildcardTypeArgumentsOrDiamond(CajetaParser::NonWildcardTypeArgumentsOrDiamondContext * /*ctx*/) override { }
-
-        virtual void enterNonWildcardTypeArguments(CajetaParser::NonWildcardTypeArgumentsContext * /*ctx*/) override { }
-        virtual void exitNonWildcardTypeArguments(CajetaParser::NonWildcardTypeArgumentsContext * /*ctx*/) override { }
-
-        virtual void enterTypeList(CajetaParser::TypeListContext * /*ctx*/) override { }
-        virtual void exitTypeList(CajetaParser::TypeListContext * /*ctx*/) override { }
-
-        virtual void enterTypeType(CajetaParser::TypeTypeContext * /*ctx*/) override { }
-        virtual void exitTypeType(CajetaParser::TypeTypeContext * /*ctx*/) override { }
-
-        virtual void enterReferenceType(CajetaParser::ReferenceTypeContext * /*ctx*/) override { }
-        virtual void exitReferenceType(CajetaParser::ReferenceTypeContext * /*ctx*/) override { }
-
-        virtual void enterPrimitiveType(CajetaParser::PrimitiveTypeContext * /*ctx*/) override { }
-        virtual void exitPrimitiveType(CajetaParser::PrimitiveTypeContext * /*ctx*/) override { }
-
-        virtual void enterTypeArguments(CajetaParser::TypeArgumentsContext * /*ctx*/) override { }
-        virtual void exitTypeArguments(CajetaParser::TypeArgumentsContext * /*ctx*/) override { }
-
-        virtual void enterSuperSuffix(CajetaParser::SuperSuffixContext * /*ctx*/) override { }
-        virtual void exitSuperSuffix(CajetaParser::SuperSuffixContext * /*ctx*/) override { }
-
-        virtual void enterExplicitGenericInvocationSuffix(CajetaParser::ExplicitGenericInvocationSuffixContext * /*ctx*/) override { }
-        virtual void exitExplicitGenericInvocationSuffix(CajetaParser::ExplicitGenericInvocationSuffixContext * /*ctx*/) override { }
-
-        virtual void enterArguments(CajetaParser::ArgumentsContext * /*ctx*/) override { }
-        virtual void exitArguments(CajetaParser::ArgumentsContext * /*ctx*/) override { }
-
-
-        virtual void enterEveryRule(antlr4::ParserRuleContext * /*ctx*/) override { }
-        virtual void exitEveryRule(antlr4::ParserRuleContext * /*ctx*/) override { }
-        virtual void visitTerminal(antlr4::tree::TerminalNode * /*node*/) override { }
-        virtual void visitErrorNode(antlr4::tree::ErrorNode * /*node*/) override { }
+        virtual void enterMethodBody(CajetaParser::MethodBodyContext * /*ctx*/) override {
+            cout << "enterMethodBody" << "\n";
+        }
+        virtual void exitMethodBody(CajetaParser::MethodBodyContext * /*ctx*/) override {
+            cout << "exitMethodBody" << "\n";
+        }
+
+        virtual void enterTypeTypeOrVoid(CajetaParser::TypeTypeOrVoidContext * /*ctx*/) override {
+            cout << "enterTypeTypeOrVoid" << "\n";
+        }
+        virtual void exitTypeTypeOrVoid(CajetaParser::TypeTypeOrVoidContext * /*ctx*/) override {
+            cout << "exitTypeTypeOrVoid" << "\n";
+        }
+
+        virtual void enterGenericMethodDeclaration(CajetaParser::GenericMethodDeclarationContext * /*ctx*/) override {
+            cout << "enterGenericMethodDeclaration" << "\n";
+        }
+        virtual void exitGenericMethodDeclaration(CajetaParser::GenericMethodDeclarationContext * /*ctx*/) override {
+            cout << "exitGenericMethodDeclaration" << "\n";
+        }
+
+        virtual void enterGenericConstructorDeclaration(CajetaParser::GenericConstructorDeclarationContext * /*ctx*/) override {
+            cout << "enterGenericConstructorDeclaration" << "\n";
+        }
+        virtual void exitGenericConstructorDeclaration(CajetaParser::GenericConstructorDeclarationContext * /*ctx*/) override {
+            cout << "exitGenericConstructorDeclaration" << "\n";
+        }
+
+        virtual void enterConstructorDeclaration(CajetaParser::ConstructorDeclarationContext * /*ctx*/) override {
+            cout << "enterConstructorDeclaration" << "\n";
+        }
+        virtual void exitConstructorDeclaration(CajetaParser::ConstructorDeclarationContext * /*ctx*/) override {
+            cout << "exitConstructorDeclaration" << "\n";
+        }
+
+        virtual void enterFieldDeclaration(CajetaParser::FieldDeclarationContext * /*ctx*/) override {
+            cout << "enterFieldDeclaration" << "\n";
+        }
+        virtual void exitFieldDeclaration(CajetaParser::FieldDeclarationContext * /*ctx*/) override {
+            cout << "exitFieldDeclaration" << "\n";
+        }
+
+        virtual void enterInterfaceBodyDeclaration(CajetaParser::InterfaceBodyDeclarationContext * /*ctx*/) override {
+            cout << "enterInterfaceBodyDeclaration" << "\n";
+        }
+        virtual void exitInterfaceBodyDeclaration(CajetaParser::InterfaceBodyDeclarationContext * /*ctx*/) override {
+            cout << "exitInterfaceBodyDeclaration" << "\n";
+        }
+
+        virtual void enterInterfaceMemberDeclaration(CajetaParser::InterfaceMemberDeclarationContext * /*ctx*/) override {
+            cout << "enterInterfaceMemberDeclaration" << "\n";
+        }
+        virtual void exitInterfaceMemberDeclaration(CajetaParser::InterfaceMemberDeclarationContext * /*ctx*/) override {
+            cout << "exitInterfaceMemberDeclaration" << "\n";
+        }
+
+        virtual void enterConstDeclaration(CajetaParser::ConstDeclarationContext * /*ctx*/) override {
+            cout << "enterConstDeclaration" << "\n";
+        }
+        virtual void exitConstDeclaration(CajetaParser::ConstDeclarationContext * /*ctx*/) override {
+            cout << "exitConstDeclaration" << "\n";
+        }
+
+        virtual void enterConstantDeclarator(CajetaParser::ConstantDeclaratorContext * /*ctx*/) override {
+            cout << "enterConstantDeclarator" << "\n";
+        }
+        virtual void exitConstantDeclarator(CajetaParser::ConstantDeclaratorContext * /*ctx*/) override {
+            cout << "exitConstantDeclarator" << "\n";
+        }
+
+        virtual void enterInterfaceMethodDeclaration(CajetaParser::InterfaceMethodDeclarationContext * /*ctx*/) override {
+            cout << "enterInterfaceMethodDeclaration" << "\n";
+        }
+        virtual void exitInterfaceMethodDeclaration(CajetaParser::InterfaceMethodDeclarationContext * /*ctx*/) override {
+            cout << "exitInterfaceMethodDeclaration" << "\n";
+        }
+
+        virtual void enterInterfaceMethodModifier(CajetaParser::InterfaceMethodModifierContext * /*ctx*/) override {
+            cout << "enterInterfaceMethodModifier" << "\n";
+        }
+        virtual void exitInterfaceMethodModifier(CajetaParser::InterfaceMethodModifierContext * /*ctx*/) override {
+            cout << "exitInterfaceMethodModifier" << "\n";
+        }
+
+        virtual void enterGenericInterfaceMethodDeclaration(CajetaParser::GenericInterfaceMethodDeclarationContext * /*ctx*/) override {
+            cout << "enterGenericInterfaceMethodDeclaration" << "\n";
+        }
+        virtual void exitGenericInterfaceMethodDeclaration(CajetaParser::GenericInterfaceMethodDeclarationContext * /*ctx*/) override {
+            cout << "exitGenericInterfaceMethodDeclaration" << "\n";
+        }
+
+        virtual void enterInterfaceCommonBodyDeclaration(CajetaParser::InterfaceCommonBodyDeclarationContext * /*ctx*/) override {
+            cout << "enterInterfaceCommonBodyDeclaration" << "\n";
+        }
+        virtual void exitInterfaceCommonBodyDeclaration(CajetaParser::InterfaceCommonBodyDeclarationContext * /*ctx*/) override {
+            cout << "exitInterfaceCommonBodyDeclaration" << "\n";
+        }
+
+        virtual void enterVariableDeclarators(CajetaParser::VariableDeclaratorsContext * /*ctx*/) override {
+            cout << "enterVariableDeclarators" << "\n";
+        }
+        virtual void exitVariableDeclarators(CajetaParser::VariableDeclaratorsContext * /*ctx*/) override {
+            cout << "exitVariableDeclarators" << "\n";
+        }
+
+        virtual void enterVariableDeclarator(CajetaParser::VariableDeclaratorContext * /*ctx*/) override {
+            cout << "enterVariableDeclarator" << "\n";
+        }
+        virtual void exitVariableDeclarator(CajetaParser::VariableDeclaratorContext * /*ctx*/) override {
+            cout << "exitVariableDeclarator" << "\n";
+        }
+
+        virtual void enterVariableDeclaratorId(CajetaParser::VariableDeclaratorIdContext * /*ctx*/) override {
+            cout << "enterVariableDeclaratorId" << "\n";
+        }
+        virtual void exitVariableDeclaratorId(CajetaParser::VariableDeclaratorIdContext * /*ctx*/) override {
+            cout << "exitVariableDeclaratorId" << "\n";
+        }
+
+        virtual void enterVariableInitializer(CajetaParser::VariableInitializerContext * /*ctx*/) override {
+            cout << "enterVariableInitializer" << "\n";
+        }
+        virtual void exitVariableInitializer(CajetaParser::VariableInitializerContext * /*ctx*/) override {
+            cout << "exitVariableInitializer" << "\n";
+        }
+
+        virtual void enterArrayInitializer(CajetaParser::ArrayInitializerContext * /*ctx*/) override {
+            cout << "enterArrayInitializer" << "\n";
+        }
+        virtual void exitArrayInitializer(CajetaParser::ArrayInitializerContext * /*ctx*/) override {
+            cout << "exitArrayInitializer" << "\n";
+        }
+
+        virtual void enterClassOrInterfaceType(CajetaParser::ClassOrInterfaceTypeContext * /*ctx*/) override {
+            cout << "enterClassOrInterfaceType" << "\n";
+        }
+        virtual void exitClassOrInterfaceType(CajetaParser::ClassOrInterfaceTypeContext * /*ctx*/) override {
+            cout << "exitClassOrInterfaceType" << "\n";
+        }
+
+        virtual void enterTypeArgument(CajetaParser::TypeArgumentContext * /*ctx*/) override {
+            cout << "enterTypeArgument" << "\n";
+        }
+        virtual void exitTypeArgument(CajetaParser::TypeArgumentContext * /*ctx*/) override {
+            cout << "exitTypeArgument" << "\n";
+        }
+
+        virtual void enterQualifiedNameList(CajetaParser::QualifiedNameListContext * /*ctx*/) override {
+            cout << "enterQualifiedNameList" << "\n";
+        }
+        virtual void exitQualifiedNameList(CajetaParser::QualifiedNameListContext * /*ctx*/) override {
+            cout << "exitQualifiedNameList" << "\n";
+        }
+
+        virtual void enterFormalParameters(CajetaParser::FormalParametersContext * /*ctx*/) override {
+            cout << "enterFormalParameters" << "\n";
+        }
+        virtual void exitFormalParameters(CajetaParser::FormalParametersContext * /*ctx*/) override {
+            cout << "exitFormalParameters" << "\n";
+        }
+
+        virtual void enterReceiverParameter(CajetaParser::ReceiverParameterContext * /*ctx*/) override {
+            cout << "enterReceiverParameter" << "\n";
+        }
+        virtual void exitReceiverParameter(CajetaParser::ReceiverParameterContext * /*ctx*/) override {
+            cout << "exitReceiverParameter" << "\n";
+        }
+
+        virtual void enterFormalParameterList(CajetaParser::FormalParameterListContext * /*ctx*/) override {
+            cout << "enterFormalParameterList" << "\n";
+        }
+        virtual void exitFormalParameterList(CajetaParser::FormalParameterListContext * /*ctx*/) override {
+            cout << "exitFormalParameterList" << "\n";
+        }
+
+        virtual void enterFormalParameter(CajetaParser::FormalParameterContext * /*ctx*/) override {
+            cout << "enterFormalParameter" << "\n";
+        }
+        virtual void exitFormalParameter(CajetaParser::FormalParameterContext * /*ctx*/) override {
+            cout << "exitFormalParameter" << "\n";
+        }
+
+        virtual void enterLastFormalParameter(CajetaParser::LastFormalParameterContext * /*ctx*/) override {
+            cout << "enterLastFormalParameter" << "\n";
+        }
+        virtual void exitLastFormalParameter(CajetaParser::LastFormalParameterContext * /*ctx*/) override {
+            cout << "exitLastFormalParameter" << "\n";
+        }
+
+        virtual void enterLambdaLVTIList(CajetaParser::LambdaLVTIListContext * /*ctx*/) override {
+            cout << "enterLambdaLVTIList" << "\n";
+        }
+        virtual void exitLambdaLVTIList(CajetaParser::LambdaLVTIListContext * /*ctx*/) override {
+            cout << "exitLambdaLVTIList" << "\n";
+        }
+
+        virtual void enterLambdaLVTIParameter(CajetaParser::LambdaLVTIParameterContext * /*ctx*/) override {
+            cout << "enterLambdaLVTIParameter" << "\n";
+        }
+        virtual void exitLambdaLVTIParameter(CajetaParser::LambdaLVTIParameterContext * /*ctx*/) override {
+            cout << "exitLambdaLVTIParameter" << "\n";
+        }
+
+        virtual void enterQualifiedName(CajetaParser::QualifiedNameContext * /*ctx*/) override {
+            cout << "enterQualifiedName" << "\n";
+        }
+        virtual void exitQualifiedName(CajetaParser::QualifiedNameContext * /*ctx*/) override {
+            cout << "exitQualifiedName" << "\n";
+        }
+
+        virtual void enterLiteral(CajetaParser::LiteralContext * /*ctx*/) override {
+            cout << "enterLiteral" << "\n";
+        }
+        virtual void exitLiteral(CajetaParser::LiteralContext * /*ctx*/) override {
+            cout << "exitLiteral" << "\n";
+        }
+
+        virtual void enterIntegerLiteral(CajetaParser::IntegerLiteralContext * /*ctx*/) override {
+            cout << "enterIntegerLiteral" << "\n";
+        }
+        virtual void exitIntegerLiteral(CajetaParser::IntegerLiteralContext * /*ctx*/) override {
+            cout << "exitIntegerLiteral" << "\n";
+        }
+
+        virtual void enterFloatLiteral(CajetaParser::FloatLiteralContext * /*ctx*/) override {
+            cout << "enterFloatLiteral" << "\n";
+        }
+        virtual void exitFloatLiteral(CajetaParser::FloatLiteralContext * /*ctx*/) override {
+            cout << "exitFloatLiteral" << "\n";
+        }
+
+        virtual void enterAltAnnotationQualifiedName(CajetaParser::AltAnnotationQualifiedNameContext * /*ctx*/) override {
+            cout << "enterAltAnnotationQualifiedName" << "\n";
+        }
+        virtual void exitAltAnnotationQualifiedName(CajetaParser::AltAnnotationQualifiedNameContext * /*ctx*/) override {
+            cout << "exitAltAnnotationQualifiedName" << "\n";
+        }
+
+        virtual void enterAnnotation(CajetaParser::AnnotationContext * /*ctx*/) override {
+            cout << "enterAnnotation" << "\n";
+        }
+        virtual void exitAnnotation(CajetaParser::AnnotationContext * /*ctx*/) override {
+            cout << "exitAnnotation" << "\n";
+        }
+
+        virtual void enterElementValuePairs(CajetaParser::ElementValuePairsContext * /*ctx*/) override {
+            cout << "enterElementValuePairs" << "\n";
+        }
+        virtual void exitElementValuePairs(CajetaParser::ElementValuePairsContext * /*ctx*/) override {
+            cout << "exitElementValuePairs" << "\n";
+        }
+
+        virtual void enterElementValuePair(CajetaParser::ElementValuePairContext * /*ctx*/) override {
+            cout << "enterElementValuePair" << "\n";
+        }
+        virtual void exitElementValuePair(CajetaParser::ElementValuePairContext * /*ctx*/) override {
+            cout << "exitElementValuePair" << "\n";
+        }
+
+        virtual void enterElementValue(CajetaParser::ElementValueContext * /*ctx*/) override {
+            cout << "enterElementValue" << "\n";
+        }
+        virtual void exitElementValue(CajetaParser::ElementValueContext * /*ctx*/) override {
+            cout << "exitElementValue" << "\n";
+        }
+
+        virtual void enterElementValueArrayInitializer(CajetaParser::ElementValueArrayInitializerContext * /*ctx*/) override {
+            cout << "enterElementValueArrayInitializer" << "\n";
+        }
+        virtual void exitElementValueArrayInitializer(CajetaParser::ElementValueArrayInitializerContext * /*ctx*/) override {
+            cout << "exitElementValueArrayInitializer" << "\n";
+        }
+
+        virtual void enterAnnotationTypeDeclaration(CajetaParser::AnnotationTypeDeclarationContext * /*ctx*/) override {
+            cout << "enterAnnotationTypeDeclaration" << "\n";
+        }
+        virtual void exitAnnotationTypeDeclaration(CajetaParser::AnnotationTypeDeclarationContext * /*ctx*/) override {
+            cout << "exitAnnotationTypeDeclaration" << "\n";
+        }
+
+        virtual void enterAnnotationTypeBody(CajetaParser::AnnotationTypeBodyContext * /*ctx*/) override {
+            cout << "enterAnnotationTypeBody" << "\n";
+        }
+        virtual void exitAnnotationTypeBody(CajetaParser::AnnotationTypeBodyContext * /*ctx*/) override {
+            cout << "exitAnnotationTypeBody" << "\n";
+        }
+
+        virtual void enterAnnotationTypeElementDeclaration(CajetaParser::AnnotationTypeElementDeclarationContext * /*ctx*/) override {
+            cout << "enterAnnotationTypeElementDeclaration" << "\n";
+        }
+        virtual void exitAnnotationTypeElementDeclaration(CajetaParser::AnnotationTypeElementDeclarationContext * /*ctx*/) override {
+            cout << "exitAnnotationTypeElementDeclaration" << "\n";
+        }
+
+        virtual void enterAnnotationTypeElementRest(CajetaParser::AnnotationTypeElementRestContext * /*ctx*/) override {
+            cout << "enterAnnotationTypeElementRest" << "\n";
+        }
+        virtual void exitAnnotationTypeElementRest(CajetaParser::AnnotationTypeElementRestContext * /*ctx*/) override {
+            cout << "exitAnnotationTypeElementRest" << "\n";
+        }
+
+        virtual void enterAnnotationMethodOrConstantRest(CajetaParser::AnnotationMethodOrConstantRestContext * /*ctx*/) override {
+            cout << "enterAnnotationMethodOrConstantRest" << "\n";
+        }
+        virtual void exitAnnotationMethodOrConstantRest(CajetaParser::AnnotationMethodOrConstantRestContext * /*ctx*/) override {
+            cout << "exitAnnotationMethodOrConstantRest" << "\n";
+        }
+
+        virtual void enterAnnotationMethodRest(CajetaParser::AnnotationMethodRestContext * /*ctx*/) override {
+            cout << "enterAnnotationMethodRest" << "\n";
+        }
+        virtual void exitAnnotationMethodRest(CajetaParser::AnnotationMethodRestContext * /*ctx*/) override {
+            cout << "exitAnnotationMethodRest" << "\n";
+        }
+
+        virtual void enterAnnotationConstantRest(CajetaParser::AnnotationConstantRestContext * /*ctx*/) override {
+            cout << "enterAnnotationConstantRest" << "\n";
+        }
+        virtual void exitAnnotationConstantRest(CajetaParser::AnnotationConstantRestContext * /*ctx*/) override {
+            cout << "exitAnnotationConstantRest" << "\n";
+        }
+
+        virtual void enterDefaultValue(CajetaParser::DefaultValueContext * /*ctx*/) override {
+            cout << "enterDefaultValue" << "\n";
+        }
+        virtual void exitDefaultValue(CajetaParser::DefaultValueContext * /*ctx*/) override {
+            cout << "exitDefaultValue" << "\n";
+        }
+
+        virtual void enterModuleDeclaration(CajetaParser::ModuleDeclarationContext * /*ctx*/) override {
+            cout << "enterModuleDeclaration" << "\n";
+        }
+        virtual void exitModuleDeclaration(CajetaParser::ModuleDeclarationContext * /*ctx*/) override {
+            cout << "exitModuleDeclaration" << "\n";
+        }
+
+        virtual void enterModuleBody(CajetaParser::ModuleBodyContext * /*ctx*/) override {
+            cout << "enterModuleBody" << "\n";
+        }
+        virtual void exitModuleBody(CajetaParser::ModuleBodyContext * /*ctx*/) override {
+            cout << "exitModuleBody" << "\n";
+        }
+
+        virtual void enterModuleDirective(CajetaParser::ModuleDirectiveContext * /*ctx*/) override {
+            cout << "enterModuleDirective" << "\n";
+        }
+        virtual void exitModuleDirective(CajetaParser::ModuleDirectiveContext * /*ctx*/) override {
+            cout << "exitModuleDirective" << "\n";
+        }
+
+        virtual void enterRequiresModifier(CajetaParser::RequiresModifierContext * /*ctx*/) override {
+            cout << "enterRequiresModifier" << "\n";
+        }
+        virtual void exitRequiresModifier(CajetaParser::RequiresModifierContext * /*ctx*/) override {
+            cout << "exitRequiresModifier" << "\n";
+        }
+
+        virtual void enterRecordDeclaration(CajetaParser::RecordDeclarationContext * /*ctx*/) override {
+            cout << "enterRecordDeclaration" << "\n";
+        }
+        virtual void exitRecordDeclaration(CajetaParser::RecordDeclarationContext * /*ctx*/) override {
+            cout << "exitRecordDeclaration" << "\n";
+        }
+
+        virtual void enterRecordHeader(CajetaParser::RecordHeaderContext * /*ctx*/) override {
+            cout << "enterRecordHeader" << "\n";
+        }
+        virtual void exitRecordHeader(CajetaParser::RecordHeaderContext * /*ctx*/) override {
+            cout << "exitRecordHeader" << "\n";
+        }
+
+        virtual void enterRecordComponentList(CajetaParser::RecordComponentListContext * /*ctx*/) override {
+            cout << "enterRecordComponentList" << "\n";
+        }
+        virtual void exitRecordComponentList(CajetaParser::RecordComponentListContext * /*ctx*/) override {
+            cout << "exitRecordComponentList" << "\n";
+        }
+
+        virtual void enterRecordComponent(CajetaParser::RecordComponentContext * /*ctx*/) override {
+            cout << "enterRecordComponent" << "\n";
+        }
+        virtual void exitRecordComponent(CajetaParser::RecordComponentContext * /*ctx*/) override {
+            cout << "exitRecordComponent" << "\n";
+        }
+
+        virtual void enterRecordBody(CajetaParser::RecordBodyContext * /*ctx*/) override {
+            cout << "enterRecordBody" << "\n";
+        }
+        virtual void exitRecordBody(CajetaParser::RecordBodyContext * /*ctx*/) override {
+            cout << "exitRecordBody" << "\n";
+        }
+
+        virtual void enterBlock(CajetaParser::BlockContext * /*ctx*/) override {
+            cout << "enterBlock" << "\n";
+        }
+        virtual void exitBlock(CajetaParser::BlockContext * /*ctx*/) override {
+            cout << "exitBlock" << "\n";
+        }
+
+        virtual void enterBlockStatement(CajetaParser::BlockStatementContext * /*ctx*/) override {
+            cout << "enterBlockStatement" << "\n";
+        }
+        virtual void exitBlockStatement(CajetaParser::BlockStatementContext * /*ctx*/) override {
+            cout << "exitBlockStatement" << "\n";
+        }
+
+        virtual void enterLocalVariableDeclaration(CajetaParser::LocalVariableDeclarationContext * /*ctx*/) override {
+            cout << "enterLocalVariableDeclaration" << "\n";
+        }
+        virtual void exitLocalVariableDeclaration(CajetaParser::LocalVariableDeclarationContext * /*ctx*/) override {
+            cout << "exitLocalVariableDeclaration" << "\n";
+        }
+
+        virtual void enterIdentifier(CajetaParser::IdentifierContext * /*ctx*/) override {
+            cout << "enterIdentifier" << "\n";
+        }
+        virtual void exitIdentifier(CajetaParser::IdentifierContext * /*ctx*/) override {
+            cout << "exitIdentifier" << "\n";
+        }
+
+        virtual void enterLocalTypeDeclaration(CajetaParser::LocalTypeDeclarationContext * /*ctx*/) override {
+            cout << "enterLocalTypeDeclaration" << "\n";
+        }
+        virtual void exitLocalTypeDeclaration(CajetaParser::LocalTypeDeclarationContext * /*ctx*/) override {
+            cout << "exitLocalTypeDeclaration" << "\n";
+        }
+
+        virtual void enterStatement(CajetaParser::StatementContext * /*ctx*/) override {
+            cout << "enterStatement" << "\n";
+        }
+        virtual void exitStatement(CajetaParser::StatementContext * /*ctx*/) override {
+            cout << "exitStatement" << "\n";
+        }
+
+        virtual void enterCatchClause(CajetaParser::CatchClauseContext * /*ctx*/) override {
+            cout << "enterCatchClause" << "\n";
+        }
+        virtual void exitCatchClause(CajetaParser::CatchClauseContext * /*ctx*/) override {
+            cout << "exitCatchClause" << "\n";
+        }
+
+        virtual void enterCatchType(CajetaParser::CatchTypeContext * /*ctx*/) override {
+            cout << "enterCatchType" << "\n";
+        }
+        virtual void exitCatchType(CajetaParser::CatchTypeContext * /*ctx*/) override {
+            cout << "exitCatchType" << "\n";
+        }
+
+        virtual void enterFinallyBlock(CajetaParser::FinallyBlockContext * /*ctx*/) override {
+            cout << "enterFinallyBlock" << "\n";
+        }
+        virtual void exitFinallyBlock(CajetaParser::FinallyBlockContext * /*ctx*/) override {
+            cout << "exitFinallyBlock" << "\n";
+        }
+
+        virtual void enterResourceSpecification(CajetaParser::ResourceSpecificationContext * /*ctx*/) override {
+            cout << "enterResourceSpecification" << "\n";
+        }
+        virtual void exitResourceSpecification(CajetaParser::ResourceSpecificationContext * /*ctx*/) override {
+            cout << "exitResourceSpecification" << "\n";
+        }
+
+        virtual void enterResources(CajetaParser::ResourcesContext * /*ctx*/) override {
+            cout << "enterResources" << "\n";
+        }
+        virtual void exitResources(CajetaParser::ResourcesContext * /*ctx*/) override {
+            cout << "exitResources" << "\n";
+        }
+
+        virtual void enterResource(CajetaParser::ResourceContext * /*ctx*/) override {
+            cout << "enterResource" << "\n";
+        }
+        virtual void exitResource(CajetaParser::ResourceContext * /*ctx*/) override {
+            cout << "exitResource" << "\n";
+        }
+
+        virtual void enterSwitchBlockStatementGroup(CajetaParser::SwitchBlockStatementGroupContext * /*ctx*/) override {
+            cout << "enterSwitchBlockStatementGroup" << "\n";
+        }
+        virtual void exitSwitchBlockStatementGroup(CajetaParser::SwitchBlockStatementGroupContext * /*ctx*/) override {
+            cout << "exitSwitchBlockStatementGroup" << "\n";
+        }
+
+        virtual void enterSwitchLabel(CajetaParser::SwitchLabelContext * /*ctx*/) override {
+            cout << "enterSwitchLabel" << "\n";
+        }
+        virtual void exitSwitchLabel(CajetaParser::SwitchLabelContext * /*ctx*/) override {
+            cout << "exitSwitchLabel" << "\n";
+        }
+
+        virtual void enterForControl(CajetaParser::ForControlContext * /*ctx*/) override {
+            cout << "enterForControl" << "\n";
+        }
+        virtual void exitForControl(CajetaParser::ForControlContext * /*ctx*/) override {
+            cout << "exitForControl" << "\n";
+        }
+
+        virtual void enterForInit(CajetaParser::ForInitContext * /*ctx*/) override {
+            cout << "enterForInit" << "\n";
+        }
+        virtual void exitForInit(CajetaParser::ForInitContext * /*ctx*/) override {
+            cout << "exitForInit" << "\n";
+        }
+
+        virtual void enterEnhancedForControl(CajetaParser::EnhancedForControlContext * /*ctx*/) override {
+            cout << "enterEnhancedForControl" << "\n";
+        }
+        virtual void exitEnhancedForControl(CajetaParser::EnhancedForControlContext * /*ctx*/) override {
+            cout << "exitEnhancedForControl" << "\n";
+        }
+
+        virtual void enterParExpression(CajetaParser::ParExpressionContext * /*ctx*/) override {
+            cout << "enterParExpression" << "\n";
+        }
+        virtual void exitParExpression(CajetaParser::ParExpressionContext * /*ctx*/) override {
+            cout << "exitParExpression" << "\n";
+        }
+
+        virtual void enterExpressionList(CajetaParser::ExpressionListContext * /*ctx*/) override {
+            cout << "enterExpressionList" << "\n";
+        }
+        virtual void exitExpressionList(CajetaParser::ExpressionListContext * /*ctx*/) override {
+            cout << "exitExpressionList" << "\n";
+        }
+
+        virtual void enterMethodCall(CajetaParser::MethodCallContext * /*ctx*/) override {
+            cout << "enterMethodCall" << "\n";
+        }
+        virtual void exitMethodCall(CajetaParser::MethodCallContext * /*ctx*/) override {
+            cout << "exitMethodCall" << "\n";
+        }
+
+        virtual void enterExpression(CajetaParser::ExpressionContext * /*ctx*/) override {
+            cout << "enterExpression" << "\n";
+        }
+        virtual void exitExpression(CajetaParser::ExpressionContext * /*ctx*/) override {
+            cout << "exitExpression" << "\n";
+        }
+
+        virtual void enterPattern(CajetaParser::PatternContext * /*ctx*/) override {
+            cout << "enterPattern" << "\n";
+        }
+        virtual void exitPattern(CajetaParser::PatternContext * /*ctx*/) override {
+            cout << "exitPattern" << "\n";
+        }
+
+        virtual void enterLambdaExpression(CajetaParser::LambdaExpressionContext * /*ctx*/) override {
+            cout << "enterLambdaExpression" << "\n";
+        }
+        virtual void exitLambdaExpression(CajetaParser::LambdaExpressionContext * /*ctx*/) override {
+            cout << "exitLambdaExpression" << "\n";
+        }
+
+        virtual void enterLambdaParameters(CajetaParser::LambdaParametersContext * /*ctx*/) override {
+            cout << "enterLambdaParameters" << "\n";
+        }
+        virtual void exitLambdaParameters(CajetaParser::LambdaParametersContext * /*ctx*/) override {
+            cout << "exitLambdaParameters" << "\n";
+        }
+
+        virtual void enterLambdaBody(CajetaParser::LambdaBodyContext * /*ctx*/) override {
+            cout << "enterLambdaBody" << "\n";
+        }
+        virtual void exitLambdaBody(CajetaParser::LambdaBodyContext * /*ctx*/) override {
+            cout << "exitLambdaBody" << "\n";
+        }
+
+        virtual void enterPrimary(CajetaParser::PrimaryContext * /*ctx*/) override {
+            cout << "enterPrimary" << "\n";
+        }
+        virtual void exitPrimary(CajetaParser::PrimaryContext * /*ctx*/) override {
+            cout << "exitPrimary" << "\n";
+        }
+
+        virtual void enterSwitchExpression(CajetaParser::SwitchExpressionContext * /*ctx*/) override {
+            cout << "enterSwitchExpression" << "\n";
+        }
+        virtual void exitSwitchExpression(CajetaParser::SwitchExpressionContext * /*ctx*/) override {
+            cout << "exitSwitchExpression" << "\n";
+        }
+
+        virtual void enterSwitchLabeledRule(CajetaParser::SwitchLabeledRuleContext * /*ctx*/) override {
+            cout << "enterSwitchLabeledRule" << "\n";
+        }
+        virtual void exitSwitchLabeledRule(CajetaParser::SwitchLabeledRuleContext * /*ctx*/) override {
+            cout << "exitSwitchLabeledRule" << "\n";
+        }
+
+        virtual void enterGuardedPattern(CajetaParser::GuardedPatternContext * /*ctx*/) override {
+            cout << "enterGuardedPattern" << "\n";
+        }
+        virtual void exitGuardedPattern(CajetaParser::GuardedPatternContext * /*ctx*/) override {
+            cout << "exitGuardedPattern" << "\n";
+        }
+
+        virtual void enterSwitchRuleOutcome(CajetaParser::SwitchRuleOutcomeContext * /*ctx*/) override {
+            cout << "enterSwitchRuleOutcome" << "\n";
+        }
+        virtual void exitSwitchRuleOutcome(CajetaParser::SwitchRuleOutcomeContext * /*ctx*/) override {
+            cout << "exitSwitchRuleOutcome" << "\n";
+        }
+
+        virtual void enterClassType(CajetaParser::ClassTypeContext * /*ctx*/) override {
+            cout << "enterClassType" << "\n";
+        }
+        virtual void exitClassType(CajetaParser::ClassTypeContext * /*ctx*/) override {
+            cout << "exitClassType" << "\n";
+        }
+
+        virtual void enterCreator(CajetaParser::CreatorContext * /*ctx*/) override {
+            cout << "enterCreator" << "\n";
+        }
+        virtual void exitCreator(CajetaParser::CreatorContext * /*ctx*/) override {
+            cout << "exitCreator" << "\n";
+        }
+
+        virtual void enterCreatedName(CajetaParser::CreatedNameContext * /*ctx*/) override {
+            cout << "enterCreatedName" << "\n";
+        }
+        virtual void exitCreatedName(CajetaParser::CreatedNameContext * /*ctx*/) override {
+            cout << "exitCreatedName" << "\n";
+        }
+
+        virtual void enterInnerCreator(CajetaParser::InnerCreatorContext * /*ctx*/) override {
+            cout << "enterInnerCreator" << "\n";
+        }
+        virtual void exitInnerCreator(CajetaParser::InnerCreatorContext * /*ctx*/) override {
+            cout << "exitInnerCreator" << "\n";
+        }
+
+        virtual void enterArrayCreatorRest(CajetaParser::ArrayCreatorRestContext * /*ctx*/) override {
+            cout << "enterArrayCreatorRest" << "\n";
+        }
+        virtual void exitArrayCreatorRest(CajetaParser::ArrayCreatorRestContext * /*ctx*/) override {
+            cout << "exitArrayCreatorRest" << "\n";
+        }
+
+        virtual void enterClassCreatorRest(CajetaParser::ClassCreatorRestContext * /*ctx*/) override {
+            cout << "enterClassCreatorRest" << "\n";
+        }
+        virtual void exitClassCreatorRest(CajetaParser::ClassCreatorRestContext * /*ctx*/) override {
+            cout << "exitClassCreatorRest" << "\n";
+        }
+
+        virtual void enterExplicitGenericInvocation(CajetaParser::ExplicitGenericInvocationContext * /*ctx*/) override {
+            cout << "enterExplicitGenericInvocation" << "\n";
+        }
+        virtual void exitExplicitGenericInvocation(CajetaParser::ExplicitGenericInvocationContext * /*ctx*/) override {
+            cout << "exitExplicitGenericInvocation" << "\n";
+        }
+
+        virtual void enterTypeArgumentsOrDiamond(CajetaParser::TypeArgumentsOrDiamondContext * /*ctx*/) override {
+            cout << "enterTypeArgumentsOrDiamond" << "\n";
+        }
+        virtual void exitTypeArgumentsOrDiamond(CajetaParser::TypeArgumentsOrDiamondContext * /*ctx*/) override {
+            cout << "exitTypeArgumentsOrDiamond" << "\n";
+        }
+
+        virtual void enterNonWildcardTypeArgumentsOrDiamond(CajetaParser::NonWildcardTypeArgumentsOrDiamondContext * /*ctx*/) override {
+            cout << "enterNonWildcardTypeArgumentsOrDiamond" << "\n";
+        }
+        virtual void exitNonWildcardTypeArgumentsOrDiamond(CajetaParser::NonWildcardTypeArgumentsOrDiamondContext * /*ctx*/) override {
+            cout << "exitNonWildcardTypeArgumentsOrDiamond" << "\n";
+        }
+
+        virtual void enterNonWildcardTypeArguments(CajetaParser::NonWildcardTypeArgumentsContext * /*ctx*/) override {
+            cout << "enterNonWildcardTypeArguments" << "\n";
+        }
+        virtual void exitNonWildcardTypeArguments(CajetaParser::NonWildcardTypeArgumentsContext * /*ctx*/) override {
+            cout << "exitNonWildcardTypeArguments" << "\n";
+        }
+
+        virtual void enterTypeList(CajetaParser::TypeListContext * /*ctx*/) override {
+            cout << "enterTypeList" << "\n";
+        }
+        virtual void exitTypeList(CajetaParser::TypeListContext * /*ctx*/) override {
+            cout << "exitTypeList" << "\n";
+        }
+
+        virtual void enterTypeType(CajetaParser::TypeTypeContext * /*ctx*/) override {
+            cout << "enterTypeType" << "\n";
+        }
+        virtual void exitTypeType(CajetaParser::TypeTypeContext * /*ctx*/) override {
+            cout << "exitTypeType" << "\n";
+        }
+
+        virtual void enterReferenceType(CajetaParser::ReferenceTypeContext * /*ctx*/) override {
+            cout << "enterReferenceType" << "\n";
+        }
+        virtual void exitReferenceType(CajetaParser::ReferenceTypeContext * /*ctx*/) override {
+            cout << "exitReferenceType" << "\n";
+        }
+
+        virtual void enterPrimitiveType(CajetaParser::PrimitiveTypeContext * /*ctx*/) override {
+            cout << "enterPrimitiveType" << "\n";
+        }
+        virtual void exitPrimitiveType(CajetaParser::PrimitiveTypeContext * /*ctx*/) override {
+            cout << "exitPrimitiveType" << "\n";
+        }
+
+        virtual void enterTypeArguments(CajetaParser::TypeArgumentsContext * /*ctx*/) override {
+            cout << "enterTypeArguments" << "\n";
+        }
+        virtual void exitTypeArguments(CajetaParser::TypeArgumentsContext * /*ctx*/) override {
+            cout << "exitTypeArguments" << "\n";
+        }
+
+        virtual void enterSuperSuffix(CajetaParser::SuperSuffixContext * /*ctx*/) override {
+            cout << "enterSuperSuffix" << "\n";
+        }
+        virtual void exitSuperSuffix(CajetaParser::SuperSuffixContext * /*ctx*/) override {
+            cout << "exitSuperSuffix" << "\n";
+        }
+
+        virtual void enterExplicitGenericInvocationSuffix(CajetaParser::ExplicitGenericInvocationSuffixContext * /*ctx*/) override {
+            cout << "enterExplicitGenericInvocationSuffix" << "\n";
+        }
+        virtual void exitExplicitGenericInvocationSuffix(CajetaParser::ExplicitGenericInvocationSuffixContext * /*ctx*/) override {
+            cout << "exitExplicitGenericInvocationSuffix" << "\n";
+        }
+
+        virtual void enterArguments(CajetaParser::ArgumentsContext * /*ctx*/) override {
+            cout << "enterArguments" << "\n";
+        }
+        virtual void exitArguments(CajetaParser::ArgumentsContext * /*ctx*/) override {
+            cout << "exitArguments" << "\n";
+        }
+
+        virtual void enterEveryRule(antlr4::ParserRuleContext * /*ctx*/) override {
+            cout << "void" << "\n";
+        }
+        virtual void exitEveryRule(antlr4::ParserRuleContext * /*ctx*/) override {
+            cout << "exitEveryRule" << "\n";
+        }
+
+        virtual void visitTerminal(antlr4::tree::TerminalNode * /*node*/) override {
+            cout << "visitTerminal" << "\n";
+        }
+        virtual void visitErrorNode(antlr4::tree::ErrorNode * /*node*/) override {
+            cout << "visitErrorNode" << "\n";
+        }
     };
 }

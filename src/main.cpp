@@ -5,11 +5,24 @@
 #include "antlr4-runtime.h"
 #include "CajetaLexer.h"
 #include "CajetaParser.h"
+#include "Parser/Package.h"
 
 using namespace std;
 using namespace antlr4;
 using namespace cajeta;
 
+#define PATH_SEPARATOR_CHAR '/'
+
+struct PackageEntry {
+    map<string, PackageEntry*> entryMap;
+    void addPackage(string package) {
+
+    }
+};
+
+struct ModuleEntry : PackageEntry {
+    TypeDefinition* typeDefinition;
+};
 
 list<string>* findModulePaths(string rootPath) {
     list<string>* result = new list<string>;
@@ -25,11 +38,11 @@ list<string>* findModulePaths(string rootPath) {
     return result;
 }
 
-string findTargetPathForModule(string rootSrcPath, string srcPath, string targetRootPath) {
-    return targetRootPath + srcPath.substr(rootSrcPath.length());
+string findPackagePathForModule(string rootSrcPath, string srcPath) {
+    return srcPath.substr(rootSrcPath.length());
 }
 
-llvm::Module* processModule(string srcPath, llvm::LLVMContext* context, string targetPath, string targetTriple,
+TypeDefinition* processModule(string srcPath, llvm::LLVMContext* context, string targetPath, string targetTriple,
                             llvm::TargetMachine* targetMachine) {
     ifstream stream;
     stream.open(srcPath);
@@ -86,15 +99,17 @@ int main(int argc, const char* argv[]) {
     list<string>* modulePaths = findModulePaths(argv[1]);
     string buildRoot = argv[2];
 
+    string pathBase;
     for (auto itr = modulePaths->begin(); itr != modulePaths->end(); itr++) {
-        string targetPath = findTargetPathForModule(rootSrcPath, *itr, rootTargetPath);
-        llvm::Module* module = processModule(*itr, context, targetPath, targetTriple, targetMachine);
-        //WriteBitcodeToFile(module, *out);
+        string packagePath = findPackagePathForModule(rootSrcPath, *itr);
+        Package* package = Package::create(packagePath);
+        TypeDefinition* typeDefinition = processModule(*itr, context, packagePath, targetTriple, targetMachine);
+        // WriteBitcodeToFile(typeDefinition->module, *out);
     }
 
 //    delete visitor;
 //    delete llvmContext;
 //    delete parseTree;
 
-    return 0;    return 0;
+    return 0;
 }
