@@ -6,42 +6,37 @@
 
 #include <cajeta/TypeDefinition.h>
 #include <set>
-#include <list>
 #include "QualifiedName.h"
 #include "Modifiable.h"
 #include "Annotatable.h"
+#include "Type.h"
 
 using namespace std;
 
 namespace cajeta {
-    class Type;
-
-    class Field : public Modifiable, public Annotatable {
-        bool reference;
+    class FormalParameter : public Modifiable, public Annotatable {
         string name;
+        TypeDefinition* typeDefinition;
+        llvm::AllocaInst* definition;
         cajeta::Type* type;
     public:
-        Field(string& name, bool reference, set<Modifier>& modifiers, set<QualifiedName*>& annotations) : Modifiable(modifiers),
-                Annotatable(annotations) {
+        FormalParameter(string& name, Type* type, set<Modifier>& modifiers,
+                        set<QualifiedName*>& annotations) : Modifiable(modifiers), Annotatable(annotations) {
             this->name = name;
-            this->reference = reference;
         }
-        Field(string& name, bool reference) {
+        FormalParameter(string& name) {
             this->name = name;
-            this->reference = reference;
         }
 
-        bool isReference() const {
-            return reference;
-        }
+        bool isReference() const;
 
-        const string& getName() const {
-            return name;
-        }
+        const string& getName() const;
 
-        Type* getType() const {
-            return type;
-        }
+        TypeDefinition* getTypeDefinition() const;
+
+        llvm::AllocaInst* getDefinition() const;
+
+        Type* getType() const;
 
         void define() { }
         void allocate(llvm::IRBuilder<>* builder, llvm::Module* module, llvm::LLVMContext* llvmContext) {
@@ -50,6 +45,6 @@ namespace cajeta {
         void release(llvm::IRBuilder<>* builder, llvm::Module* module, llvm::LLVMContext* llvmContext) {
             // typeDefinition->free(builder, module, llvmContext);
         }
-        static list<Field*> fromContext(CajetaParser::FieldDeclarationContext* ctx);
+        static FormalParameter* fromContext(CajetaParser::FormalParameterContext*);
     };
 }

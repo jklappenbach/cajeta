@@ -1,4 +1,4 @@
-package com.entity.app.component;
+packageName com.entity.app.component;
 
 import com.blah.OtherClass;
 

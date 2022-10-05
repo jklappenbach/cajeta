@@ -207,7 +207,7 @@ constantDeclarator
     : identifier ('[' ']')* '=' variableInitializer
     ;
 
-// Early versions of Java allows brackets after the method name, eg.
+// Early versions of Java allows brackets after the curMethod name, eg.
 // public int[] return2DArray() [] { ... }
 // is the same as
 // public int[][] return2DArray() { ... }
@@ -243,7 +243,6 @@ variableDeclarator
 
 variableDeclaratorId
     : identifier ('[' ']')*
-    | REFERENCE identifier ('[' ']')*
     ;
 
 variableInitializer
@@ -572,6 +571,7 @@ methodCall
 
 expression
     : primary
+    | REFERENCE primary
     | expression bop='.'
       (
          identifier
@@ -642,7 +642,6 @@ primary
     | SUPER
     | literal
     | identifier
-    | REFERENCE identifier
     | typeTypeOrVoid '.' CLASS
     | nonWildcardTypeArguments (explicitGenericInvocationSuffix | THIS arguments)
     ;
@@ -720,11 +719,7 @@ typeList
     ;
 
 typeType
-    : annotation* (referenceType | classOrInterfaceType | primitiveType) (annotation* '[' ']')*
-    ;
-
-referenceType
-    : REFERENCE classOrInterfaceType
+    : annotation* (classOrInterfaceType | primitiveType) (annotation* '[' ']')*
     ;
 
 primitiveType

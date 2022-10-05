@@ -1,0 +1,26 @@
+package cajeta.test;
+
+import com.blah.FieldAnnotation;
+import com.blah.ParameterAnnotation;
+import com.blah.MethodAnnotation;
+import lang.cajeta.BiFunction;
+
+public class System {
+    private final int32 value;
+    @FieldAnnotation
+    private Object obj;
+    private Object scooby;
+
+    @MethodAnnotation("Hello!")
+    public static void main(@ParameterAnnotation final cajeta.lang.String[] args) {
+        value = 5;
+        obj = #scooby;
+
+        x.methodCall(#obj);
+        System.out.printf("Lambda World!\n");
+
+        BiFunction<Integer, Integer, Integer> fn = (x, y) -> {
+            return x + y;
+        };
+    }
+}

@@ -1,8 +1,144 @@
+#Parsing Tree
+
+```
+(compilationUnit 
+  (packageDeclaration packageName 
+    (qualifiedName 
+      (identifier cajeta)
+    );
+  ) 
+  (typeDeclaration 
+    (classOrInterfaceModifier public) 
+      (classDeclaration class 
+        (identifier System) 
+          (classBody { 
+            (classBodyDeclaration 
+              (modifier 
+                (classOrInterfaceModifier private)
+              ) 
+              (memberDeclaration 
+                (fieldDeclaration 
+                  (typeType 
+                    (primitiveType int32)
+                  ) 
+                  (variableDeclarators 
+                    (variableDeclarator 
+                      (variableDeclaratorId 
+                        (identifier value)
+                      )
+                    )
+                  );
+                )
+              )
+            ) 
+            (classBodyDeclaration 
+              (modifier 
+                (classOrInterfaceModifier private)
+              ) 
+              (memberDeclaration 
+                (fieldDeclaration 
+                  (typeType 
+                    (classOrInterfaceType 
+                      (identifier Object)
+                    )
+                  ) 
+                  (variableDeclarators 
+                    (variableDeclarator 
+                      (variableDeclaratorId 
+                        (identifier obj)
+                      )
+                    )
+                  );
+                )
+              )
+            )            
+            (classBodyDeclaration 
+              (modifier 
+                (classOrInterfaceModifier public)
+              ) 
+              (modifier 
+                (classOrInterfaceModifier static)
+              ) 
+              (memberDeclaration 
+                (methodDeclaration 
+                  (typeTypeOrVoid void) 
+                  (identifier main) 
+                  (formalParameters 
+                    ( 
+                      (formalParameterList 
+                        (formalParameter 
+                          (typeType 
+                            (classOrInterfaceType 
+                              (identifier String)
+                            )[ ]
+                          ) 
+                          (variableDeclaratorId 
+                            (identifier args)
+                          )
+                        )
+                      ) 
+                    )
+                  ) 
+                  (methodBody 
+                    (block { 
+                      (blockStatement 
+                        (statement 
+                          (expression 
+                            (expression 
+                              (primary 
+                                (identifier value)
+                              )
+                            ) = 
+                            (expression 
+                              (primary 
+                                (literal (integerLiteral 5))
+                              )
+                            )
+                          );
+                        )
+                      )
+                      (blockStatement 
+                        (statement 
+                          (expression 
+                            (expression 
+                              (expression 
+                                (primary 
+                                  (identifier System)
+                                )
+                              ) . 
+                              (identifier out)
+                            ) . 
+                            (methodCall 
+                              (identifier printf) 
+                            ( 
+                              (expressionList 
+                                (expression 
+                                  (primary 
+                                    (literal "Hello World!\n")
+                                  )
+                                )
+                              ) 
+                            )
+                          )
+                        );
+                      )
+                    )}
+                  )
+                )
+              )
+            )
+          )}
+        )
+      )
+    )
+  )
+)
+```
 #Class Design
 - LLVM Structure for Classes
   - className: String
   - Virtual Table
-    - Entry per method
+    - Entry per curMethod
     - Function pointers to highest superclass entry if no override
   - Reflection Table
     - methodName: String
@@ -13,7 +149,7 @@
 - Annotations
   - Like Java, have a version of annotations that act as markers
     - Example: Spring @Components, which are automatically instantiated by the Spring Framework
-  - Also feature injection annotation classes with the ability to inject llvm IR with the following strategy:
+  - Also feature injection annotation types with the ability to inject llvm IR with the following strategy:
     - When injection annotation is detected, 
       - The implementation annotation class will be JIT compiled 
       - Directly executed as part of the compilation process
@@ -22,7 +158,7 @@
         - API object has access to the current module definition, and can call IR generation methods just like the listener
     - AOP Annotations specifically for
       - Class
-        - Base interface features a callback method offering an AOP object
+        - Base interface features a callback curMethod offering an AOP object
           - Callback Events
             - Class fields declared
             - Class methods declared
@@ -30,21 +166,21 @@
           - AOP Capabilities
             - Add field
             - Set field value
-            - Add method
-            - Wrap method
+            - Add curMethod
+            - Wrap curMethod
       - Class field
         - Callback Events
           - Class field declared
         - AOP Capability
           - Set field value
-          - Add method
-          - Wrap method
-      - Class method
+          - Add curMethod
+          - Wrap curMethod
+      - Class curMethod
         - Callback Events
-          - Class method declared
+          - Class curMethod declared
         - AOP Capability
-          - Wrap method
-      - Class method parameter
+          - Wrap curMethod
+      - Class curMethod parameter
         - Callback Events
           - Parameter declared
         - AOP Capability
@@ -52,7 +188,7 @@
 - Runtime Module
   - [cajeta.lang.Class<T>](https://docs.oracle.com/javase/8/docs/api/java/lang/Class.html)
   - [cajeta.lang.Object](https://docs.oracle.com/javase/8/docs/api/java/lang/Object.html)
-    - hashCode: default method based on murmur3
+    - hashCode: default curMethod based on murmur3
     - equals
     - toString
     - finalize

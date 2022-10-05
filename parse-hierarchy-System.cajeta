@@ -1,0 +1,86 @@
+cajeta.System.cajeta
+
+(compilationUnit
+    (packageDeclaration packageName
+        (qualifiedName
+            (identifier cajeta).(identifier test)
+        );
+    )
+    (typeDeclaration (classOrInterfaceModifier public)
+        (classDeclaration class
+            (identifier System)
+            (classBody {
+                (classBodyDeclaration (modifier (classOrInterfaceModifier private))
+                    (memberDeclaration
+                        (fieldDeclaration
+                            (typeType (primitiveType int32))
+                            (variableDeclarators
+                                (variableDeclarator (variableDeclaratorId (identifier value)))
+                            );
+                        )
+                    )
+                )
+                (classBodyDeclaration
+                    (modifier (classOrInterfaceModifier private))
+                    (memberDeclaration
+                        (fieldDeclaration
+                            (typeType (classOrInterfaceType (identifier Object)))
+                            (variableDeclarators
+                                (variableDeclarator
+                                    (variableDeclaratorId (identifier obj))
+                                )
+                            );
+                        )
+                    )
+                )
+                (classBodyDeclaration
+                    (modifier
+                        (classOrInterfaceModifier public)
+                    )
+                    (modifier
+                        (classOrInterfaceModifier static)
+                    )
+                    (memberDeclaration
+                        (methodDeclaration
+                            (typeTypeOrVoid void)
+                            (identifier main)
+                            (formalParameters
+                                (
+                                    (formalParameterList
+                                        (formalParameter
+                                            (typeType
+                                                (classOrInterfaceType (identifier String))[ ]
+                                            )
+                                            (variableDeclaratorId (identifier args))
+                                        )
+                                    )
+                                )
+                            )
+                            (methodBody
+                                (block {
+                                    (blockStatement
+                                        (statement
+                                            (expression
+                                                (expression (primary (identifier value))) = (expression (primary (literal (integerLiteral 5))))
+                                            );
+                                        )
+                                    )
+                                    (blockStatement
+                                        (statement
+                                            (expression
+                                                (expression (expression (primary (identifier System))).(identifier out)).
+                                                (methodCall (identifier printf)
+                                                    ((expressionList (expression (primary (literal "Hello World!\n")))))
+                                                )
+                                            );
+                                        )
+                                    )
+                                })
+                            )
+                        )
+                    )
+                )
+            })
+        )
+    )
+)

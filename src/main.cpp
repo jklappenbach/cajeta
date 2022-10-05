@@ -64,6 +64,9 @@ TypeDefinition* processModule(string srcPath, llvm::LLVMContext* context, string
     return 0;
 }
 
+// TODO: Set up parsing stack to handle the following through callbacks:
+
+// TODO (compilationUnit (packageDeclaration packageName (qualifiedName (identifier cajeta)) ;) (typeDeclaration (classOrInterfaceModifier public) (classDeclaration class (identifier System) (classBody { (classBodyDeclaration (modifier (classOrInterfaceModifier public)) (modifier (classOrInterfaceModifier static)) (memberDeclaration (methodDeclaration (typeTypeOrVoid void) (identifier main) (formalParameters ( (formalParameterList (formalParameter (typeType (classOrInterfaceType (identifier String)) [ ]) (variableDeclaratorId (identifier args)))) )) (methodBody (block { (blockStatement (statement (expression (expression (expression (primary (identifier System))) . (identifier out)) . (methodCall (identifier printf) ( (expressionList (expression (primary (literal "Hello World!\n")))) ))) ;)) }))))) }))))
 int main(int argc, const char* argv[]) {
     //cl::ParseCommandLineOptions(argc, argv, " Cajeta compiler, v1.0\n");
 

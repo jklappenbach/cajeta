@@ -154,6 +154,7 @@ RBRACK:             ']';
 SEMI:               ';';
 COMMA:              ',';
 DOT:                '.';
+REFERENCE:          '#';
 
 // Operators
 
@@ -180,7 +181,6 @@ BITAND:             '&';
 BITOR:              '|';
 CARET:              '^';
 MOD:                '%';
-REFERENCE:          '#';
 
 ADD_ASSIGN:         '+=';
 SUB_ASSIGN:         '-=';

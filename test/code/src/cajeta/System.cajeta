@@ -1,7 +1,11 @@
-package cajeta;
+package cajeta.test;
 
 public class System {
+    private int32 value;
+    private Object obj;
+
     public static void main(String[] args) {
+        value = 5;
         System.out.printf("Hello World!\n");
     }
 }

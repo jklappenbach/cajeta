@@ -8,7 +8,7 @@ find_package(antlr4-generator REQUIRED)
 ```
 line in your `CMakeList.txt` file.
 
-The package exposes a function `antlr4_generate` that generates the required setup to call ANTLR for a
+The packageName exposes a function `antlr4_generate` that generates the required setup to call ANTLR for a
 given input file during build.
 
 The following table lists the parameters that can be used with the function:
@@ -20,7 +20,7 @@ Argument# | Required  | Default | Use
 2 | Yes | n/a | Type of Rules contained in the input: LEXER, PARSER or BOTH
 4 | No  | FALSE | Boolean to indicate if a listener interface should be generated
 5 | No  | FALSE | Boolean to indicate if a visitor interface should be generated
-6 | No  | none | C++ namespace in which the generated classes should be placed
+6 | No  | none | C++ namespace in which the generated types should be placed
 7 | No  | none | Additional files on which the input depends
 8 | No  | none | Library path to use during generation
 
@@ -40,8 +40,8 @@ Output variable  | Meaning
 
 #### Sample:
 ```cmake
- # generate parser with visitor classes.
- # put the classes in C++ namespace 'antlrcpptest::'
+ # generate parser with visitor types.
+ # put the types in C++ namespace 'antlrcpptest::'
  antlr4_generate(
    antlrcpptest_parser
    ${CMAKE_CURRENT_SOURCE_DIR}/TLexer.g4
@@ -62,7 +62,7 @@ find_package(antlr4-runtime REQUIRED)
 ```
 line in your `CMakeList.txt` file.
 
-The package exposes two different targets:
+The packageName exposes two different targets:
 
 Target|Use
 --|--

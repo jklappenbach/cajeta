@@ -4,8 +4,6 @@
 
 #pragma once
 
-using namespace std;
-
 #include <llvm/IR/LegacyPassManager.h>
 #include <llvm/IR/Module.h>
 #include <llvm/IR/IRBuilder.h>
@@ -17,6 +15,10 @@ using namespace std;
 #include <llvm/Target/TargetMachine.h>
 #include <llvm/Target/TargetOptions.h>
 #include <map>
+//#include "Field.h"
+//#include "Type.h"
+//#include "Method.h"
+//#include "QualifiedName.h"
 
 using namespace std;
 
@@ -28,6 +30,9 @@ namespace cajeta {
         llvm::Module* module;
         llvm::IRBuilder<>* builder;
         map<string, TypeDefinition*> types;
+//        static map<QualifiedName*, Type*> typeAnnotations;
+//        static map<QualifiedName*, Field*> fieldAnnotations;
+//        static map<QualifiedName*, Method*> methodAnnotations;
 
         ParseContext(llvm::LLVMContext* llvmContext,
                      llvm::Module* module,

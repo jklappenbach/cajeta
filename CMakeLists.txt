@@ -46,7 +46,7 @@ include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include)
 add_executable(cajeta
         ${ANTLR_CajetaGrammarLexer_CXX_OUTPUTS}
         ${ANTLR_CajetaGrammarParser_CXX_OUTPUTS}
-        src/main.cpp include/cajeta/CajetaParserIRVisitor.h include/cajeta/Scope.h src/Scope.cpp include/cajeta/Declaration.h include/cajeta/CajetaParserIRListener.h src/CajetaParserIRListener.cpp src/Statement.cpp include/cajeta/Statement.h src/Annotation.cpp include/cajeta/Annotation.h src/Generics.cpp include/cajeta/Generics.h src/Method.cpp include/cajeta/Method.h src/TypeDefinition.cpp include/cajeta/TypeDefinition.h include/cajeta/ParseContext.h include/cajeta/Field.cpp include/cajeta/Field.h include/cajeta/Expression.h src/Expression.cpp include/Parser/Package.h src/Package.cpp)
+        src/main.cpp include/cajeta/Scope.h src/Scope.cpp include/cajeta/Declaration.h include/cajeta/CajetaParserIRListener.h src/CajetaParserIRListener.cpp src/Statement.cpp include/cajeta/Statement.h src/Annotation.cpp include/cajeta/Annotation.h src/Generics.cpp include/cajeta/Generics.h src/Method.cpp include/cajeta/Method.h src/TypeDefinition.cpp include/cajeta/TypeDefinition.h include/cajeta/ParseContext.h src/Field.cpp include/cajeta/Field.h include/cajeta/Expression.h src/Expression.cpp include/Parser/Package.h src/Package.cpp src/ParseContext.cpp include/cajeta/QualifiedName.h src/CompilationUnit.cpp include/cajeta/CompilationUnit.h src/Type.cpp include/cajeta/Type.h src/Interface.cpp include/cajeta/Interface.h src/Class.cpp include/cajeta/Class.h src/QualifiedName.cpp src/StructType.cpp include/cajeta/StructType.h src/FormalParameter.cpp)
 
 message(STATUS "Found LLVM ${LLVM_PACKAGE_VERSION}")
 message(STATUS "Using LLVMConfig.cmake in: ${LLVM_DIR}")

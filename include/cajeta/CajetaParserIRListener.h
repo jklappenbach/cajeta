@@ -1,7 +1,3 @@
-//
-// Created by James Klappenbach on 2/8/22.
-//
-
 #pragma once
 
 #include <llvm/IR/LegacyPassManager.h>
@@ -21,32 +17,48 @@
 #include <cajeta/Statement.h>
 #include <cajeta/Annotation.h>
 #include <cajeta/Generics.h>
-#include <cajeta/AccessModifier.h>
+#include <cajeta/Modifiable.h>
 #include <cajeta/TypeDefinition.h>
 #include <cajeta/Scope.h>
 #include <cajeta/Method.h>
+#include <cajeta/Modifiable.h>
+#include <cajeta/CompilationUnit.h>
+#include <cajeta/Class.h>
+#include <cajeta/Interface.h>
+#include <cajeta/Enum.h>
+#include <cajeta/FormalParameter.h>
 
 using namespace std;
 
 namespace cajeta {
-    enum ParseState { DEFINE_CLASS, DEFINE_VARIABLE, DEFINE_METHOD_SIG, DEFINE_METHOD };
-
-    AccessModifier toAccessModifier(string value);
+    enum ParseState {
+        PACKAGE_DECLARATION,
+        TYPE_DECLARATION,
+        CLASS_DECLARATION,
+        CLASS_BODY,
+        FIELD_DECLARATION,
+        METHOD_DECLARATION,
+        DEFINE_VARIABLE,
+        DEFINE_METHOD_SIG,
+        DEFINE_METHOD
+    };
 
     class CajetaParserIRListener : public CajetaParserBaseListener, ParseContext {
     private:
+
         // Parsing state
+        CompilationUnit* compilationUnit;
         string srcPath;
         string targetPath;
         ParseState parseState;
         string package;
-        map<string, string> memberVariables;
-        map<string, list<pair<string, string>>> memberMethods;
-        deque<TypeDefinition*> classStack;
-        list<TypeDefinition*> classes;
-        int accessModifiers;
-        std::map<std::string, llvm::StructType*> allocatedClasses;
-        Scope moduleScope;
+        deque<Type*> typeStack;
+        list<Type*> types;
+        Type* curType;
+        Method* curMethod;
+        set<QualifiedName*> curAnnotations;
+        set<Modifier> modifiers;
+        list<Scope*> moduleScope;
         Scope* currentScope;
 
     public:
@@ -56,13 +68,11 @@ namespace cajeta {
                               string targetTriple,
                               llvm::TargetMachine* targetMachine) :
                 ParseContext(llvmContext, new llvm::Module(srcPath, *llvmContext),
-                             new llvm::IRBuilder<>(*llvmContext)),
-                moduleScope(NULL, MODULE_SCOPE) {
-            parseState = DEFINE_CLASS;
+                             new llvm::IRBuilder<>(*llvmContext)) {
+            parseState = PACKAGE_DECLARATION;
             module->setDataLayout(targetMachine->createDataLayout());
             module->setTargetTriple(targetTriple);
-            accessModifiers = 0;
-
+            modifiers.clear();
             std::error_code ec;
             llvm::raw_fd_ostream dest(targetPath, ec, llvm::sys::fs::OF_None);
 
@@ -82,24 +92,32 @@ namespace cajeta {
 
 
         virtual void enterCompilationUnit(CajetaParser::CompilationUnitContext * /*ctx*/) override {
+            compilationUnit = new CompilationUnit;
             cout << "enterCompilationUnit" << "\n";
         }
         virtual void exitCompilationUnit(CajetaParser::CompilationUnitContext * /*ctx*/) override {
             cout << "exitCompilationUnit" << "\n";
         }
 
-        virtual void enterPackageDeclaration(CajetaParser::PackageDeclarationContext * /*ctx*/) override {
+        virtual void enterPackageDeclaration(CajetaParser::PackageDeclarationContext* ctx) override {
+            std::vector<CajetaParser::IdentifierContext *> identifiers = ctx->qualifiedName()->identifier();
+            auto itr = identifiers.begin();
+            string packageName = (*itr)->getText();
+            itr++;
+            while (itr != identifiers.end()) {
+                packageName += ".";
+                packageName += (*itr)->getText();
+                itr++;
+            }
+            compilationUnit->setPackageName(packageName);
+            parseState = TYPE_DECLARATION;
             cout << "enterPackageDeclaration" << "\n";
         }
-        virtual void exitPackageDeclaration(CajetaParser::PackageDeclarationContext * /*ctx*/) override {
-            cout << "exitPackageDeclaration" << "\n";
-        }
 
-        virtual void enterImportDeclaration(CajetaParser::ImportDeclarationContext * /*ctx*/) override {
+        virtual void enterImportDeclaration(CajetaParser::ImportDeclarationContext* ctx) override {
+            QualifiedName* qName = QualifiedName::toQualifiedName(ctx->qualifiedName());
+            compilationUnit->getImports().insert(qName);
             cout << "enterImportDeclaration" << "\n";
-        }
-        virtual void exitImportDeclaration(CajetaParser::ImportDeclarationContext * /*ctx*/) override {
-            cout << "exitImportDeclaration" << "\n";
         }
 
         virtual void enterTypeDeclaration(CajetaParser::TypeDeclarationContext * /*ctx*/) override {
@@ -118,7 +136,13 @@ namespace cajeta {
 
         virtual void enterClassOrInterfaceModifier(CajetaParser::ClassOrInterfaceModifierContext* ctx) override {
             cout << "enterClassOrInterfaceModifier" << "\n";
-            this->accessModifiers |= toAccessModifier(ctx->getText());
+            CajetaParser::AnnotationContext* ctxAnnotation = ctx->annotation();
+            if (ctxAnnotation != nullptr) {
+                QualifiedName* qName = QualifiedName::toQualifiedName(ctxAnnotation->qualifiedName());
+                curAnnotations.insert(qName);
+            } else {
+                modifiers.insert(Modifiable::toModifier(ctx->getText()));
+            }
         }
         virtual void exitClassOrInterfaceModifier(CajetaParser::ClassOrInterfaceModifierContext * /*ctx*/) override {
             cout << "exitClassOrInterfaceModifier" << "\n";
@@ -131,16 +155,18 @@ namespace cajeta {
             cout << "exitVariableModifier" << "\n";
         }
 
+        // TODO: Make this a member variable (classDefinition), so that we can add fields to the type
         virtual void enterClassDeclaration(CajetaParser::ClassDeclarationContext* ctxClassDecl) override {
             cout << "enterClassDeclaration" << "\n";
-            ClassDefinition* classDefinition = new ClassDefinition;
-            classDefinition->name = ctxClassDecl->identifier()->getText();
-            classes.push_back(classDefinition);
-            classStack.push_front(classDefinition);
-            currentScope = classDefinition->scope;
-            classDefinition->structType = llvm::StructType::create(*llvmContext, llvm::StringRef(classDefinition->name));
-            classDefinition->accessModifiers = accessModifiers;
-            accessModifiers = 0;
+            QualifiedName* qName = QualifiedName::toQualifiedName(ctxClassDecl->identifier()->getText(),
+                                                                  compilationUnit->getPackageName());
+
+            curType = new Class(qName, modifiers);
+            compilationUnit->getTypes()[qName] = curType;
+            types.push_back(curType);
+            typeStack.push_front(curType);
+            modifiers.clear();
+
             // TODO Inheritance
             //structDefinition->typeParameters;
 
@@ -227,52 +253,41 @@ namespace cajeta {
             cout << "exitClassBodyDeclaration" << "\n";
         }
 
-        virtual void enterMemberDeclaration(CajetaParser::MemberDeclarationContext * /*ctx*/) override {
+        virtual void enterMemberDeclaration(CajetaParser::MemberDeclarationContext* ctx) override {
             cout << "enterMemberDeclaration" << "\n";
         }
         virtual void exitMemberDeclaration(CajetaParser::MemberDeclarationContext * /*ctx*/) override {
             cout << "exitMemberDeclaration" << "\n";
         }
 
+        /**
+         *
+         * @param ctx
+         */
         virtual void enterMethodDeclaration(CajetaParser::MethodDeclarationContext *ctx) override {
-            cout << "enterMethodDeclaration" << "\n";
-            TypeDefinition* returnType = TypeDefinition::fromContext(ctx->typeTypeOrVoid(), this);
+            parseState = METHOD_DECLARATION;
+            Type* returnType = Type::fromContext(ctx->typeTypeOrVoid()->typeType());
+            string name = ctx->identifier()->getText();
+            curMethod = new Method(name, returnType, modifiers, curAnnotations);
+            modifiers.clear();
+            curAnnotations.clear();
 
-            llvm::FunctionType* functionType = llvm::FunctionType::get(returnType->type, false);
-            string methodIdentifier = ctx->identifier()->getText();
-            llvm::Function* function = llvm::Function::Create(functionType,
-                                                              llvm::Function::ExternalLinkage,
-                                                              methodIdentifier,
-                                                              module);
-            Method* method = new Method(accessModifiers, function);
-            accessModifiers = 0;
+            CajetaParser::FormalParametersContext* ctxParameters = ctx->formalParameters();
+            CajetaParser::FormalParameterListContext* ctxFormalParameterList = ctxParameters->formalParameterList();
+            std::vector<CajetaParser::FormalParameterContext*> parameters = ctxFormalParameterList->formalParameter();
 
-            CajetaParser::MethodBodyContext* ctxMethodBody = ctx->methodBody();
-            std::vector<CajetaParser::BlockStatementContext *> statements = ctxMethodBody->block()->blockStatement();
-            for (auto itr = statements.begin(); itr != statements.end(); itr++) {
-                CajetaParser::BlockStatementContext* ctxBlockStatement = *itr;
-                string strBlockStatement = ctxBlockStatement->getText();
-                CajetaParser::StatementContext* ctxStatement = ctxBlockStatement->statement();
-                string strStatement = ctxStatement->getText();
-                Statement* statement = Statement::create(ctxStatement);
-                std::vector<CajetaParser::ExpressionContext *> expressions = ctxStatement->expression();
-                for (auto itrExpressions = expressions.begin(); itrExpressions != expressions.end(); itrExpressions++) {
-                    CajetaParser::ExpressionContext* ctxExpression = *itrExpressions;
-                    CajetaParser::PrimaryContext* ctxPrimary = ctxExpression->primary();
-                    string str = ctxExpression->getText();
-                    for (auto itrChild = ctxExpression->children.begin(); itrChild != ctxExpression->children.end(); itrChild++) {
-                        auto val = *itrChild;
-                        string str = val->getText();
-                    }
+            // Parse parameters
+            for (auto & ctxFormalParameter : parameters) {
+                FormalParameter* parameter = FormalParameter::fromContext(ctxFormalParameter);
+                if (parameter == nullptr) {
+                    // TODO: Error reporting
+                } else {
+                    curMethod->getParameters()[parameter->getName()] = parameter;
                 }
             }
-//            std::vector<antlr4::tree::TerminalNode *> LBRACK();
-//            antlr4::tree::TerminalNode* LBRACK(size_t i);
-//            std::vector<antlr4::tree::TerminalNode *> RBRACK();
-//            antlr4::tree::TerminalNode* RBRACK(size_t i);
-//            antlr4::tree::TerminalNode *THROWS();
-//            QualifiedNameListContext *qualifiedNameList();
         }
+
+        // TODO: We want reference vs ownership declaration to be defined when a variable is passed in, in invocation -- not at the point of definition.  Parser.g4 needs a revision!
 
         /**
          *
@@ -409,7 +424,9 @@ namespace cajeta {
             cout << "exitConstructorDeclaration" << "\n";
         }
 
-        virtual void enterFieldDeclaration(CajetaParser::FieldDeclarationContext * /*ctx*/) override {
+        virtual void enterFieldDeclaration(CajetaParser::FieldDeclarationContext* ctx) override {
+            parseState = FIELD_DECLARATION;
+            //list<Field*> field = Field::fromContext(ctx);
             cout << "enterFieldDeclaration" << "\n";
         }
         virtual void exitFieldDeclaration(CajetaParser::FieldDeclarationContext * /*ctx*/) override {
@@ -542,8 +559,9 @@ namespace cajeta {
             cout << "exitReceiverParameter" << "\n";
         }
 
-        virtual void enterFormalParameterList(CajetaParser::FormalParameterListContext * /*ctx*/) override {
+        virtual void enterFormalParameterList(CajetaParser::FormalParameterListContext* ctx) override {
             cout << "enterFormalParameterList" << "\n";
+
         }
         virtual void exitFormalParameterList(CajetaParser::FormalParameterListContext * /*ctx*/) override {
             cout << "exitFormalParameterList" << "\n";
@@ -892,22 +910,24 @@ namespace cajeta {
             cout << "exitParExpression" << "\n";
         }
 
-        virtual void enterExpressionList(CajetaParser::ExpressionListContext * /*ctx*/) override {
+        virtual void enterExpressionList(CajetaParser::ExpressionListContext* ctx) override {
             cout << "enterExpressionList" << "\n";
+            cout << "enterMethodCall" << ctx->getText() << "\n";
         }
         virtual void exitExpressionList(CajetaParser::ExpressionListContext * /*ctx*/) override {
             cout << "exitExpressionList" << "\n";
         }
 
-        virtual void enterMethodCall(CajetaParser::MethodCallContext * /*ctx*/) override {
-            cout << "enterMethodCall" << "\n";
+        virtual void enterMethodCall(CajetaParser::MethodCallContext* ctx) override {
+            string str = ctx->getText();
+            cout << "enterMethodCall" << ctx->getText() << "\n";
         }
         virtual void exitMethodCall(CajetaParser::MethodCallContext * /*ctx*/) override {
             cout << "exitMethodCall" << "\n";
         }
 
-        virtual void enterExpression(CajetaParser::ExpressionContext * /*ctx*/) override {
-            cout << "enterExpression" << "\n";
+        virtual void enterExpression(CajetaParser::ExpressionContext* ctx) override {
+            cout << "enterExpression" << ctx->getText() << "\n";
         }
         virtual void exitExpression(CajetaParser::ExpressionContext * /*ctx*/) override {
             cout << "exitExpression" << "\n";
@@ -1060,14 +1080,8 @@ namespace cajeta {
             cout << "exitTypeType" << "\n";
         }
 
-        virtual void enterReferenceType(CajetaParser::ReferenceTypeContext * /*ctx*/) override {
-            cout << "enterReferenceType" << "\n";
-        }
-        virtual void exitReferenceType(CajetaParser::ReferenceTypeContext * /*ctx*/) override {
-            cout << "exitReferenceType" << "\n";
-        }
-
         virtual void enterPrimitiveType(CajetaParser::PrimitiveTypeContext * /*ctx*/) override {
+
             cout << "enterPrimitiveType" << "\n";
         }
         virtual void exitPrimitiveType(CajetaParser::PrimitiveTypeContext * /*ctx*/) override {
@@ -1112,8 +1126,9 @@ namespace cajeta {
         virtual void visitTerminal(antlr4::tree::TerminalNode * /*node*/) override {
             cout << "visitTerminal" << "\n";
         }
-        virtual void visitErrorNode(antlr4::tree::ErrorNode * /*node*/) override {
-            cout << "visitErrorNode" << "\n";
+        virtual void visitErrorNode(antlr4::tree::ErrorNode* node) override {
+            string str = node->getText();
+            cout << "visitErrorNode: " << str << "\n";
         }
     };
 }

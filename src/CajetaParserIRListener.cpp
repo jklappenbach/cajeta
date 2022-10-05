@@ -2,32 +2,13 @@
 // Created by James Klappenbach on 2/13/22.
 //
 #include "cajeta/CajetaParserIRListener.h"
-#include "cajeta/AccessModifier.h"
+#include "cajeta/Modifiable.h"
 
 using namespace cajeta;
-
-AccessModifier cajeta::toAccessModifier(string value) {
-    if (value == "public") {
-        return PUBLIC;
-    } else if (value == "private") {
-        return PRIVATE;
-    } else if (value == "protected") {
-        return PROTECTED;
-    } else if (value == "static") {
-        return STATIC;
-    } else if (value == "final") {
-        return FINAL;
-    }
-
-    return PACKAGE;
-};
 
 TypeDefinition* TypeDefinition::fromContext(CajetaParser::TypeTypeOrVoidContext* ctxTypeOrVoid, cajeta::ParseContext* ctxParse) {
     string name = ctxTypeOrVoid->getText();
     TypeDefinition* result = NativeTypeDefinition::fromName(name, ctxParse);
-    if (result && ctxTypeOrVoid->typeType() && ctxTypeOrVoid->typeType()->referenceType() != NULL) {
-        result->reference = true;
-    }
     return result;
 }
 

@@ -1,0 +1,126 @@
+(compilationUnit
+    (packageDeclaration packageName (qualifiedName (identifier cajeta).(identifier test));)
+    (importDeclaration import (qualifiedName (identifier com) . (identifier blah) . (identifier FieldAnnotation)) ;)
+    (importDeclaration import (qualifiedName (identifier com) . (identifier blah) . (identifier ParameterAnnotation)) ;)
+    (importDeclaration import (qualifiedName (identifier com) . (identifier blah) . (identifier MethodAnnotation)) ;)
+    (importDeclaration import (qualifiedName (identifier lang) . (identifier cajeta) . (identifier BiFunction)) ;)
+    (typeDeclaration
+        (classOrInterfaceModifier public) (classDeclaration class (identifier System)
+            (classBody {
+                (classBodyDeclaration
+                    (modifier
+                        (classOrInterfaceModifier private)
+                    )
+                    (memberDeclaration
+                        (fieldDeclaration (typeType (primitiveType int32))
+                            (variableDeclarators (variableDeclarator (variableDeclaratorId (identifier value))));
+                        )
+                    )
+                )
+                (classBodyDeclaration
+                    (modifier (classOrInterfaceModifier (annotation @ (qualifiedName (identifier FieldAnnotation)))))
+                    (modifier (classOrInterfaceModifier private))
+                    (memberDeclaration
+                        (fieldDeclaration (typeType (classOrInterfaceType (identifier Object)))
+                            (variableDeclarators
+                                (variableDeclarator (variableDeclaratorId (identifier obj)))
+                            );
+                        )
+                    )
+                )
+                (classBodyDeclaration
+                    (modifier
+                        (classOrInterfaceModifier
+                            (annotation @ (qualifiedName (identifier MethodAnnotation))
+                                ((elementValue (expression (primary (literal "Hello!")))) )
+                            )
+                        )
+                    )
+                    (modifier (classOrInterfaceModifier public))
+                    (modifier (classOrInterfaceModifier static))
+                    (memberDeclaration
+                        (methodDeclaration
+                            (typeTypeOrVoid void)
+                            (identifier main)
+                            (formalParameters
+                                (
+                                    (formalParameterList
+                                        (formalParameter
+                                            (variableModifier
+                                                (annotation @
+                                                    (qualifiedName (identifier com).(identifier blah).(identifier ParameterAnnotation))
+                                                )
+                                            )
+                                            (variableModifier final)
+                                            (typeType (classOrInterfaceType (identifier String)) [ ])
+                                            (variableDeclaratorId (identifier args))
+                                        )
+                                    )
+                                )
+                            )
+                            (methodBody (block {
+                                (blockStatement
+                                    (statement
+                                        (expression
+                                            (expression (primary (identifier value))) = (expression (primary (literal (integerLiteral 5))))
+                                        );
+                                    )
+                                )
+                                (blockStatement
+                                    (statement
+                                        (expression
+                                            (expression (primary (identifier x))).(methodCall (identifier methodCall) (*(expressionList (expression (primary (identifier obj)))) ))) ;))
+                                (blockStatement
+                                    (statement
+                                        (expression
+                                            (expression (expression (primary (identifier System))).(identifier out)).
+                                            (methodCall (identifier printf) ((expressionList (expression (primary (literal "Lambda World!\n")))) ))
+                                        );
+                                    )
+                                )
+                                (blockStatement
+                                    (localVariableDeclaration
+                                        (typeType
+                                            (classOrInterfaceType
+                                                (identifier BiFunction)
+                                                (typeArguments
+                                                    <(typeArgument (typeType (classOrInterfaceType (identifier Integer)))),
+                                                    (typeArgument (typeType (classOrInterfaceType (identifier Integer)))),
+                                                    (typeArgument (typeType (classOrInterfaceType (identifier Integer))))>
+                                                )
+                                            )
+                                        )
+                                        (variableDeclarators
+                                            (variableDeclarator
+                                                (variableDeclaratorId (identifier fn)) =
+                                                (variableInitializer
+                                                    (expression
+                                                        (lambdaExpression
+                                                            (lambdaParameters ( (identifier x) , (identifier y) )) ->
+                                                            (lambdaBody
+                                                                (block {
+                                                                    (blockStatement
+                                                                        (statement return
+                                                                            (expression
+                                                                                (expression (primary (identifier x))) +
+                                                                                (expression (primary (identifier y)))
+                                                                            );
+                                                                        )
+                                                                    )
+                                                                })
+                                                            )
+                                                        )
+                                                    )
+                                                )
+                                            )
+                                        )
+                                    );
+                                )
+                            }))
+                        )
+                    )
+                )
+            })
+        )
+    )
+)
