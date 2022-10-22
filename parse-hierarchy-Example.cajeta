@@ -69,12 +69,31 @@
                                 (blockStatement
                                     (statement
                                         (expression
-                                            (expression (primary (identifier x))).(methodCall (identifier methodCall) (*(expressionList (expression (primary (identifier obj)))) ))) ;))
+                                            (expression
+                                                (primary (identifier obj))
+                                            ) =
+                                            (expression #
+                                                (primary (identifier scooby))
+                                            )
+                                        );
+                                    )
+                                )
                                 (blockStatement
                                     (statement
                                         (expression
-                                            (expression (expression (primary (identifier System))).(identifier out)).
-                                            (methodCall (identifier printf) ((expressionList (expression (primary (literal "Lambda World!\n")))) ))
+                                            (expression
+                                                (primary (identifier x))
+                                            ).
+                                            (methodCall
+                                                (identifier methodCall)
+                                                (expressionList
+                                                    (expression #
+                                                        (primary
+                                                            (identifier obj)
+                                                        )
+                                                    )
+                                                )
+                                            )
                                         );
                                     )
                                 )

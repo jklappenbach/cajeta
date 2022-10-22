@@ -5,7 +5,7 @@
 #pragma once
 
 #include "Modifiable.h"
-#include "QualifiedName.h"
+#include "cajeta/module/QualifiedName.h"
 #include "Annotatable.h"
 #include <llvm/IR/LegacyPassManager.h>
 #include <llvm/IR/Module.h>
@@ -24,13 +24,18 @@ using namespace std;
 
 namespace cajeta {
 
-    class Type : public Modifiable, public Annotatable {
-    private:
-        static map<QualifiedName*, Type*> global;
+    class Method;
+    class Field;
+
+class Type : public Modifiable, public Annotatable {
     protected:
         QualifiedName* qName;
         llvm::Type* llvmType;
+        set<Method*> methods;
+        list<Field*> fields;
+        llvm::LLVMContext* ctx;
     public:
+        static map<QualifiedName*, Type*> global;
         Type() {
             llvmType = nullptr;
         }
@@ -49,6 +54,10 @@ namespace cajeta {
         const QualifiedName* getQName() const {
             return qName;
         }
+
+        void addField(Field* field);
+        void addFields(list<Field*> fields);
+        void addMethod(Method* method);
 
         virtual llvm::Type* getLlvmType(llvm::LLVMContext* context);
 

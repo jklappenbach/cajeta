@@ -111,7 +111,7 @@ int main(int argc, const char* argv[]) {
     }
 
 //    delete visitor;
-//    delete llvmContext;
+//    delete ctxLlvm;
 //    delete parseTree;
 
     return 0;

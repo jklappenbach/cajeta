@@ -1,11 +1,11 @@
 ## Getting started with Antlr4Cpp
 
-Here is how you can use this external project to create the antlr4cpp demo to start your project off.
+Here is how you can use this external project to fromContext the antlr4cpp demo to start your project off.
 
 1. Create your project source folder somewhere. e.g. ~/srcfolder/
    1. Make a subfolder cmake
    2. Copy the files in this folder to srcfolder/cmake
-   3. Cut below and use it to create srcfolder/CMakeLists.txt
+   3. Cut below and use it to fromContext srcfolder/CMakeLists.txt
    4. Copy main.cpp, TLexer.g4 and TParser.g4 to ./srcfolder/ from [here](https://github.com/antlr/antlr4/tree/master/runtime/Cpp/demo)
 2. Make a build folder e.g. ~/buildfolder/
 3. From the buildfolder, run `cmake ~/srcfolder; make`
@@ -32,7 +32,7 @@ include_directories(${ANTLR4_INCLUDE_DIRS})
 # set variable pointing to the antlr tool that supports C++
 # this is not required if the jar file can be found under PATH environment
 set(ANTLR_EXECUTABLE /home/user/antlr-4.9.3-complete.jar)
-# add macros to generate ANTLR Cpp code from grammar
+# add macros to codegen ANTLR Cpp code from grammar
 find_package(ANTLR REQUIRED)
 
 # Call macro to add lexer and grammar to your build dependencies.
@@ -79,7 +79,7 @@ ANTLR_TARGET(<name> <input>
              [VISITOR])
 ```
 
-which creates a custom command to generate C++ files from `<input>`. Running the macro defines the following variables:
+which creates a custom command to codegen C++ files from `<input>`. Running the macro defines the following variables:
 
 ```
 ANTLR_${name}_INPUT - the ANTLR input used for the macro
@@ -97,12 +97,12 @@ The options are:
 * `DEPENDS` - specify the files on which the command depends. It works the same way `DEPENDS` in [`add_custom_command()`](https://cmake.org/cmake/help/v3.11/command/add_custom_command.html)
 * `LEXER` - specify that the input file is a lexer grammar
 * `PARSER` - specify that the input file is a parser grammar
-* `LISTENER` - tell ANTLR tool to generate a parse tree listener
-* `VISITOR` - tell ANTLR tool to generate a parse tree visitor
+* `LISTENER` - tell ANTLR tool to codegen a parse tree listener
+* `VISITOR` - tell ANTLR tool to codegen a parse tree visitor
 
 ### Examples
 
-To generate C++ files from an ANTLR input file T.g4, which defines both lexer and parser grammar one may call:
+To codegen C++ files from an ANTLR input file T.g4, which defines both lexer and parser grammar one may call:
 
 ```cmake
 find_package(ANTLR REQUIRED)

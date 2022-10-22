@@ -3,3 +3,11 @@
 //
 
 #include "cajeta/Method.h"
+
+using namespace std;
+
+namespace cajeta {
+    void Type::addMethod(Method* method) {
+        methods.insert(method);
+    }
+}

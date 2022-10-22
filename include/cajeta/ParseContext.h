@@ -26,7 +26,7 @@ namespace cajeta {
     struct TypeDefinition;
 
     struct ParseContext {
-        llvm::LLVMContext* llvmContext;
+        llvm::LLVMContext* ctxLlvm;
         llvm::Module* module;
         llvm::IRBuilder<>* builder;
         map<string, TypeDefinition*> types;
@@ -37,7 +37,7 @@ namespace cajeta {
         ParseContext(llvm::LLVMContext* llvmContext,
                      llvm::Module* module,
                      llvm::IRBuilder<>* builder) {
-            this->llvmContext = llvmContext;
+            this->ctxLlvm = llvmContext;
             this->module = module;
             this->builder = builder;
         }

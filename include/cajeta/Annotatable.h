@@ -4,7 +4,7 @@
 
 #pragma once
 #include <set>
-#include "QualifiedName.h"
+#include "cajeta/module/QualifiedName.h"
 
 using namespace std;
 

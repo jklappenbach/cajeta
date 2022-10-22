@@ -482,7 +482,6 @@ localTypeDeclaration
 
 statement
     : blockLabel=block
-    | ASSERT expression (':' expression)? ';'
     | IF parExpression statement (ELSE statement)?
     | FOR '(' forControl ')' statement
     | WHILE parExpression statement
@@ -549,10 +548,10 @@ forInit
     | expressionList
     ;
 
+// TODO: Add an iterator for looping, optionally allow devs to get access to first element, last element, and index
 enhancedForControl
     : variableModifier* (typeType | VAR) variableDeclaratorId ':' expression
     ;
-
 // EXPRESSIONS
 
 parExpression

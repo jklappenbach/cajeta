@@ -6,7 +6,7 @@
 
 #include <set>
 #include "Type.h"
-#include "Class.h"
+#include "CajetaClass.h"
 #include "Enum.h"
 
 using namespace std;

@@ -2,7 +2,7 @@
 // Created by James Klappenbach on 10/2/22.
 //
 
-#include "cajeta/QualifiedName.h"
+#include "cajeta/module/QualifiedName.h"
 
 namespace cajeta {
     map<string, map<string, QualifiedName*>> QualifiedName::global;

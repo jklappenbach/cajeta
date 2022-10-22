@@ -14,7 +14,7 @@
 #include <llvm/Bitcode/BitcodeWriter.h>
 #include <CajetaParserBaseListener.h>
 #include <llvm/ADT/StringRef.h>
-#include <cajeta/Statement.h>
+#include "cajeta/ast/Statement.h"
 #include <cajeta/Annotation.h>
 #include <cajeta/Generics.h>
 #include <cajeta/Modifiable.h>
@@ -23,7 +23,7 @@
 #include <cajeta/Method.h>
 #include <cajeta/Modifiable.h>
 #include <cajeta/CompilationUnit.h>
-#include <cajeta/Class.h>
+#include <cajeta/CajetaClass.h>
 #include <cajeta/Interface.h>
 #include <cajeta/Enum.h>
 #include <cajeta/FormalParameter.h>
@@ -63,18 +63,19 @@ namespace cajeta {
 
     public:
         CajetaParserIRListener(string srcPath,
-                              llvm::LLVMContext* llvmContext,
+                              llvm::LLVMContext* ctxLlvm,
                               string targetPath,
                               string targetTriple,
                               llvm::TargetMachine* targetMachine) :
-                ParseContext(llvmContext, new llvm::Module(srcPath, *llvmContext),
-                             new llvm::IRBuilder<>(*llvmContext)) {
+                ParseContext(ctxLlvm, new llvm::Module(srcPath, *ctxLlvm),
+                             new llvm::IRBuilder<>(*ctxLlvm)) {
             parseState = PACKAGE_DECLARATION;
             module->setDataLayout(targetMachine->createDataLayout());
             module->setTargetTriple(targetTriple);
             modifiers.clear();
             std::error_code ec;
             llvm::raw_fd_ostream dest(targetPath, ec, llvm::sys::fs::OF_None);
+            builder->CreateAdd()
 
 //            CajetaLexer
 //            legacy::PassManager pass;
@@ -123,8 +124,10 @@ namespace cajeta {
         virtual void enterTypeDeclaration(CajetaParser::TypeDeclarationContext * /*ctx*/) override {
             cout << "enterTypeDeclaration" << "\n";
         }
-        virtual void exitTypeDeclaration(CajetaParser::TypeDeclarationContext * /*ctx*/) override {
-            cout << "exitTypeDeclaration" << "\n";
+        virtual void exitTypeDeclaration(CajetaParser::TypeDeclarationContext *ctx) override {
+            // TODO: Create the structure here, as we've seen all the member variables.
+            curType->getLlvmType(ctxLlvm);
+            cout << "exitTypeDeclaration" << ctx->getText() << "\n";
         }
 
         virtual void enterModifier(CajetaParser::ModifierContext * /*ctx*/) override {
@@ -161,7 +164,7 @@ namespace cajeta {
             QualifiedName* qName = QualifiedName::toQualifiedName(ctxClassDecl->identifier()->getText(),
                                                                   compilationUnit->getPackageName());
 
-            curType = new Class(qName, modifiers);
+            curType = new CajetaClass(ctxLlvm, qName, modifiers);
             compilationUnit->getTypes()[qName] = curType;
             types.push_back(curType);
             typeStack.push_front(curType);
@@ -269,6 +272,7 @@ namespace cajeta {
             Type* returnType = Type::fromContext(ctx->typeTypeOrVoid()->typeType());
             string name = ctx->identifier()->getText();
             curMethod = new Method(name, returnType, modifiers, curAnnotations);
+            curType->addMethod(curMethod);
             modifiers.clear();
             curAnnotations.clear();
 
@@ -287,8 +291,6 @@ namespace cajeta {
             }
         }
 
-        // TODO: We want reference vs ownership declaration to be defined when a variable is passed in, in invocation -- not at the point of definition.  Parser.g4 needs a revision!
-
         /**
          *
          * @param ctxStatement
@@ -298,8 +300,6 @@ namespace cajeta {
             for (auto itr = statements.begin(); itr != statements.end(); itr++) {
                 CajetaParser::StatementContext* statementContext = *itr;
                 if (statementContext->block()) {
-
-                } else if (statementContext->ASSERT()) {
 
                 } else if (statementContext->IF()) {
 
@@ -426,7 +426,8 @@ namespace cajeta {
 
         virtual void enterFieldDeclaration(CajetaParser::FieldDeclarationContext* ctx) override {
             parseState = FIELD_DECLARATION;
-            //list<Field*> field = Field::fromContext(ctx);
+            list<Field*> fields = Field::fromContext(ctx);
+            curType->addFields(fields);
             cout << "enterFieldDeclaration" << "\n";
         }
         virtual void exitFieldDeclaration(CajetaParser::FieldDeclarationContext * /*ctx*/) override {
@@ -820,6 +821,7 @@ namespace cajeta {
         }
 
         virtual void enterStatement(CajetaParser::StatementContext * /*ctx*/) override {
+
             cout << "enterStatement" << "\n";
         }
         virtual void exitStatement(CajetaParser::StatementContext * /*ctx*/) override {

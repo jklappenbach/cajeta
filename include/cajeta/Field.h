@@ -7,7 +7,7 @@
 #include <cajeta/TypeDefinition.h>
 #include <set>
 #include <list>
-#include "QualifiedName.h"
+#include "cajeta/module/QualifiedName.h"
 #include "Modifiable.h"
 #include "Annotatable.h"
 
@@ -18,6 +18,7 @@ namespace cajeta {
 
     class Field : public Modifiable, public Annotatable {
         bool reference;
+        bool var;
         string name;
         cajeta::Type* type;
     public:
@@ -35,6 +36,10 @@ namespace cajeta {
             return reference;
         }
 
+        bool isVar() const {
+            return var;
+        }
+
         const string& getName() const {
             return name;
         }
@@ -45,10 +50,10 @@ namespace cajeta {
 
         void define() { }
         void allocate(llvm::IRBuilder<>* builder, llvm::Module* module, llvm::LLVMContext* llvmContext) {
-            // typeDefinition->allocate(builder, module, llvmContext);
+            // typeDefinition->allocate(builder, module, ctxLlvm);
         }
         void release(llvm::IRBuilder<>* builder, llvm::Module* module, llvm::LLVMContext* llvmContext) {
-            // typeDefinition->free(builder, module, llvmContext);
+            // typeDefinition->free(builder, module, ctxLlvm);
         }
         static list<Field*> fromContext(CajetaParser::FieldDeclarationContext* ctx);
     };

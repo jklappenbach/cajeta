@@ -6,7 +6,7 @@
 
 #include <cajeta/TypeDefinition.h>
 #include <set>
-#include "QualifiedName.h"
+#include "cajeta/module/QualifiedName.h"
 #include "Modifiable.h"
 #include "Annotatable.h"
 #include "Type.h"
@@ -40,10 +40,10 @@ namespace cajeta {
 
         void define() { }
         void allocate(llvm::IRBuilder<>* builder, llvm::Module* module, llvm::LLVMContext* llvmContext) {
-            // typeDefinition->allocate(builder, module, llvmContext);
+            // typeDefinition->allocate(builder, module, ctxLlvm);
         }
         void release(llvm::IRBuilder<>* builder, llvm::Module* module, llvm::LLVMContext* llvmContext) {
-            // typeDefinition->free(builder, module, llvmContext);
+            // typeDefinition->free(builder, module, ctxLlvm);
         }
         static FormalParameter* fromContext(CajetaParser::FormalParameterContext*);
     };

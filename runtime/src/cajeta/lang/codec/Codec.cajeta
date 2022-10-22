@@ -1,0 +1,7 @@
+package codec;
+
+public interface Codec {
+    byte[] encode(byte[], );
+    byte[] decode(byte[]);
+
+}

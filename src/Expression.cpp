@@ -2,53 +2,10 @@
 // Created by James Klappenbach on 3/19/22.
 //
 
-#include <cajeta/Expression.h>
+#include "cajeta/ast/Expression.h"
 
 namespace cajeta {
-    /**
-     * expression
-        : primary
-        | expression bop='.'
-            (
-                identifier
-                | methodCall
-                | THIS
-                | NEW nonWildcardTypeArguments? innerCreator
-                | SUPER superSuffix
-                | explicitGenericInvocation
-            )
-        | expression '[' expression ']'
-        | methodCall
-        | NEW creator
-        | '(' annotation* typeType ('&' typeType)* ')' expression
-        | expression postfix=('++' | '--')
-        | prefix=('+'|'-'|'++'|'--') expression
-        | prefix=('~'|'!') expression
-        | expression bop=('*'|'/'|'%') expression
-        | expression bop=('+'|'-') expression
-        | expression ('<' '<' | '>' '>' '>' | '>' '>') expression
-        | expression bop=('<=' | '>=' | '>' | '<') expression
-        | expression bop=INSTANCEOF (typeType | pattern)
-        | expression bop=('==' | '!=') expression
-        | expression bop='&' expression
-        | expression bop='^' expression
-        | expression bop='|' expression
-        | expression bop='&&' expression
-        | expression bop='||' expression
-        | <assoc=right> expression bop='?' expression ':' expression
-        | <assoc=right> expression
-          bop=('=' | '+=' | '-=' | '*=' | '/=' | '&=' | '|=' | '^=' | '>>=' | '>>>=' | '<<=' | '%=')
-          expression
-        | lambdaExpression // Java8
-        | switchExpression // Java17
-
-        // Java 8 methodReference
-        | expression '::' typeArguments? identifier
-        | typeType '::' (typeArguments? identifier | NEW)
-        | classType '::' typeArguments? NEW
-        ;
-    */
-    Expression* Expression::create(CajetaParser::ExpressionContext* ctxExpression) {
+    Expression* Expression::fromContext(CajetaParser::ExpressionContext* ctxExpression) {
         Expression* expression = NULL;
         if (ctxExpression->primary()) {
 

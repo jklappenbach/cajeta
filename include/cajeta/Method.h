@@ -7,19 +7,23 @@
 #include <cajeta/Modifiable.h>
 #include <llvm/IR/BasicBlock.h>
 #include <cajeta/TypeDefinition.h>
-#include "QualifiedName.h"
+#include "cajeta/module/QualifiedName.h"
 #include "Annotatable.h"
 #include "Type.h"
 #include "FormalParameter.h"
+#include "Block.h"
 
 using namespace std;
 
 namespace cajeta {
+    class Block;
+
     class Method : public Modifiable, public Annotatable {
     private:
         string name;
         Type* returnType;
         map<string, FormalParameter*> parameters;
+        Block* block;
 
         llvm::Function* function;
         llvm::BasicBlock* basicBlock;

@@ -8,52 +8,51 @@
 namespace cajeta {
     map<QualifiedName*, Type*> Type::global;
 
-    //    CHAR:               'char';
-    //    INT16:              'int16';
-    //    UINT16:             'uint16';
-    //    INT32:              'int32';
-    //    UINT32:             'uint32';
-    //    INT64:              'int64';
-    //    UINT64:             'uint64';
-    //    INT128:             'int128';
-    //    UINT128:            'uint128';
-    //    FINALLY:            'finally';
-    //    FLOAT16:            'float16';
-    //    FLOAT32:            'float32';
-    //    FLOAT64:            'float64';
-    llvm::Type* Type::getLlvmType(llvm::LLVMContext* context) {
+#define CAJETA_NATIVE_PACKAGE "cajeta"
+    void Type::init(llvm::LLVMContext* ctxLlvm) {
+        QualifiedName* qName = QualifiedName::toQualifiedName("void", CAJETA_NATIVE_PACKAGE);
+        Type::global[qName] = llvm::Type::getVoidTy(*ctxLlvm);
+    }
+    llvm::Type* Type::getLlvmType(llvm::LLVMContext* ctxLlvm) {
         if (llvmType == nullptr) {
             // See if we're a primitive datatype
-            if (qName->getPackageName().empty()) {
+            if (qName->getPackageName() == "cajeta") {
                 if (qName->getTypeName() == "void") {
-                    llvmType = llvm::Type::getVoidTy(*context);
-                } else if (qName->getPackageName() == "char") {
-                    llvmType = llvm::Type::getInt8Ty(*context);
-                } else if (qName->getPackageName() == "int16") {
-                    llvmType = llvm::Type::getInt16Ty(*context);
-                } else if (qName->getPackageName() == "uint16") {
-                    llvmType = llvm::Type::getInt16Ty(*context);
-                } else if (qName->getPackageName() == "int32") {
-                    llvmType = llvm::Type::getInt32Ty(*context);
-                } else if (qName->getPackageName() == "uint32") {
-                    llvmType = llvm::Type::getInt32Ty(*context);
-                } else if (qName->getPackageName() == "int64") {
-                    llvmType = llvm::Type::getInt64Ty(*context);
-                } else if (qName->getPackageName() == "uint64") {
-                    llvmType = llvm::Type::getInt64Ty(*context);
-                } else if (qName->getPackageName() == "int128") {
-                    llvmType = llvm::Type::getInt128Ty(*context);
-                } else if (qName->getPackageName() == "uint128") {
-                    llvmType = llvm::Type::getInt128Ty(*context);
-                } else if (qName->getPackageName() == "float16") {
-                    llvmType = llvm::Type::getBFloatTy(*context);
-                } else if (qName->getPackageName() == "float32") {
-                    llvmType = llvm::Type::getFloatTy(*context);
-                } else if (qName->getPackageName() == "float64") {
-                    llvmType = llvm::Type::getDoubleTy(*context);
-                } else if (qName->getPackageName() == "float128") {
-                    llvmType = llvm::Type::getFP128Ty(*context);
+                    llvmType = llvm::Type::getVoidTy(*ctxLlvm);
+                } else if (qName->getTypeName() == "char") {
+                    llvmType = llvm::Type::getInt8Ty(*ctxLlvm);
+                } else if (qName->getTypeName() == "int16") {
+                    llvmType = llvm::Type::getInt16Ty(*ctxLlvm);
+                } else if (qName->getTypeName() == "uint16") {
+                    llvmType = llvm::Type::getInt16Ty(*ctxLlvm);
+                } else if (qName->getTypeName() == "int32") {
+                    llvmType = llvm::Type::getInt32Ty(*ctxLlvm);
+                } else if (qName->getTypeName() == "uint32") {
+                    llvmType = llvm::Type::getInt32Ty(*ctxLlvm);
+                } else if (qName->getTypeName() == "int64") {
+                    llvmType = llvm::Type::getInt64Ty(*ctxLlvm);
+                } else if (qName->getTypeName() == "uint64") {
+                    llvmType = llvm::Type::getInt64Ty(*ctxLlvm);
+                } else if (qName->getTypeName() == "int128") {
+                    llvmType = llvm::Type::getInt128Ty(*ctxLlvm);
+                } else if (qName->getTypeName() == "uint128") {
+                    llvmType = llvm::Type::getInt128Ty(*ctxLlvm);
+                } else if (qName->getTypeName() == "float16") {
+                    llvmType = llvm::Type::getBFloatTy(*ctxLlvm);
+                } else if (qName->getTypeName() == "float32") {
+                    llvmType = llvm::Type::getFloatTy(*ctxLlvm);
+                } else if (qName->getTypeName() == "float64") {
+                    llvmType = llvm::Type::getDoubleTy(*ctxLlvm);
+                } else if (qName->getTypeName() == "float128") {
+                    llvmType = llvm::Type::getFP128Ty(*ctxLlvm);
                 }
+            } else {
+                vector<llvm::Type*> llvmMembers;
+                for (Field* field : this->fields) {
+                    llvmMembers.push_back(field->getType()->getLlvmType(ctxLlvm));
+                }
+
+                this->llvmType = llvm::StructType::create(*ctxLlvm, llvm::ArrayRef<llvm::Type*>(llvmMembers), llvm::StringRef(qName->getTypeName()));
             }
         }
         return llvmType;
@@ -76,5 +75,12 @@ namespace cajeta {
             type = global[qName];
         }
         return type;
+    }
+
+    void Type::addField(Field* field) {
+        this->fields.push_back(field);
+    }
+    void Type::addFields(list<Field*> fields) {
+        this->fields.insert(this->fields.end(), fields.begin(), fields.end());
     }
 }

@@ -15,7 +15,7 @@ The following table lists the parameters that can be used with the function:
 
 Argument# | Required  | Default | Use
 ----------|-----------|---------|---
-0 | Yes | n/a | Unique target name. It is used to generate CMake Variables to reference the various outputs of the generation
+0 | Yes | n/a | Unique target name. It is used to codegen CMake Variables to reference the various outputs of the generation
 1 | Yes | n/a | Input file containing the lexer/parser definition
 2 | Yes | n/a | Type of Rules contained in the input: LEXER, PARSER or BOTH
 4 | No  | FALSE | Boolean to indicate if a listener interface should be generated
@@ -40,7 +40,7 @@ Output variable  | Meaning
 
 #### Sample:
 ```cmake
- # generate parser with visitor types.
+ # codegen parser with visitor types.
  # put the types in C++ namespace 'antlrcpptest::'
  antlr4_generate(
    antlrcpptest_parser
@@ -98,7 +98,7 @@ target_link_libraries( Parsertest PRIVATE
  # Set path to generator
  set(ANTLR4_JAR_LOCATION ${PROJECT_SOURCE_DIR}/thirdparty/antlr/antlr-4.9.3-complete.jar)
 
- # generate lexer
+ # codegen lexer
  antlr4_generate(
    antlrcpptest_lexer
    ${CMAKE_CURRENT_SOURCE_DIR}/TLexer.g4
@@ -108,7 +108,7 @@ target_link_libraries( Parsertest PRIVATE
    "antlrcpptest"
    )
 
- # generate parser
+ # codegen parser
  antlr4_generate(
    antlrcpptest_parser
    ${CMAKE_CURRENT_SOURCE_DIR}/TParser.g4

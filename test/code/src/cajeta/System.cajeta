@@ -6,6 +6,5 @@ public class System {
 
     public static void main(String[] args) {
         value = 5;
-        System.out.printf("Hello World!\n");
     }
 }
