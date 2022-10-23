@@ -10,7 +10,7 @@ namespace cajeta {
 
 #define CAJETA_NATIVE_PACKAGE "cajeta"
     void Type::init(llvm::LLVMContext* ctxLlvm) {
-        QualifiedName* qName = QualifiedName::toQualifiedName("void", CAJETA_NATIVE_PACKAGE);
+        QualifiedName* qName = QualifiedName::create("void", CAJETA_NATIVE_PACKAGE);
         Type::global[qName] = llvm::Type::getVoidTy(*ctxLlvm);
     }
     llvm::Type* Type::getLlvmType(llvm::LLVMContext* ctxLlvm) {
@@ -65,11 +65,11 @@ namespace cajeta {
         if (ctxType != nullptr) {
             CajetaParser::PrimitiveTypeContext* ctxPrimitiveType = ctxType->primitiveType();
             if (ctxPrimitiveType != nullptr) {
-                qName = QualifiedName::toQualifiedName(ctxPrimitiveType->getText(), "cajeta");
+                qName = QualifiedName::create(ctxPrimitiveType->getText(), "cajeta");
             } else {
                 CajetaParser::ClassOrInterfaceTypeContext* ctxClassOrInterface = ctxType->classOrInterfaceType();
                 if (ctxClassOrInterface != nullptr) {
-                    qName = QualifiedName::toQualifiedName(ctxClassOrInterface);
+                    qName = QualifiedName::fromContext(ctxClassOrInterface);
                 }
             }
             type = global[qName];

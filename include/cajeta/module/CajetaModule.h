@@ -10,13 +10,19 @@
 namespace cajeta {
     class CajetaModule {
     private:
-        CajetaModule* theInstance;
-        QualifiedName* gName;
+        static map<QualifiedName*, CajetaModule*> archive;
+        string moduleName;
+        string sourcePath;
+        string archiveTargetPath;
+        QualifiedName* qName;
         llvm::Module* module;
-        CajetaModule() { }
+        CajetaModule(string moduleName, string sourceRoot, string sourcePath, string targetRoot) {
+            this->moduleName = moduleName;
+            this->
+        }
     public:
-        static CajetaModule* getInstance() {
-
+        static CajetaModule* create(string typeName, string package) {
+            QualifiedName* qName = QualifiedName::create()
         }
     };
 }

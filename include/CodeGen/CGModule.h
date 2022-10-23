@@ -18,7 +18,7 @@ namespace cajeta {
 
         llvm::DenseMap<TypeDeclaration*, llvm::Type*> typeCache;
 
-        // Repository of global objects.
+        // Repository of cache objects.
         llvm::DenseMap<Declaration*, llvm::GlobalObject*> globals;
 
         CGTBAA TBAA;

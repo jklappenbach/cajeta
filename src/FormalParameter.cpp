@@ -17,7 +17,7 @@ namespace cajeta {
         for (auto & ctxVariableModifier : variableModifiers) {
             CajetaParser::AnnotationContext* ctxAnnotation = ctxVariableModifier->annotation();
             if (ctxAnnotation != nullptr) {
-                QualifiedName* qName = QualifiedName::toQualifiedName(ctxAnnotation->qualifiedName());
+                QualifiedName* qName = QualifiedName::fromContext(ctxAnnotation->qualifiedName());
                 annotations.insert(qName);
             } else {
                 string str = ctxVariableModifier->getText();

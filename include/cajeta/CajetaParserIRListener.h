@@ -116,7 +116,7 @@ namespace cajeta {
         }
 
         virtual void enterImportDeclaration(CajetaParser::ImportDeclarationContext* ctx) override {
-            QualifiedName* qName = QualifiedName::toQualifiedName(ctx->qualifiedName());
+            QualifiedName* qName = QualifiedName::fromContext(ctx->qualifiedName());
             compilationUnit->getImports().insert(qName);
             cout << "enterImportDeclaration" << "\n";
         }
@@ -141,7 +141,7 @@ namespace cajeta {
             cout << "enterClassOrInterfaceModifier" << "\n";
             CajetaParser::AnnotationContext* ctxAnnotation = ctx->annotation();
             if (ctxAnnotation != nullptr) {
-                QualifiedName* qName = QualifiedName::toQualifiedName(ctxAnnotation->qualifiedName());
+                QualifiedName* qName = QualifiedName::fromContext(ctxAnnotation->qualifiedName());
                 curAnnotations.insert(qName);
             } else {
                 modifiers.insert(Modifiable::toModifier(ctx->getText()));
@@ -161,8 +161,8 @@ namespace cajeta {
         // TODO: Make this a member variable (classDefinition), so that we can add fields to the type
         virtual void enterClassDeclaration(CajetaParser::ClassDeclarationContext* ctxClassDecl) override {
             cout << "enterClassDeclaration" << "\n";
-            QualifiedName* qName = QualifiedName::toQualifiedName(ctxClassDecl->identifier()->getText(),
-                                                                  compilationUnit->getPackageName());
+            QualifiedName* qName = QualifiedName::create(ctxClassDecl->identifier()->getText(),
+                                                         compilationUnit->getPackageName());
 
             curType = new CajetaClass(ctxLlvm, qName, modifiers);
             compilationUnit->getTypes()[qName] = curType;

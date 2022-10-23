@@ -13,7 +13,7 @@ namespace cajeta {
 
     class QualifiedName {
     private:
-        static map<string, map<string, QualifiedName*>> global;
+        static map<string, map<string, QualifiedName*>> cache;
         string packageName;
         string typeName;
 
@@ -25,7 +25,6 @@ namespace cajeta {
             packageName = src.packageName;
             typeName = src.typeName;
         }
-        static QualifiedName* toQualifiedName(std::vector<CajetaParser::IdentifierContext*> identifiers);
     public:
         const string& getPackageName() const {
             return packageName;
@@ -38,11 +37,11 @@ namespace cajeta {
         bool operator <(const QualifiedName& rhs) const {
             return typeName < rhs.typeName && packageName < rhs.packageName;
         }
-        static map<string, map<string, QualifiedName*>> getGlobal();
-        static QualifiedName* toQualifiedName(string typeName);
-        static QualifiedName* toQualifiedName(string typeName, string packageName);
-        static QualifiedName* toQualifiedName(CajetaParser::QualifiedNameContext* ctxQName);
-        static QualifiedName* toQualifiedName(CajetaParser::ClassOrInterfaceTypeContext* ctxTypeContext);
+        static map<string, map<string, QualifiedName*>> getCache();
+        static QualifiedName* create(string typeName, string packageName);
+        static QualifiedName* fromContext(std::vector<CajetaParser::IdentifierContext*> identifiers);
+        static QualifiedName* fromContext(CajetaParser::QualifiedNameContext* ctxQName);
+        static QualifiedName* fromContext(CajetaParser::ClassOrInterfaceTypeContext* ctxTypeContext);
         static void free();
     };
 }
