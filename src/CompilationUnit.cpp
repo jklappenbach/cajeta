@@ -1,31 +1,27 @@
 //
-// Created by James Klappenbach on 10/1/22.
+// Created by James Klappenbach on 10/22/22.
 //
 
-#include "cajeta/CompilationUnit.h"
+#include <utility>
 
-using namespace cajeta;
+#include "cajeta/module/CompilationUnit.h"
 
-const string& CompilationUnit::getPackageName() const {
-    return packageName;
-}
+namespace cajeta {
+    map<QualifiedName*, CompilationUnit*> CompilationUnit::archive;
 
-void CompilationUnit::setPackageName(const string& packageName) {
-    this->packageName = packageName;
-}
-
-set<QualifiedName*>& cajeta::CompilationUnit::getImports() {
-    return imports;
-}
-
-void CompilationUnit::setImports(const set<QualifiedName*>& imports) {
-    this->imports = imports;
-}
-
-map<QualifiedName*, Type*>& CompilationUnit::getTypes() {
-    return types;
-}
-
-void CompilationUnit::setTypes(const map<QualifiedName*, Type*>& classes) {
-    this->types = classes;
+    CompilationUnit* CompilationUnit::create(llvm::LLVMContext* ctxLlvm,
+                                             string path,
+                                             string sourceRoot,
+                                             string archiveRoot,
+                                             llvm::TargetMachine* targetMachine,
+                                             string targetTriple) {
+        CompilationUnit* compilationUnit = new CompilationUnit(ctxLlvm,
+                                                               std::move(path),
+                                                               std::move(sourceRoot),
+                                                               std::move(archiveRoot),
+                                                               targetMachine,
+                                                               std::move(targetTriple));
+        archive[compilationUnit->qName] = compilationUnit;
+        return compilationUnit;
+    }
 }

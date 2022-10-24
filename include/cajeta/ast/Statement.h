@@ -7,9 +7,9 @@
 #include <string>
 #include "cajeta/block/BlockStatement.h"
 #include "CajetaParser.h"
-#include "cajeta/Field.h"
+#include "cajeta/type/Field.h"
 #include "cajeta/ast/Expression.h"
-#include "cajeta/Identifier.h"
+#include "Identifier.h"
 #include "cajeta/ast/AbstractSyntaxTree.h"
 
 using namespace std;

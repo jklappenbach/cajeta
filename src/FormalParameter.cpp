@@ -2,7 +2,7 @@
 // Created by James Klappenbach on 10/4/22.
 //
 
-#include "cajeta/FormalParameter.h"
+#include "cajeta/ast/FormalParameter.h"
 
 namespace cajeta {
     FormalParameter* FormalParameter::fromContext(CajetaParser::FormalParameterContext* ctx) {
@@ -11,7 +11,7 @@ namespace cajeta {
         set<QualifiedName*> annotations;
         set<Modifier> modifiers;
         CajetaParser::TypeTypeContext* ctxType = ctx->typeType();
-        Type* type = Type::fromContext(ctxType);
+        CajetaType* type = CajetaType::fromContext(ctxType);
 
         std::vector<CajetaParser::VariableModifierContext *> variableModifiers = ctx->variableModifier();
         for (auto & ctxVariableModifier : variableModifiers) {
@@ -34,15 +34,7 @@ namespace cajeta {
         return name;
     }
 
-    TypeDefinition* FormalParameter::getTypeDefinition() const {
-        return typeDefinition;
-    }
-
-    llvm::AllocaInst* FormalParameter::getDefinition() const {
-        return definition;
-    }
-
-    Type* FormalParameter::getType() const {
+    CajetaType* FormalParameter::getType() const {
         return type;
     }
 }

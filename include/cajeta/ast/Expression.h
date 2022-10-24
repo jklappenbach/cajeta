@@ -5,7 +5,7 @@
 #pragma once
 
 #include "CajetaParser.h"
-#include "cajeta/Identifier.h"
+#include "Identifier.h"
 #include <string>
 #include "cajeta/ast/AbstractSyntaxTree.h"
 
@@ -57,7 +57,7 @@ expression
 */
 
 namespace cajeta {
-    class Type;
+    class CajetaType;
     class Field;
     class FormalParameter;
     class Block;
@@ -87,7 +87,7 @@ namespace cajeta {
 
     class ThisExpression : public PrimaryExpression {
         Field* field;
-        Type* type;
+        CajetaType* type;
     };
 
     class LiteralExpression : public PrimaryExpression {
@@ -99,7 +99,7 @@ namespace cajeta {
     };
 
     class ClassExpression : public PrimaryExpression {
-        Type* type;
+        CajetaType* type;
 
     };
 
@@ -107,7 +107,7 @@ namespace cajeta {
      *  nonWildcardTypeArguments (explicitGenericInvocationSuffix | THIS arguments)
      */
     class GenericsExpression : public PrimaryExpression {
-        list<Type*> types;
+        list<CajetaType*> types;
     };
 
 
@@ -205,7 +205,7 @@ namespace cajeta {
      */
     class InstanceOfExpression : public Expression {
         Expression* expression;
-        Type* type;
+        CajetaType* type;
         string pattern;
     };
 

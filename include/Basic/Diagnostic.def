@@ -36,7 +36,7 @@ DIAG(err_var_parameter_requires_var, Error, "VAR parameter requires variable as 
 DIAG(warn_ambigous_negation, Warning, "Negation is ambigous. Please consider using parenthesis.")
 DIAG(err_function_requires_return, Error, "Function requires RETURN with value")
 DIAG(err_procedure_requires_empty_return, Error, "Procedure does not allow RETURN with value")
-DIAG(err_function_and_return_type, Error, "Type of RETURN value is not compatible with function type")
+DIAG(err_function_and_return_type, Error, "CajetaType of RETURN value is not compatible with function type")
 
 DIAG(err_not_yet_implemented, Error, "module imports are not yet implemented")
 #undef DIAG

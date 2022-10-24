@@ -4,23 +4,21 @@
 
 #pragma once
 
-#include <cajeta/TypeDefinition.h>
 #include <set>
 #include "cajeta/module/QualifiedName.h"
-#include "Modifiable.h"
-#include "Annotatable.h"
-#include "Type.h"
+#include "cajeta/type/Modifiable.h"
+#include "cajeta/type/Annotatable.h"
+#include "cajeta/type/CajetaType.h"
 
 using namespace std;
 
 namespace cajeta {
     class FormalParameter : public Modifiable, public Annotatable {
         string name;
-        TypeDefinition* typeDefinition;
         llvm::AllocaInst* definition;
-        cajeta::Type* type;
+        cajeta::CajetaType* type;
     public:
-        FormalParameter(string& name, Type* type, set<Modifier>& modifiers,
+        FormalParameter(string& name, CajetaType* type, set<Modifier>& modifiers,
                         set<QualifiedName*>& annotations) : Modifiable(modifiers), Annotatable(annotations) {
             this->name = name;
         }
@@ -32,11 +30,9 @@ namespace cajeta {
 
         const string& getName() const;
 
-        TypeDefinition* getTypeDefinition() const;
-
         llvm::AllocaInst* getDefinition() const;
 
-        Type* getType() const;
+        CajetaType* getType() const;
 
         void define() { }
         void allocate(llvm::IRBuilder<>* builder, llvm::Module* module, llvm::LLVMContext* llvmContext) {

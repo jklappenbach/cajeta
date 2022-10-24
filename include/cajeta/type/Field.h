@@ -4,23 +4,25 @@
 
 #pragma once
 
-#include <cajeta/TypeDefinition.h>
 #include <set>
 #include <list>
 #include "cajeta/module/QualifiedName.h"
 #include "Modifiable.h"
 #include "Annotatable.h"
+#include "llvm/IR/IRBuilder.h"
+#include "llvm/IR/LLVMContext.h"
+
 
 using namespace std;
 
 namespace cajeta {
-    class Type;
+    class CajetaType;
 
     class Field : public Modifiable, public Annotatable {
         bool reference;
         bool var;
         string name;
-        cajeta::Type* type;
+        cajeta::CajetaType* type;
     public:
         Field(string& name, bool reference, set<Modifier>& modifiers, set<QualifiedName*>& annotations) : Modifiable(modifiers),
                 Annotatable(annotations) {
@@ -44,7 +46,7 @@ namespace cajeta {
             return name;
         }
 
-        Type* getType() const {
+        CajetaType* getType() const {
             return type;
         }
 

@@ -2,9 +2,8 @@
 
 #include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/StringRef.h"
-#include "Declaration.h"
 
-#include <cajeta/Field.h>
+#include "cajeta/type/Field.h"
 
 namespace cajeta {
     enum ScopeType { MODULE_SCOPE, CLASS_SCOPE, METHOD_SCOPE, BLOCK_SCOPE };

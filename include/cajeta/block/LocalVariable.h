@@ -5,7 +5,7 @@
 #pragma once
 
 #include "cajeta/block/BlockStatement.h"
-#include "cajeta/Type.h"
+#include "cajeta/type/CajetaType.h"
 #include <string>
 
 using namespace std;
@@ -13,7 +13,7 @@ using namespace std;
 namespace cajeta {
     class LocalVariable : public BlockStatement {
         string name;
-        Type* type;
+        CajetaType* type;
         bool var;
         bool reference;
     };

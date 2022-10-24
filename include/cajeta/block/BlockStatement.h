@@ -5,9 +5,12 @@
 #pragma once
 
 #include "cajeta/ast/AbstractSyntaxTree.h"
-#include "cajeta/ast/Statement.h"
+#include "CajetaParser.h"
+
 
 namespace cajeta {
+    class Statement;
+
     class BlockStatement : public AbstractSyntaxTree {
     private:
         Statement* statement;

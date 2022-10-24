@@ -2,7 +2,7 @@
 // Created by James Klappenbach on 10/6/22.
 //
 
-#include "Identifier.h"
+#include "cajeta/ast/Identifier.h"
 
 namespace cajeta {
     Identifier toIdentifier(string str) {

@@ -2,13 +2,13 @@
 // Created by James Klappenbach on 2/20/22.
 //
 
-#include "cajeta/Field.h"
-#include "cajeta/Type.h"
+#include "cajeta/type/Field.h"
+#include "cajeta/type/CajetaType.h"
 
 namespace cajeta {
     list<Field*> Field::fromContext(CajetaParser::FieldDeclarationContext* ctx) {
         list<Field*> fields;
-        Type* type = Type::fromContext(ctx->typeType());
+        CajetaType* type = CajetaType::fromContext(ctx->typeType());
 
         for (auto & ctxVariableDeclarator : ctx->variableDeclarators()->variableDeclarator()) {
             string name = ctxVariableDeclarator->variableDeclaratorId()->identifier()->getText();

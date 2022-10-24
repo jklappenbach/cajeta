@@ -1,7 +1,8 @@
 #include <iostream>
-#include <cajeta/CajetaParserIRListener.h>
+#include "cajeta/parse/CajetaParserIRListener.h"
 #include <llvm/Support/TargetSelect.h>
 #include <filesystem>
+#include <utility>
 #include "antlr4-runtime.h"
 #include "CajetaLexer.h"
 #include "CajetaParser.h"
@@ -12,25 +13,14 @@ using namespace cajeta;
 
 #define PATH_SEPARATOR_CHAR '/'
 
-struct PackageEntry {
-    map<string, PackageEntry*> entryMap;
-    void addPackage(string package) {
-
-    }
-};
-
-struct ModuleEntry : PackageEntry {
-    TypeDefinition* typeDefinition;
-};
-
-list<string>* findModulePaths(string rootPath) {
-    list<string>* result = new list<string>;
+list<string>& findModulePaths(string rootPath) {
+    list<string> result;
 
     using recursive_directory_iterator = __fs::filesystem::recursive_directory_iterator;
 
     for (const auto& dirEntry : recursive_directory_iterator(rootPath)) {
         if (dirEntry.is_regular_file() && dirEntry.path().string().find(".cajeta")) {
-            result->push_back(dirEntry.path().string());
+            result.push_back(dirEntry.path().string());
         }
     }
 
@@ -41,8 +31,11 @@ string findPackagePathForModule(string rootSrcPath, string srcPath) {
     return srcPath.substr(rootSrcPath.length());
 }
 
-TypeDefinition* processModule(string srcPath, llvm::LLVMContext* context, string targetPath, string targetTriple,
-                            llvm::TargetMachine* targetMachine) {
+void processModule(string srcPath,
+                   llvm::LLVMContext* context,
+                   CompilationUnit* compilationUnit,
+                   string targetTriple,
+                   llvm::TargetMachine* targetMachine) {
     ifstream stream;
     stream.open(srcPath);
     ANTLRInputStream input(stream);
@@ -55,12 +48,10 @@ TypeDefinition* processModule(string srcPath, llvm::LLVMContext* context, string
     CajetaParser parser(&tokens);
     antlr4::tree::ParseTree* parseTree = parser.compilationUnit();
 
-    //CajetaParserIRVisitor* visitor = new CajetaParserIRVisitor(srcPath, context, targetPath);
-    CajetaParserIRListener* listener = new CajetaParserIRListener(srcPath, context, targetPath, targetTriple, targetMachine);
+    CajetaParserIRListener* listener = new CajetaParserIRListener(compilationUnit, context, std::move(targetTriple), targetMachine);
     parser.addParseListener(listener);
     antlr4::tree::ParseTreeWalker::DEFAULT.walk(listener, parseTree);
     std::cout << parseTree->toStringTree(&parser) << std::endl;
-    return 0;
 }
 
 // TODO: Set up parsing stack to handle the following through callbacks:
@@ -98,14 +89,18 @@ int main(int argc, const char* argv[]) {
     }
 
     llvm::LLVMContext* context = new llvm::LLVMContext;
-    list<string>* modulePaths = findModulePaths(argv[1]);
+    list<string> modulePaths = findModulePaths(argv[1]);
     string buildRoot = argv[2];
 
     string pathBase;
-    for (auto itr = modulePaths->begin(); itr != modulePaths->end(); itr++) {
-        string packagePath = findPackagePathForModule(rootSrcPath, *itr);
-        Package* package = Package::create(packagePath);
-        TypeDefinition* typeDefinition = processModule(*itr, context, packagePath, targetTriple, targetMachine);
+    for (string path : modulePaths) {
+        CompilationUnit* compilationUnit = CompilationUnit::create(context,
+                                                                   path,
+                                                                   rootSrcPath,
+                                                                   rootTargetPath,
+                                                                   targetMachine,
+                                                                   targetTriple);
+        processModule(path, context, compilationUnit, targetTriple, targetMachine);
         // WriteBitcodeToFile(typeDefinition->module, *out);
     }
 

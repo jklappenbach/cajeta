@@ -10,23 +10,22 @@
 #include <llvm/MC/TargetRegistry.h>
 #include <llvm/Target/TargetMachine.h>
 #include <llvm/Target/TargetOptions.h>
-#include <CajetaParser.h>
+#include "CajetaParser.h"
 #include <llvm/Bitcode/BitcodeWriter.h>
-#include <CajetaParserBaseListener.h>
+#include "CajetaParserBaseListener.h"
 #include <llvm/ADT/StringRef.h>
 #include "cajeta/ast/Statement.h"
-#include <cajeta/Annotation.h>
-#include <cajeta/Generics.h>
-#include <cajeta/Modifiable.h>
-#include <cajeta/TypeDefinition.h>
-#include <cajeta/Scope.h>
-#include <cajeta/Method.h>
-#include <cajeta/Modifiable.h>
-#include <cajeta/CompilationUnit.h>
-#include <cajeta/CajetaClass.h>
-#include <cajeta/Interface.h>
-#include <cajeta/Enum.h>
-#include <cajeta/FormalParameter.h>
+#include "cajeta/type/Generics.h"
+#include "cajeta/ast/Scope.h"
+#include "cajeta/type/Method.h"
+#include "cajeta/type/Modifiable.h"
+#include "cajeta/type/Annotatable.h"
+#include "cajeta/module/CompilationUnit.h"
+#include "cajeta/type/CajetaClass.h"
+#include "cajeta/type/Interface.h"
+#include "cajeta/type/CajetaEnum.h"
+#include "cajeta/ast/FormalParameter.h"
+#include "cajeta/module/CompilationUnit.h"
 
 using namespace std;
 
@@ -43,7 +42,7 @@ namespace cajeta {
         DEFINE_METHOD
     };
 
-    class CajetaParserIRListener : public CajetaParserBaseListener, ParseContext {
+    class CajetaParserIRListener : public CajetaParserBaseListener {
     private:
 
         // Parsing state
@@ -52,30 +51,28 @@ namespace cajeta {
         string targetPath;
         ParseState parseState;
         string package;
-        deque<Type*> typeStack;
-        list<Type*> types;
-        Type* curType;
+        deque<CajetaType*> typeStack;
+        list<CajetaType*> types;
+        CajetaType* curType;
         Method* curMethod;
         set<QualifiedName*> curAnnotations;
         set<Modifier> modifiers;
         list<Scope*> moduleScope;
         Scope* currentScope;
+        llvm::LLVMContext* ctxLlvm;
+        llvm::IRBuilder<>* builder;
+
 
     public:
-        CajetaParserIRListener(string srcPath,
+        CajetaParserIRListener(CompilationUnit* compilationUnit,
                               llvm::LLVMContext* ctxLlvm,
-                              string targetPath,
                               string targetTriple,
-                              llvm::TargetMachine* targetMachine) :
-                ParseContext(ctxLlvm, new llvm::Module(srcPath, *ctxLlvm),
-                             new llvm::IRBuilder<>(*ctxLlvm)) {
+                              llvm::TargetMachine* targetMachine) {
+
             parseState = PACKAGE_DECLARATION;
-            module->setDataLayout(targetMachine->createDataLayout());
-            module->setTargetTriple(targetTriple);
             modifiers.clear();
             std::error_code ec;
             llvm::raw_fd_ostream dest(targetPath, ec, llvm::sys::fs::OF_None);
-            builder->CreateAdd()
 
 //            CajetaLexer
 //            legacy::PassManager pass;
@@ -93,7 +90,6 @@ namespace cajeta {
 
 
         virtual void enterCompilationUnit(CajetaParser::CompilationUnitContext * /*ctx*/) override {
-            compilationUnit = new CompilationUnit;
             cout << "enterCompilationUnit" << "\n";
         }
         virtual void exitCompilationUnit(CajetaParser::CompilationUnitContext * /*ctx*/) override {
@@ -110,14 +106,18 @@ namespace cajeta {
                 packageName += (*itr)->getText();
                 itr++;
             }
-            compilationUnit->setPackageName(packageName);
+
+            // Ensure that the declared packagee name matches what we've got from the FS.
+            if (packageName != compilationUnit->getQName()->getPackageName()) {
+                cerr << "Error: declared compilation unit package name does not match its location in source.";
+            }
             parseState = TYPE_DECLARATION;
             cout << "enterPackageDeclaration" << "\n";
         }
 
         virtual void enterImportDeclaration(CajetaParser::ImportDeclarationContext* ctx) override {
             QualifiedName* qName = QualifiedName::fromContext(ctx->qualifiedName());
-            compilationUnit->getImports().insert(qName);
+            compilationUnit->getImports()[qName->getTypeName()][qName->getPackageName()] = qName;
             cout << "enterImportDeclaration" << "\n";
         }
 
@@ -162,10 +162,10 @@ namespace cajeta {
         virtual void enterClassDeclaration(CajetaParser::ClassDeclarationContext* ctxClassDecl) override {
             cout << "enterClassDeclaration" << "\n";
             QualifiedName* qName = QualifiedName::create(ctxClassDecl->identifier()->getText(),
-                                                         compilationUnit->getPackageName());
+                                                         compilationUnit->getQName()->getPackageName());
 
             curType = new CajetaClass(ctxLlvm, qName, modifiers);
-            compilationUnit->getTypes()[qName] = curType;
+            // TODO: Fix me -- compilationUnit->getTypes()[qName] = curType;
             types.push_back(curType);
             typeStack.push_front(curType);
             modifiers.clear();
@@ -269,7 +269,7 @@ namespace cajeta {
          */
         virtual void enterMethodDeclaration(CajetaParser::MethodDeclarationContext *ctx) override {
             parseState = METHOD_DECLARATION;
-            Type* returnType = Type::fromContext(ctx->typeTypeOrVoid()->typeType());
+            CajetaType* returnType = CajetaType::fromContext(ctx->typeTypeOrVoid()->typeType());
             string name = ctx->identifier()->getText();
             curMethod = new Method(name, returnType, modifiers, curAnnotations);
             curType->addMethod(curMethod);

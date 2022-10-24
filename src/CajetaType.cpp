@@ -2,18 +2,19 @@
 // Created by James Klappenbach on 10/2/22.
 //
 
-#include "cajeta/Type.h"
-#include "cajeta/Field.h"
+#include "cajeta/type/CajetaType.h"
+#include "cajeta/type/Field.h"
 
 namespace cajeta {
-    map<QualifiedName*, Type*> Type::global;
+    map<QualifiedName*, CajetaType*> CajetaType::global;
 
 #define CAJETA_NATIVE_PACKAGE "cajeta"
-    void Type::init(llvm::LLVMContext* ctxLlvm) {
+    void CajetaType::init(llvm::LLVMContext* ctxLlvm) {
         QualifiedName* qName = QualifiedName::create("void", CAJETA_NATIVE_PACKAGE);
-        Type::global[qName] = llvm::Type::getVoidTy(*ctxLlvm);
+        //CajetaType::global[qName] = llvm::Type::getVoidTy(*ctxLlvm);
     }
-    llvm::Type* Type::getLlvmType(llvm::LLVMContext* ctxLlvm) {
+
+    llvm::Type* CajetaType::getLlvmType(llvm::LLVMContext* ctxLlvm) {
         if (llvmType == nullptr) {
             // See if we're a primitive datatype
             if (qName->getPackageName() == "cajeta") {
@@ -58,9 +59,9 @@ namespace cajeta {
         return llvmType;
     }
 
-    cajeta::Type* cajeta::Type::fromContext(CajetaParser::TypeTypeContext* ctxType) {
+    cajeta::CajetaType* cajeta::CajetaType::fromContext(CajetaParser::TypeTypeContext* ctxType) {
         bool reference = false;
-        Type* type = nullptr;
+        CajetaType* type = nullptr;
         QualifiedName* qName;
         if (ctxType != nullptr) {
             CajetaParser::PrimitiveTypeContext* ctxPrimitiveType = ctxType->primitiveType();
@@ -77,10 +78,10 @@ namespace cajeta {
         return type;
     }
 
-    void Type::addField(Field* field) {
+    void CajetaType::addField(Field* field) {
         this->fields.push_back(field);
     }
-    void Type::addFields(list<Field*> fields) {
+    void CajetaType::addFields(list<Field*> fields) {
         this->fields.insert(this->fields.end(), fields.begin(), fields.end());
     }
 }
