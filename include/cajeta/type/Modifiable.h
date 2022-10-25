@@ -17,7 +17,7 @@ namespace cajeta {
     public:
         Modifiable() { }
         Modifiable(set<Modifier>& modifiers) {
-            modifiers.merge(modifiers);
+            this->modifiers.insert(modifiers.begin(), modifiers.end());
         }
         void addModifier(Modifier modifier) {
             modifiers.insert(modifier);

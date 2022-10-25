@@ -1,4 +1,4 @@
-package cajeta.test;
+package cajeta;
 
 public class System {
     private int32 value;

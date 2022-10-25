@@ -197,7 +197,7 @@ bool emit(StringRef Argv0, llvm::Module *M,
         if (auto Err = PB.parsePassPipeline(
                 PM, PipelineStartEPPipeline)) {
           WithColor::error(errs(), Argv0)
-              << "Could not parse pipeline "
+              << "Could not compile pipeline "
               << PipelineStartEPPipeline.ArgStr << ": "
               << toString(std::move(Err)) << "\n";
         }

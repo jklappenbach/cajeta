@@ -39,14 +39,14 @@ namespace cajeta {
             if (suffixIndex >= 0) {
                 this->sourcePath = srcPath;
                 this->archiveRoot = archiveRoot;
-                string temp = srcPath.substr(sourceRoot.size(), suffixIndex - 1);
-                int moduleNameIndex = temp.rfind('.') + 1;
-                string moduleName = temp.substr(moduleNameIndex + 1);
+                string temp = srcPath.substr(sourceRoot.size(), suffixIndex - sourceRoot.size());
+                int moduleNameIndex = temp.rfind(PATH_SEPARATOR) + 1;
+                string moduleName = temp.substr(moduleNameIndex, suffixIndex);
                 string packageName = temp.substr(0, moduleNameIndex - 1);
-                archivePath = moduleName + PATH_SEPARATOR + moduleName + CAJETA_IR_EXTENSION;
+                archivePath = temp + CAJETA_IR_EXTENSION;
                 replace(packageName.begin(), packageName.end(), PATH_SEPARATOR, PACKAGE_SEPARATOR);
                 qName = QualifiedName::create(moduleName, packageName);
-                module = new llvm::Module(srcPath, *ctxLlvm);
+                module = new llvm::Module(qName->toString(), *ctxLlvm);
                 module->setDataLayout(targetMachine->createDataLayout());
                 module->setTargetTriple(targetTriple);
             } else {
@@ -141,6 +141,12 @@ namespace cajeta {
                                        string archiveRoot,
                                        llvm::TargetMachine* targetMachine,
                                        string targetTriple);
+        void writeIRFileTarget() {
+            string targetPath = archiveRoot + "/" + archivePath;
+            std::error_code ec;
+            llvm::raw_fd_ostream ostream(targetPath, ec, llvm::sys::fs::OF_None);
+            llvm::WriteBitcodeToFile(*this->module, ostream);
+        }
     };
 }
 

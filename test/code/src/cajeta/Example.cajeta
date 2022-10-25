@@ -1,4 +1,4 @@
-package cajeta.test;
+package cajeta;
 
 import com.blah.FieldAnnotation;
 import com.blah.ParameterAnnotation;

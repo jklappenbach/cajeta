@@ -13,7 +13,8 @@ namespace cajeta {
     class CajetaClass : public CajetaType {
     public:
         CajetaClass(llvm::LLVMContext* ctxLlvm, QualifiedName* qName, set<Modifier>& modifiers) : CajetaType(qName, modifiers) {
-            this->llvmType = llvm::StructType::create(*ctxLlvm, llvm::StringRef(qName->getTypeName()));
+            llvm::StringRef ref(qName->getTypeName());
+            this->llvmType = llvm::StructType::create(*ctxLlvm, ref);
             // TODO: FIX ME! Type::global[qName] = this;
         }
     };

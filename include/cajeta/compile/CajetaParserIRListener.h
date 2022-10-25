@@ -68,7 +68,7 @@ namespace cajeta {
                               llvm::LLVMContext* ctxLlvm,
                               string targetTriple,
                               llvm::TargetMachine* targetMachine) {
-
+            this->compilationUnit = compilationUnit;
             parseState = PACKAGE_DECLARATION;
             modifiers.clear();
             std::error_code ec;
@@ -108,7 +108,7 @@ namespace cajeta {
             }
 
             // Ensure that the declared packagee name matches what we've got from the FS.
-            if (packageName != compilationUnit->getQName()->getPackageName()) {
+            if (compilationUnit->getQName() == nullptr || packageName != compilationUnit->getQName()->getPackageName()) {
                 cerr << "Error: declared compilation unit package name does not match its location in source.";
             }
             parseState = TYPE_DECLARATION;

@@ -10,7 +10,7 @@
 
 namespace cajeta {
 
-    class Parser {
+    class Compiler {
 
         Lexer& Lex;
 
@@ -111,7 +111,7 @@ namespace cajeta {
         bool parseIdentList(IdentList& Ids);
 
     public:
-        Parser(Lexer& Lex, Sema& Actions);
+        Compiler(Lexer& Lex, Sema& Actions);
 
         ModuleDeclaration* parse();
     };

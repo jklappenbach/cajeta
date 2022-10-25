@@ -34,9 +34,14 @@ namespace cajeta {
             return typeName;
         }
 
+        const string toString() {
+            return packageName + "." + typeName;
+        }
+
         bool operator <(const QualifiedName& rhs) const {
             return typeName < rhs.typeName && packageName < rhs.packageName;
         }
+
         static map<string, map<string, QualifiedName*>> getCache();
         static QualifiedName* create(string typeName, string packageName);
         static QualifiedName* fromContext(std::vector<CajetaParser::IdentifierContext*> identifiers);

@@ -1,7 +1,7 @@
 //
 // Created by James Klappenbach on 2/13/22.
 //
-#include "cajeta/parse/CajetaParserIRListener.h"
+#include "cajeta/compile/CajetaParserIRListener.h"
 #include "cajeta/type/Modifiable.h"
 
 using namespace cajeta;
