@@ -9,43 +9,43 @@ namespace cajeta {
     map<QualifiedName*, CajetaType*> CajetaType::global;
 
 #define CAJETA_NATIVE_PACKAGE "cajeta"
-    void CajetaType::init(llvm::LLVMContext* ctxLlvm) {
+    void CajetaType::init(llvm::LLVMContext& ctxLlvm) {
         QualifiedName* qName = QualifiedName::create("void", CAJETA_NATIVE_PACKAGE);
-        //CajetaType::global[qName] = llvm::Type::getVoidTy(*ctxLlvm);
+        //CajetaType::global[qName] = llvm::Type::getVoidTy(ctxLlvm);
     }
 
-    llvm::Type* CajetaType::getLlvmType(llvm::LLVMContext* ctxLlvm) {
+    llvm::Type* CajetaType::getLlvmType(llvm::LLVMContext& ctxLlvm) {
         if (llvmType == nullptr) {
             // See if we're a primitive datatype
             if (qName->getPackageName() == "cajeta") {
                 if (qName->getTypeName() == "void") {
-                    llvmType = llvm::Type::getVoidTy(*ctxLlvm);
+                    llvmType = llvm::Type::getVoidTy(ctxLlvm);
                 } else if (qName->getTypeName() == "char") {
-                    llvmType = llvm::Type::getInt8Ty(*ctxLlvm);
+                    llvmType = llvm::Type::getInt8Ty(ctxLlvm);
                 } else if (qName->getTypeName() == "int16") {
-                    llvmType = llvm::Type::getInt16Ty(*ctxLlvm);
+                    llvmType = llvm::Type::getInt16Ty(ctxLlvm);
                 } else if (qName->getTypeName() == "uint16") {
-                    llvmType = llvm::Type::getInt16Ty(*ctxLlvm);
+                    llvmType = llvm::Type::getInt16Ty(ctxLlvm);
                 } else if (qName->getTypeName() == "int32") {
-                    llvmType = llvm::Type::getInt32Ty(*ctxLlvm);
+                    llvmType = llvm::Type::getInt32Ty(ctxLlvm);
                 } else if (qName->getTypeName() == "uint32") {
-                    llvmType = llvm::Type::getInt32Ty(*ctxLlvm);
+                    llvmType = llvm::Type::getInt32Ty(ctxLlvm);
                 } else if (qName->getTypeName() == "int64") {
-                    llvmType = llvm::Type::getInt64Ty(*ctxLlvm);
+                    llvmType = llvm::Type::getInt64Ty(ctxLlvm);
                 } else if (qName->getTypeName() == "uint64") {
-                    llvmType = llvm::Type::getInt64Ty(*ctxLlvm);
+                    llvmType = llvm::Type::getInt64Ty(ctxLlvm);
                 } else if (qName->getTypeName() == "int128") {
-                    llvmType = llvm::Type::getInt128Ty(*ctxLlvm);
+                    llvmType = llvm::Type::getInt128Ty(ctxLlvm);
                 } else if (qName->getTypeName() == "uint128") {
-                    llvmType = llvm::Type::getInt128Ty(*ctxLlvm);
+                    llvmType = llvm::Type::getInt128Ty(ctxLlvm);
                 } else if (qName->getTypeName() == "float16") {
-                    llvmType = llvm::Type::getBFloatTy(*ctxLlvm);
+                    llvmType = llvm::Type::getBFloatTy(ctxLlvm);
                 } else if (qName->getTypeName() == "float32") {
-                    llvmType = llvm::Type::getFloatTy(*ctxLlvm);
+                    llvmType = llvm::Type::getFloatTy(ctxLlvm);
                 } else if (qName->getTypeName() == "float64") {
-                    llvmType = llvm::Type::getDoubleTy(*ctxLlvm);
+                    llvmType = llvm::Type::getDoubleTy(ctxLlvm);
                 } else if (qName->getTypeName() == "float128") {
-                    llvmType = llvm::Type::getFP128Ty(*ctxLlvm);
+                    llvmType = llvm::Type::getFP128Ty(ctxLlvm);
                 }
             } else {
                 vector<llvm::Type*> llvmMembers;
@@ -53,7 +53,7 @@ namespace cajeta {
                     llvmMembers.push_back(field->getType()->getLlvmType(ctxLlvm));
                 }
 
-                this->llvmType = llvm::StructType::create(*ctxLlvm, llvm::ArrayRef<llvm::Type*>(llvmMembers), llvm::StringRef(qName->getTypeName()));
+                this->llvmType = llvm::StructType::create(ctxLlvm, llvm::ArrayRef<llvm::Type*>(llvmMembers), llvm::StringRef(qName->getTypeName()));
             }
         }
         return llvmType;

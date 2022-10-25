@@ -9,7 +9,7 @@
 namespace cajeta {
     map<QualifiedName*, CompilationUnit*> CompilationUnit::archive;
 
-    CompilationUnit* CompilationUnit::create(llvm::LLVMContext* ctxLlvm,
+    CompilationUnit* CompilationUnit::create(llvm::LLVMContext& ctxLlvm,
                                              string path,
                                              string sourceRoot,
                                              string archiveRoot,

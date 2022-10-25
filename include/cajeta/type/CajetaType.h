@@ -64,8 +64,8 @@ class CajetaType : public Modifiable, public Annotatable {
         void addFields(list<Field*> fields);
         void addMethod(Method* method);
 
-        void init(llvm::LLVMContext* ctxLlvm);
-        virtual llvm::Type* getLlvmType(llvm::LLVMContext* context);
+        void init(llvm::LLVMContext& ctxLlvm);
+        virtual llvm::Type* getLlvmType(llvm::LLVMContext& context);
         static cajeta::CajetaType* fromContext(CajetaParser::TypeTypeContext* ctx);
     };
 }

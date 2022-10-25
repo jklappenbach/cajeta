@@ -25,7 +25,7 @@ namespace cajeta {
     }
 
     void compileUnit(string srcPath,
-                     llvm::LLVMContext* context,
+                     llvm::LLVMContext& context,
                      CompilationUnit* compilationUnit,
                      string targetTriple,
                      llvm::TargetMachine* targetMachine) {

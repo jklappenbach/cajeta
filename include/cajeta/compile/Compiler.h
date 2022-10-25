@@ -7,6 +7,7 @@
 #include <iostream>
 #include "cajeta/compile/CajetaParserIRListener.h"
 #include <llvm/Support/TargetSelect.h>
+#include <llvm/Support/InitLLVM.h>
 #include <filesystem>
 #include <utility>
 #include "antlr4-runtime.h"
@@ -20,7 +21,7 @@ namespace cajeta {
     private:
         string targetTriple;
         const llvm::Target* target;
-        llvm::LLVMContext* context;
+        llvm::LLVMContext context;
         string cpu = "generic";
         string features = "";
         llvm::TargetMachine* targetMachine;
@@ -43,11 +44,8 @@ namespace cajeta {
             }
             RM = llvm::Optional<llvm::Reloc::Model>();
             targetMachine = target->createTargetMachine(targetTriple, cpu, features, opt, RM);
-            context = new llvm::LLVMContext;
         }
-        ~Compiler() {
-            delete context;
-        }
+        ~Compiler() { }
         void compile(string srcRootPath, string targetRootPath);
 
         const string& getCpu() const {

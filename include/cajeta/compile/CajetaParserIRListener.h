@@ -59,15 +59,15 @@ namespace cajeta {
         set<Modifier> modifiers;
         list<Scope*> moduleScope;
         Scope* currentScope;
-        llvm::LLVMContext* ctxLlvm;
+        llvm::LLVMContext& context;
         llvm::IRBuilder<>* builder;
 
 
     public:
         CajetaParserIRListener(CompilationUnit* compilationUnit,
-                              llvm::LLVMContext* ctxLlvm,
+                              llvm::LLVMContext& ctxLlvm,
                               string targetTriple,
-                              llvm::TargetMachine* targetMachine) {
+                              llvm::TargetMachine* targetMachine) : context(ctxLlvm) {
             this->compilationUnit = compilationUnit;
             parseState = PACKAGE_DECLARATION;
             modifiers.clear();
@@ -126,7 +126,7 @@ namespace cajeta {
         }
         virtual void exitTypeDeclaration(CajetaParser::TypeDeclarationContext *ctx) override {
             // TODO: Create the structure here, as we've seen all the member variables.
-            curType->getLlvmType(ctxLlvm);
+            curType->getLlvmType(context);
             cout << "exitTypeDeclaration" << ctx->getText() << "\n";
         }
 
@@ -164,7 +164,7 @@ namespace cajeta {
             QualifiedName* qName = QualifiedName::create(ctxClassDecl->identifier()->getText(),
                                                          compilationUnit->getQName()->getPackageName());
 
-            curType = new CajetaClass(ctxLlvm, qName, modifiers);
+            curType = new CajetaClass(context, qName, modifiers);
             // TODO: Fix me -- compilationUnit->getTypes()[qName] = curType;
             types.push_back(curType);
             typeStack.push_front(curType);

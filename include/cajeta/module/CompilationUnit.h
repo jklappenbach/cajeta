@@ -29,7 +29,7 @@ namespace cajeta {
         CajetaType* cejetaType;
 
         map<string, map<string, QualifiedName*>> imports;
-        CompilationUnit(llvm::LLVMContext* ctxLlvm,
+        CompilationUnit(llvm::LLVMContext& ctxLlvm,
                         string srcPath,
                         string sourceRoot,
                         string archiveRoot,
@@ -46,7 +46,7 @@ namespace cajeta {
                 archivePath = temp + CAJETA_IR_EXTENSION;
                 replace(packageName.begin(), packageName.end(), PATH_SEPARATOR, PACKAGE_SEPARATOR);
                 qName = QualifiedName::create(moduleName, packageName);
-                module = new llvm::Module(qName->toString(), *ctxLlvm);
+                module = new llvm::Module(qName->toString(), ctxLlvm);
                 module->setDataLayout(targetMachine->createDataLayout());
                 module->setTargetTriple(targetTriple);
             } else {
@@ -135,7 +135,7 @@ namespace cajeta {
             CompilationUnit::imports = imports;
         }
 
-        static CompilationUnit* create(llvm::LLVMContext* ctxLlvm,
+        static CompilationUnit* create(llvm::LLVMContext& ctxLlvm,
                                        string path,
                                        string sourceRoot,
                                        string archiveRoot,
