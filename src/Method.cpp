@@ -7,7 +7,4 @@
 using namespace std;
 
 namespace cajeta {
-    void CajetaType::addMethod(Method* method) {
-        methods.insert(method);
-    }
 }

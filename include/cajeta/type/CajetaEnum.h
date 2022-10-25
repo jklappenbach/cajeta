@@ -4,13 +4,12 @@
 
 #pragma once
 
-#include "cajeta/type/CajetaType.h"
-#include "Method.h"
-#include "Field.h"
+#include "cajeta/type/CajetaStructure.h"
 
 namespace cajeta {
-    class CajetaEnum : public CajetaType {
-        CajetaEnum(QualifiedName* qName, set<Modifier>& modifiers) : CajetaType(qName, modifiers) {
+    class CajetaEnum : public CajetaStructure {
+        CajetaEnum(llvm::LLVMContext& llvmContext, QualifiedName* qName, set<Modifier>& modifiers) :
+                CajetaStructure(llvmContext, qName, modifiers) {
         }
     };
 }

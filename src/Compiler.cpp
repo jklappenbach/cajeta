@@ -59,13 +59,13 @@ namespace cajeta {
         list<string>* modulePaths = listModulePaths(srcRootPath);
 
         for (string path : *modulePaths) {
-            CompilationUnit* compilationUnit = CompilationUnit::create(context,
+            CompilationUnit* compilationUnit = CompilationUnit::create(llvmContext,
                                                                        path,
                                                                        srcRootPath,
                                                                        targetRootPath,
                                                                        targetMachine,
                                                                        targetTriple);
-            compileUnit(path, context, compilationUnit, targetTriple, targetMachine);
+            compileUnit(path, llvmContext, compilationUnit, targetTriple, targetMachine);
             compilationUnit->writeIRFileTarget();
         }
         delete modulePaths;

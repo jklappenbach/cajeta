@@ -3,3 +3,6 @@
 //
 
 #include "cajeta/type/CajetaClass.h"
+
+namespace cajeta {
+}

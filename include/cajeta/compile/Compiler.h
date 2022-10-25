@@ -21,7 +21,7 @@ namespace cajeta {
     private:
         string targetTriple;
         const llvm::Target* target;
-        llvm::LLVMContext context;
+        llvm::LLVMContext llvmContext;
         string cpu = "generic";
         string features = "";
         llvm::TargetMachine* targetMachine;
@@ -44,8 +44,11 @@ namespace cajeta {
             }
             RM = llvm::Optional<llvm::Reloc::Model>();
             targetMachine = target->createTargetMachine(targetTriple, cpu, features, opt, RM);
+            CajetaType::init(llvmContext);
         }
+
         ~Compiler() { }
+
         void compile(string srcRootPath, string targetRootPath);
 
         const string& getCpu() const {

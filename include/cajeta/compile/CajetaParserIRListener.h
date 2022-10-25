@@ -53,7 +53,7 @@ namespace cajeta {
         string package;
         deque<CajetaType*> typeStack;
         list<CajetaType*> types;
-        CajetaType* curType;
+        CajetaStructure* curStructure;
         Method* curMethod;
         set<QualifiedName*> curAnnotations;
         set<Modifier> modifiers;
@@ -125,8 +125,8 @@ namespace cajeta {
             cout << "enterTypeDeclaration" << "\n";
         }
         virtual void exitTypeDeclaration(CajetaParser::TypeDeclarationContext *ctx) override {
-            // TODO: Create the structure here, as we've seen all the member variables.
-            curType->getLlvmType(context);
+            curStructure->getLlvmType();
+            // TODO: Run a finish pass that will add fields to structures, blocks to methods / functions.
             cout << "exitTypeDeclaration" << ctx->getText() << "\n";
         }
 
@@ -164,10 +164,10 @@ namespace cajeta {
             QualifiedName* qName = QualifiedName::create(ctxClassDecl->identifier()->getText(),
                                                          compilationUnit->getQName()->getPackageName());
 
-            curType = new CajetaClass(context, qName, modifiers);
-            // TODO: Fix me -- compilationUnit->getTypes()[qName] = curType;
-            types.push_back(curType);
-            typeStack.push_front(curType);
+            curStructure = new CajetaClass(context, qName, modifiers);
+            // TODO: Fix me -- compilationUnit->getTypes()[qName] = curStructure;
+            types.push_back(curStructure);
+            typeStack.push_front(curStructure);
             modifiers.clear();
 
             // TODO Inheritance
@@ -272,7 +272,7 @@ namespace cajeta {
             CajetaType* returnType = CajetaType::fromContext(ctx->typeTypeOrVoid()->typeType());
             string name = ctx->identifier()->getText();
             curMethod = new Method(name, returnType, modifiers, curAnnotations);
-            curType->addMethod(curMethod);
+            curStructure->addMethod(curMethod);
             modifiers.clear();
             curAnnotations.clear();
 
@@ -427,7 +427,11 @@ namespace cajeta {
         virtual void enterFieldDeclaration(CajetaParser::FieldDeclarationContext* ctx) override {
             parseState = FIELD_DECLARATION;
             list<Field*> fields = Field::fromContext(ctx);
-            curType->addFields(fields);
+            for (Field* field : fields) {
+                field->addModifiers(modifiers);
+            }
+            modifiers.clear();
+            curStructure->addFields(fields);
             cout << "enterFieldDeclaration" << "\n";
         }
         virtual void exitFieldDeclaration(CajetaParser::FieldDeclarationContext * /*ctx*/) override {

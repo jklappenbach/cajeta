@@ -12,7 +12,7 @@ namespace cajeta {
 
         for (auto & ctxVariableDeclarator : ctx->variableDeclarators()->variableDeclarator()) {
             string name = ctxVariableDeclarator->variableDeclaratorId()->identifier()->getText();
-// TODO: Finish me!            Field* field = new Field(name, )
+            fields.push_back(new Field(name, type));
         }
         return fields;
     }

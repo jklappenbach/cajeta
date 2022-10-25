@@ -4,23 +4,17 @@
 
 #pragma once
 
-#include "CajetaType.h"
+#include "CajetaStructure.h"
 #include "Field.h"
 #include "Method.h"
 #include "Modifiable.h"
 
 namespace cajeta {
-    class CajetaClass : public CajetaType {
+    class CajetaClass : public CajetaStructure {
+    private:
+
     public:
-        CajetaClass(llvm::LLVMContext& ctxLlvm, QualifiedName* qName, set<Modifier>& modifiers) : CajetaType(qName, modifiers) {
-            llvm::StringRef ref(qName->getTypeName());
-            try {
-                this->llvmType = llvm::StructType::create(ctxLlvm, "Test");
-            } catch (const exception& e) {
-                const char* what = e.what();
-                cout << what;
-            }
-            // TODO: FIX ME! Type::global[qName] = this;
-        }
+        CajetaClass(llvm::LLVMContext& llvmContext, QualifiedName* qName, set<Modifier>& modifiers)
+                : CajetaStructure(llvmContext, qName, modifiers) { }
     };
 }

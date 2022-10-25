@@ -28,44 +28,37 @@ namespace cajeta {
     class Field;
     class CompilationUnit;
 
-class CajetaType : public Modifiable, public Annotatable {
+    class CajetaType {
     protected:
         QualifiedName* qName;
         llvm::Type* llvmType;
-        set<Method*> methods;
-        list<Field*> fields;
-        CompilationUnit* compilationUnit;
     public:
-        static map<QualifiedName*, CajetaType*> global;
+        static map<QualifiedName*, CajetaType*> types;
 
         CajetaType() {
             llvmType = nullptr;
         }
 
-        CajetaType(QualifiedName* qName, set<Modifier>& modifiers) :
-                Modifiable(modifiers) {
+        CajetaType(QualifiedName* qName) {
             this->qName = qName;
-            global[qName] = this;
-            llvmType = nullptr;
+            types[qName] = this;
         }
 
-        CajetaType(QualifiedName* qName, set<Modifier>& modifiers, set<QualifiedName*>& annotations) :
-                Modifiable(modifiers), Annotatable(annotations) {
+        CajetaType(QualifiedName* qName, llvm::Type* llvmType) {
             this->qName = qName;
-            global[qName] = this;
-            llvmType = nullptr;
+            this->llvmType = llvmType;
+            types[qName] = this;
         }
 
         const QualifiedName* getQName() const {
             return qName;
         }
 
-        void addField(Field* field);
-        void addFields(list<Field*> fields);
-        void addMethod(Method* method);
 
-        void init(llvm::LLVMContext& ctxLlvm);
-        virtual llvm::Type* getLlvmType(llvm::LLVMContext& context);
-        static cajeta::CajetaType* fromContext(CajetaParser::TypeTypeContext* ctx);
+        virtual llvm::Type* getLlvmType() {
+            return llvmType;
+        }
+        static CajetaType* fromContext(CajetaParser::TypeTypeContext* ctx);
+        static void init(llvm::LLVMContext& ctxLlvm);
     };
 }

@@ -22,6 +22,9 @@ namespace cajeta {
         void addModifier(Modifier modifier) {
             modifiers.insert(modifier);
         }
+        void addModifiers(const set<Modifier>& modifiers) {
+            this->modifiers.insert(modifiers.begin(), modifiers.end());
+        }
         static Modifier toModifier(string value) {
             if (value == "public") {
                 return PUBLIC;

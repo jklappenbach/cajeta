@@ -35,6 +35,14 @@ namespace cajeta {
 
         map<string, FormalParameter*> getParameters() { return parameters; }
 
+        const string& getName() const {
+            return name;
+        }
+
+        void setName(const string& name) {
+            Method::name = name;
+        }
+
         void create() {
             //llvm::FunctionType* functionType = llvm::FunctionType::get(returnType->type, false);
 //            llvm::Function* function = llvm::Function::Create(functionType,

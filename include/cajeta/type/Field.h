@@ -24,9 +24,14 @@ namespace cajeta {
         string name;
         cajeta::CajetaType* type;
     public:
-        Field(string& name, bool reference, set<Modifier>& modifiers, set<QualifiedName*>& annotations) : Modifiable(modifiers),
-                Annotatable(annotations) {
+        Field(string& name, CajetaType* type) {
             this->name = name;
+            this->type = type;
+        }
+        Field(string& name, CajetaType* type, bool reference, set<Modifier>& modifiers,
+              set<QualifiedName*>& annotations) : Modifiable(modifiers), Annotatable(annotations) {
+            this->name = name;
+            this->type = type;
             this->reference = reference;
         }
         Field(string& name, bool reference) {
