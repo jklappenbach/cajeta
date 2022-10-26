@@ -30,18 +30,6 @@
 using namespace std;
 
 namespace cajeta {
-    enum ParseState {
-        PACKAGE_DECLARATION,
-        TYPE_DECLARATION,
-        CLASS_DECLARATION,
-        CLASS_BODY,
-        FIELD_DECLARATION,
-        METHOD_DECLARATION,
-        DEFINE_VARIABLE,
-        DEFINE_METHOD_SIG,
-        DEFINE_METHOD
-    };
-
     class CajetaParserIRListener : public CajetaParserBaseListener {
     private:
 
@@ -49,7 +37,6 @@ namespace cajeta {
         CompilationUnit* compilationUnit;
         string srcPath;
         string targetPath;
-        ParseState parseState;
         string package;
         deque<CajetaType*> typeStack;
         list<CajetaType*> types;
@@ -69,7 +56,6 @@ namespace cajeta {
                               string targetTriple,
                               llvm::TargetMachine* targetMachine) : context(ctxLlvm) {
             this->compilationUnit = compilationUnit;
-            parseState = PACKAGE_DECLARATION;
             modifiers.clear();
             std::error_code ec;
             llvm::raw_fd_ostream dest(targetPath, ec, llvm::sys::fs::OF_None);
@@ -111,7 +97,6 @@ namespace cajeta {
             if (compilationUnit->getQName() == nullptr || packageName != compilationUnit->getQName()->getPackageName()) {
                 cerr << "Error: declared compilation unit package name does not match its location in source.";
             }
-            parseState = TYPE_DECLARATION;
             cout << "enterPackageDeclaration" << "\n";
         }
 
@@ -165,11 +150,10 @@ namespace cajeta {
                                                          compilationUnit->getQName()->getPackageName());
 
             curStructure = new CajetaClass(context, qName, modifiers);
-            // TODO: Fix me -- compilationUnit->getTypes()[qName] = curStructure;
             types.push_back(curStructure);
             typeStack.push_front(curStructure);
             modifiers.clear();
-
+            compilationUnit->getModule()->getGlobalList();
             // TODO Inheritance
             //structDefinition->typeParameters;
 
@@ -268,7 +252,6 @@ namespace cajeta {
          * @param ctx
          */
         virtual void enterMethodDeclaration(CajetaParser::MethodDeclarationContext *ctx) override {
-            parseState = METHOD_DECLARATION;
             CajetaType* returnType = CajetaType::fromContext(ctx->typeTypeOrVoid()->typeType());
             string name = ctx->identifier()->getText();
             curMethod = new Method(name, returnType, modifiers, curAnnotations);
@@ -425,7 +408,6 @@ namespace cajeta {
         }
 
         virtual void enterFieldDeclaration(CajetaParser::FieldDeclarationContext* ctx) override {
-            parseState = FIELD_DECLARATION;
             list<Field*> fields = Field::fromContext(ctx);
             for (Field* field : fields) {
                 field->addModifiers(modifiers);

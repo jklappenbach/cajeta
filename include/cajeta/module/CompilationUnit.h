@@ -8,6 +8,9 @@
 #include "cajeta/module/QualifiedName.h"
 #include "cajeta/type/CajetaType.h"
 #include <string>
+#include <fstream>
+
+using std::ofstream;
 
 namespace cajeta {
 
@@ -142,10 +145,12 @@ namespace cajeta {
                                        llvm::TargetMachine* targetMachine,
                                        string targetTriple);
         void writeIRFileTarget() {
-            string targetPath = archiveRoot + "/" + archivePath;
+            string targetPath = archiveRoot + archivePath;
             std::error_code ec;
-            llvm::raw_fd_ostream ostream(targetPath, ec, llvm::sys::fs::OF_None);
-            llvm::WriteBitcodeToFile(*this->module, ostream);
+            module->print(llvm::outs(), nullptr);
+            //llvm::raw_fd_ostream ofs = llvm::raw_fd_ostream(targetPath, ec, llvm::sys::fs::CD_OpenAlways);
+//            llvm::raw_ostream& os = llvm::outs();
+//            llvm::WriteBitcodeToFile(*this->module, os);
         }
     };
 }

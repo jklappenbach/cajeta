@@ -65,6 +65,7 @@ target_link_libraries(cajeta
         LLVMX86AsmParser # MC, MCParser, Support, X86Desc, X86Info
         LLVMX86Desc # MC, Support, X86AsmPrinter, X86Info
         LLVMX86Info # MC, Support, Target
+        LLVMSupport
         LLVMipo
         LLVMScalarOpts
         LLVMInstCombine
