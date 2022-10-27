@@ -12,7 +12,7 @@ namespace cajeta {
     enum Modifier { NONE = 0x00, PACKAGE = 0x01, PUBLIC = 0x02, PRIVATE = 0x04, PROTECTED = 0x08, STATIC = 0x10, FINAL = 0x20, SYNCHRONIZED = 0x40 };
 
     class Modifiable {
-    private:
+    protected:
         set<Modifier> modifiers;
     public:
         Modifiable() { }
@@ -25,6 +25,7 @@ namespace cajeta {
         void addModifiers(const set<Modifier>& modifiers) {
             this->modifiers.insert(modifiers.begin(), modifiers.end());
         }
+        set<Modifier>& getModifiers() { return modifiers; }
         static Modifier toModifier(string value) {
             if (value == "public") {
                 return PUBLIC;

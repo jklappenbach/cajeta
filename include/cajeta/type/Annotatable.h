@@ -10,7 +10,7 @@ using namespace std;
 
 namespace cajeta {
     class Annotatable {
-    private:
+    protected:
         set<QualifiedName*> annotations;
     public:
         Annotatable() { }

@@ -21,17 +21,21 @@ namespace cajeta {
     private:
         string name;
         CajetaType* returnType;
+        bool constructor;
         map<string, FormalParameter*> parameters;
         Block* block;
-
+        llvm::FunctionType* functionType;
         llvm::Function* function;
         llvm::BasicBlock* basicBlock;
     public:
-        Method(string name, CajetaType* returnType, set<Modifier>& modifiers, set<QualifiedName*>& annotations) :
+        Method(string name, CajetaType* returnType, bool constructor, set<Modifier>& modifiers, set<QualifiedName*>& annotations) :
                 Modifiable(modifiers), Annotatable(annotations) {
             this->returnType = returnType;
             this->name = name;
+            this->constructor = constructor;
         }
+
+        bool isConstructor() { return constructor; }
 
         map<string, FormalParameter*> getParameters() { return parameters; }
 
@@ -40,16 +44,31 @@ namespace cajeta {
         }
 
         void setName(const string& name) {
-            Method::name = name;
+            this->name = name;
         }
 
-        void create() {
-            //llvm::FunctionType* functionType = llvm::FunctionType::get(returnType->type, false);
-//            llvm::Function* function = llvm::Function::Create(functionType,
-//                                                              llvm::Function::ExternalLinkage,
-//                                                              methodIdentifier,
-//                                                              module);
+        void generate(llvm::LLVMContext& llvmContext, llvm::Module& module) {
+            llvm::GlobalValue::LinkageTypes linkage;
+            if (modifiers.find(PUBLIC) != modifiers.end() || modifiers.find(PROTECTED) != modifiers.end()) {
+                linkage = llvm::Function::ExternalLinkage;
+            } else {
+                linkage = llvm::Function::PrivateLinkage;
+            }
+            function = llvm::Function::Create(functionType, linkage, name, module);
+        }
 
+        string toString() {
+            string value = returnType->getQName()->toString() + " " + name + "(";
+            bool first = true;
+            for (const auto& paramEntry : parameters) {
+                if (first) {
+                    first = false;
+                } else {
+                    value += ",";
+                }
+                value += paramEntry.second->getType()->getQName()->toString() + " " + paramEntry.first;
+            }
+            value += ");";
         }
     };
 }

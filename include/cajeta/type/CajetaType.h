@@ -50,7 +50,7 @@ namespace cajeta {
             types[qName] = this;
         }
 
-        const QualifiedName* getQName() const {
+        QualifiedName* getQName() const {
             return qName;
         }
 

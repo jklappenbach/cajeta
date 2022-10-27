@@ -59,6 +59,7 @@ namespace cajeta {
             modifiers.clear();
             std::error_code ec;
             llvm::raw_fd_ostream dest(targetPath, ec, llvm::sys::fs::OF_None);
+            builder = new llvm::IRBuilder(ctxLlvm);
 
 //            CajetaLexer
 //            legacy::PassManager pass;
@@ -153,14 +154,11 @@ namespace cajeta {
             types.push_back(curStructure);
             typeStack.push_front(curStructure);
             modifiers.clear();
-            compilationUnit->getModule()->getGlobalList();
-            // TODO Inheritance
-            //structDefinition->typeParameters;
-
         }
 
         virtual void exitClassDeclaration(CajetaParser::ClassDeclarationContext * /*ctx*/) override {
             cout << "exitClassDeclaration" << "\n";
+
         }
 
         virtual void enterTypeParameters(CajetaParser::TypeParametersContext * /*ctx*/) override {
@@ -254,7 +252,9 @@ namespace cajeta {
         virtual void enterMethodDeclaration(CajetaParser::MethodDeclarationContext *ctx) override {
             CajetaType* returnType = CajetaType::fromContext(ctx->typeTypeOrVoid()->typeType());
             string name = ctx->identifier()->getText();
-            curMethod = new Method(name, returnType, modifiers, curAnnotations);
+            bool constructor = name == curStructure->getQName()->getTypeName();
+
+            curMethod = new Method(name, returnType, constructor, modifiers, curAnnotations);
             curStructure->addMethod(curMethod);
             modifiers.clear();
             curAnnotations.clear();
