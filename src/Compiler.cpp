@@ -25,7 +25,7 @@ namespace cajeta {
     }
 
     void compileUnit(string srcPath,
-                     llvm::LLVMContext& context,
+                     llvm::LLVMContext* llvmContext,
                      CompilationUnit* compilationUnit,
                      string targetTriple,
                      llvm::TargetMachine* targetMachine) {
@@ -40,7 +40,7 @@ namespace cajeta {
 
         CajetaParser parser(&tokens);
         antlr4::tree::ParseTree* parseTree = parser.compilationUnit();
-        CajetaParserIRListener* listener = new CajetaParserIRListener(compilationUnit, context, std::move(targetTriple), targetMachine);
+        CajetaParserIRListener* listener = new CajetaParserIRListener(compilationUnit, llvmContext, std::move(targetTriple), targetMachine);
         parser.addParseListener(listener);
         antlr4::tree::ParseTreeWalker::DEFAULT.walk(listener, parseTree);
         std::cout << parseTree->toStringTree(&parser) << std::endl;
@@ -65,7 +65,7 @@ namespace cajeta {
                                                                        targetRootPath,
                                                                        targetMachine,
                                                                        targetTriple);
-            compileUnit(path, llvmContext, compilationUnit, targetTriple, targetMachine);
+            compileUnit(path, &llvmContext, compilationUnit, targetTriple, targetMachine);
             compilationUnit->writeIRFileTarget();
         }
         delete modulePaths;

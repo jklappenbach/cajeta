@@ -5,7 +5,7 @@
 #pragma once
 
 #include <string>
-#include "cajeta/block/BlockStatement.h"
+#include "BlockStatement.h"
 #include "CajetaParser.h"
 #include "cajeta/type/Field.h"
 #include "cajeta/ast/Expression.h"
@@ -39,7 +39,7 @@ namespace cajeta {
 //    | identifierLabel=identifier ':' statement
 //    ;
 
-    class Statement : public AbstractSyntaxTree {
+    class Statement : public BlockStatement {
         static Statement* fromContext(CajetaParser::StatementContext* ctxStatement);
     };
 

@@ -5,7 +5,6 @@
 #pragma once
 
 #include "CajetaParser.h"
-#include "Identifier.h"
 #include <string>
 #include "cajeta/ast/AbstractSyntaxTree.h"
 
@@ -94,8 +93,24 @@ namespace cajeta {
         string literal;
     };
 
+    enum ReservedIdentifiers { UNKNOWN = -1, MODULE, REQUIRE, EXPORTS, OPENS, TO, USES, PROVIDES, WITH, TRANSITIVE, YIELD, SEALED, PERMITS, RECORD, VAR };
+
     class IdentifierExpression : public PrimaryExpression {
-        Identifier identifier;
+    private:
+        string identifier;
+    public:
+        IdentifierExpression(string identifier) {
+            this->identifier = identifier;
+        }
+
+        llvm::Value* codegen(ParseContext* ctxParse) override {
+            return ctxParse->builder->
+        }
+
+        static IdentifierExpression* fromContext(CajetaParser::IdentifierContext* ctxIdentifier) {
+            IdentifierExpression* result = new IdentifierExpression(ctxIdentifier->getText());
+        }
+
     };
 
     class ClassExpression : public PrimaryExpression {

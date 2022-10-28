@@ -31,9 +31,11 @@
 #include <memory>
 #include <string>
 #include <vector>
+#include <cajeta/compile/ParseContext.h>
 
 namespace cajeta {
     class AbstractSyntaxTree {
-        virtual llvm::Value* codegen(llvm::LLVMContext* ctxLlvm) = 0;
+    public:
+        virtual llvm::Value* codegen(ParseContext* ctxParse) = 0;
     };
 }

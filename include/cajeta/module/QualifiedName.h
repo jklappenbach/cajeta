@@ -6,6 +6,7 @@
 #include <string>
 #include "CajetaParser.h"
 #include <map>
+#include <llvm/ADT/Twine.h>
 
 using namespace std;
 
@@ -16,14 +17,21 @@ namespace cajeta {
         static map<string, map<string, QualifiedName*>> cache;
         string packageName;
         string typeName;
+        llvm::Twine canonical;
 
-        QualifiedName(string name, string packageName) {
-            this->typeName = name;
+        QualifiedName(string typeName, string packageName) {
+            this->typeName = typeName;
             this->packageName = packageName;
+            canonical.concat(packageName);
+            canonical.concat(".");
+            canonical.concat(typeName);
         }
         QualifiedName(const QualifiedName& src) {
             packageName = src.packageName;
             typeName = src.typeName;
+            canonical.concat(packageName);
+            canonical.concat(".");
+            canonical.concat(typeName);
         }
     public:
         const string& getPackageName() const {
@@ -37,6 +45,8 @@ namespace cajeta {
         const string toString() {
             return packageName + "." + typeName;
         }
+
+        const llvm::Twine& toCanonical() { return canonical; }
 
         bool operator <(const QualifiedName& rhs) const {
             return typeName < rhs.typeName && packageName < rhs.packageName;

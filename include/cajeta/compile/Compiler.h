@@ -28,8 +28,6 @@ namespace cajeta {
         llvm::TargetOptions opt;
         llvm::Optional<llvm::Reloc::Model> RM;
 
-
-
     public:
         Compiler() {
             llvm::InitializeAllTargets();

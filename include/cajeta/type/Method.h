@@ -16,30 +16,30 @@ using namespace std;
 
 namespace cajeta {
     class Block;
+    class CajetaStructure;
 
     class Method : public Modifiable, public Annotatable {
     private:
+        llvm::Twine canonical;
         string name;
+        CajetaStructure* parent;
         CajetaType* returnType;
         bool constructor;
-        map<string, FormalParameter*> parameters;
-        Block* block;
+        list<FormalParameter*> parameters;
         llvm::FunctionType* functionType;
         llvm::Function* function;
-        llvm::BasicBlock* basicBlock;
+        Block* block;
     public:
-        Method(string name, CajetaType* returnType, bool constructor, set<Modifier>& modifiers, set<QualifiedName*>& annotations) :
-                Modifiable(modifiers), Annotatable(annotations) {
-            this->returnType = returnType;
-            this->name = name;
-            this->constructor = constructor;
-        }
+        Method(string name, CajetaStructure* parent, CajetaType* returnType, list<FormalParameter*>& parameters,
+               set<Modifier>& modifiers, set<QualifiedName*>& annotations);
+
+        llvm::FunctionType* getFunctionType() { return functionType; }
 
         bool isConstructor() { return constructor; }
 
-        map<string, FormalParameter*> getParameters() { return parameters; }
+        list<FormalParameter*> getParameters() { return parameters; }
 
-        const string& getName() const {
+        const llvm::Twine& getName() const {
             return name;
         }
 
@@ -54,21 +54,18 @@ namespace cajeta {
             } else {
                 linkage = llvm::Function::PrivateLinkage;
             }
-            function = llvm::Function::Create(functionType, linkage, name, module);
+
+            bool staticMethod = modifiers.find(STATIC) != modifiers.end();
+            function = llvm::Function::Create(functionType, linkage, canonical, module);
+
+            int i = 0;
+            for (FormalParameter* param : parameters) {
+                function->getArg(i)->setName(param->getName());
+            }
         }
 
-        string toString() {
-            string value = returnType->getQName()->toString() + " " + name + "(";
-            bool first = true;
-            for (const auto& paramEntry : parameters) {
-                if (first) {
-                    first = false;
-                } else {
-                    value += ",";
-                }
-                value += paramEntry.second->getType()->getQName()->toString() + " " + paramEntry.first;
-            }
-            value += ");";
+        void addBlock(Block* block) {
+
         }
     };
 }

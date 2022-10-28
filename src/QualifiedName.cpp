@@ -48,7 +48,7 @@ namespace cajeta {
             }
             return create(typeName, packageName);
         } else {
-            return nullptr;
+            return create(current, "cajeta");
         }
     }
 

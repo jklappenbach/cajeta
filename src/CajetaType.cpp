@@ -27,11 +27,24 @@ namespace cajeta {
         NATIVE_TYPE_ENTRY("float64", llvm::Type::getDoubleTy(ctx));
         NATIVE_TYPE_ENTRY("float128", llvm::Type::getFP128Ty(ctx));
     }
+    cajeta::CajetaType* cajeta::CajetaType::fromContext(CajetaParser::TypeTypeOrVoidContext* ctx) {
+        CajetaType* type = nullptr;
+        if (ctx != nullptr) {
+            QualifiedName* qName;
+            if (ctx->VOID() != nullptr) {
+                QualifiedName* qName = QualifiedName::create(ctx->getText(), "cajeta");
+                type = CajetaType::types[qName];
+            } else {
+                type = fromContext(ctx->typeType());
+            }
+        }
+        return type;
+    }
 
     cajeta::CajetaType* cajeta::CajetaType::fromContext(CajetaParser::TypeTypeContext* ctxType) {
         CajetaType* type = nullptr;
-        QualifiedName* qName;
         if (ctxType != nullptr) {
+            QualifiedName* qName;
             CajetaParser::PrimitiveTypeContext* ctxPrimitiveType = ctxType->primitiveType();
             if (ctxPrimitiveType != nullptr) {
                 qName = QualifiedName::create(ctxPrimitiveType->getText(), CAJETA_NATIVE_PACKAGE);

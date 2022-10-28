@@ -2,9 +2,8 @@ package cajeta;
 
 public class System {
     private int32 value;
-    private Object obj;
 
-    public static void main(String[] args) {
+    public static void main() {
         value = 5;
     }
 }

@@ -30,8 +30,10 @@ namespace cajeta {
 
     class CajetaType {
     protected:
+        bool array;
         QualifiedName* qName;
         llvm::Type* llvmType;
+        llvm::Twine canonical;
     public:
         static map<QualifiedName*, CajetaType*> types;
 
@@ -39,14 +41,24 @@ namespace cajeta {
             llvmType = nullptr;
         }
 
-        CajetaType(QualifiedName* qName) {
+        CajetaType(QualifiedName* qName, bool array = false) {
             this->qName = qName;
+            this->array = array;
+            canonical.concat(qName->toCanonical());
+            if (array) {
+                canonical.concat("[]");
+            }
             types[qName] = this;
         }
 
-        CajetaType(QualifiedName* qName, llvm::Type* llvmType) {
+        CajetaType(QualifiedName* qName, llvm::Type* llvmType, bool array = false) {
             this->qName = qName;
             this->llvmType = llvmType;
+            this->array = array;
+            canonical.concat(qName->toCanonical());
+            if (array) {
+                canonical.concat("[]");
+            }
             types[qName] = this;
         }
 
@@ -54,10 +66,17 @@ namespace cajeta {
             return qName;
         }
 
+        bool isArray() { return array; }
 
         virtual llvm::Type* getLlvmType() {
             return llvmType;
         }
+
+        const llvm::Twine& toCanonical() {
+            qName->toCanonical();
+        }
+
+        static CajetaType* fromContext(CajetaParser::TypeTypeOrVoidContext* ctx);
         static CajetaType* fromContext(CajetaParser::TypeTypeContext* ctx);
         static void init(llvm::LLVMContext& ctxLlvm);
     };

@@ -1,14 +1,5 @@
 #pragma once
 
-#include <llvm/IR/LegacyPassManager.h>
-#include <llvm/IR/Module.h>
-#include <llvm/IR/IRBuilder.h>
-#include <llvm/Support/Error.h>
-#include <llvm/Support/FileSystem.h>
-#include <llvm/Support/Host.h>
-#include <llvm/Support/TargetSelect.h>
-#include <llvm/MC/TargetRegistry.h>
-#include <llvm/Target/TargetMachine.h>
 #include <llvm/Target/TargetOptions.h>
 #include "CajetaParser.h"
 #include <llvm/Bitcode/BitcodeWriter.h>
@@ -18,6 +9,7 @@
 #include "cajeta/type/Generics.h"
 #include "cajeta/ast/Scope.h"
 #include "cajeta/type/Method.h"
+#include "cajeta/ast/Block.h"
 #include "cajeta/type/Modifiable.h"
 #include "cajeta/type/Annotatable.h"
 #include "cajeta/module/CompilationUnit.h"
@@ -26,41 +18,27 @@
 #include "cajeta/type/CajetaEnum.h"
 #include "cajeta/ast/FormalParameter.h"
 #include "cajeta/module/CompilationUnit.h"
+#include "cajeta/compile/ParseContext.h"
+
 
 using namespace std;
 
 namespace cajeta {
-    class CajetaParserIRListener : public CajetaParserBaseListener {
+    class CajetaParserIRListener : public CajetaParserBaseListener, public ParseContext {
     private:
-
-        // Parsing state
-        CompilationUnit* compilationUnit;
-        string srcPath;
-        string targetPath;
-        string package;
-        deque<CajetaType*> typeStack;
-        list<CajetaType*> types;
-        CajetaStructure* curStructure;
-        Method* curMethod;
         set<QualifiedName*> curAnnotations;
         set<Modifier> modifiers;
-        list<Scope*> moduleScope;
-        Scope* currentScope;
-        llvm::LLVMContext& context;
-        llvm::IRBuilder<>* builder;
+        CajetaStructure* curStructure;
+        Method* curMethod;
 
+        // Parsing state
 
     public:
         CajetaParserIRListener(CompilationUnit* compilationUnit,
-                              llvm::LLVMContext& ctxLlvm,
+                              llvm::LLVMContext* llvmContext,
                               string targetTriple,
-                              llvm::TargetMachine* targetMachine) : context(ctxLlvm) {
-            this->compilationUnit = compilationUnit;
-            modifiers.clear();
-            std::error_code ec;
-            llvm::raw_fd_ostream dest(targetPath, ec, llvm::sys::fs::OF_None);
-            builder = new llvm::IRBuilder(ctxLlvm);
-
+                              llvm::TargetMachine* targetMachine) :
+                              ParseContext(compilationUnit, llvmContext, targetTriple, targetMachine) {
 //            CajetaLexer
 //            legacy::PassManager pass;
 //            auto FileType = llvm::CGFT_ObjectFile;
@@ -94,9 +72,9 @@ namespace cajeta {
                 itr++;
             }
 
-            // Ensure that the declared packagee name matches what we've got from the FS.
+            // Ensure that the declared packagee canonical matches what we've got from the FS.
             if (compilationUnit->getQName() == nullptr || packageName != compilationUnit->getQName()->getPackageName()) {
-                cerr << "Error: declared compilation unit package name does not match its location in source.";
+                cerr << "Error: declared compilation unit package canonical does not match its location in source.";
             }
             cout << "enterPackageDeclaration" << "\n";
         }
@@ -150,7 +128,7 @@ namespace cajeta {
             QualifiedName* qName = QualifiedName::create(ctxClassDecl->identifier()->getText(),
                                                          compilationUnit->getQName()->getPackageName());
 
-            curStructure = new CajetaClass(context, qName, modifiers);
+            curStructure = new CajetaClass(llvmContext, qName, modifiers);
             types.push_back(curStructure);
             typeStack.push_front(curStructure);
             modifiers.clear();
@@ -158,6 +136,9 @@ namespace cajeta {
 
         virtual void exitClassDeclaration(CajetaParser::ClassDeclarationContext * /*ctx*/) override {
             cout << "exitClassDeclaration" << "\n";
+            for (auto methodEntry : curStructure->getMethods()) {
+                methodEntry.second->generate(llvmContext, *compilationUnit->getModule());
+            }
 
         }
 
@@ -250,28 +231,29 @@ namespace cajeta {
          * @param ctx
          */
         virtual void enterMethodDeclaration(CajetaParser::MethodDeclarationContext *ctx) override {
-            CajetaType* returnType = CajetaType::fromContext(ctx->typeTypeOrVoid()->typeType());
+            CajetaType* returnType = CajetaType::fromContext(ctx->typeTypeOrVoid());
             string name = ctx->identifier()->getText();
             bool constructor = name == curStructure->getQName()->getTypeName();
-
-            curMethod = new Method(name, returnType, constructor, modifiers, curAnnotations);
-            curStructure->addMethod(curMethod);
-            modifiers.clear();
-            curAnnotations.clear();
+            list<FormalParameter*> parameters;
 
             CajetaParser::FormalParametersContext* ctxParameters = ctx->formalParameters();
             CajetaParser::FormalParameterListContext* ctxFormalParameterList = ctxParameters->formalParameterList();
-            std::vector<CajetaParser::FormalParameterContext*> parameters = ctxFormalParameterList->formalParameter();
-
-            // Parse parameters
-            for (auto & ctxFormalParameter : parameters) {
-                FormalParameter* parameter = FormalParameter::fromContext(ctxFormalParameter);
-                if (parameter == nullptr) {
-                    // TODO: Error reporting
-                } else {
-                    curMethod->getParameters()[parameter->getName()] = parameter;
+            if (ctxFormalParameterList != nullptr) {
+                std::vector<CajetaParser::FormalParameterContext*> formalParameters = ctxFormalParameterList->formalParameter();
+                for (auto & ctxFormalParameter : formalParameters) {
+                    FormalParameter* parameter = FormalParameter::fromContext(ctxFormalParameter);
+                    if (parameter == nullptr) {
+                        // TODO: Error reporting
+                    } else {
+                        parameters.push_back(parameter);
+                    }
                 }
             }
+
+            curMethod = new Method(name, curStructure, returnType, parameters, modifiers, curAnnotations);
+            curStructure->addMethod(curMethod);
+            modifiers.clear();
+            curAnnotations.clear();
         }
 
         /**
@@ -772,6 +754,7 @@ namespace cajeta {
         }
 
         virtual void enterBlock(CajetaParser::BlockContext * /*ctx*/) override {
+            curMethod->addBlock(new Block(llvmContext, ));
             cout << "enterBlock" << "\n";
         }
         virtual void exitBlock(CajetaParser::BlockContext * /*ctx*/) override {
