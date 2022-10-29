@@ -46,7 +46,19 @@ include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include)
 add_executable(cajeta
         ${ANTLR_CajetaGrammarLexer_CXX_OUTPUTS}
         ${ANTLR_CajetaGrammarParser_CXX_OUTPUTS}
-        src/main.cpp include/cajeta/ast/Scope.h src/Scope.cpp include/cajeta/compile/CajetaParserIRListener.h src/CajetaParserIRListener.cpp src/Statement.cpp include/cajeta/ast/Statement.h src/Generics.cpp include/cajeta/type/Generics.h src/Method.cpp include/cajeta/type/Method.h src/Field.cpp include/cajeta/type/Field.h include/cajeta/ast/Expression.h src/Expression.cpp include/cajeta/module/QualifiedName.h src/CajetaType.cpp include/cajeta/type/CajetaType.h src/Interface.cpp include/cajeta/type/Interface.h src/CajetaClass.cpp include/cajeta/type/CajetaClass.h src/QualifiedName.cpp src/FormalParameter.cpp src/Block.cpp include/cajeta/ast/Block.h src/LocalVariableDeclaration.cpp include/cajeta/ast/LocalVariableDeclaration.h src/BlockStatement.cpp include/cajeta/ast/BlockStatement.h src/AbstractSyntaxTree.cpp include/cajeta/ast/AbstractSyntaxTree.h src/CompilationUnit.cpp include/cajeta/module/CompilationUnit.h src/Compiler.cpp include/cajeta/compile/Compiler.h src/CajetaStructure.cpp include/cajeta/type/CajetaStructure.h include/cajeta/compile/ParseContext.cpp include/cajeta/compile/ParseContext.h)
+        src/main.cpp include/cajeta/ast/Scope.h src/Scope.cpp include/cajeta/compile/CajetaParserIRListener.h
+        src/CajetaParserIRListener.cpp src/Statement.cpp include/cajeta/ast/Statement.h src/Generics.cpp
+        include/cajeta/type/Generics.h src/Method.cpp include/cajeta/type/Method.h src/LocalTypeDeclaration.cpp
+        include/cajeta/ast/LocalTypeDeclaration.h src/Field.cpp include/cajeta/type/Field.h
+        include/cajeta/ast/Expression.h src/Expression.cpp include/cajeta/module/QualifiedName.h
+        src/CajetaType.cpp include/cajeta/type/CajetaType.h src/Interface.cpp
+        include/cajeta/type/Interface.h src/CajetaClass.cpp include/cajeta/type/CajetaClass.h
+        src/QualifiedName.cpp src/FormalParameter.cpp src/Block.cpp include/cajeta/ast/Block.h
+        src/LocalVariableDeclaration.cpp include/cajeta/ast/LocalVariableDeclaration.h src/BlockStatement.cpp
+        include/cajeta/ast/BlockStatement.h src/AbstractSyntaxTree.cpp include/cajeta/ast/AbstractSyntaxTree.h
+        src/CompilationUnit.cpp include/cajeta/module/CompilationUnit.h src/Compiler.cpp
+        include/cajeta/compile/Compiler.h src/CajetaStructure.cpp include/cajeta/type/CajetaStructure.h
+        include/cajeta/compile/ParseContext.cpp include/cajeta/compile/ParseContext.h)
 
 message(STATUS "Found LLVM ${LLVM_PACKAGE_VERSION}")
 message(STATUS "Using LLVMConfig.cmake in: ${LLVM_DIR}")

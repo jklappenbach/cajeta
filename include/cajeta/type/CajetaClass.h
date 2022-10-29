@@ -14,7 +14,7 @@ namespace cajeta {
     private:
 
     public:
-        CajetaClass(llvm::LLVMContext& llvmContext, QualifiedName* qName, set<Modifier>& modifiers)
+        CajetaClass(llvm::LLVMContext* llvmContext, QualifiedName* qName, set<Modifier>& modifiers)
                 : CajetaStructure(llvmContext, qName, modifiers) { }
     };
 }

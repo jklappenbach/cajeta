@@ -73,7 +73,7 @@ namespace cajeta {
         }
 
         const llvm::Twine& toCanonical() {
-            qName->toCanonical();
+            return qName->toCanonical();
         }
 
         static CajetaType* fromContext(CajetaParser::TypeTypeOrVoidContext* ctx);

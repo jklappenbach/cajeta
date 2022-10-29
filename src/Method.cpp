@@ -20,6 +20,11 @@ namespace cajeta {
         canonical.concat("(");
         if (!parameters.empty()) {
             vector<llvm::Type*> llvmTypes;
+            bool staticMethod = modifiers.find(STATIC) != modifiers.end();
+            if (!staticMethod) {
+                FormalParameter* thisParam = new FormalParameter("this", parent);
+                parameters.push_front(thisParam);
+            }
             bool first = true;
             for (FormalParameter* parameter : parameters) {
                 if (first) {

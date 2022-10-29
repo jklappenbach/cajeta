@@ -16,4 +16,8 @@ namespace cajeta {
         }
         return fields;
     }
+
+    llvm::AllocaInst* Field::createStackInstance(llvm::IRBuilder<>& builder) {
+        return builder.CreateAlloca(type->getLlvmType(), nullptr, name);
+    }
 }

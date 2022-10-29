@@ -20,6 +20,7 @@ namespace cajeta {
         } else if (ctx->SEMI()) {
             // TODO: figure out what to do here.
         }
+        return result;
     }
 
     llvm::Value* BlockStatement::codegen(ParseContext* ctxParse) {

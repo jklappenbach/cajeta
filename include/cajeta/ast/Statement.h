@@ -9,7 +9,6 @@
 #include "CajetaParser.h"
 #include "cajeta/type/Field.h"
 #include "cajeta/ast/Expression.h"
-#include "Identifier.h"
 #include "cajeta/ast/AbstractSyntaxTree.h"
 
 using namespace std;
@@ -171,14 +170,14 @@ namespace cajeta {
      * BREAK identifier? ';'
      */
     class BreakStatement : public Statement {
-        Identifier identifier;
+        string identifier;
     };
 
     /**
      * CONTINUE identifier? ';'
      */
     class ContinueStatement : public Statement {
-        Identifier identifier;
+        string identifier;
     };
 
     /**
@@ -216,7 +215,7 @@ namespace cajeta {
 //    };
 
     class IdentifierLabel : public Statement {
-        Identifier identifier;
+        string identifier;
     };
 
     class SemiStatement : public Statement {

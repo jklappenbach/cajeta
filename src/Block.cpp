@@ -6,13 +6,14 @@
 #include "cajeta/ast/BlockStatement.h"
 
 namespace cajeta {
-    Block* Block::fromContext(CajetaParser::BlockContext* ctxBlock, llvm::LLVMContext& llvmContext,
-                              llvm::IRBuilder<>* builder, llvm::Twine& name, llvm::Function* parent) {
-        Block* block = new Block(llvmContext, builder, name, parent);
+    Block* Block::fromContext(CajetaParser::BlockContext* ctxBlock, ParseContext* ctxParse,
+                              llvm::Twine& name, llvm::Function* parent) {
+        Block* block = new Block(ctxParse, name, parent);
         for (CajetaParser::BlockStatementContext* ctxBlockStatement : ctxBlock->blockStatement()) {
             BlockStatement* blockStatement = BlockStatement::fromContext(ctxBlockStatement);
             block->addBlockStatement(blockStatement);
         }
+        return block;
     }
 
     llvm::Value* Block::codegen(ParseContext* ctxParse) {

@@ -11,6 +11,8 @@
 #include "Annotatable.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/LLVMContext.h"
+#include <llvm/IR/IRBuilder.h>
+
 
 
 using namespace std;
@@ -23,6 +25,7 @@ namespace cajeta {
         bool var;
         string name;
         cajeta::CajetaType* type;
+        llvm::AllocaInst* stackInstance;
     public:
         Field(string& name, CajetaType* type) {
             this->name = name;
@@ -55,13 +58,8 @@ namespace cajeta {
             return type;
         }
 
-        void define() { }
-        void allocate(llvm::IRBuilder<>* builder, llvm::Module* module, llvm::LLVMContext* llvmContext) {
-            // typeDefinition->allocate(builder, module, ctxLlvm);
-        }
-        void release(llvm::IRBuilder<>* builder, llvm::Module* module, llvm::LLVMContext* llvmContext) {
-            // typeDefinition->free(builder, module, ctxLlvm);
-        }
+        llvm::AllocaInst* createStackInstance(llvm::IRBuilder<>& builder);
+
         static list<Field*> fromContext(CajetaParser::FieldDeclarationContext* ctx);
     };
 }

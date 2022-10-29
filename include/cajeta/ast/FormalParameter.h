@@ -15,22 +15,27 @@ using namespace std;
 namespace cajeta {
     class FormalParameter : public Modifiable, public Annotatable {
         string name;
-        llvm::AllocaInst* definition;
         cajeta::CajetaType* type;
     public:
-        FormalParameter(string& name, CajetaType* type, set<Modifier>& modifiers,
+        FormalParameter(string name, CajetaType* type) {
+            this->name = name;
+            this->type = type;
+        }
+        FormalParameter(string name, CajetaType* type, set<Modifier>& modifiers,
                         set<QualifiedName*>& annotations) : Modifiable(modifiers), Annotatable(annotations) {
             this->name = name;
+            this->type = type;
         }
-        FormalParameter(string& name) {
-            this->name = name;
+        FormalParameter(const FormalParameter& src) {
+            name = src.name;
+            type = src.type;
         }
 
         bool isReference() const;
 
         const string& getName() const;
 
-        llvm::AllocaInst* getDefinition() const;
+        llvm::AllocaInst* createStackInstance(llvm::IRBuilder<>& builder);
 
         CajetaType* getType() const;
 

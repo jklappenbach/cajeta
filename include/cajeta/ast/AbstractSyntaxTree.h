@@ -36,6 +36,9 @@
 namespace cajeta {
     class AbstractSyntaxTree {
     public:
-        virtual llvm::Value* codegen(ParseContext* ctxParse) = 0;
+        virtual llvm::Value* codegen(ParseContext* ctxParse) {
+            // TODO: Remove if possible
+            return nullptr;
+        };
     };
 }

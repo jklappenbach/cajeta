@@ -104,11 +104,13 @@ namespace cajeta {
         }
 
         llvm::Value* codegen(ParseContext* ctxParse) override {
-            return ctxParse->builder->
+            //return ctxParse->builder->
+            return nullptr;
         }
 
         static IdentifierExpression* fromContext(CajetaParser::IdentifierContext* ctxIdentifier) {
             IdentifierExpression* result = new IdentifierExpression(ctxIdentifier->getText());
+            return result;
         }
 
     };
@@ -299,11 +301,11 @@ namespace cajeta {
      *  | '(' lambdaLVTIList? ')'
      */
     class LambdaParameters {
-        list<Identifier> parIdentifiers;
+        list<string> parIdentifiers;
     };
 
     class LambdaIdentifiersParameter : public LambdaParameters {
-        Identifier identifier;
+        string identifier;
     };
 
     class LambdaFormalParameters : public LambdaParameters {

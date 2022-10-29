@@ -137,7 +137,7 @@ namespace cajeta {
         virtual void exitClassDeclaration(CajetaParser::ClassDeclarationContext * /*ctx*/) override {
             cout << "exitClassDeclaration" << "\n";
             for (auto methodEntry : curStructure->getMethods()) {
-                methodEntry.second->generate(llvmContext, *compilationUnit->getModule());
+                methodEntry.second->generate(this);
             }
 
         }
@@ -254,6 +254,8 @@ namespace cajeta {
             curStructure->addMethod(curMethod);
             modifiers.clear();
             curAnnotations.clear();
+
+            //curMethod->
         }
 
         /**
@@ -754,7 +756,6 @@ namespace cajeta {
         }
 
         virtual void enterBlock(CajetaParser::BlockContext * /*ctx*/) override {
-            curMethod->addBlock(new Block(llvmContext, ));
             cout << "enterBlock" << "\n";
         }
         virtual void exitBlock(CajetaParser::BlockContext * /*ctx*/) override {

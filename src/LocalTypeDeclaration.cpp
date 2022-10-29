@@ -5,9 +5,8 @@
 #include "cajeta/ast/LocalTypeDeclaration.h"
 
 namespace cajeta {
-    LocalTypeDeclaration* fromContext(CajetaParser::LocalTypeDeclarationContext* ctx) {
-        CajetaType* type = CajetaType::fromContext(ctx);
-        LocalTypeDeclaration* result = new LocalTypeDeclaration(type);
-
+    LocalTypeDeclaration* LocalTypeDeclaration::fromContext(CajetaParser::LocalTypeDeclarationContext* ctx) {
+//        CajetaType* type = CajetaType::fromContext(ctx->);
+        return new LocalTypeDeclaration(nullptr);
     }
 }
