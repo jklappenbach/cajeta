@@ -1,0 +1,105 @@
+(compilationUnit
+    (packageDeclaration package
+        (qualifiedName (identifier cajeta))
+    ;)
+    (typeDeclaration
+        (classOrInterfaceModifier public)
+        (classOrInterfaceModifier final)
+        (classDeclaration class
+            (identifier System)
+            (classBody {
+                (classBodyDeclaration
+                    (modifier
+                        (classOrInterfaceModifier private)
+                    )
+                    (memberDeclaration
+                        (fieldDeclaration
+                            (typeType
+                                (primitiveType int32)
+                            )
+                            (variableDeclarators
+                                (variableDeclarator
+                                    (variableDeclaratorId
+                                        (identifier value)
+                                    )
+                                )
+                            )
+                        ;)
+                    )
+                )
+                (classBodyDeclaration
+                    (modifier
+                        (classOrInterfaceModifier private)
+                    )
+                    (memberDeclaration
+                        (fieldDeclaration
+                            (typeType
+                                (primitiveType int32)
+                            )
+                            (variableDeclarators
+                                (variableDeclarator
+                                    (variableDeclaratorId
+                                        (identifier x)
+                                    )
+                                )
+                            )
+                        ;)
+                    )
+                )
+                (classBodyDeclaration
+                    (modifier
+                        (classOrInterfaceModifier public)
+                    )
+                    (modifier
+                        (classOrInterfaceModifier static)
+                    )
+                    (memberDeclaration
+                        (methodDeclaration
+                            (typeTypeOrVoid void)
+                            (identifier main)
+                            (formalParameters ( ))
+                            (methodBody
+                                (block {
+                                    (blockStatement
+                                        (statement
+                                            (expression
+                                                (expression
+                                                    (primary
+                                                        (identifier value)
+                                                    )
+                                                ) =
+                                                (expression
+                                                    (primary
+                                                        (literal
+                                                            (integerLiteral 5)
+                                                        )
+                                                    )
+                                                )
+                                            )
+                                        ;)
+                                    )
+                                    (blockStatement
+                                        (statement
+                                            (expression
+                                                (expression
+                                                    (primary
+                                                        (identifier value)
+                                                    )
+                                                ) =
+                                                (expression #
+                                                    (primary
+                                                        (identifier x)
+                                                    )
+                                                )
+                                            )
+                                        ;)
+                                    ) }
+                                )
+                            )
+                        )
+                    )
+                ) }
+            )
+        )
+    )
+)

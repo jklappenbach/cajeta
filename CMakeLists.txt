@@ -4,6 +4,11 @@ project(cajeta VERSION 1.0.0)
 
 list(APPEND CMAKE_MODULE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/cmake)
 
+cmake_minimum_required (VERSION 3.16)
+project (myproj VERSION 1.0)
+
+find_package (glog 0.6.0 REQUIRED)
+
 # compiler must be 11 or 14
 set(CMAKE_CXX_STANDARD 17)
 set(Java_JAVA_EXECUTABLE "java")
@@ -46,19 +51,19 @@ include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include)
 add_executable(cajeta
         ${ANTLR_CajetaGrammarLexer_CXX_OUTPUTS}
         ${ANTLR_CajetaGrammarParser_CXX_OUTPUTS}
-        src/main.cpp include/cajeta/ast/Scope.h src/Scope.cpp include/cajeta/compile/CajetaParserIRListener.h
-        src/CajetaParserIRListener.cpp src/Statement.cpp include/cajeta/ast/Statement.h src/Generics.cpp
-        include/cajeta/type/Generics.h src/Method.cpp include/cajeta/type/Method.h src/LocalTypeDeclaration.cpp
-        include/cajeta/ast/LocalTypeDeclaration.h src/Field.cpp include/cajeta/type/Field.h
-        include/cajeta/ast/Expression.h src/Expression.cpp include/cajeta/module/QualifiedName.h
-        src/CajetaType.cpp include/cajeta/type/CajetaType.h src/Interface.cpp
-        include/cajeta/type/Interface.h src/CajetaClass.cpp include/cajeta/type/CajetaClass.h
-        src/QualifiedName.cpp src/FormalParameter.cpp src/Block.cpp include/cajeta/ast/Block.h
-        src/LocalVariableDeclaration.cpp include/cajeta/ast/LocalVariableDeclaration.h src/BlockStatement.cpp
-        include/cajeta/ast/BlockStatement.h src/AbstractSyntaxTree.cpp include/cajeta/ast/AbstractSyntaxTree.h
-        src/CompilationUnit.cpp include/cajeta/module/CompilationUnit.h src/Compiler.cpp
-        include/cajeta/compile/Compiler.h src/CajetaStructure.cpp include/cajeta/type/CajetaStructure.h
-        include/cajeta/compile/ParseContext.cpp include/cajeta/compile/ParseContext.h)
+        src/main.cpp include/cajeta/asn/Scope.h include/cajeta/asn/Scope.cpp include/cajeta/compile/CajetaParserIRListener.h
+        include/cajeta/compile/CajetaParserIRListener.cpp include/cajeta/asn/Statement.cpp include/cajeta/asn/Statement.h include/cajeta/type/Generics.cpp
+        include/cajeta/type/Generics.h include/cajeta/type/Method.cpp include/cajeta/type/Method.h include/cajeta/asn/LocalTypeDeclaration.cpp
+        include/cajeta/asn/LocalTypeDeclaration.h include/cajeta/type/Field.cpp include/cajeta/type/Field.h
+        include/cajeta/asn/Expression.h include/cajeta/asn/Expression.cpp include/cajeta/module/QualifiedName.h
+        include/cajeta/type/CajetaType.cpp include/cajeta/type/CajetaType.h include/cajeta/type/Interface.cpp
+        include/cajeta/type/Interface.h include/cajeta/type/CajetaClass.cpp include/cajeta/type/CajetaClass.h
+        include/cajeta/type/QualifiedName.cpp include/cajeta/asn/FormalParameter.cpp include/cajeta/asn/Block.cpp include/cajeta/asn/Block.h
+        include/cajeta/asn/LocalVariableDeclaration.cpp include/cajeta/asn/LocalVariableDeclaration.h include/cajeta/asn/BlockStatement.cpp
+        include/cajeta/asn/BlockStatement.h include/cajeta/asn/AbstractSyntaxNode.cpp include/cajeta/asn/AbstractSyntaxNode.h
+        include/cajeta/asn/CompilationUnit.cpp include/cajeta/asn/CompilationUnit.h include/cajeta/compile/Compiler.cpp
+        include/cajeta/compile/Compiler.h include/cajeta/type/CajetaStructure.cpp include/cajeta/type/CajetaStructure.h
+        include/cajeta/compile/CompileContext.cpp include/cajeta/compile/CompileContext.h include/cajeta/asn/PackageDeclaration.cpp include/cajeta/asn/PackageDeclaration.h include/cajeta/asn/ImportDeclaration.cpp include/cajeta/asn/ImportDeclaration.h include/cajeta/asn/TypeDeclaration.cpp include/cajeta/asn/TypeDeclaration.h)
 
 message(STATUS "Found LLVM ${LLVM_PACKAGE_VERSION}")
 message(STATUS "Using LLVMConfig.cmake in: ${LLVM_DIR}")
@@ -91,4 +96,6 @@ target_link_libraries(cajeta
         LLVMObject # BitReader, Core, Support
         LLVMBitReader # Core, Support
         LLVMCore # Support
-        LLVMSupport)
+        LLVMSupport
+        glog::glog)
+

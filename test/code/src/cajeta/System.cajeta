@@ -1,9 +1,11 @@
 package cajeta;
 
-public class System {
+public final class System {
     private int32 value;
+    private int32 x;
 
     public static void main() {
         value = 5;
+        value = #x;
     }
 }

@@ -1,5 +1,5 @@
 (compilationUnit
-    (packageDeclaration packageName (qualifiedName (identifier cajeta).(identifier test));)
+    (PackageDeclaration packageName (qualifiedName (identifier cajeta).(identifier test));)
     (importDeclaration import (qualifiedName (identifier com) . (identifier blah) . (identifier FieldAnnotation)) ;)
     (importDeclaration import (qualifiedName (identifier com) . (identifier blah) . (identifier ParameterAnnotation)) ;)
     (importDeclaration import (qualifiedName (identifier com) . (identifier blah) . (identifier MethodAnnotation)) ;)

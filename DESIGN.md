@@ -2,7 +2,7 @@
 
 ```
 (compilationUnit 
-  (packageDeclaration packageName 
+  (PackageDeclaration packageName 
     (qualifiedName 
       (identifier cajeta)
     );

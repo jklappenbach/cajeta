@@ -5,14 +5,14 @@
 #pragma once
 
 #include "cajeta/type/Modifiable.h"
-#include <cajeta/compile/ParseContext.h>
+#include <cajeta/compile/CompileContext.h>
 #include <llvm/IR/BasicBlock.h>
 #include "cajeta/module/QualifiedName.h"
 #include "Annotatable.h"
 #include "cajeta/type/CajetaType.h"
-#include "cajeta/ast/FormalParameter.h"
+#include "cajeta/asn/FormalParameter.h"
 #include "Block.h"
-#include "cajeta/ast/Scope.h"
+#include "cajeta/asn/Scope.h"
 #include "cajeta/type/CajetaType.h"
 #include <cajeta/type/Field.h>
 #include <queue>
@@ -57,7 +57,7 @@ namespace cajeta {
 
         const llvm::Twine& getCanonical() { return canonical; }
 
-        void generate(ParseContext* ctxParse) {
+        void generate(CompileContext* ctxParse) {
             llvm::GlobalValue::LinkageTypes linkage;
             if (modifiers.find(PUBLIC) != modifiers.end() || modifiers.find(PROTECTED) != modifiers.end()) {
                 linkage = llvm::Function::ExternalLinkage;
