@@ -149,7 +149,7 @@
 - Annotations
   - Like Java, have a version of annotations that act as markers
     - Example: Spring @Components, which are automatically instantiated by the Spring Framework
-  - Also feature injection annotation types with the ability to inject llvm IR with the following strategy:
+  - Also feature injection annotation structures with the ability to inject llvm IR with the following strategy:
     - When injection annotation is detected, 
       - The implementation annotation class will be JIT compiled 
       - Directly executed as part of the compilation process

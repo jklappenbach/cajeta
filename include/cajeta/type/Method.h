@@ -5,12 +5,11 @@
 #pragma once
 
 #include "cajeta/type/Modifiable.h"
-#include <cajeta/compile/CompileContext.h>
 #include <llvm/IR/BasicBlock.h>
 #include "cajeta/module/QualifiedName.h"
 #include "Annotatable.h"
 #include "cajeta/type/CajetaType.h"
-#include "cajeta/asn/FormalParameter.h"
+#include "FormalParameter.h"
 #include "Block.h"
 #include "cajeta/asn/Scope.h"
 #include "cajeta/type/CajetaType.h"
@@ -37,6 +36,7 @@ namespace cajeta {
         llvm::Function* function;
         Block* block;
         queue<Scope*> scope;
+        CajetaParser::MethodBodyContext* methodBodyContext;
     public:
         Method(string name, CajetaStructure* parent, CajetaType* returnType, list<FormalParameter*>& parameters,
                set<Modifier>& modifiers, set<QualifiedName*>& annotations);
@@ -57,24 +57,25 @@ namespace cajeta {
 
         const llvm::Twine& getCanonical() { return canonical; }
 
-        void generate(CompileContext* ctxParse) {
-            llvm::GlobalValue::LinkageTypes linkage;
-            if (modifiers.find(PUBLIC) != modifiers.end() || modifiers.find(PROTECTED) != modifiers.end()) {
-                linkage = llvm::Function::ExternalLinkage;
-            } else {
-                linkage = llvm::Function::PrivateLinkage;
-            }
-
-            bool staticMethod = modifiers.find(STATIC) != modifiers.end();
-            function = llvm::Function::Create(functionType, linkage, canonical,
-                                              ctxParse->getCompilationUnit()->getModule());
-
-            int i = 0;
-            for (FormalParameter* param : parameters) {
-                function->getArg(i)->setName(param->getName());
-            }
+        void generate(CompilationUnit* compilationUnit) {
+//            llvm::GlobalValue::LinkageTypes linkage;
+//            if (modifiers.find(PUBLIC) != modifiers.end() || modifiers.find(PROTECTED) != modifiers.end()) {
+//                linkage = llvm::Function::ExternalLinkage;
+//            } else {
+//                linkage = llvm::Function::PrivateLinkage;
+//            }
+//
+//            bool staticMethod = modifiers.find(STATIC) != modifiers.end();
+//            function = llvm::Function::Create(functionType, linkage, canonical,
+//                                              ctxParse->getCompilationUnit()->getModule());
+//
+//            int i = 0;
+//            for (FormalParameter* param : parameters) {
+//                function->getArg(i)->setName(param->getName());
+//            }
         }
 
+        // TODO: move this logic to compilationUnit / visitor
         llvm::AllocaInst* createEntryBlockAlloca(Field* field) {
             llvm::BasicBlock& entryBlock = function->getEntryBlock();
             llvm::IRBuilder<> entryBlockBuilder(&entryBlock, entryBlock.begin());
@@ -83,10 +84,15 @@ namespace cajeta {
             return alloca;
         }
 
-
-        void addBlock(Block* block) {
-
+        void setMethodBodyContext(CajetaParser::MethodBodyContext* methodBodyContext) {
+            this->methodBodyContext = methodBodyContext;
         }
+
+        CajetaParser::MethodBodyContext* getMethodBodyContext() {
+            return methodBodyContext;
+        }
+
+        void setBlock(Block* block);
     };
 }
 
