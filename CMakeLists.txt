@@ -37,7 +37,7 @@ add_definitions(${LLVM_DEFINITIONS})
 # Call macro to add lexer and grammar to your build dependencies.
 antlr_target(CajetaGrammarLexer ${CMAKE_CURRENT_SOURCE_DIR}/antlr4/CajetaLexer.g4 LEXER
              PACKAGE cajeta)
-antlr_target(CajetaGrammarParser ${CMAKE_CURRENT_SOURCE_DIR}/antlr4/CajetaParser.g4 PARSER LISTENER
+antlr_target(CajetaGrammarParser ${CMAKE_CURRENT_SOURCE_DIR}/antlr4/CajetaParser.g4 PARSER VISITOR
              PACKAGE cajeta
              DEPENDS_ANTLR CajetaGrammarLexer
              COMPILE_FLAGS -lib ${ANTLR_CajetaGrammarLexer_OUTPUT_DIR})

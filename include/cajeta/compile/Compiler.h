@@ -64,6 +64,12 @@ namespace cajeta {
         void setFeatures(const string& features) {
             this->features = features;
         }
+
+        static void reportError(antlr4::ParserRuleContext* ctx,
+                                string sourcePath,
+                                string errorId,
+                                string message);
+
     };
 
 } // cajeta
