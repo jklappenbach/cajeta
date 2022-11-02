@@ -5,8 +5,8 @@
 #pragma once
 
 #include "Modifiable.h"
-#include "cajeta/module/QualifiedName.h"
 #include "Annotatable.h"
+#include "cajeta/module/QualifiedName.h"
 #include <llvm/IR/LegacyPassManager.h>
 #include <llvm/IR/Module.h>
 #include <llvm/IR/IRBuilder.h>
@@ -28,7 +28,7 @@ namespace cajeta {
     class Field;
     class CompilationUnit;
 
-    class CajetaType {
+    class CajetaType : public Modifiable, public Annotatable {
     protected:
         bool array;
         QualifiedName* qName;
