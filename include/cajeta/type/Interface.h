@@ -9,7 +9,7 @@
 #include "cajeta/type/Field.h"
 
 namespace cajeta {
-    class Interface : public CajetaType, public Modifiable, public Annotatable {
-        Interface(QualifiedName* qName, set<Modifier>& modifiers) : Modifiable(modifiers), CajetaType(qName) { }
+    class Interface : public CajetaType {
+        Interface(QualifiedName* qName)  { }
     };
 }

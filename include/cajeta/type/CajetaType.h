@@ -76,6 +76,7 @@ namespace cajeta {
             return qName->toCanonical();
         }
 
+        static CajetaType* fromContext(CajetaParser::PrimitiveTypeContext* ctx);
         static CajetaType* fromContext(CajetaParser::TypeTypeOrVoidContext* ctx);
         static CajetaType* fromContext(CajetaParser::TypeTypeContext* ctx);
         static void init(llvm::LLVMContext& ctxLlvm);

@@ -38,7 +38,8 @@ namespace cajeta {
         queue<Scope*> scope;
         CajetaParser::MethodBodyContext* methodBodyContext;
     public:
-        Method(string name, CajetaStructure* parent, CajetaType* returnType, list<FormalParameter*>& parameters,
+        Method(string& name, CajetaType* returnType, list<FormalParameter*>& parameters);
+        Method(string& name, CajetaStructure* parent, CajetaType* returnType, list<FormalParameter*>& parameters,
                set<Modifier>& modifiers, set<QualifiedName*>& annotations);
 
         llvm::FunctionType* getFunctionType() { return functionType; }
@@ -56,7 +57,7 @@ namespace cajeta {
         }
 
         const llvm::Twine& getCanonical() { return canonical; }
-
+        void prototype();
         void generate(CompilationUnit* compilationUnit) {
 //            llvm::GlobalValue::LinkageTypes linkage;
 //            if (modifiers.find(PUBLIC) != modifiers.end() || modifiers.find(PROTECTED) != modifiers.end()) {

@@ -81,7 +81,7 @@ variableModifier
 
 classDeclaration
     : CLASS identifier typeParameters?
-      (EXTENDS typeType)?
+      (EXTENDS typeList)?
       (IMPLEMENTS typeList)?
       (PERMITS typeList)? // Java17
       classBody
@@ -572,10 +572,17 @@ expressionList
     : expression (',' expression)*
     ;
 
+parameterLabel
+    : identifier ':'
+    ;
+parameterList
+    : parameterLabel? expression (',' parameterLabel? expression)*
+    ;
+
 methodCall
-    : identifier '(' expressionList? ')'
-    | THIS '(' expressionList? ')'
-    | SUPER '(' expressionList? ')'
+    : identifier '(' parameterList? ')'
+    | THIS '(' parameterList? ')'
+    | SUPER '(' parameterList? ')'
     ;
 
 expression

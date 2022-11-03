@@ -66,6 +66,8 @@ add_executable(cajeta
         include/cajeta/compile/Compiler.cpp include/cajeta/compile/Compiler.h
         include/cajeta/type/CajetaStructure.cpp include/cajeta/type/CajetaStructure.h
         include/cajeta/type/FormalParameter.h include/cajeta/type/FormalParameter.cpp
+        include/cajeta/asn/Block.h include/cajeta/asn/Block.cpp
+        include/cajeta/asn/BlockStatement.h include/cajeta/asn/BlockStatement.cpp
         )
 
 message(STATUS "Found LLVM ${LLVM_PACKAGE_VERSION}")

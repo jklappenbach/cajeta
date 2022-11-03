@@ -16,16 +16,28 @@ namespace cajeta {
         set<Modifier> modifiers;
     public:
         Modifiable() { }
+
         Modifiable(set<Modifier>& modifiers) {
             this->modifiers.insert(modifiers.begin(), modifiers.end());
         }
+
         void addModifier(Modifier modifier) {
             modifiers.insert(modifier);
         }
+
         void addModifiers(const set<Modifier>& modifiers) {
             this->modifiers.insert(modifiers.begin(), modifiers.end());
         }
+
+        void addModifier(string str) {
+            Modifier modifier = toModifier(str);
+            if (modifier != NONE) {
+                modifiers.insert(modifier);
+            }
+        }
+
         set<Modifier>& getModifiers() { return modifiers; }
+
         static Modifier toModifier(string value) {
             if (value == "public") {
                 return PUBLIC;
