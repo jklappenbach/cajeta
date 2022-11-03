@@ -6,7 +6,7 @@
 
 #include <set>
 #include <list>
-#include "cajeta/module/QualifiedName.h"
+#include "QualifiedName.h"
 #include "Modifiable.h"
 #include "Annotatable.h"
 #include "llvm/IR/IRBuilder.h"

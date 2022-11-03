@@ -4,7 +4,7 @@
 
 #pragma once
 #include <set>
-#include "cajeta/module/QualifiedName.h"
+#include "QualifiedName.h"
 
 using namespace std;
 
@@ -15,7 +15,7 @@ namespace cajeta {
     public:
         Annotatable() { }
         Annotatable(set<QualifiedName*>& src) {
-            annotations.merge(src);
+            annotations.insert(src.begin(), src.end());
         }
         void addAnnotation(QualifiedName* qName) {
             annotations.insert(qName);

@@ -60,7 +60,7 @@ add_executable(cajeta
         include/cajeta/type/CajetaType.cpp include/cajeta/type/CajetaType.h
         include/cajeta/type/Interface.h include/cajeta/type/Interface.cpp
         include/cajeta/type/CajetaClass.cpp include/cajeta/type/CajetaClass.h
-        include/cajeta/module/QualifiedName.h include/cajeta/type/QualifiedName.cpp
+        include/cajeta/type/QualifiedName.h include/cajeta/type/QualifiedName.cpp
         include/cajeta/asn/AbstractSyntaxNode.cpp include/cajeta/asn/AbstractSyntaxNode.h
         include/cajeta/compile/CompilationUnit.cpp include/cajeta/compile/CompilationUnit.h
         include/cajeta/compile/Compiler.cpp include/cajeta/compile/Compiler.h

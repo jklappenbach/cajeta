@@ -6,7 +6,7 @@
 
 #include "Modifiable.h"
 #include "Annotatable.h"
-#include "cajeta/module/QualifiedName.h"
+#include "QualifiedName.h"
 #include <llvm/IR/LegacyPassManager.h>
 #include <llvm/IR/Module.h>
 #include <llvm/IR/IRBuilder.h>
@@ -29,14 +29,14 @@ namespace cajeta {
     class CompilationUnit;
 
     class CajetaType : public Modifiable, public Annotatable {
+    private:
+        static map<string, CajetaType*> archive;
     protected:
         bool array;
         QualifiedName* qName;
         llvm::Type* llvmType;
         llvm::Twine canonical;
     public:
-        static map<QualifiedName*, CajetaType*> types;
-
         CajetaType() {
             llvmType = nullptr;
         }
@@ -48,7 +48,7 @@ namespace cajeta {
             if (array) {
                 canonical.concat("[]");
             }
-            types[qName] = this;
+            archive[qName->toCanonical().str()] = this;
         }
 
         CajetaType(QualifiedName* qName, llvm::Type* llvmType, bool array = false) {
@@ -59,7 +59,7 @@ namespace cajeta {
             if (array) {
                 canonical.concat("[]");
             }
-            types[qName] = this;
+            archive[qName->toCanonical().str()] = this;
         }
 
         QualifiedName* getQName() const {
@@ -79,6 +79,7 @@ namespace cajeta {
         static CajetaType* fromContext(CajetaParser::PrimitiveTypeContext* ctx);
         static CajetaType* fromContext(CajetaParser::TypeTypeOrVoidContext* ctx);
         static CajetaType* fromContext(CajetaParser::TypeTypeContext* ctx);
+        static map<string, CajetaType*>& getArchive();
         static void init(llvm::LLVMContext& ctxLlvm);
     };
 }

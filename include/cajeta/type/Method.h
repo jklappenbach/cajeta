@@ -6,7 +6,7 @@
 
 #include "cajeta/type/Modifiable.h"
 #include <llvm/IR/BasicBlock.h>
-#include "cajeta/module/QualifiedName.h"
+#include "QualifiedName.h"
 #include "Annotatable.h"
 #include "cajeta/type/CajetaType.h"
 #include "FormalParameter.h"
@@ -22,9 +22,11 @@ using namespace std;
 namespace cajeta {
     class Block;
     class CajetaStructure;
+    class CompilationUnit;
 
     class Method : public Modifiable, public Annotatable {
     private:
+        static map<string, Method*> archive;
         llvm::Twine canonical;
         string name;
         CajetaStructure* parent;
@@ -38,9 +40,10 @@ namespace cajeta {
         queue<Scope*> scope;
         CajetaParser::MethodBodyContext* methodBodyContext;
     public:
-        Method(string& name, CajetaType* returnType, list<FormalParameter*>& parameters);
-        Method(string& name, CajetaStructure* parent, CajetaType* returnType, list<FormalParameter*>& parameters,
-               set<Modifier>& modifiers, set<QualifiedName*>& annotations);
+        Method(string& name,
+               CajetaType* returnType,
+               list<FormalParameter*>& parameters,
+               CompilationUnit* compilationUnit);
 
         llvm::FunctionType* getFunctionType() { return functionType; }
 
@@ -56,8 +59,8 @@ namespace cajeta {
             this->name = name;
         }
 
-        const llvm::Twine& getCanonical() { return canonical; }
-        void prototype();
+        const llvm::Twine& toCanonical() { return canonical; }
+
         void generate(CompilationUnit* compilationUnit) {
 //            llvm::GlobalValue::LinkageTypes linkage;
 //            if (modifiers.find(PUBLIC) != modifiers.end() || modifiers.find(PROTECTED) != modifiers.end()) {
@@ -94,6 +97,10 @@ namespace cajeta {
         }
 
         void setBlock(Block* block);
+
+
+        static map<string, Method*>& getArchive();
+        static llvm::Twine buildCanonical(CajetaStructure* parent, string name, list<FormalParameter*>& parameters);
     };
 }
 
