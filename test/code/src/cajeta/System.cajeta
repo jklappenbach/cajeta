@@ -5,7 +5,8 @@ public final class System {
     private int32 x;
 
     public static void main() {
-        value = 5;
-        value = #x;
+        int32 i = 0;
+        i++;
+        i += 5;
     }
 }
