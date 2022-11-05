@@ -63,6 +63,12 @@
                                                             (identifier i))) ++) ;))
                                         (blockStatement
                                             (statement
+                                                (expression ++
+                                                    (expression
+                                                        (primary
+                                                            (identifier i)))) ;))
+                                        (blockStatement
+                                            (statement
                                                 (expression
                                                     (expression
                                                         (primary

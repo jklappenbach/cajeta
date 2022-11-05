@@ -4,15 +4,15 @@
 
 #pragma once
 
-#include "cajeta/type/Modifiable.h"
+#include <cajeta/type/Modifiable.h>
 #include <llvm/IR/BasicBlock.h>
-#include "QualifiedName.h"
-#include "Annotatable.h"
-#include "cajeta/type/CajetaType.h"
-#include "FormalParameter.h"
-#include "Block.h"
-#include "cajeta/asn/Scope.h"
-#include "cajeta/type/CajetaType.h"
+#include <cajeta/type/QualifiedName.h>
+#include <cajeta/type/Annotatable.h>
+#include <cajeta/type/CajetaType.h>
+#include <cajeta/type/FormalParameter.h>
+#include <cajeta/asn/Block.h>
+#include <cajeta/asn/Scope.h>
+#include <cajeta/type/CajetaType.h>
 #include <cajeta/type/Field.h>
 #include <queue>
 #include <map>
@@ -20,7 +20,6 @@
 using namespace std;
 
 namespace cajeta {
-    class Block;
     class CajetaStructure;
     class CompilationUnit;
 
@@ -43,6 +42,7 @@ namespace cajeta {
         Method(string& name,
                CajetaType* returnType,
                list<FormalParameter*>& parameters,
+               Block* block,
                CompilationUnit* compilationUnit);
 
         llvm::FunctionType* getFunctionType() { return functionType; }
