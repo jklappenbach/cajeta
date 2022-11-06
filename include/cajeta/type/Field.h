@@ -19,27 +19,38 @@ using namespace std;
 
 namespace cajeta {
     class CajetaType;
+    class Initializer;
 
     class Field : public Modifiable, public Annotatable {
         bool reference;
         bool var;
         string name;
+        int arrayDimension;
+        Initializer* initializer;
         cajeta::CajetaType* type;
-        llvm::AllocaInst* stackInstance;
+        llvm::AllocaInst* allocaInst;
     public:
-        Field(string& name, CajetaType* type) {
+        Field(string name, CajetaType* type) {
             this->name = name;
             this->type = type;
         }
-        Field(string& name, CajetaType* type, bool reference, set<Modifier>& modifiers,
-              set<QualifiedName*>& annotations) : Modifiable(modifiers), Annotatable(annotations) {
+        Field(string name,
+              CajetaType* type,
+              int arrayDimension,
+              bool reference,
+              Initializer* initializer,
+              set<Modifier> modifiers,
+              set<QualifiedName*> annotations) : Modifiable(modifiers), Annotatable(annotations) {
             this->name = name;
+            this->arrayDimension = arrayDimension;
+            this->initializer = initializer;
             this->type = type;
             this->reference = reference;
         }
-        Field(string& name, bool reference) {
+        Field(string& name, bool reference, int arrayDimension = 0) {
             this->name = name;
             this->reference = reference;
+            this->arrayDimension = arrayDimension;
         }
 
         bool isReference() const {

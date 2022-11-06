@@ -238,7 +238,7 @@ variableDeclarators
     ;
 
 variableDeclarator
-    : variableDeclaratorId ('=' variableInitializer)?
+    : variableDeclaratorId ('=' (REFERENCE variableInitializer | variableInitializer))?
     ;
 
 variableDeclaratorId
@@ -284,7 +284,7 @@ formalParameterList
     ;
 
 formalParameter
-    : variableModifier* typeType variableDeclaratorId
+    : variableModifier* typeType variableDeclaratorId (ASSIGN expression)?
     ;
 
 lastFormalParameter
@@ -452,7 +452,7 @@ blockStatement
     ;
 
 localVariableDeclaration
-    : variableModifier* (typeType variableDeclarators | VAR identifier '=' expression)
+    : variableModifier* (typeType variableDeclarators | VAR identifier '=' REFERENCE? expression)
     ;
 
 identifier
@@ -587,7 +587,6 @@ methodCall
 
 expression
     : primary
-    | REFERENCE primary
     | expression bop='.'
       (
          identifier

@@ -32,47 +32,36 @@ namespace cajeta {
     private:
         static map<string, CajetaType*> archive;
     protected:
-        bool array;
         QualifiedName* qName;
         llvm::Type* llvmType;
-        llvm::Twine canonical;
+        string canonical;
     public:
         CajetaType() {
             llvmType = nullptr;
         }
 
-        CajetaType(QualifiedName* qName, bool array = false) {
+        CajetaType(QualifiedName* qName) {
             this->qName = qName;
-            this->array = array;
-            canonical.concat(qName->toCanonical());
-            if (array) {
-                canonical.concat("[]");
-            }
-            archive[qName->toCanonical().str()] = this;
+            canonical = qName->toCanonical();
+            archive[canonical] = this;
         }
 
-        CajetaType(QualifiedName* qName, llvm::Type* llvmType, bool array = false) {
+        CajetaType(QualifiedName* qName, llvm::Type* llvmType) {
             this->qName = qName;
             this->llvmType = llvmType;
-            this->array = array;
-            canonical.concat(qName->toCanonical());
-            if (array) {
-                canonical.concat("[]");
-            }
-            archive[qName->toCanonical().str()] = this;
+            canonical = qName->toCanonical();
+            archive[canonical] = this;
         }
 
         QualifiedName* getQName() const {
             return qName;
         }
 
-        bool isArray() { return array; }
-
         virtual llvm::Type* getLlvmType() {
             return llvmType;
         }
 
-        const llvm::Twine& toCanonical() {
+        const string& toCanonical() {
             return qName->toCanonical();
         }
 

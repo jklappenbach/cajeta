@@ -23,10 +23,10 @@ namespace cajeta {
     class CajetaStructure;
     class CompilationUnit;
 
-    class Method : public Modifiable, public Annotatable {
+    class Method : public Modifiable, public Annotatable, public AbstractSyntaxNode {
     private:
         static map<string, Method*> archive;
-        llvm::Twine canonical;
+        string canonical;
         string name;
         CajetaStructure* parent;
         CajetaType* returnType;
@@ -43,7 +43,7 @@ namespace cajeta {
                CajetaType* returnType,
                list<FormalParameter*>& parameters,
                Block* block,
-               CompilationUnit* compilationUnit);
+               CajetaStructure* parent);
 
         llvm::FunctionType* getFunctionType() { return functionType; }
 
@@ -59,25 +59,9 @@ namespace cajeta {
             this->name = name;
         }
 
-        const llvm::Twine& toCanonical() { return canonical; }
+        const string& toCanonical() { return canonical; }
 
-        void generate(CompilationUnit* compilationUnit) {
-//            llvm::GlobalValue::LinkageTypes linkage;
-//            if (modifiers.find(PUBLIC) != modifiers.end() || modifiers.find(PROTECTED) != modifiers.end()) {
-//                linkage = llvm::Function::ExternalLinkage;
-//            } else {
-//                linkage = llvm::Function::PrivateLinkage;
-//            }
-//
-//            bool staticMethod = modifiers.find(STATIC) != modifiers.end();
-//            function = llvm::Function::Create(functionType, linkage, canonical,
-//                                              ctxParse->getCompilationUnit()->getModule());
-//
-//            int i = 0;
-//            for (FormalParameter* param : parameters) {
-//                function->getArg(i)->setName(param->getName());
-//            }
-        }
+        void generateSignature(CompilationUnit* compilationUnit) override;
 
         // TODO: move this logic to compilationUnit / visitor
         llvm::AllocaInst* createEntryBlockAlloca(Field* field) {
@@ -100,7 +84,13 @@ namespace cajeta {
 
 
         static map<string, Method*>& getArchive();
-        static llvm::Twine buildCanonical(CajetaStructure* parent, string name, list<FormalParameter*>& parameters);
+        static string buildCanonical(CajetaStructure* parent,
+                                          string name,
+                                          list<FormalParameter*>& parameters);
+
+        llvm::Value* generateCode(CompilationUnit* compilationUnit) override {
+            return nullptr;
+        }
     };
 }
 
