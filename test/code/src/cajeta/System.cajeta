@@ -5,7 +5,7 @@ public final class System extends Alpha, Beta implements Gamma, Delta {
     private int32 x = 5;
 
     public static void main() {
-        int32 value = #x;
+        final int32 value = 5;
         int32 i = 0;
         //value = #i;
         i++;

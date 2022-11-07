@@ -21,23 +21,23 @@ using namespace std;
 
 namespace cajeta {
     class CajetaStructure;
-    class CompilationUnit;
+    class CajetaModule;
 
-    class Method : public Modifiable, public Annotatable, public AbstractSyntaxNode {
+    class Method : public Modifiable, public Annotatable {
     private:
         static map<string, Method*> archive;
         string canonical;
         string name;
         CajetaStructure* parent;
         CajetaType* returnType;
+        Block* block;
+        list<Scope*> scopes;
+        CajetaParser::MethodBodyContext* methodBodyContext;
         bool constructor;
         list<FormalParameter*> parameters;
-        map<string, llvm::AllocaInst*> localVariables;
-        llvm::FunctionType* functionType;
-        llvm::Function* function;
-        Block* block;
-        queue<Scope*> scope;
-        CajetaParser::MethodBodyContext* methodBodyContext;
+        llvm::FunctionType* llvmFunctionType;
+        llvm::Function* llvmFunction;
+        llvm::BasicBlock* llvmBasicBlock;
     public:
         Method(string& name,
                CajetaType* returnType,
@@ -45,7 +45,8 @@ namespace cajeta {
                Block* block,
                CajetaStructure* parent);
 
-        llvm::FunctionType* getFunctionType() { return functionType; }
+        llvm::FunctionType* getLlvmFunctionType() { return llvmFunctionType; }
+        llvm::Function* getLlvmFunction() { return llvmFunction; }
 
         bool isConstructor() { return constructor; }
 
@@ -61,16 +62,16 @@ namespace cajeta {
 
         const string& toCanonical() { return canonical; }
 
-        void generateSignature(CompilationUnit* compilationUnit) override;
+        void generateSignature(CajetaModule* compilationUnit);
 
-        // TODO: move this logic to compilationUnit / visitor
-        llvm::AllocaInst* createEntryBlockAlloca(Field* field) {
-            llvm::BasicBlock& entryBlock = function->getEntryBlock();
-            llvm::IRBuilder<> entryBlockBuilder(&entryBlock, entryBlock.begin());
-
-            llvm::AllocaInst* alloca = field->createStackInstance(entryBlockBuilder);
-            return alloca;
-        }
+//        // TODO: move this logic to compilationUnit / visitor
+//        llvm::AllocaInst* createEntryBlockAlloca(Field* field) {
+//            llvm::BasicBlock& entryBlock = llvmFunction->getEntryBlock();
+//            llvm::IRBuilder<> entryBlockBuilder(&entryBlock, entryBlock.begin());
+//
+//            llvm::AllocaInst* alloca = field->createStackInstance(entryBlockBuilder);
+//            return alloca;
+//        }
 
         void setMethodBodyContext(CajetaParser::MethodBodyContext* methodBodyContext) {
             this->methodBodyContext = methodBodyContext;
@@ -82,15 +83,28 @@ namespace cajeta {
 
         void setBlock(Block* block);
 
+        void pushScope() {
+            scopes.push_back(new Scope());
+        }
+
+        void popScope() {
+            scopes.pop_back();
+        }
+
+        void createLocalField(Field* field);
+        void setLocalField(string name, llvm::Value* value);
+
+        Field* getLocalField(string name) {
+            Scope* scope = scopes.back();
+            return scope->getField(name);
+        }
 
         static map<string, Method*>& getArchive();
         static string buildCanonical(CajetaStructure* parent,
                                           string name,
                                           list<FormalParameter*>& parameters);
 
-        llvm::Value* generateCode(CompilationUnit* compilationUnit) override {
-            return nullptr;
-        }
+        void generateCode(CajetaModule* compilationUnit);
     };
 }
 

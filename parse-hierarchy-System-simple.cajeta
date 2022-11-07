@@ -6,7 +6,21 @@
             (classOrInterfaceModifier public)
             (classOrInterfaceModifier final)
             (classDeclaration class
-                (identifier System)
+                (identifier System) extends
+                (typeList
+                    (typeType
+                        (classOrInterfaceType
+                            (identifier Alpha))) ,
+                    (typeType
+                        (classOrInterfaceType
+                            (identifier Beta)))) implements
+                (typeList
+                    (typeType
+                        (classOrInterfaceType
+                            (identifier Gamma))) ,
+                    (typeType
+                        (classOrInterfaceType
+                            (identifier Delta))))
                 (classBody {
                     (classBodyDeclaration
                         (modifier
@@ -29,7 +43,12 @@
                                 (variableDeclarators
                                     (variableDeclarator
                                         (variableDeclaratorId
-                                            (identifier x)))) ;)))
+                                            (identifier x)) =
+                                        (variableInitializer
+                                            (expression
+                                                (primary
+                                                    (literal
+                                                        (integerLiteral 5))))))) ;)))
                     (classBodyDeclaration
                         (modifier
                             (classOrInterfaceModifier public))
@@ -42,6 +61,18 @@
                                 (formalParameters ( ))
                                 (methodBody
                                     (block {
+                                        (blockStatement
+                                            (localVariableDeclaration
+                                                (typeType
+                                                    (primitiveType int32))
+                                                (variableDeclarators
+                                                    (variableDeclarator
+                                                        (variableDeclaratorId
+                                                            (identifier value)) = #
+                                                        (variableInitializer
+                                                            (expression
+                                                                (primary
+                                                                    (identifier x))))))) ;)
                                         (blockStatement
                                             (localVariableDeclaration
                                                 (typeType

@@ -38,6 +38,20 @@ namespace cajeta {
               CajetaType* type,
               int arrayDimension,
               bool reference,
+              set<Modifier> modifiers,
+              Initializer* initializer,
+              llvm::AllocaInst* allocaInst) : Modifiable(modifiers) {
+            this->name = name;
+            this->arrayDimension = arrayDimension;
+            this->initializer = initializer;
+            this->type = type;
+            this->reference = reference;
+            this->allocaInst = allocaInst;
+        }
+        Field(string name,
+              CajetaType* type,
+              int arrayDimension,
+              bool reference,
               Initializer* initializer,
               set<Modifier> modifiers,
               set<QualifiedName*> annotations) : Modifiable(modifiers), Annotatable(annotations) {
@@ -68,6 +82,8 @@ namespace cajeta {
         CajetaType* getType() const {
             return type;
         }
+
+        llvm::AllocaInst* getAllocaInst() const;
 
         llvm::AllocaInst* createStackInstance(llvm::IRBuilder<>& builder);
 

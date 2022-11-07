@@ -18,10 +18,12 @@
 #include "CajetaLexer.h"
 #include "CajetaParser.h"
 #include <string>
+#include <cajeta/exception/Exception.h>
 
 using namespace std;
 namespace cajeta {
-
+    class CajetaModule;
+    class AbstractSyntaxNode;
     class Compiler {
     private:
         string targetTriple;
@@ -69,12 +71,5 @@ namespace cajeta {
         void setFeatures(const string& features) {
             this->features = features;
         }
-
-        static void reportError(antlr4::ParserRuleContext* ctx,
-                                string sourcePath,
-                                string errorId,
-                                string message);
-
     };
-
 } // cajeta

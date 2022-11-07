@@ -26,7 +26,7 @@ namespace cajeta {
 
     class Method;
     class Field;
-    class CompilationUnit;
+    class CajetaModule;
 
     class CajetaType : public Modifiable, public Annotatable {
     private:
