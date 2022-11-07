@@ -13,13 +13,12 @@
 #include "llvm/IR/LLVMContext.h"
 #include <llvm/IR/IRBuilder.h>
 
-
-
 using namespace std;
 
 namespace cajeta {
     class CajetaType;
     class Initializer;
+    class CajetaModule;
 
     class Field : public Modifiable, public Annotatable {
         bool reference;
@@ -39,14 +38,13 @@ namespace cajeta {
               int arrayDimension,
               bool reference,
               set<Modifier> modifiers,
-              Initializer* initializer,
-              llvm::AllocaInst* allocaInst) : Modifiable(modifiers) {
+              Initializer* initializer) : Modifiable(modifiers) {
             this->name = name;
             this->arrayDimension = arrayDimension;
             this->initializer = initializer;
             this->type = type;
             this->reference = reference;
-            this->allocaInst = allocaInst;
+            this->allocaInst = nullptr;
         }
         Field(string name,
               CajetaType* type,
@@ -83,9 +81,7 @@ namespace cajeta {
             return type;
         }
 
-        llvm::AllocaInst* getAllocaInst() const;
-
-        llvm::AllocaInst* createStackInstance(llvm::IRBuilder<>& builder);
+        llvm::AllocaInst* createAllocaInst(CajetaModule* module);
 
         static list<Field*> fromContext(CajetaParser::FieldDeclarationContext* ctx);
     };

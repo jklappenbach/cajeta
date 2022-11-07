@@ -35,6 +35,8 @@ namespace cajeta {
         CajetaParser::MethodBodyContext* methodBodyContext;
         bool constructor;
         list<FormalParameter*> parameters;
+
+        llvm::IRBuilder<>* builder;
         llvm::FunctionType* llvmFunctionType;
         llvm::Function* llvmFunction;
         llvm::BasicBlock* llvmBasicBlock;
@@ -91,8 +93,8 @@ namespace cajeta {
             scopes.pop_back();
         }
 
-        void createLocalField(Field* field);
-        void setLocalField(string name, llvm::Value* value);
+        void createLocalVariable(CajetaModule* module, Field* field);
+        void setLocalField(CajetaModule* module, string name, llvm::Value* value);
 
         Field* getLocalField(string name) {
             Scope* scope = scopes.back();

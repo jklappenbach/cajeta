@@ -68,7 +68,7 @@ add_executable(cajeta
         include/cajeta/type/FormalParameter.h include/cajeta/type/FormalParameter.cpp
         include/cajeta/asn/Block.h include/cajeta/asn/Block.cpp
         include/cajeta/asn/BlockStatement.h include/cajeta/asn/BlockStatement.cpp
-        include/cajeta/asn/VariableDeclarator.cpp include/cajeta/asn/VariableDeclarator.h include/cajeta/asn/LocalVariableDeclaration.cpp include/cajeta/asn/LocalVariableDeclaration.h include/cajeta/asn/ClassBodyDeclaration.cpp include/cajeta/asn/ClassBodyDeclaration.h include/cajeta/exception/Exception.cpp include/cajeta/exception/Exception.h include/cajeta/exception/VariableAssignmentException.cpp include/cajeta/exception/VariableAssignmentException.h include/cajeta/exception/CajetaExceptions.h include/cajeta/logging/CajetaLogger.cpp include/cajeta/logging/CajetaLogger.h)
+        include/cajeta/asn/VariableDeclarator.cpp include/cajeta/asn/VariableDeclarator.h include/cajeta/asn/LocalVariableDeclaration.cpp include/cajeta/asn/LocalVariableDeclaration.h include/cajeta/asn/ClassBodyDeclaration.cpp include/cajeta/asn/ClassBodyDeclaration.h include/cajeta/exception/Exception.cpp include/cajeta/exception/Exception.h include/cajeta/exception/VariableAssignmentException.cpp include/cajeta/exception/VariableAssignmentException.h include/cajeta/exception/CajetaExceptions.h include/cajeta/logging/CajetaLogger.cpp include/cajeta/logging/CajetaLogger.h include/cajeta/util/LiteralUtils.cpp include/cajeta/util/LiteralUtils.h)
 
 message(STATUS "Found LLVM ${LLVM_PACKAGE_VERSION}")
 message(STATUS "Using LLVMConfig.cmake in: ${LLVM_DIR}")
