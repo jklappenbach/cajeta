@@ -64,47 +64,41 @@
                                         (blockStatement
                                             (localVariableDeclaration
                                                 (typeType
-                                                    (primitiveType int32))
+                                                    (classOrInterfaceType
+                                                        (identifier System)))
                                                 (variableDeclarators
                                                     (variableDeclarator
                                                         (variableDeclaratorId
-                                                            (identifier value)) = #
+                                                            (identifier instance)) =
                                                         (variableInitializer
-                                                            (expression
-                                                                (primary
-                                                                    (identifier x))))))) ;)
-                                        (blockStatement
-                                            (localVariableDeclaration
-                                                (typeType
-                                                    (primitiveType int32))
-                                                (variableDeclarators
-                                                    (variableDeclarator
-                                                        (variableDeclaratorId
-                                                            (identifier i)) =
-                                                        (variableInitializer
-                                                            (expression
-                                                                (primary
-                                                                    (literal
-                                                                        (integerLiteral 0)))))))) ;)
+                                                            (expression new
+                                                                (creator
+                                                                    (createdName
+                                                                        (identifier System))
+                                                                    (classCreatorRest
+                                                                        (arguments ( ))))))))) ;)
                                         (blockStatement
                                             (statement
                                                 (expression
                                                     (expression
-                                                        (primary
-                                                            (identifier i))) ++) ;))
-                                        (blockStatement
-                                            (statement
-                                                (expression ++
-                                                    (expression
-                                                        (primary
-                                                            (identifier i)))) ;))
-                                        (blockStatement
-                                            (statement
-                                                (expression
-                                                    (expression
-                                                        (primary
-                                                            (identifier i))) +=
+                                                        (expression
+                                                            (primary
+                                                                (identifier instance))) .
+                                                        (identifier value)) =
                                                     (expression
                                                         (primary
                                                             (literal
-                                                                (integerLiteral 5))))) ;)) }))))) }))))
+                                                                (integerLiteral 20))))) ;))
+                                        (blockStatement
+                                            (statement
+                                                (expression
+                                                    (expression
+                                                        (expression
+                                                            (primary
+                                                                (identifier instance))) .
+                                                        (identifier x)) =
+                                                    (expression
+                                                        (expression
+                                                            (primary
+                                                                (identifier instance))) .
+                                                        (identifier value))) ;)) }))))) }))))

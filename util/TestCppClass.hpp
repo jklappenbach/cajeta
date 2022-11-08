@@ -4,8 +4,6 @@
 
 #pragma once
 
-#include <string>
-
 class TestCppClass {
 private:
     int alpha;

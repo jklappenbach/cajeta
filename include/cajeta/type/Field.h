@@ -81,7 +81,7 @@ namespace cajeta {
             return type;
         }
 
-        llvm::AllocaInst* createAllocaInst(CajetaModule* module);
+        llvm::AllocaInst* getOrCreateAllocaInst(CajetaModule* module);
 
         static list<Field*> fromContext(CajetaParser::FieldDeclarationContext* ctx);
     };

@@ -28,7 +28,7 @@ include_directories(${ANTLR4_INCLUDE_DIRS})
 # this is not required if the jar file can be found under PATH environment
 set(ANTLR_EXECUTABLE /Users/julian/code/antlr4/tool/target/antlr4-4.9.4-SNAPSHOT-complete.jar)
 
-# add macros to codegen ANTLR Cpp code from grammar
+# add macros to codegen ANTLR Cpp code of grammar
 find_package(ANTLR REQUIRED)
 find_package(LLVM REQUIRED CONFIG)
 include_directories(${LLVM_INCLUDE_DIRS})
@@ -51,7 +51,7 @@ include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include)
 add_executable(cajeta
         ${ANTLR_CajetaGrammarLexer_CXX_OUTPUTS}
         ${ANTLR_CajetaGrammarParser_CXX_OUTPUTS}
-        src/main.cpp include/cajeta/asn/Scope.h include/cajeta/asn/Scope.cpp
+        src/main.cpp include/cajeta/type/Scope.h include/cajeta/type/Scope.cpp
         include/cajeta/asn/Statement.cpp include/cajeta/asn/Statement.h
         include/cajeta/type/Generics.cpp include/cajeta/type/Generics.h
         include/cajeta/type/Method.cpp include/cajeta/type/Method.h

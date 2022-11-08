@@ -11,7 +11,7 @@
 #include <cajeta/type/CajetaType.h>
 #include <cajeta/type/FormalParameter.h>
 #include <cajeta/asn/Block.h>
-#include <cajeta/asn/Scope.h>
+#include "Scope.h"
 #include <cajeta/type/CajetaType.h>
 #include <cajeta/type/Field.h>
 #include <queue>
@@ -22,6 +22,7 @@ using namespace std;
 namespace cajeta {
     class CajetaStructure;
     class CajetaModule;
+    class Expression;
 
     class Method : public Modifiable, public Annotatable {
     private:
@@ -32,7 +33,6 @@ namespace cajeta {
         CajetaType* returnType;
         Block* block;
         list<Scope*> scopes;
-        CajetaParser::MethodBodyContext* methodBodyContext;
         bool constructor;
         list<FormalParameter*> parameters;
 
@@ -45,6 +45,10 @@ namespace cajeta {
                CajetaType* returnType,
                list<FormalParameter*>& parameters,
                Block* block,
+               CajetaStructure* parent);
+
+        Method(string& name,
+               CajetaType* returnType,
                CajetaStructure* parent);
 
         llvm::FunctionType* getLlvmFunctionType() { return llvmFunctionType; }
@@ -64,24 +68,7 @@ namespace cajeta {
 
         const string& toCanonical() { return canonical; }
 
-        void generateSignature(CajetaModule* compilationUnit);
-
-//        // TODO: move this logic to compilationUnit / visitor
-//        llvm::AllocaInst* createEntryBlockAlloca(Field* field) {
-//            llvm::BasicBlock& entryBlock = llvmFunction->getEntryBlock();
-//            llvm::IRBuilder<> entryBlockBuilder(&entryBlock, entryBlock.begin());
-//
-//            llvm::AllocaInst* alloca = field->createStackInstance(entryBlockBuilder);
-//            return alloca;
-//        }
-
-        void setMethodBodyContext(CajetaParser::MethodBodyContext* methodBodyContext) {
-            this->methodBodyContext = methodBodyContext;
-        }
-
-        CajetaParser::MethodBodyContext* getMethodBodyContext() {
-            return methodBodyContext;
-        }
+        void generatePrototype(CajetaModule* module);
 
         void setBlock(Block* block);
 
@@ -94,19 +81,18 @@ namespace cajeta {
         }
 
         void createLocalVariable(CajetaModule* module, Field* field);
-        void setLocalField(CajetaModule* module, string name, llvm::Value* value);
+        void setLocalVariable(CajetaModule* module, string name, llvm::Value* value);
 
-        Field* getLocalField(string name) {
+        Field* getLocalVariable(string name) {
             Scope* scope = scopes.back();
             return scope->getField(name);
         }
+        void generateCode(CajetaModule* compilationUnit);
 
         static map<string, Method*>& getArchive();
-        static string buildCanonical(CajetaStructure* parent,
-                                          string name,
-                                          list<FormalParameter*>& parameters);
+        static string buildCanonical(CajetaStructure* parent, string name, list<FormalParameter*>& parameters);
+        static string buildCanonical(CajetaStructure* parent, string name, list<CajetaType*>& parameters);
 
-        void generateCode(CajetaModule* compilationUnit);
     };
 }
 
