@@ -21,17 +21,22 @@ namespace cajeta {
     class CajetaModule;
 
     class Field : public Modifiable, public Annotatable {
+    private:
         bool reference;
         bool var;
         string name;
         int arrayDimension;
         Initializer* initializer;
         cajeta::CajetaType* type;
-        llvm::AllocaInst* allocaInst;
+        llvm::Value* allocation;
+
     public:
         Field(string name, CajetaType* type) {
             this->name = name;
             this->type = type;
+        }
+        Field(string name, llvm::Value* allocation) {
+            
         }
         Field(string name,
               CajetaType* type,
@@ -44,7 +49,7 @@ namespace cajeta {
             this->initializer = initializer;
             this->type = type;
             this->reference = reference;
-            this->allocaInst = nullptr;
+            this->allocation = nullptr;
         }
         Field(string name,
               CajetaType* type,
@@ -65,6 +70,8 @@ namespace cajeta {
             this->arrayDimension = arrayDimension;
         }
 
+        virtual void onDelete() { }
+
         bool isReference() const {
             return reference;
         }
@@ -81,7 +88,11 @@ namespace cajeta {
             return type;
         }
 
-        llvm::AllocaInst* getOrCreateAllocaInst(CajetaModule* module);
+        void setHeapAllocation(llvm::Value* allocation) {
+            this->allocation = allocation;
+        }
+
+        llvm::Value* getOrCreateStackAllocation(CajetaModule* module);
 
         static list<Field*> fromContext(CajetaParser::FieldDeclarationContext* ctx);
     };

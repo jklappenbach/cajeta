@@ -53,6 +53,8 @@ namespace cajeta {
             archive[canonical] = this;
         }
 
+        virtual bool isPrimitive() { return true; }
+
         QualifiedName* getQName() const {
             return qName;
         }

@@ -9,7 +9,7 @@
 namespace cajeta {
     class CajetaEnum : public CajetaStructure {
         CajetaEnum(llvm::LLVMContext* llvmContext, QualifiedName* qName, set<Modifier>& modifiers) :
-                CajetaStructure(llvmContext, qName, modifiers) {
+                CajetaStructure(llvmContext, qName) {
         }
     };
 }

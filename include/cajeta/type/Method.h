@@ -72,11 +72,13 @@ namespace cajeta {
 
         void setBlock(Block* block);
 
-        void pushScope() {
+        void createScope() {
             scopes.push_back(new Scope());
         }
 
-        void popScope() {
+        void destroyScope() {
+            Scope* scope = scopes.back();
+            delete scope;
             scopes.pop_back();
         }
 
