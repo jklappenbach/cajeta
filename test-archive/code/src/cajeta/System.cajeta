@@ -1,0 +1,15 @@
+package cajeta;
+
+public final class System extends Alpha, Beta implements Gamma, Delta {
+    private int32 value;
+    private int32 x = 5;
+
+    public static void main() {
+        final int32 first = 5;
+        int32 second = first;
+        //value = #i;
+        second++;
+        ++second;
+        first += 5;
+    }
+}

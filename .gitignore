@@ -12,7 +12,6 @@ cmake_install.cmake
 CMakeCache.txt
 Makefile
 Testing
-cajeta
 gen/
 *.gch
 *.ll
