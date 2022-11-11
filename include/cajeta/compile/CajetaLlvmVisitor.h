@@ -82,7 +82,7 @@ namespace cajeta {
             QualifiedName* qName = QualifiedName::getOrInsert(name, module->getQName()->getPackageName()
                                                                     + packageAdj);
             CajetaStructure* structure;
-            structure = new CajetaClass(module->getLlvmContext(), qName);
+            structure = new CajetaClass(module, qName);
             module->getStructureStack().push_back(structure);
             structure->setClassBody(visitChildren(ctx).as<ClassBodyDeclaration*>());
             structure->generateSignature(module);

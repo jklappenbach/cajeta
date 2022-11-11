@@ -12,6 +12,7 @@
 namespace cajeta {
 
     class ClassBodyDeclaration;
+    class CajetaModule;
 
     class CajetaStructure : public CajetaType {
     private:
@@ -20,10 +21,7 @@ namespace cajeta {
         CajetaModule* module;
         Scope* scope;
     public:
-        CajetaStructure(llvm::LLVMContext* llvmContext, QualifiedName* qName) : CajetaType(qName) {
-            llvmType = llvm::StructType::create(*llvmContext, qName->getTypeName());
-            scope = new Scope();
-        }
+        CajetaStructure(CajetaModule* module, QualifiedName* qName);
         virtual bool isPrimitive() { return false; }
         Scope* getScope() { return scope; }
         void addField(Field* field);
@@ -32,28 +30,9 @@ namespace cajeta {
         void addMethods(list<Method*> methods);
         void setClassBody(ClassBodyDeclaration* classBody);
 
-        void generateSignature(CajetaModule* module) {
-            vector<llvm::Type*> llvmMembers;
-            for (auto &fieldEntry : fields) {
-                llvmMembers.push_back(fieldEntry.second->getType()->getLlvmType());
-            }
-            ((llvm::StructType*) llvmType)->setBody(llvm::ArrayRef<llvm::Type*>(llvmMembers), false);
-
-            ensureDefaultConstructor(module);
-
-            for (auto methodEntry : methods) {
-                methodEntry.second->generatePrototype(module);
-            }
-        }
+        void generateSignature(CajetaModule* module);
         void generateCode(CajetaModule* module);
-
-        void ensureDefaultConstructor(CajetaModule* module) {
-            string name = qName->getTypeName();
-            if (methods.find(name) == methods.end()) {
-                methods[name] = new Method(name, CajetaType::of("void"), this);
-            }
-        }
-
+        void ensureDefaultConstructor(CajetaModule* module);
         map<string, Field*>& getFields() { return fields; }
         map<string, Method*>& getMethods() { return methods; }
     };

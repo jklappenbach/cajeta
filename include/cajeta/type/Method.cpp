@@ -77,7 +77,7 @@ namespace cajeta {
                                               ERROR_CAUSE_VARIABLE_DUPLICATE,
                                               ERROR_ID_VARIABLE_DUPLICATE);
         }
-        field->getOrCreateStackAllocation(module);
+        field->getOrCreateAllocation(module);
         scope->fields[field->getName()] = field;
     }
 
@@ -121,7 +121,13 @@ namespace cajeta {
 
         canonical = Method::buildCanonical(parent, name, parameters);
         llvmFunction = llvm::Function::Create(llvmFunctionType, llvm::Function::ExternalLinkage,
-                                              canonical, module->getLlvmModule());
+                                              this->name, module->getLlvmModule());
+        string all;
+        for (auto &fn : module->getLlvmModule()->getFunctionList()) {
+            cout << fn.getName().str();
+            all.append(fn.getName().str()).append(",");
+        }
+
         archive[canonical] = this;
 
         module->getLlvmModule()->getOrInsertFunction(canonical, llvmFunctionType);
@@ -134,9 +140,14 @@ namespace cajeta {
         module->setBuilder(builder);
         module->setCurrentMethod(this);
 
-        createScope();
+        createScope(module);
         block->generateCode(module);
         destroyScope();
+        module->getBuilder()->CreateRetVoid();
+    }
+
+    void Method::createScope(CajetaModule* module) {
+        scopes.push_back(new Scope(module));
     }
 
     string Method::buildCanonical(CajetaStructure* parent, string name, list<CajetaType*>& parameters) {

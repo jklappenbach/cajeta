@@ -14,6 +14,7 @@ int TestCppClass::getAlpha() {
 
 int TestCppClass::main(int argc, char** argv) {
     TestCppClass* instance = new TestCppClass;
+    delete instance;
     return 0;
 }
 

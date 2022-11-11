@@ -9,16 +9,14 @@ using namespace std;
 
 namespace cajeta {
     class Field;
+    class CajetaModule;
 
     struct Scope {
+        CajetaModule* module;
         Scope* parent;
         map<string, Field*> fields;
-        Scope() {
-            parent = nullptr;
-        }
-        Scope(Scope* parent) {
-            this->parent = parent;
-        }
+        Scope(CajetaModule* module);
+        Scope(Scope* parent, CajetaModule* module);
 
         ~Scope();
 

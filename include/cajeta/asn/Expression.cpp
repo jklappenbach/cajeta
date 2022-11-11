@@ -5,7 +5,7 @@
 #include "cajeta/asn/Expression.h"
 #include "cajeta/compile/CajetaModule.h"
 #include "cajeta/util/LiteralUtils.h"
-#include "cajeta/util/MemoryAllocator.h"
+#include "cajeta/util/MemoryManager.h"
 
 namespace cajeta {
     Expression* Expression::fromContext(CajetaParser::ExpressionContext* ctx) {
@@ -256,10 +256,11 @@ namespace cajeta {
     llvm::Value* ClassCreatorRest::generateCode(CajetaModule* module) {
         list<CajetaType*> types;
         vector<llvm::Value*> values;
+        Field* currentField = module->getCurrentField();
 
         types.push_back(module->getCurrentStructure());
-        values.push_back(module->getBuilder()->CreateLoad(((llvm::AllocaInst*)module->getCurrentInstancePointer())->getAllocatedType(),
-                  module->getCurrentInstancePointer(), "this"));
+        llvm::Value* thisValue = currentField->getAllocation();
+        values.push_back(thisValue);
 
         for (auto& expression : expressionList) {
             types.push_back(expression->toType(module));
@@ -275,9 +276,10 @@ namespace cajeta {
         int fieldIndex = 0;
         for (auto &fieldEntry : module->getCurrentStructure()->getFields()) {
             Field* field = fieldEntry.second;
-            llvm::Value* allocation = module->getBuilder()->CreateStructGEP(module->getCurrentStructure()->getLlvmType(),
-                                                                            module->getCurrentInstancePointer(), fieldIndex);
-            field->setHeapAllocation(allocation);
+            llvm::Value* allocation = module->getBuilder()->CreateStructGEP(currentField->getType()->getLlvmType(),
+                                                                            currentField->getAllocation(), fieldIndex,
+                                                                            field->getName());
+            field->setAllocation(allocation);
             module->getCurrentStructure()->getScope()->fields[field->getName()] = field;
             fieldIndex++;
         }
@@ -294,6 +296,7 @@ namespace cajeta {
 
     llvm::Value* NewExpression::generateCode(CajetaModule* module) {
         CajetaStructure* structure = module->getCurrentStructure();
+        Field* field = module->getCurrentField();
 
         const llvm::DataLayout& dataLayout = module->getLlvmModule()->getDataLayout();
 
@@ -301,16 +304,13 @@ namespace cajeta {
         llvm::Value* value = llvm::ConstantInt::get(llvm::Type::getInt32Ty(*module->getLlvmContext()),
                                                     dataLayout.getTypeAllocSize(structure->getLlvmType()));
         mallocArgs.push_back(value);
-
         llvm::BasicBlock* block = module->getBuilder()->GetInsertBlock();
         llvm::Constant* allocSize = llvm::ConstantExpr::getSizeOf(structure->getLlvmType());
-        allocSize = llvm::ConstantExpr::getTruncOrBitCast(allocSize, structure->getLlvmType());
-        MemoryAllocator* memoryAllocator = MemoryAllocator::getInstance(module);
-        llvm::Instruction* mallocInst = memoryAllocator->createMallocInstruction(allocSize, block);
-        //module->getBuilder()->Insert(mallocInst);
-        module->getBuilder()->CreateStore(mallocInst, module->getCurrentInstancePointer());
+        MemoryManager* memoryAllocator = MemoryManager::getInstance(module);
+        llvm::Instruction* mallocInst = memoryAllocator->createMallocInstruction(field->getName(), allocSize, block);
+        field->setAllocation(mallocInst);
         this->creatorRest->generateCode(module);
-        return nullptr;
+        return mallocInst;
     }
 
     CajetaType* NewExpression::toType(CajetaModule* module) {

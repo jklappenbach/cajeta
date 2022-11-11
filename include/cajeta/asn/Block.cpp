@@ -11,7 +11,6 @@ namespace cajeta {
         for (auto child : children) {
             llvm::Value* value = child->generateCode(module);
         }
-        module->getBuilder()->CreateRetVoid();
         return nullptr;
     }
 }

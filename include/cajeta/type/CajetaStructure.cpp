@@ -8,6 +8,11 @@
 #include <cajeta/asn/ClassBodyDeclaration.h>
 
 namespace cajeta {
+    CajetaStructure::CajetaStructure(CajetaModule* module, QualifiedName* qName) : CajetaType(qName) {
+            llvmType = llvm::StructType::create(*module->getLlvmContext(), qName->getTypeName());
+            scope = new Scope(module);
+    }
+
     void CajetaStructure::addField(Field* field) {
         this->fields[field->getName()] = field;
     }
@@ -24,6 +29,28 @@ namespace cajeta {
             this->methods[method->getName()] = method;
         }
     }
+
+    void CajetaStructure::generateSignature(CajetaModule* module) {
+        vector<llvm::Type*> llvmMembers;
+        for (auto &fieldEntry : fields) {
+            llvmMembers.push_back(fieldEntry.second->getType()->getLlvmType());
+        }
+        ((llvm::StructType*) llvmType)->setBody(llvm::ArrayRef<llvm::Type*>(llvmMembers), false);
+
+        ensureDefaultConstructor(module);
+
+        for (auto methodEntry : methods) {
+            methodEntry.second->generatePrototype(module);
+        }
+    }
+
+    void CajetaStructure::ensureDefaultConstructor(CajetaModule* module) {
+        string name = qName->getTypeName();
+        if (methods.find(name) == methods.end()) {
+            methods[name] = new Method(name, CajetaType::of("void"), this);
+        }
+    }
+
 
     void CajetaStructure::setClassBody(cajeta::ClassBodyDeclaration* classBody) {
         for (auto memberDeclaration : classBody->getDeclarations()) {

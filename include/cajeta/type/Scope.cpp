@@ -1,11 +1,23 @@
 #include "Scope.h"
 #include "cajeta/type/Field.h"
+#include <cajeta/compile/CajetaModule.h>
 
 namespace cajeta {
+    Scope::Scope(CajetaModule* module) {
+        this->module = module;
+        parent = nullptr;
+    }
+
+    Scope::Scope(Scope* parent, CajetaModule* module) {
+        this->module = module;
+        this->parent = parent;
+    }
+
+
     Scope::~Scope() {
         for (auto& fieldEntry: fields) {
             Field* field = fieldEntry.second;
-            field->onDelete();
+            field->onDelete(module);
             delete field;
         }
         fields.clear();

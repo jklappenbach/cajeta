@@ -8,7 +8,6 @@
 
 namespace cajeta {
     llvm::Value* DefaultConstructorBlock::generateCode(CajetaModule* module) {
-        module->getBuilder()->CreateRetVoid();
         return nullptr;
     }
 }

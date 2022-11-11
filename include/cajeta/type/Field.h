@@ -12,6 +12,7 @@
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/LLVMContext.h"
 #include <llvm/IR/IRBuilder.h>
+#include <cajeta/util/MemoryManager.h>
 
 using namespace std;
 
@@ -70,7 +71,7 @@ namespace cajeta {
             this->arrayDimension = arrayDimension;
         }
 
-        virtual void onDelete() { }
+        void onDelete(CajetaModule* module);
 
         bool isReference() const {
             return reference;
@@ -88,12 +89,16 @@ namespace cajeta {
             return type;
         }
 
-        void setHeapAllocation(llvm::Value* allocation) {
+        void setAllocation(llvm::Value* allocation) {
             this->allocation = allocation;
         }
 
-        llvm::Value* getOrCreateStackAllocation(CajetaModule* module);
+        llvm::Value* getAllocation() {
+            return allocation;
+        }
 
+        llvm::Value* getOrCreateStackAllocation(CajetaModule* module);
+        llvm::Value* getOrCreateAllocation(CajetaModule* module);
         static list<Field*> fromContext(CajetaParser::FieldDeclarationContext* ctx);
     };
 }

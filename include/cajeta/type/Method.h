@@ -20,9 +20,9 @@
 using namespace std;
 
 namespace cajeta {
-    class CajetaStructure;
     class CajetaModule;
     class Expression;
+    class CajetaStructure;
 
     class Method : public Modifiable, public Annotatable {
     private:
@@ -72,9 +72,7 @@ namespace cajeta {
 
         void setBlock(Block* block);
 
-        void createScope() {
-            scopes.push_back(new Scope());
-        }
+        void createScope(CajetaModule* module);
 
         void destroyScope() {
             Scope* scope = scopes.back();

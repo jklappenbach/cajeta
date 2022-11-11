@@ -1,4 +1,4 @@
-(compilationUnit
+(cajeta.System)main(compilationUnit
         (packageDeclaration package
             (qualifiedName
                 (identifier cajeta)) ;)

@@ -14,7 +14,7 @@ namespace cajeta {
     private:
 
     public:
-        CajetaClass(llvm::LLVMContext* llvmContext, QualifiedName* qName)
-                : CajetaStructure(llvmContext, qName) { }
+        CajetaClass(CajetaModule* module, QualifiedName* qName)
+                : CajetaStructure(module, qName) { }
     };
 }

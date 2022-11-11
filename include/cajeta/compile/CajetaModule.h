@@ -41,12 +41,13 @@ namespace cajeta {
         Method* currentMethod;
         CajetaStructure* currentStructure;
 
-        // Current LLVM state
+        // Current state
         llvm::Module* llvmModule;
         llvm::IRBuilder<>* builder;
         llvm::LLVMContext* llvmContext;
         llvm::Value* currentInstancePointer;
         llvm::TargetMachine* targetMachine;
+        Field* field;
         CajetaType* initializerType;
         string targetTriple;
 
@@ -90,6 +91,14 @@ namespace cajeta {
         llvm::Value* getCurrentInstancePointer() const;
 
         void setCurrentInstancePointer(llvm::Value* instancePointer);
+
+        void setCurrentField(Field* field) {
+            this->field = field;
+        }
+
+        Field* getCurrentField() {
+            return field;
+        }
 
         static const map<QualifiedName*, CajetaModule*>& getTypeArchive() {
             return archive;
@@ -144,9 +153,6 @@ namespace cajeta {
             llvm::raw_ostream* out = new llvm::raw_fd_ostream(targetPath, ec, llvm::sys::fs::CD_CreateAlways);
             llvmModule->print(llvm::outs(), nullptr);
             llvmModule->print(*out, nullptr);
-            //llvm::raw_fd_ostream ofs = llvm::raw_fd_ostream(targetPath, ec, llvm::sys::fs::CD_OpenAlways);
-//            llvm::raw_ostream& os = llvm::outs();
-//            llvm::WriteBitcodeToFile(*this->module, os);
         }
 
         void setCurrentMethod(Method* method) {
