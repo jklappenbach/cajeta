@@ -34,7 +34,7 @@ namespace cajeta {
         Block* block;
         list<Scope*> scopes;
         bool constructor;
-        list<FormalParameter*> parameters;
+        vector<FormalParameter*> parameters;
 
         llvm::IRBuilder<>* builder;
         llvm::FunctionType* llvmFunctionType;
@@ -43,7 +43,7 @@ namespace cajeta {
     public:
         Method(string& name,
                CajetaType* returnType,
-               list<FormalParameter*>& parameters,
+               vector<FormalParameter*>& parameters,
                Block* block,
                CajetaStructure* parent);
 
@@ -56,43 +56,34 @@ namespace cajeta {
 
         bool isConstructor() { return constructor; }
 
-        list<FormalParameter*> getParameters() { return parameters; }
+        vector<FormalParameter*> getParameters() { return parameters; }
 
         const string& getName() const {
             return name;
         }
-
         void setName(const string& name) {
             this->name = name;
         }
-
-        const string& toCanonical() { return canonical; }
-
-        void generatePrototype(CajetaModule* module);
-
-        void setBlock(Block* block);
-
-        void createScope(CajetaModule* module);
-
         void destroyScope() {
             Scope* scope = scopes.back();
             delete scope;
             scopes.pop_back();
         }
-
-        void createLocalVariable(CajetaModule* module, Field* field);
-        void setLocalVariable(CajetaModule* module, string name, llvm::Value* value);
-
-        Field* getLocalVariable(string name) {
+        Field* getVariable(string name) {
             Scope* scope = scopes.back();
             return scope->getField(name);
         }
+        const string& toCanonical() { return canonical; }
+        void generatePrototype(CajetaModule* module);
+        void setBlock(Block* block);
+        void createScope(CajetaModule* module);
+        void createLocalVariable(CajetaModule* module, Field* field);
+        void setLocalVariable(CajetaModule* module, string name, llvm::Value* value);
         void generateCode(CajetaModule* compilationUnit);
-
         static map<string, Method*>& getArchive();
-        static string buildCanonical(CajetaStructure* parent, string name, list<FormalParameter*>& parameters);
-        static string buildCanonical(CajetaStructure* parent, string name, list<CajetaType*>& parameters);
-
+        static string buildCanonical(CajetaStructure* parent, const string& name, vector<FormalParameter*>& parameters);
+        static string buildCanonical(CajetaStructure* parent, const string& name, vector<CajetaType*>& parameters);
+        static string buildCanonical(CajetaStructure* parent, const string& name, vector<llvm::Value*>& parameters);
     };
 }
 

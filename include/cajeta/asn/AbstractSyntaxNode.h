@@ -44,7 +44,7 @@ namespace cajeta {
         int sourceLine;
         int sourceColumn;
         string sourceText;
-        list<AbstractSyntaxNode*> children;
+        vector<AbstractSyntaxNode*> children;
     public:
         AbstractSyntaxNode(antlr4::Token* token) {
             if (token != nullptr) {
@@ -70,7 +70,7 @@ namespace cajeta {
             return sourceText;
         }
 
-        list<AbstractSyntaxNode*>& getChildren() { return children; }
+        vector<AbstractSyntaxNode*>& getChildren() { return children; }
         virtual void generateSignature(CajetaModule* module) { }
         virtual llvm::Value* generateCode(CajetaModule* module) = 0;
     };

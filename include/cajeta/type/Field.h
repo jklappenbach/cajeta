@@ -24,7 +24,6 @@ namespace cajeta {
     class Field : public Modifiable, public Annotatable {
     private:
         bool reference;
-        bool var;
         string name;
         int arrayDimension;
         Initializer* initializer;
@@ -44,7 +43,8 @@ namespace cajeta {
               int arrayDimension,
               bool reference,
               set<Modifier> modifiers,
-              Initializer* initializer) : Modifiable(modifiers) {
+              set<QualifiedName*> annotations,
+              Initializer* initializer) : Modifiable(modifiers), Annotatable(annotations) {
             this->name = name;
             this->arrayDimension = arrayDimension;
             this->initializer = initializer;
@@ -76,11 +76,6 @@ namespace cajeta {
         bool isReference() const {
             return reference;
         }
-
-        bool isVar() const {
-            return var;
-        }
-
         const string& getName() const {
             return name;
         }

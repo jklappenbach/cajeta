@@ -12,6 +12,7 @@ namespace cajeta {
     class LocalVariableDeclaration : public BlockStatement {
     private:
         set<Modifier> modifiers;
+        set<QualifiedName*> annotations;
         CajetaType* type;
         list<VariableDeclarator*> variableDeclarators;
     public:

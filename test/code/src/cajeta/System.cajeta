@@ -7,6 +7,8 @@ public final class System extends Alpha, Beta implements Gamma, Delta {
     public static void main() {
         System instance = new System();
         instance.value = 20;
-        instance.x = instance.value;
+//        instance.x = instance.value;
+//        instance.main();
+//        int y = 4;
     }
 }

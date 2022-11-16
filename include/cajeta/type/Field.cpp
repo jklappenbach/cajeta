@@ -24,7 +24,7 @@ namespace cajeta {
             allocation = module->getBuilder()->CreateAlloca(type->getLlvmType(), nullptr, name);
             if (initializer) {
                 module->setInitializerType(type);
-                module->setCurrentInstancePointer(allocation);
+                module->pushCurrentValue(allocation);
                 initializer->generateCode(module);
             }
         }

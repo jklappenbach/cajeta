@@ -37,6 +37,7 @@ namespace cajeta {
         CajetaLlvmVisitor* visitor = new CajetaLlvmVisitor(compilationUnit);
 
         parseTree->accept(visitor);
+        cout << "\n\n";
         std::cout << parseTree->toStringTree(&parser, true) << std::endl;
         delete visitor;
     }

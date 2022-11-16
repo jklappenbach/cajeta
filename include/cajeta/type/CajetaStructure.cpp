@@ -9,18 +9,10 @@
 
 namespace cajeta {
     CajetaStructure::CajetaStructure(CajetaModule* module, QualifiedName* qName) : CajetaType(qName) {
-            llvmType = llvm::StructType::create(*module->getLlvmContext(), qName->getTypeName());
-            scope = new Scope(module);
+        llvmType = llvm::StructType::create(*module->getLlvmContext(), qName->toCanonical());
+        scope = new Scope(module);
     }
 
-    void CajetaStructure::addField(Field* field) {
-        this->fields[field->getName()] = field;
-    }
-    void CajetaStructure::addFields(list<Field*> fields) {
-        for (Field* field : fields) {
-            this->fields[field->getName()] = field;
-        }
-    }
     void CajetaStructure::addMethod(Method* method) {
         this->methods[method->getName()] = method;
     }
@@ -60,10 +52,8 @@ namespace cajeta {
     }
 
     void CajetaStructure::generateCode(CajetaModule* module) {
-        module->setCurrentStructure(this);
         for (auto methodEntry : methods) {
             methodEntry.second->generateCode(module);
         }
     }
-
 } // cajeta

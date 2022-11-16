@@ -1,4 +1,4 @@
-(cajeta.System)main(compilationUnit
+(compilationUnit
         (packageDeclaration package
             (qualifiedName
                 (identifier cajeta)) ;)
@@ -94,11 +94,12 @@
                                                 (expression
                                                     (expression
                                                         (expression
-                                                            (primary
-                                                                (identifier instance))) .
-                                                        (identifier x)) =
+                                                            (expression
+                                                                (primary
+                                                                    (identifier instance))) .
+                                                            (identifier second)) .
+                                                        (identifier third)) =
                                                     (expression
-                                                        (expression
-                                                            (primary
-                                                                (identifier instance))) .
-                                                        (identifier value))) ;)) }))))) }))))
+                                                        (primary
+                                                            (literal
+                                                                (integerLiteral 50))))) ;)) }))))) }))))

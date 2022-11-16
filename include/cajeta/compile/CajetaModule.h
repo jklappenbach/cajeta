@@ -39,15 +39,15 @@ namespace cajeta {
         list<CajetaStructure*> structureStack;
         list<CajetaStructure*> structures;
         Method* currentMethod;
-        CajetaStructure* currentStructure;
 
         // Current state
         llvm::Module* llvmModule;
+        list<llvm::Value*> valueStack;
+        list<string> identifierStack;
+        list<Field*> fieldStack;
         llvm::IRBuilder<>* builder;
         llvm::LLVMContext* llvmContext;
-        llvm::Value* currentInstancePointer;
         llvm::TargetMachine* targetMachine;
-        Field* field;
         CajetaType* initializerType;
         string targetTriple;
 
@@ -88,17 +88,11 @@ namespace cajeta {
 
         void setInitializerType(CajetaType* initializerType);
 
-        llvm::Value* getCurrentInstancePointer() const;
+        llvm::Value* getCurrentValue() const;
 
-        void setCurrentInstancePointer(llvm::Value* instancePointer);
+        void pushCurrentValue(llvm::Value* value);
 
-        void setCurrentField(Field* field) {
-            this->field = field;
-        }
-
-        Field* getCurrentField() {
-            return field;
-        }
+        llvm::Value* popCurrentValue();
 
         static const map<QualifiedName*, CajetaModule*>& getTypeArchive() {
             return archive;
@@ -113,7 +107,7 @@ namespace cajeta {
         }
 
         void setSourcePath(const string& sourcePath) {
-            CajetaModule::sourcePath = sourcePath;
+            this->sourcePath = sourcePath;
         }
 
         const string& getArchiveRoot() const {
@@ -121,7 +115,7 @@ namespace cajeta {
         }
 
         void setArchiveRoot(const string& archiveRoot) {
-            CajetaModule::archiveRoot = archiveRoot;
+            this->archiveRoot = archiveRoot;
         }
 
         const string& getArchivePath() const {
@@ -129,7 +123,7 @@ namespace cajeta {
         }
 
         void setArchivePath(const string& archivePath) {
-            CajetaModule::archivePath = archivePath;
+            this->archivePath = archivePath;
         }
 
         map<string, map<string, QualifiedName*>>& getImports() {
@@ -138,6 +132,14 @@ namespace cajeta {
 
         list<CajetaStructure*>& getStructureStack() {
             return structureStack;
+        }
+
+        list<llvm::Value*>& getValueStack() {
+            return valueStack;
+        }
+
+        list<Field*>& getFieldStack() {
+            return fieldStack;
         }
 
         list<CajetaStructure*>& getStructureList() { return structures; }
@@ -151,6 +153,7 @@ namespace cajeta {
             string targetDirs = targetPath.substr(0, targetPath.rfind("/"));
             std::filesystem::create_directories(targetDirs);
             llvm::raw_ostream* out = new llvm::raw_fd_ostream(targetPath, ec, llvm::sys::fs::CD_CreateAlways);
+            printf("\n\n");
             llvmModule->print(llvm::outs(), nullptr);
             llvmModule->print(*out, nullptr);
         }
@@ -161,14 +164,6 @@ namespace cajeta {
 
         Method* getCurrentMethod() {
             return currentMethod;
-        }
-
-        void setCurrentStructure(CajetaStructure* structure) {
-            this->currentStructure = structure;
-        }
-
-        CajetaStructure* getCurrentStructure() {
-            return currentStructure;
         }
 
         unique_ptr<list<Method*>> getAllMethods() {

@@ -7,10 +7,11 @@
 #include "cajeta/compile/CajetaModule.h"
 
 #define NATIVE_TYPE_ENTRY(typeName, llvmType) new CajetaType(QualifiedName::getOrInsert(typeName, CAJETA_NATIVE_PACKAGE), llvmType)
-#define CAJETA_NATIVE_PACKAGE "cajeta"
+#define CAJETA_NATIVE_PACKAGE ""
 
 namespace cajeta {
-    map<string, CajetaType*> CajetaType::archive;
+    map<string, CajetaType*> CajetaType::canonicalMap;
+    map<llvm::Type::TypeID, CajetaType*> CajetaType::typeIdMap;
 
     void CajetaType::init(llvm::LLVMContext& ctx) {
         NATIVE_TYPE_ENTRY("void", llvm::Type::getVoidTy(ctx));
@@ -27,31 +28,33 @@ namespace cajeta {
         NATIVE_TYPE_ENTRY("float32", llvm::Type::getFloatTy(ctx));
         NATIVE_TYPE_ENTRY("float64", llvm::Type::getDoubleTy(ctx));
         NATIVE_TYPE_ENTRY("float128", llvm::Type::getFP128Ty(ctx));
+        NATIVE_TYPE_ENTRY("this", llvm::Type::getInt64PtrTy(ctx));
     }
 
-    map<string, CajetaType*>& CajetaType::getArchive() { return archive; }
+    map<string, CajetaType*>& CajetaType::getCanonicalMap() { return canonicalMap; }
+    map<llvm::Type::TypeID, CajetaType*>& CajetaType::getTypeIdMap() { return typeIdMap; }
 
     CajetaType* CajetaType::of(string typeName) {
-        QualifiedName* qName = QualifiedName::getOrInsert(typeName, "cajeta");
-        return CajetaType::archive[qName->toCanonical()];
+        QualifiedName* qName = QualifiedName::getOrInsert(typeName);
+        return CajetaType::canonicalMap[qName->toCanonical()];
     }
 
     CajetaType* CajetaType::of(string typeName, string package) {
         QualifiedName* qName = QualifiedName::getOrInsert(typeName, package);
-        return CajetaType::archive[qName->toCanonical()];
+        return CajetaType::canonicalMap[qName->toCanonical()];
     }
 
     CajetaType* CajetaType::fromContext(CajetaParser::PrimitiveTypeContext* ctx) {
         QualifiedName* qName = QualifiedName::getOrInsert(ctx->getText(), "cajeta");
-        return CajetaType::archive[qName->toCanonical()];
+        return CajetaType::canonicalMap[qName->toCanonical()];
     }
 
     cajeta::CajetaType* cajeta::CajetaType::fromContext(CajetaParser::TypeTypeOrVoidContext* ctx) {
         CajetaType* type = nullptr;
         if (ctx != nullptr) {
             if (ctx->VOID() != nullptr) {
-                QualifiedName* qName = QualifiedName::getOrInsert(ctx->getText(), "cajeta");
-                type = CajetaType::archive[qName->toCanonical()];
+                QualifiedName* qName = QualifiedName::getOrInsert(ctx->getText());
+                type = CajetaType::canonicalMap[qName->toCanonical()];
             } else {
                 type = fromContext(ctx->typeType());
             }
@@ -66,15 +69,42 @@ namespace cajeta {
             CajetaParser::PrimitiveTypeContext* ctxPrimitiveType = ctxType->primitiveType();
             if (ctxPrimitiveType != nullptr) {
                 qName = QualifiedName::getOrInsert(ctxPrimitiveType->getText(), CAJETA_NATIVE_PACKAGE);
-                type = archive[qName->toCanonical()];
+                type = canonicalMap[qName->toCanonical()];
             } else {
                 CajetaParser::ClassOrInterfaceTypeContext* ctxClassOrInterface = ctxType->classOrInterfaceType();
                 if (ctxClassOrInterface != nullptr) {
                     qName = QualifiedName::fromContext(ctxClassOrInterface);
                 }
-                type = archive[qName->toCanonical()];
+                type = canonicalMap[qName->toCanonical()];
             }
         }
         return type;
+    }
+
+    CajetaType* CajetaType::fromLlvmType(llvm::Type* type, CajetaType* parent) {
+        CajetaType* result = nullptr;
+        try {
+            if (type->isStructTy()) {
+                llvm::StringRef ref = type->getStructName();
+                if (!ref.empty()) {
+                    string name = ref.str();
+                    result = canonicalMap[name];
+                }
+            } else {
+                int id = type->getTypeID();
+                if (id == llvm::Type::PointerTyID) {
+                    result = parent;
+                } else {
+                    result = typeIdMap[type->getTypeID()];
+                }
+            }
+        } catch (exception) {
+            throw "Exception while mapping value to type";
+        }
+        return result;
+    }
+
+    CajetaType* CajetaType::fromValue(llvm::Value* value, CajetaType* parent) {
+        return fromLlvmType(value->getType(), parent);
     }
 }

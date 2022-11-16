@@ -4,7 +4,7 @@
 
 #include <cajeta/asn/LocalVariableDeclaration.h>
 #include <cajeta/compile/CajetaModule.h>
-#include <cajeta/type/Field.h>
+#include <cajeta/type/LocalField.h>
 #include <cajeta/exception/CajetaExceptions.h>
 #include <cajeta/logging/CajetaLogger.h>
 
@@ -20,10 +20,11 @@ namespace cajeta {
     llvm::Value* LocalVariableDeclaration::generateCode(CajetaModule* module) {
         for (auto &declarator : variableDeclarators) {
             Initializer* initializer = declarator->getInitializer();
-            Field* field = new Field(declarator->getIdentifier(), type, declarator->getArrayDimension(),
-                                     declarator->isReference(), modifiers, initializer);
-            module->setCurrentField(field);
+            LocalField* field = new LocalField(declarator->getIdentifier(), type, declarator->getArrayDimension(),
+                                     declarator->isReference(), modifiers, annotations, initializer);
+            module->getFieldStack().push_back(field);
             module->getCurrentMethod()->createLocalVariable(module, field);
+            module->getFieldStack().pop_back();
         }
 
         return nullptr;

@@ -19,18 +19,27 @@ namespace cajeta {
         string typeName;
         string canonical;
 
+        QualifiedName(string typeName) {
+            this->typeName = typeName;
+            this->packageName = "";
+            canonical = typeName;
+        }
         QualifiedName(string typeName, string packageName) {
             this->typeName = typeName;
             this->packageName = packageName;
-            canonical.append(packageName);
-            canonical.append(".");
+            if (!packageName.empty()) {
+                canonical.append(packageName);
+                canonical.append(".");
+            }
             canonical.append(typeName);
         }
         QualifiedName(const QualifiedName& src) {
             packageName = src.packageName;
             typeName = src.typeName;
-            canonical.append(packageName);
-            canonical.append(".");
+            if (!packageName.empty()) {
+                canonical.append(packageName);
+                canonical.append(".");
+            }
             canonical.append(typeName);
         }
     public:
@@ -53,6 +62,7 @@ namespace cajeta {
         }
 
         static map<string, map<string, QualifiedName*>> getCache();
+        static QualifiedName* getOrInsert(string typeName);
         static QualifiedName* getOrInsert(string typeName, string packageName);
         static QualifiedName* fromContext(std::vector<CajetaParser::IdentifierContext*> identifiers);
         static QualifiedName* fromContext(CajetaParser::QualifiedNameContext* ctxQName);

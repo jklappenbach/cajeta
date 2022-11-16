@@ -41,14 +41,15 @@ namespace cajeta {
          * @param structure
          */
         void updateParent(CajetaStructure* structure) override {
+            int i = structure->getFields().size();
             for (auto variableDeclarator : variableDeclarators) {
-                Field* field = new Field(variableDeclarator->getIdentifier(),
+                StructureField* field = new StructureField(variableDeclarator->getIdentifier(),
                                          type,
                                          variableDeclarator->getArrayDimension(),
                                          variableDeclarator->isReference(),
                                          variableDeclarator->getInitializer(),
                                          std::move(modifiers),
-                                         annotations);
+                                         annotations, i++);
                 structure->getFields()[variableDeclarator->getIdentifier()] = field;
             }
         }

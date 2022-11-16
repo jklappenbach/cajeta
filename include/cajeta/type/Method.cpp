@@ -23,7 +23,7 @@ namespace cajeta {
 
     Method::Method(string& name,
                    CajetaType* returnType,
-                   list<FormalParameter*>& parameters,
+                   vector<FormalParameter*>& parameters,
                    Block* block,
                    CajetaStructure* parent) {
         this->parent = parent;
@@ -107,7 +107,7 @@ namespace cajeta {
 
         if (!staticMethod) {
             auto thisParam = new FormalParameter(std::move("this"), parent);
-            parameters.push_front(thisParam);
+            parameters.push_back(thisParam);
         }
 
         for (auto formalParameter : parameters) {
@@ -150,7 +150,7 @@ namespace cajeta {
         scopes.push_back(new Scope(module));
     }
 
-    string Method::buildCanonical(CajetaStructure* parent, string name, list<CajetaType*>& parameters) {
+    string Method::buildCanonical(CajetaStructure* parent, const string& name, vector<CajetaType*>& parameters) {
         string canonical;
         canonical.append(parent->toCanonical());
         canonical.append("::");
@@ -173,7 +173,7 @@ namespace cajeta {
         return canonical;
     }
 
-    string Method::buildCanonical(CajetaStructure* parent, string name, list<FormalParameter*>& parameters) {
+    string Method::buildCanonical(CajetaStructure* parent, const string& name, vector<FormalParameter*>& parameters) {
         string canonical;
         canonical.append(parent->toCanonical());
         canonical.append("::");
@@ -195,4 +195,28 @@ namespace cajeta {
         canonical.append(")");
         return canonical;
     }
+
+    string Method::buildCanonical(CajetaStructure* parent, const string& name, vector<llvm::Value*>& parameters) {
+        string canonical;
+        canonical.append(parent->toCanonical());
+        canonical.append("::");
+        canonical.append(name);
+        canonical.append("(");
+
+        if (!parameters.empty()) {
+            bool first = true;
+            for (auto &parameter : parameters) {
+                if (first) {
+                    first = false;
+                } else {
+                    canonical.append(",");
+                }
+                canonical.append(CajetaType::fromValue(parameter, parent)->toCanonical());
+            }
+        }
+
+        canonical.append(")");
+        return canonical;
+    }
+
 }

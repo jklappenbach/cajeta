@@ -76,7 +76,7 @@ add_executable(cajeta
         include/cajeta/exception/CajetaExceptions.h
         include/cajeta/logging/CajetaLogger.cpp include/cajeta/logging/CajetaLogger.h
         include/cajeta/util/LiteralUtils.cpp include/cajeta/util/LiteralUtils.h
-        include/cajeta/asn/DefaultConstructorBlock.cpp include/cajeta/asn/DefaultConstructorBlock.h include/cajeta/util/MemoryManager.cpp include/cajeta/util/MemoryManager.h)
+        include/cajeta/asn/DefaultConstructorBlock.cpp include/cajeta/asn/DefaultConstructorBlock.h include/cajeta/util/MemoryManager.cpp include/cajeta/util/MemoryManager.h include/cajeta/type/StructureField.cpp include/cajeta/type/StructureField.h include/cajeta/type/LocalField.cpp include/cajeta/type/LocalField.h)
 
 message(STATUS "Found LLVM ${LLVM_PACKAGE_VERSION}")
 message(STATUS "Using LLVMConfig.cmake in: ${LLVM_DIR}")

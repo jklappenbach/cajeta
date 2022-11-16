@@ -88,11 +88,17 @@ namespace cajeta {
         this->initializerType = initializerType;
     }
 
-    llvm::Value* CajetaModule::getCurrentInstancePointer() const {
-        return currentInstancePointer;
+    llvm::Value* CajetaModule::getCurrentValue() const {
+        return valueStack.back();
     }
 
-    void CajetaModule::setCurrentInstancePointer(llvm::Value* instancePointer) {
-        this->currentInstancePointer = instancePointer;
+    void CajetaModule::pushCurrentValue(llvm::Value* value) {
+        valueStack.push_back(value);
+    }
+
+    llvm::Value* CajetaModule::popCurrentValue() {
+        llvm::Value* value = valueStack.back();
+        valueStack.pop_back();
+        return value;
     }
 }

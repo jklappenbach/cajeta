@@ -149,7 +149,7 @@ namespace cajeta {
 
         virtual antlrcpp::Any visitMethodDeclaration(CajetaParser::MethodDeclarationContext* ctx) override {
             string name = ctx->identifier()->getText();
-            list<FormalParameter*> formalParameters;
+            vector<FormalParameter*> formalParameters;
             if (ctx->formalParameters()->formalParameterList()) {
                 for (auto &formalParameterContext : ctx->formalParameters()->formalParameterList()->formalParameter()) {
                     formalParameters.push_back(FormalParameter::fromContext(formalParameterContext));
@@ -248,7 +248,8 @@ namespace cajeta {
                 initializer = visitVariableInitializer(ctx->variableInitializer()).as<Initializer*>();
             }
 
-            return new VariableDeclarator(ctx->variableDeclaratorId()->identifier()->getText(),
+            return new VariableDeclarator(
+                    ctx->variableDeclaratorId()->identifier()->getText(),
                     ctx->variableDeclaratorId()->LBRACK().size(),
                     ctx->REFERENCE() != nullptr,
                     initializer,

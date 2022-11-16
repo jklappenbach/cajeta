@@ -19,8 +19,11 @@ namespace cajeta {
 
         } else if (ctx->NEW()) {
             result = new NewExpression(ctx->creator(), token);
+        }  else if (ctx->DOT()) {
+            result = new DotExpression(ctx, token);
+        } else if (ctx->identifier()) {
+            result = new IdentifierExpression(ctx->identifier(), ctx->primary() != nullptr);
         } else if (ctx->LPAREN()) {
-
         } else if (!ctx->annotation().empty()) {
 
         } else if (ctx->creator()) {
@@ -75,7 +78,7 @@ namespace cajeta {
         } else if (ctx->GE()) {
 
         } else if (ctx->EQUAL()) {
-
+            cout << "Hit!";
         } else if (ctx->NOTEQUAL()) {
 
         } else if (ctx->CARET()) {
@@ -112,8 +115,6 @@ namespace cajeta {
 
         } else if (ctx->MOD_ASSIGN()) {
 
-        } else if (ctx->DOT()) {
-
         } else if (ctx->THIS()) {
 
         } else if (ctx->innerCreator()) {
@@ -145,9 +146,6 @@ namespace cajeta {
         return result;
     }
 
-    CajetaType* Expression::toType(CajetaModule* module) { return CajetaType::of("void"); }
-
-
 //    enum LiteralType {
 //        LITERAL_TYPE_BOOL,
 //        LITERAL_TYPE_CHAR,
@@ -168,12 +166,9 @@ namespace cajeta {
         }
     }
 
-    CajetaType* LiteralExpression::toType(CajetaModule* module) {
-        return module->getInitializerType();
-    }
-
     llvm::Value* IntegerLiteralExpression::generateCode(CajetaModule* module) {
-        unsigned bits = module->getInitializerType()->getLlvmType()->getPrimitiveSizeInBits();
+        Field* field = module->getFieldStack().back();
+        unsigned bits = field->getType()->getLlvmType()->getIntegerBitWidth();
         uint8_t radix;
         switch (integerLiteralType) {
             case INTEGER_LITERAL_TYPE_BINARY:
@@ -189,8 +184,39 @@ namespace cajeta {
                 radix = 16;
                 break;
         }
-        return llvm::ConstantInt::getIntegerValue(module->getInitializerType()->getLlvmType(), llvm::APInt(bits, value, radix));
+        return llvm::ConstantInt::getIntegerValue(field->getType()->getLlvmType(), llvm::APInt(bits, value, radix));
     }
+
+    DotExpression::DotExpression(CajetaParser::ExpressionContext* ctx, antlr4::Token* token) : Expression(token) {
+        identifier = ctx->identifier()->getText();
+    }
+
+    llvm::Value* DotExpression::generateCode(CajetaModule* module) {
+        llvm::Value* value = children[0]->generateCode(module);
+        CajetaStructure* structure = (CajetaStructure*) module->getFieldStack().back()->getType();
+        module->getFieldStack().pop_back();
+        StructureField* structureField = structure->getFields()[identifier];
+        module->getFieldStack().push_back(structureField);
+        if (structureField == nullptr) {
+            throw "identifier did not map to field";
+        }
+        return module->getBuilder()->CreateStructGEP(structure->getLlvmType(),
+                                                     value,
+                                                     structureField->getOrder() + 1,
+                                                     identifier);
+    }
+
+    llvm::Value* BinaryOpExpression::generateCode(CajetaModule* module) {
+        if (binaryOp == BINARY_OP_ASSIGN) {
+            llvm::Value* destination = children[0]->generateCode(module);
+            module->pushCurrentValue(destination);
+            llvm::Value* source = children[1]->generateCode(module);
+            module->getFieldStack().pop_back();
+            return module->getBuilder()->CreateStore(source, destination);
+        }
+        return nullptr;
+    }
+
 
 //    antlr4::tree::TerminalNode *LPAREN();
 //    ExpressionContext *expression();
@@ -212,7 +238,7 @@ namespace cajeta {
         } else if (ctx->literal()) {
             result = LiteralExpression::fromContext(ctx->literal());
         } else if (ctx->identifier()) {
-            result = new IdentifierExpression(ctx->identifier());
+            result = new IdentifierExpression(ctx->identifier(), true);
         } else if (ctx->THIS()) {
             result = new ThisExpression(ctx->expression());
         }
@@ -224,17 +250,23 @@ namespace cajeta {
     }
 
     llvm::Value* IdentifierExpression::generateCode(CajetaModule* module) {
-        Field* field = module->getCurrentMethod()->getLocalVariable(this->identifier);
-        llvm::AllocaInst* alloca = (llvm::AllocaInst*) field->getOrCreateStackAllocation(module);
-        return module->getBuilder()->CreateLoad(alloca->getAllocatedType(), alloca, field->getName());
-    }
-
-    CajetaType* IdentifierExpression::toType(CajetaModule* module) {
-        Field* field = module->getCurrentMethod()->getLocalVariable(identifier);
-        if (field != nullptr) {
-            return field->getType();
+        if (primary) {
+            Field* field = module->getCurrentMethod()->getVariable(identifier);
+            module->getFieldStack().push_back(field);
+            return field->getAllocation();
         } else {
-            throw "bad identifier"; // TODO: Create new exception for this.
+            llvm::Value* value = module->getValueStack().back();
+            CajetaStructure* structure;
+            try {
+                structure = (CajetaStructure*) CajetaType::getCanonicalMap()[value->getType()->getStructName().str()];
+            } catch (exception) {
+                throw "bad type";
+            }
+            StructureField* structureField = structure->getFields()[identifier];
+            return module->getBuilder()->CreateStructGEP(structureField->getType()->getLlvmType(),
+                                                                            module->getValueStack().back(),
+                                                                            structureField->getOrder(),
+                                                                            identifier);
         }
     }
 
@@ -255,48 +287,34 @@ namespace cajeta {
      */
     llvm::Value* ClassCreatorRest::generateCode(CajetaModule* module) {
         list<CajetaType*> types;
-        vector<llvm::Value*> values;
-        Field* currentField = module->getCurrentField();
-
-        types.push_back(module->getCurrentStructure());
+        vector<llvm::Value*> parameterValues;
+        Field* currentField = module->getFieldStack().back();
         llvm::Value* thisValue = currentField->getAllocation();
-        values.push_back(thisValue);
+        parameterValues.push_back(thisValue);
 
         for (auto& expression : expressionList) {
-            types.push_back(expression->toType(module));
-            values.push_back(expression->generateCode(module));
+            parameterValues.push_back(expression->generateCode(module));
         }
 
-        string canonical = Method::buildCanonical(
-                module->getCurrentStructure(),
-                module->getCurrentStructure()->getQName()->getTypeName(),
-                types);
-        Method* constructor = Method::getArchive()[canonical];
-
-        int fieldIndex = 0;
-        for (auto &fieldEntry : module->getCurrentStructure()->getFields()) {
-            Field* field = fieldEntry.second;
-            llvm::Value* allocation = module->getBuilder()->CreateStructGEP(currentField->getType()->getLlvmType(),
-                                                                            currentField->getAllocation(), fieldIndex,
-                                                                            field->getName());
-            field->setAllocation(allocation);
-            module->getCurrentStructure()->getScope()->fields[field->getName()] = field;
-            fieldIndex++;
-        }
+        string constructorName = Method::buildCanonical(
+                (CajetaStructure*) currentField->getType(),
+                currentField->getType()->getQName()->getTypeName(),
+                parameterValues);
+        Method* constructor = Method::getArchive()[constructorName];
 
         if (constructor == nullptr) {
             throw "A constructor with the specified signature could not be found.";
         } else {
             module->getBuilder()->CreateCall(constructor->getLlvmFunctionType(),
                                              constructor->getLlvmFunction(),
-                                             values);
+                                             parameterValues);
         }
         return nullptr;
     }
 
     llvm::Value* NewExpression::generateCode(CajetaModule* module) {
-        CajetaStructure* structure = module->getCurrentStructure();
-        Field* field = module->getCurrentField();
+        Field* field = module->getFieldStack().back();
+        CajetaStructure* structure = (CajetaStructure*) field->getType();
 
         const llvm::DataLayout& dataLayout = module->getLlvmModule()->getDataLayout();
 
@@ -313,8 +331,5 @@ namespace cajeta {
         return mallocInst;
     }
 
-    CajetaType* NewExpression::toType(CajetaModule* module) {
-        return module->getCurrentStructure();
-    }
 }
 

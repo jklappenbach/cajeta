@@ -9,6 +9,7 @@
 #include "QualifiedName.h"
 #include <llvm/IR/LegacyPassManager.h>
 #include <llvm/IR/Module.h>
+#include <llvm/IR/Type.h>
 #include <llvm/IR/IRBuilder.h>
 #include <llvm/Support/Error.h>
 #include <llvm/Support/FileSystem.h>
@@ -30,7 +31,8 @@ namespace cajeta {
 
     class CajetaType : public Modifiable, public Annotatable {
     private:
-        static map<string, CajetaType*> archive;
+        static map<string, CajetaType*> canonicalMap;
+        static map<llvm::Type::TypeID, CajetaType*> typeIdMap;
     protected:
         QualifiedName* qName;
         llvm::Type* llvmType;
@@ -43,14 +45,15 @@ namespace cajeta {
         CajetaType(QualifiedName* qName) {
             this->qName = qName;
             canonical = qName->toCanonical();
-            archive[canonical] = this;
+            canonicalMap[canonical] = this;
         }
 
         CajetaType(QualifiedName* qName, llvm::Type* llvmType) {
             this->qName = qName;
             this->llvmType = llvmType;
             canonical = qName->toCanonical();
-            archive[canonical] = this;
+            canonicalMap[canonical] = this;
+            typeIdMap[llvmType->getTypeID()] = this;
         }
 
         virtual bool isPrimitive() { return true; }
@@ -72,7 +75,11 @@ namespace cajeta {
         static CajetaType* fromContext(CajetaParser::PrimitiveTypeContext* ctx);
         static CajetaType* fromContext(CajetaParser::TypeTypeOrVoidContext* ctx);
         static CajetaType* fromContext(CajetaParser::TypeTypeContext* ctx);
-        static map<string, CajetaType*>& getArchive();
+        static map<string, CajetaType*>& getCanonicalMap();
+        static map<llvm::Type::TypeID, CajetaType*>& getTypeIdMap();
         static void init(llvm::LLVMContext& ctxLlvm);
+        static CajetaType* fromLlvmType(llvm::Type* type, CajetaType* parent = nullptr);
+        static CajetaType* fromValue(llvm::Value* value, CajetaType* parent = nullptr);
+
     };
 }

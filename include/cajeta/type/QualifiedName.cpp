@@ -16,6 +16,17 @@ namespace cajeta {
         }
     }
 
+    QualifiedName* QualifiedName::getOrInsert(string typeName) {
+        map<string, QualifiedName*> packagesToTypeName = cache[typeName];
+        QualifiedName* qName = packagesToTypeName[""];
+        if (qName == nullptr) {
+            qName = new QualifiedName(typeName);
+            packagesToTypeName[""] = qName;
+            cache[typeName] = packagesToTypeName;
+        }
+        return qName;
+    }
+
     QualifiedName* QualifiedName::getOrInsert(string typeName, string packageName) {
         map<string, QualifiedName*> packagesToTypeName = cache[typeName];
         QualifiedName* qName = packagesToTypeName[packageName];
