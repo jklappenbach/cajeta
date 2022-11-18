@@ -30,7 +30,7 @@ namespace cajeta {
     private:
         list<VariableInitializer*> initializers;
     public:
-        ArrayInitializer(list<VariableInitializer*> initializers, antlr4::Token* token) : Initializer(token) {
+        ArrayInitializer(list<Initializer*> initializers, antlr4::Token* token) : Initializer(token) {
             children.insert(children.end(), initializers.begin(), initializers.end());
         }
 

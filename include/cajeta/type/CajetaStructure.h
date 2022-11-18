@@ -15,21 +15,22 @@ namespace cajeta {
     class CajetaModule;
 
     class CajetaStructure : public CajetaType {
-    private:
+    protected:
         map<string, Method*> methods;
         map<string, StructureField*> fields;
-        CajetaModule* module;
         Scope* scope;
     public:
-        CajetaStructure(CajetaModule* module, QualifiedName* qName);
+        CajetaStructure() {
+            scope = nullptr;
+        }
+        CajetaStructure(QualifiedName* qName);
         virtual bool isPrimitive() { return false; }
         Scope* getScope() { return scope; }
         void addMethod(Method* method);
         void addMethods(list<Method*> methods);
         void setClassBody(ClassBodyDeclaration* classBody);
-
-        void generateSignature(CajetaModule* module);
-        void generateCode(CajetaModule* module);
+        virtual void generateSignature(CajetaModule* module);
+        virtual void generateCode(CajetaModule* module);
         void ensureDefaultConstructor(CajetaModule* module);
         map<string, StructureField*>& getFields() { return fields; }
         map<string, Method*>& getMethods() { return methods; }

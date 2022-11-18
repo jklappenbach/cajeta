@@ -82,7 +82,7 @@ namespace cajeta {
             QualifiedName* qName = QualifiedName::getOrInsert(name, module->getQName()->getPackageName()
                                                                     + packageAdj);
             CajetaStructure* structure;
-            structure = new CajetaClass(module, qName);
+            structure = new CajetaClass(qName);
             module->getStructureStack().push_back(structure);
             structure->setClassBody(visitChildren(ctx).as<ClassBodyDeclaration*>());
             structure->generateSignature(module);
@@ -269,10 +269,10 @@ namespace cajeta {
         }
 
         virtual antlrcpp::Any visitArrayInitializer(CajetaParser::ArrayInitializerContext* ctx) override {
-            list<VariableInitializer*> initializers;
+            list<Initializer*> initializers;
             for (auto &variableInitializerContext : ctx->variableInitializer()) {
                 initializers.push_back(visitVariableInitializer(variableInitializerContext)
-                        .as<VariableInitializer*>());
+                        .as<Initializer*>());
             }
             return (Initializer*) new ArrayInitializer(initializers, ctx->getStart());
         }

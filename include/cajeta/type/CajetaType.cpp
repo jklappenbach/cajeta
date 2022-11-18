@@ -5,6 +5,7 @@
 #include "cajeta/type/CajetaType.h"
 #include "cajeta/type/Field.h"
 #include "cajeta/compile/CajetaModule.h"
+#include <cajeta/type/CajetaArray.h>
 
 #define NATIVE_TYPE_ENTRY(typeName, llvmType) new CajetaType(QualifiedName::getOrInsert(typeName, CAJETA_NATIVE_PACKAGE), llvmType)
 #define CAJETA_NATIVE_PACKAGE ""
@@ -62,22 +63,24 @@ namespace cajeta {
         return type;
     }
 
-    cajeta::CajetaType* cajeta::CajetaType::fromContext(CajetaParser::TypeTypeContext* ctxType) {
+    cajeta::CajetaType* cajeta::CajetaType::fromContext(CajetaParser::TypeTypeContext* ctx) {
         CajetaType* type = nullptr;
-        if (ctxType != nullptr) {
-            QualifiedName* qName;
-            CajetaParser::PrimitiveTypeContext* ctxPrimitiveType = ctxType->primitiveType();
-            if (ctxPrimitiveType != nullptr) {
-                qName = QualifiedName::getOrInsert(ctxPrimitiveType->getText(), CAJETA_NATIVE_PACKAGE);
-                type = canonicalMap[qName->toCanonical()];
-            } else {
-                CajetaParser::ClassOrInterfaceTypeContext* ctxClassOrInterface = ctxType->classOrInterfaceType();
-                if (ctxClassOrInterface != nullptr) {
-                    qName = QualifiedName::fromContext(ctxClassOrInterface);
-                }
-                type = canonicalMap[qName->toCanonical()];
+        QualifiedName* qName;
+        CajetaParser::PrimitiveTypeContext* ctxPrimitiveType = ctx->primitiveType();
+        if (ctxPrimitiveType != nullptr) {
+            qName = QualifiedName::getOrInsert(ctxPrimitiveType->getText(), CAJETA_NATIVE_PACKAGE);
+            type = canonicalMap[qName->toCanonical()];
+        } else {
+            CajetaParser::ClassOrInterfaceTypeContext* ctxClassOrInterface = ctx->classOrInterfaceType();
+            if (ctxClassOrInterface != nullptr) {
+                qName = QualifiedName::fromContext(ctxClassOrInterface);
             }
+            type = canonicalMap[qName->toCanonical()];
         }
+        if (ctx->LBRACK().size() > 0) {
+            type = new CajetaArray(type, ctx->LBRACK().size());
+        }
+
         return type;
     }
 

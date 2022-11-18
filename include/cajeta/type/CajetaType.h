@@ -56,6 +56,12 @@ namespace cajeta {
             typeIdMap[llvmType->getTypeID()] = this;
         }
 
+        CajetaType(const CajetaType& src) {
+            qName = src.qName;
+            llvmType = src.llvmType;
+            canonical = src.canonical;
+        }
+
         virtual bool isPrimitive() { return true; }
 
         QualifiedName* getQName() const {

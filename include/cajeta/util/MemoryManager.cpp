@@ -7,7 +7,7 @@
 
 namespace cajeta {
     std::mutex MemoryManager::mutex;
-    MemoryManager* MemoryManager::theInstance;
+    MemoryManager* MemoryManager::theInstance = nullptr;
 
     MemoryManager::MemoryManager(CajetaModule* module) {
         initMalloc(module);

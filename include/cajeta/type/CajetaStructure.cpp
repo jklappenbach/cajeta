@@ -8,10 +8,7 @@
 #include <cajeta/asn/ClassBodyDeclaration.h>
 
 namespace cajeta {
-    CajetaStructure::CajetaStructure(CajetaModule* module, QualifiedName* qName) : CajetaType(qName) {
-        llvmType = llvm::StructType::create(*module->getLlvmContext(), qName->toCanonical());
-        scope = new Scope(module);
-    }
+    CajetaStructure::CajetaStructure(QualifiedName* qName) : CajetaType(qName) { }
 
     void CajetaStructure::addMethod(Method* method) {
         this->methods[method->getName()] = method;
@@ -23,6 +20,9 @@ namespace cajeta {
     }
 
     void CajetaStructure::generateSignature(CajetaModule* module) {
+        llvmType = llvm::StructType::create(*module->getLlvmContext(), qName->toCanonical());
+        scope = new Scope(module);
+
         vector<llvm::Type*> llvmMembers;
         for (auto &fieldEntry : fields) {
             llvmMembers.push_back(fieldEntry.second->getType()->getLlvmType());

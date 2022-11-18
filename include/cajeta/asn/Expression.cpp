@@ -202,14 +202,13 @@ namespace cajeta {
         }
         return module->getBuilder()->CreateStructGEP(structure->getLlvmType(),
                                                      value,
-                                                     structureField->getOrder() + 1,
+                                                     structureField->getOrder(),
                                                      identifier);
     }
 
     llvm::Value* BinaryOpExpression::generateCode(CajetaModule* module) {
         if (binaryOp == BINARY_OP_ASSIGN) {
             llvm::Value* destination = children[0]->generateCode(module);
-            module->pushCurrentValue(destination);
             llvm::Value* source = children[1]->generateCode(module);
             module->getFieldStack().pop_back();
             return module->getBuilder()->CreateStore(source, destination);
@@ -292,8 +291,8 @@ namespace cajeta {
         llvm::Value* thisValue = currentField->getAllocation();
         parameterValues.push_back(thisValue);
 
-        for (auto& expression : expressionList) {
-            parameterValues.push_back(expression->generateCode(module));
+        for (auto& node : children) {
+            parameterValues.push_back(node->generateCode(module));
         }
 
         string constructorName = Method::buildCanonical(
@@ -309,6 +308,42 @@ namespace cajeta {
                                              constructor->getLlvmFunction(),
                                              parameterValues);
         }
+        return nullptr;
+    }
+    /**
+     * The initializer here will have expressions that will resolve to the dimensions that will be allocated.
+     *
+     * @param module
+     * @return
+     */
+    llvm::Value* ArrayCreatorRest::generateCode(CajetaModule* module) {
+        list<CajetaType*> types;
+        vector<llvm::Constant*> dimensionValues;
+        Field* currentField = module->getFieldStack().back();
+        auto &dataLayout = module->getLlvmModule()->getDataLayout();
+        llvm::Type* int64Type = llvm::Type::getInt64Ty(*module->getLlvmContext());
+        llvm::Constant* allocSize = llvm::ConstantInt::get(int64Type, dataLayout.getTypeAllocSize(currentField->getType()->getLlvmType()));
+
+        for (auto& node : children) {
+            llvm::Constant* dimensionValue = (llvm::Constant*) node->generateCode(module);
+            allocSize = llvm::ConstantExpr::getMul(dimensionValue, allocSize);
+            dimensionValues.push_back(dimensionValue);
+        }
+
+
+//        string constructorName = Method::buildCanonical(
+//                (CajetaStructure*) currentField->getType(),
+//                currentField->getType()->getQName()->getTypeName(),
+//                parameterValues);
+//        Method* constructor = Method::getArchive()[constructorName];
+//
+//        if (constructor == nullptr) {
+//            throw "A constructor with the specified signature could not be found.";
+//        } else {
+//            module->getBuilder()->CreateCall(constructor->getLlvmFunctionType(),
+//                                             constructor->getLlvmFunction(),
+//                                             parameterValues);
+//        }
         return nullptr;
     }
 

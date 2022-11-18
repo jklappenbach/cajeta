@@ -14,7 +14,7 @@ namespace cajeta {
     private:
 
     public:
-        CajetaClass(CajetaModule* module, QualifiedName* qName)
-                : CajetaStructure(module, qName) { }
+        CajetaClass(QualifiedName* qName)
+                : CajetaStructure(qName) { }
     };
 }

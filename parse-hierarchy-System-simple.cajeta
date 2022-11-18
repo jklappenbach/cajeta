@@ -64,42 +64,18 @@
                                         (blockStatement
                                             (localVariableDeclaration
                                                 (typeType
-                                                    (classOrInterfaceType
-                                                        (identifier System)))
+                                                    (primitiveType int32) [ ])
                                                 (variableDeclarators
                                                     (variableDeclarator
                                                         (variableDeclaratorId
-                                                            (identifier instance)) =
+                                                            (identifier array)) =
                                                         (variableInitializer
                                                             (expression new
                                                                 (creator
                                                                     (createdName
-                                                                        (identifier System))
-                                                                    (classCreatorRest
-                                                                        (arguments ( ))))))))) ;)
-                                        (blockStatement
-                                            (statement
-                                                (expression
-                                                    (expression
-                                                        (expression
-                                                            (primary
-                                                                (identifier instance))) .
-                                                        (identifier value)) =
-                                                    (expression
-                                                        (primary
-                                                            (literal
-                                                                (integerLiteral 20))))) ;))
-                                        (blockStatement
-                                            (statement
-                                                (expression
-                                                    (expression
-                                                        (expression
-                                                            (expression
-                                                                (primary
-                                                                    (identifier instance))) .
-                                                            (identifier second)) .
-                                                        (identifier third)) =
-                                                    (expression
-                                                        (primary
-                                                            (literal
-                                                                (integerLiteral 50))))) ;)) }))))) }))))
+                                                                        (primitiveType int32))
+                                                                    (arrayCreatorRest [
+                                                                        (expression
+                                                                            (primary
+                                                                                (literal
+                                                                                    (integerLiteral 1000)))) ]))))))) ;) }))))) }))))

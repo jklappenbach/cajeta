@@ -1,14 +1,11 @@
 package cajeta;
 
 public final class System extends Alpha, Beta implements Gamma, Delta {
-    private int32 value;
-    private int32 x = 5;
+    //private int32 value;
+    //private int32 x = 5;
 
     public static void main() {
-        System instance = new System();
-        instance.value = 20;
-//        instance.x = instance.value;
-//        instance.main();
-//        int y = 4;
+        int32[][] array = new int32[1000][500];
+        //int32[] array2 = { 1, 2, 3, 4, 5 };
     }
 }

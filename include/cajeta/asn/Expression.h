@@ -313,24 +313,26 @@ namespace cajeta {
     };
 
     class ClassCreatorRest : public CreatorRest {
-    private:
-        list<Expression*> expressionList;
     public:
         ClassCreatorRest(CajetaParser::ClassCreatorRestContext* ctx, antlr4::Token* token) : CreatorRest(token) {
             if (ctx->arguments()->parameterList()) {
                 for (auto & expressionContext : ctx->arguments()->parameterList()->expression()) {
-                    expressionList.push_back(Expression::fromContext(expressionContext));
+                    children.push_back(Expression::fromContext(expressionContext));
                 }
             }
         }
-        llvm::Value* generateCode(CajetaModule* module);
+        llvm::Value* generateCode(CajetaModule* module) override;
     };
 
     class ArrayCreatorRest : public CreatorRest {
     private:
     public:
-        ArrayCreatorRest(CajetaParser::ArrayCreatorRestContext* ctx, antlr4::Token* token) : CreatorRest(token) { }
-        llvm::Value* generateCode(CajetaModule* module) override {  return nullptr; }
+        ArrayCreatorRest(CajetaParser::ArrayCreatorRestContext* ctx, antlr4::Token* token) : CreatorRest(token) {
+            for (auto &expressionContext : ctx->expression()) {
+                children.push_back(Expression::fromContext(expressionContext));
+            }
+        }
+        llvm::Value* generateCode(CajetaModule* module) override;
     };
 
     class NewExpression : public Expression {
@@ -341,16 +343,21 @@ namespace cajeta {
         NewExpression(antlr4::Token* token) : Expression(token) { }
 
         NewExpression(CajetaParser::CreatorContext* creatorContext, antlr4::Token* token) : Expression(token) {
-            int count = creatorContext->createdName()->identifier().size();
-            int n = 0;
-            for (auto &identifierPart : creatorContext->createdName()->identifier()) {
-                if (n++ == count - 1) {
-                    typeName = identifierPart->getText();
-                } else {
-                    package.append(identifierPart->getText());
+            if (creatorContext->createdName() != nullptr) {
+                if (creatorContext->createdName()->primitiveType()) {
+                    typeName = creatorContext->createdName()->primitiveType()->getText();
+                } else if (!creatorContext->createdName()->identifier().empty()) {
+                    int count = creatorContext->createdName()->identifier().size();
+                    int n = 0;
+                    for (auto &identifierPart : creatorContext->createdName()->identifier()) {
+                        if (n++ == count - 1) {
+                            typeName = identifierPart->getText();
+                        } else {
+                            package.append(identifierPart->getText());
+                        }
+                    }
                 }
             }
-
             creatorRest = CreatorRest::fromContext(creatorContext, token);
         }
 
