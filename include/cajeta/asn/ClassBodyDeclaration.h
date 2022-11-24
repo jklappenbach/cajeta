@@ -50,7 +50,7 @@ namespace cajeta {
                                          variableDeclarator->getInitializer(),
                                          std::move(modifiers),
                                          annotations, i++);
-                structure->getFields()[variableDeclarator->getIdentifier()] = field;
+                structure->addField(field);
             }
         }
 

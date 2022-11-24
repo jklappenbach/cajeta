@@ -85,7 +85,7 @@ namespace cajeta {
             structure = new CajetaClass(qName);
             module->getStructureStack().push_back(structure);
             structure->setClassBody(visitChildren(ctx).as<ClassBodyDeclaration*>());
-            structure->generateSignature(module);
+            structure->generatePrototype(module);
             module->getStructureStack().pop_back();
             return structure;
         }
@@ -152,10 +152,10 @@ namespace cajeta {
             vector<FormalParameter*> formalParameters;
             if (ctx->formalParameters()->formalParameterList()) {
                 for (auto &formalParameterContext : ctx->formalParameters()->formalParameterList()->formalParameter()) {
-                    formalParameters.push_back(FormalParameter::fromContext(formalParameterContext));
+                    formalParameters.push_back(FormalParameter::fromContext(formalParameterContext, module));
                 }
             }
-            CajetaType* returnType = CajetaType::fromContext(ctx->typeTypeOrVoid());
+            CajetaType* returnType = CajetaType::fromContext(ctx->typeTypeOrVoid(), module);
             Block* block = visitMethodBody(ctx->methodBody()).as<Block*>();
             Method* method = new Method(name,
                                         returnType,
@@ -300,7 +300,7 @@ namespace cajeta {
         virtual antlrcpp::Any visitFormalParameterList(CajetaParser::FormalParameterListContext* ctx) override {
             list<FormalParameter*> formalParameters;
             for (auto &formalParameterContext : ctx->formalParameter()) {
-                formalParameters.push_back(FormalParameter::fromContext(formalParameterContext));
+                formalParameters.push_back(FormalParameter::fromContext(formalParameterContext, module));
             }
 
             return formalParameters;
@@ -456,7 +456,7 @@ namespace cajeta {
             }
             return (BlockStatement*) new LocalVariableDeclaration(
                     modifiers,
-                    CajetaType::fromContext(ctx->typeType()),
+                    CajetaType::fromContext(ctx->typeType(), module),
                     visitVariableDeclarators(ctx->variableDeclarators()).as<list<VariableDeclarator*>>(),
                     ctx->getStart());
         }
@@ -635,11 +635,11 @@ namespace cajeta {
         }
 
         virtual antlrcpp::Any visitTypeType(CajetaParser::TypeTypeContext* ctx) override {
-            return CajetaType::fromContext(ctx);
+            return CajetaType::fromContext(ctx, module);
         }
 
         virtual antlrcpp::Any visitPrimitiveType(CajetaParser::PrimitiveTypeContext* ctx) override {
-            return CajetaType::fromContext(ctx);
+            return CajetaType::fromContext(ctx, module);
         }
 
         virtual antlrcpp::Any visitTypeArguments(CajetaParser::TypeArgumentsContext* ctx) override {

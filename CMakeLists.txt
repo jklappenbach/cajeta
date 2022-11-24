@@ -54,11 +54,11 @@ add_executable(cajeta
         src/main.cpp include/cajeta/type/Scope.h include/cajeta/type/Scope.cpp
         include/cajeta/asn/Statement.cpp include/cajeta/asn/Statement.h
         include/cajeta/type/Generics.cpp include/cajeta/type/Generics.h
-        include/cajeta/type/Method.cpp include/cajeta/type/Method.h
+        include/cajeta/method/Method.cpp include/cajeta/method/Method.h
         include/cajeta/type/Field.cpp include/cajeta/type/Field.h
         include/cajeta/asn/Expression.h include/cajeta/asn/Expression.cpp
         include/cajeta/type/CajetaType.cpp include/cajeta/type/CajetaType.h
-        include/cajeta/type/Interface.h include/cajeta/type/Interface.cpp
+        include/cajeta/type/CajetaInterface.h include/cajeta/type/CajetaInterface.cpp
         include/cajeta/type/CajetaClass.cpp include/cajeta/type/CajetaClass.h
         include/cajeta/type/QualifiedName.h include/cajeta/type/QualifiedName.cpp
         include/cajeta/asn/AbstractSyntaxNode.cpp include/cajeta/asn/AbstractSyntaxNode.h
@@ -76,12 +76,15 @@ add_executable(cajeta
         include/cajeta/exception/CajetaExceptions.h
         include/cajeta/logging/CajetaLogger.cpp include/cajeta/logging/CajetaLogger.h
         include/cajeta/util/LiteralUtils.cpp include/cajeta/util/LiteralUtils.h
-        include/cajeta/asn/DefaultConstructorBlock.cpp include/cajeta/asn/DefaultConstructorBlock.h
+        include/cajeta/asn/DefaultBlock.cpp include/cajeta/asn/DefaultBlock.h
         include/cajeta/util/MemoryManager.cpp include/cajeta/util/MemoryManager.h
         include/cajeta/type/StructureField.cpp include/cajeta/type/StructureField.h
         include/cajeta/type/LocalField.cpp include/cajeta/type/LocalField.h
         include/cajeta/util/FileStream.cpp include/cajeta/util/FileStream.h
-        include/cajeta/type/CajetaArray.cpp include/cajeta/type/CajetaArray.h)
+        include/cajeta/type/CajetaArray.cpp include/cajeta/type/CajetaArray.h
+        include/cajeta/method/DefaultConstructorMethod.h include/cajeta/method/DefaultConstructorMethod.cpp
+        include/cajeta/method/DefaultDestructorMethod.h include/cajeta/method/DefaultDestructorMethod.cpp
+        include/cajeta/method/ArrayDestructorMethod.h include/cajeta/method/ArrayDestructorMethod.cpp include/cajeta/type/StructureMetadata.cpp include/cajeta/type/StructureMetadata.h)
 
 message(STATUS "Found LLVM ${LLVM_PACKAGE_VERSION}")
 message(STATUS "Using LLVMConfig.cmake in: ${LLVM_DIR}")

@@ -6,6 +6,7 @@
 #include "cajeta/compile/CajetaModule.h"
 #include "cajeta/util/LiteralUtils.h"
 #include "cajeta/util/MemoryManager.h"
+#include "cajeta/type/CajetaArray.h"
 
 namespace cajeta {
     Expression* Expression::fromContext(CajetaParser::ExpressionContext* ctx) {
@@ -167,9 +168,14 @@ namespace cajeta {
     }
 
     llvm::Value* IntegerLiteralExpression::generateCode(CajetaModule* module) {
-        Field* field = module->getFieldStack().back();
-        unsigned bits = field->getType()->getLlvmType()->getIntegerBitWidth();
+        unsigned bits = 64;
         uint8_t radix;
+
+        Field* field = module->getFieldStack().back();
+        if (field->getType()->getStructType() == STRUCT_TYPE_PRIMITIVE) {
+            bits = field->getType()->getLlvmType()->getIntegerBitWidth();
+        }
+
         switch (integerLiteralType) {
             case INTEGER_LITERAL_TYPE_BINARY:
                 radix = 2;
@@ -317,12 +323,13 @@ namespace cajeta {
      * @return
      */
     llvm::Value* ArrayCreatorRest::generateCode(CajetaModule* module) {
-        list<CajetaType*> types;
         vector<llvm::Constant*> dimensionValues;
         Field* currentField = module->getFieldStack().back();
+        CajetaArray* arrayType = (CajetaArray*) currentField->getType();
         auto &dataLayout = module->getLlvmModule()->getDataLayout();
         llvm::Type* int64Type = llvm::Type::getInt64Ty(*module->getLlvmContext());
-        llvm::Constant* allocSize = llvm::ConstantInt::get(int64Type, dataLayout.getTypeAllocSize(currentField->getType()->getLlvmType()));
+        llvm::Constant* allocSize = llvm::ConstantInt::get(int64Type, dataLayout.getTypeAllocSize(arrayType->getElementType()
+                ->getLlvmType()));
 
         for (auto& node : children) {
             llvm::Constant* dimensionValue = (llvm::Constant*) node->generateCode(module);
@@ -330,41 +337,32 @@ namespace cajeta {
             dimensionValues.push_back(dimensionValue);
         }
 
+        char fieldName[1024];
+        snprintf(fieldName, 1023, "%s.%s", currentField->getName().c_str(), CajetaArray::ARRAY_FIELD_NAME.c_str());
+        llvm::Value* fieldPointer = module->getBuilder()->CreateStructGEP(arrayType->getLlvmType(),
+                                              currentField->getAllocation(),
+                                              arrayType->getFields()[CajetaArray::ARRAY_FIELD_NAME]->getOrder(),
+                                              fieldName);
 
-//        string constructorName = Method::buildCanonical(
-//                (CajetaStructure*) currentField->getType(),
-//                currentField->getType()->getQName()->getTypeName(),
-//                parameterValues);
-//        Method* constructor = Method::getArchive()[constructorName];
-//
-//        if (constructor == nullptr) {
-//            throw "A constructor with the specified signature could not be found.";
-//        } else {
-//            module->getBuilder()->CreateCall(constructor->getLlvmFunctionType(),
-//                                             constructor->getLlvmFunction(),
-//                                             parameterValues);
-//        }
-        return nullptr;
+        MemoryManager* memoryAllocator = MemoryManager::getInstance(module);
+        llvm::Instruction* mallocInst = memoryAllocator->createMallocInstruction("", allocSize,
+                                                                                 module->getBuilder()->GetInsertBlock());
+        module->getBuilder()->CreateStore(mallocInst, fieldPointer);
+        arrayType->getFields()[CajetaArray::ARRAY_FIELD_NAME] = new StructureField(CajetaArray::ARRAY_FIELD_NAME, fieldPointer, 0);
+        return mallocInst;
     }
 
     llvm::Value* NewExpression::generateCode(CajetaModule* module) {
         Field* field = module->getFieldStack().back();
         CajetaStructure* structure = (CajetaStructure*) field->getType();
 
-        const llvm::DataLayout& dataLayout = module->getLlvmModule()->getDataLayout();
-
-        vector<llvm::Value*> mallocArgs;
-        llvm::Value* value = llvm::ConstantInt::get(llvm::Type::getInt32Ty(*module->getLlvmContext()),
-                                                    dataLayout.getTypeAllocSize(structure->getLlvmType()));
-        mallocArgs.push_back(value);
-        llvm::BasicBlock* block = module->getBuilder()->GetInsertBlock();
         llvm::Constant* allocSize = llvm::ConstantExpr::getSizeOf(structure->getLlvmType());
         MemoryManager* memoryAllocator = MemoryManager::getInstance(module);
-        llvm::Instruction* mallocInst = memoryAllocator->createMallocInstruction(field->getName(), allocSize, block);
+        llvm::Instruction* mallocInst = memoryAllocator->createMallocInstruction(field->getName(), allocSize,
+                                                                                 module->getBuilder()->GetInsertBlock());
         field->setAllocation(mallocInst);
         this->creatorRest->generateCode(module);
         return mallocInst;
     }
-
 }
 

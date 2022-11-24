@@ -3,7 +3,7 @@
 //
 
 #include <cajeta/asn/Block.h>
-#include <cajeta/type/Method.h>
+#include "cajeta/method/Method.h"
 #include <cajeta/compile/CajetaModule.h>
 
 namespace cajeta {

@@ -8,7 +8,7 @@
 #include "llvm/IR/Module.h"
 #include "cajeta/type/QualifiedName.h"
 #include "cajeta/type/CajetaStructure.h"
-#include "cajeta/type/Method.h"
+#include "cajeta/method/Method.h"
 #include <support/Any.h>
 #include <string>
 #include <fstream>
@@ -142,7 +142,9 @@ namespace cajeta {
             return fieldStack;
         }
 
-        list<CajetaStructure*>& getStructureList() { return structures; }
+        list<CajetaStructure*>& getStructureList() {
+            return structures;
+        }
 
         llvm::IRBuilder<>* getBuilder() const;
 

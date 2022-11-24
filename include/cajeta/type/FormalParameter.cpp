@@ -3,15 +3,16 @@
 //
 
 #include "cajeta/type/FormalParameter.h"
+#include "cajeta/compile/CajetaModule.h"
 
 namespace cajeta {
-    FormalParameter* FormalParameter::fromContext(CajetaParser::FormalParameterContext* ctx) {
+    FormalParameter* FormalParameter::fromContext(CajetaParser::FormalParameterContext* ctx, CajetaModule* module) {
         FormalParameter* parameter = nullptr;
         string name = ctx->variableDeclaratorId()->identifier()->getText();
         set<QualifiedName*> annotations;
         set<Modifier> modifiers;
         CajetaParser::TypeTypeContext* ctxType = ctx->typeType();
-        CajetaType* type = CajetaType::fromContext(ctxType);
+        CajetaType* type = CajetaType::fromContext(ctxType, module);
 
         std::vector<CajetaParser::VariableModifierContext *> variableModifiers = ctx->variableModifier();
         for (auto & ctxVariableModifier : variableModifiers) {

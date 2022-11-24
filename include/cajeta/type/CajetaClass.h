@@ -6,7 +6,7 @@
 
 #include "CajetaStructure.h"
 #include "Field.h"
-#include "Method.h"
+#include "cajeta/method/Method.h"
 #include "Modifiable.h"
 
 namespace cajeta {
@@ -16,5 +16,7 @@ namespace cajeta {
     public:
         CajetaClass(QualifiedName* qName)
                 : CajetaStructure(qName) { }
+        virtual int getStructType() { return STRUCT_TYPE_CLASS; }
     };
+
 }

@@ -22,7 +22,7 @@ namespace cajeta {
     class CajetaModule;
 
     class Field : public Modifiable, public Annotatable {
-    private:
+    protected:
         bool reference;
         string name;
         int arrayDimension;
@@ -35,8 +35,9 @@ namespace cajeta {
             this->name = name;
             this->type = type;
         }
-        Field(string name, llvm::Value* allocation) {
-            
+        Field(string& name, llvm::Value* allocation) {
+            this->name = name;
+            this->allocation = allocation;
         }
         Field(string name,
               CajetaType* type,
@@ -94,6 +95,6 @@ namespace cajeta {
 
         llvm::Value* getOrCreateStackAllocation(CajetaModule* module);
         llvm::Value* getOrCreateAllocation(CajetaModule* module);
-        static list<Field*> fromContext(CajetaParser::FieldDeclarationContext* ctx);
+        static list<Field*> fromContext(CajetaParser::FieldDeclarationContext* ctx, CajetaModule* module);
     };
 }

@@ -29,7 +29,13 @@ namespace cajeta {
         NATIVE_TYPE_ENTRY("float32", llvm::Type::getFloatTy(ctx));
         NATIVE_TYPE_ENTRY("float64", llvm::Type::getDoubleTy(ctx));
         NATIVE_TYPE_ENTRY("float128", llvm::Type::getFP128Ty(ctx));
-        NATIVE_TYPE_ENTRY("this", llvm::Type::getInt64PtrTy(ctx));
+        NATIVE_TYPE_ENTRY("pointer", llvm::Type::getInt64PtrTy(ctx));
+    }
+
+    llvm::ConstantInt* CajetaType::getTypeAllocSize(CajetaModule* module) {
+        const llvm::DataLayout& dataLayout = module->getLlvmModule()->getDataLayout();
+        return llvm::ConstantInt::get(llvm::Type::getInt64Ty(*module->getLlvmContext()),
+                                                    dataLayout.getTypeAllocSize(llvmType));
     }
 
     map<string, CajetaType*>& CajetaType::getCanonicalMap() { return canonicalMap; }
@@ -45,25 +51,25 @@ namespace cajeta {
         return CajetaType::canonicalMap[qName->toCanonical()];
     }
 
-    CajetaType* CajetaType::fromContext(CajetaParser::PrimitiveTypeContext* ctx) {
+    CajetaType* CajetaType::fromContext(CajetaParser::PrimitiveTypeContext* ctx, CajetaModule* module) {
         QualifiedName* qName = QualifiedName::getOrInsert(ctx->getText(), "cajeta");
         return CajetaType::canonicalMap[qName->toCanonical()];
     }
 
-    cajeta::CajetaType* cajeta::CajetaType::fromContext(CajetaParser::TypeTypeOrVoidContext* ctx) {
+    cajeta::CajetaType* cajeta::CajetaType::fromContext(CajetaParser::TypeTypeOrVoidContext* ctx, CajetaModule* module) {
         CajetaType* type = nullptr;
         if (ctx != nullptr) {
             if (ctx->VOID() != nullptr) {
                 QualifiedName* qName = QualifiedName::getOrInsert(ctx->getText());
                 type = CajetaType::canonicalMap[qName->toCanonical()];
             } else {
-                type = fromContext(ctx->typeType());
+                type = fromContext(ctx->typeType(), module);
             }
         }
         return type;
     }
 
-    cajeta::CajetaType* cajeta::CajetaType::fromContext(CajetaParser::TypeTypeContext* ctx) {
+    cajeta::CajetaType* cajeta::CajetaType::fromContext(CajetaParser::TypeTypeContext* ctx, CajetaModule* module) {
         CajetaType* type = nullptr;
         QualifiedName* qName;
         CajetaParser::PrimitiveTypeContext* ctxPrimitiveType = ctx->primitiveType();
@@ -79,6 +85,8 @@ namespace cajeta {
         }
         if (ctx->LBRACK().size() > 0) {
             type = new CajetaArray(type, ctx->LBRACK().size());
+            module->getStructureList().push_back((CajetaStructure*) type);
+            ((CajetaArray*) type)->generatePrototype(module);
         }
 
         return type;

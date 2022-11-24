@@ -3,24 +3,32 @@
 //
 
 #include "cajeta/type/CajetaArray.h"
+#include "cajeta/compile/CajetaModule.h"
+#include "cajeta/method/ArrayDestructorMethod.h"
 
 namespace cajeta {
-    void CajetaArray::generateSignature(CajetaModule* module) {
-        vector<llvm::Type*> llvmMembers;
-        for (auto &fieldEntry : fields) {
-            llvmMembers.push_back(fieldEntry.second->getType()->getLlvmType());
-        }
-        ((llvm::StructType*) llvmType)->setBody(llvm::ArrayRef<llvm::Type*>(llvmMembers), false);
+    string CajetaArray::ARRAY_FIELD_NAME("@array");
 
-        ensureDefaultConstructor(module);
-
-        for (auto methodEntry : methods) {
-            methodEntry.second->generatePrototype(module);
+    CajetaArray::CajetaArray(CajetaType* elementType, int dimension) {
+        this->elementType = elementType;
+        this->dimension = dimension;
+        char typeName[1025];
+        snprintf(typeName, 1024, "%s[%d]", elementType->getQName()->getTypeName().c_str(), dimension);
+        qName = QualifiedName::getOrInsert(typeName, elementType->getQName()->getPackageName());
+        canonical = qName->toCanonical();
+        char fieldName[256];
+        fields[ARRAY_FIELD_NAME] = new StructureField(ARRAY_FIELD_NAME, CajetaType::of("pointer"), 0);
+        for (int i = 0; i < dimension; i++) {
+            snprintf(fieldName, 255, "@dim%d", i);
+            fields[fieldName] = new StructureField(fieldName, CajetaType::of("int32"), i + 1);
         }
     }
-    void CajetaArray::generateCode(CajetaModule* module) {
-        for (auto methodEntry : methods) {
-            methodEntry.second->generateCode(module);
+
+    void CajetaArray::ensureDefaultDestructor(CajetaModule* module) {
+        string name = "~";
+        name.append(qName->getTypeName());
+        if (methods.find(name) == methods.end()) {
+            addMethod(new ArrayDestructorMethod(this));
         }
     }
 }

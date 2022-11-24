@@ -29,6 +29,8 @@ namespace cajeta {
     class Field;
     class CajetaModule;
 
+    enum StructType { STRUCT_TYPE_PRIMITIVE, STRUCT_TYPE_CLASS, STRUCT_TYPE_ENUM, STRUCT_TYPE_ARRAY };
+
     class CajetaType : public Modifiable, public Annotatable {
     private:
         static map<string, CajetaType*> canonicalMap;
@@ -46,6 +48,7 @@ namespace cajeta {
             this->qName = qName;
             canonical = qName->toCanonical();
             canonicalMap[canonical] = this;
+            llvmType = nullptr;
         }
 
         CajetaType(QualifiedName* qName, llvm::Type* llvmType) {
@@ -62,7 +65,7 @@ namespace cajeta {
             canonical = src.canonical;
         }
 
-        virtual bool isPrimitive() { return true; }
+        virtual int getStructType() { return STRUCT_TYPE_PRIMITIVE; }
 
         QualifiedName* getQName() const {
             return qName;
@@ -72,20 +75,21 @@ namespace cajeta {
             return llvmType;
         }
 
+        virtual llvm::ConstantInt* getTypeAllocSize(CajetaModule* module);
+
         const string& toCanonical() {
             return qName->toCanonical();
         }
 
         static CajetaType* of(string typeName);
         static CajetaType* of(string typeName, string package);
-        static CajetaType* fromContext(CajetaParser::PrimitiveTypeContext* ctx);
-        static CajetaType* fromContext(CajetaParser::TypeTypeOrVoidContext* ctx);
-        static CajetaType* fromContext(CajetaParser::TypeTypeContext* ctx);
+        static CajetaType* fromContext(CajetaParser::PrimitiveTypeContext* ctx, CajetaModule* module);
+        static CajetaType* fromContext(CajetaParser::TypeTypeOrVoidContext* ctx, CajetaModule* module);
+        static CajetaType* fromContext(CajetaParser::TypeTypeContext* ctx, CajetaModule* module);
         static map<string, CajetaType*>& getCanonicalMap();
         static map<llvm::Type::TypeID, CajetaType*>& getTypeIdMap();
         static void init(llvm::LLVMContext& ctxLlvm);
         static CajetaType* fromLlvmType(llvm::Type* type, CajetaType* parent = nullptr);
         static CajetaType* fromValue(llvm::Value* value, CajetaType* parent = nullptr);
-
     };
 }

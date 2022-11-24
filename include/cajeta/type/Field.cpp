@@ -8,9 +8,9 @@
 #include "cajeta/compile/CajetaModule.h"
 
 namespace cajeta {
-    list<Field*> Field::fromContext(CajetaParser::FieldDeclarationContext* ctx) {
+    list<Field*> Field::fromContext(CajetaParser::FieldDeclarationContext* ctx, CajetaModule* module) {
         list<Field*> fields;
-        CajetaType* type = CajetaType::fromContext(ctx->typeType());
+        CajetaType* type = CajetaType::fromContext(ctx->typeType(), module);
 
         for (auto & ctxVariableDeclarator : ctx->variableDeclarators()->variableDeclarator()) {
             string name = ctxVariableDeclarator->variableDeclaratorId()->identifier()->getText();
@@ -46,8 +46,12 @@ namespace cajeta {
 
     void Field::onDelete(CajetaModule* module) {
         if (!reference) {
-            MemoryManager::getInstance(module)->createFreeInstruction(allocation,
-                                                                      module->getBuilder()->GetInsertBlock());
+            string destructorName = "~";
+            destructorName.append(type->getQName()->getTypeName());
+            if (type->getStructType() != STRUCT_TYPE_PRIMITIVE) {
+                ((CajetaStructure*)type)->invokeMethod(destructorName, allocation, module);
+                MemoryManager::getInstance(module)->createFreeInstruction(allocation, module->getBuilder()->GetInsertBlock());
+            }
         }
     }
 }

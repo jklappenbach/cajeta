@@ -13,6 +13,8 @@
 using namespace std;
 
 namespace cajeta {
+    class CajetaModule;
+
     class FormalParameter : public Modifiable, public Annotatable {
     private:
         string name;
@@ -42,6 +44,6 @@ namespace cajeta {
             return canonical;
         }
 
-        static FormalParameter* fromContext(CajetaParser::FormalParameterContext*);
+        static FormalParameter* fromContext(CajetaParser::FormalParameterContext* ctx, CajetaModule* module);
     };
 }

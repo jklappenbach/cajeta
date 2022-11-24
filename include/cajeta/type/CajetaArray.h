@@ -6,22 +6,39 @@
 
 #include "CajetaStructure.h"
 #include "Field.h"
-#include "Method.h"
+#include "cajeta/method/Method.h"
 #include "Modifiable.h"
 #include <stdio.h>
+#include <vector>
 
 namespace cajeta {
     class CajetaArray : public CajetaStructure {
     private:
         int dimension;
         CajetaType* elementType;
+        std::vector<llvm::Constant*> dimensions;
     public:
-        CajetaArray(CajetaType* elementType, int dimension) {
-            char buffer[256];
-            snprintf(buffer, 255, "%s[%d]", elementType->getQName()->toCanonical().c_str(), dimension);
-            qName = QualifiedName::getOrInsert(string(buffer));
-        }
-        virtual void generateSignature(CajetaModule* module);
-        virtual void generateCode(CajetaModule* module);
+        static string ARRAY_FIELD_NAME;
+        CajetaArray(CajetaType* elementType, int dimension);
+
+        int getStructType() override { return STRUCT_TYPE_ARRAY; }
+        /**
+         * Returns a list of Constants, each element will hold the size of the requested array dimension
+         * @return A list of Constant* to dimension sizes
+         */
+        std::vector<llvm::Constant*>& getDimensions() { return dimensions; }
+
+        /**
+         * The underlying type of the element in the array
+         * @return
+         */
+        CajetaType* getElementType() { return elementType; }
+        /**
+         * The number of dimensions in the array
+         * @return An integer
+         */
+        const int getDimension() { return dimension; }
+
+        void ensureDefaultDestructor(CajetaModule* module) override;
     };
 }

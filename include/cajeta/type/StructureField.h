@@ -14,6 +14,18 @@ namespace cajeta {
     public:
         StructureField(string name,
                        CajetaType* type,
+                       int order) : Field(name, type) {
+            this->order = order;
+        }
+        StructureField(string name, llvm::Type* type, int order) : Field(name, type) {
+            this->order = order;
+        }
+        StructureField(string name, llvm::Value* allocation, int order) : Field(name, allocation) {
+            this->order = order;
+            this->allocation = allocation;
+        }
+        StructureField(string name,
+                       CajetaType* type,
                        int arrayDimension,
                        bool reference,
                        Initializer* initializer,
