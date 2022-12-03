@@ -22,22 +22,22 @@ namespace cajeta {
     }
 
     llvm::CallInst* FileStream::createOpenInstruction(llvm::Value* file, llvm::Constant* openFlags,
-                                                      llvm::BasicBlock* basicBlock) {
+        llvm::BasicBlock* basicBlock) {
         return nullptr;
     }
 
     llvm::CallInst* FileStream::createOpenInstruction(llvm::Constant* path, llvm::Constant* openFlags,
-                                                      llvm::BasicBlock* basicBlock) {
+        llvm::BasicBlock* basicBlock) {
         return nullptr;
     }
 
     llvm::CallInst* FileStream::createCloseInstruction(llvm::Value* file, llvm::Constant* openFlags,
-                                                       llvm::BasicBlock* basicBlock) {
+        llvm::BasicBlock* basicBlock) {
         return nullptr;
     }
 
     llvm::CallInst* FileStream::createControlInstruction(llvm::Value* file, llvm::Constant* openFlags,
-                                                         llvm::BasicBlock* basicBlock) {
+        llvm::BasicBlock* basicBlock) {
         return nullptr;
     }
 
@@ -46,12 +46,13 @@ namespace cajeta {
     }
 
     llvm::CallInst* FileStream::createSeekInstruction(llvm::Value* file, llvm::Constant* offset, llvm::Constant* whence,
-                                                      llvm::BasicBlock* basicBlock) {
+        llvm::BasicBlock* basicBlock) {
         return nullptr;
     }
 
-    llvm::CallInst* FileStream::createRewindInstruction(llvm::Value* file, llvm::Constant* offset, llvm::Constant* whence,
-                                        llvm::BasicBlock* basicBlock) {
+    llvm::CallInst*
+    FileStream::createRewindInstruction(llvm::Value* file, llvm::Constant* offset, llvm::Constant* whence,
+        llvm::BasicBlock* basicBlock) {
         return nullptr;
     }
 

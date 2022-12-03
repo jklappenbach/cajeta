@@ -10,74 +10,78 @@
 
 namespace cajeta {
     void logInfo(antlr4::ParserRuleContext* ctx,
-                 string sourcePath,
-                 string errorId,
-                 string message) {
+        string sourcePath,
+        string errorId,
+        string message) {
         antlr4::Token* token = ctx->getStart();
         LOG(INFO) << sourcePath << "[" << token->getLine() << ":" << token->getStartIndex() <<
                   "]\nError " << errorId << ": " << message << "\n" << token->getText();
     }
 
     void logInfo(CajetaModule* cajetaModule,
-                 AbstractSyntaxNode* node,
-                 Exception& e) {
+        AbstractSyntaxNode* node,
+        Exception& e) {
         LOG(INFO) << cajetaModule->getSourcePath() << "[" << node->getSourceLine() << "," <<
-                                                                                          node->getSourceColumn() << "]\nError " << e.getErrorId() << ": " << e.getMessage() << "\n" << node->getSourceText();
+                  node->getSourceColumn() << "]\nError " << e.getErrorId() << ": " << e.getMessage() << "\n"
+                  << node->getSourceText();
     }
 
     void logWarning(antlr4::ParserRuleContext* ctx,
-                    string sourcePath,
-                    string errorId,
-                    string message) {
+        string sourcePath,
+        string errorId,
+        string message) {
         antlr4::Token* token = ctx->getStart();
         LOG(WARNING) << sourcePath << "[" << token->getLine() << ":" << token->getStartIndex() <<
                      "]\nError " << errorId << ": " << message << "\n" << token->getText();
     }
 
     void logWarning(CajetaModule* cajetaModule,
-                    AbstractSyntaxNode* node,
-                    Exception& e) {
+        AbstractSyntaxNode* node,
+        Exception& e) {
         LOG(WARNING) << cajetaModule->getSourcePath() << "[" << node->getSourceLine() << "," <<
-                                                                                             node->getSourceColumn() << "]\nError " << e.getErrorId() << ": " << e.getMessage() << "\n" << node->getSourceText();
+                     node->getSourceColumn() << "]\nError " << e.getErrorId() << ": " << e.getMessage() << "\n"
+                     << node->getSourceText();
     }
 
     void logError(antlr4::ParserRuleContext* ctx,
-                  string sourcePath,
-                  string errorId,
-                  string message) {
+        string sourcePath,
+        string errorId,
+        string message) {
         antlr4::Token* token = ctx->getStart();
         LOG(ERROR) << sourcePath << "[" << token->getLine() << ":" << token->getStartIndex() <<
                    "]\nError " << errorId << ": " << message << "\n" << token->getText();
     }
 
     void logError(CajetaModule* cajetaModule,
-                  AbstractSyntaxNode* node,
-                  Exception& e) {
+        AbstractSyntaxNode* node,
+        Exception& e) {
         LOG(ERROR) << cajetaModule->getSourcePath() << "[" << node->getSourceLine() << "," <<
-                                                                                           node->getSourceColumn() << "]\nError " << e.getErrorId() << ": " << e.getMessage() << "\n" << node->getSourceText();
+                   node->getSourceColumn() << "]\nError " << e.getErrorId() << ": " << e.getMessage() << "\n"
+                   << node->getSourceText();
     }
 
     void logFatal(antlr4::ParserRuleContext* ctx,
-                  string sourcePath,
-                  string errorId,
-                  string message) {
+        string sourcePath,
+        string errorId,
+        string message) {
         antlr4::Token* token = ctx->getStart();
         LOG(FATAL) << sourcePath << "[" << token->getLine() << ":" << token->getStartIndex() <<
                    "]\nError " << errorId << ": " << message << "\n" << token->getText();
     }
 
     void logFatal(CajetaModule* cajetaModule,
-                  AbstractSyntaxNode* node,
-                  Exception& e) {
+        AbstractSyntaxNode* node,
+        Exception& e) {
         LOG(FATAL) << cajetaModule->getSourcePath() << "[" << node->getSourceLine() << "," <<
-                                                                                           node->getSourceColumn() << "]\nError " << e.getErrorId() << ": " << e.getMessage() << "\n" << node->getSourceText();
+                   node->getSourceColumn() << "]\nError " << e.getErrorId() << ": " << e.getMessage() << "\n"
+                   << node->getSourceText();
     }
 
     void CajetaLogger::log(LoggingLevel level,
-                           antlr4::ParserRuleContext* ctx,
-                           string sourcePath,
-                           string errorId,
-                           string message) {
+        antlr4::ParserRuleContext* ctx,
+        string sourcePath,
+        string errorId,
+        string message) {
         switch (level) {
             case INFO:
                 logInfo(ctx, sourcePath, errorId, message);
@@ -95,9 +99,9 @@ namespace cajeta {
     }
 
     void CajetaLogger::log(LoggingLevel level,
-                           CajetaModule* cajetaModule,
-                           AbstractSyntaxNode* node,
-                           Exception& e) {
+        CajetaModule* cajetaModule,
+        AbstractSyntaxNode* node,
+        Exception& e) {
         switch (level) {
             case INFO:
                 logInfo(cajetaModule, node, e);

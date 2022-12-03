@@ -12,6 +12,6 @@ int main(int argc, const char* argv[]) {
     //cl::ParseCommandLineOptions(argc, argv, " Cajeta compiler, v1.0\n");
     llvm::InitLLVM initLlvm(argc, argv);
     Compiler compiler;
-    compiler.compile(argv[1], argv[2]);
+    compiler.compile(argv[1], argv[2], argv[3]);
     return 0;
 }

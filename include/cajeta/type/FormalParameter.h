@@ -5,30 +5,36 @@
 #pragma once
 
 #include <set>
-#include "QualifiedName.h"
-#include "cajeta/type/Modifiable.h"
-#include "cajeta/type/Annotatable.h"
-#include "cajeta/type/CajetaType.h"
+#include <cajeta/type/Field.h>
 
 using namespace std;
 
 namespace cajeta {
     class CajetaModule;
 
-    class FormalParameter : public Modifiable, public Annotatable {
-    private:
-        string name;
-        cajeta::CajetaType* type;
+    class Method;
+
+    class FormalParameter : public Field {
+    protected:
+        Method* parent;
     public:
-        FormalParameter(string name, CajetaType* type, set<Modifier>& modifiers, set<QualifiedName*>& annotations);
-        FormalParameter(string name, CajetaType* type) {
+        FormalParameter(string name, CajetaType* type, bool reference, set<Modifier>& modifiers,
+            set<QualifiedName*>& annotations);
+
+        FormalParameter(string name, CajetaType* type) : Field(name, type) {
             this->name = name;
             this->type = type;
         }
-        FormalParameter(const FormalParameter& src) {
+
+        FormalParameter(const FormalParameter& src) : Field(src.getName(), src.getType()) {
+            parent = src.parent;
             name = src.name;
             type = src.type;
         }
+
+        Method* getParent() const;
+
+        void setParent(Method* parent);
 
         bool isReference() const;
 
@@ -38,11 +44,7 @@ namespace cajeta {
 
         CajetaType* getType() const;
 
-        string toCanonical() {
-            string canonical = type->toCanonical();
-            canonical.append(":").append(name);
-            return canonical;
-        }
+        string toCanonical();
 
         static FormalParameter* fromContext(CajetaParser::FormalParameterContext* ctx, CajetaModule* module);
     };

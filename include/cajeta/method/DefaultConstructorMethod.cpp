@@ -16,9 +16,8 @@ namespace cajeta {
      * @param returnType
      * @param parent
      */
-    DefaultConstructorMethod::DefaultConstructorMethod(CajetaStructure* parent) : Method(parent->getQName()->getTypeName(),
-                   CajetaType::of("void"),
-                   parent) {
+    DefaultConstructorMethod::DefaultConstructorMethod(CajetaModule* module, CajetaStructure* parent)
+        : Method(module, parent->getQName()->getTypeName(), CajetaType::of("void"), parent) {
         this->parent = parent;
         this->name = name;
         this->returnType = returnType;
@@ -27,14 +26,14 @@ namespace cajeta {
         scopes.push_back(parent->getScope());
     }
 
-    void DefaultConstructorMethod::generateCode(CajetaModule* module) {
+    void DefaultConstructorMethod::generateCode() {
         llvmBasicBlock = llvm::BasicBlock::Create(*module->getLlvmContext(), name, llvmFunction);
         builder = new llvm::IRBuilder<>(llvmBasicBlock, llvmBasicBlock->begin());
         builder->SetInsertPoint(llvmBasicBlock);
         module->setBuilder(builder);
         module->setCurrentMethod(this);
 
-        createScope(module);
+        createScope();
         block->generateCode(module);
         destroyScope();
 

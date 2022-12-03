@@ -18,10 +18,10 @@ namespace cajeta {
      * @return
      */
     llvm::Value* LocalVariableDeclaration::generateCode(CajetaModule* module) {
-        for (auto &declarator : variableDeclarators) {
+        for (auto& declarator: variableDeclarators) {
             Initializer* initializer = declarator->getInitializer();
-            LocalField* field = new LocalField(declarator->getIdentifier(), type, declarator->getArrayDimension(),
-                                     declarator->isReference(), modifiers, annotations, initializer);
+            LocalField* field = new LocalField(declarator->getIdentifier(), type,
+                declarator->isReference(), modifiers, annotations, initializer);
             module->getFieldStack().push_back(field);
             module->getCurrentMethod()->createLocalVariable(module, field);
             module->getFieldStack().pop_back();

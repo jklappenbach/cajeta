@@ -7,16 +7,18 @@
 #include <cajeta/compile/CajetaModule.h>
 #include <cajeta/logging/CajetaLogger.h>
 #include "cajeta/compile/Compiler.h"
+#include "cajeta/type/StructureMetadata.h"
+#include "cajeta/type/CajetaStructure.h"
 
 namespace cajeta {
     map<QualifiedName*, CajetaModule*> CajetaModule::archive;
 
     CajetaModule::CajetaModule(llvm::LLVMContext* llvmContext,
-                               string sourcePath,
-                               string sourceRoot,
-                               string archiveRoot,
-                               string targetTriple,
-                               llvm::TargetMachine* targetMachine) {
+        string sourcePath,
+        string sourceRoot,
+        string archiveRoot,
+        string targetTriple,
+        llvm::TargetMachine* targetMachine) {
         this->llvmContext = llvmContext;
         this->sourcePath = sourcePath;
         this->sourceRoot = sourceRoot;
@@ -38,6 +40,7 @@ namespace cajeta {
             llvmModule->setSourceFileName(sourcePath);
             llvmModule->setDataLayout(targetMachine->createDataLayout());
             llvmModule->setTargetTriple(targetTriple);
+            structureMetadata = new StructureMetadata(this);
         } else {
             cerr << "Error: Module srcPath must reference a cajeta module, a file with the correct naming convention";
         }
@@ -61,13 +64,17 @@ namespace cajeta {
 
         if (qName->getPackageName() != packageName) {
             string message = "Declared package name " + packageName + " must match the compilation unit path of " +
-                             qName->getPackageName();
-            CajetaLogger::log(ERROR, ctx, "CAJETAERROR_PACKAGE_MISMATCH", sourcePath, message);
+                qName->getPackageName();
+            CajetaLogger::log(ERROR, ctx, "CAJETA_ERROR_PACKAGE_MISMATCH", sourcePath, message);
         }
     }
 
     bool verifyImport(QualifiedName* qName) {
         return true;
+    }
+
+    void CajetaModule::processMetadata(CajetaStructure* structure) {
+        structureMetadata->populateMetadataGlobals(structure);
     }
 
     void CajetaModule::onImportDeclaration(CajetaParser::ImportDeclarationContext* ctx) {
@@ -100,5 +107,9 @@ namespace cajeta {
         llvm::Value* value = valueStack.back();
         valueStack.pop_back();
         return value;
+    }
+
+    void CajetaModule::addToGenerate(Method* method) {
+        toGenerate.push_back(method);
     }
 }

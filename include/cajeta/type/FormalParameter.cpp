@@ -13,9 +13,10 @@ namespace cajeta {
         set<Modifier> modifiers;
         CajetaParser::TypeTypeContext* ctxType = ctx->typeType();
         CajetaType* type = CajetaType::fromContext(ctxType, module);
+        bool reference;
 
-        std::vector<CajetaParser::VariableModifierContext *> variableModifiers = ctx->variableModifier();
-        for (auto & ctxVariableModifier : variableModifiers) {
+        std::vector<CajetaParser::VariableModifierContext*> variableModifiers = ctx->variableModifier();
+        for (auto& ctxVariableModifier: variableModifiers) {
             CajetaParser::AnnotationContext* ctxAnnotation = ctxVariableModifier->annotation();
             if (ctxAnnotation != nullptr) {
                 QualifiedName* qName = QualifiedName::fromContext(ctxAnnotation->qualifiedName());
@@ -26,7 +27,7 @@ namespace cajeta {
             }
         }
         if (type != nullptr) {
-            parameter = new FormalParameter(name, type, modifiers, annotations);
+            parameter = new FormalParameter(name, type, reference, modifiers, annotations);
         }
         return parameter;
     }
@@ -39,12 +40,24 @@ namespace cajeta {
         return type;
     }
 
-    FormalParameter::FormalParameter(string name,
-                                     CajetaType* type,
-                                     set<Modifier>& modifiers,
-                                     set<QualifiedName*>& annotations)
-                                            : Modifiable(modifiers), Annotatable(annotations) {
+    string FormalParameter::toCanonical() {
+        string canonical = type->toCanonical();
+        canonical.append(":").append(name);
+        return canonical;
+    }
+
+    FormalParameter::FormalParameter(string name, CajetaType* type, bool reference, set<Modifier>& modifiers,
+        set<QualifiedName*>& annotations)
+        : Field(name, type, reference, modifiers, annotations, nullptr) {
         this->name = name;
         this->type = type;
+    }
+
+    Method* FormalParameter::getParent() const {
+        return parent;
+    }
+
+    void FormalParameter::setParent(Method* parent) {
+        this->parent = parent;
     }
 }

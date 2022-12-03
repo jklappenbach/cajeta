@@ -13,17 +13,20 @@ namespace cajeta {
         this->parent = parent;
     }
 
-
     Scope::~Scope() {
-        for (auto& fieldEntry: fields) {
-            Field* field = fieldEntry.second;
-            field->onDelete(module);
+        for (auto itr = fields.rbegin(); itr != fields.rend(); itr++) {
+            Field* field = (*itr).second;
+            field->onDelete(module, this);
             delete field;
         }
         fields.clear();
     }
 
-    void Scope::setField(Field* field) {
+    bool Scope::containsField(string fieldName) {
+        return fields.find(fieldName) != fields.end();
+    }
+
+    void Scope::putField(Field* field) {
         fields[field->getName()] = field;
     }
 

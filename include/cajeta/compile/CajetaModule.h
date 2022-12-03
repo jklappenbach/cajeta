@@ -25,6 +25,10 @@ using std::ofstream;
 #define CAJETA_IR_EXTENSION         ".ll"
 
 namespace cajeta {
+    class StructureMetadata;
+
+    class CajetaStructure;
+
     class CajetaModule {
     private:
         static map<QualifiedName*, CajetaModule*> archive;
@@ -39,8 +43,10 @@ namespace cajeta {
         list<CajetaStructure*> structureStack;
         list<CajetaStructure*> structures;
         Method* currentMethod;
+        StructureMetadata* structureMetadata;
 
         // Current state
+        list<Method*> toGenerate;
         llvm::Module* llvmModule;
         list<llvm::Value*> valueStack;
         list<string> identifierStack;
@@ -54,11 +60,11 @@ namespace cajeta {
 
     public:
         CajetaModule(llvm::LLVMContext* llvmContext,
-                     string sourcePath,
-                     string sourceRoot,
-                     string archiveRoot,
-                     string targetTriple,
-                     llvm::TargetMachine* targetMachine);
+            string sourcePath,
+            string sourceRoot,
+            string archiveRoot,
+            string targetTriple,
+            llvm::TargetMachine* targetMachine);
 
         QualifiedName* getQName() const {
             return qName;
@@ -148,6 +154,8 @@ namespace cajeta {
 
         llvm::IRBuilder<>* getBuilder() const;
 
+        void processMetadata(CajetaStructure* structure);
+
         void writeIRFileTarget() {
             string targetPath = archiveRoot + archivePath;
             std::error_code ec;
@@ -170,8 +178,8 @@ namespace cajeta {
 
         unique_ptr<list<Method*>> getAllMethods() {
             unique_ptr<list<Method*>> result(new list<Method*>);
-            for (CajetaStructure* structure : structures) {
-                for (auto methodEntry : structure->getMethods()) {
+            for (CajetaStructure* structure: structures) {
+                for (auto methodEntry: structure->getMethods()) {
                     result->push_back(methodEntry.second);
                 }
             }
@@ -181,7 +189,12 @@ namespace cajeta {
         void onPackageDeclaration(CajetaParser::PackageDeclarationContext* ctx);
 
         void onImportDeclaration(CajetaParser::ImportDeclarationContext* ctx);
+
         void onStructureDeclaration(antlrcpp::Any any);
+
+        void addToGenerate(Method* method);
+
+        list<Method*>& getToGenerate() { return toGenerate; }
     };
 }
 

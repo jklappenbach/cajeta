@@ -78,13 +78,12 @@ add_executable(cajeta
         include/cajeta/util/LiteralUtils.cpp include/cajeta/util/LiteralUtils.h
         include/cajeta/asn/DefaultBlock.cpp include/cajeta/asn/DefaultBlock.h
         include/cajeta/util/MemoryManager.cpp include/cajeta/util/MemoryManager.h
-        include/cajeta/type/StructureField.cpp include/cajeta/type/StructureField.h
+        include/cajeta/type/ClassProperty.cpp include/cajeta/type/ClassProperty.h
         include/cajeta/type/LocalField.cpp include/cajeta/type/LocalField.h
         include/cajeta/util/FileStream.cpp include/cajeta/util/FileStream.h
         include/cajeta/type/CajetaArray.cpp include/cajeta/type/CajetaArray.h
         include/cajeta/method/DefaultConstructorMethod.h include/cajeta/method/DefaultConstructorMethod.cpp
-        include/cajeta/method/DefaultDestructorMethod.h include/cajeta/method/DefaultDestructorMethod.cpp
-        include/cajeta/method/ArrayDestructorMethod.h include/cajeta/method/ArrayDestructorMethod.cpp include/cajeta/type/StructureMetadata.cpp include/cajeta/type/StructureMetadata.h)
+        include/cajeta/type/StructureMetadata.cpp include/cajeta/type/StructureMetadata.h)
 
 message(STATUS "Found LLVM ${LLVM_PACKAGE_VERSION}")
 message(STATUS "Using LLVMConfig.cmake in: ${LLVM_DIR}")

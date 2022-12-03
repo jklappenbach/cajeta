@@ -59,10 +59,15 @@ expression
 
 namespace cajeta {
     class CajetaModule;
+
     class CajetaType;
+
     class Field;
+
     class FormalParameter;
+
     class Block;
+
     class Annotation;
 
     class Expression : public Statement {
@@ -70,12 +75,15 @@ namespace cajeta {
         bool primary;
     public:
         Expression(antlr4::Token* token) : Statement(token) { }
+
         Expression(bool primary, antlr4::Token* token) : Statement(token) {
             this->primary = primary;
         }
+
         virtual void addChild(Expression* expression) {
             children.push_back(expression);
         };
+
         static Expression* fromContext(CajetaParser::ExpressionContext* ctx);
     };
 
@@ -92,14 +100,17 @@ namespace cajeta {
     class PrimaryExpression : public Expression {
     public:
         PrimaryExpression(antlr4::Token* token) : Expression(token) { }
+
         llvm::Value* generateCode(CajetaModule* module) override;
+
         static Expression* fromContext(CajetaParser::PrimaryContext* ctx);
     };
 
     class ParExpression : public PrimaryExpression {
     public:
         ParExpression(antlr4::Token* token) : PrimaryExpression(token) { }
-        llvm::Value* generateCode(CajetaModule* module) override {  return nullptr; }
+
+        llvm::Value* generateCode(CajetaModule* module) override { return nullptr; }
     };
 
     class ThisExpression : public PrimaryExpression {
@@ -116,6 +127,7 @@ namespace cajeta {
         string identifier;
     public:
         DotExpression(CajetaParser::ExpressionContext* ctx, antlr4::Token* token);
+
         llvm::Value* generateCode(CajetaModule* module) override;
     };
 
@@ -134,6 +146,7 @@ namespace cajeta {
         string value;
     public:
         LiteralExpression(antlr4::Token* token) : PrimaryExpression(token) { }
+
         static LiteralExpression* fromContext(CajetaParser::LiteralContext* ctx);
     };
 
@@ -153,7 +166,8 @@ namespace cajeta {
                 literalType = LITERAL_TYPE_TEXT_BLOCK;
             }
         }
-        llvm::Value* generateCode(CajetaModule* module) override {  return nullptr; }
+
+        llvm::Value* generateCode(CajetaModule* module) override { return nullptr; }
         // TODO: Add override when we have strings for getType
 
     };
@@ -169,7 +183,7 @@ namespace cajeta {
     private:
         IntegerLiteralType integerLiteralType;
     public:
-        IntegerLiteralExpression(CajetaParser::IntegerLiteralContext* ctx) : LiteralExpression(ctx->getStart()){
+        IntegerLiteralExpression(CajetaParser::IntegerLiteralContext* ctx) : LiteralExpression(ctx->getStart()) {
             value = ctx->getText();
             if (ctx->BINARY_LITERAL()) {
                 integerLiteralType = INTEGER_LITERAL_TYPE_BINARY;
@@ -181,10 +195,14 @@ namespace cajeta {
                 integerLiteralType = INTEGER_LITERAL_TYPE_DECIMAL;
             }
         }
+
         llvm::Value* generateCode(CajetaModule* module) override;
     };
 
-    enum FloatLiteralType { FLOAT_LITERAL_FLOAT, FLOAT_LITERAL_HEX };
+    enum FloatLiteralType {
+        FLOAT_LITERAL_FLOAT, FLOAT_LITERAL_HEX
+    };
+
     class FloatLiteralExpression : public LiteralExpression {
     private:
         FloatLiteralType floatLiteralType;
@@ -199,7 +217,23 @@ namespace cajeta {
         }
     };
 
-    enum ReservedIdentifiers { UNKNOWN = -1, MODULE, REQUIRE, EXPORTS, OPENS, TO, USES, PROVIDES, WITH, TRANSITIVE, YIELD, SEALED, PERMITS, RECORD, VAR };
+    enum ReservedIdentifiers {
+        UNKNOWN = -1,
+        MODULE,
+        REQUIRE,
+        EXPORTS,
+        OPENS,
+        TO,
+        USES,
+        PROVIDES,
+        WITH,
+        TRANSITIVE,
+        YIELD,
+        SEALED,
+        PERMITS,
+        RECORD,
+        VAR
+    };
 
     class IdentifierExpression : public Expression {
     private:
@@ -209,10 +243,14 @@ namespace cajeta {
             this->primary = primary;
             identifier = ctx->getText();
         }
-        IdentifierExpression(bool primary, CajetaParser::IdentifierContext* ctx) : Expression(primary, ctx->getStart()) {
+
+        IdentifierExpression(bool primary, CajetaParser::IdentifierContext* ctx) : Expression(primary,
+            ctx->getStart()) {
             identifier = ctx->getText();
         }
+
         string& getTextValue() { return identifier; }
+
         llvm::Value* generateCode(CajetaModule* module) override;
     };
 
@@ -220,7 +258,7 @@ namespace cajeta {
     private:
         CajetaType* type;
     public:
-        llvm::Value* generateCode(CajetaModule* module) override {  return nullptr; }
+        llvm::Value* generateCode(CajetaModule* module) override { return nullptr; }
     };
 
     /**
@@ -231,7 +269,8 @@ namespace cajeta {
         list<CajetaType*> types;
     public:
         GenericsExpression(antlr4::Token* token) : PrimaryExpression(token) { }
-        llvm::Value* generateCode(CajetaModule* module) override {  return nullptr; }
+
+        llvm::Value* generateCode(CajetaModule* module) override { return nullptr; }
     };
 
 
@@ -240,6 +279,7 @@ namespace cajeta {
         Expression* expression;
     public:
         BopExpression(antlr4::Token* token) : Expression(token) { }
+
         llvm::Value* generateCode(CajetaModule* module) override {
             llvm::Value* base = children[0]->generateCode(module);
             llvm::Type* type = base->getType();
@@ -255,60 +295,69 @@ namespace cajeta {
     class BopIdentifierExpression : public BopExpression {
     public:
         BopIdentifierExpression(antlr4::Token* token) : BopExpression(token) { }
-        llvm::Value* generateCode(CajetaModule* module) override {  return nullptr; }
+
+        llvm::Value* generateCode(CajetaModule* module) override { return nullptr; }
 
     };
 
     class BopMethodCallExpression : public BopExpression {
     public:
         BopMethodCallExpression(antlr4::Token* token) : BopExpression(token) { }
-        llvm::Value* generateCode(CajetaModule* module) override {  return nullptr; }
+
+        llvm::Value* generateCode(CajetaModule* module) override { return nullptr; }
     };
 
     class BopThisExpression : public BopExpression {
     public:
         BopThisExpression(antlr4::Token* token) : BopExpression(token) { }
-        llvm::Value* generateCode(CajetaModule* module) override {  return nullptr; }
+
+        llvm::Value* generateCode(CajetaModule* module) override { return nullptr; }
 
     };
 
     class BopNewExpression : public BopExpression {
     public:
         BopNewExpression(antlr4::Token* token) : BopExpression(token) { }
-        llvm::Value* generateCode(CajetaModule* module) override {  return nullptr; }
+
+        llvm::Value* generateCode(CajetaModule* module) override { return nullptr; }
 
     };
 
     class BopSuperExpression : public BopExpression {
     public:
         BopSuperExpression(antlr4::Token* token) : BopExpression(token) { }
-        llvm::Value* generateCode(CajetaModule* module) override {  return nullptr; }
+
+        llvm::Value* generateCode(CajetaModule* module) override { return nullptr; }
 
     };
 
     class BopExplicitGenericInvocation : public BopExpression {
     public:
         BopExplicitGenericInvocation(antlr4::Token* token) : BopExpression(token) { }
-        llvm::Value* generateCode(CajetaModule* module) override {  return nullptr; }
+
+        llvm::Value* generateCode(CajetaModule* module) override { return nullptr; }
 
     };
 
     class ArrayExpression : public Expression {
     public:
         ArrayExpression(antlr4::Token* token) : Expression(token) { }
-        llvm::Value* generateCode(CajetaModule* module) override {  return nullptr; }
+
+        llvm::Value* generateCode(CajetaModule* module) override { return nullptr; }
 
     };
 
     class MethodCallExpression : public Expression {
     public:
         MethodCallExpression(antlr4::Token* token) : Expression(token) { }
-        llvm::Value* generateCode(CajetaModule* module) override {  return nullptr; }
+
+        llvm::Value* generateCode(CajetaModule* module) override { return nullptr; }
     };
 
     class CreatorRest : public AbstractSyntaxNode {
     public:
         CreatorRest(antlr4::Token* token) : AbstractSyntaxNode(token) { }
+
         static CreatorRest* fromContext(CajetaParser::CreatorContext* ctx, antlr4::Token* token);
     };
 
@@ -316,11 +365,12 @@ namespace cajeta {
     public:
         ClassCreatorRest(CajetaParser::ClassCreatorRestContext* ctx, antlr4::Token* token) : CreatorRest(token) {
             if (ctx->arguments()->parameterList()) {
-                for (auto & expressionContext : ctx->arguments()->parameterList()->expression()) {
+                for (auto& expressionContext: ctx->arguments()->parameterList()->expression()) {
                     children.push_back(Expression::fromContext(expressionContext));
                 }
             }
         }
+
         llvm::Value* generateCode(CajetaModule* module) override;
     };
 
@@ -328,10 +378,11 @@ namespace cajeta {
     private:
     public:
         ArrayCreatorRest(CajetaParser::ArrayCreatorRestContext* ctx, antlr4::Token* token) : CreatorRest(token) {
-            for (auto &expressionContext : ctx->expression()) {
+            for (auto& expressionContext: ctx->expression()) {
                 children.push_back(Expression::fromContext(expressionContext));
             }
         }
+
         llvm::Value* generateCode(CajetaModule* module) override;
     };
 
@@ -349,7 +400,7 @@ namespace cajeta {
                 } else if (!creatorContext->createdName()->identifier().empty()) {
                     int count = creatorContext->createdName()->identifier().size();
                     int n = 0;
-                    for (auto &identifierPart : creatorContext->createdName()->identifier()) {
+                    for (auto& identifierPart: creatorContext->createdName()->identifier()) {
                         if (n++ == count - 1) {
                             typeName = identifierPart->getText();
                         } else {
@@ -370,13 +421,16 @@ namespace cajeta {
     class CastExpression : public Expression {
     public:
         CastExpression(antlr4::Token* token) : Expression(token) { }
-        llvm::Value* generateCode(CajetaModule* module) override {  return nullptr; }
+
+        llvm::Value* generateCode(CajetaModule* module) override { return nullptr; }
     };
 
     /**
      * expression postfix=('++' | '--')
      */
-    enum PostfixOp { POSTFIX_OP_INC, POSTFIX_OP_DEC };
+    enum PostfixOp {
+        POSTFIX_OP_INC, POSTFIX_OP_DEC
+    };
 
     class PostfixExpression : public Expression {
         PostfixOp op;
@@ -384,13 +438,17 @@ namespace cajeta {
         PostfixExpression(PostfixOp op, antlr4::Token* token) : Expression(token) {
             this->op = op;
         }
-        llvm::Value* generateCode(CajetaModule* module) override {  return nullptr; }
+
+        llvm::Value* generateCode(CajetaModule* module) override { return nullptr; }
     };
 
     /**
      * prefix=('+'|'-'|'++'|'--') expression
      */
-    enum PrefixOp { PREFIX_OP_POSITIVE, PREFIX_OP_NEGATIVE, PREFIX_OP_INC, PREFIX_OP_DEC };
+    enum PrefixOp {
+        PREFIX_OP_POSITIVE, PREFIX_OP_NEGATIVE, PREFIX_OP_INC, PREFIX_OP_DEC
+    };
+
     class PrefixExpression : public Expression {
     private:
         PrefixOp op;
@@ -398,7 +456,8 @@ namespace cajeta {
         PrefixExpression(PrefixOp op, antlr4::Token* token) : Expression(token) {
             this->op = op;
         }
-        llvm::Value* generateCode(CajetaModule* module) override {  return nullptr; }
+
+        llvm::Value* generateCode(CajetaModule* module) override { return nullptr; }
     };
 
     /**
@@ -414,7 +473,10 @@ namespace cajeta {
     /**
      * expression ('<' '<' | '>' '>' '>' | '>' '>') expression
      */
-    enum BitshiftOp { BITSHIFT_OP_LEFT, BITSHIFT_OP_UNSIGNED_RIGHT, BITSHIFT_OP_RIGHT };
+    enum BitshiftOp {
+        BITSHIFT_OP_LEFT, BITSHIFT_OP_UNSIGNED_RIGHT, BITSHIFT_OP_RIGHT
+    };
+
     class BitshiftExpression : public Expression {
     private:
         BitshiftOp op;
@@ -425,7 +487,10 @@ namespace cajeta {
     /**
      * expression bop=('<=' | '>=' | '>' | '<') expression
      */
-    enum ComparisonOp { COMPARE_OP_LTE, COMPARE_OP_GTE, COMPARE_OP_GT, COMPARE_OP_LT };
+    enum ComparisonOp {
+        COMPARE_OP_LTE, COMPARE_OP_GTE, COMPARE_OP_GT, COMPARE_OP_LT
+    };
+
     class ComparisonExpression : public Expression {
     private:
         ComparisonOp op;
@@ -450,9 +515,13 @@ namespace cajeta {
     /**
      * expression bop=('==' | '!=') expression
      */
-    enum EquivalenceOp { EQUIVALENCE_OP_EQ, EQUIVALENCE_OP_NE };
+    enum EquivalenceOp {
+        EQUIVALENCE_OP_EQ, EQUIVALENCE_OP_NE
+    };
+
     class EquivalenceExpression : public Expression {
         EquivalenceOp op;
+
         EquivalenceExpression(EquivalenceOp op, antlr4::Token* token) : Expression(token) {
             this->op = op;
         }
@@ -504,6 +573,7 @@ namespace cajeta {
         ArithmeticAssignmentExpression(antlr4::Token* token) : Expression(token) { }
 
     };
+
     /**
      * <assoc=right> expression bop='?' expression ':' expression
      */

@@ -3,13 +3,23 @@
 //
 
 #pragma once
+
 #include <set>
 #include <string>
 
 using namespace std;
 
 namespace cajeta {
-    enum Modifier { NONE = 0x00, PACKAGE = 0x01, PUBLIC = 0x02, PRIVATE = 0x04, PROTECTED = 0x08, STATIC = 0x10, FINAL = 0x20, SYNCHRONIZED = 0x40 };
+    enum Modifier {
+        NONE = 0x00,
+        PACKAGE = 0x01,
+        PUBLIC = 0x02,
+        PRIVATE = 0x04,
+        PROTECTED = 0x08,
+        STATIC = 0x10,
+        FINAL = 0x20,
+        SYNCHRONIZED = 0x40
+    };
 
     class Modifiable {
     protected:

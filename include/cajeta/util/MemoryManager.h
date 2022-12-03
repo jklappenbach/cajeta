@@ -24,7 +24,9 @@ namespace cajeta {
         llvm::FunctionCallee freeFunctionCallee;
 
         MemoryManager(CajetaModule* module);
+
         void initMalloc(CajetaModule* module);
+
         void initFree(CajetaModule* module);
 
     public:
@@ -44,7 +46,7 @@ namespace cajeta {
          * @return
          */
         llvm::CallInst* createMallocInstruction(string registerName, llvm::Constant* allocSize,
-                                                llvm::BasicBlock* basicBlock);
+            llvm::BasicBlock* basicBlock);
 
         /**
          *
@@ -53,7 +55,7 @@ namespace cajeta {
          * @return
          */
         llvm::CallInst* createFreeInstruction(llvm::Value* pointer,
-                                              llvm::BasicBlock* basicBlock);
+            llvm::BasicBlock* basicBlock);
 
     };
 }

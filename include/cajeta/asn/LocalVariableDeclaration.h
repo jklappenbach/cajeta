@@ -3,6 +3,7 @@
 //
 
 #pragma once
+
 #include <cajeta/asn/VariableDeclarator.h>
 #include <cajeta/type/CajetaType.h>
 #include <cajeta/asn/BlockStatement.h>
@@ -17,9 +18,9 @@ namespace cajeta {
         list<VariableDeclarator*> variableDeclarators;
     public:
         LocalVariableDeclaration(set<Modifier>& modifiers,
-                                 CajetaType* type,
-                                 list<VariableDeclarator*> variableDeclarators,
-                                 antlr4::Token* token) : BlockStatement(token) {
+            CajetaType* type,
+            list<VariableDeclarator*> variableDeclarators,
+            antlr4::Token* token) : BlockStatement(token) {
             this->modifiers = modifiers;
             this->type = type;
             this->variableDeclarators = variableDeclarators;

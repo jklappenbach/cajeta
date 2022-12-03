@@ -35,10 +35,11 @@ namespace cajeta {
     llvm::ConstantInt* CajetaType::getTypeAllocSize(CajetaModule* module) {
         const llvm::DataLayout& dataLayout = module->getLlvmModule()->getDataLayout();
         return llvm::ConstantInt::get(llvm::Type::getInt64Ty(*module->getLlvmContext()),
-                                                    dataLayout.getTypeAllocSize(llvmType));
+            dataLayout.getTypeAllocSize(llvmType));
     }
 
     map<string, CajetaType*>& CajetaType::getCanonicalMap() { return canonicalMap; }
+
     map<llvm::Type::TypeID, CajetaType*>& CajetaType::getTypeIdMap() { return typeIdMap; }
 
     CajetaType* CajetaType::of(string typeName) {
@@ -56,7 +57,8 @@ namespace cajeta {
         return CajetaType::canonicalMap[qName->toCanonical()];
     }
 
-    cajeta::CajetaType* cajeta::CajetaType::fromContext(CajetaParser::TypeTypeOrVoidContext* ctx, CajetaModule* module) {
+    cajeta::CajetaType*
+    cajeta::CajetaType::fromContext(CajetaParser::TypeTypeOrVoidContext* ctx, CajetaModule* module) {
         CajetaType* type = nullptr;
         if (ctx != nullptr) {
             if (ctx->VOID() != nullptr) {
@@ -84,9 +86,9 @@ namespace cajeta {
             type = canonicalMap[qName->toCanonical()];
         }
         if (ctx->LBRACK().size() > 0) {
-            type = new CajetaArray(type, ctx->LBRACK().size());
+            type = new CajetaArray(module, type, ctx->LBRACK().size());
             module->getStructureList().push_back((CajetaStructure*) type);
-            ((CajetaArray*) type)->generatePrototype(module);
+            ((CajetaArray*) type)->generatePrototype();
         }
 
         return type;

@@ -10,13 +10,16 @@ using namespace std;
 
 namespace cajeta {
     class CajetaModule;
+
     class Expression;
+
     class CajetaStructure;
 
     class DefaultConstructorMethod : public Method {
     public:
-        DefaultConstructorMethod(CajetaStructure* parent);
-        void generateCode(CajetaModule* compilationUnit);
+        DefaultConstructorMethod(CajetaModule* module, CajetaStructure* parent);
+
+        void generateCode();
     };
 }
 

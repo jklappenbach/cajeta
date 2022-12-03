@@ -8,6 +8,7 @@
 #include "cajeta/compile/Compiler.h"
 #include "cajeta/exception/VariableAssignmentException.h"
 #include "cajeta/asn/DefaultBlock.h"
+#include "cajeta/type/FormalParameter.h"
 
 using namespace std;
 
@@ -21,29 +22,34 @@ using namespace std;
 namespace cajeta {
     map<string, Method*> Method::archive;
 
-    Method::Method(string& name,
-                   CajetaType* returnType,
-                   vector<FormalParameter*>& parameters,
-                   Block* block,
-                   CajetaStructure* parent) {
+    Method::Method(CajetaModule* module,
+        string& name,
+        CajetaType* returnType,
+        vector<FormalParameter*>& parameterList,
+        Block* block,
+        CajetaStructure* parent) {
+        this->module = module;
         this->parent = parent;
         this->name = name;
         this->returnType = returnType;
-        this->parameters = parameters;
+        this->parameterList = parameterList;
         this->block = block;
         constructor = parent->getQName()->getTypeName() == name;
         scopes.push_back(parent->getScope());
         vector<llvm::Type*> llvmTypes;
 
-        for (auto parameter : parameters) {
+        for (auto& parameter: parameterList) {
+            parameter->setParent(this);
             llvmTypes.push_back(parameter->getType()->getLlvmType());
-            this->parameters.push_back(parameter);
+            parameters[parameter->getName()] = parameter;
         }
 
         // No default structure scope (class members) for static methods
         if (modifiers.find(STATIC) == modifiers.end()) {
             scopes.push_back(parent->getScope());
         }
+
+        llvmBasicBlock = nullptr;
     }
 
     /**
@@ -52,15 +58,18 @@ namespace cajeta {
      * @param returnType
      * @param parent
      */
-    Method::Method(string name,
-                   CajetaType* returnType,
-                   CajetaStructure* parent) {
+    Method::Method(CajetaModule* module,
+        string name,
+        CajetaType* returnType,
+        CajetaStructure* parent) {
+        this->module = module;
         this->parent = parent;
         this->name = name;
         this->returnType = returnType;
         constructor = parent->getQName()->getTypeName() == name;
         block = new DefaultBlock();
         scopes.push_back(parent->getScope());
+        llvmBasicBlock = nullptr;
     }
 
     map<string, Method*>& Method::getArchive() { return archive; }
@@ -69,48 +78,50 @@ namespace cajeta {
         this->block = block;
     }
 
-    void Method::createLocalVariable(CajetaModule* module, cajeta::Field* field) {
+    void Method::createLocalVariable(CajetaModule* module, Field* field) {
         Scope* scope = scopes.back();
-        if (scope->fields.find(field->getName()) != scope->fields.end()) {
+        if (scope->getField(field->getName()) != nullptr) {
             throw VariableAssignmentException(field->getName(),
-                                              field->getType()->getQName()->toCanonical(),
-                                              ERROR_CAUSE_VARIABLE_DUPLICATE,
-                                              ERROR_ID_VARIABLE_DUPLICATE);
+                field->getType()->getQName()->toCanonical(),
+                ERROR_CAUSE_VARIABLE_DUPLICATE,
+                ERROR_ID_VARIABLE_DUPLICATE);
         }
         field->getOrCreateAllocation(module);
-        scope->fields[field->getName()] = field;
+        scope->putField(field);
     }
 
     void Method::setLocalVariable(CajetaModule* module, string name, llvm::Value* value) {
         Scope* scope = scopes.back();
-        Field* field = scope->fields[name];
+        Field* field = scope->getField(name);
         if (field == nullptr) {
             throw VariableAssignmentException(name,
-                                              field->getType()->getQName()->toCanonical(),
-                                              ERROR_CAUSE_VARIABLE_NOT_FOUND,
-                                              ERROR_ID_VARIABLE_NOT_FOUND);
+                field->getType()->getQName()->toCanonical(),
+                ERROR_CAUSE_VARIABLE_NOT_FOUND,
+                ERROR_ID_VARIABLE_NOT_FOUND);
         }
         if (field->getModifiers().find(FINAL) != field->getModifiers().end()) {
             throw VariableAssignmentException(name,
-                                              field->getType()->getQName()->toCanonical(),
-                                              ERROR_CAUSE_ASSIGNMENT_FINAL,
-                                              ERROR_ID_ASSIGNMENT_FINAL);
+                field->getType()->getQName()->toCanonical(),
+                ERROR_CAUSE_ASSIGNMENT_FINAL,
+                ERROR_ID_ASSIGNMENT_FINAL);
         }
         module->getBuilder()->CreateStore(value, field->getOrCreateStackAllocation(module));
     }
 
 
-    void Method::generatePrototype(CajetaModule* module) {
+    void Method::generatePrototype() {
         vector<llvm::Type*> llvmTypes;
 
         bool staticMethod = modifiers.find(STATIC) != modifiers.end();
 
         if (!staticMethod) {
             auto thisParam = new FormalParameter(std::move("this"), parent);
-            parameters.push_back(thisParam);
+            thisParam->setParent(this);
+            parameterList.push_back(thisParam);
+            parameters[thisParam->getName()] = thisParam;
         }
 
-        for (auto formalParameter : parameters) {
+        for (auto formalParameter: parameterList) {
             llvmTypes.push_back(formalParameter->getType()->getLlvmType());
         }
         if (llvmTypes.size()) {
@@ -119,11 +130,11 @@ namespace cajeta {
             llvmFunctionType = llvm::FunctionType::get(returnType->getLlvmType(), false);
         }
 
-        canonical = Method::buildCanonical(parent, name, parameters);
+        canonical = Method::buildCanonical(parent, name, parameterList);
         llvmFunction = llvm::Function::Create(llvmFunctionType, llvm::Function::ExternalLinkage,
-                                              this->name, module->getLlvmModule());
+            toCanonical(), module->getLlvmModule());
         string all;
-        for (auto &fn : module->getLlvmModule()->getFunctionList()) {
+        for (auto& fn: module->getLlvmModule()->getFunctionList()) {
             cout << fn.getName().str();
             all.append(fn.getName().str()).append(",");
         }
@@ -133,21 +144,36 @@ namespace cajeta {
         module->getLlvmModule()->getOrInsertFunction(canonical, llvmFunctionType);
     }
 
-    void Method::generateCode(CajetaModule* module) {
-        llvmBasicBlock = llvm::BasicBlock::Create(*module->getLlvmContext(), name, llvmFunction);
-        builder = new llvm::IRBuilder<>(llvmBasicBlock, llvmBasicBlock->begin());
-        builder->SetInsertPoint(llvmBasicBlock);
-        module->setBuilder(builder);
-        module->setCurrentMethod(this);
+    void Method::generateCode() {
+        if (llvmBasicBlock == nullptr) {
+            llvmBasicBlock = llvm::BasicBlock::Create(*module->getLlvmContext(), toCanonical(), llvmFunction);
+            builder = new llvm::IRBuilder<>(llvmBasicBlock, llvmBasicBlock->begin());
+            builder->SetInsertPoint(llvmBasicBlock);
+            module->setBuilder(builder);
+            module->setCurrentMethod(this);
 
-        createScope(module);
-        block->generateCode(module);
-        destroyScope();
-        module->getBuilder()->CreateRetVoid();
+            createScope();
+
+            // TODO Fix this!  This is the base class stack frame initialization
+            for (auto& arg: llvmFunction->args()) {
+                llvm::AllocaInst* paramAlloca = builder->CreateAlloca(arg.getType(), nullptr, arg.getName());
+                builder->CreateStore(&arg, paramAlloca);
+                //    scopes.back()->fields[arg.getName().str()] = paramAlloca;
+            }
+            block->generateCode(module);
+
+            destroyScope();
+
+            module->getBuilder()->CreateRetVoid();
+        }
     }
 
-    void Method::createScope(CajetaModule* module) {
+    void Method::createScope() {
         scopes.push_back(new Scope(module));
+    }
+
+    void Method::putScope(Field* field) {
+        scopes.back()->putField(field);
     }
 
     string Method::buildCanonical(CajetaStructure* parent, const string& name, vector<CajetaType*>& parameters) {
@@ -159,7 +185,7 @@ namespace cajeta {
 
         if (!parameters.empty()) {
             bool first = true;
-            for (auto &parameter : parameters) {
+            for (auto& parameter: parameters) {
                 if (first) {
                     first = false;
                 } else {
@@ -182,7 +208,7 @@ namespace cajeta {
 
         if (!parameters.empty()) {
             bool first = true;
-            for (auto &parameter : parameters) {
+            for (auto& parameter: parameters) {
                 if (first) {
                     first = false;
                 } else {
@@ -205,7 +231,7 @@ namespace cajeta {
 
         if (!parameters.empty()) {
             bool first = true;
-            for (auto &parameter : parameters) {
+            for (auto& parameter: parameters) {
                 if (first) {
                     first = false;
                 } else {

@@ -13,12 +13,15 @@ using namespace std;
 
 namespace cajeta {
     class Method;
+
     class BlockStatement;
 
     class Block : public AbstractSyntaxNode {
     public:
         Block(antlr4::Token* token) : AbstractSyntaxNode(token) { }
+
         Block() : AbstractSyntaxNode(nullptr) { }
+
         llvm::Value* generateCode(CajetaModule* module) override;
     };
 }

@@ -8,7 +8,7 @@
 
 namespace cajeta {
     llvm::Value* Block::generateCode(CajetaModule* module) {
-        for (auto child : children) {
+        for (auto child: children) {
             llvm::Value* value = child->generateCode(module);
         }
         return nullptr;

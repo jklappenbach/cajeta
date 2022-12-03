@@ -26,10 +26,14 @@ using namespace std;
 namespace cajeta {
 
     class Method;
+
     class Field;
+
     class CajetaModule;
 
-    enum StructType { STRUCT_TYPE_PRIMITIVE, STRUCT_TYPE_CLASS, STRUCT_TYPE_ENUM, STRUCT_TYPE_ARRAY };
+    enum StructType {
+        STRUCT_TYPE_PRIMITIVE, STRUCT_TYPE_CLASS, STRUCT_TYPE_ENUM, STRUCT_TYPE_ARRAY
+    };
 
     class CajetaType : public Modifiable, public Annotatable {
     private:
@@ -82,14 +86,23 @@ namespace cajeta {
         }
 
         static CajetaType* of(string typeName);
+
         static CajetaType* of(string typeName, string package);
+
         static CajetaType* fromContext(CajetaParser::PrimitiveTypeContext* ctx, CajetaModule* module);
+
         static CajetaType* fromContext(CajetaParser::TypeTypeOrVoidContext* ctx, CajetaModule* module);
+
         static CajetaType* fromContext(CajetaParser::TypeTypeContext* ctx, CajetaModule* module);
+
         static map<string, CajetaType*>& getCanonicalMap();
+
         static map<llvm::Type::TypeID, CajetaType*>& getTypeIdMap();
+
         static void init(llvm::LLVMContext& ctxLlvm);
+
         static CajetaType* fromLlvmType(llvm::Type* type, CajetaType* parent = nullptr);
+
         static CajetaType* fromValue(llvm::Value* value, CajetaType* parent = nullptr);
     };
 }

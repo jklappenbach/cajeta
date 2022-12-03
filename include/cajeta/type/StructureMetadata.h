@@ -7,39 +7,40 @@
 #include "cajeta/type/CajetaStructure.h"
 #include "cajeta/compile/CajetaModule.h"
 
+#define INTERNAL_PREFIX         string("#")
+#define INTERNAL_NAME(str)      INTERNAL_PREFIX + str
+
 namespace cajeta {
     struct MethodComparator {
-        // Compare 2 Player objects using name
-        bool operator ()(Method* a, Method* b) {
+        bool operator()(Method* a, Method* b) {
             return a->getVirtualTableIndex() < b->getVirtualTableIndex();
         }
     };
 
     class StructureMetadata {
         int virtualTableIndex;
-
+        CajetaModule* module;
         llvm::Type* llvmInt16Type;
-        llvm::StructType* llvmParameterType;
-        llvm::StructType* llvmFieldType;
-        llvm::StructType* llvmMethodType;
+        llvm::Type* llvmInt8Type;
+        llvm::StructType* llvmPropertiesType;
+        vector<llvm::StructType*> llvmParametersType;
         llvm::StructType* llvmRttiType;
 
     public:
         /**
-         * 1. Name
-         * 2. Number of member variables
-         * 3. Array of member variable entries
+         * 1. Get common int16 type
+         * 2. Create Parameter Type
+         * 3. Create Field Type
+         * 2. Create Method Type
+         * 3. Create RTTI Type
+         * 4. Set CajetaStructure's static variable for the type
          *
-         * @param structure
          * @param module
          */
         StructureMetadata(CajetaModule* module) {
+            this->module = module;
             llvmInt16Type = llvm::IntegerType::getInt16Ty(*module->getLlvmContext());
-            createParameterType(module);
-            createFieldType(module);
-            createMethodType(module);
-            createRttiType(module);
-            CajetaStructure::setRttiType(llvmRttiType);
+            llvmInt8Type = llvm::IntegerType::getInt8Ty(*module->getLlvmContext());
         }
 
         /**
@@ -58,7 +59,7 @@ namespace cajeta {
          * @param structure
          * @param module
          */
-        void populateMetadataGlobals(CajetaStructure* structure, CajetaModule* module);
+        void populateMetadataGlobals(CajetaStructure* structure);
 
     private:
         /**
@@ -71,7 +72,7 @@ namespace cajeta {
          *
          * @param module
          */
-        void createFieldType(CajetaModule* module);
+        llvm::Type* createPropertyType(CajetaStructure* structure, ClassProperty* property);
 
         /**
          *
@@ -79,27 +80,32 @@ namespace cajeta {
          * @param module
          * @return
          */
-        llvm::Constant* createFieldConstant(StructureField* field, CajetaModule* module);
+        llvm::Constant* createPropertyConstant(ClassProperty* property, llvm::StructType* propertyType);
 
         /**
          * 1. Parameter Name (string, array)
          * 2. Parameter Type (string, array)
-         * 3. Modifier Count (int16)
-         * 4. Modifiers (int16, array)
-         * 5. Annotation Count (int16)
-         * 6. Annotation Types (array of strings)
+         * 3. Modifier Count (int8)
+         * 4. Modifiers (int8, array)
+         * 5. Annotation Count (int8)
+         * 6. Structure annotations (array of strings)
          *
          * @param module
          */
-        void createParameterType(CajetaModule* module);
+        llvm::StructType* createParameterType(FormalParameter* parameter);
 
         /**
+         * 1. Parameter name
+         * 2. Type canonical
+         * 3. Modifier count
+         * 4. Array of modifiers
+         * 5. Annotation count
+         * 6. Structure of annotations
          *
          * @param parameter
-         * @param module
          * @return
          */
-        llvm::Constant* createParameterConstant(FormalParameter* parameter, CajetaModule* module);
+        llvm::Constant* createParameterConstant(FormalParameter* parameter, llvm::StructType* parameterType);
 
         /**
          * 1. Method name
@@ -109,14 +115,14 @@ namespace cajeta {
          *
          * @param module
          */
-        void createMethodType(CajetaModule* module);
+        llvm::StructType* createMethodType(Method* method);
 
         /**
          * TODO: Need to create a custom structure for the vtable for a given class, needs to use the FunctionType for each method
          * in the struct.
          * @param module
          */
-        void createVirtualTableType(CajetaStructure* structure, vector<Method*> methods, CajetaModule* module);
+        void createVirtualTableType(CajetaStructure* structure, vector<Method*> methods);
 
         /**
          *
@@ -132,14 +138,14 @@ namespace cajeta {
          * @param module
          * @return
          */
-        llvm::Constant* createMethodConstant(Method* method, CajetaModule* module);
+        llvm::Constant* createMethodConstant(Method* method, llvm::StructType* methodType);
 
         /**
          * 1. Array of Function pointers (vtable)
          * 2. Array of FunctionType pointers
          * 3. Type name
-         * 4. Size of fields
-         * 5. Array of fields
+         * 4. Size of properties
+         * 5. Array of properties
          * 6. Size of class method set
          * 7. Array of methods
          * 8. Size of parent structures
@@ -147,7 +153,7 @@ namespace cajeta {
          *
          * @param module
          */
-        void createRttiType(CajetaModule* module);
+        void createRttiType(CajetaStructure* structure);
 
         /**
          *
@@ -156,7 +162,7 @@ namespace cajeta {
          * @param module
          * @return
          */
-        llvm::Constant* createRttiConstant(vector<llvm::Constant*>& args, CajetaStructure* structure, CajetaModule* module);
+        llvm::Constant* createRttiConstant(vector<llvm::Constant*>& args, CajetaStructure* structure);
 
         /**
          *

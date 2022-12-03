@@ -10,6 +10,6 @@
 
 namespace cajeta {
     class CajetaInterface : public CajetaStructure {
-        CajetaInterface(QualifiedName* qName)  { }
+        CajetaInterface(CajetaModule* module, QualifiedName* qName) : CajetaStructure(module, qName) { }
     };
 }

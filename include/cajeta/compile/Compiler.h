@@ -23,7 +23,9 @@
 using namespace std;
 namespace cajeta {
     class CajetaModule;
+
     class AbstractSyntaxNode;
+
     class Compiler {
     private:
         string targetTriple;
@@ -54,7 +56,7 @@ namespace cajeta {
 
         ~Compiler() { }
 
-        void compile(string sourceRootPath, string archiveRootPath);
+        void compile(string entryMethod, string sourceRootPath, string archiveRootPath);
 
         const string& getCpu() const {
             return cpu;

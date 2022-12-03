@@ -45,24 +45,36 @@ namespace cajeta {
         llvm::Function* setPositionFunction;
 
         FileStream();
+
     public:
         static FileStream* getInstance();
+
         llvm::CallInst* createOpenInstruction(llvm::Value* file, llvm::Constant* openFlags,
-                                                llvm::BasicBlock* basicBlock);
+            llvm::BasicBlock* basicBlock);
+
         llvm::CallInst* createOpenInstruction(llvm::Constant* path, llvm::Constant* openFlags,
-                                              llvm::BasicBlock* basicBlock);
+            llvm::BasicBlock* basicBlock);
+
         llvm::CallInst* createCloseInstruction(llvm::Value* file, llvm::Constant* openFlags,
-                                              llvm::BasicBlock* basicBlock);
+            llvm::BasicBlock* basicBlock);
+
         llvm::CallInst* createControlInstruction(llvm::Value* file, llvm::Constant* openFlags,
-                                               llvm::BasicBlock* basicBlock);
+            llvm::BasicBlock* basicBlock);
+
         llvm::CallInst* createFlushInstruction(llvm::Value* file, llvm::BasicBlock* basicBlock);
+
         llvm::CallInst* createSeekInstruction(llvm::Value* file, llvm::Constant* offset, llvm::Constant* whence,
-                                                 llvm::BasicBlock* basicBlock);
+            llvm::BasicBlock* basicBlock);
+
         llvm::CallInst* createRewindInstruction(llvm::Value* file, llvm::Constant* offset, llvm::Constant* whence,
-                                              llvm::BasicBlock* basicBlock);
+            llvm::BasicBlock* basicBlock);
+
         llvm::CallInst* createTellInstruction(llvm::Value* file, llvm::BasicBlock* basicBlock);
+
         llvm::CallInst* createStatusInstruction(llvm::Value* file, llvm::BasicBlock* basicBlock);
+
         llvm::CallInst* createGetPositionInstruction(llvm::Value* file, llvm::BasicBlock* basicBlock);
+
         llvm::CallInst* createSetPositionInstruction(llvm::Value* file, llvm::BasicBlock* basicBlock);
     };
 

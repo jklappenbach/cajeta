@@ -3,6 +3,7 @@
 //
 
 #pragma once
+
 #include <set>
 #include "QualifiedName.h"
 
@@ -12,13 +13,23 @@ namespace cajeta {
     class Annotatable {
     protected:
         set<QualifiedName*> annotations;
+        list<QualifiedName*> annotationList;
     public:
         Annotatable() { }
+
         Annotatable(set<QualifiedName*>& src) {
             annotations.insert(src.begin(), src.end());
         }
+
         void addAnnotation(QualifiedName* qName) {
+            annotationList.push_back(qName);
             annotations.insert(qName);
         }
+
+        set<QualifiedName*>& getAnnotations() {
+            return annotations;
+        }
+
+        list<QualifiedName*>& getAnnotationList() { return annotationList; }
     };
 }

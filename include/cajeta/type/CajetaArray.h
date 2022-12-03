@@ -19,9 +19,11 @@ namespace cajeta {
         std::vector<llvm::Constant*> dimensions;
     public:
         static string ARRAY_FIELD_NAME;
-        CajetaArray(CajetaType* elementType, int dimension);
+
+        CajetaArray(CajetaModule* module, CajetaType* elementType, int dimension);
 
         int getStructType() override { return STRUCT_TYPE_ARRAY; }
+
         /**
          * Returns a list of Constants, each element will hold the size of the requested array dimension
          * @return A list of Constant* to dimension sizes
@@ -33,12 +35,11 @@ namespace cajeta {
          * @return
          */
         CajetaType* getElementType() { return elementType; }
+
         /**
          * The number of dimensions in the array
          * @return An integer
          */
         const int getDimension() { return dimension; }
-
-        void ensureDefaultDestructor(CajetaModule* module) override;
     };
 }

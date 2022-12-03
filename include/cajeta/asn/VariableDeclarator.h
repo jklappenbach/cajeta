@@ -21,6 +21,7 @@ namespace cajeta {
         VariableInitializer(Expression* expression, antlr4::Token* token) : Initializer(token) {
             children.push_back(expression);
         }
+
         llvm::Value* generateCode(CajetaModule* module) override {
             return children.back()->generateCode(module);
         }
@@ -35,7 +36,7 @@ namespace cajeta {
         }
 
         llvm::Value* generateCode(CajetaModule* module) override {
-            for (auto &node : children) {
+            for (auto& node: children) {
                 node->generateCode(module);
             }
             return nullptr; //llvm::ConstantStruct::get
@@ -50,10 +51,10 @@ namespace cajeta {
         bool reference;
     public:
         VariableDeclarator(string identifier,
-                           bool reference,
-                           int arrayDimension,
-                           Initializer* initializer,
-                           antlr4::Token* token) : AbstractSyntaxNode(token) {
+            bool reference,
+            int arrayDimension,
+            Initializer* initializer,
+            antlr4::Token* token) : AbstractSyntaxNode(token) {
             this->identifier = identifier;
             this->reference = reference;
             this->arrayDimension = arrayDimension;

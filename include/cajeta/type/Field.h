@@ -18,14 +18,17 @@ using namespace std;
 
 namespace cajeta {
     class CajetaType;
+
     class Initializer;
+
     class CajetaModule;
+
+    class Scope;
 
     class Field : public Modifiable, public Annotatable {
     protected:
         bool reference;
         string name;
-        int arrayDimension;
         Initializer* initializer;
         cajeta::CajetaType* type;
         llvm::Value* allocation;
@@ -34,49 +37,53 @@ namespace cajeta {
         Field(string name, CajetaType* type) {
             this->name = name;
             this->type = type;
+            this->allocation = nullptr;
         }
-        Field(string& name, llvm::Value* allocation) {
+
+        Field(string& name, CajetaType* type, llvm::Value* allocation) {
             this->name = name;
+            this->type = type;
             this->allocation = allocation;
         }
+
         Field(string name,
-              CajetaType* type,
-              int arrayDimension,
-              bool reference,
-              set<Modifier> modifiers,
-              set<QualifiedName*> annotations,
-              Initializer* initializer) : Modifiable(modifiers), Annotatable(annotations) {
+            CajetaType* type,
+            bool reference,
+            set<Modifier> modifiers,
+            set<QualifiedName*> annotations,
+            Initializer* initializer) : Modifiable(modifiers), Annotatable(annotations) {
             this->name = name;
-            this->arrayDimension = arrayDimension;
             this->initializer = initializer;
             this->type = type;
             this->reference = reference;
             this->allocation = nullptr;
         }
+
         Field(string name,
-              CajetaType* type,
-              int arrayDimension,
-              bool reference,
-              Initializer* initializer,
-              set<Modifier> modifiers,
-              set<QualifiedName*> annotations) : Modifiable(modifiers), Annotatable(annotations) {
+            CajetaType* type,
+            bool reference,
+            Initializer* initializer,
+            set<Modifier> modifiers,
+            set<QualifiedName*> annotations) : Modifiable(modifiers), Annotatable(annotations) {
             this->name = name;
-            this->arrayDimension = arrayDimension;
             this->initializer = initializer;
             this->type = type;
             this->reference = reference;
-        }
-        Field(string& name, bool reference, int arrayDimension = 0) {
-            this->name = name;
-            this->reference = reference;
-            this->arrayDimension = arrayDimension;
+            this->allocation = nullptr;
         }
 
-        void onDelete(CajetaModule* module);
+        Field(string& name, bool reference) {
+            this->name = name;
+            this->reference = reference;
+            this->allocation = nullptr;
+        }
+
+        void onDelete(CajetaModule* module, Scope* scope);
 
         bool isReference() const {
             return reference;
         }
+
         const string& getName() const {
             return name;
         }
@@ -94,7 +101,9 @@ namespace cajeta {
         }
 
         llvm::Value* getOrCreateStackAllocation(CajetaModule* module);
+
         llvm::Value* getOrCreateAllocation(CajetaModule* module);
+
         static list<Field*> fromContext(CajetaParser::FieldDeclarationContext* ctx, CajetaModule* module);
     };
 }

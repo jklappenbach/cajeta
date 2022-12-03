@@ -36,10 +36,10 @@ namespace cajeta {
 
         virtual antlrcpp::Any visitCompilationUnit(CajetaParser::CompilationUnitContext* ctx) override {
             module->onPackageDeclaration(ctx->packageDeclaration());
-            for (auto &importDeclarationContext : ctx->importDeclaration()) {
+            for (auto& importDeclarationContext: ctx->importDeclaration()) {
                 module->onImportDeclaration(importDeclarationContext);
             }
-            for (auto &typeDeclarationContext : ctx->typeDeclaration()) {
+            for (auto& typeDeclarationContext: ctx->typeDeclaration()) {
                 module->onStructureDeclaration(visitChildren(typeDeclarationContext));
             }
             return antlrcpp::Any(nullptr);
@@ -64,7 +64,8 @@ namespace cajeta {
             return Modifiable::toModifier(ctx->getText());
         }
 
-        virtual antlrcpp::Any visitClassOrInterfaceModifier(CajetaParser::ClassOrInterfaceModifierContext* ctx) override {
+        virtual antlrcpp::Any
+        visitClassOrInterfaceModifier(CajetaParser::ClassOrInterfaceModifierContext* ctx) override {
             return visitChildren(ctx);
         }
 
@@ -75,17 +76,17 @@ namespace cajeta {
         virtual antlrcpp::Any visitClassDeclaration(CajetaParser::ClassDeclarationContext* ctx) override {
             string packageAdj;
             string name = ctx->identifier()->getText();
-            for (auto &structure : module->getStructureStack()) {
+            for (auto& structure: module->getStructureStack()) {
                 packageAdj.append(".");
                 packageAdj.append(structure->getQName()->getTypeName());
             }
             QualifiedName* qName = QualifiedName::getOrInsert(name, module->getQName()->getPackageName()
-                                                                    + packageAdj);
+                + packageAdj);
             CajetaStructure* structure;
-            structure = new CajetaClass(qName);
+            structure = new CajetaClass(module, qName);
             module->getStructureStack().push_back(structure);
             structure->setClassBody(visitChildren(ctx).as<ClassBodyDeclaration*>());
-            structure->generatePrototype(module);
+            structure->generatePrototype();
             module->getStructureStack().pop_back();
             return structure;
         }
@@ -124,9 +125,9 @@ namespace cajeta {
 
         virtual antlrcpp::Any visitClassBody(CajetaParser::ClassBodyContext* ctx) override {
             ClassBodyDeclaration* classBody = new ClassBodyDeclaration(ctx->getStart());
-            for (auto &classBodyDeclarationCtx : ctx->classBodyDeclaration()) {
+            for (auto& classBodyDeclarationCtx: ctx->classBodyDeclaration()) {
                 classBody->getDeclarations().push_back(visitClassBodyDeclaration(classBodyDeclarationCtx)
-                                                               .as<MemberDeclaration*>());
+                    .as<MemberDeclaration*>());
             }
             return classBody;
         }
@@ -136,8 +137,9 @@ namespace cajeta {
         }
 
         virtual antlrcpp::Any visitClassBodyDeclaration(CajetaParser::ClassBodyDeclarationContext* ctx) override {
-            MemberDeclaration* memberDeclaration = visitMemberDeclaration(ctx->memberDeclaration()).as<MemberDeclaration*>();
-            for (auto &modifierContext : ctx->modifier()) {
+            MemberDeclaration* memberDeclaration = visitMemberDeclaration(
+                ctx->memberDeclaration()).as<MemberDeclaration*>();
+            for (auto& modifierContext: ctx->modifier()) {
                 memberDeclaration->onModifier(visitModifier(modifierContext).as<Modifier>());
             }
             return memberDeclaration;
@@ -151,17 +153,17 @@ namespace cajeta {
             string name = ctx->identifier()->getText();
             vector<FormalParameter*> formalParameters;
             if (ctx->formalParameters()->formalParameterList()) {
-                for (auto &formalParameterContext : ctx->formalParameters()->formalParameterList()->formalParameter()) {
+                for (auto& formalParameterContext: ctx->formalParameters()->formalParameterList()->formalParameter()) {
                     formalParameters.push_back(FormalParameter::fromContext(formalParameterContext, module));
                 }
             }
             CajetaType* returnType = CajetaType::fromContext(ctx->typeTypeOrVoid(), module);
             Block* block = visitMethodBody(ctx->methodBody()).as<Block*>();
-            Method* method = new Method(name,
-                                        returnType,
-                                        formalParameters,
-                                        block,
-                                        module->getStructureStack().front());
+            Method* method = new Method(module, name,
+                returnType,
+                formalParameters,
+                block,
+                module->getStructureStack().front());
             return (MemberDeclaration*) new MethodDeclaration(method, ctx->getStart());
         }
 
@@ -181,11 +183,13 @@ namespace cajeta {
             return visitChildren(ctx);
         }
 
-        virtual antlrcpp::Any visitGenericMethodDeclaration(CajetaParser::GenericMethodDeclarationContext* ctx) override {
+        virtual antlrcpp::Any
+        visitGenericMethodDeclaration(CajetaParser::GenericMethodDeclarationContext* ctx) override {
             return visitChildren(ctx);
         }
 
-        virtual antlrcpp::Any visitGenericConstructorDeclaration(CajetaParser::GenericConstructorDeclarationContext* ctx) override {
+        virtual antlrcpp::Any
+        visitGenericConstructorDeclaration(CajetaParser::GenericConstructorDeclarationContext* ctx) override {
             return visitChildren(ctx);
         }
 
@@ -200,11 +204,13 @@ namespace cajeta {
                 visitVariableDeclarators(ctx->variableDeclarators()).as<list<VariableDeclarator*>>(), ctx->getStart());
         }
 
-        virtual antlrcpp::Any visitInterfaceBodyDeclaration(CajetaParser::InterfaceBodyDeclarationContext* ctx) override {
+        virtual antlrcpp::Any
+        visitInterfaceBodyDeclaration(CajetaParser::InterfaceBodyDeclarationContext* ctx) override {
             return visitChildren(ctx);
         }
 
-        virtual antlrcpp::Any visitInterfaceMemberDeclaration(CajetaParser::InterfaceMemberDeclarationContext* ctx) override {
+        virtual antlrcpp::Any
+        visitInterfaceMemberDeclaration(CajetaParser::InterfaceMemberDeclarationContext* ctx) override {
             return visitChildren(ctx);
         }
 
@@ -216,7 +222,8 @@ namespace cajeta {
             return visitChildren(ctx);
         }
 
-        virtual antlrcpp::Any visitInterfaceMethodDeclaration(CajetaParser::InterfaceMethodDeclarationContext* ctx) override {
+        virtual antlrcpp::Any
+        visitInterfaceMethodDeclaration(CajetaParser::InterfaceMethodDeclarationContext* ctx) override {
             return visitChildren(ctx);
         }
 
@@ -224,19 +231,21 @@ namespace cajeta {
             return visitChildren(ctx);
         }
 
-        virtual antlrcpp::Any visitGenericInterfaceMethodDeclaration(CajetaParser::GenericInterfaceMethodDeclarationContext* ctx) override {
+        virtual antlrcpp::Any
+        visitGenericInterfaceMethodDeclaration(CajetaParser::GenericInterfaceMethodDeclarationContext* ctx) override {
             return visitChildren(ctx);
         }
 
-        virtual antlrcpp::Any visitInterfaceCommonBodyDeclaration(CajetaParser::InterfaceCommonBodyDeclarationContext* ctx) override {
+        virtual antlrcpp::Any
+        visitInterfaceCommonBodyDeclaration(CajetaParser::InterfaceCommonBodyDeclarationContext* ctx) override {
             return visitChildren(ctx);
         }
 
         virtual antlrcpp::Any visitVariableDeclarators(CajetaParser::VariableDeclaratorsContext* ctx) override {
             list<VariableDeclarator*> variableDeclarators;
-            for (auto &variableDeclaratorContext : ctx->variableDeclarator()) {
+            for (auto& variableDeclaratorContext: ctx->variableDeclarator()) {
                 variableDeclarators.push_back(visitVariableDeclarator(variableDeclaratorContext)
-                        .as<VariableDeclarator*>());
+                    .as<VariableDeclarator*>());
             }
             return variableDeclarators;
         }
@@ -249,11 +258,11 @@ namespace cajeta {
             }
 
             return new VariableDeclarator(
-                    ctx->variableDeclaratorId()->identifier()->getText(),
-                    ctx->variableDeclaratorId()->LBRACK().size(),
-                    ctx->REFERENCE() != nullptr,
-                    initializer,
-                    ctx->getStart());
+                ctx->variableDeclaratorId()->identifier()->getText(),
+                ctx->variableDeclaratorId()->LBRACK().size(),
+                ctx->REFERENCE() != nullptr,
+                initializer,
+                ctx->getStart());
         }
 
         virtual antlrcpp::Any visitVariableDeclaratorId(CajetaParser::VariableDeclaratorIdContext* ctx) override {
@@ -265,14 +274,14 @@ namespace cajeta {
                 return visitArrayInitializer(ctx->arrayInitializer());
             }
             return (Initializer*) new VariableInitializer(visitExpression(ctx->expression()).as<Expression*>(),
-                    ctx->getStart());
+                ctx->getStart());
         }
 
         virtual antlrcpp::Any visitArrayInitializer(CajetaParser::ArrayInitializerContext* ctx) override {
             list<Initializer*> initializers;
-            for (auto &variableInitializerContext : ctx->variableInitializer()) {
+            for (auto& variableInitializerContext: ctx->variableInitializer()) {
                 initializers.push_back(visitVariableInitializer(variableInitializerContext)
-                        .as<Initializer*>());
+                    .as<Initializer*>());
             }
             return (Initializer*) new ArrayInitializer(initializers, ctx->getStart());
         }
@@ -299,7 +308,7 @@ namespace cajeta {
 
         virtual antlrcpp::Any visitFormalParameterList(CajetaParser::FormalParameterListContext* ctx) override {
             list<FormalParameter*> formalParameters;
-            for (auto &formalParameterContext : ctx->formalParameter()) {
+            for (auto& formalParameterContext: ctx->formalParameter()) {
                 formalParameters.push_back(FormalParameter::fromContext(formalParameterContext, module));
             }
 
@@ -338,7 +347,8 @@ namespace cajeta {
             return visitChildren(ctx);
         }
 
-        virtual antlrcpp::Any visitAltAnnotationQualifiedName(CajetaParser::AltAnnotationQualifiedNameContext* ctx) override {
+        virtual antlrcpp::Any
+        visitAltAnnotationQualifiedName(CajetaParser::AltAnnotationQualifiedNameContext* ctx) override {
             return visitChildren(ctx);
         }
 
@@ -358,11 +368,13 @@ namespace cajeta {
             return visitChildren(ctx);
         }
 
-        virtual antlrcpp::Any visitElementValueArrayInitializer(CajetaParser::ElementValueArrayInitializerContext* ctx) override {
+        virtual antlrcpp::Any
+        visitElementValueArrayInitializer(CajetaParser::ElementValueArrayInitializerContext* ctx) override {
             return visitChildren(ctx);
         }
 
-        virtual antlrcpp::Any visitAnnotationTypeDeclaration(CajetaParser::AnnotationTypeDeclarationContext* ctx) override {
+        virtual antlrcpp::Any
+        visitAnnotationTypeDeclaration(CajetaParser::AnnotationTypeDeclarationContext* ctx) override {
             return visitChildren(ctx);
         }
 
@@ -370,15 +382,18 @@ namespace cajeta {
             return visitChildren(ctx);
         }
 
-        virtual antlrcpp::Any visitAnnotationTypeElementDeclaration(CajetaParser::AnnotationTypeElementDeclarationContext* ctx) override {
+        virtual antlrcpp::Any
+        visitAnnotationTypeElementDeclaration(CajetaParser::AnnotationTypeElementDeclarationContext* ctx) override {
             return visitChildren(ctx);
         }
 
-        virtual antlrcpp::Any visitAnnotationTypeElementRest(CajetaParser::AnnotationTypeElementRestContext* ctx) override {
+        virtual antlrcpp::Any
+        visitAnnotationTypeElementRest(CajetaParser::AnnotationTypeElementRestContext* ctx) override {
             return visitChildren(ctx);
         }
 
-        virtual antlrcpp::Any visitAnnotationMethodOrConstantRest(CajetaParser::AnnotationMethodOrConstantRestContext* ctx) override {
+        virtual antlrcpp::Any
+        visitAnnotationMethodOrConstantRest(CajetaParser::AnnotationMethodOrConstantRestContext* ctx) override {
             return visitChildren(ctx);
         }
 
@@ -432,7 +447,7 @@ namespace cajeta {
 
         virtual antlrcpp::Any visitBlock(CajetaParser::BlockContext* ctx) override {
             Block* block = new Block(ctx->getStart());
-            for (auto &blockStatementContext : ctx->blockStatement()) {
+            for (auto& blockStatementContext: ctx->blockStatement()) {
                 block->addChild(visitBlockStatement(blockStatementContext).as<BlockStatement*>());
             }
             return block;
@@ -449,16 +464,17 @@ namespace cajeta {
             return visitChildren(ctx);
         }
 
-        virtual antlrcpp::Any visitLocalVariableDeclaration(CajetaParser::LocalVariableDeclarationContext* ctx) override {
-            set<Modifier> modifiers;
-            for (auto &variableModifierContext : ctx->variableModifier()) {
+        virtual antlrcpp::Any
+        visitLocalVariableDeclaration(CajetaParser::LocalVariableDeclarationContext* ctx) override {
+            set < Modifier > modifiers;
+            for (auto& variableModifierContext: ctx->variableModifier()) {
                 modifiers.insert(Modifiable::toModifier(variableModifierContext->getText()));
             }
             return (BlockStatement*) new LocalVariableDeclaration(
-                    modifiers,
-                    CajetaType::fromContext(ctx->typeType(), module),
-                    visitVariableDeclarators(ctx->variableDeclarators()).as<list<VariableDeclarator*>>(),
-                    ctx->getStart());
+                modifiers,
+                CajetaType::fromContext(ctx->typeType(), module),
+                visitVariableDeclarators(ctx->variableDeclarators()).as<list<VariableDeclarator*>>(),
+                ctx->getStart());
         }
 
         virtual antlrcpp::Any visitIdentifier(CajetaParser::IdentifierContext* ctx) override {
@@ -497,7 +513,8 @@ namespace cajeta {
             return visitChildren(ctx);
         }
 
-        virtual antlrcpp::Any visitSwitchBlockStatementGroup(CajetaParser::SwitchBlockStatementGroupContext* ctx) override {
+        virtual antlrcpp::Any
+        visitSwitchBlockStatementGroup(CajetaParser::SwitchBlockStatementGroupContext* ctx) override {
             return visitChildren(ctx);
         }
 
@@ -547,7 +564,7 @@ namespace cajeta {
 
         virtual antlrcpp::Any visitExpression(CajetaParser::ExpressionContext* ctx) override {
             Expression* expression = Expression::fromContext(ctx);
-            for (auto &expressionContext : ctx->expression()) {
+            for (auto& expressionContext: ctx->expression()) {
                 antlrcpp::Any any = visitChildren(expressionContext->parent);
                 expression->addChild(any.as<Expression*>());
             }
@@ -614,7 +631,8 @@ namespace cajeta {
             return visitChildren(ctx);
         }
 
-        virtual antlrcpp::Any visitExplicitGenericInvocation(CajetaParser::ExplicitGenericInvocationContext* ctx) override {
+        virtual antlrcpp::Any
+        visitExplicitGenericInvocation(CajetaParser::ExplicitGenericInvocationContext* ctx) override {
             return visitChildren(ctx);
         }
 
@@ -622,11 +640,13 @@ namespace cajeta {
             return visitChildren(ctx);
         }
 
-        virtual antlrcpp::Any visitNonWildcardTypeArgumentsOrDiamond(CajetaParser::NonWildcardTypeArgumentsOrDiamondContext* ctx) override {
+        virtual antlrcpp::Any
+        visitNonWildcardTypeArgumentsOrDiamond(CajetaParser::NonWildcardTypeArgumentsOrDiamondContext* ctx) override {
             return visitChildren(ctx);
         }
 
-        virtual antlrcpp::Any visitNonWildcardTypeArguments(CajetaParser::NonWildcardTypeArgumentsContext* ctx) override {
+        virtual antlrcpp::Any
+        visitNonWildcardTypeArguments(CajetaParser::NonWildcardTypeArgumentsContext* ctx) override {
             return visitChildren(ctx);
         }
 
@@ -650,7 +670,8 @@ namespace cajeta {
             return visitChildren(ctx);
         }
 
-        virtual antlrcpp::Any visitExplicitGenericInvocationSuffix(CajetaParser::ExplicitGenericInvocationSuffixContext* ctx) override {
+        virtual antlrcpp::Any
+        visitExplicitGenericInvocationSuffix(CajetaParser::ExplicitGenericInvocationSuffixContext* ctx) override {
             return visitChildren(ctx);
         }
 

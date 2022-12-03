@@ -7,6 +7,7 @@
 #include "cajeta/util/LiteralUtils.h"
 #include "cajeta/util/MemoryManager.h"
 #include "cajeta/type/CajetaArray.h"
+#include "cajeta/type/LocalField.h"
 
 namespace cajeta {
     Expression* Expression::fromContext(CajetaParser::ExpressionContext* ctx) {
@@ -20,7 +21,7 @@ namespace cajeta {
 
         } else if (ctx->NEW()) {
             result = new NewExpression(ctx->creator(), token);
-        }  else if (ctx->DOT()) {
+        } else if (ctx->DOT()) {
             result = new DotExpression(ctx, token);
         } else if (ctx->identifier()) {
             result = new IdentifierExpression(ctx->identifier(), ctx->primary() != nullptr);
@@ -139,7 +140,7 @@ namespace cajeta {
 
         if (result) {
             if (!ctx->expression().empty()) {
-                for (auto childContext : ctx->expression()) {
+                for (auto childContext: ctx->expression()) {
                     result->addChild(Expression::fromContext(childContext));
                 }
             }
@@ -201,15 +202,19 @@ namespace cajeta {
         llvm::Value* value = children[0]->generateCode(module);
         CajetaStructure* structure = (CajetaStructure*) module->getFieldStack().back()->getType();
         module->getFieldStack().pop_back();
-        StructureField* structureField = structure->getFields()[identifier];
-        module->getFieldStack().push_back(structureField);
-        if (structureField == nullptr) {
-            throw "identifier did not map to field";
-        }
-        return module->getBuilder()->CreateStructGEP(structure->getLlvmType(),
-                                                     value,
-                                                     structureField->getOrder(),
-                                                     identifier);
+        ClassProperty* property = structure->getProperties()[identifier];
+        // TODO: We shouldn't be using structureField, we should be creating a PropertyField from the property
+        // TODO: We should automatically create an entry in our scope for a structure hierarchy.  These can be lazily loaded, but should be available for reference
+        // TODO: and deallocation here.
+        return nullptr;
+//        module->getFieldStack().push_back(structureField);
+//        if (structureField == nullptr) {
+//            throw "identifier did not map to field";
+//        }
+//        return module->getBuilder()->CreateStructGEP(structure->getLlvmType(),
+//                                                     value,
+//                                                     structureField->getOrder(),
+//                                                     identifier);
     }
 
     llvm::Value* BinaryOpExpression::generateCode(CajetaModule* module) {
@@ -267,11 +272,11 @@ namespace cajeta {
             } catch (exception) {
                 throw "bad type";
             }
-            StructureField* structureField = structure->getFields()[identifier];
+            ClassProperty* structureField = structure->getProperties()[identifier];
             return module->getBuilder()->CreateStructGEP(structureField->getType()->getLlvmType(),
-                                                                            module->getValueStack().back(),
-                                                                            structureField->getOrder(),
-                                                                            identifier);
+                module->getValueStack().back(),
+                structureField->getOrder(),
+                identifier);
         }
     }
 
@@ -297,25 +302,26 @@ namespace cajeta {
         llvm::Value* thisValue = currentField->getAllocation();
         parameterValues.push_back(thisValue);
 
-        for (auto& node : children) {
+        for (auto& node: children) {
             parameterValues.push_back(node->generateCode(module));
         }
 
         string constructorName = Method::buildCanonical(
-                (CajetaStructure*) currentField->getType(),
-                currentField->getType()->getQName()->getTypeName(),
-                parameterValues);
+            (CajetaStructure*) currentField->getType(),
+            currentField->getType()->getQName()->getTypeName(),
+            parameterValues);
         Method* constructor = Method::getArchive()[constructorName];
 
         if (constructor == nullptr) {
             throw "A constructor with the specified signature could not be found.";
         } else {
             module->getBuilder()->CreateCall(constructor->getLlvmFunctionType(),
-                                             constructor->getLlvmFunction(),
-                                             parameterValues);
+                constructor->getLlvmFunction(),
+                parameterValues);
         }
         return nullptr;
     }
+
     /**
      * The initializer here will have expressions that will resolve to the dimensions that will be allocated.
      *
@@ -326,12 +332,12 @@ namespace cajeta {
         vector<llvm::Constant*> dimensionValues;
         Field* currentField = module->getFieldStack().back();
         CajetaArray* arrayType = (CajetaArray*) currentField->getType();
-        auto &dataLayout = module->getLlvmModule()->getDataLayout();
+        auto& dataLayout = module->getLlvmModule()->getDataLayout();
         llvm::Type* int64Type = llvm::Type::getInt64Ty(*module->getLlvmContext());
-        llvm::Constant* allocSize = llvm::ConstantInt::get(int64Type, dataLayout.getTypeAllocSize(arrayType->getElementType()
-                ->getLlvmType()));
+        llvm::Constant* allocSize = llvm::ConstantInt::get(int64Type,
+            dataLayout.getTypeAllocSize(arrayType->getElementType()->getLlvmType()));
 
-        for (auto& node : children) {
+        for (auto& node: children) {
             llvm::Constant* dimensionValue = (llvm::Constant*) node->generateCode(module);
             allocSize = llvm::ConstantExpr::getMul(dimensionValue, allocSize);
             dimensionValues.push_back(dimensionValue);
@@ -339,16 +345,18 @@ namespace cajeta {
 
         char fieldName[1024];
         snprintf(fieldName, 1023, "%s.%s", currentField->getName().c_str(), CajetaArray::ARRAY_FIELD_NAME.c_str());
-        llvm::Value* fieldPointer = module->getBuilder()->CreateStructGEP(arrayType->getLlvmType(),
-                                              currentField->getAllocation(),
-                                              arrayType->getFields()[CajetaArray::ARRAY_FIELD_NAME]->getOrder(),
-                                              fieldName);
+        llvm::Value* allocation = module->getBuilder()->CreateStructGEP(arrayType->getLlvmType(),
+            currentField->getAllocation(),
+            arrayType->getProperties()[CajetaArray::ARRAY_FIELD_NAME]->getOrder(),
+            fieldName);
+        LocalField* field = new LocalField(fieldName, arrayType, allocation);
+        module->getCurrentMethod()->putScope(field);
 
         MemoryManager* memoryAllocator = MemoryManager::getInstance(module);
-        llvm::Instruction* mallocInst = memoryAllocator->createMallocInstruction("", allocSize,
-                                                                                 module->getBuilder()->GetInsertBlock());
-        module->getBuilder()->CreateStore(mallocInst, fieldPointer);
-        arrayType->getFields()[CajetaArray::ARRAY_FIELD_NAME] = new StructureField(CajetaArray::ARRAY_FIELD_NAME, fieldPointer, 0);
+        llvm::Instruction* mallocInst = memoryAllocator->createMallocInstruction("",
+            allocSize,
+            module->getBuilder()->GetInsertBlock());
+        module->getBuilder()->CreateStore(mallocInst, allocation);
         return mallocInst;
     }
 
@@ -359,7 +367,7 @@ namespace cajeta {
         llvm::Constant* allocSize = llvm::ConstantExpr::getSizeOf(structure->getLlvmType());
         MemoryManager* memoryAllocator = MemoryManager::getInstance(module);
         llvm::Instruction* mallocInst = memoryAllocator->createMallocInstruction(field->getName(), allocSize,
-                                                                                 module->getBuilder()->GetInsertBlock());
+            module->getBuilder()->GetInsertBlock());
         field->setAllocation(mallocInst);
         this->creatorRest->generateCode(module);
         return mallocInst;

@@ -71,7 +71,9 @@ namespace cajeta {
         }
 
         vector<AbstractSyntaxNode*>& getChildren() { return children; }
+
         virtual void generateSignature(CajetaModule* module) { }
+
         virtual llvm::Value* generateCode(CajetaModule* module) = 0;
     };
 }

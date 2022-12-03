@@ -14,7 +14,9 @@ using namespace std;
 namespace cajeta {
 
     class Block;
+
     class Expression;
+
     class ParExpression;
 
 //    statement
@@ -41,6 +43,7 @@ namespace cajeta {
     class Statement : public BlockStatement {
     public:
         Statement(antlr4::Token* token) : BlockStatement(token) { }
+
         static Statement* fromContext(CajetaParser::StatementContext* ctx);
     };
 
@@ -66,6 +69,7 @@ namespace cajeta {
         Block* block;
     public:
         LabelStatement(antlr4::Token* token) : Statement(token) { }
+
         llvm::Value* generateCode(CajetaModule* compilationUnit) override;
     };
 
@@ -83,6 +87,7 @@ namespace cajeta {
         Statement* elseClause;
     public:
         IfStatement(antlr4::Token* token) : Statement(token) { }
+
         llvm::Value* generateCode(CajetaModule* compilationUnit) override;
     };
 
@@ -96,6 +101,7 @@ namespace cajeta {
         list<Expression*> update;
     public:
         ForStatement(antlr4::Token* token) : Statement(token) { }
+
         llvm::Value* generateCode(CajetaModule* compilationUnit) override;
     };
 
@@ -110,6 +116,7 @@ namespace cajeta {
         Expression* expression;
     public:
         EnhancedForStatement(antlr4::Token* token) : Statement(token) { }
+
         llvm::Value* generateCode(CajetaModule* compilationUnit) override;
     };
 
@@ -122,6 +129,7 @@ namespace cajeta {
         Statement* statement;
     public:
         WhileStatement(antlr4::Token* token) : Statement(token) { }
+
         llvm::Value* generateCode(CajetaModule* compilationUnit) override;
     };
 
@@ -134,6 +142,7 @@ namespace cajeta {
         ParExpression* parExpression;
     public:
         DoStatement(CajetaParser::StatementContext* ctx);
+
         llvm::Value* generateCode(CajetaModule* compilationUnit) override;
     };
 
@@ -155,6 +164,7 @@ namespace cajeta {
         Block* finally;
     public:
         TryStatement(antlr4::Token* token) : Statement(token) { }
+
         llvm::Value* generateCode(CajetaModule* compilationUnit) override;
     };
 
@@ -169,6 +179,7 @@ namespace cajeta {
         Block* finally;
     public:
         ResourceTryStatement(antlr4::Token* token) : Statement(token) { }
+
         llvm::Value* generateCode(CajetaModule* compilationUnit) override;
     };
 
@@ -194,6 +205,7 @@ namespace cajeta {
         list<SwitchBlockStatement*> switchBlockStatements;
     public:
         SwitchStatement(antlr4::Token* token) : Statement(token) { }
+
         llvm::Value* generateCode(CajetaModule* compilationUnit) override;
     };
 
@@ -206,6 +218,7 @@ namespace cajeta {
         Block* block;
     public:
         SynchronizedStatement(antlr4::Token* token) : Statement(token) { }
+
         llvm::Value* generateCode(CajetaModule* compilationUnit) override;
     };
 
@@ -217,6 +230,7 @@ namespace cajeta {
         Expression* expression;
     public:
         ReturnStatement(antlr4::Token* token) : Statement(token) { }
+
         llvm::Value* generateCode(CajetaModule* compilationUnit) override;
     };
 
@@ -228,6 +242,7 @@ namespace cajeta {
         Expression* expression;
     public:
         ThrowStatement(antlr4::Token* token) : Statement(token) { }
+
         llvm::Value* generateCode(CajetaModule* compilationUnit) override;
     };
 
@@ -239,6 +254,7 @@ namespace cajeta {
         string identifier;
     public:
         BreakStatement(antlr4::Token* token) : Statement(token) { }
+
         llvm::Value* generateCode(CajetaModule* compilationUnit) override;
     };
 
@@ -250,6 +266,7 @@ namespace cajeta {
         string identifier;
     public:
         ContinueStatement(antlr4::Token* token) : Statement(token) { }
+
         llvm::Value* generateCode(CajetaModule* compilationUnit) override;
     };
 
@@ -260,6 +277,7 @@ namespace cajeta {
     private:
     public:
         YieldStatement(antlr4::Token* token) : Statement(token) { }
+
         llvm::Value* generateCode(CajetaModule* compilationUnit) override;
     };
 
@@ -295,12 +313,14 @@ namespace cajeta {
         string identifier;
     public:
         IdentifierLabel(antlr4::Token* token) : Statement(token) { }
+
         llvm::Value* generateCode(CajetaModule* compilationUnit) override;
     };
 
     class SemiStatement : public Statement {
     public:
         SemiStatement(antlr4::Token* token) : Statement(token) { }
+
         llvm::Value* generateCode(CajetaModule* compilationUnit) override;
     };
 }

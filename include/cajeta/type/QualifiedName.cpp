@@ -6,14 +6,19 @@
 
 namespace cajeta {
     map<string, map<string, QualifiedName*>> QualifiedName::cache;
+
     map<string, map<string, QualifiedName*>> QualifiedName::getCache() { return cache; }
 
     void QualifiedName::free() {
-        for (auto & typeNameEntry : cache) {
-            for (auto & packageEntry : typeNameEntry.second) {
+        for (auto& typeNameEntry: cache) {
+            for (auto& packageEntry: typeNameEntry.second) {
                 delete packageEntry.second;
             }
         }
+    }
+
+    QualifiedName* QualifiedName::toArrayType() {
+        return getOrInsert(typeName + "Array", packageName);
     }
 
     QualifiedName* QualifiedName::getOrInsert(string typeName) {

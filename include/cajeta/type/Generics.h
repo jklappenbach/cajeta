@@ -13,6 +13,7 @@ using namespace std;
 namespace cajeta {
     struct TypeParameter {
         string parameterName;
+
         TypeParameter(string parameterName) {
             this->parameterName = parameterName;
         }
@@ -22,6 +23,7 @@ namespace cajeta {
     struct ExtendedTypeParameter : TypeParameter {
         string extends;
         llvm::Type* type;
+
         ExtendedTypeParameter(string parameterName, string extends) : TypeParameter(parameterName) {
             this->extends = extends;
         }

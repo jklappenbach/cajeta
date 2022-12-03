@@ -13,7 +13,9 @@ namespace cajeta {
     class MemberDeclaration : public AbstractSyntaxNode {
     public:
         MemberDeclaration(antlr4::Token* token) : AbstractSyntaxNode(token) { }
+
         virtual void updateParent(CajetaStructure* structure) = 0;
+
         virtual void onModifier(Modifier modifier) = 0;
     };
 
@@ -24,10 +26,12 @@ namespace cajeta {
         set<Modifier> modifiers;
         set<QualifiedName*> annotations;
     public:
-        FieldDeclaration(CajetaType* type, list<VariableDeclarator*> variableDeclarators, antlr4::Token* token) : MemberDeclaration(token) {
+        FieldDeclaration(CajetaType* type, list<VariableDeclarator*> variableDeclarators, antlr4::Token* token)
+            : MemberDeclaration(token) {
             this->type = type;
             this->variableDeclarators = variableDeclarators;
         }
+
         void onModifier(Modifier modifier) override { modifiers.insert(modifier); }
 
         /**
@@ -41,16 +45,13 @@ namespace cajeta {
          * @param structure
          */
         void updateParent(CajetaStructure* structure) override {
-            int i = structure->getFields().size();
-            for (auto variableDeclarator : variableDeclarators) {
-                StructureField* field = new StructureField(variableDeclarator->getIdentifier(),
-                                         type,
-                                         variableDeclarator->getArrayDimension(),
-                                         variableDeclarator->isReference(),
-                                         variableDeclarator->getInitializer(),
-                                         std::move(modifiers),
-                                         annotations, i++);
-                structure->addField(field);
+            int i = structure->getProperties().size();
+            for (auto variableDeclarator: variableDeclarators) {
+                ClassProperty* property = new ClassProperty(variableDeclarator->getIdentifier(),
+                    type,
+                    std::move(modifiers),
+                    annotations, i++);
+                structure->addProperty(property);
             }
         }
 
@@ -64,10 +65,13 @@ namespace cajeta {
         Method* method;
     public:
         MethodDeclaration(Method* method, antlr4::Token* token) : MemberDeclaration(token) { this->method = method; }
+
         void onModifier(Modifier modifier) override { this->method->addModifier(modifier); }
+
         void updateParent(CajetaStructure* structure) override {
             structure->getMethods()[method->getName()] = method;
         }
+
         llvm::Value* generateCode(CajetaModule* compilationUnit) override {
             return nullptr;
         }
@@ -78,10 +82,13 @@ namespace cajeta {
         list<MemberDeclaration*> declarations;
     public:
         ClassBodyDeclaration(antlr4::Token* token) : AbstractSyntaxNode(token) { }
+
         list<MemberDeclaration*>& getDeclarations() { return declarations; }
+
         virtual void generateSignature(CajetaModule* compilationUnit) override {
 
         }
+
         llvm::Value* generateCode(CajetaModule* compilationUnit) override {
             return nullptr;
         }

@@ -13,11 +13,13 @@ using namespace std;
 
 namespace cajeta {
     class Method;
+
     class BlockStatement;
 
     class DefaultBlock : public Block {
     public:
         DefaultBlock() { }
+
         llvm::Value* generateCode(CajetaModule* module) override;
     };
 }
