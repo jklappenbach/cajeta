@@ -330,6 +330,7 @@ namespace cajeta {
      */
     llvm::Value* ArrayCreatorRest::generateCode(CajetaModule* module) {
         vector<llvm::Constant*> dimensionValues;
+        llvm::Value* value = module->getValueStack().back();
         Field* currentField = module->getFieldStack().back();
         CajetaArray* arrayType = (CajetaArray*) currentField->getType();
         auto& dataLayout = module->getLlvmModule()->getDataLayout();
@@ -337,24 +338,28 @@ namespace cajeta {
         llvm::Constant* allocSize = llvm::ConstantInt::get(int64Type,
             dataLayout.getTypeAllocSize(arrayType->getElementType()->getLlvmType()));
 
+        // TODO: Initialize the dimensional values for the array here
+        int ordinal = 1;
+        char buffer[256];
         for (auto& node: children) {
+            snprintf(buffer, 255, "#dim%d", ordinal);
             llvm::Constant* dimensionValue = (llvm::Constant*) node->generateCode(module);
+            llvm::Value* allocation = module->getBuilder()->CreateStructGEP(arrayType->getLlvmType(),
+                value, ordinal++, buffer);
+            LocalField* field = new LocalField(buffer, CajetaType::of("int64"), allocation);
+            module->getCurrentMethod()->putScope(field);
+            module->getBuilder()->CreateStore(dimensionValue, allocation);
             allocSize = llvm::ConstantExpr::getMul(dimensionValue, allocSize);
             dimensionValues.push_back(dimensionValue);
         }
 
         char fieldName[1024];
-        snprintf(fieldName, 1023, "%s.%s", currentField->getName().c_str(), CajetaArray::ARRAY_FIELD_NAME.c_str());
-        llvm::Value* allocation = module->getBuilder()->CreateStructGEP(arrayType->getLlvmType(),
-            currentField->getAllocation(),
-            arrayType->getProperties()[CajetaArray::ARRAY_FIELD_NAME]->getOrder(),
-            fieldName);
+        llvm::Value* allocation = module->getBuilder()->CreateStructGEP(arrayType->getLlvmType(), value, 0);
         LocalField* field = new LocalField(fieldName, arrayType, allocation);
         module->getCurrentMethod()->putScope(field);
 
         MemoryManager* memoryAllocator = MemoryManager::getInstance(module);
-        llvm::Instruction* mallocInst = memoryAllocator->createMallocInstruction("",
-            allocSize,
+        llvm::Instruction* mallocInst = memoryAllocator->createMallocInstruction("", allocSize,
             module->getBuilder()->GetInsertBlock());
         module->getBuilder()->CreateStore(mallocInst, allocation);
         return mallocInst;
@@ -368,8 +373,9 @@ namespace cajeta {
         MemoryManager* memoryAllocator = MemoryManager::getInstance(module);
         llvm::Instruction* mallocInst = memoryAllocator->createMallocInstruction(field->getName(), allocSize,
             module->getBuilder()->GetInsertBlock());
-        field->setAllocation(mallocInst);
+        module->getValueStack().push_back(mallocInst);
         this->creatorRest->generateCode(module);
+        module->getValueStack().pop_back();
         return mallocInst;
     }
 }

@@ -7,8 +7,8 @@
 #include "cajeta/compile/CajetaModule.h"
 #include <cajeta/type/CajetaArray.h>
 
-#define NATIVE_TYPE_ENTRY(typeName, llvmType) new CajetaType(QualifiedName::getOrInsert(typeName, CAJETA_NATIVE_PACKAGE), llvmType)
 #define CAJETA_NATIVE_PACKAGE ""
+#define NATIVE_TYPE_ENTRY(typeName, llvmType) new CajetaType(QualifiedName::getOrInsert(typeName, CAJETA_NATIVE_PACKAGE), llvmType)
 
 namespace cajeta {
     map<string, CajetaType*> CajetaType::canonicalMap;

@@ -20,7 +20,7 @@ namespace cajeta {
             elementType->getLlvmType()->getPointerTo());
         properties[ARRAY_FIELD_NAME] = new ClassProperty(ARRAY_FIELD_NAME, arrayPropertyType, 0);
         for (int i = 0; i < dimension; i++) {
-            snprintf(fieldName, 255, "@dim%d", i);
+            snprintf(fieldName, 255, "#dim%d", i);
             properties[fieldName] = new ClassProperty(fieldName, CajetaType::of("int64"), i + 1);
         }
     }

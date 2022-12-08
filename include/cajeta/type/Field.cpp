@@ -40,7 +40,8 @@ namespace cajeta {
      */
     llvm::Value* Field::getOrCreateAllocation(CajetaModule* module) {
         if (!allocation) {
-            allocation = initializer->generateCode(module);
+            allocation = module->getBuilder()->CreateAlloca(type->getLlvmType(), nullptr, name);
+            module->getBuilder()->CreateStore(initializer->generateCode(module), allocation);
         }
         return allocation;
     }
@@ -48,19 +49,9 @@ namespace cajeta {
     void Field::onDelete(CajetaModule* module, Scope* scope) {
         if (type->getStructType() != STRUCT_TYPE_PRIMITIVE) {
             if (!reference) {
-//                MemoryManager::getInstance(module)->createFreeInstruction(allocation,
-//                    module->getBuilder()->GetInsertBlock());
-
-                int temp = name.find('.');
-                if (temp >= 0) {
-                    llvm::LoadInst* loadInst = module->getBuilder()->CreateLoad(type->getLlvmType(), allocation, "");
-
-                    MemoryManager::getInstance(module)->createFreeInstruction(loadInst,
-                        module->getBuilder()->GetInsertBlock());
-                } else {
-                    MemoryManager::getInstance(module)->createFreeInstruction(allocation,
-                        module->getBuilder()->GetInsertBlock());
-                }
+                llvm::LoadInst* loadInst = module->getBuilder()->CreateLoad(type->getLlvmType(), allocation, "");
+                MemoryManager::getInstance(module)->createFreeInstruction(loadInst,
+                    module->getBuilder()->GetInsertBlock());
             }
         }
     }
