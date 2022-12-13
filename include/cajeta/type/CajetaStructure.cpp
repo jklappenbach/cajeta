@@ -34,7 +34,7 @@ namespace cajeta {
 
     void CajetaStructure::generatePrototype() {
         llvmType = llvm::StructType::create(*module->getLlvmContext(), qName->toCanonical());
-        scope = new Scope(module);
+        scope = new Scope(toCanonical(), module);
 
         vector<llvm::Type*> llvmMembers;
         for (auto& fieldEntry: properties) {

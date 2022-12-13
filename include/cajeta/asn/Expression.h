@@ -339,12 +339,11 @@ namespace cajeta {
 
     };
 
-    class ArrayExpression : public Expression {
+    class ArrayIndexExpression : public Expression {
     public:
-        ArrayExpression(antlr4::Token* token) : Expression(token) { }
+        ArrayIndexExpression(CajetaParser::ExpressionContext* ctx, antlr4::Token* token);
 
-        llvm::Value* generateCode(CajetaModule* module) override { return nullptr; }
-
+        llvm::Value* generateCode(CajetaModule* module) override;
     };
 
     class MethodCallExpression : public Expression {

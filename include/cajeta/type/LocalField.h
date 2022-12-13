@@ -13,10 +13,12 @@ namespace cajeta {
         bool var;
     public:
         LocalField(string name, CajetaType* type, bool reference, set<Modifier> modifiers,
-            set<QualifiedName*> annotations, Initializer* initializer) :
-            Field(name, type, reference, modifiers, annotations, initializer) { }
+            set<QualifiedName*> annotations, Initializer* initializer, Field* parent = nullptr) :
+            Field(name, type, reference, modifiers, annotations, initializer, parent) { }
 
-        LocalField(string name, CajetaType* type, llvm::Value* allocation) : Field(name, type, allocation) { }
+        LocalField(string name, CajetaType* type, llvm::Value* allocation, Field* parent = nullptr) : Field(name, type, allocation, parent) { }
+
+        LocalField(string name, CajetaType* type, Field* parent = nullptr) : Field(name, type, parent) { }
 
         bool isVar() const {
             return var;

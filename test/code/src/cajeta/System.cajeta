@@ -5,7 +5,7 @@ public final class System extends Alpha, Beta implements Gamma, Delta {
     private int32 x = 5;
 
     public static void main() {
-        int32[][] array = new int32[1000][500];
-        //int32[] array2 = { 1, 2, 3, 4, 5 };
+        int32[] array = new int32[12];
+        array[0] = 1;
     }
 }

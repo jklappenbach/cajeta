@@ -1,86 +1,96 @@
-cajeta.System.cajeta
-
 (compilationUnit
-    (PackageDeclaration packageName
-        (qualifiedName
-            (identifier cajeta).(identifier test)
-        );
-    )
-    (typeDeclaration (classOrInterfaceModifier public)
-        (classDeclaration class
-            (identifier System)
-            (classBody {
-                (classBodyDeclaration (modifier (classOrInterfaceModifier private))
-                    (memberDeclaration
-                        (fieldDeclaration
-                            (typeType (primitiveType int32))
-                            (variableDeclarators
-                                (variableDeclarator (variableDeclaratorId (identifier value)))
-                            );
-                        )
-                    )
-                )
-                (classBodyDeclaration
-                    (modifier (classOrInterfaceModifier private))
-                    (memberDeclaration
-                        (fieldDeclaration
-                            (typeType (classOrInterfaceType (identifier Object)))
-                            (variableDeclarators
-                                (variableDeclarator
-                                    (variableDeclaratorId (identifier obj))
-                                )
-                            );
-                        )
-                    )
-                )
-                (classBodyDeclaration
-                    (modifier
-                        (classOrInterfaceModifier public)
-                    )
-                    (modifier
-                        (classOrInterfaceModifier static)
-                    )
-                    (memberDeclaration
-                        (methodDeclaration
-                            (typeTypeOrVoid void)
-                            (identifier main)
-                            (formalParameters
-                                (
-                                    (formalParameterList
-                                        (formalParameter
-                                            (typeType
-                                                (classOrInterfaceType (identifier String))[ ]
-                                            )
-                                            (variableDeclaratorId (identifier args))
-                                        )
-                                    )
-                                )
-                            )
-                            (methodBody
-                                (block {
-                                    (blockStatement
-                                        (statement
+        (packageDeclaration package
+            (qualifiedName
+                (identifier cajeta)) ;)
+        (typeDeclaration
+            (classOrInterfaceModifier public)
+            (classOrInterfaceModifier final)
+            (classDeclaration class
+                (identifier System) extends
+                (typeList
+                    (typeType
+                        (classOrInterfaceType
+                            (identifier Alpha))) ,
+                    (typeType
+                        (classOrInterfaceType
+                            (identifier Beta)))) implements
+                (typeList
+                    (typeType
+                        (classOrInterfaceType
+                            (identifier Gamma))) ,
+                    (typeType
+                        (classOrInterfaceType
+                            (identifier Delta))))
+                (classBody {
+                    (classBodyDeclaration
+                        (modifier
+                            (classOrInterfaceModifier private))
+                        (memberDeclaration
+                            (fieldDeclaration
+                                (typeType
+                                    (primitiveType int32))
+                                (variableDeclarators
+                                    (variableDeclarator
+                                        (variableDeclaratorId
+                                            (identifier value)))) ;)))
+                    (classBodyDeclaration
+                        (modifier
+                            (classOrInterfaceModifier private))
+                        (memberDeclaration
+                            (fieldDeclaration
+                                (typeType
+                                    (primitiveType int32))
+                                (variableDeclarators
+                                    (variableDeclarator
+                                        (variableDeclaratorId
+                                            (identifier x)) =
+                                        (variableInitializer
                                             (expression
-                                                (expression (primary (identifier value))) = (expression (primary (literal (integerLiteral 5))))
-                                            );
-                                        )
-                                    )
-                                    (blockStatement
-                                        (statement
-                                            (expression
-                                                (expression (expression (primary (identifier System))).(identifier out)).
-                                                (methodCall (identifier printf)
-                                                    ((expressionList (expression (primary (literal "Hello World!\n")))))
-                                                )
-                                            );
-                                        )
-                                    )
-                                })
-                            )
-                        )
-                    )
-                )
-            })
-        )
-    )
-)
+                                                (primary
+                                                    (literal
+                                                        (integerLiteral 5))))))) ;)))
+                    (classBodyDeclaration
+                        (modifier
+                            (classOrInterfaceModifier public))
+                        (modifier
+                            (classOrInterfaceModifier static))
+                        (memberDeclaration
+                            (methodDeclaration
+                                (typeTypeOrVoid void)
+                                (identifier main)
+                                (formalParameters ( ))
+                                (methodBody
+                                    (block {
+                                        (blockStatement
+                                            (localVariableDeclaration
+                                                (typeType
+                                                    (primitiveType int32) [ ])
+                                                (variableDeclarators
+                                                    (variableDeclarator
+                                                        (variableDeclaratorId
+                                                            (identifier array)) =
+                                                        (variableInitializer
+                                                            (expression new
+                                                                (creator
+                                                                    (createdName
+                                                                        (primitiveType int32))
+                                                                    (arrayCreatorRest [
+                                                                        (expression
+                                                                            (primary
+                                                                                (literal
+                                                                                    (integerLiteral 12)))) ]))))))) ;)
+                                        (blockStatement
+                                            (statement
+                                                (expression
+                                                    (expression
+                                                        (expression
+                                                            (primary
+                                                                (identifier array))) [
+                                                        (expression
+                                                            (primary
+                                                                (literal
+                                                                    (integerLiteral 0)))) ]) =
+                                                    (expression
+                                                        (primary
+                                                            (literal
+                                                                (integerLiteral 1))))) ;)) }))))) }))))

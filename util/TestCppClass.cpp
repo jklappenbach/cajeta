@@ -13,8 +13,8 @@ int TestCppClass::getAlpha() {
 }
 
 int TestCppClass::main(int argc, char** argv) {
-    TestCppClass* instance = new TestCppClass;
-    delete instance;
+    int array[5];
+    array[2] = 5;
     return 0;
 }
 

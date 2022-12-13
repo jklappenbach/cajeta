@@ -13,9 +13,21 @@ namespace cajeta {
 
     class CajetaModule;
 
-    // TODO: Create PropertyField, LocalField, FormalParameter fields, and ensure they have support with the scope.  Make sure we have static scope,
+    /**
+     * Supported scopes:
+     *
+     * Given that we have a single class per module, we have the following layers of scope:
+     *
+     * 1. Class Static
+     * 2. Contained Class Static
+     *      2a. Contained Class Instance
+     *          2b. Contained Class Method
+     * 3. Class Instance
+     * 4. Class Method
+     */
     class Scope {
     protected:
+        string name;
         CajetaModule* module;
         Scope* parent;
         map<string, Field*> fields;
@@ -23,9 +35,9 @@ namespace cajeta {
         void putField(Field* field, string propertyPath);
 
     public:
-        Scope(CajetaModule* module);
+        Scope(string name, CajetaModule* module);
 
-        Scope(Scope* parent, CajetaModule* module);
+        Scope(string name, Scope* parent, CajetaModule* module);
 
         ~Scope();
 

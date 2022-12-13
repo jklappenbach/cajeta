@@ -41,6 +41,7 @@ namespace cajeta {
             llvmModule->setDataLayout(targetMachine->createDataLayout());
             llvmModule->setTargetTriple(targetTriple);
             structureMetadata = new StructureMetadata(this);
+            scopeStack.push_back(new Scope(qName->toCanonical(), this));
         } else {
             cerr << "Error: Module srcPath must reference a cajeta module, a file with the correct naming convention";
         }

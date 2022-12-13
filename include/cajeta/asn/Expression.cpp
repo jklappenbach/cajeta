@@ -26,6 +26,8 @@ namespace cajeta {
         } else if (ctx->identifier()) {
             result = new IdentifierExpression(ctx->identifier(), ctx->primary() != nullptr);
         } else if (ctx->LPAREN()) {
+        } else if (ctx->LBRACK()) {
+            result = new ArrayIndexExpression(ctx, token);
         } else if (!ctx->annotation().empty()) {
 
         } else if (ctx->creator()) {
@@ -146,6 +148,31 @@ namespace cajeta {
             }
         }
         return result;
+    }
+
+    ArrayIndexExpression::ArrayIndexExpression(CajetaParser::ExpressionContext* ctx, antlr4::Token* token) : Expression(token) {
+
+    }
+
+    llvm::Value* ArrayIndexExpression::generateCode(CajetaModule* module) {
+        llvm::Value* fieldAllocation = children[0]->generateCode(module);
+        Field* field = module->getFieldStack().back();
+        CajetaArray* arrayType = (CajetaArray*) field->getType();
+        llvm::Constant* arrayIndex = nullptr;
+        for (int i = 1; i < children.size(); i++) {
+            llvm::Constant* dimensionValue = (llvm::Constant*) children[i]->generateCode(module);
+            if (arrayIndex == nullptr) {
+                arrayIndex = dimensionValue;
+            } else {
+                arrayIndex = llvm::ConstantExpr::getMul(dimensionValue, arrayIndex);
+            }
+        }
+        llvm::Value* arrayAllocation = module->getBuilder()->CreateStructGEP(arrayType->getLlvmType(),
+            fieldAllocation, 0);
+        vector<llvm::Value*> indexes;
+        indexes.push_back(arrayIndex);
+        return module->getBuilder()->CreateGEP(arrayType->getElementType()->getLlvmType()->getPointerTo(), arrayAllocation,
+            llvm::ArrayRef<llvm::Value*>(indexes), "", true);
     }
 
 //    enum LiteralType {
@@ -306,18 +333,16 @@ namespace cajeta {
             parameterValues.push_back(node->generateCode(module));
         }
 
-        string constructorName = Method::buildCanonical(
-            (CajetaStructure*) currentField->getType(),
-            currentField->getType()->getQName()->getTypeName(),
-            parameterValues);
+        string constructorName = Method::buildCanonical( (CajetaStructure*) currentField->getType(),
+            currentField->getType()->getQName()->getTypeName(), parameterValues);
+
         Method* constructor = Method::getArchive()[constructorName];
 
         if (constructor == nullptr) {
             throw "A constructor with the specified signature could not be found.";
         } else {
             module->getBuilder()->CreateCall(constructor->getLlvmFunctionType(),
-                constructor->getLlvmFunction(),
-                parameterValues);
+                constructor->getLlvmFunction(), parameterValues);
         }
         return nullptr;
     }
@@ -343,23 +368,23 @@ namespace cajeta {
         char buffer[256];
         for (auto& node: children) {
             snprintf(buffer, 255, "#dim%d", ordinal);
+            LocalField* field = new LocalField(string(buffer), CajetaType::of("int64"), currentField);
             llvm::Constant* dimensionValue = (llvm::Constant*) node->generateCode(module);
             llvm::Value* allocation = module->getBuilder()->CreateStructGEP(arrayType->getLlvmType(),
-                value, ordinal++, buffer);
-            LocalField* field = new LocalField(buffer, CajetaType::of("int64"), allocation);
+                value, ordinal++, field->getHierarchicalName());
             module->getCurrentMethod()->putScope(field);
             module->getBuilder()->CreateStore(dimensionValue, allocation);
+            field->setAllocation(allocation);
             allocSize = llvm::ConstantExpr::getMul(dimensionValue, allocSize);
             dimensionValues.push_back(dimensionValue);
         }
 
-        char fieldName[1024];
         llvm::Value* allocation = module->getBuilder()->CreateStructGEP(arrayType->getLlvmType(), value, 0);
-        LocalField* field = new LocalField(fieldName, arrayType, allocation);
+        LocalField* field = new LocalField("#array", arrayType, allocation, currentField);
         module->getCurrentMethod()->putScope(field);
 
         MemoryManager* memoryAllocator = MemoryManager::getInstance(module);
-        llvm::Instruction* mallocInst = memoryAllocator->createMallocInstruction("", allocSize,
+        llvm::Instruction* mallocInst = memoryAllocator->createMallocInstruction(field->getHierarchicalName(), allocSize,
             module->getBuilder()->GetInsertBlock());
         module->getBuilder()->CreateStore(mallocInst, allocation);
         return mallocInst;
@@ -371,7 +396,7 @@ namespace cajeta {
 
         llvm::Constant* allocSize = llvm::ConstantExpr::getSizeOf(structure->getLlvmType());
         MemoryManager* memoryAllocator = MemoryManager::getInstance(module);
-        llvm::Instruction* mallocInst = memoryAllocator->createMallocInstruction(field->getName(), allocSize,
+        llvm::Instruction* mallocInst = memoryAllocator->createMallocInstruction(field->getHierarchicalName(), allocSize,
             module->getBuilder()->GetInsertBlock());
         module->getValueStack().push_back(mallocInst);
         this->creatorRest->generateCode(module);

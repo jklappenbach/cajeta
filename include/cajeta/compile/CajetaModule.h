@@ -46,6 +46,7 @@ namespace cajeta {
         StructureMetadata* structureMetadata;
 
         // Current state
+        list<Scope*> scopeStack;
         list<Method*> toGenerate;
         llvm::Module* llvmModule;
         list<llvm::Value*> valueStack;
@@ -150,6 +151,10 @@ namespace cajeta {
 
         list<CajetaStructure*>& getStructureList() {
             return structures;
+        }
+
+        list<Scope*>& getScopeStack() {
+            return scopeStack;
         }
 
         llvm::IRBuilder<>* getBuilder() const;

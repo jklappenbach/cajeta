@@ -34,7 +34,6 @@ namespace cajeta {
         CajetaStructure* parent;
         CajetaType* returnType;
         Block* block;
-        list<Scope*> scopes;
         bool constructor;
         map<string, FormalParameter*> parameters;
         vector<FormalParameter*> parameterList;
@@ -90,16 +89,9 @@ namespace cajeta {
             return virtualTableIndex < src.virtualTableIndex;
         }
 
-        void destroyScope() {
-            Scope* scope = scopes.back();
-            delete scope;
-            scopes.pop_back();
-        }
+        void destroyScope();
 
-        Field* getVariable(string name) {
-            Scope* scope = scopes.back();
-            return scope->getField(name);
-        }
+        Field* getVariable(string name);
 
         CajetaModule* getModule() { return module; }
 

@@ -3,12 +3,14 @@
 #include <cajeta/compile/CajetaModule.h>
 
 namespace cajeta {
-    Scope::Scope(CajetaModule* module) {
+    Scope::Scope(string name, CajetaModule* module) {
+        this->name = name;
         this->module = module;
         parent = nullptr;
     }
 
-    Scope::Scope(Scope* parent, CajetaModule* module) {
+    Scope::Scope(string name, Scope* parent, CajetaModule* module) {
+        this->name = name;
         this->module = module;
         this->parent = parent;
     }

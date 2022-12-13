@@ -23,7 +23,6 @@ namespace cajeta {
         this->returnType = returnType;
         constructor = parent->getQName()->getTypeName() == name;
         block = new DefaultBlock;
-        scopes.push_back(parent->getScope());
     }
 
     void DefaultConstructorMethod::generateCode() {

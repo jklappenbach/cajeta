@@ -35,7 +35,7 @@ namespace cajeta {
         this->parameterList = parameterList;
         this->block = block;
         constructor = parent->getQName()->getTypeName() == name;
-        scopes.push_back(parent->getScope());
+        module->getScopeStack().push_back(parent->getScope());
         vector<llvm::Type*> llvmTypes;
 
         for (auto& parameter: parameterList) {
@@ -46,7 +46,7 @@ namespace cajeta {
 
         // No default structure scope (class members) for static methods
         if (modifiers.find(STATIC) == modifiers.end()) {
-            scopes.push_back(parent->getScope());
+            module->getScopeStack().push_back(parent->getScope());
         }
 
         llvmBasicBlock = nullptr;
@@ -68,7 +68,7 @@ namespace cajeta {
         this->returnType = returnType;
         constructor = parent->getQName()->getTypeName() == name;
         block = new DefaultBlock();
-        scopes.push_back(parent->getScope());
+        module->getScopeStack().push_back(parent->getScope());
         llvmBasicBlock = nullptr;
     }
 
@@ -79,7 +79,7 @@ namespace cajeta {
     }
 
     void Method::createLocalVariable(CajetaModule* module, Field* field) {
-        Scope* scope = scopes.back();
+        Scope* scope = module->getScopeStack().back();
         if (scope->getField(field->getName()) != nullptr) {
             throw VariableAssignmentException(field->getName(),
                 field->getType()->getQName()->toCanonical(),
@@ -91,7 +91,7 @@ namespace cajeta {
     }
 
     void Method::setLocalVariable(CajetaModule* module, string name, llvm::Value* value) {
-        Scope* scope = scopes.back();
+        Scope* scope = module->getScopeStack().back();
         Field* field = scope->getField(name);
         if (field == nullptr) {
             throw VariableAssignmentException(name,
@@ -169,12 +169,24 @@ namespace cajeta {
     }
 
     void Method::createScope() {
-        scopes.push_back(new Scope(module));
+        module->getScopeStack().push_back(new Scope(toCanonical(), module));
     }
 
     void Method::putScope(Field* field) {
-        scopes.back()->putField(field);
+        module->getScopeStack().back()->putField(field);
     }
+
+    void Method::destroyScope() {
+        Scope* scope = module->getScopeStack().back();
+        delete scope;
+        module->getScopeStack().pop_back();
+    }
+
+    Field* Method::getVariable(string name) {
+        Scope* scope = module->getScopeStack().back();
+        return scope->getField(name);
+    }
+
 
     string Method::buildCanonical(CajetaStructure* parent, const string& name, vector<CajetaType*>& parameters) {
         string canonical;
@@ -244,5 +256,4 @@ namespace cajeta {
         canonical.append(")");
         return canonical;
     }
-
 }
