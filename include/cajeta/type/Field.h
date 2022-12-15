@@ -34,6 +34,7 @@ namespace cajeta {
         Initializer* initializer;
         cajeta::CajetaType* type;
         llvm::Value* allocation;
+        llvm::Value* load;
 
         string buildHierarchicalName() {
             if (parent) {
@@ -47,14 +48,18 @@ namespace cajeta {
             this->name = name;
             this->type = type;
             this->parent = parent;
+            this->reference = false;
             this->allocation = nullptr;
+            this->load = nullptr;
         }
 
         Field(string& name, CajetaType* type, llvm::Value* allocation, Field* parent = nullptr) {
             this->name = name;
             this->type = type;
             this->parent = parent;
+            this->reference = false;
             this->allocation = allocation;
+            this->load = nullptr;
         }
 
         Field(string name,
@@ -69,6 +74,7 @@ namespace cajeta {
             this->reference = reference;
             this->parent = parent;
             this->allocation = nullptr;
+            this->load = nullptr;
         }
 
         Field(string name,
@@ -84,6 +90,7 @@ namespace cajeta {
             this->reference = reference;
             this->parent = parent;
             this->allocation = nullptr;
+            this->load = nullptr;
         }
 
         Field(string& name, bool reference, Field* parent = nullptr) {
@@ -91,6 +98,7 @@ namespace cajeta {
             this->reference = reference;
             this->parent = parent;
             this->allocation = nullptr;
+            this->load = nullptr;
         }
 
         void onDelete(CajetaModule* module, Scope* scope);
@@ -122,12 +130,10 @@ namespace cajeta {
             return type;
         }
 
+        virtual llvm::Value* createLoad(CajetaModule* module);
+
         void setAllocation(llvm::Value* allocation) {
             this->allocation = allocation;
-        }
-
-        llvm::Value* getAllocation() {
-            return allocation;
         }
 
         llvm::Value* getOrCreateStackAllocation(CajetaModule* module);

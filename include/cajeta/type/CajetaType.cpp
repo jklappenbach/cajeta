@@ -52,6 +52,10 @@ namespace cajeta {
         return CajetaType::canonicalMap[qName->toCanonical()];
     }
 
+    CajetaType* CajetaType::of(QualifiedName* qName) {
+        return CajetaType::canonicalMap[qName->toCanonical()];
+    }
+
     CajetaType* CajetaType::fromContext(CajetaParser::PrimitiveTypeContext* ctx, CajetaModule* module) {
         QualifiedName* qName = QualifiedName::getOrInsert(ctx->getText(), "cajeta");
         return CajetaType::canonicalMap[qName->toCanonical()];

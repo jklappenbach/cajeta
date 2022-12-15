@@ -76,7 +76,7 @@ namespace cajeta {
         virtual antlrcpp::Any visitClassDeclaration(CajetaParser::ClassDeclarationContext* ctx) override {
             string packageAdj;
             string name = ctx->identifier()->getText();
-            for (auto& structure: module->getStructureStack()) {
+            for (auto& structure: module->getTypeStack()) {
                 packageAdj.append(".");
                 packageAdj.append(structure->getQName()->getTypeName());
             }
@@ -84,10 +84,10 @@ namespace cajeta {
                 + packageAdj);
             CajetaStructure* structure;
             structure = new CajetaClass(module, qName);
-            module->getStructureStack().push_back(structure);
+            module->getTypeStack().push_back(structure);
             structure->setClassBody(visitChildren(ctx).as<ClassBodyDeclaration*>());
             structure->generatePrototype();
-            module->getStructureStack().pop_back();
+            module->getTypeStack().pop_back();
             return structure;
         }
 
@@ -163,7 +163,7 @@ namespace cajeta {
                 returnType,
                 formalParameters,
                 block,
-                module->getStructureStack().front());
+                (CajetaStructure*) module->getTypeStack().front());
             return (MemberDeclaration*) new MethodDeclaration(method, ctx->getStart());
         }
 

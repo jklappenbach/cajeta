@@ -15,6 +15,16 @@ namespace cajeta {
         this->module = module;
     }
 
+    CajetaType* CajetaStructure::getPointerType() {
+        QualifiedName* pointerName = QualifiedName::getOrInsert(qName->getTypeName() + string("*"), qName->getPackageName());
+        CajetaType* pointerType = CajetaType::of(pointerName);
+        if (!pointerType) {
+            pointerType = new CajetaType(pointerName, llvmType->getPointerTo());
+            pointerType->
+        }
+        return pointerType;
+    }
+
     void CajetaStructure::addMethod(Method* method) {
         methods[method->getName()] = method;
         methodList.push_back(method);

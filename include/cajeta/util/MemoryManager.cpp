@@ -51,9 +51,16 @@ namespace cajeta {
             basicBlock);
     }
 
+    llvm::CallInst* MemoryManager::createMallocInstruction(llvm::Constant* allocSize, llvm::BasicBlock* basicBlock) {
+        vector<llvm::Value*> args;
+        args.push_back(allocSize);
+        return llvm::CallInst::Create(mallocFunctionCallee,
+            llvm::ArrayRef<llvm::Value*>(args),
+            "",
+            basicBlock);
+    }
 
-    llvm::CallInst* MemoryManager::createFreeInstruction(llvm::Value* pointer,
-        llvm::BasicBlock* basicBlock) {
+    llvm::CallInst* MemoryManager::createFreeInstruction(llvm::Value* pointer, llvm::BasicBlock* basicBlock) {
         vector<llvm::Value*> args;
         args.push_back(pointer);
         return llvm::CallInst::Create(freeFunctionCallee,

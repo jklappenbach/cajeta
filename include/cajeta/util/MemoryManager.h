@@ -50,6 +50,16 @@ namespace cajeta {
 
         /**
          *
+         * @param allocSize
+         * @param args
+         * @param basicBlock
+         * @return
+         */
+        llvm::CallInst* createMallocInstruction(llvm::Constant* allocSize,
+            llvm::BasicBlock* basicBlock);
+
+        /**
+         *
          * @param pointer
          * @param basicBlock
          * @return

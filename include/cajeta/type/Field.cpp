@@ -40,19 +40,31 @@ namespace cajeta {
      */
     llvm::Value* Field::getOrCreateAllocation(CajetaModule* module) {
         if (!allocation) {
-            allocation = module->getBuilder()->CreateAlloca(type->getLlvmType(), nullptr, name);
+            if (type->getStructType() == STRUCT_TYPE_PRIMITIVE) {
+                allocation = module->getBuilder()->CreateAlloca(type->getLlvmType(), nullptr, getHierarchicalName());
+            } else {
+                allocation = module->getBuilder()->CreateAlloca(type->getLlvmType()->getPointerTo(), nullptr, getHierarchicalName());
+            }
             module->getBuilder()->CreateStore(initializer->generateCode(module), allocation);
         }
         return allocation;
     }
 
+    llvm::Value* Field::createLoad(CajetaModule* module) {
+        if (!load) {
+            if (type->getStructType() == STRUCT_TYPE_PRIMITIVE) {
+                load = module->getBuilder()->CreateLoad(type->getLlvmType(), allocation);
+            } else {
+                load = module->getBuilder()->CreateLoad(type->getLlvmType()->getPointerTo(), allocation);
+            }
+        }
+        return load;
+    }
+
     void Field::onDelete(CajetaModule* module, Scope* scope) {
         if (type->getStructType() != STRUCT_TYPE_PRIMITIVE) {
-            if (!reference) {
-                llvm::LoadInst* loadInst = module->getBuilder()->CreateLoad(type->getLlvmType(), allocation, "");
-                MemoryManager::getInstance(module)->createFreeInstruction(loadInst,
-                    module->getBuilder()->GetInsertBlock());
-            }
+            MemoryManager::getInstance(module)->createFreeInstruction(createLoad(module),
+                module->getBuilder()->GetInsertBlock());
         }
     }
 }

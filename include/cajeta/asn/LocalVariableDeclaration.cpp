@@ -20,10 +20,17 @@ namespace cajeta {
     llvm::Value* LocalVariableDeclaration::generateCode(CajetaModule* module) {
         for (auto& declarator: variableDeclarators) {
             Initializer* initializer = declarator->getInitializer();
-            LocalField* field = new LocalField(declarator->getIdentifier(), type,
-                declarator->isReference(), modifiers, annotations, initializer);
+            LocalField* field;
+            if (type->getStructType() == STRUCT_TYPE_PRIMITIVE) {
+                field = new LocalField(declarator->getIdentifier(), type,
+                    declarator->isReference(), modifiers, annotations, initializer);
+            } else {
+                field = new LocalField(declarator->getIdentifier(), ((CajetaStructure*)type)->getPointerType(),
+                    declarator->isReference(), modifiers, annotations, initializer);
+            }
+            module->getTypeStack().push_back(type);
             module->getFieldStack().push_back(field);
-            module->getCurrentMethod()->createLocalVariable(module, field);
+            module->getScopeStack().back()->putField(field);
             module->getFieldStack().pop_back();
         }
 

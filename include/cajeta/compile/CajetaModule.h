@@ -40,7 +40,7 @@ namespace cajeta {
         string archiveRoot;
         string archivePath;
 
-        list<CajetaStructure*> structureStack;
+        list<CajetaType*> typeStack;
         list<CajetaStructure*> structures;
         Method* currentMethod;
         StructureMetadata* structureMetadata;
@@ -137,8 +137,8 @@ namespace cajeta {
             return imports;
         }
 
-        list<CajetaStructure*>& getStructureStack() {
-            return structureStack;
+        list<CajetaType*>& getTypeStack() {
+            return typeStack;
         }
 
         list<llvm::Value*>& getValueStack() {

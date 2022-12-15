@@ -32,7 +32,7 @@ namespace cajeta {
     class CajetaModule;
 
     enum StructType {
-        STRUCT_TYPE_PRIMITIVE, STRUCT_TYPE_CLASS, STRUCT_TYPE_ENUM, STRUCT_TYPE_ARRAY
+        STRUCT_TYPE_PRIMITIVE, STRUCT_TYPE_POINTER, STRUCT_TYPE_CLASS, STRUCT_TYPE_ENUM, STRUCT_TYPE_ARRAY
     };
 
     class CajetaType : public Modifiable, public Annotatable {
@@ -43,6 +43,7 @@ namespace cajeta {
         QualifiedName* qName;
         llvm::Type* llvmType;
         string canonical;
+        StructType structType;
     public:
         CajetaType() {
             llvmType = nullptr;
@@ -69,7 +70,13 @@ namespace cajeta {
             canonical = src.canonical;
         }
 
-        virtual int getStructType() { return STRUCT_TYPE_PRIMITIVE; }
+        virtual int getStructType() {
+            if (qName->getTypeName().find("*") >= 0) {
+                return STRUCT_TYPE_POINTER;
+            } else {
+                return STRUCT_TYPE_PRIMITIVE;
+            }
+        }
 
         QualifiedName* getQName() const {
             return qName;
@@ -88,6 +95,8 @@ namespace cajeta {
         static CajetaType* of(string typeName);
 
         static CajetaType* of(string typeName, string package);
+
+        static CajetaType* of(QualifiedName* qName);
 
         static CajetaType* fromContext(CajetaParser::PrimitiveTypeContext* ctx, CajetaModule* module);
 

@@ -38,6 +38,8 @@ namespace cajeta {
 
         CajetaStructure(CajetaModule* module, QualifiedName* qName);
 
+        CajetaType* getPointerType();
+
         Scope* getScope() { return scope; }
 
         void addMethod(Method* method);
