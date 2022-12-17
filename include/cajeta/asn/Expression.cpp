@@ -171,9 +171,8 @@ namespace cajeta {
         llvm::Value* arrayAllocation = module->getBuilder()->CreateLoad(type->getLlvmType()->getPointerTo(), arrayPtr);
         vector<llvm::Value*> indexes;
         indexes.push_back(arrayIndex);
-        arrayPtr = module->getBuilder()->CreateGEP(type->getElementType()->getLlvmType()->getPointerTo(), arrayAllocation,
+        return module->getBuilder()->CreateGEP(type->getElementType()->getLlvmType()->getPointerTo(), arrayAllocation,
             llvm::ArrayRef<llvm::Value*>(indexes), "", true);
-        return module->getBuilder()->CreateLoad(type->getElementType()->getLlvmType()->getPointerTo(), arrayPtr);
     }
 
 //    enum LiteralType {
@@ -291,7 +290,7 @@ namespace cajeta {
         if (primary) {
             Field* field = module->getCurrentMethod()->getVariable(identifier);
             module->getFieldStack().push_back(field);
-            return field->getOrCreateAllocation(module);
+            return field->createLoad(module);
         } else {
             llvm::Value* value = module->getValueStack().back();
             CajetaStructure* structure;

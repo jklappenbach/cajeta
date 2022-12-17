@@ -15,14 +15,21 @@ int TestCppClass::getAlpha() {
 struct Blah {
 public:
     long x;
-    TestCppClass* instance;
+    int* array;
 };
 
 int TestCppClass::main(int argc, char** argv) {
     Blah* blah = new Blah;
-    blah->instance = new TestCppClass;
     blah->x = 5;
-    delete blah->instance;
+    blah->array = new int[5];
+    blah->array[0] = 10;
+    blah->array[1] = 11;
+    blah->array[2] = 12;
+
+//    Blah* blah = new Blah;
+//    blah->instance = new TestCppClass;
+//    blah->x = 5;
+    delete blah->array;
     delete blah;
     return 0;
 }

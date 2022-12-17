@@ -57,6 +57,9 @@ namespace cajeta {
             if (parent) {
                 allocation = parent->createLoad(module);
             }
+            if (allocation == nullptr) {
+                allocation = this->getOrCreateAllocation(module);
+            }
             return module->getBuilder()->CreateLoad(type->getLlvmType()->getPointerTo(), allocation);
         }
     }
