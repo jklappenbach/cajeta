@@ -51,14 +51,14 @@ namespace cajeta {
     }
 
     llvm::Value* Field::createLoad(CajetaModule* module) {
-        if (!load) {
-            if (type->getStructType() == STRUCT_TYPE_PRIMITIVE) {
-                load = module->getBuilder()->CreateLoad(type->getLlvmType(), allocation);
-            } else {
-                load = module->getBuilder()->CreateLoad(type->getLlvmType()->getPointerTo(), allocation);
+        if (type->getStructType() == STRUCT_TYPE_PRIMITIVE) {
+            return module->getBuilder()->CreateLoad(type->getLlvmType(), allocation);
+        } else {
+            if (parent) {
+                allocation = parent->createLoad(module);
             }
+            return module->getBuilder()->CreateLoad(type->getLlvmType()->getPointerTo(), allocation);
         }
-        return load;
     }
 
     void Field::onDelete(CajetaModule* module, Scope* scope) {

@@ -13,6 +13,7 @@ namespace cajeta {
         } else {
             value = allocation;
         }
-        return module->getBuilder()->CreateStructGEP(type->getLlvmType(), value, index);
+        value = module->getBuilder()->CreateStructGEP(type->getLlvmType(), value, index);
+        return module->getBuilder()->CreateLoad(type->getLlvmType(), value);
     }
 } // cajeta

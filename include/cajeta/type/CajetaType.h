@@ -71,7 +71,8 @@ namespace cajeta {
         }
 
         virtual int getStructType() {
-            if (qName->getTypeName().find("*") >= 0) {
+            int result = qName->getTypeName().find("*");
+            if (result >= 0) {
                 return STRUCT_TYPE_POINTER;
             } else {
                 return STRUCT_TYPE_PRIMITIVE;

@@ -16,7 +16,7 @@ namespace cajeta {
     }
 
     Scope::~Scope() {
-        for (auto itr = fields.rbegin(); itr != fields.rend(); itr++) {
+        for (auto itr = fields.begin(); itr != fields.end(); itr++) {
             Field* field = (*itr).second;
             field->onDelete(module, this);
             delete field;

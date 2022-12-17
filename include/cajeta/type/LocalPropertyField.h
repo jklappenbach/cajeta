@@ -12,12 +12,20 @@ namespace cajeta {
         int index;
     public:
         LocalPropertyField(string name, CajetaType* type, bool reference, set<Modifier> modifiers,
-            set<QualifiedName*> annotations, Initializer* initializer, Field* parent = nullptr) :
-            LocalField(name, type, reference, modifiers, annotations, initializer, parent) { }
+            set<QualifiedName*> annotations, Initializer* initializer, int index, Field* parent = nullptr) :
+            LocalField(name, type, reference, modifiers, annotations, initializer, parent) {
+            this->index = index;
+        }
 
-        LocalPropertyField(string name, CajetaType* type, llvm::Value* allocation, Field* parent = nullptr) : LocalField(name, type, allocation, parent) { }
+        LocalPropertyField(string name, CajetaType* type, llvm::Value* allocation, int index, Field* parent = nullptr)
+                : LocalField(name, type, allocation, parent) {
+            this->index = index;
+        }
 
-        LocalPropertyField(string name, CajetaType* type, Field* parent = nullptr) : LocalField(name, type, parent) { }
+        LocalPropertyField(string name, CajetaType* type, int index, Field* parent = nullptr)
+                : LocalField(name, type, parent) {
+            this->index = index;
+        }
 
         llvm::Value* createLoad(CajetaModule* module) override;
 

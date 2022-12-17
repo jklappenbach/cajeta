@@ -8,6 +8,7 @@
 #include "cajeta/util/MemoryManager.h"
 #include "cajeta/type/CajetaArray.h"
 #include "cajeta/type/LocalField.h"
+#include "cajeta/type/LocalPropertyField.h"
 
 namespace cajeta {
     Expression* Expression::fromContext(CajetaParser::ExpressionContext* ctx) {
@@ -166,12 +167,13 @@ namespace cajeta {
                 arrayIndex = llvm::ConstantExpr::getMul(dimensionValue, arrayIndex);
             }
         }
-        llvm::Value* arrayAllocation = module->getBuilder()->CreateStructGEP(type->getLlvmType(),
-            fieldAllocation, 0);
+        llvm::Value* arrayPtr = module->getBuilder()->CreateStructGEP(type->getLlvmType(), fieldAllocation, 0);
+        llvm::Value* arrayAllocation = module->getBuilder()->CreateLoad(type->getLlvmType()->getPointerTo(), arrayPtr);
         vector<llvm::Value*> indexes;
         indexes.push_back(arrayIndex);
-        return module->getBuilder()->CreateGEP(type->getElementType()->getLlvmType()->getPointerTo(), arrayAllocation,
+        arrayPtr = module->getBuilder()->CreateGEP(type->getElementType()->getLlvmType()->getPointerTo(), arrayAllocation,
             llvm::ArrayRef<llvm::Value*>(indexes), "", true);
+        return module->getBuilder()->CreateLoad(type->getElementType()->getLlvmType()->getPointerTo(), arrayPtr);
     }
 
 //    enum LiteralType {
@@ -358,8 +360,8 @@ namespace cajeta {
         CajetaType* type = module->getTypeStack().back();
         Field* currentField = module->getFieldStack().back();
         auto& dataLayout = module->getLlvmModule()->getDataLayout();
-        llvm::Type* int64Type = llvm::Type::getInt64Ty(*module->getLlvmContext());
-        llvm::Constant* allocSize = llvm::ConstantInt::get(int64Type,
+        CajetaType* int64Type = CajetaType::of("int64");
+        llvm::Constant* allocSize = llvm::ConstantInt::get(int64Type->getLlvmType(),
             dataLayout.getTypeAllocSize(((CajetaArray*) type)->getElementType()->getLlvmType()));
 
         // TODO: Initialize the dimensional values for the array here
@@ -367,7 +369,7 @@ namespace cajeta {
         char buffer[256];
         for (auto& node: children) {
             snprintf(buffer, 255, "#dim%d", ordinal);
-            LocalField* field = new LocalField(string(buffer), CajetaType::of("int64"), currentField);
+            LocalField* field = new LocalField(string(buffer), int64Type, currentField);
             llvm::Constant* dimensionValue = (llvm::Constant*) node->generateCode(module);
             llvm::Value* allocation = module->getBuilder()->CreateStructGEP(type->getLlvmType(),
                 value, ordinal++);
@@ -379,7 +381,7 @@ namespace cajeta {
         }
 
         llvm::Value* allocation = module->getBuilder()->CreateStructGEP(type->getLlvmType(), value, 0);
-        LocalField* field = new LocalField("#array", type, allocation, currentField);
+        LocalField* field = new LocalPropertyField("#array", type, allocation, 0, currentField);
         module->getCurrentMethod()->putScope(field);
 
         MemoryManager* memoryAllocator = MemoryManager::getInstance(module);

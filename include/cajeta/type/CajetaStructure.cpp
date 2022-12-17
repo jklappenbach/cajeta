@@ -8,6 +8,8 @@
 #include <cajeta/asn/ClassBodyDeclaration.h>
 #include <cajeta/method/DefaultConstructorMethod.h>
 
+using namespace std;
+
 namespace cajeta {
     llvm::StructType* CajetaStructure::llvmRttiType = nullptr;
 
@@ -20,7 +22,6 @@ namespace cajeta {
         CajetaType* pointerType = CajetaType::of(pointerName);
         if (!pointerType) {
             pointerType = new CajetaType(pointerName, llvmType->getPointerTo());
-            pointerType->
         }
         return pointerType;
     }

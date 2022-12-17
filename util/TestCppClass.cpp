@@ -12,9 +12,18 @@ int TestCppClass::getAlpha() {
     return alpha;
 }
 
+struct Blah {
+public:
+    long x;
+    TestCppClass* instance;
+};
+
 int TestCppClass::main(int argc, char** argv) {
-    int array[5];
-    array[2] = 5;
+    Blah* blah = new Blah;
+    blah->instance = new TestCppClass;
+    blah->x = 5;
+    delete blah->instance;
+    delete blah;
     return 0;
 }
 
