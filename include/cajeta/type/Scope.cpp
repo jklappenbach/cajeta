@@ -1,5 +1,5 @@
 #include "Scope.h"
-#include "cajeta/type/Field.h"
+#include "cajeta/field/Field.h"
 #include <cajeta/compile/CajetaModule.h>
 
 namespace cajeta {

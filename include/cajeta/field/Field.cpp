@@ -2,7 +2,7 @@
 // Created by James Klappenbach on 2/20/22.
 //
 
-#include "cajeta/type/Field.h"
+#include "Field.h"
 #include "cajeta/type/CajetaType.h"
 #include "cajeta/asn/VariableDeclarator.h"
 #include "cajeta/compile/CajetaModule.h"
@@ -20,47 +20,34 @@ namespace cajeta {
         return fields;
     }
 
-    llvm::Value* Field::getOrCreateStackAllocation(CajetaModule* module) {
-        if (!allocation) {
-            allocation = module->getBuilder()->CreateAlloca(type->getLlvmType(), nullptr, name);
-            if (initializer) {
-                module->setInitializerType(type);
-                module->pushCurrentValue(allocation);
-                initializer->generateCode(module);
-            }
-        }
-        return allocation;
-    }
-
     /**
      * I think this is how variable allocations should be handled, either way: the initializer will
-     * either create a stack allocation, or one off the heap created by malloc
+     * either create a stack origin, or one off the heap created by malloc
      * @param module
      * @return
      */
     llvm::Value* Field::getOrCreateAllocation(CajetaModule* module) {
-        if (!allocation) {
+        if (!origin) {
             if (type->getStructType() == STRUCT_TYPE_PRIMITIVE) {
-                allocation = module->getBuilder()->CreateAlloca(type->getLlvmType(), nullptr, getHierarchicalName());
+                origin = module->getBuilder()->CreateAlloca(type->getLlvmType(), nullptr, getHierarchicalName());
             } else {
-                allocation = module->getBuilder()->CreateAlloca(type->getLlvmType()->getPointerTo(), nullptr, getHierarchicalName());
+                origin = module->getBuilder()->CreateAlloca(type->getLlvmType()->getPointerTo(), nullptr, getHierarchicalName());
             }
-            module->getBuilder()->CreateStore(initializer->generateCode(module), allocation);
+            module->getValueStack().push_back(origin);
+            initializer->generateCode(module);
+            module->getValueStack().pop_back();
         }
-        return allocation;
+        return origin;
     }
 
     llvm::Value* Field::createLoad(CajetaModule* module) {
+        if (!origin) {
+            load = getOrCreateAllocation(module);
+        }
         if (type->getStructType() == STRUCT_TYPE_PRIMITIVE) {
-            return module->getBuilder()->CreateLoad(type->getLlvmType(), allocation);
+            return load = module->getBuilder()->CreateLoad(type->getLlvmType(), origin);
         } else {
-            if (parent) {
-                allocation = parent->createLoad(module);
-            }
-            if (allocation == nullptr) {
-                allocation = this->getOrCreateAllocation(module);
-            }
-            return module->getBuilder()->CreateLoad(type->getLlvmType()->getPointerTo(), allocation);
+            return load = module->getBuilder()->CreateLoad(type->getLlvmType()->getPointerTo(), origin);
         }
     }
 

@@ -43,7 +43,6 @@ namespace cajeta {
         QualifiedName* qName;
         llvm::Type* llvmType;
         string canonical;
-        StructType structType;
     public:
         CajetaType() {
             llvmType = nullptr;
@@ -86,6 +85,8 @@ namespace cajeta {
         virtual llvm::Type* getLlvmType() {
             return llvmType;
         }
+
+        CajetaType* toPointerType();
 
         virtual llvm::ConstantInt* getTypeAllocSize(CajetaModule* module);
 

@@ -55,7 +55,7 @@ add_executable(cajeta
         include/cajeta/asn/Statement.cpp include/cajeta/asn/Statement.h
         include/cajeta/type/Generics.cpp include/cajeta/type/Generics.h
         include/cajeta/method/Method.cpp include/cajeta/method/Method.h
-        include/cajeta/type/Field.cpp include/cajeta/type/Field.h
+        include/cajeta/field/Field.cpp include/cajeta/field/Field.h
         include/cajeta/asn/Expression.h include/cajeta/asn/Expression.cpp
         include/cajeta/type/CajetaType.cpp include/cajeta/type/CajetaType.h
         include/cajeta/type/CajetaInterface.h include/cajeta/type/CajetaInterface.cpp
@@ -79,8 +79,9 @@ add_executable(cajeta
         include/cajeta/asn/DefaultBlock.cpp include/cajeta/asn/DefaultBlock.h
         include/cajeta/util/MemoryManager.cpp include/cajeta/util/MemoryManager.h
         include/cajeta/type/ClassProperty.cpp include/cajeta/type/ClassProperty.h
-        include/cajeta/type/LocalField.cpp include/cajeta/type/LocalField.h
-        include/cajeta/type/LocalPropertyField.cpp include/cajeta/type/LocalPropertyField.h
+        include/cajeta/field/LocalField.cpp include/cajeta/field/LocalField.h
+        include/cajeta/field/LocalStructureField.cpp include/cajeta/field/LocalStructureField.h
+        include/cajeta/field/LocalPropertyField.cpp include/cajeta/field/LocalPropertyField.h
         include/cajeta/util/FileStream.cpp include/cajeta/util/FileStream.h
         include/cajeta/type/CajetaArray.cpp include/cajeta/type/CajetaArray.h
         include/cajeta/method/DefaultConstructorMethod.h include/cajeta/method/DefaultConstructorMethod.cpp

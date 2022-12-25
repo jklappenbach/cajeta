@@ -6,7 +6,7 @@
 
 #include <string>
 #include "CajetaParser.h"
-#include "cajeta/type/Field.h"
+#include "cajeta/field/Field.h"
 #include "cajeta/asn/BlockStatement.h"
 
 using namespace std;

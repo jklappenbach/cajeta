@@ -4,14 +4,15 @@
 
 #include <cajeta/asn/LocalVariableDeclaration.h>
 #include <cajeta/compile/CajetaModule.h>
-#include <cajeta/type/LocalField.h>
+#include <cajeta/field/LocalField.h>
+#include <cajeta/field/LocalStructureField.h>
 #include <cajeta/exception/CajetaExceptions.h>
 #include <cajeta/logging/CajetaLogger.h>
 
 namespace cajeta {
     /**
-     * If we have a primitive variable, we can store in on the stack and will immediately create an allocation.
-     * Otherwise, we will create an allocation for a structure reference.  If the variable receives a new operator,
+     * If we have a primitive variable, we can store in on the stack and will immediately create an currentRegister.
+     * Otherwise, we will create an currentRegister for a structure reference.  If the variable receives a new operator,
      * we'll just let the malloc call create the register
      *
      * @param module
@@ -25,13 +26,16 @@ namespace cajeta {
                 field = new LocalField(declarator->getIdentifier(), type,
                     declarator->isReference(), modifiers, annotations, initializer);
             } else {
-                field = new LocalField(declarator->getIdentifier(), ((CajetaStructure*)type)->getPointerType(),
+                field = new LocalStructureField(declarator->getIdentifier(), type,
                     declarator->isReference(), modifiers, annotations, initializer);
             }
+
             module->getTypeStack().push_back(type);
             module->getFieldStack().push_back(field);
             module->getScopeStack().back()->putField(field);
+            field->getOrCreateAllocation(module);
             module->getFieldStack().pop_back();
+            module->getTypeStack().pop_back();
         }
 
         return nullptr;

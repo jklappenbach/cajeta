@@ -23,7 +23,8 @@ namespace cajeta {
         }
 
         llvm::Value* generateCode(CajetaModule* module) override {
-            return children.back()->generateCode(module);
+            children.back()->generateCode(module);
+            return nullptr;
         }
     };
 

@@ -13,7 +13,7 @@
 #include "cajeta/asn/Block.h"
 #include "cajeta/type/Scope.h"
 #include "cajeta/type/CajetaType.h"
-#include "cajeta/type/Field.h"
+#include "cajeta/field/Field.h"
 #include <queue>
 #include <map>
 

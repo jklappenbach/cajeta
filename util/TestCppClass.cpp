@@ -20,8 +20,8 @@ public:
 
 int TestCppClass::main(int argc, char** argv) {
     Blah* blah = new Blah;
-    blah->x = 5;
-    blah->array = new int[5];
+    blah->x = 3;
+    blah->array = new int[4];
     blah->array[0] = 10;
     blah->array[1] = 11;
     blah->array[2] = 12;

@@ -3,7 +3,7 @@
 //
 
 #include <cajeta/type/CajetaStructure.h>
-#include <cajeta/type/Field.h>
+#include "cajeta/field/Field.h"
 #include "cajeta/method/Method.h"
 #include <cajeta/asn/ClassBodyDeclaration.h>
 #include <cajeta/method/DefaultConstructorMethod.h>

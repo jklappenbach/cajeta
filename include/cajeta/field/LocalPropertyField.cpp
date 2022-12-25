@@ -7,12 +7,7 @@
 
 namespace cajeta {
     llvm::Value* LocalPropertyField::createLoad(CajetaModule* module) {
-        llvm::Value* value;
-        if (parent) {
-            value = parent->createLoad(module);
-        } else {
-            value = allocation;
-        }
+        llvm::Value* value = parent->createLoad(module);
         value = module->getBuilder()->CreateStructGEP(type->getLlvmType(), value, index);
         return module->getBuilder()->CreateLoad(type->getLlvmType(), value);
     }

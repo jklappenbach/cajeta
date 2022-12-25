@@ -6,7 +6,7 @@
 
 #include "cajeta/type/CajetaStructure.h"
 #include "cajeta/method/Method.h"
-#include "cajeta/type/Field.h"
+#include "cajeta/field/Field.h"
 
 namespace cajeta {
     class CajetaInterface : public CajetaStructure {

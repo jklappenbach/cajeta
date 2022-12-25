@@ -105,7 +105,7 @@ namespace cajeta {
                 ERROR_CAUSE_ASSIGNMENT_FINAL,
                 ERROR_ID_ASSIGNMENT_FINAL);
         }
-        module->getBuilder()->CreateStore(value, field->getOrCreateStackAllocation(module));
+        module->getBuilder()->CreateStore(value, field->getOrCreateAllocation(module));
     }
 
 

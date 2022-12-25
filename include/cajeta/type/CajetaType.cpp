@@ -3,7 +3,7 @@
 //
 
 #include "cajeta/type/CajetaType.h"
-#include "cajeta/type/Field.h"
+#include "cajeta/field/Field.h"
 #include "cajeta/compile/CajetaModule.h"
 #include <cajeta/type/CajetaArray.h>
 
@@ -96,6 +96,15 @@ namespace cajeta {
         }
 
         return type;
+    }
+
+    CajetaType* CajetaType::toPointerType() {
+        QualifiedName* pointerName = QualifiedName::getOrInsert(qName->getTypeName() + string("*"), qName->getPackageName());
+        CajetaType* pointerType = CajetaType::of(pointerName);
+        if (!pointerType) {
+            pointerType = new CajetaType(pointerName, llvmType->getPointerTo());
+        }
+        return pointerType;
     }
 
     CajetaType* CajetaType::fromLlvmType(llvm::Type* type, CajetaType* parent) {
