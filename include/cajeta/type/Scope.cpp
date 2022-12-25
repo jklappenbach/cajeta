@@ -16,8 +16,7 @@ namespace cajeta {
     }
 
     Scope::~Scope() {
-        for (auto itr = fields.begin(); itr != fields.end(); itr++) {
-            Field* field = (*itr).second;
+        for (auto field : fieldList) {
             field->onDelete(module, this);
             delete field;
         }
@@ -30,6 +29,7 @@ namespace cajeta {
 
     void Scope::putField(Field* field) {
         fields[field->getName()] = field;
+        fieldList.push_front(field);
     }
 
     Field* Scope::getField(string fieldName) {

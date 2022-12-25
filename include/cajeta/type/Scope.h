@@ -4,6 +4,7 @@
 #include "llvm/ADT/StringRef.h"
 #include <string>
 #include <map>
+#include <list>
 #include "llvm/IR/Value.h"
 
 using namespace std;
@@ -31,6 +32,7 @@ namespace cajeta {
         CajetaModule* module;
         Scope* parent;
         map<string, Field*> fields;
+        list<Field*> fieldList;
 
         void putField(Field* field, string propertyPath);
 

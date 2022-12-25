@@ -338,7 +338,7 @@ namespace cajeta {
             parameterValues.push_back(node->generateCode(module));
         }
 
-        string constructorName = Method::buildCanonical( (CajetaStructure*) currentField->getType(),
+        string constructorName = Method::buildCanonical((CajetaStructure*) currentField->getType(),
             currentField->getType()->getQName()->getTypeName(), parameterValues);
 
         Method* constructor = Method::getArchive()[constructorName];
@@ -368,11 +368,11 @@ namespace cajeta {
         llvm::Constant* allocSize = llvm::ConstantInt::get(int64Type->getLlvmType(),
             dataLayout.getTypeAllocSize(arrayType->getElementType()->getLlvmType()));
 
-        // TODO: Initialize the dimensional values for the array here
         int ordinal = 1;
         char buffer[256];
         for (auto& node: children) {
             snprintf(buffer, 255, "#dim%d", ordinal);
+            // TODO: These should probably be property fields!
             LocalField* field = new LocalField(string(buffer), int64Type, currentField);
             llvm::Constant* dimensionValue = (llvm::Constant*) node->generateCode(module);
             llvm::Value* allocation = module->getBuilder()->CreateStructGEP(arrayType->getLlvmType(),
@@ -388,7 +388,8 @@ namespace cajeta {
         MemoryManager* memoryAllocator = MemoryManager::getInstance(module);
         llvm::Instruction* mallocInst = memoryAllocator->createMallocInstruction(allocSize,
             module->getBuilder()->GetInsertBlock());
-        LocalField* field = new LocalPropertyField("#array", arrayType->getElementType(), module->getBuilder()->CreateStore(mallocInst, allocation), 0, currentField);
+        LocalField* field = new LocalPropertyField("#array", arrayType->getElementType()->toPointerType(),
+            module->getBuilder()->CreateStore(mallocInst, allocation), 0, currentField);
         module->getCurrentMethod()->putScope(field);
         return nullptr;
     }
