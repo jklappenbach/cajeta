@@ -64,8 +64,7 @@ namespace cajeta {
             return Modifiable::toModifier(ctx->getText());
         }
 
-        virtual antlrcpp::Any
-        visitClassOrInterfaceModifier(CajetaParser::ClassOrInterfaceModifierContext* ctx) override {
+        virtual antlrcpp::Any visitClassOrInterfaceModifier(CajetaParser::ClassOrInterfaceModifierContext* ctx) override {
             return visitChildren(ctx);
         }
 
@@ -146,6 +145,7 @@ namespace cajeta {
         }
 
         virtual antlrcpp::Any visitMemberDeclaration(CajetaParser::MemberDeclarationContext* ctx) override {
+            cout << "Here!";
             return visitChildren(ctx);
         }
 
@@ -194,7 +194,20 @@ namespace cajeta {
         }
 
         virtual antlrcpp::Any visitConstructorDeclaration(CajetaParser::ConstructorDeclarationContext* ctx) override {
-            return visitChildren(ctx);
+            string name = ctx->identifier()->getText();
+            vector<FormalParameter*> formalParameters;
+            if (ctx->formalParameters()->formalParameterList()) {
+                for (auto& formalParameterContext: ctx->formalParameters()->formalParameterList()->formalParameter()) {
+                    formalParameters.push_back(FormalParameter::fromContext(formalParameterContext, module));
+                }
+            }
+            Block* block = visitBlock(ctx->constructorBody).as<Block*>();
+            Method* method = new Method(module, name,
+                CajetaType::of("void"),
+                formalParameters,
+                block,
+                (CajetaStructure*) module->getTypeStack().front());
+            return (MemberDeclaration*) new MethodDeclaration(method, ctx->getStart());
         }
 
         // TODO: Scrap this and replace with a
@@ -299,7 +312,7 @@ namespace cajeta {
         }
 
         virtual antlrcpp::Any visitFormalParameters(CajetaParser::FormalParametersContext* ctx) override {
-            return visitChildren(ctx->formalParameterList()).as<list<FormalParameter*>>();
+            return visitFormalParameterList(ctx->formalParameterList()).as<list<FormalParameter*>>();
         }
 
         virtual antlrcpp::Any visitReceiverParameter(CajetaParser::ReceiverParameterContext* ctx) override {
@@ -308,8 +321,10 @@ namespace cajeta {
 
         virtual antlrcpp::Any visitFormalParameterList(CajetaParser::FormalParameterListContext* ctx) override {
             list<FormalParameter*> formalParameters;
-            for (auto& formalParameterContext: ctx->formalParameter()) {
-                formalParameters.push_back(FormalParameter::fromContext(formalParameterContext, module));
+            if (ctx) {
+                for (auto &formalParameterContext: ctx->formalParameter()) {
+                    formalParameters.push_back(FormalParameter::fromContext(formalParameterContext, module));
+                }
             }
 
             return formalParameters;

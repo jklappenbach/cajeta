@@ -1,0 +1,7 @@
+package cajeta;
+
+public class String {
+    private char[] value;
+
+    public String() { }
+}
