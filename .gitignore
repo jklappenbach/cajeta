@@ -17,3 +17,4 @@ gen/
 *.ll
 *.tokens
 cmake/cajeta
+.DS_Store

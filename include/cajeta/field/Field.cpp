@@ -53,7 +53,7 @@ namespace cajeta {
 
     void Field::onDelete(CajetaModule* module, Scope* scope) {
         if (type->getStructType() != STRUCT_TYPE_PRIMITIVE) {
-            MemoryManager::getInstance(module)->createFreeInstruction(createLoad(module),
+            MemoryManager::createFreeInstruction(module, createLoad(module),
                 module->getBuilder()->GetInsertBlock());
         }
     }

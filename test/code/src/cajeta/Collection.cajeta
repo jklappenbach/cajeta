@@ -1,0 +1,9 @@
+package cajeta;
+
+public class Collection {
+    private char[] value;
+
+    public String() { }
+    public String(char[] data) {
+    }
+}

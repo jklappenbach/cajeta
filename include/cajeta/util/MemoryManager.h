@@ -16,27 +16,12 @@ namespace cajeta {
 
     class MemoryManager {
     private:
-        static std::mutex mutex;
-        static MemoryManager* theInstance;
-        llvm::FunctionType* mallocFunctionType;
-        llvm::FunctionCallee mallocFunctionCallee;
-        llvm::FunctionType* freeFunctionType;
-        llvm::FunctionCallee freeFunctionCallee;
 
-        MemoryManager(CajetaModule* module);
-
-        void initMalloc(CajetaModule* module);
-
-        void initFree(CajetaModule* module);
+        static llvm::FunctionCallee getMalloc(CajetaModule* module);
+        static llvm::FunctionCallee getFree(CajetaModule* module);
 
     public:
 
-        /**
-         *
-         * @param module
-         * @return
-         */
-        static MemoryManager* getInstance(CajetaModule* module);
 
         /**
          *
@@ -45,7 +30,7 @@ namespace cajeta {
          * @param basicBlock
          * @return
          */
-        llvm::CallInst* createMallocInstruction(string registerName, llvm::Constant* allocSize,
+        static llvm::CallInst* createMallocInstruction(CajetaModule* module, string registerName, llvm::Constant* allocSize,
             llvm::BasicBlock* basicBlock);
 
         /**
@@ -55,7 +40,7 @@ namespace cajeta {
          * @param basicBlock
          * @return
          */
-        llvm::CallInst* createMallocInstruction(llvm::Constant* allocSize,
+        static llvm::CallInst* createMallocInstruction(CajetaModule* module, llvm::Constant* allocSize,
             llvm::BasicBlock* basicBlock);
 
         /**
@@ -64,7 +49,7 @@ namespace cajeta {
          * @param basicBlock
          * @return
          */
-        llvm::CallInst* createFreeInstruction(llvm::Value* pointer,
+        static llvm::CallInst* createFreeInstruction(CajetaModule* module, llvm::Value* pointer,
             llvm::BasicBlock* basicBlock);
 
     };
