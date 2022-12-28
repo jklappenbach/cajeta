@@ -54,10 +54,10 @@ namespace cajeta {
 
         for (string sourcePath: *modulePaths) {
             CajetaModule* module = new CajetaModule(&llvmContext,
-                std::move(sourcePath),
-                std::move(sourceRootPath),
-                std::move(archiveRootPath),
-                std::move(targetTriple),
+                sourcePath,
+                sourceRootPath,
+                archiveRootPath,
+                targetTriple,
                 targetMachine);
             ifstream stream;
             stream.open(module->getSourcePath());
