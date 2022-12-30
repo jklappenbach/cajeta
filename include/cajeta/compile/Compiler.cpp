@@ -72,7 +72,6 @@ namespace cajeta {
 
         Method* method = Method::getArchive()[entryMethod];
         if (method == nullptr) {
-            // TODO throw an error
             return;
         }
 

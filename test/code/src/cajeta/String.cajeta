@@ -4,4 +4,6 @@ public class String {
     private char[] value;
 
     public String() { }
+    public String(char[] data) {
+    }
 }

@@ -25,9 +25,7 @@ namespace cajeta {
 
         MemoryManager(CajetaModule* module);
 
-        void initMalloc(CajetaModule* module);
-
-        void initFree(CajetaModule* module);
+        void init(CajetaModule* module);
 
     public:
 

@@ -1,6 +1,6 @@
 package cajeta;
 
-public final class System extends Alpha, Beta implements Gamma, Delta {
+public final class System extends Alpha {
     private int32 value;
     private int32 x = 5;
 

@@ -10,8 +10,7 @@ namespace cajeta {
     MemoryManager* MemoryManager::theInstance = nullptr;
 
     MemoryManager::MemoryManager(CajetaModule* module) {
-        initMalloc(module);
-        initFree(module);
+        init(module);
     }
 
     MemoryManager* MemoryManager::getInstance(CajetaModule* module) {
@@ -23,19 +22,17 @@ namespace cajeta {
         return theInstance;
     }
 
-    void MemoryManager::initMalloc(CajetaModule* module) {
+    void MemoryManager::init(CajetaModule* module) {
         llvm::Type* sizeArgumentType = llvm::Type::getInt64Ty(*module->getLlvmContext());
         llvm::Type* returnType = llvm::Type::getInt64PtrTy(*module->getLlvmContext());
         std::vector<llvm::Type*> arguments;
         arguments.push_back(sizeArgumentType);
         mallocFunctionType = llvm::FunctionType::get(returnType, llvm::ArrayRef<llvm::Type*>(arguments), false);
         mallocFunctionCallee = module->getLlvmModule()->getOrInsertFunction("malloc", mallocFunctionType);
-    }
 
-    void MemoryManager::initFree(CajetaModule* module) {
-        llvm::Type* returnType = llvm::Type::getVoidTy(*module->getLlvmContext());
+        returnType = llvm::Type::getVoidTy(*module->getLlvmContext());
         llvm::Type* pointerType = llvm::Type::getInt64PtrTy(*module->getLlvmContext());
-        std::vector<llvm::Type*> arguments;
+        arguments.clear();
         arguments.push_back(pointerType);
         freeFunctionType = llvm::FunctionType::get(returnType, llvm::ArrayRef<llvm::Type*>(arguments), false);
         freeFunctionCallee = module->getLlvmModule()->getOrInsertFunction("free", freeFunctionType);
