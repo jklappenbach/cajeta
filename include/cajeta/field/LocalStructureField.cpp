@@ -29,7 +29,7 @@ namespace cajeta {
     }
 
     void LocalStructureField::onDelete(CajetaModule* module, Scope* scope) {
-        MemoryManager::getInstance(module)->createFreeInstruction(createLoad(module),
+        MemoryManager::createFreeInstruction(module, createLoad(module),
             module->getBuilder()->GetInsertBlock());
     }
 }

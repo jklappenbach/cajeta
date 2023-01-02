@@ -6,20 +6,16 @@
 #include <cajeta/compile/CajetaModule.h>
 
 namespace cajeta {
-    std::mutex Printer::mutex;
-    Printer* Printer::theInstance = nullptr;
-
-    Printer::Printer(CajetaModule* module) {
-        init(module);
-    }
-
-    Printer* Printer::getInstance(CajetaModule* module) {
-        mutex.lock();
-        if (!theInstance) {
-            theInstance = new Printer(module);
+    llvm::FunctionCallee getPrintf(CajetaModule* module) {
+        llvm::Function* fn = module->getLlvmModule()->getFunction("printf");
+        llvm::FunctionCallee fnCallee;
+        if (!fn) {
+            llvm::FunctionType* fnType = llvm::FunctionType::get(llvm::IntegerType::get(module->getLlvmModule()->getContext(), 32), true);
+            fnCallee = module->getLlvmModule()->getOrInsertFunction("printf", fnType);
+        } else {
+            fnCallee = llvm::FunctionCallee(fn->getFunctionType(), fn);
         }
-        mutex.unlock();
-        return theInstance;
+        return fnCallee;
     }
 
 //        func_printf = llvm::Function::Create(FuncTy9, llvm::GlobalValue::ExternalLinkage, "printf", module->getLlvmModule());
@@ -27,29 +23,11 @@ namespace cajeta {
 //        AttrListPtr func_printf_PAL;
 //        func_printf->setAttributes(func_printf_PAL);
 
-    void Printer::init(CajetaModule* module) {
-        printerFunctionType = llvm::FunctionType::get(llvm::IntegerType::get(module->getLlvmModule()->getContext(), 32), true);
-        printerFunctionCallee = module->getLlvmModule()->getOrInsertFunction("printf", printerFunctionType);
-    }
-
-    llvm::CallInst* Printer::createPrintfInstruction(llvm::ConstantDataArray* format,
-            vector<llvm::ConstantDataArray*> printArgs, llvm::BasicBlock* basicBlock) {
-        vector<llvm::Value*> args;
-        args.push_back(format);
-        args.insert(args.begin(), printArgs.begin(), printArgs.end());
-        return llvm::CallInst::Create(printerFunctionCallee,
-            llvm::ArrayRef<llvm::Value*>(args),
-            "",
-            basicBlock);
-    }
-
-    llvm::CallInst* Printer::createPrintfInstruction(llvm::Value* format, vector<llvm::Value*> printArgs,
+    llvm::CallInst* Printer::createPrintfInstruction(CajetaModule* module, vector<llvm::Value*> printArgs,
             llvm::BasicBlock* basicBlock) {
-        vector<llvm::Value*> args;
-        args.push_back(format);
-        args.insert(args.begin(), printArgs.begin(), printArgs.end());
-        return llvm::CallInst::Create(printerFunctionCallee,
-            llvm::ArrayRef<llvm::Value*>(args),
+        llvm::FunctionCallee fnCallee = getPrintf(module);
+        return llvm::CallInst::Create(fnCallee,
+            llvm::ArrayRef<llvm::Value*>(printArgs),
             "",
             basicBlock);
     }
