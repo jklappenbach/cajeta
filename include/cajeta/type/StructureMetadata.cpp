@@ -230,8 +230,8 @@ namespace cajeta {
         // 1. Type name
         args.push_back(llvm::ConstantDataArray::getString(*module->getLlvmContext(), structure->toCanonical(), true));
 
-//        // 2. Size of property list
-//        args.push_back(llvm::ConstantInt::get(llvmInt16Type, llvm::APInt(16, structure->getProperties().size(), false)));
+        // 2. Size of property list
+        args.push_back(llvm::ConstantInt::get(llvmInt16Type, llvm::APInt(16, structure->getProperties().size(), false)));
 
 //        vector<llvm::Constant*> propertyConstants;
 //        int i = 0;
@@ -313,8 +313,7 @@ namespace cajeta {
             structure->toCanonical() + string("#VTable")));
     }
 
-    llvm::Constant*
-    StructureMetadata::createVirtualTableConstant(llvm::StructType* llvmVirtualTableType, vector<Method*>& methods) {
+    llvm::Constant* StructureMetadata::createVirtualTableConstant(llvm::StructType* llvmVirtualTableType, vector<Method*>& methods) {
         vector<llvm::Constant*> args;
         for (auto& method: methods) {
             args.push_back(method->getLlvmFunction());
