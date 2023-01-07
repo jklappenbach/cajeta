@@ -30,7 +30,7 @@ namespace cajeta {
                 res += c - '0';
                 i++;
             } else {
-                throw std::runtime_error(string("Non octal digit: ") + c);
+                throw string("Non octal digit: ") + c;
             }
         }
 
@@ -68,7 +68,7 @@ namespace cajeta {
                 }
                 i++;
             } else {
-                throw std::runtime_error(string("Non-hex digit: ") + c);
+                throw string("Non-hex digit: ") + c;
             }
         }
 
@@ -99,9 +99,9 @@ namespace cajeta {
             }
             const char c = value[i];
             if (not std::isdigit(c)) {
-                throw std::runtime_error(std::string("Non-numeric character: ") + c);
+                throw std::string("Non-numeric character: ") + c;
             } else if (c != '0' && c != '1') {
-                throw std::runtime_error(string("Non-binary digit: ") + c);
+                throw string("Non-binary digit: ") + c;
             }
             res *= 2;
             res += c - '0';
@@ -132,7 +132,7 @@ namespace cajeta {
         while (i < value.size()) {
             const char c = value[i];
             if (not std::isdigit(c)) {
-                throw std::runtime_error(std::string("Non-numeric character: ") + c);
+                throw std::string("Non-numeric character: ") + c;
             }
             res *= 10;
             res += c - '0';

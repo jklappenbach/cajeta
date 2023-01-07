@@ -4,10 +4,10 @@ project(cajeta VERSION 1.0.0)
 
 list(APPEND CMAKE_MODULE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/cmake)
 
-cmake_minimum_required (VERSION 3.16)
-project (myproj VERSION 1.0)
+cmake_minimum_required(VERSION 3.16)
+project(myproj VERSION 1.0)
 
-find_package (glog 0.6.0 REQUIRED)
+find_package(glog 0.6.0 REQUIRED)
 
 # compiler must be 11 or 14
 set(CMAKE_CXX_STANDARD 17)
@@ -26,7 +26,7 @@ include_directories(${ANTLR4_INCLUDE_DIRS})
 
 # set variable pointing to the antlr tool that supports C++
 # this is not required if the jar file can be found under PATH environment
-set(ANTLR_EXECUTABLE /Users/julian/code/antlr4/tool/target/antlr4-4.9.4-SNAPSHOT-complete.jar)
+set(ANTLR_EXECUTABLE $ENV{ANTLR_EXECUTABLE})
 
 # add macros to codegen ANTLR Cpp code of grammar
 find_package(ANTLR REQUIRED)

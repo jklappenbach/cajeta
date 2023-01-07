@@ -14,9 +14,10 @@ namespace cajeta {
     list<string>* listModulePaths(string rootPath) {
         list<string>* result = new list<string>;
 
-        using recursive_directory_iterator = __fs::filesystem::recursive_directory_iterator;
+        using recursive_directory_iterator = std::filesystem::recursive_directory_iterator;
+        std::filesystem::path sourcePath(rootPath);
 
-        for (const auto& dirEntry: recursive_directory_iterator(rootPath)) {
+        for (const auto& dirEntry: recursive_directory_iterator(sourcePath)) {
             if (dirEntry.is_regular_file() && dirEntry.path().string().find(".cajeta")) {
                 result->push_back(dirEntry.path().string());
             }
@@ -48,6 +49,8 @@ namespace cajeta {
         if (archiveRootPath[archiveRootPath.size() - 1] != '/') {
             archiveRootPath.append("/");
         }
+
+//        std::filesystem::path cwd = std::filesystem::current_path();
 
         list<string>* modulePaths = listModulePaths(sourceRootPath);
         list<CajetaModule*> modules;
