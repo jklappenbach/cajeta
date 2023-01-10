@@ -136,6 +136,8 @@ classBodyDeclaration
 memberDeclaration
     : methodDeclaration
     | genericMethodDeclaration
+    | operatorOverloadDeclaration
+    | genericOperatorOverloadDeclaration
     | fieldDeclaration
     | constructorDeclaration
     | genericConstructorDeclaration
@@ -144,6 +146,43 @@ memberDeclaration
     | classDeclaration
     | enumDeclaration
     | recordDeclaration //Java17
+    ;
+
+operatorOverloadDeclaration
+    : typeTypeOrVoid OPERATOR ASSIGN formalParameters methodBody
+    | typeTypeOrVoid OPERATOR GT formalParameters methodBody
+    | typeTypeOrVoid OPERATOR LT formalParameters methodBody
+    | typeTypeOrVoid OPERATOR EQUAL formalParameters methodBody
+    | typeTypeOrVoid OPERATOR LE formalParameters methodBody
+    | typeTypeOrVoid OPERATOR GE formalParameters methodBody
+    | typeTypeOrVoid OPERATOR NOTEQUAL formalParameters methodBody
+    | typeTypeOrVoid OPERATOR AND formalParameters methodBody
+    | typeTypeOrVoid OPERATOR OR formalParameters methodBody
+    | typeTypeOrVoid OPERATOR INC formalParameters methodBody
+    | typeTypeOrVoid OPERATOR DEC formalParameters methodBody
+    | typeTypeOrVoid OPERATOR ADD formalParameters methodBody
+    | typeTypeOrVoid OPERATOR SUB formalParameters methodBody
+    | typeTypeOrVoid OPERATOR MUL formalParameters methodBody
+    | typeTypeOrVoid OPERATOR DIV formalParameters methodBody
+    | typeTypeOrVoid OPERATOR BITAND formalParameters methodBody
+    | typeTypeOrVoid OPERATOR BITOR formalParameters methodBody
+    | typeTypeOrVoid OPERATOR CARET formalParameters methodBody
+    | typeTypeOrVoid OPERATOR MOD formalParameters methodBody
+    | typeTypeOrVoid OPERATOR ADD_ASSIGN formalParameters methodBody
+    | typeTypeOrVoid OPERATOR SUB_ASSIGN formalParameters methodBody
+    | typeTypeOrVoid OPERATOR MUL_ASSIGN formalParameters methodBody
+    | typeTypeOrVoid OPERATOR DIV_ASSIGN formalParameters methodBody
+    | typeTypeOrVoid OPERATOR AND_ASSIGN formalParameters methodBody
+    | typeTypeOrVoid OPERATOR OR_ASSIGN formalParameters methodBody
+    | typeTypeOrVoid OPERATOR XOR_ASSIGN formalParameters methodBody
+    | typeTypeOrVoid OPERATOR MOD_ASSIGN formalParameters methodBody
+    | typeTypeOrVoid OPERATOR LSHIFT_ASSIGN formalParameters methodBody
+    | typeTypeOrVoid OPERATOR RSHIFT_ASSIGN formalParameters methodBody
+    | typeTypeOrVoid OPERATOR URSHIFT_ASSIGN formalParameters methodBody
+    ;
+
+genericOperatorOverloadDeclaration
+    : typeParameters operatorOverloadDeclaration
     ;
 
 /* We use rule this even for void methods which cannot have [] after parameters.
@@ -205,6 +244,7 @@ constDeclaration
 
 constantDeclarator
     : identifier ('[' ']')* '=' variableInitializer
+    | identifier ('[' expression ']')* '=' variableInitializer
     ;
 
 // Early versions of Java allows brackets after the curMethod canonical, eg.
@@ -243,6 +283,7 @@ variableDeclarator
 
 variableDeclaratorId
     : identifier ('[' ']')*
+    | identifier ('[' expression ']')*
     ;
 
 variableInitializer
@@ -575,8 +616,13 @@ expressionList
 parameterLabel
     : IDENTIFIER ':'
     ;
+
+parameterEntry
+    : parameterLabel? expression
+    ;
+
 parameterList
-    : parameterLabel? expression (',' parameterLabel? expression)*
+    : parameterEntry (',' parameterEntry)*
     ;
 
 methodCall
@@ -735,6 +781,7 @@ typeList
 
 typeType
     : annotation* (classOrInterfaceType | primitiveType) (annotation* '[' ']')*
+    | annotation* (classOrInterfaceType | primitiveType) (annotation* '[' expression ']')*
     ;
 
 primitiveType

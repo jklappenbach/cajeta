@@ -103,7 +103,7 @@ function(antlr4_generate
   endif ()
 
   if ( (ARGC GREATER_EQUAL 6 ) AND (NOT ${ARGV5} STREQUAL "") )
-    set(Antlr4_NamespaceOption "-module;${ARGV5}")
+    set(Antlr4_NamespaceOption "-package;${ARGV5}")
 
     list( APPEND Antlr4_GeneratorStatusMessage " in Namespace ${ARGV5}" )
   else()
