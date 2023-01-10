@@ -1,0 +1,15 @@
+package cajeta;
+
+public final class System extends Alpha {
+    private int32 value;
+    private int32 x = 5;
+
+    public static void main() {
+        System system = new System();
+        system.doSomething(34);
+    }
+
+    public void doSomething(int32 foobar) {
+        int32 someVariable = 45 + foobar;
+    }
+}

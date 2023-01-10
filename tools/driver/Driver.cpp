@@ -183,7 +183,7 @@ bool emit(StringRef Argv0, llvm::Module *M,
   FAM.registerPass(
       [&] { return PB.buildDefaultAAPipeline(); });
 
-  // Register all the basic analyses with the managers.
+  // Register all the classes analyses with the managers.
   PB.registerModuleAnalyses(MAM);
   PB.registerCGSCCAnalyses(CGAM);
   PB.registerFunctionAnalyses(FAM);

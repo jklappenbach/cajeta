@@ -1,0 +1,14 @@
+package foo.bar.baz;
+
+public final class System {
+    private int32 value;
+    private int32 x = 5;
+
+    public static void main() {
+        int32 mainInt = 45;
+        int32 otherInt = mainInt;
+    }
+
+    public void doTheOtherThing(int32 anotherValue) {
+    }
+}

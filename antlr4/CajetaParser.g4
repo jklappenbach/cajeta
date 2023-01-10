@@ -35,7 +35,7 @@ options { tokenVocab=CajetaLexer; }
 
 compilationUnit
     : packageDeclaration? importDeclaration* typeDeclaration*
-    | moduleDeclaration EOF
+    | EOF
     ;
 
 packageDeclaration
@@ -48,14 +48,13 @@ importDeclaration
 
 typeDeclaration
     : classOrInterfaceModifier*
-      (classDeclaration | enumDeclaration | interfaceDeclaration | annotationTypeDeclaration | recordDeclaration)
+      (classDeclaration | enumDeclaration | interfaceDeclaration | annotationTypeDeclaration)
     | ';'
     ;
 
 modifier
     : classOrInterfaceModifier
     | NATIVE
-    | SYNCHRONIZED
     | TRANSIENT
     | VOLATILE
     ;
@@ -136,6 +135,8 @@ classBodyDeclaration
 memberDeclaration
     : methodDeclaration
     | genericMethodDeclaration
+    | operatorOverloadDeclaration
+    | genericOperatorOverloadDeclaration
     | fieldDeclaration
     | constructorDeclaration
     | genericConstructorDeclaration
@@ -143,7 +144,43 @@ memberDeclaration
     | annotationTypeDeclaration
     | classDeclaration
     | enumDeclaration
-    | recordDeclaration //Java17
+    ;
+
+operatorOverloadDeclaration
+    : typeType OPERATOR ASSIGN formalParameters methodBody
+    | typeType OPERATOR GT formalParameters methodBody
+    | typeType OPERATOR LT formalParameters methodBody
+    | typeType OPERATOR EQUAL formalParameters methodBody
+    | typeType OPERATOR LE formalParameters methodBody
+    | typeType OPERATOR GE formalParameters methodBody
+    | typeType OPERATOR NOTEQUAL formalParameters methodBody
+    | typeType OPERATOR AND formalParameters methodBody
+    | typeType OPERATOR OR formalParameters methodBody
+    | typeType OPERATOR INC formalParameters methodBody
+    | typeType OPERATOR DEC formalParameters methodBody
+    | typeType OPERATOR ADD formalParameters methodBody
+    | typeType OPERATOR SUB formalParameters methodBody
+    | typeType OPERATOR MUL formalParameters methodBody
+    | typeType OPERATOR DIV formalParameters methodBody
+    | typeType OPERATOR BITAND formalParameters methodBody
+    | typeType OPERATOR BITOR formalParameters methodBody
+    | typeType OPERATOR CARET formalParameters methodBody
+    | typeType OPERATOR MOD formalParameters methodBody
+    | typeType OPERATOR ADD_ASSIGN formalParameters methodBody
+    | typeType OPERATOR SUB_ASSIGN formalParameters methodBody
+    | typeType OPERATOR MUL_ASSIGN formalParameters methodBody
+    | typeType OPERATOR DIV_ASSIGN formalParameters methodBody
+    | typeType OPERATOR AND_ASSIGN formalParameters methodBody
+    | typeType OPERATOR OR_ASSIGN formalParameters methodBody
+    | typeType OPERATOR XOR_ASSIGN formalParameters methodBody
+    | typeType OPERATOR MOD_ASSIGN formalParameters methodBody
+    | typeType OPERATOR LSHIFT_ASSIGN formalParameters methodBody
+    | typeType OPERATOR RSHIFT_ASSIGN formalParameters methodBody
+    | typeType OPERATOR URSHIFT_ASSIGN formalParameters methodBody
+    ;
+
+genericOperatorOverloadDeclaration
+    : typeParameters operatorOverloadDeclaration
     ;
 
 /* We use rule this even for void methods which cannot have [] after parameters.
@@ -196,7 +233,6 @@ interfaceMemberDeclaration
     | annotationTypeDeclaration
     | classDeclaration
     | enumDeclaration
-    | recordDeclaration // Java17
     ;
 
 constDeclaration
@@ -205,6 +241,7 @@ constDeclaration
 
 constantDeclarator
     : identifier ('[' ']')* '=' variableInitializer
+    | identifier ('[' expression ']')* '=' variableInitializer
     ;
 
 // Early versions of Java allows brackets after the curMethod canonical, eg.
@@ -243,6 +280,7 @@ variableDeclarator
 
 variableDeclaratorId
     : identifier ('[' ']')*
+    | identifier ('[' expression ']')*
     ;
 
 variableInitializer
@@ -260,6 +298,7 @@ classOrInterfaceType
 
 typeArgument
     : typeType
+    | primitiveType
     | annotation* '?' ((EXTENDS | SUPER) typeType)?
     ;
 
@@ -372,7 +411,6 @@ annotationTypeElementRest
     | interfaceDeclaration ';'?
     | enumDeclaration ';'?
     | annotationTypeDeclaration ';'?
-    | recordDeclaration ';'? // Java17
     ;
 
 annotationMethodOrConstantRest
@@ -392,52 +430,10 @@ defaultValue
     : DEFAULT elementValue
     ;
 
-// MODULES - Java9
-
-moduleDeclaration
-    : OPEN? MODULE qualifiedName moduleBody
-    ;
-
-moduleBody
-    : '{' moduleDirective* '}'
-    ;
-
-moduleDirective
-	: REQUIRES requiresModifier* qualifiedName ';'
-	| EXPORTS qualifiedName (TO qualifiedName)? ';'
-	| OPENS qualifiedName (TO qualifiedName)? ';'
-	| USES qualifiedName ';'
-	| PROVIDES qualifiedName WITH qualifiedName ';'
-	;
-
 requiresModifier
 	: TRANSITIVE
 	| STATIC
 	;
-
-// RECORDS - Java 17
-
-recordDeclaration
-    : RECORD identifier typeParameters? recordHeader
-      (IMPLEMENTS typeList)?
-      recordBody
-    ;
-
-recordHeader
-    : '(' recordComponentList? ')'
-    ;
-
-recordComponentList
-    : recordComponent (',' recordComponent)*
-    ;
-
-recordComponent
-    : typeType identifier
-    ;
-
-recordBody
-    : '{' classBodyDeclaration* '}'
-    ;
 
 // STATEMENTS / BLOCKS
 
@@ -457,26 +453,12 @@ localVariableDeclaration
 
 identifier
     : IDENTIFIER
-    | MODULE
-    | OPEN
-    | REQUIRES
-    | EXPORTS
-    | OPENS
-    | TO
-    | USES
-    | PROVIDES
-    | WITH
-    | TRANSITIVE
-    | YIELD
-    | SEALED
-    | PERMITS
-    | RECORD
     | VAR
     ;
 
 localTypeDeclaration
     : classOrInterfaceModifier*
-      (classDeclaration | interfaceDeclaration | recordDeclaration)
+      (classDeclaration | interfaceDeclaration)
     | ';'
     ;
 
@@ -489,7 +471,6 @@ statement
     | TRY block (catchClause+ finallyBlock? | finallyBlock)
     | TRY resourceSpecification block catchClause* finallyBlock?
     | SWITCH parExpression '{' switchBlockStatementGroup* switchLabel* '}'
-    | SYNCHRONIZED parExpression block
     | RETURN expression? ';'
     | THROW expression ';'
     | BREAK identifier? ';'
@@ -575,8 +556,13 @@ expressionList
 parameterLabel
     : IDENTIFIER ':'
     ;
+
+parameterEntry
+    : parameterLabel? expression
+    ;
+
 parameterList
-    : parameterLabel? expression (',' parameterLabel? expression)*
+    : parameterEntry (',' parameterEntry)*
     ;
 
 methodCall
@@ -735,11 +721,14 @@ typeList
 
 typeType
     : annotation* (classOrInterfaceType | primitiveType) (annotation* '[' ']')*
+    | annotation* (classOrInterfaceType | primitiveType) (annotation* '[' expression ']')*
     ;
 
 primitiveType
     : BOOLEAN
     | CHAR
+    | INT8
+    | UINT8
     | INT16
     | UINT16
     | INT32

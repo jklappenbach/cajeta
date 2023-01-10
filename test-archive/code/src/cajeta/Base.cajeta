@@ -1,0 +1,9 @@
+package cajeta;
+
+public class Base {
+    private int32 baseValue;
+
+    public void doTheThing(int32 foobar) {
+        int32 result = baseValue + foobar;
+    }
+}

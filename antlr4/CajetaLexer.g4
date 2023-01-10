@@ -73,6 +73,7 @@ INSTANCEOF:         'instanceof';
 INTERFACE:          'interface';
 NATIVE:             'native';
 NEW:                'new';
+OPERATOR:           'operator';
 PACKAGE:            'package';
 PRIVATE:            'private';
 PROTECTED:          'protected';
@@ -80,9 +81,9 @@ PUBLIC:             'public';
 RETURN:             'return';
 STATIC:             'static';
 STRICTFP:           'strictfp';
+STRUCTURE:          'structure';
 SUPER:              'super';
 SWITCH:             'switch';
-SYNCHRONIZED:       'synchronized';
 THIS:               'this';
 THROW:              'throw';
 THROWS:             'throws';
@@ -93,7 +94,7 @@ VOLATILE:           'volatile';
 WHILE:              'while';
 
 // Module related keywords
-MODULE:             'module';
+MODULE:             'pModule';
 OPEN:               'open';
 REQUIRES:           'requires';
 EXPORTS:            'exports';
@@ -244,7 +245,7 @@ fragment LetterOrDigit
     ;
 
 fragment Letter
-    : [a-zA-Z$_] // these are the "cajeta letters" below 0x7F
+    : [a-zA-Z$_] // these are the "code letters" below 0x7F
     | ~[\u0000-\u007F\uD800-\uDBFF] // covers all characters above 0x7F which are not a surrogate
     | [\uD800-\uDBFF] [\uDC00-\uDFFF] // covers UTF-16 surrogate pairs encodings for U+10000 to U+10FFFF
     ;
