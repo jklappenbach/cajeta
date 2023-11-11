@@ -83,7 +83,6 @@ STATIC:             'static';
 STRICTFP:           'strictfp';
 SUPER:              'super';
 SWITCH:             'switch';
-SYNCHRONIZED:       'synchronized';
 THIS:               'this';
 THROW:              'throw';
 THROWS:             'throws';

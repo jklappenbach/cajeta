@@ -55,8 +55,6 @@ namespace cajeta {
             result = make_shared<TryStatement>(token);
         } else if (ctx->SWITCH()) {
             result = make_shared<SwitchStatement>(token);
-        } else if (ctx->SYNCHRONIZED()) {
-            result = make_shared<SynchronizedStatement>(token);
         } else if (ctx->RETURN()) {
             result = make_shared<ReturnStatement>(token);
         } else if (ctx->THROW()) {

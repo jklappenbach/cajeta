@@ -55,7 +55,6 @@ typeDeclaration
 modifier
     : classOrInterfaceModifier
     | NATIVE
-    | SYNCHRONIZED
     | TRANSIENT
     | VOLATILE
     ;
@@ -530,7 +529,6 @@ statement
     | TRY block (catchClause+ finallyBlock? | finallyBlock)
     | TRY resourceSpecification block catchClause* finallyBlock?
     | SWITCH parExpression '{' switchBlockStatementGroup* switchLabel* '}'
-    | SYNCHRONIZED parExpression block
     | RETURN expression? ';'
     | THROW expression ';'
     | BREAK identifier? ';'
