@@ -1,6 +1,6 @@
 #include "gtest/gtest.h"
 #include <iostream>
-//#include <llvm/Support/InitLLVM.h>
+#include <llvm/Support/InitLLVM.h>
 //#include "cajeta/compile/Compiler.h"
 
 using namespace std;
@@ -8,7 +8,10 @@ using namespace std;
 //using namespace cajeta;
 
 TEST(blaTest, test1) {
-//    llvm::InitLLVM initLlvm(argc, argv);
+    int argc = 1;
+    const char** argv;
+    llvm::InitLLVM initLlvm(argc, argv, false);
+
 //    Compiler compiler;
 //    compiler.compile(argv[1], argv[2], argv[3]);
 

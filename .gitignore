@@ -3,6 +3,7 @@
 .ninja_deps
 .ninja_log
 build/
+gen/
 cajeta.cbp
 Makefile
 Testing

@@ -4,8 +4,9 @@ LIST(APPEND CMAKE_MODULE_PATH ${PROJECT_SOURCE_DIR}/cmake)
 
 # compiler must be 11 or 14
 set(CMAKE_CXX_STANDARD 17)
-SET(CMP0075 ON)
-SET(CMP0135 NEW)
+cmake_policy(SET CMP0135 NEW)
+cmake_policy(SET CMP0075 NEW)
+
 
 # set variable pointing to the antlr tool that supports C++
 set(Java_JAVA_EXECUTABLE "java")
@@ -26,7 +27,7 @@ find_package(LLVM REQUIRED CONFIG)
 add_definitions(${LLVM_DEFINITIONS})
 include_directories(${LLVM_INCLUDE_DIRS})
 find_package(ANTLR REQUIRED)
-
+message(STATUS "LLVM_DEFINITIONS: ${LLVM_DEFINITIONS}")
 include_directories(${ANTLR4CPP_INCLUDE_DIRS})
 include_directories("/usr/local/include")
 include_directories("/usr/local/include/antlr4-runtime")
