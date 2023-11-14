@@ -11,7 +11,7 @@ namespace cajeta {
     llvm::Value* StackField::createStore(llvm::Value* value) {
         return nullptr;
     }
-    llvm::Value* StackField::getOrCreateAllocation() {
+    llvm::AllocaInst* StackField::getOrCreateAllocation() {
         return nullptr;
     }
 } // cajeta

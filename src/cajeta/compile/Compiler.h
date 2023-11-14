@@ -9,11 +9,11 @@
 #include <llvm/Support/InitLLVM.h>
 #include <llvm/IR/LLVMContext.h>
 #include <llvm/Target/TargetMachine.h>
-#include <llvm/Support/Host.h>
+#include <llvm/TargetParser/Host.h>
 #include <llvm/MC/TargetRegistry.h>
 #include <filesystem>
 #include <utility>
-#include "antlr4-runtime.h"
+#include "antlr4-runtime/antlr4-runtime.h"
 #include "../type/CajetaType.h"
 #include "CajetaLexer.h"
 #include "CajetaParser.h"

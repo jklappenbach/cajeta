@@ -8,6 +8,7 @@
 #include <regex>
 #include <llvm/IRReader/IRReader.h>
 #include <cajeta/type/CajetaStructure.h>
+#include <llvm/Bitcode/BitcodeReader.h>
 
 using namespace std;
 
@@ -15,6 +16,7 @@ namespace cajeta {
     class ClassLoader {
     protected:
         list<string> classPaths;
+        // map<string,
     public:
         ClassLoader(string classPath, llvm::LLVMContext* context) {
             if (classPath.empty()) {
@@ -34,22 +36,20 @@ namespace cajeta {
             };
         }
 
-
-        unique_ptr<llvm::Module> loadModules(std::string path, llvm::LLVMContext* context) {
-
-        }
         /**
          * If
          * @param package
          * @param context
          * @return
          */
-        unique_ptr<llvm::Module> loadModules(std::string package, llvm::LLVMContext* context) {
+        unique_ptr<llvm::Module> loadModules(std::string package, llvm::LLVMContext* context);
 
-        }
-
-        unique_ptr<CajetaStructure> loadStructure(std::string canonical, llvm::LLVMContext* context) {
-
-        }
+        /**
+         *
+         * @param canonical
+         * @param context
+         * @return
+         */
+        unique_ptr<CajetaStructure> loadStructure(std::string canonical, llvm::LLVMContext* context);
     };
 } // cajeta

@@ -20,8 +20,8 @@ namespace cajeta {
         return std::make_unique<llvm::Module>(llvm::StringRef("Null"), *context);
     }
     std::unique_ptr<CajetaStructure> ClassLoader::loadStructure(std::string canonical, llvm::LLVMContext* context) {
-        // Load Module
-        return std::make_unique<CajetaStructure>(new CajetaStructure(nullptr));
+        CajetaModulePtr ptr;// Load Module
+        return std::make_unique<CajetaStructure>(ptr);
     }
 
 } // cajeta

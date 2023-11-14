@@ -5,6 +5,7 @@
 #include "Compiler.h"
 #include "CajetaModule.h"
 #include "CajetaLlvmVisitor.h"
+#include "llvm/Bitcode/BitcodeReader.h"
 #include "../asn/AbstractSyntaxNode.h"
 
 using namespace antlr4;
@@ -34,7 +35,7 @@ namespace cajeta {
         tokens.fill();
         CajetaParser parser(&tokens);
         antlr4::tree::ParseTree* parseTree = parser.compilationUnit();
-        CajetaLlvmVisitor* visitor = new CajetaLlvmVisitor(compilationUnit);
+        auto visitor = new CajetaLlvmVisitor(compilationUnit);
         parseTree->accept(visitor);
         cout << "\n\n";
         std::cout << parseTree->toStringTree(&parser, true) << std::endl;

@@ -4,16 +4,16 @@
 #pragma once
 
 
-#include "../../../build/antlr4_runtime/src/antlr4_runtime/runtime/Cpp/runtime/src/antlr4-runtime.h"
+#include "antlr4-runtime.h"
 #include "CajetaParserVisitor.h"
-#include "../type/CajetaStructure.h"
-#include "../type/CajetaClass.h"
-#include "../../../build/antlr4_runtime/src/antlr4_runtime/runtime/Cpp/runtime/src/support/Any.h"
-#include "../asn/Block.h"
-#include "../asn/expression/Expression.h"
-#include "../asn/LocalVariableDeclaration.h"
-#include "CajetaModule.h"
-#include "../asn/ClassBodyDeclaration.h"
+#include "cajeta/type/CajetaStructure.h"
+#include "cajeta/type/CajetaClass.h"
+#include <any>
+#include "Block.h"
+#include "cajeta/asn/expression/Expression.h"
+#include "cajeta/asn/LocalVariableDeclaration.h"
+#include "cajeta/compile/CajetaModule.h"
+#include "cajeta/asn/ClassBodyDeclaration.h"
 
 
 namespace cajeta {
