@@ -1,11 +1,11 @@
 #include "gtest/gtest.h"
 #include <iostream>
-#include <llvm/Support/InitLLVM.h>
-#include "cajeta/compile/Compiler.h"
+//#include <llvm/Support/InitLLVM.h>
+//#include "cajeta/compile/Compiler.h"
 
 using namespace std;
-using namespace antlr4;
-using namespace cajeta;
+//using namespace antlr4;
+//using namespace cajeta;
 
 TEST(blaTest, test1) {
 //    llvm::InitLLVM initLlvm(argc, argv);
