@@ -68,4 +68,3 @@ target_link_libraries(${CMAKE_PROJECT_NAME}
         ${targets}
         LLVMOption # Support
         glog::glog)
-

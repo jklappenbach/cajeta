@@ -1,18 +1,18 @@
 #include "gtest/gtest.h"
 #include <iostream>
 #include <llvm/Support/InitLLVM.h>
-//#include "cajeta/compile/Compiler.h"
+#include "cajeta/compile/Compiler.h"
 
 using namespace std;
-//using namespace antlr4;
-//using namespace cajeta;
+using namespace antlr4;
+using namespace cajeta;
 
 TEST(blaTest, test1) {
-    int argc = 1;
-    const char** argv;
-    llvm::InitLLVM initLlvm(argc, argv, false);
+    int argc = 3;
+    const char* argv[] = { "cajeta.System::main()", "/Users/julian/code/cpp/cajeta/test/code/src", "/Users/julian/code/cpp/cajeta/test/build/" };
+    llvm::InitLLVM initLlvm(argc, (char**&) argv, false);
 
-//    Compiler compiler;
+    Compiler compiler;
 //    compiler.compile(argv[1], argv[2], argv[3]);
 
     //act

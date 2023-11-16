@@ -14,6 +14,8 @@ set(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} ${CMAKE_SOURCE_DIR}/cmake)
 cmake_policy(SET CMP0135 NEW)
 cmake_policy(SET CMP0075 NEW)
 
+find_package(glog 0.6.0 REQUIRED)
+
 include(FetchContent)
 FetchContent_Declare(
         googletest
@@ -28,34 +30,43 @@ find_package(LLVM REQUIRED CONFIG)
 include_directories(${LLVM_INCLUDE_DIRS})
 #include_directories(${ANTLR4_INCLUDE_DIRS})
 include_directories("/usr/local/include/antlr4-runtime")
-#include_directories("${CMAKE_SOURCE_DIR}/src")
 include_directories("/usr/local/include")
-#include_directories("${CMAKE_SOURCE_DIR}/generated/lex")
-#include_directories("${CMAKE_SOURCE_DIR}/generated/parser")
+include_directories("${CMAKE_SOURCE_DIR}/generated/lex")
+include_directories("${CMAKE_SOURCE_DIR}/generated/parser")
 
 add_executable(${BINARY} ${TEST_SOURCES})
+message(STATUS "LLVM_: ${targets}")
 
 target_link_libraries(${BINARY}
         ${CMAKE_PROJECT_NAME}_lib
+        /usr/local/lib/libantlr4-runtime.a
         gtest_main
+        LLVMAArch64CodeGen
+        LLVMARMCodeGen
+        LLVMAMDGPUCodeGen
         LLVMX86CodeGen
         LLVMX86AsmParser # MC, MCParser, Support, X86Desc, X86Info
         LLVMX86Desc # MC, Support, X86AsmPrinter, X86Info
         LLVMX86Info # MC, Support, Target
-        LLVMipo
-        LLVMScalarOpts
-        LLVMInstCombine
-        LLVMTransformUtils
-        LLVMAnalysis
-        LLVMTarget
+        LLVMAVRCodeGen
+        LLVMBPFCodeGen
+        LLVMHexagonCodeGen
+        LLVMMSP430CodeGen
+        LLVMLanaiCodeGen
+        LLVMLoongArchCodeGen
+        LLVMMipsCodeGen
+        LLVMNVPTXCodeGen
+        LLVMPowerPCCodeGen
+        LLVMRISCVCodeGen
+        LLVMSparcCodeGen
+        LLVMSystemZCodeGen
+        LLVMWebAssemblyCodeGen
+        LLVMXCoreCodeGen
+        LLVMVECodeGen
+        LLVMMSP430Desc
         ${targets}
         LLVMOption # Support
-        LLVMMCParser # MC, Support
-        LLVMMC # Object, Support
-        LLVMObject # BitReader, Core, Support
-        LLVMBitReader # Core, Support
-        LLVMCore # Support
-        LLVMSupport)
+        glog::glog)
 
 add_test(NAME ${BINARY} COMMAND ${BINARY})
 
