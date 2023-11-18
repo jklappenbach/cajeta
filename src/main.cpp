@@ -10,8 +10,7 @@ using namespace cajeta;
 
 int main(int argc, const char* argv[]) {
     //cl::ParseCommandLineOptions(argc, argv, " Cajeta compiler, v1.0\n");
-    llvm::InitLLVM initLlvm(argc, argv);
-    Compiler compiler;
+    Compiler compiler(argc, argv);
     compiler.compile(argv[1], argv[2], argv[3]);
     return 0;
 }

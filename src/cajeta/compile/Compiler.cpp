@@ -7,6 +7,9 @@
 #include "CajetaLlvmVisitor.h"
 #include "llvm/Bitcode/BitcodeReader.h"
 #include "../asn/AbstractSyntaxNode.h"
+#include "cajeta/error/CajetaExceptions.h"
+#include <sys/stat.h>
+
 
 using namespace antlr4;
 using namespace std;
@@ -27,7 +30,9 @@ namespace cajeta {
         return result;
     }
 
-    void parse(ifstream& stream, CajetaModulePtr compilationUnit) {
+    void parse(CajetaModulePtr module) {
+        ifstream stream;
+        stream.open(module->getSourcePath());
         stream.seekg(0);
         ANTLRInputStream input(stream);
         CajetaLexer lexer(&input);
@@ -35,11 +40,33 @@ namespace cajeta {
         tokens.fill();
         CajetaParser parser(&tokens);
         antlr4::tree::ParseTree* parseTree = parser.compilationUnit();
-        auto visitor = new CajetaLlvmVisitor(compilationUnit);
+        auto visitor = new CajetaLlvmVisitor(module);
         parseTree->accept(visitor);
         cout << "\n\n";
         std::cout << parseTree->toStringTree(&parser, true) << std::endl;
         delete visitor;
+    }
+
+    bool fileExists(string& sourcePath) {
+        struct stat buffer;
+        return (stat(sourcePath.c_str(), &buffer) == 0);
+    }
+
+    CajetaModulePtr Compiler::createModule(string sourcePath, string sourceRootPath, string targetRootPath) {
+        if (!fileExists(sourcePath))
+            throw FileNotFoundException(sourcePath);
+
+        return make_shared<CajetaModule>(&llvmContext,
+            sourcePath,
+            sourceRootPath,
+            targetRootPath,
+            targetTriple,
+            targetMachine);
+    }
+
+    void Compiler::compile(CajetaModulePtr module) {
+        modules.push_back(module);
+        parse(module);
     }
 
     void Compiler::compile(string entryMethod, string sourceRootPath, string archiveRootPath) {
@@ -54,19 +81,10 @@ namespace cajeta {
 //        std::filesystem::path cwd = std::filesystem::current_path();
 
         list<string>* modulePaths = listModulePaths(sourceRootPath);
-        list<CajetaModulePtr> modules;
 
         for (string sourcePath: *modulePaths) {
-            CajetaModulePtr module = make_shared<CajetaModule>(&llvmContext,
-                sourcePath,
-                sourceRootPath,
-                archiveRootPath,
-                targetTriple,
-                targetMachine);
-            ifstream stream;
-            stream.open(module->getSourcePath());
-            modules.push_back(module);
-            parse(stream, module);
+            CajetaModulePtr module = createModule(sourcePath, sourceRootPath, archiveRootPath);
+            compile(module);
             cout << "\n";
         }
 

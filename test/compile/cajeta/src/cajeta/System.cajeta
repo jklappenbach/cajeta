@@ -1,7 +1,5 @@
 package cajeta;
 
-import cajeta.Base;
-
 public final class System {
     private int32 value;
     private int32 x = 5;
@@ -9,19 +7,8 @@ public final class System {
     public static void main() {
         int32 mainInt = 45;
         int32 otherInt = mainInt;
-        int32[3] anIntArray;
-        anIntArray[0] = 23452;
-        anIntArray[1] = 2342;
-        anIntArray[2] = 34563;
-//        int32[] anIntArrayReference = new int32[60];
-//        System system = new System();
-//        system.doTheOtherThing(34);
-//        anIntArrayReference = anIntArray;
     }
 
     public void doTheOtherThing(int32 foobar) {
-//        int32 someVariable = 45 + foobar;
-//        int64[] firstArray = new int64[32];
-//        int64[45] secondArray;
     }
 }

@@ -28,14 +28,12 @@ FetchContent_MakeAvailable(googletest)
 
 find_package(LLVM REQUIRED CONFIG)
 include_directories(${LLVM_INCLUDE_DIRS})
-#include_directories(${ANTLR4_INCLUDE_DIRS})
 include_directories("/usr/local/include/antlr4-runtime")
 include_directories("/usr/local/include")
 include_directories("${CMAKE_SOURCE_DIR}/generated/lex")
 include_directories("${CMAKE_SOURCE_DIR}/generated/parser")
 
 add_executable(${BINARY} ${TEST_SOURCES})
-message(STATUS "LLVM_: ${targets}")
 
 target_link_libraries(${BINARY}
         ${CMAKE_PROJECT_NAME}_lib

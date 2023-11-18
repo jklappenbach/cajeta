@@ -2,6 +2,11 @@
 ## Compile
 - Can compile empty class
 ## Class 
+### Can Write & Read Class Metadata
+- Can write property block
+  - Can write size of struct
+  - Can write count of all props
+  - Can write 
 ### Memory Management
 - Can run main on empty class
 - Can allocate class and its freed after scope drop
@@ -13,6 +18,18 @@
 ### References
 - Can create arbitrary scopes
 - Can transfer a reference from the original and deallocate correctly
+### Method calls
+- Can run main and call method, returning its value
+- Can run main, allocate class, call method, ...
+### Class Loader
+- Can load a class locally
+- Can load a class from a URL
+- Can load a class from a signed jarvcx
+### Aspects
+- Can set a property's value
+- Can add a property
+- Can intercept a method
+- Can add a method
 ### Reflection
 - Can get read all information on a class
   - Properties
@@ -25,9 +42,6 @@
       - Annotations
   - Methods
 - Can allocate class from constructor
-### Method calls
-- Can run main and call method, returning its value
-- Can run main, allocate class, call method, ...
 ## System
 - Can get current time in ms
 - Can get environment variables

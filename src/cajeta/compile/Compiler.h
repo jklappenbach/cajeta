@@ -36,8 +36,13 @@ namespace cajeta {
         llvm::TargetMachine* targetMachine;
         llvm::TargetOptions opt;
         std::optional<llvm::Reloc::Model> RM;
+        list<CajetaModulePtr> modules;
 
     public:
+        Compiler(int argc, const char* argv[]) {
+            llvm::InitLLVM initLlvm(argc, argv);
+            Compiler();
+        }
         Compiler() {
             llvm::InitializeAllTargets();
             llvm::InitializeAllTargetMCs();
@@ -57,6 +62,8 @@ namespace cajeta {
 
         void compile(string entryMethod, string sourceRootPath, string archiveRootPath);
 
+        void compile(CajetaModulePtr module);
+
         const string& getCpu() const {
             return cpu;
         }
@@ -71,6 +78,12 @@ namespace cajeta {
 
         void setFeatures(const string& features) {
             this->features = features;
+        }
+
+        CajetaModulePtr createModule(string sourcePath, string sourceRootPath, string targetRootPath);
+
+        list<CajetaModulePtr> getModules() {
+            return modules;
         }
     };
 } // cajeta
