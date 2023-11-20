@@ -65,4 +65,4 @@ namespace cajeta {
             return module->getBuilder()->CreateStore(value, alloca);
         }
     }
-} // cajeta
+} // code

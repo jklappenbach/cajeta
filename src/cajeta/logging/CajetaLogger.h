@@ -32,4 +32,4 @@ namespace cajeta {
 
     typedef shared_ptr<CajetaLogger> CajetaLoggerPtr;
 
-} // cajeta
+} // code

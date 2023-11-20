@@ -75,11 +75,11 @@ namespace cajeta {
                 break;
             case BINARY_OP_DIV:
 //                if (lhs->getType()->isFloatTy()) {
-//                    result = module->getBuilder()->CreateFDiv(lhs, rhs);
+//                    result = pModule->getBuilder()->CreateFDiv(lhs, rhs);
 //                } else if ((lhsType->getTypeFlags() | rhsType->getTypeFlags()) & SIGNED_FLAG) {
-//                    result = module->getBuilder()->CreateSDiv(lhs, rhs);
+//                    result = pModule->getBuilder()->CreateSDiv(lhs, rhs);
 //                } else {
-//                    result = module->getBuilder()->CreateUDiv(lhs, rhs);
+//                    result = pModule->getBuilder()->CreateUDiv(lhs, rhs);
 //                }
                 break;
             case BINARY_OP_BITAND:
@@ -131,11 +131,11 @@ namespace cajeta {
                 break;
             case BINARY_OP_DIV_EQUALS:
 //                if (lhs->getType()->isFloatTy()) {
-//                    result = module->getBuilder()->CreateFDiv(lhs, rhs);
+//                    result = pModule->getBuilder()->CreateFDiv(lhs, rhs);
 //                } else if ((lhsType->getTypeFlags() | rhsType->getTypeFlags()) & SIGNED_FLAG) {
-//                    result = module->getBuilder()->CreateSDiv(lhs, rhs);
+//                    result = pModule->getBuilder()->CreateSDiv(lhs, rhs);
 //                } else {
-//                    result = module->getBuilder()->CreateUDiv(lhs, rhs);
+//                    result = pModule->getBuilder()->CreateUDiv(lhs, rhs);
 //                }
                 result = module->getBuilder()->CreateStore(lhs, result);
                 break;
@@ -172,4 +172,4 @@ namespace cajeta {
         return result;
     }
 
-} // cajeta
+} // code

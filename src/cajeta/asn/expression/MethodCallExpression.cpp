@@ -15,16 +15,16 @@ namespace cajeta {
         module->getAsnStack().push_back(shared_from_this());
 
         // TODO Find out if this is the correct approach
-//        CajetaStructurePtr structure = static_pointer_cast<CajetaStructure>(module->getFieldStack().back()->getType());
+//        CajetaStructurePtr structure = static_pointer_cast<CajetaStructure>(pModule->getFieldStack().back()->getType());
 //        llvm::Value* instance = nullptr;
-//        if (module->getFieldStack().size() > 0) {
-//            instance = module->getFieldStack().back()->getOrCreateAllocation();
+//        if (pModule->getFieldStack().size() > 0) {
+//            instance = pModule->getFieldStack().back()->getOrCreateAllocation();
 //        }
 
 //        vector<ParameterEntry> entries;
 //
 //        for (auto& param : parameters) {
-//            llvm::Value* value = param.expression->generateCode(module);
+//            llvm::Value* value = param.expression->generateCode(pModule);
 //            ParameterEntry entry(CajetaType::of(value), param.label, value);
 //            entries.push_back(entry);
 //        }
@@ -34,4 +34,4 @@ namespace cajeta {
     }
 
 
-} // cajeta
+} // code

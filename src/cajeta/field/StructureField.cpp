@@ -11,4 +11,4 @@ namespace cajeta {
         value = module->getBuilder()->CreateStructGEP(parent->getType()->getLlvmType(), value, index);
         return module->getBuilder()->CreateLoad(type->getLlvmType(), value);
     }
-} // cajeta
+} // code

@@ -64,7 +64,7 @@ target_link_libraries(demo antlr4_static)
 
 ## Documentation for FindANTLR
 
-The module defines the following variables:
+The pModule defines the following variables:
 
 ```
 ANTLR_FOUND - true is ANTLR jar executable is found
@@ -72,7 +72,7 @@ ANTLR_EXECUTABLE - the path to the ANTLR jar executable
 ANTLR_VERSION - the version of ANTLR
 ```
 
-If ANTLR is found, the module will  provide the macros:
+If ANTLR is found, the pModule will  provide the macros:
 
 ```
 ANTLR_TARGET(<name> <input>

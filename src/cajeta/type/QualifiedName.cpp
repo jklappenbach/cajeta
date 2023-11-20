@@ -83,7 +83,7 @@ namespace cajeta {
             }
             return getOrInsert(typeName, packageName);
         } else {
-            return getOrInsert(current, "cajeta");
+            return getOrInsert(current, "code");
         }
     }
 

@@ -213,7 +213,7 @@ namespace cajeta {
         }
 
 //        // 4. Create the struct
-//        this->llvmPropertiesType = llvm::StructType::create(*module->getLlvmContext(), propertyTypes);
+//        this->llvmPropertiesType = llvm::StructType::create(*pModule->getLlvmContext(), propertyTypes);
 //
 //        // 5. Add that as the first structure of properties
 //        members.push_back(llvmPropertiesType);
@@ -228,8 +228,8 @@ namespace cajeta {
 //        }
 //
 //        // 8. Add methodTypes to rtti of method types
-//        members.push_back(llvm::StructType::get(*module->getLlvmContext(), methodTypes));
-//        llvmRttiType = llvm::StructType::create(*module->getLlvmContext(), llvm::ArrayRef(members),
+//        members.push_back(llvm::StructType::get(*pModule->getLlvmContext(), methodTypes));
+//        llvmRttiType = llvm::StructType::create(*pModule->getLlvmContext(), llvm::ArrayRef(members),
 //            structure->toCanonical() + string("#RttiType"));
     }
 
@@ -287,13 +287,13 @@ namespace cajeta {
 //        args.push_back(llvm::ConstantInt::get(llvmInt16Type, llvm::APInt(16, structure->getSuperClasses().size(), false)));
 //        vector<llvm::Constant*> superConstants;
 //        for (auto &super : structure->getSuperClasses()) {
-//            superConstants.push_back(llvm::ConstantDataArray::getString(*module->getLlvmContext(),
+//            superConstants.push_back(llvm::ConstantDataArray::getString(*pModule->getLlvmContext(),
 //                                                                        super->toCanonical(),
 //                                                                        true));
 //        }
 //        args.push_back(
 //                llvm::ConstantArray::get(
-//                        llvm::ArrayType::get(llvm::PointerType::getInt64PtrTy(*module->getLlvmContext()), methodConstants.size()),
+//                        llvm::ArrayType::get(llvm::PointerType::getInt64PtrTy(*pModule->getLlvmContext()), methodConstants.size()),
 //                        llvm::ArrayRef<llvm::Constant*>(methodConstants)
 //                )
 //        );
@@ -303,7 +303,7 @@ namespace cajeta {
 
     void StructureMetadata::populateMetadataGlobals(CajetaStructurePtr structure) {
         string globalName = structure->toCanonical() + string("#VTable");
-        if (module->getGlobalVariables().find(globalName) == module->getGlobalVariables().end()) {
+        if (module->getModuleVariables().find(globalName) == module->getModuleVariables().end()) {
             llvm::GlobalVariable* virtualTableGlobal = module->getLlvmModule()->getGlobalVariable(globalName);
             if (!virtualTableGlobal) {
                 createVirtualTableType(structure);
@@ -313,13 +313,13 @@ namespace cajeta {
                 virtualTableGlobal->setInitializer(virtualTableConstant);
                 structure->setVirtualTableGlobal(virtualTableGlobal);
             }
-            module->getGlobalVariables()[globalName] = module;
+            module->getModuleVariables()[globalName] = module;
         }
 
 //        createRttiType(structure);
 //
 //        vector<llvm::Constant*> args;
-//        llvm::GlobalVariable* rttiGlobal = (llvm::GlobalVariable*) module->getLlvmModule()->getOrInsertGlobal(
+//        llvm::GlobalVariable* rttiGlobal = (llvm::GlobalVariable*) pModule->getLlvmModule()->getOrInsertGlobal(
 //            llvm::StringRef(structure->toCanonical() + string("#RttiGlobal")), llvmRttiType);
 //        rttiGlobal->setInitializer(createRttiConstant(args, structure));
 //        structure->setRttiGlobal(rttiGlobal);
@@ -383,4 +383,4 @@ namespace cajeta {
         }
         return llvm::ConstantStruct::get(structure->getVirtualTableType(), llvm::ArrayRef<llvm::Constant*>(args));
     }
-} // cajeta
+} // code

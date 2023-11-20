@@ -83,4 +83,4 @@ namespace cajeta {
     };
 
     typedef shared_ptr<VariableDeclarator> VariableDeclaratorPtr;
-} // cajeta
+} // code

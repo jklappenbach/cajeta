@@ -1,4 +1,4 @@
-package cajeta;
+package foo.bar.baz;
 
 public final class System {
     private int32 value;
@@ -9,6 +9,6 @@ public final class System {
         int32 otherInt = mainInt;
     }
 
-    public void doTheOtherThing(int32 foobar) {
+    public void doTheOtherThing(int32 anotherValue) {
     }
 }

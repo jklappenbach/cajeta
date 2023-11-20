@@ -165,4 +165,4 @@ namespace cajeta {
          */
         llvm::Constant* createRttiConstant(vector<llvm::Constant*>& args, CajetaStructurePtr structure);
     };
-}// cajeta
+}// code

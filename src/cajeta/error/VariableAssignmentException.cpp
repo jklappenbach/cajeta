@@ -5,4 +5,4 @@
 #include "VariableAssignmentException.h"
 
 namespace cajeta {
-} // cajeta
+} // code

@@ -108,7 +108,7 @@ namespace cajeta {
     }
 
     CajetaTypePtr CajetaType::fromContext(CajetaParser::PrimitiveTypeContext* ctx, CajetaModulePtr module) {
-        QualifiedNamePtr qName = QualifiedName::getOrInsert(ctx->getText(), "cajeta");
+        QualifiedNamePtr qName = QualifiedName::getOrInsert(ctx->getText(), "code");
         return CajetaType::canonicalMap[qName->toCanonical()];
     }
 
@@ -155,7 +155,7 @@ namespace cajeta {
             } else {
                 type = make_shared<CajetaArray>(module, type, ctx->LBRACK().size());
             }
-            module->getStructureList().push_back(static_pointer_cast<CajetaStructure>(type));
+            module->getStructures()[type->toCanonical()] = static_pointer_cast<CajetaStructure>(type);
             //((CajetaArray*) type)->generatePrototype();  TODO: WOT?!
         }
 

@@ -242,7 +242,7 @@ class CajetaType : public Modifiable, public Annotatable,
          *          - If op is unsigned and src is signed, throw a warning (integer overflow), but allow if rank delta is 1.  Otherwise,
          *
          * @param op The Value* to be compared against this value
-         * @param module The module to use for creating builder statement to cast the argument to a new value with rank parity
+         * @param module The pModule to use for creating builder statement to cast the argument to a new value with rank parity
          * @return A normalize result with any warnings to promote
          */
         llvm::Value* normalize(llvm::Value* op, CajetaModulePtr module);

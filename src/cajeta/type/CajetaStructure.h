@@ -152,4 +152,4 @@ namespace cajeta {
             return llvmRttiType;
         }
     };
-} // cajeta
+} // code

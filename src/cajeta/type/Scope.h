@@ -22,7 +22,7 @@ namespace cajeta {
     /**
      * Supported scopes:
      *
-     * Given that we have a single class per module, we have the following layers of scope:
+     * Given that we have a single class per pModule, we have the following layers of scope:
      *
      * 1. Class Static
      * 2. Contained Class Static

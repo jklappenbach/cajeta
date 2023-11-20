@@ -33,10 +33,9 @@ namespace cajeta {
 
     class CajetaModule : public enable_shared_from_this<CajetaModule> {
     private:
-        static map<QualifiedNamePtr, CajetaModulePtr> qNameToModules;
         static map<string, MethodPtr> methods;
-        static map<string, CajetaModulePtr> globalVariables;
         static map<string, CajetaModulePtr> globalStructures;
+        static map<string, CajetaModulePtr> moduleVariables;
 
 
         map<string, map<string, QualifiedNamePtr>> imports;
@@ -46,7 +45,7 @@ namespace cajeta {
         string archiveRoot;
         string archivePath;
 
-        list<CajetaStructurePtr> structures;
+        map<string, CajetaStructurePtr> structures;
         MethodPtr currentMethod;
         StructureMetadataPtr structureMetadata;
 
@@ -105,10 +104,6 @@ namespace cajeta {
 
         void setInitializerType(CajetaTypePtr initializerType);
 
-        static const map<QualifiedNamePtr, CajetaModulePtr>& getTypeArchive() {
-            return qNameToModules;
-        }
-
         const string& getSourcePath() const {
             return sourcePath;
         }
@@ -137,7 +132,7 @@ namespace cajeta {
             return imports;
         }
 
-        list<CajetaStructurePtr>& getStructureList() {
+        map<string, CajetaStructurePtr>& getStructures() {
             return structures;
         }
 
@@ -145,14 +140,13 @@ namespace cajeta {
             return scopeStack;
         }
 
-        static map<string, CajetaModulePtr>& getGlobalVariables() {
-            return globalVariables;
-        }
-
         static map<string, CajetaModulePtr>& getGlobalStructures() {
             return globalStructures;
         }
 
+        static map<string, CajetaModulePtr>& getModuleVariables() {
+            return moduleVariables;
+        }
 
         llvm::IRBuilder<>* getBuilder() const;
 
@@ -180,8 +174,8 @@ namespace cajeta {
 
         list<MethodPtr> getAllMethods() {
             list<MethodPtr> result;
-            for (CajetaStructurePtr structure: structures) {
-                for (auto methodEntry: structure->getMethods()) {
+            for (auto entry:  structures) {
+                for (auto methodEntry: entry.second->getMethods()) {
                     result.push_back(methodEntry.second);
                 }
             }

@@ -15,7 +15,7 @@ namespace cajeta {
     }
 
     /**
-     * Match the parameters provided to a constructor.  Put the constructor (Method*) in the module, which will then be
+     * Match the parameters provided to a constructor.  Put the constructor (Method*) in the pModule, which will then be
      * called when the Method regains control.
      *
      * @param module
@@ -25,11 +25,11 @@ namespace cajeta {
         module->getAsnStack().push_back(shared_from_this());
     //        list<CajetaTypePtr> types;
     //        vector<ParameterEntry> parameterEntries;
-    //        FieldPtr currentField = module->getFieldStack().back();
-    //        llvm::Value* thisValue = currentField->getOrCreateAllocation(module);
+    //        FieldPtr currentField = pModule->getFieldStack().back();
+    //        llvm::Value* thisValue = currentField->getOrCreateAllocation(pModule);
     //
     //        for (auto& param: parameters) {
-    //            llvm::Value* value = param.expression->generateCode(module);
+    //            llvm::Value* value = param.expression->generateCode(pModule);
     //            parameterEntries.push_back(ParameterEntry(CajetaType::of(value), param.label, value));
     //        }
     //
@@ -50,10 +50,10 @@ namespace cajeta {
     llvm::Value* ArrayCreatorRest::generateCode(CajetaModulePtr module) {
         module->getAsnStack().push_back(shared_from_this());
     //        vector<llvm::Constant*> dimensionValues;
-    //        llvm::Value* load = module->getCurrentValue();
-    //        FieldPtr field = module->getFieldStack().back();
+    //        llvm::Value* load = pModule->getCurrentValue();
+    //        FieldPtr field = pModule->getFieldStack().back();
     //        CajetaArrayPtr arrayType = (CajetaArrayPtr) field->getType();
-    //        auto& dataLayout = module->getLlvmModule()->getDataLayout();
+    //        auto& dataLayout = pModule->getLlvmModule()->getDataLayout();
     //        CajetaTypePtr int64Type = CajetaType::of("int64");
     //        llvm::Constant* allocSize = llvm::ConstantInt::get(int64Type->getLlvmType(),
     //            dataLayout.getTypeAllocSize(arrayType->getElementType()->getLlvmType()));
@@ -64,25 +64,25 @@ namespace cajeta {
     //            snprintf(buffer, 255, "#dim%d", ordinal);
     //            // TODO: These should probably be property fields!
     //            LocalFieldPtr field = new LocalField(string(buffer), int64Type, field);
-    //            llvm::Constant* dimensionValue = (llvm::Constant*) node->generateCode(module);
-    //            llvm::Value* allocation = module->getBuilder()->CreateStructGEP(arrayType->getLlvmType(),
+    //            llvm::Constant* dimensionValue = (llvm::Constant*) node->generateCode(pModule);
+    //            llvm::Value* allocation = pModule->getBuilder()->CreateStructGEP(arrayType->getLlvmType(),
     //                load, ordinal++);
-    //            module->getScopeStack().peek()->putField(field);
-    //            module->getBuilder()->CreateStore(dimensionValue, allocation);
+    //            pModule->getScopeStack().peek()->putField(field);
+    //            pModule->getBuilder()->CreateStore(dimensionValue, allocation);
     //            field->setAllocation(allocation);
     //            allocSize = llvm::ConstantExpr::getMul(dimensionValue, allocSize);
     //            dimensionValues.push_back(dimensionValue);
     //        }
     //
-    //        llvm::Value* allocation = module->getBuilder()->CreateStructGEP(arrayType->getLlvmType(), load, 0);
-    //        llvm::Instruction* mallocInst = MemoryManager::createMallocInstruction(module, allocSize,
-    //            module->getBuilder()->GetInsertBlock());
+    //        llvm::Value* allocation = pModule->getBuilder()->CreateStructGEP(arrayType->getLlvmType(), load, 0);
+    //        llvm::Instruction* mallocInst = MemoryManager::createMallocInstruction(pModule, allocSize,
+    //            pModule->getBuilder()->GetInsertBlock());
     //        LocalFieldPtr arrayField = new StructureField("#array", arrayType->getElementType()->toPointerType(),
-    //            module->getBuilder()->CreateStore(mallocInst, allocation), 0, field);
-    //        module->getScopeStack().peek()->putField(arrayField);
+    //            pModule->getBuilder()->CreateStore(mallocInst, allocation), 0, field);
+    //        pModule->getScopeStack().peek()->putField(arrayField);
         module->getAsnStack().pop_back();
 
         return nullptr;
     }
 
-} // cajeta
+} // code

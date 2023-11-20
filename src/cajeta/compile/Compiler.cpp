@@ -22,7 +22,7 @@ namespace cajeta {
         std::filesystem::path sourcePath(rootPath);
 
         for (const auto& dirEntry: recursive_directory_iterator(sourcePath)) {
-            if (dirEntry.is_regular_file() && dirEntry.path().string().find(".cajeta")) {
+            if (dirEntry.is_regular_file() && dirEntry.path().string().find(".code")) {
                 result->push_back(dirEntry.path().string());
             }
         }

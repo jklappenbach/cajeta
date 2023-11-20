@@ -63,4 +63,4 @@ namespace cajeta {
 
     typedef shared_ptr<StructureProperty> StructurePropertyPtr;
 
-} // cajeta
+} // code

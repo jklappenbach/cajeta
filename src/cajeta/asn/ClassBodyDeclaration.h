@@ -103,4 +103,4 @@ namespace cajeta {
         }
     };
     typedef shared_ptr<ClassBodyDeclaration> ClassBodyDeclarationPtr;
-} // cajeta
+} // code

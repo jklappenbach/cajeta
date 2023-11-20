@@ -18,4 +18,4 @@ namespace cajeta {
         llvm::Value* generateCode(CajetaModulePtr module) override;
     };
 
-} // cajeta
+} // code

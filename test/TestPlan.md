@@ -12,9 +12,9 @@
 - Can allocate class and its freed after scope drop
 - Can allocate class and its methods are all mapped and freed after scope drop
 - Can allocate class and its properties are all mapped and freed after scope drop
-- Can write definition in module for class
-- Can read definition in module for class
-- Can find definition in module for class
+- Can write definition in pModule for class
+- Can read definition in pModule for class
+- Can find definition in pModule for class
 ### References
 - Can create arbitrary scopes
 - Can transfer a reference from the original and deallocate correctly

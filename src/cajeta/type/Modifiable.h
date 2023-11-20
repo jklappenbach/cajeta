@@ -65,7 +65,7 @@ namespace cajeta {
                 return FINAL;
             } else if (value == "synchronized") {
                 return SYNCHRONIZED;
-            } else if (value == "module") {
+            } else if (value == "pModule") {
                 return PACKAGE;
             }
 

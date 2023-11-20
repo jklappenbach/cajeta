@@ -18,12 +18,25 @@ TEST(CompilerTests, canThrowOnInvalidInput) {
     EXPECT_THROW(compiler.createModule(inputPath, sourceRootPath, outputPath), FileNotFoundException);
 }
 
-TEST(CompilerTests, canParseOnValidPath) {
-    string inputPath = CAJETA_TEST_ROOT + string("/compile/cajeta/src/cajeta/System.cajeta");
-    string sourceRootPath = CAJETA_TEST_ROOT + string("/compile/cajeta/src");
-    string outputPath = CAJETA_TEST_ROOT + string("/compile/cajeta/build");
+TEST(CompilerTests, canParseOnValidShortPackage) {
+    string inputPath = CAJETA_TEST_ROOT + string("/compile/code/src/cajeta/System.cajeta");
+    string sourceRootPath = CAJETA_TEST_ROOT + string("/compile/code/src");
+    string outputPath = CAJETA_TEST_ROOT + string("/compile/code/build");
     Compiler compiler;
-    CajetaModulePtr module = compiler.createModule(inputPath, sourceRootPath, outputPath);
-    auto structures = module->getStructureStack();
-    EXPECT_EQ(structures.size(), 1);
+    CajetaModulePtr pModule = compiler.createModule(inputPath, sourceRootPath, outputPath);
+    compiler.compile(pModule);
+    auto modules = CajetaModule::getGlobalStructures();
+    EXPECT_EQ(modules.size(), 1);
+}
+
+TEST(CompilerTests, canParseOnValidLongPackage) {
+    string inputPath = CAJETA_TEST_ROOT + string("/compile/code/src/foo/bar/baz/System.cajeta");
+    string sourceRootPath = CAJETA_TEST_ROOT + string("/compile/code/src");
+    string outputPath = CAJETA_TEST_ROOT + string("/compile/code/build");
+    Compiler compiler;
+    CajetaModulePtr pModule = compiler.createModule(inputPath, sourceRootPath, outputPath);
+    compiler.compile(pModule);
+    auto modules = CajetaModule::getGlobalStructures();
+    EXPECT_EQ(modules.size(), 1);
+    //pModule->getStructures()
 }

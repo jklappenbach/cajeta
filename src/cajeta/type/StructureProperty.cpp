@@ -5,4 +5,4 @@
 #include "StructureProperty.h"
 
 namespace cajeta {
-} // cajeta
+} // code

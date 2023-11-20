@@ -20,7 +20,7 @@ namespace cajeta {
         return fnCallee;
     }
 
-//        func_printf = llvm::Function::Create(FuncTy9, llvm::GlobalValue::ExternalLinkage, "printf", module->getLlvmModule());
+//        func_printf = llvm::Function::Create(FuncTy9, llvm::GlobalValue::ExternalLinkage, "printf", pModule->getLlvmModule());
 //        func_printf->setCallingConv(CallingConv::C);
 //        AttrListPtr func_printf_PAL;
 //        func_printf->setAttributes(func_printf_PAL);

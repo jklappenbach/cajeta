@@ -14,8 +14,8 @@ namespace cajeta {
         module->getAsnStack().push_back(shared_from_this());
 
         llvm::Value* value = children[0]->generateCode(module);
-//        CajetaStructurePtr structure = static_pointer_cast<CajetaStructure>(module->getFieldStack().back()->getType());
-//        module->getFieldStack().pop_back();
+//        CajetaStructurePtr structure = static_pointer_cast<CajetaStructure>(pModule->getFieldStack().back()->getType());
+//        pModule->getFieldStack().pop_back();
 //        StructurePropertyPtr property = structure->getProperties()[identifier];
         // TODO: We shouldn't be using structureField, we should be creating a PropertyField from the property
         // TODO: We should automatically create an entry in our scope for a structure hierarchy.  These can be lazily loaded, but should be available for reference
@@ -23,14 +23,14 @@ namespace cajeta {
         module->getAsnStack().pop_back();
 
         return nullptr;
-//        module->getFieldStack().push_back(structureField);
+//        pModule->getFieldStack().push_back(structureField);
 //        if (structureField == nullptr) {
 //            throw "identifier did not map to field";
 //        }
-//        return module->getBuilder()->CreateStructGEP(structure->getLlvmType(),
+//        return pModule->getBuilder()->CreateStructGEP(structure->getLlvmType(),
 //                                                     value,
 //                                                     structureField->getOrder(),
 //                                                     identifier);
     }
 
-} // cajeta
+} // code

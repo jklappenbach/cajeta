@@ -5,4 +5,4 @@
 #include "Exception.h"
 
 namespace cajeta {
-} // cajeta
+} // code

@@ -19,4 +19,4 @@ namespace cajeta {
         llvm::AllocaInst* getOrCreateAllocation() override;
     };
 
-} // cajeta
+} // code

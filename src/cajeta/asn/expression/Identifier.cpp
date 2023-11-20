@@ -14,7 +14,7 @@ namespace cajeta {
             return field->getOrCreateAllocation();
         } else {
             // TODO: Fix Me!
-//            llvm::Value* value = module->getFieldStack().back()->getOrCreateAllocation();
+//            llvm::Value* value = pModule->getFieldStack().back()->getOrCreateAllocation();
 //            CajetaStructurePtr structure;
 //            try {
 //                structure = static_pointer_cast<CajetaStructure>(CajetaType::getCanonicalMap()[value->getType()->getStructName().str()]);
@@ -22,8 +22,8 @@ namespace cajeta {
 //                throw "bad type";
 //            }
 //            StructurePropertyPtr structureField = structure->getProperties()[identifier];
-//            return module->getBuilder()->CreateStructGEP(structureField->getType()->getLlvmType(),
-//                module->getFieldStack().back()->getOrCreateAllocation(),
+//            return pModule->getBuilder()->CreateStructGEP(structureField->getType()->getLlvmType(),
+//                pModule->getFieldStack().back()->getOrCreateAllocation(),
 //                structureField->getOrder(),
 //                identifier);
         }
@@ -31,4 +31,4 @@ namespace cajeta {
         return nullptr;
     }
 
-} // cajeta
+} // code

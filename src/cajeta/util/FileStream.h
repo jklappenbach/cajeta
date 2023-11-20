@@ -78,4 +78,4 @@ namespace cajeta {
         llvm::CallInst* createSetPositionInstruction(llvm::Value* file, llvm::BasicBlock* basicBlock);
     };
 
-} // cajeta
+} // code

@@ -52,4 +52,4 @@ namespace cajeta {
          */
         unique_ptr<CajetaStructure> loadStructure(std::string canonical, llvm::LLVMContext* context);
     };
-} // cajeta
+} // code

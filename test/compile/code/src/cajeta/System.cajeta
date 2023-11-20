@@ -1,0 +1,6 @@
+package cajeta;
+
+public final class System {
+    public static void main() {
+    }
+}

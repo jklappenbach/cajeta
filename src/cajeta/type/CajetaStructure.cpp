@@ -241,7 +241,7 @@ namespace cajeta {
             methodArgs.push_back(parameters[i].value);
         }
         // TODO: enable this after fixing bugs
-        // this->module->getBuilder()->CreateCall(method->getLlvmFunctionType(), method->getLlvmFunction(), llvm::ArrayRef<llvm::Value*>(methodArgs));
+        // this->pModule->getBuilder()->CreateCall(method->getLlvmFunctionType(), method->getLlvmFunction(), llvm::ArrayRef<llvm::Value*>(methodArgs));
     }
 
     /**
@@ -254,6 +254,6 @@ namespace cajeta {
      * @param module
      */
     void CajetaStructure::generateMetadata() {
-        //module->getLlvmModule()->getOrInsertGlobal();
+        //pModule->getLlvmModule()->getOrInsertGlobal();
     }
-} // cajeta
+} // code

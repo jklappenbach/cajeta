@@ -11,9 +11,8 @@
 #include "../type/CajetaStructure.h"
 
 namespace cajeta {
-    map<QualifiedNamePtr, CajetaModulePtr> CajetaModule::qNameToModules;
-    map<string, CajetaModulePtr> CajetaModule::globalVariables;
     map<string, CajetaModulePtr> CajetaModule::globalStructures;
+    map<string, CajetaModulePtr> CajetaModule::moduleVariables;
 
     CajetaModule::CajetaModule(llvm::LLVMContext* llvmContext,
         string sourcePath,
@@ -33,7 +32,7 @@ namespace cajeta {
             string temp = sourcePath.substr(sourceRoot.size(), suffixIndex - sourceRoot.size());
             int moduleNameIndex = temp.rfind(PATH_SEPARATOR) + 1;
             string moduleName = temp.substr(moduleNameIndex, suffixIndex);
-            string packageName = temp.substr(0, moduleNameIndex - 1);
+            string packageName = temp.substr(1, moduleNameIndex - 2);
             archivePath = temp + CAJETA_IR_EXTENSION;
             replace(packageName.begin(), packageName.end(), PATH_SEPARATOR, PACKAGE_SEPARATOR);
             qName = QualifiedName::getOrInsert(moduleName, packageName);
@@ -43,7 +42,7 @@ namespace cajeta {
             llvmModule->setDataLayout(targetMachine->createDataLayout());
             llvmModule->setTargetTriple(targetTriple);
         } else {
-            cerr << "Error: Module srcPath must reference a cajeta module, a file with the correct naming convention";
+            cerr << "Error: Module srcPath must reference a code pModule, a file with the correct naming convention";
         }
     }
 
@@ -84,7 +83,7 @@ namespace cajeta {
 
     void CajetaModule::onStructureDeclaration(std::any any) {
         CajetaStructurePtr structure = std::any_cast<CajetaStructurePtr>(any);
-        structures.push_back(structure);
+        structures[structure->toCanonical()] = structure;
     }
 
     CajetaTypePtr CajetaModule::getInitializerType() const {
@@ -103,7 +102,7 @@ namespace cajeta {
         llvm::TargetMachine* targetMachine) {
         CajetaModulePtr result = make_shared<CajetaModule>(llvmContext, sourcePath, sourceRoot, archiveRoot, targetTriple, targetMachine);
         result->structureMetadata = make_shared<StructureMetadata>(result);
-        qNameToModules[result->qName] = result;
+        globalStructures[result->qName->toCanonical()] = result;
         return result;
     }
 

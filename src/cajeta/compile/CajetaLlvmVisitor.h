@@ -1,5 +1,5 @@
 
-// Generated of /Users/julian/code/cpp/cajeta/antlr4/CajetaParser.g4 by ANTLR 4.9.3
+// Generated of /Users/julian/code/cpp/code/antlr4/CajetaParser.g4 by ANTLR 4.9.3
 
 #pragma once
 
@@ -24,34 +24,34 @@ namespace cajeta {
      */
     class CajetaLlvmVisitor : public CajetaParserVisitor {
     private:
-        CajetaModulePtr module;
+        CajetaModulePtr pModule;
     public:
         CajetaLlvmVisitor(CajetaModulePtr module) {
-            this->module = module;
+            this->pModule = module;
         }
 
         CajetaModulePtr getCajetaModule() const {
-            return module;
+            return pModule;
         }
 
         virtual std::any visitCompilationUnit(CajetaParser::CompilationUnitContext* ctx) override {
-            module->onPackageDeclaration(ctx->packageDeclaration());
+            pModule->onPackageDeclaration(ctx->packageDeclaration());
             for (auto& importDeclarationContext: ctx->importDeclaration()) {
-                module->onImportDeclaration(importDeclarationContext);
+                pModule->onImportDeclaration(importDeclarationContext);
             }
             for (auto& typeDeclarationContext: ctx->typeDeclaration()) {
-                module->onStructureDeclaration(visitChildren(typeDeclarationContext));
+                pModule->onStructureDeclaration(visitChildren(typeDeclarationContext));
             }
             return std::any(nullptr);
         }
 
         virtual std::any visitPackageDeclaration(CajetaParser::PackageDeclarationContext* ctx) override {
-            module->onPackageDeclaration(ctx);
+            pModule->onPackageDeclaration(ctx);
             return visitChildren(ctx);
         }
 
         virtual std::any visitImportDeclaration(CajetaParser::ImportDeclarationContext* ctx) override {
-            module->onImportDeclaration(ctx);
+            pModule->onImportDeclaration(ctx);
             return visitChildren(ctx);
         }
 
@@ -76,11 +76,11 @@ namespace cajeta {
         virtual std::any visitClassDeclaration(CajetaParser::ClassDeclarationContext* ctx) override {
             string packageAdj;
             string name = ctx->identifier()->getText();
-            for (auto& structure: module->getStructureStack()) {
+            for (auto& structure: pModule->getStructureStack()) {
                 packageAdj.append(".");
                 packageAdj.append(structure->getQName()->getTypeName());
             }
-            QualifiedNamePtr qName = QualifiedName::getOrInsert(name, module->getQName()->getPackageName() + packageAdj);
+            QualifiedNamePtr qName = QualifiedName::getOrInsert(name, pModule->getQName()->getPackageName() + packageAdj);
             list<QualifiedNamePtr> qExtended;
             list<QualifiedNamePtr> qImplemented;
             for (auto& ctxTypeList : ctx->typeList()) {
@@ -89,11 +89,12 @@ namespace cajeta {
                     qExtended.push_back(QualifiedName::fromContext(ctxTypeType->classOrInterfaceType()));
                 }
             }
-            CajetaStructurePtr structure = make_shared<CajetaClass>(module, qName, qExtended, qImplemented);
-            module->getStructureStack().push_back(structure);
+            CajetaStructurePtr structure = make_shared<CajetaClass>(pModule, qName, qExtended, qImplemented);
+            pModule->getStructureStack().push_back(structure);
             structure->setClassBody(std::any_cast<ClassBodyDeclarationPtr>(visitChildren(ctx)));
             structure->generatePrototype();
-            module->getStructureStack().pop_back();
+            pModule->getStructureStack().pop_back();
+            CajetaModule::getGlobalStructures()[structure->getQName()->toCanonical()] = pModule;
             return structure;
         }
 
@@ -168,18 +169,18 @@ namespace cajeta {
             vector<FormalParameterPtr> formalParameters;
             if (ctx->formalParameters()->formalParameterList()) {
                 for (auto& formalParameterContext: ctx->formalParameters()->formalParameterList()->formalParameter()) {
-                    formalParameters.push_back(FormalParameter::fromContext(formalParameterContext, module));
+                    formalParameters.push_back(FormalParameter::fromContext(formalParameterContext, pModule));
                 }
             }
-            CajetaTypePtr returnType = CajetaType::fromContext(ctx->typeTypeOrVoid(), module);
+            CajetaTypePtr returnType = CajetaType::fromContext(ctx->typeTypeOrVoid(), pModule);
             BlockPtr block = any_cast<BlockPtr>(visitMethodBody(ctx->methodBody()));
             MethodPtr method = Method::create(
-                this->module,
+                this->pModule,
                 name,
                 returnType,
                 formalParameters,
                 block,
-                module->getStructureStack().front());
+                pModule->getStructureStack().front());
             return static_pointer_cast<MemberDeclaration>(make_shared<MethodDeclaration>(method, ctx->getStart()));
         }
 
@@ -214,15 +215,15 @@ namespace cajeta {
             vector<FormalParameterPtr> formalParameters;
             if (ctx->formalParameters()->formalParameterList()) {
                 for (auto& formalParameterContext: ctx->formalParameters()->formalParameterList()->formalParameter()) {
-                    formalParameters.push_back(FormalParameter::fromContext(formalParameterContext, module));
+                    formalParameters.push_back(FormalParameter::fromContext(formalParameterContext, pModule));
                 }
             }
             BlockPtr block = any_cast<BlockPtr>(visitBlock(ctx->constructorBody));
-            MethodPtr method = Method::create(module, name,
+            MethodPtr method = Method::create(pModule, name,
                 CajetaType::of("void"),
                 formalParameters,
                 block,
-                module->getStructureStack().back());
+                pModule->getStructureStack().back());
             return static_pointer_cast<MemberDeclaration>(make_shared<MethodDeclaration>(method, ctx->getStart()));
         }
 
@@ -343,7 +344,7 @@ namespace cajeta {
             list<FormalParameterPtr> formalParameters;
             if (ctx) {
                 for (auto& formalParameterContext: ctx->formalParameter()) {
-                    formalParameters.push_back(FormalParameter::fromContext(formalParameterContext, module));
+                    formalParameters.push_back(FormalParameter::fromContext(formalParameterContext, pModule));
                 }
             }
 
@@ -507,7 +508,7 @@ namespace cajeta {
             }
             return static_pointer_cast<BlockStatement>(make_shared<LocalVariableDeclaration>(
                 modifiers,
-                CajetaType::fromContext(ctx->typeType(), module),
+                CajetaType::fromContext(ctx->typeType(), pModule),
                 any_cast<list<VariableDeclaratorPtr>>(visitVariableDeclarators(ctx->variableDeclarators())),
                 ctx->getStart()));
         }
@@ -694,11 +695,11 @@ namespace cajeta {
         }
 
         virtual std::any visitTypeType(CajetaParser::TypeTypeContext* ctx) override {
-            return CajetaType::fromContext(ctx, module);
+            return CajetaType::fromContext(ctx, pModule);
         }
 
         virtual std::any visitPrimitiveType(CajetaParser::PrimitiveTypeContext* ctx) override {
-            return CajetaType::fromContext(ctx, module);
+            return CajetaType::fromContext(ctx, pModule);
         }
 
         virtual std::any visitTypeArguments(CajetaParser::TypeArgumentsContext* ctx) override {
@@ -718,4 +719,4 @@ namespace cajeta {
             return visitChildren(ctx);
         }
     };
-}  // namespace cajeta
+}  // namespace code

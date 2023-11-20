@@ -5,4 +5,4 @@
 #include "ExplicitCastRequiredException.h"
 
 namespace cajeta {
-} // cajeta
+} // code

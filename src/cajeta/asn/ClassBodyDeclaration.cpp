@@ -5,4 +5,4 @@
 #include "ClassBodyDeclaration.h"
 
 namespace cajeta {
-} // cajeta
+} // code
