@@ -279,7 +279,7 @@ class types used in the template to an inheritance hierarchy.  The following dem
         }
     }
     
-    pbulic class ConcreteClass extends AnotherTemplateClass<AnotherClass> {
+    public class ConcreteClass extends AnotherTemplateClass<AnotherClass> {
         public void someOtherMethod() {
         }
     }
