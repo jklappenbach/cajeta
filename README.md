@@ -3,8 +3,8 @@
 Cajeta is a computer language that is a hybrid of C++ and Java, incorporating some of the memory management philosophies 
 of Rust.  Like Java, all objects are allocated from the heap, and creating an object involves a transparent stack variable,
 called a "stack reference", that maintains the pointer to heap memory, as well as the object metadata of ownership and 
-the actual type for polymorphism.  A actual reference may be to a base type, but the allocation was of a child type.  The   
-stack reference memory will carry the information as to the actual type.
+the actual type for polymorphism.  A actual reference may be to a base type, but the allocation was of a child type.  
+The stack reference memory will carry the information as to the actual type.
 
 Like Java, Cajeta will feature only pass-by-value parameters to methods.  Even object references are passed by value.  If 
 an object reference is passed into a method, whereby it is assigned a new value, the calling scope will remain unchanged.
