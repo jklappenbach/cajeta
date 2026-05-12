@@ -176,6 +176,39 @@ namespace cajeta {
         // element type. The pre-pass resolveTypes can't always determine this
         // (locals aren't in scope until their declarations run at codegen).
         resolvedType = property->getType();
+
+        // Variable-size struct fields (Session 5.5b): the LLVM struct holds
+        // only the i32 length prefix at this slot; the data bytes live past
+        // the struct's footprint in the buffer. Emit specialized codegen:
+        //   1. Load length from the prefix slot.
+        //   2. GEP past the LLVM struct to the data start.
+        //   3. Call __cajeta_str_view_to_owned to materialize a null-
+        //      terminated owned copy that's compatible with the String stdlib.
+        // The result is a fresh String pointer; callers that store it must
+        // either own it (and free at scope-end) or use it transiently.
+        if (CajetaStruct::isVariableSize(property)) {
+            auto* builder = module->getBuilder();
+            auto& ctx = *module->getLlvmContext();
+            llvm::Type* i32Ty = llvm::Type::getInt32Ty(ctx);
+            llvm::Type* i64Ty = llvm::Type::getInt64Ty(ctx);
+            llvm::Type* i8Ty = llvm::Type::getInt8Ty(ctx);
+
+            llvm::Value* lenPrefixPtr = builder->CreateStructGEP(
+                klass->getLlvmType(), base, property->getOrder(), identifier + "_len_ptr");
+            llvm::Value* length = builder->CreateLoad(i32Ty, lenPrefixPtr, identifier + "_len");
+            llvm::Value* length64 = builder->CreateIntCast(length, i64Ty, /*isSigned=*/true);
+
+            // Data starts immediately after the LLVM struct. Use the struct's
+            // total byte size (DataLayout) as the offset.
+            const llvm::DataLayout& dl = module->getLlvmModule()->getDataLayout();
+            uint64_t structBytes = dl.getTypeAllocSize(klass->getLlvmType());
+            llvm::Value* dataPtr = builder->CreateInBoundsGEP(
+                i8Ty, base, llvm::ConstantInt::get(i64Ty, structBytes), identifier + "_data");
+
+            llvm::Function* fn = module->getRuntimeFunction("__cajeta_str_view_to_owned");
+            if (!fn) return nullptr;
+            return builder->CreateCall(fn, {dataPtr, length64});
+        }
         return module->getBuilder()->CreateStructGEP(klass->getLlvmType(), base,
             property->getOrder(), identifier);
     }

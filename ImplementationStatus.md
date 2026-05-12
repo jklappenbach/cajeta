@@ -6,8 +6,8 @@ Tracks rollout progress for the doctrine in `MemoryModel.md` and `WireFormats.md
 
 ## Current status
 
-**Phase:** Sessions 1–5 (core) complete. 325 tests total, all passing. Struct views now honor `@BigEndian` / `@LittleEndian` / `@Align(natural)`.
-**Current line item:** **Session 5 / Step 5.4** — variable-size offset cache + view bounds-check (or Session 6 — migration).
+**Phase:** Sessions 1–5 + 5.5b complete. 334 tests total, all passing. Wire-format support: declared structs, packed/natural alignment, endianness bswap, bounds-checked construction, inline `String` fields (read-only, owned-copy result).
+**Current line item:** **Session 6** — migration (rewrite leaking runtime helpers, update existing tests).
 
 ---
 
@@ -83,11 +83,19 @@ Auxiliary fixes from this session: `IdentifierExpression`-receiver `getResolvedT
 - [x] **5.1** Annotation parsing — `visitStructDeclaration` walks the enclosing `typeDeclaration`'s `classOrInterfaceModifier` list, recognizes `@BigEndian`, `@LittleEndian`, and `@Align(...)` (treated as natural alignment in v1), and configures the `CajetaStruct` instance.
 - [x] **5.2** `DotExpression::maybeBswap` emits `llvm.bswap.iN` on integer fields >= 16 bits when struct endianness ≠ host. Hooked into the read path (`loadIfLValue`, `ReturnStatement`) and the write path (`BinaryOpExpression` ASSIGN, after slot-type coercion).
 - [x] **5.3** `CajetaStruct::generatePrototype` passes `isPacked` to `setBody` based on alignment annotation; natural alignment inserts padding.
-- [ ] **5.4** Variable-size offset cache — **deferred**. Needs inline-`String`/array-in-struct codegen plus the construction-time length-prefix walk; significant chunk on its own.
-- [ ] **5.5** Variable-size mutation rule — **deferred** (no variable-size fields yet).
-- [x] **5.6** 5 new tests in `test/parser/EndianAlignTests.cpp`: big-endian round-trip; reading big-endian-written bytes through a host-order view shows them reversed; host-default order works; little-endian on a little-host is a no-op; int64 big-endian round-trip. 325 tests total.
+- [x] **5.4** View construction now bounds-checks: `count * elem_size >= sizeof(struct)`. Element size comes from the argument's `CajetaArray` resolvedType (e.g. `int32[]` → 4-byte elements). Failure routes through `__cajeta_throw` so user code can `try/catch` it.
+- [ ] **5.5** Variable-size struct fields (`String`, `T[]` inline) + their offset cache + mutation rule — **deferred to Session 5.5b**. Needs a different value representation for inline strings since they aren't null-terminated.
+- [x] **5.6** 9 new tests across two suites — 5 in `EndianAlignTests`, 4 in `StructViewBoundsTests` (sufficient buffer, undersize-throws, exact-size, near-miss). 329 tests total.
 
-The construction-time bounds check from Session 4 (which depends on byte-count math, currently off because the array header stores element count not byte count) is also deferred — same logical bucket as the variable-size work since it needs proper element-size accounting.
+### Session 5.5b — Variable-size struct fields  ✅ complete (single-trailing-field shape)
+
+- [x] **5.5b.1** `CajetaStruct::isVariableSize` recognizes `String`-typed fields. The LLVM struct substitutes `i32` (the length prefix) at the slot; data bytes live past the LLVM struct's footprint. Layout rule: variable-size fields must be last (enforced at `generatePrototype` with `CAJETA_ERROR_VARSIZE_FIELD_NOT_LAST`).
+- [x] **5.5b.2** Runtime helper `__cajeta_str_view_to_owned(data, length)` allocates a null-terminated copy so the result is compatible with the existing String stdlib.
+- [x] **5.5b.3** `DotExpression::generateCode` detects variable-size fields and emits specialized codegen: load length-prefix, GEP past the LLVM struct to data start, call the runtime helper, return the owned ptr.
+- [x] **5.5b.4** `BinaryOpExpression` ASSIGN rejects variable-size field writes with `CAJETA_ERROR_VARSIZE_FIELD_ASSIGN`.
+- [x] **5.5b.5** 5 new tests in `VariableSizeStructTests`: declaration shape, content read-back via `.equals`, `.size()` returns the prefix length, assignment rejected, post-variable fixed-size field rejected. 334 tests total.
+
+**Out of scope:** multiple variable-size fields in one struct, `T[]` as a variable-size struct field, fields after a variable-size field (would need runtime-computed offsets), zero-copy String reads (today's read materializes an owned copy — pragmatic compromise; a length-aware StringView would be a bigger redesign).
 
 ### Session 6 — Migration
 

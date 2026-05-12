@@ -10,8 +10,18 @@
 #include "CajetaStruct.h"
 #include "../compile/CajetaModule.h"
 #include "../method/Method.h"
+#include "../error/Exception.h"
 
 namespace cajeta {
+
+    bool CajetaStruct::isVariableSize(const StructurePropertyPtr& property) {
+        if (!property || !property->getType()) return false;
+        auto qn = property->getType()->getQName();
+        if (qn && qn->getTypeName() == "String") return true;
+        // CajetaArray-typed fields are variable-size too; handled in a later
+        // pass when nested arrays-in-structs land.
+        return false;
+    }
 
     void CajetaStruct::generatePrototype() {
         string canonical = qName->toCanonical();
@@ -34,10 +44,34 @@ namespace cajeta {
         // alignment (inserts implicit padding between fields). Endianness is
         // a per-access concern (bswap on load/store) and doesn't affect the
         // layout itself — same byte offsets regardless.
+        //
+        // Variable-size fields (String today) substitute their i32 length
+        // prefix into the LLVM struct. The data bytes live past the LLVM
+        // struct in the buffer and are accessed via specialized DotExpression
+        // codegen (see DotExpression.cpp). v1 restriction: at most one
+        // variable-size field, and it must be the last field — fields after
+        // a variable-size one would need runtime-computed offsets, deferred.
         vector<llvm::Type*> llvmMembers;
         llvmMembers.reserve(propertyList.size());
+        llvm::Type* i32Ty = llvm::Type::getInt32Ty(*module->getLlvmContext());
+        bool sawVariableSize = false;
         for (auto& property : propertyList) {
-            llvmMembers.push_back(property->getType()->getLlvmType());
+            if (sawVariableSize) {
+                char buf[256];
+                snprintf(buf, sizeof(buf),
+                    "struct '%s' has a fixed-size field '%s' after a variable-size field; "
+                    "variable-size fields must be last (v1 restriction)",
+                    canonical.c_str(), property->getName().c_str());
+                throw Exception(buf, "CAJETA_ERROR_VARSIZE_FIELD_NOT_LAST");
+            }
+            if (isVariableSize(property)) {
+                // Substitute the length prefix (i32). The data bytes that
+                // follow aren't part of the LLVM struct's footprint.
+                llvmMembers.push_back(i32Ty);
+                sawVariableSize = true;
+            } else {
+                llvmMembers.push_back(property->getType()->getLlvmType());
+            }
         }
         const bool packed = (alignment != StructAlignment::Natural);
         ((llvm::StructType*) llvmType)->setBody(

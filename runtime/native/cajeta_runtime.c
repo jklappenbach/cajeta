@@ -307,6 +307,20 @@ const char* __cajeta_bool_to_str(int32_t v) {
     return v ? "true" : "false";
 }
 
+// Copy `length` bytes from `data` into a freshly malloc'd null-terminated
+// string. Used by struct-view field reads on `String`-typed fields: the
+// inline bytes in the buffer aren't null-terminated, so we materialize an
+// owned copy that's compatible with the existing String stdlib (strlen,
+// strcmp, etc.). Caller takes ownership of the result.
+char* __cajeta_str_view_to_owned(const char* data, int64_t length) {
+    if (length < 0) length = 0;
+    char* out = (char*) malloc((size_t) length + 1);
+    if (!out) return NULL;
+    if (data && length > 0) memcpy(out, data, (size_t) length);
+    out[length] = '\0';
+    return out;
+}
+
 int64_t __cajeta_str_len(const char* s) {
     return s ? (int64_t) strlen(s) : 0;
 }

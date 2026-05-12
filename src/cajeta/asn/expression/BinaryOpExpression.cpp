@@ -4,8 +4,10 @@
 
 #include "BinaryOpExpression.h"
 #include "../../error/CajetaExceptions.h"
+#include "../../error/Exception.h"
 #include "../../compile/CajetaModule.h"
 #include "../../type/CajetaClass.h"
+#include "../../type/CajetaStruct.h"
 #include "../../type/CajetaArray.h"
 #include "Expression.h"
 #include "DotExpression.h"
@@ -250,6 +252,18 @@ namespace cajeta {
                                 auto& props = klass->getProperties();
                                 auto it = props.find(dotLhs->getIdentifier());
                                 if (it != props.end()) {
+                                    // Reject writes to variable-size struct
+                                    // fields — they can't be resized in place.
+                                    // See WireFormats.md § Mutation rules.
+                                    if (CajetaStruct::isVariableSize(it->second)) {
+                                        char buf[256];
+                                        snprintf(buf, sizeof(buf),
+                                            "cannot reassign variable-size struct field '%s'; "
+                                            "build a new buffer instead",
+                                            it->second->getName().c_str());
+                                        throw Exception(buf,
+                                            "CAJETA_ERROR_VARSIZE_FIELD_ASSIGN");
+                                    }
                                     slotTy = it->second->getType()->getLlvmType();
                                 }
                             }

@@ -37,13 +37,16 @@ namespace cajeta {
     };
 
     /**
-     * POD struct type. Sibling to CajetaClass. v1 implementation is a stub —
-     * it carries the struct's annotations (endianness, alignment) and inherits
-     * the field machinery from CajetaClass, but does not yet emit a view
-     * constructor or compute byte offsets.
+     * POD struct type. Sibling to CajetaClass. Real layout + view constructor
+     * + field-accessor codegen are wired in Sessions 4 and 5 of the rollout.
      *
-     * Real layout + constructor + field-accessor codegen lands in Session 4
-     * (see `ImplementationStatus.md`).
+     * Variable-size field support (Session 5.5b): String-typed fields lay out
+     * as an inline `i32 length` followed by `length` bytes. The LLVM struct
+     * type substitutes the length prefix for the field's slot; the data bytes
+     * live past the LLVM struct's footprint in the buffer. Restriction in
+     * v1: at most one variable-size field, and it must be the last field.
+     * Reading such a field allocates a null-terminated copy so the result is
+     * compatible with the existing String stdlib.
      */
     class CajetaStruct : public CajetaClass {
     private:
@@ -60,6 +63,11 @@ namespace cajeta {
         StructAlignment getAlignment() const { return alignment; }
         void setAlignment(StructAlignment a) { alignment = a; }
 
+        // True iff `property` is a variable-size struct field (String today;
+        // T[] support to follow). Variable-size fields are laid out as an
+        // inline i32 length prefix followed by `length` bytes.
+        static bool isVariableSize(const StructurePropertyPtr& property);
+
         // Override: packed layout (no padding by default), no default
         // constructor, no vtable/RTTI. Register the struct itself in the
         // canonical type map so name lookups return this instance (not a
@@ -68,8 +76,9 @@ namespace cajeta {
 
         // Byte size of the struct's fixed prefix (sum of fixed-size fields,
         // with packed or natural alignment depending on this struct's
-        // annotation). Variable-size fields aren't counted here — their
-        // contribution is computed at view-construction time.
+        // annotation). Variable-size fields contribute their i32 length-prefix
+        // here; their data bytes are not counted (they live past the LLVM
+        // struct's footprint in the buffer).
         uint64_t getFixedSize() const;
     };
 

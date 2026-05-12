@@ -85,13 +85,50 @@ namespace cajeta {
 
                 llvm::Type* i64Ty = llvm::Type::getInt64Ty(llvmCtx);
                 llvm::Type* i8Ty = llvm::Type::getInt8Ty(llvmCtx);
-                (void) structType;  // referenced for documentation; v1 doesn't bounds-check.
 
-                // v1: no bounds check — variable-size element handling and the
-                // proper count*elem_size accounting (we currently read count,
-                // not bytes, from the array header) land in Session 5. The
-                // caller is trusted to pass a sufficiently-sized buffer.
-                //
+                // Bounds check: byte_count = element_count * element_size must
+                // be at least the struct's fixed-prefix size. We need the
+                // element size of the byte-array argument, which lives on the
+                // argument's resolved CajetaArray type. On failure we throw
+                // via the existing exception runtime so user code can catch
+                // it; an uncaught throw aborts, same as any other.
+                uint64_t structBytes = structType->getFixedSize();
+                uint64_t elemBytes = 1;  // sensible default if resolution fails
+                if (auto argExpr = dynamic_pointer_cast<Expression>(parameters[0].expression)) {
+                    if (!argExpr->getResolvedType()) argExpr->resolveTypes(module);
+                    if (auto arrType = dynamic_pointer_cast<CajetaArray>(argExpr->getResolvedType())) {
+                        if (auto elemTy = arrType->getElementLlvmType(&llvmCtx)) {
+                            elemBytes = module->getLlvmModule()->getDataLayout().getTypeAllocSize(elemTy);
+                            if (elemBytes == 0) elemBytes = 1;
+                        }
+                    }
+                }
+
+                llvm::Value* count = builder->CreateLoad(i64Ty, bytesPtr, "view_buf_count");
+                llvm::Value* haveBytes = builder->CreateMul(count,
+                    llvm::ConstantInt::get(i64Ty, elemBytes), "view_buf_bytes");
+                llvm::Value* ok = builder->CreateICmpUGE(haveBytes,
+                    llvm::ConstantInt::get(i64Ty, structBytes), "view_size_ok");
+
+                llvm::Function* parentFn = builder->GetInsertBlock()->getParent();
+                llvm::BasicBlock* failBB = llvm::BasicBlock::Create(
+                    llvmCtx, "view_size_fail", parentFn);
+                llvm::BasicBlock* okBB = llvm::BasicBlock::Create(
+                    llvmCtx, "view_size_ok", parentFn);
+                builder->CreateCondBr(ok, okBB, failBB);
+
+                builder->SetInsertPoint(failBB);
+                if (llvm::Function* throwFn = module->getRuntimeFunction("__cajeta_throw")) {
+                    // Throw value is informational. Higher byte = struct-view-fail tag;
+                    // low bits = needed minimum bytes (truncated). Catchers can
+                    // currently only observe the value via __cajeta_get_thrown.
+                    uint64_t tag = (uint64_t) 0xCA1E7A00 | (structBytes & 0xFF);
+                    builder->CreateCall(throwFn,
+                        {llvm::ConstantInt::get(i64Ty, tag)});
+                }
+                builder->CreateUnreachable();
+
+                builder->SetInsertPoint(okBB);
                 // GEP past the array header's i64 size field to reach data[0].
                 llvm::Value* dataPtr = builder->CreateInBoundsGEP(
                     i8Ty, bytesPtr,
