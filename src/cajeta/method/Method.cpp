@@ -7,6 +7,7 @@
 #include "../compile/CajetaModule.h"
 #include "../compile/Compiler.h"
 #include "../error/VariableAssignmentException.h"
+#include "../error/Exception.h"
 #include "../asn/DefaultBlock.h"
 #include "../type/FormalParameter.h"
 #include "../field/ParameterField.h"
@@ -65,6 +66,18 @@ namespace cajeta {
         this->block = block;
     }
 
+    void Method::emitOwnerDrops(CajetaModulePtr module) {
+        if (ownerDropEntries.empty()) return;
+        llvm::Function* popRun = module->getRuntimeFunction("__cajeta_drop_pop_run");
+        if (!popRun) return;
+        auto* b = module->getBuilder();
+        // Reverse declaration order: LIFO. Each pop releases the entry from the
+        // chain and runs its drop function if the entry is still active.
+        for (auto it = ownerDropEntries.rbegin(); it != ownerDropEntries.rend(); ++it) {
+            b->CreateCall(popRun, {*it});
+        }
+    }
+
     void Method::createLocalVariable(CajetaModulePtr module, FieldPtr field) {
         ScopePtr scope = module->getScopeStack().peek();
         if (scope->getField(field->getName()) != nullptr) {
@@ -99,6 +112,26 @@ namespace cajeta {
         vector<llvm::Type*> llvmTypes;
 
         bool staticMethod = modifiers.find(STATIC) != modifiers.end();
+
+        // Static check (Session 3 / Step 3.5): a multi-parameter free function
+        // can't return a borrow because there's no rule for picking which
+        // parameter's lifetime the return inherits. See
+        // MemoryModel.md § Function signatures § Free function, multiple parameters.
+        //
+        // Instance methods (non-static) are exempt — their borrow-return inherits
+        // from `this` by elision, regardless of how many other parameters they take.
+        if (staticMethod && !returnsOwnership && returnType
+                && returnType->getLlvmType()
+                && returnType->getLlvmType()->isPointerTy()
+                && parameterList.size() > 1) {
+            char buf[256];
+            snprintf(buf, sizeof(buf),
+                "multi-parameter free function '%s' cannot return a borrow; "
+                "use `#%s` to return ownership, or reduce to a single parameter",
+                name.c_str(),
+                returnType->getQName() ? returnType->getQName()->getTypeName().c_str() : "T");
+            throw Exception(buf, "CAJETA_ERROR_BORROW_RETURN_MULTI_PARAM");
+        }
 
         if (!staticMethod) {
             auto thisParam = make_shared<FormalParameter>(string("this"), CajetaType::of("pointer"));
@@ -160,6 +193,9 @@ namespace cajeta {
         // a missing return is undefined in Cajeta semantics, but we emit a zero-value
         // ret so the IR remains well-formed.
         if (!builder->GetInsertBlock()->getTerminator()) {
+            // Fire scope-end drops before the synthetic return so the chain is
+            // unwound the same way an explicit `return` would do it.
+            emitOwnerDrops(module);
             llvm::Type* retLlvmTy = returnType ? returnType->getLlvmType() : nullptr;
             if (!retLlvmTy || retLlvmTy->isVoidTy()) {
                 builder->CreateRetVoid();

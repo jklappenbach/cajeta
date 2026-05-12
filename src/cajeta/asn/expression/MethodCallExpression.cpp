@@ -277,6 +277,17 @@ namespace cajeta {
                     }
                     return v;
                 };
+                // Cajeta.* — language-internal diagnostics. Today: drop-chain
+                // observability for the rollout's test suite. These are part of
+                // the runtime, not the user-facing standard library.
+                if (ns == "Cajeta" && methodCallName == "dropCount" && parameters.empty()) {
+                    llvm::Function* fn = module->getRuntimeFunction("__cajeta_drop_count_get");
+                    return builder->CreateCall(fn, {});
+                }
+                if (ns == "Cajeta" && methodCallName == "dropCountReset" && parameters.empty()) {
+                    llvm::Function* fn = module->getRuntimeFunction("__cajeta_drop_count_reset");
+                    return builder->CreateCall(fn, {});
+                }
                 if (ns == "System" && methodCallName == "exit" && parameters.size() == 1) {
                     llvm::Function* fn = module->getRuntimeFunction("__cajeta_exit");
                     llvm::Value* code = loadValue(0);

@@ -15,6 +15,7 @@
 #include "LiteralExpression.h"
 #include "MethodCallExpression.h"
 #include "NewExpression.h"
+#include "../../error/Exception.h"
 
 namespace cajeta {
     ExpressionPtr Expression::fromContext(CajetaParser::ExpressionContext* ctx) {
@@ -607,12 +608,44 @@ namespace cajeta {
         //
         // Only direct identifier sources are tracked today; chain forms
         // (`#person.name`) require path-based borrow tracking, which lands in
-        // Session 3.
+        // a later step of Session 3.
         auto inner = dynamic_pointer_cast<Expression>(children[0]);
         llvm::Value* value = inner ? inner->generateCode(module) : nullptr;
+        // The wrapped expression typically yields an l-value (an alloca). The
+        // consumer of a moved value wants the r-value — the pointer to the
+        // owned heap block, not the address of the local slot that holds it.
+        // Load through the alloca so the destination receives the actual heap
+        // pointer.
+        if (value) {
+            if (auto* a = llvm::dyn_cast<llvm::AllocaInst>(value)) {
+                value = module->getBuilder()->CreateLoad(a->getAllocatedType(), a);
+            }
+        }
         if (auto idExpr = dynamic_pointer_cast<IdentifierExpression>(inner)) {
             auto scope = module->getScopeStack().peek();
-            if (scope) scope->markMoved(idExpr->getTextValue());
+            if (scope) {
+                scope->markMoved(idExpr->getTextValue());
+                // If the moved-out identifier has a drop entry, flag it inactive
+                // so scope-exit doesn't re-free the value the new owner holds.
+                if (FieldPtr field = scope->getField(idExpr->getTextValue())) {
+                    if (llvm::Value* entry = field->getDropEntry()) {
+                        if (llvm::Function* mark = module->getRuntimeFunction(
+                                "__cajeta_drop_mark_inactive")) {
+                            module->getBuilder()->CreateCall(mark, {entry});
+                        }
+                    }
+                }
+            }
+        } else if (dynamic_pointer_cast<DotExpression>(inner)) {
+            // Path-based move (`#person.address.city`). Build the dotted path
+            // and record it on the scope so future reads through that path —
+            // or any prefix — are rejected. See MemoryModel.md § Path-based
+            // borrow tracking.
+            auto scope = module->getScopeStack().peek();
+            if (scope) {
+                string path = DotExpression::buildPath(inner);
+                if (!path.empty()) scope->markMovedPath(path);
+            }
         }
         return value;
     }

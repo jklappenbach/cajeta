@@ -91,10 +91,70 @@ void __cajeta_array_bounds_fail(int64_t index, int64_t dim) {
 // __thread / _Thread_local is a small change but unnecessary until JIT'd code
 // runs on multiple threads.
 
+// --- drop chain (Session 3 of the memory-model rollout) ---------------------
+//
+// Owners declared in a function push a `cajeta_drop_entry` onto a per-thread
+// linked list at declaration time, and pop+drop at scope exit. The exception
+// throw path walks this chain down to the catching try-frame's watermark so
+// stack unwinding fires drops along the way. See MemoryModel.md § Runtime:
+// drop chain with watermark.
+
+struct cajeta_drop_entry {
+    void* obj;
+    void (*drop_fn)(void*);
+    struct cajeta_drop_entry* prev;
+    int8_t active;  // i8 instead of bool — fixed ABI for the IR side
+};
+
+size_t __cajeta_drop_entry_size(void) {
+    return sizeof(struct cajeta_drop_entry);
+}
+
+static struct cajeta_drop_entry* __cajeta_drop_top = NULL;
+
+// Observability for tests: bumped every time a drop function actually fires
+// (i.e. an active entry pops or unwinds). Tests can read it to assert that
+// owned resources are freed at expected program points.
+static int64_t __cajeta_drop_count = 0;
+
+int64_t __cajeta_drop_count_get(void) { return __cajeta_drop_count; }
+void __cajeta_drop_count_reset(void) { __cajeta_drop_count = 0; }
+
+// Push an owner onto the drop chain. The entry storage is stack-allocated in
+// the caller's frame; we never own the memory, only chain pointers through it.
+void __cajeta_drop_push(struct cajeta_drop_entry* e, void* obj, void (*drop_fn)(void*)) {
+    e->obj = obj;
+    e->drop_fn = drop_fn;
+    e->prev = __cajeta_drop_top;
+    e->active = 1;
+    __cajeta_drop_top = e;
+}
+
+// Pop the topmost entry and run its drop function if still active. Caller
+// passes the entry pointer so popping can verify shape (in debug builds; v1
+// trusts the caller).
+void __cajeta_drop_pop_run(struct cajeta_drop_entry* e) {
+    if (e->active && e->drop_fn) {
+        __cajeta_drop_count++;
+        e->drop_fn(e->obj);
+    }
+    __cajeta_drop_top = e->prev;
+}
+
+// Mark an entry inactive (the owner has been moved out via `#`). The entry
+// remains on the chain so scope-exit pop logic still finds it, but the drop
+// function won't run.
+void __cajeta_drop_mark_inactive(struct cajeta_drop_entry* e) {
+    e->active = 0;
+}
+
 struct cajeta_exception_frame {
     jmp_buf buf;
     struct cajeta_exception_frame* prev;
     int64_t thrown_value;
+    // Drop-chain watermark snapshotted at try-entry. On throw, the runtime
+    // unwinds drops between the current top and this watermark before longjmp.
+    struct cajeta_drop_entry* drop_watermark;
 };
 
 // Exposed as a compile-time-known size for the IR side; the compiler allocates a
@@ -110,6 +170,8 @@ static struct cajeta_exception_frame* __cajeta_exc_top = NULL;
 void __cajeta_exc_push(struct cajeta_exception_frame* f) {
     f->prev = __cajeta_exc_top;
     f->thrown_value = 0;
+    // Snapshot the current drop-chain top so a throw can unwind back to here.
+    f->drop_watermark = __cajeta_drop_top;
     __cajeta_exc_top = f;
 }
 
@@ -125,6 +187,20 @@ void __cajeta_throw(int64_t value) {
         fprintf(stderr, "cajeta: uncaught exception (value=%lld)\n",
                 (long long) value);
         abort();
+    }
+    // Unwind drops between the current top and the catching frame's watermark.
+    // Each active entry runs its drop function once; the entry itself is
+    // stack-allocated in the originating frame, so we only manipulate the
+    // chain pointer here.
+    struct cajeta_drop_entry* watermark = __cajeta_exc_top->drop_watermark;
+    while (__cajeta_drop_top != watermark) {
+        struct cajeta_drop_entry* e = __cajeta_drop_top;
+        if (!e) break;  // shouldn't happen, but bail rather than loop
+        if (e->active && e->drop_fn) {
+            __cajeta_drop_count++;
+            e->drop_fn(e->obj);
+        }
+        __cajeta_drop_top = e->prev;
     }
     __cajeta_exc_top->thrown_value = value;
     longjmp(__cajeta_exc_top->buf, 1);

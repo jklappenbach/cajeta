@@ -159,6 +159,12 @@ add_custom_command(
 
 set_source_files_properties(${CAJETA_RT_EMBED} PROPERTIES GENERATED TRUE)
 list(APPEND GENERATED_SOURCES ${CAJETA_RT_EMBED})
+
+# Also compile the runtime as a native object so tests can observe runtime
+# state (e.g. drop counters) directly from C++. The JIT'd code still uses the
+# embedded bitcode version; the native one only matters for the test binary.
+set_source_files_properties(${CAJETA_RT_SRC} PROPERTIES LANGUAGE C)
+list(APPEND GENERATED_SOURCES ${CAJETA_RT_SRC})
 # ------------------------------------------------------------------------------
 
 add_library(${CMAKE_PROJECT_NAME}_lib STATIC ${SOURCES} ${GENERATED_SOURCES})

@@ -60,6 +60,11 @@ namespace cajeta {
         vector<FormalParameterPtr> parameterList;
         int virtualTableIndex;
 
+        // DropEntry alloca pointers for every owned local declared in this method,
+        // in declaration order. Drained at scope exit / return — pops fire in
+        // reverse order. See MemoryModel.md § Runtime: drop chain with watermark.
+        vector<llvm::Value*> ownerDropEntries;
+
         CajetaModulePtr module;
         llvm::IRBuilder<>* builder;
         llvm::FunctionType* llvmFunctionType;
@@ -99,6 +104,17 @@ namespace cajeta {
 
         bool isReturnsOwnership() const { return returnsOwnership; }
         void setReturnsOwnership(bool v) { returnsOwnership = v; }
+
+        // Register a DropEntry alloca (as emitted by LocalVariableDeclaration for
+        // an owned local). Called once per owned local, at declaration order.
+        void registerDropEntry(llvm::Value* entry) { ownerDropEntries.push_back(entry); }
+
+        // Emit drop-chain pops + drops for all currently-registered owners, in
+        // reverse declaration order. Called before each normal-flow function exit
+        // (explicit return and the synthetic fallthrough terminator).
+        // Exception unwind doesn't go through this — `__cajeta_throw` walks the
+        // drop chain itself down to the catching watermark.
+        void emitOwnerDrops(CajetaModulePtr module);
 
         const string& getName() const {
             return name;

@@ -6,8 +6,8 @@ Tracks rollout progress for the doctrine in `MemoryModel.md` and `WireFormats.md
 
 ## Current status
 
-**Phase:** Session 2 complete (AST + minimal use-after-move static check). 295 tests total, all passing.
-**Current line item:** **Session 3 / Step 3.1** — runtime `DropEntry` + helpers + `drop_watermark` on exception frame.
+**Phase:** Sessions 1–3 complete (parser, AST, borrow checks, drop chain). 314 tests total, all passing.
+**Current line item:** **Session 4 / Step 4.1** — `CajetaStruct` layout computation (fixed-prefix size, variable-size detection).
 
 ---
 
@@ -47,16 +47,27 @@ Tracks rollout progress for the doctrine in `MemoryModel.md` and `WireFormats.md
 
 Grammar cleanup as part of this session: removed the legacy `REFERENCE?` from `variableDeclarator` and the var-form `localVariableDeclaration`; `#expr` now flows uniformly through `MoveExpression`. The `bool reference` flag on `VariableDeclarator` is now always false (left in place to avoid churning callers; will be retired during migration).
 
-### Session 3 — Drop chain + path-based analysis  ← **next**
+### Session 3 — Drop chain + elision  🟡 mostly complete (3.4 deferred to 3.5-session)
 
-- [ ] **3.1** Runtime: `DropEntry` struct, `__cajeta_drop_push` / `__cajeta_drop_pop_run` helpers, `drop_watermark` field on exception frame.  ← **currently here**
-- [ ] **3.2** Codegen: DropEntry alloca + chain push/pop at scope boundaries.
-- [ ] **3.3** `__cajeta_throw` updated to unwind drops down to the watermark before `longjmp`.
-- [ ] **3.4** Static check: path-based borrow tracking (field-path borrows, alias-mutation).
-- [ ] **3.5** Static check: inter-procedural elision (method returns borrow tied to `this`; single-param returns tied to that param; multi-param borrow-return forbidden).
-- [ ] **3.6** Tests: valid borrows, invalid alias-mutation, invalid multi-param borrow-return.
+- [x] **3.1** Runtime: `cajeta_drop_entry`, push/pop/mark-inactive helpers, `drop_watermark` on exception frame, `__cajeta_drop_count_*` test observability.
+- [x] **3.2** Codegen: array locals push DropEntry allocas; move-out flips inactive; `Method::emitOwnerDrops` fires pop+drop on every normal return path.
+- [x] **3.3** `__cajeta_throw` unwinds drops to the catching frame's watermark before `longjmp`.
+- [ ] **3.4** Path-based borrow tracking — **carved out into Session 3.5**.
+- [x] **3.5** Multi-parameter free-function borrow-return rejected at `Method::generatePrototype` with `CAJETA_ERROR_BORROW_RETURN_MULTI_PARAM`.
+- [x] **3.6** 12 new tests: 5 `DropChainTests`, 7 `ElisionTests`. 307 tests total.
 
-### Session 4 — Struct view layout + constructor
+New language-internal intrinsics: `Cajeta.dropCount()` / `Cajeta.dropCountReset()` for test observability of the drop counter. Diagnostic-only — not user-facing stdlib.
+
+### Session 3.5 — Path-based borrow tracking (carved out of Session 3)  ✅ complete
+
+- [x] **3.4.1** `Scope` now tracks `movedPaths` as a string set with prefix semantics; `markMovedPath` / `isPathMoved` walk parent scopes.
+- [x] **3.4.2** `DotExpression::generateCode` builds the dotted path and consults the scope at the top of codegen, throwing `CAJETA_ERROR_USE_AFTER_MOVE` if any prefix has been moved.
+- [x] **3.4.3** Root-identifier moves (`#person`) also invalidate sub-paths (`person.name`) via the shared `movedNames` check inside `isPathMoved`.
+- [x] **3.4.4** 7 new tests in `test/parser/PathBorrowTests.cpp`: exact-match path moves, root moves blocking sub-paths, double-moves, deeper-path moves blocking transitive reads, sibling paths still readable. 314 tests total.
+
+Alias-mutation through path writes (`person.name = #other` invalidating a live borrow into `person.name`) is deferred — needs a "live borrow" tracking pass that knows which paths each named borrow inhabits. Today's coverage catches every case where a move appears textually before the conflicting read.
+
+### Session 4 — Struct view layout + constructor  ← **next**
 
 - [ ] **4.1** Type system: `CajetaStruct` with explicit layout computation (fixed-prefix size, variable-size field identification, all-fixed fast-path detection).
 - [ ] **4.2** Constructor synthesis: `MyStruct(byte[])` returning a borrow-view; plus `.from(...)` and `.view(...)` aliases.

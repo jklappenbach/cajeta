@@ -832,6 +832,8 @@ namespace cajeta {
     llvm::Value* ReturnStatement::generateCode(CajetaModulePtr module) {
         auto* builder = module->getBuilder();
         if (!expression) {
+            // Fire drops before the value-less return.
+            if (auto m = module->getCurrentMethod()) m->emitOwnerDrops(module);
             return builder->CreateRetVoid();
         }
         llvm::Value* val = expression->generateCode(module);
@@ -874,6 +876,8 @@ namespace cajeta {
             }
             // Pointer / aggregate mismatches fall through; LLVM verifier will flag.
         }
+        // Fire drops before the typed return so all owned locals are released.
+        if (auto m = module->getCurrentMethod()) m->emitOwnerDrops(module);
         return builder->CreateRet(val);
     }
 

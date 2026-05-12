@@ -5,6 +5,7 @@
 #include "DotExpression.h"
 #include "../../compile/CajetaModule.h"
 #include "../../type/CajetaClass.h"
+#include "../../error/Exception.h"
 #include "Identifier.h"
 
 #include <climits>
@@ -45,9 +46,48 @@ namespace cajeta {
     // or a pointer loaded from the heap; both yield an address we can GEP into. The member
     // index comes from StructureProperty::getOrder() — set when the class registered its
     // properties during signature pass.
+    string DotExpression::buildPath(const ExpressionPtr& expr) {
+        if (auto id = dynamic_pointer_cast<IdentifierExpression>(expr)) {
+            return id->getTextValue();
+        }
+        if (auto dot = dynamic_pointer_cast<DotExpression>(expr)) {
+            const auto& children = const_cast<DotExpression*>(dot.get())->getChildren();
+            if (children.empty()) return "";
+            auto lhs = dynamic_pointer_cast<Expression>(children[0]);
+            if (!lhs) return "";
+            string lhsPath = buildPath(lhs);
+            if (lhsPath.empty()) return "";
+            return lhsPath + "." + dot->getIdentifier();
+        }
+        return "";
+    }
+
     llvm::Value* DotExpression::generateCode(CajetaModulePtr module) {
         if (children.empty()) {
             return nullptr;
+        }
+
+        // Use-after-move check for field-access paths. Build the dotted path
+        // from this DotExpression down to its named root, then ask the scope
+        // whether any prefix of that path has been moved-out. This catches
+        // patterns like `#person.name` followed by a read of `person.name`
+        // or any path through it.
+        //
+        // Per MemoryModel.md § Path-based borrow tracking. Skip when the LHS
+        // doesn't bottom out at a named identifier (e.g. `factory.make().foo`)
+        // — those produce anonymous owners and are handled by the separate
+        // anonymous-owner rule.
+        {
+            ExpressionPtr self = dynamic_pointer_cast<Expression>(shared_from_this());
+            string path = buildPath(self);
+            if (!path.empty()) {
+                auto scope = module->getScopeStack().peek();
+                if (scope && scope->isPathMoved(path)) {
+                    throw Exception("use-after-move: path '" + path
+                        + "' was transferred via `#` and cannot be read here",
+                        "CAJETA_ERROR_USE_AFTER_MOVE");
+                }
+            }
         }
 
         // Static-namespace constants: Math.PI / Math.E / Integer.MAX_VALUE / ... .

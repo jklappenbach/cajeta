@@ -56,6 +56,7 @@ namespace cajeta {
         InitializerPtr initializer;
         cajeta::CajetaTypePtr type;
         llvm::AllocaInst* alloca;
+        llvm::Value* dropEntry = nullptr;
 
     public:
         Field(CajetaModulePtr module, string name, CajetaTypePtr type, FieldPtr parent = nullptr) {
@@ -149,6 +150,12 @@ namespace cajeta {
         void setAllocation(llvm::AllocaInst* alloca) {
             this->alloca = alloca;
         }
+
+        // Drop-chain entry alloca for this owner, or null if this field isn't an
+        // owner (e.g. primitive, borrow, parameter without `#`). Set by codegen
+        // when the owner pushes onto the chain.
+        llvm::Value* getDropEntry() const { return dropEntry; }
+        void setDropEntry(llvm::Value* e) { dropEntry = e; }
 
         virtual llvm::Value* createLoad() = 0;
 

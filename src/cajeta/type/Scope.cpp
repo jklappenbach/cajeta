@@ -57,4 +57,40 @@ namespace cajeta {
         if (parent) return parent->isMoved(name);
         return false;
     }
+
+    void Scope::markMovedPath(const string& path) {
+        // Record on the scope where the root variable lives, so a move inside
+        // a nested block still invalidates the outer binding's sub-paths.
+        if (path.empty()) return;
+        size_t dot = path.find('.');
+        string root = (dot == string::npos) ? path : path.substr(0, dot);
+        Scope* target = this;
+        while (target) {
+            if (target->fields.find(root) != target->fields.end()) {
+                target->movedPaths.insert(path);
+                return;
+            }
+            target = target->parent ? target->parent.get() : nullptr;
+        }
+        // Fallback: record locally if the root isn't found in any ancestor.
+        movedPaths.insert(path);
+    }
+
+    bool Scope::isPathMoved(const string& path) {
+        // Check every prefix of `path` ("a", "a.b", "a.b.c") against the
+        // moved-path set — if any prefix was moved, the full path is invalid.
+        size_t pos = 0;
+        while (true) {
+            size_t dot = path.find('.', pos);
+            string prefix = (dot == string::npos) ? path : path.substr(0, dot);
+            if (movedPaths.find(prefix) != movedPaths.end()) return true;
+            // The root identifier of the path may also be in the variable-level
+            // moved set (covers `#person` followed by a `person.name` read).
+            if (pos == 0 && movedNames.find(prefix) != movedNames.end()) return true;
+            if (dot == string::npos) break;
+            pos = dot + 1;
+        }
+        if (parent) return parent->isPathMoved(path);
+        return false;
+    }
 }

@@ -20,6 +20,12 @@ namespace cajeta {
         void resolveTypes(CajetaModulePtr module) override;
 
         llvm::Value* generateCode(CajetaModulePtr module) override;
+
+        // Build the dotted-path string for a chain like `person.address.city`.
+        // Returns "" if the chain bottoms out at something that isn't a named
+        // identifier (e.g. a method call result). Used by the borrow checker
+        // to track moved paths and reject reads through them.
+        static string buildPath(const ExpressionPtr& expr);
     };
 
 } // code
