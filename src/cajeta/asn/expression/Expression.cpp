@@ -192,6 +192,11 @@ namespace cajeta {
             result = make_shared<BinaryOpExpression>(BINARY_OP_MOD_EQUALS, token);
         } else if (ctx->THIS()) {
             result = make_shared<ThisExpression>(ctx);
+        } else if (ctx->REFERENCE()) {
+            // `#expr` — transfer ownership of expr at the surrounding consumption
+            // site (assignment LHS, method-call argument, or return). Wrapped in
+            // MoveExpression so consumers can detect it via dynamic_pointer_cast.
+            result = make_shared<MoveExpression>(token);
         } else if (ctx->INSTANCEOF()) {
             // `expr instanceof Type` — target type comes from typeType (the pattern form
             // of instanceof, which binds a name, is treated as the same shape for now).
@@ -579,6 +584,37 @@ namespace cajeta {
         phi->addIncoming(thenVal, thenEnd);
         phi->addIncoming(elseVal, elseEnd);
         return phi;
+    }
+
+    void MoveExpression::resolveTypes(CajetaModulePtr module) {
+        AbstractSyntaxNode::resolveTypes(module);
+        // Our resolvedType mirrors the wrapped expression's — `#x` carries the
+        // same type as `x` for typing purposes; the `#` is purely an ownership
+        // operation, not a coercion.
+        if (!children.empty()) {
+            if (auto inner = dynamic_pointer_cast<Expression>(children[0])) {
+                resolvedType = inner->getResolvedType();
+            }
+        }
+    }
+
+    llvm::Value* MoveExpression::generateCode(CajetaModulePtr module) {
+        if (children.empty()) return nullptr;
+        // Evaluate the wrapped expression FIRST (while the source is still
+        // readable), then mark the source as moved. Marking before evaluating
+        // would trip the use-after-move check on the very read that performs
+        // the transfer.
+        //
+        // Only direct identifier sources are tracked today; chain forms
+        // (`#person.name`) require path-based borrow tracking, which lands in
+        // Session 3.
+        auto inner = dynamic_pointer_cast<Expression>(children[0]);
+        llvm::Value* value = inner ? inner->generateCode(module) : nullptr;
+        if (auto idExpr = dynamic_pointer_cast<IdentifierExpression>(inner)) {
+            auto scope = module->getScopeStack().peek();
+            if (scope) scope->markMoved(idExpr->getTextValue());
+        }
+        return value;
     }
 
     void SwitchExpression::resolveTypes(CajetaModulePtr module) {

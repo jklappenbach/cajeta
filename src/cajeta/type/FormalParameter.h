@@ -24,6 +24,10 @@ namespace cajeta {
         MethodPtr parent;
         string name;
         CajetaTypePtr type;
+        // True iff the parameter type is prefixed with `#` (e.g. `#String s`),
+        // meaning the parameter takes ownership of its argument at the callsite.
+        // See `MemoryModel.md` § Borrow / transfer rules.
+        bool transferred = false;
     public:
         FormalParameter(string name, CajetaTypePtr type, set<Modifier>& modifiers,
             set<QualifiedNamePtr>& annotations);
@@ -37,7 +41,11 @@ namespace cajeta {
             parent = src.parent;
             name = src.name;
             type = src.type;
+            transferred = src.transferred;
         }
+
+        bool isTransferred() const { return transferred; }
+        void setTransferred(bool v) { transferred = v; }
 
         MethodPtr getParent() const;
 

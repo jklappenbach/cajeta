@@ -27,6 +27,12 @@ namespace cajeta {
         }
         if (type != nullptr) {
             parameter = make_shared<FormalParameter>(name, type, modifiers, annotations);
+            // `#T x` — parameter takes ownership at the callsite. The token comes
+            // before the type in the grammar (`REFERENCE? typeType`), so checking
+            // ctx->REFERENCE() here is enough.
+            if (ctx->REFERENCE() != nullptr) {
+                parameter->setTransferred(true);
+            }
         }
         return parameter;
     }

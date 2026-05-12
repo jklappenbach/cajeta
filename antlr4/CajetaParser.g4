@@ -286,7 +286,7 @@ variableDeclarators
     ;
 
 variableDeclarator
-    : variableDeclaratorId ('=' (REFERENCE variableInitializer | variableInitializer))?
+    : variableDeclaratorId ('=' variableInitializer)?
     ;
 
 variableDeclaratorId
@@ -462,7 +462,7 @@ blockStatement
     ;
 
 localVariableDeclaration
-    : variableModifier* (typeType variableDeclarators | VAR identifier '=' REFERENCE? expression)
+    : variableModifier* (typeType variableDeclarators | VAR identifier '=' expression)
     ;
 
 identifier

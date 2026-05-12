@@ -268,6 +268,29 @@ namespace cajeta {
     // The parser produces one of these so the failure surfaces at codegen time as a clear
     // cajeta::Exception with the construct name and source location, rather than a silent
     /**
+     * `#expr` — the move/transfer operator. See `MemoryModel.md` for full
+     * semantics. At codegen time:
+     *   1. Delegates value-generation to its single child.
+     *   2. If that child is an `IdentifierExpression`, marks the identifier as
+     *      moved in the active scope so subsequent reads can be rejected.
+     *   3. Carries a static-checked invariant: nested `##expr` reports the
+     *      same use-after-move error pattern after the first wrap unwinds.
+     *
+     * The transfer-flow side (drop-elision on the source, ownership transfer
+     * to the destination) lives at the use site (`BinaryOpExpression` for
+     * assignment, `MethodCallExpression` for arguments, `ReturnStatement` for
+     * returns). They detect that their child is a `MoveExpression` via
+     * `dynamic_pointer_cast` and act accordingly.
+     */
+    class MoveExpression : public Expression {
+    public:
+        MoveExpression(antlr4::Token* token) : Expression(token) { }
+
+        void resolveTypes(CajetaModulePtr module) override;
+        llvm::Value* generateCode(CajetaModulePtr module) override;
+    };
+
+    /**
      * Java-17 switch expression. Today we only support the arrow form with single-
      * expression case bodies — `case X -> expr;` and `default -> expr;` — which is
      * the most common shape and avoids needing `yield`.

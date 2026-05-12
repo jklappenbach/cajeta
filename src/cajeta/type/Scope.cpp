@@ -37,4 +37,24 @@ namespace cajeta {
     FieldPtr Scope::getField(llvm::AllocaInst* alloca) {
         return allocaToField[alloca];
     }
+
+    void Scope::markMoved(const string& name) {
+        // Find the scope where the name was declared and record the move there;
+        // otherwise record it locally so later checks still see it.
+        Scope* target = this;
+        while (target) {
+            if (target->fields.find(name) != target->fields.end()) {
+                target->movedNames.insert(name);
+                return;
+            }
+            target = target->parent ? target->parent.get() : nullptr;
+        }
+        movedNames.insert(name);
+    }
+
+    bool Scope::isMoved(const string& name) {
+        if (movedNames.find(name) != movedNames.end()) return true;
+        if (parent) return parent->isMoved(name);
+        return false;
+    }
 }

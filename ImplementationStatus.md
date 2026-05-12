@@ -6,8 +6,8 @@ Tracks rollout progress for the doctrine in `MemoryModel.md` and `WireFormats.md
 
 ## Current status
 
-**Phase:** Session 1 complete (parser foundation). Existing tests still pass + 17 new parse tests pass. 285 tests total.
-**Current line item:** **Session 2 / Step 2.1** — extend `Expression` AST with `moveFlag`.
+**Phase:** Session 2 complete (AST + minimal use-after-move static check). 295 tests total, all passing.
+**Current line item:** **Session 3 / Step 3.1** — runtime `DropEntry` + helpers + `drop_watermark` on exception frame.
 
 ---
 
@@ -36,18 +36,20 @@ Tracks rollout progress for the doctrine in `MemoryModel.md` and `WireFormats.md
 - [x] **1.5** Existing 268 tests pass — backward-compatible.
 - [x] **1.6** 17 new parse-level tests in `test/parser/Session1ParseTests.cpp`: valid samples (parses) + invalid samples (parser rejects).
 
-### Session 2 — AST + basic codegen  ← **next**
+### Session 2 — AST + basic codegen  ✅ complete
 
-- [ ] **2.1** Extend `Expression` with `moveFlag`.  ← **currently here**
-- [ ] **2.2** Extend type signatures with `transferred` bit on parameter and return types.
-- [ ] **2.3** Add `CajetaStruct` type node (sibling to `CajetaClass`).
-- [ ] **2.4** Codegen: mark `#x` as moved in the scope; emit basic drops at scope end (no watermark yet).
-- [ ] **2.5** Static check: use-after-move at variable level.
-- [ ] **2.6** Tests for valid moves and rejected use-after-move (both directions).
+- [x] **2.1** Added `MoveExpression` AST node wrapping `#expr`. Cleaner than a flag on Expression — consumers detect via `dynamic_pointer_cast`. Wired through `Expression::fromContext` via the new `REFERENCE expression` grammar alternative.
+- [x] **2.2** `FormalParameter` gained `bool transferred` set from `ctx->REFERENCE()`. `Method` gained `bool returnsOwnership` set from `ctx->typeTypeOrVoid()->REFERENCE()` in the visitor.
+- [x] **2.3** `CajetaStruct` stub at `src/cajeta/type/CajetaStruct.h` — sibling of `CajetaClass`, carries `endianness` and `alignment` annotations. Full layout/codegen deferred to Session 4.
+- [ ] **2.4** Drop emission at scope end — **deferred to Session 3** with the runtime DropEntry infrastructure (premature without the chain).
+- [x] **2.5** `Scope::markMoved` / `Scope::isMoved` track moved-out identifiers; walks up the scope chain to find the declaring scope. `IdentifierExpression::generateCode` throws `CAJETA_ERROR_USE_AFTER_MOVE` on reads of moved names.
+- [x] **2.6** 10 new tests in `test/parser/UseAfterMoveTests.cpp` — valid moves (5) and rejected use-after-move (5). All passing. 295 tests total.
 
-### Session 3 — Drop chain + path-based analysis
+Grammar cleanup as part of this session: removed the legacy `REFERENCE?` from `variableDeclarator` and the var-form `localVariableDeclaration`; `#expr` now flows uniformly through `MoveExpression`. The `bool reference` flag on `VariableDeclarator` is now always false (left in place to avoid churning callers; will be retired during migration).
 
-- [ ] **3.1** Runtime: `DropEntry` struct, `__cajeta_drop_push` / `__cajeta_drop_pop_run` helpers, `drop_watermark` field on exception frame.
+### Session 3 — Drop chain + path-based analysis  ← **next**
+
+- [ ] **3.1** Runtime: `DropEntry` struct, `__cajeta_drop_push` / `__cajeta_drop_pop_run` helpers, `drop_watermark` field on exception frame.  ← **currently here**
 - [ ] **3.2** Codegen: DropEntry alloca + chain push/pop at scope boundaries.
 - [ ] **3.3** `__cajeta_throw` updated to unwind drops down to the watermark before `longjmp`.
 - [ ] **3.4** Static check: path-based borrow tracking (field-path borrows, alias-mutation).

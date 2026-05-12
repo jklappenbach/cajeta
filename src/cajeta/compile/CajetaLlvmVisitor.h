@@ -187,6 +187,11 @@ namespace cajeta {
                 formalParameters,
                 block,
                 pModule->getStructureStack().front());
+            // `#T foo()` — return transfers ownership. The grammar puts the `#`
+            // on typeTypeOrVoid (`REFERENCE? typeType`); see MemoryModel.md.
+            if (ctx->typeTypeOrVoid() && ctx->typeTypeOrVoid()->REFERENCE() != nullptr) {
+                method->setReturnsOwnership(true);
+            }
             return static_pointer_cast<MemberDeclaration>(make_shared<MethodDeclaration>(method, ctx->getStart()));
         }
 
@@ -300,7 +305,7 @@ namespace cajeta {
             return make_shared<VariableDeclarator>(
                 ctx->variableDeclaratorId()->identifier()->getText(),
                 ctx->variableDeclaratorId()->LBRACK().size(),
-                ctx->REFERENCE() != nullptr,
+                /*isReference=*/false,
                 initializer,
                 ctx->getStart());
         }

@@ -50,6 +50,10 @@ namespace cajeta {
         string name;
         CajetaClassPtr parent;
         CajetaTypePtr returnType;
+        // True iff the return type is prefixed with `#`, meaning the method
+        // transfers ownership of the returned value to its caller. See
+        // `MemoryModel.md` § Function signatures.
+        bool returnsOwnership = false;
         BlockPtr block;
         bool constructor;
         map<string, FormalParameterPtr> parameters;
@@ -90,6 +94,11 @@ namespace cajeta {
         map<string, FormalParameterPtr> getParameters() { return parameters; }
 
         CajetaTypePtr getReturnType() { return returnType; }
+
+        CajetaClassPtr getParent() const { return parent; }
+
+        bool isReturnsOwnership() const { return returnsOwnership; }
+        void setReturnsOwnership(bool v) { returnsOwnership = v; }
 
         const string& getName() const {
             return name;

@@ -68,9 +68,11 @@ namespace cajeta {
                 }
                 string identName = vdCtx->variableDeclaratorId()->identifier()->getText();
                 int arrayDim = static_cast<int>(vdCtx->variableDeclaratorId()->LBRACK().size());
-                bool isRef = vdCtx->REFERENCE() != nullptr;
+                // The legacy `REFERENCE? variableInitializer` form was removed
+                // from the grammar; transfers now flow through MoveExpression in
+                // the initializer expression itself.
                 declarators.push_back(make_shared<VariableDeclarator>(
-                    identName, isRef, arrayDim, initializer, vdCtx->getStart()));
+                    identName, /*isReference=*/false, arrayDim, initializer, vdCtx->getStart()));
             }
         }
         return make_shared<LocalVariableDeclaration>(
