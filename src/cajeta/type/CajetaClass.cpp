@@ -10,7 +10,23 @@
 #include "../method/DefaultConstructorMethod.h"
 #include "../field/HeapField.h"
 
+#include <algorithm>
 #include <functional>
+#include <cstdint>
+
+namespace {
+    // FNV-1a 64-bit — must match the runtime's __cajeta_signature_hash
+    // exactly so compile-time and runtime hashes of the same canonical
+    // signature agree.
+    int64_t signatureHash(const std::string& s) {
+        uint64_t h = 0xcbf29ce484222325ULL;
+        for (unsigned char c : s) {
+            h ^= c;
+            h *= 0x100000001b3ULL;
+        }
+        return (int64_t) h;
+    }
+}
 
 using namespace std;
 
@@ -118,18 +134,52 @@ namespace cajeta {
 
         llvmType = CajetaType::getOrCreateLlvmType(module->getLlvmContext(), canonical);
         typeMap[TypeKey(llvmType)] = shared_from_this();
+        // Overwrite the plain-CajetaType placeholder `getOrCreateLlvmType` put
+        // in the canonical map so name lookups (e.g. `dynamic_pointer_cast<
+        // CajetaClass>(receiverType)` in MethodCallExpression) actually see
+        // this class. Also register the short typeName so unqualified
+        // references like `new Counter()` find the right entry.
+        canonicalMap[canonical] = static_pointer_cast<CajetaType>(shared_from_this());
+        canonicalMap[qName->getTypeName()] = static_pointer_cast<CajetaType>(shared_from_this());
+        typeFlags = STRUCT_FLAG | USER_DEFINED_FLAG;
         module->getScopeStack().add(make_shared<Scope>(toCanonical(), module));
+
+        // Class instance layout: { ptr vtable, <user fields...> }. The vtable
+        // pointer at LLVM index 0 is set by `new ClassName()` (see
+        // ClassCreatorRest) to point at the class's #VTable global. User
+        // properties get LLVM indices 1..N — `getFieldLlvmIndex` exposes
+        // the +1 shift to consumers (DotExpression and friends).
         vector<llvm::Type*> llvmMembers;
-        for (auto& propertyEntry: properties) {
-            llvmMembers.push_back(propertyEntry.second->getType()->getLlvmType());
+        llvmMembers.push_back(llvm::PointerType::get(*module->getLlvmContext(), 0));
+        // Iterate propertyList (insertion-ordered) so LLVM indices are
+        // deterministic; the `properties` map's iteration order is by
+        // string key and would scramble field offsets.
+        for (auto& property : propertyList) {
+            llvmMembers.push_back(property->getType()->getLlvmType());
         }
         ((llvm::StructType*) llvmType)->setBody(llvm::ArrayRef<llvm::Type*>(llvmMembers), false);
+
+        // Register self in the module's structure map BEFORE method/vtable
+        // generation so any later-declared subclass that lists us in its
+        // `extends` clause can find us by name. Also: resolve our own
+        // parents now — they must have been registered by their own
+        // prototype generation, which means declared earlier in the source.
+        module->getStructures()[canonical] = static_pointer_cast<CajetaClass>(shared_from_this());
+        resolveSuperClasses();
 
         ensureDefaultConstructor();
 
         for (auto methodEntry: methods) {
             methodEntry.second->generatePrototype();
         }
+
+        // Vtable build runs AFTER every method has its LLVM Function — the
+        // constant needs `getLlvmFunction()` to return non-null for each slot.
+        // Classes with only static methods/constructors produce a 2-slot
+        // header-only vtable (`{ i16 version, i16 count = 0 }`); meaningful
+        // dispatch arrives when inheritance and virtual calls are wired up.
+        writeVirtualTable();
+
         CajetaModule::getStructureToModule()[canonical] = module;
     }
 
@@ -204,42 +254,78 @@ namespace cajeta {
         }
     }
 
+    void CajetaClass::resolveSuperClasses() {
+        superClasses.clear();
+        for (auto& qName : qExtended) {
+            // First try the qName's full canonical (correct when the user
+            // wrote `extends some.pkg.Animal`).
+            auto& structures = module->getStructures();
+            auto it = structures.find(qName->toCanonical());
+            if (it != structures.end()) {
+                superClasses.push_back(it->second);
+                continue;
+            }
+            // Fallback for single-identifier names like `extends Animal`:
+            // QualifiedName::fromContext picks "code" as the package, which
+            // won't match the class's actual canonical. Walk by short name.
+            bool found = false;
+            for (auto& entry : structures) {
+                if (entry.second->getQName()->getTypeName() == qName->getTypeName()) {
+                    superClasses.push_back(entry.second);
+                    found = true;
+                    break;
+                }
+            }
+            (void) found;  // unresolved parents silently skip; future versions
+                           // should raise CAJETA_ERROR_UNRESOLVED_PARENT or
+                           // similar once a module-level resolution pass is
+                           // in place.
+        }
+    }
+
     void CajetaClass::buildVirtualTable() {
-        // Build the vtable slot list in parent-first order. Each unique
-        // canonical (unlabeled) signature gets one slot. An override in a
-        // derived class replaces the slot's MethodPtr but keeps the inherited
-        // index — that's the override semantic the vtable relies on.
+        // Build the (canonical → MethodPtr) mapping by walking the hierarchy
+        // parent-first. Overrides in derived classes replace the parent's
+        // entry; brand-new methods append. Statics and constructors are not
+        // virtual and don't participate.
         //
-        // We track slot order in a vector (to preserve insertion order) and
-        // canonical→index in a side map for O(1) lookup.
+        // Once the unique-method set is determined, we sort by the canonical
+        // signature's FNV-1a hash. Dispatch is hash-based (see runtime's
+        // __cajeta_vtable_lookup) which sidesteps the slot-index collision
+        // problem that multi-inheritance would otherwise hit with a
+        // position-only layout.
         virtualMethodList.clear();
-        vector<MethodPtr> slots;
-        map<string, int> canonToIdx;
+        map<string, MethodPtr> uniqueByCanonical;
 
         std::function<void(CajetaClassPtr)> walk = [&](CajetaClassPtr c) {
-            // Parents first so their slots are assigned the lower indices.
             for (auto& sup : c->getSuperClasses()) walk(sup);
             for (auto& m : c->getMethodList()) {
-                // Statics and constructors are not virtual — they don't
-                // participate in dynamic dispatch.
                 if (m->isConstructor()) continue;
                 if (m->getModifiers().find(STATIC) != m->getModifiers().end()) continue;
                 string canon = m->toCanonical(/*labeled=*/false);
-                auto it = canonToIdx.find(canon);
-                if (it == canonToIdx.end()) {
-                    int idx = (int) slots.size();
-                    canonToIdx[canon] = idx;
-                    m->setVirtualTableIndex(idx);
-                    slots.push_back(m);
-                } else {
-                    m->setVirtualTableIndex(it->second);
-                    slots[it->second] = m;  // override replaces inherited
-                }
+                uniqueByCanonical[canon] = m;   // overrides naturally replace
             }
         };
         walk(static_pointer_cast<CajetaClass>(shared_from_this()));
 
-        for (auto& m : slots) virtualMethodList.push_back(m);
+        // Sort by hash for binary search at dispatch time. Hash is stable
+        // across runs (FNV-1a) so the compiler and runtime agree.
+        vector<pair<int64_t, MethodPtr>> sorted;
+        sorted.reserve(uniqueByCanonical.size());
+        for (auto& entry : uniqueByCanonical) {
+            sorted.emplace_back(signatureHash(entry.first), entry.second);
+        }
+        std::sort(sorted.begin(), sorted.end(),
+            [](const pair<int64_t, MethodPtr>& a,
+               const pair<int64_t, MethodPtr>& b) {
+                return a.first < b.first;
+            });
+
+        int idx = 0;
+        for (auto& [hash, method] : sorted) {
+            method->setVirtualTableIndex(idx++);
+            virtualMethodList.push_back(method);
+        }
     }
 
     void CajetaClass::writeVirtualTable() {
@@ -252,9 +338,43 @@ namespace cajeta {
             static_pointer_cast<CajetaClass>(shared_from_this()));
     }
 
+    MethodPtr CajetaClass::resolveMethod(string& methodName, vector<ParameterEntry>& parameters, bool isConstructor, bool floatingParams) {
+        // Each class indexes its declared methods under keys built with its
+        // own class name (Method::buildGeneric/buildCanonical embed the
+        // parent class). Inherited methods are NOT re-keyed into derived
+        // class maps; instead we walk the hierarchy at lookup time so the
+        // recursive call hits the parent's maps with the right key flavor.
+        string generic = Method::buildGeneric(static_pointer_cast<CajetaClass>(shared_from_this()), methodName, parameters, floatingParams);
+        string canonical = Method::buildCanonical(static_pointer_cast<CajetaClass>(shared_from_this()), methodName, parameters, floatingParams);
+
+        map<string, map<string, MethodPtr>>* genericMap;
+        if (isConstructor) {
+            genericMap = floatingParams ? &labeledConstructorMap : &unlabeledConstructorMap;
+        } else {
+            genericMap = floatingParams ? &labeledMethodMap : &unlabeledMethodMap;
+        }
+
+        if (genericMap->find(generic) != genericMap->end()) {
+            map<string, MethodPtr>& canonicalMap = (*genericMap)[generic];
+            auto it = canonicalMap.find(canonical);
+            if (it != canonicalMap.end()) {
+                return it->second;
+            }
+            MethodPtr m = getClosestMethod(methodName, parameters, canonicalMap);
+            if (m) return m;
+        }
+
+        // Constructors are NOT inherited; only walk parents for instance methods.
+        if (!isConstructor) {
+            for (auto& parent : superClasses) {
+                MethodPtr m = parent->resolveMethod(methodName, parameters, isConstructor, floatingParams);
+                if (m) return m;
+            }
+        }
+        return nullptr;
+    }
+
     llvm::Value* CajetaClass::invokeMethod(string& methodName, vector<ParameterEntry> parameters, bool isConstructor, llvm::Value* thisValue) {
-        MethodPtr method;
-        vector<CajetaTypePtr> types;
         bool floatingParams = true;
         for (auto &param : parameters) {
             if (param.label.empty()) {
@@ -266,39 +386,52 @@ namespace cajeta {
             sort(parameters.begin(), parameters.end(), [](const ParameterEntry& a, const ParameterEntry& b) -> bool { return a.label < b.label; });
         }
 
-        string generic = Method::buildGeneric(static_pointer_cast<CajetaClass>(shared_from_this()), methodName, parameters, floatingParams);
-        string canonical = Method::buildCanonical(static_pointer_cast<CajetaClass>(shared_from_this()), methodName, parameters, floatingParams);
-
-        map<string, map<string, MethodPtr>>* genericMap;
-
-        if (isConstructor) {
-            genericMap = floatingParams ? &labeledConstructorMap : &unlabeledConstructorMap;
-        } else {
-            genericMap = floatingParams ? &labeledMethodMap : &unlabeledMethodMap;
-        }
-
-        if (genericMap->find(generic) != genericMap->end()) {
-            map<string, MethodPtr> canonicalMap = (*genericMap)[generic];
-            if (canonicalMap.find(canonical) != canonicalMap.end()) {
-                method = canonicalMap[canonical];
-            } else {
-                method = getClosestMethod(methodName, parameters, canonicalMap);
-            }
-        }
+        MethodPtr method = resolveMethod(methodName, parameters, isConstructor, floatingParams);
         if (!method) {
             return nullptr;
         }
         // Method::generatePrototype injects `this` as the first parameter for non-static
         // methods; prepend the instance pointer here so the call's argument list matches.
+        bool isStatic = method->getModifiers().find(STATIC) != method->getModifiers().end();
         vector<llvm::Value*> methodArgs;
-        if (thisValue && method->getModifiers().find(STATIC) == method->getModifiers().end()) {
+        if (thisValue && !isStatic) {
             methodArgs.push_back(thisValue);
         }
         for (int i = 0; i < parameters.size(); i++) {
             methodArgs.push_back(parameters[i].value);
         }
-        return module->getBuilder()->CreateCall(method->getLlvmFunctionType(),
-            method->getLlvmFunction(), llvm::ArrayRef<llvm::Value*>(methodArgs));
+
+        // Dynamic dispatch via the receiver's vtable: hash the method's
+        // canonical signature, load the receiver's vtable pointer (instance
+        // slot 0), call __cajeta_vtable_lookup to find the function pointer,
+        // and indirect-call it. Statics and constructors stay direct — they
+        // don't participate in the vtable. The compile-time `method` is the
+        // statically-resolved entry; the runtime hash-based lookup is what
+        // actually picks the override-correct function in a subclass.
+        auto* builder = module->getBuilder();
+        auto& llvmCtx = *module->getLlvmContext();
+        llvm::Value* callee = method->getLlvmFunction();
+        bool useVtable = thisValue && !isStatic && !isConstructor;
+        if (useVtable) {
+            llvm::Function* lookupFn = module->getRuntimeFunction("__cajeta_vtable_lookup");
+            if (lookupFn) {
+                llvm::Type* ptrTy = llvm::PointerType::get(llvmCtx, 0);
+                llvm::Type* i64Ty = llvm::Type::getInt64Ty(llvmCtx);
+                // The instance's vtable pointer lives at slot 0 — load it.
+                // `thisValue` is the receiver heap pointer; first 8 bytes
+                // are the vtable* (per CajetaClass::generatePrototype's
+                // layout decision).
+                llvm::Value* vtable = builder->CreateLoad(ptrTy, thisValue, "vtable");
+                int64_t hash = signatureHash(method->toCanonical(/*labeled=*/false));
+                llvm::Value* fnPtr = builder->CreateCall(lookupFn,
+                    {vtable,
+                     llvm::ConstantInt::get(i64Ty, llvm::APInt(64, (uint64_t) hash, false))},
+                    "vmethod_fn");
+                callee = fnPtr;
+            }
+        }
+        return builder->CreateCall(method->getLlvmFunctionType(),
+            callee, llvm::ArrayRef<llvm::Value*>(methodArgs));
     }
 
     /**

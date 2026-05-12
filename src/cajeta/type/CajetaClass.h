@@ -103,6 +103,15 @@ namespace cajeta {
 
         list<CajetaClassPtr>& getSuperClasses() { return superClasses; }
 
+        // LLVM struct index for a class field. Class instances reserve LLVM
+        // slot 0 for the vtable pointer, so user properties live at LLVM
+        // indices 1..N even though `StructureProperty::getOrder()` is
+        // 0-based. `CajetaStruct` overrides this to return the order
+        // verbatim (no vtable slot).
+        virtual int getFieldLlvmIndex(const StructurePropertyPtr& prop) const {
+            return prop->getOrder() + 1;
+        }
+
         void setVirtualTableType(llvm::StructType* llvmVirtualTableType) {
             this->llvmVirtualTableType = llvmVirtualTableType;
         }
@@ -129,6 +138,18 @@ namespace cajeta {
 
         void setClassBody(ClassBodyDeclarationPtr classBody);
 
+        // Resolve names in `qExtended` to actual CajetaClassPtr instances and
+        // populate `superClasses`. Looks up parents in the module's structures
+        // map (populated when each class registers itself during prototype
+        // generation), so parents must be declared earlier in the source than
+        // their subclasses — forward references aren't supported in v1.
+        //
+        // The lookup tries the qName's full canonical (e.g. "test.Animal") and
+        // falls back to the short type name (e.g. just "Animal") since
+        // `QualifiedName::fromContext` for a single identifier picks the
+        // wrong package on its own.
+        void resolveSuperClasses();
+
         // Single-pass hierarchy walk that populates `virtualMethodList` in slot
         // order. For each non-static, non-constructor method:
         //   - If the canonical (unlabeled) signature is new, append a fresh slot.
@@ -144,6 +165,11 @@ namespace cajeta {
         void writeVirtualTable();
 
         llvm::Value* invokeMethod(string& methodName, vector<ParameterEntry> parameters, bool isConstructor, llvm::Value* thisInstance = nullptr);
+
+        // Look up a method on this class or any of its ancestors. Each class
+        // indexes methods under keys that embed its own class name, so the
+        // recursion re-keys at each level. Returns nullptr if not found.
+        MethodPtr resolveMethod(string& methodName, vector<ParameterEntry>& parameters, bool isConstructor, bool floatingParams);
 
         virtual void generatePrototype();
 

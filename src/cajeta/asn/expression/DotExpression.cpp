@@ -176,6 +176,10 @@ namespace cajeta {
         // element type. The pre-pass resolveTypes can't always determine this
         // (locals aren't in scope until their declarations run at codegen).
         resolvedType = property->getType();
+        // Field index depends on the receiver type. CajetaClass instances
+        // reserve LLVM slot 0 for the vtable pointer, so user fields land at
+        // index getOrder()+1. CajetaStruct (POD) uses getOrder() directly.
+        unsigned fieldIdx = (unsigned) klass->getFieldLlvmIndex(property);
 
         // Variable-size struct fields (Session 5.5b): the LLVM struct holds
         // only the i32 length prefix at this slot; the data bytes live past
@@ -194,7 +198,7 @@ namespace cajeta {
             llvm::Type* i8Ty = llvm::Type::getInt8Ty(ctx);
 
             llvm::Value* lenPrefixPtr = builder->CreateStructGEP(
-                klass->getLlvmType(), base, property->getOrder(), identifier + "_len_ptr");
+                klass->getLlvmType(), base, fieldIdx, identifier + "_len_ptr");
             llvm::Value* length = builder->CreateLoad(i32Ty, lenPrefixPtr, identifier + "_len");
             llvm::Value* length64 = builder->CreateIntCast(length, i64Ty, /*isSigned=*/true);
 
@@ -210,7 +214,7 @@ namespace cajeta {
             return builder->CreateCall(fn, {dataPtr, length64});
         }
         return module->getBuilder()->CreateStructGEP(klass->getLlvmType(), base,
-            property->getOrder(), identifier);
+            fieldIdx, identifier);
     }
 
 } // code

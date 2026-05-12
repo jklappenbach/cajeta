@@ -34,6 +34,19 @@ namespace cajeta {
         llvm::CallInst* instance = MemoryManager::createMallocInstruction(
             module, allocSize, builder->GetInsertBlock());
 
+        // Initialize the vtable pointer at instance slot 0. Required for
+        // dynamic dispatch — `dog.speak()` reads slot 0 to find Dog's vtable
+        // before binary-searching for `speak`'s hash. Without this write the
+        // instance's vtable pointer is whatever malloc returned (uninitialized
+        // bytes), and the first virtual call segfaults.
+        if (auto klass = dynamic_pointer_cast<CajetaClass>(targetType)) {
+            if (llvm::GlobalVariable* vtable = klass->getVirtualTableGlobal()) {
+                llvm::Value* vtablePtrSlot = builder->CreateStructGEP(
+                    structTy, instance, /*idx=*/0, "vtable_slot");
+                builder->CreateStore(vtable, vtablePtrSlot);
+            }
+        }
+
         // Resolve parameters and call the constructor.
         vector<ParameterEntry> entries;
         for (auto& param : parameters) {

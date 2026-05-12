@@ -80,6 +80,12 @@ namespace cajeta {
         // here; their data bytes are not counted (they live past the LLVM
         // struct's footprint in the buffer).
         uint64_t getFixedSize() const;
+
+        // Structs are POD — no vtable header — so user properties stay at
+        // their 0-based LLVM indices.
+        int getFieldLlvmIndex(const StructurePropertyPtr& prop) const override {
+            return prop->getOrder();
+        }
     };
 
 } // namespace cajeta

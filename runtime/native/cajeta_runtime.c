@@ -148,6 +148,63 @@ void __cajeta_drop_mark_inactive(struct cajeta_drop_entry* e) {
     e->active = 0;
 }
 
+// --- VTable: hash-based dispatch ---------------------------------------------
+//
+// Each class's vtable is a sorted array of (signature-hash, function-pointer)
+// entries. Dispatch hashes the call-site's method canonical signature, binary-
+// searches the receiver's vtable, and indirect-calls the matching function.
+// This sidesteps the slot-index collision problem that single-vtable layouts
+// run into for multiple inheritance — methods are addressed by stable hash,
+// not by position.
+//
+// Layout (LLVM struct):
+//   { i16 version, i16 count, [count x { i64 hash, ptr fn }] entries }
+//
+// The header is 4 bytes (`version` + `count`), but the entries array is
+// 8-byte aligned per LLVM's default rules — so there are 4 bytes of padding
+// before `entries`, and the entries themselves start at byte offset 8.
+
+struct cajeta_vtable_entry {
+    int64_t hash;
+    void* fn;
+};
+
+// FNV-1a 64-bit hash. Stable across runs and platforms — both the compiler
+// (at vtable build time) and the runtime (at dispatch time) compute the
+// same hash for the same canonical signature.
+int64_t __cajeta_signature_hash(const char* s) {
+    if (!s) return 0;
+    uint64_t h = 0xcbf29ce484222325ULL;     // FNV offset basis
+    while (*s) {
+        h ^= (uint8_t) *s++;
+        h *= 0x100000001b3ULL;              // FNV prime
+    }
+    return (int64_t) h;
+}
+
+// Binary-search the vtable for `hash`; return the matching function pointer
+// or NULL if not found. The "not found" case shouldn't happen for well-typed
+// dispatch — the static type guarantees the method exists on the receiver —
+// but is treated as a soft miss so a misuse aborts at the call site (NULL
+// fn-pointer call) rather than corrupting memory.
+void* __cajeta_vtable_lookup(void* vptr, int64_t hash) {
+    if (!vptr) return NULL;
+    const int16_t* hdr = (const int16_t*) vptr;
+    int32_t count = hdr[1];                 // slot 1 = count
+    if (count <= 0) return NULL;
+    const struct cajeta_vtable_entry* entries =
+        (const struct cajeta_vtable_entry*) ((const char*) vptr + 8);
+    int lo = 0, hi = count;
+    while (lo < hi) {
+        int mid = (lo + hi) >> 1;
+        int64_t h = entries[mid].hash;
+        if (h < hash) lo = mid + 1;
+        else if (h > hash) hi = mid;
+        else return entries[mid].fn;
+    }
+    return NULL;
+}
+
 struct cajeta_exception_frame {
     jmp_buf buf;
     struct cajeta_exception_frame* prev;
