@@ -1,0 +1,107 @@
+# Memory Model + Wire Formats — Implementation Status
+
+Tracks rollout progress for the doctrine in `MemoryModel.md` and `WireFormats.md`. Update as work proceeds — when a step completes, change `[ ]` to `[x]` and move the **← currently here** marker.
+
+---
+
+## Current status
+
+**Phase:** Pre-implementation. Design complete, specs written, no language code changes yet.
+**Current line item:** **Session 1 / Step 1.1** — update annotation casing in docs to TypeCamelCase.
+
+---
+
+## Completed
+
+### Design & specification
+- `MemoryModel.md` — v1 spec: single-owner heap, `#` transfer operator, borrow/move rules, static-analysis rules (intra-function + elision), fields-as-owners, container conventions, struct-view integration, drop chain with watermark, debug-mode runtime checks.
+- `WireFormats.md` — v1 spec: `struct` keyword, packed-default layout + `@Align(natural)`, endianness annotations (`@BigEndian` / `@LittleEndian`), inline length-prefix for variable-size fields, view constructor synthesis (`MyStruct(byte[])` + `.from()` / `.view()` aliases), validate-once-at-construction, mutation rules, wire-format versioning guidance.
+- Auto-memory pointers: `project_memory_model.md`, `project_wire_formats.md`, `project_implementation_status.md`.
+
+### Pre-doctrine codebase state
+- 268 tests passing (Java-idiom, no `#`, no `struct`).
+- Existing memory model leaks (no drops, no borrow checking).
+- 16 files modified + 9 new test files uncommitted on `main` from prior session.
+
+---
+
+## Plan
+
+### Session 1 — Parser foundation  ← **in progress**
+
+- [ ] **1.1** Update annotation casing in docs to TypeCamelCase (`@BigEndian`, `@LittleEndian`, `@Align`).  ← **currently here**
+- [ ] **1.2** Lexer: add `#` token; add `struct` keyword.
+- [ ] **1.3** Parser grammar: `#` in value-prefix position; `#` in parameter type position; `#` in return type position; struct declaration; `@BigEndian` / `@LittleEndian` / `@Align` annotation recognition on struct declarations.
+- [ ] **1.4** Regenerate ANTLR parser.
+- [ ] **1.5** Verify existing 268 tests still pass (additions must be backward compatible).
+- [ ] **1.6** Parse-level tests for new syntax: valid samples (parses) + invalid samples (parser rejects).
+
+### Session 2 — AST + basic codegen
+
+- [ ] **2.1** Extend `Expression` with `moveFlag`.
+- [ ] **2.2** Extend type signatures with `transferred` bit on parameter and return types.
+- [ ] **2.3** Add `CajetaStruct` type node (sibling to `CajetaClass`).
+- [ ] **2.4** Codegen: mark `#x` as moved in the scope; emit basic drops at scope end (no watermark yet).
+- [ ] **2.5** Static check: use-after-move at variable level.
+- [ ] **2.6** Tests for valid moves and rejected use-after-move (both directions).
+
+### Session 3 — Drop chain + path-based analysis
+
+- [ ] **3.1** Runtime: `DropEntry` struct, `__cajeta_drop_push` / `__cajeta_drop_pop_run` helpers, `drop_watermark` field on exception frame.
+- [ ] **3.2** Codegen: DropEntry alloca + chain push/pop at scope boundaries.
+- [ ] **3.3** `__cajeta_throw` updated to unwind drops down to the watermark before `longjmp`.
+- [ ] **3.4** Static check: path-based borrow tracking (field-path borrows, alias-mutation).
+- [ ] **3.5** Static check: inter-procedural elision (method returns borrow tied to `this`; single-param returns tied to that param; multi-param borrow-return forbidden).
+- [ ] **3.6** Tests: valid borrows, invalid alias-mutation, invalid multi-param borrow-return.
+
+### Session 4 — Struct view layout + constructor
+
+- [ ] **4.1** Type system: `CajetaStruct` with explicit layout computation (fixed-prefix size, variable-size field identification, all-fixed fast-path detection).
+- [ ] **4.2** Constructor synthesis: `MyStruct(byte[])` returning a borrow-view; plus `.from(...)` and `.view(...)` aliases.
+- [ ] **4.3** Construction-time bounds check (`data.size() >= minSize`).
+- [ ] **4.4** Construction-time length-prefix validation (single sweep over variable-size fields).
+- [ ] **4.5** Throw on construction failure.
+- [ ] **4.6** Field accessor codegen: load/store at the computed offset.
+- [ ] **4.7** Borrow checker integration: view = borrow of buffer; field access = path-based borrow.
+- [ ] **4.8** Tests: valid view construction, valid field reads, valid field writes, oversize/undersize buffer rejection.
+
+### Session 5 — Endianness, alignment, variable-size offsets
+
+- [ ] **5.1** Annotation processing: `@BigEndian`, `@LittleEndian`, `@Align(natural)` on struct declarations.
+- [ ] **5.2** Endianness intrinsics: emit `bswap` on field access when struct endianness differs from host.
+- [ ] **5.3** `@Align(natural)` codegen: insert padding for natural alignment; use standard aligned loads.
+- [ ] **5.4** Variable-size offset cache: resolve offsets at construction time, cache in view layout.
+- [ ] **5.5** Mutation rule enforcement: reject reassignment of variable-size struct fields at the AST level.
+- [ ] **5.6** Tests: big-endian reads, little-endian reads, aligned layouts, variable-size offsets, rejected mutations.
+
+### Session 6 — Migration
+
+- [ ] **6.1** Rewrite stdlib runtime helpers (string concat, substring, etc.) to integrate with drops instead of leaking.
+- [ ] **6.2** Migrate existing 268 tests to the new ownership idioms where applicable.
+- [ ] **6.3** Update `README.md` test-suite table.
+
+---
+
+## Conventions
+
+- Each session must end with full regression passing (`./build/test/cajeta_test`). No half-finished commits.
+- Update the **← currently here** marker every time work moves to a new step.
+- Mark items `[x]` only when both implementation and tests are complete for that step.
+- If a step expands into multiple sub-tasks, sub-bullet them under the original.
+
+---
+
+## Deferred / out-of-scope
+
+- Owning-view variant (`MyStruct(#bytes)`): purely additive; add post-v1.
+- Multi-threading / `Send`/`Sync` analog.
+- FFI safety beyond signature-trust.
+- `unsafe` escape hatch.
+- Reflection / dynamic-dispatch borrow analysis.
+- Debug-mode runtime checks (`--debug-borrows` flag, generation field, 2-layout build): deferred to a post-v1 session.
+
+---
+
+## Notes / open questions
+
+(Add as they surface during implementation.)
