@@ -129,6 +129,18 @@ namespace cajeta {
 
         void setClassBody(ClassBodyDeclarationPtr classBody);
 
+        // Single-pass hierarchy walk that populates `virtualMethodList` in slot
+        // order. For each non-static, non-constructor method:
+        //   - If the canonical (unlabeled) signature is new, append a fresh slot.
+        //   - If it matches an ancestor's method (override), replace the slot's
+        //     MethodPtr with this class's method; the index stays the same.
+        // Sets `Method::virtualTableIndex` to the slot index in passing.
+        // Idempotent — clears `virtualMethodList` before rebuilding.
+        void buildVirtualTable();
+
+        // Full vtable build entry point: builds the slot list, then invokes
+        // StructureMetadata::populate to materialize the LLVM vtable type and
+        // global. Safe to call multiple times (no-ops after first success).
         void writeVirtualTable();
 
         llvm::Value* invokeMethod(string& methodName, vector<ParameterEntry> parameters, bool isConstructor, llvm::Value* thisInstance = nullptr);

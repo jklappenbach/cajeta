@@ -132,6 +132,20 @@ CAJETA_DUMP_IR=1 CAJETA_SOURCE_ROOT="$PWD" \
 | `CompilerOptionTests`       | `--bounds=off` toggle, `--emit` mode round-trip, target-triple setter |
 | `FpTests`                   | fp32/fp64 arithmetic, fp16 declare/store, fp4/fp6/fp8 storage |
 
+#### Memory model + wire formats (Sessions 1–5.5b of the rollout — see `ImplementationStatus.md`)
+
+| Suite                       | What it covers                                                |
+| --------------------------- | ------------------------------------------------------------- |
+| `Session1ParseTests`        | Parser-level recognition of `#` in three positions, `struct` keyword, `@BigEndian` / `@LittleEndian` / `@Align` annotations; invalid syntax rejected |
+| `UseAfterMoveTests`         | `#` transfer marks the source moved; subsequent reads throw `CAJETA_ERROR_USE_AFTER_MOVE` |
+| `DropChainTests`            | Owned-array drops fire on normal return, are suppressed on move-out, and unwind on `throw` |
+| `ElisionTests`              | Multi-parameter free functions can't return a borrow (`CAJETA_ERROR_BORROW_RETURN_MULTI_PARAM`); single-param / `#`-returning / primitive-returning signatures pass |
+| `PathBorrowTests`           | `#person.name` records the path; reads through that path (or any prefix) are rejected |
+| `StructViewTests`           | `struct` declaration, `MyStruct(byte[])` view construction, field reads/writes through the view |
+| `StructViewBoundsTests`     | View constructor's `count * elem_size >= sizeof(struct)` check fires on undersize buffer, catchable via `try/catch` |
+| `EndianAlignTests`          | `@BigEndian` emits `bswap` on field access (verified by reading the same bytes through a host-order view); `@LittleEndian` on a little-host is a no-op |
+| `VariableSizeStructTests`   | Inline `String` field reads materialize an owned copy; reassignment rejected; layout rule (variable-size must be last) enforced |
+
 - Type
     - Number
         - Integer

@@ -275,3 +275,18 @@ Recommend **path 1**. The codebase is small enough; the inconsistency of path 2 
 4. **Runtime:** define `DropEntry`, add push/pop helpers, extend the exception frame with a `drop_watermark` field. Update `__cajeta_throw` to unwind drops before longjmp.
 5. **Codegen:** at each owner declaration, emit DropEntry alloca + chain push. At each scope exit, emit pop+drop. At each `#` move-out, emit `active = false`. At each try-block entry, save watermark. At each return, emit drops for the function's still-active owners.
 6. **Migration:** rewrite stdlib runtime helpers (string concat, substring, etc. currently leak) to integrate with drops. Rewrite test suite to use the new ownership idioms.
+
+---
+
+## Known gaps (post-v1 rollout)
+
+The rollout left a few items deliberately out of v1 scope; they're called out here so future work knows where to pick up.
+
+- **String stdlib helpers still leak.** Functions like `__cajeta_str_concat`, `__cajeta_str_substring`, `__cajeta_str_toUpperCase`, `__cajeta_str_view_to_owned` all return malloc'd memory that's never freed. Wiring them through the drop chain needs the type system to distinguish "this `String` is heap-owned" from "this `String` is a borrow/literal" — the current `String` type collapses both. A first step is a dedicated `OwnedString` flag on the type instance plus codegen that registers a drop entry only for the owned variant.
+- **`T[]` inline in a struct.** Session 5.5b shipped `String` as a variable-size struct field; `T[]` follows the same shape but needs slightly different field-read semantics (an array view, not an owned copy).
+- **Fields after a variable-size field.** Today every variable-size field must be last. Supporting interleaved fixed/variable layouts needs runtime-computed offsets stored alongside the view value (a small per-view metadata block).
+- **Alias-mutation through writes.** Path-based borrow tracking catches use-after-move; it does not yet catch "borrow into `person.name` invalidated by a later `person.name = #other` write." That needs a live-borrow tracking pass.
+- **Multi-parameter borrow-return with annotation.** Today multi-input free functions can't return a borrow at all. Rust-style explicit lifetime annotations would lift this restriction; not part of v1.
+- **Variable-size struct field write.** Reassigning a variable-size field is rejected because in-place resize isn't possible. A "rebuild the buffer" idiom is the workaround.
+- **Construction-time length-prefix validation for variable-size struct fields.** The current view bounds check verifies `count * elem_size >= fixed_prefix`; it doesn't (yet) walk inline length-prefixes to verify the variable region fits. A length-prefix value larger than the remaining buffer would read past the end — caller responsibility today.
+- **FFI / `unsafe` / multi-threading.** All explicitly deferred.

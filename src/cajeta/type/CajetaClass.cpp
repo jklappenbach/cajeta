@@ -3,11 +3,14 @@
 //
 
 #include "CajetaClass.h"
+#include "StructureMetadata.h"
 #include "../field/Field.h"
 #include "../method/Method.h"
 #include "../asn/ClassBodyDeclaration.h"
 #include "../method/DefaultConstructorMethod.h"
 #include "../field/HeapField.h"
+
+#include <functional>
 
 using namespace std;
 
@@ -199,6 +202,54 @@ namespace cajeta {
             mapMethod(method, labeledMethodMap, true);
             mapMethod(method, unlabeledMethodMap, false);
         }
+    }
+
+    void CajetaClass::buildVirtualTable() {
+        // Build the vtable slot list in parent-first order. Each unique
+        // canonical (unlabeled) signature gets one slot. An override in a
+        // derived class replaces the slot's MethodPtr but keeps the inherited
+        // index — that's the override semantic the vtable relies on.
+        //
+        // We track slot order in a vector (to preserve insertion order) and
+        // canonical→index in a side map for O(1) lookup.
+        virtualMethodList.clear();
+        vector<MethodPtr> slots;
+        map<string, int> canonToIdx;
+
+        std::function<void(CajetaClassPtr)> walk = [&](CajetaClassPtr c) {
+            // Parents first so their slots are assigned the lower indices.
+            for (auto& sup : c->getSuperClasses()) walk(sup);
+            for (auto& m : c->getMethodList()) {
+                // Statics and constructors are not virtual — they don't
+                // participate in dynamic dispatch.
+                if (m->isConstructor()) continue;
+                if (m->getModifiers().find(STATIC) != m->getModifiers().end()) continue;
+                string canon = m->toCanonical(/*labeled=*/false);
+                auto it = canonToIdx.find(canon);
+                if (it == canonToIdx.end()) {
+                    int idx = (int) slots.size();
+                    canonToIdx[canon] = idx;
+                    m->setVirtualTableIndex(idx);
+                    slots.push_back(m);
+                } else {
+                    m->setVirtualTableIndex(it->second);
+                    slots[it->second] = m;  // override replaces inherited
+                }
+            }
+        };
+        walk(static_pointer_cast<CajetaClass>(shared_from_this()));
+
+        for (auto& m : slots) virtualMethodList.push_back(m);
+    }
+
+    void CajetaClass::writeVirtualTable() {
+        // Idempotent: bail if we've already produced a vtable global. Callers
+        // can invoke this at any point in prototype generation without
+        // worrying about duplicate work.
+        if (llvmVirtualTableGlobal != nullptr) return;
+        buildVirtualTable();
+        StructureMetadata(module).populate(
+            static_pointer_cast<CajetaClass>(shared_from_this()));
     }
 
     llvm::Value* CajetaClass::invokeMethod(string& methodName, vector<ParameterEntry> parameters, bool isConstructor, llvm::Value* thisValue) {

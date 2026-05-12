@@ -182,205 +182,116 @@ namespace cajeta {
         return llvm::ConstantStruct::get(llvmMethodType, llvm::ArrayRef<llvm::Constant*>(args));
     }
 
-    /**
-     * 1. Type name
-     * 2. Size of property list
-     * 3. Structure of properties
-     * 4. Size of class method list
-     * 5. Structure of methods
-     * 6. Size of superclass list
-     * 7. Structure of parent types
-     *
-     * @param module
-     */
-    void StructureMetadata::createRttiType(CajetaClassPtr structure) {
-        vector<llvm::Type*> members;
+    // ---- RTTI: deferred ------------------------------------------------------
+    //
+    // The RTTI type/constant builders are intentionally stubs. The design
+    // (version, type name, property/method/parent tables) is sketched in the
+    // header's doc comment but the implementation hasn't landed — finishing
+    // it is a separate piece of work. `populate` does NOT call into either
+    // of these today; callers should not assume RTTI is available on a class.
+    //
+    // The previous draft of these methods left half-built code that would
+    // crash (`createRttiConstant` dereferences `llvmRttiType`/`llvmPropertiesType`
+    // which `createRttiType` never assigned). Marking explicitly stubbed
+    // until someone picks it up.
 
-        // 0. Version ID
-        members.push_back(llvmInt16Type);
-
-        // 1. Type name
-        members.push_back(llvm::ArrayType::get(llvm::Type::getInt8Ty(*module->getLlvmContext()),
-            structure->toCanonical().size() + 1));
-
-        // 2. Size of property list
-        members.push_back(llvmInt16Type);
-
-        // 3. List of properties
-        vector<llvm::Type*> propertyTypes;
-        for (auto& property: structure->getPropertyList()) {
-            propertyTypes.push_back(createPropertyType(structure, property));
-        }
-
-//        // 4. Create the struct
-//        this->llvmPropertiesType = llvm::StructType::create(*pModule->getLlvmContext(), propertyTypes);
-//
-//        // 5. Add that as the first structure of properties
-//        members.push_back(llvmPropertiesType);
-//
-//        // 6. Size of class method list
-//        members.push_back(llvmInt16Type);
-//
-//        // 7. List of methods
-//        vector<llvm::Type*> methodTypes;
-//        for (auto& method: structure->getMethodList()) {
-//            methodTypes.push_back(createMethodType(method));
-//        }
-//
-//        // 8. Add methodTypes to rtti of method types
-//        members.push_back(llvm::StructType::get(*pModule->getLlvmContext(), methodTypes));
-//        llvmRttiType = llvm::StructType::create(*pModule->getLlvmContext(), llvm::ArrayRef(members),
-//            structure->toCanonical() + string("#RttiType"));
+    void StructureMetadata::createRttiType(CajetaClassPtr /*structure*/) {
+        // TODO: build the RTTI struct type — version, name, properties,
+        // methods, parents. See header doc comment for the layout sketch.
     }
 
-    llvm::Constant* StructureMetadata::createRttiConstant(vector<llvm::Constant*>& args, CajetaClassPtr structure) {
-        // 0. Version ID
-        args.push_back(llvm::ConstantInt::get(llvmInt16Type, llvm::APInt(16, 0, false)));
-        // 1. Type name
-        args.push_back(llvm::ConstantDataArray::getString(*module->getLlvmContext(), structure->toCanonical(), true));
-
-        // 2. Size of property list
-        args.push_back(llvm::ConstantInt::get(llvmInt16Type, llvm::APInt(16, structure->getProperties().size(), false)));
-
-        // 3. Structure of properties
-        vector<llvm::Constant*> propertyConstants;
-        int i = 0;
-        for (auto& property: structure->getPropertyList()) {
-            propertyConstants.push_back(
-                createPropertyConstant(property, (llvm::StructType*) llvmPropertiesType->getTypeAtIndex(i++)));
-        }
-
-        args.push_back(
-            llvm::ConstantArray::get(
-                llvm::ArrayType::get(llvmPropertiesType, propertyConstants.size()),
-                llvm::ArrayRef<llvm::Constant*>(propertyConstants)
-            )
-        );
-
-        // 4. Create the struct
-
-        // 5. Add that as the first structure of properties
-
-        // 6. Size of class method list
-
-        // 7. List of methods
-
-        // 8. Add methodTypes to rtti of method types
-
-
-//
-//        // 4. Size of class method list
-//        args.push_back(llvm::ConstantInt::get(llvmInt16Type, llvm::APInt(16, structure->getMethods().size(), false)));
-
-//        vector<llvm::Constant*> methodConstants;
-//        for (auto &method : structure->getMethodList()) {
-//            methodConstants.push_back(createMethodConstant(method));
-//        }
-//        // 5. Structure of methods
-//        args.push_back(
-//            llvm::ConstantArray::get(
-//                    llvm::ArrayType::get(llvmMethodType, methodConstants.size()),
-//                    llvm::ArrayRef<llvm::Constant*>(methodConstants)
-//            )
-//        );
-//
-//        args.push_back(llvm::ConstantInt::get(llvmInt16Type, llvm::APInt(16, structure->getSuperClasses().size(), false)));
-//        vector<llvm::Constant*> superConstants;
-//        for (auto &super : structure->getSuperClasses()) {
-//            superConstants.push_back(llvm::ConstantDataArray::getString(*pModule->getLlvmContext(),
-//                                                                        super->toCanonical(),
-//                                                                        true));
-//        }
-//        args.push_back(
-//                llvm::ConstantArray::get(
-//                        llvm::ArrayType::get(llvm::PointerType::getInt64PtrTy(*pModule->getLlvmContext()), methodConstants.size()),
-//                        llvm::ArrayRef<llvm::Constant*>(methodConstants)
-//                )
-//        );
-
-        return llvm::ConstantStruct::get(llvmRttiType, llvm::ArrayRef<llvm::Constant*>(args));
+    llvm::Constant* StructureMetadata::createRttiConstant(
+            vector<llvm::Constant*>& /*args*/,
+            CajetaClassPtr /*structure*/) {
+        // TODO: pair with createRttiType once it actually builds the type.
+        // Returning null is safe — no caller invokes this today.
+        return nullptr;
     }
 
     void StructureMetadata::populate(CajetaClassPtr structure) {
+        // Idempotent. Three states matter:
+        //   1. Structure already has its vtable global → nothing to do.
+        //   2. The LLVM module has the global but the structure forgot to
+        //      record it (e.g. we built it in an earlier pass and the
+        //      structure-side reference was lost) → re-link.
+        //   3. Neither → build from scratch.
+        if (structure->getVirtualTableGlobal() != nullptr) return;
         string globalName = structure->toCanonical() + string("#VTable");
-        if (module->getModuleVariables().find(globalName) == module->getModuleVariables().end()) {
-            llvm::GlobalVariable* virtualTableGlobal = module->getLlvmModule()->getGlobalVariable(globalName);
-            if (!virtualTableGlobal) {
-                createVirtualTableType(structure);
-                virtualTableGlobal = (llvm::GlobalVariable*) module->getLlvmModule()->
-                    getOrInsertGlobal(globalName, structure->getVirtualTableType());
-                llvm::Constant* virtualTableConstant = createVirtualTableConstant(structure);
-                virtualTableGlobal->setInitializer(virtualTableConstant);
-                structure->setVirtualTableGlobal(virtualTableGlobal);
-            }
-            module->getModuleVariables()[globalName] = module;
+        if (auto* existing = module->getLlvmModule()->getGlobalVariable(globalName)) {
+            structure->setVirtualTableGlobal(existing);
+            return;
         }
 
-//        createRttiType(structure);
-//
-//        vector<llvm::Constant*> args;
-//        llvm::GlobalVariable* rttiGlobal = (llvm::GlobalVariable*) pModule->getLlvmModule()->getOrInsertGlobal(
-//            llvm::StringRef(structure->toCanonical() + string("#RttiGlobal")), llvmRttiType);
-//        rttiGlobal->setInitializer(createRttiConstant(args, structure));
-//        structure->setRttiGlobal(rttiGlobal);
+        // Build the type first so the global has somewhere to land. The
+        // type-build uses the structure's virtualMethodList (populated by
+        // CajetaClass::buildVirtualTable, which writeVirtualTable runs before
+        // calling this method).
+        createVirtualTableType(structure);
+        auto* g = (llvm::GlobalVariable*) module->getLlvmModule()->
+            getOrInsertGlobal(globalName, structure->getVirtualTableType());
+        g->setInitializer(createVirtualTableConstant(structure));
+        structure->setVirtualTableGlobal(g);
+
+        // RTTI build is deferred — see `createRttiType` for the half-stubbed
+        // shape; finishing it is its own piece of work.
     }
 
-    bool compareMethod(MethodPtr first, MethodPtr second) {
-        return first->getVirtualTableIndex() < second->getVirtualTableIndex();
-    }
-
-
-    /**
-     * 0. Version
-     * 1. TODO: Convert function pointers to an array
-     * 2. TODO: Make sure structure methods are set to the correct index in the table
-     * @param structure
-     * @return
-     */
+    // VTable layout: `{ i16 version, i16 count, ptr slot_0, ptr slot_1, ... }`.
+    // Slots are function pointer values (opaque `ptr` under LLVM 18 opaque-
+    // pointer mode); each slot holds the address of the virtual method whose
+    // index matches the slot's position in `virtualMethodList`.
+    //
+    // The slot list comes from `structure->getVirtualMethodList()` — built by
+    // `CajetaClass::buildVirtualTable` walking the hierarchy parent-first and
+    // resolving overrides. The type and the constant share this same list,
+    // so they're guaranteed to agree on arity and ordering.
     llvm::Type* StructureMetadata::createVirtualTableType(CajetaClassPtr structure) {
+        const auto& slots = structure->getVirtualMethodList();
+        llvm::Type* ptrTy = llvm::PointerType::get(*module->getLlvmContext(), 0);
+
         vector<llvm::Type*> members;
-        structure->createInheritanceMethodMap();
-        list<MethodPtr>& sortedMethods = structure->getMethodList();
-        for (auto& entry : structure->getUnlabeledMethodMap()) {
-            for (auto& preciseEntry : (entry.second)) {
-                sortedMethods.push_back(preciseEntry.second);
-            }
-        }
-
-        sortedMethods.sort(compareMethod);
-
+        members.reserve(2 + slots.size());
         // 0. Version
         members.push_back(llvmInt16Type);
-
-        // 1. Number of functions
+        // 1. Number of slots
         members.push_back(llvmInt16Type);
-
-        // 2. List of function types
-        for (auto& method : sortedMethods) {
-            members.push_back(method->getLlvmFunctionType());
+        // 2..N+1. Function-pointer slots. We use opaque `ptr` rather than the
+        // method's specific FunctionType — LLVM struct members can't be
+        // FunctionType, only PointerType to a function.
+        for (size_t i = 0; i < slots.size(); ++i) {
+            members.push_back(ptrTy);
         }
-        llvm::StructType* result = llvm::StructType::create(*module->getLlvmContext(), llvm::ArrayRef(members), structure->toCanonical() + string("#VTable"));
+
+        llvm::StructType* result = llvm::StructType::create(
+            *module->getLlvmContext(),
+            llvm::ArrayRef<llvm::Type*>(members),
+            structure->toCanonical() + string("#VTable"));
         structure->setVirtualTableType(result);
         return result;
     }
 
-
     llvm::Constant* StructureMetadata::createVirtualTableConstant(CajetaClassPtr structure) {
+        // Caller (`populate`) is responsible for having built the type. We do
+        // NOT call createVirtualTableType here — doing so would re-clear and
+        // re-build a struct that LLVM has already created and possibly handed
+        // out references to.
+        const auto& slots = structure->getVirtualMethodList();
         vector<llvm::Constant*> args;
-
-        createVirtualTableType(structure);
+        args.reserve(2 + slots.size());
 
         // 0. Version
-        args.push_back(llvm::ConstantInt::get(llvmInt16Type, llvm::APInt(16, 0, false)));
-
-        // 1. Number of functions
-        args.push_back(llvm::ConstantInt::get(llvmInt16Type,
-            llvm::APInt(16, structure->getVirtualMethodList().size(), false)));
-
-        // 2. List of functions
-        for (auto& method : structure->getVirtualMethodList()) {
+        args.push_back(llvm::ConstantInt::get(
+            llvmInt16Type, llvm::APInt(16, 0, false)));
+        // 1. Slot count
+        args.push_back(llvm::ConstantInt::get(
+            llvmInt16Type, llvm::APInt(16, slots.size(), false)));
+        // 2..N+1. Function pointers — `llvm::Function*` is itself a
+        // `llvm::Constant*`, so it slots in directly as a pointer constant.
+        for (auto& method : slots) {
             args.push_back(method->getLlvmFunction());
         }
-        return llvm::ConstantStruct::get(structure->getVirtualTableType(), llvm::ArrayRef<llvm::Constant*>(args));
+
+        return llvm::ConstantStruct::get(structure->getVirtualTableType(),
+            llvm::ArrayRef<llvm::Constant*>(args));
     }
 } // code
