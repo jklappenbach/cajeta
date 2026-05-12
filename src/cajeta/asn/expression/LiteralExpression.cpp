@@ -22,9 +22,68 @@ namespace cajeta {
         switch (literalType) {
             case LITERAL_TYPE_BOOL:        resolvedType = CajetaType::of("boolean"); break;
             case LITERAL_TYPE_STRING:
-            case LITERAL_TYPE_TEXT_BLOCK:
+            case LITERAL_TYPE_TEXT_BLOCK:  resolvedType = CajetaType::of("String"); break;
             case LITERAL_TYPE_NULL:        resolvedType = CajetaType::of("pointer"); break;
+            case LITERAL_TYPE_CHAR:        resolvedType = CajetaType::of("char"); break;
             default: break;
+        }
+    }
+
+    // Decode the inner content of a CHAR_LITERAL lexeme (the bit between the single
+    // quotes, with escapes still raw). Returns the code-unit value; values outside
+    // 0..255 are truncated by the caller's i8 cast.
+    static int decodeCharLiteral(const string& inner) {
+        if (inner.empty()) return 0;
+        if (inner[0] != '\\') {
+            // Plain byte. Higher bytes (UTF-8 multibyte) just take the first byte —
+            // Cajeta `char` is int8 today, so multibyte source chars don't fit.
+            return (unsigned char) inner[0];
+        }
+        if (inner.size() < 2) return 0;
+        char c = inner[1];
+        switch (c) {
+            case 'b': return 0x08;
+            case 't': return 0x09;
+            case 'n': return 0x0A;
+            case 'f': return 0x0C;
+            case 'r': return 0x0D;
+            case '"': return 0x22;
+            case '\'': return 0x27;
+            case '\\': return 0x5C;
+            case 'u': {
+                // Skip extra 'u's per Java spec, then read 4 hex digits.
+                size_t i = 1;
+                while (i < inner.size() && inner[i] == 'u') i++;
+                int v = 0;
+                int read = 0;
+                while (i < inner.size() && read < 4) {
+                    char h = inner[i++];
+                    int d;
+                    if (h >= '0' && h <= '9') d = h - '0';
+                    else if (h >= 'a' && h <= 'f') d = 10 + (h - 'a');
+                    else if (h >= 'A' && h <= 'F') d = 10 + (h - 'A');
+                    else break;
+                    v = (v << 4) | d;
+                    read++;
+                }
+                return v;
+            }
+            default: {
+                // Octal: up to 3 digits.
+                if (c >= '0' && c <= '7') {
+                    int v = 0;
+                    size_t i = 1;
+                    int read = 0;
+                    while (i < inner.size() && read < 3
+                            && inner[i] >= '0' && inner[i] <= '7') {
+                        v = (v << 3) | (inner[i] - '0');
+                        i++;
+                        read++;
+                    }
+                    return v;
+                }
+                return (unsigned char) c;
+            }
         }
     }
 
@@ -35,6 +94,66 @@ namespace cajeta {
             return raw.substr(1, raw.size() - 2);
         }
         return raw;
+    }
+
+    // Decode backslash-escapes in a string-literal body (already stripped of its
+    // surrounding quotes). Mirrors the lexer's EscapeSequence rule: \b \t \n \f \r
+    // \" \' \\, octal \NNN (1–3 digits), and \uXXXX (one or more u's allowed).
+    static string decodeStringLiteral(const string& src) {
+        string out;
+        out.reserve(src.size());
+        size_t i = 0;
+        while (i < src.size()) {
+            char c = src[i++];
+            if (c != '\\' || i >= src.size()) { out.push_back(c); continue; }
+            char e = src[i++];
+            switch (e) {
+                case 'b': out.push_back('\b'); break;
+                case 't': out.push_back('\t'); break;
+                case 'n': out.push_back('\n'); break;
+                case 'f': out.push_back('\f'); break;
+                case 'r': out.push_back('\r'); break;
+                case '"': out.push_back('"');  break;
+                case '\'': out.push_back('\''); break;
+                case '\\': out.push_back('\\'); break;
+                case 'u': {
+                    while (i < src.size() && src[i] == 'u') i++;
+                    int v = 0;
+                    int read = 0;
+                    while (i < src.size() && read < 4) {
+                        char h = src[i];
+                        int d;
+                        if (h >= '0' && h <= '9') d = h - '0';
+                        else if (h >= 'a' && h <= 'f') d = 10 + (h - 'a');
+                        else if (h >= 'A' && h <= 'F') d = 10 + (h - 'A');
+                        else break;
+                        v = (v << 4) | d;
+                        i++;
+                        read++;
+                    }
+                    // For now we encode the code-point as a single byte if it fits;
+                    // larger code points are dropped on the floor. Proper UTF-8
+                    // encoding lands when String becomes UTF-8 end-to-end.
+                    if (v <= 0xFF) out.push_back((char) v);
+                    break;
+                }
+                default:
+                    if (e >= '0' && e <= '7') {
+                        int v = e - '0';
+                        int read = 1;
+                        while (i < src.size() && read < 3
+                                && src[i] >= '0' && src[i] <= '7') {
+                            v = (v << 3) | (src[i] - '0');
+                            i++;
+                            read++;
+                        }
+                        out.push_back((char) v);
+                    } else {
+                        out.push_back(e);
+                    }
+            }
+        }
+        return out;
     }
 
     llvm::Value* TextLiteralExpression::generateCode(CajetaModulePtr module) {
@@ -48,7 +167,17 @@ namespace cajeta {
                 return llvm::ConstantPointerNull::get(llvm::PointerType::get(ctx, 0));
             case LITERAL_TYPE_STRING:
             case LITERAL_TYPE_TEXT_BLOCK:
-                return module->getBuilder()->CreateGlobalStringPtr(stripQuotes(value), "str");
+                return module->getBuilder()->CreateGlobalStringPtr(
+                    decodeStringLiteral(stripQuotes(value)), "str");
+            case LITERAL_TYPE_CHAR: {
+                // Strip the single-quote pair, then decode any escape into a byte value.
+                string inner = value;
+                if (inner.size() >= 2 && inner.front() == '\'' && inner.back() == '\'') {
+                    inner = inner.substr(1, inner.size() - 2);
+                }
+                int v = decodeCharLiteral(inner);
+                return llvm::ConstantInt::get(llvm::Type::getInt8Ty(ctx), v, /*isSigned=*/true);
+            }
             default:
                 return nullptr;
         }

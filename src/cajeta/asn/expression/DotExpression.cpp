@@ -5,6 +5,10 @@
 #include "DotExpression.h"
 #include "../../compile/CajetaModule.h"
 #include "../../type/CajetaClass.h"
+#include "Identifier.h"
+
+#include <climits>
+#include <cmath>
 
 namespace cajeta {
     DotExpression::DotExpression(CajetaParser::ExpressionContext* ctx, antlr4::Token* token) : Expression(token) {
@@ -45,6 +49,31 @@ namespace cajeta {
         if (children.empty()) {
             return nullptr;
         }
+
+        // Static-namespace constants: Math.PI / Math.E / Integer.MAX_VALUE / ... .
+        // These have no instance backing and don't survive the GEP path below, so we
+        // short-circuit them here and emit IR constants directly.
+        if (auto idExpr = dynamic_pointer_cast<IdentifierExpression>(children[0])) {
+            auto& ctx = *module->getLlvmContext();
+            const std::string& ns = idExpr->getTextValue();
+            if (ns == "Math") {
+                if (identifier == "PI") return llvm::ConstantFP::get(
+                    llvm::Type::getDoubleTy(ctx), M_PI);
+                if (identifier == "E")  return llvm::ConstantFP::get(
+                    llvm::Type::getDoubleTy(ctx), M_E);
+            } else if (ns == "Integer") {
+                if (identifier == "MAX_VALUE") return llvm::ConstantInt::get(
+                    llvm::Type::getInt32Ty(ctx), INT32_MAX, /*isSigned=*/true);
+                if (identifier == "MIN_VALUE") return llvm::ConstantInt::get(
+                    llvm::Type::getInt32Ty(ctx), INT32_MIN, /*isSigned=*/true);
+            } else if (ns == "Long") {
+                if (identifier == "MAX_VALUE") return llvm::ConstantInt::get(
+                    llvm::Type::getInt64Ty(ctx), INT64_MAX, /*isSigned=*/true);
+                if (identifier == "MIN_VALUE") return llvm::ConstantInt::get(
+                    llvm::Type::getInt64Ty(ctx), INT64_MIN, /*isSigned=*/true);
+            }
+        }
+
         llvm::Value* base = children[0]->generateCode(module);
         if (!base) {
             return nullptr;

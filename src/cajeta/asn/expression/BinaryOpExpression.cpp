@@ -208,20 +208,36 @@ namespace cajeta {
                     }
                 }
                 llvm::Value* rhsVal = loadR(rhs);
-                // Coerce rhs to the alloca's element type when assigning into a typed slot,
-                // so `int32 a = 5;` (literal i64) stores correctly into the i32 alloca.
+                // Coerce rhs to the destination's element type. Two slot shapes need
+                // this: (a) plain local-variable allocas, where the alloca carries the
+                // type directly; (b) GEPs into an array element, where the AST gives
+                // us the element type. Both matter — without the GEP path a wide
+                // integer literal like `xs[0] = 10` (i64 by default) writes 8 bytes
+                // into a 4-byte slot and clobbers neighboring memory.
+                llvm::Type* slotTy = nullptr;
                 if (auto* a = llvm::dyn_cast<llvm::AllocaInst>(lhs)) {
-                    llvm::Type* slotTy = a->getAllocatedType();
-                    if (rhsVal->getType() != slotTy) {
-                        if (slotTy->isIntegerTy() && rhsVal->getType()->isIntegerTy()) {
-                            rhsVal = builder->CreateIntCast(rhsVal, slotTy, /*isSigned=*/true);
-                        } else if (slotTy->isFloatingPointTy() && rhsVal->getType()->isFloatingPointTy()) {
-                            rhsVal = builder->CreateFPCast(rhsVal, slotTy);
-                        } else if (slotTy->isFloatingPointTy() && rhsVal->getType()->isIntegerTy()) {
-                            rhsVal = builder->CreateSIToFP(rhsVal, slotTy);
-                        } else if (slotTy->isIntegerTy() && rhsVal->getType()->isFloatingPointTy()) {
-                            rhsVal = builder->CreateFPToSI(rhsVal, slotTy);
+                    slotTy = a->getAllocatedType();
+                } else if (lhsAst && dynamic_pointer_cast<ArrayIndexExpression>(lhsAst)) {
+                    if (auto elemType = lhsAst->getResolvedType()) {
+                        // For reference-element arrays the slot holds a pointer;
+                        // primitive arrays hold the value directly.
+                        if (dynamic_pointer_cast<CajetaArray>(elemType) ||
+                            (elemType->getTypeFlags() & STRUCT_FLAG)) {
+                            slotTy = llvm::PointerType::get(*module->getLlvmContext(), 0);
+                        } else if (llvm::Type* lt = elemType->getLlvmType()) {
+                            slotTy = lt;
                         }
+                    }
+                }
+                if (slotTy && rhsVal->getType() != slotTy) {
+                    if (slotTy->isIntegerTy() && rhsVal->getType()->isIntegerTy()) {
+                        rhsVal = builder->CreateIntCast(rhsVal, slotTy, /*isSigned=*/true);
+                    } else if (slotTy->isFloatingPointTy() && rhsVal->getType()->isFloatingPointTy()) {
+                        rhsVal = builder->CreateFPCast(rhsVal, slotTy);
+                    } else if (slotTy->isFloatingPointTy() && rhsVal->getType()->isIntegerTy()) {
+                        rhsVal = builder->CreateSIToFP(rhsVal, slotTy);
+                    } else if (slotTy->isIntegerTy() && rhsVal->getType()->isFloatingPointTy()) {
+                        rhsVal = builder->CreateFPToSI(rhsVal, slotTy);
                     }
                 }
                 builder->CreateStore(rhsVal, lhs);
@@ -232,10 +248,51 @@ namespace cajeta {
                 break;
             }
             case BINARY_OP_ADD: {
-                auto [l, r] = coerceArithPair(module, loadL(lhs), loadR(rhs));
-                result = l->getType()->isFloatingPointTy()
-                    ? emitFpBinOp(module, l, r, llvm::Instruction::FAdd)
-                    : builder->CreateAdd(l, r);
+                llvm::Value* l = loadL(lhs);
+                llvm::Value* r = loadR(rhs);
+                // String concatenation: if either operand evaluates to a pointer
+                // and neither side is an array, lower to __cajeta_str_concat,
+                // auto-stringifying primitive operands first.
+                bool lIsArr = lhsAst && dynamic_pointer_cast<CajetaArray>(lhsAst->getResolvedType());
+                bool rIsArr = rhsAst && dynamic_pointer_cast<CajetaArray>(rhsAst->getResolvedType());
+                bool lIsPtr = l->getType()->isPointerTy() && !lIsArr;
+                bool rIsPtr = r->getType()->isPointerTy() && !rIsArr;
+                if (lIsPtr || rIsPtr) {
+                    auto& llvmCtx = *module->getLlvmContext();
+                    llvm::Type* ptrTy = llvm::PointerType::get(llvmCtx, 0);
+                    llvm::Type* i64Ty = llvm::Type::getInt64Ty(llvmCtx);
+                    llvm::Type* i32Ty = llvm::Type::getInt32Ty(llvmCtx);
+                    llvm::Type* f64Ty = llvm::Type::getDoubleTy(llvmCtx);
+                    auto stringify = [&](llvm::Value* v) -> llvm::Value* {
+                        llvm::Type* t = v->getType();
+                        if (t->isPointerTy()) return v;
+                        if (t->isIntegerTy(1)) {
+                            llvm::Value* widened = builder->CreateZExt(v, i32Ty);
+                            llvm::Function* fn = module->getRuntimeFunction("__cajeta_bool_to_str");
+                            return builder->CreateCall(fn, {widened});
+                        }
+                        if (t->isIntegerTy()) {
+                            v = builder->CreateIntCast(v, i64Ty, /*isSigned=*/true);
+                            llvm::Function* fn = module->getRuntimeFunction("__cajeta_i64_to_str");
+                            return builder->CreateCall(fn, {v});
+                        }
+                        if (t->isFloatingPointTy()) {
+                            if (t != f64Ty) v = builder->CreateFPCast(v, f64Ty);
+                            llvm::Function* fn = module->getRuntimeFunction("__cajeta_f64_to_str");
+                            return builder->CreateCall(fn, {v});
+                        }
+                        return llvm::ConstantPointerNull::get(llvm::cast<llvm::PointerType>(ptrTy));
+                    };
+                    llvm::Value* ls = stringify(l);
+                    llvm::Value* rs = stringify(r);
+                    llvm::Function* concat = module->getRuntimeFunction("__cajeta_str_concat");
+                    result = builder->CreateCall(concat, {ls, rs});
+                    break;
+                }
+                auto [pl, pr] = coerceArithPair(module, l, r);
+                result = pl->getType()->isFloatingPointTy()
+                    ? emitFpBinOp(module, pl, pr, llvm::Instruction::FAdd)
+                    : builder->CreateAdd(pl, pr);
                 break;
             }
             case BINARY_OP_SUB: {
@@ -295,9 +352,13 @@ namespace cajeta {
             }
             case BINARY_OP_MOD: {
                 auto [l, r] = coerceArithPair(module, loadL(lhs), loadR(rhs));
-                result = ((lhsTypeFlags | rhsTypeFlags) & SIGNED_FLAG)
-                    ? builder->CreateSRem(l, r)
-                    : builder->CreateURem(l, r);
+                if (l->getType()->isFloatingPointTy()) {
+                    result = builder->CreateFRem(l, r);
+                } else if ((lhsTypeFlags | rhsTypeFlags) & SIGNED_FLAG) {
+                    result = builder->CreateSRem(l, r);
+                } else {
+                    result = builder->CreateURem(l, r);
+                }
                 break;
             }
             // Compound assignments: compute at the wider type, then truncate back to the

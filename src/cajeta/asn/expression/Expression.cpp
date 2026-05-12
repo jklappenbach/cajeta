@@ -103,7 +103,37 @@ namespace cajeta {
         } else if (ctx->lambdaExpression()) {
             result = make_shared<UnsupportedExpression>("lambda expression", token);
         } else if (ctx->switchExpression()) {
-            result = make_shared<UnsupportedExpression>("switch expression", token);
+            // switch expression — arrow form with single-expression bodies. Anything
+            // more elaborate (colon form, yield, guarded patterns) is rejected at
+            // codegen with NOT_IMPLEMENTED.
+            auto* sx = ctx->switchExpression();
+            ExpressionPtr disc = sx->parExpression()
+                ? Expression::fromContext(sx->parExpression()->expression())
+                : nullptr;
+            list<SwitchExpression::Case> cases;
+            for (auto* rule : sx->switchLabeledRule()) {
+                SwitchExpression::Case cs;
+                if (rule->CASE() && rule->expressionList()) {
+                    for (auto* e : rule->expressionList()->expression()) {
+                        cs.labels.push_back(Expression::fromContext(e));
+                    }
+                }
+                auto outcome = rule->switchRuleOutcome();
+                if (outcome) {
+                    // Arrow form: the rule body is `blockStatement* statementExpression ;`.
+                    // We accept exactly the shape `expression ;` — i.e. a single
+                    // ExpressionStatement — and pull out its expression.
+                    auto bs = outcome->blockStatement();
+                    if (bs.size() == 1) {
+                        auto* stmt = bs[0]->statement();
+                        if (stmt && stmt->statementExpression) {
+                            cs.body = Expression::fromContext(stmt->statementExpression);
+                        }
+                    }
+                }
+                cases.push_back(std::move(cs));
+            }
+            result = make_shared<SwitchExpression>(token, disc, std::move(cases));
         } else if (!ctx->LT().empty()) {
             // LT().size() == 2 in the grammar means '<' '<' (shift-left); a single '<' is comparison.
             result = make_shared<BinaryOpExpression>(
@@ -548,6 +578,153 @@ namespace cajeta {
         llvm::PHINode* phi = builder->CreatePHI(thenVal->getType(), 2);
         phi->addIncoming(thenVal, thenEnd);
         phi->addIncoming(elseVal, elseEnd);
+        return phi;
+    }
+
+    void SwitchExpression::resolveTypes(CajetaModulePtr module) {
+        if (discriminator) discriminator->resolveTypes(module);
+        for (auto& c : cases) {
+            for (auto& lab : c.labels) {
+                if (lab) lab->resolveTypes(module);
+            }
+            if (c.body) c.body->resolveTypes(module);
+        }
+        // Result type tracks the first non-default case body's resolvedType. Cajeta
+        // doesn't yet do a least-upper-bound across arms — callers that need a
+        // specific shape can cast at the use site.
+        for (auto& c : cases) {
+            if (!c.labels.empty() && c.body) {
+                resolvedType = c.body->getResolvedType();
+                if (resolvedType) break;
+            }
+        }
+        if (!resolvedType) {
+            for (auto& c : cases) {
+                if (c.body && c.body->getResolvedType()) {
+                    resolvedType = c.body->getResolvedType();
+                    break;
+                }
+            }
+        }
+    }
+
+    llvm::Value* SwitchExpression::generateCode(CajetaModulePtr module) {
+        auto* builder = module->getBuilder();
+        llvm::LLVMContext& ctx = *module->getLlvmContext();
+        if (!discriminator) {
+            throw Exception("switch expression missing discriminator",
+                "CAJETA_ERROR_NOT_IMPLEMENTED");
+        }
+        llvm::Value* disc = discriminator->generateCode(module);
+        if (auto* a = llvm::dyn_cast<llvm::AllocaInst>(disc)) {
+            disc = builder->CreateLoad(a->getAllocatedType(), disc);
+        }
+        if (!disc->getType()->isIntegerTy()) {
+            throw Exception("switch expression discriminator must be integer-typed",
+                "CAJETA_ERROR_NOT_IMPLEMENTED");
+        }
+        llvm::Type* discTy = disc->getType();
+
+        llvm::Function* parentFn = builder->GetInsertBlock()->getParent();
+        llvm::BasicBlock* mergeBB = llvm::BasicBlock::Create(ctx, "sw_expr_merge", parentFn);
+        llvm::BasicBlock* defaultBB = nullptr;
+
+        // Separate cases into non-default and default for ordering.
+        struct LoweredCase { llvm::BasicBlock* bb; ExpressionPtr body; vector<llvm::ConstantInt*> labels; };
+        vector<LoweredCase> nonDefault;
+        ExpressionPtr defaultBody;
+        for (auto& c : cases) {
+            if (c.labels.empty()) {
+                if (!defaultBB) {
+                    defaultBB = llvm::BasicBlock::Create(ctx, "sw_default", parentFn);
+                    defaultBody = c.body;
+                }
+                continue;
+            }
+            LoweredCase lc;
+            lc.bb = llvm::BasicBlock::Create(ctx, "sw_case", parentFn);
+            lc.body = c.body;
+            for (auto& lab : c.labels) {
+                llvm::Value* v = lab ? lab->generateCode(module) : nullptr;
+                if (auto* ci = llvm::dyn_cast_or_null<llvm::ConstantInt>(v)) {
+                    if (ci->getType() != discTy) {
+                        // Sign-extend or truncate the label constant to match the
+                        // discriminator's width — needed for cases like a `byte`
+                        // discriminator with an `int` literal label.
+                        ci = llvm::ConstantInt::get(llvm::cast<llvm::IntegerType>(discTy),
+                            ci->getSExtValue(), /*isSigned=*/true);
+                    }
+                    lc.labels.push_back(ci);
+                } else {
+                    throw Exception("switch case label must be a constant integer",
+                        "CAJETA_ERROR_NOT_IMPLEMENTED");
+                }
+            }
+            nonDefault.push_back(std::move(lc));
+        }
+        if (!defaultBB) {
+            // Java requires a default in switch expressions for exhaustiveness; emit a
+            // synthetic unreachable so we don't have to insert a phi entry for nothing.
+            defaultBB = llvm::BasicBlock::Create(ctx, "sw_default_unreachable", parentFn);
+        }
+
+        llvm::SwitchInst* sw = builder->CreateSwitch(disc, defaultBB,
+            (unsigned) nonDefault.size());
+        for (auto& lc : nonDefault) {
+            for (auto* l : lc.labels) sw->addCase(l, lc.bb);
+        }
+
+        // Collect each arm's result value and the BB it ends in for the phi node.
+        vector<pair<llvm::Value*, llvm::BasicBlock*>> incoming;
+        llvm::Type* phiTy = nullptr;
+
+        auto emitArm = [&](llvm::BasicBlock* bb, const ExpressionPtr& body) {
+            builder->SetInsertPoint(bb);
+            if (!body) {
+                builder->CreateUnreachable();
+                return;
+            }
+            llvm::Value* v = body->generateCode(module);
+            if (auto* a = llvm::dyn_cast_or_null<llvm::AllocaInst>(v)) {
+                v = builder->CreateLoad(a->getAllocatedType(), v);
+            }
+            if (v) {
+                if (!phiTy) phiTy = v->getType();
+                else if (phiTy != v->getType() && phiTy->isIntegerTy() && v->getType()->isIntegerTy()) {
+                    // Widen integer arms to a common width — pick the larger.
+                    if (phiTy->getScalarSizeInBits() < v->getType()->getScalarSizeInBits()) {
+                        phiTy = v->getType();
+                    }
+                }
+                incoming.push_back({v, builder->GetInsertBlock()});
+            }
+            builder->CreateBr(mergeBB);
+        };
+
+        for (auto& lc : nonDefault) emitArm(lc.bb, lc.body);
+        if (defaultBody) {
+            emitArm(defaultBB, defaultBody);
+        } else {
+            builder->SetInsertPoint(defaultBB);
+            builder->CreateUnreachable();
+        }
+
+        builder->SetInsertPoint(mergeBB);
+        if (incoming.empty() || !phiTy) {
+            // All arms unreachable — nothing to return.
+            builder->CreateUnreachable();
+            return nullptr;
+        }
+        llvm::PHINode* phi = builder->CreatePHI(phiTy, (unsigned) incoming.size());
+        for (auto& [v, bb] : incoming) {
+            llvm::Value* widened = v;
+            if (v->getType() != phiTy && v->getType()->isIntegerTy() && phiTy->isIntegerTy()) {
+                // Need to insert the cast in the arm's predecessor block, before its branch.
+                llvm::IRBuilder<> tmp(bb->getTerminator());
+                widened = tmp.CreateIntCast(v, phiTy, /*isSigned=*/true);
+            }
+            phi->addIncoming(widened, bb);
+        }
         return phi;
     }
 

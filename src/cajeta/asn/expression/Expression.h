@@ -267,6 +267,41 @@ namespace cajeta {
     // (lambdas, switch expressions, super dispatch, inner-class new, method references).
     // The parser produces one of these so the failure surfaces at codegen time as a clear
     // cajeta::Exception with the construct name and source location, rather than a silent
+    /**
+     * Java-17 switch expression. Today we only support the arrow form with single-
+     * expression case bodies — `case X -> expr;` and `default -> expr;` — which is
+     * the most common shape and avoids needing `yield`.
+     *
+     *   switch (x) {
+     *     case 1, 2 -> 10;
+     *     case 3    -> 20;
+     *     default   -> 99;
+     *   }
+     *
+     * Each case may match multiple constants via a comma-separated list. The cases
+     * lower to an `llvm::SwitchInst` and a phi node collects each arm's value.
+     */
+    class SwitchExpression : public Expression {
+    public:
+        struct Case {
+            list<ExpressionPtr> labels;     // empty == default
+            ExpressionPtr body;
+        };
+    private:
+        ExpressionPtr discriminator;
+        list<Case> cases;
+    public:
+        SwitchExpression(antlr4::Token* token,
+                          ExpressionPtr discriminator,
+                          list<Case> cases)
+            : Expression(token),
+              discriminator(std::move(discriminator)),
+              cases(std::move(cases)) { }
+
+        void resolveTypes(CajetaModulePtr module) override;
+        llvm::Value* generateCode(CajetaModulePtr module) override;
+    };
+
     // nullptr returning invalid IR.
     class UnsupportedExpression : public Expression {
     private:

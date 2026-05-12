@@ -49,14 +49,6 @@ TEST(UnsupportedExpressionTests, lambdaThrowsNotImplemented) {
     expectNotImplemented(src, "lambda");
 }
 
-TEST(UnsupportedExpressionTests, switchExpressionThrowsNotImplemented) {
-    // Java-17-style switch expression — matches ctx->switchExpression().
-    auto src = makeSource("int32",
-        "int32 x = 1;\n"
-        "return switch (x) { case 1 -> 10; default -> 20; };");
-    expectNotImplemented(src, "switch");
-}
-
 TEST(UnsupportedExpressionTests, methodReferenceTypeThrowsNotImplemented) {
     // `Type::method` form — matches ctx->COLONCOLON() in fromContext, which we check
     // before NEW/identifier so it doesn't get swallowed by those branches.

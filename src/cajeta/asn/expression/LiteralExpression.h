@@ -41,6 +41,8 @@ namespace cajeta {
                 literalType = LITERAL_TYPE_STRING;
             } else if (ctx->TEXT_BLOCK()) {
                 literalType = LITERAL_TYPE_TEXT_BLOCK;
+            } else if (ctx->CHAR_LITERAL()) {
+                literalType = LITERAL_TYPE_CHAR;
             }
         }
 

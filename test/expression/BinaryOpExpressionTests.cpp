@@ -62,6 +62,15 @@ TEST(BinaryOpTests, intMod) {
     EXPECT_EQ(fn(), 2);
 }
 
+TEST(BinaryOpTests, floatMod) {
+    auto jit = CajetaJit::compile(makeSource("float64",
+        "float64 a = 10.5;\n"
+        "float64 b = 3.0;\n"
+        "return a % b;"), "test.B");
+    auto fn = jit->lookup<double (*)()>("run");
+    EXPECT_DOUBLE_EQ(fn(), 1.5);
+}
+
 TEST(BinaryOpTests, intAddViaLocals) {
     auto jit = CajetaJit::compile(makeSource("int32",
         "int32 a = 10;\n"

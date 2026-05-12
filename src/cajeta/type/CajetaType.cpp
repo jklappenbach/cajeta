@@ -79,6 +79,12 @@ namespace cajeta {
         NATIVE_TYPE_ENTRY("float64", llvm::Type::getDoubleTy(ctx), FLOAT64_TYPE_ID);
         NATIVE_TYPE_ENTRY("float128", llvm::Type::getFP128Ty(ctx), FLOAT128_TYPE_ID);
         NATIVE_TYPE_ENTRY("pointer", llvm::PointerType::get(ctx, 0), POINTER_TYPE_ID);
+        // `String` is an alias for the opaque-pointer type today — string literals
+        // are global-string-ptr (i8*) and there's no String class yet. Registered
+        // with shareLlvmType=false so the reverse lookup keeps "pointer" canonical.
+        CajetaType::create(
+            QualifiedName::getOrInsert("String", CAJETA_NATIVE_PACKAGE),
+            llvm::PointerType::get(ctx, 0), POINTER_TYPE_ID, /*shareLlvmType=*/false);
     }
 
     llvm::ConstantInt* CajetaType::getTypeAllocSize(CajetaModulePtr module) {
@@ -161,11 +167,17 @@ namespace cajeta {
             } else {
                 throw "What is this if not a class or interface?";
             }
-            if (canonicalMap.find(qName->toCanonical()) != canonicalMap.end()) {
-
+            auto it = canonicalMap.find(qName->toCanonical());
+            if (it != canonicalMap.end()) {
+                type = it->second;
+            } else {
+                // Fall back to the native ("") package — covers built-in aliases like
+                // String/Exception that fromContext defaults to package "code".
+                auto nativeIt = canonicalMap.find(qName->getTypeName());
+                if (nativeIt != canonicalMap.end()) {
+                    type = nativeIt->second;
+                }
             }
-            type = canonicalMap[qName->toCanonical()];
-
         }
         // Each `[]` pair wraps the type in another CajetaArray. `int[]` -> CajetaArray<int>;
         // `int[][]` -> CajetaArray<CajetaArray<int>>. The size expressions (when present)

@@ -130,17 +130,39 @@ namespace cajeta {
     };
 
     /**
-     * variableModifier* (typeType | VAR) variableDeclaratorId ':' expression
+     * Enhanced for-loop over an iterable (today: arrays only).
+     *
+     *   for ([iteratorType iteratorName ,] elementType elementName : iterable)
+     *       body
+     *
+     * The optional iterator binding is a Cajeta extension that exposes the running
+     * 0-based index alongside the element value.
      */
     class EnhancedForStatement : public Statement {
     private:
-        list<FieldPtr> fields;
-        bool var;
-        string variableName;
-        Expression* expression;
+        CajetaTypePtr iteratorType;     // null if no iterator binding
+        string iteratorName;
+        CajetaTypePtr elementType;
+        string elementName;
+        ExpressionPtr iterableExpr;
+        StatementPtr body;
     public:
-        EnhancedForStatement(antlr4::Token* token) : Statement(token) { }
+        EnhancedForStatement(antlr4::Token* token,
+                              CajetaTypePtr iteratorType,
+                              string iteratorName,
+                              CajetaTypePtr elementType,
+                              string elementName,
+                              ExpressionPtr iterableExpr,
+                              StatementPtr body)
+            : Statement(token),
+              iteratorType(iteratorType),
+              iteratorName(std::move(iteratorName)),
+              elementType(elementType),
+              elementName(std::move(elementName)),
+              iterableExpr(iterableExpr),
+              body(body) { }
 
+        void resolveTypes(CajetaModulePtr module) override;
         llvm::Value* generateCode(CajetaModulePtr module) override;
     };
 

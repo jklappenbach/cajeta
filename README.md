@@ -114,12 +114,21 @@ CAJETA_DUMP_IR=1 CAJETA_SOURCE_ROOT="$PWD" \
 | `CastTests`                 | int↔float and width-changing casts                            |
 | `TernaryTests`              | `cond ? a : b` with int/float/coercion/nested/side-effect     |
 | `InstanceOfTests`           | Compile-time `instanceof` static-type matching                |
-| `UnsupportedExpressionTests`| Lambda / switch / super / inner-class / method-ref / generic-invocation throw NOT_IMPLEMENTED |
+| `UnsupportedExpressionTests`| Lambda / super / inner-class / method-ref / generic-invocation throw NOT_IMPLEMENTED |
+| `SwitchExpressionTests`     | Java 17 arrow-form switch expressions with multi-label cases and a default arm |
 | `ArrayTests`                | `new T[n]`, indexing, `arr.size()`, bounds checks, nested `T[][]` |
 | `ControlFlowTests`          | if/else, while, for, do-while, break, continue, nested loops, early-return |
 | `ForInitDeclTests`          | Loop-variable declaration inside `for (...)` init |
+| `EnhancedForTests`          | `for (T x : arr)` and Cajeta-extended `for (int i, T x : arr)` with break/continue |
 | `SwitchTests`               | switch/case/default with fall-through and no-match |
 | `TryCatchTests`             | throw / try / catch via setjmp/longjmp runtime |
+| `SystemIoTests`             | `System.{stdout,stderr,stdin}.{print,println,printf}` with SLF4J-style `{}` templating, `+` String concatenation with auto-stringified primitives |
+| `StringMethodsTests`        | `String.{size,length,isEmpty,equals,charAt,indexOf,startsWith,endsWith,contains,substring,toUpperCase,toLowerCase,trim,replace}` |
+| `MathIntrinsicTests`        | `Math.{abs,max,min,sqrt,pow,floor,ceil,round,sin,cos,tan,log,log10,exp}`, `Math.{PI,E}`, `Integer.{MAX,MIN}_VALUE` |
+| `CharLiteralTests`          | Single-quoted `char` literals — ASCII, escape sequences (\n, \t, …), octal, `\\uXXXX` |
+| `ConversionIntrinsicTests`  | `Integer.parseInt`, `Long.parseLong`, `Double.parseDouble`, `Boolean.parseBoolean`, `*.toString`, `String.valueOf` |
+| `NullHandlingTests`         | null assignment / comparison and null-safe String built-ins |
+| `SystemUtilTests`           | `System.{exit,currentTimeMillis}`, `Math.random` |
 | `CompilerOptionTests`       | `--bounds=off` toggle, `--emit` mode round-trip, target-triple setter |
 | `FpTests`                   | fp32/fp64 arithmetic, fp16 declare/store, fp4/fp6/fp8 storage |
 

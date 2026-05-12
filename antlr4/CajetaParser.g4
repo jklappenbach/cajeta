@@ -529,10 +529,11 @@ forInit
     | expressionList
     ;
 
-// TODO: Add an iterator for looping, optionally allow devs to get access to first element, last element, and index
+// Standard Java enhanced-for `for (T x : iterable)`. The optional `loopIterator ,`
+// prefix is a Cajeta extension that exposes the running index/iteration variable
+// alongside the element binding.
 enhancedForControl
-    : loopVariable ':' expression
-    | loopIterator ',' loopVariable ':' expression
+    : (loopIterator ',')? loopVariable
     ;
 
 loopVariable

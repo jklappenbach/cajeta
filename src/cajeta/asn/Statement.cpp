@@ -7,6 +7,7 @@
 #include "expression/Identifier.h"
 #include "../compile/CajetaModule.h"
 #include "../field/HeapField.h"
+#include "../field/StackField.h"
 #include "../type/CajetaArray.h"
 #include "Block.h"
 #include "LocalVariableDeclaration.h"
@@ -129,36 +130,66 @@ namespace cajeta {
                 : nullptr;
             result = make_shared<IfStatement>(token, cond, thenStmt, elseStmt);
         } else if (ctx->FOR()) {
-            // FOR '(' forControl ')' statement. C-style: optional init, condition,
-            // and update list. The init may be either a variable declaration
-            // (`int32 i = 0`) or an expression (`i = 0`).
+            // FOR '(' forControl ')' statement.
+            //   - enhancedForControl: for-each over an iterable
+            //   - C-style: optional init, condition, and update list
             auto forCtl = ctx->forControl();
-            BlockStatementPtr init;
-            ExpressionPtr cond;
-            list<ExpressionPtr> updates;
-            if (forCtl) {
-                if (auto fi = forCtl->forInit()) {
-                    if (fi->localVariableDeclaration()) {
-                        init = buildLocalVariableDeclaration(fi->localVariableDeclaration());
-                    } else if (fi->expressionList() && !fi->expressionList()->expression().empty()) {
-                        init = make_shared<ExpressionStatement>(
-                            Expression::fromContext(fi->expressionList()->expression(0)),
-                            token);
-                    }
-                }
-                if (forCtl->expression()) {
-                    cond = Expression::fromContext(forCtl->expression());
-                }
-                if (forCtl->expressionList()) {
-                    for (auto* e : forCtl->expressionList()->expression()) {
-                        updates.push_back(Expression::fromContext(e));
-                    }
-                }
-            }
             StatementPtr body = ctx->statement().empty()
                 ? nullptr
                 : Statement::fromContext(ctx->statement(0));
-            result = make_shared<ForStatement>(token, init, cond, updates, body);
+            if (forCtl && forCtl->enhancedForControl()) {
+                auto ec = forCtl->enhancedForControl();
+                CajetaTypePtr iterType;
+                string iterName;
+                if (auto it = ec->loopIterator()) {
+                    if (it->typeType()) {
+                        iterType = CajetaType::fromContext(it->typeType(), nullptr);
+                    }
+                    if (it->variableDeclaratorId()) {
+                        iterName = it->variableDeclaratorId()->identifier()->getText();
+                    }
+                }
+                CajetaTypePtr elemType;
+                string elemName;
+                ExpressionPtr iterableExpr;
+                if (auto lv = ec->loopVariable()) {
+                    if (lv->typeType()) {
+                        elemType = CajetaType::fromContext(lv->typeType(), nullptr);
+                    }
+                    if (lv->variableDeclaratorId()) {
+                        elemName = lv->variableDeclaratorId()->identifier()->getText();
+                    }
+                    if (lv->expression()) {
+                        iterableExpr = Expression::fromContext(lv->expression());
+                    }
+                }
+                result = make_shared<EnhancedForStatement>(token,
+                    iterType, iterName, elemType, elemName, iterableExpr, body);
+            } else {
+                BlockStatementPtr init;
+                ExpressionPtr cond;
+                list<ExpressionPtr> updates;
+                if (forCtl) {
+                    if (auto fi = forCtl->forInit()) {
+                        if (fi->localVariableDeclaration()) {
+                            init = buildLocalVariableDeclaration(fi->localVariableDeclaration());
+                        } else if (fi->expressionList() && !fi->expressionList()->expression().empty()) {
+                            init = make_shared<ExpressionStatement>(
+                                Expression::fromContext(fi->expressionList()->expression(0)),
+                                token);
+                        }
+                    }
+                    if (forCtl->expression()) {
+                        cond = Expression::fromContext(forCtl->expression());
+                    }
+                    if (forCtl->expressionList()) {
+                        for (auto* e : forCtl->expressionList()->expression()) {
+                            updates.push_back(Expression::fromContext(e));
+                        }
+                    }
+                }
+                result = make_shared<ForStatement>(token, init, cond, updates, body);
+            }
         } else if (ctx->WHILE() && !ctx->DO()) {
             // WHILE parExpression statement
             ExpressionPtr cond = ctx->parExpression()
@@ -472,9 +503,121 @@ namespace cajeta {
         return nullptr;
     }
 
+    void EnhancedForStatement::resolveTypes(CajetaModulePtr module) {
+        if (iterableExpr) iterableExpr->resolveTypes(module);
+        if (body) body->resolveTypes(module);
+    }
+
     llvm::Value* EnhancedForStatement::generateCode(CajetaModulePtr module) {
-        // for-each (`for (T x : iterable)`) needs an iterator protocol; deferred until
-        // we have a real iteration interface in the standard library.
+        auto* builder = module->getBuilder();
+        llvm::LLVMContext& ctx = *module->getLlvmContext();
+        llvm::Function* parentFn = builder->GetInsertBlock()->getParent();
+        if (!iterableExpr || !elementType || elementName.empty()) {
+            return nullptr;
+        }
+
+        // We only support array iterables today. Resolve the iterable's array type so
+        // we know its element-LLVM shape (primitive vs pointer-slot).
+        iterableExpr->resolveTypes(module);
+        auto arrType = dynamic_pointer_cast<CajetaArray>(iterableExpr->getResolvedType());
+        if (!arrType) {
+            return nullptr;
+        }
+        llvm::Value* arrayVal = iterableExpr->generateCode(module);
+        if (!arrayVal) return nullptr;
+        if (auto* a = llvm::dyn_cast<llvm::AllocaInst>(arrayVal)) {
+            arrayVal = builder->CreateLoad(a->getAllocatedType(), a);
+        }
+
+        llvm::Type* i64Ty = llvm::Type::getInt64Ty(ctx);
+        llvm::Type* hdrTy = arrType->getLlvmType();
+
+        // Index counter — always int64 to match the array-header size field.
+        llvm::AllocaInst* idxSlot = builder->CreateAlloca(i64Ty, nullptr, "fe_idx");
+        builder->CreateStore(llvm::ConstantInt::get(i64Ty, 0), idxSlot);
+
+        // Element binding alloca. For primitive element types we store the value
+        // directly; for reference element types we store a `ptr` slot (matching the
+        // shape LocalVariableDeclaration would have used).
+        bool elemIsPrimitive = (elementType->getTypeFlags() & PRIMITIVE_FLAG) != 0;
+        bool elemIsArray = dynamic_pointer_cast<CajetaArray>(elementType) != nullptr;
+        llvm::Type* elemSlotTy = (elemIsPrimitive && !elemIsArray)
+            ? elementType->getLlvmType()
+            : llvm::PointerType::get(ctx, 0);
+        llvm::AllocaInst* elemSlot = builder->CreateAlloca(elemSlotTy, nullptr, elementName);
+
+        // Optional iterator alloca for the Cajeta-extended `for (int i, T x : arr)` form.
+        llvm::AllocaInst* iterSlot = nullptr;
+        if (iteratorType && !iteratorName.empty()) {
+            iterSlot = builder->CreateAlloca(iteratorType->getLlvmType(), nullptr, iteratorName);
+        }
+
+        // Register both bindings in the current scope so the body's IdentifierExpression
+        // lookups find them. StackField pre-seeded with the alloca we just created.
+        auto scope = module->getScopeStack().peek();
+        auto elemField = make_shared<StackField>(module, elementName, elementType);
+        elemField->setAllocation(elemSlot);
+        scope->putField(elemField);
+        if (iterSlot) {
+            auto iterField = make_shared<StackField>(module, iteratorName, iteratorType);
+            iterField->setAllocation(iterSlot);
+            scope->putField(iterField);
+        }
+
+        // Load size once at loop entry (Java semantics: iterating an array sees its
+        // length at the start; explicit grows are not in scope today anyway).
+        llvm::Value* sizePtr = builder->CreateStructGEP(hdrTy, arrayVal,
+            CajetaArray::SIZE_FIELD_INDEX, "size");
+        llvm::Value* sizeVal = builder->CreateLoad(i64Ty, sizePtr, "size_v");
+
+        llvm::BasicBlock* headBB = llvm::BasicBlock::Create(ctx, "fe_head", parentFn);
+        llvm::BasicBlock* bodyBB = llvm::BasicBlock::Create(ctx, "fe_body", parentFn);
+        llvm::BasicBlock* updateBB = llvm::BasicBlock::Create(ctx, "fe_update", parentFn);
+        llvm::BasicBlock* exitBB = llvm::BasicBlock::Create(ctx, "fe_exit", parentFn);
+        builder->CreateBr(headBB);
+
+        builder->SetInsertPoint(headBB);
+        llvm::Value* idxVal = builder->CreateLoad(i64Ty, idxSlot, "i");
+        llvm::Value* cond = builder->CreateICmpSLT(idxVal, sizeVal, "fe_cmp");
+        builder->CreateCondBr(cond, bodyBB, exitBB);
+
+        builder->SetInsertPoint(bodyBB);
+        // GEP to data[idx]: header is `{ i64 size, [0 x T] data }`. Match the form
+        // ArrayIndexExpression uses — single 3-index GEP on the header type so the
+        // result matches the byte-offset that the runtime's heap layout assumes.
+        llvm::Type* i32Ty = llvm::Type::getInt32Ty(ctx);
+        llvm::Value* elemPtr = builder->CreateGEP(hdrTy, arrayVal,
+            {llvm::ConstantInt::get(i64Ty, 0),
+             llvm::ConstantInt::get(i32Ty, CajetaArray::DATA_FIELD_INDEX),
+             idxVal}, "elem_ptr");
+        // The element slot in the data region matches elemSlotTy (primitive value
+        // for primitive arrays, pointer for reference arrays). Load and store.
+        llvm::Value* elemVal = builder->CreateLoad(elemSlotTy, elemPtr, "elem");
+        builder->CreateStore(elemVal, elemSlot);
+        if (iterSlot) {
+            // Store the current index into the iterator binding, narrowing if needed.
+            llvm::Value* idxCast = idxVal;
+            llvm::Type* itTy = iteratorType->getLlvmType();
+            if (itTy != i64Ty && itTy->isIntegerTy()) {
+                idxCast = builder->CreateIntCast(idxVal, itTy, /*isSigned=*/true);
+            }
+            builder->CreateStore(idxCast, iterSlot);
+        }
+
+        module->pushLoopContext(updateBB, exitBB);
+        if (body) body->generateCode(module);
+        module->popLoopContext();
+        if (!builder->GetInsertBlock()->getTerminator()) {
+            builder->CreateBr(updateBB);
+        }
+
+        builder->SetInsertPoint(updateBB);
+        llvm::Value* nextIdx = builder->CreateAdd(idxVal,
+            llvm::ConstantInt::get(i64Ty, 1), "fe_next");
+        builder->CreateStore(nextIdx, idxSlot);
+        builder->CreateBr(headBB);
+
+        builder->SetInsertPoint(exitBB);
         return nullptr;
     }
 
