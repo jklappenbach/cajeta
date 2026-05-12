@@ -131,36 +131,51 @@ namespace cajeta {
     }
 
     void Method::generateCode() {
-        if (llvmBasicBlock == nullptr) {
-            llvmBasicBlock = llvm::BasicBlock::Create(*module->getLlvmContext(), toCanonical(), llvmFunction);
-            builder = new llvm::IRBuilder<>(llvmBasicBlock, llvmBasicBlock->begin());
-            builder->SetInsertPoint(llvmBasicBlock);
-            module->setBuilder(builder);
-            module->setCurrentMethod(shared_from_this());
-
-            createScope();
-
-            int i = 0;
-            for (auto& parameter: parameterList) {
-                FieldPtr parameterField = make_shared<ParameterField>(module, parameter, llvmFunction, i++);
-                module->getScopeStack().peek()->putField(parameterField);
-            }
-            char buffer[256];
-            snprintf(buffer, 256, "Entering method %s\n", toCanonical(true).c_str());
-            llvm::Value* message = builder->CreateGlobalStringPtr(buffer, "str");
-            vector<llvm::Value*> args({message});
-            Printer::createPrintfInstruction(module, llvm::ArrayRef<llvm::Value*>(args), llvmBasicBlock);
-            block->generateCode(module);
-            snprintf(buffer, 256, "Exiting method %s\n", toCanonical(true).c_str());
-            message = builder->CreateGlobalStringPtr(buffer, "str");
-            args.clear();
-            args.push_back(message);
-            Printer::createPrintfInstruction(module, llvm::ArrayRef<llvm::Value*>(args), llvmBasicBlock);
-
-            destroyScope();
-
-            module->getBuilder()->CreateRetVoid();
+        if (llvmBasicBlock != nullptr) {
+            return;
         }
+        llvmBasicBlock = llvm::BasicBlock::Create(*module->getLlvmContext(), "entry", llvmFunction);
+        builder = new llvm::IRBuilder<>(llvmBasicBlock, llvmBasicBlock->begin());
+        builder->SetInsertPoint(llvmBasicBlock);
+        module->setBuilder(builder);
+        module->setCurrentMethod(shared_from_this());
+
+        createScope();
+
+        int i = 0;
+        for (auto& parameter: parameterList) {
+            FieldPtr parameterField = make_shared<ParameterField>(module, parameter, llvmFunction, i++);
+            module->getScopeStack().peek()->putField(parameterField);
+        }
+
+        // Type-resolver pre-pass: populates Expression::resolvedType so codegen can
+        // distinguish e.g. fp8 from i8 when they share an LLVM type.
+        if (block) {
+            block->resolveTypes(module);
+            block->generateCode(module);
+        }
+
+        // Emit a terminator only if the body didn't (i.e. no explicit return). For void
+        // methods this is the conventional "fall through to ret"; for non-void methods
+        // a missing return is undefined in Cajeta semantics, but we emit a zero-value
+        // ret so the IR remains well-formed.
+        if (!builder->GetInsertBlock()->getTerminator()) {
+            llvm::Type* retLlvmTy = returnType ? returnType->getLlvmType() : nullptr;
+            if (!retLlvmTy || retLlvmTy->isVoidTy()) {
+                builder->CreateRetVoid();
+            } else if (retLlvmTy->isFloatingPointTy()) {
+                builder->CreateRet(llvm::ConstantFP::getZero(retLlvmTy));
+            } else if (retLlvmTy->isPointerTy()) {
+                builder->CreateRet(llvm::ConstantPointerNull::get(llvm::cast<llvm::PointerType>(retLlvmTy)));
+            } else if (retLlvmTy->isIntegerTy()) {
+                builder->CreateRet(llvm::ConstantInt::get(retLlvmTy, 0));
+            } else {
+                // Aggregate/other — best-effort poison value.
+                builder->CreateRet(llvm::PoisonValue::get(retLlvmTy));
+            }
+        }
+
+        destroyScope();
     }
 
     void Method::createScope() {

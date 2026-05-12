@@ -31,7 +31,14 @@ namespace cajeta {
     }
 
     void HeapField::onDelete() {
-        MemoryManager::createFreeInstruction(module, createLoad(),
-            module->getBuilder()->GetInsertBlock());
+        // Skip if the current block is already terminated — emitting a free after a
+        // `ret` would leave dangling instructions and break LLVM verification. This is
+        // a stopgap until ownership analysis decides per-field whether a free is
+        // appropriate; for now no free fires on functions that return their array.
+        auto* block = module->getBuilder()->GetInsertBlock();
+        if (!block || block->getTerminator()) {
+            return;
+        }
+        MemoryManager::createFreeInstruction(module, createLoad(), block);
     }
 }

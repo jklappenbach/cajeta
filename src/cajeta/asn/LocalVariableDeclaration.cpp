@@ -6,6 +6,7 @@
 #include "../compile/CajetaModule.h"
 #include "../field/HeapField.h"
 #include "../field/StackField.h"
+#include "../type/CajetaArray.h"
 #include "../error/CajetaExceptions.h"
 #include "../logging/CajetaLogger.h"
 
@@ -19,12 +20,15 @@ namespace cajeta {
      * @return
      */
     llvm::Value* LocalVariableDeclaration::generateCode(CajetaModulePtr module) {
-        module->getAsnStack().push_back(shared_from_this());
 
+        // Arrays and class instances live on the heap; their local slot is a pointer.
+        // Only true primitives (int32, float64, bool, etc.) get an inline-value alloca.
+        bool isArray = dynamic_pointer_cast<CajetaArray>(type) != nullptr;
+        bool wantsInlineSlot = (type->getTypeFlags() & PRIMITIVE_FLAG) && !isArray;
         for (auto& declarator: variableDeclarators) {
             InitializerPtr initializer = declarator->getInitializer();
             FieldPtr field;
-            if (type->getTypeFlags() & PRIMITIVE_FLAG) {
+            if (wantsInlineSlot) {
                 field = make_shared<StackField>(module, declarator->getIdentifier(), type,
                     declarator->isReference(), modifiers, annotations, initializer);
             } else {

@@ -23,6 +23,8 @@ namespace cajeta {
 
         string& getTextValue() { return identifier; }
 
+        void resolveTypes(CajetaModulePtr module) override;
+
         llvm::Value* generateCode(CajetaModulePtr module) override;
     };
 } // code

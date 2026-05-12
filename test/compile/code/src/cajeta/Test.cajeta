@@ -1,6 +1,6 @@
 package cajeta;
 
-public final class System {
+public final class Test {
     public static void main() {
     }
 }

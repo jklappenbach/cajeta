@@ -9,7 +9,7 @@ namespace cajeta {
     llvm::FunctionCallee Printer::getPrintf(CajetaModulePtr module) {
         llvm::Function* fn = module->getLlvmModule()->getFunction("printf");
         llvm::FunctionCallee fnCallee;
-        vector<llvm::Type*> args({llvm::Type::getInt8PtrTy(*module->getLlvmContext())});
+        vector<llvm::Type*> args({llvm::PointerType::get(*module->getLlvmContext(), 0)});
         llvm::Type* returnType = llvm::Type::getInt32Ty(*module->getLlvmContext());
         if (!fn) {
             llvm::FunctionType* fnType = llvm::FunctionType::get(returnType, llvm::ArrayRef<llvm::Type*>(args), true);

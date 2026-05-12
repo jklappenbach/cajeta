@@ -38,7 +38,27 @@ namespace cajeta {
                 alloca = module->getBuilder()->CreateAlloca(type->getLlvmType()->getPointerTo());
             }
             if (initializer != nullptr) {
-                module->getBuilder()->CreateStore(initializer->generateCode(module), alloca);
+                llvm::Value* initVal = initializer->generateCode(module);
+                if (initVal) {
+                    // Coerce when the initializer's natural LLVM type doesn't match the
+                    // declared field type — e.g. integer literals default to i64 but a
+                    // field declared int32 needs the value truncated.
+                    llvm::Type* fieldTy = alloca->getAllocatedType();
+                    if (initVal->getType() != fieldTy) {
+                        auto* builder = module->getBuilder();
+                        llvm::Type* srcTy = initVal->getType();
+                        if (fieldTy->isIntegerTy() && srcTy->isIntegerTy()) {
+                            initVal = builder->CreateIntCast(initVal, fieldTy, /*isSigned=*/true);
+                        } else if (fieldTy->isFloatingPointTy() && srcTy->isFloatingPointTy()) {
+                            initVal = builder->CreateFPCast(initVal, fieldTy);
+                        } else if (fieldTy->isFloatingPointTy() && srcTy->isIntegerTy()) {
+                            initVal = builder->CreateSIToFP(initVal, fieldTy);
+                        } else if (fieldTy->isIntegerTy() && srcTy->isFloatingPointTy()) {
+                            initVal = builder->CreateFPToSI(initVal, fieldTy);
+                        }
+                    }
+                    module->getBuilder()->CreateStore(initVal, alloca);
+                }
             }
         }
         return alloca;

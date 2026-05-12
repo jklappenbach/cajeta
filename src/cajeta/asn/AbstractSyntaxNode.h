@@ -76,7 +76,18 @@ namespace cajeta {
 
         vector<AbstractSyntaxNodePtr>& getChildren() { return children; }
 
+        // Pre-codegen pass: registers class/method signatures. See Compiler.cpp.
         virtual void generateSignature(CajetaModulePtr module) { }
+
+        // Pre-codegen pass: resolves CajetaType information that codegen will need but
+        // can't recover from LLVM types alone (fp8 vs i8, generic type instantiation,
+        // etc.). Default walks children. Concrete Expression subclasses override to set
+        // their own resolvedType once children have been resolved.
+        virtual void resolveTypes(CajetaModulePtr module) {
+            for (auto& child : children) {
+                if (child) child->resolveTypes(module);
+            }
+        }
 
         virtual llvm::Value* generateCode(CajetaModulePtr module) = 0;
     };

@@ -7,10 +7,18 @@
 #include "CajetaModule.h"
 #include "../logging/CajetaLogger.h"
 #include "Compiler.h"
+#include "../method/Method.h"
 #include "../type/StructureMetadata.h"
 #include "../type/CajetaClass.h"
+#include "../runtime/EmbeddedRuntime.h"
+
+#include "llvm/Bitcode/BitcodeReader.h"
+#include "llvm/IR/Function.h"
+#include "llvm/Linker/Linker.h"
+#include "llvm/Support/MemoryBuffer.h"
 
 namespace cajeta {
+    map<string, MethodPtr> CajetaModule::methods;
     map<string, CajetaModulePtr> CajetaModule::strutureToModule;
     map<string, CajetaModulePtr> CajetaModule::moduleVariables;
 
@@ -105,5 +113,43 @@ namespace cajeta {
         result->structureMetadata = make_shared<StructureMetadata>(result);
         strutureToModule[result->qName->toCanonical()] = result;
         return result;
+    }
+
+    void CajetaModule::resetGlobals() {
+        strutureToModule.clear();
+        moduleVariables.clear();
+        methods.clear();
+        Method::getArchive().clear();
+    }
+
+    bool CajetaModule::linkRuntime() {
+        // Tracked via presence of a sentinel runtime function in the module — if it's
+        // already there, the runtime has been linked.
+        if (llvmModule->getFunction("__cajeta_new_array") != nullptr) {
+            return true;
+        }
+        llvm::StringRef bcRef(reinterpret_cast<const char*>(cajeta_runtime_bc), cajeta_runtime_bc_len);
+        auto buf = llvm::MemoryBuffer::getMemBuffer(bcRef, "cajeta_runtime", /*RequiresNullTerminator=*/false);
+        auto parsed = llvm::parseBitcodeFile(buf->getMemBufferRef(), *llvmContext);
+        if (!parsed) {
+            cerr << "cajeta: failed to parse embedded runtime bitcode: "
+                 << llvm::toString(parsed.takeError()) << std::endl;
+            return false;
+        }
+        std::unique_ptr<llvm::Module> rtModule = std::move(*parsed);
+        // Align the runtime's target triple/datalayout with the user module's so the linker
+        // doesn't complain about a mismatch.
+        rtModule->setTargetTriple(llvmModule->getTargetTriple());
+        rtModule->setDataLayout(llvmModule->getDataLayout());
+        if (llvm::Linker::linkModules(*llvmModule, std::move(rtModule))) {
+            cerr << "cajeta: Linker::linkModules failed when merging runtime" << std::endl;
+            return false;
+        }
+        return true;
+    }
+
+    llvm::Function* CajetaModule::getRuntimeFunction(const std::string& name) {
+        linkRuntime();
+        return llvmModule->getFunction(name);
     }
 }

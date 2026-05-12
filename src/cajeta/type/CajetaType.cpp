@@ -40,6 +40,12 @@ namespace cajeta {
         return false;
     }
 
+    void CajetaType::resetGlobals() {
+        canonicalMap.clear();
+        typeMap.clear();
+        llvmTypeIdMap.clear();
+    }
+
     void CajetaType::init(llvm::LLVMContext& ctx) {
         NATIVE_TYPE_ENTRY("void", llvm::Type::getVoidTy(ctx), VOID_TYPE_ID);
         NATIVE_TYPE_ENTRY("boolean", llvm::Type::getInt1Ty(ctx), BOOLEAN_TYPE_ID);
@@ -53,11 +59,26 @@ namespace cajeta {
         NATIVE_TYPE_ENTRY("int64", llvm::Type::getInt64Ty(ctx), INT64_TYPE_ID);
         NATIVE_TYPE_ENTRY("uint128", llvm::Type::getInt128Ty(ctx), UINT128_TYPE_ID);
         NATIVE_TYPE_ENTRY("int128", llvm::Type::getInt128Ty(ctx), INT128_TYPE_ID);
+        // Sub-byte and 8-bit floats from the OCP Microscaling spec. LLVM has no IR-level
+        // Type* for these formats (only APFloat semantics), so we represent them as iN
+        // storage and rely on runtime helpers for conversions/arithmetic (future work).
+        // shareLlvmType=false so the iN registration doesn't overwrite the int{4,6,8} entries.
+        #define FP_OPAQUE_ENTRY(typeName, bits, typeFlags) \
+            CajetaType::create(QualifiedName::getOrInsert(typeName, CAJETA_NATIVE_PACKAGE), \
+                llvm::IntegerType::get(ctx, bits), typeFlags, /*shareLlvmType=*/false);
+        FP_OPAQUE_ENTRY("float4e2m1",     4, FLOAT4E2M1_TYPE_ID);
+        FP_OPAQUE_ENTRY("float6e2m3",     6, FLOAT6E2M3_TYPE_ID);
+        FP_OPAQUE_ENTRY("float6e3m2",     6, FLOAT6E3M2_TYPE_ID);
+        FP_OPAQUE_ENTRY("float8e4m3",     8, FLOAT8E4M3_TYPE_ID);
+        FP_OPAQUE_ENTRY("float8e5m2",     8, FLOAT8E5M2_TYPE_ID);
+        FP_OPAQUE_ENTRY("float8e4m3fnuz", 8, FLOAT8E4M3FNUZ_TYPE_ID);
+        FP_OPAQUE_ENTRY("float8e5m2fnuz", 8, FLOAT8E5M2FNUZ_TYPE_ID);
+        #undef FP_OPAQUE_ENTRY
         NATIVE_TYPE_ENTRY("float16", llvm::Type::getBFloatTy(ctx), FLOAT16_TYPE_ID);
         NATIVE_TYPE_ENTRY("float32", llvm::Type::getFloatTy(ctx), FLOAT32_TYPE_ID);
         NATIVE_TYPE_ENTRY("float64", llvm::Type::getDoubleTy(ctx), FLOAT64_TYPE_ID);
         NATIVE_TYPE_ENTRY("float128", llvm::Type::getFP128Ty(ctx), FLOAT128_TYPE_ID);
-        NATIVE_TYPE_ENTRY("pointer", llvm::Type::getInt64PtrTy(ctx), POINTER_TYPE_ID);
+        NATIVE_TYPE_ENTRY("pointer", llvm::PointerType::get(ctx, 0), POINTER_TYPE_ID);
     }
 
     llvm::ConstantInt* CajetaType::getTypeAllocSize(CajetaModulePtr module) {
@@ -69,6 +90,7 @@ namespace cajeta {
     string CajetaType::toGeneric() {
         if (typeFlags & PRIMITIVE_FLAG) {
             switch (llvmType->getTypeID()) {
+                case llvm::Type::HalfTyID:
                 case llvm::Type::BFloatTyID:
                 case llvm::Type::FloatTyID:
                 case llvm::Type::DoubleTyID:
@@ -145,18 +167,13 @@ namespace cajeta {
             type = canonicalMap[qName->toCanonical()];
 
         }
-        if (ctx->LBRACK().size() > 0) {
-            if (ctx->expression().size() > 0) {
-                vector<long> dimensions;
-                for (auto& expression : ctx->expression()) {
-                    dimensions.push_back(std::stol(expression->getText()));
-                }
-                type = make_shared<CajetaArray>(module, type, dimensions);
-            } else {
-                type = make_shared<CajetaArray>(module, type, ctx->LBRACK().size());
-            }
+        // Each `[]` pair wraps the type in another CajetaArray. `int[]` -> CajetaArray<int>;
+        // `int[][]` -> CajetaArray<CajetaArray<int>>. The size expressions (when present)
+        // are allocation-time concerns; they don't change the type.
+        int bracketPairs = static_cast<int>(ctx->LBRACK().size());
+        for (int i = 0; i < bracketPairs; i++) {
+            type = make_shared<CajetaArray>(module, type);
             module->getStructures()[type->toCanonical()] = static_pointer_cast<CajetaClass>(type);
-            //((CajetaArray*) type)->generatePrototype();  TODO: WOT?!
         }
 
         return type;
@@ -264,6 +281,16 @@ namespace cajeta {
                 case INT128_TYPE_ID:
                     result = module->getBuilder()->CreateIntCast(op, llvmType, true);
                     break;
+                case FLOAT4E2M1_TYPE_ID:
+                case FLOAT6E2M3_TYPE_ID:
+                case FLOAT6E3M2_TYPE_ID:
+                case FLOAT8E4M3_TYPE_ID:
+                case FLOAT8E5M2_TYPE_ID:
+                case FLOAT8E4M3FNUZ_TYPE_ID:
+                case FLOAT8E5M2FNUZ_TYPE_ID:
+                    // LLVM has no IR-level Type* for these formats. Storage is iN; casts to/from
+                    // standard FP types need runtime conversion helpers (not yet implemented).
+                    throw Exception(string("Casts to sub-fp16 float types require runtime conversion helpers (not yet implemented)."), string("101"));
                 case FLOAT16_TYPE_ID:
                 case FLOAT32_TYPE_ID:
                 case FLOAT64_TYPE_ID:

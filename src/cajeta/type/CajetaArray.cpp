@@ -6,64 +6,35 @@
 #include "../compile/CajetaModule.h"
 
 namespace cajeta {
-    string CajetaArray::ARRAY_FIELD_NAME("#array");
 
-    CajetaArray::CajetaArray(CajetaModulePtr module, CajetaTypePtr elementType, int dimension) : CajetaClass(module) {
-        this->elementType = elementType;
-        this->dimension = dimension;
-        string typeName = elementType->toCanonical();
-        for (int i = 0; i < dimension; i++) {
-            typeName.append(string("[]"));
+    llvm::Type* CajetaArray::getElementLlvmType(llvm::LLVMContext* ctx) const {
+        // Array-of-array nests via a pointer at each level (each inner array is its
+        // own heap allocation), so when the element type is itself an array store an
+        // opaque pointer in the flexible-data slot.
+        if (dynamic_pointer_cast<CajetaArray>(elementType)) {
+            return llvm::PointerType::get(*ctx, 0);
         }
-        qName = QualifiedName::getOrCreate(typeName);
-        canonical = qName->toCanonical();
-
-        // First, create the common array type
-        vector<llvm::Type*> structProps;
-        char fieldName[256];
-        CajetaTypePtr arrayPropertyType = CajetaType::create(elementType->getQName()->toArrayType(),
-            elementType->getLlvmType()->getPointerTo(), REFERENCE_FLAG);
-
-        properties[ARRAY_FIELD_NAME] = make_shared<StructureProperty>(ARRAY_FIELD_NAME, arrayPropertyType, 0);
-        structProps.push_back(elementType->getLlvmType()->getPointerTo());
-        for (int i = 0; i < dimension; i++) {
-            snprintf(fieldName, 255, "#dim%d", i);
-            properties[string(fieldName)] = make_shared<StructureProperty>(fieldName, CajetaType::of("int64"), i + 1);
-            structProps.push_back(CajetaType::of("int64")->getLlvmType());
-        }
-        llvmType = CajetaType::getOrCreateLlvmType(module->getLlvmContext(), canonical, structProps);
-
-        // Create the reference type
-        vector<llvm::Type*> referenceProps;
-        referenceProps.push_back(llvm::Type::getInt1Ty(*module->getLlvmContext()));  // Reference owner?
-        referenceProps.push_back(llvmType);
-        llvmReferenceType = CajetaType::getOrCreateLlvmType(module->getLlvmContext(), string("#") + canonical, referenceProps);
+        return elementType->getLlvmType();
     }
 
-    CajetaArray::CajetaArray(CajetaModulePtr module, CajetaTypePtr elementType, vector<long> dimensions) : CajetaClass(module) {
+    CajetaArray::CajetaArray(CajetaModulePtr module, CajetaTypePtr elementType) : CajetaClass(module) {
         this->elementType = elementType;
-        this->dimension = dimensions.size();
-        string typeName = elementType->toCanonical();
-        long totalElements = 0;
-        for (long dim : dimensions) {
-            typeName.append(string("[")).append(std::to_string(dim)).append(string("]"));
-            totalElements += dim;
-        }
+        string typeName = elementType->toCanonical() + "[]";
         qName = QualifiedName::getOrCreate(typeName);
         canonical = qName->toCanonical();
 
-        // First, create the common array type
-        vector<llvm::Type*> structProps;
-        char fieldName[256];
-        llvm::Type* llvmArrayType = llvm::ArrayType::get(elementType->getLlvmType(), totalElements);
-        CajetaTypePtr arrayType = make_shared<CajetaType>(string("#") + typeName, llvmArrayType, USER_DEFINED_FLAG);
-        properties[ARRAY_FIELD_NAME] = make_shared<StructureProperty>(ARRAY_FIELD_NAME, arrayType, 0);
-        structProps.push_back(llvmArrayType);
-        for (int i = 0; i < dimension; i++) {
-            snprintf(fieldName, 255, "#dim%d", i);
-            properties[string(fieldName)] = make_shared<StructureProperty>(fieldName, CajetaType::of("int64"), i + 1);
-            structProps.push_back(CajetaType::of("int64")->getLlvmType());
-        }
-        llvmType = CajetaType::getOrCreateLlvmType(module->getLlvmContext(), canonical, structProps);
+        llvm::LLVMContext* ctx = module->getLlvmContext();
+        llvm::Type* i64Ty = llvm::Type::getInt64Ty(*ctx);
+        llvm::Type* elemLlvm = getElementLlvmType(ctx);
+
+        // Header layout: { i64 size, [0 x T] data }. The trailing zero-length array
+        // is LLVM's way of expressing flexible data after the header; the actual
+        // backing allocation is sized to include `count * sizeof(T)` bytes for the
+        // data region.
+        vector<llvm::Type*> fields = {
+            i64Ty,
+            llvm::ArrayType::get(elemLlvm, 0),
+        };
+        llvmType = CajetaType::getOrCreateLlvmType(ctx, string("#array.") + canonical, fields);
     }
 }

@@ -12,7 +12,7 @@ namespace cajeta {
 
         if (!fn) {
             llvm::Type* sizeArgumentType = llvm::Type::getInt64Ty(*module->getLlvmContext());
-            llvm::Type* returnType = llvm::Type::getInt64PtrTy(*module->getLlvmContext());
+            llvm::Type* returnType = llvm::PointerType::get(*module->getLlvmContext(), 0);
             std::vector<llvm::Type*> arguments;
             arguments.push_back(sizeArgumentType);
             llvm::FunctionType* fnType = llvm::FunctionType::get(returnType, llvm::ArrayRef<llvm::Type*>(arguments),
@@ -30,7 +30,7 @@ namespace cajeta {
 
         if (!fn) {
             llvm::Type* returnType = llvm::Type::getVoidTy(*module->getLlvmContext());
-            llvm::Type* pointerType = llvm::Type::getInt64PtrTy(*module->getLlvmContext());
+            llvm::Type* pointerType = llvm::PointerType::get(*module->getLlvmContext(), 0);
             std::vector<llvm::Type*> arguments;
             arguments.push_back(pointerType);
             llvm::FunctionType* fnType = llvm::FunctionType::get(returnType, llvm::ArrayRef<llvm::Type*>(arguments),

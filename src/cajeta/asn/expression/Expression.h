@@ -6,7 +6,7 @@
 
 #include <list>
 #include <string>
-#include "../Statement.h"
+#include "../AbstractSyntaxNode.h"
 #include "CajetaParser.h"
 #include "../../type/CajetaType.h"
 
@@ -73,15 +73,24 @@ namespace cajeta {
     class Expression;
     typedef shared_ptr<Expression> ExpressionPtr;
 
-    class Expression : public Statement {
+    // Expression is a sibling of Statement under AbstractSyntaxNode. When an expression
+    // appears in statement position (e.g. `foo();`), wrap it in ExpressionStatement
+    // rather than relying on inheritance — see Statement::fromContext.
+    class Expression : public AbstractSyntaxNode {
     protected:
         bool primary;
+        // Set by the type-resolver pass; codegen consults this for situations where the
+        // LLVM type alone is insufficient (e.g. fp8 stored as i8). May be null pre-resolution.
+        CajetaTypePtr resolvedType;
     public:
-        Expression(antlr4::Token* token) : Statement(token) { }
+        Expression(antlr4::Token* token) : AbstractSyntaxNode(token) { }
 
-        Expression(bool primary, antlr4::Token* token) : Statement(token) {
+        Expression(bool primary, antlr4::Token* token) : AbstractSyntaxNode(token) {
             this->primary = primary;
         }
+
+        CajetaTypePtr getResolvedType() const { return resolvedType; }
+        void setResolvedType(CajetaTypePtr t) { resolvedType = t; }
 
         virtual void addChild(ExpressionPtr expression) {
             children.push_back(expression);
@@ -109,21 +118,13 @@ namespace cajeta {
         static ExpressionPtr fromContext(CajetaParser::PrimaryContext* ctx);
     };
 
-    class ParExpression : public PrimaryExpression {
-    public:
-        ParExpression(antlr4::Token* token) : PrimaryExpression(token) { }
-
-        llvm::Value* generateCode(CajetaModulePtr module) override { return nullptr; }
-    };
-
     class ThisExpression : public PrimaryExpression {
-    private:
-        Field* field;
-        CajetaTypePtr type;
     public:
-        ThisExpression(CajetaParser::ExpressionContext* ctx) : PrimaryExpression(ctx->getStart()) {
+        ThisExpression(CajetaParser::ExpressionContext* ctx) : PrimaryExpression(ctx->getStart()) { }
 
-        }
+        void resolveTypes(CajetaModulePtr module) override;
+
+        llvm::Value* generateCode(CajetaModulePtr module) override;
     };
 
     enum ReservedIdentifiers {
@@ -144,94 +145,15 @@ namespace cajeta {
         VAR
     };
 
-    class ClassExpression : public PrimaryExpression {
-    private:
-        CajetaTypePtr type;
-    public:
-        llvm::Value* generateCode(CajetaModulePtr module) override { return nullptr; }
-    };
-
-    /**
-     *  nonWildcardTypeArguments (explicitGenericInvocationSuffix | THIS arguments)
-     */
-    class GenericsExpression : public PrimaryExpression {
-    private:
-        list<CajetaType*> types;
-    public:
-        GenericsExpression(antlr4::Token* token) : PrimaryExpression(token) { }
-
-        llvm::Value* generateCode(CajetaModulePtr module) override { return nullptr; }
-    };
-
-
-    class BopExpression : public Expression {
-    private:
-        ExpressionPtr expression;
-    public:
-        BopExpression(antlr4::Token* token) : Expression(token) { }
-
-        llvm::Value* generateCode(CajetaModulePtr module) override {
-            llvm::Value* base = children[0]->generateCode(module);
-            llvm::Type* type = base->getType();
-            try {
-                string structName = type->getStructName().str();
-            } catch (exception) {
-                // We can only index into structures here.  We have the wrong type
-            }
-            return nullptr;
-        }
-    };
-
-    class BopIdentifierExpression : public BopExpression {
-    public:
-        BopIdentifierExpression(antlr4::Token* token) : BopExpression(token) { }
-
-        llvm::Value* generateCode(CajetaModulePtr module) override { return nullptr; }
-
-    };
-
-    class BopMethodCallExpression : public BopExpression {
-    public:
-        BopMethodCallExpression(antlr4::Token* token) : BopExpression(token) { }
-
-        llvm::Value* generateCode(CajetaModulePtr module) override { return nullptr; }
-    };
-
-    class BopThisExpression : public BopExpression {
-    public:
-        BopThisExpression(antlr4::Token* token) : BopExpression(token) { }
-
-        llvm::Value* generateCode(CajetaModulePtr module) override { return nullptr; }
-
-    };
-
-    class BopNewExpression : public BopExpression {
-    public:
-        BopNewExpression(antlr4::Token* token) : BopExpression(token) { }
-
-        llvm::Value* generateCode(CajetaModulePtr module) override { return nullptr; }
-
-    };
-
-    class BopSuperExpression : public BopExpression {
-    public:
-        BopSuperExpression(antlr4::Token* token) : BopExpression(token) { }
-
-        llvm::Value* generateCode(CajetaModulePtr module) override { return nullptr; }
-
-    };
-
-    class BopExplicitGenericInvocation : public BopExpression {
-    public:
-        BopExplicitGenericInvocation(antlr4::Token* token) : BopExpression(token) { }
-
-        llvm::Value* generateCode(CajetaModulePtr module) override { return nullptr; }
-
-    };
+    // Removed dead classes: ClassExpression, GenericsExpression, BopExpression and its 6
+    // subclasses, ParExpression. Their grammar productions are handled by DotExpression
+    // or are unreached. Member access lowers via DotExpression directly.
 
     class ArrayIndexExpression : public Expression {
     public:
         ArrayIndexExpression(CajetaParser::ExpressionContext* ctx, antlr4::Token* token);
+
+        void resolveTypes(CajetaModulePtr module) override;
 
         llvm::Value* generateCode(CajetaModulePtr module) override;
     };
@@ -241,10 +163,18 @@ namespace cajeta {
      * '(' annotation* typeType ('&' typeType)* ')' expression
      */
     class CastExpression : public Expression {
+    private:
+        CajetaTypePtr destType;
     public:
-        CastExpression(antlr4::Token* token) : Expression(token) { }
+        CastExpression(CajetaTypePtr destType, antlr4::Token* token)
+            : Expression(token), destType(destType) { }
 
-        llvm::Value* generateCode(CajetaModulePtr module) override { return nullptr; }
+        void resolveTypes(CajetaModulePtr module) override {
+            AbstractSyntaxNode::resolveTypes(module);
+            resolvedType = destType;
+        }
+
+        llvm::Value* generateCode(CajetaModulePtr module) override;
     };
 
     /**
@@ -261,14 +191,19 @@ namespace cajeta {
             this->op = op;
         }
 
-        llvm::Value* generateCode(CajetaModulePtr module) override { return nullptr; }
+        llvm::Value* generateCode(CajetaModulePtr module) override;
     };
 
     /**
-     * prefix=('+'|'-'|'++'|'--') expression
+     * prefix=('+'|'-'|'++'|'--'|'~'|'!') expression
      */
     enum PrefixOp {
-        PREFIX_OP_POSITIVE, PREFIX_OP_NEGATIVE, PREFIX_OP_INC, PREFIX_OP_DEC
+        PREFIX_OP_POSITIVE,
+        PREFIX_OP_NEGATIVE,
+        PREFIX_OP_INC,
+        PREFIX_OP_DEC,
+        PREFIX_OP_BITNOT,   // ~
+        PREFIX_OP_LOGNOT    // !
     };
 
     class PrefixExpression : public Expression {
@@ -279,49 +214,38 @@ namespace cajeta {
             this->op = op;
         }
 
-        llvm::Value* generateCode(CajetaModulePtr module) override { return nullptr; }
+        llvm::Value* generateCode(CajetaModulePtr module) override;
     };
+
+    // Removed dead classes: LogicalPrefixExpression, BitshiftExpression, ComparisonExpression,
+    // EquivalenceExpression, BitwiseAndExpression, BitwiseExOrExpression,
+    // BitwiseInclusiveOrExpression, LogicalAndExpression, LogicalOrExpression,
+    // ArithmeticAssignmentExpression. All of these are handled by BinaryOpExpression
+    // variants now (shift / comparison / equality / bitwise / logical / *_EQUALS).
+    // PrefixExpression handles ~ / ! / +/- / ++/--.
 
     /**
-     * prefix=('~'|'!') expression
+     * <assoc=right> expression bop='?' expression ':' expression
+     *
+     * Ternary. children = [cond, then, else] from fromContext's child-population loop.
+     * Emits a conditional branch + phi pattern, same shape as &&/||.
      */
-    class LogicalPrefixExpression : public Expression {
-    private:
-        string op;
+    class BooleanSwitchExpression : public Expression {
     public:
-        LogicalPrefixExpression(antlr4::Token* token) : Expression(token) { }
-    };
+        BooleanSwitchExpression(antlr4::Token* token) : Expression(token) { }
 
-    /**
-     * expression ('<' '<' | '>' '>' '>' | '>' '>') expression
-     */
-    enum BitshiftOp {
-        BITSHIFT_OP_LEFT, BITSHIFT_OP_UNSIGNED_RIGHT, BITSHIFT_OP_RIGHT
-    };
+        void resolveTypes(CajetaModulePtr module) override;
 
-    class BitshiftExpression : public Expression {
-    private:
-        BitshiftOp op;
-    public:
-        BitshiftExpression(antlr4::Token* token) : Expression(token) { }
-    };
-
-    /**
-     * expression bop=('<=' | '>=' | '>' | '<') expression
-     */
-    enum ComparisonOp {
-        COMPARE_OP_LTE, COMPARE_OP_GTE, COMPARE_OP_GT, COMPARE_OP_LT
-    };
-
-    class ComparisonExpression : public Expression {
-    private:
-        ComparisonOp op;
-    public:
-        ComparisonExpression(antlr4::Token* token) : Expression(token) { }
+        llvm::Value* generateCode(CajetaModulePtr module) override;
     };
 
     /**
      * expression bop=INSTANCEOF (typeType | pattern)
+     *
+     * Compile-time only for now: emits a constant i1 by comparing the lhs's
+     * resolvedType to the target type. A real runtime check needs class-hierarchy
+     * metadata emitted via StructureMetadata (so we can walk parents at runtime);
+     * that's tracked separately.
      */
     class InstanceOfExpression : public Expression {
     private:
@@ -332,142 +256,26 @@ namespace cajeta {
             this->type = type;
             this->pattern = pattern;
         }
-    };
 
-    /**
-     * expression bop=('==' | '!=') expression
-     */
-    enum EquivalenceOp {
-        EQUIVALENCE_OP_EQ, EQUIVALENCE_OP_NE
-    };
+        void resolveTypes(CajetaModulePtr module) override;
 
-    class EquivalenceExpression : public Expression {
-        EquivalenceOp op;
-
-        EquivalenceExpression(EquivalenceOp op, antlr4::Token* token) : Expression(token) {
-            this->op = op;
-        }
-    };
-
-    /**
-     * expression bop='&' expression
-     */
-    class BitwiseAndExpression : public Expression {
-    public:
-        BitwiseAndExpression(antlr4::Token* token) : Expression(token) { }
-    };
-
-    /**
-    * expression bop='^' expression
-    */
-    class BitwiseExOrExpression : public Expression {
-    public:
-        BitwiseExOrExpression(antlr4::Token* token) : Expression(token) { }
-    };
-
-    /**
-    * expression bop = '|' expression
-    */
-    class BitwiseInclusiveOrExpression : public Expression {
-    public:
-        BitwiseInclusiveOrExpression(antlr4::Token* token) : Expression(token) { }
+        llvm::Value* generateCode(CajetaModulePtr module) override;
     };
 
 
-    /**
-    * expression bop = '&&' expression
-    */
-    class LogicalAndExpression : public Expression {
-    public:
-        LogicalAndExpression(antlr4::Token* token) : Expression(token) { }
-    };
-
-    /**
-     * expression bop = '||' expression
-     */
-    class LogicalOrExpression : public Expression {
-    public:
-        LogicalOrExpression(antlr4::Token* token) : Expression(token) { }
-    };
-
-    class ArithmeticAssignmentExpression : public Expression {
-    public:
-        ArithmeticAssignmentExpression(antlr4::Token* token) : Expression(token) { }
-
-    };
-
-    /**
-     * <assoc=right> expression bop='?' expression ':' expression
-     */
-    class BooleanSwitchExpression : public Expression {
-    public:
-        BooleanSwitchExpression(antlr4::Token* token) : Expression(token) { }
-    };
-
-
-    /**
-     * lambdaParameters
-     *  : identifier
-     *  | '(' formalParameterList? ')'
-     *  | '(' identifier (',' identifier)* ')'
-     *  | '(' lambdaLVTIList? ')'
-     */
-    class LambdaParameters {
-        list<string> parIdentifiers;
-    };
-
-    class LambdaIdentifiersParameter : public LambdaParameters {
-        string identifier;
-    };
-
-    class LambdaFormalParameters : public LambdaParameters {
-        list<FormalParameter*> formalParameter;
-    };
-
-    class LambdaBody {
-
-    };
-
-
-    class LambdaExpressionBody : public LambdaBody {
-        ExpressionPtr expression;
-    };
-
-    class LambdaBlockBody : public LambdaBody {
-        Block* block;
-    };
-
-    /**
-     * lambdaExpression // Java8
-     */
-    class LambdaExpression : public Expression {
+    // Placeholder for expression forms recognized by the grammar but not yet implemented
+    // (lambdas, switch expressions, super dispatch, inner-class new, method references).
+    // The parser produces one of these so the failure surfaces at codegen time as a clear
+    // cajeta::Exception with the construct name and source location, rather than a silent
+    // nullptr returning invalid IR.
+    class UnsupportedExpression : public Expression {
     private:
-        LambdaParameters* lambdaParameters;
-        LambdaBody* lambdaBody;
+        string constructName;
     public:
-        LambdaExpression(antlr4::Token* token) : Expression(token) { }
-    };
+        UnsupportedExpression(string constructName, antlr4::Token* token)
+            : Expression(token), constructName(std::move(constructName)) { }
 
-//    | switchExpression // Java17
-
-    /**
-     * typeArgument
-       : typeType
-       | annotation* '?' ((EXTENDS | SUPER) typeType)?
-       ;
-     */
-    class TypeArguments {
-        Annotation* annotation;
-
-    };
-
-//    // Java 8 methodReference
-//    | expression '::' typeArguments? identifier
-//    | typeType '::' (typeArguments? identifier | NEW)
-//    | classType '::' typeArguments? NEW
-    class MethodReferenceExpression : public Expression {
-    public:
-        MethodReferenceExpression(antlr4::Token* token) : Expression(token) { }
+        llvm::Value* generateCode(CajetaModulePtr module) override;
     };
 
 }

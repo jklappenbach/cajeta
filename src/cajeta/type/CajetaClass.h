@@ -131,7 +131,7 @@ namespace cajeta {
 
         void writeVirtualTable();
 
-        void invokeMethod(string& methodName, vector<ParameterEntry> parameters, bool isConstructor, llvm::Value* thisInstance = nullptr);
+        llvm::Value* invokeMethod(string& methodName, vector<ParameterEntry> parameters, bool isConstructor, llvm::Value* thisInstance = nullptr);
 
         virtual void generatePrototype();
 

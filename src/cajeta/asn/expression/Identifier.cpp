@@ -6,29 +6,23 @@
 #include "cajeta/compile/CajetaModule.h"
 
 namespace cajeta {
-    llvm::Value* IdentifierExpression::generateCode(CajetaModulePtr module) {
-        module->getAsnStack().push_back(shared_from_this());
-
-        if (primary) {
+    void IdentifierExpression::resolveTypes(CajetaModulePtr module) {
+        // Look up the identifier in the active scope and pin our resolvedType to the
+        // referenced field's type. Used downstream by DotExpression and ArrayIndexExpression.
+        if (!module->getScopeStack().isEmpty()) {
             FieldPtr field = module->getScopeStack().peek()->getField(identifier);
-            return field->getOrCreateAllocation();
-        } else {
-            // TODO: Fix Me!
-//            llvm::Value* value = pModule->getFieldStack().back()->getOrCreateAllocation();
-//            CajetaClassPtr structure;
-//            try {
-//                structure = static_pointer_cast<CajetaStructure>(CajetaType::getCanonicalMap()[value->getType()->getStructName().str()]);
-//            } catch (exception) {
-//                throw "bad type";
-//            }
-//            StructurePropertyPtr structureField = structure->getProperties()[identifier];
-//            return pModule->getBuilder()->CreateStructGEP(structureField->getType()->getLlvmType(),
-//                pModule->getFieldStack().back()->getOrCreateAllocation(),
-//                structureField->getOrder(),
-//                identifier);
+            if (field) {
+                resolvedType = field->getType();
+            }
         }
-        module->getAsnStack().pop_back();
-        return nullptr;
+    }
+
+    llvm::Value* IdentifierExpression::generateCode(CajetaModulePtr module) {
+        // Identifier always resolves to a local field's address (its alloca). Member access
+        // (`obj.member`) is the responsibility of DotExpression, not this node — the legacy
+        // `primary == false` branch was speculative and never reached.
+        FieldPtr field = module->getScopeStack().peek()->getField(identifier);
+        return field ? static_cast<llvm::Value*>(field->getOrCreateAllocation()) : nullptr;
     }
 
 } // code

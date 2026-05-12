@@ -1,6 +1,6 @@
 package foo.bar.baz;
 
-public final class System {
+public final class Test {
     private int32 value;
     private int32 x = 5;
 

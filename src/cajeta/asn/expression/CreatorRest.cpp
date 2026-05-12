@@ -4,85 +4,152 @@
 
 #include "CreatorRest.h"
 #include "cajeta/compile/CajetaModule.h"
+#include "cajeta/type/CajetaClass.h"
+#include "cajeta/type/CajetaArray.h"
+#include "cajeta/util/MemoryManager.h"
+
+#include <functional>
 
 namespace cajeta {
-    CreatorRest* CreatorRest::fromContext(CajetaParser::CreatorContext* ctx, antlr4::Token* token) {
+    shared_ptr<CreatorRest> CreatorRest::fromContext(CajetaParser::CreatorContext* ctx, antlr4::Token* token) {
         if (ctx->classCreatorRest()) {
-            return new ClassCreatorRest(ctx->classCreatorRest(), token);
+            return make_shared<ClassCreatorRest>(ctx->classCreatorRest(), token);
         } else {
-            return new ArrayCreatorRest(ctx->arrayCreatorRest(), token);
+            return make_shared<ArrayCreatorRest>(ctx->arrayCreatorRest(), token);
         }
     }
 
-    /**
-     * Match the parameters provided to a constructor.  Put the constructor (Method*) in the pModule, which will then be
-     * called when the Method regains control.
-     *
-     * @param module
-     * @return
-     */
+    // Emits `malloc(sizeof(struct))` then dispatches to the matching constructor with the
+    // user-supplied arguments. Returns the malloc'd pointer.
     llvm::Value* ClassCreatorRest::generateCode(CajetaModulePtr module) {
-        module->getAsnStack().push_back(shared_from_this());
-    //        list<CajetaTypePtr> types;
-    //        vector<ParameterEntry> parameterEntries;
-    //        FieldPtr currentField = pModule->getFieldStack().back();
-    //        llvm::Value* thisValue = currentField->getOrCreateAllocation(pModule);
-    //
-    //        for (auto& param: parameters) {
-    //            llvm::Value* value = param.expression->generateCode(pModule);
-    //            parameterEntries.push_back(ParameterEntry(CajetaType::of(value), param.label, value));
-    //        }
-    //
-    //        CajetaClassPtr structure = (CajetaStructure*) currentField->getType();
-    //        string constructorName = Method::buildCanonical(structure,
-    //            currentField->getType()->getQName()->getTypeName(), parameterEntries, true);
-    //        structure->invokeMethod(constructorName, parameterEntries, true, thisValue);
-        module->getAsnStack().pop_back();
-        return nullptr;
+        if (!targetType) {
+            return nullptr;
+        }
+        auto* builder = module->getBuilder();
+        llvm::Type* structTy = targetType->getLlvmType();
+        const llvm::DataLayout& dataLayout = module->getLlvmModule()->getDataLayout();
+        llvm::Constant* allocSize = llvm::ConstantInt::get(
+            llvm::Type::getInt64Ty(*module->getLlvmContext()),
+            dataLayout.getTypeAllocSize(structTy));
+        llvm::CallInst* instance = MemoryManager::createMallocInstruction(
+            module, allocSize, builder->GetInsertBlock());
+
+        // Resolve parameters and call the constructor.
+        vector<ParameterEntry> entries;
+        for (auto& param : parameters) {
+            llvm::Value* value = param.expression->generateCode(module);
+            entries.push_back(ParameterEntry(CajetaType::of(value), param.label, value));
+        }
+        if (auto klass = dynamic_pointer_cast<CajetaClass>(targetType)) {
+            string ctorName = targetType->getQName()->getTypeName();
+            klass->invokeMethod(ctorName, entries, /*isConstructor=*/true, instance);
+        }
+        return instance;
     }
 
-    /**
-     * The initializer here will have expressions that will resolve to the llvmDimensions that will be allocated.
-     *
-     * @param module
-     * @return
-     */
+    // Java-style array allocation: one heap call per dimension level. For `new T[a][b]`
+    // we allocate the outer header of length `a` whose element-type is a pointer to
+    // an inner array, then loop and allocate an inner header of length `b` for each
+    // outer slot. For `new T[a][]` we only allocate the outer; inner slots stay null
+    // (the runtime helper zero-fills via calloc). Returns the outermost header pointer.
     llvm::Value* ArrayCreatorRest::generateCode(CajetaModulePtr module) {
-        module->getAsnStack().push_back(shared_from_this());
-    //        vector<llvm::Constant*> dimensionValues;
-    //        llvm::Value* load = pModule->getCurrentValue();
-    //        FieldPtr field = pModule->getFieldStack().back();
-    //        CajetaArrayPtr arrayType = (CajetaArrayPtr) field->getType();
-    //        auto& dataLayout = pModule->getLlvmModule()->getDataLayout();
-    //        CajetaTypePtr int64Type = CajetaType::of("int64");
-    //        llvm::Constant* allocSize = llvm::ConstantInt::get(int64Type->getLlvmType(),
-    //            dataLayout.getTypeAllocSize(arrayType->getElementType()->getLlvmType()));
-    //
-    //        int ordinal = 1;
-    //        char buffer[256];
-    //        for (auto& node: children) {
-    //            snprintf(buffer, 255, "#dim%d", ordinal);
-    //            // TODO: These should probably be property fields!
-    //            LocalFieldPtr field = new LocalField(string(buffer), int64Type, field);
-    //            llvm::Constant* dimensionValue = (llvm::Constant*) node->generateCode(pModule);
-    //            llvm::Value* allocation = pModule->getBuilder()->CreateStructGEP(arrayType->getLlvmType(),
-    //                load, ordinal++);
-    //            pModule->getScopeStack().peek()->putField(field);
-    //            pModule->getBuilder()->CreateStore(dimensionValue, allocation);
-    //            field->setAllocation(allocation);
-    //            allocSize = llvm::ConstantExpr::getMul(dimensionValue, allocSize);
-    //            dimensionValues.push_back(dimensionValue);
-    //        }
-    //
-    //        llvm::Value* allocation = pModule->getBuilder()->CreateStructGEP(arrayType->getLlvmType(), load, 0);
-    //        llvm::Instruction* mallocInst = MemoryManager::createMallocInstruction(pModule, allocSize,
-    //            pModule->getBuilder()->GetInsertBlock());
-    //        LocalFieldPtr arrayField = new StructureField("#array", arrayType->getElementType()->toPointerType(),
-    //            pModule->getBuilder()->CreateStore(mallocInst, allocation), 0, field);
-    //        pModule->getScopeStack().peek()->putField(arrayField);
-        module->getAsnStack().pop_back();
+        if (!targetType || totalBracketPairs <= 0) {
+            return nullptr;
+        }
+        auto* builder = module->getBuilder();
+        llvm::LLVMContext& ctx = *module->getLlvmContext();
+        llvm::Type* i64Ty = llvm::Type::getInt64Ty(ctx);
+        llvm::Type* i32Ty = llvm::Type::getInt32Ty(ctx);
+        const llvm::DataLayout& dl = module->getLlvmModule()->getDataLayout();
 
-        return nullptr;
+        // Build the type chain: typeChain[0] = T (innermost element),
+        // typeChain[k] = T[][...] wrapped k times. typeChain[N] is the outermost type.
+        vector<CajetaTypePtr> typeChain;
+        typeChain.push_back(targetType);
+        for (int i = 0; i < totalBracketPairs; i++) {
+            CajetaTypePtr wrapped = make_shared<CajetaArray>(module, typeChain.back());
+            module->getStructures()[wrapped->toCanonical()] =
+                static_pointer_cast<CajetaClass>(wrapped);
+            typeChain.push_back(wrapped);
+        }
+
+        llvm::Function* allocFn = module->getRuntimeFunction("__cajeta_new_array_header");
+        if (!allocFn) {
+            return nullptr;
+        }
+        llvm::Function* parentFn = builder->GetInsertBlock()->getParent();
+
+        // Recursive emitter: level 0 = outermost. Allocates that level's header and,
+        // when an inner size was specified, loops over the data slots populating them
+        // with recursive sub-allocations.
+        std::function<llvm::Value*(int)> emit = [&](int level) -> llvm::Value* {
+            if (level >= (int) children.size()) {
+                return llvm::ConstantPointerNull::get(llvm::PointerType::get(ctx, 0));
+            }
+            auto arr = dynamic_pointer_cast<CajetaArray>(typeChain[totalBracketPairs - level]);
+            if (!arr) {
+                return nullptr;
+            }
+
+            // Resolve this level's user-supplied size, loaded if it came from an alloca.
+            llvm::Value* count = children[level]->generateCode(module);
+            if (auto* a = llvm::dyn_cast<llvm::AllocaInst>(count)) {
+                count = builder->CreateLoad(a->getAllocatedType(), a);
+            }
+            if (count->getType() != i64Ty) {
+                count = builder->CreateIntCast(count, i64Ty, /*isSigned=*/true);
+            }
+
+            llvm::Type* headerTy = arr->getLlvmType();
+            llvm::Type* elemTy = arr->getElementLlvmType(&ctx);
+            llvm::Value* headerSize = llvm::ConstantInt::get(i64Ty,
+                dl.getTypeAllocSize(headerTy));
+            llvm::Value* elemSize = llvm::ConstantInt::get(i64Ty,
+                dl.getTypeAllocSize(elemTy));
+            llvm::Value* hdrPtr = builder->CreateCall(allocFn,
+                {headerSize, elemSize, count});
+
+            // If there's a deeper level to populate, loop over `count` slots and assign.
+            if (level + 1 < (int) children.size()) {
+                // Counter alloca at function entry to keep the loop clean of repeated allocas.
+                llvm::IRBuilder<> entryBuilder(&parentFn->getEntryBlock(),
+                    parentFn->getEntryBlock().begin());
+                llvm::Value* counterAlloca = entryBuilder.CreateAlloca(i64Ty);
+                builder->CreateStore(llvm::ConstantInt::get(i64Ty, 0), counterAlloca);
+
+                llvm::BasicBlock* loopHead = llvm::BasicBlock::Create(ctx, "arr_init_head", parentFn);
+                llvm::BasicBlock* loopBody = llvm::BasicBlock::Create(ctx, "arr_init_body", parentFn);
+                llvm::BasicBlock* loopExit = llvm::BasicBlock::Create(ctx, "arr_init_exit", parentFn);
+
+                builder->CreateBr(loopHead);
+
+                builder->SetInsertPoint(loopHead);
+                llvm::Value* idx = builder->CreateLoad(i64Ty, counterAlloca);
+                llvm::Value* cmp = builder->CreateICmpSLT(idx, count);
+                builder->CreateCondBr(cmp, loopBody, loopExit);
+
+                builder->SetInsertPoint(loopBody);
+                llvm::Value* inner = emit(level + 1);
+                // Slot = &hdrPtr->data[idx]. GEP indices walk: pointer -> struct -> data array -> element.
+                vector<llvm::Value*> gepIndices = {
+                    llvm::ConstantInt::get(i64Ty, 0),
+                    llvm::ConstantInt::get(i32Ty, CajetaArray::DATA_FIELD_INDEX),
+                    idx,
+                };
+                llvm::Value* slot = builder->CreateGEP(headerTy, hdrPtr, gepIndices);
+                builder->CreateStore(inner, slot);
+                llvm::Value* nextIdx = builder->CreateAdd(idx,
+                    llvm::ConstantInt::get(i64Ty, 1));
+                builder->CreateStore(nextIdx, counterAlloca);
+                builder->CreateBr(loopHead);
+
+                builder->SetInsertPoint(loopExit);
+            }
+
+            return hdrPtr;
+        };
+
+        return emit(0);
     }
 
 } // code

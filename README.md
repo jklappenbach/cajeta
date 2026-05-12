@@ -15,6 +15,114 @@ For memory management, instead of reference counting, "smart" pointers, Cajeta i
 strategy whereby only one reference can own heap memory allocations, and when it falls out of scope the memory is 
 automatically allocated.
 
+## Building
+
+The compiler is configured via CMake and built with Ninja. Two scripts wrap the typical flow:
+
+```sh
+./setup.sh    # one-time: runs cmake into build/, picks LLVM from LLVM_DIR env or default /usr/lib/llvm-18
+./build.sh    # incremental ninja build; runs every time you change code
+```
+
+### Build prerequisites
+
+System packages (Ubuntu 24.04 names — adapt for other distros):
+
+```sh
+sudo apt install \
+    cmake ninja-build clang-18 llvm-18-dev libllvm18 \
+    libantlr4-runtime-dev openjdk-17-jre \
+    libgtest-dev libglog-dev libzstd-dev vim-common
+```
+
+Notes:
+- `clang-18` is required at compiler-build time to compile `runtime/native/cajeta_runtime.c` to
+  LLVM bitcode, which is then embedded into the Cajeta compiler binary.
+- `vim-common` provides `xxd`, used to convert the bitcode bytes into a C array.
+- `openjdk-17-jre` is needed to run the bundled ANTLR4 jar in `tools/antlr/`.
+- To target a different LLVM version, set `LLVM_DIR` before running setup, e.g.
+  `LLVM_DIR=/usr/lib/llvm-19/lib/cmake/llvm ./setup.sh`.
+
+### Build outputs
+
+- `build/src/cajeta` — the compiler binary.
+- `build/test/cajeta_test` — the test executable.
+- `build/src/cajeta_runtime.bc` — the C runtime compiled to LLVM bitcode.
+- `build/src/cajeta_runtime_embedded.cpp` — generated C array of the bitcode bytes,
+  linked into the compiler. The compiler links this bitcode into every output module
+  via `CajetaModule::linkRuntime()` so cross-compilation needs no per-target runtime.
+
+## Running the tests
+
+Tests are written with GoogleTest. The fixture in `test/jit/JitTestHelper.{h,cpp}` compiles a
+Cajeta source string, links the embedded runtime into the produced LLVM module, JITs it via
+`llvm::orc::LLJIT`, and exposes generated functions to the C++ test as callable pointers.
+
+> **Do not invoke `c++` / `clang++` directly on `test/main.cpp`.**
+> The test executable depends on libgtest, the Cajeta static library, the ANTLR4 runtime,
+> and roughly a hundred LLVM static libs — the CMake build assembles that link line. A direct
+> compile produces the error you'd expect: `undefined reference to testing::InitGoogleTest`,
+> `undefined reference to testing::UnitTest::Run`, etc.
+>
+> If your IDE (CLion, VS Code, etc.) is trying to compile `main.cpp` as a standalone file,
+> point it at this repo's `CMakeLists.txt` instead — that's the only supported build path.
+> Always build the test target via:
+>
+> ```sh
+> ./setup.sh      # once, to generate build/
+> ./build.sh      # every time you change code
+> ```
+>
+> The test binary lands at `build/test/cajeta_test`.
+
+```sh
+# Run the full suite. CAJETA_SOURCE_ROOT lets the parse-flow tests locate sample .cajeta files.
+CAJETA_SOURCE_ROOT="$PWD" ./build/test/cajeta_test
+
+# Compact output (one line per test result).
+CAJETA_SOURCE_ROOT="$PWD" ./build/test/cajeta_test --gtest_brief=1
+
+# Filter to specific suites or tests (gtest syntax).
+CAJETA_SOURCE_ROOT="$PWD" ./build/test/cajeta_test '--gtest_filter=BinaryOpTests.*'
+CAJETA_SOURCE_ROOT="$PWD" ./build/test/cajeta_test '--gtest_filter=CompareTests.lessThanTrue'
+
+# Skip the parse-flow tests (CompilerTests) when iterating on expression codegen.
+CAJETA_SOURCE_ROOT="$PWD" ./build/test/cajeta_test '--gtest_filter=-CompilerTests.*'
+```
+
+### Debugging tip
+
+Set `CAJETA_DUMP_IR=1` to have the JIT helper print the generated LLVM IR to stderr just
+before passing it to the JIT. Useful when a test fails verification:
+
+```sh
+CAJETA_DUMP_IR=1 CAJETA_SOURCE_ROOT="$PWD" \
+    ./build/test/cajeta_test '--gtest_filter=BinaryOpTests.intAdd'
+```
+
+### Test suites
+
+| Suite                       | What it covers                                                |
+| --------------------------- | ------------------------------------------------------------- |
+| `CompilerTests`             | End-to-end parse-flow tests on `.cajeta` files in `test/compile/code/src/` |
+| `LiteralExpressionTests`    | Integer / float / bool literal codegen                        |
+| `BinaryOpTests`             | `+ - * / %`, bitwise, shifts, compound `*=` forms             |
+| `CompareTests`              | `< <= > >= == !=` over ints and floats                        |
+| `LogicalTests`              | Short-circuit `&&` and `\|\|`                                 |
+| `PrefixTests`               | Unary `+ - ~ !` and `++x / --x`                               |
+| `PostfixTests`              | `x++ / x--`                                                   |
+| `CastTests`                 | int↔float and width-changing casts                            |
+| `TernaryTests`              | `cond ? a : b` with int/float/coercion/nested/side-effect     |
+| `InstanceOfTests`           | Compile-time `instanceof` static-type matching                |
+| `UnsupportedExpressionTests`| Lambda / switch / super / inner-class / method-ref / generic-invocation throw NOT_IMPLEMENTED |
+| `ArrayTests`                | `new T[n]`, indexing, `arr.size()`, bounds checks, nested `T[][]` |
+| `ControlFlowTests`          | if/else, while, for, do-while, break, continue, nested loops, early-return |
+| `ForInitDeclTests`          | Loop-variable declaration inside `for (...)` init |
+| `SwitchTests`               | switch/case/default with fall-through and no-match |
+| `TryCatchTests`             | throw / try / catch via setjmp/longjmp runtime |
+| `CompilerOptionTests`       | `--bounds=off` toggle, `--emit` mode round-trip, target-triple setter |
+| `FpTests`                   | fp32/fp64 arithmetic, fp16 declare/store, fp4/fp6/fp8 storage |
+
 - Type
     - Number
         - Integer

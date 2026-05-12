@@ -737,6 +737,13 @@ primitiveType
     | UINT64
     | INT128
     | UINT128
+    | FLOAT4E2M1
+    | FLOAT6E2M3
+    | FLOAT6E3M2
+    | FLOAT8E4M3
+    | FLOAT8E5M2
+    | FLOAT8E4M3FNUZ
+    | FLOAT8E5M2FNUZ
     | FLOAT16
     | FLOAT32
     | FLOAT64

@@ -34,7 +34,17 @@ namespace cajeta {
         BINARY_OP_SHIFTRIGHT_EQUALS,
         BINARY_OP_USHIFTRIGHT_EQUALS,
         BINARY_OP_SHIFTLEFT_EQUALS,
-        BINARY_OP_MOD_EQUALS
+        BINARY_OP_MOD_EQUALS,
+        // Comparisons → i1
+        BINARY_OP_LT,
+        BINARY_OP_LE,
+        BINARY_OP_GT,
+        BINARY_OP_GE,
+        BINARY_OP_EQ,
+        BINARY_OP_NE,
+        // Short-circuit logical → i1
+        BINARY_OP_LOGAND,
+        BINARY_OP_LOGOR
     };
 
     class BinaryOpExpression : public Expression {
@@ -82,6 +92,28 @@ namespace cajeta {
                     assignment = true;
                     requireIntOps = true;
                     break;
+                case BINARY_OP_LT:
+                case BINARY_OP_LE:
+                case BINARY_OP_GT:
+                case BINARY_OP_GE:
+                case BINARY_OP_EQ:
+                case BINARY_OP_NE:
+                case BINARY_OP_LOGAND:
+                case BINARY_OP_LOGOR:
+                    assignment = false;
+                    break;
+            }
+        }
+
+        void resolveTypes(CajetaModulePtr module) override {
+            // Walk children first, then take lhs's type as our result type. A real type
+            // promotion pass would pick the wider of lhs/rhs; for now this matches the
+            // existing assumption in codegen (lhs drives the op type).
+            AbstractSyntaxNode::resolveTypes(module);
+            if (!children.empty()) {
+                if (auto lhs = dynamic_pointer_cast<Expression>(children[0])) {
+                    resolvedType = lhs->getResolvedType();
+                }
             }
         }
 

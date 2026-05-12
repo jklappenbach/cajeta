@@ -59,8 +59,6 @@ namespace cajeta {
         }
 
         llvm::Value* generateCode(CajetaModulePtr module) override {
-            module->getAsnStack().push_back(shared_from_this());
-            module->getAsnStack().pop_back();
             return nullptr;
         }
     };
@@ -78,8 +76,6 @@ namespace cajeta {
         }
 
         llvm::Value* generateCode(CajetaModulePtr module) override {
-            module->getAsnStack().push_back(shared_from_this());
-            module->getAsnStack().pop_back();
             return nullptr;
         }
     };
@@ -97,8 +93,6 @@ namespace cajeta {
         }
 
         llvm::Value* generateCode(CajetaModulePtr module) override {
-            module->getAsnStack().push_back(shared_from_this());
-            module->getAsnStack().pop_back();
             return nullptr;
         }
     };

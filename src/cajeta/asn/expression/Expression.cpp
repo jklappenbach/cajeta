@@ -22,33 +22,62 @@ namespace cajeta {
         ExpressionPtr result = nullptr;
         if (ctx->ASSIGN()) {
             result = make_shared<BinaryOpExpression>(BINARY_OP_ASSIGN, token);
+        } else if (ctx->COLONCOLON()) {
+            // Method reference: `expr::id`, `Type::id`, or `Type::new`. Check before NEW
+            // and identifier so we don't mis-route those token-bearing forms.
+            result = make_shared<UnsupportedExpression>("method reference", token);
         } else if (ctx->primary()) {
             result = PrimaryExpression::fromContext(ctx->primary());
+        } else if (ctx->DOT()) {
+            // DOT-as-binary-op consumes all six suffix forms. Check before methodCall
+            // because `obj.foo()` matches both DOT and methodCall — DOT must win.
+            if (ctx->SUPER() || ctx->superSuffix()) {
+                result = make_shared<UnsupportedExpression>("super call", token);
+            } else if (ctx->explicitGenericInvocation()) {
+                result = make_shared<UnsupportedExpression>("explicit generic invocation", token);
+            } else if (ctx->innerCreator()) {
+                result = make_shared<UnsupportedExpression>(
+                    "inner-class instantiation (obj.new Inner())", token);
+            } else if (ctx->methodCall()) {
+                // `obj.foo(args)` — method invocation on a receiver. The receiver is the
+                // lhs expression captured by the children-add loop at the bottom of this
+                // function (ctx->expression() returns [lhs] here).
+                result = make_shared<MethodCallExpression>(ctx->methodCall(), token);
+            } else {
+                result = make_shared<DotExpression>(ctx, token);
+            }
         } else if (ctx->methodCall()) {
+            // Bare standalone call `foo(...)` (no DOT). With-DOT calls are routed by the
+            // branch above.
             result = make_shared<MethodCallExpression>(ctx->methodCall(), token);
         } else if (ctx->NEW()) {
             result = make_shared<NewExpression>(ctx->creator(), token);
-        } else if (ctx->DOT()) {
-            result = make_shared<DotExpression>(ctx, token);
         } else if (ctx->identifier()) {
             result = make_shared<IdentifierExpression>(ctx->identifier(), ctx->primary() != nullptr);
         } else if (ctx->LPAREN()) {
+            // Cast: '(' annotation* typeType ('&' typeType)* ')' expression
+            // We don't yet support intersection casts (multiple typeTypes); take the first.
+            if (!ctx->typeType().empty()) {
+                CajetaTypePtr destType = CajetaType::fromContext(ctx->typeType(0), nullptr);
+                result = make_shared<CastExpression>(destType, token);
+            }
         } else if (ctx->LBRACK()) {
             result = make_shared<ArrayIndexExpression>(ctx, token);
-        } else if (!ctx->annotation().empty()) {
-
-        } else if (ctx->creator()) {
-        } else if (!ctx->typeType().empty()) {
-
-        } else if (ctx->RPAREN()) {
-
+        // Grammar artifacts (annotation/creator/typeType-alone/RPAREN) are sub-rules that
+        // never appear as standalone expressions; their parent expression form has
+        // already been matched by a prior branch (NEW, LPAREN cast, etc.).
         } else if (!ctx->BITAND().empty()) {
-
-        } else if (ctx->AND()) {
+            result = make_shared<BinaryOpExpression>(BINARY_OP_BITAND, token);
         } else if (ctx->ADD()) {
-            result = make_shared<BinaryOpExpression>(BINARY_OP_ADD, token);
+            // The same ADD/SUB tokens cover both binary and prefix unary forms; the
+            // grammar tags unary with `ctx->prefix`.
+            result = ctx->prefix
+                ? static_pointer_cast<Expression>(make_shared<PrefixExpression>(PREFIX_OP_POSITIVE, token))
+                : static_pointer_cast<Expression>(make_shared<BinaryOpExpression>(BINARY_OP_ADD, token));
         } else if (ctx->SUB()) {
-            result = make_shared<BinaryOpExpression>(BINARY_OP_SUB, token);
+            result = ctx->prefix
+                ? static_pointer_cast<Expression>(make_shared<PrefixExpression>(PREFIX_OP_NEGATIVE, token))
+                : static_pointer_cast<Expression>(make_shared<BinaryOpExpression>(BINARY_OP_SUB, token));
         } else if (ctx->MUL()) {
             result = make_shared<BinaryOpExpression>(BINARY_OP_MUL, token);
         } else if (ctx->DIV()) {
@@ -68,82 +97,79 @@ namespace cajeta {
                 result = make_shared<PostfixExpression>(POSTFIX_OP_DEC, token);
             }
         } else if (ctx->TILDE()) {
-
+            result = make_shared<PrefixExpression>(PREFIX_OP_BITNOT, token);
         } else if (ctx->BANG()) {
-
+            result = make_shared<PrefixExpression>(PREFIX_OP_LOGNOT, token);
         } else if (ctx->lambdaExpression()) {
-
+            result = make_shared<UnsupportedExpression>("lambda expression", token);
         } else if (ctx->switchExpression()) {
-
-        } else if (ctx->typeArguments()) {
-
-        } else if (ctx->classType()) {
-
+            result = make_shared<UnsupportedExpression>("switch expression", token);
         } else if (!ctx->LT().empty()) {
-
+            // LT().size() == 2 in the grammar means '<' '<' (shift-left); a single '<' is comparison.
+            result = make_shared<BinaryOpExpression>(
+                ctx->LT().size() >= 2 ? BINARY_OP_SHIFTLEFT : BINARY_OP_LT, token);
         } else if (!ctx->GT().empty()) {
-
+            // GT().size() == 2 means '>' '>' (shift-right); 3 means '>' '>' '>' (unsigned shift); 1 is comparison.
+            BinaryOp op;
+            switch (ctx->GT().size()) {
+                case 3:  op = BINARY_OP_USHIFTRIGHT; break;
+                case 2:  op = BINARY_OP_SHIFTRIGHT;  break;
+                default: op = BINARY_OP_GT;          break;
+            }
+            result = make_shared<BinaryOpExpression>(op, token);
         } else if (ctx->LE()) {
-
+            result = make_shared<BinaryOpExpression>(BINARY_OP_LE, token);
         } else if (ctx->GE()) {
-
+            result = make_shared<BinaryOpExpression>(BINARY_OP_GE, token);
         } else if (ctx->EQUAL()) {
-            cout << "Hit!";
+            result = make_shared<BinaryOpExpression>(BINARY_OP_EQ, token);
         } else if (ctx->NOTEQUAL()) {
-
+            result = make_shared<BinaryOpExpression>(BINARY_OP_NE, token);
         } else if (ctx->CARET()) {
-
+            result = make_shared<BinaryOpExpression>(BINARY_OP_BITXOR, token);
         } else if (ctx->BITOR()) {
-
+            result = make_shared<BinaryOpExpression>(BINARY_OP_BITOR, token);
         } else if (ctx->AND()) {
-
+            result = make_shared<BinaryOpExpression>(BINARY_OP_LOGAND, token);
         } else if (ctx->OR()) {
-
-        } else if (ctx->COLON()) {
-
+            result = make_shared<BinaryOpExpression>(BINARY_OP_LOGOR, token);
         } else if (ctx->QUESTION()) {
-
+            // `cond ? then : else`. The grammar matches QUESTION and COLON together; we
+            // pick QUESTION as the discriminator. Children populated later by the loop
+            // at the bottom of this function as [cond, then, else].
+            result = make_shared<BooleanSwitchExpression>(token);
         } else if (ctx->ADD_ASSIGN()) {
             result = make_shared<BinaryOpExpression>(BINARY_OP_ADD_EQUALS, token);
         } else if (ctx->SUB_ASSIGN()) {
-
+            result = make_shared<BinaryOpExpression>(BINARY_OP_SUB_EQUALS, token);
         } else if (ctx->MUL_ASSIGN()) {
-
+            result = make_shared<BinaryOpExpression>(BINARY_OP_MUL_EQUALS, token);
         } else if (ctx->DIV_ASSIGN()) {
-
+            result = make_shared<BinaryOpExpression>(BINARY_OP_DIV_EQUALS, token);
         } else if (ctx->AND_ASSIGN()) {
-
+            result = make_shared<BinaryOpExpression>(BINARY_OP_BITAND_EQUALS, token);
         } else if (ctx->OR_ASSIGN()) {
-
+            result = make_shared<BinaryOpExpression>(BINARY_OP_BITOR_EQUALS, token);
         } else if (ctx->XOR_ASSIGN()) {
-
+            result = make_shared<BinaryOpExpression>(BINARY_OP_BITXOR_EQUALS, token);
         } else if (ctx->RSHIFT_ASSIGN()) {
-
+            result = make_shared<BinaryOpExpression>(BINARY_OP_SHIFTRIGHT_EQUALS, token);
         } else if (ctx->URSHIFT_ASSIGN()) {
-
+            result = make_shared<BinaryOpExpression>(BINARY_OP_USHIFTRIGHT_EQUALS, token);
         } else if (ctx->LSHIFT_ASSIGN()) {
-
+            result = make_shared<BinaryOpExpression>(BINARY_OP_SHIFTLEFT_EQUALS, token);
         } else if (ctx->MOD_ASSIGN()) {
-
+            result = make_shared<BinaryOpExpression>(BINARY_OP_MOD_EQUALS, token);
         } else if (ctx->THIS()) {
-
-        } else if (ctx->innerCreator()) {
-
-        } else if (ctx->SUPER()) {
-
-        } else if (ctx->superSuffix()) {
-
-        } else if (ctx->explicitGenericInvocation()) {
-
-        } else if (ctx->nonWildcardTypeArguments()) {
-
-        } else if (ctx->LBRACK()) {
-
-        } else if (ctx->RBRACK()) {
-
+            result = make_shared<ThisExpression>(ctx);
         } else if (ctx->INSTANCEOF()) {
-
-        } else if (ctx->pattern()) {
+            // `expr instanceof Type` — target type comes from typeType (the pattern form
+            // of instanceof, which binds a name, is treated as the same shape for now).
+            CajetaTypePtr targetType = ctx->typeType().empty()
+                ? CajetaTypePtr()
+                : CajetaType::fromContext(ctx->typeType(0), nullptr);
+            string patternName = ctx->pattern() ? ctx->pattern()->getText() : string();
+            result = make_shared<InstanceOfExpression>(targetType, patternName, token);
         }
 
         if (result) {
@@ -161,27 +187,260 @@ namespace cajeta {
 
     }
 
-    llvm::Value* ArrayIndexExpression::generateCode(CajetaModulePtr module) {
-        module->getAsnStack().push_back(shared_from_this());
+    // Resolve a value-of-slot for sites that consumed an l-value (alloca or ArrayIndex
+    // GEP). Returns the loaded value when `v` is such an address; otherwise returns
+    // `v` unchanged (constants, intermediates). `valueType` is the Cajeta type of the
+    // element (used to pick the load size — reference types load as `ptr`, primitives
+    // load as their own LLVM type).
+    static llvm::Value* readSlot(CajetaModulePtr module, llvm::Value* v,
+                                  CajetaTypePtr valueType) {
+        if (!v) return v;
+        auto* builder = module->getBuilder();
+        if (auto* a = llvm::dyn_cast<llvm::AllocaInst>(v)) {
+            return builder->CreateLoad(a->getAllocatedType(), a);
+        }
+        if (!v->getType()->isPointerTy() || !valueType) return v;
+        llvm::Type* loadTy;
+        if (dynamic_pointer_cast<CajetaArray>(valueType)) {
+            // Slot stores a `ptr` to the inner header (or to any reference).
+            loadTy = llvm::PointerType::get(*module->getLlvmContext(), 0);
+        } else if (valueType->getTypeFlags() & STRUCT_FLAG) {
+            loadTy = llvm::PointerType::get(*module->getLlvmContext(), 0);
+        } else {
+            loadTy = valueType->getLlvmType();
+        }
+        if (!loadTy) return v;
+        return builder->CreateLoad(loadTy, v);
+    }
 
-        llvm::Value* fieldAllocation = children[0]->generateCode(module);
-        llvm::Constant* arrayIndex = nullptr;
-        for (int i = 1; i < children.size(); i++) {
-            llvm::Constant* dimensionValue = (llvm::Constant*) children[i]->generateCode(module);
-            if (arrayIndex == nullptr) {
-                arrayIndex = dimensionValue;
-            } else {
-                arrayIndex = llvm::ConstantExpr::getMul(dimensionValue, arrayIndex);
+    void ArrayIndexExpression::resolveTypes(CajetaModulePtr module) {
+        AbstractSyntaxNode::resolveTypes(module);
+        // One level of indexing unwraps one CajetaArray layer. `int[][]` indexed once
+        // yields `int[]`; indexed again yields `int`.
+        if (!children.empty()) {
+            if (auto exprChild = dynamic_pointer_cast<Expression>(children[0])) {
+                if (auto arr = dynamic_pointer_cast<CajetaArray>(exprChild->getResolvedType())) {
+                    resolvedType = arr->getElementType();
+                }
             }
         }
-        vector<llvm::Value*> indexes({arrayIndex});
-        llvm::Type* llvmFieldType = ((llvm::AllocaInst*) fieldAllocation)->getAllocatedType();
-        llvm::ArrayType* llvmArrayType = (llvm::ArrayType*) llvmFieldType->getContainedType(0);
-        llvm::Type* llvmElementType = llvmArrayType->getElementType();
-        llvm::Value* llvmArray = module->getBuilder()->CreateStructGEP(llvmArrayType, fieldAllocation, 0);
-        llvm::Value* result = module->getBuilder()->CreateGEP(llvmElementType, llvmArray, llvm::ArrayRef<llvm::Value*>(indexes));
-        module->getAsnStack().pop_back();
-        return result;
+    }
+
+    llvm::Value* ArrayIndexExpression::generateCode(CajetaModulePtr module) {
+        // Each ArrayIndexExpression handles exactly one index level. children[0] is the
+        // array expression (a ptr to a header `{ i64 size, [0 x T] data }`); children[1]
+        // is the index expression. For `arr[i][j]` the AST is nested:
+        //   (ArrayIndex (ArrayIndex arr i) j)
+        // matching the Java grammar `expression '[' expression ']'` recursively.
+        if (children.size() < 2) {
+            return nullptr;
+        }
+        auto* builder = module->getBuilder();
+        llvm::LLVMContext& ctx = *module->getLlvmContext();
+        llvm::Type* i64Ty = llvm::Type::getInt64Ty(ctx);
+        llvm::Type* i32Ty = llvm::Type::getInt32Ty(ctx);
+
+        // Resolve the array value (the header pointer).
+        //   - Local-variable arrays: an alloca holding a `ptr` to the header. Load to get
+        //     the header pointer.
+        //   - Nested ArrayIndex (`arr[i][j]`): the parent ArrayIndex gave us a slot whose
+        //     element is a `ptr` to the inner header — load `ptr` to get that.
+        //   - Anything else (e.g. method-call returning an array): the value already IS
+        //     the header pointer.
+        llvm::Value* arrayVal = children[0]->generateCode(module);
+        auto lhsExpr = dynamic_pointer_cast<Expression>(children[0]);
+        if (auto* a = llvm::dyn_cast<llvm::AllocaInst>(arrayVal)) {
+            arrayVal = builder->CreateLoad(a->getAllocatedType(), a);
+        } else if (lhsExpr && dynamic_pointer_cast<ArrayIndexExpression>(lhsExpr)) {
+            arrayVal = builder->CreateLoad(
+                llvm::PointerType::get(ctx, 0), arrayVal);
+        }
+
+        // Resolve element type from the CajetaArray annotation on the lhs. With opaque
+        // pointers the LLVM type alone tells us nothing; we lean on the type resolver
+        // having pinned children[0]->resolvedType to the CajetaArray.
+        //
+        // The pre-pass resolver runs before LocalVariableDeclaration populates the
+        // scope, so identifier-based lhses are commonly null at resolveTypes time. We
+        // re-run resolveTypes here (now that the scope is populated by codegen) and
+        // also publish *our* element type so consumers like ReturnStatement see it.
+        CajetaArrayPtr arrayType;
+        if (auto exprChild = dynamic_pointer_cast<Expression>(children[0])) {
+            if (!exprChild->getResolvedType()) {
+                exprChild->resolveTypes(module);
+            }
+            arrayType = dynamic_pointer_cast<CajetaArray>(exprChild->getResolvedType());
+        }
+        if (!arrayType) {
+            return nullptr;
+        }
+        if (!resolvedType) {
+            resolvedType = arrayType->getElementType();
+        }
+        llvm::Type* headerTy = arrayType->getLlvmType();
+
+        // Resolve the index expression.
+        llvm::Value* idx = children[1]->generateCode(module);
+        if (auto* a = llvm::dyn_cast<llvm::AllocaInst>(idx)) {
+            idx = builder->CreateLoad(a->getAllocatedType(), a);
+        }
+        if (idx->getType() != i64Ty) {
+            idx = builder->CreateIntCast(idx, i64Ty, /*isSigned=*/true);
+        }
+
+        // Bounds check (when enabled by the compiler flag and the runtime helper is
+        // linked): load the size field and branch to fail if `idx >= size` under
+        // unsigned comparison (catches negatives). Disabled via `cajeta --bounds=off`.
+        llvm::Function* boundsFail = module->isBoundsCheckEnabled()
+            ? module->getRuntimeFunction("__cajeta_array_bounds_fail")
+            : nullptr;
+        if (boundsFail) {
+            llvm::Value* sizePtr = builder->CreateStructGEP(headerTy, arrayVal,
+                CajetaArray::SIZE_FIELD_INDEX);
+            llvm::Value* size = builder->CreateLoad(i64Ty, sizePtr);
+            llvm::Value* outOfBounds = builder->CreateICmpUGE(idx, size);
+            llvm::Function* parentFn = builder->GetInsertBlock()->getParent();
+            llvm::BasicBlock* failBB = llvm::BasicBlock::Create(ctx, "bounds_fail", parentFn);
+            llvm::BasicBlock* okBB = llvm::BasicBlock::Create(ctx, "bounds_ok", parentFn);
+            builder->CreateCondBr(outOfBounds, failBB, okBB);
+            builder->SetInsertPoint(failBB);
+            builder->CreateCall(boundsFail, {idx, size});
+            builder->CreateUnreachable();
+            builder->SetInsertPoint(okBB);
+        }
+
+        // Element address: &header->data[idx]. GEP walks ptr -> struct -> data array -> element.
+        vector<llvm::Value*> gepIndices = {
+            llvm::ConstantInt::get(i64Ty, 0),
+            llvm::ConstantInt::get(i32Ty, CajetaArray::DATA_FIELD_INDEX),
+            idx,
+        };
+        return builder->CreateGEP(headerTy, arrayVal, gepIndices);
+    }
+
+    // Helper for prefix/postfix: child is the operand. Returns (addr, value) where addr is
+    // non-null iff the operand is an l-value (we may need to store back to it for ++/--).
+    static std::pair<llvm::Value*, llvm::Value*> loadOperand(CajetaModulePtr module,
+                                                              const AbstractSyntaxNodePtr& child) {
+        llvm::Value* raw = child->generateCode(module);
+        if (!raw) {
+            return {nullptr, nullptr};
+        }
+        if (auto* a = llvm::dyn_cast<llvm::AllocaInst>(raw)) {
+            return {a, module->getBuilder()->CreateLoad(a->getAllocatedType(), a)};
+        }
+        return {nullptr, raw};
+    }
+
+    llvm::Value* PrefixExpression::generateCode(CajetaModulePtr module) {
+        if (children.empty()) return nullptr;
+        auto* builder = module->getBuilder();
+        auto [addr, val] = loadOperand(module, children[0]);
+        if (!val) return nullptr;
+        llvm::Type* ty = val->getType();
+
+        switch (op) {
+            case PREFIX_OP_POSITIVE:
+                return val;
+            case PREFIX_OP_NEGATIVE:
+                return ty->isFloatingPointTy() ? builder->CreateFNeg(val) : builder->CreateNeg(val);
+            case PREFIX_OP_BITNOT:
+                return builder->CreateNot(val);
+            case PREFIX_OP_LOGNOT: {
+                // !x ≡ (x == 0). Produces i1.
+                llvm::Value* zero = ty->isFloatingPointTy()
+                    ? (llvm::Value*) llvm::ConstantFP::getZero(ty)
+                    : (llvm::Value*) llvm::ConstantInt::get(ty, 0);
+                return ty->isFloatingPointTy()
+                    ? builder->CreateFCmpOEQ(val, zero)
+                    : builder->CreateICmpEQ(val, zero);
+            }
+            case PREFIX_OP_INC:
+            case PREFIX_OP_DEC: {
+                if (!addr) return val; // can't increment a non-l-value; emit the unchanged value
+                llvm::Value* one = ty->isFloatingPointTy()
+                    ? (llvm::Value*) llvm::ConstantFP::get(ty, 1.0)
+                    : (llvm::Value*) llvm::ConstantInt::get(ty, 1);
+                llvm::Value* newVal;
+                if (op == PREFIX_OP_INC) {
+                    newVal = ty->isFloatingPointTy() ? builder->CreateFAdd(val, one)
+                                                     : builder->CreateAdd(val, one);
+                } else {
+                    newVal = ty->isFloatingPointTy() ? builder->CreateFSub(val, one)
+                                                     : builder->CreateSub(val, one);
+                }
+                builder->CreateStore(newVal, addr);
+                return newVal;
+            }
+        }
+        return nullptr;
+    }
+
+    llvm::Value* CastExpression::generateCode(CajetaModulePtr module) {
+        if (children.empty() || !destType) return nullptr;
+        auto* builder = module->getBuilder();
+        auto [_, val] = loadOperand(module, children[0]);
+        if (!val) return nullptr;
+        llvm::Type* srcTy = val->getType();
+        llvm::Type* dstTy = destType->getLlvmType();
+        if (srcTy == dstTy) return val;
+
+        bool srcInt = srcTy->isIntegerTy();
+        bool dstInt = dstTy->isIntegerTy();
+        bool srcFp  = srcTy->isFloatingPointTy();
+        bool dstFp  = dstTy->isFloatingPointTy();
+        bool srcPtr = srcTy->isPointerTy();
+        bool dstPtr = dstTy->isPointerTy();
+        unsigned long destFlags = destType->getTypeFlags();
+        bool destSigned = (destFlags & SIGNED_FLAG) != 0;
+
+        if (srcInt && dstInt) {
+            return builder->CreateIntCast(val, dstTy, destSigned);
+        }
+        if (srcFp && dstFp) {
+            return builder->CreateFPCast(val, dstTy);
+        }
+        if (srcInt && dstFp) {
+            return destSigned ? builder->CreateSIToFP(val, dstTy)
+                              : builder->CreateUIToFP(val, dstTy);
+        }
+        if (srcFp && dstInt) {
+            return destSigned ? builder->CreateFPToSI(val, dstTy)
+                              : builder->CreateFPToUI(val, dstTy);
+        }
+        if (srcPtr && dstPtr) {
+            return builder->CreateBitCast(val, dstTy);
+        }
+        if (srcPtr && dstInt) {
+            return builder->CreatePtrToInt(val, dstTy);
+        }
+        if (srcInt && dstPtr) {
+            return builder->CreateIntToPtr(val, dstTy);
+        }
+        // Fallback to bitcast for anything that's bit-compatible.
+        return builder->CreateBitCast(val, dstTy);
+    }
+
+    llvm::Value* PostfixExpression::generateCode(CajetaModulePtr module) {
+        if (children.empty()) return nullptr;
+        auto* builder = module->getBuilder();
+        auto [addr, val] = loadOperand(module, children[0]);
+        if (!val || !addr) return val;
+        llvm::Type* ty = val->getType();
+        llvm::Value* one = ty->isFloatingPointTy()
+            ? (llvm::Value*) llvm::ConstantFP::get(ty, 1.0)
+            : (llvm::Value*) llvm::ConstantInt::get(ty, 1);
+        llvm::Value* newVal;
+        if (op == POSTFIX_OP_INC) {
+            newVal = ty->isFloatingPointTy() ? builder->CreateFAdd(val, one)
+                                             : builder->CreateAdd(val, one);
+        } else {
+            newVal = ty->isFloatingPointTy() ? builder->CreateFSub(val, one)
+                                             : builder->CreateSub(val, one);
+        }
+        builder->CreateStore(newVal, addr);
+        // Postfix yields the *original* value, not the updated one.
+        return val;
     }
 
 
@@ -208,13 +467,151 @@ namespace cajeta {
             result = make_shared<IdentifierExpression>(ctx->identifier(), true);
         } else if (ctx->THIS()) {
             result = make_shared<ThisExpression>(ctx->expression());
+        } else if (ctx->SUPER()) {
+            // `super` as a primary expression (e.g. `super.foo()`); the actual call
+            // dispatch is the bigger feature we haven't built yet.
+            result = make_shared<UnsupportedExpression>("super call", ctx->getStart());
         }
         return result;
     }
 
     llvm::Value* PrimaryExpression::generateCode(CajetaModulePtr module) {
-        module->getAsnStack().push_back(shared_from_this());
-        module->getAsnStack().pop_back();
         return nullptr;
+    }
+
+    // Helper used by ternary/instanceof: load value from an alloca-style l-value.
+    static llvm::Value* loadIfAllocaShared(CajetaModulePtr module, llvm::Value* v) {
+        if (auto* a = llvm::dyn_cast_or_null<llvm::AllocaInst>(v)) {
+            return module->getBuilder()->CreateLoad(a->getAllocatedType(), a);
+        }
+        return v;
+    }
+
+    void BooleanSwitchExpression::resolveTypes(CajetaModulePtr module) {
+        AbstractSyntaxNode::resolveTypes(module);
+        // Result type = the `then` branch's resolved type. A full implementation would
+        // unify with the `else` branch (least common ancestor); we leave that to
+        // codegen-time coercion since the type system doesn't yet have promotion.
+        if (children.size() >= 2) {
+            if (auto thenExpr = dynamic_pointer_cast<Expression>(children[1])) {
+                resolvedType = thenExpr->getResolvedType();
+            }
+        }
+    }
+
+    llvm::Value* BooleanSwitchExpression::generateCode(CajetaModulePtr module) {
+        if (children.size() < 3) return nullptr;
+        auto* builder = module->getBuilder();
+        llvm::LLVMContext& ctx = *module->getLlvmContext();
+
+        // Evaluate condition; coerce non-i1 (e.g. i32 0/non-0) to i1 via != 0.
+        llvm::Value* cond = loadIfAllocaShared(module, children[0]->generateCode(module));
+        llvm::Type* i1Ty = llvm::Type::getInt1Ty(ctx);
+        if (cond->getType() != i1Ty) {
+            llvm::Value* zero = llvm::ConstantInt::get(cond->getType(), 0);
+            cond = builder->CreateICmpNE(cond, zero);
+        }
+
+        llvm::Function* parentFn = builder->GetInsertBlock()->getParent();
+        llvm::BasicBlock* thenBB = llvm::BasicBlock::Create(ctx, "ternary_then", parentFn);
+        llvm::BasicBlock* elseBB = llvm::BasicBlock::Create(ctx, "ternary_else", parentFn);
+        llvm::BasicBlock* mergeBB = llvm::BasicBlock::Create(ctx, "ternary_merge", parentFn);
+
+        builder->CreateCondBr(cond, thenBB, elseBB);
+
+        builder->SetInsertPoint(thenBB);
+        llvm::Value* thenVal = loadIfAllocaShared(module, children[1]->generateCode(module));
+        llvm::BasicBlock* thenEnd = builder->GetInsertBlock();
+        builder->CreateBr(mergeBB);
+
+        builder->SetInsertPoint(elseBB);
+        llvm::Value* elseVal = loadIfAllocaShared(module, children[2]->generateCode(module));
+        // If types differ, narrow/extend the else side to match the then side. Mirrors
+        // BinaryOpExpression's coerceArithPair logic at a single point of variance.
+        if (elseVal->getType() != thenVal->getType()) {
+            llvm::Type* tt = thenVal->getType();
+            llvm::Type* et = elseVal->getType();
+            if (tt->isIntegerTy() && et->isIntegerTy()) {
+                elseVal = builder->CreateIntCast(elseVal, tt, /*isSigned=*/true);
+            } else if (tt->isFloatingPointTy() && et->isFloatingPointTy()) {
+                elseVal = builder->CreateFPCast(elseVal, tt);
+            } else if (tt->isFloatingPointTy() && et->isIntegerTy()) {
+                elseVal = builder->CreateSIToFP(elseVal, tt);
+            } else if (tt->isIntegerTy() && et->isFloatingPointTy()) {
+                elseVal = builder->CreateFPToSI(elseVal, tt);
+            }
+        }
+        llvm::BasicBlock* elseEnd = builder->GetInsertBlock();
+        builder->CreateBr(mergeBB);
+
+        builder->SetInsertPoint(mergeBB);
+        llvm::PHINode* phi = builder->CreatePHI(thenVal->getType(), 2);
+        phi->addIncoming(thenVal, thenEnd);
+        phi->addIncoming(elseVal, elseEnd);
+        return phi;
+    }
+
+    llvm::Value* UnsupportedExpression::generateCode(CajetaModulePtr module) {
+        char buf[256];
+        snprintf(buf, sizeof(buf),
+            "%s is not yet implemented (source line %d, column %d)",
+            constructName.c_str(), sourceLine, sourceColumn);
+        throw Exception(string(buf), "CAJETA_ERROR_NOT_IMPLEMENTED");
+    }
+
+    void InstanceOfExpression::resolveTypes(CajetaModulePtr module) {
+        AbstractSyntaxNode::resolveTypes(module);
+        resolvedType = CajetaType::of("boolean");
+    }
+
+    llvm::Value* InstanceOfExpression::generateCode(CajetaModulePtr module) {
+        // Static dispatch only: take the lhs's compile-time resolvedType and ask whether
+        // it matches `type` (or one of its bases, when we can walk the chain). When the
+        // lhs type is unknown at compile time, we fall back to `false` — wrong for the
+        // dynamic-dispatch case but safe (never falsely reports a match).
+        llvm::LLVMContext& ctx = *module->getLlvmContext();
+        llvm::Type* i1 = llvm::Type::getInt1Ty(ctx);
+
+        // Always evaluate the lhs so side-effects fire even in the static case.
+        if (!children.empty()) {
+            children[0]->generateCode(module);
+        }
+
+        if (!type || children.empty()) {
+            return llvm::ConstantInt::getFalse(i1);
+        }
+        auto lhsExpr = dynamic_pointer_cast<Expression>(children[0]);
+        if (!lhsExpr) {
+            return llvm::ConstantInt::getFalse(i1);
+        }
+        // The pre-pass resolver runs before LocalVariableDeclaration populates the scope,
+        // so the lhs's resolvedType may be null. Re-run resolveTypes now — at codegen
+        // time the scope is fully populated.
+        if (!lhsExpr->getResolvedType()) {
+            lhsExpr->resolveTypes(module);
+        }
+        CajetaTypePtr lhsType = lhsExpr->getResolvedType();
+        if (!lhsType) {
+            return llvm::ConstantInt::getFalse(i1);
+        }
+        // Exact match. A full implementation would walk lhsType's parent chain; for
+        // primitive/non-class types the compile-time check is sufficient.
+        bool isMatch = (lhsType->toCanonical() == type->toCanonical());
+        return isMatch ? llvm::ConstantInt::getTrue(i1) : llvm::ConstantInt::getFalse(i1);
+    }
+
+    void ThisExpression::resolveTypes(CajetaModulePtr module) {
+        // `this` resolves to the current class type on the structure stack.
+        if (!module->getStructureStack().empty()) {
+            resolvedType = module->getStructureStack().back();
+        }
+    }
+
+    llvm::Value* ThisExpression::generateCode(CajetaModulePtr module) {
+        // Method::generateCode registers a ParameterField named "this" in the active scope
+        // for non-static methods. We return its alloca (l-value style); consumers can
+        // loadIfLValue if they need the pointer itself.
+        FieldPtr thisField = module->getScopeStack().peek()->getField("this");
+        return thisField ? static_cast<llvm::Value*>(thisField->getOrCreateAllocation()) : nullptr;
     }
 }

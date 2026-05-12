@@ -6,6 +6,8 @@
 
 #include <memory>
 #include <regex>
+#include <filesystem>
+#include <cstdlib>
 #include <llvm/IRReader/IRReader.h>
 #include <cajeta/type/CajetaClass.h>
 #include <llvm/Bitcode/BitcodeReader.h>

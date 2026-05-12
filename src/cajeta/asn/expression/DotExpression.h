@@ -15,6 +15,8 @@ namespace cajeta {
     public:
         DotExpression(CajetaParser::ExpressionContext* ctx, antlr4::Token* token);
 
+        void resolveTypes(CajetaModulePtr module) override;
+
         llvm::Value* generateCode(CajetaModulePtr module) override;
     };
 

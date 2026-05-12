@@ -8,7 +8,8 @@
 #include "CajetaParserVisitor.h"
 #include "cajeta/type/CajetaClass.h"
 #include <any>
-#include "Block.h"
+#include "cajeta/asn/Block.h"
+#include "cajeta/asn/Statement.h"
 #include "cajeta/asn/expression/Expression.h"
 #include "cajeta/asn/LocalVariableDeclaration.h"
 #include "cajeta/compile/CajetaModule.h"
@@ -570,12 +571,11 @@ namespace cajeta {
         }
 
         virtual std::any visitExpression(CajetaParser::ExpressionContext* ctx) override {
-            ExpressionPtr expression = Expression::fromContext(ctx);
-            for (auto& expressionContext: ctx->expression()) {
-                std::any any = visitChildren(expressionContext->parent);
-                expression->addChild(std::any_cast<ExpressionPtr>(any));
-            }
-            return expression;
+            // Expression::fromContext builds the full sub-tree (including children) via
+            // its own recursive descent; no further visitor-driven addChild loop is
+            // needed, and the loop that used to live here aggregated visitChildren in a
+            // way that broke for postfix operators.
+            return Expression::fromContext(ctx);
         }
 
         virtual std::any visitPattern(CajetaParser::PatternContext* ctx) override {

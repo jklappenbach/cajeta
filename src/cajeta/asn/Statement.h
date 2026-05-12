@@ -19,8 +19,6 @@ namespace cajeta {
     class Expression;
     typedef shared_ptr<Expression> ExpressionPtr;
 
-    class ParExpression;
-
     class Statement;
     typedef shared_ptr<Statement> StatementPtr;
 
@@ -60,21 +58,31 @@ namespace cajeta {
             this->expression = expression;
         }
 
-        llvm::Value* generateCode(CajetaModulePtr module) override {
-            return nullptr;
-        }
+        ExpressionPtr getExpression() const { return expression; }
+
+        // The wrapped expression isn't in `children` so the default walk skips it. Forward
+        // explicitly so the type-resolver pre-pass visits every Expression in the tree.
+        // Body in Statement.cpp because Expression is forward-declared here.
+        void resolveTypes(CajetaModulePtr module) override;
+
+        llvm::Value* generateCode(CajetaModulePtr module) override;
     };
 
     /**
      * blockLabel=block
+     *
+     * A block used in statement position (e.g. the body of `if (x) { ... }`). Wraps
+     * a Block of inner block-statements. The "label" naming is historical — labels
+     * proper (`outer: while (...) ...`) aren't implemented yet.
      */
     class LabelStatement : public Statement {
     private:
-        string labelName;
-        Block* block;
+        BlockPtr block;
     public:
-        LabelStatement(antlr4::Token* token) : Statement(token) { }
+        LabelStatement(antlr4::Token* token, BlockPtr block)
+            : Statement(token), block(block) { }
 
+        void resolveTypes(CajetaModulePtr module) override;
         llvm::Value* generateCode(CajetaModulePtr module) override;
     };
 
@@ -87,26 +95,37 @@ namespace cajeta {
      */
     class IfStatement : public Statement {
     private:
-        ParExpression* parExpression;
-        Statement* statement;
-        Statement* elseClause;
+        ExpressionPtr condition;
+        StatementPtr thenBranch;
+        StatementPtr elseBranch;
     public:
-        IfStatement(antlr4::Token* token) : Statement(token) { }
+        IfStatement(antlr4::Token* token, ExpressionPtr cond, StatementPtr thenStmt,
+                    StatementPtr elseStmt)
+            : Statement(token), condition(cond), thenBranch(thenStmt), elseBranch(elseStmt) { }
 
+        void resolveTypes(CajetaModulePtr module) override;
         llvm::Value* generateCode(CajetaModulePtr module) override;
     };
 
     /**
      * FOR '(' forControl ')' statement
+     *
+     * C-style: `for (init; cond; update) body`. init may be a local-variable
+     * declaration or a list of expression statements; cond and update are optional.
      */
     class ForStatement : public Statement {
     private:
-        list<FieldPtr> initializer;
-        Expression* control;
-        list<Expression*> update;
+        BlockStatementPtr init;       // LocalVariableDeclaration or ExpressionStatement; may be null
+        ExpressionPtr condition;       // optional — null means "always true"
+        list<ExpressionPtr> update;    // run after each iteration
+        StatementPtr body;
     public:
-        ForStatement(antlr4::Token* token) : Statement(token) { }
+        ForStatement(antlr4::Token* token, BlockStatementPtr init, ExpressionPtr cond,
+                     list<ExpressionPtr> update, StatementPtr body)
+            : Statement(token), init(init), condition(cond),
+              update(std::move(update)), body(body) { }
 
+        void resolveTypes(CajetaModulePtr module) override;
         llvm::Value* generateCode(CajetaModulePtr module) override;
     };
 
@@ -130,11 +149,13 @@ namespace cajeta {
      */
     class WhileStatement : public Statement {
     private:
-        ExpressionPtr parExpression;
-        StatementPtr statement;
+        ExpressionPtr condition;
+        StatementPtr body;
     public:
-        WhileStatement(antlr4::Token* token) : Statement(token) { }
+        WhileStatement(antlr4::Token* token, ExpressionPtr cond, StatementPtr body)
+            : Statement(token), condition(cond), body(body) { }
 
+        void resolveTypes(CajetaModulePtr module) override;
         llvm::Value* generateCode(CajetaModulePtr module) override;
     };
 
@@ -143,33 +164,44 @@ namespace cajeta {
      */
     class DoStatement : public Statement {
     private:
-        list<StatementPtr> statements;
-        ExpressionPtr parExpression;
+        StatementPtr body;
+        ExpressionPtr condition;
     public:
-        DoStatement(CajetaParser::StatementContext* ctx);
+        DoStatement(antlr4::Token* token, StatementPtr body, ExpressionPtr cond)
+            : Statement(token), body(body), condition(cond) { }
 
+        void resolveTypes(CajetaModulePtr module) override;
         llvm::Value* generateCode(CajetaModulePtr module) override;
     };
 
-    class CatchClause {
-    private:
-        list<FieldPtr> catchFields;
-        Block* catchBlock;
-    public:
-
+    // One catch clause within a try. Currently single-type per catch (no `T1 | T2`
+    // multi-catch), and the bound variable is implicitly the thrown value loaded via
+    // the runtime accessor.
+    struct CatchClause {
+        CajetaTypePtr type;       // exception type (primitives + classes for now)
+        string variableName;       // bound name in the catch body
+        BlockPtr body;
     };
 
     /**
      * TRY block (catchClause+ finallyBlock? | finallyBlock)
+     *
+     * setjmp/longjmp-based exception handling: each try-block allocates a frame on
+     * the stack, registers it with the runtime, and uses setjmp to set a recovery
+     * point. `throw` longjmps back to the most recently registered frame.
      */
     class TryStatement : public Statement {
     private:
-        BlockPtr block;
-        list<CatchClause> catchClauses;
-        BlockPtr finally;
+        BlockPtr tryBlock;
+        std::vector<CatchClause> catchClauses;
+        BlockPtr finallyBlock;
     public:
-        TryStatement(antlr4::Token* token) : Statement(token) { }
+        TryStatement(antlr4::Token* token, BlockPtr tryBlock,
+                     std::vector<CatchClause> catches, BlockPtr finallyBlock)
+            : Statement(token), tryBlock(tryBlock),
+              catchClauses(std::move(catches)), finallyBlock(finallyBlock) { }
 
+        void resolveTypes(CajetaModulePtr module) override;
         llvm::Value* generateCode(CajetaModulePtr module) override;
     };
 
@@ -188,30 +220,32 @@ namespace cajeta {
         llvm::Value* generateCode(CajetaModulePtr module) override;
     };
 
-    class SwitchBlockStatement {
-
-    };
-    typedef shared_ptr<SwitchBlockStatement> SwitchBlockStatementPtr;
-
-    class SwitchBlockStatementGroup : public SwitchBlockStatement {
-        string switchLabel;
-        Block* switchBlock;
-    };
-
-    class SwitchLabel : public SwitchBlockStatement {
-        string switchLabel;
+    // One labeled group within a switch — e.g. `case 1: case 2: stmts...`.
+    // `caseValues` are the constant expressions for the case labels; an empty list
+    // with `isDefault=true` means the `default:` group.
+    struct SwitchGroup {
+        std::vector<ExpressionPtr> caseValues;
+        bool isDefault = false;
+        std::vector<BlockStatementPtr> statements;
     };
 
     /**
      * SWITCH parExpression '{' switchBlockStatementGroup* switchLabel* '}'
+     *
+     * Classic Java switch over an integer subject. Groups fall through to the next
+     * one unless terminated by `break` or `return`. `default:` matches when no case
+     * does. The new-style `case X -> body` form is out of scope this round.
      */
     class SwitchStatement : public Statement {
     private:
-        ExpressionPtr parExpression;
-        list<SwitchBlockStatementPtr> switchBlockStatements;
+        ExpressionPtr subject;
+        std::vector<SwitchGroup> groups;
     public:
-        SwitchStatement(antlr4::Token* token) : Statement(token) { }
+        SwitchStatement(antlr4::Token* token, ExpressionPtr subject,
+                        std::vector<SwitchGroup> groups)
+            : Statement(token), subject(subject), groups(std::move(groups)) { }
 
+        void resolveTypes(CajetaModulePtr module) override;
         llvm::Value* generateCode(CajetaModulePtr module) override;
     };
 
@@ -235,7 +269,11 @@ namespace cajeta {
     private:
         ExpressionPtr expression;
     public:
-        ReturnStatement(antlr4::Token* token) : Statement(token) { }
+        ReturnStatement(antlr4::Token* token, ExpressionPtr expression = nullptr)
+            : Statement(token), expression(expression) { }
+
+        // Like ExpressionStatement, the returned expression isn't in `children`.
+        void resolveTypes(CajetaModulePtr module) override;
 
         llvm::Value* generateCode(CajetaModulePtr module) override;
     };
@@ -247,8 +285,10 @@ namespace cajeta {
     private:
         ExpressionPtr expression;
     public:
-        ThrowStatement(antlr4::Token* token) : Statement(token) { }
+        ThrowStatement(antlr4::Token* token, ExpressionPtr expression = nullptr)
+            : Statement(token), expression(expression) { }
 
+        void resolveTypes(CajetaModulePtr module) override;
         llvm::Value* generateCode(CajetaModulePtr module) override;
     };
 

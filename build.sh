@@ -1,6 +1,6 @@
 #!/bin/bash
+set -e
 
-pushd .
-cd build
-cmake --build . --target all -j 14
-popd
+pushd build > /dev/null
+cmake --build . --target all -j "$(nproc)"
+popd > /dev/null

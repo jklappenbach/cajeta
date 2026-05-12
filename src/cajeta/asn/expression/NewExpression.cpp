@@ -7,17 +7,17 @@
 
 namespace cajeta {
     llvm::Value* NewExpression::generateCode(CajetaModulePtr module) {
-        module->getAsnStack().push_back(shared_from_this());
-//        FieldPtr field = pModule->getFieldStack().back();
-//        CajetaTypePtr type = field->getType();
-//        llvm::Constant* allocSize = llvm::ConstantExpr::getSizeOf(type->getLlvmType());
-//        llvm::Instruction* mallocInst = MemoryManager::createMallocInstruction(pModule, allocSize,
-//            pModule->getBuilder()->GetInsertBlock());
-//        pModule->setCurrentValue(mallocInst);
-//        this->creatorRest->generateCode(pModule);
-//        return mallocInst;
-        module->getAsnStack().pop_back();
-
-        return nullptr;
+        if (!creatorRest) {
+            return nullptr;
+        }
+        // Look up the target type by name. typeName names the class for `new Foo()`, or
+        // the element type for `new T[...]`. Package is "" for primitives (e.g. int32).
+        CajetaTypePtr type = CajetaType::of(typeName, package);
+        if (!type) {
+            // Fallback to canonical lookup by bare typeName for primitives.
+            type = CajetaType::of(typeName);
+        }
+        creatorRest->setTargetType(type);
+        return creatorRest->generateCode(module);
     }
 } // code

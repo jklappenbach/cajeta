@@ -44,9 +44,11 @@ namespace cajeta {
             }
         }
 
-        llvm::Value* generateCode(CajetaModulePtr module) override;
-        // TODO: Add override when we have strings for getType
+        LiteralType getLiteralType() const { return literalType; }
 
+        void resolveTypes(CajetaModulePtr module) override;
+
+        llvm::Value* generateCode(CajetaModulePtr module) override;
     };
 
     enum IntegerLiteralType {
@@ -73,6 +75,8 @@ namespace cajeta {
             }
         }
 
+        void resolveTypes(CajetaModulePtr module) override;
+
         llvm::Value* generateCode(CajetaModulePtr module) override;
     };
 
@@ -92,6 +96,10 @@ namespace cajeta {
             }
             value = ctx->getText();
         }
+
+        void resolveTypes(CajetaModulePtr module) override;
+
+        llvm::Value* generateCode(CajetaModulePtr module) override;
     };
 
 } // code

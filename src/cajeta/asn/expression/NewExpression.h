@@ -12,7 +12,7 @@ namespace cajeta {
     class NewExpression : public Expression {
         string package;
         string typeName;
-        CreatorRest* creatorRest;
+        CreatorRestPtr creatorRest;
     public:
         NewExpression(antlr4::Token* token) : Expression(token) { }
 

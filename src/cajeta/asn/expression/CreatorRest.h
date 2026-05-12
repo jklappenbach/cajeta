@@ -10,11 +10,19 @@
 namespace cajeta {
 
     class CreatorRest : public AbstractSyntaxNode {
+    protected:
+        // Target type set by the parent NewExpression before generateCode runs.
+        // For ClassCreatorRest this is the struct type; for ArrayCreatorRest the
+        // element type.
+        CajetaTypePtr targetType;
     public:
         CreatorRest(antlr4::Token* token) : AbstractSyntaxNode(token) { }
 
-        static CreatorRest* fromContext(CajetaParser::CreatorContext* ctx, antlr4::Token* token);
+        void setTargetType(CajetaTypePtr t) { targetType = t; }
+
+        static shared_ptr<CreatorRest> fromContext(CajetaParser::CreatorContext* ctx, antlr4::Token* token);
     };
+    typedef shared_ptr<CreatorRest> CreatorRestPtr;
 
     class ClassCreatorRest : public CreatorRest {
         vector<MethodCallParameter> parameters;
@@ -35,8 +43,13 @@ namespace cajeta {
 
     class ArrayCreatorRest : public CreatorRest {
     private:
+        // Total `[]` pairs in the creator (e.g. `new T[2][3][]` has 3). Equals the
+        // nesting depth of the resulting array type. children.size() is the number
+        // of levels with explicit sizes — the rest are left null after allocation.
+        int totalBracketPairs;
     public:
         ArrayCreatorRest(CajetaParser::ArrayCreatorRestContext* ctx, antlr4::Token* token) : CreatorRest(token) {
+            totalBracketPairs = static_cast<int>(ctx->LBRACK().size());
             for (auto& expressionContext: ctx->expression()) {
                 children.push_back(Expression::fromContext(expressionContext));
             }

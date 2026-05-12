@@ -49,8 +49,24 @@ namespace cajeta {
         MethodPtr currentMethod;
         StructureMetadataPtr structureMetadata;
 
+        // Compiler-level options that codegen consults. Set on the module by the
+        // Compiler at creation time (so each module produces IR consistent with the
+        // current invocation's CLI flags).
+        bool boundsCheckEnabled = true;
+
+    public:
+        // Active loop targets for break/continue. Each loop pushes its targets on
+        // entry to its body codegen and pops on exit; break/continue read the
+        // innermost frame.
+        struct LoopContext {
+            llvm::BasicBlock* continueTarget;
+            llvm::BasicBlock* breakTarget;
+        };
+
+    private:
+        std::vector<LoopContext> loopContextStack;
+
         // Current state
-        list<AbstractSyntaxNodePtr> asnStack;
         ScopeStack scopeStack;
         list<CajetaClassPtr> structureStack;
         list<MethodPtr> toGenerate;
@@ -94,10 +110,6 @@ namespace cajeta {
 
         llvm::IRBuilder<>* getBuilder() {
             return this->builder;
-        }
-
-        list<AbstractSyntaxNodePtr>& getAsnStack() {
-            return asnStack;
         }
 
         CajetaTypePtr getInitializerType() const;
@@ -148,9 +160,32 @@ namespace cajeta {
             return moduleVariables;
         }
 
+        // Clear cross-Compiler module/method bookkeeping. Used by Compiler's ctor so
+        // each fresh Compiler instance starts with empty static state.
+        static void resetGlobals();
+
         llvm::IRBuilder<>* getBuilder() const;
 
+        bool isBoundsCheckEnabled() const { return boundsCheckEnabled; }
+        void setBoundsCheckEnabled(bool v) { boundsCheckEnabled = v; }
+
+        void pushLoopContext(llvm::BasicBlock* cont, llvm::BasicBlock* brk) {
+            loopContextStack.push_back({cont, brk});
+        }
+        void popLoopContext() { if (!loopContextStack.empty()) loopContextStack.pop_back(); }
+        bool hasLoopContext() const { return !loopContextStack.empty(); }
+        const LoopContext& currentLoopContext() const { return loopContextStack.back(); }
+
         void processMetadata(CajetaClassPtr structure);
+
+        // Parse the embedded cajeta_runtime bitcode and Linker::linkModules-merge it
+        // into this module. Idempotent — safe to call multiple times; subsequent calls
+        // are no-ops. Returns true on success.
+        bool linkRuntime();
+
+        // Look up a runtime helper by name (must be linked first via linkRuntime()).
+        // Returns nullptr if missing.
+        llvm::Function* getRuntimeFunction(const std::string& name);
 
         void writeIRFileTarget() {
             string targetPath = archiveRoot + archivePath;

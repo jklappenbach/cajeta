@@ -27,7 +27,7 @@ namespace cajeta {
         if (llvmReferenceType == nullptr) {
             vector<llvm::Type*> types;
             types.push_back(llvm::Type::getInt1Ty(*module->getLlvmContext()));
-            types.push_back(llvmType->getInt64PtrTy(*module->getLlvmContext()));
+            types.push_back(llvm::PointerType::get(*module->getLlvmContext(), 0));
             llvmReferenceType = llvm::StructType::create(*module->getLlvmContext(), llvm::ArrayRef<llvm::Type*>(types));
         }
         return llvmReferenceType;
@@ -201,7 +201,7 @@ namespace cajeta {
         }
     }
 
-    void CajetaClass::invokeMethod(string& methodName, vector<ParameterEntry> parameters, bool isConstructor, llvm::Value* thisValue) {
+    llvm::Value* CajetaClass::invokeMethod(string& methodName, vector<ParameterEntry> parameters, bool isConstructor, llvm::Value* thisValue) {
         MethodPtr method;
         vector<CajetaTypePtr> types;
         bool floatingParams = true;
@@ -233,15 +233,21 @@ namespace cajeta {
             } else {
                 method = getClosestMethod(methodName, parameters, canonicalMap);
             }
-        } else {
-            // throw "Method not found.";
         }
+        if (!method) {
+            return nullptr;
+        }
+        // Method::generatePrototype injects `this` as the first parameter for non-static
+        // methods; prepend the instance pointer here so the call's argument list matches.
         vector<llvm::Value*> methodArgs;
+        if (thisValue && method->getModifiers().find(STATIC) == method->getModifiers().end()) {
+            methodArgs.push_back(thisValue);
+        }
         for (int i = 0; i < parameters.size(); i++) {
             methodArgs.push_back(parameters[i].value);
         }
-        // TODO: enable this after fixing bugs
-        // this->pModule->getBuilder()->CreateCall(method->getLlvmFunctionType(), method->getLlvmFunction(), llvm::ArrayRef<llvm::Value*>(methodArgs));
+        return module->getBuilder()->CreateCall(method->getLlvmFunctionType(),
+            method->getLlvmFunction(), llvm::ArrayRef<llvm::Value*>(methodArgs));
     }
 
     /**

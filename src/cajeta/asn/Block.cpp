@@ -8,12 +8,10 @@
 
 namespace cajeta {
     llvm::Value* Block::generateCode(CajetaModulePtr module) {
-        module->getAsnStack().push_back(shared_from_this());
 
         for (auto child: children) {
             child->generateCode(module);
         }
-        module->getAsnStack().pop_back();
         return nullptr;
     }
 }

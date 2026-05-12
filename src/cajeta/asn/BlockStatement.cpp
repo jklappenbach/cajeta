@@ -9,9 +9,7 @@
 
 namespace cajeta {
     llvm::Value* DefaultBlockStatement::generateCode(CajetaModulePtr module) {
-        module->getAsnStack().push_back(shared_from_this());
         llvm::Value* result = (*children.begin())->generateCode(module);
-        module->getAsnStack().pop_back();
         return result;
     }
 }

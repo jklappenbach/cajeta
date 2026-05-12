@@ -23,23 +23,27 @@
 using namespace std;
 
 namespace cajeta {
-    #define PRIMITIVE_FLAG          0b0000000000000001
-    #define NUMBER_FLAG             0b0000000000000010
-    #define INT_FLAG                0b0000000000000100
-    #define FLOAT_FLAG              0b0000000000001000
-    #define SIGNED_FLAG             0b0000000000010000
-    #define STRUCT_FLAG             0b0000000000100000
-    #define POINTER_FLAG            0b0000000001000000
-    #define REFERENCE_FLAG          0b0000000010000000
-    #define USER_DEFINED_FLAG       0b0000000100000000
-    #define BIT_8_FLAG              0b0000001000000000
-    #define BIT_16_FLAG             0b0000010000000000
-    #define BIT_32_FLAG             0b0000100000000000
-    #define BIT_64_FLAG             0b0001000000000000
-    #define BIT_128_FLAG            0b0010000000000000
-    #define BIT_SIZE_MASK           0b0011111000000000
+    #define PRIMITIVE_FLAG          0b00000000000000000001
+    #define NUMBER_FLAG             0b00000000000000000010
+    #define INT_FLAG                0b00000000000000000100
+    #define FLOAT_FLAG              0b00000000000000001000
+    #define SIGNED_FLAG             0b00000000000000010000
+    #define STRUCT_FLAG             0b00000000000000100000
+    #define POINTER_FLAG            0b00000000000001000000
+    #define REFERENCE_FLAG          0b00000000000010000000
+    #define USER_DEFINED_FLAG       0b00000000000100000000
+    #define BIT_4_FLAG              0b00000000001000000000
+    #define BIT_6_FLAG              0b00000000010000000000
+    #define BIT_8_FLAG              0b00000000100000000000
+    #define BIT_16_FLAG             0b00000001000000000000
+    #define BIT_32_FLAG             0b00000010000000000000
+    #define BIT_64_FLAG             0b00000100000000000000
+    #define BIT_128_FLAG            0b00001000000000000000
+    #define BIT_SIZE_MASK           0b00001111111000000000
 
 
+    // Numeric IDs are ordered so sub-byte floats sort below fp16; CajetaType::normalize()
+    // compares the full flag word, so an fp4/fp6/fp8 operand normalizes up to fp16/fp32/etc.
     #define VOID_ID                 0x0000000100000000
     #define BOOLEAN_ID              0x0000000200000000
     #define UINT8_ID                0x0000000300000000
@@ -52,12 +56,19 @@ namespace cajeta {
     #define INT64_ID                0x0000000A00000000
     #define UINT128_ID              0x0000000B00000000
     #define INT128_ID               0x0000000C00000000
-    #define FLOAT16_ID              0x0000000D00000000
-    #define FLOAT32_ID              0x0000000E00000000
-    #define FLOAT64_ID              0x0000000F00000000
-    #define FLOAT128_ID             0x0000001000000000
-    #define POINTER_ID              0x0000001100000000
-    #define STRUCT_ID               0x0000001200000000
+    #define FLOAT4E2M1_ID           0x0000000D00000000
+    #define FLOAT6E2M3_ID           0x0000000E00000000
+    #define FLOAT6E3M2_ID           0x0000000F00000000
+    #define FLOAT8E4M3_ID           0x0000001000000000
+    #define FLOAT8E5M2_ID           0x0000001100000000
+    #define FLOAT8E4M3FNUZ_ID       0x0000001200000000
+    #define FLOAT8E5M2FNUZ_ID       0x0000001300000000
+    #define FLOAT16_ID              0x0000001400000000
+    #define FLOAT32_ID              0x0000001500000000
+    #define FLOAT64_ID              0x0000001600000000
+    #define FLOAT128_ID             0x0000001700000000
+    #define POINTER_ID              0x0000001800000000
+    #define STRUCT_ID               0x0000001900000000
 
     #define VOID_TYPE_ID            (VOID_ID | PRIMITIVE_FLAG)
     #define BOOLEAN_TYPE_ID         (BOOLEAN_ID | INT_FLAG | NUMBER_FLAG | PRIMITIVE_FLAG)
@@ -71,6 +82,13 @@ namespace cajeta {
     #define INT64_TYPE_ID           (INT64_ID | INT_FLAG | SIGNED_FLAG | NUMBER_FLAG | PRIMITIVE_FLAG | BIT_64_FLAG)
     #define UINT128_TYPE_ID         (UINT128_ID | INT_FLAG | NUMBER_FLAG | PRIMITIVE_FLAG | BIT_128_FLAG)
     #define INT128_TYPE_ID          (INT128_ID | INT_FLAG | SIGNED_FLAG | NUMBER_FLAG | PRIMITIVE_FLAG | BIT_128_FLAG)
+    #define FLOAT4E2M1_TYPE_ID      (FLOAT4E2M1_ID | FLOAT_FLAG | SIGNED_FLAG | NUMBER_FLAG | PRIMITIVE_FLAG | BIT_4_FLAG)
+    #define FLOAT6E2M3_TYPE_ID      (FLOAT6E2M3_ID | FLOAT_FLAG | SIGNED_FLAG | NUMBER_FLAG | PRIMITIVE_FLAG | BIT_6_FLAG)
+    #define FLOAT6E3M2_TYPE_ID      (FLOAT6E3M2_ID | FLOAT_FLAG | SIGNED_FLAG | NUMBER_FLAG | PRIMITIVE_FLAG | BIT_6_FLAG)
+    #define FLOAT8E4M3_TYPE_ID      (FLOAT8E4M3_ID | FLOAT_FLAG | SIGNED_FLAG | NUMBER_FLAG | PRIMITIVE_FLAG | BIT_8_FLAG)
+    #define FLOAT8E5M2_TYPE_ID      (FLOAT8E5M2_ID | FLOAT_FLAG | SIGNED_FLAG | NUMBER_FLAG | PRIMITIVE_FLAG | BIT_8_FLAG)
+    #define FLOAT8E4M3FNUZ_TYPE_ID  (FLOAT8E4M3FNUZ_ID | FLOAT_FLAG | SIGNED_FLAG | NUMBER_FLAG | PRIMITIVE_FLAG | BIT_8_FLAG)
+    #define FLOAT8E5M2FNUZ_TYPE_ID  (FLOAT8E5M2FNUZ_ID | FLOAT_FLAG | SIGNED_FLAG | NUMBER_FLAG | PRIMITIVE_FLAG | BIT_8_FLAG)
     #define FLOAT16_TYPE_ID         (FLOAT16_ID | FLOAT_FLAG | SIGNED_FLAG | NUMBER_FLAG | PRIMITIVE_FLAG | BIT_16_FLAG)
     #define FLOAT32_TYPE_ID         (FLOAT32_ID | FLOAT_FLAG | SIGNED_FLAG | NUMBER_FLAG | PRIMITIVE_FLAG | BIT_32_FLAG)
     #define FLOAT64_TYPE_ID         (FLOAT64_ID | FLOAT_FLAG | SIGNED_FLAG | NUMBER_FLAG | PRIMITIVE_FLAG | BIT_64_FLAG)
@@ -197,6 +215,11 @@ class CajetaType : public Modifiable, public Annotatable,
 
         static void init(llvm::LLVMContext& ctxLlvm);
 
+        // Drop all cached llvm::Type* / CajetaTypePtr entries. Called from the Compiler
+        // constructor before init() so a fresh LLVMContext doesn't inherit dangling
+        // pointers from a previous Compiler's now-destroyed context.
+        static void resetGlobals();
+
 
         static llvm::StructType* getOrCreateLlvmType(llvm::LLVMContext* ctx, string name, vector<llvm::Type*> properties);
         static llvm::StructType* getOrCreateLlvmType(llvm::LLVMContext* ctx, string name);
@@ -214,13 +237,19 @@ class CajetaType : public Modifiable, public Annotatable,
             return result;
         }
 
-        static CajetaTypePtr create(QualifiedNamePtr qName, llvm::Type* llvmType, CajetaTypeFlags typeFlags) {
+        static CajetaTypePtr create(QualifiedNamePtr qName, llvm::Type* llvmType, CajetaTypeFlags typeFlags,
+            bool shareLlvmType = true) {
             CajetaTypePtr result = make_shared<CajetaType>(qName, llvmType, typeFlags);
-            typeMap[TypeKey(result->llvmType)] = result;
             result->rank = canonicalMap.size();
             canonicalMap[result->canonical] = result;
-            if (llvmType->getTypeID() != llvm::Type::StructTyID) {
-                llvmTypeIdMap[llvmType->getTypeID()] = result;
+            // Sub-byte/fp8 types alias an integer storage type (i4/i6/i8); registering them in
+            // typeMap or llvmTypeIdMap would clobber the canonical int registration. Pass
+            // shareLlvmType=false in that case.
+            if (shareLlvmType) {
+                typeMap[TypeKey(result->llvmType)] = result;
+                if (llvmType->getTypeID() != llvm::Type::StructTyID) {
+                    llvmTypeIdMap[llvmType->getTypeID()] = result;
+                }
             }
             return result;
         }
