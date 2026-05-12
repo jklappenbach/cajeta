@@ -5,11 +5,13 @@
 #include "DotExpression.h"
 #include "../../compile/CajetaModule.h"
 #include "../../type/CajetaClass.h"
+#include "../../type/CajetaStruct.h"
 #include "../../error/Exception.h"
 #include "Identifier.h"
 
 #include <climits>
 #include <cmath>
+#include <llvm/IR/Intrinsics.h>
 
 namespace cajeta {
     DotExpression::DotExpression(CajetaParser::ExpressionContext* ctx, antlr4::Token* token) : Expression(token) {
@@ -46,6 +48,30 @@ namespace cajeta {
     // or a pointer loaded from the heap; both yield an address we can GEP into. The member
     // index comes from StructureProperty::getOrder() — set when the class registered its
     // properties during signature pass.
+    llvm::Value* DotExpression::maybeBswap(CajetaModulePtr module, llvm::Value* v,
+                                              const ExpressionPtr& receiver) {
+        if (!v || !receiver) return v;
+        auto recvType = receiver->getResolvedType();
+        if (!recvType) return v;
+        auto structType = dynamic_pointer_cast<CajetaStruct>(recvType);
+        if (!structType) return v;
+        StructEndianness e = structType->getEndianness();
+        if (e == StructEndianness::Host) return v;
+        // v1 assumption: host is little-endian (x86_64, aarch64). When we
+        // grow cross-compile support, this picks the host's order from the
+        // target triple instead.
+        const bool hostLittle = true;
+        bool needBswap = (e == StructEndianness::Big && hostLittle)
+                      || (e == StructEndianness::Little && !hostLittle);
+        if (!needBswap) return v;
+        llvm::Type* t = v->getType();
+        if (!t->isIntegerTy()) return v;          // float bswap is post-v1
+        if (t->getIntegerBitWidth() <= 8) return v;  // single byte has no byte order
+        llvm::Function* fn = llvm::Intrinsic::getDeclaration(
+            module->getLlvmModule(), llvm::Intrinsic::bswap, {t});
+        return module->getBuilder()->CreateCall(fn, {v});
+    }
+
     string DotExpression::buildPath(const ExpressionPtr& expr) {
         if (auto id = dynamic_pointer_cast<IdentifierExpression>(expr)) {
             return id->getTextValue();

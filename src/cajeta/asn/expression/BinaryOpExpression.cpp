@@ -59,7 +59,16 @@ namespace cajeta {
             if (auto resolved = ast->getResolvedType()) {
                 if (llvm::Type* loadTy = resolved->getLlvmType()) {
                     if (loadTy != v->getType()) {
-                        return builder->CreateLoad(loadTy, v);
+                        llvm::Value* loaded = builder->CreateLoad(loadTy, v);
+                        // Bswap on read when the receiver struct's endianness
+                        // differs from the host (DotExpression-rooted reads).
+                        if (auto dot = dynamic_pointer_cast<DotExpression>(ast)) {
+                            if (!dot->getChildren().empty()) {
+                                auto recv = dynamic_pointer_cast<Expression>(dot->getChildren()[0]);
+                                loaded = DotExpression::maybeBswap(module, loaded, recv);
+                            }
+                        }
+                        return loaded;
                     }
                 }
             }
@@ -247,6 +256,18 @@ namespace cajeta {
                         }
                     }
                 }
+                // Bswap on store when writing into a struct field whose
+                // struct carries a non-host endianness annotation. Run the
+                // coercion below first (so the value is the right width),
+                // then the bswap converts host order → declared order.
+                bool needsFieldBswap = false;
+                ExpressionPtr dotRecv;
+                if (auto dotLhs = dynamic_pointer_cast<DotExpression>(lhsAst)) {
+                    if (!dotLhs->getChildren().empty()) {
+                        dotRecv = dynamic_pointer_cast<Expression>(dotLhs->getChildren()[0]);
+                        needsFieldBswap = (dotRecv != nullptr);
+                    }
+                }
                 if (slotTy && rhsVal->getType() != slotTy) {
                     if (slotTy->isIntegerTy() && rhsVal->getType()->isIntegerTy()) {
                         rhsVal = builder->CreateIntCast(rhsVal, slotTy, /*isSigned=*/true);
@@ -257,6 +278,12 @@ namespace cajeta {
                     } else if (slotTy->isIntegerTy() && rhsVal->getType()->isFloatingPointTy()) {
                         rhsVal = builder->CreateFPToSI(rhsVal, slotTy);
                     }
+                }
+                // For struct-field writes with non-host endianness, bswap the
+                // (now slot-typed) value so the bytes in the buffer match the
+                // declared wire order.
+                if (needsFieldBswap) {
+                    rhsVal = DotExpression::maybeBswap(module, rhsVal, dotRecv);
                 }
                 builder->CreateStore(rhsVal, lhs);
                 // The expression's value is the assigned r-value (C/Java convention),

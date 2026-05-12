@@ -113,8 +113,8 @@ namespace cajeta {
 
         virtual std::any visitStructDeclaration(CajetaParser::StructDeclarationContext* ctx) override {
             // POD struct declaration. Mirrors visitClassDeclaration's flow but
-            // produces a CajetaStruct (packed layout, no vtable/RTTI, view
-            // constructor synthesized on demand by MethodCallExpression).
+            // produces a CajetaStruct (packed layout by default, no vtable/RTTI,
+            // view constructor synthesized on demand by MethodCallExpression).
             string name = ctx->identifier()->getText();
             string packageAdj;
             for (auto& structure : pModule->getStructureStack()) {
@@ -124,6 +124,33 @@ namespace cajeta {
             QualifiedNamePtr qName = QualifiedName::getOrInsert(
                 name, pModule->getQName()->getPackageName() + packageAdj);
             auto structure = make_shared<CajetaStruct>(pModule, qName);
+
+            // Pull wire-format annotations off the enclosing typeDeclaration.
+            // The grammar parses them as classOrInterfaceModifier* before the
+            // structDeclaration; from here we look upward at the parent and
+            // scan its modifier list. See WireFormats.md § Endianness / §
+            // Alignment for semantics.
+            if (auto* typeDecl = dynamic_cast<CajetaParser::TypeDeclarationContext*>(ctx->parent)) {
+                for (auto* mod : typeDecl->classOrInterfaceModifier()) {
+                    auto* ann = mod->annotation();
+                    if (!ann) continue;
+                    string aName = ann->qualifiedName()
+                        ? ann->qualifiedName()->getText()
+                        : (ann->altAnnotationQualifiedName()
+                            ? ann->altAnnotationQualifiedName()->getText()
+                            : string());
+                    if (aName == "BigEndian") {
+                        structure->setEndianness(StructEndianness::Big);
+                    } else if (aName == "LittleEndian") {
+                        structure->setEndianness(StructEndianness::Little);
+                    } else if (aName == "Align") {
+                        // The argument should be `natural`. We treat any
+                        // Align(...) as a request for natural alignment in v1.
+                        structure->setAlignment(StructAlignment::Natural);
+                    }
+                }
+            }
+
             pModule->getStructureStack().push_back(structure);
             structure->setClassBody(std::any_cast<ClassBodyDeclarationPtr>(visitChildren(ctx)));
             structure->generatePrototype();

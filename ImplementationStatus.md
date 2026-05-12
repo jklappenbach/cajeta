@@ -6,8 +6,8 @@ Tracks rollout progress for the doctrine in `MemoryModel.md` and `WireFormats.md
 
 ## Current status
 
-**Phase:** Sessions 1–4 complete (parser → drop chain → struct views). 320 tests total, all passing. Struct views support: declaration, view construction, field read/write through the view.
-**Current line item:** **Session 5 / Step 5.1** — endianness/alignment annotation processing.
+**Phase:** Sessions 1–5 (core) complete. 325 tests total, all passing. Struct views now honor `@BigEndian` / `@LittleEndian` / `@Align(natural)`.
+**Current line item:** **Session 5 / Step 5.4** — variable-size offset cache + view bounds-check (or Session 6 — migration).
 
 ---
 
@@ -78,14 +78,16 @@ Alias-mutation through path writes (`person.name = #other` invalidating a live b
 
 Auxiliary fixes from this session: `IdentifierExpression`-receiver `getResolvedType()` is null at pre-pass time (locals not in scope yet), so `DotExpression::generateCode` now re-resolves the receiver at codegen; `BinaryOpExpression` ASSIGN and `ReturnStatement` do the same for the receiver lookup when deciding load-/store-type.
 
-### Session 5 — Endianness, alignment, variable-size offsets, view bounds-check  ← **next**
+### Session 5 — Endianness, alignment (variable-size offsets deferred)  🟡 core complete
 
-- [ ] **5.1** Annotation processing: `@BigEndian`, `@LittleEndian`, `@Align(natural)` on struct declarations.  ← **currently here**
-- [ ] **5.2** Endianness intrinsics: emit `bswap` on field access when struct endianness differs from host.
-- [ ] **5.3** `@Align(natural)` codegen: insert padding for natural alignment; use standard aligned loads.
-- [ ] **5.4** Variable-size offset cache: resolve offsets at construction time, cache in view layout.
-- [ ] **5.5** Mutation rule enforcement: reject reassignment of variable-size struct fields at the AST level.
-- [ ] **5.6** Tests: big-endian reads, little-endian reads, aligned layouts, variable-size offsets, rejected mutations.
+- [x] **5.1** Annotation parsing — `visitStructDeclaration` walks the enclosing `typeDeclaration`'s `classOrInterfaceModifier` list, recognizes `@BigEndian`, `@LittleEndian`, and `@Align(...)` (treated as natural alignment in v1), and configures the `CajetaStruct` instance.
+- [x] **5.2** `DotExpression::maybeBswap` emits `llvm.bswap.iN` on integer fields >= 16 bits when struct endianness ≠ host. Hooked into the read path (`loadIfLValue`, `ReturnStatement`) and the write path (`BinaryOpExpression` ASSIGN, after slot-type coercion).
+- [x] **5.3** `CajetaStruct::generatePrototype` passes `isPacked` to `setBody` based on alignment annotation; natural alignment inserts padding.
+- [ ] **5.4** Variable-size offset cache — **deferred**. Needs inline-`String`/array-in-struct codegen plus the construction-time length-prefix walk; significant chunk on its own.
+- [ ] **5.5** Variable-size mutation rule — **deferred** (no variable-size fields yet).
+- [x] **5.6** 5 new tests in `test/parser/EndianAlignTests.cpp`: big-endian round-trip; reading big-endian-written bytes through a host-order view shows them reversed; host-default order works; little-endian on a little-host is a no-op; int64 big-endian round-trip. 325 tests total.
+
+The construction-time bounds check from Session 4 (which depends on byte-count math, currently off because the array header stores element count not byte count) is also deferred — same logical bucket as the variable-size work since it needs proper element-size accounting.
 
 ### Session 6 — Migration
 

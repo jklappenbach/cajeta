@@ -30,17 +30,18 @@ namespace cajeta {
         canonicalMap[qName->getTypeName()] = static_pointer_cast<CajetaType>(shared_from_this());
         typeFlags = STRUCT_FLAG | USER_DEFINED_FLAG;
 
-        // Packed layout — wire formats default to packed (no padding). The
-        // `@Align(natural)` annotation that opts into natural alignment is a
-        // Session 5 item; for now every struct is packed.
+        // Packed by default; @Align(natural) opts into LLVM's natural
+        // alignment (inserts implicit padding between fields). Endianness is
+        // a per-access concern (bswap on load/store) and doesn't affect the
+        // layout itself — same byte offsets regardless.
         vector<llvm::Type*> llvmMembers;
         llvmMembers.reserve(propertyList.size());
         for (auto& property : propertyList) {
             llvmMembers.push_back(property->getType()->getLlvmType());
         }
+        const bool packed = (alignment != StructAlignment::Natural);
         ((llvm::StructType*) llvmType)->setBody(
-            llvm::ArrayRef<llvm::Type*>(llvmMembers),
-            /*isPacked=*/true);
+            llvm::ArrayRef<llvm::Type*>(llvmMembers), packed);
 
         // Structs are not `new`-able: no default constructor, no vtable. The
         // view constructor is synthesized on demand by MethodCallExpression's

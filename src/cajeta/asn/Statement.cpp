@@ -860,7 +860,9 @@ namespace cajeta {
             }
         } else if (auto dot = dynamic_pointer_cast<DotExpression>(expression)) {
             // DotExpression returned a GEP to a field slot — load through it
-            // using the field's declared type.
+            // using the field's declared type. If the receiver struct carries
+            // a non-host endianness annotation, bswap after the load so the
+            // host sees the value in its own byte order.
             if (!dot->getChildren().empty()) {
                 auto recv = dynamic_pointer_cast<Expression>(dot->getChildren()[0]);
                 if (recv) {
@@ -871,6 +873,7 @@ namespace cajeta {
                         if (it != props.end()) {
                             if (llvm::Type* lt = it->second->getType()->getLlvmType()) {
                                 val = builder->CreateLoad(lt, val);
+                                val = DotExpression::maybeBswap(module, val, recv);
                             }
                         }
                     }
