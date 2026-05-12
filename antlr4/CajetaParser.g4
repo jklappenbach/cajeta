@@ -48,7 +48,7 @@ importDeclaration
 
 typeDeclaration
     : classOrInterfaceModifier*
-      (classDeclaration | enumDeclaration | interfaceDeclaration | annotationTypeDeclaration)
+      (classDeclaration | structDeclaration | enumDeclaration | interfaceDeclaration | annotationTypeDeclaration)
     | ';'
     ;
 
@@ -83,6 +83,14 @@ classDeclaration
       (EXTENDS typeList)?
       (IMPLEMENTS typeList)?
       (PERMITS typeList)? // Java17
+      classBody
+    ;
+
+// POD aggregate with declared layout. See WireFormats.md for layout, endianness,
+// annotation semantics. The body reuses classBody for fields/methods, but the
+// type system enforces no-vtable / no-inheritance / declared-layout semantics.
+structDeclaration
+    : STRUCT identifier typeParameters?
       classBody
     ;
 
@@ -199,8 +207,11 @@ methodBody
     | ';'
     ;
 
+// Return type marker: an optional REFERENCE ('#') prefix on the return type
+// declares that the function transfers ownership to its caller. See
+// MemoryModel.md § Borrow / transfer rules and § Function signatures.
 typeTypeOrVoid
-    : typeType
+    : REFERENCE? typeType
     | VOID
     ;
 
@@ -322,12 +333,15 @@ formalParameterList
     | lastFormalParameter
     ;
 
+// Optional REFERENCE ('#') prefix on the parameter type declares that this
+// parameter takes ownership of its argument. See MemoryModel.md § Borrow /
+// transfer rules.
 formalParameter
-    : variableModifier* typeType variableDeclaratorId (ASSIGN expression)?
+    : variableModifier* REFERENCE? typeType variableDeclaratorId (ASSIGN expression)?
     ;
 
 lastFormalParameter
-    : variableModifier* typeType annotation* '...' variableDeclaratorId
+    : variableModifier* REFERENCE? typeType annotation* '...' variableDeclaratorId
     ;
 
 // local variable type inference
@@ -590,6 +604,10 @@ expression
     | expression postfix=('++' | '--')
     | prefix=('+'|'-'|'++'|'--') expression
     | prefix=('~'|'!') expression
+    // Move/transfer operator: '#expr' transfers ownership of expr to the
+    // receiving site (assignment LHS, argument slot, return slot). See
+    // MemoryModel.md for full semantics.
+    | REFERENCE expression
     | expression bop=('*'|'/'|'%') expression
     | expression bop=('+'|'-') expression
     | expression ('<' '<' | '>' '>' '>' | '>' '>') expression

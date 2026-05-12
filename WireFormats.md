@@ -61,10 +61,10 @@ Sub-byte float types (`float8e4m3`, `float4e2m1`, etc.) lay out as 1 byte.
 
 Default packed layout means fields may be unaligned (an `int32` starting at offset 1, for example). The compiler emits unaligned-access intrinsics by default for portability — essentially free on x86, slight perf cost on ARM, always correct.
 
-**Opt-in natural alignment** via `@align(natural)`:
+**Opt-in natural alignment** via `@Align(natural)`:
 
 ```
-@align(natural)
+@Align(natural)
 struct LocalRecord { ... }
 ```
 
@@ -76,16 +76,16 @@ Per-struct annotation only; field-level alignment overrides are not supported in
 
 **Default: host order.** Multi-byte primitives are read/written in the platform's native endianness — no byte-swap on access.
 
-**Opt-in big-endian** via `@bigendian`:
+**Opt-in big-endian** via `@BigEndian`:
 
 ```
-@bigendian
+@BigEndian
 struct RequestHeader { ... }
 ```
 
 All multi-byte primitive fields are byte-swapped on access. The compiler emits `bswap` intrinsics when the struct's endianness differs from the host's.
 
-`@littleendian` is also accepted (no-op on little-endian hosts, byte-swaps on big-endian hosts).
+`@LittleEndian` is also accepted (no-op on little-endian hosts, byte-swaps on big-endian hosts).
 
 Endianness is per-struct, not per-field.
 
@@ -103,6 +103,67 @@ Variable-size fields can appear anywhere in the struct. Fields after a variable-
 **Optimization:** if all variable-size fields happen to be at the end, every fixed field uses a compile-time-constant offset. The compiler detects this layout and emits the fast path automatically.
 
 Arrays of variable-size elements (e.g. `String[]`) are not supported in v1 as inline-struct fields. Heap-allocated arrays remain available.
+
+---
+
+## Nested structs
+
+A struct field may itself be of struct type. Nested structs lay out **inline** — the inner struct's bytes appear directly within the outer struct, at the outer's field offset. There is no pointer or heap indirection.
+
+```
+struct Point {
+    int32 x;
+    int32 y;
+}
+
+struct Line {
+    Point start;     // bytes 0..8
+    Point end;       // bytes 8..16
+}
+```
+
+Total size of `Line` is 16 bytes — exactly the sum of its nested layouts.
+
+### Fixed-size inner
+
+If every field of the inner struct is fixed-size, the inner contributes a constant block to the outer's layout. All offsets in the outer remain compile-time-constant.
+
+### Variable-size inner
+
+If the inner struct contains a `String`, an array, or another variable-size struct, the inner is itself variable-size. The outer treats it like any other variable-size field: subsequent fields' offsets are resolved at view-construction time. Length-prefix validation recurses — the view constructor sweeps every length-prefix at every nesting level.
+
+### Endianness inheritance
+
+A nested struct **inherits the outer struct's endianness** unless it has its own `@BigEndian` / `@LittleEndian` annotation. The intent of a `@BigEndian` outer is that every multi-byte primitive in the record is big-endian, regardless of how fields are grouped into nested types.
+
+To opt a sub-region into a different byte order, annotate the nested struct's declaration. Mixed-endian records are rare but supported.
+
+### Alignment inheritance
+
+A nested struct **inherits the outer struct's alignment** unless it has its own `@Align(...)` annotation. Packed outer → packed inner. `@Align(natural)` outer → naturally aligned inner.
+
+### Field access through nesting
+
+`outer.inner.field` is a borrow rooted at `outer`'s buffer per the field-path rule (see `MemoryModel.md` § Path-based borrow tracking). For fixed-size inners the chained offset is constant; for variable-size inners the cached offset table from view construction is used.
+
+### Mutation rules
+
+Mutating a leaf field writes through to the buffer:
+- `line.start.x = 5` — 4-byte write at `line.start.x`'s computed offset.
+- `line.start = newPoint` — **fixed-size inner only**, byte-copies the inner's bytes into the slot. No `#` required for fixed-size structs (they are value-type fields, like primitives).
+- `line.start = newPoint` where `Line.start` is **variable-size** — **static error** (size mismatch would shift subsequent fields). Use leaf-field writes or build a new buffer.
+
+### Recursive types forbidden
+
+A struct may not contain itself, directly or transitively. The compiler detects this during layout and rejects the declaration.
+
+```
+struct Bad {
+    Bad child;     // STATIC ERROR — infinite size
+}
+```
+
+Recursive shapes need indirection (a pointer/reference type), which is not in v1.
 
 ---
 
@@ -214,11 +275,11 @@ No automatic backwards-compatibility — that's a protocol design problem, not a
 
 ### Unaligned access
 
-x86 handles unaligned loads/stores transparently with negligible cost. ARMv7+ allows them for most types but at a small perf cost; pre-ARMv6 traps. The compiler emits unaligned-access intrinsics by default for portability. If a struct uses `@align(natural)`, accesses are aligned and use standard load/store.
+x86 handles unaligned loads/stores transparently with negligible cost. ARMv7+ allows them for most types but at a small perf cost; pre-ARMv6 traps. The compiler emits unaligned-access intrinsics by default for portability. If a struct uses `@Align(natural)`, accesses are aligned and use standard load/store.
 
 ### Byte order
 
-Network protocols are typically big-endian (network byte order). Use `@bigendian` on the wire struct. Most file formats are little-endian; use `@littleendian` (or rely on host-order default when targeting only little-endian hosts).
+Network protocols are typically big-endian (network byte order). Use `@BigEndian` on the wire struct. Most file formats are little-endian; use `@LittleEndian` (or rely on host-order default when targeting only little-endian hosts).
 
 ### Wide primitives
 
@@ -243,16 +304,18 @@ Network protocols are typically big-endian (network byte order). Use `@bigendian
 | Mutating the backing buffer while view is live     | Memory model § alias-mutation rule |
 | Reassigning a variable-size field through a view   | Wire-format mutation rule          |
 | Reading/writing past the end of the buffer         | Construction-time bounds + length-prefix validation (runtime, once per view) |
+| Recursive struct definition (direct or transitive) | Layout-cycle detection during type registration |
+| Reassigning a variable-size nested-struct field    | Wire-format mutation rule (same as variable-size leaf) |
 
 ---
 
 ## Implementation outline (for the language implementer)
 
-1. **Parser:** recognize `struct` keyword as distinct from `class`. Accept `@align(...)`, `@bigendian`, `@littleendian` annotations on struct declarations.
-2. **Type system:** add `CajetaStruct` (sibling to `CajetaClass`) with explicit layout computation. Compute fixed-prefix size; identify variable-size fields; pre-compute the constant-offset fast path when applicable.
+1. **Parser:** recognize `struct` keyword as distinct from `class`. Accept `@Align(...)`, `@BigEndian`, `@LittleEndian` annotations on struct declarations.
+2. **Type system:** add `CajetaStruct` (sibling to `CajetaClass`) with explicit layout computation. Compute fixed-prefix size; identify variable-size fields; pre-compute the constant-offset fast path when applicable. Recurse into nested struct fields, inheriting endianness/alignment from the outer unless overridden. Detect layout cycles (recursive struct definitions) during this pass and reject.
 3. **Constructor synthesis:** for each `struct`, emit a function `MyStruct(byte[])` returning a borrow view, plus `.from(...)` and `.view(...)` aliases. Emit the size-check and length-prefix-validation sweep.
 4. **Field accessor codegen:** for each field, emit a getter and setter that performs the offset computation, byte-swap if needed, and the load/store.
-5. **Variable-size offset cache:** at view-construction time, walk variable-size fields and cache resolved offsets in the view's internal layout. For all-fixed structs, this step is a no-op.
+5. **Variable-size offset cache:** at view-construction time, walk variable-size fields and cache resolved offsets in the view's internal layout. Recurse into nested variable-size structs so every length-prefix at every nesting level is validated and offsets are resolved before the view is returned. For all-fixed structs (including those with all-fixed nested structs), this step is a no-op.
 6. **Borrow checker integration:** treat view construction as a borrow of the byte array; treat each field access as a path-based borrow. Reject struct views whose backing buffer goes out of scope before the view does.
 7. **Mutation rule enforcement:** at the AST level, reject reassignment of variable-size struct fields.
 8. **Endianness intrinsics:** emit `bswap` only when struct endianness differs from host endianness (resolved at compile time per target triple).
@@ -279,7 +342,7 @@ println(p.r + ", " + p.g + ", " + p.b);
 ### Network protocol header (big-endian)
 
 ```
-@bigendian
+@BigEndian
 struct RpcHeader {
     int32 magic;
     int16 version;
@@ -310,3 +373,26 @@ println(u.username + " has " + u.permissions.size() + " permissions");
 ```
 
 The compiler resolves offsets for `displayName` and `permissions` at view-construction by reading the preceding length-prefixes once.
+
+### Nested structs
+
+```
+@BigEndian
+struct Point {
+    int32 x;
+    int32 y;
+}
+
+@BigEndian
+struct BoundingBox {
+    Point topLeft;       // bytes 0..8   (inherits @BigEndian)
+    Point bottomRight;   // bytes 8..16
+    int32 padding;       // bytes 16..20
+}
+
+byte[] frame = readBox();
+BoundingBox box = BoundingBox(frame);
+println(box.topLeft.x + ", " + box.bottomRight.y);
+```
+
+Nested structs inherit endianness and alignment from the outer unless they carry their own annotation. The inner `Point` doesn't need its own `@BigEndian` here — declaring it explicitly is allowed (and required if a sub-region's byte order needs to differ).

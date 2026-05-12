@@ -110,6 +110,12 @@ namespace cajeta {
             return visitChildren(ctx);
         }
 
+        virtual std::any visitStructDeclaration(CajetaParser::StructDeclarationContext* ctx) override {
+            // Struct codegen is implemented in a later rollout step; for now the
+            // visitor just walks the body so any errors surface in the usual way.
+            return visitChildren(ctx);
+        }
+
         virtual std::any visitEnumDeclaration(CajetaParser::EnumDeclarationContext* ctx) override {
             return visitChildren(ctx);
         }

@@ -6,8 +6,8 @@ Tracks rollout progress for the doctrine in `MemoryModel.md` and `WireFormats.md
 
 ## Current status
 
-**Phase:** Pre-implementation. Design complete, specs written, no language code changes yet.
-**Current line item:** **Session 1 / Step 1.1** — update annotation casing in docs to TypeCamelCase.
+**Phase:** Session 1 complete (parser foundation). Existing tests still pass + 17 new parse tests pass. 285 tests total.
+**Current line item:** **Session 2 / Step 2.1** — extend `Expression` AST with `moveFlag`.
 
 ---
 
@@ -27,18 +27,18 @@ Tracks rollout progress for the doctrine in `MemoryModel.md` and `WireFormats.md
 
 ## Plan
 
-### Session 1 — Parser foundation  ← **in progress**
+### Session 1 — Parser foundation  ✅ complete
 
-- [ ] **1.1** Update annotation casing in docs to TypeCamelCase (`@BigEndian`, `@LittleEndian`, `@Align`).  ← **currently here**
-- [ ] **1.2** Lexer: add `#` token; add `struct` keyword.
-- [ ] **1.3** Parser grammar: `#` in value-prefix position; `#` in parameter type position; `#` in return type position; struct declaration; `@BigEndian` / `@LittleEndian` / `@Align` annotation recognition on struct declarations.
-- [ ] **1.4** Regenerate ANTLR parser.
-- [ ] **1.5** Verify existing 268 tests still pass (additions must be backward compatible).
-- [ ] **1.6** Parse-level tests for new syntax: valid samples (parses) + invalid samples (parser rejects).
+- [x] **1.1** Update annotation casing in docs to TypeCamelCase (`@BigEndian`, `@LittleEndian`, `@Align`).
+- [x] **1.2** Lexer: add `#` token (already `REFERENCE`); add `struct` keyword (`STRUCT`).
+- [x] **1.3** Parser grammar: `#` as expression-prefix, optional `#` on `formalParameter` typeType and `typeTypeOrVoid`; new `structDeclaration` rule; `@BigEndian` / `@LittleEndian` / `@Align(natural)` accepted via the existing `annotation` rule.
+- [x] **1.4** Regenerate ANTLR parser — added `visitStructDeclaration` stub in `CajetaLlvmVisitor` to keep it concrete.
+- [x] **1.5** Existing 268 tests pass — backward-compatible.
+- [x] **1.6** 17 new parse-level tests in `test/parser/Session1ParseTests.cpp`: valid samples (parses) + invalid samples (parser rejects).
 
-### Session 2 — AST + basic codegen
+### Session 2 — AST + basic codegen  ← **next**
 
-- [ ] **2.1** Extend `Expression` with `moveFlag`.
+- [ ] **2.1** Extend `Expression` with `moveFlag`.  ← **currently here**
 - [ ] **2.2** Extend type signatures with `transferred` bit on parameter and return types.
 - [ ] **2.3** Add `CajetaStruct` type node (sibling to `CajetaClass`).
 - [ ] **2.4** Codegen: mark `#x` as moved in the scope; emit basic drops at scope end (no watermark yet).

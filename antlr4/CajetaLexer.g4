@@ -88,6 +88,7 @@ PUBLIC:             'public';
 RETURN:             'return';
 STATIC:             'static';
 STRICTFP:           'strictfp';
+STRUCT:             'struct';
 STRUCTURE:          'structure';
 SUPER:              'super';
 SWITCH:             'switch';
