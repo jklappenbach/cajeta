@@ -51,12 +51,26 @@ namespace cajeta {
         StructAlignment alignment = StructAlignment::Packed;
     public:
         CajetaStruct(CajetaModulePtr module) : CajetaClass(module) { }
+        CajetaStruct(CajetaModulePtr module, QualifiedNamePtr qName)
+            : CajetaClass(module, qName, {}, {}) { }
 
         StructEndianness getEndianness() const { return endianness; }
         void setEndianness(StructEndianness e) { endianness = e; }
 
         StructAlignment getAlignment() const { return alignment; }
         void setAlignment(StructAlignment a) { alignment = a; }
+
+        // Override: packed layout (no padding by default), no default
+        // constructor, no vtable/RTTI. Register the struct itself in the
+        // canonical type map so name lookups return this instance (not a
+        // generic placeholder).
+        void generatePrototype() override;
+
+        // Byte size of the struct's fixed prefix (sum of fixed-size fields,
+        // with packed or natural alignment depending on this struct's
+        // annotation). Variable-size fields aren't counted here — their
+        // contribution is computed at view-construction time.
+        uint64_t getFixedSize() const;
     };
 
 } // namespace cajeta

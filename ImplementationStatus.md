@@ -6,8 +6,8 @@ Tracks rollout progress for the doctrine in `MemoryModel.md` and `WireFormats.md
 
 ## Current status
 
-**Phase:** Sessions 1–3 complete (parser, AST, borrow checks, drop chain). 314 tests total, all passing.
-**Current line item:** **Session 4 / Step 4.1** — `CajetaStruct` layout computation (fixed-prefix size, variable-size detection).
+**Phase:** Sessions 1–4 complete (parser → drop chain → struct views). 320 tests total, all passing. Struct views support: declaration, view construction, field read/write through the view.
+**Current line item:** **Session 5 / Step 5.1** — endianness/alignment annotation processing.
 
 ---
 
@@ -67,20 +67,20 @@ New language-internal intrinsics: `Cajeta.dropCount()` / `Cajeta.dropCountReset(
 
 Alias-mutation through path writes (`person.name = #other` invalidating a live borrow into `person.name`) is deferred — needs a "live borrow" tracking pass that knows which paths each named borrow inhabits. Today's coverage catches every case where a move appears textually before the conflicting read.
 
-### Session 4 — Struct view layout + constructor  ← **next**
+### Session 4 — Struct view layout + constructor  🟡 mostly complete
 
-- [ ] **4.1** Type system: `CajetaStruct` with explicit layout computation (fixed-prefix size, variable-size field identification, all-fixed fast-path detection).
-- [ ] **4.2** Constructor synthesis: `MyStruct(byte[])` returning a borrow-view; plus `.from(...)` and `.view(...)` aliases.
-- [ ] **4.3** Construction-time bounds check (`data.size() >= minSize`).
-- [ ] **4.4** Construction-time length-prefix validation (single sweep over variable-size fields).
-- [ ] **4.5** Throw on construction failure.
-- [ ] **4.6** Field accessor codegen: load/store at the computed offset.
-- [ ] **4.7** Borrow checker integration: view = borrow of buffer; field access = path-based borrow.
-- [ ] **4.8** Tests: valid view construction, valid field reads, valid field writes, oversize/undersize buffer rejection.
+- [x] **4.1** `CajetaStruct::generatePrototype` builds a packed LLVM struct, registers under both canonical and short name. `getFixedSize` returns the byte count.
+- [x] **4.2** View constructor synthesis via MethodCallExpression intercept: when the call site is `MyStruct(byte[])` with the matching struct name, emit the GEP past the array header and return the typed data pointer.
+- [ ] **4.3–4.5** Construction-time bounds check — **deferred to Session 5**. Current intercept assumes the buffer is large enough; proper checking needs element-size accounting (the array header stores element count, not byte count).
+- [x] **4.6** Field accessor codegen: `DotExpression` loads through alloca'd struct views and emits `CreateStructGEP` for the field. Pre-existing class field path was unused/untested; this session made it work for structs. ASSIGN and ReturnStatement both load-through DotExpression GEPs at the field's declared type, and the rhs is coerced to the field's slot type so wide-default integer literals (i64) write the right number of bytes.
+- [x] **4.7** Borrow checker integration falls out of the existing path-based machinery: `h.version` is a DotExpression and the path tracker already handles it.
+- [x] **4.8** 6 new tests in `test/parser/StructViewTests.cpp`: struct declaration, view construction, single-field write + read, multi-field independence, view-buffer aliasing, fresh-buffer zero reads. 320 tests total.
 
-### Session 5 — Endianness, alignment, variable-size offsets
+Auxiliary fixes from this session: `IdentifierExpression`-receiver `getResolvedType()` is null at pre-pass time (locals not in scope yet), so `DotExpression::generateCode` now re-resolves the receiver at codegen; `BinaryOpExpression` ASSIGN and `ReturnStatement` do the same for the receiver lookup when deciding load-/store-type.
 
-- [ ] **5.1** Annotation processing: `@BigEndian`, `@LittleEndian`, `@Align(natural)` on struct declarations.
+### Session 5 — Endianness, alignment, variable-size offsets, view bounds-check  ← **next**
+
+- [ ] **5.1** Annotation processing: `@BigEndian`, `@LittleEndian`, `@Align(natural)` on struct declarations.  ← **currently here**
 - [ ] **5.2** Endianness intrinsics: emit `bswap` on field access when struct endianness differs from host.
 - [ ] **5.3** `@Align(natural)` codegen: insert padding for natural alignment; use standard aligned loads.
 - [ ] **5.4** Variable-size offset cache: resolve offsets at construction time, cache in view layout.

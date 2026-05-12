@@ -123,6 +123,13 @@ namespace cajeta {
         if (!lhs) {
             return nullptr;
         }
+        // Re-run resolveTypes if the lhs wasn't resolved during the pre-pass —
+        // local variables aren't added to the scope until their declarations
+        // run at codegen time, so identifiers referenced later may have a
+        // null resolvedType at resolve time.
+        if (!lhs->getResolvedType()) {
+            lhs->resolveTypes(module);
+        }
         auto klass = dynamic_pointer_cast<CajetaClass>(lhs->getResolvedType());
         if (!klass) {
             return nullptr;
@@ -131,7 +138,18 @@ namespace cajeta {
         if (it == klass->getProperties().end()) {
             return nullptr;
         }
+        // If the receiver is an l-value (an alloca that holds a pointer to the
+        // object), load through it first. The struct/class instance lives at
+        // the address the alloca stores; GEP'ing the alloca directly would
+        // walk the slot, not the object.
+        if (auto* a = llvm::dyn_cast<llvm::AllocaInst>(base)) {
+            base = module->getBuilder()->CreateLoad(a->getAllocatedType(), a);
+        }
         StructurePropertyPtr property = it->second;
+        // Set our own resolvedType so callers can load-through with the right
+        // element type. The pre-pass resolveTypes can't always determine this
+        // (locals aren't in scope until their declarations run at codegen).
+        resolvedType = property->getType();
         return module->getBuilder()->CreateStructGEP(klass->getLlvmType(), base,
             property->getOrder(), identifier);
     }

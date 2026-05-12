@@ -5,6 +5,7 @@
 #include "Statement.h"
 #include "expression/Expression.h"
 #include "expression/Identifier.h"
+#include "expression/DotExpression.h"
 #include "../compile/CajetaModule.h"
 #include "../field/HeapField.h"
 #include "../field/StackField.h"
@@ -837,8 +838,8 @@ namespace cajeta {
             return builder->CreateRetVoid();
         }
         llvm::Value* val = expression->generateCode(module);
-        // Load if the expression returned an l-value (alloca or array-slot GEP) — return
-        // wants a value, not an address.
+        // Load if the expression returned an l-value (alloca, array-slot GEP, or
+        // struct/class field GEP) — return wants a value, not an address.
         if (auto* a = llvm::dyn_cast<llvm::AllocaInst>(val)) {
             val = builder->CreateLoad(a->getAllocatedType(), a);
         } else if (auto idx = dynamic_pointer_cast<ArrayIndexExpression>(expression)) {
@@ -855,6 +856,24 @@ namespace cajeta {
                 }
                 if (loadTy) {
                     val = builder->CreateLoad(loadTy, val);
+                }
+            }
+        } else if (auto dot = dynamic_pointer_cast<DotExpression>(expression)) {
+            // DotExpression returned a GEP to a field slot — load through it
+            // using the field's declared type.
+            if (!dot->getChildren().empty()) {
+                auto recv = dynamic_pointer_cast<Expression>(dot->getChildren()[0]);
+                if (recv) {
+                    if (!recv->getResolvedType()) recv->resolveTypes(module);
+                    if (auto klass = dynamic_pointer_cast<CajetaClass>(recv->getResolvedType())) {
+                        auto& props = klass->getProperties();
+                        auto it = props.find(dot->getIdentifier());
+                        if (it != props.end()) {
+                            if (llvm::Type* lt = it->second->getType()->getLlvmType()) {
+                                val = builder->CreateLoad(lt, val);
+                            }
+                        }
+                    }
                 }
             }
         }

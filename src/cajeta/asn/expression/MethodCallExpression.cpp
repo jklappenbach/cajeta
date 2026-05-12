@@ -6,6 +6,7 @@
 #include "cajeta/compile/CajetaModule.h"
 #include "cajeta/type/CajetaArray.h"
 #include "cajeta/type/CajetaClass.h"
+#include "cajeta/type/CajetaStruct.h"
 #include "cajeta/method/Method.h"
 #include "Expression.h"
 #include "DotExpression.h"
@@ -62,6 +63,42 @@ namespace cajeta {
     llvm::Value* MethodCallExpression::generateCode(CajetaModulePtr module) {
         auto* builder = module->getBuilder();
         llvm::LLVMContext& llvmCtx = *module->getLlvmContext();
+
+        // ----- Struct view construction: `MyStruct(byte[] bytes)` -----
+        // Synthesizes the view: bounds-check (data.size() >= sizeof(struct))
+        // then GEP into the array header's data region and return a typed
+        // pointer. The struct's "instance" is just that pointer; field
+        // accesses GEP off it.
+        //
+        // Matches when the call is bare (no receiver) AND the method name is
+        // the canonical name of a registered CajetaStruct.
+        if (children.empty() && parameters.size() == 1) {
+            auto structType = dynamic_pointer_cast<CajetaStruct>(
+                CajetaType::of(methodCallName));
+            if (structType) {
+                // Evaluate the byte[] argument; load through if it's an alloca.
+                llvm::Value* bytesPtr = parameters[0].expression->generateCode(module);
+                if (auto* a = llvm::dyn_cast_or_null<llvm::AllocaInst>(bytesPtr)) {
+                    bytesPtr = builder->CreateLoad(a->getAllocatedType(), a);
+                }
+                if (!bytesPtr) return nullptr;
+
+                llvm::Type* i64Ty = llvm::Type::getInt64Ty(llvmCtx);
+                llvm::Type* i8Ty = llvm::Type::getInt8Ty(llvmCtx);
+                (void) structType;  // referenced for documentation; v1 doesn't bounds-check.
+
+                // v1: no bounds check — variable-size element handling and the
+                // proper count*elem_size accounting (we currently read count,
+                // not bytes, from the array header) land in Session 5. The
+                // caller is trusted to pass a sufficiently-sized buffer.
+                //
+                // GEP past the array header's i64 size field to reach data[0].
+                llvm::Value* dataPtr = builder->CreateInBoundsGEP(
+                    i8Ty, bytesPtr,
+                    llvm::ConstantInt::get(i64Ty, 8), "view_data_ptr");
+                return dataPtr;
+            }
+        }
 
         // ----- System.<stream>.<method>(...) intrinsic -----
         if (!children.empty()) {

@@ -7,6 +7,7 @@
 #include "antlr4-runtime.h"
 #include "CajetaParserVisitor.h"
 #include "cajeta/type/CajetaClass.h"
+#include "cajeta/type/CajetaStruct.h"
 #include <any>
 #include "cajeta/asn/Block.h"
 #include "cajeta/asn/Statement.h"
@@ -111,9 +112,24 @@ namespace cajeta {
         }
 
         virtual std::any visitStructDeclaration(CajetaParser::StructDeclarationContext* ctx) override {
-            // Struct codegen is implemented in a later rollout step; for now the
-            // visitor just walks the body so any errors surface in the usual way.
-            return visitChildren(ctx);
+            // POD struct declaration. Mirrors visitClassDeclaration's flow but
+            // produces a CajetaStruct (packed layout, no vtable/RTTI, view
+            // constructor synthesized on demand by MethodCallExpression).
+            string name = ctx->identifier()->getText();
+            string packageAdj;
+            for (auto& structure : pModule->getStructureStack()) {
+                packageAdj.append(".");
+                packageAdj.append(structure->getQName()->getTypeName());
+            }
+            QualifiedNamePtr qName = QualifiedName::getOrInsert(
+                name, pModule->getQName()->getPackageName() + packageAdj);
+            auto structure = make_shared<CajetaStruct>(pModule, qName);
+            pModule->getStructureStack().push_back(structure);
+            structure->setClassBody(std::any_cast<ClassBodyDeclarationPtr>(visitChildren(ctx)));
+            structure->generatePrototype();
+            pModule->getStructureStack().pop_back();
+            CajetaModule::getStructureToModule()[structure->getQName()->toCanonical()] = pModule;
+            return static_pointer_cast<CajetaClass>(structure);
         }
 
         virtual std::any visitEnumDeclaration(CajetaParser::EnumDeclarationContext* ctx) override {

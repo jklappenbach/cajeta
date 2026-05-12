@@ -8,6 +8,7 @@
 #include "../../type/CajetaClass.h"
 #include "../../type/CajetaArray.h"
 #include "Expression.h"
+#include "DotExpression.h"
 
 namespace cajeta {
 
@@ -226,6 +227,23 @@ namespace cajeta {
                             slotTy = llvm::PointerType::get(*module->getLlvmContext(), 0);
                         } else if (llvm::Type* lt = elemType->getLlvmType()) {
                             slotTy = lt;
+                        }
+                    }
+                } else if (auto dotLhs = dynamic_pointer_cast<DotExpression>(lhsAst)) {
+                    // `obj.field = value` — slot type is the field's declared
+                    // type. Walk down the chain to find the field on the
+                    // receiver's class/struct.
+                    if (!dotLhs->getChildren().empty()) {
+                        auto recv = dynamic_pointer_cast<Expression>(dotLhs->getChildren()[0]);
+                        if (recv) {
+                            if (!recv->getResolvedType()) recv->resolveTypes(module);
+                            if (auto klass = dynamic_pointer_cast<CajetaClass>(recv->getResolvedType())) {
+                                auto& props = klass->getProperties();
+                                auto it = props.find(dotLhs->getIdentifier());
+                                if (it != props.end()) {
+                                    slotTy = it->second->getType()->getLlvmType();
+                                }
+                            }
                         }
                     }
                 }
