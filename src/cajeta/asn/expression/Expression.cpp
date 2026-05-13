@@ -982,11 +982,13 @@ namespace cajeta {
         for (size_t i = 0; i < paramNames.size(); ++i) {
             // Bind each LLVM arg into an alloca-backed ParameterField so
             // identifier lookups inside the body load through it (same
-            // pattern as method params).
+            // pattern as method params). LLVM arg 0 is the implicit
+            // `captures` pointer (L2 ABI), so user param i lives at LLVM
+            // arg i + 1.
             auto formal = std::make_shared<FormalParameter>(
                 paramNames[i], paramTypes[i]);
             auto field = std::make_shared<ParameterField>(
-                module, formal, fn, (int) i);
+                module, formal, fn, (int) i + 1);
             // Force the alloca + store now so getOrCreateAllocation later
             // returns the populated slot.
             field->getOrCreateAllocation();
@@ -1033,9 +1035,37 @@ namespace cajeta {
         module->setCurrentMethod(outerMethod);
         outerBuilder->SetInsertPoint(outerInsertBlock);
 
-        // The lambda expression evaluates to the function's address — a
-        // pointer-typed value that can be stored in a CajetaFunctionType slot.
-        return fn;
+        // L2-1 ABI: materialize a closure record `{ ptr fn, ptr captures }`
+        // on the outer stack. A function-typed variable's slot (still a
+        // single `ptr`) holds the address of this record; the call site
+        // loads fn_ptr and captures_ptr from it and indirect-dispatches.
+        // For non-capturing lambdas (L2-1), captures_ptr is null and the
+        // synthesized function ignores its first arg.
+        auto& llvmCtx = *module->getLlvmContext();
+        llvm::PointerType* ptrTy = llvm::PointerType::get(llvmCtx, 0);
+        llvm::StructType* closureTy = llvm::StructType::get(
+            llvmCtx, {(llvm::Type*) ptrTy, (llvm::Type*) ptrTy});
+        // Place the alloca in the outer function's entry block so the slot
+        // is hoisted out of any inner loops (same convention as the rest of
+        // the codegen).
+        llvm::Function* outerFn = outerInsertBlock
+            ? outerInsertBlock->getParent() : nullptr;
+        llvm::Value* closure;
+        if (outerFn) {
+            llvm::IRBuilder<> entry(&outerFn->getEntryBlock(),
+                outerFn->getEntryBlock().getFirstInsertionPt());
+            closure = entry.CreateAlloca(closureTy, nullptr, "closure");
+        } else {
+            closure = outerBuilder->CreateAlloca(closureTy, nullptr, "closure");
+        }
+        llvm::Value* fnSlot = outerBuilder->CreateStructGEP(
+            closureTy, closure, 0, "closure.fn");
+        outerBuilder->CreateStore(fn, fnSlot);
+        llvm::Value* capSlot = outerBuilder->CreateStructGEP(
+            closureTy, closure, 1, "closure.captures");
+        outerBuilder->CreateStore(
+            llvm::ConstantPointerNull::get(ptrTy), capSlot);
+        return closure;
     }
 
     void InstanceOfExpression::resolveTypes(CajetaModulePtr module) {

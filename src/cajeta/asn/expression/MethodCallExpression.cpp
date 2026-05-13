@@ -67,31 +67,49 @@ namespace cajeta {
 
         // ----- Indirect call through a function-typed local -----
         // `add(3, 4)` where `add` was declared as `(int32, int32) -> int32`.
-        // The local's slot holds a function pointer (a CajetaFunctionType
-        // value at the language level); load it and emit an indirect call.
-        // Matches when the call is bare (no receiver) AND a scope lookup of
-        // methodCallName yields a function-typed field. See cajeta-docs/Lambdas.md.
+        // The local's slot holds a `ptr` to a closure record
+        // `{ ptr fn, ptr captures }` (L2 ABI). Load the closure, extract
+        // both fields, and indirect-dispatch with captures prepended to the
+        // user args. Matches when the call is bare (no receiver) AND a
+        // scope lookup of methodCallName yields a function-typed field.
+        // See cajeta-docs/Lambdas.md.
         if (children.empty() && !module->getScopeStack().isEmpty()) {
             auto scope = module->getScopeStack().peek();
             FieldPtr field = scope ? scope->getField(methodCallName) : nullptr;
             if (field) {
                 auto fnType = dynamic_pointer_cast<CajetaFunctionType>(field->getType());
                 if (fnType) {
+                    llvm::Type* ptrTy = llvm::PointerType::get(llvmCtx, 0);
+                    llvm::StructType* closureTy = llvm::StructType::get(
+                        llvmCtx, {ptrTy, ptrTy});
                     llvm::AllocaInst* slot = field->getOrCreateAllocation();
+                    llvm::Value* closurePtr = builder->CreateLoad(
+                        ptrTy, slot, "closure_ptr");
+                    llvm::Value* fnSlot = builder->CreateStructGEP(
+                        closureTy, closurePtr, 0, "closure.fn");
                     llvm::Value* callee = builder->CreateLoad(
-                        llvm::PointerType::get(llvmCtx, 0), slot, "fn_ptr");
+                        ptrTy, fnSlot, "fn_ptr");
+                    llvm::Value* capSlot = builder->CreateStructGEP(
+                        closureTy, closurePtr, 1, "closure.captures");
+                    llvm::Value* captures = builder->CreateLoad(
+                        ptrTy, capSlot, "captures_ptr");
+
                     vector<llvm::Value*> args;
+                    args.push_back(captures);  // implicit first arg per L2 ABI
                     llvm::FunctionType* sig = fnType->getLlvmFunctionType();
                     for (size_t i = 0; i < parameters.size(); ++i) {
                         llvm::Value* v = parameters[i].expression->generateCode(module);
                         if (auto* a = llvm::dyn_cast_or_null<llvm::AllocaInst>(v)) {
                             v = builder->CreateLoad(a->getAllocatedType(), a);
                         }
-                        // Width-coerce to the function signature's expected param type
-                        // (matches the coercion `invokeMethod` does for ordinary calls).
-                        if (sig && i < sig->getNumParams() && v
-                                && v->getType() != sig->getParamType(i)) {
-                            llvm::Type* expected = sig->getParamType(i);
+                        // Width-coerce to the function signature's expected
+                        // param type (matches the coercion invokeMethod does
+                        // for ordinary calls). Signature index is i + 1 to
+                        // skip the captures slot.
+                        size_t sigIdx = i + 1;
+                        if (sig && sigIdx < sig->getNumParams() && v
+                                && v->getType() != sig->getParamType(sigIdx)) {
+                            llvm::Type* expected = sig->getParamType(sigIdx);
                             if (expected->isIntegerTy() && v->getType()->isIntegerTy()) {
                                 v = builder->CreateIntCast(v, expected, /*isSigned=*/true);
                             } else if (expected->isFloatingPointTy()

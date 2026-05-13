@@ -35,10 +35,22 @@ namespace cajeta {
         this->qName = QualifiedName::getOrInsert(canon, "");
         this->canonical = canon;
         this->typeFlags = POINTER_FLAG;
-        this->llvmType = llvm::PointerType::get(*module->getLlvmContext(), 0);
+        // The value-side LLVM type is `ptr` — a function-typed local holds a
+        // pointer to a closure record `{ ptr fn, ptr captures }`. L2-1 keeps
+        // the slot type unchanged from L1 (still a single `ptr`); only the
+        // pointed-to layout grew. Call sites load the record and indirect-
+        // dispatch through fn_ptr, passing captures_ptr as the first arg.
+        llvm::Type* ptrTy = llvm::PointerType::get(*module->getLlvmContext(), 0);
+        this->llvmType = ptrTy;
 
+        // L2 calling convention: every lambda function takes `ptr captures`
+        // as its first arg. Non-capturing lambdas pass null; capturing
+        // lambdas (L2-2+) pass the address of their captures struct. The
+        // synthesized function ignores the arg in L2-1 — it's about the
+        // ABI shape, not capture semantics.
         std::vector<llvm::Type*> llvmParams;
-        llvmParams.reserve(this->parameterTypes.size());
+        llvmParams.reserve(this->parameterTypes.size() + 1);
+        llvmParams.push_back(ptrTy);
         for (auto& p : this->parameterTypes) {
             llvmParams.push_back(p->getLlvmType());
         }
