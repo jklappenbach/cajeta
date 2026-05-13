@@ -105,6 +105,9 @@ namespace cajeta {
             }
         }
 
+        bool isAssignment() const { return assignment; }
+        BinaryOp getBinaryOp() const { return binaryOp; }
+
         void resolveTypes(CajetaModulePtr module) override {
             // Walk children first, then take lhs's type as our result type. A real type
             // promotion pass would pick the wider of lhs/rhs; for now this matches the

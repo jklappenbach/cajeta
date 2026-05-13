@@ -15,6 +15,7 @@
 
 #include "gtest/gtest.h"
 #include "../jit/JitTestHelper.h"
+#include "cajeta/error/Exception.h"
 
 #include <cstdint>
 #include <string>
@@ -234,6 +235,84 @@ TEST(LambdaL2Tests, blockBodyDirectReturnHeapCap) {
         "            return arr[i] + bias;\n"
         "        };\n"
         "        return fn(0);\n"  // 5 + 10 = 15
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 15);
+}
+
+// L2-5: writing to a value-captured primitive must be rejected at
+// compile time. The lambda would silently mutate a private copy of the
+// captured value — that's a footgun the language pins down per Rule 5
+// in cajeta-docs/Lambdas.md. The exception carries the offending name
+// so error messages stay actionable.
+TEST(LambdaL2Tests, writingValueCaptureIsCompileError) {
+    auto src =
+        "package test;\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        int32 counter = 0;\n"
+        "        () -> int32 fn = () -> {\n"
+        "            counter = counter + 1;\n"
+        "            return counter;\n"
+        "        };\n"
+        "        return fn();\n"
+        "    }\n"
+        "}\n";
+    try {
+        CajetaJit::compile(src, "test.D");
+        FAIL() << "expected lambda value-capture write to throw";
+    } catch (cajeta::Exception& e) {
+        EXPECT_EQ(e.getErrorId(), "CAJETA_ERROR_TYPE");
+        EXPECT_NE(e.getMessage().find("counter"), std::string::npos);
+        EXPECT_NE(e.getMessage().find("captured by value"), std::string::npos);
+    }
+}
+
+// L2-5: compound assignment (`+=`) also counts as a write to the value
+// capture. The detection key is `BinaryOpExpression::isAssignment()`,
+// which is true for every assigning form.
+TEST(LambdaL2Tests, compoundAssignToValueCaptureIsCompileError) {
+    auto src =
+        "package test;\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        int32 acc = 0;\n"
+        "        (int32) -> int32 fn = n -> {\n"
+        "            acc += n;\n"
+        "            return acc;\n"
+        "        };\n"
+        "        return fn(5);\n"
+        "    }\n"
+        "}\n";
+    try {
+        CajetaJit::compile(src, "test.D");
+        FAIL() << "expected compound-assign to value capture to throw";
+    } catch (cajeta::Exception& e) {
+        EXPECT_EQ(e.getErrorId(), "CAJETA_ERROR_TYPE");
+        EXPECT_NE(e.getMessage().find("acc"), std::string::npos);
+    }
+}
+
+// Negative case: assigning a non-captured local (declared inside the
+// lambda block) is fine — the check is name-based on the value-captured
+// set, so a local with no shadow on the outside isn't affected.
+// `int32 local = base + 0` (rather than `= base`) sidesteps the same
+// pre-existing l-value-coercion gap in StackField that
+// blockBodyWithCapturesAndLocals worked around: BinaryOpExpression
+// loads l-values on its way out, so the initializer is a proper i32
+// r-value when it hits the slot store.
+TEST(LambdaL2Tests, writingLocalIsNotCaptureError) {
+    auto src =
+        "package test;\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        int32 base = 10;\n"
+        "        () -> int32 fn = () -> {\n"
+        "            int32 local = base + 0;\n"
+        "            local = local + 5;\n"  // writing to local, not capture
+        "            return local;\n"
+        "        };\n"
+        "        return fn();\n"
         "    }\n"
         "}\n";
     EXPECT_EQ(runI32(src), 15);

@@ -937,6 +937,69 @@ namespace cajeta {
         }
     }
 
+    // Rule 5 from cajeta-docs/Lambdas.md: writing to a primitive that was
+    // captured by value is a compile error — the lambda is mutating a
+    // private copy, so the write would silently fail to propagate. The
+    // user must use a mutable wrapper (Cell-style) to opt into shared
+    // mutability. Walks the body looking for assignment-form
+    // BinaryOpExpressions whose LHS resolves to a value-captured name.
+    // Throws with a precise message naming the offending identifier.
+    static void enforceValueCaptureImmutability(
+            const AbstractSyntaxNodePtr& node,
+            const std::set<std::string>& valueCapturedNames) {
+        if (!node || valueCapturedNames.empty()) return;
+        if (auto bop = std::dynamic_pointer_cast<BinaryOpExpression>(node)) {
+            if (bop->isAssignment() && !bop->getChildren().empty()) {
+                if (auto lhsId = std::dynamic_pointer_cast<IdentifierExpression>(
+                        bop->getChildren()[0])) {
+                    const std::string& name = lhsId->getTextValue();
+                    if (valueCapturedNames.find(name) != valueCapturedNames.end()) {
+                        throw Exception(
+                            "cannot assign to '" + name + "' inside lambda — "
+                            "primitives are captured by value (the lambda "
+                            "holds a private copy); use a mutable wrapper "
+                            "if you need shared mutability",
+                            "CAJETA_ERROR_TYPE");
+                    }
+                }
+            }
+        }
+        if (auto mc = std::dynamic_pointer_cast<MethodCallExpression>(node)) {
+            for (auto& c : mc->getChildren()) {
+                enforceValueCaptureImmutability(c, valueCapturedNames);
+            }
+            for (auto& p : mc->getParameters()) {
+                enforceValueCaptureImmutability(p.expression, valueCapturedNames);
+            }
+            return;
+        }
+        if (auto lvd = std::dynamic_pointer_cast<LocalVariableDeclaration>(node)) {
+            for (auto& vd : lvd->getVariableDeclarators()) {
+                if (vd && vd->getInitializer()) {
+                    enforceValueCaptureImmutability(vd->getInitializer(), valueCapturedNames);
+                }
+            }
+            return;
+        }
+        if (auto ret = std::dynamic_pointer_cast<ReturnStatement>(node)) {
+            enforceValueCaptureImmutability(ret->getExpression(), valueCapturedNames);
+            return;
+        }
+        if (auto ifs = std::dynamic_pointer_cast<IfStatement>(node)) {
+            enforceValueCaptureImmutability(ifs->getCondition(), valueCapturedNames);
+            enforceValueCaptureImmutability(ifs->getThenBranch(), valueCapturedNames);
+            enforceValueCaptureImmutability(ifs->getElseBranch(), valueCapturedNames);
+            return;
+        }
+        if (auto es = std::dynamic_pointer_cast<ExpressionStatement>(node)) {
+            enforceValueCaptureImmutability(es->getExpression(), valueCapturedNames);
+            return;
+        }
+        for (auto& c : node->getChildren()) {
+            enforceValueCaptureImmutability(c, valueCapturedNames);
+        }
+    }
+
     void LambdaExpression::resolveTypes(CajetaModulePtr module) {
         // L1: bodies can't reference outer-scope locals (captures are L2),
         // so the lambda's body resolution doesn't need access to the
@@ -1077,6 +1140,21 @@ namespace cajeta {
                 bool slotIsPointer = outerSlot
                     && outerSlot->getAllocatedType()->isPointerTy();
                 captures.push_back({name, t, /*byValue=*/!slotIsPointer});
+            }
+        }
+
+        // L2-5: writes to value-captured primitives are a compile error
+        // (the lambda would be mutating a private copy invisibly). Build
+        // the set of value-capture names from `captures` and walk the
+        // body checking assignment LHSes against it. Throws on the first
+        // offender so the error message stays precise.
+        if (!captures.empty()) {
+            std::set<std::string> valueCapturedNames;
+            for (auto& c : captures) {
+                if (c.byValue) valueCapturedNames.insert(c.name);
+            }
+            if (!valueCapturedNames.empty()) {
+                enforceValueCaptureImmutability(body, valueCapturedNames);
             }
         }
 
