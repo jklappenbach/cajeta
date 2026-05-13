@@ -12,6 +12,7 @@
 #include "cajeta/util/MemoryManager.h"
 #include "cajeta/asn/expression/Identifier.h"
 #include "cajeta/type/CajetaArray.h"
+#include "cajeta/type/CajetaTask.h"
 #include "cajeta/error/ExplicitCastRequiredException.h"
 #include "cajeta/error/InvalidOperandException.h"
 #include "BinaryOpExpression.h"
@@ -2185,34 +2186,127 @@ namespace cajeta {
     // (scheduler, state machines, Task<T> struct) layers on top later; the
     // AST surface stays stable.
 
+    // R1 contract: `await` unwraps Task<T>* to T. If the inner expression
+    // already resolved to T (a bare call to an async fn that hasn't been
+    // wrapped, or a sync-compat pass-through), await acts as the identity.
+    // The strict "await only on Task<T>" check lands in R3 when the type
+    // rewrite for async fn returns is in place.
     void AwaitExpression::resolveTypes(CajetaModulePtr module) {
         AbstractSyntaxNode::resolveTypes(module);
-        if (!children.empty()) {
-            if (auto inner = dynamic_pointer_cast<Expression>(children[0])) {
-                resolvedType = inner->getResolvedType();
-            }
+        if (children.empty()) return;
+        auto inner = dynamic_pointer_cast<Expression>(children[0]);
+        if (!inner) return;
+        auto innerType = inner->getResolvedType();
+        if (auto task = dynamic_pointer_cast<CajetaTask>(innerType)) {
+            resolvedType = task->getElementType();
+        } else {
+            resolvedType = innerType;
         }
     }
 
     llvm::Value* AwaitExpression::generateCode(CajetaModulePtr module) {
         if (children.empty()) return nullptr;
         auto inner = dynamic_pointer_cast<Expression>(children[0]);
-        return inner ? inner->generateCode(module) : nullptr;
+        if (!inner) return nullptr;
+        llvm::Value* v = inner->generateCode(module);
+        if (!v) return nullptr;
+        auto innerType = inner->getResolvedType();
+        auto task = dynamic_pointer_cast<CajetaTask>(innerType);
+        if (!task) {
+            // Sync-compat: inner is a plain value (not a Task wrapper).
+            // Identity-load through allocas so the caller sees the value.
+            if (auto* a = llvm::dyn_cast<llvm::AllocaInst>(v)) {
+                return module->getBuilder()->CreateLoad(a->getAllocatedType(), a);
+            }
+            return v;
+        }
+        // Task<T>* in hand: load .value (field index 0). The Task ptr may
+        // be in an alloca slot (when the spawn result was bound to a
+        // local) — load through to get the heap ptr first.
+        auto* builder = module->getBuilder();
+        auto* ctx = module->getLlvmContext();
+        if (auto* a = llvm::dyn_cast<llvm::AllocaInst>(v)) {
+            v = builder->CreateLoad(llvm::PointerType::get(*ctx, 0), a);
+        }
+        llvm::Value* valueSlot = builder->CreateStructGEP(
+            task->getLlvmType(), v, CajetaTask::VALUE_FIELD_INDEX, "task_value");
+        return builder->CreateLoad(
+            task->getLlvmType()->getStructElementType(CajetaTask::VALUE_FIELD_INDEX),
+            valueSlot);
     }
 
     void SpawnExpression::resolveTypes(CajetaModulePtr module) {
         AbstractSyntaxNode::resolveTypes(module);
-        if (!children.empty()) {
-            if (auto inner = dynamic_pointer_cast<Expression>(children[0])) {
-                resolvedType = inner->getResolvedType();
-            }
+        if (children.empty()) return;
+        auto inner = dynamic_pointer_cast<Expression>(children[0]);
+        if (!inner) return;
+        auto innerType = inner->getResolvedType();
+        // spawn `T-returning-call` materializes a Task<T>. If T is itself
+        // already Task<T'> (i.e., calling a hypothetically-typed async fn
+        // that returned a Task), keep the existing wrapper — don't double-
+        // box. For sync MVP backward-compat (the inner fn returns plain T),
+        // we synthesize the Task<T> here.
+        if (auto task = dynamic_pointer_cast<CajetaTask>(innerType)) {
+            resolvedType = task;
+        } else if (innerType) {
+            resolvedType = CajetaTask::getOrCreate(module, innerType);
         }
     }
 
     llvm::Value* SpawnExpression::generateCode(CajetaModulePtr module) {
         if (children.empty()) return nullptr;
         auto inner = dynamic_pointer_cast<Expression>(children[0]);
-        return inner ? inner->generateCode(module) : nullptr;
+        if (!inner) return nullptr;
+        // R1: synchronous lowering — run the body to completion first, then
+        // pack the result into a fresh Task<T>. R2 inverts this: the spawn
+        // call returns an unstarted Task<T> that a worker thread picks up.
+        llvm::Value* innerValue = inner->generateCode(module);
+        if (!innerValue) return nullptr;
+        // Codebase convention: MethodCallExpression doesn't populate
+        // resolvedType. Fall back to recovering the type from the LLVM
+        // value's type when the AST hasn't published one.
+        auto innerType = inner->getResolvedType();
+        if (!innerType) {
+            innerType = CajetaType::of(innerValue);
+        }
+        if (!innerType) return nullptr;
+        // If the inner already produced a Task<T>* (calling an async fn
+        // that's been rewritten to return Task<T>), forward it directly —
+        // don't double-wrap. R1 doesn't perform that rewrite yet, so this
+        // branch is dead for now; it'll activate in the R2 series.
+        if (dynamic_pointer_cast<CajetaTask>(innerType)) {
+            if (auto* a = llvm::dyn_cast<llvm::AllocaInst>(innerValue)) {
+                return module->getBuilder()->CreateLoad(
+                    llvm::PointerType::get(*module->getLlvmContext(), 0), a);
+            }
+            return innerValue;
+        }
+        auto* builder = module->getBuilder();
+        auto* ctx = module->getLlvmContext();
+        // Coerce the inner value to the r-value form expected for storage.
+        if (auto* a = llvm::dyn_cast<llvm::AllocaInst>(innerValue)) {
+            innerValue = builder->CreateLoad(a->getAllocatedType(), a);
+        }
+        auto task = CajetaTask::getOrCreate(module, innerType);
+        // Publish our resolvedType so AwaitExpression (the parent in the
+        // canonical `await spawn fn()` shape) can detect "this child is a
+        // Task<T>" without a separate type lookup. resolveTypes can't set
+        // this because MethodCallExpression doesn't populate its own
+        // resolvedType until generateCode runs.
+        resolvedType = task;
+        llvm::Type* taskTy = task->getLlvmType();
+        const llvm::DataLayout& dl = module->getLlvmModule()->getDataLayout();
+        llvm::Constant* allocSize = llvm::ConstantInt::get(
+            llvm::Type::getInt64Ty(*ctx), dl.getTypeAllocSize(taskTy));
+        llvm::CallInst* instance = MemoryManager::createMallocInstruction(
+            module, allocSize, builder->GetInsertBlock());
+        llvm::Value* valueSlot = builder->CreateStructGEP(
+            taskTy, instance, CajetaTask::VALUE_FIELD_INDEX, "task_value_slot");
+        builder->CreateStore(innerValue, valueSlot);
+        llvm::Value* doneSlot = builder->CreateStructGEP(
+            taskTy, instance, CajetaTask::DONE_FIELD_INDEX, "task_done_slot");
+        builder->CreateStore(llvm::ConstantInt::getTrue(*ctx), doneSlot);
+        return instance;
     }
 
     void DetachExpression::resolveTypes(CajetaModulePtr module) {

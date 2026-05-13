@@ -49,13 +49,16 @@ TEST(AsyncSyntaxTests, awaitPassesThroughInnerValue) {
     EXPECT_EQ(runI32(src), 7);
 }
 
-// `spawn` parses and runs the call inline (sync lowering).
+// `spawn` parses, runs the call inline (sync lowering), and materializes a
+// Task<int32> wrapper that `await` unwraps. Bare `spawn` returns a
+// Task<T>* now — bare integer destinations would be a type error, so the
+// canonical form goes through `await`.
 TEST(AsyncSyntaxTests, spawnRunsCallInline) {
     auto src =
         "package test;\n"
         "public final class D {\n"
         "    public static async int32 compute() { return 11; }\n"
-        "    public static int32 run() { return spawn compute(); }\n"
+        "    public static int32 run() { return await spawn compute(); }\n"
         "}\n";
     EXPECT_EQ(runI32(src), 11);
 }
@@ -90,6 +93,25 @@ TEST(AsyncSyntaxTests, scopeBlockExecutesContents) {
         "    }\n"
         "}\n";
     EXPECT_EQ(runI32(src), 5);
+}
+
+// R1: `spawn` materializes a heap-allocated Task<T> wrapper whose value
+// field carries the result and done flag is set true. The await unwraps
+// the value through a struct-GEP — proving the wrapper actually exists
+// (not pass-through) by exercising a chained spawn-then-await across a
+// local binding. If R1's Task<T> codegen were missing, the local would
+// hold an i32 (not a Task<int32>*) and the second await would type-error.
+TEST(AsyncSyntaxTests, taskWrapperIsHeapAllocated) {
+    auto src =
+        "package test;\n"
+        "public final class D {\n"
+        "    public static async int32 compute() { return 21; }\n"
+        "    public static int32 run() {\n"
+        "        int32 v = await spawn compute();\n"
+        "        return v + v;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 42);
 }
 
 // `detach expr` parses and evaluates the inner expression for its side
