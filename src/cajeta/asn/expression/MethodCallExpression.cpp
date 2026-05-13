@@ -428,6 +428,36 @@ namespace cajeta {
                     llvm::Function* fn = module->getRuntimeFunction("__cajeta_drop_count_reset");
                     return builder->CreateCall(fn, {});
                 }
+                // Threading sync primitives — Lock. These are low-level
+                // intrinsics; the user-facing `Lock` class (with an
+                // `acquire()` that returns a RAII guard) will wrap them
+                // once user-defined-drop-on-class machinery lands. For
+                // now Cajeta source can use them directly. See
+                // ThreadModel.md § Synchronization primitives.
+                if (ns == "Cajeta" && methodCallName == "lockNew" && parameters.empty()) {
+                    llvm::Function* fn = module->getRuntimeFunction("__cajeta_lock_new");
+                    return builder->CreateCall(fn, {});
+                }
+                if (ns == "Cajeta" && methodCallName == "lockAcquire" && parameters.size() == 1) {
+                    llvm::Function* fn = module->getRuntimeFunction("__cajeta_lock_acquire");
+                    llvm::Value* h = loadValue(0);
+                    return builder->CreateCall(fn, {h});
+                }
+                if (ns == "Cajeta" && methodCallName == "lockRelease" && parameters.size() == 1) {
+                    llvm::Function* fn = module->getRuntimeFunction("__cajeta_lock_release");
+                    llvm::Value* h = loadValue(0);
+                    return builder->CreateCall(fn, {h});
+                }
+                if (ns == "Cajeta" && methodCallName == "lockTryAcquire" && parameters.size() == 1) {
+                    llvm::Function* fn = module->getRuntimeFunction("__cajeta_lock_try_acquire");
+                    llvm::Value* h = loadValue(0);
+                    return builder->CreateCall(fn, {h});
+                }
+                if (ns == "Cajeta" && methodCallName == "lockDestroy" && parameters.size() == 1) {
+                    llvm::Function* fn = module->getRuntimeFunction("__cajeta_lock_destroy");
+                    llvm::Value* h = loadValue(0);
+                    return builder->CreateCall(fn, {h});
+                }
                 if (ns == "System" && methodCallName == "exit" && parameters.size() == 1) {
                     llvm::Function* fn = module->getRuntimeFunction("__cajeta_exit");
                     llvm::Value* code = loadValue(0);

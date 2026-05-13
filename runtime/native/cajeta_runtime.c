@@ -10,6 +10,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <pthread.h>
 
 typedef void (*cajeta_ctor_fn)(void* self);
 
@@ -112,6 +113,60 @@ void __cajeta_closure_drop(void* p) {
     if (!p) return;
     struct cajeta_closure_record* c = (struct cajeta_closure_record*) p;
     if (c->drop_fn) c->drop_fn(p);
+}
+
+// --- Threading sync primitives: Lock --------------------------------------
+//
+// Cajeta's `Lock` is the no-data RAII gate from ThreadModel.md. The OS-level
+// implementation is just a pthread_mutex_t — the language-side guard
+// semantics (drop-on-scope-exit) layer on top. Async-aware suspension also
+// layers on top, once the executor exists; for v0 these are blocking calls
+// against the OS mutex, which is enough for single-thread tests and for
+// the future user-facing Lock class to wrap.
+//
+// The intrinsic-level API is a deliberate stepping stone: Cajeta source
+// invokes `Cajeta.lockNew / lockAcquire / lockRelease / lockTryAcquire /
+// lockDestroy` directly via the namespace-dispatch path in
+// MethodCallExpression. Once user-defined class drop lands, a `Lock` class
+// will wrap these calls with an `acquire()` that returns a `LockGuard`
+// whose drop calls release.
+
+void* __cajeta_lock_new(void) {
+    pthread_mutex_t* m = (pthread_mutex_t*) malloc(sizeof(pthread_mutex_t));
+    if (!m) {
+        fprintf(stderr, "cajeta: __cajeta_lock_new failed\n");
+        abort();
+    }
+    if (pthread_mutex_init(m, NULL) != 0) {
+        fprintf(stderr, "cajeta: pthread_mutex_init failed\n");
+        free(m);
+        abort();
+    }
+    return m;
+}
+
+void __cajeta_lock_acquire(void* p) {
+    if (!p) return;
+    pthread_mutex_lock((pthread_mutex_t*) p);
+}
+
+void __cajeta_lock_release(void* p) {
+    if (!p) return;
+    pthread_mutex_unlock((pthread_mutex_t*) p);
+}
+
+// Returns 1 if the lock was acquired, 0 if it was already held. Mirrors
+// the boolean return shape that the eventual `tryAcquire(): bool` method
+// in the user-facing Lock class will surface.
+int32_t __cajeta_lock_try_acquire(void* p) {
+    if (!p) return 0;
+    return pthread_mutex_trylock((pthread_mutex_t*) p) == 0 ? 1 : 0;
+}
+
+void __cajeta_lock_destroy(void* p) {
+    if (!p) return;
+    pthread_mutex_destroy((pthread_mutex_t*) p);
+    free(p);
 }
 
 // Abort with a diagnostic when an array index is out of bounds. Compiler emits a
