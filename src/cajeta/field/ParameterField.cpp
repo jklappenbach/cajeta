@@ -4,6 +4,8 @@
 
 #include "ParameterField.h"
 #include "../compile/CajetaModule.h"
+#include "../type/CajetaArray.h"
+#include "../type/CajetaStruct.h"
 
 namespace cajeta {
 
@@ -35,8 +37,19 @@ namespace cajeta {
 
     llvm::AllocaInst* ParameterField::getOrCreateAllocation() {
         if (!alloca) {
+            // Match the ABI Method::generatePrototype chose for this slot:
+            // class/array (non-struct) parameters are passed as `ptr`, so
+            // the local slot is `ptr` too. Otherwise (primitives, structs)
+            // alloc the type itself.
+            bool isStruct = dynamic_pointer_cast<CajetaStruct>(type) != nullptr;
+            bool isArr = dynamic_pointer_cast<CajetaArray>(type) != nullptr;
+            bool isClassLike = dynamic_pointer_cast<CajetaClass>(type) != nullptr;
+            bool isPrim = type && (type->getTypeFlags() & PRIMITIVE_FLAG);
+            bool passByPointer = (isClassLike && !isStruct) && (isArr || !isPrim);
             llvm::Type* llvmType;
-            if (type->getTypeFlags() & PRIMITIVE_FLAG) {
+            if (passByPointer) {
+                llvmType = llvm::PointerType::get(*module->getLlvmContext(), 0);
+            } else if (type->getTypeFlags() & PRIMITIVE_FLAG) {
                 llvmType = type->getLlvmType();
             } else {
                 llvmType = type->getLlvmType()->getPointerTo();

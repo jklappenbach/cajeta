@@ -3,6 +3,7 @@
 //
 
 #include "LocalVariableDeclaration.h"
+#include "VariableDeclarator.h"
 #include "../compile/CajetaModule.h"
 #include "../field/HeapField.h"
 #include "../field/StackField.h"
@@ -66,6 +67,17 @@ namespace cajeta {
         bool wantsInlineSlot = (type->getTypeFlags() & PRIMITIVE_FLAG) && !isArray;
         for (auto& declarator: variableDeclarators) {
             InitializerPtr initializer = declarator->getInitializer();
+            // Array-literal initializer (`int32[] xs = {1, 2, 3}`): the
+            // literal has no type of its own, so push the element type
+            // down here before codegen so the literal knows how big the
+            // slots are and how to coerce its values.
+            if (isArray) {
+                if (auto arrInit = dynamic_pointer_cast<ArrayInitializer>(initializer)) {
+                    if (auto arrType = dynamic_pointer_cast<CajetaArray>(type)) {
+                        arrInit->setElementType(arrType->getElementType());
+                    }
+                }
+            }
             FieldPtr field;
             if (wantsInlineSlot) {
                 field = make_shared<StackField>(module, declarator->getIdentifier(), type,

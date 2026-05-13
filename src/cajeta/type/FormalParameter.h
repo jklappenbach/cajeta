@@ -55,6 +55,13 @@ namespace cajeta {
 
         static FormalParameterPtr fromContext(CajetaParser::FormalParameterContext* ctx, CajetaModulePtr module);
 
+        // Build a FormalParameter from the `T... args` (varargs) form. The
+        // resulting parameter's type is `T[]` (CajetaArray-wrapped); the
+        // method-level varargs flag is tracked separately on the Method.
+        // Callers (MethodCallExpression) pack trailing args into a fresh
+        // T[] before passing.
+        static FormalParameterPtr fromContext(CajetaParser::LastFormalParameterContext* ctx, CajetaModulePtr module);
+
         string& getName();
 
         void setName(const string& name);

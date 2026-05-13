@@ -62,6 +62,12 @@ namespace cajeta {
         // method's only role is to carry the signature (for canonical
         // computation + vtable-hash lookup).
         bool abstractFlag = false;
+        // Varargs (`T... args`) method. The last parameter's type is `T[]`;
+        // call sites with more than (parameterList.size() - 1) args pack
+        // the trailing args into a fresh array before passing. Tracked as a
+        // flag because the parameter type alone (`T[]`) can't distinguish
+        // a varargs slot from a regular array-typed slot.
+        bool varargsFlag = false;
         map<string, FormalParameterPtr> parameters;
         vector<FormalParameterPtr> parameterList;
         int virtualTableIndex;
@@ -102,6 +108,9 @@ namespace cajeta {
 
         bool isAbstract() const { return abstractFlag; }
         void setAbstract(bool v) { abstractFlag = v; }
+
+        bool isVarargs() const { return varargsFlag; }
+        void setVarargs(bool v) { varargsFlag = v; }
 
         vector<FormalParameterPtr> getParameterList() { return parameterList; }
 

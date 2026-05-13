@@ -651,14 +651,91 @@ namespace cajeta {
             }
         }
 
-        // Evaluate args, loading any l-values.
+        // Evaluate args, loading any l-values. Each entry carries the
+        // expression's resolved type when known (fall back to of(value) for
+        // primitive values that have a clean LLVM type).
         vector<ParameterEntry> entries;
         for (auto& param : parameters) {
+            if (!param.expression->getResolvedType()) {
+                param.expression->resolveTypes(module);
+            }
             llvm::Value* value = param.expression->generateCode(module);
             if (auto* a = llvm::dyn_cast<llvm::AllocaInst>(value)) {
                 value = builder->CreateLoad(a->getAllocatedType(), a);
             }
-            entries.push_back(ParameterEntry(CajetaType::of(value), param.label, value));
+            CajetaTypePtr et = param.expression->getResolvedType();
+            if (!et) et = CajetaType::of(value);
+            entries.push_back(ParameterEntry(et, param.label, value));
+        }
+
+        // Varargs (`T... args`): if a same-named method on the target class is
+        // marked varargs and the call site is supplying enough fixed args
+        // plus zero-or-more trailing values, pack the trailing values into a
+        // fresh T[] and replace them with the single array argument before
+        // dispatch. The check looks for a name match (not full signature)
+        // because varargs is the only case where the call's arg count is
+        // expected to differ from a target method's parameter count.
+        MethodPtr varargsTarget;
+        for (auto& mEntry : targetClass->getMethods()) {
+            auto& m = mEntry.second;
+            if (m->isVarargs() && m->getName() == methodCallName) {
+                varargsTarget = m;
+                break;
+            }
+        }
+        if (varargsTarget) {
+            // parameterList still has the implicit `this` slot prepended for
+            // instance methods, so the fixed arg count (what the call must
+            // supply before the vararg pack) is total - 1 (the vararg
+            // T[] slot) - (1 if non-static, else 0).
+            auto paramList = varargsTarget->getParameterList();
+            bool isStatic = varargsTarget->getModifiers().find(STATIC)
+                != varargsTarget->getModifiers().end();
+            int totalParams = (int) paramList.size();
+            int fixedArgs = totalParams - 1 - (isStatic ? 0 : 1);
+            if (fixedArgs < 0) fixedArgs = 0;
+            if ((int) entries.size() >= fixedArgs) {
+                // Determine T from the varargs param (the last slot).
+                auto varParam = paramList.empty() ? nullptr : paramList.back();
+                auto arrType = varParam
+                    ? dynamic_pointer_cast<CajetaArray>(varParam->getType())
+                    : nullptr;
+                if (arrType) {
+                    auto& llvmCtx = *module->getLlvmContext();
+                    llvm::Type* i64Ty = llvm::Type::getInt64Ty(llvmCtx);
+                    llvm::Type* i32Ty = llvm::Type::getInt32Ty(llvmCtx);
+                    const llvm::DataLayout& dl =
+                        module->getLlvmModule()->getDataLayout();
+                    llvm::Type* headerTy = arrType->getLlvmType();
+                    llvm::Type* elemTy = arrType->getElementLlvmType(&llvmCtx);
+                    int trailing = (int) entries.size() - fixedArgs;
+                    if (auto allocFn = module->getRuntimeFunction(
+                            "__cajeta_new_array_header")) {
+                        llvm::Value* hdrPtr = builder->CreateCall(allocFn, {
+                            llvm::ConstantInt::get(i64Ty, dl.getTypeAllocSize(headerTy)),
+                            llvm::ConstantInt::get(i64Ty, dl.getTypeAllocSize(elemTy)),
+                            llvm::ConstantInt::get(i64Ty, trailing),
+                        });
+                        for (int i = 0; i < trailing; ++i) {
+                            llvm::Value* v = entries[fixedArgs + i].value;
+                            if (v && v->getType() != elemTy && elemTy->isIntegerTy()
+                                    && v->getType()->isIntegerTy()) {
+                                v = builder->CreateIntCast(v, elemTy, /*isSigned=*/true);
+                            }
+                            vector<llvm::Value*> gepIndices = {
+                                llvm::ConstantInt::get(i64Ty, 0),
+                                llvm::ConstantInt::get(i32Ty, CajetaArray::DATA_FIELD_INDEX),
+                                llvm::ConstantInt::get(i64Ty, i),
+                            };
+                            llvm::Value* slot = builder->CreateGEP(headerTy, hdrPtr, gepIndices);
+                            builder->CreateStore(v, slot);
+                        }
+                        // Trim entries to fixed args + the new array entry.
+                        entries.erase(entries.begin() + fixedArgs, entries.end());
+                        entries.push_back(ParameterEntry(arrType, "", hdrPtr));
+                    }
+                }
+            }
         }
 
         return targetClass->invokeMethod(methodCallName, entries, /*isConstructor=*/false, thisValue);

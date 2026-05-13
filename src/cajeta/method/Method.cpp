@@ -5,6 +5,7 @@
 #include "Method.h"
 #include "../type/CajetaClass.h"
 #include "../type/CajetaStruct.h"
+#include "../type/CajetaArray.h"
 #include "../compile/CajetaModule.h"
 #include "../compile/Compiler.h"
 #include "../error/VariableAssignmentException.h"
@@ -167,16 +168,20 @@ namespace cajeta {
         for (auto formalParameter: parameterList) {
             CajetaTypePtr pt = formalParameter->getType();
             llvm::Type* ptLlvm = pt->getLlvmType();
-            // Class instances pass by pointer, not by value. The struct
-            // layout exists only for fields/layout; method-call ABI treats
-            // a class-typed parameter as `ptr`. (Structs — `struct` keyword,
-            // which is a CajetaStruct subtype — DO pass by value; that's
-            // what makes them POD wire-format types per WireFormats.md.)
-            if (auto klass = dynamic_pointer_cast<CajetaClass>(pt)) {
-                bool isStruct = dynamic_pointer_cast<CajetaStruct>(pt) != nullptr;
-                if (!isStruct && !(pt->getTypeFlags() & PRIMITIVE_FLAG)) {
-                    ptLlvm = llvm::PointerType::get(*module->getLlvmContext(), 0);
-                }
+            // Class instances and arrays pass by pointer, not by value.
+            // CajetaArray::getTypeFlags() returns ARRAY_TYPE_ID which happens
+            // to include PRIMITIVE_FLAG (because arrays are heap-allocated
+            // and act like reference types at parameter slots), so we test
+            // for CajetaArray and CajetaClass explicitly rather than
+            // relying on the primitive bit. Structs (CajetaStruct, declared
+            // with `struct`) DO pass by value per WireFormats.md.
+            bool isStruct = dynamic_pointer_cast<CajetaStruct>(pt) != nullptr;
+            bool isArr = dynamic_pointer_cast<CajetaArray>(pt) != nullptr;
+            bool isClassLike = dynamic_pointer_cast<CajetaClass>(pt) != nullptr;
+            bool isPrim = pt && (pt->getTypeFlags() & PRIMITIVE_FLAG);
+            bool passByPointer = (isClassLike && !isStruct) && (isArr || !isPrim);
+            if (passByPointer) {
+                ptLlvm = llvm::PointerType::get(*module->getLlvmContext(), 0);
             }
             llvmTypes.push_back(ptLlvm);
         }

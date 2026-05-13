@@ -510,8 +510,26 @@ namespace cajeta {
         if (thisValue && !isStatic) {
             methodArgs.push_back(thisValue);
         }
-        for (int i = 0; i < parameters.size(); i++) {
-            methodArgs.push_back(parameters[i].value);
+        // Coerce each arg to match the function's parameter type. Integer
+        // literals default to i64, but the function may expect i32 / i8 / etc.
+        // Without coercion the JIT verifier rejects the call as a type
+        // mismatch. Use the function's parameter types as the source of truth.
+        auto* coerceBuilder = module->getBuilder();
+        llvm::FunctionType* mft = method->getLlvmFunctionType();
+        int thisOffset = (thisValue && !isStatic) ? 1 : 0;
+        for (int i = 0; i < (int) parameters.size(); i++) {
+            llvm::Value* v = parameters[i].value;
+            if (mft && (int) mft->getNumParams() > i + thisOffset) {
+                llvm::Type* expected = mft->getParamType(i + thisOffset);
+                if (v && v->getType() != expected) {
+                    if (expected->isIntegerTy() && v->getType()->isIntegerTy()) {
+                        v = coerceBuilder->CreateIntCast(v, expected, /*isSigned=*/true);
+                    } else if (expected->isFloatingPointTy() && v->getType()->isFloatingPointTy()) {
+                        v = coerceBuilder->CreateFPCast(v, expected);
+                    }
+                }
+            }
+            methodArgs.push_back(v);
         }
 
         // Dynamic dispatch via the receiver's vtable: hash the method's

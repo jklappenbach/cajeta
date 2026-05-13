@@ -484,9 +484,18 @@ namespace cajeta {
         virtual std::any visitMethodDeclaration(CajetaParser::MethodDeclarationContext* ctx) override {
             string name = ctx->identifier()->getText();
             vector<FormalParameterPtr> formalParameters;
-            if (ctx->formalParameters()->formalParameterList()) {
-                for (auto& formalParameterContext: ctx->formalParameters()->formalParameterList()->formalParameter()) {
-                    formalParameters.push_back(FormalParameter::fromContext(formalParameterContext, pModule));
+            bool varargs = false;
+            if (auto* fpList = ctx->formalParameters()->formalParameterList()) {
+                for (auto& fpCtx : fpList->formalParameter()) {
+                    if (auto p = FormalParameter::fromContext(fpCtx, pModule)) {
+                        formalParameters.push_back(p);
+                    }
+                }
+                if (auto* lastFp = fpList->lastFormalParameter()) {
+                    if (auto p = FormalParameter::fromContext(lastFp, pModule)) {
+                        formalParameters.push_back(p);
+                        varargs = true;
+                    }
                 }
             }
             CajetaTypePtr returnType = CajetaType::fromContext(ctx->typeTypeOrVoid(), pModule);
@@ -498,6 +507,7 @@ namespace cajeta {
                 formalParameters,
                 block,
                 pModule->getStructureStack().front());
+            method->setVarargs(varargs);
             // `#T foo()` — return transfers ownership. The grammar puts the `#`
             // on typeTypeOrVoid (`REFERENCE? typeType`); see MemoryModel.md.
             if (ctx->typeTypeOrVoid() && ctx->typeTypeOrVoid()->REFERENCE() != nullptr) {
@@ -639,7 +649,11 @@ namespace cajeta {
             for (auto& variableInitializerContext: ctx->variableInitializer()) {
                 initializers.push_back(any_cast<InitializerPtr>(visitVariableInitializer(variableInitializerContext)));
             }
-            return make_shared<ArrayInitializer>(initializers, ctx->getStart());
+            // Return as InitializerPtr so callers' any_cast<InitializerPtr>
+            // succeeds — make_shared<ArrayInitializer> would otherwise hand
+            // back shared_ptr<ArrayInitializer>, a distinct std::any type.
+            return static_pointer_cast<Initializer>(
+                make_shared<ArrayInitializer>(initializers, ctx->getStart()));
         }
 
         virtual std::any visitClassOrInterfaceType(CajetaParser::ClassOrInterfaceTypeContext* ctx) override {

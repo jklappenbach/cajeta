@@ -4,8 +4,28 @@
 
 #include "FormalParameter.h"
 #include "../compile/CajetaModule.h"
+#include "CajetaArray.h"
 
 namespace cajeta {
+    FormalParameterPtr FormalParameter::fromContext(CajetaParser::LastFormalParameterContext* ctx, CajetaModulePtr module) {
+        if (!ctx) return nullptr;
+        string name = ctx->variableDeclaratorId()->identifier()->getText();
+        set<QualifiedNamePtr> annotations;
+        set<Modifier> modifiers;
+        CajetaTypePtr elemType = CajetaType::fromContext(ctx->typeType(), module);
+        if (!elemType) return nullptr;
+        // Wrap as T[] — varargs callers will pack trailing args into a
+        // fresh array of this element type and pass it as the single
+        // value at this parameter slot.
+        auto arrType = make_shared<CajetaArray>(module, elemType);
+        if (module) {
+            module->getStructures()[arrType->toCanonical()] =
+                static_pointer_cast<CajetaClass>(arrType);
+        }
+        return make_shared<FormalParameter>(name,
+            static_pointer_cast<CajetaType>(arrType), modifiers, annotations);
+    }
+
     FormalParameterPtr FormalParameter::fromContext(CajetaParser::FormalParameterContext* ctx, CajetaModulePtr module) {
         FormalParameterPtr parameter = nullptr;
         string name = ctx->variableDeclaratorId()->identifier()->getText();

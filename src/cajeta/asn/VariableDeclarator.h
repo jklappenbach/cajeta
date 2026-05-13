@@ -34,6 +34,13 @@ namespace cajeta {
     class ArrayInitializer : public Initializer {
     private:
         list<VariableInitializerPtr> initializers;
+        // Element type for the literal. The literal `{1, 2, 3}` has no
+        // declared type of its own; the surrounding context (e.g. a
+        // `int32[] xs = {1, 2, 3}` local variable declaration) passes it
+        // down by calling setElementType before codegen. Without it the
+        // initializer can't choose an LLVM type for the heap allocation
+        // or coerce the element values.
+        CajetaTypePtr elementType;
     public:
         virtual ~ArrayInitializer() {
             initializers.clear();
@@ -41,6 +48,9 @@ namespace cajeta {
         ArrayInitializer(list<InitializerPtr> initializers, antlr4::Token* token) : Initializer(token) {
             children.insert(children.end(), initializers.begin(), initializers.end());
         }
+
+        CajetaTypePtr getElementType() const { return elementType; }
+        void setElementType(CajetaTypePtr t) { elementType = std::move(t); }
 
         llvm::Value* generateCode(CajetaModulePtr module) override;
     };
