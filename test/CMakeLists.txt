@@ -15,5 +15,12 @@ target_link_libraries(${BINARY} PRIVATE
         GTest::gtest
         GTest::gtest_main)
 
+# Bake the project source root into the test binary so the disk-reading
+# CompilerTests (`canParseOnValidShortPackage`, etc.) can find their .cajeta
+# fixtures without requiring CAJETA_SOURCE_ROOT to be set in the environment.
+# Tests still honor the env var when present (overrides the default).
+target_compile_definitions(${BINARY} PRIVATE
+        CAJETA_SOURCE_ROOT_DEFAULT="${PROJECT_SOURCE_DIR}")
+
 include(GoogleTest)
 gtest_discover_tests(${BINARY})
