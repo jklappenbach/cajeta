@@ -950,9 +950,32 @@ namespace cajeta {
         return nullptr;
     }
 
+    // R5-A': pop every scope frame this method pushed via the watermark
+    // captured at function entry, waiting on each registered task. Called
+    // before BOTH the void-return path and the typed-return path so an
+    // early return from inside an explicit `scope { }` still joins all
+    // pending child tasks before the ret instruction.
+    static void emitScopeExitToWatermark(CajetaModulePtr module) {
+        auto m = module->getCurrentMethod();
+        if (!m) return;
+        llvm::AllocaInst* mark = m->getScopeWatermark();
+        if (!mark) return;
+        llvm::Function* exitToFn = module->getRuntimeFunction(
+            "__cajeta_scope_exit_to");
+        if (!exitToFn) return;
+        auto* builder = module->getBuilder();
+        auto& ctx = *module->getLlvmContext();
+        llvm::Type* ptrTy = llvm::PointerType::get(ctx, 0);
+        llvm::Value* watermark = builder->CreateLoad(ptrTy, mark);
+        builder->CreateCall(exitToFn, {watermark});
+    }
+
     llvm::Value* ReturnStatement::generateCode(CajetaModulePtr module) {
         auto* builder = module->getBuilder();
         if (!expression) {
+            // Pop any open scope frames before the value-less return so
+            // every pending child task is joined first.
+            emitScopeExitToWatermark(module);
             // Fire drops before the value-less return.
             if (auto m = module->getCurrentMethod()) m->emitOwnerDrops(module);
             return builder->CreateRetVoid();
@@ -1117,6 +1140,10 @@ namespace cajeta {
             }
             // Pointer / aggregate mismatches fall through; LLVM verifier will flag.
         }
+        // Pop any open scope frames before the typed return — joins every
+        // pending child task (function-body scope + any explicit scope
+        // the return is lexically inside of).
+        emitScopeExitToWatermark(module);
         // Fire drops before the typed return so all owned locals are released.
         if (auto m = module->getCurrentMethod()) m->emitOwnerDrops(module);
         return builder->CreateRet(val);

@@ -279,6 +279,27 @@ namespace cajeta {
             module->getScopeStack().peek()->putField(parameterField);
         }
 
+        // R5-A' implicit function-body scope: capture the scope_top from the
+        // caller's perspective into an alloca, then push the function-body
+        // frame. Every return path (synthetic, explicit ReturnStatement)
+        // calls __cajeta_scope_exit_to(watermark) so all frames pushed by
+        // this method — its implicit frame plus any explicit `scope { }`
+        // nested inside — get waited and popped, regardless of how the
+        // function exits. Watermark lives in an alloca so multiple return
+        // paths share the same value without code duplication.
+        auto& ctx = *module->getLlvmContext();
+        llvm::Type* ptrTy = llvm::PointerType::get(ctx, 0);
+        scopeWatermark = builder->CreateAlloca(ptrTy, nullptr, "scope_watermark");
+        if (llvm::Function* saveFn = module->getRuntimeFunction(
+                "__cajeta_scope_save_top")) {
+            llvm::Value* mark = builder->CreateCall(saveFn, {});
+            builder->CreateStore(mark, scopeWatermark);
+        }
+        if (llvm::Function* enterFn = module->getRuntimeFunction(
+                "__cajeta_scope_enter")) {
+            builder->CreateCall(enterFn, {});
+        }
+
         // Type-resolver pre-pass: populates Expression::resolvedType so codegen can
         // distinguish e.g. fp8 from i8 when they share an LLVM type.
         if (block) {
@@ -291,6 +312,18 @@ namespace cajeta {
         // a missing return is undefined in Cajeta semantics, but we emit a zero-value
         // ret so the IR remains well-formed.
         if (!builder->GetInsertBlock()->getTerminator()) {
+            // Pop every scope frame this method pushed (function-body + any
+            // explicit scopes still open at fall-through) by walking down
+            // to the captured watermark. ScopeStatement-managed frames
+            // normally pop themselves at their own `}` — they only remain
+            // here if the body fell through with one still open, which
+            // would be a structural malformation we accept as a defensive
+            // cleanup.
+            if (llvm::Function* exitToFn = module->getRuntimeFunction(
+                    "__cajeta_scope_exit_to")) {
+                llvm::Value* mark = builder->CreateLoad(ptrTy, scopeWatermark);
+                builder->CreateCall(exitToFn, {mark});
+            }
             // Fire scope-end drops before the synthetic return so the chain is
             // unwound the same way an explicit `return` would do it.
             emitOwnerDrops(module);

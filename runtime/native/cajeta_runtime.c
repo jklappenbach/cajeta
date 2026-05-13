@@ -462,6 +462,31 @@ void __cajeta_scope_exit(void) {
     free(f);
 }
 
+// Watermark API for the R5-A' implicit function-body scope. Codegen
+// captures the scope_top observed at function entry, then calls
+// __cajeta_scope_exit_to with that watermark on every return path.
+// Pops every frame above the watermark in LIFO order — handles the
+// case where `return` exits from inside one or more explicit
+// `scope { }` blocks nested under the function body's implicit scope.
+void* __cajeta_scope_save_top(void) {
+    struct cajeta_scope_frame** top = __cajeta_scope_top_ptr();
+    return (void*) *top;
+}
+
+void __cajeta_scope_exit_to(void* watermark) {
+    struct cajeta_scope_frame** top = __cajeta_scope_top_ptr();
+    while (*top != (struct cajeta_scope_frame*) watermark) {
+        struct cajeta_scope_frame* f = *top;
+        if (!f) break;  // ran off the bottom; defensive
+        for (int i = 0; i < f->count; i++) {
+            __cajeta_task_wait(f->task_dones[i]);
+        }
+        *top = f->prev;
+        free(f->task_dones);
+        free(f);
+    }
+}
+
 // --- Threading sync primitives: Lock (async-aware, R4) -------------------
 //
 // Sits on top of the fiber executor. A Cajeta Lock is a pthread_mutex_t

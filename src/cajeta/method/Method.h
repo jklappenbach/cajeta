@@ -87,6 +87,14 @@ namespace cajeta {
         llvm::FunctionType* llvmFunctionType;
         llvm::Function* llvmFunction;
         llvm::BasicBlock* llvmBasicBlock;
+        // R5-A' implicit function-body scope: at function entry codegen
+        // alloca's a ptr slot here and stores `__cajeta_scope_save_top()`
+        // into it. Each return path loads it back and calls
+        // `__cajeta_scope_exit_to(watermark)` so every scope frame
+        // pushed inside the function — implicit function-body OR any
+        // explicit `scope { }` the return is inside of — gets waited
+        // and popped before the ret instruction.
+        llvm::AllocaInst* scopeWatermark = nullptr;
     public:
         Method(CajetaModulePtr module,
             string& name,
@@ -106,6 +114,8 @@ namespace cajeta {
             }
             return llvmFunctionType;
         }
+
+        llvm::AllocaInst* getScopeWatermark() const { return scopeWatermark; }
 
         llvm::Function* getLlvmFunction() { return llvmFunction; }
 

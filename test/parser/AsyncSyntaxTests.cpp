@@ -176,6 +176,37 @@ TEST(AsyncSyntaxTests, mainThreadWaitsOnFiberHolder) {
     EXPECT_EQ(runI32(src), 42);
 }
 
+// R5-A': implicit function-body scope. Even without an explicit
+// `scope { ... }`, the function body itself is a scope — every spawn
+// at the top level gets registered and waited at function exit. Same
+// probative shape as scopeWaitsForUnawaitedSpawns: hold the lock,
+// release inside the function body, the implicit function-body scope
+// waits for the worker fiber to finish lockRelease before main runs
+// lockDestroy. Without the implicit scope, lockDestroy would race the
+// worker's lock ops.
+TEST(AsyncSyntaxTests, implicitFunctionBodyScopeJoinsSpawn) {
+    auto src =
+        "package test;\n"
+        "public final class D {\n"
+        "    public static async int32 yielder() { return 0; }\n"
+        "    public static async int32 worker(pointer h) {\n"
+        "        Cajeta.lockAcquire(h);\n"
+        "        int32 dummy = await spawn yielder();\n"
+        "        Cajeta.lockRelease(h);\n"
+        "        return 0;\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        pointer h = Cajeta.lockNew();\n"
+        "        Cajeta.lockAcquire(h);\n"
+        "        spawn worker(h);\n"
+        "        Cajeta.lockRelease(h);\n"
+        "        Cajeta.lockDestroy(h);\n"
+        "        return 42;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 42);
+}
+
 // R5-A: scope waits for unawaited spawns before letting control past `}`.
 // The fiber acquires a lock, does some yielding work, then releases.
 // Main holds the lock initially; main releases it inside the scope so
