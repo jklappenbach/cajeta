@@ -103,6 +103,23 @@ namespace cajeta {
             module->getScopeStack().peek()->putField(field);
             field->getOrCreateAllocation();
 
+            // L3-2 escape-check wiring: a function-typed local initialized
+            // from a lambda inherits the lambda's borrow-capture state.
+            // After the initializer has run (putField → getOrCreateAllocation
+            // triggered the lambda's generateCode and its capture analysis),
+            // copy the flag onto the field so a later `return fnLocal` can
+            // surface the dangling-borrow error before LLVM verify.
+            if (auto varInit = dynamic_pointer_cast<VariableInitializer>(initializer)) {
+                auto& children = varInit->getChildren();
+                if (!children.empty()) {
+                    if (auto lambda = dynamic_pointer_cast<LambdaExpression>(children[0])) {
+                        if (lambda->getHasBorrowCaptures()) {
+                            field->setHasBorrowCaptures(true);
+                        }
+                    }
+                }
+            }
+
             // Wire the drop chain for owned heap allocations. v1 covers
             // CajetaArray locals — the most concrete case where we already have
             // a runtime free function. Class instances and String-owning locals

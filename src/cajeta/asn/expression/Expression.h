@@ -361,7 +361,15 @@ namespace cajeta {
         // Name of the synthesized LLVM function. Unique per module via a
         // monotonic counter; set lazily on first codegen.
         std::string synthesizedName;
+        // True once capture analysis has run AND found at least one
+        // borrow capture (heap reference, not primitive copy, not `#`
+        // transfer). Read after generateCode by the escape check that
+        // gates return-of-closure / store-to-non-local. Closures with
+        // only by-value or by-transfer captures are free to escape;
+        // borrow captures are bounded by the declaring scope.
+        bool hasBorrowCaptures = false;
     public:
+        bool getHasBorrowCaptures() const { return hasBorrowCaptures; }
         LambdaExpression(antlr4::Token* token,
             std::vector<std::string> paramNames,
             std::vector<CajetaTypePtr> paramTypes,

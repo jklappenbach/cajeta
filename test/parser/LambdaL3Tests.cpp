@@ -112,3 +112,116 @@ TEST(LambdaL3Tests, transferAndBorrowCoexist) {
         "}\n";
     EXPECT_EQ(runI32(src), 2 + 7 + 7);
 }
+
+// ---------------------------------------------------------------------
+// L3-2: lifetime / escape check
+// ---------------------------------------------------------------------
+
+// Helper for the escape-check tests below: a method that builds a
+// closure capturing a local heap value by borrow and returns it. With
+// the L3-2 check in place this must throw at compile time — the
+// borrowed local would be dead by the time the caller invoked the
+// returned closure.
+namespace {
+
+void expectBorrowEscape(const std::string& src) {
+    try {
+        CajetaJit::compile(src, "test.D");
+        FAIL() << "expected borrow-escape error for returned closure";
+    } catch (cajeta::Exception& e) {
+        EXPECT_EQ(e.getErrorId(), "CAJETA_ERROR_BORROW_ESCAPE");
+        EXPECT_NE(e.getMessage().find("borrow"), std::string::npos);
+    }
+}
+
+} // namespace
+
+// Returning a function-typed local that holds a borrow capture is a
+// compile error — the most common shape of the dangling-closure bug.
+TEST(LambdaL3Tests, returnClosureWithBorrowCaptureIsError) {
+    auto src =
+        "package test;\n"
+        "public final class D {\n"
+        "    public static () -> int64 mkFn() {\n"
+        "        int32[] arr = new int32[3];\n"
+        "        () -> int64 fn = () -> arr.size();\n"
+        "        return fn;\n"
+        "    }\n"
+        "    public static int32 run() { return 0; }\n"
+        "}\n";
+    expectBorrowEscape(src);
+}
+
+// Inline-construction shape: `return () -> ...;` without naming the
+// closure. The check fires after the lambda's generateCode populates
+// its borrow flag.
+TEST(LambdaL3Tests, returnFreshLambdaWithBorrowCaptureIsError) {
+    auto src =
+        "package test;\n"
+        "public final class D {\n"
+        "    public static () -> int64 mkFn() {\n"
+        "        int32[] arr = new int32[3];\n"
+        "        return () -> arr.size();\n"
+        "    }\n"
+        "    public static int32 run() { return 0; }\n"
+        "}\n";
+    expectBorrowEscape(src);
+}
+
+// The "allowed-to-escape" cases below only verify that the L3-2 check
+// doesn't over-fire — i.e. compilation completes without throwing
+// CAJETA_ERROR_BORROW_ESCAPE. They don't call the returned closure: the
+// closure record itself is still stack-allocated (L2-1 design) so
+// invoking it after the producing method returns would dereference a
+// dead frame. Heap-allocation of escaping closures is L3-3's concern;
+// once that lands, these tests can grow assertions.
+
+// Closures whose captures are all by-value (primitives) — the closure
+// holds copies, not borrows, so the borrow check has nothing to flag.
+TEST(LambdaL3Tests, returnClosureWithOnlyValueCapturesAllowed) {
+    auto src =
+        "package test;\n"
+        "public final class D {\n"
+        "    public static (int32) -> int32 mkAdder() {\n"
+        "        int32 base = 10;\n"
+        "        (int32) -> int32 fn = x -> x + base;\n"
+        "        return fn;\n"
+        "    }\n"
+        "    public static int32 run() { return 0; }\n"
+        "}\n";
+    auto jit = CajetaJit::compile(src, "test.D");
+    SUCCEED();
+}
+
+// Closures that transfer ownership of their heap captures via `#name`
+// — again no borrows, so the borrow check passes.
+TEST(LambdaL3Tests, returnClosureWithOnlyTransferCapturesAllowed) {
+    auto src =
+        "package test;\n"
+        "public final class D {\n"
+        "    public static () -> int64 mkFn() {\n"
+        "        int32[] arr = new int32[4];\n"
+        "        () -> int64 fn = () -> #arr.size();\n"
+        "        return fn;\n"
+        "    }\n"
+        "    public static int32 run() { return 0; }\n"
+        "}\n";
+    auto jit = CajetaJit::compile(src, "test.D");
+    SUCCEED();
+}
+
+// Non-capturing closures (no outer references at all). Ensures the
+// check doesn't over-fire on the empty-capture case.
+TEST(LambdaL3Tests, returnNonCapturingClosureAllowed) {
+    auto src =
+        "package test;\n"
+        "public final class D {\n"
+        "    public static () -> int32 mkConst() {\n"
+        "        () -> int32 fn = () -> 42;\n"
+        "        return fn;\n"
+        "    }\n"
+        "    public static int32 run() { return 0; }\n"
+        "}\n";
+    auto jit = CajetaJit::compile(src, "test.D");
+    SUCCEED();
+}

@@ -57,6 +57,7 @@ namespace cajeta {
         cajeta::CajetaTypePtr type;
         llvm::AllocaInst* alloca;
         llvm::Value* dropEntry = nullptr;
+        bool _hasBorrowCaptures = false;
 
     public:
         Field(CajetaModulePtr module, string name, CajetaTypePtr type, FieldPtr parent = nullptr) {
@@ -156,6 +157,15 @@ namespace cajeta {
         // when the owner pushes onto the chain.
         llvm::Value* getDropEntry() const { return dropEntry; }
         void setDropEntry(llvm::Value* e) { dropEntry = e; }
+
+        // L3-2: set on function-typed fields that hold a closure with
+        // borrow captures. Such a closure is scope-bound — returning it
+        // or storing it past the declaring scope would leave the borrows
+        // dangling. ReturnStatement consults this to reject the return.
+        // Defaults false; LocalVariableDeclaration sets it after the
+        // initializer codegen finds the RHS lambda's borrow flag.
+        bool hasBorrowCaptures() const { return _hasBorrowCaptures; }
+        void setHasBorrowCaptures(bool v) { _hasBorrowCaptures = v; }
 
         virtual llvm::Value* createLoad() = 0;
 

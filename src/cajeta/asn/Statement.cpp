@@ -12,6 +12,7 @@
 #include "../type/CajetaArray.h"
 #include "Block.h"
 #include "LocalVariableDeclaration.h"
+#include "../error/Exception.h"
 
 /**
  * statement
@@ -915,7 +916,50 @@ namespace cajeta {
             if (auto m = module->getCurrentMethod()) m->emitOwnerDrops(module);
             return builder->CreateRetVoid();
         }
+        // L3-2 escape check: a function-typed local that holds a closure
+        // with borrow captures is bounded by its declaring scope — its
+        // captured borrows refer to outer locals that would be dead by
+        // the time the caller invoked the returned closure. Reject the
+        // return before codegen so the user gets a clear error rather
+        // than runtime use-after-free.
+        //
+        // Two shapes covered:
+        //   - `return fnLocal;`   — IdentifierExpression with a Field
+        //                            whose hasBorrowCaptures was set by
+        //                            LocalVariableDeclaration when the
+        //                            lambda RHS was generated.
+        //   - `return () -> ...;` — direct LambdaExpression; we'll see
+        //                            its flag after generateCode below.
+        if (auto idExpr = dynamic_pointer_cast<IdentifierExpression>(expression)) {
+            auto scope = module->getScopeStack().peek();
+            FieldPtr f = scope ? scope->getField(idExpr->getTextValue()) : nullptr;
+            if (f && f->hasBorrowCaptures()) {
+                throw Exception(
+                    "cannot return closure '" + idExpr->getTextValue()
+                    + "' — it captures one or more outer locals by borrow, "
+                    "and those borrows would dangle past the function return; "
+                    "transfer the captures via `#name` to give the closure "
+                    "ownership it can carry past this scope",
+                    "CAJETA_ERROR_BORROW_ESCAPE");
+            }
+        }
         llvm::Value* val = expression->generateCode(module);
+        // Same check, deferred form: returning a fresh lambda directly
+        // (`return () -> ...;`). We need the lambda's generateCode to
+        // run first so its capture analysis populated the flag, hence
+        // the post-codegen position. Catches the inline construction
+        // case that no Field-based check could reach.
+        if (auto lambdaExpr = dynamic_pointer_cast<LambdaExpression>(expression)) {
+            if (lambdaExpr->getHasBorrowCaptures()) {
+                throw Exception(
+                    "cannot return this lambda — it captures one or more "
+                    "outer locals by borrow, and those borrows would "
+                    "dangle past the function return; transfer the "
+                    "captures via `#name` to give the closure ownership "
+                    "it can carry past this scope",
+                    "CAJETA_ERROR_BORROW_ESCAPE");
+            }
+        }
         // Load if the expression returned an l-value (alloca, array-slot GEP, or
         // struct/class field GEP) — return wants a value, not an address.
         if (auto* a = llvm::dyn_cast<llvm::AllocaInst>(val)) {

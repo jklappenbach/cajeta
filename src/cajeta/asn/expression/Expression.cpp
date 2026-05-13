@@ -1239,6 +1239,14 @@ namespace cajeta {
                 bool byTransfer = !byValue
                     && transferNames.find(name) != transferNames.end();
                 captures.push_back({name, t, byValue, byTransfer});
+                // L3-2: any borrow capture (heap reference held by the
+                // closure without an explicit transfer) ties the
+                // closure's lifetime to the enclosing scope. The escape
+                // check at ReturnStatement consults this flag to reject
+                // returning such a closure.
+                if (!byValue && !byTransfer) {
+                    hasBorrowCaptures = true;
+                }
             }
         }
 
