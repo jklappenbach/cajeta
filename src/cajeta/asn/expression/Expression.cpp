@@ -2443,6 +2443,18 @@ namespace cajeta {
                 string("ctx_arg") + std::to_string(i) + "_init");
             outerBuilder->CreateStore(capturedArgs[i], field);
         }
+        // R5-A: register the task with the innermost enclosing scope so
+        // its closing `}` will wait for this task before returning.
+        // Runtime no-ops if there's no active scope (today's MVP allows
+        // top-level spawns; the doc says they should be a compile error
+        // but enforcement is a future R5-B item).
+        if (llvm::Function* regFn = module->getRuntimeFunction(
+                "__cajeta_scope_register")) {
+            llvm::Value* doneSlot = outerBuilder->CreateStructGEP(
+                taskTy, taskInstance, CajetaTask::DONE_FIELD_INDEX,
+                "scope_register_done");
+            outerBuilder->CreateCall(regFn, {doneSlot});
+        }
         if (llvm::Function* runFn = module->getRuntimeFunction(
                 "__cajeta_task_run")) {
             outerBuilder->CreateCall(runFn, {ctxInstance, trampFn});

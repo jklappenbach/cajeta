@@ -420,17 +420,35 @@ namespace cajeta {
         return nullptr;
     }
 
-    // ThreadModel.md — sync-lowering MVP: `scope { ... }` is just its inner
-    // block. With no real scheduler, every `spawn` runs inline and finishes
-    // before reaching the closing `}`, so the structured-concurrency join is
-    // automatic. When the scheduler lands, this class will track the set of
-    // outstanding child tasks and block until they all complete.
+    // ThreadModel.md — `scope { ... }` is a structured-concurrency block.
+    // R5-A: every spawn site inside the block registers its task's done-
+    // addr with the active scope frame; at the closing `}` we wait for
+    // each one before letting control past. The scope frame stack is
+    // managed in the runtime (per-fiber for code running inside an async
+    // body; per-OS-thread for the main thread).
     void ScopeStatement::resolveTypes(CajetaModulePtr module) {
         if (block) block->resolveTypes(module);
     }
 
     llvm::Value* ScopeStatement::generateCode(CajetaModulePtr module) {
+        auto* builder = module->getBuilder();
+        if (llvm::Function* enterFn = module->getRuntimeFunction(
+                "__cajeta_scope_enter")) {
+            builder->CreateCall(enterFn, {});
+        }
         if (block) block->generateCode(module);
+        // scope_exit only emits if the block didn't already terminate
+        // (return/throw mid-block). A terminator means control is
+        // exiting the function instead of falling off the brace — the
+        // surrounding cleanup paths will be responsible for waiting.
+        // TODO: integrate scope_exit into the early-return path.
+        llvm::BasicBlock* bb = builder->GetInsertBlock();
+        if (bb && !bb->getTerminator()) {
+            if (llvm::Function* exitFn = module->getRuntimeFunction(
+                    "__cajeta_scope_exit")) {
+                builder->CreateCall(exitFn, {});
+            }
+        }
         return nullptr;
     }
 

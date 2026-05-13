@@ -175,6 +175,17 @@ typedef enum {
     CAJETA_FIBER_DONE,      // trampoline returned; carrier will free
 } cajeta_fiber_state;
 
+// R5-A: per-scope tracking of spawned child tasks. The scope's closing
+// `}` calls __cajeta_scope_exit which waits for every registered task's
+// done flag before returning, guaranteeing the doc's "control doesn't
+// leave the block until every child has finished" property.
+struct cajeta_scope_frame {
+    int32_t** task_dones;  // each ptr is the done field of a spawned Task<T>
+    int count;
+    int cap;
+    struct cajeta_scope_frame* prev;
+};
+
 struct cajeta_fiber {
     ucontext_t ctx;
     void* stack;
@@ -182,6 +193,11 @@ struct cajeta_fiber {
     cajeta_task_trampoline_fn trampoline;
     void* trampoline_arg;
     struct cajeta_fiber* next;
+    // Per-fiber scope chain. A naïve `__thread` would alias across fiber
+    // switches (the carrier hosts many fibers on the same OS thread), so
+    // each fiber owns its own stack of scope frames. Updated by
+    // scope_enter/exit when invoked from a fiber context.
+    struct cajeta_scope_frame* scope_top;
 };
 
 static pthread_mutex_t __cajeta_task_mutex = PTHREAD_MUTEX_INITIALIZER;
@@ -201,6 +217,23 @@ static pthread_t __cajeta_task_worker;
 // to the cond_wait path in __cajeta_task_wait.
 static __thread struct cajeta_fiber* __cajeta_current_fiber = NULL;
 static __thread ucontext_t __cajeta_carrier_ctx;
+
+// Scope chain for code running outside a fiber (the main entry point, or
+// any pthread that isn't a carrier-hosted fiber). Fibers carry their own
+// scope chain in `cajeta_fiber::scope_top`; the helper below picks the
+// right one based on current context.
+static __thread struct cajeta_scope_frame* __cajeta_main_scope_top = NULL;
+
+// Returns a pointer to the current scope_top slot — either the running
+// fiber's slot or the main thread's TLS slot. Callers read or write
+// through this pointer, so push/pop works uniformly regardless of
+// fiber vs main context.
+static struct cajeta_scope_frame** __cajeta_scope_top_ptr(void) {
+    if (__cajeta_current_fiber) {
+        return &__cajeta_current_fiber->scope_top;
+    }
+    return &__cajeta_main_scope_top;
+}
 
 // Fiber entry trampoline — invoked by makecontext on first resume. Runs
 // the user trampoline (which calls the async fn + signals done) and then
@@ -308,6 +341,7 @@ void __cajeta_task_run(void* arg, cajeta_task_trampoline_fn trampoline) {
     f->trampoline = trampoline;
     f->trampoline_arg = arg;
     f->next = NULL;
+    f->scope_top = NULL;
 
     pthread_mutex_lock(&__cajeta_task_mutex);
     if (!__cajeta_task_workers_started) {
@@ -358,6 +392,74 @@ void __cajeta_task_complete(int32_t* done_addr) {
     pthread_cond_broadcast(&__cajeta_task_done_cond);
     __cajeta_wake_all_parked_locked();
     pthread_mutex_unlock(&__cajeta_task_mutex);
+}
+
+// --- Threading: scope frames (R5-A) ---------------------------------------
+//
+// `scope { ... }` blocks own their child tasks: codegen emits a
+// __cajeta_scope_enter at the opening brace, every spawn site inside
+// calls __cajeta_scope_register with its task's done-addr, and the
+// closing brace runs __cajeta_scope_exit which waits for every
+// registered task's done flag before letting control past `}`.
+//
+// The scope chain is per-fiber (fibers running on the same carrier OS
+// thread must not see each other's scopes); the main thread has its
+// own TLS chain. The __cajeta_scope_top_ptr helper picks the right
+// slot transparently.
+
+void __cajeta_scope_enter(void) {
+    struct cajeta_scope_frame* f =
+        (struct cajeta_scope_frame*) malloc(sizeof(*f));
+    if (!f) {
+        fprintf(stderr, "cajeta: __cajeta_scope_enter malloc failed\n");
+        abort();
+    }
+    f->task_dones = NULL;
+    f->count = 0;
+    f->cap = 0;
+    struct cajeta_scope_frame** top = __cajeta_scope_top_ptr();
+    f->prev = *top;
+    *top = f;
+}
+
+// Append a task's done-addr to the current scope frame's list. spawn
+// sites call this just before __cajeta_task_run; the corresponding
+// scope_exit waits on each in turn. Doc behavior: spawn outside any
+// scope is a compile error — but today's MVP doesn't enforce that, so
+// register-without-scope is a no-op rather than an abort (preserving
+// the existing tests' top-level-spawn pattern).
+void __cajeta_scope_register(int32_t* done_addr) {
+    struct cajeta_scope_frame** top = __cajeta_scope_top_ptr();
+    struct cajeta_scope_frame* f = *top;
+    if (!f) return;  // No active scope — silently ignore (see comment).
+    if (f->count == f->cap) {
+        int newcap = f->cap ? f->cap * 2 : 4;
+        int32_t** grown = (int32_t**) realloc(f->task_dones,
+            newcap * sizeof(int32_t*));
+        if (!grown) {
+            fprintf(stderr, "cajeta: __cajeta_scope_register realloc failed\n");
+            abort();
+        }
+        f->task_dones = grown;
+        f->cap = newcap;
+    }
+    f->task_dones[f->count++] = done_addr;
+}
+
+// Wait for every registered task's done flag, then pop the frame.
+// __cajeta_task_wait is fiber-aware (parks if we're a fiber, OS-blocks
+// if main) — both paths converge on "control doesn't leave until every
+// child is done".
+void __cajeta_scope_exit(void) {
+    struct cajeta_scope_frame** top = __cajeta_scope_top_ptr();
+    struct cajeta_scope_frame* f = *top;
+    if (!f) return;
+    for (int i = 0; i < f->count; i++) {
+        __cajeta_task_wait(f->task_dones[i]);
+    }
+    *top = f->prev;
+    free(f->task_dones);
+    free(f);
 }
 
 // --- Threading sync primitives: Lock (async-aware, R4) -------------------

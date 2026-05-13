@@ -176,6 +176,38 @@ TEST(AsyncSyntaxTests, mainThreadWaitsOnFiberHolder) {
     EXPECT_EQ(runI32(src), 42);
 }
 
+// R5-A: scope waits for unawaited spawns before letting control past `}`.
+// The fiber acquires a lock, does some yielding work, then releases.
+// Main holds the lock initially; main releases it inside the scope so
+// the fiber can proceed; the scope's closing brace MUST wait until the
+// fiber has run lockRelease(h) before main runs lockDestroy(h). If the
+// scope didn't wait, lockDestroy would race with the fiber's lock ops
+// and likely crash. A passing test = scope_exit successfully joined.
+TEST(AsyncSyntaxTests, scopeWaitsForUnawaitedSpawns) {
+    auto src =
+        "package test;\n"
+        "public final class D {\n"
+        "    public static async int32 yielder() { return 0; }\n"
+        "    public static async int32 worker(pointer h) {\n"
+        "        Cajeta.lockAcquire(h);\n"
+        "        int32 dummy = await spawn yielder();\n"
+        "        Cajeta.lockRelease(h);\n"
+        "        return 0;\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        pointer h = Cajeta.lockNew();\n"
+        "        Cajeta.lockAcquire(h);\n"
+        "        scope {\n"
+        "            spawn worker(h);\n"
+        "            Cajeta.lockRelease(h);\n"
+        "        }\n"
+        "        Cajeta.lockDestroy(h);\n"
+        "        return 42;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 42);
+}
+
 // R3-B: nested await — an async fn awaits another async fn. Under R2's
 // single-worker model this would deadlock: the carrier blocks on cond_wait
 // for the inner task's done flag, but the inner task is sitting on the

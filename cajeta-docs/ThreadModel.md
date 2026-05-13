@@ -56,10 +56,11 @@ async void processAll(List<Url> urls) {
 
 Properties:
 
-- **No leaked tasks.** A `spawn` without an enclosing `scope` is a compile error.
-- **Cancellation propagates down.** Cancelling the scope cancels every child task.
-- **Errors propagate up.** If a child throws, the scope cancels its other children and re-throws once they've finished unwinding.
-- **Borrows can outlive the spawn.** Because the scope is guaranteed to join all children before returning, borrows captured by `spawn`'d tasks are valid for the lifetime of the scope. This is the structural escape-hatch that lets parallel-with-borrows work safely.
+- **Joins on exit.** ✅ implemented (R5-A): scope_enter at the opening brace pushes a per-fiber (or per-main-thread) scope frame; every spawn site inside the block registers its task's `done` addr; scope_exit at the closing brace iterates the registered list and calls `__cajeta_task_wait` on each before letting control past `}`. Wait is fiber-aware (parks if in a fiber, OS-blocks if main).
+- **No leaked tasks** — designed as a compile error for `spawn` without enclosing `scope`. Not yet enforced; current MVP allows top-level spawns (the surrounding `await` provides the join in practice for every existing test). Enforcement = future R5-B.
+- **Cancellation propagates down** — future R5-C. Each task needs a cancellation token threaded through fiber state; await checks on resume; scope-level cancel sets every child's token. Not yet implemented.
+- **Errors propagate up** — future R5-D. Builds on the existing exception runtime + R5-C: a child throw records the exception on its Task; scope_exit on join inspects each child's exception slot; if any threw, scope cancels remaining children and re-throws.
+- **Borrows can outlive the spawn** — relies on the join property above. Today the join exists; the static check that rejects borrow captures whose source dies before the scope is a separate piece of work.
 
 `spawn` returns a `Task<T>` that you can optionally `await`. Without `await`, the result is dropped at scope-end (still after the task completes).
 
