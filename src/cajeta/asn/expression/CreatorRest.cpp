@@ -59,6 +59,16 @@ namespace cajeta {
                 param.expression->resolveTypes(module);
             }
             llvm::Value* value = param.expression->generateCode(module);
+            // L-value-to-r-value coercion. Argument expressions can be
+            // local allocas (IdentifierExpression), field GEPs
+            // (DotExpression — covers `this.handle` etc.), or array
+            // slots (ArrayIndexExpression) — all need a load before
+            // the value flows into the constructor. Without this,
+            // ctor params like `pointer handle` receive the slot
+            // address instead of the value, which silently misroutes
+            // every pthread-handle-style argument.
+            auto astExpr = dynamic_pointer_cast<Expression>(param.expression);
+            value = loadIfLValue(module, value, astExpr);
             CajetaTypePtr paramType = param.expression->getResolvedType();
             if (!paramType) paramType = CajetaType::of(value);
             entries.push_back(ParameterEntry(paramType, param.label, value));

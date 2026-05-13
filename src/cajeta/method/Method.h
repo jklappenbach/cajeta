@@ -72,10 +72,15 @@ namespace cajeta {
         vector<FormalParameterPtr> parameterList;
         int virtualTableIndex;
 
-        // DropEntry alloca pointers for every owned local declared in this method,
-        // in declaration order. Drained at scope exit / return — pops fire in
-        // reverse order. See MemoryModel.md § Runtime: drop chain with watermark.
-        vector<llvm::Value*> ownerDropEntries;
+        // Stack of drop frames. Each Block::generateCode pushes a frame
+        // at entry, registers any owned locals declared inside into the
+        // top frame, and fires + pops the frame's entries at the
+        // block's closing `}` (unless the block was already terminated
+        // by a return/throw — those fire ALL frames LIFO themselves
+        // before the terminator). This is what makes RAII guards
+        // release at inner-block exit instead of at method exit. See
+        // MemoryModel.md § Runtime: drop chain with watermark.
+        vector<vector<llvm::Value*>> dropFrameStack;
 
         CajetaModulePtr module;
         llvm::IRBuilder<>* builder;
@@ -123,15 +128,42 @@ namespace cajeta {
         bool isReturnsOwnership() const { return returnsOwnership; }
         void setReturnsOwnership(bool v) { returnsOwnership = v; }
 
-        // Register a DropEntry alloca (as emitted by LocalVariableDeclaration for
-        // an owned local). Called once per owned local, at declaration order.
-        void registerDropEntry(llvm::Value* entry) { ownerDropEntries.push_back(entry); }
+        // Push a fresh (empty) drop frame onto the stack. Block::generateCode
+        // calls this at its entry; the frame collects every owned local
+        // declared inside the block until the matching pop.
+        void pushDropFrame() { dropFrameStack.emplace_back(); }
 
-        // Emit drop-chain pops + drops for all currently-registered owners, in
-        // reverse declaration order. Called before each normal-flow function exit
-        // (explicit return and the synthetic fallthrough terminator).
-        // Exception unwind doesn't go through this — `__cajeta_throw` walks the
-        // drop chain itself down to the catching watermark.
+        // Pop the top frame without emitting any IR. Use after the
+        // matching emitTopFrameDrops (or after a terminator made the
+        // drops dead code).
+        void popDropFrame() {
+            if (!dropFrameStack.empty()) dropFrameStack.pop_back();
+        }
+
+        // Register a DropEntry alloca (as emitted by LocalVariableDeclaration for
+        // an owned local) into the current top frame.
+        void registerDropEntry(llvm::Value* entry) {
+            if (dropFrameStack.empty()) {
+                // Defensive: a caller that registers before any block has
+                // pushed gets a synthetic outer frame so the entry isn't
+                // silently dropped. Shouldn't happen in normal flow.
+                dropFrameStack.emplace_back();
+            }
+            dropFrameStack.back().push_back(entry);
+        }
+
+        // Emit drop-chain pops + drops for the top frame's entries in
+        // reverse order. Called by Block::generateCode at its normal
+        // closing `}` to release the locals declared inside that block.
+        // The frame is NOT popped — call popDropFrame() afterwards.
+        void emitTopFrameDrops(CajetaModulePtr module);
+
+        // Emit drop-chain pops + drops for EVERY frame still on the
+        // stack, walking from innermost to outermost (LIFO across
+        // frames, LIFO within each). Called by ReturnStatement before
+        // the ret so the chain unwinds across all enclosing blocks at
+        // once. Frames stay on the stack — each enclosing block will
+        // observe the terminator and skip its own fire on the way out.
         void emitOwnerDrops(CajetaModulePtr module);
 
         const string& getName() const {

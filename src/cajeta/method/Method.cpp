@@ -68,15 +68,30 @@ namespace cajeta {
         this->block = block;
     }
 
-    void Method::emitOwnerDrops(CajetaModulePtr module) {
-        if (ownerDropEntries.empty()) return;
+    void Method::emitTopFrameDrops(CajetaModulePtr module) {
+        if (dropFrameStack.empty() || dropFrameStack.back().empty()) return;
         llvm::Function* popRun = module->getRuntimeFunction("__cajeta_drop_pop_run");
         if (!popRun) return;
         auto* b = module->getBuilder();
-        // Reverse declaration order: LIFO. Each pop releases the entry from the
-        // chain and runs its drop function if the entry is still active.
-        for (auto it = ownerDropEntries.rbegin(); it != ownerDropEntries.rend(); ++it) {
+        auto& frame = dropFrameStack.back();
+        for (auto it = frame.rbegin(); it != frame.rend(); ++it) {
             b->CreateCall(popRun, {*it});
+        }
+    }
+
+    void Method::emitOwnerDrops(CajetaModulePtr module) {
+        if (dropFrameStack.empty()) return;
+        llvm::Function* popRun = module->getRuntimeFunction("__cajeta_drop_pop_run");
+        if (!popRun) return;
+        auto* b = module->getBuilder();
+        // Fire each frame inner→outer (the LIFO direction). Within each
+        // frame, fire entries in reverse declaration order. Frames stay
+        // on the stack — enclosing Block::generateCode will observe the
+        // terminator and skip its own emitTopFrameDrops on the way out.
+        for (auto fit = dropFrameStack.rbegin(); fit != dropFrameStack.rend(); ++fit) {
+            for (auto eit = fit->rbegin(); eit != fit->rend(); ++eit) {
+                b->CreateCall(popRun, {*eit});
+            }
         }
     }
 

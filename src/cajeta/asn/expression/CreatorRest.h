@@ -31,8 +31,15 @@ namespace cajeta {
             if (ctx->arguments()->parameterList()) {
                 for (auto& ctxParameterEntry: ctx->arguments()->parameterList()->parameterEntry()) {
                     MethodCallParameter entry;
-                    entry.label = ctxParameterEntry->getText();
                     entry.expression = Expression::fromContext(ctxParameterEntry->expression());
+                    // Only set label if a parameterLabel actually exists. Reading
+                    // ctxParameterEntry->getText() captures the entire entry text
+                    // (including the expression), which would make every positional
+                    // arg look labeled and route through the labeled-ctor resolver
+                    // — silently failing the lookup.
+                    if (ctxParameterEntry->parameterLabel()) {
+                        entry.label = ctxParameterEntry->parameterLabel()->getText();
+                    }
                     parameters.push_back(entry);
                 }
             }
