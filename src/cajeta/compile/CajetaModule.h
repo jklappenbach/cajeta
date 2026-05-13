@@ -37,6 +37,16 @@ namespace cajeta {
         static map<string, CajetaModulePtr> strutureToModule;
         static map<string, CajetaModulePtr> moduleVariables;
 
+        // The module currently being walked (parse pass or template-
+        // instantiation walk). Used as a fallback by call sites that don't
+        // thread `module` through their APIs — notably the parse-time
+        // Expression / Type construction path, which is several layers deep
+        // off the visitor. Set by `Compiler::parse` and by
+        // `CajetaClass::instantiate` around their respective walks.
+        // Single-threaded compilation, so a plain pointer is enough; if we
+        // ever parallelize parsing this becomes thread_local.
+        static CajetaModulePtr activeModule;
+
 
         map<string, map<string, QualifiedNamePtr>> imports;
         QualifiedNamePtr qName;
@@ -65,6 +75,19 @@ namespace cajeta {
 
     private:
         std::vector<LoopContext> loopContextStack;
+
+        // Type-parameter substitution stack for template instantiation. Each
+        // frame is a map from parameter name (T, K, V, ...) to the concrete
+        // CajetaTypePtr it resolves to during the current instantiation walk.
+        // Pushed on entry to `CajetaClass::instantiate`, popped on exit.
+        //
+        // Only the TOP frame is consulted by type resolution — parameters
+        // never leak across instantiations. When `Pair<A,B> extends Tuple<A>`
+        // is materialized, `A` is substituted to `int32` *before* recursing
+        // into Tuple's instantiation; Tuple's frame contains `T → int32`,
+        // not Pair's `A`. v1 doesn't support nested template classes, so a
+        // single-level lookup is sufficient.
+        std::vector<std::map<std::string, CajetaTypePtr>> typeSubstitutionStack;
 
         // Current state
         ScopeStack scopeStack;
@@ -144,6 +167,25 @@ namespace cajeta {
             return imports;
         }
 
+        // Template-instantiation substitution stack — see field declaration
+        // for semantics. Push before walking a template body with concrete
+        // arguments; pop when done.
+        void pushTypeSubstitution(std::map<std::string, CajetaTypePtr> frame) {
+            typeSubstitutionStack.push_back(std::move(frame));
+        }
+        void popTypeSubstitution() {
+            if (!typeSubstitutionStack.empty()) typeSubstitutionStack.pop_back();
+        }
+        // Returns nullptr if `name` isn't bound by the current top frame.
+        // Only the top is consulted; parameters never leak across nested
+        // instantiations (see field-comment rationale).
+        CajetaTypePtr lookupTypeParameter(const std::string& name) const {
+            if (typeSubstitutionStack.empty()) return nullptr;
+            const auto& top = typeSubstitutionStack.back();
+            auto it = top.find(name);
+            return it == top.end() ? nullptr : it->second;
+        }
+
         map<string, CajetaClassPtr>& getStructures() {
             return structures;
         }
@@ -155,6 +197,13 @@ namespace cajeta {
         static map<string, CajetaModulePtr>& getStructureToModule() {
             return strutureToModule;
         }
+
+        // Active-module accessor. Returns the module currently being walked,
+        // or nullptr outside any walk. Call sites that didn't thread a module
+        // parameter through (parse-time Expression / Type construction) read
+        // this. See the activeModule field for set/clear discipline.
+        static CajetaModulePtr getActiveModule() { return activeModule; }
+        static void setActiveModule(CajetaModulePtr m) { activeModule = m; }
 
         static map<string, CajetaModulePtr>& getModuleVariables() {
             return moduleVariables;
@@ -210,6 +259,11 @@ namespace cajeta {
         list<MethodPtr> getAllMethods() {
             list<MethodPtr> result;
             for (auto entry:  structures) {
+                // Templates have no concrete type and their bodies reference
+                // unresolved type parameters; their methods can't be lowered.
+                // Concrete instantiations (e.g. Box<int32>) are codegen'd via
+                // their own entries in `structures`.
+                if (entry.second->isTemplate()) continue;
                 for (auto methodEntry: entry.second->getMethods()) {
                     result.push_back(methodEntry.second);
                 }

@@ -61,11 +61,17 @@ namespace cajeta {
         tokens.fill();
         CajetaParser parser(&tokens);
         antlr4::tree::ParseTree* parseTree = parser.compilationUnit();
+        // Make the module visible to parse-time helpers that didn't thread
+        // it through (CajetaType / Expression construction). See
+        // CajetaModule::activeModule for rationale.
+        auto prevActive = CajetaModule::getActiveModule();
+        CajetaModule::setActiveModule(module);
         auto visitor = new CajetaLlvmVisitor(module);
         parseTree->accept(visitor);
         cout << "\n\n";
         std::cout << parseTree->toStringTree(&parser, true) << std::endl;
         delete visitor;
+        CajetaModule::setActiveModule(prevActive);
     }
 
     bool fileExists(string& sourcePath) {

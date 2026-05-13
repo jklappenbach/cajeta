@@ -130,6 +130,21 @@ namespace cajeta {
     }
 
     void CajetaClass::generatePrototype() {
+        // Templates aren't types — `Box` alone has no layout, no methods to
+        // lower, no vtable to build. Defer the structural work until a
+        // concrete `Box<int32>` is referenced and `instantiate(...)` runs.
+        //
+        // We DO register the template in canonicalMap so type-use sites can
+        // find it by name and route through `instantiate`. We deliberately
+        // do NOT add it to module->getStructures() — that's the codegen
+        // worklist, and the template's body methods reference unresolved
+        // `T` placeholders which can't be lowered. Concrete instantiations
+        // (e.g. Box<int32>) are added to structures and codegen normally.
+        if (isTemplate()) {
+            canonicalMap[qName->toCanonical()] = static_pointer_cast<CajetaType>(shared_from_this());
+            canonicalMap[qName->getTypeName()] = static_pointer_cast<CajetaType>(shared_from_this());
+            return;
+        }
         string canonical = qName->toCanonical();
 
         llvmType = CajetaType::getOrCreateLlvmType(module->getLlvmContext(), canonical);

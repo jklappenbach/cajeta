@@ -6,6 +6,7 @@
 #include "../field/Field.h"
 #include "../compile/CajetaModule.h"
 #include "CajetaArray.h"
+#include "CajetaClass.h"
 #include "../error/InvalidOperandException.h"
 
 namespace cajeta {
@@ -154,6 +155,11 @@ namespace cajeta {
     }
 
     cajeta::CajetaTypePtr cajeta::CajetaType::fromContext(CajetaParser::TypeTypeContext* ctx, CajetaModulePtr module) {
+        // Fall back to the active module set during the walk — many parse-time
+        // call sites don't have a `module` to pass. See CajetaModule::activeModule.
+        if (!module) {
+            module = CajetaModule::getActiveModule();
+        }
         CajetaTypePtr type;
         QualifiedNamePtr qName;
         CajetaParser::PrimitiveTypeContext* ctxPrimitiveType = ctx->primitiveType();
@@ -167,15 +173,58 @@ namespace cajeta {
             } else {
                 throw "What is this if not a class or interface?";
             }
-            auto it = canonicalMap.find(qName->toCanonical());
-            if (it != canonicalMap.end()) {
-                type = it->second;
-            } else {
-                // Fall back to the native ("") package — covers built-in aliases like
-                // String/Exception that fromContext defaults to package "code".
-                auto nativeIt = canonicalMap.find(qName->getTypeName());
-                if (nativeIt != canonicalMap.end()) {
-                    type = nativeIt->second;
+            // Template type-parameter substitution: when we're inside a template
+            // instantiation walk, `T` should resolve to whatever concrete type
+            // was bound for this instantiation (consulted via the module's
+            // substitution stack). Only matched on the simple type name —
+            // template parameters are unqualified by definition.
+            if (module) {
+                CajetaTypePtr substituted = module->lookupTypeParameter(qName->getTypeName());
+                if (substituted) {
+                    type = substituted;
+                }
+            }
+            if (!type) {
+                auto it = canonicalMap.find(qName->toCanonical());
+                if (it != canonicalMap.end()) {
+                    type = it->second;
+                } else {
+                    // Fall back to the native ("") package — covers built-in aliases like
+                    // String/Exception that fromContext defaults to package "code".
+                    auto nativeIt = canonicalMap.find(qName->getTypeName());
+                    if (nativeIt != canonicalMap.end()) {
+                        type = nativeIt->second;
+                    }
+                }
+            }
+            // Template instantiation: if the type-use site carries
+            // typeArguments (e.g. `Box<int32>`), resolve them and route
+            // through the template's instantiate(...) cache. Each argument
+            // is itself a typeType and goes through fromContext recursively
+            // — substitutions cascade naturally, so `Pair<int32, T>` inside
+            // an outer template walk lands `T` to its current substitution
+            // before instantiating Pair.
+            //
+            // Diamond operator (`Box<>`) is parsed as typeArgumentsOrDiamond
+            // but doesn't appear in the typeType production — it only shows
+            // up under classCreatorRest's createdName. So here we only see
+            // explicit-args typeArguments; diamond inference is TPL-7's job
+            // and lives in NewExpression / ClassCreatorRest.
+            if (auto* targs = ctxClassOrInterface->typeArguments(0)) {
+                auto templateClass = dynamic_pointer_cast<CajetaClass>(type);
+                if (templateClass && templateClass->isTemplate()) {
+                    vector<CajetaTypePtr> args;
+                    for (auto* targ : targs->typeArgument()) {
+                        if (!targ->typeType()) {
+                            throw "wildcard type arguments not supported in v1";
+                        }
+                        CajetaTypePtr argType = fromContext(targ->typeType(), module);
+                        if (!argType) {
+                            throw "unresolved template argument";
+                        }
+                        args.push_back(argType);
+                    }
+                    type = templateClass->instantiate(args);
                 }
             }
         }

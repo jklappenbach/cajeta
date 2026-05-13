@@ -20,6 +20,7 @@
 namespace cajeta {
     map<string, MethodPtr> CajetaModule::methods;
     map<string, CajetaModulePtr> CajetaModule::strutureToModule;
+    CajetaModulePtr CajetaModule::activeModule;
     map<string, CajetaModulePtr> CajetaModule::moduleVariables;
 
     CajetaModule::CajetaModule(llvm::LLVMContext* llvmContext,

@@ -38,6 +38,11 @@ namespace cajeta {
             }
         }
 
+        // Read-only access to the constructor-call argument list, exposed so
+        // TPL-7 diamond inference can inspect arg types without re-evaluating
+        // expressions.
+        const vector<MethodCallParameter>& getParameters() const { return parameters; }
+
         llvm::Value* generateCode(CajetaModulePtr module) override;
     };
 

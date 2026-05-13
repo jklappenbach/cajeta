@@ -91,8 +91,58 @@ namespace cajeta {
                 }
             }
             CajetaClassPtr structure = make_shared<CajetaClass>(pModule, qName, qExtended, qImplemented);
+
+            // Template parameters — capture name + optional `extends` bounds.
+            // Bounds are resolved to QualifiedNamePtrs here so we don't need
+            // to hold the parse tree past per-module build. The class becomes
+            // a template (non-instantiable until referenced with concrete args
+            // via `instantiate(...)`). We also capture the raw source text of
+            // the enclosing typeDeclaration so the parse tree can be released
+            // when this visit pass ends — re-parsing the snippet on demand is
+            // cheap and the result is cached per instantiation. ANTLR context
+            // nodes carry parent links to the compilation unit, so pinning a
+            // single class would transitively pin the whole file's tree.
+            if (auto* tps = ctx->typeParameters()) {
+                vector<TypeParameter> params;
+                for (auto* tp : tps->typeParameter()) {
+                    TypeParameter param(tp->identifier()->getText());
+                    if (auto* bound = tp->typeBound()) {
+                        for (auto* tt : bound->typeType()) {
+                            if (auto* coi = tt->classOrInterfaceType()) {
+                                param.bounds.push_back(QualifiedName::fromContext(coi));
+                            }
+                        }
+                    }
+                    params.push_back(std::move(param));
+                }
+                structure->setTypeParameters(std::move(params));
+
+                antlr4::ParserRuleContext* enclosing = ctx;
+                if (auto* td = dynamic_cast<CajetaParser::TypeDeclarationContext*>(ctx->parent)) {
+                    enclosing = td;
+                }
+                auto* startTok = enclosing->getStart();
+                auto* stopTok = enclosing->getStop();
+                if (startTok && stopTok && startTok->getInputStream()) {
+                    antlr4::misc::Interval interval(
+                        startTok->getStartIndex(), stopTok->getStopIndex());
+                    structure->setTemplateSource(
+                        startTok->getInputStream()->getText(interval));
+                }
+            }
+
             pModule->getStructureStack().push_back(structure);
-            structure->setClassBody(std::any_cast<ClassBodyDeclarationPtr>(visitChildren(ctx)));
+            // For templates, skip the body walk entirely. The body contains
+            // unresolved type-parameter references (`T value`, `T method()`)
+            // that FormalParameter / CajetaType resolution can't handle in
+            // the original parse pass. The captured snippet is the source of
+            // truth for the body — it gets re-parsed under a substitution
+            // map by `instantiate(...)`, where T is bound to a concrete type.
+            // Skipping here also keeps the template out of getAllMethods'
+            // codegen worklist by way of having no methods at all.
+            if (!structure->isTemplate()) {
+                structure->setClassBody(std::any_cast<ClassBodyDeclarationPtr>(visitChildren(ctx)));
+            }
             structure->generatePrototype();
             pModule->getStructureStack().pop_back();
             CajetaModule::getStructureToModule()[structure->getQName()->toCanonical()] = pModule;

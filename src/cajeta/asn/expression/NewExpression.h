@@ -6,12 +6,18 @@
 
 #include "Expression.h"
 #include "CreatorRest.h"
+#include "../../type/CajetaType.h"
 
 namespace cajeta {
 
     class NewExpression : public Expression {
         string package;
         string typeName;
+        // Resolved template arguments for `new Box<int32>(...)`. Empty for
+        // non-templated `new Foo(...)` and for diamond-form `new Box<>(...)`
+        // (TPL-7 fills these in by inference at codegen time).
+        vector<CajetaTypePtr> typeArguments;
+        bool isDiamond = false;
         CreatorRestPtr creatorRest;
     public:
         NewExpression(antlr4::Token* token) : Expression(token) { }
@@ -30,10 +36,43 @@ namespace cajeta {
                             package.append(identifierPart->getText());
                         }
                     }
+                    // Template arguments: createdName allows typeArgumentsOrDiamond
+                    // after each identifier. v1 looks at the LAST one (applying
+                    // to the leaf type); multiple levels of generics in a
+                    // qualified name (e.g. `Outer<A>.Inner<B>`) are deferred.
+                    auto tads = creatorContext->createdName()->typeArgumentsOrDiamond();
+                    if (!tads.empty()) {
+                        auto* lastTad = tads.back();
+                        if (auto* targs = lastTad->typeArguments()) {
+                            for (auto* targ : targs->typeArgument()) {
+                                if (!targ->typeType()) {
+                                    throw "wildcard type arguments not supported in v1";
+                                }
+                                // module=nullptr; fromContext falls back to
+                                // CajetaModule::getActiveModule() so any
+                                // outer-template substitution stack is honored
+                                // (e.g. `new Box<T>()` inside a template body
+                                // where T was bound by the instantiation).
+                                CajetaTypePtr argType = CajetaType::fromContext(targ->typeType(), nullptr);
+                                if (!argType) {
+                                    throw "unresolved template argument in `new`";
+                                }
+                                typeArguments.push_back(argType);
+                            }
+                        } else {
+                            // Diamond form: typeArgumentsOrDiamond has '<' '>'
+                            // tokens but no inner typeArguments rule match.
+                            // TPL-7 handles inference from constructor args.
+                            isDiamond = true;
+                        }
+                    }
                 }
             }
             creatorRest = CreatorRest::fromContext(creatorContext, token);
         }
+
+        const vector<CajetaTypePtr>& getTypeArguments() const { return typeArguments; }
+        bool getIsDiamond() const { return isDiamond; }
 
         llvm::Value* generateCode(CajetaModulePtr module) override;
     };

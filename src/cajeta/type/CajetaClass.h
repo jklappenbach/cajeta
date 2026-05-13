@@ -8,6 +8,9 @@
 #include "StructureProperty.h"
 #include "../method/Method.h"
 #include "Scope.h"
+#include "Generics.h"
+
+#include <vector>
 
 namespace cajeta {
     class CajetaInterface;
@@ -48,11 +51,34 @@ namespace cajeta {
         CajetaModulePtr module;
         ScopePtr scope;
 
-        llvm::StructType* llvmVirtualTableType;
-        llvm::GlobalVariable* llvmVirtualTableGlobal;
-        llvm::StructType* llvmRttiType;
-        llvm::StructType* llvmReferenceType;
-        llvm::GlobalVariable* llvmRttiGlobal;
+        // Templates. `typeParameters` non-empty AND `typeArguments` empty =
+        // an unmaterialized template (don't run generatePrototype on it; it
+        // isn't a real type). Both non-empty = a concrete instantiation
+        // (`Box<int32>`), a real type that codegens normally. Both empty =
+        // an ordinary non-templated class.
+        //
+        // `templateSource` holds the raw text of the class declaration —
+        // captured during the visit pass while the ANTLR CharStream is still
+        // live. We deliberately don't retain parse-tree pointers: ANTLR's
+        // context nodes carry parent links up to the compilation unit, so
+        // pinning one class transitively pins the entire file's tree. The
+        // text is small, re-parsing on demand is cheap, and the result is
+        // cached after first instantiation (see CajetaClass::instantiate).
+        vector<TypeParameter> typeParameters;
+        vector<CajetaTypePtr> typeArguments;
+        string templateSource;
+
+        // Default to nullptr so writeVirtualTable's "already built?" guard
+        // works on fresh instances. Without explicit initialization these
+        // pointers held indeterminate values, which for newly-allocated
+        // template instantiations could look non-null and silently skip
+        // vtable construction — and the resulting garbage pointer crashed
+        // the next instance-construction codegen.
+        llvm::StructType* llvmVirtualTableType = nullptr;
+        llvm::GlobalVariable* llvmVirtualTableGlobal = nullptr;
+        llvm::StructType* llvmRttiType = nullptr;
+        llvm::StructType* llvmReferenceType = nullptr;
+        llvm::GlobalVariable* llvmRttiGlobal = nullptr;
 
         MethodPtr getClosestMethod(string methodName, vector<ParameterEntry> parameters, map<string, MethodPtr> canonical);
         MethodPtr getClosestConstructor(string methodName, vector<ParameterEntry> parameters, map<string, MethodPtr> canonical);
@@ -163,6 +189,38 @@ namespace cajeta {
         // StructureMetadata::populate to materialize the LLVM vtable type and
         // global. Safe to call multiple times (no-ops after first success).
         void writeVirtualTable();
+
+        // Template predicates and accessors. `isTemplate()` means typeParameters
+        // were declared and no type arguments have been bound yet — the class
+        // is a recipe, not a type. `isInstantiation()` means concrete arguments
+        // have been supplied. See Generics.h and CajetaClass::instantiate.
+        bool isTemplate() const { return !typeParameters.empty() && typeArguments.empty(); }
+        bool isInstantiation() const { return !typeArguments.empty(); }
+
+        // Materialize a concrete class from this template under the given
+        // arguments. Idempotent: a second call with the same args returns
+        // the cached instantiation. No-op if this class is not a template
+        // (returns `this`). Defined in TemplateInstantiator.cpp; declared
+        // here as a member for ergonomic call sites, but implemented in a
+        // separate TU to keep CajetaClass.h free of visitor / parser
+        // dependencies. See MEMORY model: the template's source snippet is
+        // re-parsed on each unique instantiation; the result is cached in
+        // `module->getStructures()` keyed by canonical-with-args name.
+        CajetaClassPtr instantiate(vector<CajetaTypePtr> args);
+
+        // Diamond-operator inference (TPL-7). Given the argument types of a
+        // `new Box<>(args)` call site, examine this template's constructor
+        // signatures and return the type-parameter bindings (in declaration
+        // order). Throws CAJETA_ERROR_TYPE_INFERENCE on ambiguity, conflict,
+        // or no match. Callers typically pass the result straight into
+        // `instantiate(...)`.
+        vector<CajetaTypePtr> inferDiamondArgs(const vector<CajetaTypePtr>& argTypes);
+        const vector<TypeParameter>& getTypeParameters() const { return typeParameters; }
+        const vector<CajetaTypePtr>& getTypeArguments() const { return typeArguments; }
+        void setTypeParameters(vector<TypeParameter> params) { typeParameters = std::move(params); }
+        void setTypeArguments(vector<CajetaTypePtr> args) { typeArguments = std::move(args); }
+        const string& getTemplateSource() const { return templateSource; }
+        void setTemplateSource(string src) { templateSource = std::move(src); }
 
         llvm::Value* invokeMethod(string& methodName, vector<ParameterEntry> parameters, bool isConstructor, llvm::Value* thisInstance = nullptr);
 
