@@ -12,3 +12,21 @@ generated/
 *.ll
 *.tokens
 .DS_Store
+
+# Stray build artifacts that appear when cmake is accidentally invoked
+# from the repo root or a source subdirectory (instead of /build).
+# These are cmake-generated, never source.
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+build.ninja
+src/CMakeFiles/
+src/cmake_install.cmake
+src/libcajeta_lib.a
+src/cajeta_runtime.bc
+src/cajeta_runtime_embedded.cpp
+test/CMakeFiles/
+test/cmake_install.cmake
+test/cajeta_test
+test/cajeta_test*_include.cmake
+test/cajeta_test*_tests.cmake

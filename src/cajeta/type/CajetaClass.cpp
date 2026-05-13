@@ -231,10 +231,16 @@ namespace cajeta {
     }
 
     void CajetaClass::ensureDefaultConstructor() {
-        string name = qName->getTypeName();
-        if (methods.find(name) == methods.end()) {
-            addMethod(make_shared<DefaultConstructorMethod>(module, static_pointer_cast<CajetaClass>(shared_from_this())));
-        }
+        // Previous version looked up `qName->getTypeName()` in `methods`,
+        // but `methods` is keyed by the full canonical (`"pkg.Class::Class()"`),
+        // never by the bare type name — so this check missed every
+        // user-declared constructor and a synthesized default was added
+        // after the user's, which then threw "Constructor already
+        // exists" from addMethod when canonical signatures collided.
+        // Consult the constructor map directly instead.
+        if (!unlabeledConstructorMap.empty()) return;
+        addMethod(make_shared<DefaultConstructorMethod>(
+            module, static_pointer_cast<CajetaClass>(shared_from_this())));
     }
 
     void CajetaClass::setClassBody(cajeta::ClassBodyDeclarationPtr classBody) {
