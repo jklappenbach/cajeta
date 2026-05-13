@@ -411,11 +411,19 @@ namespace cajeta {
                     return loadStringArg(module, parameters[i].expression);
                 };
                 auto loadValue = [&](size_t i) {
-                    llvm::Value* v = parameters[i].expression->generateCode(module);
-                    if (auto* a = llvm::dyn_cast_or_null<llvm::AllocaInst>(v)) {
-                        v = builder->CreateLoad(a->getAllocatedType(), a);
+                    // Use the shared l-value-to-r-value coercion: an
+                    // arg expression might be a local alloca, an array
+                    // GEP, a struct/class field GEP (DotExpression), or
+                    // a class-field implicit-this GEP from
+                    // IdentifierExpression. All of those need a load
+                    // before the value flows into the runtime helper.
+                    auto& p = parameters[i].expression;
+                    llvm::Value* v = p->generateCode(module);
+                    auto ast = dynamic_pointer_cast<Expression>(p);
+                    if (ast && !ast->getResolvedType()) {
+                        ast->resolveTypes(module);
                     }
-                    return v;
+                    return loadIfLValue(module, v, ast);
                 };
                 // Cajeta.* — language-internal diagnostics. Today: drop-chain
                 // observability for the rollout's test suite. These are part of

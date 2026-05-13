@@ -1047,6 +1047,19 @@ namespace cajeta {
                     }
                 }
             }
+        } else if (auto id = dynamic_pointer_cast<IdentifierExpression>(expression)) {
+            // Implicit-this field access: when a bare identifier inside
+            // an instance method body resolves to a class property,
+            // IdentifierExpression returns the field's GEP slot (not an
+            // AllocaInst). Load through using the resolved type, same
+            // shape as the DotExpression branch above.
+            if (val && val->getType()->isPointerTy() && id->getResolvedType()) {
+                if (llvm::Type* lt = id->getResolvedType()->getLlvmType()) {
+                    if (lt != val->getType()) {
+                        val = builder->CreateLoad(lt, val);
+                    }
+                }
+            }
         }
         // Coerce to the enclosing function's return type. IntegerLiteralExpression picks
         // the smallest-fitting width and Cajeta otherwise lacks an upfront-promotion pass,

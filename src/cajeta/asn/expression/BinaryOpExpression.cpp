@@ -70,20 +70,40 @@ namespace cajeta {
                 if (loadTy) return builder->CreateLoad(loadTy, v);
             }
         }
+        // DotExpression usually returns a field's GEP slot pointer that
+        // needs loading through. The exception is variable-size struct
+        // fields (WireFormats.md § Inline length-prefix layout), where
+        // DotExpression returns a runtime helper's already-materialized
+        // String pointer — that's the value, not a slot to load. Gate
+        // on v being an actual GEP so we don't double-load the helper
+        // result. Doesn't use `loadTy != v->getType()` because a
+        // `pointer`-typed field has loadTy == ptr == v->getType() but
+        // still needs the load.
+        if (auto dot = dynamic_pointer_cast<DotExpression>(ast)) {
+            if (auto resolved = ast->getResolvedType()) {
+                if (llvm::Type* loadTy = resolved->getLlvmType()) {
+                    if (llvm::isa<llvm::GetElementPtrInst>(v)) {
+                        llvm::Value* loaded = builder->CreateLoad(loadTy, v);
+                        if (!dot->getChildren().empty()) {
+                            auto recv = dynamic_pointer_cast<Expression>(dot->getChildren()[0]);
+                            loaded = DotExpression::maybeBswap(module, loaded, recv);
+                        }
+                        return loaded;
+                    }
+                }
+            }
+        }
+        // IdentifierExpression that resolved to a class property via the
+        // implicit-this fallback also returns a GEP — same load story.
+        // We detect it by v being a pointer-typed value (the GEP) while
+        // ast's resolvedType is a non-pointer scalar (the field's type).
+        // The standalone pointer-with-different-type check below catches
+        // this; an explicit branch isn't needed here.
         if (v->getType()->isPointerTy() && ast) {
             if (auto resolved = ast->getResolvedType()) {
                 if (llvm::Type* loadTy = resolved->getLlvmType()) {
                     if (loadTy != v->getType()) {
-                        llvm::Value* loaded = builder->CreateLoad(loadTy, v);
-                        // Bswap on read when the receiver struct's endianness
-                        // differs from the host (DotExpression-rooted reads).
-                        if (auto dot = dynamic_pointer_cast<DotExpression>(ast)) {
-                            if (!dot->getChildren().empty()) {
-                                auto recv = dynamic_pointer_cast<Expression>(dot->getChildren()[0]);
-                                loaded = DotExpression::maybeBswap(module, loaded, recv);
-                            }
-                        }
-                        return loaded;
+                        return builder->CreateLoad(loadTy, v);
                     }
                 }
             }

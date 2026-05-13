@@ -584,7 +584,11 @@ namespace cajeta {
         } else if (ctx->identifier()) {
             result = make_shared<IdentifierExpression>(ctx->identifier(), true);
         } else if (ctx->THIS()) {
-            result = make_shared<ThisExpression>(ctx->expression());
+            // Pass the Token directly — ctx is a PrimaryContext here, so
+            // ctx->expression() is null for the THIS form and the old
+            // ThisExpression(ctx->expression()) overload would null-deref
+            // on getStart(). The token-taking overload sidesteps that.
+            result = make_shared<ThisExpression>(ctx->getStart());
         } else if (ctx->SUPER()) {
             // `super` as a primary expression (e.g. `super.foo()`); the actual call
             // dispatch is the bigger feature we haven't built yet.

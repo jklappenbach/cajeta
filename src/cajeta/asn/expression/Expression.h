@@ -133,6 +133,12 @@ namespace cajeta {
     class ThisExpression : public PrimaryExpression {
     public:
         ThisExpression(CajetaParser::ExpressionContext* ctx) : PrimaryExpression(ctx->getStart()) { }
+        // Used by PrimaryExpression::fromContext, where `ctx` is a
+        // PrimaryContext (not an ExpressionContext). Previously the
+        // call site passed `ctx->expression()` which is null for the
+        // THIS form — the result was a null-deref the moment ThisExpression
+        // tried to read getStart(). Now we accept the Token directly.
+        ThisExpression(antlr4::Token* token) : PrimaryExpression(token) { }
 
         void resolveTypes(CajetaModulePtr module) override;
 
