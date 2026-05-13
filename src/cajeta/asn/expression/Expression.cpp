@@ -1732,7 +1732,38 @@ namespace cajeta {
 
         if (isCtor) {
             kind = Kind::CONSTRUCTOR;
-            return;  // codegen will surface NOT_IMPLEMENTED
+            if (!targetClass) return;
+            // Find any constructor on the class (L4-4 doesn't yet
+            // overload-resolve — first ctor wins). Build the function-
+            // value type from the ctor's user-facing params (skip the
+            // synthesized `this` at index 0) and the class instance
+            // type as the return.
+            MethodPtr ctor;
+            for (auto& entry : targetClass->getMethods()) {
+                if (entry.second && entry.second->isConstructor()) {
+                    ctor = entry.second;
+                    break;
+                }
+            }
+            if (!ctor) return;
+            std::vector<CajetaTypePtr> paramTypes;
+            auto pl = ctor->getParameterList();
+            for (size_t i = 1; i < pl.size(); ++i) {
+                paramTypes.push_back(pl[i]->getType());
+            }
+            CajetaTypePtr ret = std::static_pointer_cast<CajetaType>(targetClass);
+            std::string canon = CajetaFunctionType::buildCanonical(paramTypes, ret);
+            auto& cmap = CajetaType::getCanonicalMap();
+            auto it = cmap.find(canon);
+            if (it != cmap.end()) {
+                resolvedType = it->second;
+            } else {
+                auto fnType = std::make_shared<CajetaFunctionType>(
+                    module, paramTypes, ret);
+                cmap[canon] = std::static_pointer_cast<CajetaType>(fnType);
+                resolvedType = fnType;
+            }
+            return;
         }
         if (!targetClass) return;  // unresolved receiver; codegen errors
 
@@ -1806,10 +1837,95 @@ namespace cajeta {
         if (!resolvedType) resolveTypes(module);
 
         if (kind == Kind::CONSTRUCTOR) {
-            throw Exception(
-                "method reference: constructor reference (Type::new) "
-                "is not yet implemented",
-                "CAJETA_ERROR_NOT_IMPLEMENTED");
+            // Resolve the class + its constructor again at codegen time
+            // — we need both the LLVM struct type (for sizing the
+            // allocation and the vtable slot) and the ctor's LLVM
+            // function pointer for the thunk's call.
+            auto& llvmCtx = *module->getLlvmContext();
+            auto* lmod = module->getLlvmModule();
+            llvm::PointerType* ptrTy = llvm::PointerType::get(llvmCtx, 0);
+
+            auto fnType = std::dynamic_pointer_cast<CajetaFunctionType>(resolvedType);
+            CajetaClassPtr targetClass = resolveMethodRefTargetClass(
+                receiverType, receiverExpr, module);
+            if (!fnType || !targetClass) {
+                throw Exception(
+                    "method reference: constructor reference target "
+                    "did not resolve to a class type",
+                    "CAJETA_ERROR_NOT_IMPLEMENTED");
+            }
+            MethodPtr ctor;
+            for (auto& entry : targetClass->getMethods()) {
+                if (entry.second && entry.second->isConstructor()) {
+                    ctor = entry.second;
+                    break;
+                }
+            }
+            if (!ctor || !ctor->getLlvmFunction()) {
+                throw Exception(
+                    "constructor reference: target constructor has no "
+                    "LLVM function at codegen time",
+                    "CAJETA_ERROR_NOT_IMPLEMENTED");
+            }
+
+            // Synthesize the thunk:
+            //   (ptr captures, ctor_args...) -> ptr instance
+            // Body mirrors what CreatorRest::generateCode does for
+            // `new Foo(args)`: malloc the struct, write the vtable,
+            // call the ctor, return the instance pointer.
+            if (thunkName.empty()) {
+                thunkName = std::string("__cajeta_method_ref_")
+                    + std::to_string(methodRefCounter++);
+            }
+            llvm::Function* existing = lmod->getFunction(thunkName);
+            llvm::Function* thunk = existing
+                ? existing
+                : llvm::Function::Create(fnType->getLlvmFunctionType(),
+                    llvm::Function::ExternalLinkage, thunkName, lmod);
+            if (!existing) {
+                llvm::BasicBlock* tbb = llvm::BasicBlock::Create(
+                    llvmCtx, "entry", thunk);
+                llvm::IRBuilder<> tb(tbb);
+
+                llvm::Type* structTy = targetClass->getLlvmType();
+                const llvm::DataLayout& dl = lmod->getDataLayout();
+                llvm::Constant* allocSize = llvm::ConstantInt::get(
+                    llvm::Type::getInt64Ty(llvmCtx),
+                    dl.getTypeAllocSize(structTy));
+                llvm::CallInst* instance = MemoryManager::createMallocInstruction(
+                    module, allocSize, tbb);
+
+                // Write the vtable pointer at slot 0 (required for any
+                // virtual dispatch on the new instance).
+                if (llvm::GlobalVariable* vtable = targetClass->getVirtualTableGlobal()) {
+                    llvm::Value* vptrSlot = tb.CreateStructGEP(
+                        structTy, instance, /*idx=*/0, "vtable_slot");
+                    tb.CreateStore(vtable, vptrSlot);
+                }
+
+                // Pass the new instance as `this`, then the thunk's
+                // explicit args (1..) as the user-facing ctor params.
+                std::vector<llvm::Value*> ctorArgs;
+                ctorArgs.push_back(instance);
+                unsigned thunkArgCount = thunk->arg_size();
+                for (unsigned i = 1; i < thunkArgCount; ++i) {
+                    ctorArgs.push_back(thunk->getArg(i));
+                }
+                tb.CreateCall(ctor->getLlvmFunctionType(),
+                    ctor->getLlvmFunction(), ctorArgs);
+                tb.CreateRet(instance);
+            }
+
+            // Non-capturing — private global closure record.
+            llvm::StructType* closureTy = llvm::StructType::get(llvmCtx,
+                {(llvm::Type*) ptrTy, (llvm::Type*) ptrTy, (llvm::Type*) ptrTy});
+            llvm::Constant* nullPtr = llvm::ConstantPointerNull::get(ptrTy);
+            llvm::Constant* init = llvm::ConstantStruct::get(closureTy,
+                {static_cast<llvm::Constant*>(thunk), nullPtr, nullPtr});
+            auto* gv = new llvm::GlobalVariable(*lmod, closureTy,
+                /*isConstant=*/true, llvm::GlobalValue::PrivateLinkage,
+                init, thunkName + "_record");
+            return gv;
         }
 
         auto fnType = std::dynamic_pointer_cast<CajetaFunctionType>(resolvedType);

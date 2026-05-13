@@ -91,26 +91,47 @@ TEST(LambdaL4Tests, staticMethodReferenceTwiceConsistent) {
 // codegen so the parser doesn't reject them outright — they're
 // scheduled for L4-2/L4-3/L4-4. The error mentions the specific shape
 // so callers know what's missing.
-TEST(LambdaL4Tests, constructorRefStillNotImplemented) {
-    // No explicit ctor — the constructor-ref doesn't actually invoke
-    // anything in this test; codegen rejects the form before reaching
-    // the underlying ctor.
+// ---------------------------------------------------------------------
+// L4-4: constructor references — `Type::new`
+// ---------------------------------------------------------------------
+
+// Zero-arg constructor reference. The thunk mallocs the instance,
+// writes the vtable, calls the default ctor, returns the instance.
+TEST(LambdaL4Tests, constructorReferenceZeroArg) {
     auto src =
         "package test;\n"
-        "public class Foo { }\n"
+        "public class Counter {\n"
+        "    public int32 next() { return 13; }\n"
+        "}\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        () -> Foo ctor = Foo::new;\n"
-        "        return 0;\n"
+        "        () -> Counter ctor = Counter::new;\n"
+        "        Counter c = ctor();\n"
+        "        return c.next();\n"  // 13
         "    }\n"
         "}\n";
-    try {
-        CajetaJit::compile(src, "test.D");
-        FAIL() << "expected constructor-ref NOT_IMPLEMENTED";
-    } catch (cajeta::Exception& e) {
-        EXPECT_EQ(e.getErrorId(), "CAJETA_ERROR_NOT_IMPLEMENTED");
-        EXPECT_NE(e.getMessage().find("constructor reference"), std::string::npos);
-    }
+    EXPECT_EQ(runI32(src), 13);
+}
+
+// Non-capturing — safe to return from a producing method and invoke
+// from the caller.
+TEST(LambdaL4Tests, returnedConstructorRefCallable) {
+    auto src =
+        "package test;\n"
+        "public class Counter {\n"
+        "    public int32 next() { return 21; }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static () -> Counter mkCtor() {\n"
+        "        return Counter::new;\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        () -> Counter ctor = mkCtor();\n"
+        "        Counter c = ctor();\n"
+        "        return c.next();\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 21);
 }
 
 // ---------------------------------------------------------------------
