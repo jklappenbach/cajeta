@@ -101,6 +101,10 @@ namespace cajeta {
         llvm::StructType* llvmRttiType = nullptr;
         llvm::StructType* llvmReferenceType = nullptr;
         llvm::GlobalVariable* llvmRttiGlobal = nullptr;
+        // Synthesized drop wrapper for this class — see getOrCreateDropFunction.
+        // Cached on first request so LocalVariableDeclaration's drop-entry
+        // registration is a constant-time lookup per declaration site.
+        llvm::Function* llvmDropFunction = nullptr;
 
         MethodPtr getClosestMethod(string methodName, vector<ParameterEntry> parameters, map<string, MethodPtr> canonical);
         MethodPtr getClosestConstructor(string methodName, vector<ParameterEntry> parameters, map<string, MethodPtr> canonical);
@@ -186,6 +190,16 @@ namespace cajeta {
         llvm::GlobalVariable* getVirtualTableGlobal() {
             return llvmVirtualTableGlobal;
         }
+
+        // Synthesize (or return the cached) per-class drop wrapper. The
+        // wrapper takes `ptr instance`, calls the user-declared `drop()`
+        // method on it if one exists, then frees the heap allocation via
+        // __cajeta_free. LocalVariableDeclaration registers a drop entry
+        // pointing at this function for every class-typed local so
+        // instances are reclaimed at scope exit. Returns null only when
+        // the runtime helpers aren't yet linked, in which case the
+        // caller skips the drop-entry registration.
+        llvm::Function* getOrCreateDropFunction();
 
         void setRttiGlobal(llvm::GlobalVariable* llvmRttiGlobal) {
             this->llvmRttiGlobal = llvmRttiGlobal;

@@ -10,6 +10,8 @@
 #include "../field/HeapField.h"
 #include "../field/StackField.h"
 #include "../type/CajetaArray.h"
+#include "../type/CajetaClass.h"
+#include "../type/CajetaStruct.h"
 #include "../type/CajetaFunctionType.h"
 #include "Block.h"
 #include "LocalVariableDeclaration.h"
@@ -953,6 +955,27 @@ namespace cajeta {
                     if (llvm::Function* mark = module->getRuntimeFunction(
                             "__cajeta_drop_mark_inactive")) {
                         builder->CreateCall(mark, {entry});
+                    }
+                }
+            }
+            // Same transfer semantics for class-instance locals.
+            // Returning the local moves the heap allocation up to the
+            // caller; this scope's drop entry must not fire or we'd
+            // free the instance the caller now owns. The caller's
+            // declared receiving local will get its own drop entry.
+            // Struct values and arrays aren't covered here — structs
+            // live inline (no drop), and arrays remain owned by the
+            // declaring scope regardless of whether the array header
+            // is returned (that's a separate pre-existing limitation).
+            if (f) {
+                auto klass = dynamic_pointer_cast<CajetaClass>(f->getType());
+                auto isStruct = dynamic_pointer_cast<CajetaStruct>(f->getType());
+                if (klass && !isStruct && !klass->isInterface()) {
+                    if (llvm::Value* entry = f->getDropEntry()) {
+                        if (llvm::Function* mark = module->getRuntimeFunction(
+                                "__cajeta_drop_mark_inactive")) {
+                            builder->CreateCall(mark, {entry});
+                        }
                     }
                 }
             }

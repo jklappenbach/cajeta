@@ -8,6 +8,8 @@
 #include "../field/HeapField.h"
 #include "../field/StackField.h"
 #include "../type/CajetaArray.h"
+#include "../type/CajetaClass.h"
+#include "../type/CajetaStruct.h"
 #include "../type/CajetaFunctionType.h"
 #include "expression/Expression.h"
 #include "../method/Method.h"
@@ -46,6 +48,33 @@ namespace cajeta {
             llvm::ArrayType::get(i8Ty, DROP_ENTRY_BYTES));
 
         // Load the owner pointer to pass as the drop function's `obj` arg.
+        llvm::Value* ownerPtr = builder->CreateLoad(ptrTy, field->getOrCreateAllocation());
+        builder->CreateCall(push, {entryPtr, ownerPtr, dropFn});
+
+        field->setDropEntry(entryPtr);
+        if (auto m = module->getCurrentMethod()) m->registerDropEntry(entryPtr);
+    }
+
+    // Variant for class-instance locals — same drop-chain wiring, but
+    // takes an already-resolved drop function (the class's synthesized
+    // wrapper) directly instead of a runtime-helper name. The wrapper
+    // is specific to the class, so there's no global symbol to look up
+    // via getRuntimeFunction.
+    static void emitDropEntryForFn(CajetaModulePtr module, FieldPtr field,
+                                    llvm::Function* dropFn) {
+        llvm::Function* push = module->getRuntimeFunction("__cajeta_drop_push");
+        if (!push || !dropFn) return;
+        auto* builder = module->getBuilder();
+        auto& ctx = *module->getLlvmContext();
+        llvm::Type* i8Ty = llvm::Type::getInt8Ty(ctx);
+        llvm::Type* ptrTy = llvm::PointerType::get(ctx, 0);
+
+        llvm::Function* parentFn = builder->GetInsertBlock()->getParent();
+        llvm::IRBuilder<> entryBuilder(&parentFn->getEntryBlock(),
+            parentFn->getEntryBlock().begin());
+        llvm::Value* entryPtr = entryBuilder.CreateAlloca(
+            llvm::ArrayType::get(i8Ty, DROP_ENTRY_BYTES));
+
         llvm::Value* ownerPtr = builder->CreateLoad(ptrTy, field->getOrCreateAllocation());
         builder->CreateCall(push, {entryPtr, ownerPtr, dropFn});
 
@@ -146,6 +175,24 @@ namespace cajeta {
             // ownership transfers to the caller without a double-free.
             if (dynamic_pointer_cast<CajetaFunctionType>(type)) {
                 emitDropEntryFor(module, field, "__cajeta_closure_drop");
+            }
+
+            // User-defined-drop wiring for class-instance locals.
+            // Arrays and structs are handled separately above; struct
+            // values live inline (no heap), and arrays have their own
+            // __cajeta_free_array path. For everything else that's a
+            // class — including the constructor-ref result — register
+            // the class's synthesized drop wrapper so the instance is
+            // reclaimed at scope exit (running any user-declared
+            // `drop()` method first). ReturnStatement deactivates this
+            // entry when the local is returned, transferring ownership
+            // to the caller.
+            auto klass = dynamic_pointer_cast<CajetaClass>(type);
+            bool isStructType = dynamic_pointer_cast<CajetaStruct>(type) != nullptr;
+            if (klass && !isArray && !isStructType && !klass->isInterface()) {
+                if (llvm::Function* dropFn = klass->getOrCreateDropFunction()) {
+                    emitDropEntryForFn(module, field, dropFn);
+                }
             }
         }
 

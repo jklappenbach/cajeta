@@ -185,10 +185,34 @@ namespace cajeta {
             }
             llvmTypes.push_back(ptLlvm);
         }
+        // Apply the same pass-by-pointer rule to the return type: a
+        // class-like (non-struct) return travels as `ptr`, matching the
+        // calling convention the param coercion above uses for class
+        // params. Without this the indirect-call type mismatches when a
+        // method returns a class instance and the caller stores it into
+        // a class-typed local.
+        llvm::Type* llvmRet;
+        {
+            CajetaTypePtr rt = returnType;
+            bool isStructR = rt
+                && dynamic_pointer_cast<CajetaStruct>(rt) != nullptr;
+            bool isArrR = rt
+                && dynamic_pointer_cast<CajetaArray>(rt) != nullptr;
+            bool isClassLikeR = rt
+                && dynamic_pointer_cast<CajetaClass>(rt) != nullptr;
+            bool isPrimR = rt && (rt->getTypeFlags() & PRIMITIVE_FLAG);
+            bool returnByPointer = (isClassLikeR && !isStructR)
+                && (isArrR || !isPrimR);
+            if (returnByPointer) {
+                llvmRet = llvm::PointerType::get(*module->getLlvmContext(), 0);
+            } else {
+                llvmRet = rt ? rt->getLlvmType() : nullptr;
+            }
+        }
         if (llvmTypes.size()) {
-            llvmFunctionType = llvm::FunctionType::get(returnType->getLlvmType(), llvmTypes, false);
+            llvmFunctionType = llvm::FunctionType::get(llvmRet, llvmTypes, false);
         } else {
-            llvmFunctionType = llvm::FunctionType::get(returnType->getLlvmType(), false);
+            llvmFunctionType = llvm::FunctionType::get(llvmRet, false);
         }
 
         string canonical = Method::buildCanonical(parent, name, parameterList, true);

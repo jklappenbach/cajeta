@@ -249,6 +249,92 @@ namespace cajeta {
         }
     }
 
+    llvm::Function* CajetaClass::getOrCreateDropFunction() {
+        if (llvmDropFunction) return llvmDropFunction;
+        if (interfaceFlag) return nullptr;
+        auto& ctx = *module->getLlvmContext();
+        auto* lmod = module->getLlvmModule();
+        llvm::PointerType* ptrTy = llvm::PointerType::get(ctx, 0);
+        llvm::FunctionType* fnTy = llvm::FunctionType::get(
+            llvm::Type::getVoidTy(ctx), {(llvm::Type*) ptrTy},
+            /*isVarArg=*/false);
+
+        // Build the symbol name from the canonical class name with
+        // separators sanitized to underscores so it's a valid C
+        // identifier (and reads sensibly in stack traces).
+        std::string dropName = std::string("__cajeta_") + qName->toCanonical() + "_drop";
+        for (char& c : dropName) {
+            if (c == ':' || c == '.' || c == '<' || c == '>' || c == ',' || c == ' ') {
+                c = '_';
+            }
+        }
+
+        // If the same JIT module has built this drop fn before (e.g. a
+        // template instantiation revisited), reuse it.
+        if (llvm::Function* existing = lmod->getFunction(dropName)) {
+            llvmDropFunction = existing;
+            return existing;
+        }
+
+        llvmDropFunction = llvm::Function::Create(fnTy,
+            llvm::Function::ExternalLinkage, dropName, lmod);
+        llvm::BasicBlock* bb = llvm::BasicBlock::Create(
+            ctx, "entry", llvmDropFunction);
+        llvm::IRBuilder<> b(bb);
+        llvm::Value* instance = llvmDropFunction->getArg(0);
+
+        // Null guard. The drop chain only ever fires on values pushed
+        // by __cajeta_drop_push, but a user-declared `drop()` method
+        // might run inside another drop (chain teardown) on a borrowed
+        // null receiver. Cheap to add, prevents a crash on the unhappy
+        // path.
+        llvm::BasicBlock* doDrop = llvm::BasicBlock::Create(
+            ctx, "doDrop", llvmDropFunction);
+        llvm::BasicBlock* done = llvm::BasicBlock::Create(
+            ctx, "done", llvmDropFunction);
+        llvm::Value* isNull = b.CreateICmpEQ(instance,
+            llvm::ConstantPointerNull::get(ptrTy));
+        b.CreateCondBr(isNull, done, doDrop);
+
+        b.SetInsertPoint(doDrop);
+
+        // Call the user's drop() method if defined. Single-param
+        // (just `this`), non-constructor, named exactly "drop". We
+        // look up directly rather than going through resolveMethod so
+        // the drop wrapper doesn't depend on overload resolution that
+        // hasn't run yet at this stage of codegen.
+        MethodPtr userDrop;
+        for (auto& entry : methods) {
+            MethodPtr m = entry.second;
+            if (!m || m->isConstructor()) continue;
+            if (m->getName() != "drop") continue;
+            auto pl = m->getParameterList();
+            // After Method::generatePrototype, instance methods have
+            // `this` as parameterList[0]. drop() has no other params.
+            if (pl.size() == 1) {
+                userDrop = m;
+                break;
+            }
+        }
+        if (userDrop && userDrop->getLlvmFunction()) {
+            b.CreateCall(userDrop->getLlvmFunctionType(),
+                userDrop->getLlvmFunction(), {instance});
+        }
+
+        // Free the heap allocation. __cajeta_free is part of the
+        // closure-drop runtime added in L3-3; reuse it here so all
+        // generic heap blocks share one free symbol.
+        llvm::Function* freeFn = module->getRuntimeFunction("__cajeta_free");
+        if (freeFn) {
+            b.CreateCall(freeFn, {instance});
+        }
+
+        b.CreateBr(done);
+        b.SetInsertPoint(done);
+        b.CreateRetVoid();
+        return llvmDropFunction;
+    }
+
     struct MethodEntry {
         MethodPtr method;
         int score;
