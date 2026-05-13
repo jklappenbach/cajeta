@@ -43,6 +43,13 @@ namespace cajeta {
         static std::string buildCanonical(
             const std::vector<CajetaTypePtr>& parameterTypes,
             CajetaTypePtr returnType);
+
+        // Mirror of Method::generatePrototype's pass-by-pointer choice
+        // for params and returns at the call boundary. Exposed because
+        // the matching call site in MethodReferenceExpression needs to
+        // type the indirect call the same way the function-typed
+        // signature does.
+        static llvm::Type* toCallingConvType(CajetaTypePtr p, llvm::Type* ptrTy);
     };
 
 }

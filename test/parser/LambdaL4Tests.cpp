@@ -135,6 +135,68 @@ TEST(LambdaL4Tests, boundInstanceMethodReferenceCallable) {
     EXPECT_EQ(runI32(src), 42);
 }
 
+// ---------------------------------------------------------------------
+// L4-3: unbound instance method references — `Type::instanceMethod`
+// ---------------------------------------------------------------------
+
+// The function-value type has the receiver as its first explicit
+// parameter; the caller passes a receiver at the call site and the
+// thunk forwards it as `this`. Non-capturing — closure record is a
+// private global, no escape concerns.
+TEST(LambdaL4Tests, unboundInstanceMethodReferenceCallable) {
+    auto src =
+        "package test;\n"
+        "public class Counter {\n"
+        "    public int32 next() { return 99; }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Counter c = new Counter();\n"
+        "        (Counter) -> int32 fn = Counter::next;\n"
+        "        return fn(c);\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 99);
+}
+
+// Multi-arg unbound instance ref: receiver + extra method params.
+TEST(LambdaL4Tests, unboundInstanceMethodReferenceMultiArg) {
+    auto src =
+        "package test;\n"
+        "public class Adder {\n"
+        "    public int32 plus(int32 x) { return x + 1; }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Adder a = new Adder();\n"
+        "        (Adder, int32) -> int32 fn = Adder::plus;\n"
+        "        return fn(a, 10);\n"  // 11
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 11);
+}
+
+// Unbound refs don't capture — safe to return from a producing method
+// since the closure record is a private global constant.
+TEST(LambdaL4Tests, returnedUnboundInstanceRefCallable) {
+    auto src =
+        "package test;\n"
+        "public class Counter {\n"
+        "    public int32 next() { return 7; }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static (Counter) -> int32 mkFn() {\n"
+        "        return Counter::next;\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        (Counter) -> int32 fn = mkFn();\n"
+        "        Counter c = new Counter();\n"
+        "        return fn(c);\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 7);
+}
+
 // Returning a bound-instance ref must be rejected by the L3-2 escape
 // check — the captured receiver is borrowed and would dangle past the
 // producing method's return.

@@ -1642,36 +1642,62 @@ namespace cajeta {
     static int64_t methodRefCounter = 0;
 
     // Resolve a MethodReferenceExpression's LHS to a target class.
-    // Tries the typeType form, then the expression form's resolvedType,
-    // then falls back to scanning the type registry for a class whose
-    // short name matches a bare-identifier expression LHS — that last
-    // path handles the common `Util::method` shape that the grammar
-    // parses as `expression '::' identifier` rather than `typeType '::'
-    // identifier`.
-    static CajetaClassPtr resolveMethodRefTargetClass(
+    // Returns the class plus whether the LHS resolved as a runtime VALUE
+    // (a local of class type, suitable for binding) or as a TYPE-NAME
+    // (the class itself, suitable for unbound / static refs).
+    //
+    // The grammar parses `Util::method` (where Util is a bare class name)
+    // as `expression '::' identifier` — IdentifierExpression's scope
+    // lookup leaves resolvedType null. When that happens we fall back to
+    // scanning the type registry for a class whose short name matches,
+    // and flag the result as a type-name resolution so the caller can
+    // pick UNBOUND_INSTANCE over BOUND_INSTANCE.
+    struct MethodRefTargetResolution {
+        CajetaClassPtr targetClass;
+        bool receiverIsValue;
+    };
+    static MethodRefTargetResolution resolveMethodRefTarget(
             CajetaTypePtr receiverType,
             ExpressionPtr receiverExpr,
             CajetaModulePtr module) {
+        MethodRefTargetResolution out{nullptr, false};
         if (receiverType) {
-            return std::dynamic_pointer_cast<CajetaClass>(receiverType);
+            out.targetClass = std::dynamic_pointer_cast<CajetaClass>(receiverType);
+            // typeType form is always type-name; receiverIsValue stays false.
+            return out;
         }
-        if (!receiverExpr) return nullptr;
+        if (!receiverExpr) return out;
         if (!receiverExpr->getResolvedType()) {
             receiverExpr->resolveTypes(module);
         }
         if (auto k = std::dynamic_pointer_cast<CajetaClass>(receiverExpr->getResolvedType())) {
-            return k;
+            out.targetClass = k;
+            out.receiverIsValue = true;
+            return out;
         }
+        // Class-name fallback for bare identifiers naming a class type.
         auto idExpr = std::dynamic_pointer_cast<IdentifierExpression>(receiverExpr);
-        if (!idExpr) return nullptr;
+        if (!idExpr) return out;
         const std::string& shortName = idExpr->getTextValue();
         for (auto& entry : CajetaType::getCanonicalMap()) {
             auto klass = std::dynamic_pointer_cast<CajetaClass>(entry.second);
             if (!klass) continue;
             auto qn = klass->getQName();
-            if (qn && qn->getTypeName() == shortName) return klass;
+            if (qn && qn->getTypeName() == shortName) {
+                out.targetClass = klass;
+                // receiverIsValue stays false — the LHS named a type, not an instance.
+                return out;
+            }
         }
-        return nullptr;
+        return out;
+    }
+
+    // Convenience wrapper for sites that only need the class.
+    static CajetaClassPtr resolveMethodRefTargetClass(
+            CajetaTypePtr receiverType,
+            ExpressionPtr receiverExpr,
+            CajetaModulePtr module) {
+        return resolveMethodRefTarget(receiverType, receiverExpr, module).targetClass;
     }
 
     // Find a method on `klass` by name. The lookup currently doesn't
@@ -1700,8 +1726,9 @@ namespace cajeta {
         // Decide the kind. L4-1 only implements the STATIC form; the
         // others land on a NOT_IMPLEMENTED at codegen so the parser
         // still accepts every shape the grammar covers.
-        CajetaClassPtr targetClass = resolveMethodRefTargetClass(
+        MethodRefTargetResolution res = resolveMethodRefTarget(
             receiverType, receiverExpr, module);
+        CajetaClassPtr targetClass = res.targetClass;
 
         if (isCtor) {
             kind = Kind::CONSTRUCTOR;
@@ -1735,37 +1762,41 @@ namespace cajeta {
             return;
         }
 
-        // Instance method — kind depends on whether the LHS was a type
-        // (UNBOUND_INSTANCE) or an expression (BOUND_INSTANCE).
+        // Instance method — BOUND_INSTANCE if the LHS resolved as a
+        // runtime value (a local of class type), UNBOUND_INSTANCE if it
+        // named a type (typeType form or class-name fallback from a bare
+        // identifier).
         MethodPtr instanceMethod = findMethodByName(targetClass, methodName, /*wantStatic=*/false);
         if (instanceMethod) {
-            kind = receiverExpr ? Kind::BOUND_INSTANCE : Kind::UNBOUND_INSTANCE;
+            kind = res.receiverIsValue
+                ? Kind::BOUND_INSTANCE
+                : Kind::UNBOUND_INSTANCE;
+            // Compute the function-value type. instanceMethod's
+            // parameterList includes the synthesized `this` at index 0
+            // (per Method::generatePrototype).
+            std::vector<CajetaTypePtr> paramTypes;
+            auto pl = instanceMethod->getParameterList();
+            if (kind == Kind::UNBOUND_INSTANCE) {
+                // Receiver becomes the function-value's first param;
+                // user-facing args follow.
+                paramTypes.push_back(targetClass);
+            }
+            for (size_t i = 1; i < pl.size(); ++i) {
+                paramTypes.push_back(pl[i]->getType());
+            }
+            CajetaTypePtr ret = instanceMethod->getReturnType();
+            std::string canon = CajetaFunctionType::buildCanonical(paramTypes, ret);
+            auto& cmap = CajetaType::getCanonicalMap();
+            auto it = cmap.find(canon);
+            if (it != cmap.end()) {
+                resolvedType = it->second;
+            } else {
+                auto fnType = std::make_shared<CajetaFunctionType>(
+                    module, paramTypes, ret);
+                cmap[canon] = std::static_pointer_cast<CajetaType>(fnType);
+                resolvedType = fnType;
+            }
             if (kind == Kind::BOUND_INSTANCE) {
-                // Compute the bound function-value type: same params as
-                // the user-declared method (the `this` arg gets fed from
-                // captures, not from the call site). The borrow on the
-                // receiver makes this a scope-bound closure, so flag it
-                // for L3-2's escape check.
-                std::vector<CajetaTypePtr> paramTypes;
-                // instanceMethod's parameterList includes the synthesized
-                // `this` at index 0 (per Method::generatePrototype).
-                // Skip it so the user-facing signature drops `this`.
-                auto pl = instanceMethod->getParameterList();
-                for (size_t i = 1; i < pl.size(); ++i) {
-                    paramTypes.push_back(pl[i]->getType());
-                }
-                CajetaTypePtr ret = instanceMethod->getReturnType();
-                std::string canon = CajetaFunctionType::buildCanonical(paramTypes, ret);
-                auto& cmap = CajetaType::getCanonicalMap();
-                auto it = cmap.find(canon);
-                if (it != cmap.end()) {
-                    resolvedType = it->second;
-                } else {
-                    auto fnType = std::make_shared<CajetaFunctionType>(
-                        module, paramTypes, ret);
-                    cmap[canon] = std::static_pointer_cast<CajetaType>(fnType);
-                    resolvedType = fnType;
-                }
                 _hasBorrowCaptures = true;
             }
         }
@@ -1774,14 +1805,10 @@ namespace cajeta {
     llvm::Value* MethodReferenceExpression::generateCode(CajetaModulePtr module) {
         if (!resolvedType) resolveTypes(module);
 
-        if (kind == Kind::UNBOUND_INSTANCE || kind == Kind::CONSTRUCTOR) {
-            const char* shape =
-                kind == Kind::UNBOUND_INSTANCE
-                    ? "unbound instance method reference (Type::instanceMethod)"
-                    : "constructor reference (Type::new)";
+        if (kind == Kind::CONSTRUCTOR) {
             throw Exception(
-                std::string("method reference: ") + shape
-                + " is not yet implemented",
+                "method reference: constructor reference (Type::new) "
+                "is not yet implemented",
                 "CAJETA_ERROR_NOT_IMPLEMENTED");
         }
 
@@ -1834,8 +1861,9 @@ namespace cajeta {
             llvm::IRBuilder<> tb(tbb);
             std::vector<llvm::Value*> callArgs;
             if (kind == Kind::BOUND_INSTANCE) {
-                // Captures struct is `{ ptr receiver }`. Load the receiver
-                // and pass it as `this`. User args follow.
+                // Captures struct is `{ ptr receiver }`. Load the
+                // receiver and pass it as `this`. User args follow at
+                // thunk arg 1..
                 std::vector<llvm::Type*> capFields = {(llvm::Type*) ptrTy};
                 llvm::StructType* capStructTy = llvm::StructType::get(
                     llvmCtx, capFields);
@@ -1844,11 +1872,25 @@ namespace cajeta {
                     capStructTy, capArg, 0, "captured.this");
                 llvm::Value* recvVal = tb.CreateLoad(ptrTy, recvSlot, "this");
                 callArgs.push_back(recvVal);
-            }
-            // User-facing args live at thunk arg 1.. (arg 0 is captures).
-            unsigned thunkArgCount = thunk->arg_size();
-            for (unsigned i = 1; i < thunkArgCount; ++i) {
-                callArgs.push_back(thunk->getArg(i));
+                unsigned thunkArgCount = thunk->arg_size();
+                for (unsigned i = 1; i < thunkArgCount; ++i) {
+                    callArgs.push_back(thunk->getArg(i));
+                }
+            } else if (kind == Kind::UNBOUND_INSTANCE) {
+                // Thunk arg 1 IS the receiver (passed by the caller as
+                // the function value's first explicit arg). The method
+                // expects `this` first; pass arg 1 there, then args 2..
+                callArgs.push_back(thunk->getArg(1));
+                unsigned thunkArgCount = thunk->arg_size();
+                for (unsigned i = 2; i < thunkArgCount; ++i) {
+                    callArgs.push_back(thunk->getArg(i));
+                }
+            } else {
+                // STATIC — captures is unused; forward args verbatim.
+                unsigned thunkArgCount = thunk->arg_size();
+                for (unsigned i = 1; i < thunkArgCount; ++i) {
+                    callArgs.push_back(thunk->getArg(i));
+                }
             }
             llvm::Value* callResult = tb.CreateCall(
                 target->getLlvmFunctionType(), target->getLlvmFunction(),
@@ -1863,11 +1905,11 @@ namespace cajeta {
         llvm::StructType* closureTy = llvm::StructType::get(llvmCtx,
             {(llvm::Type*) ptrTy, (llvm::Type*) ptrTy, (llvm::Type*) ptrTy});
 
-        if (kind == Kind::STATIC) {
+        if (kind == Kind::STATIC || kind == Kind::UNBOUND_INSTANCE) {
             // Non-capturing — closure record can be a private global
             // constant `{ thunk, null, null }`. Globals live for the
-            // whole program, so a static method reference can be
-            // returned / stored without escape worries.
+            // whole program, so a static or unbound-instance method
+            // reference can be returned / stored without escape worries.
             llvm::Constant* nullPtr = llvm::ConstantPointerNull::get(ptrTy);
             llvm::Constant* init = llvm::ConstantStruct::get(closureTy,
                 {static_cast<llvm::Constant*>(thunk), nullPtr, nullPtr});

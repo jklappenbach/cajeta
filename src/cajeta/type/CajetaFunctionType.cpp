@@ -6,6 +6,9 @@
 
 #include "CajetaFunctionType.h"
 #include "../compile/CajetaModule.h"
+#include "CajetaArray.h"
+#include "CajetaClass.h"
+#include "CajetaStruct.h"
 
 namespace cajeta {
 
@@ -52,12 +55,34 @@ namespace cajeta {
         llvmParams.reserve(this->parameterTypes.size() + 1);
         llvmParams.push_back(ptrTy);
         for (auto& p : this->parameterTypes) {
-            llvmParams.push_back(p->getLlvmType());
+            llvmParams.push_back(toCallingConvType(p, ptrTy));
         }
-        llvm::Type* llvmRet = this->returnType
-            ? this->returnType->getLlvmType()
-            : llvm::Type::getVoidTy(*module->getLlvmContext());
+        // Same pass-by-pointer rule for the return type: a class-or-array
+        // return is conventionally a `ptr` to the heap value, not the
+        // struct itself. Without this the indirect-call's return type
+        // mismatches the underlying method's signature, which goes
+        // through the same coercion in Method::generatePrototype.
+        llvm::Type* llvmRet = toCallingConvType(this->returnType, ptrTy);
+        if (!llvmRet) {
+            llvmRet = llvm::Type::getVoidTy(*module->getLlvmContext());
+        }
         this->llvmFunctionType = llvm::FunctionType::get(llvmRet, llvmParams, /*isVarArg=*/false);
+    }
+
+    // Mirror of Method::generatePrototype's pass-by-pointer choice for
+    // parameter and return types. Class instances and arrays cross the
+    // call boundary as `ptr` to the heap value; structs and primitives
+    // travel by value. Keeping the rule in lockstep means a method
+    // looked up via reference can be called through CajetaFunctionType's
+    // signature without per-arg coercion.
+    llvm::Type* CajetaFunctionType::toCallingConvType(CajetaTypePtr p, llvm::Type* ptrTy) {
+        if (!p) return nullptr;
+        bool isStruct = std::dynamic_pointer_cast<CajetaStruct>(p) != nullptr;
+        bool isArr = std::dynamic_pointer_cast<CajetaArray>(p) != nullptr;
+        bool isClassLike = std::dynamic_pointer_cast<CajetaClass>(p) != nullptr;
+        bool isPrim = (p->getTypeFlags() & PRIMITIVE_FLAG) != 0;
+        bool passByPointer = (isClassLike && !isStruct) && (isArr || !isPrim);
+        return passByPointer ? ptrTy : p->getLlvmType();
     }
 
 }
