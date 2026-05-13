@@ -153,6 +153,33 @@ namespace cajeta {
                 }
             }
 
+            // Capture user-supplied annotations from the enclosing
+            // typeDeclaration (e.g. `@Loggable public class Foo`). v1 stores
+            // them by name only — element-value pairs (`@MyAnn(key=v)`) are
+            // parsed but not yet captured. Annotations are accessible to
+            // future reflection / RTTI paths via Annotatable::getAnnotations.
+            if (auto* typeDecl = dynamic_cast<CajetaParser::TypeDeclarationContext*>(ctx->parent)) {
+                for (auto* mod : typeDecl->classOrInterfaceModifier()) {
+                    auto* ann = mod->annotation();
+                    if (!ann) continue;
+                    QualifiedNamePtr qn;
+                    if (ann->qualifiedName()) {
+                        qn = QualifiedName::fromContext(ann->qualifiedName());
+                    } else if (auto* alt = ann->altAnnotationQualifiedName()) {
+                        // `pkg.@MyAnn` form: package prefix lives in
+                        // identifier(0..n-2), the annotation name is the
+                        // last identifier (after the '@'). v1 takes only
+                        // the leaf name.
+                        const auto& ids = alt->identifier();
+                        if (!ids.empty()) {
+                            qn = QualifiedName::getOrInsert(
+                                ids.back()->getText(), "");
+                        }
+                    }
+                    if (qn) structure->addAnnotation(qn);
+                }
+            }
+
             pModule->getStructureStack().push_back(structure);
             // Pre-register the class in canonicalMap (under both canonical
             // and short typeName) so self-references inside the body
@@ -747,7 +774,13 @@ namespace cajeta {
 
         virtual std::any
         visitAnnotationTypeDeclaration(CajetaParser::AnnotationTypeDeclarationContext* ctx) override {
-            return visitChildren(ctx);
+            // v1: `@interface MyAnn { ... }` parses but is otherwise inert.
+            // The annotation name is recognized when other code does
+            // `@MyAnn` (Annotatable stores it by name), but the body's
+            // element-method declarations aren't registered. Returning a
+            // null `any` keeps onStructureDeclaration from trying to cast
+            // a non-class result to CajetaClassPtr.
+            return std::any(nullptr);
         }
 
         virtual std::any visitAnnotationTypeBody(CajetaParser::AnnotationTypeBodyContext* ctx) override {
