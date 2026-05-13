@@ -225,3 +225,164 @@ TEST(LambdaL3Tests, returnNonCapturingClosureAllowed) {
     auto jit = CajetaJit::compile(src, "test.D");
     SUCCEED();
 }
+
+// ---------------------------------------------------------------------
+// L3-3: closure drop chain — escapable closures + drop accounting
+// ---------------------------------------------------------------------
+
+namespace {
+
+// Two-step helper mirroring DropChainTests.observe: `run()` does the
+// work (its return fires the drop chain), `read()` reads the post-drop
+// count. Closure-related drop semantics aren't visible from within the
+// producing method since drops happen at its return, so the split is
+// necessary.
+int64_t observeDrops(const std::string& body) {
+    std::string src =
+        std::string("package test;\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Cajeta.dropCountReset();\n"
+        "        ") + body + "\n"
+        "        return 0;\n"
+        "    }\n"
+        "    public static int64 read() {\n"
+        "        return Cajeta.dropCount();\n"
+        "    }\n"
+        "}\n";
+    auto jit = CajetaJit::compile(src, "test.D");
+    auto runFn = jit->lookup<int32_t (*)()>("run");
+    runFn();
+    auto readFn = jit->lookup<int64_t (*)()>("read");
+    return readFn();
+}
+
+} // namespace
+
+// Transfer capture: outer's drop entry is deactivated (no double-free),
+// the closure's drop entry fires once and the synthesized drop function
+// frees the transferred heap object + the captures struct + the closure
+// record. The drop chain registers one increment for the active entry.
+TEST(LambdaL3Tests, transferCaptureClosureDropsOnce) {
+    EXPECT_EQ(observeDrops(
+        "int32[] arr = new int32[3];\n"
+        "        () -> int64 fn = () -> #arr.size();"), 1);
+}
+
+// Borrow capture: outer's array keeps its active drop entry (closure
+// merely borrowed the pointer). Two increments — one for the closure
+// (which only frees its own heap-allocated record + captures struct,
+// not the borrowed array) and one for the outer's array.
+TEST(LambdaL3Tests, borrowCaptureClosureDropsBothEntries) {
+    EXPECT_EQ(observeDrops(
+        "int32[] arr = new int32[3];\n"
+        "        () -> int64 fn = () -> arr.size();"), 2);
+}
+
+// Value capture: outer primitive has no drop entry. Closure's drop
+// entry fires once.
+TEST(LambdaL3Tests, valueCaptureClosureDropsOnce) {
+    EXPECT_EQ(observeDrops(
+        "int32 base = 10;\n"
+        "        (int32) -> int32 fn = x -> x + base;"), 1);
+}
+
+// Non-capturing closure: the record is a private global constant, not
+// heap-allocated, but the function-typed local still gets a drop entry
+// (we don't statically know if the value came from a non-capturing
+// literal or a possibly-capturing call). At scope exit
+// __cajeta_closure_drop reads drop_fn=null on the global and no-ops —
+// but the entry's fire still increments the count.
+TEST(LambdaL3Tests, nonCapturingClosureLocalIncrementsCount) {
+    EXPECT_EQ(observeDrops(
+        "() -> int32 fn = () -> 42;"), 1);
+}
+
+// End-to-end escape: return a closure that transferred a heap value,
+// then invoke it from the caller. Pre-L3-3 the heap was freed at the
+// producer's return and the call would segfault. Now the closure owns
+// the heap, the producer's drop entry was deactivated on return, and
+// the caller's local takes ownership.
+TEST(LambdaL3Tests, returnedTransferCaptureClosureCallable) {
+    auto src =
+        "package test;\n"
+        "public final class D {\n"
+        "    public static () -> int64 mkFn() {\n"
+        "        int32[] arr = new int32[5];\n"
+        "        () -> int64 fn = () -> #arr.size();\n"
+        "        return fn;\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        () -> int64 fn = mkFn();\n"
+        "        int64 size = fn();\n"
+        "        return (int32) size;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 5);
+}
+
+// End-to-end escape: value-capture closure. Primitives copy into the
+// captures struct at the producing site; heap-alloc'd struct persists
+// past mkAdder's return because the closure now owns it.
+TEST(LambdaL3Tests, returnedValueCaptureClosureCallable) {
+    auto src =
+        "package test;\n"
+        "public final class D {\n"
+        "    public static (int32) -> int32 mkAdder() {\n"
+        "        int32 base = 10;\n"
+        "        (int32) -> int32 fn = x -> x + base;\n"
+        "        return fn;\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        (int32) -> int32 fn = mkAdder();\n"
+        "        return fn(5);\n"  // 5 + 10
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 15);
+}
+
+// End-to-end escape: non-capturing closure. Record lives in a global,
+// so the producer's stack frame death is irrelevant.
+TEST(LambdaL3Tests, returnedNonCapturingClosureCallable) {
+    auto src =
+        "package test;\n"
+        "public final class D {\n"
+        "    public static () -> int32 mkConst() {\n"
+        "        () -> int32 fn = () -> 42;\n"
+        "        return fn;\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        () -> int32 fn = mkConst();\n"
+        "        return fn();\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 42);
+}
+
+// Drop count after escape + invocation: the caller's local owns the
+// returned closure and fires its drop entry at scope exit. mkFn's drop
+// entries are deactivated (transferred). Caller's run() fires one drop
+// for fn (which itself frees the transferred arr + captures + closure).
+TEST(LambdaL3Tests, escapedClosureDropFiresInCaller) {
+    auto src =
+        "package test;\n"
+        "public final class D {\n"
+        "    public static () -> int64 mkFn() {\n"
+        "        int32[] arr = new int32[4];\n"
+        "        () -> int64 fn = () -> #arr.size();\n"
+        "        return fn;\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        Cajeta.dropCountReset();\n"
+        "        () -> int64 fn = mkFn();\n"
+        "        int64 unused = fn();\n"
+        "        return 0;\n"
+        "    }\n"
+        "    public static int64 read() {\n"
+        "        return Cajeta.dropCount();\n"
+        "    }\n"
+        "}\n";
+    auto jit = CajetaJit::compile(src, "test.D");
+    jit->lookup<int32_t (*)()>("run")();
+    EXPECT_EQ(jit->lookup<int64_t (*)()>("read")(), 1);
+}

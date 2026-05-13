@@ -218,6 +218,20 @@ namespace cajeta {
         module->setBuilder(builder);
         module->setCurrentMethod(shared_from_this());
 
+        // Push the enclosing class onto the structure stack so bare
+        // method/field references inside the body resolve against it
+        // (MethodCallExpression and similar consume structureStack.back()
+        // as the implicit target class). The parsing-time push lives
+        // only for the duration of parsing; codegen runs later off the
+        // already-built AST, so without this we'd return null targets
+        // and crash on null-deref downstream. Popped after the body
+        // finishes so we don't leak state into the next method's gen.
+        bool pushedClass = false;
+        if (parent) {
+            module->getStructureStack().push_back(parent);
+            pushedClass = true;
+        }
+
         createScope();
 
         int i = 0;
@@ -257,6 +271,9 @@ namespace cajeta {
         }
 
         destroyScope();
+        if (pushedClass) {
+            module->getStructureStack().pop_back();
+        }
     }
 
     void Method::createScope() {

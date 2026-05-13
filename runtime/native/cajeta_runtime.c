@@ -72,6 +72,48 @@ void __cajeta_free_array(void* ptr) {
     free(ptr);
 }
 
+// Generic zero-fill allocation for compiler-emitted heap blocks that don't
+// match an array shape — used for closure records and captures structs in
+// L3-3. Mirrors __cajeta_new_array's failure mode so the compiler doesn't
+// have to handle null returns.
+void* __cajeta_alloc(uint64_t size) {
+    if (size == 0) return NULL;
+    void* p = calloc(1, (size_t) size);
+    if (p == NULL) {
+        fprintf(stderr, "cajeta: __cajeta_alloc failed (size=%llu)\n",
+                (unsigned long long) size);
+        abort();
+    }
+    return p;
+}
+
+// Mirror of __cajeta_free_array for non-array heap blocks. Kept as a
+// separate symbol so the drop-fn function-pointer types match what the
+// emitted IR uses for arrays (both are `void(*)(void*)`).
+void __cajeta_free(void* ptr) {
+    free(ptr);
+}
+
+// Drop dispatcher for function-typed locals. The drop chain registers
+// this generic helper for every function-typed local; at scope exit it
+// reads the closure record's drop_fn slot and invokes it if non-null.
+// Non-capturing closures (whose record is a global constant with
+// drop_fn=null) and null pointers are no-ops, so the same drop-entry
+// shape is safe for every assignment.
+//
+// Closure record layout (L3-3): { void* fn, void* captures, void(*drop_fn)(void*) }
+struct cajeta_closure_record {
+    void* fn;
+    void* captures;
+    void (*drop_fn)(void*);
+};
+
+void __cajeta_closure_drop(void* p) {
+    if (!p) return;
+    struct cajeta_closure_record* c = (struct cajeta_closure_record*) p;
+    if (c->drop_fn) c->drop_fn(p);
+}
+
 // Abort with a diagnostic when an array index is out of bounds. Compiler emits a
 // conditional branch to this from ArrayIndexExpression when bounds checking is on.
 void __cajeta_array_bounds_fail(int64_t index, int64_t dim) {

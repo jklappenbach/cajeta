@@ -8,6 +8,7 @@
 #include "../field/HeapField.h"
 #include "../field/StackField.h"
 #include "../type/CajetaArray.h"
+#include "../type/CajetaFunctionType.h"
 #include "expression/Expression.h"
 #include "../method/Method.h"
 #include "../error/CajetaExceptions.h"
@@ -126,6 +127,19 @@ namespace cajeta {
             // join later as their drop semantics get pinned.
             if (isArray) {
                 emitDropEntryFor(module, field, "__cajeta_free_array");
+            }
+
+            // L3-3: function-typed locals own the closure record they
+            // point at (for capturing closures) and need a drop entry
+            // that fires __cajeta_closure_drop at scope exit. Non-
+            // capturing closures store a stack-allocated record with
+            // drop_fn=null, so the runtime helper no-ops on them; the
+            // entry shape is therefore safe for every function-typed
+            // local regardless of what it holds. ReturnStatement
+            // deactivates the entry when the local is returned so
+            // ownership transfers to the caller without a double-free.
+            if (dynamic_pointer_cast<CajetaFunctionType>(type)) {
+                emitDropEntryFor(module, field, "__cajeta_closure_drop");
             }
         }
 

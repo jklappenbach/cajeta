@@ -1297,24 +1297,27 @@ namespace cajeta {
         llvm::BasicBlock* outerInsertBlock = outerBuilder->GetInsertBlock();
         MethodPtr outerMethod = module->getCurrentMethod();
 
-        // ---- Allocate + populate the captures struct on the outer stack,
-        //      using the outer builder (we haven't switched insertion yet).
-        //      Each primitive capture loads its current value from the
-        //      outer field's slot and stores it into the captures struct.
-        //      The captures struct address goes into the closure record's
-        //      captures slot a few lines down.
+        // ---- Allocate + populate the captures struct. Heap-allocate when
+        //      there are captures so the struct can outlive the producing
+        //      method's stack frame; the matching free is in the lambda's
+        //      synthesized drop function (built below). Each primitive
+        //      capture loads its current value from the outer field's slot
+        //      and stores it into the captures struct.
         llvm::PointerType* ptrTy = llvm::PointerType::get(llvmCtx, 0);
         llvm::Value* capturesPtr = nullptr;
+        const llvm::DataLayout& dl = lmod->getDataLayout();
         if (capturesTy) {
-            llvm::Function* outerFn = outerInsertBlock
-                ? outerInsertBlock->getParent() : nullptr;
-            if (outerFn) {
-                llvm::IRBuilder<> entry(&outerFn->getEntryBlock(),
-                    outerFn->getEntryBlock().getFirstInsertionPt());
-                capturesPtr = entry.CreateAlloca(capturesTy, nullptr, "captures");
-            } else {
-                capturesPtr = outerBuilder->CreateAlloca(capturesTy, nullptr, "captures");
+            llvm::Function* allocFn = module->getRuntimeFunction("__cajeta_alloc");
+            if (!allocFn) {
+                throw Exception(
+                    "runtime helper __cajeta_alloc not linked — cannot "
+                    "allocate closure captures",
+                    "CAJETA_ERROR_RUNTIME");
             }
+            uint64_t capBytes = dl.getTypeAllocSize(capturesTy);
+            capturesPtr = outerBuilder->CreateCall(allocFn, {
+                llvm::ConstantInt::get(llvm::Type::getInt64Ty(llvmCtx), capBytes),
+            }, "captures");
             for (size_t i = 0; i < captures.size(); ++i) {
                 auto& cap = captures[i];
                 FieldPtr outerField = outerScope->getField(cap.name);
@@ -1333,16 +1336,20 @@ namespace cajeta {
                     std::string("cap.") + cap.name);
                 outerBuilder->CreateStore(outerVal, slot);
                 // Rule 3 (`#name` transfer): mark the outer binding as
-                // moved so subsequent reads in the enclosing scope hit
-                // use-after-move. The compile-time mark is sufficient for
-                // L3-1; full drop-chain transfer (closure becomes the new
-                // owner and frees at its own drop) lands in L3-3. For
-                // now, the outer's drop entry stays active so the heap
-                // object is still freed at outer scope exit — safe as
-                // long as the closure doesn't escape (L3-2's job to
-                // enforce).
+                // moved and deactivate its drop entry. The closure now
+                // owns the transferred value — its synthesized drop_fn
+                // (below) will free the heap object when the closure
+                // itself drops. Without the deactivation, both the
+                // outer and the closure would attempt to free the same
+                // memory.
                 if (cap.byTransfer && outerScope) {
                     outerScope->markMoved(cap.name);
+                    if (llvm::Value* entry = outerField->getDropEntry()) {
+                        if (llvm::Function* mark = module->getRuntimeFunction(
+                                "__cajeta_drop_mark_inactive")) {
+                            outerBuilder->CreateCall(mark, {entry});
+                        }
+                    }
                 }
             }
         }
@@ -1514,37 +1521,99 @@ namespace cajeta {
         module->setCurrentMethod(outerMethod);
         outerBuilder->SetInsertPoint(outerInsertBlock);
 
-        // L2 ABI: materialize a closure record `{ ptr fn, ptr captures }`
-        // on the outer stack. A function-typed variable's slot (still a
-        // single `ptr`) holds the address of this record; the call site
-        // loads fn_ptr and captures_ptr from it and indirect-dispatches.
-        // capturesPtr is non-null when free identifiers in the body
-        // captured outer fields (L2-2 onwards); otherwise null and the
-        // synthesized function ignores its first arg.
-        llvm::StructType* closureTy = llvm::StructType::get(
-            llvmCtx, {(llvm::Type*) ptrTy, (llvm::Type*) ptrTy});
-        // Place the alloca in the outer function's entry block so the slot
-        // is hoisted out of any inner loops (same convention as the rest of
-        // the codegen).
-        llvm::Function* closureOuterFn = outerInsertBlock
-            ? outerInsertBlock->getParent() : nullptr;
-        llvm::Value* closure;
-        if (closureOuterFn) {
-            llvm::IRBuilder<> entry(&closureOuterFn->getEntryBlock(),
-                closureOuterFn->getEntryBlock().getFirstInsertionPt());
-            closure = entry.CreateAlloca(closureTy, nullptr, "closure");
-        } else {
-            closure = outerBuilder->CreateAlloca(closureTy, nullptr, "closure");
+        // L3-3 closure layout: `{ ptr fn, ptr captures, ptr drop_fn }`.
+        // The drop_fn slot lets the runtime's __cajeta_closure_drop find
+        // the per-lambda free routine without needing static type info at
+        // the call site. Heap-alloc when there are captures so the
+        // closure can outlive the producing method's stack frame
+        // (escape); stack-alloc for non-capturing closures (drop_fn=null,
+        // safe because nothing to free).
+        llvm::StructType* closureTy = llvm::StructType::get(llvmCtx,
+            {(llvm::Type*) ptrTy, (llvm::Type*) ptrTy, (llvm::Type*) ptrTy});
+        uint64_t closureBytes = dl.getTypeAllocSize(closureTy);
+
+        // Synthesize the per-lambda drop function for capturing closures.
+        // It frees each transferred capture's heap object, then the
+        // captures struct, then the closure record itself. Borrow and
+        // value (primitive) captures need nothing — the closure didn't
+        // own them. Only transfer captures (`#name`) require freeing.
+        llvm::Value* dropFnValue = llvm::ConstantPointerNull::get(ptrTy);
+        if (capturesTy) {
+            llvm::Function* freeArrayFn = module->getRuntimeFunction("__cajeta_free_array");
+            llvm::Function* freeFn = module->getRuntimeFunction("__cajeta_free");
+            std::string dropName = synthesizedName + "_drop";
+            llvm::FunctionType* dropFnTy = llvm::FunctionType::get(
+                llvm::Type::getVoidTy(llvmCtx), {ptrTy}, /*isVarArg=*/false);
+            llvm::Function* dropFn = llvm::Function::Create(dropFnTy,
+                llvm::Function::ExternalLinkage, dropName, lmod);
+            llvm::BasicBlock* dropEntryBB = llvm::BasicBlock::Create(
+                llvmCtx, "entry", dropFn);
+            llvm::IRBuilder<> dropBuilder(dropEntryBB);
+            llvm::Value* closureArg = dropFn->getArg(0);
+            llvm::Value* capLoadSlot = dropBuilder.CreateStructGEP(
+                closureTy, closureArg, 1, "closure.captures");
+            llvm::Value* capLoaded = dropBuilder.CreateLoad(
+                ptrTy, capLoadSlot, "captures");
+            for (size_t i = 0; i < captures.size(); ++i) {
+                if (!captures[i].byTransfer) continue;
+                // Today only CajetaArray transfer captures have a known
+                // drop function. Non-array transfers compile but leak —
+                // tracked alongside the existing emitDropEntryFor coverage.
+                if (!std::dynamic_pointer_cast<CajetaArray>(captures[i].type)) continue;
+                if (!freeArrayFn) continue;
+                llvm::Value* slot = dropBuilder.CreateStructGEP(
+                    capturesTy, capLoaded, (unsigned) i,
+                    std::string("cap.") + captures[i].name);
+                llvm::Value* heapPtr = dropBuilder.CreateLoad(
+                    ptrTy, slot, captures[i].name);
+                dropBuilder.CreateCall(freeArrayFn, {heapPtr});
+            }
+            if (freeFn) {
+                dropBuilder.CreateCall(freeFn, {capLoaded});
+                dropBuilder.CreateCall(freeFn, {closureArg});
+            }
+            dropBuilder.CreateRetVoid();
+            dropFnValue = dropFn;
         }
+
+        // Materialize the closure record. Two paths:
+        //   - Non-capturing: emit a private global constant
+        //     `{ fn, null, null }`. Globals live for the program's
+        //     lifetime, so the closure can safely escape its declaring
+        //     scope without a heap allocation — most non-capturing
+        //     lambdas are tiny constants and never freed anyway.
+        //   - Capturing: heap-allocate the record so the closure can
+        //     outlive the producing method's frame. The synthesized
+        //     drop_fn frees the closure when ownership runs out.
+        llvm::Value* closure;
+        if (!capturesTy) {
+            llvm::Constant* nullPtr = llvm::ConstantPointerNull::get(ptrTy);
+            llvm::Constant* init = llvm::ConstantStruct::get(closureTy,
+                {static_cast<llvm::Constant*>(fn), nullPtr, nullPtr});
+            auto* gv = new llvm::GlobalVariable(*lmod, closureTy,
+                /*isConstant=*/true, llvm::GlobalValue::PrivateLinkage,
+                init, synthesizedName + "_record");
+            return gv;
+        }
+        llvm::Function* allocFn = module->getRuntimeFunction("__cajeta_alloc");
+        if (!allocFn) {
+            throw Exception(
+                "runtime helper __cajeta_alloc not linked — cannot "
+                "allocate closure record",
+                "CAJETA_ERROR_RUNTIME");
+        }
+        closure = outerBuilder->CreateCall(allocFn, {
+            llvm::ConstantInt::get(llvm::Type::getInt64Ty(llvmCtx), closureBytes),
+        }, "closure");
         llvm::Value* fnSlot = outerBuilder->CreateStructGEP(
             closureTy, closure, 0, "closure.fn");
         outerBuilder->CreateStore(fn, fnSlot);
         llvm::Value* capSlot = outerBuilder->CreateStructGEP(
             closureTy, closure, 1, "closure.captures");
-        llvm::Value* capValue = capturesPtr
-            ? capturesPtr
-            : (llvm::Value*) llvm::ConstantPointerNull::get(ptrTy);
-        outerBuilder->CreateStore(capValue, capSlot);
+        outerBuilder->CreateStore(capturesPtr, capSlot);
+        llvm::Value* dropSlot = outerBuilder->CreateStructGEP(
+            closureTy, closure, 2, "closure.drop_fn");
+        outerBuilder->CreateStore(dropFnValue, dropSlot);
         return closure;
     }
 

@@ -10,6 +10,7 @@
 #include "../field/HeapField.h"
 #include "../field/StackField.h"
 #include "../type/CajetaArray.h"
+#include "../type/CajetaFunctionType.h"
 #include "Block.h"
 #include "LocalVariableDeclaration.h"
 #include "../error/Exception.h"
@@ -941,6 +942,19 @@ namespace cajeta {
                     "transfer the captures via `#name` to give the closure "
                     "ownership it can carry past this scope",
                     "CAJETA_ERROR_BORROW_ESCAPE");
+            }
+            // L3-3: returning a function-typed local transfers closure
+            // ownership to the caller. Deactivate the local's drop entry
+            // so this scope's exit pop doesn't free the closure out from
+            // under the receiving caller. The caller's own function-typed
+            // local will register a fresh drop entry on receipt.
+            if (f && dynamic_pointer_cast<CajetaFunctionType>(f->getType())) {
+                if (llvm::Value* entry = f->getDropEntry()) {
+                    if (llvm::Function* mark = module->getRuntimeFunction(
+                            "__cajeta_drop_mark_inactive")) {
+                        builder->CreateCall(mark, {entry});
+                    }
+                }
             }
         }
         llvm::Value* val = expression->generateCode(module);

@@ -80,8 +80,14 @@ namespace cajeta {
                 auto fnType = dynamic_pointer_cast<CajetaFunctionType>(field->getType());
                 if (fnType) {
                     llvm::Type* ptrTy = llvm::PointerType::get(llvmCtx, 0);
+                    // L3-3 closure layout: { ptr fn, ptr captures, ptr drop_fn }.
+                    // The call site only reads fn (offset 0) and captures
+                    // (offset 1); drop_fn (offset 2) is the runtime's
+                    // concern at scope exit. Keeping the struct type
+                    // consistent with the layout LambdaExpression emits
+                    // so any future GEP arithmetic stays valid.
                     llvm::StructType* closureTy = llvm::StructType::get(
-                        llvmCtx, {ptrTy, ptrTy});
+                        llvmCtx, {ptrTy, ptrTy, ptrTy});
                     llvm::AllocaInst* slot = field->getOrCreateAllocation();
                     llvm::Value* closurePtr = builder->CreateLoad(
                         ptrTy, slot, "closure_ptr");
