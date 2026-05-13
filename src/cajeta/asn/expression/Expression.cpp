@@ -106,16 +106,19 @@ namespace cajeta {
         } else if (ctx->BANG()) {
             result = make_shared<PrefixExpression>(PREFIX_OP_LOGNOT, token);
         } else if (ctx->lambdaExpression()) {
-            // L1: only the typed form `(T1 name1, T2 name2) -> expr` is
-            // supported. Other lambda-parameters shapes (bare identifier,
-            // `var`-list, comma-separated bare identifiers needing
-            // target-type inference) parse but are stubbed at codegen
-            // until later slices.
+            // L1 (typed params) + L1.5 (bare-identifier params with
+            // target-type inference). Parameter forms recognized:
+            //   `(T1 a, T2 b) -> expr`          — explicit types
+            //   `() -> expr`                    — zero params
+            //   `(a, b) -> expr`                — bare names, types from context
+            //   `a -> expr`                     — single bare name, type from context
+            // The `var`-list form parses but lands on UnsupportedExpression;
+            // block bodies likewise stub out until L2.
             auto* lx = ctx->lambdaExpression();
             auto* lp = lx->lambdaParameters();
             std::vector<std::string> names;
             std::vector<CajetaTypePtr> types;
-            bool hasFullySpecifiedParams = false;
+            bool acceptable = false;
             if (lp) {
                 if (auto* fpl = lp->formalParameterList()) {
                     for (auto* fp : fpl->formalParameter()) {
@@ -124,29 +127,37 @@ namespace cajeta {
                             types.push_back(p->getType());
                         }
                     }
-                    hasFullySpecifiedParams = !names.empty()
-                        || fpl->formalParameter().empty();
-                } else if (lp->LPAREN() && lp->RPAREN()
-                        && !lp->identifier().empty() == false
-                        && !lp->lambdaLVTIList()) {
-                    // Empty parens `() -> expr` — zero params, no inference needed.
-                    hasFullySpecifiedParams = true;
+                    acceptable = !names.empty() || fpl->formalParameter().empty();
+                } else if (lp->LPAREN() && lp->RPAREN() && !lp->lambdaLVTIList()) {
+                    // Parens form. Either empty `()` or bare-identifier list
+                    // `(a, b)`. Names captured; types filled in at resolve
+                    // time from the lambda's expectedType (set by the
+                    // surrounding LocalVariableDeclaration).
+                    for (auto* id : lp->identifier()) {
+                        names.push_back(id->getText());
+                    }
+                    acceptable = true;
+                } else if (!lp->identifier().empty() && !lp->LPAREN()) {
+                    // Single bare identifier `x -> expr`. Same inference
+                    // path as the parens-list form.
+                    names.push_back(lp->identifier(0)->getText());
+                    acceptable = true;
                 }
             }
-            // Body: expression form only in L1. A block-body lambda
+            // Body: expression form only in L1/L1.5. A block-body lambda
             // parses but lands on the UnsupportedExpression fallback.
             auto* lb = lx->lambdaBody();
             ExpressionPtr body;
             if (lb && lb->expression()) {
                 body = Expression::fromContext(lb->expression());
             }
-            if (hasFullySpecifiedParams && body) {
+            if (acceptable && body) {
                 result = make_shared<LambdaExpression>(token,
                     std::move(names), std::move(types), std::move(body));
             } else {
                 result = make_shared<UnsupportedExpression>(
-                    "lambda expression (only typed-params + expression-body form is "
-                    "supported in L1)", token);
+                    "lambda expression (this form needs L2: captures, "
+                    "block bodies, or var-list params)", token);
             }
         } else if (ctx->switchExpression()) {
             // switch expression — arrow form with single-expression bodies. Anything
@@ -892,6 +903,30 @@ namespace cajeta {
     }
 
     llvm::Value* LambdaExpression::generateCode(CajetaModulePtr module) {
+        // L1.5 target-type inference: bare-identifier lambda params (parsed
+        // with empty `paramTypes`) borrow their types from the surrounding
+        // context's expectedType. The expectedType is set by
+        // LocalVariableDeclaration::generateCode before this generateCode
+        // runs, so we infer here rather than in resolveTypes (which runs
+        // earlier, before the context wiring has happened).
+        if (paramTypes.size() < paramNames.size()) {
+            auto expectedFn = std::dynamic_pointer_cast<CajetaFunctionType>(expectedType);
+            if (expectedFn
+                    && expectedFn->getParameterTypes().size() == paramNames.size()) {
+                paramTypes = expectedFn->getParameterTypes();
+                // Stale resolvedType (which was computed without the now-
+                // known param types) — recompute so the synthesized
+                // function uses the right signature.
+                resolvedType.reset();
+            } else {
+                throw Exception(
+                    "lambda parameter types could not be inferred — "
+                    "annotate the parameters explicitly or assign the "
+                    "lambda to a function-typed variable so the LHS pins "
+                    "the parameter types",
+                    "CAJETA_ERROR_TYPE_INFERENCE");
+            }
+        }
         // Ensure resolvedType (the CajetaFunctionType) is computed — body
         // may not have been pre-resolved if this lambda is itself a
         // sub-expression of an unresolved context.
