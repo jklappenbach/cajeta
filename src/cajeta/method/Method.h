@@ -56,6 +56,12 @@ namespace cajeta {
         bool returnsOwnership = false;
         BlockPtr block;
         bool constructor;
+        // Abstract method — has no body, no LLVM function declaration.
+        // Interface methods are abstract; the implementing class's matching
+        // method is what actually executes at dispatch time. The abstract
+        // method's only role is to carry the signature (for canonical
+        // computation + vtable-hash lookup).
+        bool abstractFlag = false;
         map<string, FormalParameterPtr> parameters;
         vector<FormalParameterPtr> parameterList;
         int virtualTableIndex;
@@ -93,6 +99,9 @@ namespace cajeta {
         llvm::Function* getLlvmFunction() { return llvmFunction; }
 
         bool isConstructor() { return constructor; }
+
+        bool isAbstract() const { return abstractFlag; }
+        void setAbstract(bool v) { abstractFlag = v; }
 
         vector<FormalParameterPtr> getParameterList() { return parameterList; }
 

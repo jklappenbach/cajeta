@@ -467,14 +467,24 @@ namespace cajeta {
             llvm::cast<llvm::ArrayType>(
                 structure->getVirtualTableType()->getTypeAtIndex(2))->getElementType());
 
+        // Use the lock-step hash list from buildVirtualTable rather than
+        // recomputing — interface entries store the implementing class's
+        // Method (so getLlvmFunction returns the concrete function) but
+        // the hash needs to be the *interface* method's canonical, which
+        // recomputing from `method` would lose.
+        const auto& slotHashes = structure->getVirtualSlotHashList();
         vector<llvm::Constant*> entryConstants;
         entryConstants.reserve(slots.size());
+        size_t hashIdx = 0;
         for (auto& method : slots) {
-            int64_t hash = signatureHash(method->toCanonical(/*labeled=*/false));
+            int64_t hash = (hashIdx < slotHashes.size())
+                ? slotHashes[hashIdx]
+                : signatureHash(method->toCanonical(/*labeled=*/false));
             entryConstants.push_back(llvm::ConstantStruct::get(entryTy, {
                 llvm::ConstantInt::get(i64Ty, llvm::APInt(64, (uint64_t) hash, false)),
                 method->getLlvmFunction(),
             }));
+            ++hashIdx;
         }
         llvm::Constant* entriesArr = llvm::ConstantArray::get(
             llvm::cast<llvm::ArrayType>(structure->getVirtualTableType()->getTypeAtIndex(2)),

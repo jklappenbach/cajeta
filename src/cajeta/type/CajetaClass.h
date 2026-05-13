@@ -40,6 +40,13 @@ namespace cajeta {
         map<string, map<string, MethodPtr>> unlabeledMethodMap;
 
         list<MethodPtr> virtualMethodList;
+        // Hash for each virtualMethodList entry, in lockstep order. For
+        // ordinary methods the hash matches signatureHash(method->toCanonical()).
+        // For interface entries, the hash is the *interface* method's canonical
+        // (not the concrete-implementing method's), so a receiver typed as the
+        // interface dispatches to the right slot. Populated by buildVirtualTable;
+        // consumed by StructureMetadata::createVirtualTableConstant.
+        vector<int64_t> virtualSlotHashList;
         list<MethodPtr> methodList;
         map<string, StructurePropertyPtr> properties;
         list<StructurePropertyPtr> propertyList;
@@ -48,6 +55,16 @@ namespace cajeta {
 
         list<CajetaClassPtr> superClasses;
         list<CajetaInterfacePtr> interfaces;
+        // Concrete CajetaClass pointers for interfaces this class implements
+        // (CajetaInterface is just a CajetaClass with isInterface()=true; we
+        // store as CajetaClassPtr so buildVirtualTable can treat them uniformly
+        // with the supertype walk).
+        list<CajetaClassPtr> implementedInterfaces;
+        // Interfaces have no instance fields and their methods are abstract
+        // markers — `new MyInterface()` is invalid and their methods have
+        // no LLVM function. The flag toggles those behaviors on the same
+        // CajetaClass that the visitor builds for `interface X { ... }`.
+        bool interfaceFlag = false;
         CajetaModulePtr module;
         ScopePtr scope;
 
@@ -106,6 +123,13 @@ namespace cajeta {
 
         bool isParentOrKind(CajetaClassPtr source);
 
+        bool isInterface() const { return interfaceFlag; }
+        void setIsInterface(bool v) { interfaceFlag = v; }
+        list<CajetaClassPtr>& getImplementedInterfaces() { return implementedInterfaces; }
+        const list<QualifiedNamePtr>& getQImplemented() const { return qImplemented; }
+        void setQImplemented(list<QualifiedNamePtr> q) { qImplemented = std::move(q); }
+        void resolveImplementedInterfaces();
+
         ScopePtr getScope() { return scope; }
 
         void addMethod(MethodPtr method);
@@ -120,6 +144,10 @@ namespace cajeta {
 
         list<MethodPtr>& getVirtualMethodList() {
             return virtualMethodList;
+        }
+
+        const vector<int64_t>& getVirtualSlotHashList() const {
+            return virtualSlotHashList;
         }
 
         map<string, StructurePropertyPtr>& getProperties() { return properties; }

@@ -147,6 +147,37 @@ namespace cajeta {
         }
         string canonical = qName->toCanonical();
 
+        // Interfaces participate as types (registered in canonicalMap so
+        // variables can be declared at the interface type, and methods can
+        // be looked up by signature) but have no instance layout, no vtable
+        // of their own, and no default constructor. Their methods are
+        // abstract — Method::generatePrototype skips LLVM-function creation
+        // for them. Implementing classes' vtables carry concrete entries
+        // keyed under the interface methods' canonical hashes (see
+        // CajetaClass::buildVirtualTable).
+        if (isInterface()) {
+            // Even though an interface has no allocation site of its own, it
+            // needs an LLVM struct type so variables typed at the interface
+            // can size their slot and load through their vtable pointer. The
+            // layout is just `{ ptr vtable }` — same prefix every implementing
+            // class shares — so reading slot 0 yields the concrete class's
+            // vtable global regardless of which class was assigned in.
+            llvmType = CajetaType::getOrCreateLlvmType(module->getLlvmContext(), canonical);
+            typeMap[TypeKey(llvmType)] = shared_from_this();
+            vector<llvm::Type*> members{ llvm::PointerType::get(*module->getLlvmContext(), 0) };
+            ((llvm::StructType*) llvmType)->setBody(llvm::ArrayRef<llvm::Type*>(members), false);
+
+            canonicalMap[canonical] = static_pointer_cast<CajetaType>(shared_from_this());
+            canonicalMap[qName->getTypeName()] = static_pointer_cast<CajetaType>(shared_from_this());
+            typeFlags = STRUCT_FLAG | USER_DEFINED_FLAG;
+            module->getStructures()[canonical] = static_pointer_cast<CajetaClass>(shared_from_this());
+            for (auto& m : methods) {
+                m.second->generatePrototype();
+            }
+            CajetaModule::getStructureToModule()[canonical] = module;
+            return;
+        }
+
         llvmType = CajetaType::getOrCreateLlvmType(module->getLlvmContext(), canonical);
         typeMap[TypeKey(llvmType)] = shared_from_this();
         // Overwrite the plain-CajetaType placeholder `getOrCreateLlvmType` put
@@ -181,6 +212,7 @@ namespace cajeta {
         // prototype generation, which means declared earlier in the source.
         module->getStructures()[canonical] = static_pointer_cast<CajetaClass>(shared_from_this());
         resolveSuperClasses();
+        resolveImplementedInterfaces();
 
         ensureDefaultConstructor();
 
@@ -298,6 +330,33 @@ namespace cajeta {
         }
     }
 
+    void CajetaClass::resolveImplementedInterfaces() {
+        // Mirrors resolveSuperClasses but for `implements I1, I2`. Each name
+        // is looked up in the module's structures map; entries flagged
+        // isInterface() are pushed into implementedInterfaces. Non-interface
+        // names in the implements list are silently skipped today (a future
+        // version should raise CAJETA_ERROR_NOT_AN_INTERFACE).
+        implementedInterfaces.clear();
+        auto& structures = module->getStructures();
+        for (auto& qn : qImplemented) {
+            CajetaClassPtr found;
+            auto it = structures.find(qn->toCanonical());
+            if (it != structures.end()) {
+                found = it->second;
+            } else {
+                for (auto& entry : structures) {
+                    if (entry.second->getQName()->getTypeName() == qn->getTypeName()) {
+                        found = entry.second;
+                        break;
+                    }
+                }
+            }
+            if (found && found->isInterface()) {
+                implementedInterfaces.push_back(found);
+            }
+        }
+    }
+
     void CajetaClass::buildVirtualTable() {
         // Build the (canonical → MethodPtr) mapping by walking the hierarchy
         // parent-first. Overrides in derived classes replace the parent's
@@ -310,6 +369,7 @@ namespace cajeta {
         // problem that multi-inheritance would otherwise hit with a
         // position-only layout.
         virtualMethodList.clear();
+        virtualSlotHashList.clear();
         map<string, MethodPtr> uniqueByCanonical;
 
         std::function<void(CajetaClassPtr)> walk = [&](CajetaClassPtr c) {
@@ -317,11 +377,48 @@ namespace cajeta {
             for (auto& m : c->getMethodList()) {
                 if (m->isConstructor()) continue;
                 if (m->getModifiers().find(STATIC) != m->getModifiers().end()) continue;
+                if (m->isAbstract()) continue;   // interface markers don't sit here
                 string canon = m->toCanonical(/*labeled=*/false);
                 uniqueByCanonical[canon] = m;   // overrides naturally replace
             }
         };
         walk(static_pointer_cast<CajetaClass>(shared_from_this()));
+
+        // Interface dispatch: for each implemented interface method, find
+        // the class's matching concrete method (by short name + param
+        // signature) and register it in the vtable under the *interface*
+        // method's canonical. The receiver's static type at the call site
+        // determines which hash gets used — a call through an interface-
+        // typed variable uses the interface's canonical and lands on the
+        // entry we add here.
+        auto findConcreteFor = [&](MethodPtr abstractM) -> MethodPtr {
+            string targetSig = abstractM->toCanonical(/*labeled=*/false);
+            // Strip the leading `parent::` (anything before the last "::")
+            // so we match by method name + params only.
+            auto pos = targetSig.rfind("::");
+            string suffix = (pos == string::npos) ? targetSig : targetSig.substr(pos + 2);
+            for (auto& [canon, m] : uniqueByCanonical) {
+                auto p = canon.rfind("::");
+                if (p == string::npos) continue;
+                if (canon.substr(p + 2) == suffix) return m;
+            }
+            return nullptr;
+        };
+        for (auto& iface : implementedInterfaces) {
+            for (auto& m : iface->getMethodList()) {
+                if (m->isConstructor()) continue;
+                if (m->getModifiers().find(STATIC) != m->getModifiers().end()) continue;
+                if (auto concrete = findConcreteFor(m)) {
+                    // Key by the interface method's canonical; value points
+                    // to the class's concrete implementation. The vtable
+                    // entry's function is concrete->getLlvmFunction().
+                    uniqueByCanonical[m->toCanonical(/*labeled=*/false)] = concrete;
+                }
+                // No concrete impl = unsatisfied interface obligation. A
+                // future version should raise CAJETA_ERROR_INTERFACE_NOT_IMPLEMENTED
+                // here; today we skip and the vtable simply omits the entry.
+            }
+        }
 
         // Sort by hash for binary search at dispatch time. Hash is stable
         // across runs (FNV-1a) so the compiler and runtime agree.
@@ -340,6 +437,7 @@ namespace cajeta {
         for (auto& [hash, method] : sorted) {
             method->setVirtualTableIndex(idx++);
             virtualMethodList.push_back(method);
+            virtualSlotHashList.push_back(hash);
         }
     }
 

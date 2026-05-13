@@ -111,6 +111,29 @@ namespace cajeta {
     void Method::generatePrototype() {
         vector<llvm::Type*> llvmTypes;
 
+        // Abstract method (declared on an interface, no body): build the
+        // signature so callers can compute its canonical / vtable hash, but
+        // don't emit an LLVM function — the concrete class's matching
+        // implementation is what dispatch actually targets. Still need to
+        // splice in the implicit `this` and build llvmFunctionType so that
+        // any vtable-typed indirect call has the right function type.
+        if (abstractFlag) {
+            bool staticAbstract = modifiers.find(STATIC) != modifiers.end();
+            if (!staticAbstract) {
+                auto thisParam = make_shared<FormalParameter>(string("this"), CajetaType::of("pointer"));
+                thisParam->setParent(shared_from_this());
+                parameterList.insert(parameterList.begin(), thisParam);
+                parameters[thisParam->getName()] = thisParam;
+            }
+            for (auto formalParameter: parameterList) {
+                llvmTypes.push_back(formalParameter->getType()->getLlvmType());
+            }
+            llvmFunctionType = llvmTypes.empty()
+                ? llvm::FunctionType::get(returnType->getLlvmType(), false)
+                : llvm::FunctionType::get(returnType->getLlvmType(), llvmTypes, false);
+            return;
+        }
+
         bool staticMethod = modifiers.find(STATIC) != modifiers.end();
 
         // Static check (Session 3 / Step 3.5): a multi-parameter free function
@@ -164,6 +187,9 @@ namespace cajeta {
     }
 
     void Method::generateCode() {
+        // Abstract methods carry no body — dispatch goes to a concrete
+        // implementation via the vtable.
+        if (abstractFlag) return;
         if (llvmBasicBlock != nullptr) {
             return;
         }

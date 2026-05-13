@@ -39,6 +39,7 @@ namespace cajeta {
     #define BIT_32_FLAG             0b00000010000000000000
     #define BIT_64_FLAG             0b00000100000000000000
     #define BIT_128_FLAG            0b00001000000000000000
+    #define ENUM_FLAG               0b00010000000000000000
     #define BIT_SIZE_MASK           0b00001111111000000000
 
 

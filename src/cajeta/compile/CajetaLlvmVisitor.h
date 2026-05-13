@@ -84,10 +84,32 @@ namespace cajeta {
             QualifiedNamePtr qName = QualifiedName::getOrInsert(name, pModule->getQName()->getPackageName() + packageAdj);
             list<QualifiedNamePtr> qExtended;
             list<QualifiedNamePtr> qImplemented;
-            for (auto& ctxTypeList : ctx->typeList()) {
-                string str = ctxTypeList->getText();
-                for (auto& ctxTypeType : ctxTypeList->typeType()) {
-                    qExtended.push_back(QualifiedName::fromContext(ctxTypeType->classOrInterfaceType()));
+            // Grammar: `(EXTENDS typeList)? (IMPLEMENTS typeList)? (PERMITS typeList)?`
+            // ANTLR exposes typeLists in source order; match each to its
+            // keyword by start-token index. Sealed-class PERMITS is parsed
+            // but its typeList is ignored in v1 (GAP-11).
+            auto kwIdx = [](antlr4::tree::TerminalNode* n) -> ssize_t {
+                return n && n->getSymbol() ? (ssize_t) n->getSymbol()->getTokenIndex() : -1;
+            };
+            ssize_t extKw = kwIdx(ctx->EXTENDS());
+            ssize_t implKw = kwIdx(ctx->IMPLEMENTS());
+            ssize_t permKw = kwIdx(ctx->PERMITS());
+            for (auto* tl : ctx->typeList()) {
+                ssize_t tlIdx = tl->getStart()
+                    ? (ssize_t) tl->getStart()->getTokenIndex() : -1;
+                // Determine which keyword this typeList follows by picking
+                // the largest keyword-index that's still less than tlIdx.
+                ssize_t best = -1;
+                int which = -1; // 0=extends, 1=implements, 2=permits
+                if (extKw >= 0 && extKw < tlIdx && extKw > best) { best = extKw; which = 0; }
+                if (implKw >= 0 && implKw < tlIdx && implKw > best) { best = implKw; which = 1; }
+                if (permKw >= 0 && permKw < tlIdx && permKw > best) { best = permKw; which = 2; }
+                list<QualifiedNamePtr>* bucket = nullptr;
+                if (which == 0) bucket = &qExtended;
+                else if (which == 1) bucket = &qImplemented;
+                if (!bucket) continue;
+                for (auto& tt : tl->typeType()) {
+                    bucket->push_back(QualifiedName::fromContext(tt->classOrInterfaceType()));
                 }
             }
             CajetaClassPtr structure = make_shared<CajetaClass>(pModule, qName, qExtended, qImplemented);
@@ -226,7 +248,81 @@ namespace cajeta {
         }
 
         virtual std::any visitInterfaceDeclaration(CajetaParser::InterfaceDeclarationContext* ctx) override {
-            return visitChildren(ctx);
+            // Build a CajetaClass tagged isInterface=true. The interface body
+            // holds method *signatures* (abstract — no LLVM function), and
+            // implementing classes' vtables get one entry per interface
+            // method pointing to the class's concrete implementation.
+            //
+            // v1 limits:
+            //  - No default methods (interface methods with bodies)
+            //  - No constDeclaration
+            //  - No nested types
+            //  - No templated interface methods (GAP-4)
+            //  - `extends I1, I2` parses but interface-extends-interface chains
+            //    are not yet resolved
+            string packageAdj;
+            string name = ctx->identifier()->getText();
+            for (auto& s : pModule->getStructureStack()) {
+                packageAdj.append(".");
+                packageAdj.append(s->getQName()->getTypeName());
+            }
+            QualifiedNamePtr qName = QualifiedName::getOrInsert(
+                name, pModule->getQName()->getPackageName() + packageAdj);
+            list<QualifiedNamePtr> qExtended;
+            list<QualifiedNamePtr> qImplemented;
+            if (auto* tl = ctx->typeList()) {
+                for (auto* tt : tl->typeType()) {
+                    qExtended.push_back(QualifiedName::fromContext(tt->classOrInterfaceType()));
+                }
+            }
+
+            CajetaClassPtr interface = make_shared<CajetaClass>(
+                pModule, qName, qExtended, qImplemented);
+            interface->setIsInterface(true);
+
+            pModule->getStructureStack().push_back(interface);
+
+            // Build abstract Methods for each interfaceMethodDeclaration.
+            // We sidestep visitClassBody/visitMethodDeclaration because those
+            // expect a real method body; interface methods have either `;`
+            // or a default block (the latter is deferred).
+            auto classBody = make_shared<ClassBodyDeclaration>(ctx->getStart());
+            auto* body = ctx->interfaceBody();
+            if (body) {
+                for (auto* bd : body->interfaceBodyDeclaration()) {
+                    auto* md = bd->interfaceMemberDeclaration();
+                    if (!md) continue;
+                    auto* imd = md->interfaceMethodDeclaration();
+                    if (!imd) continue;
+                    auto* common = imd->interfaceCommonBodyDeclaration();
+                    if (!common) continue;
+                    string methodName = common->identifier()->getText();
+                    vector<FormalParameterPtr> formals;
+                    if (auto* fps = common->formalParameters()) {
+                        if (auto* list = fps->formalParameterList()) {
+                            for (auto* fp : list->formalParameter()) {
+                                if (auto p = FormalParameter::fromContext(fp, pModule)) {
+                                    formals.push_back(p);
+                                }
+                            }
+                        }
+                    }
+                    CajetaTypePtr returnType = CajetaType::fromContext(
+                        common->typeTypeOrVoid(), pModule);
+                    MethodPtr method = Method::create(
+                        pModule, methodName, returnType, formals,
+                        /*block=*/nullptr, interface);
+                    method->setAbstract(true);
+                    classBody->getDeclarations().push_back(
+                        make_shared<MethodDeclaration>(method, common->getStart()));
+                }
+            }
+            interface->setClassBody(classBody);
+            interface->generatePrototype();
+
+            pModule->getStructureStack().pop_back();
+            CajetaModule::getStructureToModule()[interface->getQName()->toCanonical()] = pModule;
+            return interface;
         }
 
         virtual std::any visitClassBody(CajetaParser::ClassBodyContext* ctx) override {
