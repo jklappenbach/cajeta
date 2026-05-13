@@ -100,6 +100,8 @@ The token is propagated automatically; user code rarely sees it explicitly. For 
 
 ## Synchronization primitives
 
+All core sync primitives live in package **`cajeta.threading`** — `cajeta.threading.Mutex`, `cajeta.threading.Lock`, `cajeta.threading.RwLock`, `cajeta.threading.ConditionVariable`, and the guard types (`MutexGuard`, `LockGuard`, `ReadGuard`, `WriteGuard`). The future async runtime (`Task<T>`, scope/spawn/detach machinery) also lives there. Stdlib types built on these primitives (`Channel<T>`, `Semaphore`) are in the same package by convention. The code examples below omit the package qualifier for brevity, but the actual type names are fully qualified.
+
 All core sync primitives use the **RAII guard pattern**: acquiring the lock returns a guard whose lifetime is the critical section. When the guard drops (scope exit, early return, exception unwind — all handled by the existing drop chain), the lock releases automatically. "Forgot to unlock" is structurally unrepresentable.
 
 The primitives are async-aware: `await m.lock()` parks the current task on the wait queue and lets the executor run something else — it does not block the OS thread. OS-blocking forms are not exposed; if you find yourself wanting one, you almost certainly want to push the OS interaction into a dedicated worker task that owns the resource and serves async requests against it.
@@ -380,6 +382,8 @@ A small C runtime ships in `runtime/native/`, paralleling the existing exception
 - **Task allocator** — `__cajeta_task_new(size, state_machine_fn)` allocates a task frame on the heap. Owned by the spawning scope.
 - **Executor** — work-stealing pool, one OS thread per core by default. `__cajeta_task_schedule(task)` puts a task in the run queue.
 - **Token primitive** — atomic flag for cancellation; tasks check on resume.
+
+The user-facing `cajeta.threading.*` classes wrap these C helpers — the runtime entry points are an implementation detail. Today's intrinsic-level path (`Cajeta.lockNew()` / `Cajeta.lockAcquire(p)` / etc.) is a transitional bootstrap that the future `cajeta.threading.Lock` class will subsume; user code should target the class API, not the intrinsics, once they exist.
 
 `async fn` lowers to state machines whose suspension points are LLVM coroutine intrinsics or hand-rolled equivalents. Each suspension saves locals into the task frame; resume restores them and dispatches on the saved state.
 
