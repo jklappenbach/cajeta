@@ -96,6 +96,10 @@ namespace cajeta {
         return block;
     }
 
+    BlockPtr Statement::buildBlockFromContext(CajetaParser::BlockContext* ctx) {
+        return buildBlock(ctx);
+    }
+
     static BlockStatementPtr buildBlockStatement(CajetaParser::BlockStatementContext* ctx) {
         if (auto* lvdCtx = ctx->localVariableDeclaration()) {
             return buildLocalVariableDeclaration(lvdCtx);

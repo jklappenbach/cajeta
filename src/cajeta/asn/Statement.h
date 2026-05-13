@@ -48,6 +48,14 @@ namespace cajeta {
         Statement(antlr4::Token* token) : BlockStatement(token) { }
 
         static StatementPtr fromContext(CajetaParser::StatementContext* ctx);
+
+        // Public alias to the file-internal block builder so callers outside
+        // Statement.cpp (e.g. LambdaExpression's parser branch, which needs
+        // a Block to wrap a block-form lambda body) can construct a Block
+        // from its parser context without duplicating BlockStatement
+        // assembly logic. Delegates to the same private helper used inside
+        // Statement.cpp.
+        static BlockPtr buildBlockFromContext(CajetaParser::BlockContext* ctx);
     };
 
     class ExpressionStatement : public Statement {
@@ -102,6 +110,12 @@ namespace cajeta {
         IfStatement(antlr4::Token* token, ExpressionPtr cond, StatementPtr thenStmt,
                     StatementPtr elseStmt)
             : Statement(token), condition(cond), thenBranch(thenStmt), elseBranch(elseStmt) { }
+
+        // Exposed so external walkers (e.g. the lambda body's free-variable
+        // scan) can reach sub-expressions hidden behind private fields.
+        ExpressionPtr getCondition() const { return condition; }
+        StatementPtr getThenBranch() const { return thenBranch; }
+        StatementPtr getElseBranch() const { return elseBranch; }
 
         void resolveTypes(CajetaModulePtr module) override;
         llvm::Value* generateCode(CajetaModulePtr module) override;
@@ -296,6 +310,10 @@ namespace cajeta {
 
         // Like ExpressionStatement, the returned expression isn't in `children`.
         void resolveTypes(CajetaModulePtr module) override;
+
+        // Exposed so external walkers (e.g. the lambda body's free-variable
+        // scan) can reach the returned expression that isn't in `children`.
+        ExpressionPtr getExpression() const { return expression; }
 
         llvm::Value* generateCode(CajetaModulePtr module) override;
     };

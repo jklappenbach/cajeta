@@ -26,6 +26,14 @@ namespace cajeta {
             this->variableDeclarators = variableDeclarators;
         }
 
+        // For tree walkers that need to reach sub-expressions hidden in the
+        // private declarator list (e.g. the lambda body's free-variable
+        // scan). The walker visits each declarator's initializer to find
+        // identifiers referenced on the RHS.
+        const list<VariableDeclaratorPtr>& getVariableDeclarators() const {
+            return variableDeclarators;
+        }
+
         llvm::Value* generateCode(CajetaModulePtr module) override;
     };
 

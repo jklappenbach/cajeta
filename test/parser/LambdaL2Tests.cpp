@@ -182,3 +182,77 @@ TEST(LambdaL2Tests, mixedPrimitiveAndHeapCaptures) {
         "}\n";
     EXPECT_EQ(runI32(src), 100);
 }
+
+// L2-4: block-body lambda with an explicit return statement.
+TEST(LambdaL2Tests, blockBodyExplicitReturn) {
+    auto src =
+        "package test;\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        () -> int32 f = () -> { return 42; };\n"
+        "        return f();\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 42);
+}
+
+// L2-4 + captures: block body that introduces locals derived from
+// captured values. Avoids `int32 v = arr[idx];` because there's a
+// pre-existing l-value-coercion gap in StackField's initializer path
+// (unrelated to lambdas — see ArrayIndex-into-local in regular methods).
+TEST(LambdaL2Tests, blockBodyWithCapturesAndLocals) {
+    auto src =
+        "package test;\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        int32 bias = 10;\n"
+        "        int32 scale = 3;\n"
+        "        (int32) -> int32 fn = i -> {\n"
+        "            int32 doubled = i + i;\n"
+        "            int32 r = doubled * scale + bias;\n"
+        "            return r;\n"
+        "        };\n"
+        "        return fn(4);\n"  // doubled=8, r=8*3+10=34
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 34);
+}
+
+// Direct heap capture read inside a block-body lambda (sidesteps the
+// StackField/ArrayIndex pre-existing gap by combining the read into the
+// return expression). Confirms heap captures still flow through the
+// captures struct under the block-body codegen path.
+TEST(LambdaL2Tests, blockBodyDirectReturnHeapCap) {
+    auto src =
+        "package test;\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        int32 bias = 10;\n"
+        "        int32[] arr = new int32[3];\n"
+        "        arr[0] = 5;\n"
+        "        (int32) -> int32 fn = i -> {\n"
+        "            return arr[i] + bias;\n"
+        "        };\n"
+        "        return fn(0);\n"  // 5 + 10 = 15
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 15);
+}
+
+// L2-4: block-body with branching control flow. Both arms return.
+TEST(LambdaL2Tests, blockBodyWithControlFlow) {
+    auto src =
+        "package test;\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        (int32) -> int32 absish = x -> {\n"
+        "            if (x < 0) {\n"
+        "                return 0 - x;\n"
+        "            }\n"
+        "            return x;\n"
+        "        };\n"
+        "        return absish(0 - 7) + absish(3);\n"  // 7 + 3 = 10
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 10);
+}

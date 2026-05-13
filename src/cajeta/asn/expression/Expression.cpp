@@ -19,6 +19,10 @@
 #include "LiteralExpression.h"
 #include "MethodCallExpression.h"
 #include "NewExpression.h"
+#include "../Block.h"
+#include "../Statement.h"
+#include "../LocalVariableDeclaration.h"
+#include "../VariableDeclarator.h"
 #include "../../error/Exception.h"
 
 namespace cajeta {
@@ -144,20 +148,22 @@ namespace cajeta {
                     acceptable = true;
                 }
             }
-            // Body: expression form only in L1/L1.5. A block-body lambda
-            // parses but lands on the UnsupportedExpression fallback.
+            // Body: expression form (L1/L1.5) or block form (L2-4). The
+            // var-list parameter form is still unsupported.
             auto* lb = lx->lambdaBody();
-            ExpressionPtr body;
+            AbstractSyntaxNodePtr body;
             if (lb && lb->expression()) {
                 body = Expression::fromContext(lb->expression());
+            } else if (lb && lb->block()) {
+                body = Statement::buildBlockFromContext(lb->block());
             }
             if (acceptable && body) {
                 result = make_shared<LambdaExpression>(token,
                     std::move(names), std::move(types), std::move(body));
             } else {
                 result = make_shared<UnsupportedExpression>(
-                    "lambda expression (this form needs L2: captures, "
-                    "block bodies, or var-list params)", token);
+                    "lambda expression (this form needs var-list params, "
+                    "still unsupported in L2)", token);
             }
         } else if (ctx->switchExpression()) {
             // switch expression — arrow form with single-expression bodies. Anything
@@ -867,12 +873,15 @@ namespace cajeta {
 
     // Walk the lambda body's AST collecting names of free identifiers — names
     // referenced inside the body that aren't bound by the lambda's parameter
-    // list. The walker handles two AST quirks:
-    //   - MethodCallExpression's args live in `parameters`, not `children`
-    //     (children[0] is the receiver). Walking only `children` would miss
-    //     the `x` in `Integer.toString(x)`.
-    //   - IdentifierExpression terminates recursion — its `children` are
-    //     never populated and the identifier name is what we're after.
+    // list. The walker has to know about a few AST shapes where sub-nodes
+    // live outside `children`:
+    //   - MethodCallExpression: args in `parameters` (children[0] is the
+    //     receiver).
+    //   - IdentifierExpression: terminate; the identifier name is the target.
+    //   - LocalVariableDeclaration / ReturnStatement / IfStatement /
+    //     ExpressionStatement: sub-expressions are in private fields
+    //     reached via dedicated getters. Block-body lambdas would otherwise
+    //     skip every identifier on a statement's RHS.
     // Identifiers that don't resolve to a local Field (class names, namespace
     // tokens like `Math` / `System`) get filtered later when the caller looks
     // up the outer scope, so it's fine to over-collect here.
@@ -899,6 +908,28 @@ namespace cajeta {
             for (auto& p : mc->getParameters()) {
                 collectFreeIdentifiers(p.expression, bound, seen, out);
             }
+            return;
+        }
+        if (auto lvd = std::dynamic_pointer_cast<LocalVariableDeclaration>(node)) {
+            for (auto& vd : lvd->getVariableDeclarators()) {
+                if (vd && vd->getInitializer()) {
+                    collectFreeIdentifiers(vd->getInitializer(), bound, seen, out);
+                }
+            }
+            return;
+        }
+        if (auto ret = std::dynamic_pointer_cast<ReturnStatement>(node)) {
+            collectFreeIdentifiers(ret->getExpression(), bound, seen, out);
+            return;
+        }
+        if (auto ifs = std::dynamic_pointer_cast<IfStatement>(node)) {
+            collectFreeIdentifiers(ifs->getCondition(), bound, seen, out);
+            collectFreeIdentifiers(ifs->getThenBranch(), bound, seen, out);
+            collectFreeIdentifiers(ifs->getElseBranch(), bound, seen, out);
+            return;
+        }
+        if (auto es = std::dynamic_pointer_cast<ExpressionStatement>(node)) {
+            collectFreeIdentifiers(es->getExpression(), bound, seen, out);
             return;
         }
         for (auto& c : node->getChildren()) {
@@ -928,7 +959,14 @@ namespace cajeta {
         if (auto expectedFn = std::dynamic_pointer_cast<CajetaFunctionType>(expectedType)) {
             ret = expectedFn->getReturnType();
         }
-        if (!ret) ret = body ? body->getResolvedType() : nullptr;
+        if (!ret) {
+            // Only Expression bodies expose a resolvedType — block bodies
+            // require an explicit LHS expectedType (or void) since their
+            // shape doesn't map to a single expression's resolved type.
+            if (auto bexpr = std::dynamic_pointer_cast<Expression>(body)) {
+                ret = bexpr->getResolvedType();
+            }
+        }
         if (!ret) ret = CajetaType::of("void");
         std::string canon = CajetaFunctionType::buildCanonical(paramTypes, ret);
         auto& cmap = CajetaType::getCanonicalMap();
@@ -1180,71 +1218,95 @@ namespace cajeta {
             }
         }
 
-        // Generate the body and return its value.
+        // Generate the body. Expression bodies produce a single value that
+        // becomes the implicit return; block bodies produce no value and
+        // contain their own ReturnStatement(s).
+        bool blockBody = std::dynamic_pointer_cast<Block>(body) != nullptr;
         llvm::Value* bodyVal = body->generateCode(module);
-        // L-value-to-r-value coercion. The body's value flows directly into
-        // the return instruction below, so an l-value (alloca, array-slot
-        // GEP, struct/class field GEP) needs to be loaded first. Mirrors
-        // the same conversions ReturnStatement does — keep them in sync
-        // when one grows a new case.
-        if (auto* a = llvm::dyn_cast_or_null<llvm::AllocaInst>(bodyVal)) {
-            bodyVal = lambdaBuilder->CreateLoad(a->getAllocatedType(), a);
-        } else if (auto idx = std::dynamic_pointer_cast<ArrayIndexExpression>(body)) {
-            CajetaTypePtr elemType = idx->getResolvedType();
-            if (elemType) {
-                llvm::Type* loadTy;
-                if (std::dynamic_pointer_cast<CajetaArray>(elemType)
-                        || (elemType->getTypeFlags() & STRUCT_FLAG)) {
-                    loadTy = llvm::PointerType::get(*module->getLlvmContext(), 0);
+
+        if (blockBody) {
+            // The block's own ReturnStatement emits the terminator. If the
+            // user wrote a block that falls through to the closing brace
+            // without returning, the current insertion block has no
+            // terminator yet — emit a default return so LLVM verify is
+            // satisfied (RetVoid for void lambdas, undef of the return
+            // type otherwise; matches how a malformed regular method
+            // would surface).
+            llvm::BasicBlock* tail = lambdaBuilder->GetInsertBlock();
+            if (tail && !tail->getTerminator()) {
+                llvm::Type* retTy = fn->getReturnType();
+                if (retTy->isVoidTy()) {
+                    lambdaBuilder->CreateRetVoid();
                 } else {
-                    loadTy = elemType->getLlvmType();
-                }
-                if (loadTy && bodyVal) {
-                    bodyVal = lambdaBuilder->CreateLoad(loadTy, bodyVal);
+                    lambdaBuilder->CreateRet(llvm::UndefValue::get(retTy));
                 }
             }
-        } else if (auto dot = std::dynamic_pointer_cast<DotExpression>(body)) {
-            if (!dot->getChildren().empty()) {
-                auto recv = std::dynamic_pointer_cast<Expression>(dot->getChildren()[0]);
-                if (recv) {
-                    if (!recv->getResolvedType()) recv->resolveTypes(module);
-                    if (auto klass = std::dynamic_pointer_cast<CajetaClass>(recv->getResolvedType())) {
-                        auto& props = klass->getProperties();
-                        auto it = props.find(dot->getIdentifier());
-                        if (it != props.end() && bodyVal) {
-                            if (llvm::Type* lt = it->second->getType()->getLlvmType()) {
-                                bodyVal = lambdaBuilder->CreateLoad(lt, bodyVal);
+        } else {
+            // L-value-to-r-value coercion. The expression body's value
+            // flows directly into the return instruction below, so an
+            // l-value (alloca, array-slot GEP, struct/class field GEP)
+            // needs to be loaded first. Mirrors the same conversions
+            // ReturnStatement does — keep them in sync when one grows a
+            // new case.
+            if (auto* a = llvm::dyn_cast_or_null<llvm::AllocaInst>(bodyVal)) {
+                bodyVal = lambdaBuilder->CreateLoad(a->getAllocatedType(), a);
+            } else if (auto idx = std::dynamic_pointer_cast<ArrayIndexExpression>(body)) {
+                CajetaTypePtr elemType = idx->getResolvedType();
+                if (elemType) {
+                    llvm::Type* loadTy;
+                    if (std::dynamic_pointer_cast<CajetaArray>(elemType)
+                            || (elemType->getTypeFlags() & STRUCT_FLAG)) {
+                        loadTy = llvm::PointerType::get(*module->getLlvmContext(), 0);
+                    } else {
+                        loadTy = elemType->getLlvmType();
+                    }
+                    if (loadTy && bodyVal) {
+                        bodyVal = lambdaBuilder->CreateLoad(loadTy, bodyVal);
+                    }
+                }
+            } else if (auto dot = std::dynamic_pointer_cast<DotExpression>(body)) {
+                if (!dot->getChildren().empty()) {
+                    auto recv = std::dynamic_pointer_cast<Expression>(dot->getChildren()[0]);
+                    if (recv) {
+                        if (!recv->getResolvedType()) recv->resolveTypes(module);
+                        if (auto klass = std::dynamic_pointer_cast<CajetaClass>(recv->getResolvedType())) {
+                            auto& props = klass->getProperties();
+                            auto it = props.find(dot->getIdentifier());
+                            if (it != props.end() && bodyVal) {
+                                if (llvm::Type* lt = it->second->getType()->getLlvmType()) {
+                                    bodyVal = lambdaBuilder->CreateLoad(lt, bodyVal);
+                                }
                             }
                         }
                     }
                 }
             }
-        }
-        if (bodyVal) {
-            // Coerce to the function return type if width differs (literal
-            // i64 going to an i32 return slot, etc.) — mirrors what
-            // invokeMethod does at the call site.
-            llvm::Type* retTy = fn->getReturnType();
-            if (retTy && !retTy->isVoidTy() && bodyVal->getType() != retTy) {
-                if (retTy->isIntegerTy() && bodyVal->getType()->isIntegerTy()) {
-                    bodyVal = lambdaBuilder->CreateIntCast(
-                        bodyVal, retTy, /*isSigned=*/true);
-                } else if (retTy->isFloatingPointTy()
-                        && bodyVal->getType()->isFloatingPointTy()) {
-                    bodyVal = lambdaBuilder->CreateFPCast(bodyVal, retTy);
+            if (bodyVal) {
+                // Coerce to the function return type if width differs
+                // (literal i64 going to an i32 return slot, etc.) —
+                // mirrors what invokeMethod does at the call site.
+                llvm::Type* retTy = fn->getReturnType();
+                if (retTy && !retTy->isVoidTy() && bodyVal->getType() != retTy) {
+                    if (retTy->isIntegerTy() && bodyVal->getType()->isIntegerTy()) {
+                        bodyVal = lambdaBuilder->CreateIntCast(
+                            bodyVal, retTy, /*isSigned=*/true);
+                    } else if (retTy->isFloatingPointTy()
+                            && bodyVal->getType()->isFloatingPointTy()) {
+                        bodyVal = lambdaBuilder->CreateFPCast(bodyVal, retTy);
+                    }
                 }
-            }
-            if (retTy->isVoidTy()) {
-                lambdaBuilder->CreateRetVoid();
+                if (retTy->isVoidTy()) {
+                    lambdaBuilder->CreateRetVoid();
+                } else {
+                    lambdaBuilder->CreateRet(bodyVal);
+                }
             } else {
-                lambdaBuilder->CreateRet(bodyVal);
-            }
-        } else {
-            if (fn->getReturnType()->isVoidTy()) {
-                lambdaBuilder->CreateRetVoid();
-            } else {
-                lambdaBuilder->CreateRet(
-                    llvm::UndefValue::get(fn->getReturnType()));
+                if (fn->getReturnType()->isVoidTy()) {
+                    lambdaBuilder->CreateRetVoid();
+                } else {
+                    lambdaBuilder->CreateRet(
+                        llvm::UndefValue::get(fn->getReturnType()));
+                }
             }
         }
 

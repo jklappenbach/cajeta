@@ -44,13 +44,14 @@ void expectNotImplemented(const std::string& source, const std::string& expected
 } // namespace
 
 TEST(UnsupportedExpressionTests, lambdaThrowsNotImplemented) {
-    // L1 supports typed-params + expression-body lambdas (`(int32 a) -> a + 1`).
-    // Block-body lambdas, bare-identifier-param lambdas, and `var`-list
-    // lambdas still throw NOT_IMPLEMENTED — they need target-type inference
-    // and/or richer body lowering that's slated for L1.5+.
+    // L1/L1.5 supports typed-params, bare-identifier params, and expression
+    // bodies. L2-2/L2-3 added primitive and heap captures; L2-4 added
+    // block-body lambdas. The remaining unsupported form is the var-list
+    // parameter shape (`(var a, var b) -> ...`), which needs richer target-
+    // type inference to land.
     auto src = makeSource("int32",
-        "() -> int32 f = () -> { return 42; };\n"
-        "        return f();");
+        "(int32, int32) -> int32 f = (var a, var b) -> a + b;\n"
+        "        return f(1, 2);");
     expectNotImplemented(src, "lambda");
 }
 

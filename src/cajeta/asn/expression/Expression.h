@@ -341,7 +341,11 @@ namespace cajeta {
     private:
         std::vector<std::string> paramNames;
         std::vector<CajetaTypePtr> paramTypes;
-        ExpressionPtr body;
+        // L1/L1.5: an Expression (expression-body form, e.g. `x -> x + 1`).
+        // L2-4 onwards: may also be a Block (`{ stmt; return val; }`),
+        // hence the AbstractSyntaxNode-typed slot. Codegen dispatches
+        // based on the dynamic type.
+        AbstractSyntaxNodePtr body;
         // Name of the synthesized LLVM function. Unique per module via a
         // monotonic counter; set lazily on first codegen.
         std::string synthesizedName;
@@ -349,7 +353,7 @@ namespace cajeta {
         LambdaExpression(antlr4::Token* token,
             std::vector<std::string> paramNames,
             std::vector<CajetaTypePtr> paramTypes,
-            ExpressionPtr body)
+            AbstractSyntaxNodePtr body)
             : Expression(token),
               paramNames(std::move(paramNames)),
               paramTypes(std::move(paramTypes)),
@@ -357,7 +361,7 @@ namespace cajeta {
 
         const std::vector<std::string>& getParamNames() const { return paramNames; }
         const std::vector<CajetaTypePtr>& getParamTypes() const { return paramTypes; }
-        ExpressionPtr getBody() const { return body; }
+        AbstractSyntaxNodePtr getBody() const { return body; }
 
         // Target-type hint from the surrounding context (e.g. a LHS
         // function-typed declaration). When set, codegen uses this as the
