@@ -95,6 +95,52 @@ TEST(AsyncSyntaxTests, scopeBlockExecutesContents) {
     EXPECT_EQ(runI32(src), 5);
 }
 
+// R3-A: spawn of an async fn that takes one argument. Arg is evaluated
+// at the spawn site (main thread), captured into the context struct,
+// and read by the trampoline on the worker. Proves the context-capture
+// pipeline carries primitive values correctly across the thread boundary.
+TEST(AsyncSyntaxTests, spawnPassesOneArgument) {
+    auto src =
+        "package test;\n"
+        "public final class D {\n"
+        "    public static async int32 doubled(int32 x) { return x + x; }\n"
+        "    public static int32 run() { return await spawn doubled(21); }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 42);
+}
+
+// R3-A: spawn passing multiple arguments. Verifies the per-field ctx
+// struct stores + loads work in arg order — a swap of two slots would
+// produce the wrong subtraction result.
+TEST(AsyncSyntaxTests, spawnPassesMultipleArguments) {
+    auto src =
+        "package test;\n"
+        "public final class D {\n"
+        "    public static async int32 sub(int32 a, int32 b) { return a - b; }\n"
+        "    public static int32 run() { return await spawn sub(100, 17); }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 83);
+}
+
+// R3-A: arg values evaluated at spawn site come from outer locals, not
+// from constants. Confirms the ctx capture path reads each arg through
+// its alloca → r-value coercion the same way regular method-call sites
+// would. Without that load, the worker would see the slot ADDRESS in
+// its arg slot and the cast/add would either error or produce garbage.
+TEST(AsyncSyntaxTests, spawnArgsFromLocals) {
+    auto src =
+        "package test;\n"
+        "public final class D {\n"
+        "    public static async int32 mul(int32 a, int32 b) { return a * b; }\n"
+        "    public static int32 run() {\n"
+        "        int32 x = 6;\n"
+        "        int32 y = 7;\n"
+        "        return await spawn mul(x, y);\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 42);
+}
+
 // R2: spawning multiple tasks back-to-back exercises the queue depth and
 // proves the await/condvar wait correctly pairs with each task's done
 // flag (not a single global "any task done" signal). If the wait predicate

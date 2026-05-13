@@ -36,6 +36,8 @@ namespace cajeta {
         // recurse into the args when scanning a lambda body for captures.
         const vector<MethodCallParameter>& getParameters() const { return parameters; }
 
+        const string& getMethodCallName() const { return methodCallName; }
+
         /**
          * First, get the full name of the object.
          * @param module
