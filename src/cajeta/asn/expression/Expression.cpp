@@ -865,6 +865,47 @@ namespace cajeta {
 
     static int64_t lambdaCounter = 0;
 
+    // Walk the lambda body's AST collecting names of free identifiers — names
+    // referenced inside the body that aren't bound by the lambda's parameter
+    // list. The walker handles two AST quirks:
+    //   - MethodCallExpression's args live in `parameters`, not `children`
+    //     (children[0] is the receiver). Walking only `children` would miss
+    //     the `x` in `Integer.toString(x)`.
+    //   - IdentifierExpression terminates recursion — its `children` are
+    //     never populated and the identifier name is what we're after.
+    // Identifiers that don't resolve to a local Field (class names, namespace
+    // tokens like `Math` / `System`) get filtered later when the caller looks
+    // up the outer scope, so it's fine to over-collect here.
+    static void collectFreeIdentifiers(
+            const AbstractSyntaxNodePtr& node,
+            const std::set<std::string>& bound,
+            std::set<std::string>& seen,
+            std::vector<std::string>& out) {
+        if (!node) return;
+        if (auto id = std::dynamic_pointer_cast<IdentifierExpression>(node)) {
+            const std::string& name = id->getTextValue();
+            if (!name.empty()
+                    && bound.find(name) == bound.end()
+                    && seen.find(name) == seen.end()) {
+                seen.insert(name);
+                out.push_back(name);
+            }
+            return;
+        }
+        if (auto mc = std::dynamic_pointer_cast<MethodCallExpression>(node)) {
+            for (auto& c : mc->getChildren()) {
+                collectFreeIdentifiers(c, bound, seen, out);
+            }
+            for (auto& p : mc->getParameters()) {
+                collectFreeIdentifiers(p.expression, bound, seen, out);
+            }
+            return;
+        }
+        for (auto& c : node->getChildren()) {
+            collectFreeIdentifiers(c, bound, seen, out);
+        }
+    }
+
     void LambdaExpression::resolveTypes(CajetaModulePtr module) {
         // L1: bodies can't reference outer-scope locals (captures are L2),
         // so the lambda's body resolution doesn't need access to the
@@ -952,6 +993,59 @@ namespace cajeta {
             return existing;
         }
 
+        // ---- L2-2 capture analysis (run while outer scope is still on top
+        //      of the stack — before we push the lambda's own scope). Walk
+        //      the body for free identifiers, then for each candidate look
+        //      up the outer scope: a primitive-typed Field becomes a
+        //      capture-by-value. Non-primitive captures (heap/borrow) and
+        //      `#name` transfers land in later L2 sub-slices; identifiers
+        //      that don't resolve to a Field (class names, namespaces) are
+        //      left to be looked up the usual way inside the body and
+        //      filtered out here.
+        std::set<std::string> bound(paramNames.begin(), paramNames.end());
+        std::set<std::string> seen;
+        std::vector<std::string> freeNames;
+        collectFreeIdentifiers(body, bound, seen, freeNames);
+
+        struct Capture {
+            std::string name;
+            CajetaTypePtr type;
+        };
+        std::vector<Capture> captures;
+        ScopePtr outerScope = module->getScopeStack().isEmpty()
+            ? nullptr : module->getScopeStack().peek();
+        if (outerScope) {
+            for (auto& name : freeNames) {
+                FieldPtr f = outerScope->getField(name);
+                if (!f) continue;  // class name, namespace, or unresolved
+                CajetaTypePtr t = f->getType();
+                if (!t) continue;
+                if (t->getTypeFlags() & PRIMITIVE_FLAG) {
+                    captures.push_back({name, t});
+                }
+                // Non-primitive captures: silently skipped in L2-2. If the
+                // body actually reads one, the lookup inside the lambda
+                // will fail (we sever scope walk-up below), surfacing a
+                // missing-identifier error rather than emitting cross-
+                // function alloca references.
+            }
+        }
+
+        // Build the captures struct LLVM type. Anonymous; LLVM unifies
+        // structurally identical literal struct types so the type used at
+        // the alloc site (outer code) matches the type used by GEPs inside
+        // the lambda body.
+        auto& llvmCtx = *module->getLlvmContext();
+        llvm::StructType* capturesTy = nullptr;
+        if (!captures.empty()) {
+            std::vector<llvm::Type*> capLlvmTypes;
+            capLlvmTypes.reserve(captures.size());
+            for (auto& c : captures) {
+                capLlvmTypes.push_back(c.type->getLlvmType());
+            }
+            capturesTy = llvm::StructType::get(llvmCtx, capLlvmTypes);
+        }
+
         llvm::Function* fn = llvm::Function::Create(
             fnType->getLlvmFunctionType(),
             llvm::Function::ExternalLinkage,
@@ -965,14 +1059,50 @@ namespace cajeta {
         llvm::BasicBlock* outerInsertBlock = outerBuilder->GetInsertBlock();
         MethodPtr outerMethod = module->getCurrentMethod();
 
+        // ---- Allocate + populate the captures struct on the outer stack,
+        //      using the outer builder (we haven't switched insertion yet).
+        //      Each primitive capture loads its current value from the
+        //      outer field's slot and stores it into the captures struct.
+        //      The captures struct address goes into the closure record's
+        //      captures slot a few lines down.
+        llvm::PointerType* ptrTy = llvm::PointerType::get(llvmCtx, 0);
+        llvm::Value* capturesPtr = nullptr;
+        if (capturesTy) {
+            llvm::Function* outerFn = outerInsertBlock
+                ? outerInsertBlock->getParent() : nullptr;
+            if (outerFn) {
+                llvm::IRBuilder<> entry(&outerFn->getEntryBlock(),
+                    outerFn->getEntryBlock().getFirstInsertionPt());
+                capturesPtr = entry.CreateAlloca(capturesTy, nullptr, "captures");
+            } else {
+                capturesPtr = outerBuilder->CreateAlloca(capturesTy, nullptr, "captures");
+            }
+            for (size_t i = 0; i < captures.size(); ++i) {
+                auto& cap = captures[i];
+                FieldPtr outerField = outerScope->getField(cap.name);
+                llvm::AllocaInst* outerSlot = outerField->getOrCreateAllocation();
+                llvm::Value* outerVal = outerBuilder->CreateLoad(
+                    cap.type->getLlvmType(), outerSlot, cap.name);
+                llvm::Value* slot = outerBuilder->CreateStructGEP(
+                    capturesTy, capturesPtr, (unsigned) i,
+                    std::string("cap.") + cap.name);
+                outerBuilder->CreateStore(outerVal, slot);
+            }
+        }
+
         llvm::BasicBlock* entryBB = llvm::BasicBlock::Create(
-            *module->getLlvmContext(), "entry", fn);
+            llvmCtx, "entry", fn);
         llvm::IRBuilder<>* lambdaBuilder = new llvm::IRBuilder<>(entryBB);
         module->setBuilder(lambdaBuilder);
 
-        // Open a fresh scope for the lambda's parameters. Each named param
-        // becomes a ParameterField, same shape as a regular method's params.
+        // Open a fresh scope for the lambda's parameters + captures. After
+        // adding to the stack, sever the parent link so identifier lookups
+        // inside the body never walk up into the outer method's scope —
+        // every cross-scope use must come through the explicit captures
+        // mechanism. Missed captures surface as missing-identifier errors
+        // at body codegen rather than emitting invalid cross-function IR.
         module->getScopeStack().add(make_shared<Scope>(synthesizedName, module));
+        module->getScopeStack().peek()->setParent(nullptr);
 
         // L1 dummy method context — we need *some* MethodPtr on the module
         // because some helpers (e.g. drop-chain bookkeeping) read it, even
@@ -993,6 +1123,31 @@ namespace cajeta {
             // returns the populated slot.
             field->getOrCreateAllocation();
             module->getScopeStack().peek()->putField(field);
+        }
+
+        // ---- Unpack captures inside the lambda function. LLVM arg 0 is
+        //      the captures pointer; for each captured primitive, GEP into
+        //      the captures struct, load the value, and stash it in a
+        //      local alloca. Register a StackField pointing at that alloca
+        //      so the body's identifier lookups find the captured value as
+        //      if it were a normal local.
+        if (capturesTy) {
+            llvm::Value* capArg = fn->getArg(0);
+            for (size_t i = 0; i < captures.size(); ++i) {
+                auto& cap = captures[i];
+                llvm::Value* slot = lambdaBuilder->CreateStructGEP(
+                    capturesTy, capArg, (unsigned) i,
+                    std::string("cap.") + cap.name);
+                llvm::Value* val = lambdaBuilder->CreateLoad(
+                    cap.type->getLlvmType(), slot, cap.name);
+                llvm::AllocaInst* localSlot = lambdaBuilder->CreateAlloca(
+                    cap.type->getLlvmType(), nullptr, cap.name);
+                lambdaBuilder->CreateStore(val, localSlot);
+                auto capField = std::make_shared<StackField>(
+                    module, cap.name, cap.type);
+                capField->setAllocation(localSlot);
+                module->getScopeStack().peek()->putField(capField);
+            }
         }
 
         // Generate the body and return its value.
@@ -1035,25 +1190,24 @@ namespace cajeta {
         module->setCurrentMethod(outerMethod);
         outerBuilder->SetInsertPoint(outerInsertBlock);
 
-        // L2-1 ABI: materialize a closure record `{ ptr fn, ptr captures }`
+        // L2 ABI: materialize a closure record `{ ptr fn, ptr captures }`
         // on the outer stack. A function-typed variable's slot (still a
         // single `ptr`) holds the address of this record; the call site
         // loads fn_ptr and captures_ptr from it and indirect-dispatches.
-        // For non-capturing lambdas (L2-1), captures_ptr is null and the
+        // capturesPtr is non-null when free identifiers in the body
+        // captured outer fields (L2-2 onwards); otherwise null and the
         // synthesized function ignores its first arg.
-        auto& llvmCtx = *module->getLlvmContext();
-        llvm::PointerType* ptrTy = llvm::PointerType::get(llvmCtx, 0);
         llvm::StructType* closureTy = llvm::StructType::get(
             llvmCtx, {(llvm::Type*) ptrTy, (llvm::Type*) ptrTy});
         // Place the alloca in the outer function's entry block so the slot
         // is hoisted out of any inner loops (same convention as the rest of
         // the codegen).
-        llvm::Function* outerFn = outerInsertBlock
+        llvm::Function* closureOuterFn = outerInsertBlock
             ? outerInsertBlock->getParent() : nullptr;
         llvm::Value* closure;
-        if (outerFn) {
-            llvm::IRBuilder<> entry(&outerFn->getEntryBlock(),
-                outerFn->getEntryBlock().getFirstInsertionPt());
+        if (closureOuterFn) {
+            llvm::IRBuilder<> entry(&closureOuterFn->getEntryBlock(),
+                closureOuterFn->getEntryBlock().getFirstInsertionPt());
             closure = entry.CreateAlloca(closureTy, nullptr, "closure");
         } else {
             closure = outerBuilder->CreateAlloca(closureTy, nullptr, "closure");
@@ -1063,8 +1217,10 @@ namespace cajeta {
         outerBuilder->CreateStore(fn, fnSlot);
         llvm::Value* capSlot = outerBuilder->CreateStructGEP(
             closureTy, closure, 1, "closure.captures");
-        outerBuilder->CreateStore(
-            llvm::ConstantPointerNull::get(ptrTy), capSlot);
+        llvm::Value* capValue = capturesPtr
+            ? capturesPtr
+            : (llvm::Value*) llvm::ConstantPointerNull::get(ptrTy);
+        outerBuilder->CreateStore(capValue, capSlot);
         return closure;
     }
 
