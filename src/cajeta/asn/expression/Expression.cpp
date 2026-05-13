@@ -993,15 +993,17 @@ namespace cajeta {
             return existing;
         }
 
-        // ---- L2-2 capture analysis (run while outer scope is still on top
+        // ---- L2 capture analysis (run while outer scope is still on top
         //      of the stack — before we push the lambda's own scope). Walk
         //      the body for free identifiers, then for each candidate look
-        //      up the outer scope: a primitive-typed Field becomes a
-        //      capture-by-value. Non-primitive captures (heap/borrow) and
-        //      `#name` transfers land in later L2 sub-slices; identifiers
-        //      that don't resolve to a Field (class names, namespaces) are
-        //      left to be looked up the usual way inside the body and
-        //      filtered out here.
+        //      up the outer scope. Primitive Fields → capture-by-value
+        //      (L2-2). Non-primitive Fields → capture-by-borrow (L2-3): we
+        //      copy the outer slot's pointer value into the captures
+        //      struct, so the lambda sees the same heap object. `#name`
+        //      transfers + lifetime/escape checks remain L3 territory.
+        //      Identifiers that don't resolve to a Field (class names,
+        //      namespaces) are left for the body's normal lookup; they
+        //      don't go through captures.
         std::set<std::string> bound(paramNames.begin(), paramNames.end());
         std::set<std::string> seen;
         std::vector<std::string> freeNames;
@@ -1010,6 +1012,7 @@ namespace cajeta {
         struct Capture {
             std::string name;
             CajetaTypePtr type;
+            bool byValue;  // true: primitive copy; false: borrow (heap ptr)
         };
         std::vector<Capture> captures;
         ScopePtr outerScope = module->getScopeStack().isEmpty()
@@ -1020,28 +1023,40 @@ namespace cajeta {
                 if (!f) continue;  // class name, namespace, or unresolved
                 CajetaTypePtr t = f->getType();
                 if (!t) continue;
-                if (t->getTypeFlags() & PRIMITIVE_FLAG) {
-                    captures.push_back({name, t});
-                }
-                // Non-primitive captures: silently skipped in L2-2. If the
-                // body actually reads one, the lookup inside the lambda
-                // will fail (we sever scope walk-up below), surfacing a
-                // missing-identifier error rather than emitting cross-
-                // function alloca references.
+                // Skip function-typed captures for now — capturing a
+                // closure inside another closure needs careful thinking
+                // about closure-record lifetime and isn't part of L2-3.
+                if (std::dynamic_pointer_cast<CajetaFunctionType>(t)) continue;
+                // Source-of-truth for "is this a value or a pointer slot"
+                // is the outer field's existing alloca, not the type
+                // flags. A few language types (CajetaArray in particular)
+                // are flagged PRIMITIVE but live behind a pointer slot
+                // because they're heap-allocated; relying on the flag
+                // alone would mis-route the capture. Pointer slot →
+                // borrow capture (copy the ptr); value slot → primitive
+                // capture (copy the value).
+                llvm::AllocaInst* outerSlot = f->getOrCreateAllocation();
+                bool slotIsPointer = outerSlot
+                    && outerSlot->getAllocatedType()->isPointerTy();
+                captures.push_back({name, t, /*byValue=*/!slotIsPointer});
             }
         }
 
         // Build the captures struct LLVM type. Anonymous; LLVM unifies
         // structurally identical literal struct types so the type used at
         // the alloc site (outer code) matches the type used by GEPs inside
-        // the lambda body.
+        // the lambda body. Primitive captures occupy their natural LLVM
+        // type slot; borrow captures occupy a `ptr` slot (matches the
+        // outer StackField's alloca shape for non-primitives).
         auto& llvmCtx = *module->getLlvmContext();
         llvm::StructType* capturesTy = nullptr;
         if (!captures.empty()) {
             std::vector<llvm::Type*> capLlvmTypes;
             capLlvmTypes.reserve(captures.size());
             for (auto& c : captures) {
-                capLlvmTypes.push_back(c.type->getLlvmType());
+                capLlvmTypes.push_back(c.byValue
+                    ? c.type->getLlvmType()
+                    : (llvm::Type*) llvm::PointerType::get(llvmCtx, 0));
             }
             capturesTy = llvm::StructType::get(llvmCtx, capLlvmTypes);
         }
@@ -1081,8 +1096,15 @@ namespace cajeta {
                 auto& cap = captures[i];
                 FieldPtr outerField = outerScope->getField(cap.name);
                 llvm::AllocaInst* outerSlot = outerField->getOrCreateAllocation();
+                // Primitive capture: load the value itself.
+                // Borrow capture: load the pointer the outer slot holds
+                // (StackField allocs `ptr` for non-primitives, so the load
+                // type is `ptr` — same as the captures-struct field).
+                llvm::Type* loadTy = cap.byValue
+                    ? cap.type->getLlvmType()
+                    : (llvm::Type*) llvm::PointerType::get(llvmCtx, 0);
                 llvm::Value* outerVal = outerBuilder->CreateLoad(
-                    cap.type->getLlvmType(), outerSlot, cap.name);
+                    loadTy, outerSlot, cap.name);
                 llvm::Value* slot = outerBuilder->CreateStructGEP(
                     capturesTy, capturesPtr, (unsigned) i,
                     std::string("cap.") + cap.name);
@@ -1133,15 +1155,23 @@ namespace cajeta {
         //      if it were a normal local.
         if (capturesTy) {
             llvm::Value* capArg = fn->getArg(0);
+            llvm::Type* ptrLlvmTy = llvm::PointerType::get(llvmCtx, 0);
             for (size_t i = 0; i < captures.size(); ++i) {
                 auto& cap = captures[i];
                 llvm::Value* slot = lambdaBuilder->CreateStructGEP(
                     capturesTy, capArg, (unsigned) i,
                     std::string("cap.") + cap.name);
+                // Primitive: load the value (e.g. i32). Borrow: load the
+                // captured `ptr`. Local alloca shape mirrors StackField's
+                // own shape for the corresponding type so the body's
+                // identifier-lookup-and-load matches.
+                llvm::Type* slotTy = cap.byValue
+                    ? cap.type->getLlvmType()
+                    : ptrLlvmTy;
                 llvm::Value* val = lambdaBuilder->CreateLoad(
-                    cap.type->getLlvmType(), slot, cap.name);
+                    slotTy, slot, cap.name);
                 llvm::AllocaInst* localSlot = lambdaBuilder->CreateAlloca(
-                    cap.type->getLlvmType(), nullptr, cap.name);
+                    slotTy, nullptr, cap.name);
                 lambdaBuilder->CreateStore(val, localSlot);
                 auto capField = std::make_shared<StackField>(
                     module, cap.name, cap.type);
@@ -1152,8 +1182,43 @@ namespace cajeta {
 
         // Generate the body and return its value.
         llvm::Value* bodyVal = body->generateCode(module);
+        // L-value-to-r-value coercion. The body's value flows directly into
+        // the return instruction below, so an l-value (alloca, array-slot
+        // GEP, struct/class field GEP) needs to be loaded first. Mirrors
+        // the same conversions ReturnStatement does — keep them in sync
+        // when one grows a new case.
         if (auto* a = llvm::dyn_cast_or_null<llvm::AllocaInst>(bodyVal)) {
             bodyVal = lambdaBuilder->CreateLoad(a->getAllocatedType(), a);
+        } else if (auto idx = std::dynamic_pointer_cast<ArrayIndexExpression>(body)) {
+            CajetaTypePtr elemType = idx->getResolvedType();
+            if (elemType) {
+                llvm::Type* loadTy;
+                if (std::dynamic_pointer_cast<CajetaArray>(elemType)
+                        || (elemType->getTypeFlags() & STRUCT_FLAG)) {
+                    loadTy = llvm::PointerType::get(*module->getLlvmContext(), 0);
+                } else {
+                    loadTy = elemType->getLlvmType();
+                }
+                if (loadTy && bodyVal) {
+                    bodyVal = lambdaBuilder->CreateLoad(loadTy, bodyVal);
+                }
+            }
+        } else if (auto dot = std::dynamic_pointer_cast<DotExpression>(body)) {
+            if (!dot->getChildren().empty()) {
+                auto recv = std::dynamic_pointer_cast<Expression>(dot->getChildren()[0]);
+                if (recv) {
+                    if (!recv->getResolvedType()) recv->resolveTypes(module);
+                    if (auto klass = std::dynamic_pointer_cast<CajetaClass>(recv->getResolvedType())) {
+                        auto& props = klass->getProperties();
+                        auto it = props.find(dot->getIdentifier());
+                        if (it != props.end() && bodyVal) {
+                            if (llvm::Type* lt = it->second->getType()->getLlvmType()) {
+                                bodyVal = lambdaBuilder->CreateLoad(lt, bodyVal);
+                            }
+                        }
+                    }
+                }
+            }
         }
         if (bodyVal) {
             // Coerce to the function return type if width differs (literal

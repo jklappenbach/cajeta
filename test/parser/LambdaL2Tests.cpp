@@ -113,3 +113,72 @@ TEST(LambdaL2Tests, paramShadowsOuterName) {
         "}\n";
     EXPECT_EQ(runI32(src), 5);
 }
+
+// L2-3: heap capture by borrow. A String local (pointer alias) flows into
+// the captures struct as a `ptr`; inside the lambda, the receiver dispatch
+// path treats it as a String exactly as if it were a regular local.
+TEST(LambdaL2Tests, capturesStringByBorrow) {
+    auto src =
+        "package test;\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        String s = \"hello\";\n"
+        "        (int32) -> int32 fn = n -> n + (int32) s.length();\n"
+        "        return fn(2);\n"  // 2 + 5 = 7
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 7);
+}
+
+// L2-3: heap capture by borrow on an array. arr.size() reads the array
+// header through the captured pointer.
+TEST(LambdaL2Tests, capturesArrayByBorrow) {
+    auto src =
+        "package test;\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        int32[] arr = new int32[7];\n"
+        "        () -> int64 fn = () -> arr.size();\n"
+        "        return (int32) fn();\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 7);
+}
+
+// Borrow semantics: the captures struct stores the heap pointer at the
+// capture moment. Mutating the heap object through the original local
+// after the lambda is created is visible to the lambda — both reference
+// the same heap memory. (Rebinding the outer slot to a *new* heap object
+// would NOT be visible, but rebinding `arr` would be a fresh assignment
+// that L2-3 doesn't exercise.)
+TEST(LambdaL2Tests, capturedHeapMutationVisible) {
+    auto src =
+        "package test;\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        int32[] arr = new int32[3];\n"
+        "        arr[0] = 10;\n"
+        "        (int32) -> int32 read = i -> arr[i];\n"
+        "        arr[0] = 99;\n"
+        "        return read(0);\n"  // sees 99 (shared heap)
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 99);
+}
+
+// Mixed: capture one primitive and one heap value in the same lambda.
+// Verifies the captures struct's mixed-field layout (i32 + ptr) round-
+// trips correctly.
+TEST(LambdaL2Tests, mixedPrimitiveAndHeapCaptures) {
+    auto src =
+        "package test;\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        int32 bias = 100;\n"
+        "        int32[] arr = new int32[5];\n"
+        "        (int32) -> int32 fn = i -> arr[i] + bias;\n"
+        "        return fn(0);\n"  // 0 + 100 = 100
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 100);
+}
