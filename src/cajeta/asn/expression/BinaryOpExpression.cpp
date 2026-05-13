@@ -182,6 +182,74 @@ namespace cajeta {
         llvm::Value* rhs = children[1]->generateCode(module);
         ExpressionPtr lhsAst = dynamic_pointer_cast<Expression>(children[0]);
         ExpressionPtr rhsAst = dynamic_pointer_cast<Expression>(children[1]);
+
+        // Operator overloading: if LHS resolves to a class type with an
+        // `operator<sym>` method (e.g. `operator+`, `operator==`), dispatch
+        // through it before the built-in arithmetic path. RHS is passed as
+        // the single non-this argument; the method's return value is the
+        // expression's value. The lookup falls back through hierarchy via
+        // resolveMethod (same machinery dispatch uses), so an operator
+        // defined on a base class is visible to its subclasses.
+        const char* opSym = nullptr;
+        switch (binaryOp) {
+            case BINARY_OP_ADD: opSym = "+"; break;
+            case BINARY_OP_SUB: opSym = "-"; break;
+            case BINARY_OP_MUL: opSym = "*"; break;
+            case BINARY_OP_DIV: opSym = "/"; break;
+            case BINARY_OP_MOD: opSym = "%"; break;
+            case BINARY_OP_EQ:  opSym = "=="; break;
+            case BINARY_OP_NE:  opSym = "!="; break;
+            case BINARY_OP_LT:  opSym = "<";  break;
+            case BINARY_OP_GT:  opSym = ">";  break;
+            case BINARY_OP_LE:  opSym = "<="; break;
+            case BINARY_OP_GE:  opSym = ">="; break;
+            case BINARY_OP_BITAND: opSym = "&"; break;
+            case BINARY_OP_BITOR:  opSym = "|"; break;
+            case BINARY_OP_BITXOR: opSym = "^"; break;
+            default: break;
+        }
+        if (opSym && lhsAst) {
+            if (!lhsAst->getResolvedType()) lhsAst->resolveTypes(module);
+            auto lhsClass = dynamic_pointer_cast<CajetaClass>(lhsAst->getResolvedType());
+            if (lhsClass && !lhsClass->isInterface()
+                    && !(lhsClass->getTypeFlags() & PRIMITIVE_FLAG)) {
+                string opName = string("operator") + opSym;
+                const bool fp = false;
+                if (rhsAst && !rhsAst->getResolvedType()) {
+                    rhsAst->resolveTypes(module);
+                }
+                CajetaTypePtr rhsType = rhsAst ? rhsAst->getResolvedType() : nullptr;
+                if (!rhsType) rhsType = CajetaType::of(rhs);
+                // resolveMethod's canonical computation calls
+                // `parameter.type->toCanonical()` which crashes on null —
+                // bail out if we still don't have a usable type rather than
+                // attempt the lookup.
+                if (!rhsType) {
+                    goto fallthrough_to_builtin;
+                }
+                // l-value coercion: identifier expressions evaluate to the
+                // alloca holding the heap pointer, but invokeMethod expects
+                // the actual instance pointer (so the called function
+                // receives `this` as a Counter*, not a Counter**).
+                llvm::Value* recvVal = lhs;
+                if (auto* a = llvm::dyn_cast<llvm::AllocaInst>(recvVal)) {
+                    recvVal = builder->CreateLoad(a->getAllocatedType(), a);
+                }
+                llvm::Value* rhsVal = rhs;
+                if (auto* a = llvm::dyn_cast<llvm::AllocaInst>(rhsVal)) {
+                    rhsVal = builder->CreateLoad(a->getAllocatedType(), a);
+                }
+                vector<ParameterEntry> entries;
+                entries.push_back(ParameterEntry(rhsType, "", rhsVal));
+                if (auto m = lhsClass->resolveMethod(opName, entries,
+                        /*isConstructor=*/false, /*floatingParams=*/fp)) {
+                    return lhsClass->invokeMethod(opName, entries,
+                        /*isConstructor=*/false, recvVal);
+                }
+            }
+        }
+        fallthrough_to_builtin:;
+
         long lhsTypeFlags = CajetaType::getTypeFlagsOf(lhs);
         long rhsTypeFlags = CajetaType::getTypeFlagsOf(rhs);
         llvm::Value* result = nullptr;

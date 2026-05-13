@@ -7,6 +7,7 @@
 #include "Modifiable.h"
 #include "Annotatable.h"
 #include "QualifiedName.h"
+#include <optional>
 #include "llvm/IR/Module.h"
 #include "llvm/IR/Type.h"
 #include "llvm/IR/IRBuilder.h"
@@ -129,6 +130,12 @@ class CajetaType : public Modifiable, public Annotatable,
         static map<string, CajetaTypePtr> canonicalMap;
         static map<TypeKey, CajetaTypePtr> typeMap;
         static map<llvm::Type::TypeID, CajetaTypePtr> llvmTypeIdMap;
+        // Enum constant registry. Keyed by the enum's short typeName
+        // ("Direction") and then by constant name ("NORTH" / "SOUTH" / ...).
+        // The value is the constant's int32 ordinal. DotExpression consults
+        // this for `MyEnum.CONST` references; the enum CajetaType itself
+        // is registered in canonicalMap as an i32-backed type.
+        static map<string, map<string, int32_t>> enumConstants;
         QualifiedNamePtr qName;
         llvm::Type* llvmType;
         string canonical;
@@ -256,6 +263,27 @@ class CajetaType : public Modifiable, public Annotatable,
         }
 
         static unsigned long getTypeFlagsOf(llvm::Value* op);
+
+        // Enum support. `registerEnumConstant` is called per constant when
+        // the visitor sees `enum X { A, B, C }`. `lookupEnumConstant` returns
+        // the int32 ordinal if `enumName.constName` is a registered enum
+        // constant; `nullopt` otherwise. The enum's CajetaType itself is
+        // a normal i32-backed primitive registered in canonicalMap.
+        static void registerEnumConstant(const string& enumName,
+            const string& constName, int32_t ordinal) {
+            enumConstants[enumName][constName] = ordinal;
+        }
+        static bool isEnumName(const string& enumName) {
+            return enumConstants.find(enumName) != enumConstants.end();
+        }
+        static const std::optional<int32_t> lookupEnumConstant(
+            const string& enumName, const string& constName) {
+            auto it = enumConstants.find(enumName);
+            if (it == enumConstants.end()) return std::nullopt;
+            auto cit = it->second.find(constName);
+            if (cit == it->second.end()) return std::nullopt;
+            return cit->second;
+        }
 
         /**
          *  Sources for both LHS and RHS:

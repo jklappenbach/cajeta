@@ -15,6 +15,7 @@ namespace cajeta {
     #define NATIVE_TYPE_ENTRY(typeName, llvmType, typeFlags) CajetaType::create(QualifiedName::getOrInsert(typeName, CAJETA_NATIVE_PACKAGE), llvmType, typeFlags);
 
     map<string, CajetaTypePtr> CajetaType::canonicalMap;
+    map<string, map<string, int32_t>> CajetaType::enumConstants;
     map<TypeKey, CajetaTypePtr> CajetaType::typeMap;
     map<llvm::Type::TypeID, CajetaTypePtr> CajetaType::llvmTypeIdMap;
 
@@ -45,6 +46,7 @@ namespace cajeta {
         canonicalMap.clear();
         typeMap.clear();
         llvmTypeIdMap.clear();
+        enumConstants.clear();
     }
 
     void CajetaType::init(llvm::LLVMContext& ctx) {

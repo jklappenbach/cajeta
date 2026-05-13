@@ -91,8 +91,19 @@ namespace cajeta {
     }
 
     void CajetaModule::onStructureDeclaration(std::any any) {
-        CajetaClassPtr structure = std::any_cast<CajetaClassPtr>(any);
-        structures[structure->toCanonical()] = structure;
+        // Type-declaration children that don't yield a CajetaClass (e.g. enums,
+        // which register their constants in a side-table instead) return a
+        // null `any`; skip those rather than throw bad_any_cast.
+        if (!any.has_value()) return;
+        try {
+            CajetaClassPtr structure = std::any_cast<CajetaClassPtr>(any);
+            if (structure) {
+                structures[structure->toCanonical()] = structure;
+            }
+        } catch (const std::bad_any_cast&) {
+            // Not a CajetaClass — caller didn't return one (e.g. enum
+            // declaration). Nothing to register on the module here.
+        }
     }
 
     CajetaTypePtr CajetaModule::getInitializerType() const {

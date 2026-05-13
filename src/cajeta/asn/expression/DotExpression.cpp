@@ -34,6 +34,16 @@ namespace cajeta {
         if (!lhs) {
             return;
         }
+        // Enum constant reference: `MyEnum.NAME` — resolvedType is int32.
+        // Bind here so diamond inference and other resolveType consumers see
+        // the right type without waiting for generateCode to short-circuit.
+        if (auto id = dynamic_pointer_cast<IdentifierExpression>(lhs)) {
+            const string& ns = id->getTextValue();
+            if (CajetaType::lookupEnumConstant(ns, identifier).has_value()) {
+                resolvedType = CajetaType::of("int32");
+                return;
+            }
+        }
         auto klass = dynamic_pointer_cast<CajetaClass>(lhs->getResolvedType());
         if (!klass) {
             return;
@@ -137,6 +147,13 @@ namespace cajeta {
                     llvm::Type::getInt64Ty(ctx), INT64_MAX, /*isSigned=*/true);
                 if (identifier == "MIN_VALUE") return llvm::ConstantInt::get(
                     llvm::Type::getInt64Ty(ctx), INT64_MIN, /*isSigned=*/true);
+            }
+            // Enum constant: `MyEnum.NAME` resolves to the ordinal i32. The
+            // enum type is registered in canonicalMap; the constant table is
+            // a separate side-map populated by visitEnumDeclaration.
+            if (auto v = CajetaType::lookupEnumConstant(ns, identifier)) {
+                return llvm::ConstantInt::get(
+                    llvm::Type::getInt32Ty(ctx), *v, /*isSigned=*/true);
             }
         }
 

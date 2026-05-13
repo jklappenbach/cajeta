@@ -4,6 +4,7 @@
 
 #include "Method.h"
 #include "../type/CajetaClass.h"
+#include "../type/CajetaStruct.h"
 #include "../compile/CajetaModule.h"
 #include "../compile/Compiler.h"
 #include "../error/VariableAssignmentException.h"
@@ -164,7 +165,20 @@ namespace cajeta {
         }
 
         for (auto formalParameter: parameterList) {
-            llvmTypes.push_back(formalParameter->getType()->getLlvmType());
+            CajetaTypePtr pt = formalParameter->getType();
+            llvm::Type* ptLlvm = pt->getLlvmType();
+            // Class instances pass by pointer, not by value. The struct
+            // layout exists only for fields/layout; method-call ABI treats
+            // a class-typed parameter as `ptr`. (Structs — `struct` keyword,
+            // which is a CajetaStruct subtype — DO pass by value; that's
+            // what makes them POD wire-format types per WireFormats.md.)
+            if (auto klass = dynamic_pointer_cast<CajetaClass>(pt)) {
+                bool isStruct = dynamic_pointer_cast<CajetaStruct>(pt) != nullptr;
+                if (!isStruct && !(pt->getTypeFlags() & PRIMITIVE_FLAG)) {
+                    ptLlvm = llvm::PointerType::get(*module->getLlvmContext(), 0);
+                }
+            }
+            llvmTypes.push_back(ptLlvm);
         }
         if (llvmTypes.size()) {
             llvmFunctionType = llvm::FunctionType::get(returnType->getLlvmType(), llvmTypes, false);

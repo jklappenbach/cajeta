@@ -154,6 +154,20 @@ namespace cajeta {
             }
 
             pModule->getStructureStack().push_back(structure);
+            // Pre-register the class in canonicalMap (under both canonical
+            // and short typeName) so self-references inside the body
+            // resolve — e.g. `Vector operator+ (Vector other)` inside class
+            // Vector. The actual generatePrototype below will overwrite
+            // these placeholder entries with the same class (idempotent).
+            // Templates handle this in their own path via instantiate; skip
+            // for templates here.
+            if (!structure->isTemplate()) {
+                CajetaType::getCanonicalMap()[qName->toCanonical()] =
+                    static_pointer_cast<CajetaType>(structure);
+                CajetaType::getCanonicalMap()[qName->getTypeName()] =
+                    static_pointer_cast<CajetaType>(structure);
+            }
+
             // For templates, skip the body walk entirely. The body contains
             // unresolved type-parameter references (`T value`, `T method()`)
             // that FormalParameter / CajetaType resolution can't handle in
@@ -232,7 +246,48 @@ namespace cajeta {
         }
 
         virtual std::any visitEnumDeclaration(CajetaParser::EnumDeclarationContext* ctx) override {
-            return visitChildren(ctx);
+            // v1 enum: each constant gets an int32 ordinal (0, 1, 2, ...). The
+            // enum type itself registers as an i32-backed CajetaType under its
+            // qName so `MyEnum x` declares an int32 slot; `MyEnum.NAME` is
+            // resolved at DotExpression codegen to an i32 constant via the
+            // CajetaType::enumConstants registry.
+            //
+            // Not yet supported (deferred):
+            //  - constants with arguments: `MONDAY(1)`
+            //  - enum bodies with methods
+            //  - `implements` clause on enum
+            string name = ctx->identifier()->getText();
+            string packageAdj;
+            for (auto& s : pModule->getStructureStack()) {
+                packageAdj.append(".");
+                packageAdj.append(s->getQName()->getTypeName());
+            }
+            QualifiedNamePtr qName = QualifiedName::getOrInsert(
+                name, pModule->getQName()->getPackageName() + packageAdj);
+
+            // Register the enum as an i32-backed primitive. shareLlvmType=false
+            // because i32 already owns the typeMap[i32] slot — we don't want
+            // to clobber it.
+            llvm::Type* i32Ty = llvm::Type::getInt32Ty(*pModule->getLlvmContext());
+            auto enumType = CajetaType::create(qName, i32Ty,
+                INT_FLAG | SIGNED_FLAG | NUMBER_FLAG | PRIMITIVE_FLAG
+                    | BIT_32_FLAG | ENUM_FLAG,
+                /*shareLlvmType=*/false);
+            // Also register under the short typeName so an unqualified `Color`
+            // reference at a type-use site resolves without needing the full
+            // canonical (matches how CajetaClass::generatePrototype registers
+            // both forms for class names).
+            CajetaType::getCanonicalMap()[qName->getTypeName()] = enumType;
+
+            // Walk constants in declared order and assign sequential ordinals.
+            int32_t ordinal = 0;
+            if (auto* constants = ctx->enumConstants()) {
+                for (auto* ec : constants->enumConstant()) {
+                    string constName = ec->identifier()->getText();
+                    CajetaType::registerEnumConstant(name, constName, ordinal++);
+                }
+            }
+            return std::any(nullptr);
         }
 
         virtual std::any visitEnumConstants(CajetaParser::EnumConstantsContext* ctx) override {
@@ -352,7 +407,74 @@ namespace cajeta {
         }
 
         virtual std::any visitOperatorOverloadDeclaration(CajetaParser::OperatorOverloadDeclarationContext *ctx) override {
-            return visitChildren(ctx);
+            // `int32 operator+ (Vector other) { return ... }` and friends.
+            // Build a Method whose *name* is `operator<symbol>` so the
+            // BinaryOpExpression / PrefixExpression codegen can look it up
+            // via the same machinery as a regular method. The receiver
+            // (`this`) is implicit, as for any non-static method.
+            //
+            // v1 supports the common arithmetic, comparison, and compound-
+            // assignment operators. Less common ops (>>>, bitwise &/|/^,
+            // their compound forms) parse but their callers haven't been
+            // taught yet — the methods are still registered for the day
+            // somebody wires them in.
+            const char* sym = "?";
+            if (ctx->ADD()) sym = "+";
+            else if (ctx->SUB()) sym = "-";
+            else if (ctx->MUL()) sym = "*";
+            else if (ctx->DIV()) sym = "/";
+            else if (ctx->MOD()) sym = "%";
+            else if (ctx->EQUAL()) sym = "==";
+            else if (ctx->NOTEQUAL()) sym = "!=";
+            else if (ctx->LT()) sym = "<";
+            else if (ctx->GT()) sym = ">";
+            else if (ctx->LE()) sym = "<=";
+            else if (ctx->GE()) sym = ">=";
+            else if (ctx->INC()) sym = "++";
+            else if (ctx->DEC()) sym = "--";
+            else if (ctx->ASSIGN()) sym = "=";
+            else if (ctx->ADD_ASSIGN()) sym = "+=";
+            else if (ctx->SUB_ASSIGN()) sym = "-=";
+            else if (ctx->MUL_ASSIGN()) sym = "*=";
+            else if (ctx->DIV_ASSIGN()) sym = "/=";
+            else if (ctx->MOD_ASSIGN()) sym = "%=";
+            else if (ctx->AND()) sym = "&&";
+            else if (ctx->OR()) sym = "||";
+            else if (ctx->BITAND()) sym = "&";
+            else if (ctx->BITOR()) sym = "|";
+            else if (ctx->CARET()) sym = "^";
+            else if (ctx->AND_ASSIGN()) sym = "&=";
+            else if (ctx->OR_ASSIGN()) sym = "|=";
+            else if (ctx->XOR_ASSIGN()) sym = "^=";
+            else if (ctx->LSHIFT_ASSIGN()) sym = "<<=";
+            else if (ctx->RSHIFT_ASSIGN()) sym = ">>=";
+            else if (ctx->URSHIFT_ASSIGN()) sym = ">>>=";
+
+            string methodName = string("operator") + sym;
+            vector<FormalParameterPtr> formals;
+            if (auto* fps = ctx->formalParameters()) {
+                if (auto* list = fps->formalParameterList()) {
+                    for (auto* fp : list->formalParameter()) {
+                        if (auto p = FormalParameter::fromContext(fp, pModule)) {
+                            formals.push_back(p);
+                        }
+                    }
+                }
+            }
+            CajetaTypePtr returnType = CajetaType::fromContext(ctx->typeType(), pModule);
+            BlockPtr block;
+            if (ctx->methodBody()) {
+                auto bodyAny = visitMethodBody(ctx->methodBody());
+                if (bodyAny.has_value()) {
+                    try { block = any_cast<BlockPtr>(bodyAny); }
+                    catch (const std::bad_any_cast&) { /* `;` form — no block */ }
+                }
+            }
+            MethodPtr method = Method::create(
+                pModule, methodName, returnType, formals, block,
+                pModule->getStructureStack().front());
+            return static_pointer_cast<MemberDeclaration>(
+                make_shared<MethodDeclaration>(method, ctx->getStart()));
         }
 
         virtual std::any visitTemplatedOperatorOverloadDeclaration(CajetaParser::TemplatedOperatorOverloadDeclarationContext* ctx) override {
