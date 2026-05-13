@@ -132,7 +132,7 @@ CAJETA_DUMP_IR=1 CAJETA_SOURCE_ROOT="$PWD" \
 | `CompilerOptionTests`       | `--bounds=off` toggle, `--emit` mode round-trip, target-triple setter |
 | `FpTests`                   | fp32/fp64 arithmetic, fp16 declare/store, fp4/fp6/fp8 storage |
 
-#### Memory model + wire formats (Sessions 1–5.5b of the rollout — see `ImplementationStatus.md`)
+#### Memory model + wire formats (Sessions 1–5.5b of the rollout — see `cajeta-docs/ImplementationStatus.md`)
 
 | Suite                       | What it covers                                                |
 | --------------------------- | ------------------------------------------------------------- |
