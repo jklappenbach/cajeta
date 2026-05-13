@@ -11,6 +11,7 @@
 #include "../../type/CajetaArray.h"
 #include "Expression.h"
 #include "DotExpression.h"
+#include "Identifier.h"
 
 namespace cajeta {
 
@@ -31,18 +32,30 @@ namespace cajeta {
     }
 
     // l-value → r-value coercion. Three cases:
-    //   (1) AllocaInst: load with the alloca's allocated type. Common case for local vars.
+    //   (1) IdentifierExpression alloca: load with the alloca's allocated type.
+    //       Common case for local vars.
     //   (2) ArrayIndex GEP: load the element value. Reference-typed elements load as
     //       `ptr` (the slot stores a pointer to the referenced object); primitive
     //       elements load their own LLVM type.
-    //   (3) Other pointer-typed Value with a resolvedType on the source AST: load with
-    //       that type's LLVM mapping. Used for member-access GEPs from DotExpression.
+    //   (3) DotExpression GEP into a struct/class field: load with the field's
+    //       LLVM type and bswap if the receiver's endianness differs from host.
     // Constants and intermediate r-values pass through unchanged.
-    static llvm::Value* loadIfLValue(CajetaModulePtr module, llvm::Value* v, ExpressionPtr ast = nullptr) {
+    //
+    // The AllocaInst → load mapping is gated on the AST being an
+    // IdentifierExpression (or absent — legacy callers without an AST). Other
+    // expression types that legitimately produce AllocaInst values that are
+    // NOT slot pointers (LambdaExpression's closure record, NewExpression's
+    // stack allocations, etc.) must pass through unchanged, because the
+    // alloca address IS the value being yielded.
+    llvm::Value* loadIfLValue(CajetaModulePtr module, llvm::Value* v, ExpressionPtr ast) {
         if (!v) return v;
         auto* builder = module->getBuilder();
-        if (auto* a = llvm::dyn_cast<llvm::AllocaInst>(v)) {
-            return builder->CreateLoad(a->getAllocatedType(), a);
+        bool treatAllocaAsSlot = !ast
+            || dynamic_pointer_cast<IdentifierExpression>(ast) != nullptr;
+        if (treatAllocaAsSlot) {
+            if (auto* a = llvm::dyn_cast<llvm::AllocaInst>(v)) {
+                return builder->CreateLoad(a->getAllocatedType(), a);
+            }
         }
         if (ast && dynamic_pointer_cast<ArrayIndexExpression>(ast)) {
             CajetaTypePtr elemType = ast->getResolvedType();

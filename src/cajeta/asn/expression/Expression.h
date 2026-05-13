@@ -73,6 +73,18 @@ namespace cajeta {
     class Expression;
     typedef shared_ptr<Expression> ExpressionPtr;
 
+    // l-value → r-value coercion shared between expression-result consumers
+    // (BinaryOp's RHS/LHS load paths, ReturnStatement, LambdaExpression's
+    // body, VariableInitializer). Given a value `v` that may be a pointer
+    // to a slot (alloca for locals, GEP for array elements / struct
+    // fields), loads through to produce a value of the wrapped type.
+    // Scalars and intermediate r-values pass through unchanged. `ast` is
+    // optional; when provided it lets the helper distinguish ArrayIndex
+    // and DotExpression slot pointers (which need element/field-type-
+    // driven loads) from anonymous pointer values.
+    llvm::Value* loadIfLValue(CajetaModulePtr module, llvm::Value* v,
+                              ExpressionPtr ast = nullptr);
+
     // Expression is a sibling of Statement under AbstractSyntaxNode. When an expression
     // appears in statement position (e.g. `foo();`), wrap it in ExpressionStatement
     // rather than relying on inheritance — see Statement::fromContext.

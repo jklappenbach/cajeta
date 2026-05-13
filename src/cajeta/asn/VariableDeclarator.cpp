@@ -12,7 +12,19 @@ namespace cajeta {
     }
 
     llvm::Value* VariableInitializer::generateCode(CajetaModulePtr module) {
-        return children.back()->generateCode(module);
+        // An initializer's job is to produce a value that the surrounding
+        // declaration writes into the local's slot. If the wrapped
+        // expression evaluates to an l-value — IdentifierExpression's
+        // alloca for `int32 a = b;`, ArrayIndexExpression's GEP for
+        // `int32 v = arr[i];`, DotExpression's field GEP for
+        // `int32 f = obj.x;` — the slot store needs the r-value loaded
+        // through, not the slot pointer itself. Forward via loadIfLValue
+        // so every consumer of an initializer (StackField, HeapField,
+        // generated stores) sees a real value.
+        auto& back = children.back();
+        llvm::Value* v = back->generateCode(module);
+        auto exprAst = dynamic_pointer_cast<Expression>(back);
+        return loadIfLValue(module, v, exprAst);
     }
 
     llvm::Value* ArrayInitializer::generateCode(CajetaModulePtr module) {

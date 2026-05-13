@@ -197,26 +197,25 @@ TEST(LambdaL2Tests, blockBodyExplicitReturn) {
     EXPECT_EQ(runI32(src), 42);
 }
 
-// L2-4 + captures: block body that introduces locals derived from
-// captured values. Avoids `int32 v = arr[idx];` because there's a
-// pre-existing l-value-coercion gap in StackField's initializer path
-// (unrelated to lambdas — see ArrayIndex-into-local in regular methods).
+// L2-4 + captures: block body that reads a captured primitive and a
+// captured heap value into locals, combines them, returns the local.
 TEST(LambdaL2Tests, blockBodyWithCapturesAndLocals) {
     auto src =
         "package test;\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
         "        int32 bias = 10;\n"
-        "        int32 scale = 3;\n"
+        "        int32[] arr = new int32[3];\n"
+        "        arr[0] = 5;\n"
         "        (int32) -> int32 fn = i -> {\n"
-        "            int32 doubled = i + i;\n"
-        "            int32 r = doubled * scale + bias;\n"
+        "            int32 v = arr[i];\n"
+        "            int32 r = v + bias;\n"
         "            return r;\n"
         "        };\n"
-        "        return fn(4);\n"  // doubled=8, r=8*3+10=34
+        "        return fn(0);\n"  // v=5, r=5+10=15
         "    }\n"
         "}\n";
-    EXPECT_EQ(runI32(src), 34);
+    EXPECT_EQ(runI32(src), 15);
 }
 
 // Direct heap capture read inside a block-body lambda (sidesteps the
@@ -296,11 +295,6 @@ TEST(LambdaL2Tests, compoundAssignToValueCaptureIsCompileError) {
 // Negative case: assigning a non-captured local (declared inside the
 // lambda block) is fine — the check is name-based on the value-captured
 // set, so a local with no shadow on the outside isn't affected.
-// `int32 local = base + 0` (rather than `= base`) sidesteps the same
-// pre-existing l-value-coercion gap in StackField that
-// blockBodyWithCapturesAndLocals worked around: BinaryOpExpression
-// loads l-values on its way out, so the initializer is a proper i32
-// r-value when it hits the slot store.
 TEST(LambdaL2Tests, writingLocalIsNotCaptureError) {
     auto src =
         "package test;\n"
@@ -308,7 +302,7 @@ TEST(LambdaL2Tests, writingLocalIsNotCaptureError) {
         "    public static int32 run() {\n"
         "        int32 base = 10;\n"
         "        () -> int32 fn = () -> {\n"
-        "            int32 local = base + 0;\n"
+        "            int32 local = base;\n"
         "            local = local + 5;\n"  // writing to local, not capture
         "            return local;\n"
         "        };\n"
