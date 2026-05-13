@@ -250,6 +250,267 @@ async Response getWithTimeout(Url u, Duration d) {
 
 ---
 
+## Synchronization primitives
+
+Actors + structured concurrency cover most application-level coordination, but lower-level primitives remain necessary for: lock-free / hot-path code, cross-actor coordination, and read-heavy workloads where mailbox round-trips dominate. The primitives below are deliberately *async-aware* — `await mutex.lock()` parks the task on the wait queue and lets the executor run something else, instead of blocking the OS thread. OS-blocking forms are NOT exposed; if you find yourself wanting one, you almost certainly want to push the OS interaction into a dedicated worker task that owns the resource and serves async requests against it.
+
+Each primitive owns the value it protects via a template parameter. Access is mediated by a guard whose lifetime is the critical section; release happens automatically when the guard drops at scope exit — same drop-chain machinery the rest of the memory model uses, so "forgot to unlock" is structurally unrepresentable.
+
+A short decision tree at the bottom of this section recommends which primitive to reach for.
+
+### Mutex&lt;T&gt;
+
+Exclusive access to an owned value. `await m.lock()` returns a `LockGuard<T>` borrow of the inner T; releasing happens when the guard drops.
+
+```
+Mutex<int32> counter = new Mutex<>(0);
+
+async void increment() {
+    LockGuard<int32> g = await counter.lock();
+    *g += 1;
+    // g drops at end of scope → mutex auto-released
+}
+```
+
+**When the actor model obviates `Mutex<T>`.** Whenever the protected value is *the* state of a logical thing (a counter, a connection, a registry), wrap it in an actor instead — the mailbox is already a serial gate. You don't need a Mutex and you can't accidentally drop the guard early.
+
+```
+// Reaching for Mutex — works, but unidiomatic:
+Mutex<int32> total = new Mutex<>(0);
+scope {
+    spawn () -> async void {
+        LockGuard<int32> g = await total.lock();
+        *g += await fetchScore(urlA);
+    };
+    spawn () -> async void {
+        LockGuard<int32> g = await total.lock();
+        *g += await fetchScore(urlB);
+    };
+}
+
+// The Cajeta way — the actor IS the mutex:
+actor Tally {
+    int32 total = 0;
+    public void add(int32 s) { total += s; }
+    public int32 read()      { return total; }
+}
+Tally t = new Tally();
+scope {
+    spawn () -> async void { await t.add(await fetchScore(urlA)); };
+    spawn () -> async void { await t.add(await fetchScore(urlB)); };
+}
+```
+
+**When `Mutex<T>` is still the right tool.** Data structures with a lock-free fast path and an occasional locked slow path — typical of caches, pools, or anything performance-sensitive enough that the actor's per-call mailbox cost is unacceptable.
+
+```
+class LockFreeCache {
+    AtomicPtr<Bucket[]> buckets;
+    Mutex<ResizeState>  resizeState;
+
+    async Value? get(Key k) {
+        // Hot path: lock-free read via atomic load. No mutex involved.
+        Bucket[] bs = buckets.load(acquire);
+        return bs[hash(k) % bs.size()].lookup(k);
+    }
+
+    async void resize() {
+        // Cold path: serialize resizers via the mutex.
+        LockGuard<ResizeState> g = await resizeState.lock();
+        Bucket[] fresh = rebuild(buckets.load(acquire));
+        buckets.store(fresh, release);
+    }
+}
+```
+
+### Critical section
+
+A critical section is a Mutex held for the duration of a lexical block. Cajeta has no `synchronized` keyword — the LockGuard's scope *is* the critical section. The shape is identical to Java's `synchronized (obj) { ... }` but the value being protected is type-safely tied to the guard, so you can't accidentally protect with one mutex while accessing through another.
+
+```
+// In Java:
+synchronized (sharedList) {
+    sharedList.add(item);
+    sharedList.add(otherItem);
+}
+
+// In Cajeta — there's no `synchronized`. The critical section is the
+// scope in which the LockGuard lives:
+{
+    LockGuard<List<Item>> g = await listLock.lock();
+    g.add(item);
+    g.add(otherItem);
+}   // g drops here → lock auto-released
+```
+
+**When the actor model obviates the critical section.** Multi-step operations on a single conceptual entity belong inside one actor method. The two operations are then atomic relative to other actor methods, with no guard plumbing.
+
+```
+// Imperative critical section:
+{
+    LockGuard<List<Item>> g = await listLock.lock();
+    g.add(item);
+    g.add(otherItem);
+}
+
+// Actor: the method body IS the critical section.
+actor ItemList {
+    private List<Item> items;
+    public void addBoth(Item a, Item b) {
+        items.add(a);
+        items.add(b);
+    }
+}
+await itemList.addBoth(item, otherItem);
+```
+
+**When you still need a block-scoped lock.** Multi-step operations spanning two values that don't fit naturally inside a single actor. This is usually a smell — combining them into one actor or one composite `Mutex<(File, Checksum)>` is often clearer — but legitimate cases exist (the values have very different lifetimes, or one is a borrow):
+
+```
+{
+    LockGuard<File>  fg = await file.lock();
+    LockGuard<int32> sg = await checksum.lock();
+    *sg = await computeChecksum(fg);
+    await writeChecksumHeader(fg, *sg);
+}
+```
+
+Standing recommendation: if you need to hold two locks together, prefer combining the values into one actor or one Mutex.
+
+### Semaphore
+
+Counting permit pool. `await s.acquire()` blocks until a permit is free; `s.release()` returns one. Use case: bound the *number* of concurrent operations against some resource.
+
+```
+Semaphore s = new Semaphore(permits: 5);
+
+async Result useResource() {
+    await s.acquire();
+    try {
+        return await expensiveCall();
+    } finally {
+        s.release();
+    }
+}
+```
+
+**When `scope { spawn N times }` obviates a semaphore.** If the workload is statically batchable — you have a known list of tasks and want at most K running concurrently — structured concurrency gives you that for free with chunked scopes. No counting permits, no acquire/release ceremony, no leaked permits on exception:
+
+```
+// Reaching for a semaphore:
+Semaphore concurrency = new Semaphore(permits: 4);
+scope {
+    for (Url u in urls) {
+        spawn () -> async void {
+            await concurrency.acquire();
+            try {
+                await fetchScore(u);
+            } finally {
+                concurrency.release();
+            }
+        };
+    }
+}
+
+// Structured concurrency: at most 4 in flight at a time, by construction.
+async void fetchAll(List<Url> urls) {
+    for (List<Url> chunk : chunkOf(urls, 4)) {
+        scope {
+            for (Url u : chunk) spawn fetchScore(u);
+        }   // this scope joins all 4 before the next chunk
+    }
+}
+```
+
+The chunked form has more structural clarity (the concurrency limit is part of the program's shape) and stronger error semantics (a failure cancels exactly the in-flight 4, not whatever happens to be mid-acquire).
+
+**When you still need a semaphore.** Long-lived, overlapping concurrency where there's no enclosing scope that could serve as the batching boundary. The canonical case is a server limiting *globally* concurrent expensive operations across the lifetime of all requests:
+
+```
+// Server-wide limit: at most 16 expensive operations across all requests.
+Semaphore expensive = new Semaphore(permits: 16);
+
+async Response handleRequest(Request r) {
+    if (r.requiresExpensiveOp()) {
+        await expensive.acquire();
+        try {
+            return await expensiveOp(r);
+        } finally {
+            expensive.release();
+        }
+    }
+    return await cheapOp(r);
+}
+```
+
+There's no scope that covers "every request for the server's lifetime" because requests are unbounded and overlapping. The semaphore's permit pool is the natural bound.
+
+### Lock — RwLock&lt;T&gt; (many readers ∥ one writer)
+
+Cajeta's "Lock" primitive is `RwLock<T>` — read/write distinction is the only Lock semantic that meaningfully differs from `Mutex<T>`. A plain exclusive Lock with explicit lock/unlock API (like Java's `Lock` interface) isn't provided; that's just `Mutex<T>` with a worse API surface.
+
+```
+RwLock<HashMap<Key, Val>> cache = new RwLock<>(new HashMap<>());
+
+async Val? lookup(Key k) {
+    ReadGuard<HashMap<Key, Val>> g = await cache.read();
+    return g.get(k);
+}
+
+async void insert(Key k, Val v) {
+    WriteGuard<HashMap<Key, Val>> g = await cache.write();
+    g.put(k, v);
+}
+```
+
+Any number of concurrent `read` calls can hold a `ReadGuard` simultaneously; `write` waits for outstanding reads to drain, then proceeds exclusively, then new reads can resume.
+
+**When the actor model obviates RwLock.** Most workloads. The actor's mailbox is itself an efficient queue and the per-call cost is small. If you don't have measurements showing the actor's serialization is a bottleneck, default to an actor:
+
+```
+actor Cache {
+    private HashMap<Key, Val> map = new HashMap<>();
+    public Val? lookup(Key k) { return map.get(k); }
+    public void insert(Key k, Val v) { map.put(k, v); }
+}
+```
+
+**When you still need RwLock.** Read-very-heavy paths where the *measured* mailbox round-trip cost is the bottleneck. The canonical case is a config object: every request reads it; updates fire only on hot-reload:
+
+```
+RwLock<Config> config = new RwLock<>(loadInitial());
+
+async Response handle(Request r) {
+    ReadGuard<Config> g = await config.read();
+    // Hundreds of concurrent requests can hold a read at once;
+    // hot-reload (below) fires once a day and waits for in-flight reads.
+    return await process(r, g);
+}
+
+async void hotReload() {
+    Config c = loadFresh();
+    WriteGuard<Config> g = await config.write();
+    *g = c;
+}
+```
+
+If `Config` lived inside an actor, every request would queue behind the mailbox — fine for hundreds of req/s, brutal for hundreds of thousands.
+
+### Decision tree
+
+When you need to coordinate access to shared state, walk the choices in this order:
+
+1. **Can the state be owned by one logical entity?** Wrap it in an `actor`. This is the right answer for the large majority of cases.
+2. **Is the workload statically batchable into "K at a time"?** Use chunked `scope { spawn ... }`. Structured concurrency expresses the concurrency limit in the program's shape rather than as runtime bookkeeping.
+3. **Read-heavy, with measured contention on an actor's mailbox?** `RwLock<T>`.
+4. **Need a counted permit pool with overlapping lifetimes that no scope can bound?** `Semaphore`.
+5. **A lock-free fast path with an occasional locked cold path?** `Mutex<T>` for the cold path; atomics for the fast path.
+6. **Need to atomically operate on values from two different actors?** Reconsider the decomposition — usually you can combine them into one actor or one `Mutex<(A, B)>`. If you genuinely can't, a critical section holding two LockGuards is the escape hatch.
+
+Reach for the highest-numbered tool only when the lower-numbered ones don't fit. Each step down is a step toward subtler bugs and higher cognitive load.
+
+---
+
 ## Runtime requirements
 
 A small C runtime ships in `runtime/native/`, paralleling the existing exception / drop-chain helpers:
