@@ -108,6 +108,8 @@ All core sync primitives use the **RAII guard pattern**: acquiring the lock retu
 
 The primitives are async-aware: `await m.lock()` parks the current task on the wait queue and lets the executor run something else — it does not block the OS thread. OS-blocking forms are not exposed; if you find yourself wanting one, you almost certainly want to push the OS interaction into a dedicated worker task that owns the resource and serves async requests against it.
 
+Implementation today (R4): each lock holds a pthread mutex (protecting its own `held` flag and wait queue) plus a per-lock pthread condvar (for any main-thread acquirer). When a fiber calls `lockAcquire` and the lock is held, the fiber links itself into the lock's wait queue and swaps back to the carrier — no OS-thread block. When `lockRelease` runs, it dequeues one waiter from the lock's queue and re-enqueues it on the carrier's ready queue, then signals the condvar to wake any main-thread waiter. Main-thread `lockAcquire` is a plain cond_wait (main is outside the fiber executor; OS-blocking is fine there).
+
 ### `Mutex<T>` — the fused-lock-and-data primitive
 
 `Mutex<T>` owns the protected value. The only way to read or write it is through a guard obtained from `lock()` or `tryLock()`:

@@ -131,43 +131,12 @@ void __cajeta_closure_drop(void* p) {
 // will wrap these calls with an `acquire()` that returns a `LockGuard`
 // whose drop calls release.
 
-void* __cajeta_lock_new(void) {
-    pthread_mutex_t* m = (pthread_mutex_t*) malloc(sizeof(pthread_mutex_t));
-    if (!m) {
-        fprintf(stderr, "cajeta: __cajeta_lock_new failed\n");
-        abort();
-    }
-    if (pthread_mutex_init(m, NULL) != 0) {
-        fprintf(stderr, "cajeta: pthread_mutex_init failed\n");
-        free(m);
-        abort();
-    }
-    return m;
-}
-
-void __cajeta_lock_acquire(void* p) {
-    if (!p) return;
-    pthread_mutex_lock((pthread_mutex_t*) p);
-}
-
-void __cajeta_lock_release(void* p) {
-    if (!p) return;
-    pthread_mutex_unlock((pthread_mutex_t*) p);
-}
-
-// Returns 1 if the lock was acquired, 0 if it was already held. Mirrors
-// the boolean return shape that the eventual `tryAcquire(): bool` method
-// in the user-facing Lock class will surface.
-int32_t __cajeta_lock_try_acquire(void* p) {
-    if (!p) return 0;
-    return pthread_mutex_trylock((pthread_mutex_t*) p) == 0 ? 1 : 0;
-}
-
-void __cajeta_lock_destroy(void* p) {
-    if (!p) return;
-    pthread_mutex_destroy((pthread_mutex_t*) p);
-    free(p);
-}
+// The lock primitives live AFTER the fiber executor (further down in
+// this file) so they can use the fiber struct + carrier state directly.
+// Forward declarations are intentionally avoided — re-declaring `static
+// __thread` storage with separate definitions is a footgun on some
+// compilers, so the file is ordered: shared infrastructure first, then
+// users of that infrastructure.
 
 // --- Threading: stackful fiber executor (R3-B) ----------------------------
 //
@@ -389,6 +358,154 @@ void __cajeta_task_complete(int32_t* done_addr) {
     pthread_cond_broadcast(&__cajeta_task_done_cond);
     __cajeta_wake_all_parked_locked();
     pthread_mutex_unlock(&__cajeta_task_mutex);
+}
+
+// --- Threading sync primitives: Lock (async-aware, R4) -------------------
+//
+// Sits on top of the fiber executor. A Cajeta Lock is a pthread_mutex_t
+// for state protection plus a per-lock wait queue of parked fibers and a
+// condvar for any main-thread waiter. Acquire from a fiber that hits a
+// held lock parks the fiber on the lock's queue and yields — the carrier
+// keeps running other fibers. Acquire from the main thread cond_waits
+// like a regular pthread (main is outside the fiber executor and can OS-
+// block without harming concurrency).
+//
+// `held` is the canonical "is anyone holding this lock" flag, distinct
+// from the pthread_mutex_t state (which protects the lock's own metadata
+// — held + wait queue — not user mutual exclusion). Splitting them lets
+// the fiber path park on the wait queue without leaving the user-mutex
+// held.
+
+struct cajeta_async_lock {
+    pthread_mutex_t mutex;
+    pthread_cond_t released_cond;
+    int held;
+    struct cajeta_fiber* wait_head;
+    struct cajeta_fiber* wait_tail;
+};
+
+void* __cajeta_lock_new(void) {
+    struct cajeta_async_lock* l = (struct cajeta_async_lock*) malloc(sizeof(*l));
+    if (!l) {
+        fprintf(stderr, "cajeta: __cajeta_lock_new failed\n");
+        abort();
+    }
+    if (pthread_mutex_init(&l->mutex, NULL) != 0) {
+        fprintf(stderr, "cajeta: pthread_mutex_init failed\n");
+        free(l);
+        abort();
+    }
+    if (pthread_cond_init(&l->released_cond, NULL) != 0) {
+        fprintf(stderr, "cajeta: pthread_cond_init failed\n");
+        pthread_mutex_destroy(&l->mutex);
+        free(l);
+        abort();
+    }
+    l->held = 0;
+    l->wait_head = NULL;
+    l->wait_tail = NULL;
+    return l;
+}
+
+void __cajeta_lock_acquire(void* p) {
+    if (!p) return;
+    struct cajeta_async_lock* l = (struct cajeta_async_lock*) p;
+    if (!__cajeta_current_fiber) {
+        // Main thread (or any non-fiber pthread): cond_wait until the
+        // holder releases. Matches the doc's intent that the program's
+        // entry point can sit on a top-level await without burning CPU.
+        pthread_mutex_lock(&l->mutex);
+        while (l->held) {
+            pthread_cond_wait(&l->released_cond, &l->mutex);
+        }
+        l->held = 1;
+        pthread_mutex_unlock(&l->mutex);
+        return;
+    }
+    // Fiber path: park on the lock's wait queue if held. On wake the
+    // dequeued-by-release fiber is back on the ready queue; when the
+    // carrier dispatches it, swapcontext returns INTO this loop and
+    // re-checks held (another acquirer could have raced in, so re-park
+    // rather than assume we have the lock).
+    for (;;) {
+        pthread_mutex_lock(&l->mutex);
+        if (!l->held) {
+            l->held = 1;
+            pthread_mutex_unlock(&l->mutex);
+            return;
+        }
+        struct cajeta_fiber* self = __cajeta_current_fiber;
+        self->next = NULL;
+        if (l->wait_tail) {
+            l->wait_tail->next = self;
+            l->wait_tail = self;
+        } else {
+            l->wait_head = self;
+            l->wait_tail = self;
+        }
+        self->state = CAJETA_FIBER_PARKED;
+        pthread_mutex_unlock(&l->mutex);
+        swapcontext(&self->ctx, &__cajeta_carrier_ctx);
+    }
+}
+
+void __cajeta_lock_release(void* p) {
+    if (!p) return;
+    struct cajeta_async_lock* l = (struct cajeta_async_lock*) p;
+    pthread_mutex_lock(&l->mutex);
+    l->held = 0;
+    struct cajeta_fiber* next = l->wait_head;
+    if (next) {
+        l->wait_head = next->next;
+        if (!l->wait_head) l->wait_tail = NULL;
+        next->next = NULL;
+    }
+    // Signal one main-thread waiter even when a fiber is being handed
+    // the lock — costs almost nothing and avoids missed-wake races with
+    // a pthread that happens to be cond_waiting concurrently.
+    pthread_cond_signal(&l->released_cond);
+    pthread_mutex_unlock(&l->mutex);
+    if (next) {
+        // Move the woken fiber onto the carrier's ready queue. Done
+        // under the task mutex so it pairs correctly with the carrier's
+        // dequeue.
+        pthread_mutex_lock(&__cajeta_task_mutex);
+        next->state = CAJETA_FIBER_READY;
+        next->next = NULL;
+        if (__cajeta_ready_tail) {
+            __cajeta_ready_tail->next = next;
+            __cajeta_ready_tail = next;
+        } else {
+            __cajeta_ready_head = next;
+            __cajeta_ready_tail = next;
+        }
+        pthread_cond_signal(&__cajeta_task_queue_cond);
+        pthread_mutex_unlock(&__cajeta_task_mutex);
+    }
+}
+
+// Returns 1 if acquired, 0 if already held. Non-blocking even on a
+// fiber — `tryAcquire` semantics are "give me the lock right now or
+// tell me you couldn't", never "park me".
+int32_t __cajeta_lock_try_acquire(void* p) {
+    if (!p) return 0;
+    struct cajeta_async_lock* l = (struct cajeta_async_lock*) p;
+    int got = 0;
+    pthread_mutex_lock(&l->mutex);
+    if (!l->held) {
+        l->held = 1;
+        got = 1;
+    }
+    pthread_mutex_unlock(&l->mutex);
+    return got;
+}
+
+void __cajeta_lock_destroy(void* p) {
+    if (!p) return;
+    struct cajeta_async_lock* l = (struct cajeta_async_lock*) p;
+    pthread_cond_destroy(&l->released_cond);
+    pthread_mutex_destroy(&l->mutex);
+    free(l);
 }
 
 // Abort with a diagnostic when an array index is out of bounds. Compiler emits a

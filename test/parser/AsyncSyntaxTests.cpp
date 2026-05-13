@@ -109,6 +109,73 @@ TEST(AsyncSyntaxTests, spawnPassesOneArgument) {
     EXPECT_EQ(runI32(src), 42);
 }
 
+// R4: smoke-test the fiber-aware lock_acquire path. A fiber acquires a
+// freshly-allocated (uncontended) lock and releases it; the lock then
+// gets reused by a second fiber. Under R3-B's plain pthread_mutex_lock
+// this works trivially; under R4 the fiber goes through the new
+// fiber-branch in __cajeta_lock_acquire (check `__cajeta_current_fiber`,
+// take the lock's own mutex, check `held`, mark held=1). If the struct
+// layout or check is broken, this test catches it.
+//
+// Deterministic fiber-on-fiber contention would require storing Task<T>
+// in a user variable so two tasks can be spawned before either is awaited
+// — and Task<T> isn't yet a user-resolvable type (it's only synthesized
+// by the compiler at spawn sites). A more probative contention test
+// lands once `Task<T>` is exposed as a known template.
+TEST(AsyncSyntaxTests, fiberLockAcquireUsesFiberPath) {
+    auto src =
+        "package test;\n"
+        "public final class D {\n"
+        "    public static async int32 fiberA(pointer h) {\n"
+        "        Cajeta.lockAcquire(h);\n"
+        "        Cajeta.lockRelease(h);\n"
+        "        return 19;\n"
+        "    }\n"
+        "    public static async int32 fiberB(pointer h) {\n"
+        "        Cajeta.lockAcquire(h);\n"
+        "        Cajeta.lockRelease(h);\n"
+        "        return 23;\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        pointer h = Cajeta.lockNew();\n"
+        "        int32 a = await spawn fiberA(h);\n"
+        "        int32 b = await spawn fiberB(h);\n"
+        "        Cajeta.lockDestroy(h);\n"
+        "        return a + b;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 42);
+}
+
+// R4: a fiber holds a lock while it yields (via an inner await). The
+// main thread then tries to acquire the same lock — it's NOT a fiber,
+// so it uses the cond_wait path of __cajeta_lock_acquire. Either it
+// blocks until the worker fiber resumes and releases, or it gets the
+// uncontended fast path if the worker already finished. Both flows
+// have to work for the test to pass.
+TEST(AsyncSyntaxTests, mainThreadWaitsOnFiberHolder) {
+    auto src =
+        "package test;\n"
+        "public final class D {\n"
+        "    public static async int32 nested() { return 0; }\n"
+        "    public static async int32 holder(pointer h) {\n"
+        "        Cajeta.lockAcquire(h);\n"
+        "        int32 inner = await spawn nested();\n"
+        "        Cajeta.lockRelease(h);\n"
+        "        return 42 + inner;\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        pointer h = Cajeta.lockNew();\n"
+        "        int32 r = await spawn holder(h);\n"
+        "        Cajeta.lockAcquire(h);\n"
+        "        Cajeta.lockRelease(h);\n"
+        "        Cajeta.lockDestroy(h);\n"
+        "        return r;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 42);
+}
+
 // R3-B: nested await — an async fn awaits another async fn. Under R2's
 // single-worker model this would deadlock: the carrier blocks on cond_wait
 // for the inner task's done flag, but the inner task is sitting on the
