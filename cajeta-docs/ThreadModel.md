@@ -35,7 +35,9 @@ Every `async` function has return type `Task<T>`. Awaiting a `Task<T>` either:
 
 `await` is only legal inside `async fn` / inside a `spawn` body. Calling an `async fn` without `await` produces an unstarted `Task<T>` — it does nothing until awaited or `spawn`ed.
 
-Under the hood: `async fn` lowers to a state machine — same shape as Rust/Swift/C# — with the captures and locals living in a heap-allocated frame. The frame is owned by whichever scope launched the task.
+Under the hood: each task is a **stackful fiber** — its own heap-allocated stack (~64 KB initial) plus a saved `ucontext`. A single carrier OS thread runs many fibers cooperatively; `await` parks the running fiber and switches back to the carrier, which picks another ready fiber. No `async fn` codegen transformation is required — fibers' suspension lives in the C runtime's context-switch primitive, and from the compiler's perspective an `async fn` is an ordinary function that happens to be invoked through a trampoline.
+
+This is Java 21's virtual-thread model rather than the stackless state-machine model used by Rust/Swift/C#. We took stackful for two reasons: it ships much faster (no async-fn rewrite pass) and it removes function coloring — any function can call `await`, not just one declared `async`. The per-fiber stack cost is real but matches Java 21's tradeoff; if measurements ever demand it, stackless rewrite remains possible later without changing the surface syntax.
 
 ### 2. `scope { ... }` — structured concurrency blocks
 
@@ -379,13 +381,13 @@ A small C runtime ships in `runtime/native/`, paralleling the existing exception
 
 - **Mutex / Lock / RwLock primitives** — wrappers over the platform's pthread primitives (`pthread_mutex_t`, `pthread_rwlock_t`). The async-aware suspending behaviour layers a wait queue on top — the OS lock is held only across the actual critical section, not during the user-task's suspension.
 - **Condition variable primitive** — wrapper over `pthread_cond_t` with the same async-aware wait queue.
-- **Task allocator** — `__cajeta_task_new(size, state_machine_fn)` allocates a task frame on the heap. Owned by the spawning scope.
-- **Executor** — work-stealing pool, one OS thread per core by default. `__cajeta_task_schedule(task)` puts a task in the run queue.
-- **Token primitive** — atomic flag for cancellation; tasks check on resume.
+- **Fiber primitive** — `__cajeta_task_run(ctx, trampoline)` allocates a stackful fiber (its own ~64 KB stack + `ucontext_t`) and queues it on the ready list. `__cajeta_task_wait(&task->done)` parks the current fiber if called from inside one (cooperative yield to the carrier), or `pthread_cond_wait`s on the global done-condvar if called from the main thread. `__cajeta_task_complete(&task->done)` flips the flag, broadcasts the done-condvar, and moves every parked fiber back to the ready queue so they can recheck their await conditions.
+- **Executor** — currently a single carrier OS thread. A pool with work-stealing is a future enhancement; the cooperative model means correctness doesn't depend on parallelism, only on the carrier draining the ready queue.
+- **Token primitive** — atomic flag for cancellation; tasks check on resume. (Not yet implemented; lands with R5.)
 
 The user-facing `cajeta.threading.*` classes wrap these C helpers — the runtime entry points are an implementation detail. Today's intrinsic-level path (`Cajeta.lockNew()` / `Cajeta.lockAcquire(p)` / etc.) is a transitional bootstrap that the future `cajeta.threading.Lock` class will subsume; user code should target the class API, not the intrinsics, once they exist.
 
-`async fn` lowers to state machines whose suspension points are LLVM coroutine intrinsics or hand-rolled equivalents. Each suspension saves locals into the task frame; resume restores them and dispatches on the saved state.
+Suspension is delivered by `ucontext.h` (`getcontext` / `makecontext` / `swapcontext`). The compiler doesn't transform `async fn` bodies at all — they compile like ordinary functions; the trampoline emitted at each spawn site wraps the call and runs inside the spawned fiber's stack.
 
 ---
 

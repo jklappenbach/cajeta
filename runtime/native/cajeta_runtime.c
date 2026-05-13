@@ -169,90 +169,207 @@ void __cajeta_lock_destroy(void* p) {
     free(p);
 }
 
-// --- Threading: async task queue + worker (R2) ----------------------------
+// --- Threading: stackful fiber executor (R3-B) ----------------------------
 //
-// ThreadModel.md sync primitives have an OS implementation here. The async-
-// runtime side: spawn enqueues a (trampoline, task) pair; a worker thread
-// pops + invokes the trampoline. The trampoline is codegen-emitted per
-// spawn site: it calls the user's async fn, writes the result into the
-// task's value slot, then calls __cajeta_task_complete with the address of
-// the task's `done` field to flip it under the mutex + broadcast.
+// ThreadModel.md async runtime: each spawn produces a fiber — a userspace
+// task with its own stack (allocated separately, ~64KB). A single carrier
+// OS thread runs many fibers cooperatively via ucontext.h. When a fiber
+// calls await on a not-yet-done Task, it parks (saves its context, returns
+// to the carrier); the carrier then picks another ready fiber. When any
+// task completes, all parked fibers move back to the ready queue and
+// re-check their await conditions. Polling-wake is inefficient (every
+// completion wakes every parker) but correct; per-task wait queues land
+// in a later iteration.
 //
-// R2 is one worker thread, one global queue, one global mutex/condvar pair
-// per state (queue-non-empty, any-task-done). A real work-stealing pool +
-// per-task wait queues lands later. Today's design is enough for correct
-// (if not maximally efficient) concurrency: the main thread's await blocks
-// on the global done-condvar; the worker writes done + broadcasts.
+// The main thread is NOT a fiber. Its await OS-blocks on a condvar — the
+// program's entry point can sit there waiting for the top-level spawned
+// task to complete. This mirrors Java 21's "platform thread" vs "virtual
+// thread" distinction.
+//
+// Why stackful (not stackless state machines)? Faster to ship — no async-
+// fn codegen transformation — and removes function coloring (any function
+// can call await, not just `async` ones). The per-fiber stack cost (~64KB)
+// matches Java 21's virtual-thread model and is acceptable for v1. A
+// stackless rewrite remains possible later if measured cost demands it.
 
-typedef void (*cajeta_task_trampoline_fn)(void* task);
+#include <ucontext.h>
+#include <string.h>
 
-struct cajeta_task_work {
+#define CAJETA_FIBER_STACK_SIZE (64 * 1024)
+
+typedef void (*cajeta_task_trampoline_fn)(void* arg);
+
+typedef enum {
+    CAJETA_FIBER_READY,     // on the ready queue, will be resumed
+    CAJETA_FIBER_RUNNING,   // on the carrier right now
+    CAJETA_FIBER_PARKED,    // suspended at await, awaits global wake
+    CAJETA_FIBER_DONE,      // trampoline returned; carrier will free
+} cajeta_fiber_state;
+
+struct cajeta_fiber {
+    ucontext_t ctx;
+    void* stack;
+    cajeta_fiber_state state;
     cajeta_task_trampoline_fn trampoline;
-    void* task;
-    struct cajeta_task_work* next;
+    void* trampoline_arg;
+    struct cajeta_fiber* next;
 };
 
 static pthread_mutex_t __cajeta_task_mutex = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t  __cajeta_task_queue_cond = PTHREAD_COND_INITIALIZER;
 static pthread_cond_t  __cajeta_task_done_cond  = PTHREAD_COND_INITIALIZER;
-static struct cajeta_task_work* __cajeta_task_queue_head = NULL;
-static struct cajeta_task_work* __cajeta_task_queue_tail = NULL;
+// Ready queue: fibers whose next scheduler tick will resume execution.
+static struct cajeta_fiber* __cajeta_ready_head = NULL;
+static struct cajeta_fiber* __cajeta_ready_tail = NULL;
+// Parked list: fibers blocked inside __cajeta_task_wait waiting for some
+// task's done flag to flip. Wake-all-on-any-complete is the v1 strategy.
+static struct cajeta_fiber* __cajeta_parked_head = NULL;
 static int __cajeta_task_workers_started = 0;
 static pthread_t __cajeta_task_worker;
 
-static void* __cajeta_task_worker_loop(void* arg) {
+// Per-OS-thread state. Only the carrier thread will ever have a non-null
+// __cajeta_current_fiber — the main thread sees it null and falls through
+// to the cond_wait path in __cajeta_task_wait.
+static __thread struct cajeta_fiber* __cajeta_current_fiber = NULL;
+static __thread ucontext_t __cajeta_carrier_ctx;
+
+// Fiber entry trampoline — invoked by makecontext on first resume. Runs
+// the user trampoline (which calls the async fn + signals done) and then
+// falls through to uc_link, which returns to the carrier.
+static void __cajeta_fiber_entry(void) {
+    struct cajeta_fiber* f = __cajeta_current_fiber;
+    f->trampoline(f->trampoline_arg);
+    f->state = CAJETA_FIBER_DONE;
+    // Falling off the end here triggers uc_link -> back to carrier.
+}
+
+// Move every parked fiber to the ready queue. Caller holds the mutex.
+// Called from __cajeta_task_complete — the cheapest correct policy when
+// we don't track who-awaits-whom yet. Each woken parker will spin-check
+// its own done flag and (likely) re-park if it wasn't the target.
+static void __cajeta_wake_all_parked_locked(void) {
+    while (__cajeta_parked_head) {
+        struct cajeta_fiber* f = __cajeta_parked_head;
+        __cajeta_parked_head = f->next;
+        f->state = CAJETA_FIBER_READY;
+        f->next = NULL;
+        if (__cajeta_ready_tail) {
+            __cajeta_ready_tail->next = f;
+            __cajeta_ready_tail = f;
+        } else {
+            __cajeta_ready_head = f;
+            __cajeta_ready_tail = f;
+        }
+    }
+    pthread_cond_broadcast(&__cajeta_task_queue_cond);
+}
+
+// Park the running fiber. Called by __cajeta_task_wait when inside a fiber
+// and the awaited task isn't done. Adds the fiber to parked_head, then
+// swaps back to the carrier — the swap returns into this function only
+// after the fiber gets woken and the carrier dispatches it again.
+static void __cajeta_fiber_park(void) {
+    struct cajeta_fiber* f = __cajeta_current_fiber;
+    pthread_mutex_lock(&__cajeta_task_mutex);
+    f->state = CAJETA_FIBER_PARKED;
+    f->next = __cajeta_parked_head;
+    __cajeta_parked_head = f;
+    pthread_mutex_unlock(&__cajeta_task_mutex);
+    swapcontext(&f->ctx, &__cajeta_carrier_ctx);
+}
+
+// Carrier loop: pop a ready fiber, swap into it, observe its post-yield
+// state, free if done. Single carrier suffices for v1 because all fibers
+// are cooperative — they yield to each other inside this thread.
+static void* __cajeta_carrier_loop(void* arg) {
     (void) arg;
     for (;;) {
         pthread_mutex_lock(&__cajeta_task_mutex);
-        while (!__cajeta_task_queue_head) {
+        while (!__cajeta_ready_head) {
             pthread_cond_wait(&__cajeta_task_queue_cond, &__cajeta_task_mutex);
         }
-        struct cajeta_task_work* w = __cajeta_task_queue_head;
-        __cajeta_task_queue_head = w->next;
-        if (!__cajeta_task_queue_head) __cajeta_task_queue_tail = NULL;
+        struct cajeta_fiber* f = __cajeta_ready_head;
+        __cajeta_ready_head = f->next;
+        if (!__cajeta_ready_head) __cajeta_ready_tail = NULL;
+        f->next = NULL;
         pthread_mutex_unlock(&__cajeta_task_mutex);
-        w->trampoline(w->task);
-        free(w);
+
+        __cajeta_current_fiber = f;
+        f->state = CAJETA_FIBER_RUNNING;
+        if (!f->stack) {
+            // First-resume init: allocate the stack and prime the context
+            // to dispatch to __cajeta_fiber_entry. uc_link points back at
+            // the carrier so a normal fall-off-the-end returns here.
+            f->stack = malloc(CAJETA_FIBER_STACK_SIZE);
+            if (!f->stack) {
+                fprintf(stderr, "cajeta: fiber stack malloc failed\n");
+                abort();
+            }
+            getcontext(&f->ctx);
+            f->ctx.uc_stack.ss_sp = f->stack;
+            f->ctx.uc_stack.ss_size = CAJETA_FIBER_STACK_SIZE;
+            f->ctx.uc_link = &__cajeta_carrier_ctx;
+            makecontext(&f->ctx, __cajeta_fiber_entry, 0);
+        }
+        swapcontext(&__cajeta_carrier_ctx, &f->ctx);
+        __cajeta_current_fiber = NULL;
+        if (f->state == CAJETA_FIBER_DONE) {
+            free(f->stack);
+            free(f);
+        }
+        // Parked fibers stay on __cajeta_parked_head awaiting a wake.
     }
     return NULL;
 }
 
-// Enqueue a trampoline/task pair. Starts the worker thread on first call —
-// lazy init avoids paying a thread-create cost for programs that never
-// spawn. The trampoline is codegen-emitted; the runtime is type-agnostic
-// (just a function pointer).
-void __cajeta_task_run(void* task, cajeta_task_trampoline_fn trampoline) {
+// Enqueue a trampoline-arg pair as a fresh fiber. The actual stack +
+// ucontext init is deferred to the carrier's first dispatch so cancelled-
+// before-resumed spawns don't pay the stack-alloc cost. Lazy carrier
+// thread start mirrors R2: programs that never spawn don't pay for a
+// pthread_create.
+void __cajeta_task_run(void* arg, cajeta_task_trampoline_fn trampoline) {
+    struct cajeta_fiber* f = malloc(sizeof(*f));
+    if (!f) {
+        fprintf(stderr, "cajeta: __cajeta_task_run fiber malloc failed\n");
+        abort();
+    }
+    f->ctx = (ucontext_t) {0};
+    f->stack = NULL;
+    f->state = CAJETA_FIBER_READY;
+    f->trampoline = trampoline;
+    f->trampoline_arg = arg;
+    f->next = NULL;
+
     pthread_mutex_lock(&__cajeta_task_mutex);
     if (!__cajeta_task_workers_started) {
         __cajeta_task_workers_started = 1;
         pthread_create(&__cajeta_task_worker, NULL,
-                       __cajeta_task_worker_loop, NULL);
+                       __cajeta_carrier_loop, NULL);
     }
-    struct cajeta_task_work* w = malloc(sizeof(*w));
-    if (!w) {
-        fprintf(stderr, "cajeta: __cajeta_task_run malloc failed\n");
-        pthread_mutex_unlock(&__cajeta_task_mutex);
-        abort();
-    }
-    w->trampoline = trampoline;
-    w->task = task;
-    w->next = NULL;
-    if (__cajeta_task_queue_tail) {
-        __cajeta_task_queue_tail->next = w;
-        __cajeta_task_queue_tail = w;
+    if (__cajeta_ready_tail) {
+        __cajeta_ready_tail->next = f;
+        __cajeta_ready_tail = f;
     } else {
-        __cajeta_task_queue_head = w;
-        __cajeta_task_queue_tail = w;
+        __cajeta_ready_head = f;
+        __cajeta_ready_tail = f;
     }
     pthread_cond_signal(&__cajeta_task_queue_cond);
     pthread_mutex_unlock(&__cajeta_task_mutex);
 }
 
-// Block the calling thread until the task at `done_addr` flips to nonzero.
-// Codegen passes `&task->done` directly so the runtime doesn't need the
-// CajetaTask layout's field offset.
+// Block until the task at `done_addr` flips to nonzero. From a fiber:
+// park-yield-recheck; the carrier can run other fibers in between. From
+// the main thread (no current fiber): condvar wait. This is what makes
+// nested await work — a fiber awaiting another fiber doesn't hold the
+// carrier hostage.
 void __cajeta_task_wait(int32_t* done_addr) {
     if (!done_addr) return;
+    if (__cajeta_current_fiber) {
+        while (!*done_addr) {
+            __cajeta_fiber_park();
+        }
+        return;
+    }
     pthread_mutex_lock(&__cajeta_task_mutex);
     while (!*done_addr) {
         pthread_cond_wait(&__cajeta_task_done_cond, &__cajeta_task_mutex);
@@ -262,13 +379,15 @@ void __cajeta_task_wait(int32_t* done_addr) {
 
 // Called by the codegen-emitted trampoline once the inner fn has run and
 // its result has been written into the task's value slot. Sets done = 1
-// under the mutex (so it pairs with __cajeta_task_wait's predicate check)
-// and broadcasts to wake every awaiter.
+// under the mutex, wakes any main-thread awaiter via cond_done, and moves
+// every parked fiber back to the ready queue so they can recheck their
+// own await condition.
 void __cajeta_task_complete(int32_t* done_addr) {
     if (!done_addr) return;
     pthread_mutex_lock(&__cajeta_task_mutex);
     *done_addr = 1;
     pthread_cond_broadcast(&__cajeta_task_done_cond);
+    __cajeta_wake_all_parked_locked();
     pthread_mutex_unlock(&__cajeta_task_mutex);
 }
 

@@ -109,6 +109,30 @@ TEST(AsyncSyntaxTests, spawnPassesOneArgument) {
     EXPECT_EQ(runI32(src), 42);
 }
 
+// R3-B: nested await — an async fn awaits another async fn. Under R2's
+// single-worker model this would deadlock: the carrier blocks on cond_wait
+// for the inner task's done flag, but the inner task is sitting on the
+// queue with no worker free to run it. With stackful fibers + cooperative
+// yield, the outer fiber parks itself when it awaits, the carrier picks
+// up the inner fiber, that completes, parked fibers wake and the outer
+// resumes. The test passing proves the fiber yield + wake-on-complete
+// path actually moves through.
+TEST(AsyncSyntaxTests, nestedAwaitDoesNotDeadlock) {
+    auto src =
+        "package test;\n"
+        "public final class D {\n"
+        "    public static async int32 inner() { return 7; }\n"
+        "    public static async int32 outer() {\n"
+        "        int32 v = await spawn inner();\n"
+        "        return v * 6;\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        return await spawn outer();\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 42);
+}
+
 // R3-A: spawn passing multiple arguments. Verifies the per-field ctx
 // struct stores + loads work in arg order — a swap of two slots would
 // produce the wrong subtraction result.

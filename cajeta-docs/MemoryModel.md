@@ -203,7 +203,7 @@ v1 ships borrow-view only; the owning variant is purely additive (no codegen rew
 
 ### Layout
 
-Per-thread (v1: global, single-threaded) linked list of cleanup entries, parallel to the exception frame stack.
+Linked list of cleanup entries (currently single global head — promotion to TLS is a known gap under the fiber model). Each `DropEntry` is alloca'd in the declaring function's frame, so when a fiber suspends mid-call its drop entries sit dormant on the fiber's own stack — but the global chain-head pointer is shared across fibers, which means today's drop chain assumes one fiber at a time touches it (true for the cooperative single-carrier model, but per-fiber-TLS-head is the correct long-term fix). See `ThreadModel.md` § Runtime requirements for the fiber executor.
 
 ```c
 struct DropEntry {
@@ -327,3 +327,4 @@ The rollout left a few items deliberately out of v1 scope; they're called out he
 - **Variable-size struct field write.** Reassigning a variable-size field is rejected because in-place resize isn't possible. A "rebuild the buffer" idiom is the workaround.
 - **Construction-time length-prefix validation for variable-size struct fields.** The current view bounds check verifies `count * elem_size >= fixed_prefix`; it doesn't (yet) walk inline length-prefixes to verify the variable region fits. A length-prefix value larger than the remaining buffer would read past the end — caller responsibility today.
 - **FFI / `unsafe` / multi-threading.** All explicitly deferred.
+- **Drop chain head is global, not per-fiber.** The stackful fiber executor (R3-B) added cooperative concurrency, but the drop-chain head is still a single static. Correct under today's single-carrier model (only one fiber executes at a time), but multi-carrier parallelism — or any change that lets two carriers run fibers simultaneously — needs the chain head promoted to TLS / fiber-local. Drop entries themselves are already alloca'd in the fiber's own stack, so the only piece moving is the head pointer.
