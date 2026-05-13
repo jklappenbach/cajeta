@@ -937,6 +937,91 @@ namespace cajeta {
         }
     }
 
+    // Find the leftmost (receiver-side) identifier in an expression's
+    // subtree. The grammar groups `#c.next()` as `#(c.next())` — REFERENCE
+    // binds looser than `.` — so the name being transferred isn't the
+    // MoveExpression's immediate child but lives one level deeper, as the
+    // method call's receiver. Walking to the leftmost leaf via known
+    // expression shapes (method call → receiver, dot/array-index → lhs,
+    // identifier → that identifier) gives the receiver-side name.
+    static std::string firstIdentifierIn(const AbstractSyntaxNodePtr& node) {
+        if (!node) return "";
+        if (auto id = std::dynamic_pointer_cast<IdentifierExpression>(node)) {
+            return id->getTextValue();
+        }
+        if (auto mc = std::dynamic_pointer_cast<MethodCallExpression>(node)) {
+            // children[0] is the receiver, when there is one. A bare
+            // `foo(x)` has no receiver and no transfer candidate at this
+            // level — `#foo(x)` would mean "transfer the call's return",
+            // which isn't meaningful for capture-by-transfer.
+            if (!mc->getChildren().empty()) {
+                return firstIdentifierIn(mc->getChildren()[0]);
+            }
+            return "";
+        }
+        // Generic fallback: first non-empty leftmost identifier. Handles
+        // DotExpression, ArrayIndexExpression, parens, etc., which all
+        // place the receiver/lhs in children[0].
+        for (auto& c : node->getChildren()) {
+            auto r = firstIdentifierIn(c);
+            if (!r.empty()) return r;
+        }
+        return "";
+    }
+
+    // Collect the names of outer-scope identifiers transferred into the
+    // closure via `#name` in the lambda body. Rule 3 from
+    // cajeta-docs/Lambdas.md: ownership moves into the closure and the
+    // outer name becomes unreadable afterwards. Uses the same statement-
+    // shape recursion as collectFreeIdentifiers so block bodies pick up
+    // `#name` anywhere it appears (return value, initializer, condition,
+    // arg). The transferred name is the receiver-side leaf of the move's
+    // subtree (see firstIdentifierIn).
+    static void collectTransferNames(
+            const AbstractSyntaxNodePtr& node,
+            std::set<std::string>& out) {
+        if (!node) return;
+        if (auto mv = std::dynamic_pointer_cast<MoveExpression>(node)) {
+            if (!mv->getChildren().empty()) {
+                std::string name = firstIdentifierIn(mv->getChildren()[0]);
+                if (!name.empty()) out.insert(name);
+            }
+            // Still recurse — nested `#` (rare but possible).
+            for (auto& c : mv->getChildren()) {
+                collectTransferNames(c, out);
+            }
+            return;
+        }
+        if (auto mc = std::dynamic_pointer_cast<MethodCallExpression>(node)) {
+            for (auto& c : mc->getChildren()) collectTransferNames(c, out);
+            for (auto& p : mc->getParameters()) collectTransferNames(p.expression, out);
+            return;
+        }
+        if (auto lvd = std::dynamic_pointer_cast<LocalVariableDeclaration>(node)) {
+            for (auto& vd : lvd->getVariableDeclarators()) {
+                if (vd && vd->getInitializer()) collectTransferNames(vd->getInitializer(), out);
+            }
+            return;
+        }
+        if (auto ret = std::dynamic_pointer_cast<ReturnStatement>(node)) {
+            collectTransferNames(ret->getExpression(), out);
+            return;
+        }
+        if (auto ifs = std::dynamic_pointer_cast<IfStatement>(node)) {
+            collectTransferNames(ifs->getCondition(), out);
+            collectTransferNames(ifs->getThenBranch(), out);
+            collectTransferNames(ifs->getElseBranch(), out);
+            return;
+        }
+        if (auto es = std::dynamic_pointer_cast<ExpressionStatement>(node)) {
+            collectTransferNames(es->getExpression(), out);
+            return;
+        }
+        for (auto& c : node->getChildren()) {
+            collectTransferNames(c, out);
+        }
+    }
+
     // Rule 5 from cajeta-docs/Lambdas.md: writing to a primitive that was
     // captured by value is a compile error — the lambda is mutating a
     // private copy, so the write would silently fail to propagate. The
@@ -1113,11 +1198,18 @@ namespace cajeta {
         struct Capture {
             std::string name;
             CajetaTypePtr type;
-            bool byValue;  // true: primitive copy; false: borrow (heap ptr)
+            bool byValue;     // true: primitive copy; false: pointer slot
+            bool byTransfer;  // true: `#name` transfer (only meaningful when
+                              //       !byValue); false: borrow (default)
         };
         std::vector<Capture> captures;
         ScopePtr outerScope = module->getScopeStack().isEmpty()
             ? nullptr : module->getScopeStack().peek();
+        // Names that appeared inside `#name` somewhere in the body — these
+        // are transfer captures (Rule 3), not the default borrow. Computed
+        // up-front so the categorization loop below can consult it.
+        std::set<std::string> transferNames;
+        collectTransferNames(body, transferNames);
         if (outerScope) {
             for (auto& name : freeNames) {
                 FieldPtr f = outerScope->getField(name);
@@ -1139,7 +1231,14 @@ namespace cajeta {
                 llvm::AllocaInst* outerSlot = f->getOrCreateAllocation();
                 bool slotIsPointer = outerSlot
                     && outerSlot->getAllocatedType()->isPointerTy();
-                captures.push_back({name, t, /*byValue=*/!slotIsPointer});
+                bool byValue = !slotIsPointer;
+                // `#name` only makes sense for heap values (pointer slot).
+                // On a primitive, `#` is just a no-op marker and the
+                // capture stays by-value — Rule 1 wins because there's
+                // nothing to transfer.
+                bool byTransfer = !byValue
+                    && transferNames.find(name) != transferNames.end();
+                captures.push_back({name, t, byValue, byTransfer});
             }
         }
 
@@ -1225,6 +1324,18 @@ namespace cajeta {
                     capturesTy, capturesPtr, (unsigned) i,
                     std::string("cap.") + cap.name);
                 outerBuilder->CreateStore(outerVal, slot);
+                // Rule 3 (`#name` transfer): mark the outer binding as
+                // moved so subsequent reads in the enclosing scope hit
+                // use-after-move. The compile-time mark is sufficient for
+                // L3-1; full drop-chain transfer (closure becomes the new
+                // owner and frees at its own drop) lands in L3-3. For
+                // now, the outer's drop entry stays active so the heap
+                // object is still freed at outer scope exit — safe as
+                // long as the closure doesn't escape (L3-2's job to
+                // enforce).
+                if (cap.byTransfer && outerScope) {
+                    outerScope->markMoved(cap.name);
+                }
             }
         }
 
