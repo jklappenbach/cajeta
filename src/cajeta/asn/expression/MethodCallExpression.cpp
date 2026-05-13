@@ -7,6 +7,7 @@
 #include "cajeta/type/CajetaArray.h"
 #include "cajeta/type/CajetaClass.h"
 #include "cajeta/type/CajetaStruct.h"
+#include "cajeta/type/CajetaFunctionType.h"
 #include "cajeta/method/Method.h"
 #include "Expression.h"
 #include "DotExpression.h"
@@ -63,6 +64,47 @@ namespace cajeta {
     llvm::Value* MethodCallExpression::generateCode(CajetaModulePtr module) {
         auto* builder = module->getBuilder();
         llvm::LLVMContext& llvmCtx = *module->getLlvmContext();
+
+        // ----- Indirect call through a function-typed local -----
+        // `add(3, 4)` where `add` was declared as `(int32, int32) -> int32`.
+        // The local's slot holds a function pointer (a CajetaFunctionType
+        // value at the language level); load it and emit an indirect call.
+        // Matches when the call is bare (no receiver) AND a scope lookup of
+        // methodCallName yields a function-typed field. See cajeta-docs/Lambdas.md.
+        if (children.empty() && !module->getScopeStack().isEmpty()) {
+            auto scope = module->getScopeStack().peek();
+            FieldPtr field = scope ? scope->getField(methodCallName) : nullptr;
+            if (field) {
+                auto fnType = dynamic_pointer_cast<CajetaFunctionType>(field->getType());
+                if (fnType) {
+                    llvm::AllocaInst* slot = field->getOrCreateAllocation();
+                    llvm::Value* callee = builder->CreateLoad(
+                        llvm::PointerType::get(llvmCtx, 0), slot, "fn_ptr");
+                    vector<llvm::Value*> args;
+                    llvm::FunctionType* sig = fnType->getLlvmFunctionType();
+                    for (size_t i = 0; i < parameters.size(); ++i) {
+                        llvm::Value* v = parameters[i].expression->generateCode(module);
+                        if (auto* a = llvm::dyn_cast_or_null<llvm::AllocaInst>(v)) {
+                            v = builder->CreateLoad(a->getAllocatedType(), a);
+                        }
+                        // Width-coerce to the function signature's expected param type
+                        // (matches the coercion `invokeMethod` does for ordinary calls).
+                        if (sig && i < sig->getNumParams() && v
+                                && v->getType() != sig->getParamType(i)) {
+                            llvm::Type* expected = sig->getParamType(i);
+                            if (expected->isIntegerTy() && v->getType()->isIntegerTy()) {
+                                v = builder->CreateIntCast(v, expected, /*isSigned=*/true);
+                            } else if (expected->isFloatingPointTy()
+                                    && v->getType()->isFloatingPointTy()) {
+                                v = builder->CreateFPCast(v, expected);
+                            }
+                        }
+                        args.push_back(v);
+                    }
+                    return builder->CreateCall(sig, callee, args);
+                }
+            }
+        }
 
         // ----- Struct view construction: `MyStruct(byte[] bytes)` -----
         // Synthesizes the view: bounds-check (data.size() >= sizeof(struct))

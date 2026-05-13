@@ -44,23 +44,35 @@ void expectNotImplemented(const std::string& source, const std::string& expected
 } // namespace
 
 TEST(UnsupportedExpressionTests, lambdaThrowsNotImplemented) {
-    // `() -> 42` triggers ctx->lambdaExpression() in Expression::fromContext.
-    auto src = makeSource("int32", "return ((() -> 42)());");
+    // L1 supports typed-params + expression-body lambdas (`(int32 a) -> a + 1`).
+    // Block-body lambdas, bare-identifier-param lambdas, and `var`-list
+    // lambdas still throw NOT_IMPLEMENTED — they need target-type inference
+    // and/or richer body lowering that's slated for L1.5+.
+    auto src = makeSource("int32",
+        "() -> int32 f = () -> { return 42; };\n"
+        "        return f();");
     expectNotImplemented(src, "lambda");
 }
 
 TEST(UnsupportedExpressionTests, methodReferenceTypeThrowsNotImplemented) {
     // `Type::method` form — matches ctx->COLONCOLON() in fromContext, which we check
     // before NEW/identifier so it doesn't get swallowed by those branches.
+    // Stored into a function-typed local rather than called directly — the
+    // grammar doesn't allow `ref()` to call a method-reference value, so the
+    // bare reference is the cleanest way to surface the construct.
     auto src = makeSource("int32",
-        "return int32::toString();");
+        "(int32) -> string ref = int32::toString;\n"
+        "        return 0;");
     expectNotImplemented(src, "method reference");
 }
 
 TEST(UnsupportedExpressionTests, methodReferenceNewThrowsNotImplemented) {
-    // `ClassType::new` form — same COLONCOLON path.
+    // `ClassType::new` form — same COLONCOLON path. Stored into a
+    // function-typed local rather than called directly (grammar doesn't
+    // allow a method-reference value to be invoked with `()`).
     auto src = makeSource("int32",
-        "return int32::new();");
+        "() -> int32 ctor = int32::new;\n"
+        "        return 0;");
     expectNotImplemented(src, "method reference");
 }
 

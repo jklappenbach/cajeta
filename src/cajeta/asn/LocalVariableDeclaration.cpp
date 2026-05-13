@@ -8,6 +8,7 @@
 #include "../field/HeapField.h"
 #include "../field/StackField.h"
 #include "../type/CajetaArray.h"
+#include "expression/Expression.h"
 #include "../method/Method.h"
 #include "../error/CajetaExceptions.h"
 #include "../logging/CajetaLogger.h"
@@ -75,6 +76,19 @@ namespace cajeta {
                 if (auto arrInit = dynamic_pointer_cast<ArrayInitializer>(initializer)) {
                     if (auto arrType = dynamic_pointer_cast<CajetaArray>(type)) {
                         arrInit->setElementType(arrType->getElementType());
+                    }
+                }
+            }
+            // Function-typed initializer with a lambda RHS: push the LHS's
+            // function type down to the lambda so it can use the declared
+            // return type (and, eventually, expected param types) rather
+            // than trying to infer them from a body whose own resolvedType
+            // isn't always populated. See cajeta-docs/Lambdas.md.
+            if (auto varInit = dynamic_pointer_cast<VariableInitializer>(initializer)) {
+                auto& children = varInit->getChildren();
+                if (!children.empty()) {
+                    if (auto lambda = dynamic_pointer_cast<LambdaExpression>(children[0])) {
+                        lambda->setExpectedType(type);
                     }
                 }
             }

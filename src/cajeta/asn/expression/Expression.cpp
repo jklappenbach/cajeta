@@ -4,6 +4,10 @@
 
 #include "Expression.h"
 #include "cajeta/compile/CajetaModule.h"
+#include "cajeta/type/CajetaFunctionType.h"
+#include "cajeta/type/FormalParameter.h"
+#include "cajeta/field/StackField.h"
+#include "cajeta/field/ParameterField.h"
 #include "cajeta/util/LiteralUtils.h"
 #include "cajeta/util/MemoryManager.h"
 #include "cajeta/asn/expression/Identifier.h"
@@ -102,7 +106,48 @@ namespace cajeta {
         } else if (ctx->BANG()) {
             result = make_shared<PrefixExpression>(PREFIX_OP_LOGNOT, token);
         } else if (ctx->lambdaExpression()) {
-            result = make_shared<UnsupportedExpression>("lambda expression", token);
+            // L1: only the typed form `(T1 name1, T2 name2) -> expr` is
+            // supported. Other lambda-parameters shapes (bare identifier,
+            // `var`-list, comma-separated bare identifiers needing
+            // target-type inference) parse but are stubbed at codegen
+            // until later slices.
+            auto* lx = ctx->lambdaExpression();
+            auto* lp = lx->lambdaParameters();
+            std::vector<std::string> names;
+            std::vector<CajetaTypePtr> types;
+            bool hasFullySpecifiedParams = false;
+            if (lp) {
+                if (auto* fpl = lp->formalParameterList()) {
+                    for (auto* fp : fpl->formalParameter()) {
+                        if (auto p = FormalParameter::fromContext(fp, nullptr)) {
+                            names.push_back(p->getName());
+                            types.push_back(p->getType());
+                        }
+                    }
+                    hasFullySpecifiedParams = !names.empty()
+                        || fpl->formalParameter().empty();
+                } else if (lp->LPAREN() && lp->RPAREN()
+                        && !lp->identifier().empty() == false
+                        && !lp->lambdaLVTIList()) {
+                    // Empty parens `() -> expr` — zero params, no inference needed.
+                    hasFullySpecifiedParams = true;
+                }
+            }
+            // Body: expression form only in L1. A block-body lambda
+            // parses but lands on the UnsupportedExpression fallback.
+            auto* lb = lx->lambdaBody();
+            ExpressionPtr body;
+            if (lb && lb->expression()) {
+                body = Expression::fromContext(lb->expression());
+            }
+            if (hasFullySpecifiedParams && body) {
+                result = make_shared<LambdaExpression>(token,
+                    std::move(names), std::move(types), std::move(body));
+            } else {
+                result = make_shared<UnsupportedExpression>(
+                    "lambda expression (only typed-params + expression-body form is "
+                    "supported in L1)", token);
+            }
         } else if (ctx->switchExpression()) {
             // switch expression — arrow form with single-expression bodies. Anything
             // more elaborate (colon form, yield, guarded patterns) is rejected at
@@ -803,6 +848,159 @@ namespace cajeta {
             "%s is not yet implemented (source line %d, column %d)",
             constructName.c_str(), sourceLine, sourceColumn);
         throw Exception(string(buf), "CAJETA_ERROR_NOT_IMPLEMENTED");
+    }
+
+    // --- LambdaExpression -------------------------------------------------
+
+    static int64_t lambdaCounter = 0;
+
+    void LambdaExpression::resolveTypes(CajetaModulePtr module) {
+        // L1: bodies can't reference outer-scope locals (captures are L2),
+        // so the lambda's body resolution doesn't need access to the
+        // surrounding scope's fields beyond what resolveTypes naturally
+        // walks. Identifier resolution to lambda-local params happens at
+        // generateCode time when the parameter scope is pushed.
+        if (!module) module = CajetaModule::getActiveModule();
+        if (!module) return;
+        if (body) body->resolveTypes(module);
+
+        // Determine the lambda's CajetaFunctionType. Preferred order:
+        //   1. expectedType (a CajetaFunctionType from the surrounding
+        //      context, e.g. the LHS of a function-typed variable
+        //      declaration that called setExpectedType before resolveTypes).
+        //   2. The body's resolvedType, when populated (not all
+        //      Expression subclasses pin their resolvedType — works for
+        //      identifiers and literals, less for arithmetic expressions).
+        //   3. Fallback: void. A nonsensical lambda surfaces at codegen.
+        CajetaTypePtr ret;
+        if (auto expectedFn = std::dynamic_pointer_cast<CajetaFunctionType>(expectedType)) {
+            ret = expectedFn->getReturnType();
+        }
+        if (!ret) ret = body ? body->getResolvedType() : nullptr;
+        if (!ret) ret = CajetaType::of("void");
+        std::string canon = CajetaFunctionType::buildCanonical(paramTypes, ret);
+        auto& cmap = CajetaType::getCanonicalMap();
+        auto it = cmap.find(canon);
+        if (it != cmap.end()) {
+            resolvedType = it->second;
+        } else {
+            auto fnType = std::make_shared<CajetaFunctionType>(
+                module, paramTypes, ret);
+            cmap[canon] = static_pointer_cast<CajetaType>(fnType);
+            resolvedType = fnType;
+        }
+    }
+
+    llvm::Value* LambdaExpression::generateCode(CajetaModulePtr module) {
+        // Ensure resolvedType (the CajetaFunctionType) is computed — body
+        // may not have been pre-resolved if this lambda is itself a
+        // sub-expression of an unresolved context.
+        if (!resolvedType) resolveTypes(module);
+        auto fnType = std::dynamic_pointer_cast<CajetaFunctionType>(resolvedType);
+        if (!fnType) {
+            throw Exception("lambda has no function type",
+                "CAJETA_ERROR_NOT_IMPLEMENTED");
+        }
+
+        // Synthesize a unique name for the LLVM function. The lambda body
+        // becomes the function body; the function is registered in the
+        // current module's IR module and returned as a `ptr` value.
+        if (synthesizedName.empty()) {
+            synthesizedName = std::string("__cajeta_lambda_")
+                + std::to_string(lambdaCounter++);
+        }
+
+        auto* lmod = module->getLlvmModule();
+        // Already emitted? (Re-entering codegen for the same lambda — rare,
+        // but harmless to return the existing function pointer.)
+        if (auto* existing = lmod->getFunction(synthesizedName)) {
+            return existing;
+        }
+
+        llvm::Function* fn = llvm::Function::Create(
+            fnType->getLlvmFunctionType(),
+            llvm::Function::ExternalLinkage,
+            synthesizedName,
+            lmod);
+
+        // Save current insertion state — we're going to emit the lambda's
+        // body into its own function, then restore the outer cursor so the
+        // surrounding expression continues building.
+        auto* outerBuilder = module->getBuilder();
+        llvm::BasicBlock* outerInsertBlock = outerBuilder->GetInsertBlock();
+        MethodPtr outerMethod = module->getCurrentMethod();
+
+        llvm::BasicBlock* entryBB = llvm::BasicBlock::Create(
+            *module->getLlvmContext(), "entry", fn);
+        llvm::IRBuilder<>* lambdaBuilder = new llvm::IRBuilder<>(entryBB);
+        module->setBuilder(lambdaBuilder);
+
+        // Open a fresh scope for the lambda's parameters. Each named param
+        // becomes a ParameterField, same shape as a regular method's params.
+        module->getScopeStack().add(make_shared<Scope>(synthesizedName, module));
+
+        // L1 dummy method context — we need *some* MethodPtr on the module
+        // because some helpers (e.g. drop-chain bookkeeping) read it, even
+        // though a lambda body in L1 has no drop chain of its own.
+        module->setCurrentMethod(nullptr);
+
+        for (size_t i = 0; i < paramNames.size(); ++i) {
+            // Bind each LLVM arg into an alloca-backed ParameterField so
+            // identifier lookups inside the body load through it (same
+            // pattern as method params).
+            auto formal = std::make_shared<FormalParameter>(
+                paramNames[i], paramTypes[i]);
+            auto field = std::make_shared<ParameterField>(
+                module, formal, fn, (int) i);
+            // Force the alloca + store now so getOrCreateAllocation later
+            // returns the populated slot.
+            field->getOrCreateAllocation();
+            module->getScopeStack().peek()->putField(field);
+        }
+
+        // Generate the body and return its value.
+        llvm::Value* bodyVal = body->generateCode(module);
+        if (auto* a = llvm::dyn_cast_or_null<llvm::AllocaInst>(bodyVal)) {
+            bodyVal = lambdaBuilder->CreateLoad(a->getAllocatedType(), a);
+        }
+        if (bodyVal) {
+            // Coerce to the function return type if width differs (literal
+            // i64 going to an i32 return slot, etc.) — mirrors what
+            // invokeMethod does at the call site.
+            llvm::Type* retTy = fn->getReturnType();
+            if (retTy && !retTy->isVoidTy() && bodyVal->getType() != retTy) {
+                if (retTy->isIntegerTy() && bodyVal->getType()->isIntegerTy()) {
+                    bodyVal = lambdaBuilder->CreateIntCast(
+                        bodyVal, retTy, /*isSigned=*/true);
+                } else if (retTy->isFloatingPointTy()
+                        && bodyVal->getType()->isFloatingPointTy()) {
+                    bodyVal = lambdaBuilder->CreateFPCast(bodyVal, retTy);
+                }
+            }
+            if (retTy->isVoidTy()) {
+                lambdaBuilder->CreateRetVoid();
+            } else {
+                lambdaBuilder->CreateRet(bodyVal);
+            }
+        } else {
+            if (fn->getReturnType()->isVoidTy()) {
+                lambdaBuilder->CreateRetVoid();
+            } else {
+                lambdaBuilder->CreateRet(
+                    llvm::UndefValue::get(fn->getReturnType()));
+            }
+        }
+
+        // Restore outer state.
+        module->getScopeStack().pop();
+        delete lambdaBuilder;
+        module->setBuilder(outerBuilder);
+        module->setCurrentMethod(outerMethod);
+        outerBuilder->SetInsertPoint(outerInsertBlock);
+
+        // The lambda expression evaluates to the function's address — a
+        // pointer-typed value that can be stored in a CajetaFunctionType slot.
+        return fn;
     }
 
     void InstanceOfExpression::resolveTypes(CajetaModulePtr module) {

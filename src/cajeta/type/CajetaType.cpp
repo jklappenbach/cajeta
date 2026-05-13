@@ -7,6 +7,7 @@
 #include "../compile/CajetaModule.h"
 #include "CajetaArray.h"
 #include "CajetaClass.h"
+#include "CajetaFunctionType.h"
 #include "../error/InvalidOperandException.h"
 
 namespace cajeta {
@@ -161,6 +162,28 @@ namespace cajeta {
         // call sites don't have a `module` to pass. See CajetaModule::activeModule.
         if (!module) {
             module = CajetaModule::getActiveModule();
+        }
+        // Function type: `(T1, T2) -> R`. Resolve each component and build
+        // (or look up by canonical) a CajetaFunctionType. See
+        // cajeta-docs/Lambdas.md.
+        if (auto* fnt = ctx->functionType()) {
+            auto typeTypes = fnt->typeType();
+            if (typeTypes.empty()) {
+                throw "function type must have a return type";
+            }
+            std::vector<CajetaTypePtr> paramTypes;
+            paramTypes.reserve(typeTypes.size() - 1);
+            for (size_t i = 0; i + 1 < typeTypes.size(); ++i) {
+                paramTypes.push_back(fromContext(typeTypes[i], module));
+            }
+            CajetaTypePtr ret = fromContext(typeTypes.back(), module);
+            std::string canon = CajetaFunctionType::buildCanonical(paramTypes, ret);
+            auto it = canonicalMap.find(canon);
+            if (it != canonicalMap.end()) return it->second;
+            auto fnType = std::make_shared<CajetaFunctionType>(
+                module, std::move(paramTypes), std::move(ret));
+            canonicalMap[canon] = static_pointer_cast<CajetaType>(fnType);
+            return static_pointer_cast<CajetaType>(fnType);
         }
         CajetaTypePtr type;
         QualifiedNamePtr qName;

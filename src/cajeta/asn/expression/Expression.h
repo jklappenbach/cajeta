@@ -325,6 +325,54 @@ namespace cajeta {
         llvm::Value* generateCode(CajetaModulePtr module) override;
     };
 
+    // Non-capturing lambda: `(int32 a, int32 b) -> a + b`. Lowers at codegen
+    // to a synthesized static LLVM function whose body is the lambda's
+    // expression; the lambda expression itself evaluates to that function's
+    // address (a `ptr`), which a CajetaFunctionType-typed slot can hold.
+    //
+    // v1 (L1) limits:
+    //  - Explicit parameter types required. Elided forms (`(a, b) -> ...`)
+    //    that rely on target-type inference from the surrounding type
+    //    context are deferred to L1.5 or later.
+    //  - Expression body only — no block bodies yet.
+    //  - No captures. Bodies that reference outer-scope names produce a
+    //    codegen error; capture support arrives in L2.
+    class LambdaExpression : public Expression {
+    private:
+        std::vector<std::string> paramNames;
+        std::vector<CajetaTypePtr> paramTypes;
+        ExpressionPtr body;
+        // Name of the synthesized LLVM function. Unique per module via a
+        // monotonic counter; set lazily on first codegen.
+        std::string synthesizedName;
+    public:
+        LambdaExpression(antlr4::Token* token,
+            std::vector<std::string> paramNames,
+            std::vector<CajetaTypePtr> paramTypes,
+            ExpressionPtr body)
+            : Expression(token),
+              paramNames(std::move(paramNames)),
+              paramTypes(std::move(paramTypes)),
+              body(std::move(body)) { }
+
+        const std::vector<std::string>& getParamNames() const { return paramNames; }
+        const std::vector<CajetaTypePtr>& getParamTypes() const { return paramTypes; }
+        ExpressionPtr getBody() const { return body; }
+
+        // Target-type hint from the surrounding context (e.g. a LHS
+        // function-typed declaration). When set, codegen uses this as the
+        // lambda's CajetaFunctionType — its return type is what the lambda's
+        // synthesized function returns. Without it, codegen would have to
+        // infer return type from the body, which requires every body-shape
+        // expression to populate its own resolvedType — not the case yet.
+        void setExpectedType(CajetaTypePtr t) { expectedType = std::move(t); }
+
+        void resolveTypes(CajetaModulePtr module) override;
+        llvm::Value* generateCode(CajetaModulePtr module) override;
+    private:
+        CajetaTypePtr expectedType;
+    };
+
     // nullptr returning invalid IR.
     class UnsupportedExpression : public Expression {
     private:

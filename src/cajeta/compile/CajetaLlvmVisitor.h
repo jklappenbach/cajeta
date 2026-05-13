@@ -329,6 +329,15 @@ namespace cajeta {
             return visitChildren(ctx);
         }
 
+        // Function-type production: `(T1, T2) -> R`. Just delegates to
+        // CajetaType::fromContext on the enclosing typeType. The actual
+        // CajetaFunctionType is built there (the visitFunctionType entry
+        // point exists only to satisfy the visitor's pure-virtual hook —
+        // the typeType path is what callers use).
+        virtual std::any visitFunctionType(CajetaParser::FunctionTypeContext* ctx) override {
+            return visitChildren(ctx);
+        }
+
         virtual std::any visitInterfaceDeclaration(CajetaParser::InterfaceDeclarationContext* ctx) override {
             // Build a CajetaClass tagged isInterface=true. The interface body
             // holds method *signatures* (abstract — no LLVM function), and

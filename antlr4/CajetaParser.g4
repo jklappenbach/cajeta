@@ -731,8 +731,16 @@ typeList
     ;
 
 typeType
-    : annotation* (classOrInterfaceType | primitiveType) (annotation* '[' ']')*
+    : functionType
+    | annotation* (classOrInterfaceType | primitiveType) (annotation* '[' ']')*
     | annotation* (classOrInterfaceType | primitiveType) (annotation* '[' expression ']')*
+    ;
+
+// First-class function type: `(T1, T2) -> R`. See cajeta-docs/Lambdas.md.
+// Distinct from Java's @FunctionalInterface SAM conversion; this is a real
+// type-former, callable directly, with no boxing for primitives.
+functionType
+    : '(' (typeType (',' typeType)*)? ')' '->' typeType
     ;
 
 primitiveType
