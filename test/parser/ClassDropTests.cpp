@@ -69,18 +69,19 @@ TEST(ClassDropTests, twoInstancesFireBothDrops) {
     ), 2);
 }
 
-// User-defined drop() method is invoked before the heap free. The
-// observable: have drop() allocate a small array — when drop() returns
-// the array's own drop fires, adding 1 to the drop count. So a class
-// whose user.drop() allocates an array contributes:
+// User-defined destructor is invoked before the heap free. The
+// observable: have ~Tracer() allocate a small array — when the
+// destructor returns the array's own drop fires, adding 1 to the
+// drop count. So a class with a destructor that allocates an array
+// contributes:
 //   1 for the class instance's drop entry (pop_run's pre-increment)
-//   1 for the array's drop fired at drop()'s scope-exit
-// Total = 2. A class without a user drop contributes only 1.
+//   1 for the array's drop fired at the destructor's scope-exit
+// Total = 2. A class without a destructor contributes only 1.
 TEST(ClassDropTests, userDropMethodIsInvoked) {
     auto src =
         "package test;\n"
         "public class Tracer {\n"
-        "    public void drop() {\n"
+        "    public ~Tracer() {\n"
         "        int32[] junk = new int32[1];\n"
         "    }\n"
         "}\n"

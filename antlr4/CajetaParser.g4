@@ -153,6 +153,7 @@ memberDeclaration
     | operatorOverloadDeclaration
     | fieldDeclaration
     | constructorDeclaration
+    | destructorDeclaration
     | interfaceDeclaration
     | annotationTypeDeclaration
     | classDeclaration
@@ -218,6 +219,17 @@ typeTypeOrVoid
 
 constructorDeclaration
     : identifier formalParameters (THROWS qualifiedNameList)? constructorBody=block
+    ;
+
+// Destructor — C++-style `~ClassName()`. Mirrors the constructor's
+// shape (the identifier must match the enclosing class name; the
+// compiler validates that during the visit). The body becomes the
+// class's drop method internally — the synthesized __cajeta_<class>_drop
+// wrapper invokes it before freeing the instance, and the destructor
+// itself isn't callable from user code. See cajeta-docs/MemoryModel.md
+// § Destructors.
+destructorDeclaration
+    : TILDE identifier '(' ')' destructorBody=block
     ;
 
 fieldDeclaration

@@ -104,6 +104,43 @@ LIFO within a scope; inner scopes drop before outer. A borrow declared before it
 
 ---
 
+## Destructors
+
+A class can declare a destructor with `~ClassName()`. The compiler runs it just before the instance's heap memory is reclaimed — the canonical place to release the resources the instance owns:
+
+```
+public class Lock {
+    private pointer handle;
+
+    public Lock() {
+        this.handle = Cajeta.lockNew();
+    }
+
+    public ~Lock() {
+        Cajeta.lockDestroy(this.handle);
+    }
+}
+```
+
+Rules:
+
+- **Identifier must match the class.** `~Foo()` inside `class Bar` is a compile error. Same convention as the constructor's identifier.
+- **No parameters, no return type.** The body has no inputs to take and nothing to hand back. `~Lock(int32 x)` is a parse error.
+- **Not user-callable.** Calling `obj.destructor()` or similar from user code is rejected — destructors are invoked exclusively by the drop chain at scope exit.
+- **Inside the body, `this` is live.** Field access, intrinsic calls, even calls to other instance methods on `this` all work. The instance hasn't been freed yet.
+- **Runs once.** Each instance's destructor fires exactly once, at the point the drop chain reaches its entry. If the instance was transferred via `#` to another owner, the original owner's drop entry is deactivated; only the new owner's drop fires the destructor.
+
+The runtime mechanism — "drop chain" — is the same machinery the borrow checker uses to reclaim arrays, closures, and other owned heap blocks. A destructor is the *user-extensible* hook into it: the compiler emits a per-class wrapper `__cajeta_<ClassName>_drop` that calls your destructor and then frees the instance's memory. From a developer's perspective, the contract is simply "write `~ClassName()` if you have a resource to release; the language guarantees it runs at the right time."
+
+Limitations (v1 / known gaps):
+
+- **No virtual dispatch.** Dropping a `Bar` local that holds a `Foo extends Bar` fires `~Bar()`, not `~Foo()`. Adding `drop` to the vtable is the proper fix; deferred.
+- **No automatic field drops.** If a class owns a heap field (an array, a class instance, another `Lock`), the user's destructor must release it explicitly. Rust auto-generates these; we don't yet.
+- **No `super.~Class()` chaining.** Derived destructors don't implicitly chain to the base class's. With single-class hierarchies this hasn't bitten yet; needs care when virtual dispatch lands.
+- **Method-scoped, not block-scoped firing.** Drop entries fire at method exit, not at the closing `}` of an inner block. RAII patterns that need release-on-block-exit (a `LockGuard` declared in an inner scope releasing before the rest of the method runs) currently require splitting the critical section into its own method.
+
+---
+
 ## Containers (stdlib convention)
 
 All stdlib containers follow:

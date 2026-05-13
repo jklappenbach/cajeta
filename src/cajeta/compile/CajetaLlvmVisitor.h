@@ -15,6 +15,7 @@
 #include "cajeta/asn/LocalVariableDeclaration.h"
 #include "cajeta/compile/CajetaModule.h"
 #include "cajeta/asn/ClassBodyDeclaration.h"
+#include "cajeta/error/Exception.h"
 
 
 namespace cajeta {
@@ -579,6 +580,40 @@ namespace cajeta {
                 formalParameters,
                 block,
                 pModule->getStructureStack().back());
+            return static_pointer_cast<MemberDeclaration>(make_shared<MethodDeclaration>(method, ctx->getStart()));
+        }
+
+        // `~ClassName() { ... }` — destructor declaration. Builds the
+        // body as a method internally named "drop" so the existing
+        // class-drop wrapper machinery (CajetaClass::getOrCreateDropFunction)
+        // picks it up unchanged. The identifier between ~ and ( must
+        // match the enclosing class name, same convention as the
+        // constructor's identifier. See cajeta-docs/MemoryModel.md §
+        // Destructors.
+        virtual std::any visitDestructorDeclaration(CajetaParser::DestructorDeclarationContext* ctx) override {
+            string declaredName = ctx->identifier()->getText();
+            auto enclosing = pModule->getStructureStack().back();
+            string className = enclosing
+                ? enclosing->getQName()->getTypeName()
+                : string();
+            if (!className.empty() && declaredName != className) {
+                throw Exception(
+                    "destructor name `~" + declaredName + "` must match "
+                    "the enclosing class name (expected `~" + className + "`)",
+                    "CAJETA_ERROR_TYPE");
+            }
+            BlockPtr block = any_cast<BlockPtr>(visitBlock(ctx->destructorBody));
+            // Internally a destructor IS the class's drop method.
+            // The synthesized __cajeta_<class>_drop wrapper looks up a
+            // method named "drop" (per Method::getName) and calls it
+            // before freeing the instance.
+            string dropName = "drop";
+            vector<FormalParameterPtr> noParams;
+            MethodPtr method = Method::create(pModule, dropName,
+                CajetaType::of("void"),
+                noParams,
+                block,
+                enclosing);
             return static_pointer_cast<MemberDeclaration>(make_shared<MethodDeclaration>(method, ctx->getStart()));
         }
 
