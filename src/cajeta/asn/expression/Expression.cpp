@@ -32,9 +32,29 @@ namespace cajeta {
         if (ctx->ASSIGN()) {
             result = make_shared<BinaryOpExpression>(BINARY_OP_ASSIGN, token);
         } else if (ctx->COLONCOLON()) {
-            // Method reference: `expr::id`, `Type::id`, or `Type::new`. Check before NEW
-            // and identifier so we don't mis-route those token-bearing forms.
-            result = make_shared<UnsupportedExpression>("method reference", token);
+            // Method reference: `expr::id`, `Type::id`, or `Type::new`.
+            // Check before NEW and identifier so we don't mis-route
+            // those token-bearing forms. Detect the LHS shape:
+            //   - typeType form (`Type::id` / `Type::new`): grammar
+            //     captured a typeType in front of the COLONCOLON.
+            //   - expression form (`obj::id`): grammar captured an
+            //     expression in front.
+            CajetaTypePtr methodRefRecvType;
+            ExpressionPtr methodRefRecvExpr;
+            std::string methodRefName;
+            bool methodRefIsCtor = ctx->NEW() != nullptr;
+            if (!ctx->typeType().empty()) {
+                methodRefRecvType = CajetaType::fromContext(
+                    ctx->typeType(0), nullptr);
+            } else if (!ctx->expression().empty()) {
+                methodRefRecvExpr = Expression::fromContext(ctx->expression(0));
+            }
+            if (!methodRefIsCtor && ctx->identifier()) {
+                methodRefName = ctx->identifier()->getText();
+            }
+            result = make_shared<MethodReferenceExpression>(token,
+                methodRefRecvType, methodRefRecvExpr,
+                std::move(methodRefName), methodRefIsCtor);
         } else if (ctx->primary()) {
             result = PrimaryExpression::fromContext(ctx->primary());
         } else if (ctx->DOT()) {
@@ -1615,6 +1635,206 @@ namespace cajeta {
             closureTy, closure, 2, "closure.drop_fn");
         outerBuilder->CreateStore(dropFnValue, dropSlot);
         return closure;
+    }
+
+    // --- MethodReferenceExpression ---------------------------------------
+
+    static int64_t methodRefCounter = 0;
+
+    // Resolve a MethodReferenceExpression's LHS to a target class.
+    // Tries the typeType form, then the expression form's resolvedType,
+    // then falls back to scanning the type registry for a class whose
+    // short name matches a bare-identifier expression LHS — that last
+    // path handles the common `Util::method` shape that the grammar
+    // parses as `expression '::' identifier` rather than `typeType '::'
+    // identifier`.
+    static CajetaClassPtr resolveMethodRefTargetClass(
+            CajetaTypePtr receiverType,
+            ExpressionPtr receiverExpr,
+            CajetaModulePtr module) {
+        if (receiverType) {
+            return std::dynamic_pointer_cast<CajetaClass>(receiverType);
+        }
+        if (!receiverExpr) return nullptr;
+        if (!receiverExpr->getResolvedType()) {
+            receiverExpr->resolveTypes(module);
+        }
+        if (auto k = std::dynamic_pointer_cast<CajetaClass>(receiverExpr->getResolvedType())) {
+            return k;
+        }
+        auto idExpr = std::dynamic_pointer_cast<IdentifierExpression>(receiverExpr);
+        if (!idExpr) return nullptr;
+        const std::string& shortName = idExpr->getTextValue();
+        for (auto& entry : CajetaType::getCanonicalMap()) {
+            auto klass = std::dynamic_pointer_cast<CajetaClass>(entry.second);
+            if (!klass) continue;
+            auto qn = klass->getQName();
+            if (qn && qn->getTypeName() == shortName) return klass;
+        }
+        return nullptr;
+    }
+
+    // Find a method on `klass` by name. The lookup currently doesn't
+    // overload-resolve — L4-1 assumes one method per name on the
+    // referenced class. When multiple methods share the name, the first
+    // one found wins; overload-aware method references will follow once
+    // we have a target-type-driven resolution pass.
+    static MethodPtr findMethodByName(CajetaClassPtr klass,
+                                       const std::string& name,
+                                       bool wantStatic) {
+        if (!klass) return nullptr;
+        for (auto& entry : klass->getMethods()) {
+            MethodPtr m = entry.second;
+            if (!m || m->getName() != name) continue;
+            bool isStatic = m->getModifiers().find(STATIC) != m->getModifiers().end();
+            if (isStatic != wantStatic) continue;
+            return m;
+        }
+        return nullptr;
+    }
+
+    void MethodReferenceExpression::resolveTypes(CajetaModulePtr module) {
+        if (!module) module = CajetaModule::getActiveModule();
+        if (!module) return;
+
+        // Decide the kind. L4-1 only implements the STATIC form; the
+        // others land on a NOT_IMPLEMENTED at codegen so the parser
+        // still accepts every shape the grammar covers.
+        CajetaClassPtr targetClass = resolveMethodRefTargetClass(
+            receiverType, receiverExpr, module);
+
+        if (isCtor) {
+            kind = Kind::CONSTRUCTOR;
+            return;  // codegen will surface NOT_IMPLEMENTED
+        }
+        if (!targetClass) return;  // unresolved receiver; codegen errors
+
+        MethodPtr staticMethod = findMethodByName(targetClass, methodName, /*wantStatic=*/true);
+        if (staticMethod) {
+            kind = Kind::STATIC;
+            // Derive the function-value type from the method's
+            // parameter and return types. Static methods don't have an
+            // implicit `this`, so the parameter list IS the user-
+            // declared one.
+            std::vector<CajetaTypePtr> paramTypes;
+            for (auto& p : staticMethod->getParameterList()) {
+                paramTypes.push_back(p->getType());
+            }
+            CajetaTypePtr ret = staticMethod->getReturnType();
+            std::string canon = CajetaFunctionType::buildCanonical(paramTypes, ret);
+            auto& cmap = CajetaType::getCanonicalMap();
+            auto it = cmap.find(canon);
+            if (it != cmap.end()) {
+                resolvedType = it->second;
+            } else {
+                auto fnType = std::make_shared<CajetaFunctionType>(
+                    module, paramTypes, ret);
+                cmap[canon] = std::static_pointer_cast<CajetaType>(fnType);
+                resolvedType = fnType;
+            }
+            return;
+        }
+
+        // Instance method — kind depends on whether the LHS was a type
+        // (UNBOUND_INSTANCE) or an expression (BOUND_INSTANCE). Both
+        // are L4-2/L4-3 territory; resolveTypes records the kind so
+        // codegen can surface a precise NOT_IMPLEMENTED message.
+        MethodPtr instanceMethod = findMethodByName(targetClass, methodName, /*wantStatic=*/false);
+        if (instanceMethod) {
+            kind = receiverExpr ? Kind::BOUND_INSTANCE : Kind::UNBOUND_INSTANCE;
+        }
+    }
+
+    llvm::Value* MethodReferenceExpression::generateCode(CajetaModulePtr module) {
+        if (!resolvedType) resolveTypes(module);
+
+        if (kind != Kind::STATIC) {
+            const char* shape =
+                kind == Kind::BOUND_INSTANCE   ? "bound instance method reference (obj::method)"
+              : kind == Kind::UNBOUND_INSTANCE ? "unbound instance method reference (Type::instanceMethod)"
+              : kind == Kind::CONSTRUCTOR      ? "constructor reference (Type::new)"
+              : "method reference";
+            throw Exception(
+                std::string("method reference: ") + shape
+                + " is not yet implemented",
+                "CAJETA_ERROR_NOT_IMPLEMENTED");
+        }
+
+        auto fnType = std::dynamic_pointer_cast<CajetaFunctionType>(resolvedType);
+        if (!fnType) {
+            throw Exception(
+                "method reference '::' "
+                + methodName
+                + "' did not resolve to a known static method",
+                "CAJETA_ERROR_NOT_IMPLEMENTED");
+        }
+
+        // Look up the target method again at codegen time — we need its
+        // LLVM function for the thunk's call instruction. resolveTypes
+        // confirmed it exists.
+        CajetaClassPtr targetClass = resolveMethodRefTargetClass(
+            receiverType, receiverExpr, module);
+        MethodPtr target = findMethodByName(targetClass, methodName, /*wantStatic=*/true);
+        if (!target || !target->getLlvmFunction()) {
+            throw Exception(
+                "method reference: target static method '"
+                + methodName + "' has no LLVM function at codegen time",
+                "CAJETA_ERROR_NOT_IMPLEMENTED");
+        }
+
+        auto& llvmCtx = *module->getLlvmContext();
+        auto* lmod = module->getLlvmModule();
+        llvm::PointerType* ptrTy = llvm::PointerType::get(llvmCtx, 0);
+
+        // Synthesize a thunk function matching the closure ABI:
+        //   (ptr captures, <method params>) -> <return>
+        // The captures arg is unused — static method refs don't capture
+        // anything. Body forwards each arg verbatim to the underlying
+        // static method.
+        if (thunkName.empty()) {
+            thunkName = std::string("__cajeta_method_ref_")
+                + std::to_string(methodRefCounter++);
+        }
+        llvm::Function* existing = lmod->getFunction(thunkName);
+        llvm::Function* thunk = existing
+            ? existing
+            : llvm::Function::Create(fnType->getLlvmFunctionType(),
+                llvm::Function::ExternalLinkage, thunkName, lmod);
+        if (!existing) {
+            llvm::BasicBlock* tbb = llvm::BasicBlock::Create(
+                llvmCtx, "entry", thunk);
+            llvm::IRBuilder<> tb(tbb);
+            // Build the call arglist from thunk args 1.. (arg 0 is the
+            // captures slot, unused here).
+            std::vector<llvm::Value*> callArgs;
+            unsigned thunkArgCount = thunk->arg_size();
+            for (unsigned i = 1; i < thunkArgCount; ++i) {
+                callArgs.push_back(thunk->getArg(i));
+            }
+            llvm::Value* callResult = tb.CreateCall(
+                target->getLlvmFunctionType(), target->getLlvmFunction(),
+                callArgs);
+            if (thunk->getReturnType()->isVoidTy()) {
+                tb.CreateRetVoid();
+            } else {
+                tb.CreateRet(callResult);
+            }
+        }
+
+        // Materialize the closure record as a private global constant
+        // `{ thunk, null, null }` — same shape and lifetime story as a
+        // non-capturing lambda. Globals live for the whole program, so
+        // a method reference can be returned / stored without escape
+        // worries.
+        llvm::StructType* closureTy = llvm::StructType::get(llvmCtx,
+            {(llvm::Type*) ptrTy, (llvm::Type*) ptrTy, (llvm::Type*) ptrTy});
+        llvm::Constant* nullPtr = llvm::ConstantPointerNull::get(ptrTy);
+        llvm::Constant* init = llvm::ConstantStruct::get(closureTy,
+            {static_cast<llvm::Constant*>(thunk), nullPtr, nullPtr});
+        auto* gv = new llvm::GlobalVariable(*lmod, closureTy,
+            /*isConstant=*/true, llvm::GlobalValue::PrivateLinkage,
+            init, thunkName + "_record");
+        return gv;
     }
 
     void InstanceOfExpression::resolveTypes(CajetaModulePtr module) {

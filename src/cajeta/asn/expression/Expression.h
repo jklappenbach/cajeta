@@ -275,6 +275,61 @@ namespace cajeta {
     };
 
 
+    // Method reference: `Type::method`, `obj::method`, or `Type::new`.
+    // Compiles to a function-typed value (same value-level shape as a
+    // lambda) pointing at a synthesized thunk that adapts the underlying
+    // method to the closure ABI (`ptr captures` as the first arg).
+    // L4-1 implements only the static-method form
+    // (`Type::staticMethod`); bound instance refs, unbound instance
+    // refs, and constructor refs throw NOT_IMPLEMENTED until the
+    // matching sub-slices land. See cajeta-docs/Lambdas.md § Method
+    // references.
+    class MethodReferenceExpression : public Expression {
+    public:
+        enum class Kind {
+            STATIC,            // Type::staticMethod
+            BOUND_INSTANCE,    // obj::method
+            UNBOUND_INSTANCE,  // Type::instanceMethod
+            CONSTRUCTOR        // Type::new
+        };
+    private:
+        // For `Type::id` / `Type::new`: the type appears literally in
+        // the source as a typeType and we resolve it eagerly at AST
+        // build time (its name is in scope unconditionally).
+        CajetaTypePtr receiverType;
+        // For `obj::id`: the receiver is a runtime expression evaluated
+        // at the reference site. nullptr for the type-receiver forms.
+        ExpressionPtr receiverExpr;
+        // Method name being referenced. Empty for CONSTRUCTOR.
+        std::string methodName;
+        bool isCtor;
+        // Set by resolveTypes once we know whether the named method is
+        // static or instance. STATIC for either form when the target
+        // method is static; BOUND_INSTANCE for obj::method on an
+        // instance method; UNBOUND_INSTANCE for Type::method on an
+        // instance method.
+        Kind kind = Kind::STATIC;
+        // Name of the synthesized thunk function, generated lazily on
+        // first codegen.
+        std::string thunkName;
+    public:
+        MethodReferenceExpression(antlr4::Token* token,
+                                  CajetaTypePtr receiverType,
+                                  ExpressionPtr receiverExpr,
+                                  std::string methodName,
+                                  bool isCtor)
+            : Expression(token),
+              receiverType(std::move(receiverType)),
+              receiverExpr(std::move(receiverExpr)),
+              methodName(std::move(methodName)),
+              isCtor(isCtor) {
+            if (this->isCtor) kind = Kind::CONSTRUCTOR;
+        }
+
+        void resolveTypes(CajetaModulePtr module) override;
+        llvm::Value* generateCode(CajetaModulePtr module) override;
+    };
+
     // Placeholder for expression forms recognized by the grammar but not yet implemented
     // (lambdas, switch expressions, super dispatch, inner-class new, method references).
     // The parser produces one of these so the failure surfaces at codegen time as a clear
