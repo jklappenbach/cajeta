@@ -1736,24 +1736,49 @@ namespace cajeta {
         }
 
         // Instance method — kind depends on whether the LHS was a type
-        // (UNBOUND_INSTANCE) or an expression (BOUND_INSTANCE). Both
-        // are L4-2/L4-3 territory; resolveTypes records the kind so
-        // codegen can surface a precise NOT_IMPLEMENTED message.
+        // (UNBOUND_INSTANCE) or an expression (BOUND_INSTANCE).
         MethodPtr instanceMethod = findMethodByName(targetClass, methodName, /*wantStatic=*/false);
         if (instanceMethod) {
             kind = receiverExpr ? Kind::BOUND_INSTANCE : Kind::UNBOUND_INSTANCE;
+            if (kind == Kind::BOUND_INSTANCE) {
+                // Compute the bound function-value type: same params as
+                // the user-declared method (the `this` arg gets fed from
+                // captures, not from the call site). The borrow on the
+                // receiver makes this a scope-bound closure, so flag it
+                // for L3-2's escape check.
+                std::vector<CajetaTypePtr> paramTypes;
+                // instanceMethod's parameterList includes the synthesized
+                // `this` at index 0 (per Method::generatePrototype).
+                // Skip it so the user-facing signature drops `this`.
+                auto pl = instanceMethod->getParameterList();
+                for (size_t i = 1; i < pl.size(); ++i) {
+                    paramTypes.push_back(pl[i]->getType());
+                }
+                CajetaTypePtr ret = instanceMethod->getReturnType();
+                std::string canon = CajetaFunctionType::buildCanonical(paramTypes, ret);
+                auto& cmap = CajetaType::getCanonicalMap();
+                auto it = cmap.find(canon);
+                if (it != cmap.end()) {
+                    resolvedType = it->second;
+                } else {
+                    auto fnType = std::make_shared<CajetaFunctionType>(
+                        module, paramTypes, ret);
+                    cmap[canon] = std::static_pointer_cast<CajetaType>(fnType);
+                    resolvedType = fnType;
+                }
+                _hasBorrowCaptures = true;
+            }
         }
     }
 
     llvm::Value* MethodReferenceExpression::generateCode(CajetaModulePtr module) {
         if (!resolvedType) resolveTypes(module);
 
-        if (kind != Kind::STATIC) {
+        if (kind == Kind::UNBOUND_INSTANCE || kind == Kind::CONSTRUCTOR) {
             const char* shape =
-                kind == Kind::BOUND_INSTANCE   ? "bound instance method reference (obj::method)"
-              : kind == Kind::UNBOUND_INSTANCE ? "unbound instance method reference (Type::instanceMethod)"
-              : kind == Kind::CONSTRUCTOR      ? "constructor reference (Type::new)"
-              : "method reference";
+                kind == Kind::UNBOUND_INSTANCE
+                    ? "unbound instance method reference (Type::instanceMethod)"
+                    : "constructor reference (Type::new)";
             throw Exception(
                 std::string("method reference: ") + shape
                 + " is not yet implemented",
@@ -1765,7 +1790,7 @@ namespace cajeta {
             throw Exception(
                 "method reference '::' "
                 + methodName
-                + "' did not resolve to a known static method",
+                + "' did not resolve to a known method",
                 "CAJETA_ERROR_NOT_IMPLEMENTED");
         }
 
@@ -1774,10 +1799,11 @@ namespace cajeta {
         // confirmed it exists.
         CajetaClassPtr targetClass = resolveMethodRefTargetClass(
             receiverType, receiverExpr, module);
-        MethodPtr target = findMethodByName(targetClass, methodName, /*wantStatic=*/true);
+        MethodPtr target = findMethodByName(targetClass, methodName,
+            /*wantStatic=*/kind == Kind::STATIC);
         if (!target || !target->getLlvmFunction()) {
             throw Exception(
-                "method reference: target static method '"
+                "method reference: target method '"
                 + methodName + "' has no LLVM function at codegen time",
                 "CAJETA_ERROR_NOT_IMPLEMENTED");
         }
@@ -1787,10 +1813,12 @@ namespace cajeta {
         llvm::PointerType* ptrTy = llvm::PointerType::get(llvmCtx, 0);
 
         // Synthesize a thunk function matching the closure ABI:
-        //   (ptr captures, <method params>) -> <return>
-        // The captures arg is unused — static method refs don't capture
-        // anything. Body forwards each arg verbatim to the underlying
-        // static method.
+        //   (ptr captures, <user-facing method params>) -> <return>
+        // For STATIC: captures is ignored; args forward straight to the
+        //   underlying static method.
+        // For BOUND_INSTANCE: load the captured receiver from captures[0]
+        //   and pass it as `this` (the underlying instance method's first
+        //   arg) along with the rest of the user args.
         if (thunkName.empty()) {
             thunkName = std::string("__cajeta_method_ref_")
                 + std::to_string(methodRefCounter++);
@@ -1804,9 +1832,20 @@ namespace cajeta {
             llvm::BasicBlock* tbb = llvm::BasicBlock::Create(
                 llvmCtx, "entry", thunk);
             llvm::IRBuilder<> tb(tbb);
-            // Build the call arglist from thunk args 1.. (arg 0 is the
-            // captures slot, unused here).
             std::vector<llvm::Value*> callArgs;
+            if (kind == Kind::BOUND_INSTANCE) {
+                // Captures struct is `{ ptr receiver }`. Load the receiver
+                // and pass it as `this`. User args follow.
+                std::vector<llvm::Type*> capFields = {(llvm::Type*) ptrTy};
+                llvm::StructType* capStructTy = llvm::StructType::get(
+                    llvmCtx, capFields);
+                llvm::Value* capArg = thunk->getArg(0);
+                llvm::Value* recvSlot = tb.CreateStructGEP(
+                    capStructTy, capArg, 0, "captured.this");
+                llvm::Value* recvVal = tb.CreateLoad(ptrTy, recvSlot, "this");
+                callArgs.push_back(recvVal);
+            }
+            // User-facing args live at thunk arg 1.. (arg 0 is captures).
             unsigned thunkArgCount = thunk->arg_size();
             for (unsigned i = 1; i < thunkArgCount; ++i) {
                 callArgs.push_back(thunk->getArg(i));
@@ -1821,20 +1860,94 @@ namespace cajeta {
             }
         }
 
-        // Materialize the closure record as a private global constant
-        // `{ thunk, null, null }` — same shape and lifetime story as a
-        // non-capturing lambda. Globals live for the whole program, so
-        // a method reference can be returned / stored without escape
-        // worries.
         llvm::StructType* closureTy = llvm::StructType::get(llvmCtx,
             {(llvm::Type*) ptrTy, (llvm::Type*) ptrTy, (llvm::Type*) ptrTy});
-        llvm::Constant* nullPtr = llvm::ConstantPointerNull::get(ptrTy);
-        llvm::Constant* init = llvm::ConstantStruct::get(closureTy,
-            {static_cast<llvm::Constant*>(thunk), nullPtr, nullPtr});
-        auto* gv = new llvm::GlobalVariable(*lmod, closureTy,
-            /*isConstant=*/true, llvm::GlobalValue::PrivateLinkage,
-            init, thunkName + "_record");
-        return gv;
+
+        if (kind == Kind::STATIC) {
+            // Non-capturing — closure record can be a private global
+            // constant `{ thunk, null, null }`. Globals live for the
+            // whole program, so a static method reference can be
+            // returned / stored without escape worries.
+            llvm::Constant* nullPtr = llvm::ConstantPointerNull::get(ptrTy);
+            llvm::Constant* init = llvm::ConstantStruct::get(closureTy,
+                {static_cast<llvm::Constant*>(thunk), nullPtr, nullPtr});
+            auto* gv = new llvm::GlobalVariable(*lmod, closureTy,
+                /*isConstant=*/true, llvm::GlobalValue::PrivateLinkage,
+                init, thunkName + "_record");
+            return gv;
+        }
+
+        // BOUND_INSTANCE — heap-allocate the captures struct + closure
+        // record, populate with the evaluated receiver, and synthesize
+        // a drop function that frees both at scope exit. Mirrors the
+        // L3-3 lambda heap-closure path; the captured receiver is a
+        // borrow (we don't free the receiver object itself).
+        auto* outerBuilder = module->getBuilder();
+        const llvm::DataLayout& dl = lmod->getDataLayout();
+        llvm::Function* allocFn = module->getRuntimeFunction("__cajeta_alloc");
+        llvm::Function* freeFn = module->getRuntimeFunction("__cajeta_free");
+        if (!allocFn || !freeFn) {
+            throw Exception(
+                "runtime helpers __cajeta_alloc / __cajeta_free not linked",
+                "CAJETA_ERROR_RUNTIME");
+        }
+
+        // 1. Allocate captures struct and store the evaluated receiver.
+        std::vector<llvm::Type*> bindFields = {(llvm::Type*) ptrTy};
+        llvm::StructType* capStructTy = llvm::StructType::get(
+            llvmCtx, bindFields);
+        uint64_t capBytes = dl.getTypeAllocSize(capStructTy);
+        llvm::Value* capturesPtr = outerBuilder->CreateCall(allocFn, {
+            llvm::ConstantInt::get(llvm::Type::getInt64Ty(llvmCtx), capBytes),
+        }, "captures");
+        llvm::Value* recvValue = receiverExpr->generateCode(module);
+        // L-value coerce the receiver: an IdentifierExpression yields its
+        // alloca, which holds the heap pointer — load through to get the
+        // actual ptr.
+        if (auto* a = llvm::dyn_cast_or_null<llvm::AllocaInst>(recvValue)) {
+            recvValue = outerBuilder->CreateLoad(
+                a->getAllocatedType(), a);
+        }
+        llvm::Value* recvStoreSlot = outerBuilder->CreateStructGEP(
+            capStructTy, capturesPtr, 0, "captures.this");
+        outerBuilder->CreateStore(recvValue, recvStoreSlot);
+
+        // 2. Synthesize the per-ref drop function. Frees the captures
+        //    struct and the closure record; the receiver itself isn't
+        //    freed (borrow capture, original owner still has the entry).
+        std::string dropName = thunkName + "_drop";
+        llvm::FunctionType* dropFnTy = llvm::FunctionType::get(
+            llvm::Type::getVoidTy(llvmCtx), {ptrTy}, /*isVarArg=*/false);
+        llvm::Function* dropFn = llvm::Function::Create(dropFnTy,
+            llvm::Function::ExternalLinkage, dropName, lmod);
+        llvm::BasicBlock* dropEntryBB = llvm::BasicBlock::Create(
+            llvmCtx, "entry", dropFn);
+        {
+            llvm::IRBuilder<> db(dropEntryBB);
+            llvm::Value* closureArg = dropFn->getArg(0);
+            llvm::Value* capSlotInDrop = db.CreateStructGEP(
+                closureTy, closureArg, 1, "closure.captures");
+            llvm::Value* capLoaded = db.CreateLoad(ptrTy, capSlotInDrop, "captures");
+            db.CreateCall(freeFn, {capLoaded});
+            db.CreateCall(freeFn, {closureArg});
+            db.CreateRetVoid();
+        }
+
+        // 3. Allocate the closure record and populate fn / captures / drop_fn.
+        uint64_t closureBytes = dl.getTypeAllocSize(closureTy);
+        llvm::Value* closure = outerBuilder->CreateCall(allocFn, {
+            llvm::ConstantInt::get(llvm::Type::getInt64Ty(llvmCtx), closureBytes),
+        }, "closure");
+        llvm::Value* fnSlot = outerBuilder->CreateStructGEP(
+            closureTy, closure, 0, "closure.fn");
+        outerBuilder->CreateStore(thunk, fnSlot);
+        llvm::Value* capSlot = outerBuilder->CreateStructGEP(
+            closureTy, closure, 1, "closure.captures");
+        outerBuilder->CreateStore(capturesPtr, capSlot);
+        llvm::Value* dropSlot = outerBuilder->CreateStructGEP(
+            closureTy, closure, 2, "closure.drop_fn");
+        outerBuilder->CreateStore(dropFn, dropSlot);
+        return closure;
     }
 
     void InstanceOfExpression::resolveTypes(CajetaModulePtr module) {

@@ -312,7 +312,13 @@ namespace cajeta {
         // Name of the synthesized thunk function, generated lazily on
         // first codegen.
         std::string thunkName;
+        // Set when this method ref captures the receiver by borrow
+        // (kind == BOUND_INSTANCE) — analogous to LambdaExpression's
+        // hasBorrowCaptures flag, consumed by the L3-2 escape check at
+        // ReturnStatement and propagated to function-typed Fields.
+        bool _hasBorrowCaptures = false;
     public:
+        bool getHasBorrowCaptures() const { return _hasBorrowCaptures; }
         MethodReferenceExpression(antlr4::Token* token,
                                   CajetaTypePtr receiverType,
                                   ExpressionPtr receiverExpr,

@@ -113,24 +113,49 @@ TEST(LambdaL4Tests, constructorRefStillNotImplemented) {
     }
 }
 
-TEST(LambdaL4Tests, boundInstanceRefStillNotImplemented) {
+// ---------------------------------------------------------------------
+// L4-2: bound instance method references — `obj::method`
+// ---------------------------------------------------------------------
+
+// Receiver captured by borrow; thunk loads the captured `this` and
+// dispatches the instance method with it.
+TEST(LambdaL4Tests, boundInstanceMethodReferenceCallable) {
+    auto src =
+        "package test;\n"
+        "public class Counter {\n"
+        "    public int32 next() { return 42; }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Counter c = new Counter();\n"
+        "        () -> int32 fn = c::next;\n"
+        "        return fn();\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 42);
+}
+
+// Returning a bound-instance ref must be rejected by the L3-2 escape
+// check — the captured receiver is borrowed and would dangle past the
+// producing method's return.
+TEST(LambdaL4Tests, returnBoundInstanceRefIsBorrowEscape) {
     auto src =
         "package test;\n"
         "public class Counter {\n"
         "    public int32 next() { return 1; }\n"
         "}\n"
         "public final class D {\n"
-        "    public static int32 run() {\n"
+        "    public static () -> int32 mkFn() {\n"
         "        Counter c = new Counter();\n"
         "        () -> int32 fn = c::next;\n"
-        "        return 0;\n"
+        "        return fn;\n"
         "    }\n"
+        "    public static int32 run() { return 0; }\n"
         "}\n";
     try {
         CajetaJit::compile(src, "test.D");
-        FAIL() << "expected bound-instance-ref NOT_IMPLEMENTED";
+        FAIL() << "expected bound-instance-ref to be rejected on escape";
     } catch (cajeta::Exception& e) {
-        EXPECT_EQ(e.getErrorId(), "CAJETA_ERROR_NOT_IMPLEMENTED");
-        EXPECT_NE(e.getMessage().find("bound instance"), std::string::npos);
+        EXPECT_EQ(e.getErrorId(), "CAJETA_ERROR_BORROW_ESCAPE");
     }
 }

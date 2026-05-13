@@ -974,6 +974,15 @@ namespace cajeta {
                     "CAJETA_ERROR_BORROW_ESCAPE");
             }
         }
+        if (auto refExpr = dynamic_pointer_cast<MethodReferenceExpression>(expression)) {
+            if (refExpr->getHasBorrowCaptures()) {
+                throw Exception(
+                    "cannot return this method reference — it captures "
+                    "the receiver by borrow, and the borrow would dangle "
+                    "past the function return",
+                    "CAJETA_ERROR_BORROW_ESCAPE");
+            }
+        }
         // Load if the expression returned an l-value (alloca, array-slot GEP, or
         // struct/class field GEP) — return wants a value, not an address.
         if (auto* a = llvm::dyn_cast<llvm::AllocaInst>(val)) {
