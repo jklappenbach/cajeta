@@ -140,14 +140,19 @@ classBodyDeclaration
     | modifier* memberDeclaration
     ;
 
+// Note: there are no method-, operator-, or constructor-level template
+// declarations. Every method in Cajeta is virtual (like Java), and
+// template-on-virtual would have no way to populate the vtable — the
+// receiver's vtable would need a slot per (method, arg-type-list) and
+// the call site can't know which to install without runtime type-arg
+// metadata, which contradicts the monomorphization-per-instantiation
+// design. C++ explicitly forbids template virtual methods for the same
+// reason. Class templates remain supported (templates aren't methods).
 memberDeclaration
     : methodDeclaration
-    | templatedMethodDeclaration
     | operatorOverloadDeclaration
-    | templatedOperatorOverloadDeclaration
     | fieldDeclaration
     | constructorDeclaration
-    | templatedConstructorDeclaration
     | interfaceDeclaration
     | annotationTypeDeclaration
     | classDeclaration
@@ -187,10 +192,6 @@ operatorOverloadDeclaration
     | typeType OPERATOR URSHIFT_ASSIGN formalParameters methodBody
     ;
 
-templatedOperatorOverloadDeclaration
-    : typeParameters operatorOverloadDeclaration
-    ;
-
 /* We use rule this even for void methods which cannot have [] after parameters.
    This simplifies grammar and we can consider void to be a type, which
    renders the [] matching as a llvmContext-sensitive issue or a semantic check
@@ -215,14 +216,6 @@ typeTypeOrVoid
     | VOID
     ;
 
-templatedMethodDeclaration
-    : typeParameters methodDeclaration
-    ;
-
-templatedConstructorDeclaration
-    : typeParameters constructorDeclaration
-    ;
-
 constructorDeclaration
     : identifier formalParameters (THROWS qualifiedNameList)? constructorBody=block
     ;
@@ -236,10 +229,13 @@ interfaceBodyDeclaration
     | ';'
     ;
 
+// See the matching note above `memberDeclaration` — interface methods
+// can't carry their own typeParameters either, since the concrete class
+// implementing the interface has to populate a vtable slot per method
+// and there's no place for per-call template instantiations to land.
 interfaceMemberDeclaration
     : constDeclaration
     | interfaceMethodDeclaration
-    | templatedInterfaceMethodDeclaration
     | interfaceDeclaration
     | annotationTypeDeclaration
     | classDeclaration
@@ -271,10 +267,6 @@ interfaceMethodModifier
     | DEFAULT
     | STATIC
     | STRICTFP
-    ;
-
-templatedInterfaceMethodDeclaration
-    : interfaceMethodModifier* typeParameters interfaceCommonBodyDeclaration
     ;
 
 interfaceCommonBodyDeclaration

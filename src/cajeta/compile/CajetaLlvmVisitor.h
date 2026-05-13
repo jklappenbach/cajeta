@@ -504,10 +504,6 @@ namespace cajeta {
                 make_shared<MethodDeclaration>(method, ctx->getStart()));
         }
 
-        virtual std::any visitTemplatedOperatorOverloadDeclaration(CajetaParser::TemplatedOperatorOverloadDeclarationContext* ctx) override {
-            return visitChildren(ctx);
-        }
-
         virtual std::any visitMethodDeclaration(CajetaParser::MethodDeclarationContext* ctx) override {
             string name = ctx->identifier()->getText();
             vector<FormalParameterPtr> formalParameters;
@@ -559,15 +555,6 @@ namespace cajeta {
             return visitChildren(ctx);
         }
 
-        virtual std::any
-        visitTemplatedMethodDeclaration(CajetaParser::TemplatedMethodDeclarationContext* ctx) override {
-            return visitChildren(ctx);
-        }
-
-        virtual std::any
-        visitTemplatedConstructorDeclaration(CajetaParser::TemplatedConstructorDeclarationContext* ctx) override {
-            return visitChildren(ctx);
-        }
 
         virtual std::any visitConstructorDeclaration(CajetaParser::ConstructorDeclarationContext* ctx) override {
             string name = ctx->identifier()->getText();
@@ -622,11 +609,6 @@ namespace cajeta {
         }
 
         virtual std::any visitInterfaceMethodModifier(CajetaParser::InterfaceMethodModifierContext* ctx) override {
-            return visitChildren(ctx);
-        }
-
-        virtual std::any
-        visitTemplatedInterfaceMethodDeclaration(CajetaParser::TemplatedInterfaceMethodDeclarationContext* ctx) override {
             return visitChildren(ctx);
         }
 

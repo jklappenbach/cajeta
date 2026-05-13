@@ -385,8 +385,20 @@ defined type with the template parameters substituted; there is no type erasure,
 are present at runtime as first-class concrete types.
 
 Template syntax resembles Java's `<T>` parameter declarations, allowing the developer to limit the scope of
-class types used in the template to an inheritance hierarchy (`<T extends Foo>`).  The following demonstrates
-basic usage:
+class types used in the template to an inheritance hierarchy (`<T extends Foo>`).
+
+**Templates are class-level only.** A method, constructor, operator overload, or interface method cannot
+declare its own type parameters (the `<U> U someFunc(U x)` shape).  Cajeta methods are all virtual — like
+Java — so the vtable has to be laid out at class-instantiation time, with one slot per method.  A method
+template would need a vtable slot per (method, type-argument-list) pair, but the call site has no way to
+tell the receiver's vtable which slot to install without runtime type-argument metadata, which contradicts
+the monomorphization-per-instantiation design.  C++ forbids template virtual methods for the same reason.
+
+Class-level type parameters can be used freely in method signatures, though: `class Box<T> { T value(); }`
+is fine — `T` is bound by the enclosing class, not by the method, and gets substituted at
+class-instantiation time.
+
+The following demonstrates basic usage:
 
 ### Class Templates
 

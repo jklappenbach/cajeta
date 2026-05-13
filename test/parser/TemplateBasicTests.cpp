@@ -36,6 +36,28 @@ int32_t runI32(const std::string& src) {
 // field and returns it. Native (primitive) type arg is the key thing we
 // want to verify works — it's the differentiator from Java's type-erased
 // generics (and matches C#'s approach: real distinct types per arg list).
+// Class-level type parameters referenced inside a regular method's
+// signature — NOT a method-level template. The method is a plain
+// methodDeclaration; the `T` in its parameter type and return type is
+// bound by the surrounding `class MyClass<T> { ... }` and gets
+// substituted at instantiation time. Method-level template syntax
+// (`<U> U someFunc(U x)`) is explicitly absent from the grammar; see
+// the matching note above `memberDeclaration` in CajetaParser.g4.
+TEST(TemplateBasicTests, classTypeParameterFlowsIntoMethodSignature) {
+    auto src =
+        "package test;\n"
+        "public class Pipe<T> {\n"
+        "    public T through(T value) { return value; }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Pipe<int32> p = new Pipe<int32>();\n"
+        "        return p.through(99);\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 99);
+}
+
 TEST(TemplateBasicTests, primitiveArgInstantiates) {
     auto src =
         "package test;\n"
