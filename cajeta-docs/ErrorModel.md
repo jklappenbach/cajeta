@@ -1,5 +1,14 @@
 # Cajeta Error Model — Specification v1
 
+> ⚠️ **Open question — syntax for fallible types.** This doc currently uses `T!E` (success type left, error type right). That ordering is invented; the only existing language that uses `!` as the error-union operator is **Zig**, which puts the error set on the **left** (`E!T`, optionally `!T` with an inferred error set). Before any implementation lands, choose one of:
+>
+> 1. **`E!T`** — match Zig precedent. Tighter alignment with prior art, supports `!T` shorthand later, asymmetry signals "the bang is the failure flag."
+> 2. **`T!E`** (this doc's current form) — reads left-to-right with Java/Cajeta's "return type first" convention. Idiosyncratic.
+> 3. **`Result<T, E>`** — drop the `!` operator entirely. Familiar from Rust/F#/etc., more verbose at signature sites.
+>
+> If `E!T` or `Result<T, E>` is chosen, the examples and rationale section below need a search-and-replace pass. The semantic content (`try`, `catch`, `panic`, scope integration) doesn't change.
+
+
 ## Goals
 
 - **Errors are values, not out-of-band control flow.** No setjmp/longjmp, no DWARF unwind tables for recoverable errors. An `Err(e)` flows back through the call stack as a return value — type-checked, pattern-matchable, transformable like any other value.
