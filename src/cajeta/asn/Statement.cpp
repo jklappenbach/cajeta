@@ -284,9 +284,12 @@ namespace cajeta {
                 : nullptr;
             result = make_shared<ThrowStatement>(token, throwExpr);
         } else if (ctx->BREAK()) {
-            result = make_shared<BreakStatement>(token);
+            // `break;` or `break label;` — capture the optional identifier.
+            string label = ctx->identifier() ? ctx->identifier()->getText() : "";
+            result = make_shared<BreakStatement>(token, std::move(label));
         } else if (ctx->CONTINUE()) {
-            result = make_shared<ContinueStatement>(token);
+            string label = ctx->identifier() ? ctx->identifier()->getText() : "";
+            result = make_shared<ContinueStatement>(token, std::move(label));
         } else if (ctx->YIELD()) {
             result = make_shared<YieldStatement>(token);
         } else if (ctx->block()) {
@@ -303,7 +306,14 @@ namespace cajeta {
             cout << "Hit switch expression";
             //result = new SwitchExpression;
         } else if (ctx->identifierLabel) {
-            result = make_shared<IdentifierLabel>(ctx->getStart());
+            // `label: statement` — capture both the label name and the
+            // statement it labels so codegen can stash the label on the
+            // module before the inner statement (typically a loop) runs.
+            string label = ctx->identifierLabel->getText();
+            StatementPtr inner = ctx->statement().empty()
+                ? nullptr
+                : Statement::fromContext(ctx->statement(0));
+            result = make_shared<IdentifierLabel>(token, std::move(label), inner);
         } else if (ctx->SEMI()) {
             cout << "Hit SEMI statement";
         }
@@ -949,11 +959,20 @@ namespace cajeta {
         if (!module->hasLoopContext()) {
             return nullptr;
         }
-        // After the unconditional br, start a fresh unreachable block so further
-        // statements in the same Cajeta block (if any) emit into a valid container —
-        // LLVM otherwise complains about adding to a terminated block.
+        // Labeled `break label;` walks the loop stack for a matching label;
+        // bare `break;` uses the innermost loop. After the unconditional br,
+        // start a fresh unreachable block so further statements in the same
+        // Cajeta block (if any) emit into a valid container — LLVM otherwise
+        // complains about adding to a terminated block.
         auto* builder = module->getBuilder();
-        builder->CreateBr(module->currentLoopContext().breakTarget);
+        llvm::BasicBlock* target = nullptr;
+        if (!label.empty()) {
+            if (auto* lc = module->findLoopContext(label)) {
+                target = lc->breakTarget;
+            }
+        }
+        if (!target) target = module->currentLoopContext().breakTarget;
+        builder->CreateBr(target);
         llvm::BasicBlock* deadBB = llvm::BasicBlock::Create(
             *module->getLlvmContext(), "after_break",
             builder->GetInsertBlock()->getParent());
@@ -966,7 +985,14 @@ namespace cajeta {
             return nullptr;
         }
         auto* builder = module->getBuilder();
-        builder->CreateBr(module->currentLoopContext().continueTarget);
+        llvm::BasicBlock* target = nullptr;
+        if (!label.empty()) {
+            if (auto* lc = module->findLoopContext(label)) {
+                target = lc->continueTarget;
+            }
+        }
+        if (!target) target = module->currentLoopContext().continueTarget;
+        builder->CreateBr(target);
         llvm::BasicBlock* deadBB = llvm::BasicBlock::Create(
             *module->getLlvmContext(), "after_continue",
             builder->GetInsertBlock()->getParent());
@@ -979,6 +1005,13 @@ namespace cajeta {
     }
 
     llvm::Value* IdentifierLabel::generateCode(CajetaModulePtr module) {
+        // `label: statement` — stash the label on the module so the next
+        // pushLoopContext (typically by the inner loop) picks it up. Then
+        // run the labeled statement.
+        if (!identifier.empty()) {
+            module->setPendingLoopLabel(identifier);
+        }
+        if (body) body->generateCode(module);
         return nullptr;
     }
 

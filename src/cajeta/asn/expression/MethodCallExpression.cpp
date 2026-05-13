@@ -738,6 +738,49 @@ namespace cajeta {
             }
         }
 
+        // Default parameter values: if a same-named method on the class has
+        // defaults for its trailing parameters and the call supplies fewer
+        // args than the method expects, fill the missing slots from the
+        // method's default expressions. Match by name + arity-range
+        // (required..total) — the first method whose [required, total]
+        // window contains the call's arg count wins.
+        if (!targetClass->getMethods().empty()) {
+            for (auto& mEntry : targetClass->getMethods()) {
+                auto& m = mEntry.second;
+                if (m->getName() != methodCallName) continue;
+                if (m->isVarargs()) continue;
+                bool isStatic = m->getModifiers().find(STATIC)
+                    != m->getModifiers().end();
+                auto pl = m->getParameterList();
+                int thisShift = isStatic ? 0 : 1;
+                int userParams = (int) pl.size() - thisShift;
+                if ((int) entries.size() >= userParams) continue;
+                int required = 0;
+                for (int i = thisShift; i < (int) pl.size(); ++i) {
+                    if (pl[i]->getDefaultValue()) break;
+                    required++;
+                }
+                if ((int) entries.size() < required) continue;
+                // Eligible: emit each missing default expression.
+                for (int i = thisShift + (int) entries.size();
+                     i < (int) pl.size(); ++i) {
+                    auto defExpr = pl[i]->getDefaultValue();
+                    if (!defExpr) break;
+                    if (!defExpr->getResolvedType()) {
+                        defExpr->resolveTypes(module);
+                    }
+                    llvm::Value* dv = defExpr->generateCode(module);
+                    if (auto* a = llvm::dyn_cast_or_null<llvm::AllocaInst>(dv)) {
+                        dv = builder->CreateLoad(a->getAllocatedType(), a);
+                    }
+                    CajetaTypePtr dt = defExpr->getResolvedType();
+                    if (!dt) dt = CajetaType::of(dv);
+                    entries.push_back(ParameterEntry(dt, "", dv));
+                }
+                break;
+            }
+        }
+
         return targetClass->invokeMethod(methodCallName, entries, /*isConstructor=*/false, thisValue);
     }
 

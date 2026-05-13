@@ -4,6 +4,7 @@
 
 #include "FormalParameter.h"
 #include "../compile/CajetaModule.h"
+#include "../asn/expression/Expression.h"
 #include "CajetaArray.h"
 
 namespace cajeta {
@@ -52,6 +53,12 @@ namespace cajeta {
             // ctx->REFERENCE() here is enough.
             if (ctx->REFERENCE() != nullptr) {
                 parameter->setTransferred(true);
+            }
+            // Optional default value: `int32 x = 42`. Captured at parse time
+            // so the call-site fill-in path can clone the expression's AST
+            // node and emit it for each missing argument.
+            if (ctx->ASSIGN() && ctx->expression()) {
+                parameter->setDefaultValue(Expression::fromContext(ctx->expression()));
             }
         }
         return parameter;

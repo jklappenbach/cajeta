@@ -67,14 +67,22 @@ namespace cajeta {
     public:
         // Active loop targets for break/continue. Each loop pushes its targets on
         // entry to its body codegen and pops on exit; break/continue read the
-        // innermost frame.
+        // innermost frame. The optional label lets labeled break/continue
+        // (`break outer;`) find the matching loop without walking from the
+        // innermost — set by the surrounding IdentifierLabel statement (via
+        // setPendingLoopLabel) which the loop consumes on push.
         struct LoopContext {
             llvm::BasicBlock* continueTarget;
             llvm::BasicBlock* breakTarget;
+            std::string label;
         };
 
     private:
         std::vector<LoopContext> loopContextStack;
+        // Label set by the most recent unconsumed IdentifierLabel — the
+        // immediately-following loop's pushLoopContext picks it up. Cleared
+        // after consumption so unrelated nested loops don't inherit it.
+        std::string pendingLoopLabel;
 
         // Type-parameter substitution stack for template instantiation. Each
         // frame is a map from parameter name (T, K, V, ...) to the concrete
@@ -219,7 +227,20 @@ namespace cajeta {
         void setBoundsCheckEnabled(bool v) { boundsCheckEnabled = v; }
 
         void pushLoopContext(llvm::BasicBlock* cont, llvm::BasicBlock* brk) {
-            loopContextStack.push_back({cont, brk});
+            loopContextStack.push_back({cont, brk, pendingLoopLabel});
+            pendingLoopLabel.clear();
+        }
+        // Set by IdentifierLabel; consumed by the next pushLoopContext.
+        void setPendingLoopLabel(const std::string& label) {
+            pendingLoopLabel = label;
+        }
+        // Look up a labeled loop context. Returns null if no enclosing loop
+        // matches the label. Walks the stack from innermost to outermost.
+        const LoopContext* findLoopContext(const std::string& label) const {
+            for (auto it = loopContextStack.rbegin(); it != loopContextStack.rend(); ++it) {
+                if (it->label == label) return &(*it);
+            }
+            return nullptr;
         }
         void popLoopContext() { if (!loopContextStack.empty()) loopContextStack.pop_back(); }
         bool hasLoopContext() const { return !loopContextStack.empty(); }

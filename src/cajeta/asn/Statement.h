@@ -319,9 +319,12 @@ namespace cajeta {
      */
     class BreakStatement : public Statement {
     private:
-        string identifier;
+        string label;   // empty for unlabeled `break;`
     public:
         BreakStatement(antlr4::Token* token) : Statement(token) { }
+        BreakStatement(antlr4::Token* token, string label)
+            : Statement(token), label(std::move(label)) { }
+        const string& getLabel() const { return label; }
 
         llvm::Value* generateCode(CajetaModulePtr module) override;
     };
@@ -331,9 +334,12 @@ namespace cajeta {
      */
     class ContinueStatement : public Statement {
     private:
-        string identifier;
+        string label;   // empty for unlabeled `continue;`
     public:
         ContinueStatement(antlr4::Token* token) : Statement(token) { }
+        ContinueStatement(antlr4::Token* token, string label)
+            : Statement(token), label(std::move(label)) { }
+        const string& getLabel() const { return label; }
 
         llvm::Value* generateCode(CajetaModulePtr module) override;
     };
@@ -379,9 +385,15 @@ namespace cajeta {
     class IdentifierLabel : public Statement {
     private:
         string identifier;
+        StatementPtr body;
     public:
         IdentifierLabel(antlr4::Token* token) : Statement(token) { }
+        IdentifierLabel(antlr4::Token* token, string label, StatementPtr body)
+            : Statement(token), identifier(std::move(label)), body(std::move(body)) { }
 
+        void resolveTypes(CajetaModulePtr module) override {
+            if (body) body->resolveTypes(module);
+        }
         llvm::Value* generateCode(CajetaModulePtr module) override;
     };
 

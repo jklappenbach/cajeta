@@ -7,6 +7,11 @@
 #include <set>
 #include "cajeta/field/Field.h"
 
+namespace cajeta {
+    class Expression;
+    typedef std::shared_ptr<Expression> ExpressionPtr;
+}
+
 using namespace std;
 
 namespace cajeta {
@@ -28,7 +33,15 @@ namespace cajeta {
         // meaning the parameter takes ownership of its argument at the callsite.
         // See `MemoryModel.md` § Borrow / transfer rules.
         bool transferred = false;
+        // `int32 x = 42` — default value expression. Evaluated at the call
+        // site when the caller omits this argument. Stored as an AST node
+        // so the evaluation is lazy (Python-like) and respects the
+        // caller-side scope rather than a value frozen at declaration time.
+        ExpressionPtr defaultValue;
     public:
+        ExpressionPtr getDefaultValue() const { return defaultValue; }
+        void setDefaultValue(ExpressionPtr e) { defaultValue = std::move(e); }
+
         FormalParameter(string name, CajetaTypePtr type, set<Modifier>& modifiers,
             set<QualifiedNamePtr>& annotations);
 
