@@ -169,6 +169,109 @@ void __cajeta_lock_destroy(void* p) {
     free(p);
 }
 
+// --- Threading: async task queue + worker (R2) ----------------------------
+//
+// ThreadModel.md sync primitives have an OS implementation here. The async-
+// runtime side: spawn enqueues a (trampoline, task) pair; a worker thread
+// pops + invokes the trampoline. The trampoline is codegen-emitted per
+// spawn site: it calls the user's async fn, writes the result into the
+// task's value slot, then calls __cajeta_task_complete with the address of
+// the task's `done` field to flip it under the mutex + broadcast.
+//
+// R2 is one worker thread, one global queue, one global mutex/condvar pair
+// per state (queue-non-empty, any-task-done). A real work-stealing pool +
+// per-task wait queues lands later. Today's design is enough for correct
+// (if not maximally efficient) concurrency: the main thread's await blocks
+// on the global done-condvar; the worker writes done + broadcasts.
+
+typedef void (*cajeta_task_trampoline_fn)(void* task);
+
+struct cajeta_task_work {
+    cajeta_task_trampoline_fn trampoline;
+    void* task;
+    struct cajeta_task_work* next;
+};
+
+static pthread_mutex_t __cajeta_task_mutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t  __cajeta_task_queue_cond = PTHREAD_COND_INITIALIZER;
+static pthread_cond_t  __cajeta_task_done_cond  = PTHREAD_COND_INITIALIZER;
+static struct cajeta_task_work* __cajeta_task_queue_head = NULL;
+static struct cajeta_task_work* __cajeta_task_queue_tail = NULL;
+static int __cajeta_task_workers_started = 0;
+static pthread_t __cajeta_task_worker;
+
+static void* __cajeta_task_worker_loop(void* arg) {
+    (void) arg;
+    for (;;) {
+        pthread_mutex_lock(&__cajeta_task_mutex);
+        while (!__cajeta_task_queue_head) {
+            pthread_cond_wait(&__cajeta_task_queue_cond, &__cajeta_task_mutex);
+        }
+        struct cajeta_task_work* w = __cajeta_task_queue_head;
+        __cajeta_task_queue_head = w->next;
+        if (!__cajeta_task_queue_head) __cajeta_task_queue_tail = NULL;
+        pthread_mutex_unlock(&__cajeta_task_mutex);
+        w->trampoline(w->task);
+        free(w);
+    }
+    return NULL;
+}
+
+// Enqueue a trampoline/task pair. Starts the worker thread on first call —
+// lazy init avoids paying a thread-create cost for programs that never
+// spawn. The trampoline is codegen-emitted; the runtime is type-agnostic
+// (just a function pointer).
+void __cajeta_task_run(void* task, cajeta_task_trampoline_fn trampoline) {
+    pthread_mutex_lock(&__cajeta_task_mutex);
+    if (!__cajeta_task_workers_started) {
+        __cajeta_task_workers_started = 1;
+        pthread_create(&__cajeta_task_worker, NULL,
+                       __cajeta_task_worker_loop, NULL);
+    }
+    struct cajeta_task_work* w = malloc(sizeof(*w));
+    if (!w) {
+        fprintf(stderr, "cajeta: __cajeta_task_run malloc failed\n");
+        pthread_mutex_unlock(&__cajeta_task_mutex);
+        abort();
+    }
+    w->trampoline = trampoline;
+    w->task = task;
+    w->next = NULL;
+    if (__cajeta_task_queue_tail) {
+        __cajeta_task_queue_tail->next = w;
+        __cajeta_task_queue_tail = w;
+    } else {
+        __cajeta_task_queue_head = w;
+        __cajeta_task_queue_tail = w;
+    }
+    pthread_cond_signal(&__cajeta_task_queue_cond);
+    pthread_mutex_unlock(&__cajeta_task_mutex);
+}
+
+// Block the calling thread until the task at `done_addr` flips to nonzero.
+// Codegen passes `&task->done` directly so the runtime doesn't need the
+// CajetaTask layout's field offset.
+void __cajeta_task_wait(int32_t* done_addr) {
+    if (!done_addr) return;
+    pthread_mutex_lock(&__cajeta_task_mutex);
+    while (!*done_addr) {
+        pthread_cond_wait(&__cajeta_task_done_cond, &__cajeta_task_mutex);
+    }
+    pthread_mutex_unlock(&__cajeta_task_mutex);
+}
+
+// Called by the codegen-emitted trampoline once the inner fn has run and
+// its result has been written into the task's value slot. Sets done = 1
+// under the mutex (so it pairs with __cajeta_task_wait's predicate check)
+// and broadcasts to wake every awaiter.
+void __cajeta_task_complete(int32_t* done_addr) {
+    if (!done_addr) return;
+    pthread_mutex_lock(&__cajeta_task_mutex);
+    *done_addr = 1;
+    pthread_cond_broadcast(&__cajeta_task_done_cond);
+    pthread_mutex_unlock(&__cajeta_task_mutex);
+}
+
 // Abort with a diagnostic when an array index is out of bounds. Compiler emits a
 // conditional branch to this from ArrayIndexExpression when bounds checking is on.
 void __cajeta_array_bounds_fail(int64_t index, int64_t dim) {

@@ -95,6 +95,28 @@ TEST(AsyncSyntaxTests, scopeBlockExecutesContents) {
     EXPECT_EQ(runI32(src), 5);
 }
 
+// R2: spawning multiple tasks back-to-back exercises the queue depth and
+// proves the await/condvar wait correctly pairs with each task's done
+// flag (not a single global "any task done" signal). If the wait predicate
+// were shared across tasks, the first await would return as soon as any
+// later task completed — likely the wrong value.
+TEST(AsyncSyntaxTests, multipleSpawnsRunIndependently) {
+    auto src =
+        "package test;\n"
+        "public final class D {\n"
+        "    public static async int32 one() { return 1; }\n"
+        "    public static async int32 ten() { return 10; }\n"
+        "    public static async int32 hundred() { return 100; }\n"
+        "    public static int32 run() {\n"
+        "        int32 a = await spawn one();\n"
+        "        int32 b = await spawn ten();\n"
+        "        int32 c = await spawn hundred();\n"
+        "        return a + b + c;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 111);
+}
+
 // R1: `spawn` materializes a heap-allocated Task<T> wrapper whose value
 // field carries the result and done flag is set true. The await unwraps
 // the value through a struct-GEP — proving the wrapper actually exists

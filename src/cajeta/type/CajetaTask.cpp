@@ -37,12 +37,14 @@ namespace cajeta {
             valueLlvm = elementType->getLlvmType();
         }
 
-        // Layout: { T value, i1 done }. Future R2+ work adds a continuation
-        // slot and wait-queue head — the early indices stay stable so spawn/
-        // await codegen doesn't need rewriting.
+        // Layout: { T value, i32 done }. `done` is i32 (not i1) so the C
+        // runtime can atomic-store and read it without bit-packing
+        // arithmetic — the worker thread sets it under the global task
+        // mutex; await loads under the same mutex. R3 will extend with
+        // continuation pointers + per-task wait queue.
         vector<llvm::Type*> fields = {
             valueLlvm,
-            llvm::Type::getInt1Ty(*ctx),
+            llvm::Type::getInt32Ty(*ctx),
         };
         llvmType = CajetaType::getOrCreateLlvmType(ctx,
             string("#task.") + canonical, fields);

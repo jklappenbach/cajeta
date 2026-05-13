@@ -2220,13 +2220,19 @@ namespace cajeta {
             }
             return v;
         }
-        // Task<T>* in hand: load .value (field index 0). The Task ptr may
-        // be in an alloca slot (when the spawn result was bound to a
-        // local) — load through to get the heap ptr first.
+        // Task<T>* in hand. R2: block until the worker has flipped the
+        // done flag, then load .value. The Task ptr may be in an alloca
+        // slot (when the spawn result was bound to a local) — load
+        // through to get the heap ptr first.
         auto* builder = module->getBuilder();
         auto* ctx = module->getLlvmContext();
         if (auto* a = llvm::dyn_cast<llvm::AllocaInst>(v)) {
             v = builder->CreateLoad(llvm::PointerType::get(*ctx, 0), a);
+        }
+        llvm::Value* doneSlot = builder->CreateStructGEP(
+            task->getLlvmType(), v, CajetaTask::DONE_FIELD_INDEX, "task_done_slot");
+        if (llvm::Function* waitFn = module->getRuntimeFunction("__cajeta_task_wait")) {
+            builder->CreateCall(waitFn, {doneSlot});
         }
         llvm::Value* valueSlot = builder->CreateStructGEP(
             task->getLlvmType(), v, CajetaTask::VALUE_FIELD_INDEX, "task_value");
@@ -2253,59 +2259,107 @@ namespace cajeta {
         }
     }
 
+    // R2 spawn lowering: build a per-spawn-site trampoline function and
+    // enqueue it on the runtime's task queue. The trampoline contains the
+    // inner expression's IR (call to the async fn + store result into the
+    // Task's value slot + signal done); a worker thread pops + runs it.
+    //
+    // R2 restriction: only zero-argument MethodCallExpression inners. Arg-
+    // bearing async fns need closure-style capture for the trampoline,
+    // which lands in R3 alongside the state-machine pass.
     llvm::Value* SpawnExpression::generateCode(CajetaModulePtr module) {
         if (children.empty()) return nullptr;
         auto inner = dynamic_pointer_cast<Expression>(children[0]);
         if (!inner) return nullptr;
-        // R1: synchronous lowering — run the body to completion first, then
-        // pack the result into a fresh Task<T>. R2 inverts this: the spawn
-        // call returns an unstarted Task<T> that a worker thread picks up.
+        auto innerCall = dynamic_pointer_cast<MethodCallExpression>(inner);
+        if (!innerCall || !innerCall->getParameters().empty()) {
+            throw Exception(
+                "spawn currently only supports zero-argument async method "
+                "calls; arg-bearing async fns land with R3 coroutine state "
+                "machines",
+                "CAJETA_ERROR_ASYNC_R2_RESTRICTION");
+        }
+
+        auto* outerBuilder = module->getBuilder();
+        auto& llvmCtx = *module->getLlvmContext();
+        auto* lmod = module->getLlvmModule();
+        llvm::BasicBlock* outerInsertBlock = outerBuilder->GetInsertBlock();
+        llvm::PointerType* ptrTy = llvm::PointerType::get(llvmCtx, 0);
+
+        // Synthesize the trampoline: void (ptr task). Unique name per
+        // spawn site so multiple spawns coexist in the same module.
+        static uint64_t trampolineCounter = 0;
+        string trampName = string("__cajeta_spawn_trampoline_")
+            + std::to_string(trampolineCounter++);
+        llvm::FunctionType* trampTy = llvm::FunctionType::get(
+            llvm::Type::getVoidTy(llvmCtx), {ptrTy}, false);
+        llvm::Function* trampFn = llvm::Function::Create(
+            trampTy, llvm::Function::ExternalLinkage, trampName, lmod);
+        llvm::BasicBlock* trampEntry = llvm::BasicBlock::Create(
+            llvmCtx, "entry", trampFn);
+
+        // Emit the inner call's IR INTO the trampoline body. Reuses
+        // MethodCallExpression's existing resolution + emission logic
+        // (intrinsics, static-method lookup, vtable dispatch) without
+        // reimplementing any of it — the only difference is the current
+        // insertion point.
+        outerBuilder->SetInsertPoint(trampEntry);
         llvm::Value* innerValue = inner->generateCode(module);
-        if (!innerValue) return nullptr;
-        // Codebase convention: MethodCallExpression doesn't populate
-        // resolvedType. Fall back to recovering the type from the LLVM
-        // value's type when the AST hasn't published one.
+        if (!innerValue) {
+            outerBuilder->SetInsertPoint(outerInsertBlock);
+            return nullptr;
+        }
         auto innerType = inner->getResolvedType();
+        if (!innerType) innerType = CajetaType::of(innerValue);
         if (!innerType) {
-            innerType = CajetaType::of(innerValue);
+            outerBuilder->SetInsertPoint(outerInsertBlock);
+            return nullptr;
         }
-        if (!innerType) return nullptr;
-        // If the inner already produced a Task<T>* (calling an async fn
-        // that's been rewritten to return Task<T>), forward it directly —
-        // don't double-wrap. R1 doesn't perform that rewrite yet, so this
-        // branch is dead for now; it'll activate in the R2 series.
-        if (dynamic_pointer_cast<CajetaTask>(innerType)) {
-            if (auto* a = llvm::dyn_cast<llvm::AllocaInst>(innerValue)) {
-                return module->getBuilder()->CreateLoad(
-                    llvm::PointerType::get(*module->getLlvmContext(), 0), a);
-            }
-            return innerValue;
-        }
-        auto* builder = module->getBuilder();
-        auto* ctx = module->getLlvmContext();
-        // Coerce the inner value to the r-value form expected for storage.
         if (auto* a = llvm::dyn_cast<llvm::AllocaInst>(innerValue)) {
-            innerValue = builder->CreateLoad(a->getAllocatedType(), a);
+            innerValue = outerBuilder->CreateLoad(a->getAllocatedType(), a);
         }
         auto task = CajetaTask::getOrCreate(module, innerType);
-        // Publish our resolvedType so AwaitExpression (the parent in the
-        // canonical `await spawn fn()` shape) can detect "this child is a
-        // Task<T>" without a separate type lookup. resolveTypes can't set
-        // this because MethodCallExpression doesn't populate its own
-        // resolvedType until generateCode runs.
-        resolvedType = task;
         llvm::Type* taskTy = task->getLlvmType();
-        const llvm::DataLayout& dl = module->getLlvmModule()->getDataLayout();
+        // trampoline body, continued: store result into task->value, then
+        // call __cajeta_task_complete(&task->done) which flips the flag
+        // under the global mutex and broadcasts to wake awaiters.
+        llvm::Value* taskParam = trampFn->arg_begin();
+        llvm::Value* trampValueSlot = outerBuilder->CreateStructGEP(
+            taskTy, taskParam, CajetaTask::VALUE_FIELD_INDEX,
+            "task_value_slot");
+        outerBuilder->CreateStore(innerValue, trampValueSlot);
+        llvm::Value* trampDoneSlot = outerBuilder->CreateStructGEP(
+            taskTy, taskParam, CajetaTask::DONE_FIELD_INDEX,
+            "task_done_slot");
+        if (llvm::Function* completeFn = module->getRuntimeFunction(
+                "__cajeta_task_complete")) {
+            outerBuilder->CreateCall(completeFn, {trampDoneSlot});
+        }
+        outerBuilder->CreateRetVoid();
+
+        // Trampoline finished. Restore outer cursor for the spawn-site
+        // IR: allocate the Task<T>, zero its done flag, enqueue.
+        outerBuilder->SetInsertPoint(outerInsertBlock);
+        // Publish resolvedType for the enclosing AwaitExpression to find.
+        // resolveTypes couldn't set it because MethodCallExpression
+        // doesn't populate its resolvedType until generateCode runs.
+        resolvedType = task;
+        const llvm::DataLayout& dl = lmod->getDataLayout();
         llvm::Constant* allocSize = llvm::ConstantInt::get(
-            llvm::Type::getInt64Ty(*ctx), dl.getTypeAllocSize(taskTy));
+            llvm::Type::getInt64Ty(llvmCtx),
+            dl.getTypeAllocSize(taskTy));
         llvm::CallInst* instance = MemoryManager::createMallocInstruction(
-            module, allocSize, builder->GetInsertBlock());
-        llvm::Value* valueSlot = builder->CreateStructGEP(
-            taskTy, instance, CajetaTask::VALUE_FIELD_INDEX, "task_value_slot");
-        builder->CreateStore(innerValue, valueSlot);
-        llvm::Value* doneSlot = builder->CreateStructGEP(
-            taskTy, instance, CajetaTask::DONE_FIELD_INDEX, "task_done_slot");
-        builder->CreateStore(llvm::ConstantInt::getTrue(*ctx), doneSlot);
+            module, allocSize, outerInsertBlock);
+        llvm::Value* doneInit = outerBuilder->CreateStructGEP(
+            taskTy, instance, CajetaTask::DONE_FIELD_INDEX,
+            "task_done_init");
+        outerBuilder->CreateStore(
+            llvm::ConstantInt::get(
+                llvm::Type::getInt32Ty(llvmCtx), 0), doneInit);
+        if (llvm::Function* runFn = module->getRuntimeFunction(
+                "__cajeta_task_run")) {
+            outerBuilder->CreateCall(runFn, {instance, trampFn});
+        }
         return instance;
     }
 
