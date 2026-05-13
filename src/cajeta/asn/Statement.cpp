@@ -364,6 +364,12 @@ namespace cajeta {
             result = make_shared<ContinueStatement>(token, std::move(label));
         } else if (ctx->YIELD()) {
             result = make_shared<YieldStatement>(token);
+        } else if (ctx->SCOPE()) {
+            // `scope { ... }` — structured concurrency block. ctx->block() is
+            // present for both this and the bare-block form below; SCOPE() is
+            // the discriminator. Must be checked BEFORE the bare-block branch.
+            BlockPtr blk = ctx->block() ? buildBlock(ctx->block()) : nullptr;
+            result = make_shared<ScopeStatement>(token, blk);
         } else if (ctx->block()) {
             // Bare block-as-statement (no keyword discriminator), e.g. `{ stmt1; stmt2; }`
             // in statement position. Reached only after all keyword forms (which can
@@ -410,6 +416,20 @@ namespace cajeta {
     }
 
     llvm::Value* LabelStatement::generateCode(CajetaModulePtr module) {
+        if (block) block->generateCode(module);
+        return nullptr;
+    }
+
+    // ThreadModel.md — sync-lowering MVP: `scope { ... }` is just its inner
+    // block. With no real scheduler, every `spawn` runs inline and finishes
+    // before reaching the closing `}`, so the structured-concurrency join is
+    // automatic. When the scheduler lands, this class will track the set of
+    // outstanding child tasks and block until they all complete.
+    void ScopeStatement::resolveTypes(CajetaModulePtr module) {
+        if (block) block->resolveTypes(module);
+    }
+
+    llvm::Value* ScopeStatement::generateCode(CajetaModulePtr module) {
         if (block) block->generateCode(module);
         return nullptr;
     }

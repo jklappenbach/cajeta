@@ -94,6 +94,24 @@ namespace cajeta {
         llvm::Value* generateCode(CajetaModulePtr module) override;
     };
 
+    // ThreadModel.md — `scope { ... }` is a structured-concurrency block that
+    // owns every Task spawned inside it; control doesn't leave the block
+    // until every child task has finished or been cancelled. In the sync-
+    // lowering MVP this is just a block: spawns run inline, so there are no
+    // outstanding children at the closing `}`. The class exists now so later
+    // phases (real scheduler, scope-bound joins) have an AST hook without
+    // having to re-parse.
+    class ScopeStatement : public Statement {
+    private:
+        BlockPtr block;
+    public:
+        ScopeStatement(antlr4::Token* token, BlockPtr block)
+            : Statement(token), block(block) { }
+
+        void resolveTypes(CajetaModulePtr module) override;
+        llvm::Value* generateCode(CajetaModulePtr module) override;
+    };
+
     class AssignmentStatement : public Statement {
 
     };

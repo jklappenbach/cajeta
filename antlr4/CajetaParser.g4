@@ -71,6 +71,7 @@ classOrInterfaceModifier
     | STRICTFP
     | SEALED // Java17
     | NON_SEALED // Java17
+    | ASYNC // ThreadModel.md — async fn returns Task<T>
     ;
 
 variableModifier
@@ -494,6 +495,7 @@ statement
     | BREAK identifier? ';'
     | CONTINUE identifier? ';'
     | YIELD expression ';' // Java17
+    | SCOPE block  // ThreadModel.md — joins all child tasks before exiting
     | SEMI
     | statementExpression=expression ';'
     | switchExpression ';'? // Java17
@@ -612,6 +614,14 @@ expression
     // receiving site (assignment LHS, argument slot, return slot). See
     // MemoryModel.md for full semantics.
     | REFERENCE expression
+    // Structured concurrency (ThreadModel.md): await unwraps a Task<T> to
+    // T; spawn launches a Task<T> bound to the enclosing scope; detach
+    // launches one that outlives the current frame. Semantic checks
+    // (await only inside async, spawn only inside scope, detach requires
+    // # captures) live in the AST resolution pass.
+    | AWAIT expression
+    | SPAWN expression
+    | DETACH expression
     | expression bop=('*'|'/'|'%') expression
     | expression bop=('+'|'-') expression
     | expression ('<' '<' | '>' '>' '>' | '>' '>') expression

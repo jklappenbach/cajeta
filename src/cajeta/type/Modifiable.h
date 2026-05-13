@@ -18,7 +18,12 @@ namespace cajeta {
         PROTECTED = 0x08,
         STATIC = 0x10,
         FINAL = 0x20,
-        SYNCHRONIZED = 0x40
+        SYNCHRONIZED = 0x40,
+        // ThreadModel.md — method whose body is a suspendable state machine.
+        // In the sync-lowering MVP, only the modifier bit is recorded; codegen
+        // ignores it. The real scheduler / state-machine lowering keys off this
+        // bit to pick the async ABI.
+        ASYNC = 0x80
     };
 
     class Modifiable {
@@ -67,6 +72,8 @@ namespace cajeta {
                 return SYNCHRONIZED;
             } else if (value == "pModule") {
                 return PACKAGE;
+            } else if (value == "async") {
+                return ASYNC;
             }
 
             return NONE;
@@ -88,6 +95,8 @@ namespace cajeta {
                     return "synchronized";
                 case PACKAGE:
                     return "package";
+                case ASYNC:
+                    return "async";
                 default:
                     return "";
             }

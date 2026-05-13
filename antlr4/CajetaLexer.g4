@@ -127,6 +127,15 @@ SEALED:             'sealed';
 PERMITS:            'permits';
 NON_SEALED:         'non-sealed';
 
+// Structured concurrency (ThreadModel.md). `async` is a method modifier;
+// `scope { ... }` is a statement; `await`/`spawn`/`detach` are expression
+// prefixes that consume a method call.
+ASYNC:              'async';
+AWAIT:              'await';
+SPAWN:              'spawn';
+SCOPE:              'scope';
+DETACH:             'detach';
+
 // Literals
 
 DECIMAL_LITERAL:    ('0' | [1-9] (Digits? | '_'+ Digits)) [lL]?;

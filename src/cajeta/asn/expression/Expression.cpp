@@ -280,6 +280,15 @@ namespace cajeta {
             // site (assignment LHS, method-call argument, or return). Wrapped in
             // MoveExpression so consumers can detect it via dynamic_pointer_cast.
             result = make_shared<MoveExpression>(token);
+        } else if (ctx->AWAIT()) {
+            // `await expr` — unwrap Task<T> to T (sync MVP just reads .value).
+            result = make_shared<AwaitExpression>(token);
+        } else if (ctx->SPAWN()) {
+            // `spawn expr` — run inner call now, return a completed Task<T>.
+            result = make_shared<SpawnExpression>(token);
+        } else if (ctx->DETACH()) {
+            // `detach expr` — run inner call now, discard the resulting Task.
+            result = make_shared<DetachExpression>(token);
         } else if (ctx->INSTANCEOF()) {
             // `expr instanceof Type` — target type comes from typeType (the pattern form
             // of instanceof, which binds a name, is treated as the same shape for now).
@@ -2166,5 +2175,64 @@ namespace cajeta {
         // loadIfLValue if they need the pointer itself.
         FieldPtr thisField = module->getScopeStack().peek()->getField("this");
         return thisField ? static_cast<llvm::Value*>(thisField->getOrCreateAllocation()) : nullptr;
+    }
+
+    // Sync-lowering MVP for the three concurrency expressions. They all wrap a
+    // single inner expression in children[0]. resolveTypes mirrors the inner
+    // expression's type so the outer context picks up the right type without
+    // a Task<T> wrapper. generateCode just forwards to the inner expression
+    // (await/spawn) or evaluates-and-discards (detach). The async runtime
+    // (scheduler, state machines, Task<T> struct) layers on top later; the
+    // AST surface stays stable.
+
+    void AwaitExpression::resolveTypes(CajetaModulePtr module) {
+        AbstractSyntaxNode::resolveTypes(module);
+        if (!children.empty()) {
+            if (auto inner = dynamic_pointer_cast<Expression>(children[0])) {
+                resolvedType = inner->getResolvedType();
+            }
+        }
+    }
+
+    llvm::Value* AwaitExpression::generateCode(CajetaModulePtr module) {
+        if (children.empty()) return nullptr;
+        auto inner = dynamic_pointer_cast<Expression>(children[0]);
+        return inner ? inner->generateCode(module) : nullptr;
+    }
+
+    void SpawnExpression::resolveTypes(CajetaModulePtr module) {
+        AbstractSyntaxNode::resolveTypes(module);
+        if (!children.empty()) {
+            if (auto inner = dynamic_pointer_cast<Expression>(children[0])) {
+                resolvedType = inner->getResolvedType();
+            }
+        }
+    }
+
+    llvm::Value* SpawnExpression::generateCode(CajetaModulePtr module) {
+        if (children.empty()) return nullptr;
+        auto inner = dynamic_pointer_cast<Expression>(children[0]);
+        return inner ? inner->generateCode(module) : nullptr;
+    }
+
+    void DetachExpression::resolveTypes(CajetaModulePtr module) {
+        AbstractSyntaxNode::resolveTypes(module);
+        // `detach` is fire-and-forget — the surrounding expression context
+        // gets no value (void). The inner is still type-resolved so its
+        // method-call shape is valid.
+        if (!children.empty()) {
+            if (auto inner = dynamic_pointer_cast<Expression>(children[0])) {
+                inner->resolveTypes(module);
+            }
+        }
+        resolvedType = CajetaType::of("void");
+    }
+
+    llvm::Value* DetachExpression::generateCode(CajetaModulePtr module) {
+        if (children.empty()) return nullptr;
+        if (auto inner = dynamic_pointer_cast<Expression>(children[0])) {
+            inner->generateCode(module);
+        }
+        return nullptr;
     }
 }

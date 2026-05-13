@@ -369,6 +369,36 @@ namespace cajeta {
         llvm::Value* generateCode(CajetaModulePtr module) override;
     };
 
+    // Structured-concurrency expressions (ThreadModel.md). All three wrap a
+    // single inner expression in children[0]. In the sync-lowering MVP:
+    //   - AwaitExpression: takes a Task<T> value, returns the inner T.
+    //   - SpawnExpression: takes a method-call invocation, runs it immediately,
+    //     packs the result in a fresh completed Task<T>.
+    //   - DetachExpression: same as spawn but discards the Task. The
+    //     "captures must be #-transferred" rule lands with the real scheduler.
+    // Real scheduling, suspension at await, and scope-bound child lifetimes
+    // come in later phases; today these are straight-line lowerings.
+    class AwaitExpression : public Expression {
+    public:
+        AwaitExpression(antlr4::Token* token) : Expression(token) { }
+        void resolveTypes(CajetaModulePtr module) override;
+        llvm::Value* generateCode(CajetaModulePtr module) override;
+    };
+
+    class SpawnExpression : public Expression {
+    public:
+        SpawnExpression(antlr4::Token* token) : Expression(token) { }
+        void resolveTypes(CajetaModulePtr module) override;
+        llvm::Value* generateCode(CajetaModulePtr module) override;
+    };
+
+    class DetachExpression : public Expression {
+    public:
+        DetachExpression(antlr4::Token* token) : Expression(token) { }
+        void resolveTypes(CajetaModulePtr module) override;
+        llvm::Value* generateCode(CajetaModulePtr module) override;
+    };
+
     /**
      * Java-17 switch expression. Today we only support the arrow form with single-
      * expression case bodies — `case X -> expr;` and `default -> expr;` — which is
