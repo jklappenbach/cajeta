@@ -185,40 +185,62 @@ namespace cajeta {
         QualifiedNamePtr instQName = QualifiedName::getOrInsert(
             instName, qName->getPackageName());
 
-        // Extends/implements clauses on the template are inherited verbatim
-        // for v1. Parameterized supers (`extends Container<T>`) will need
-        // their typeArguments substituted and routed through instantiate
-        // recursively — that's TPL-5 work. Today, the typeArguments on the
-        // super clause are silently dropped (matching the pre-template
-        // behavior of QualifiedName::fromContext).
+        // Build the substitution map (parameter name → arg). Push it before
+        // resolving the extends clause so any parameterized super
+        // (`extends Container<T>`) gets its typeArguments substituted and
+        // routed through instantiate. Without the substitution active here,
+        // `T` in the super's typeArguments would fail to resolve and
+        // parameterized inheritance would silently drop the args.
+        map<string, CajetaTypePtr> subst;
+        for (size_t i = 0; i < typeParameters.size(); ++i) {
+            subst[typeParameters[i].name] = args[i];
+        }
+        module->pushTypeSubstitution(subst);
+        // Active-module needs to be set here too — fromContext on the super's
+        // typeArguments consults activeModule for the substitution stack.
+        auto prevActiveForSupers = CajetaModule::getActiveModule();
+        CajetaModule::setActiveModule(module);
+
+        // Resolve the extends/implements clauses. For each typeType we call
+        // fromContext, which knows how to instantiate parameterized supers
+        // (`Container<T>` with T bound by the current substitution) and
+        // returns the concrete CajetaClassPtr. We then push the resolved
+        // class's qName so resolveSuperClasses' structures-map lookup finds
+        // the right instantiation (e.g. `test.Container<int32>`) rather
+        // than the bare template.
         list<QualifiedNamePtr> instExtended;
         list<QualifiedNamePtr> instImplemented;
         for (auto* tl : classDecl->typeList()) {
             for (auto* tt : tl->typeType()) {
                 if (auto* coi = tt->classOrInterfaceType()) {
-                    instExtended.push_back(QualifiedName::fromContext(coi));
+                    CajetaTypePtr resolvedSuper = CajetaType::fromContext(tt, module);
+                    auto superClass = dynamic_pointer_cast<CajetaClass>(resolvedSuper);
+                    if (superClass) {
+                        instExtended.push_back(superClass->getQName());
+                    } else {
+                        // Fallback: bare name. resolveSuperClasses also walks
+                        // by short name, which handles plain `extends Animal`
+                        // forward references.
+                        instExtended.push_back(QualifiedName::fromContext(coi));
+                    }
                 }
             }
         }
+        CajetaModule::setActiveModule(prevActiveForSupers);
 
         auto inst = make_shared<CajetaClass>(module, instQName, instExtended, instImplemented);
         inst->setTypeParameters(typeParameters);   // retained for debugging / introspection
         inst->setTypeArguments(args);
+        // Remember which template produced this instantiation. Used by
+        // inferDiamondArgs (TPL-N3) to recognize that `List<int32>` is "a
+        // List" when unifying against a `List<T>` parameter declaration.
+        inst->setTemplateOrigin(static_pointer_cast<CajetaClass>(shared_from_this()));
 
         // Cache BEFORE we walk the body. Lets self-referential templates
         // like `class List<T> { List<T> next; }` resolve their own type
         // during the walk — the second reference finds the partially-built
         // instantiation in the cache instead of recursing forever.
         structures[instCanonical] = inst;
-
-        // Build the substitution map (parameter name → arg) and push it.
-        // CajetaType::fromContext consults the top frame, so any `T` in the
-        // template body resolves to the concrete arg during this walk.
-        map<string, CajetaTypePtr> subst;
-        for (size_t i = 0; i < typeParameters.size(); ++i) {
-            subst[typeParameters[i].name] = args[i];
-        }
-        module->pushTypeSubstitution(subst);
 
         // Isolate the instantiation walk with a clean structure stack
         // containing only `inst`. The visitor's `visitMethodDeclaration`
@@ -264,24 +286,79 @@ namespace cajeta {
     // and unify each ctor's parameter types against the supplied argument
     // types. v1 is flat: we look only at the syntactic identifier of each
     // formal parameter's typeType, comparing it directly against type-
-    // parameter names. Nested generics in parameter types (`Box<List<T>>(...)`)
-    // aren't analyzed.
+    // parameter names. Nested template arguments in parameter types
+    // (`Box<List<T>>(...)`) aren't analyzed.
     //
     // Returns the resolved type arguments in declaration order. Throws on
     // ambiguous overload, conflicting bindings, or any type parameter left
     // unbound.
 
-    static string typeTypeIdentifier(CajetaParser::TypeTypeContext* tt) {
-        // For our v1 we only care about the leaf identifier of a non-array,
-        // non-primitive typeType. Anything else returns "" so the caller
-        // falls back to the "not a type parameter" branch.
-        if (!tt || tt->primitiveType()) return "";
-        if (!tt->LBRACK().empty()) return "";  // array
-        auto* coi = tt->classOrInterfaceType();
-        if (!coi) return "";
+    // Unify a single (formal parameter typeType, arg CajetaType) pair.
+    // Adds bindings to `bindings` as type-parameter names get matched. Returns
+    // false on any conflict (same T bound to two different args, parameterized
+    // name with mismatched outer template, etc.). Recursive: nested template
+    // arguments in formal parameter types (`List<T>`, `Box<Pair<A, B>>`) are
+    // walked alongside the arg's typeArguments structure.
+    static bool unifyParam(
+        CajetaParser::TypeTypeContext* paramTT,
+        CajetaTypePtr argType,
+        const std::set<string>& paramNames,
+        std::map<string, CajetaTypePtr>& bindings) {
+        if (!paramTT || !argType) return false;
+
+        // Primitive or array formal slot: v1 doesn't do strict type-checks
+        // here, but they also can't contribute to template-parameter bindings.
+        if (paramTT->primitiveType()) return true;
+        if (!paramTT->LBRACK().empty()) return true;
+
+        auto* coi = paramTT->classOrInterfaceType();
+        if (!coi) return true;
+
         const auto& ids = coi->identifier();
-        if (ids.size() != 1) return "";        // qualified / nested → not a T
-        return ids[0]->getText();
+        if (ids.size() != 1) return true;       // qualified name — v1 skip
+        const string ident = ids[0]->getText();
+        auto* targs = coi->typeArguments(0);
+
+        // Pure type-parameter slot (e.g. `T` formal).
+        if (paramNames.count(ident)) {
+            if (targs) {
+                // `T<...>` doesn't make sense — T is a type, not a template.
+                return false;
+            }
+            auto existing = bindings.find(ident);
+            if (existing == bindings.end()) {
+                bindings[ident] = argType;
+                return true;
+            }
+            return existing->second->toCanonical() == argType->toCanonical();
+        }
+
+        // Concrete named slot (e.g. `List<T>` or `Box`). When parameterized,
+        // argType must be an instantiation whose templateOrigin's short name
+        // matches the formal, and inner args must unify pairwise.
+        if (targs) {
+            auto argClass = dynamic_pointer_cast<CajetaClass>(argType);
+            if (!argClass || !argClass->isInstantiation()) return false;
+            auto argTemplate = argClass->getTemplateOrigin();
+            if (!argTemplate) return false;
+            if (argTemplate->getQName()->getTypeName() != ident) return false;
+            auto& argTypeArgs = argClass->getTypeArguments();
+            auto innerTArgs = targs->typeArgument();
+            if (argTypeArgs.size() != innerTArgs.size()) return false;
+            for (size_t i = 0; i < innerTArgs.size(); ++i) {
+                if (!innerTArgs[i]->typeType()) return false;
+                if (!unifyParam(innerTArgs[i]->typeType(), argTypeArgs[i],
+                        paramNames, bindings)) {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        // Plain concrete name (no type args): v1 skips strict checks. Caller
+        // is responsible for ensuring the arg is compatible at the call site
+        // — diamond inference is just about binding the T's.
+        return true;
     }
 
     vector<CajetaTypePtr> CajetaClass::inferDiamondArgs(
@@ -343,18 +420,11 @@ namespace cajeta {
             std::map<string, CajetaTypePtr> bindings;
             bool ok = true;
             for (size_t i = 0; i < params.size(); ++i) {
-                string ident = typeTypeIdentifier(params[i]->typeType());
-                if (paramNames.count(ident)) {
-                    auto existing = bindings.find(ident);
-                    if (existing == bindings.end()) {
-                        bindings[ident] = argTypes[i];
-                    } else if (existing->second->toCanonical()
-                            != argTypes[i]->toCanonical()) {
-                        ok = false;   // conflicting bindings for same T
-                        break;
-                    }
+                if (!unifyParam(params[i]->typeType(), argTypes[i],
+                        paramNames, bindings)) {
+                    ok = false;
+                    break;
                 }
-                // Non-type-parameter slots aren't strictly checked in v1.
             }
             if (!ok) continue;
             viableBindings.push_back(std::move(bindings));

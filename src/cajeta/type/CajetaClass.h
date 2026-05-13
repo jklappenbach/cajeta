@@ -8,7 +8,7 @@
 #include "StructureProperty.h"
 #include "../method/Method.h"
 #include "Scope.h"
-#include "Generics.h"
+#include "Templates.h"
 
 #include <vector>
 
@@ -67,6 +67,11 @@ namespace cajeta {
         vector<TypeParameter> typeParameters;
         vector<CajetaTypePtr> typeArguments;
         string templateSource;
+        // Back-pointer from a concrete instantiation to the template class it
+        // came from. Null for templates and for plain (non-templated) classes.
+        // Used by inferDiamondArgs to recognize that `List<int32>` is "a List"
+        // when unifying against a `List<T>` parameter declaration.
+        CajetaClassPtr templateOrigin;
 
         // Default to nullptr so writeVirtualTable's "already built?" guard
         // works on fresh instances. Without explicit initialization these
@@ -193,7 +198,7 @@ namespace cajeta {
         // Template predicates and accessors. `isTemplate()` means typeParameters
         // were declared and no type arguments have been bound yet — the class
         // is a recipe, not a type. `isInstantiation()` means concrete arguments
-        // have been supplied. See Generics.h and CajetaClass::instantiate.
+        // have been supplied. See Templates.h and CajetaClass::instantiate.
         bool isTemplate() const { return !typeParameters.empty() && typeArguments.empty(); }
         bool isInstantiation() const { return !typeArguments.empty(); }
 
@@ -221,6 +226,8 @@ namespace cajeta {
         void setTypeArguments(vector<CajetaTypePtr> args) { typeArguments = std::move(args); }
         const string& getTemplateSource() const { return templateSource; }
         void setTemplateSource(string src) { templateSource = std::move(src); }
+        CajetaClassPtr getTemplateOrigin() const { return templateOrigin; }
+        void setTemplateOrigin(CajetaClassPtr origin) { templateOrigin = std::move(origin); }
 
         llvm::Value* invokeMethod(string& methodName, vector<ParameterEntry> parameters, bool isConstructor, llvm::Value* thisInstance = nullptr);
 

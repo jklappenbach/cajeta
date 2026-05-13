@@ -47,11 +47,21 @@ namespace cajeta {
             }
         }
 
-        // Resolve parameters and call the constructor.
+        // Resolve parameters and call the constructor. Prefer the expression's
+        // resolvedType when available — `CajetaType::of(llvm::Value*)` can't
+        // recover class-instance types (the LLVM value is just a `ptr` and
+        // doesn't carry the user-class identity). Without this fallback,
+        // passing a class instance as a constructor arg would null-deref
+        // when `Method::buildCanonical` walks parameter types.
         vector<ParameterEntry> entries;
         for (auto& param : parameters) {
+            if (!param.expression->getResolvedType()) {
+                param.expression->resolveTypes(module);
+            }
             llvm::Value* value = param.expression->generateCode(module);
-            entries.push_back(ParameterEntry(CajetaType::of(value), param.label, value));
+            CajetaTypePtr paramType = param.expression->getResolvedType();
+            if (!paramType) paramType = CajetaType::of(value);
+            entries.push_back(ParameterEntry(paramType, param.label, value));
         }
         if (auto klass = dynamic_pointer_cast<CajetaClass>(targetType)) {
             string ctorName = targetType->getQName()->getTypeName();

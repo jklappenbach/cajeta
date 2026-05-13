@@ -259,7 +259,7 @@ namespace cajeta {
             return visitChildren(ctx);
         }
 
-        virtual std::any visitGenericOperatorOverloadDeclaration(CajetaParser::GenericOperatorOverloadDeclarationContext* ctx) override {
+        virtual std::any visitTemplatedOperatorOverloadDeclaration(CajetaParser::TemplatedOperatorOverloadDeclarationContext* ctx) override {
             return visitChildren(ctx);
         }
 
@@ -305,12 +305,12 @@ namespace cajeta {
         }
 
         virtual std::any
-        visitGenericMethodDeclaration(CajetaParser::GenericMethodDeclarationContext* ctx) override {
+        visitTemplatedMethodDeclaration(CajetaParser::TemplatedMethodDeclarationContext* ctx) override {
             return visitChildren(ctx);
         }
 
         virtual std::any
-        visitGenericConstructorDeclaration(CajetaParser::GenericConstructorDeclarationContext* ctx) override {
+        visitTemplatedConstructorDeclaration(CajetaParser::TemplatedConstructorDeclarationContext* ctx) override {
             return visitChildren(ctx);
         }
 
@@ -371,7 +371,7 @@ namespace cajeta {
         }
 
         virtual std::any
-        visitGenericInterfaceMethodDeclaration(CajetaParser::GenericInterfaceMethodDeclarationContext* ctx) override {
+        visitTemplatedInterfaceMethodDeclaration(CajetaParser::TemplatedInterfaceMethodDeclarationContext* ctx) override {
             return visitChildren(ctx);
         }
 
@@ -743,7 +743,7 @@ namespace cajeta {
         }
 
         virtual std::any
-        visitExplicitGenericInvocation(CajetaParser::ExplicitGenericInvocationContext* ctx) override {
+        visitExplicitTemplateInvocation(CajetaParser::ExplicitTemplateInvocationContext* ctx) override {
             return visitChildren(ctx);
         }
 
@@ -782,7 +782,7 @@ namespace cajeta {
         }
 
         virtual std::any
-        visitExplicitGenericInvocationSuffix(CajetaParser::ExplicitGenericInvocationSuffixContext* ctx) override {
+        visitExplicitTemplateInvocationSuffix(CajetaParser::ExplicitTemplateInvocationSuffixContext* ctx) override {
             return visitChildren(ctx);
         }
 

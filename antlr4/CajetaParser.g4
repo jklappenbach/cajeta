@@ -142,12 +142,12 @@ classBodyDeclaration
 
 memberDeclaration
     : methodDeclaration
-    | genericMethodDeclaration
+    | templatedMethodDeclaration
     | operatorOverloadDeclaration
-    | genericOperatorOverloadDeclaration
+    | templatedOperatorOverloadDeclaration
     | fieldDeclaration
     | constructorDeclaration
-    | genericConstructorDeclaration
+    | templatedConstructorDeclaration
     | interfaceDeclaration
     | annotationTypeDeclaration
     | classDeclaration
@@ -187,7 +187,7 @@ operatorOverloadDeclaration
     | typeType OPERATOR URSHIFT_ASSIGN formalParameters methodBody
     ;
 
-genericOperatorOverloadDeclaration
+templatedOperatorOverloadDeclaration
     : typeParameters operatorOverloadDeclaration
     ;
 
@@ -215,11 +215,11 @@ typeTypeOrVoid
     | VOID
     ;
 
-genericMethodDeclaration
+templatedMethodDeclaration
     : typeParameters methodDeclaration
     ;
 
-genericConstructorDeclaration
+templatedConstructorDeclaration
     : typeParameters constructorDeclaration
     ;
 
@@ -239,7 +239,7 @@ interfaceBodyDeclaration
 interfaceMemberDeclaration
     : constDeclaration
     | interfaceMethodDeclaration
-    | genericInterfaceMethodDeclaration
+    | templatedInterfaceMethodDeclaration
     | interfaceDeclaration
     | annotationTypeDeclaration
     | classDeclaration
@@ -273,7 +273,7 @@ interfaceMethodModifier
     | STRICTFP
     ;
 
-genericInterfaceMethodDeclaration
+templatedInterfaceMethodDeclaration
     : interfaceMethodModifier* typeParameters interfaceCommonBodyDeclaration
     ;
 
@@ -595,7 +595,7 @@ expression
        | THIS
        | NEW nonWildcardTypeArguments? innerCreator
        | SUPER superSuffix
-       | explicitGenericInvocation
+       | explicitTemplateInvocation
       )
     | expression '[' expression ']'
     | methodCall
@@ -663,7 +663,7 @@ primary
     | literal
     | identifier
     | typeTypeOrVoid '.' CLASS
-    | nonWildcardTypeArguments (explicitGenericInvocationSuffix | THIS arguments)
+    | nonWildcardTypeArguments (explicitTemplateInvocationSuffix | THIS arguments)
     ;
 
 // Java17
@@ -716,8 +716,8 @@ classCreatorRest
     : arguments classBody?
     ;
 
-explicitGenericInvocation
-    : nonWildcardTypeArguments explicitGenericInvocationSuffix
+explicitTemplateInvocation
+    : nonWildcardTypeArguments explicitTemplateInvocationSuffix
     ;
 
 typeArgumentsOrDiamond
@@ -778,7 +778,7 @@ superSuffix
     | '.' typeArguments? identifier arguments?
     ;
 
-explicitGenericInvocationSuffix
+explicitTemplateInvocationSuffix
     : SUPER superSuffix
     | identifier arguments
     ;

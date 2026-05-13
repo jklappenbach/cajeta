@@ -80,7 +80,7 @@ namespace cajeta {
         virtual void generateSignature(CajetaModulePtr module) { }
 
         // Pre-codegen pass: resolves CajetaType information that codegen will need but
-        // can't recover from LLVM types alone (fp8 vs i8, generic type instantiation,
+        // can't recover from LLVM types alone (fp8 vs i8, template instantiation,
         // etc.). Default walks children. Concrete Expression subclasses override to set
         // their own resolvedType once children have been resolved.
         virtual void resolveTypes(CajetaModulePtr module) {

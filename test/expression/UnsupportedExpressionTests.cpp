@@ -79,10 +79,11 @@ TEST(UnsupportedExpressionTests, innerCreatorThrowsNotImplemented) {
     expectNotImplemented(src, "inner-class");
 }
 
-TEST(UnsupportedExpressionTests, explicitGenericInvocationThrowsNotImplemented) {
-    // `obj.<T>foo()` triggers the DOT branch's explicit-generic-invocation sub-case.
+TEST(UnsupportedExpressionTests, explicitTemplateInvocationThrowsNotImplemented) {
+    // `obj.<T>foo()` triggers the DOT branch's explicit-template-invocation
+    // sub-case. The grammar still accepts the syntax; codegen rejects it.
     auto src = makeSource("int32",
         "int32 obj = 0;\n"
         "return obj.<int32>method();");
-    expectNotImplemented(src, "explicit generic invocation");
+    expectNotImplemented(src, "explicit template invocation");
 }

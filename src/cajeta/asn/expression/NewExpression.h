@@ -38,7 +38,7 @@ namespace cajeta {
                     }
                     // Template arguments: createdName allows typeArgumentsOrDiamond
                     // after each identifier. v1 looks at the LAST one (applying
-                    // to the leaf type); multiple levels of generics in a
+                    // to the leaf type); multiple levels of template args in a
                     // qualified name (e.g. `Outer<A>.Inner<B>`) are deferred.
                     auto tads = creatorContext->createdName()->typeArgumentsOrDiamond();
                     if (!tads.empty()) {

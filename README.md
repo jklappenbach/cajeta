@@ -114,7 +114,7 @@ CAJETA_DUMP_IR=1 CAJETA_SOURCE_ROOT="$PWD" \
 | `CastTests`                 | int↔float and width-changing casts                            |
 | `TernaryTests`              | `cond ? a : b` with int/float/coercion/nested/side-effect     |
 | `InstanceOfTests`           | Compile-time `instanceof` static-type matching                |
-| `UnsupportedExpressionTests`| Lambda / super / inner-class / method-ref / generic-invocation throw NOT_IMPLEMENTED |
+| `UnsupportedExpressionTests`| Lambda / super / inner-class / method-ref / explicit-template-invocation throw NOT_IMPLEMENTED |
 | `SwitchExpressionTests`     | Java 17 arrow-form switch expressions with multi-label cases and a default arm |
 | `ArrayTests`                | `new T[n]`, indexing, `arr.size()`, bounds checks, nested `T[][]` |
 | `ControlFlowTests`          | if/else, while, for, do-while, break, continue, nested loops, early-return |
@@ -379,12 +379,14 @@ participate in chaining.
 
 ## Templates
 
-Instead of Generics, Cajeta will offer true templates, akin to what C++ offers.  Templates will support types, including 
-all primitives.  Each class declaration involving a template will result in a new implicitly defined type with template 
-values substituted.  Unlike generics, there is no type erasure.  Template types are present at runtime.
+Cajeta offers true templates, akin to what C++ offers — not Java-style generics.  Templates accept any type as a
+parameter, including all primitives.  Each class declaration involving a template produces a new implicitly
+defined type with the template parameters substituted; there is no type erasure, and template-produced types
+are present at runtime as first-class concrete types.
 
-Template expressions will feature similar syntax to Java's Generics, allowing the developer to limit the scope of 
-class types used in the template to an inheritance hierarchy.  The following demonstrates basic usage:
+Template syntax resembles Java's `<T>` parameter declarations, allowing the developer to limit the scope of
+class types used in the template to an inheritance hierarchy (`<T extends Foo>`).  The following demonstrates
+basic usage:
 
 ### Class Templates
 

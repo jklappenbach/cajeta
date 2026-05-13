@@ -34,8 +34,8 @@ namespace cajeta {
             // because `obj.foo()` matches both DOT and methodCall — DOT must win.
             if (ctx->SUPER() || ctx->superSuffix()) {
                 result = make_shared<UnsupportedExpression>("super call", token);
-            } else if (ctx->explicitGenericInvocation()) {
-                result = make_shared<UnsupportedExpression>("explicit generic invocation", token);
+            } else if (ctx->explicitTemplateInvocation()) {
+                result = make_shared<UnsupportedExpression>("explicit template invocation", token);
             } else if (ctx->innerCreator()) {
                 result = make_shared<UnsupportedExpression>(
                     "inner-class instantiation (obj.new Inner())", token);
@@ -491,7 +491,7 @@ namespace cajeta {
 //    antlr4::tree::TerminalNode *DOT();
 //    antlr4::tree::TerminalNode *CLASS();
 //    NonWildcardTypeArgumentsContext *nonWildcardTypeArguments();
-//    ExplicitGenericInvocationSuffixContext *explicitGenericInvocationSuffix();
+//    ExplicitTemplateInvocationSuffixContext *explicitTemplateInvocationSuffix();
 //    ArgumentsContext *arguments();
     ExpressionPtr PrimaryExpression::fromContext(CajetaParser::PrimaryContext* ctx) {
         ExpressionPtr result = nullptr;

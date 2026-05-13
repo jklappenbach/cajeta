@@ -34,7 +34,8 @@ int32_t runI32(const std::string& src) {
 
 // The smallest possible template instantiation: Box<int32> holds an int32
 // field and returns it. Native (primitive) type arg is the key thing we
-// want to verify works — it's the differentiator from Java generics.
+// want to verify works — it's the differentiator from Java's type-erased
+// generics (and matches C#'s approach: real distinct types per arg list).
 TEST(TemplateBasicTests, primitiveArgInstantiates) {
     auto src =
         "package test;\n"
@@ -271,6 +272,147 @@ TEST(TemplateBasicTests, twoParameterTemplateInstantiates) {
         "    }\n"
         "}\n";
     EXPECT_EQ(runI32(src), 99);
+}
+
+// --- Nested templates (TPL-N1) -------------------------------------------
+
+// Parameterized super: `class List<T> extends Container<T>`. Instantiating
+// `List<int32>` must also instantiate `Container<int32>` with the same T
+// binding, and dispatch should reach Container's inherited method through
+// the vtable.
+TEST(TemplateBasicTests, parameterizedSuperInstantiates) {
+    auto src =
+        "package test;\n"
+        "public class Container<U> {\n"
+        "    public int32 count() { return 41; }\n"
+        "}\n"
+        "public class List<T> extends Container<T> {\n"
+        "    public int32 listMark() { return 1; }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        List<int32> l = new List<int32>();\n"
+        "        return l.count();\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 41);
+}
+
+// Baseline for nested-arg inference: same template structure with explicit
+// type args. Verifies that a templated-class-typed constructor arg works at
+// all before we layer inference on top.
+TEST(TemplateBasicTests, nestedClassTypedCtorArgUnderExplicitArgs) {
+    auto src =
+        "package test;\n"
+        "public class List<T> {\n"
+        "    public int32 listMark() { return 1; }\n"
+        "}\n"
+        "public class Wrapper<T> {\n"
+        "    public Wrapper(List<T> v) {  }\n"
+        "    public int32 fixed() { return 31; }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        List<int32> inner = new List<int32>();\n"
+        "        Wrapper<int32> w = new Wrapper<int32>(inner);\n"
+        "        return w.fixed();\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 31);
+}
+
+// Diamond inference where the ctor parameter type is itself parameterized:
+// `Wrapper<T>(List<T> v)`. From a `List<int32>` arg, T should bind to int32.
+// The unifier has to recurse into nested template arguments to recover the
+// binding from the arg's own typeArguments.
+TEST(TemplateBasicTests, diamondInfersThroughNestedParameter) {
+    auto src =
+        "package test;\n"
+        "public class List<T> {\n"
+        "    public int32 listMark() { return 1; }\n"
+        "}\n"
+        "public class Wrapper<T> {\n"
+        "    public Wrapper(List<T> v) {  }\n"
+        "    public int32 fixed() { return 31; }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        List<int32> inner = new List<int32>();\n"
+        "        Wrapper<int32> w = new Wrapper<>(inner);\n"
+        "        return w.fixed();\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 31);
+}
+
+// `Outer<Inner<int32>>` — a templated type used as a type argument to another
+// template. CajetaType::fromContext recursively resolves each typeArgument,
+// so nested instantiation should fall out for free.
+TEST(TemplateBasicTests, nestedTypeArgumentAtTypeUseSite) {
+    auto src =
+        "package test;\n"
+        "public class Inner<T> {\n"
+        "    public int32 fixed() { return 11; }\n"
+        "}\n"
+        "public class Outer<U> {\n"
+        "    public int32 outer() { return 22; }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Outer<Inner<int32>> o = new Outer<Inner<int32>>();\n"
+        "        return o.outer();\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 22);
+}
+
+// Three-deep nesting: Outer<Mid<Inner<int32>>>. Each level instantiates the
+// inner before the outer can be built. Verifies the recursion has no fixed
+// depth limit.
+TEST(TemplateBasicTests, deeplyNestedTypeArgumentsInstantiate) {
+    auto src =
+        "package test;\n"
+        "public class Inner<T> {\n"
+        "    public int32 inn() { return 1; }\n"
+        "}\n"
+        "public class Mid<U> {\n"
+        "    public int32 mid() { return 2; }\n"
+        "}\n"
+        "public class Outer<V> {\n"
+        "    public int32 out() { return 4; }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Outer<Mid<Inner<int32>>> o = new Outer<Mid<Inner<int32>>>();\n"
+        "        return o.out();\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 4);
+}
+
+// Constraint on a parameter whose argument is itself a template instantiation.
+// `Pair extends Foo` ensures `Pair<int32, int32>` (an instantiation) still
+// satisfies a `<T extends Foo>` bound — the isParentOrKind walk goes up
+// through the instantiation's templateOrigin->superClasses chain.
+TEST(TemplateBasicTests, nestedInstantiationSatisfiesBound) {
+    auto src =
+        "package test;\n"
+        "public class Foo {\n"
+        "    public int32 fooMark() { return 1; }\n"
+        "}\n"
+        "public class Pair<A, B> extends Foo {\n"
+        "    public int32 pairMark() { return 2; }\n"
+        "}\n"
+        "public class Container<T extends Foo> {\n"
+        "    public int32 fixed() { return 55; }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Container<Pair<int32, int32>> c = new Container<Pair<int32, int32>>();\n"
+        "        return c.fixed();\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 55);
 }
 
 // Multi-parameter diamond inference: ctor has both A- and B-typed slots,
