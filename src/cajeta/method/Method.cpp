@@ -287,7 +287,34 @@ namespace cajeta {
         if (llvmBasicBlock != nullptr) {
             return;
         }
-        llvmBasicBlock = llvm::BasicBlock::Create(*module->getLlvmContext(), "entry", llvmFunction);
+        // A5: when @Around advice matched this method, lazily create
+        // an extracted-body LLVM Function. matchingAdvice was
+        // populated by A3 (CajetaModule::resolveAdviceMatches) which
+        // runs between parse and Phase 1; generatePrototype itself
+        // runs DURING parse, before A3, so this can't move earlier
+        // without breaking the timing. The body emits into
+        // llvmOriginalFunction below, leaving llvmFunction free to
+        // host the wrapper. External callers' getLlvmFunction()
+        // still resolves to llvmFunction (the wrapper), so the
+        // advised behavior is the default entry point.
+        if (!llvmOriginalFunction) {
+            for (auto& m : matchingAdvice) {
+                if (m.kind == AdviceKind::Around) {
+                    std::string originalName =
+                        Method::buildCanonical(parent, name, parameterList, true)
+                        + "__original";
+                    llvmOriginalFunction = llvm::Function::Create(
+                        llvmFunctionType, llvm::Function::ExternalLinkage,
+                        originalName, module->getLlvmModule());
+                    break;
+                }
+            }
+        }
+        llvm::Function* bodyFn = llvmOriginalFunction
+            ? llvmOriginalFunction : llvmFunction;
+        bool hasAroundWrapper = (llvmOriginalFunction != nullptr);
+
+        llvmBasicBlock = llvm::BasicBlock::Create(*module->getLlvmContext(), "entry", bodyFn);
         builder = new llvm::IRBuilder<>(llvmBasicBlock, llvmBasicBlock->begin());
         builder->SetInsertPoint(llvmBasicBlock);
         module->setBuilder(builder);
@@ -311,7 +338,7 @@ namespace cajeta {
 
         int i = 0;
         for (auto& parameter: parameterList) {
-            FieldPtr parameterField = make_shared<ParameterField>(module, parameter, llvmFunction, i++);
+            FieldPtr parameterField = make_shared<ParameterField>(module, parameter, bodyFn, i++);
             module->getScopeStack().peek()->putField(parameterField);
         }
 
@@ -341,7 +368,12 @@ namespace cajeta {
         // scope frame the body will populate — useful for advice
         // bodies that might themselves spawn (when A4 relaxes to
         // allow that). Empty matchingAdvice → no-op.
-        emitBeforeAdvice(module);
+        //
+        // A5: when an @Around wrapper exists, @Before fires in the
+        // WRAPPER (around the call to advice), not in the extracted
+        // original body. The spec's "Multiple aspects on one method"
+        // section calls out the flatten-into-wrapper composition.
+        if (!hasAroundWrapper) emitBeforeAdvice(module);
 
         // Type-resolver pre-pass: populates Expression::resolvedType so codegen can
         // distinguish e.g. fp8 from i8 when they share an LLVM type.
@@ -358,8 +390,10 @@ namespace cajeta {
             // A4: fire @After advice BEFORE scope_exit + drops. The
             // advice runs in the method-body lifetime; cleanup
             // happens afterward so the advice can read state still
-            // owned by the function.
-            emitAfterAdvice(module);
+            // owned by the function. With an @Around wrapper,
+            // @After fires in the wrapper instead (same composition
+            // rule the @Before hook follows above).
+            if (!hasAroundWrapper) emitAfterAdvice(module);
             // Pop every scope frame this method pushed (function-body + any
             // explicit scopes still open at fall-through) by walking down
             // to the captured watermark. ScopeStatement-managed frames
@@ -393,6 +427,169 @@ namespace cajeta {
         destroyScope();
         if (pushedClass) {
             module->getStructureStack().pop_back();
+        }
+
+        // A5 wrapper emission. If the user body went into
+        // llvmOriginalFunction (because @Around matched), emit the
+        // wrapper body into llvmFunction now. The wrapper:
+        //   1. Fires @Before advice (any kinds in matchingAdvice).
+        //   2. Calls the @Around advice, passing llvmOriginalFunction
+        //      as the @Original Function<...> proceed argument, then
+        //      forwarding all of llvmFunction's own arguments.
+        //   3. Fires @After advice.
+        //   4. Returns the @Around advice's result.
+        // v1 takes the FIRST @Around match only (the spec's
+        // "Multiple aspects on one method" defers @Order-driven
+        // chaining to A7); additional @Around matches are silently
+        // ignored. Empty wrapper is impossible by construction —
+        // llvmOriginalFunction is only created when @Around matched.
+        if (hasAroundWrapper) {
+            emitAroundWrapper();
+        }
+    }
+
+    void Method::emitAroundWrapper() {
+        // Find the first @Around match. v1 supports only one;
+        // @Order-driven chaining of multiple Arounds joins A7.
+        MethodPtr aroundAdvice;
+        for (auto& m : matchingAdvice) {
+            if (m.kind == AdviceKind::Around) {
+                aroundAdvice = m.adviceMethod;
+                break;
+            }
+        }
+        if (!aroundAdvice || !aroundAdvice->getLlvmFunction()) {
+            // Advice missing or not yet codegen-ready — leave the
+            // wrapper unimplemented. The LLVM verifier will flag
+            // it; that's actionable feedback even without explicit
+            // diagnostics (which join A12).
+            return;
+        }
+
+        auto& ctx = *module->getLlvmContext();
+        auto* lmod = module->getLlvmModule();
+        llvm::PointerType* ptrTy = llvm::PointerType::get(ctx, 0);
+
+        // The advice's @Original parameter is typed as a Cajeta
+        // function value (`(int32) -> int32 proceed` in source).
+        // At the LLVM level that's a pointer to a closure record
+        // `{ ptr fn, ptr captures, ptr drop_fn }`, and the call
+        // site loads fn, loads captures, then calls
+        // `fn(captures, args...)` — the captures ptr is always the
+        // first synthetic argument. See LambdaExpression's call
+        // emission for the same shape.
+        //
+        // Two pieces to synthesize:
+        //   1. An adapter fn matching the closure-call signature
+        //      (captures-ptr + original args). Its body ignores
+        //      captures and forwards args to llvmOriginalFunction.
+        //   2. A heap-allocated closure record pointing at the
+        //      adapter, with captures=null, drop_fn=null. The
+        //      wrapper passes a pointer to this record as the
+        //      proceed argument.
+        std::vector<llvm::Type*> adapterParamTys;
+        adapterParamTys.push_back(ptrTy);   // captures (unused)
+        for (auto* pt : llvmFunctionType->params()) {
+            adapterParamTys.push_back(pt);
+        }
+        llvm::FunctionType* adapterFnTy = llvm::FunctionType::get(
+            llvmFunctionType->getReturnType(), adapterParamTys, false);
+        std::string adapterName =
+            Method::buildCanonical(parent, name, parameterList, true)
+            + "__original_adapter";
+        llvm::Function* adapterFn = llvm::Function::Create(
+            adapterFnTy, llvm::Function::ExternalLinkage,
+            adapterName, lmod);
+        {
+            llvm::BasicBlock* adBB = llvm::BasicBlock::Create(
+                ctx, "entry", adapterFn);
+            llvm::IRBuilder<> adBuilder(adBB);
+            std::vector<llvm::Value*> fwd;
+            int i = 0;
+            for (auto& a : adapterFn->args()) {
+                if (i++ == 0) continue;  // skip captures
+                fwd.push_back(&a);
+            }
+            llvm::CallInst* inner = adBuilder.CreateCall(
+                llvmFunctionType, llvmOriginalFunction, fwd);
+            if (llvmFunctionType->getReturnType()->isVoidTy()) {
+                adBuilder.CreateRetVoid();
+            } else {
+                adBuilder.CreateRet(inner);
+            }
+        }
+
+        // Build the wrapper body now. The closure record alloc
+        // happens here so it can be heap-resident for the duration
+        // of the advice call. (Stack-allocating would be safe too
+        // since the advice can't store the closure anywhere that
+        // outlives this frame, but the existing closure shape uses
+        // __cajeta_alloc and the lambda-call site doesn't care.)
+        llvm::BasicBlock* wrapperBB = llvm::BasicBlock::Create(
+            ctx, "wrapper", llvmFunction);
+        llvm::IRBuilder<> wrapBuilder(wrapperBB);
+
+        llvm::StructType* closureTy = llvm::StructType::get(ctx,
+            { (llvm::Type*) ptrTy, (llvm::Type*) ptrTy, (llvm::Type*) ptrTy });
+        const llvm::DataLayout& dl = lmod->getDataLayout();
+        llvm::Function* allocFn = module->getRuntimeFunction("__cajeta_alloc");
+        llvm::Value* closure = nullptr;
+        if (allocFn) {
+            closure = wrapBuilder.CreateCall(allocFn, {
+                llvm::ConstantInt::get(
+                    llvm::Type::getInt64Ty(ctx),
+                    dl.getTypeAllocSize(closureTy)),
+            }, "around_closure");
+            llvm::Value* fnSlot = wrapBuilder.CreateStructGEP(
+                closureTy, closure, 0, "closure.fn");
+            wrapBuilder.CreateStore(adapterFn, fnSlot);
+            llvm::Value* capSlot = wrapBuilder.CreateStructGEP(
+                closureTy, closure, 1, "closure.captures");
+            wrapBuilder.CreateStore(
+                llvm::ConstantPointerNull::get(ptrTy), capSlot);
+            llvm::Value* dropSlot = wrapBuilder.CreateStructGEP(
+                closureTy, closure, 2, "closure.drop_fn");
+            wrapBuilder.CreateStore(
+                llvm::ConstantPointerNull::get(ptrTy), dropSlot);
+        } else {
+            // No __cajeta_alloc means the runtime didn't link.
+            // Without a closure record there's nothing to pass as
+            // proceed; abandon the wrapper and let the verifier
+            // flag the missing terminator.
+            return;
+        }
+
+        std::vector<llvm::Value*> callArgs;
+        callArgs.push_back(closure);
+        for (auto& arg : llvmFunction->args()) {
+            callArgs.push_back(&arg);
+        }
+
+        // A4-style @Before / @After emit on the wrapper's IR.
+        // emitBeforeAdvice / emitAfterAdvice call through
+        // module->getBuilder() — swap the module-level builder to
+        // our wrapper-local one for the duration.
+        auto* prevBuilder = builder;
+        llvm::IRBuilder<>* wb = &wrapBuilder;
+        builder = wb;
+        module->setBuilder(wb);
+        emitBeforeAdvice(module);
+
+        llvm::CallInst* result = wb->CreateCall(
+            aroundAdvice->getLlvmFunctionType(),
+            aroundAdvice->getLlvmFunction(),
+            callArgs);
+
+        emitAfterAdvice(module);
+
+        builder = prevBuilder;
+        module->setBuilder(prevBuilder);
+
+        llvm::Type* retTy = llvmFunctionType->getReturnType();
+        if (retTy->isVoidTy()) {
+            wb->CreateRetVoid();
+        } else {
+            wb->CreateRet(result);
         }
     }
 

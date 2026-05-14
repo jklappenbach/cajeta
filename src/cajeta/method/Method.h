@@ -128,6 +128,16 @@ namespace cajeta {
         llvm::IRBuilder<>* builder;
         llvm::FunctionType* llvmFunctionType;
         llvm::Function* llvmFunction;
+        // A5 method extraction: when at least one @Around advice
+        // matches this method, the user-written body emits into THIS
+        // separately-named llvm Function (canonical + `__original`
+        // suffix), and llvmFunction becomes the wrapper whose body
+        // calls the advice with this function pointer as the
+        // `@Original` proceed argument. Null on methods that don't
+        // need wrapping — the body emits directly into llvmFunction
+        // and external callers' getLlvmFunction() resolves to the
+        // same direct entry point.
+        llvm::Function* llvmOriginalFunction = nullptr;
         llvm::BasicBlock* llvmBasicBlock;
         // R5-A' implicit function-body scope: at function entry codegen
         // alloca's a ptr slot here and stores `__cajeta_scope_save_top()`
@@ -193,7 +203,23 @@ namespace cajeta {
         void emitBeforeAdvice(CajetaModulePtr module);
         void emitAfterAdvice(CajetaModulePtr module);
 
+        // A5: emit the @Around wrapper. Called from generateCode
+        // after the original body has been emitted into
+        // llvmOriginalFunction. The wrapper fires any @Before
+        // advice, calls the @Around advice (passing
+        // llvmOriginalFunction as the proceed argument), fires any
+        // @After advice, and returns the advice's result. Only one
+        // @Around match is honored in v1; @Order-driven chaining
+        // of multiple Arounds joins A7.
+        void emitAroundWrapper();
+
         llvm::Function* getLlvmFunction() { return llvmFunction; }
+        // Extracted-body function for @Around-wrapped methods. Null
+        // unless A5 method extraction kicked in. External callers
+        // shouldn't usually need this — the public entry is
+        // getLlvmFunction (the wrapper); the original is wired
+        // internally by Method::generateCode.
+        llvm::Function* getLlvmOriginalFunction() { return llvmOriginalFunction; }
 
         bool isConstructor() { return constructor; }
 
