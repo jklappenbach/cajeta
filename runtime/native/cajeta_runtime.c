@@ -771,7 +771,13 @@ void* __cajeta_vtable_lookup(void* vptr, int64_t hash) {
 struct cajeta_exception_frame {
     jmp_buf buf;
     struct cajeta_exception_frame* prev;
-    int64_t thrown_value;
+    // R5/Error-model #202: the thrown value is now a void* — typed at the
+    // codegen level as a Throwable*, but the runtime is type-agnostic so we
+    // store it as a bare pointer. Backwards-compatible with the old int64-
+    // throw idiom: ThrowStatement converts integer literals via IntToPtr,
+    // TryStatement's catch binding reads back via PtrToInt when the
+    // declared catch type is integer-shaped.
+    void* thrown_value;
     // Drop-chain watermark snapshotted at try-entry. On throw, the runtime
     // unwinds drops between the current top and this watermark before longjmp.
     struct cajeta_drop_entry* drop_watermark;
@@ -789,7 +795,7 @@ static struct cajeta_exception_frame* __cajeta_exc_top = NULL;
 
 void __cajeta_exc_push(struct cajeta_exception_frame* f) {
     f->prev = __cajeta_exc_top;
-    f->thrown_value = 0;
+    f->thrown_value = NULL;
     // Snapshot the current drop-chain top so a throw can unwind back to here.
     f->drop_watermark = __cajeta_drop_top;
     __cajeta_exc_top = f;
@@ -802,10 +808,9 @@ void __cajeta_exc_pop(void) {
 }
 
 __attribute__((noreturn))
-void __cajeta_throw(int64_t value) {
+void __cajeta_throw(void* value) {
     if (!__cajeta_exc_top) {
-        fprintf(stderr, "cajeta: uncaught exception (value=%lld)\n",
-                (long long) value);
+        fprintf(stderr, "cajeta: uncaught exception (value=%p)\n", value);
         abort();
     }
     // Unwind drops between the current top and the catching frame's watermark.
@@ -826,8 +831,8 @@ void __cajeta_throw(int64_t value) {
     longjmp(__cajeta_exc_top->buf, 1);
 }
 
-int64_t __cajeta_get_thrown(void) {
-    return __cajeta_exc_top ? __cajeta_exc_top->thrown_value : 0;
+void* __cajeta_get_thrown(void) {
+    return __cajeta_exc_top ? __cajeta_exc_top->thrown_value : NULL;
 }
 
 // --- I/O helpers: print / println / log (SLF4J-style {} templating) ----------

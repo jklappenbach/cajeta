@@ -821,21 +821,34 @@ namespace cajeta {
         }
 
         builder->SetInsertPoint(catchBB);
-        // Read the thrown value BEFORE popping — pop unwinds the runtime stack and
-        // the helper reads from the topmost frame.
-        llvm::Value* thrownValPreserved = builder->CreateCall(getThrown, {});
+        // R5/Error-model #202: getThrown now returns void*. Read it BEFORE
+        // popping — pop unwinds the runtime stack and the helper reads from
+        // the topmost frame. Convert back to the catch binding's declared
+        // type below.
+        llvm::Value* thrownValPtr = builder->CreateCall(getThrown, {});
         builder->CreateCall(pop, {});
         if (!catchClauses.empty()) {
             auto& c = catchClauses[0];  // single-clause for now
-            llvm::Value* thrownVal = thrownValPreserved;
-            // Bind the catch variable: alloca i64 (the thrown value), store, and
-            // register a Field so the body can reference it by name.
             if (!c.variableName.empty()) {
-                llvm::Value* slot = entryBuilder.CreateAlloca(i64Ty);
-                builder->CreateStore(thrownVal, slot);
+                auto type = c.type ? c.type : CajetaType::of("int64");
+                llvm::Type* bindTy = type->getLlvmType();
+                if (!bindTy) bindTy = i64Ty;
+                llvm::Value* slot = entryBuilder.CreateAlloca(bindTy);
+                // Integer catch binding: PtrToInt to recover the legacy
+                // i64-throw shape. Pointer binding: store the ptr directly
+                // (the Throwable/RecoverableException/UnrecoverableException
+                // case — once class-typed catches start being used).
+                llvm::Value* storeVal = thrownValPtr;
+                if (bindTy->isIntegerTy()) {
+                    storeVal = builder->CreatePtrToInt(thrownValPtr, i64Ty);
+                    if (bindTy != i64Ty) {
+                        storeVal = builder->CreateIntCast(storeVal, bindTy,
+                            /*isSigned=*/true);
+                    }
+                }
+                builder->CreateStore(storeVal, slot);
                 auto& scope = module->getScopeStack();
                 if (!scope.isEmpty()) {
-                    auto type = c.type ? c.type : CajetaType::of("int64");
                     auto field = make_shared<HeapField>(module, c.variableName, type);
                     field->setAllocation(llvm::cast<llvm::AllocaInst>(slot));
                     scope.peek()->putField(field);
@@ -1157,6 +1170,7 @@ namespace cajeta {
         auto* builder = module->getBuilder();
         llvm::LLVMContext& ctx = *module->getLlvmContext();
         llvm::Type* i64Ty = llvm::Type::getInt64Ty(ctx);
+        llvm::PointerType* ptrTy = llvm::PointerType::get(ctx, 0);
 
         llvm::Function* throwFn = module->getRuntimeFunction("__cajeta_throw");
         if (!throwFn) {
@@ -1164,20 +1178,25 @@ namespace cajeta {
         }
 
         llvm::Value* val = expression ? expression->generateCode(module)
-                                       : llvm::ConstantInt::get(i64Ty, 0);
+                                       : llvm::ConstantPointerNull::get(ptrTy);
         if (auto* a = llvm::dyn_cast_or_null<llvm::AllocaInst>(val)) {
             val = builder->CreateLoad(a->getAllocatedType(), a);
         }
-        // The runtime takes i64; extend/narrow numeric throws to fit. References
-        // (when we get them) would need a different path; punt for now.
+        // R5/Error-model #202: the runtime takes a void*. Pointer values flow
+        // through unchanged (class instance throws are the doc-aligned case);
+        // integer values get IntToPtr-converted, preserving the legacy
+        // `throw 42` shape so old exception tests still work — the catch
+        // codegen reverses the conversion via PtrToInt when the catch
+        // binding type is integer-shaped.
         if (val && val->getType()->isIntegerTy()) {
             if (val->getType() != i64Ty) {
                 val = builder->CreateIntCast(val, i64Ty, /*isSigned=*/true);
             }
+            val = builder->CreateIntToPtr(val, ptrTy);
         } else if (val && val->getType()->isPointerTy()) {
-            val = builder->CreatePtrToInt(val, i64Ty);
+            // Already a pointer — pass through.
         } else {
-            val = llvm::ConstantInt::get(i64Ty, 0);
+            val = llvm::ConstantPointerNull::get(ptrTy);
         }
 
         builder->CreateCall(throwFn, {val});

@@ -188,9 +188,13 @@ namespace cajeta {
                     // Throw value is informational. Higher byte = struct-view-fail tag;
                     // low bits = needed minimum bytes (truncated). Catchers can
                     // currently only observe the value via __cajeta_get_thrown.
+                    // Error-model #202: runtime takes void*. IntToPtr the tag
+                    // so the call type-checks against the new signature.
                     uint64_t tag = (uint64_t) 0xCA1E7A00 | (structBytes & 0xFF);
-                    builder->CreateCall(throwFn,
-                        {llvm::ConstantInt::get(i64Ty, tag)});
+                    llvm::PointerType* ptrTy = llvm::PointerType::get(llvmCtx, 0);
+                    llvm::Value* tagPtr = builder->CreateIntToPtr(
+                        llvm::ConstantInt::get(i64Ty, tag), ptrTy);
+                    builder->CreateCall(throwFn, {tagPtr});
                 }
                 builder->CreateUnreachable();
 
