@@ -354,6 +354,28 @@ namespace cajeta {
         // nothing.
         static void validatePlaceholders();
 
+        // Cross-module call helper. Returns a Function* safe to use
+        // as a CallInst callee inserted via `builder` — if the
+        // original Function lives in the same llvm::Module as
+        // `builder`'s insert point, that pointer is returned
+        // directly; otherwise the helper calls getOrInsertFunction
+        // on the calling module so an extern declaration appears
+        // there, and returns THAT decl. Both definitions resolve to
+        // the same symbol at JIT/link time, but the calling
+        // module's IR carries a proper module-local reference
+        // instead of a dangling cross-module Function* (which
+        // Linker::linkModules can't reconcile and verifyModule
+        // rejects).
+        //
+        // Callers pass a non-null original Function and the active
+        // IRBuilder; the helper handles the case where original is
+        // already declaration-only (no body) the same way — the
+        // calling module gets its own declaration.
+        static llvm::Function* ensureFunctionVisible(
+            llvm::IRBuilder<>* builder,
+            llvm::Function* original,
+            llvm::FunctionType* fnType);
+
         // Active-module accessor. Returns the module currently being walked,
         // or nullptr outside any walk. Call sites that didn't thread a module
         // parameter through (parse-time Expression / Type construction) read

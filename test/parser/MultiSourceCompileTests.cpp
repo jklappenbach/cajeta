@@ -116,68 +116,46 @@ TEST(MultiSourceCompileTests, crossModuleInjectResolves) {
     EXPECT_EQ(runI32(sources, "service.Service"), 33);
 }
 
-// Cross-file forward reference at parse level. Consumer
-// `app.App` is keyed alphabetically BEFORE provider
-// `xyz.Provider`, so it parses first. When App's body references
-// `Provider`, the archive pre-scan has already seen Provider
-// declared in xyz.Provider's source, so CajetaType::fromContext
-// creates a placeholder CajetaClass. xyz.Provider's later
+// Cross-file forward reference end-to-end. Consumer `app.App` is
+// keyed alphabetically BEFORE provider `xyz.Provider`, so it
+// parses first. When App's body references `Provider`, the
+// archive pre-scan has already seen Provider declared in
+// xyz.Provider's source, so CajetaType::fromContext creates a
+// placeholder CajetaClass. xyz.Provider's later
 // visitClassDeclaration finds the placeholder and fills it in
 // via fillFromDeclaration. The placeholder's shared_ptr identity
 // is the same as the eventual real class, so App's earlier
 // reference stays valid.
 //
-// This test verifies the parse-level claim — placeholder
-// promotion + fill-in — without going through JIT codegen. The
-// JIT-roundtrip path has a separate cross-module merge gap
-// (Linker::linkModules with OverrideFromSrc mishandles function
-// references whose definition is in the donor, not the primary)
-// that's tracked as a follow-up. End-to-end DI via the
-// placeholder works for the order where the dependency parses
-// first (covered by crossModuleInjectResolves above).
+// The cross-module merge that follows is the second piece: App's
+// synthesized __cajeta_inject calls Provider's __cajeta_inject,
+// which lives in Provider's llvm::Module. Without intervention
+// the CallInst operand would dangle once Linker::linkModules
+// rewrites symbols. CajetaModule::ensureFunctionVisible inserts a
+// proper extern declaration in App's module so the call lands
+// on a module-local Function* (which the linker resolves by
+// symbol name at JIT load). Together those two pieces complete
+// the forward-reference story.
 TEST(MultiSourceCompileTests, forwardReferenceFillsPlaceholder) {
     std::map<std::string, std::string> sources;
     sources["app.App"] =
         "package app;\n"
         "import xyz.Provider;\n"
-        "public class App {\n"
-        "    Provider p;\n"
+        "@Component public class App {\n"
+        "    @Inject Provider p;\n"
         "    public App() { return; }\n"
+        "    public static int32 run() {\n"
+        "        App a = __cajeta_inject();\n"
+        "        return a.p.value;\n"
+        "    }\n"
         "}\n";
     sources["xyz.Provider"] =
         "package xyz;\n"
-        "public class Provider {\n"
+        "@Component public class Provider {\n"
         "    public int32 value;\n"
         "    public Provider() { value = 77; return; }\n"
         "}\n";
-    Compiler compiler;
-    compileMultiForInspection(compiler, sources);
-
-    // Provider is in canonicalMap and is NOT a placeholder
-    // (it got filled in by visitClassDeclaration).
-    auto& canon = cajeta::CajetaType::getCanonicalMap();
-    auto it = canon.find("xyz.Provider");
-    ASSERT_NE(it, canon.end()) << "xyz.Provider missing from canonicalMap";
-    auto providerKlass = std::dynamic_pointer_cast<cajeta::CajetaClass>(it->second);
-    ASSERT_NE(providerKlass, nullptr);
-    EXPECT_FALSE(providerKlass->isPlaceholder())
-        << "Provider should have been filled in by visitClassDeclaration";
-
-    // App's `Provider p` field references the SAME CajetaClass
-    // shared_ptr as Provider — the placeholder identity carries
-    // through the fill-in.
-    auto appIt = canon.find("app.App");
-    ASSERT_NE(appIt, canon.end());
-    auto appKlass = std::dynamic_pointer_cast<cajeta::CajetaClass>(appIt->second);
-    ASSERT_NE(appKlass, nullptr);
-    auto propIt = appKlass->getProperties().find("p");
-    ASSERT_NE(propIt, appKlass->getProperties().end());
-    auto fieldType = std::dynamic_pointer_cast<cajeta::CajetaClass>(
-        propIt->second->getType());
-    ASSERT_NE(fieldType, nullptr);
-    EXPECT_EQ(fieldType.get(), providerKlass.get())
-        << "App's Provider-typed field should point at the SAME CajetaClass "
-           "as canonicalMap[xyz.Provider] — the filled-in placeholder";
+    EXPECT_EQ(runI32(sources, "app.App"), 77);
 }
 
 // Import-aware short-name resolution, inspected post-parse. Two

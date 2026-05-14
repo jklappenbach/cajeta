@@ -172,9 +172,20 @@ namespace cajeta {
                     }
                 }
                 if (!targetInject) continue;
+                // Cross-module call: in a multi-source compile the
+                // target's __cajeta_inject lives in the target's
+                // llvm::Module, not the calling (owner) class's
+                // module. ensureFunctionVisible inserts a
+                // declaration in the calling module when needed so
+                // the resulting CreateCall references a module-
+                // local Function (the JIT links definitions across
+                // modules by symbol name at load time).
+                llvm::Function* targetFn = CajetaModule::ensureFunctionVisible(
+                    builder, targetInject->getLlvmFunction(),
+                    targetInject->getLlvmFunctionType());
                 depPtr = builder->CreateCall(
                     targetInject->getLlvmFunctionType(),
-                    targetInject->getLlvmFunction(),
+                    targetFn,
                     {},
                     rd.field->getName() + "_dep");
             } else {

@@ -660,7 +660,17 @@ namespace cajeta {
         // actually picks the override-correct function in a subclass.
         auto* builder = module->getBuilder();
         auto& llvmCtx = *module->getLlvmContext();
-        llvm::Value* callee = method->getLlvmFunction();
+        // Cross-module dispatch: when the receiver class lives in a
+        // different llvm::Module than where the call is being
+        // emitted (e.g. App's run() calling Provider's __cajeta_inject
+        // after multi-source compile), use a module-local extern
+        // declaration as the callee rather than a Function* whose
+        // parent is a foreign module. ensureFunctionVisible returns
+        // method->getLlvmFunction() unchanged when caller and target
+        // are co-resident.
+        llvm::Value* callee = CajetaModule::ensureFunctionVisible(
+            builder, method->getLlvmFunction(),
+            method->getLlvmFunctionType());
         bool useVtable = thisValue && !isStatic && !isConstructor;
         if (useVtable) {
             llvm::Function* lookupFn = module->getRuntimeFunction("__cajeta_vtable_lookup");

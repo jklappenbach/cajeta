@@ -693,6 +693,39 @@ namespace cajeta {
         }
     }
 
+    llvm::Function* CajetaModule::ensureFunctionVisible(
+            llvm::IRBuilder<>* builder,
+            llvm::Function* original,
+            llvm::FunctionType* fnType) {
+        if (!original || !builder) return original;
+        llvm::BasicBlock* insertBB = builder->GetInsertBlock();
+        if (!insertBB) return original;
+        llvm::Function* enclosingFn = insertBB->getParent();
+        if (!enclosingFn) return original;
+        llvm::Module* callerLm = enclosingFn->getParent();
+        if (!callerLm || callerLm == original->getParent()) {
+            // Same module — no fixup needed.
+            return original;
+        }
+        // Cross-module reference. Insert a declaration in the
+        // caller's module; getOrInsertFunction returns either an
+        // existing decl/def or a newly-created declaration. Cast
+        // back to llvm::Function for use as a CallInst callee.
+        llvm::FunctionCallee callee = callerLm->getOrInsertFunction(
+            original->getName(), fnType);
+        if (auto* fn = llvm::dyn_cast<llvm::Function>(callee.getCallee())) {
+            return fn;
+        }
+        // Bitcast-shaped callee (different type signature found
+        // under same name) — fall back to the original. The
+        // resulting CreateCall will still verify under the original
+        // function's module, just not the cross-module path. v1
+        // shouldn't hit this case (cajeta-mangled names include
+        // arg types in the canonical, so name + type are tightly
+        // coupled).
+        return original;
+    }
+
     void CajetaModule::validatePlaceholders() {
         for (auto& [key, type] : CajetaType::getCanonicalMap()) {
             auto klass = std::dynamic_pointer_cast<CajetaClass>(type);
