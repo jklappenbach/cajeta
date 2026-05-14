@@ -399,6 +399,14 @@ namespace cajeta {
         // Resolve a dependency from a name-qualifier-aware lookup.
         // Returns nullptr if no candidate matches; the caller turns
         // that into a missing-impl / ambiguous error with context.
+        //
+        // Three lookup tiers (A10):
+        //   1. Direct match on the component's canonical name.
+        //   2. Direct match on the component's short typeName.
+        //   3. Implements-interface match — a component class whose
+        //      getImplementedInterfaces() list contains the requested
+        //      type. Lets `@Inject Persister p` resolve to a
+        //      `@Component class Disk implements Persister`.
         auto resolveDependency =
             [&](const string& typeName, const string& nameQualifier,
                 vector<ComponentDescriptorPtr>& outCandidates) -> ComponentDescriptorPtr {
@@ -413,6 +421,25 @@ namespace cajeta {
                     if (itS != byShort.end()) {
                         candidates.insert(candidates.end(),
                             itS->second.begin(), itS->second.end());
+                    }
+                }
+                if (candidates.empty()) {
+                    // Interface walk. Linear over active components —
+                    // typical compiles have a handful, so the constant
+                    // factor is small. A short-circuit `break` after a
+                    // match avoids double-counting when a class lists
+                    // the same interface in its own implements clause
+                    // plus inherits it from a superclass.
+                    for (auto& c : active) {
+                        if (!c->klass) continue;
+                        for (auto& iface : c->klass->getImplementedInterfaces()) {
+                            if (!iface || !iface->getQName()) continue;
+                            if (iface->getQName()->toCanonical() == typeName
+                                    || iface->getQName()->getTypeName() == typeName) {
+                                candidates.push_back(c);
+                                break;
+                            }
+                        }
                     }
                 }
                 outCandidates = candidates;
