@@ -37,15 +37,16 @@ namespace cajeta {
             valueLlvm = elementType->getLlvmType();
         }
 
-        // Layout: { T value, i32 done, ptr exception }. `done` is i32 (not
-        // i1) so the C runtime can atomic-store and read it without bit-
-        // packing arithmetic. `exception` is a Throwable* (or NULL) — the
-        // fiber trampoline writes it on the throw path; await checks it
-        // post-resume and re-raises if non-null. Field indices stay stable
-        // for future R3-B2 / wait-queue extensions.
+        // Layout: { T value, i32 done, ptr exception, ptr fiber }. `done`
+        // is i32 so the C runtime can atomic-store it. `exception` is the
+        // Throwable* the trampoline writes on throw. `fiber` is the
+        // cajeta_fiber* the runtime allocates inside __cajeta_task_run;
+        // scope uses it for R5-C cancellation (set the fiber's cancel_with
+        // so its next await aborts).
         vector<llvm::Type*> fields = {
             valueLlvm,
             llvm::Type::getInt32Ty(*ctx),
+            llvm::PointerType::get(*ctx, 0),
             llvm::PointerType::get(*ctx, 0),
         };
         llvmType = CajetaType::getOrCreateLlvmType(ctx,

@@ -195,6 +195,44 @@ TEST(ErrorModelTests, implicitScopeReraisesAtFunctionExit) {
     EXPECT_EQ(runI32(src), 31);
 }
 
+// R5-C: when one child of a scope throws, the sibling that's parked in
+// an await gets cancelled — its next resume raises the trigger instead
+// of completing normally. Without R5-C, scope would wait indefinitely
+// for `idleSibling` (which is awaiting `forever`, a task that runs
+// freely). With R5-C, scope cancels idleSibling after seeing failing's
+// throw, so idleSibling's await raises and its trampoline catches.
+// The visible signal: run() returns the trigger value (44), not hung.
+TEST(ErrorModelTests, scopeCancelsParkedSiblingOnFirstThrow) {
+    auto src =
+        "package test;\n"
+        "public final class D {\n"
+        "    public static async int32 failing() {\n"
+        "        throw 44;\n"
+        "        return 0;\n"
+        "    }\n"
+        "    public static async int32 forever() {\n"
+        "        return 0;\n"
+        "    }\n"
+        "    public static async int32 idleSibling() {\n"
+        "        int32 v = await spawn forever();\n"
+        "        return v + 1;\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        int32 result = -1;\n"
+        "        try {\n"
+        "            scope {\n"
+        "                spawn failing();\n"
+        "                spawn idleSibling();\n"
+        "            }\n"
+        "        } catch (Exception e) {\n"
+        "            result = (int32) e;\n"
+        "        }\n"
+        "        return result;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 44);
+}
+
 // Constructor throws clause — same grammar, separate parse path.
 TEST(ErrorModelTests, constructorThrowsParses) {
     auto src =

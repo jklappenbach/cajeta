@@ -188,6 +188,7 @@ __attribute__((noreturn)) void __cajeta_throw(void* value);
 struct cajeta_scope_entry {
     int32_t* done_addr;
     void** exception_addr;  // points to the Throwable* slot; NULL on success
+    void** fiber_slot;      // points to Task's fiber-ptr slot; runtime fills it
 };
 
 struct cajeta_scope_frame {
@@ -209,6 +210,12 @@ struct cajeta_fiber {
     // each fiber owns its own stack of scope frames. Updated by
     // scope_enter/exit when invoked from a fiber context.
     struct cajeta_scope_frame* scope_top;
+    // R5-C: cancellation marker. When non-NULL, the fiber's next
+    // __cajeta_task_wait resume will throw this Throwable* instead of
+    // returning normally. Set by __cajeta_fiber_cancel from scope's
+    // first-throw escalation; cleared by the await re-raise path so
+    // the same cancel doesn't fire twice on a fiber that survives.
+    void* cancel_with;
 };
 
 static pthread_mutex_t __cajeta_task_mutex = PTHREAD_MUTEX_INITIALIZER;
@@ -339,8 +346,11 @@ static void* __cajeta_carrier_loop(void* arg) {
 // ucontext init is deferred to the carrier's first dispatch so cancelled-
 // before-resumed spawns don't pay the stack-alloc cost. Lazy carrier
 // thread start mirrors R2: programs that never spawn don't pay for a
-// pthread_create.
-void __cajeta_task_run(void* arg, cajeta_task_trampoline_fn trampoline) {
+// pthread_create. `fiber_slot` (R5-C) is the address of the Task's
+// FIBER_FIELD slot — we write the freshly-allocated fiber's pointer
+// there so scope can find the fiber by walking its registered task list.
+void __cajeta_task_run(void* arg, cajeta_task_trampoline_fn trampoline,
+                       void** fiber_slot) {
     struct cajeta_fiber* f = malloc(sizeof(*f));
     if (!f) {
         fprintf(stderr, "cajeta: __cajeta_task_run fiber malloc failed\n");
@@ -353,6 +363,8 @@ void __cajeta_task_run(void* arg, cajeta_task_trampoline_fn trampoline) {
     f->trampoline_arg = arg;
     f->next = NULL;
     f->scope_top = NULL;
+    f->cancel_with = NULL;
+    if (fiber_slot) *fiber_slot = f;
 
     pthread_mutex_lock(&__cajeta_task_mutex);
     if (!__cajeta_task_workers_started) {
@@ -376,11 +388,23 @@ void __cajeta_task_run(void* arg, cajeta_task_trampoline_fn trampoline) {
 // the main thread (no current fiber): condvar wait. This is what makes
 // nested await work — a fiber awaiting another fiber doesn't hold the
 // carrier hostage.
+//
+// R5-C: after each fiber wake, check the fiber's cancel_with marker.
+// If set, the surrounding scope cancelled us — throw the trigger so
+// the cancelled fiber's body unwinds and the trampoline catches it
+// onto the Task's exception slot (where scope's next walk picks it up,
+// but for cancellation siblings that's just a propagation of what the
+// scope already decided to raise).
 void __cajeta_task_wait(int32_t* done_addr) {
     if (!done_addr) return;
     if (__cajeta_current_fiber) {
         while (!*done_addr) {
             __cajeta_fiber_park();
+            void* cancel = __cajeta_current_fiber->cancel_with;
+            if (cancel) {
+                __cajeta_current_fiber->cancel_with = NULL;
+                __cajeta_throw(cancel);
+            }
         }
         return;
     }
@@ -389,6 +413,17 @@ void __cajeta_task_wait(int32_t* done_addr) {
         pthread_cond_wait(&__cajeta_task_done_cond, &__cajeta_task_mutex);
     }
     pthread_mutex_unlock(&__cajeta_task_mutex);
+}
+
+// R5-C: set a fiber's cancel_with marker. Its next __cajeta_task_wait
+// resume will throw the marker instead of returning normally. Idempotent —
+// re-cancel just overwrites the marker (last cancel wins). NULL fiber
+// is a no-op (caller may not have a fiber pointer if the task hasn't
+// been dispatched yet — but cancel_with set on a not-yet-dispatched
+// fiber is still honored as soon as it parks on its first await).
+void __cajeta_fiber_cancel(struct cajeta_fiber* fiber, void* throwable) {
+    if (!fiber) return;
+    fiber->cancel_with = throwable;
 }
 
 // Called by the codegen-emitted trampoline once the inner fn has run and
@@ -439,7 +474,8 @@ void __cajeta_scope_enter(void) {
 // outside any scope is a compile error — but today's MVP doesn't enforce
 // that, so register-without-scope is a no-op rather than an abort
 // (preserving the existing tests' top-level-spawn pattern).
-void __cajeta_scope_register(int32_t* done_addr, void** exception_addr) {
+void __cajeta_scope_register(int32_t* done_addr, void** exception_addr,
+                             void** fiber_slot) {
     struct cajeta_scope_frame** top = __cajeta_scope_top_ptr();
     struct cajeta_scope_frame* f = *top;
     if (!f) return;
@@ -457,6 +493,7 @@ void __cajeta_scope_register(int32_t* done_addr, void** exception_addr) {
     }
     f->entries[f->count].done_addr = done_addr;
     f->entries[f->count].exception_addr = exception_addr;
+    f->entries[f->count].fiber_slot = fiber_slot;
     f->count++;
 }
 
@@ -477,17 +514,24 @@ void __cajeta_scope_exit(void) {
     struct cajeta_scope_frame** top = __cajeta_scope_top_ptr();
     struct cajeta_scope_frame* f = *top;
     if (!f) return;
-    for (int i = 0; i < f->count; i++) {
-        __cajeta_task_wait(f->entries[i].done_addr);
-    }
-    // First-throw-wins escalation. Walk in registration order so a
-    // deterministic child wins when multiple threw — same order spawns
-    // appear in source.
+    // First-throw-wins escalation with R5-C cancellation: wait on each
+    // child in turn; the moment one's exception slot is non-null, mark
+    // that as the trigger and cancel every remaining (unawaited) child
+    // so their next await aborts. Then keep waiting on the rest so the
+    // scope still joins everything before unwinding upward.
     void* trigger = NULL;
     for (int i = 0; i < f->count; i++) {
-        if (f->entries[i].exception_addr && *f->entries[i].exception_addr) {
+        __cajeta_task_wait(f->entries[i].done_addr);
+        if (!trigger && f->entries[i].exception_addr
+                && *f->entries[i].exception_addr) {
             trigger = *f->entries[i].exception_addr;
-            break;
+            for (int j = i + 1; j < f->count; j++) {
+                if (f->entries[j].fiber_slot && *f->entries[j].fiber_slot) {
+                    __cajeta_fiber_cancel(
+                        (struct cajeta_fiber*) *f->entries[j].fiber_slot,
+                        trigger);
+                }
+            }
         }
     }
     *top = f->prev;
@@ -513,23 +557,29 @@ void __cajeta_scope_exit_to(void* watermark) {
     // Collect the first trigger encountered while popping frames so we
     // can re-raise it at the end. Walking innermost-out matches "child
     // exceptions surface up to the enclosing scope"; the topmost frame's
-    // throws win over outer frames because we process them first.
+    // throws win over outer frames because we process them first. R5-C:
+    // cancel remaining siblings within each frame as soon as we see a
+    // trigger from it, same as scope_exit.
     void* trigger = NULL;
     while (*top != (struct cajeta_scope_frame*) watermark) {
         struct cajeta_scope_frame* f = *top;
         if (!f) break;
+        void* frame_trigger = NULL;
         for (int i = 0; i < f->count; i++) {
             __cajeta_task_wait(f->entries[i].done_addr);
-        }
-        if (!trigger) {
-            for (int i = 0; i < f->count; i++) {
-                if (f->entries[i].exception_addr
-                        && *f->entries[i].exception_addr) {
-                    trigger = *f->entries[i].exception_addr;
-                    break;
+            if (!frame_trigger && f->entries[i].exception_addr
+                    && *f->entries[i].exception_addr) {
+                frame_trigger = *f->entries[i].exception_addr;
+                for (int j = i + 1; j < f->count; j++) {
+                    if (f->entries[j].fiber_slot && *f->entries[j].fiber_slot) {
+                        __cajeta_fiber_cancel(
+                            (struct cajeta_fiber*) *f->entries[j].fiber_slot,
+                            frame_trigger);
+                    }
                 }
             }
         }
+        if (!trigger && frame_trigger) trigger = frame_trigger;
         *top = f->prev;
         __cajeta_scope_release(f);
     }

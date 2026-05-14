@@ -2529,6 +2529,14 @@ namespace cajeta {
             "task_exception_init");
         outerBuilder->CreateStore(
             llvm::ConstantPointerNull::get(ptrTy), excInit);
+        // R5-C: zero the fiber slot too. __cajeta_task_run writes the
+        // freshly-allocated fiber here so scope's cancellation walk can
+        // find it.
+        llvm::Value* fiberSlot = outerBuilder->CreateStructGEP(
+            taskTy, taskInstance, CajetaTask::FIBER_FIELD_INDEX,
+            "task_fiber_init");
+        outerBuilder->CreateStore(
+            llvm::ConstantPointerNull::get(ptrTy), fiberSlot);
         // Allocate the ctx struct on the heap and populate it.
         llvm::Function* allocFn = module->getRuntimeFunction("__cajeta_alloc");
         if (!allocFn) {
@@ -2555,20 +2563,30 @@ namespace cajeta {
         // its closing `}` will wait for this task before returning.
         // R5-D: also pass the exception slot so scope_exit can walk it
         // post-wait and re-raise any caught throw via the doc's first-
-        // throw-wins escalation.
+        // throw-wins escalation. R5-C: also the fiber slot so scope can
+        // cancel remaining siblings when one throws.
+        llvm::Value* doneRegSlot = outerBuilder->CreateStructGEP(
+            taskTy, taskInstance, CajetaTask::DONE_FIELD_INDEX,
+            "scope_register_done");
+        llvm::Value* excRegSlot = outerBuilder->CreateStructGEP(
+            taskTy, taskInstance, CajetaTask::EXCEPTION_FIELD_INDEX,
+            "scope_register_exc");
+        llvm::Value* fiberRegSlot = outerBuilder->CreateStructGEP(
+            taskTy, taskInstance, CajetaTask::FIBER_FIELD_INDEX,
+            "scope_register_fiber");
         if (llvm::Function* regFn = module->getRuntimeFunction(
                 "__cajeta_scope_register")) {
-            llvm::Value* doneSlot = outerBuilder->CreateStructGEP(
-                taskTy, taskInstance, CajetaTask::DONE_FIELD_INDEX,
-                "scope_register_done");
-            llvm::Value* excSlot = outerBuilder->CreateStructGEP(
-                taskTy, taskInstance, CajetaTask::EXCEPTION_FIELD_INDEX,
-                "scope_register_exc");
-            outerBuilder->CreateCall(regFn, {doneSlot, excSlot});
+            outerBuilder->CreateCall(regFn,
+                {doneRegSlot, excRegSlot, fiberRegSlot});
         }
+        // R5-C: __cajeta_task_run writes the freshly-allocated fiber's
+        // pointer into the task's fiber slot before enqueueing — so
+        // scope's later cancellation walk can find the fiber. Pass the
+        // slot address.
         if (llvm::Function* runFn = module->getRuntimeFunction(
                 "__cajeta_task_run")) {
-            outerBuilder->CreateCall(runFn, {ctxInstance, trampFn});
+            outerBuilder->CreateCall(runFn,
+                {ctxInstance, trampFn, fiberRegSlot});
         }
         return taskInstance;
     }

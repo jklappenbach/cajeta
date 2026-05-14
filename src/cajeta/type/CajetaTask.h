@@ -32,6 +32,11 @@ namespace cajeta {
         // checks this slot after task_wait — non-null means re-raise into
         // the awaiter's frame.
         static constexpr unsigned EXCEPTION_FIELD_INDEX = 2;
+        // R5-C: ptr to the fiber that runs this task. __cajeta_task_run
+        // writes this after allocating the fiber. Scope uses it to call
+        // __cajeta_fiber_cancel on remaining children when one throws.
+        // NULL while the task is queued but not yet popped by the carrier.
+        static constexpr unsigned FIBER_FIELD_INDEX = 3;
 
         CajetaTask(CajetaModulePtr module, CajetaTypePtr elementType);
 
