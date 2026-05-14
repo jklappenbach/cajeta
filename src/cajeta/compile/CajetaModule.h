@@ -71,9 +71,25 @@ namespace cajeta {
         // singleton fills it. resolveDependencyGraph populates this
         // list as it validates; A9 codegen reads it to emit the
         // __postConstruct body without re-running lookup.
+        //
+        // AllocateMode follows the spec's four-mode hierarchy. The
+        // default is Singleton. OwnerScope / Transient are
+        // implemented in codegen as fresh-per-site allocation
+        // (v1 simplification: identical at field-level granularity;
+        // they diverge only at constructor-parameter sites which
+        // aren't injected yet). CallScope is rejected as not-yet-
+        // supported until the implicit function-body scope wires up.
+        enum class AllocateMode {
+            Singleton,
+            OwnerScope,
+            CallScope,
+            Transient,
+        };
         struct ResolvedDependency {
             StructurePropertyPtr field;
-            ComponentDescriptorPtr target;
+            ComponentDescriptorPtr target;     // null iff `optional` and no candidate
+            AllocateMode allocate = AllocateMode::Singleton;
+            bool optional = false;
         };
 
         struct ComponentDescriptor {

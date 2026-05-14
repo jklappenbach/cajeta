@@ -131,36 +131,86 @@ namespace cajeta {
         parent->invokeMethod(ctorName, noArgs,
                              /*isConstructor=*/true, instance);
 
-        // Field injection. For every resolved @Inject field, fetch
-        // the target's singleton (via its own __cajeta_inject) and
-        // store into the field slot.
+        // Field injection. The IR shape depends on the resolved
+        // dependency's allocate mode:
+        //
+        //   Singleton (default) — call target.__cajeta_inject() and
+        //     store the cached singleton pointer. Repeated injection
+        //     sites share the same instance.
+        //
+        //   OwnerScope / Transient — emit fresh alloc + vtable +
+        //     ctor inline; the resulting instance is owned by the
+        //     containing class. Drop-chain hookup of these owner-
+        //     scoped allocations is a v1 known gap (leak at owner
+        //     destruction). At field-level granularity the two
+        //     modes collapse to the same shape; they diverge for
+        //     constructor-parameter injection which isn't wired.
+        //
+        //   Optional with null target — no candidate matched and
+        //     the user marked the field optional. Store a null
+        //     pointer; user code reads-and-checks.
         for (auto& rd : descriptor->resolvedFields) {
-            if (!rd.field || !rd.target || !rd.target->klass) continue;
-
-            // Locate the target's inject method. We added it on
-            // the target descriptor's class earlier in the same
-            // pass; the method map keys by canonical signature.
-            // Walk the methods looking for one named
-            // __cajeta_inject — same lookup the resolver uses.
-            MethodPtr targetInject;
-            for (auto& [mkey, m] : rd.target->klass->getMethods()) {
-                if (m && m->getName() == "__cajeta_inject") {
-                    targetInject = m;
-                    break;
-                }
-            }
-            if (!targetInject) continue;
-            llvm::Value* depPtr = builder->CreateCall(
-                targetInject->getLlvmFunctionType(),
-                targetInject->getLlvmFunction(),
-                {},
-                rd.field->getName() + "_dep");
+            if (!rd.field) continue;
 
             unsigned fieldIdx =
                 (unsigned) parent->getFieldLlvmIndex(rd.field);
             llvm::Value* slot = builder->CreateStructGEP(
                 structTy, instance, fieldIdx,
                 rd.field->getName() + "_slot");
+
+            llvm::Value* depPtr = nullptr;
+            if (!rd.target || !rd.target->klass) {
+                // Optional injection with no candidate → store null.
+                depPtr = llvm::ConstantPointerNull::get(
+                    llvm::cast<llvm::PointerType>(ptrTy));
+            } else if (rd.allocate == CajetaModule::AllocateMode::Singleton) {
+                MethodPtr targetInject;
+                for (auto& [mkey, m] : rd.target->klass->getMethods()) {
+                    if (m && m->getName() == "__cajeta_inject") {
+                        targetInject = m;
+                        break;
+                    }
+                }
+                if (!targetInject) continue;
+                depPtr = builder->CreateCall(
+                    targetInject->getLlvmFunctionType(),
+                    targetInject->getLlvmFunction(),
+                    {},
+                    rd.field->getName() + "_dep");
+            } else {
+                // OwnerScope or Transient — fresh alloc per field.
+                // Mirror the alloc + vtable + ctor pattern from
+                // __cajeta_inject's fresh path, scoped to this
+                // single field. No singleton cache, no atexit
+                // registration. Field-injected dependencies of
+                // the target (the target's own @Inject fields) are
+                // NOT walked here — those would recurse via the
+                // target's __cajeta_inject if SINGLETON, or via a
+                // dedicated make_X helper for non-SINGLETON
+                // nested. v1 single-level: the freshly alloc'd
+                // target's fields stay zero-initialized except
+                // for what the user constructor sets. Tests in
+                // this commit avoid deep dependency graphs under
+                // non-SINGLETON modes.
+                CajetaClassPtr targetClass = rd.target->klass;
+                llvm::Type* targetStructTy = targetClass->getLlvmType();
+                llvm::Constant* targetSize = llvm::ConstantInt::get(
+                    llvm::Type::getInt64Ty(ctx),
+                    dl.getTypeAllocSize(targetStructTy));
+                llvm::CallInst* freshInst = MemoryManager::createMallocInstruction(
+                    module, targetSize, builder->GetInsertBlock());
+                if (auto vt = targetClass->getVirtualTableGlobal()) {
+                    llvm::Value* vts = builder->CreateStructGEP(
+                        targetStructTy, freshInst, /*idx=*/0, "vtable_slot");
+                    builder->CreateStore(vt, vts);
+                }
+                std::string ctorN = targetClass->getQName()->getTypeName();
+                std::vector<ParameterEntry> noArgs2;
+                targetClass->invokeMethod(ctorN, noArgs2,
+                                          /*isConstructor=*/true, freshInst);
+                depPtr = freshInst;
+            }
+
             builder->CreateStore(depPtr, slot);
         }
 

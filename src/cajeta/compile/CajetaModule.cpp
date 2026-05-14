@@ -521,6 +521,52 @@ namespace cajeta {
                 const string& targetCanonical = fieldType->getQName()->toCanonical();
                 const string& targetShort = fieldType->getQName()->getTypeName();
                 const string nameQualifier = injectAnn->getString("name");
+                bool isOptional = injectAnn->getBool("optional");
+
+                // `allocate = ALLOCATE_X` is a bare identifier in
+                // source. The visitor's classifyLiteral doesn't have
+                // a "bare identifier as enumerator" shape, so it
+                // falls through to String with the raw text (no
+                // surrounding quotes — the captured strVal is just
+                // the identifier). Read via getString first; for
+                // forward-compat, also accept the ClassRef form
+                // (`ALLOCATE_X.class`) if a user ever writes it.
+                AllocateMode allocate = AllocateMode::Singleton;
+                string allocStr = injectAnn->getString("allocate");
+                if (allocStr.empty()) {
+                    allocStr = injectAnn->getClassRef("allocate");
+                }
+                if (allocStr == "ALLOCATE_SINGLETON") {
+                    allocate = AllocateMode::Singleton;
+                } else if (allocStr == "ALLOCATE_OWNER_SCOPE") {
+                    allocate = AllocateMode::OwnerScope;
+                } else if (allocStr == "ALLOCATE_CALL_SCOPE") {
+                    allocate = AllocateMode::CallScope;
+                } else if (allocStr == "ALLOCATE_TRANSIENT") {
+                    allocate = AllocateMode::Transient;
+                } else if (!allocStr.empty()) {
+                    // Recognized syntactic shape but not one of the
+                    // four spec modes — flag with a missing-component
+                    // -ish error so the user sees what's wrong.
+                    throw Exception(
+                        "@Inject on field '" + prop->getName()
+                            + "' of " + c->klass->getQName()->toCanonical()
+                            + " uses unknown allocate mode '" + allocStr + "'",
+                        "CAJETA_ERROR_MISSING_COMPONENT");
+                }
+                if (allocate == AllocateMode::CallScope) {
+                    // R5-A' implicit-function-body-scope integration
+                    // hasn't reached the inject path yet. Reject with
+                    // a clear "not yet" rather than silently fall
+                    // through to Singleton.
+                    throw Exception(
+                        "@Inject on field '" + prop->getName()
+                            + "' of " + c->klass->getQName()->toCanonical()
+                            + " requests ALLOCATE_CALL_SCOPE which is "
+                              "not yet supported (v1 ships SINGLETON, "
+                              "OWNER_SCOPE, TRANSIENT)",
+                        "CAJETA_ERROR_NOT_IMPLEMENTED");
+                }
 
                 vector<ComponentDescriptorPtr> candidates;
                 auto resolved = resolveDependency(targetCanonical, nameQualifier, candidates);
@@ -528,6 +574,18 @@ namespace cajeta {
                     resolved = resolveDependency(targetShort, nameQualifier, candidates);
                 }
                 if (candidates.empty()) {
+                    if (isOptional) {
+                        // No candidate; field stays null. The
+                        // codegen branch reads target==null and
+                        // stores ConstantPointerNull.
+                        ResolvedDependency rd;
+                        rd.field = prop;
+                        rd.target = nullptr;
+                        rd.allocate = allocate;
+                        rd.optional = true;
+                        c->resolvedFields.push_back(rd);
+                        continue;
+                    }
                     throw Exception(
                         c->klass->getQName()->toCanonical()
                             + " needs " + targetCanonical
@@ -557,6 +615,8 @@ namespace cajeta {
                 ResolvedDependency rd;
                 rd.field = prop;
                 rd.target = resolved;
+                rd.allocate = allocate;
+                rd.optional = isOptional;
                 c->resolvedFields.push_back(rd);
             }
         }
