@@ -11,26 +11,14 @@
 //     consumer's `import a.b.Foo;` steers resolution.
 //   - Cross-module DI: @Component in one file, @Inject in
 //     another, resolveDependencyGraph builds the graph across.
-//
-// Parse-order limitation: the multi-source overload iterates the
-// `sources` map in key order. If file A references a type defined
-// in file B, B's class must register before A parses. Tests pick
-// keys so dependencies sort alphabetically first. A topological
-// pre-pass is a follow-up.
-//
-// Cross-module codegen-time call limitation: a USER constructor
-// called across module boundaries (`new Counter()` in file A
-// where Counter is defined in file B) currently trips the LLVM
-// verifier after the post-codegen module-merge step — references
-// inserted into A's IR aren't promoted to extern declarations,
-// so the merge produces a function whose definition gets clobbered
-// by a same-name forward reference. Cross-module SYNTHESIZED
-// inject-method calls (the canonical DI shape) DO work, since
-// they route through a different dispatch path. Promoting all
-// cross-module method references to proper extern decls in the
-// calling module is a codegen change tracked as a follow-up;
-// the multi-source overload is meanwhile useful for the cross-
-// module-DI shape the spec actually demands.
+//   - Forward references across files: a consumer file parsed
+//     BEFORE its dependency works through the placeholder
+//     mechanism. CajetaType::fromContext's miss path consults
+//     the archive registry (populated by the ANTLR-based
+//     pre-scan over every .cajeta file under the source root),
+//     creates a placeholder CajetaClass for known-but-unparsed
+//     names, and visitClassDeclaration later fills the same
+//     placeholder in-place when the real declaration arrives.
 //
 
 #include "gtest/gtest.h"
@@ -38,12 +26,14 @@
 #include "cajeta/compile/Compiler.h"
 #include "cajeta/compile/CajetaModule.h"
 #include "cajeta/type/CajetaClass.h"
+#include "cajeta/error/Exception.h"
 
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <map>
 #include <random>
+#include <stdexcept>
 #include <string>
 
 using cajeta::Compiler;
@@ -60,8 +50,7 @@ int32_t runI32(const std::map<std::string, std::string>& sources,
 }
 
 // Compile multiple sources without going through the JIT — used
-// for tests that only inspect post-parse state (import maps,
-// canonicalMap, structure-to-module registry) and don't need IR.
+// for tests that only inspect post-parse state.
 void compileMultiForInspection(Compiler& compiler,
                                const std::map<std::string, std::string>& sources) {
     static std::mt19937_64 rng(std::random_device{}());
@@ -87,6 +76,7 @@ void compileMultiForInspection(Compiler& compiler,
     auto archive = std::filesystem::temp_directory_path()
                  / ("cajeta_ms_inspect_arch_" + std::to_string(rng()));
     std::filesystem::create_directories(archive);
+    cajeta::prescanSourceRoot(base.string());
     using recursive_directory_iterator = std::filesystem::recursive_directory_iterator;
     for (const auto& entry : recursive_directory_iterator(base)) {
         if (!entry.is_regular_file() || entry.path().extension() != ".cajeta") continue;
@@ -101,9 +91,7 @@ void compileMultiForInspection(Compiler& compiler,
 
 // Cross-module DI through the JIT: Dep is a @Component in
 // package `dep`; Service is a @Component in package `service`
-// that imports Dep and @Injects it. resolveDependencyGraph walks
-// the process-global structureToModule map and threads the
-// dependency across module boundaries. The synthesized inject
+// that imports Dep and @Injects it. The synthesized inject
 // methods' cross-module calls go through a path the
 // post-codegen merge handles cleanly.
 TEST(MultiSourceCompileTests, crossModuleInjectResolves) {
@@ -128,14 +116,74 @@ TEST(MultiSourceCompileTests, crossModuleInjectResolves) {
     EXPECT_EQ(runI32(sources, "service.Service"), 33);
 }
 
+// Cross-file forward reference at parse level. Consumer
+// `app.App` is keyed alphabetically BEFORE provider
+// `xyz.Provider`, so it parses first. When App's body references
+// `Provider`, the archive pre-scan has already seen Provider
+// declared in xyz.Provider's source, so CajetaType::fromContext
+// creates a placeholder CajetaClass. xyz.Provider's later
+// visitClassDeclaration finds the placeholder and fills it in
+// via fillFromDeclaration. The placeholder's shared_ptr identity
+// is the same as the eventual real class, so App's earlier
+// reference stays valid.
+//
+// This test verifies the parse-level claim — placeholder
+// promotion + fill-in — without going through JIT codegen. The
+// JIT-roundtrip path has a separate cross-module merge gap
+// (Linker::linkModules with OverrideFromSrc mishandles function
+// references whose definition is in the donor, not the primary)
+// that's tracked as a follow-up. End-to-end DI via the
+// placeholder works for the order where the dependency parses
+// first (covered by crossModuleInjectResolves above).
+TEST(MultiSourceCompileTests, forwardReferenceFillsPlaceholder) {
+    std::map<std::string, std::string> sources;
+    sources["app.App"] =
+        "package app;\n"
+        "import xyz.Provider;\n"
+        "public class App {\n"
+        "    Provider p;\n"
+        "    public App() { return; }\n"
+        "}\n";
+    sources["xyz.Provider"] =
+        "package xyz;\n"
+        "public class Provider {\n"
+        "    public int32 value;\n"
+        "    public Provider() { value = 77; return; }\n"
+        "}\n";
+    Compiler compiler;
+    compileMultiForInspection(compiler, sources);
+
+    // Provider is in canonicalMap and is NOT a placeholder
+    // (it got filled in by visitClassDeclaration).
+    auto& canon = cajeta::CajetaType::getCanonicalMap();
+    auto it = canon.find("xyz.Provider");
+    ASSERT_NE(it, canon.end()) << "xyz.Provider missing from canonicalMap";
+    auto providerKlass = std::dynamic_pointer_cast<cajeta::CajetaClass>(it->second);
+    ASSERT_NE(providerKlass, nullptr);
+    EXPECT_FALSE(providerKlass->isPlaceholder())
+        << "Provider should have been filled in by visitClassDeclaration";
+
+    // App's `Provider p` field references the SAME CajetaClass
+    // shared_ptr as Provider — the placeholder identity carries
+    // through the fill-in.
+    auto appIt = canon.find("app.App");
+    ASSERT_NE(appIt, canon.end());
+    auto appKlass = std::dynamic_pointer_cast<cajeta::CajetaClass>(appIt->second);
+    ASSERT_NE(appKlass, nullptr);
+    auto propIt = appKlass->getProperties().find("p");
+    ASSERT_NE(propIt, appKlass->getProperties().end());
+    auto fieldType = std::dynamic_pointer_cast<cajeta::CajetaClass>(
+        propIt->second->getType());
+    ASSERT_NE(fieldType, nullptr);
+    EXPECT_EQ(fieldType.get(), providerKlass.get())
+        << "App's Provider-typed field should point at the SAME CajetaClass "
+           "as canonicalMap[xyz.Provider] — the filled-in placeholder";
+}
+
 // Import-aware short-name resolution, inspected post-parse. Two
-// classes named Logger live in different packages with different
-// short names; a consumer file imports one. Verify that the
-// consumer module's `imports` map captured the right qualified
-// name and that fromContext on a bare `Logger` reference would
-// resolve through it (we observe the captured import directly
-// rather than re-running fromContext, since the consumer source
-// here has no actual `Logger` use site).
+// classes named Logger live in different packages; a consumer
+// file imports one. Verify the consumer module's imports map
+// captured the right qualified name.
 TEST(MultiSourceCompileTests, importMapCapturesQualifier) {
     std::map<std::string, std::string> sources;
     sources["fast.Logger"] =
@@ -144,26 +192,50 @@ TEST(MultiSourceCompileTests, importMapCapturesQualifier) {
     sources["slow.Logger"] =
         "package slow;\n"
         "public class Logger { public Logger() { return; } }\n";
-    sources["zz_app.App"] =
-        "package zz_app;\n"
+    sources["app.App"] =
+        "package app;\n"
         "import slow.Logger;\n"
         "public final class App { public App() { return; } }\n";
     Compiler compiler;
     compileMultiForInspection(compiler, sources);
 
-    // Find App's module and check its imports map.
     auto& s2m = CajetaModule::getStructureToModule();
-    auto it = s2m.find("zz_app.App");
-    ASSERT_NE(it, s2m.end()) << "zz_app.App should be in the registry";
+    auto it = s2m.find("app.App");
+    ASSERT_NE(it, s2m.end());
     auto appModule = it->second;
     ASSERT_NE(appModule, nullptr);
     auto& imports = appModule->getImports();
     auto importIt = imports.find("Logger");
-    ASSERT_NE(importIt, imports.end()) << "App should have an import for 'Logger'";
+    ASSERT_NE(importIt, imports.end());
     ASSERT_FALSE(importIt->second.empty());
     auto& packageMap = importIt->second;
     auto pkgIt = packageMap.find("slow");
-    ASSERT_NE(pkgIt, packageMap.end()) << "App's Logger import should resolve to package 'slow'";
+    ASSERT_NE(pkgIt, packageMap.end());
     EXPECT_EQ(pkgIt->second->getTypeName(), "Logger");
     EXPECT_EQ(pkgIt->second->getPackageName(), "slow");
+}
+
+// Unknown type that's NOT in the archive throws — fromContext's
+// miss path returns null (no archive entry) and the call site
+// (visitFieldDeclaration) raises CAJETA_ERROR_UNKNOWN_TYPE. The
+// placeholder synthesis is gated on archive presence, so typos
+// and dead references stay as compile errors.
+TEST(MultiSourceCompileTests, unknownTypeStillRejected) {
+    std::map<std::string, std::string> sources;
+    sources["app.App"] =
+        "package app;\n"
+        "@Component public class App {\n"
+        "    @Inject DefinitelyNotDeclared nope;\n"
+        "    public App() { return; }\n"
+        "    public static int32 run() { return 0; }\n"
+        "}\n";
+    try {
+        runI32(sources, "app.App");
+        FAIL() << "expected CAJETA_ERROR_UNKNOWN_TYPE";
+    } catch (cajeta::Exception& e) {
+        EXPECT_EQ(e.getErrorId(), "CAJETA_ERROR_UNKNOWN_TYPE");
+    } catch (std::runtime_error&) {
+        // JIT layer may wrap the throw — accept that path too.
+        SUCCEED();
+    }
 }

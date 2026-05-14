@@ -11,7 +11,9 @@
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/raw_ostream.h"
 #include "../asn/AbstractSyntaxNode.h"
+#include "../type/CajetaType.h"
 #include "cajeta/error/CajetaExceptions.h"
+#include "CajetaParserBaseVisitor.h"
 #include <sys/stat.h>
 
 #ifdef CAJETA_HAS_LLD
@@ -34,6 +36,105 @@ namespace cajeta {
             return;
         }
         targetMachine = target->createTargetMachine(targetTriple, cpu, features, opt, RM);
+    }
+
+    // ANTLR-based pre-scan visitor. Walks the parse tree shallowly
+    // looking for typeDeclaration contexts at top-level and nested
+    // inside class bodies. For each declared class/interface/struct,
+    // registers (canonical, shortName) in the archive so cross-
+    // file forward references in the main visitor pass can create
+    // placeholders only for names that are actually declared
+    // somewhere in the compilation unit.
+    //
+    // ANTLR was chosen over regex because cajeta supports nested
+    // type declarations (class-inside-class) whose canonical name
+    // depends on the enclosing class stack; a flat regex can spot
+    // the names but can't compose the right canonical, and regex
+    // is fragile around string literals and comments anyway.
+    class ArchivePrescanVisitor : public CajetaParserBaseVisitor {
+    public:
+        std::string package;
+        std::vector<std::string> enclosingStack;
+
+        std::any visitPackageDeclaration(
+                CajetaParser::PackageDeclarationContext* ctx) override {
+            std::vector<CajetaParser::IdentifierContext*> ids =
+                ctx->qualifiedName()->identifier();
+            std::string p;
+            for (size_t i = 0; i < ids.size(); ++i) {
+                if (i) p += ".";
+                p += ids[i]->getText();
+            }
+            package = p;
+            return defaultResult();
+        }
+
+        std::any visitClassDeclaration(
+                CajetaParser::ClassDeclarationContext* ctx) override {
+            registerAndRecurse(ctx->identifier()->getText(), ctx);
+            return defaultResult();
+        }
+
+        std::any visitInterfaceDeclaration(
+                CajetaParser::InterfaceDeclarationContext* ctx) override {
+            registerAndRecurse(ctx->identifier()->getText(), ctx);
+            return defaultResult();
+        }
+
+        std::any visitStructDeclaration(
+                CajetaParser::StructDeclarationContext* ctx) override {
+            registerAndRecurse(ctx->identifier()->getText(), ctx);
+            return defaultResult();
+        }
+
+    private:
+        void registerAndRecurse(const std::string& shortName,
+                                 antlr4::tree::ParseTree* tree) {
+            // Compose canonical from package + enclosing class
+            // stack + this short name. Mirrors CajetaLlvmVisitor's
+            // visitClassDeclaration package-adjustment for nested
+            // types.
+            std::string canonical;
+            if (!package.empty()) canonical = package;
+            for (auto& e : enclosingStack) {
+                if (!canonical.empty()) canonical += ".";
+                canonical += e;
+            }
+            if (!canonical.empty()) canonical += ".";
+            canonical += shortName;
+            CajetaType::registerArchive(canonical, shortName);
+            enclosingStack.push_back(shortName);
+            visitChildren(tree);
+            enclosingStack.pop_back();
+        }
+    };
+
+    // Pre-scan one source via ANTLR.
+    static void prescanSource(antlr4::ANTLRInputStream& input) {
+        CajetaLexer lexer(&input);
+        CommonTokenStream tokens(&lexer);
+        tokens.fill();
+        CajetaParser parser(&tokens);
+        antlr4::tree::ParseTree* tree = parser.compilationUnit();
+        ArchivePrescanVisitor v;
+        tree->accept(&v);
+    }
+
+    // Pre-scan every source file under a root, building the
+    // archive registry of class declarations available to the
+    // compile. Called once at the start of Compiler::compile(
+    // entryMethod, ...) before any modules parse.
+    void prescanSourceRoot(const std::string& rootPath) {
+        using recursive_directory_iterator = std::filesystem::recursive_directory_iterator;
+        std::filesystem::path root(rootPath);
+        for (const auto& entry : recursive_directory_iterator(root)) {
+            if (!entry.is_regular_file()) continue;
+            if (entry.path().extension() != CAJETA_EXTENSION) continue;
+            std::ifstream in(entry.path());
+            if (!in) continue;
+            antlr4::ANTLRInputStream input(in);
+            prescanSource(input);
+        }
     }
 
     list<string>* listModulePaths(string rootPath) {
@@ -217,6 +318,12 @@ public class UnrecoverableException extends Exception {
 
 //        std::filesystem::path cwd = std::filesystem::current_path();
 
+        // Pre-scan: enumerate every class/interface/struct declared
+        // anywhere under sourceRootPath into the archive registry.
+        // Lets fromContext's miss path vouch for forward references
+        // before deciding placeholder vs unknown-type error.
+        prescanSourceRoot(sourceRootPath);
+
         list<string>* modulePaths = listModulePaths(sourceRootPath);
 
         for (string sourcePath: *modulePaths) {
@@ -229,6 +336,14 @@ public class UnrecoverableException extends Exception {
 //        if (method == nullptr) {
 //            return;
 //        }
+
+        // Forward-reference validation. Catches any placeholder
+        // CajetaClass created during the parse passes that no
+        // visitClassDeclaration ever filled in — i.e., the archive
+        // pre-scan vouched for a name that didn't actually arrive
+        // via a real declaration. Defense-in-depth; normal flow
+        // sees zero placeholders left.
+        CajetaModule::validatePlaceholders();
 
         // AspectModel.md § A3 pointcut-matching pass. Runs after
         // every module has been parsed (all classes + advice methods

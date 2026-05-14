@@ -20,6 +20,9 @@ namespace cajeta {
     map<string, map<string, int32_t>> CajetaType::enumConstants;
     map<TypeKey, CajetaTypePtr> CajetaType::typeMap;
     map<llvm::Type::TypeID, CajetaTypePtr> CajetaType::llvmTypeIdMap;
+    // Archive — see CajetaType.h. Cleared by resetGlobals so each
+    // fresh Compiler starts with an empty set.
+    static map<string, string> g_archive;
 
 
     TypeKey::TypeKey(llvm::Type* type) {
@@ -49,6 +52,28 @@ namespace cajeta {
         typeMap.clear();
         llvmTypeIdMap.clear();
         enumConstants.clear();
+        g_archive.clear();
+    }
+
+    map<string, string>& CajetaType::getArchive() { return g_archive; }
+
+    void CajetaType::registerArchive(const string& canonical,
+                                      const string& shortName) {
+        // Both keys point at the canonical so the miss-path in
+        // fromContext can promote a bare short name into the right
+        // qualified placeholder. First write wins; a second
+        // registration of the same canonical is fine (idempotent
+        // from re-running the pre-scan), and a second registration
+        // of the same SHORT name with a different canonical means
+        // two classes share the short name across packages — keep
+        // the first to remain deterministic, and let the visitor
+        // catch the duplicate-canonical case at parse time if any.
+        if (!canonical.empty() && g_archive.count(canonical) == 0) {
+            g_archive[canonical] = canonical;
+        }
+        if (!shortName.empty() && g_archive.count(shortName) == 0) {
+            g_archive[shortName] = canonical;
+        }
     }
 
     void CajetaType::init(llvm::LLVMContext& ctx) {
@@ -263,6 +288,58 @@ namespace cajeta {
                     auto nativeIt = canonicalMap.find(qName->getTypeName());
                     if (nativeIt != canonicalMap.end()) {
                         type = nativeIt->second;
+                    }
+                }
+                // Placeholder synthesis. The four lookup tiers
+                // above couldn't find a defined type, but the
+                // archive pre-scan may have noted that the name
+                // IS declared somewhere in the compilation unit
+                // — just not yet visited by the body walk that
+                // would have populated canonicalMap. Create a
+                // forward-reference placeholder CajetaClass under
+                // the archive's canonical so the caller carries
+                // a real CajetaTypePtr forward. visitClassDeclaration
+                // later detects the existing placeholder and fills
+                // it in on the same shared_ptr.
+                if (!type) {
+                    auto& archive = getArchive();
+                    std::string lookup = qName->toCanonical();
+                    auto archIt = archive.find(lookup);
+                    if (archIt == archive.end()) {
+                        // Try short name — archive carries both keys
+                        // so bare-name references can still vouch.
+                        archIt = archive.find(qName->getTypeName());
+                    }
+                    if (archIt != archive.end()) {
+                        const std::string& canonical = archIt->second;
+                        // Parse canonical into package + short.
+                        auto dot = canonical.find_last_of('.');
+                        std::string pkg = (dot == std::string::npos)
+                            ? std::string()
+                            : canonical.substr(0, dot);
+                        std::string shortName = (dot == std::string::npos)
+                            ? canonical
+                            : canonical.substr(dot + 1);
+                        QualifiedNamePtr phName =
+                            QualifiedName::getOrInsert(shortName, pkg);
+                        auto placeholder = std::make_shared<CajetaClass>(
+                            module, phName,
+                            std::list<QualifiedNamePtr>{},
+                            std::list<QualifiedNamePtr>{});
+                        placeholder->setPlaceholder(true);
+                        // Don't pre-set llvmType — leave it null so
+                        // the real generatePrototype's
+                        // getOrCreateLlvmType call creates a named
+                        // StructType under the canonical (rather
+                        // than seeing a pre-set non-struct type and
+                        // discarding the name). CajetaClass::getLlvmType
+                        // overrides to return `ptr` while the
+                        // placeholder is unfilled, so earlier-parsed
+                        // classes composing layouts against the
+                        // placeholder still get a sized type back.
+                        canonicalMap[canonical] = placeholder;
+                        canonicalMap[shortName] = placeholder;
+                        type = placeholder;
                     }
                 }
             }

@@ -136,6 +136,12 @@ std::unique_ptr<CajetaJit> CajetaJit::compile(
                      / ("cajeta_archive_" + sourceRoot.filename().string());
     std::filesystem::create_directories(archiveRoot);
 
+    // Pre-scan the just-written sources into the archive so
+    // forward references across files can create placeholders
+    // (rather than throw or silently null) when their type's
+    // declaration arrives later in the parse order.
+    cajeta::prescanSourceRoot(sourceRoot.string());
+
     cajeta::CajetaModulePtr primary;
     for (auto& sourcePath : sourcePaths) {
         auto m = compiler->createModule(sourcePath.string(),
@@ -146,6 +152,7 @@ std::unique_ptr<CajetaJit> CajetaJit::compile(
     }
     (void) fqEntryClass;  // routing happens via the entry method name at lookup time
 
+    cajeta::CajetaModule::validatePlaceholders();
     cajeta::CajetaModule::resolveAdviceMatches();
     cajeta::CajetaModule::setActiveProfile("test");
     cajeta::CajetaModule::resolveDependencyGraph();

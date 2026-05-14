@@ -113,7 +113,33 @@ namespace cajeta {
                     bucket->push_back(QualifiedName::fromContext(tt->classOrInterfaceType()));
                 }
             }
-            CajetaClassPtr structure = make_shared<CajetaClass>(pModule, qName, qExtended, qImplemented);
+            // Placeholder reuse. If some earlier-parsed class held a
+            // forward reference to this class (created via CajetaType
+            // ::fromContext's miss path), the placeholder is already
+            // in canonicalMap under our canonical or short name.
+            // Reuse the same CajetaClass instance — fillFromDeclaration
+            // assigns module/qName/extends/implements on the existing
+            // shared_ptr so every earlier reference now points at the
+            // fully-filled class.
+            CajetaClassPtr structure;
+            {
+                auto& canon = CajetaType::getCanonicalMap();
+                auto it = canon.find(qName->toCanonical());
+                if (it == canon.end()) {
+                    it = canon.find(qName->getTypeName());
+                }
+                if (it != canon.end()) {
+                    auto existing = std::dynamic_pointer_cast<CajetaClass>(it->second);
+                    if (existing && existing->isPlaceholder()) {
+                        existing->fillFromDeclaration(
+                            pModule, qName, qExtended, qImplemented);
+                        structure = existing;
+                    }
+                }
+            }
+            if (!structure) {
+                structure = make_shared<CajetaClass>(pModule, qName, qExtended, qImplemented);
+            }
 
             // Template parameters — capture name + optional `extends` bounds.
             // Bounds are resolved to QualifiedNamePtrs here so we don't need
@@ -954,21 +980,21 @@ namespace cajeta {
             return static_pointer_cast<MemberDeclaration>(make_shared<MethodDeclaration>(method, ctx->getStart()));
         }
 
-        // TODO: Scrap this and replace with a
         virtual std::any visitFieldDeclaration(CajetaParser::FieldDeclarationContext* ctx) override {
             CajetaTypePtr type = any_cast<CajetaTypePtr>(visitTypeType(ctx->typeType()));
-            // Reject unknown field type names at the source. CajetaType::
-            // fromContext returns null silently for class-or-interface
-            // misses because forward references (e.g. `permits X` lists)
-            // and deferred-handler contexts (lambda LVTI params routed to
-            // NOT_IMPLEMENTED) depend on that tolerance. Field types
-            // don't have a deferred-resolution mechanism — a null here
-            // would propagate to CajetaClass::generatePrototype's struct
-            // layout and segfault on getLlvmType() with no diagnostic.
-            // Throw at the visit site so the error carries both the
-            // offending type name and the variable name(s) the user
-            // wrote.
+            // Forward-reference tolerance: fromContext synthesizes a
+            // placeholder CajetaClass when the named type is known
+            // to the archive but hasn't been visited yet, and throws
+            // CAJETA_ERROR_UNKNOWN_TYPE for names not declared
+            // anywhere in the compilation unit. Either we got a real
+            // type back (resolved or placeholder), or fromContext
+            // already threw — no extra reject needed here. The
+            // post-parse pass catches any placeholder left unfilled.
             if (!type) {
+                // Belt-and-suspenders: should be unreachable now that
+                // fromContext either succeeds or throws, but a null
+                // here would still segfault generatePrototype, so
+                // emit the same diagnostic shape as before.
                 string typeName = ctx->typeType()->getText();
                 string declared = ctx->variableDeclarators()->getText();
                 throw Exception(

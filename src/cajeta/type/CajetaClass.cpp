@@ -42,6 +42,14 @@ namespace cajeta {
         this->module = module;
     }
 
+    llvm::Type* CajetaClass::getLlvmType() {
+        if (llvmType) return llvmType;
+        if (placeholderFlag && module) {
+            return llvm::PointerType::get(*module->getLlvmContext(), 0);
+        }
+        return llvmType;
+    }
+
     llvm::Type* CajetaClass::getLlvmReferenceType() {
         if (llvmReferenceType == nullptr) {
             vector<llvm::Type*> types;

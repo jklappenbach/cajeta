@@ -344,6 +344,16 @@ namespace cajeta {
         // populated by this pass.
         static void resolveDependencyGraph();
 
+        // Post-parse validation: scan canonicalMap for any
+        // CajetaClass with placeholderFlag still set. A placeholder
+        // marks a name that fromContext synthesized when the archive
+        // vouched for it but visitClassDeclaration never arrived to
+        // fill it in — meaning the pre-scan disagreed with the
+        // actual parse (a name the archive saw but the visitor
+        // missed). Defense-in-depth; under normal flow this finds
+        // nothing.
+        static void validatePlaceholders();
+
         // Active-module accessor. Returns the module currently being walked,
         // or nullptr outside any walk. Call sites that didn't thread a module
         // parameter through (parse-time Expression / Type construction) read

@@ -65,6 +65,15 @@ namespace cajeta {
         // no LLVM function. The flag toggles those behaviors on the same
         // CajetaClass that the visitor builds for `interface X { ... }`.
         bool interfaceFlag = false;
+        // Forward-reference placeholder marker. CajetaType::fromContext
+        // sets this when it creates a CajetaClass for a name that's
+        // known-to-the-archive but hasn't been declared yet by the
+        // visitor walk. visitClassDeclaration finds the placeholder,
+        // fills in its real shape (qName, modifiers, super/implements,
+        // methods, properties), and clears the flag. Any placeholder
+        // still set after all parsing is a leak — flagged by the
+        // post-parse pass.
+        bool placeholderFlag = false;
         CajetaModulePtr module;
         ScopePtr scope;
 
@@ -129,6 +138,40 @@ namespace cajeta {
 
         bool isInterface() const { return interfaceFlag; }
         void setIsInterface(bool v) { interfaceFlag = v; }
+        bool isPlaceholder() const { return placeholderFlag; }
+        void setPlaceholder(bool v) { placeholderFlag = v; }
+
+        // Class instances flow by pointer in cajeta — field slots
+        // of class type store the pointer to the instance, not the
+        // instance struct inline. While a forward-reference
+        // placeholder is unfilled, getLlvmType() returns `ptr` so
+        // earlier-parsed classes composing their layouts against
+        // this type get a sized slot. Once the real declaration
+        // arrives, generatePrototype establishes the named
+        // StructType and llvmType is non-null on subsequent calls,
+        // so this override falls through to the base. Definition
+        // lives in CajetaClass.cpp because the `ptr` fallback needs
+        // module->getLlvmContext() (CajetaModule isn't complete
+        // at this header's include level).
+        llvm::Type* getLlvmType() override;
+
+        // Fill an existing placeholder with the real declaration's
+        // shape. visitClassDeclaration calls this when it finds a
+        // pre-existing placeholder in canonicalMap whose canonical
+        // matches the class being declared. All existing references
+        // to the placeholder (held by fields/methods of earlier-
+        // parsed classes) become valid for the real class because
+        // it's the same shared_ptr instance.
+        void fillFromDeclaration(CajetaModulePtr m,
+                                  QualifiedNamePtr q,
+                                  list<QualifiedNamePtr> ext,
+                                  list<QualifiedNamePtr> impl) {
+            this->module = m;
+            this->qName = q;
+            this->qExtended = std::move(ext);
+            this->qImplemented = std::move(impl);
+            this->placeholderFlag = false;
+        }
         list<CajetaClassPtr>& getImplementedInterfaces() { return implementedInterfaces; }
         const list<QualifiedNamePtr>& getQImplemented() const { return qImplemented; }
         void setQImplemented(list<QualifiedNamePtr> q) { qImplemented = std::move(q); }

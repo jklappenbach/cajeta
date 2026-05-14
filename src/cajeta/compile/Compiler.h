@@ -27,6 +27,16 @@ namespace cajeta {
 
     class AbstractSyntaxNode;
 
+    // Walk every .cajeta file under `rootPath` and register every
+    // declared class/interface/struct's (canonical, shortName) pair
+    // in the archive (CajetaType::registerArchive). Used by the
+    // multi-file compile paths (Compiler::compile(entryMethod, ...)
+    // and the JIT helper's multi-source overload) to populate the
+    // archive registry BEFORE any module parses, so cross-file
+    // forward references can create placeholders for names that
+    // are known-to-exist somewhere in the compilation unit.
+    void prescanSourceRoot(const std::string& rootPath);
+
     enum class EmitMode {
         IR,    // Default: text LLVM IR (.ll) per module
         Obj,   // Native object file (.o) for the configured target

@@ -693,6 +693,19 @@ namespace cajeta {
         }
     }
 
+    void CajetaModule::validatePlaceholders() {
+        for (auto& [key, type] : CajetaType::getCanonicalMap()) {
+            auto klass = std::dynamic_pointer_cast<CajetaClass>(type);
+            if (klass && klass->isPlaceholder()) {
+                throw Exception(
+                    "unresolved forward reference to type '" + key
+                        + "' — declared in the archive pre-scan but no "
+                          "class declaration was visited that fills it in",
+                    "CAJETA_ERROR_UNRESOLVED_PLACEHOLDER");
+            }
+        }
+    }
+
     bool CajetaModule::linkRuntime() {
         // Tracked via presence of a sentinel runtime function in the module — if it's
         // already there, the runtime has been linked.

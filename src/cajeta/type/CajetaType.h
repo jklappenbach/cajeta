@@ -191,6 +191,14 @@ class CajetaType : public Modifiable, public Annotatable,
             return llvmType;
         }
 
+        // Used by the placeholder-synthesis path so a forward-
+        // referenced class has a named (body-less) struct type
+        // before its real generatePrototype runs. The real pass
+        // calls setBody on the same struct (getOrCreateLlvmType
+        // is canonical-keyed) so existing references compose
+        // correctly.
+        void setLlvmType(llvm::Type* t) { llvmType = t; }
+
         CajetaTypePtr toPointerType();
 
         virtual llvm::ConstantInt* getTypeAllocSize(CajetaModulePtr module);
@@ -218,6 +226,31 @@ class CajetaType : public Modifiable, public Annotatable,
         static CajetaTypePtr fromContext(CajetaParser::TypeTypeContext* ctx, CajetaModulePtr module);
 
         static map<string, CajetaTypePtr>& getCanonicalMap();
+
+        // Archive of class/interface/struct declarations available in
+        // the current compilation unit. Populated by a pre-scan over
+        // every .cajeta source under the source root (or, for the
+        // multi-source JIT helper, every source string the test
+        // provided) BEFORE any visitor walks begin. Keyed by both
+        // canonical name (`pkg.Class`) and short typeName (`Class`)
+        // so fromContext's miss path can vouch for a referenced name
+        // before deciding to create a placeholder vs throw.
+        //
+        // The mapped value is the resolved canonical the placeholder
+        // would be created under — short-name lookups carry the full
+        // qualified name from the archive so we don't pollute
+        // canonicalMap with bare-name entries that collide across
+        // packages.
+        static map<string, string>& getArchive();
+
+        // Record one class/interface/struct declaration found by the
+        // pre-scan. Idempotent — repeated registration of the same
+        // canonical leaves the existing entry. Same canonical from a
+        // second source file is treated as a duplicate-declaration
+        // error at compile time (not here — the archive just notes
+        // first-sight).
+        static void registerArchive(const string& canonical,
+                                    const string& shortName);
 
         static map<llvm::Type::TypeID, CajetaTypePtr>& getTypeIdMap();
 
