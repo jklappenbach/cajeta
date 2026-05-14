@@ -95,6 +95,42 @@ namespace cajeta {
         }
     }
 
+    // Emit one advice call. Validates v1 constraints (static, no
+    // params, void return) and skips advice methods that don't meet
+    // them — A12 will add diagnostics, but for A4 the simplest forms
+    // route is: match the v1 shape or be silently skipped at codegen.
+    // The advice method's LLVM Function pointer is the one
+    // Method::generatePrototype installed during Phase 1, so it's
+    // available here regardless of which module owns the aspect.
+    static void emitOneAdviceCall(CajetaModulePtr module, const MethodPtr& advice) {
+        if (!advice) return;
+        llvm::Function* fn = advice->getLlvmFunction();
+        if (!fn) return;
+        // v1 constraint: zero non-implicit parameters. Static methods
+        // have no `this` slot; non-static methods have one. v1 advice
+        // is static-only, so the LLVM signature should have zero
+        // params (and any non-zero signature means the user wrote a
+        // shape we don't support yet — JoinPoint / annotation
+        // instance args ship in A5+). Skip without emitting rather
+        // than emit a verifier-rejecting call with garbage args.
+        if (fn->getFunctionType()->getNumParams() != 0) return;
+        module->getBuilder()->CreateCall(fn, {});
+    }
+
+    void Method::emitBeforeAdvice(CajetaModulePtr module) {
+        for (auto& m : matchingAdvice) {
+            if (m.kind != AdviceKind::Before) continue;
+            emitOneAdviceCall(module, m.adviceMethod);
+        }
+    }
+
+    void Method::emitAfterAdvice(CajetaModulePtr module) {
+        for (auto& m : matchingAdvice) {
+            if (m.kind != AdviceKind::After) continue;
+            emitOneAdviceCall(module, m.adviceMethod);
+        }
+    }
+
     void Method::createLocalVariable(CajetaModulePtr module, FieldPtr field) {
         ScopePtr scope = module->getScopeStack().peek();
         if (scope->getField(field->getName()) != nullptr) {
@@ -300,6 +336,13 @@ namespace cajeta {
             builder->CreateCall(enterFn, {});
         }
 
+        // A4: fire @Before advice right after scope_enter, before the
+        // body emits. Sequenced this way so the advice sees the same
+        // scope frame the body will populate — useful for advice
+        // bodies that might themselves spawn (when A4 relaxes to
+        // allow that). Empty matchingAdvice → no-op.
+        emitBeforeAdvice(module);
+
         // Type-resolver pre-pass: populates Expression::resolvedType so codegen can
         // distinguish e.g. fp8 from i8 when they share an LLVM type.
         if (block) {
@@ -312,6 +355,11 @@ namespace cajeta {
         // a missing return is undefined in Cajeta semantics, but we emit a zero-value
         // ret so the IR remains well-formed.
         if (!builder->GetInsertBlock()->getTerminator()) {
+            // A4: fire @After advice BEFORE scope_exit + drops. The
+            // advice runs in the method-body lifetime; cleanup
+            // happens afterward so the advice can read state still
+            // owned by the function.
+            emitAfterAdvice(module);
             // Pop every scope frame this method pushed (function-body + any
             // explicit scopes still open at fall-through) by walking down
             // to the captured watermark. ScopeStatement-managed frames

@@ -1026,6 +1026,11 @@ namespace cajeta {
     llvm::Value* ReturnStatement::generateCode(CajetaModulePtr module) {
         auto* builder = module->getBuilder();
         if (!expression) {
+            // A4: fire @After advice before scope-exit + drops, on
+            // the same ordering rule the fall-through return uses in
+            // Method::generateCode (advice runs in body lifetime,
+            // cleanup runs after).
+            if (auto m = module->getCurrentMethod()) m->emitAfterAdvice(module);
             // Pop any open scope frames before the value-less return so
             // every pending child task is joined first.
             emitScopeExitToWatermark(module);
@@ -1193,6 +1198,10 @@ namespace cajeta {
             }
             // Pointer / aggregate mismatches fall through; LLVM verifier will flag.
         }
+        // A4: fire @After advice before scope-exit + drops on the
+        // typed-return path too. Same ordering rule as the void-
+        // return / fall-through paths.
+        if (auto m = module->getCurrentMethod()) m->emitAfterAdvice(module);
         // Pop any open scope frames before the typed return — joins every
         // pending child task (function-body scope + any explicit scope
         // the return is lexically inside of).

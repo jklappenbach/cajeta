@@ -177,6 +177,22 @@ namespace cajeta {
             return matchingAdvice;
         }
 
+        // A4 codegen wrappers. emitBeforeAdvice fires every matching
+        // @Before advice at the current insert point (called from
+        // Method::generateCode right after scope_enter, before the
+        // body emits). emitAfterAdvice fires every matching @After
+        // advice (called from Method::generateCode at fall-through
+        // exit and from ReturnStatement::generateCode at every
+        // explicit return — both BEFORE the existing
+        // emitScopeExitToWatermark / emitOwnerDrops calls, so the
+        // advice runs in the method-body lifetime).
+        //
+        // v1 advice constraints (relaxed in A5+): static method,
+        // no parameters, void return. Methods that don't match are
+        // silently skipped — A12's diagnostics pass surfaces them.
+        void emitBeforeAdvice(CajetaModulePtr module);
+        void emitAfterAdvice(CajetaModulePtr module);
+
         llvm::Function* getLlvmFunction() { return llvmFunction; }
 
         bool isConstructor() { return constructor; }
