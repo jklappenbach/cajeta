@@ -106,10 +106,6 @@ Auxiliary fixes from this session: `IdentifierExpression`-receiver `getResolvedT
 
 The "migration" framing in the original plan assumed we'd be moving existing tests from a non-checked to a checked model. In practice the checks are non-invasive (they fire only when `#` is used), so no existing test needed rewriting — the migration question reduces to the stdlib leak, which is documented and deferred.
 
-- [ ] **6.1** Rewrite stdlib runtime helpers (string concat, substring, etc.) to integrate with drops instead of leaking.
-- [ ] **6.2** Migrate existing 268 tests to the new ownership idioms where applicable.
-- [ ] **6.3** Update `README.md` test-suite table.
-
 ---
 
 ## Conventions

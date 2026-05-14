@@ -63,7 +63,7 @@ namespace cajeta {
     // UnsupportedExpression. Inherited fields are written directly via
     // `this.message`. Each subclass repeats the field assignment.
     static const char* const STDLIB_SOURCE = R"CAJETA(
-package cajeta.lang;
+package cajeta.error;
 public class Throwable {
     public String message;
     public Throwable(String message) {
@@ -123,15 +123,17 @@ public class UnrecoverableException extends Exception {
     void parse(CajetaModulePtr module) {
         // Stdlib first — its types must be in canonicalMap before user code
         // can reference them by simple name. The module's qName is path-
-        // derived (e.g. `test.D` from `test/D.cajeta`), but stdlib classes
-        // declare `package cajeta.lang;`, so we temporarily swap the
-        // module's qName to one whose package is `cajeta.lang` for the
-        // stdlib parse — that way visitClassDeclaration builds stdlib
-        // classes with `cajeta.lang.Throwable` canonical names. Restored
-        // before the user-source parse so user classes get their proper
-        // path-derived package.
+        // derived (e.g. `test.D` from `test/D.cajeta`), but the exception
+        // hierarchy declares `package cajeta.error;`, so we temporarily
+        // swap the module's qName to one whose package is `cajeta.error`
+        // for the stdlib parse — that way visitClassDeclaration builds
+        // stdlib classes with `cajeta.error.Throwable` canonical names.
+        // Restored before the user-source parse so user classes get their
+        // proper path-derived package. `cajeta.lang` is reserved for the
+        // future language-prelude bucket (String, Math, System, ...) and
+        // is intentionally not used today.
         QualifiedNamePtr originalQName = module->getQName();
-        module->setQName(QualifiedName::getOrInsert("stdlib", "cajeta.lang"));
+        module->setQName(QualifiedName::getOrInsert("stdlib", "cajeta.error"));
         antlr4::ANTLRInputStream stdlibInput(STDLIB_SOURCE);
         parseSource(module, stdlibInput, /*label=*/"");
         module->setQName(originalQName);
@@ -145,7 +147,7 @@ public class UnrecoverableException extends Exception {
         // address, returning 1 for any descendant of UnrecoverableException.
         {
             auto& structures = module->getStructures();
-            auto it = structures.find("cajeta.lang.UnrecoverableException");
+            auto it = structures.find("cajeta.error.UnrecoverableException");
             if (it != structures.end()) {
                 CajetaClassPtr unrecClass = it->second;
                 llvm::GlobalVariable* unrecVT = unrecClass->getVirtualTableGlobal();

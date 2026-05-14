@@ -6,14 +6,17 @@ Tracks the R1–R5 rollout of the async runtime described in `ThreadModel.md`. C
 
 ## Current status
 
-**Phases R1 through R5-D + error-model v1 complete.** Full structured-concurrency story functional end-to-end: stackful fibers, scope joins, cancellation, exception escalation. Error model has stdlib Throwable hierarchy (with `cause` chaining), `throws` clause grammar + advisory lint, runtime exception path on `void*`, Task<T> exception slot with await re-raise, and stack-trace capture at throw sites with auto-print on uncaught.
+**Phases R1 through R5-D + error-model v1 complete.** Full structured-concurrency story functional end-to-end: stackful fibers, scope joins, cancellation, exception escalation. Error model has stdlib Throwable hierarchy (in `package cajeta.error;`, with `cause` chaining), `throws` clause grammar + advisory lint with try/catch coverage awareness, runtime exception path on `void*`, Task<T> exception slot with await re-raise, and stack-trace capture at throw sites with auto-print on uncaught.
 
-**Next areas (post-v1 polish):**
-- Recoverable/Unrecoverable distinction via vtable type-check (task #210). Today the system catch path treats them identically.
-- Inherited-field write codegen fix (#208) — unblocks richer stdlib subclass constructors.
-- `String` parameter codegen fix (#211) — unblocks upgrading Throwable.message from `pointer` to `String`.
-- Lint refinements (#209) — try/catch coverage awareness, `@SuppressUncaughtThrow` annotation.
-- TLS-promote the exception chain + drop-chain head for multi-carrier safety.
+**Post-v1 polish items — all shipped:**
+- [x] Recoverable/Unrecoverable distinction via vtable type-check (#210) — commit `ea5ca6e`.
+- [x] Inherited-field write codegen fix (#208) — commit `16434e5`, with `0dda81b` follow-up for the inherited-field ASSIGN slot width + the orthogonal `(T) obj.field` cast-load bug surfaced by stress testing.
+- [x] `String` parameter codegen fix (#211) — commit `b987e59`. `Throwable.message` is now `String`.
+- [x] Lint refinements (#209) — commit `996cf21`. The uncaught-throws lint now walks an enclosing-try stack and suppresses warnings when any catch arm covers the throw (supertype-aware). The annotation generalized to `@SuppressLint("id")` in `e3d238e`.
+
+**Still open:**
+- TLS-promote the exception chain + drop-chain head for multi-carrier safety. Today's single-carrier model doesn't race; a worker pool would. See *Known gaps* below.
+- Several smaller known gaps and v2 concerns, also below.
 
 ---
 
@@ -73,24 +76,20 @@ Tracks the R1–R5 rollout of the async runtime described in `ThreadModel.md`. C
 - Commit `a4bedb3`.
 
 ### Design spec
-- `ErrorModel.md` — drafted. Errors-as-values, `try` mandatory at call sites, `panic` for unrecoverables, multi-arm pattern catches. Commit `ab68857`.
+- `ErrorModel.md` — drafted. Errors-as-values, `try` mandatory at call sites, `panic` for unrecoverables, multi-arm pattern catches. Commit `ab68857`. Subsequently rewritten around an exception-hierarchy design (commit `6fe6cb6`); the rest of the bullets below describe the shipped version.
 
----
-
-## Blocked / pending
-
-### Error model
-**Spec settled** — `ErrorModel.md` uses an exception-hierarchy design (Unrecoverable/Recoverable, advisory `throws` clause, system default catch). Implementation work list is at the bottom of the doc. Roughly: stdlib `Throwable`/`UnrecoverableException`/`RecoverableException` → `throws` grammar → lint warning → runtime carries `Throwable*` not `int64` → system catch wrapping main + each fiber trampoline → `CajetaTask` exception slot + `await` re-raise.
-
-### R5-C — Cancellation tokens
-Now unblocked by the error-model decision. Surfaces as a `CancellationException extends RecoverableException`. Implementation:
-- Each `Task` (or fiber) gets an atomic cancel flag.
-- `__cajeta_task_cancel(task)` sets the flag.
-- `__cajeta_task_wait` checks on resume and (via the new exception machinery) re-raises `CancellationException` into the awaiter's frame.
-- Scope-level cancel iterates registered children and sets each one's flag.
-
-### R5-D — Exception escalation through scope
-Unblocked by the error-model decision. When `scope_exit` joins children, walk each child's `Task.exception` slot; if any child threw, cancel remaining siblings, wait for their unwinds, re-raise the first exception into the scope's containing frame.
+### Error model — implementation (v1 complete)
+- Stdlib `Throwable` / `Exception` / `RecoverableException` / `UnrecoverableException` classes, originally in `package cajeta.lang;`, moved to `package cajeta.error;` for discoverability + reuse. `Exception` carries a typed `Throwable cause` for chain-of-causality.
+- `throws` clause grammar + AST (#200), advisory `uncaught-throws` lint warning (#201), stack-trace capture at throw sites (#203).
+- Runtime exception path migrated to `Throwable*` on `void*` carrier; system default catch wraps main + each fiber trampoline. `CajetaTask` gained an exception slot; `await` re-raises into the awaiter.
+- Recoverable/Unrecoverable distinction at system catch (#210) — vtable type-check against the `__cajeta_unrecoverable_vtable_marker` global published by `Compiler::parse()` after stdlib load.
+- R5-C cancellation tokens (commit `fa7c7f8`) — `CancellationException extends RecoverableException`; scope-level cancel walks registered children and sets their atomic cancel flag.
+- R5-D exception escalation through scope — `scope_exit` joins children, cancels siblings on first throw, re-raises into the containing frame.
+- Comprehensive lint system: rule IDs + `@SuppressLint("id")` (commits `ded5897`, `e3d238e`); try/catch coverage awareness for `uncaught-throws` (#209, commit `996cf21`) — the lint walks an enclosing-try stack and suppresses warnings when any catch arm catches the throw (supertype-aware via `getSuperClasses()`).
+- Inherited-field write codegen fix (#208, commit `16434e5`) — subclass struct now prepends inherited fields, so GEPs for inherited fields share the parent's slot index. Follow-up (commit `0dda81b`) added the same walk to `BinaryOpExpression`'s ASSIGN slot-type lookup (mixed-width inherited fields were trampling neighbors with too-wide stores) and switched `CastExpression::generateCode` to `loadIfLValue` so `(T) obj.field` loads the value instead of ptrtoint'ing the GEP address.
+- `String`-parameter codegen fix (#211, commit `b987e59`) — variable-size-field check now gates on `dynamic_pointer_cast<CajetaStruct>`, so a `String` field on a regular class is freely writable. Unblocked `Throwable.message: String`.
+- `int8` / `uint8` wired as documented native types (commit `2a9655b`) — `INT8`/`UINT8` lexer rules and `CajetaType::init` registrations were missing, so `int8` lexed as IDENTIFIER and silently produced null types that segfaulted in struct layout.
+- Unknown field types throw `CAJETA_ERROR_UNKNOWN_TYPE` at `visitFieldDeclaration` instead of silently leaking null (commit `ac122a6`) — turns the same segfault shape into a diagnostic with the user's original type-name token.
 
 ---
 

@@ -18,6 +18,8 @@
 
 ## The hierarchy
 
+All four roots live in `package cajeta.error;` (the implicitly-loaded stdlib prelude registers them there). User-defined exceptions should extend one of these types; the package convention keeps exception hierarchies discoverable and encourages reuse over re-rolling.
+
 ```
 Throwable                           (abstract root, carries `message`)
 └── Exception                       (adds `cause` for chain-of-causality)
