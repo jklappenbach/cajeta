@@ -175,12 +175,23 @@ typedef enum {
     CAJETA_FIBER_DONE,      // trampoline returned; carrier will free
 } cajeta_fiber_state;
 
-// R5-A: per-scope tracking of spawned child tasks. The scope's closing
-// `}` calls __cajeta_scope_exit which waits for every registered task's
-// done flag before returning, guaranteeing the doc's "control doesn't
-// leave the block until every child has finished" property.
+// Forward declaration — scope_exit re-raises via __cajeta_throw, which
+// is defined later in the file.
+__attribute__((noreturn)) void __cajeta_throw(void* value);
+
+// R5-A/R5-D: per-scope tracking of spawned child tasks. The scope's
+// closing `}` calls __cajeta_scope_exit which waits for every registered
+// task's done flag before returning, guaranteeing the doc's "control
+// doesn't leave the block until every child has finished" property. R5-D
+// adds the exception slot: after waiting, scope_exit walks each task's
+// exception slot and re-raises the first one found.
+struct cajeta_scope_entry {
+    int32_t* done_addr;
+    void** exception_addr;  // points to the Throwable* slot; NULL on success
+};
+
 struct cajeta_scope_frame {
-    int32_t** task_dones;  // each ptr is the done field of a spawned Task<T>
+    struct cajeta_scope_entry* entries;
     int count;
     int cap;
     struct cajeta_scope_frame* prev;
@@ -414,7 +425,7 @@ void __cajeta_scope_enter(void) {
         fprintf(stderr, "cajeta: __cajeta_scope_enter malloc failed\n");
         abort();
     }
-    f->task_dones = NULL;
+    f->entries = NULL;
     f->count = 0;
     f->cap = 0;
     struct cajeta_scope_frame** top = __cajeta_scope_top_ptr();
@@ -422,44 +433,68 @@ void __cajeta_scope_enter(void) {
     *top = f;
 }
 
-// Append a task's done-addr to the current scope frame's list. spawn
-// sites call this just before __cajeta_task_run; the corresponding
-// scope_exit waits on each in turn. Doc behavior: spawn outside any
-// scope is a compile error — but today's MVP doesn't enforce that, so
-// register-without-scope is a no-op rather than an abort (preserving
-// the existing tests' top-level-spawn pattern).
-void __cajeta_scope_register(int32_t* done_addr) {
+// Append a task's (done, exception) pair to the current scope frame.
+// spawn sites call this just before __cajeta_task_run; the corresponding
+// scope_exit waits on done then inspects exception. Doc behavior: spawn
+// outside any scope is a compile error — but today's MVP doesn't enforce
+// that, so register-without-scope is a no-op rather than an abort
+// (preserving the existing tests' top-level-spawn pattern).
+void __cajeta_scope_register(int32_t* done_addr, void** exception_addr) {
     struct cajeta_scope_frame** top = __cajeta_scope_top_ptr();
     struct cajeta_scope_frame* f = *top;
-    if (!f) return;  // No active scope — silently ignore (see comment).
+    if (!f) return;
     if (f->count == f->cap) {
         int newcap = f->cap ? f->cap * 2 : 4;
-        int32_t** grown = (int32_t**) realloc(f->task_dones,
-            newcap * sizeof(int32_t*));
+        struct cajeta_scope_entry* grown =
+            (struct cajeta_scope_entry*) realloc(f->entries,
+                newcap * sizeof(struct cajeta_scope_entry));
         if (!grown) {
             fprintf(stderr, "cajeta: __cajeta_scope_register realloc failed\n");
             abort();
         }
-        f->task_dones = grown;
+        f->entries = grown;
         f->cap = newcap;
     }
-    f->task_dones[f->count++] = done_addr;
+    f->entries[f->count].done_addr = done_addr;
+    f->entries[f->count].exception_addr = exception_addr;
+    f->count++;
 }
 
-// Wait for every registered task's done flag, then pop the frame.
-// __cajeta_task_wait is fiber-aware (parks if we're a fiber, OS-blocks
-// if main) — both paths converge on "control doesn't leave until every
-// child is done".
+// Wait for every registered task's done flag, then walk again checking
+// exception slots. If any task threw, re-raise the first one found —
+// the doc's "first-throw wins" semantics for scope joins.
+//
+// R5-D-lite: no sibling cancellation yet. Pre-cancel R5-C lands, this
+// just waits for every child to complete naturally, then escalates.
+// When R5-C lands, the loop becomes: on first non-null exception,
+// cancel the rest, wait for them, then re-raise.
+static void __cajeta_scope_release(struct cajeta_scope_frame* f) {
+    free(f->entries);
+    free(f);
+}
+
 void __cajeta_scope_exit(void) {
     struct cajeta_scope_frame** top = __cajeta_scope_top_ptr();
     struct cajeta_scope_frame* f = *top;
     if (!f) return;
     for (int i = 0; i < f->count; i++) {
-        __cajeta_task_wait(f->task_dones[i]);
+        __cajeta_task_wait(f->entries[i].done_addr);
+    }
+    // First-throw-wins escalation. Walk in registration order so a
+    // deterministic child wins when multiple threw — same order spawns
+    // appear in source.
+    void* trigger = NULL;
+    for (int i = 0; i < f->count; i++) {
+        if (f->entries[i].exception_addr && *f->entries[i].exception_addr) {
+            trigger = *f->entries[i].exception_addr;
+            break;
+        }
     }
     *top = f->prev;
-    free(f->task_dones);
-    free(f);
+    __cajeta_scope_release(f);
+    if (trigger) {
+        __cajeta_throw(trigger);
+    }
 }
 
 // Watermark API for the R5-A' implicit function-body scope. Codegen
@@ -475,15 +510,31 @@ void* __cajeta_scope_save_top(void) {
 
 void __cajeta_scope_exit_to(void* watermark) {
     struct cajeta_scope_frame** top = __cajeta_scope_top_ptr();
+    // Collect the first trigger encountered while popping frames so we
+    // can re-raise it at the end. Walking innermost-out matches "child
+    // exceptions surface up to the enclosing scope"; the topmost frame's
+    // throws win over outer frames because we process them first.
+    void* trigger = NULL;
     while (*top != (struct cajeta_scope_frame*) watermark) {
         struct cajeta_scope_frame* f = *top;
-        if (!f) break;  // ran off the bottom; defensive
+        if (!f) break;
         for (int i = 0; i < f->count; i++) {
-            __cajeta_task_wait(f->task_dones[i]);
+            __cajeta_task_wait(f->entries[i].done_addr);
+        }
+        if (!trigger) {
+            for (int i = 0; i < f->count; i++) {
+                if (f->entries[i].exception_addr
+                        && *f->entries[i].exception_addr) {
+                    trigger = *f->entries[i].exception_addr;
+                    break;
+                }
+            }
         }
         *top = f->prev;
-        free(f->task_dones);
-        free(f);
+        __cajeta_scope_release(f);
+    }
+    if (trigger) {
+        __cajeta_throw(trigger);
     }
 }
 

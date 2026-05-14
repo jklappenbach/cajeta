@@ -2255,6 +2255,14 @@ namespace cajeta {
         builder->CreateCondBr(hasExc, rethrowBB, normalBB);
 
         builder->SetInsertPoint(rethrowBB);
+        // Clear the exception slot BEFORE throwing so the surrounding
+        // scope_exit_to doesn't re-raise the same exception when the
+        // user has already caught it via try/catch around the await.
+        // Without this, function-return-after-handled-throw triggers a
+        // ghost re-raise from the scope frame's exception walk.
+        builder->CreateStore(
+            llvm::ConstantPointerNull::get(llvm::cast<llvm::PointerType>(ptrTy)),
+            excSlot);
         if (llvm::Function* throwFn = module->getRuntimeFunction("__cajeta_throw")) {
             builder->CreateCall(throwFn, {excPtr});
         }
@@ -2545,15 +2553,18 @@ namespace cajeta {
         }
         // R5-A: register the task with the innermost enclosing scope so
         // its closing `}` will wait for this task before returning.
-        // Runtime no-ops if there's no active scope (today's MVP allows
-        // top-level spawns; the doc says they should be a compile error
-        // but enforcement is a future R5-B item).
+        // R5-D: also pass the exception slot so scope_exit can walk it
+        // post-wait and re-raise any caught throw via the doc's first-
+        // throw-wins escalation.
         if (llvm::Function* regFn = module->getRuntimeFunction(
                 "__cajeta_scope_register")) {
             llvm::Value* doneSlot = outerBuilder->CreateStructGEP(
                 taskTy, taskInstance, CajetaTask::DONE_FIELD_INDEX,
                 "scope_register_done");
-            outerBuilder->CreateCall(regFn, {doneSlot});
+            llvm::Value* excSlot = outerBuilder->CreateStructGEP(
+                taskTy, taskInstance, CajetaTask::EXCEPTION_FIELD_INDEX,
+                "scope_register_exc");
+            outerBuilder->CreateCall(regFn, {doneSlot, excSlot});
         }
         if (llvm::Function* runFn = module->getRuntimeFunction(
                 "__cajeta_task_run")) {

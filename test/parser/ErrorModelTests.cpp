@@ -138,6 +138,63 @@ TEST(ErrorModelTests, asyncFnSuccessAwaitsValueThroughBranches) {
     EXPECT_EQ(runI32(src), 17);
 }
 
+// R5-D: a spawned task throws but isn't awaited. The enclosing scope's
+// closing `}` walks each registered task's exception slot and re-raises
+// the first one found into the surrounding frame. Caught by the
+// outer try/catch.
+TEST(ErrorModelTests, scopeReraisesUnawaitedSpawnThrow) {
+    auto src =
+        "package test;\n"
+        "public final class D {\n"
+        "    public static async int32 failing() {\n"
+        "        throw 77;\n"
+        "        return 0;\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        int32 result = -1;\n"
+        "        try {\n"
+        "            scope {\n"
+        "                spawn failing();\n"
+        "            }\n"
+        "        } catch (Exception e) {\n"
+        "            result = (int32) e;\n"
+        "        }\n"
+        "        return result;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 77);
+}
+
+// R5-D: spawn at the function-body level (no explicit scope). The
+// implicit function-body scope picks up the throw at function exit
+// and re-raises into the function's caller. Here run() doesn't catch,
+// so the throw propagates out — but with no test main wrapping, an
+// uncaught throw would abort. Wrap in try/catch to verify propagation.
+TEST(ErrorModelTests, implicitScopeReraisesAtFunctionExit) {
+    auto src =
+        "package test;\n"
+        "public final class D {\n"
+        "    public static async int32 failing() {\n"
+        "        throw 31;\n"
+        "        return 0;\n"
+        "    }\n"
+        "    public static int32 inner() {\n"
+        "        spawn failing();\n"
+        "        return 0;\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        int32 result = -1;\n"
+        "        try {\n"
+        "            result = inner();\n"
+        "        } catch (Exception e) {\n"
+        "            result = (int32) e;\n"
+        "        }\n"
+        "        return result;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 31);
+}
+
 // Constructor throws clause — same grammar, separate parse path.
 TEST(ErrorModelTests, constructorThrowsParses) {
     auto src =
