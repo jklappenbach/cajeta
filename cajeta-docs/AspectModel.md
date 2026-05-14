@@ -203,7 +203,19 @@ Without `@Order`, source-declaration order in the aspect class is used. Across a
 A class annotated `@Component` becomes part of the compile-time DI graph. The annotation takes two optional parameters:
 
 - `name = "..."` — a qualifier for disambiguation when multiple components implement the same interface. Default: no qualifier (the component matches unqualified injections of its declared types).
-- `allocate = ALLOCATE_SINGLETON | ALLOCATE_TRANSIENT` — the instantiation policy. Default: `ALLOCATE_SINGLETON` (one shared instance lazily constructed on first inject, lives until program exit). `ALLOCATE_TRANSIENT` constructs a fresh instance at every injection site, owned by the receiver and dropped via the normal drop chain when the receiver goes out of scope.
+- `allocate = ALLOCATE_SINGLETON | ALLOCATE_CONTAINER_SCOPE | ALLOCATE_CALL_SCOPE | ALLOCATE_TRANSIENT` — the instantiation policy. Default: `ALLOCATE_SINGLETON`. The four modes form a hierarchy of decreasing lifetime:
+
+  | Mode | Lifetime | One instance per |
+  |------|----------|------------------|
+  | `ALLOCATE_SINGLETON` | program | process |
+  | `ALLOCATE_CONTAINER_SCOPE` | fiber | spawned task (or main, treated as one container) |
+  | `ALLOCATE_CALL_SCOPE` | call | method activation |
+  | `ALLOCATE_TRANSIENT` | injection | injection site |
+
+  - **`ALLOCATE_SINGLETON`** — one shared instance per process, lazily constructed on first inject, lives until program exit. `@PreDestroy` fires at exit.
+  - **`ALLOCATE_CONTAINER_SCOPE`** — one instance per fiber (or per main thread, when not in a fiber). Created on first inject within the fiber, shared by every other inject in that fiber, dropped when the fiber completes. Stored in a per-fiber cache on the `cajeta_fiber` struct. The natural fit for "this should be one-per-task" patterns: a `RequestContext`, a per-task tracing span, a connection-per-task lease.
+  - **`ALLOCATE_CALL_SCOPE`** — one instance per call activation, shared across the entire transitive call graph of one method invocation. Created on first inject within the call, dropped when the activation's drop chain runs (i.e., at the method's return or throw). The natural fit for "this single operation needs its own context" patterns: a transaction handle, a per-request audit trail, an in-progress message-builder. Implemented via the existing implicit function-body scope (R5-A').
+  - **`ALLOCATE_TRANSIENT`** — a fresh instance at every injection site. Owned by the receiver and dropped via the normal drop chain when the receiver goes out of scope. No caching at all.
 
 ```cajeta
 @Component public class Database {
