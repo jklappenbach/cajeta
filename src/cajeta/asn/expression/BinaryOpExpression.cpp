@@ -343,16 +343,31 @@ namespace cajeta {
                     }
                 } else if (auto dotLhs = dynamic_pointer_cast<DotExpression>(lhsAst)) {
                     // `obj.field = value` — slot type is the field's declared
-                    // type. Walk down the chain to find the field on the
-                    // receiver's class/struct.
+                    // type. Walk the inheritance chain to find the field; an
+                    // inherited field lives on an ancestor's properties map,
+                    // not the subclass's own. Without this walk, slotTy stays
+                    // null for inherited writes and a wide-default integer
+                    // literal (i64) stores past the slot's width into the
+                    // next field. (#208 follow-up.)
                     if (!dotLhs->getChildren().empty()) {
                         auto recv = dynamic_pointer_cast<Expression>(dotLhs->getChildren()[0]);
                         if (recv) {
                             if (!recv->getResolvedType()) recv->resolveTypes(module);
                             if (auto klass = dynamic_pointer_cast<CajetaClass>(recv->getResolvedType())) {
-                                auto& props = klass->getProperties();
-                                auto it = props.find(dotLhs->getIdentifier());
-                                if (it != props.end()) {
+                                StructurePropertyPtr found;
+                                std::function<bool(const CajetaClassPtr&)> findProp =
+                                    [&](const CajetaClassPtr& cls) -> bool {
+                                        auto pit = cls->getProperties().find(dotLhs->getIdentifier());
+                                        if (pit != cls->getProperties().end()) {
+                                            found = pit->second;
+                                            return true;
+                                        }
+                                        for (auto& parent : cls->getSuperClasses()) {
+                                            if (findProp(parent)) return true;
+                                        }
+                                        return false;
+                                    };
+                                if (findProp(klass)) {
                                     // Reject writes to variable-size struct
                                     // fields — they can't be resized in place.
                                     // See WireFormats.md § Mutation rules.
@@ -366,16 +381,16 @@ namespace cajeta {
                                     bool isViewStruct =
                                         dynamic_pointer_cast<CajetaStruct>(klass) != nullptr;
                                     if (isViewStruct
-                                            && CajetaStruct::isVariableSize(it->second)) {
+                                            && CajetaStruct::isVariableSize(found)) {
                                         char buf[256];
                                         snprintf(buf, sizeof(buf),
                                             "cannot reassign variable-size struct field '%s'; "
                                             "build a new buffer instead",
-                                            it->second->getName().c_str());
+                                            found->getName().c_str());
                                         throw Exception(buf,
                                             "CAJETA_ERROR_VARSIZE_FIELD_ASSIGN");
                                     }
-                                    slotTy = it->second->getType()->getLlvmType();
+                                    slotTy = found->getType()->getLlvmType();
                                 }
                             }
                         }

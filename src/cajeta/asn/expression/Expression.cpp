@@ -507,7 +507,16 @@ namespace cajeta {
     llvm::Value* CastExpression::generateCode(CajetaModulePtr module) {
         if (children.empty() || !destType) return nullptr;
         auto* builder = module->getBuilder();
-        auto [_, val] = loadOperand(module, children[0]);
+        // loadOperand only unwraps AllocaInst, which leaves field-access
+        // GEPs (DotExpression, implicit-this) as raw pointers — `(int64)
+        // obj.field` would then ptrtoint the GEP address instead of
+        // loading + extending the field value. loadIfLValue uses the
+        // ast's resolvedType to load through GEPs at the right element
+        // type.
+        llvm::Value* raw = children[0]->generateCode(module);
+        if (!raw) return nullptr;
+        auto childAst = dynamic_pointer_cast<Expression>(children[0]);
+        llvm::Value* val = loadIfLValue(module, raw, childAst);
         if (!val) return nullptr;
         llvm::Type* srcTy = val->getType();
         llvm::Type* dstTy = destType->getLlvmType();

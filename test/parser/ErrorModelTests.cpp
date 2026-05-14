@@ -22,6 +22,12 @@ int32_t runI32(const std::string& src) {
     return fn();
 }
 
+int64_t runI64(const std::string& src) {
+    auto jit = CajetaJit::compile(src, "test.D");
+    auto fn = jit->lookup<int64_t (*)()>("run");
+    return fn();
+}
+
 } // namespace
 
 // Throws clause on a method parses and the body still codegens. No
@@ -313,6 +319,71 @@ TEST(ErrorModelTests, subclassWritesOwnFieldAfterInherited) {
         "    }\n"
         "}\n";
     EXPECT_EQ(runI32(src), 42);
+}
+
+// #208 stress: three-level inheritance. Grandchild constructor writes a
+// grandparent field; reads pull from every level. Exercises the recursive
+// `countInheritedFields` (two levels deep) and `getFieldLlvmIndex`'s
+// ancestor-walk in CajetaClass.h, plus DotExpression's recursive findProp
+// in resolveTypes / generateCode. Layout for `Child` must be
+// { vtable, g (i32), p (i32), c (i32) } so g lands at LLVM index 1, p at 2,
+// c at 3 — independent of which level declared each.
+TEST(ErrorModelTests, threeLevelInheritedFieldReadWrite) {
+    auto src =
+        "package test;\n"
+        "public class Grandparent {\n"
+        "    public int32 g;\n"
+        "    public Grandparent() { this.g = 0; }\n"
+        "}\n"
+        "public class Parent extends Grandparent {\n"
+        "    public int32 p;\n"
+        "    public Parent() { this.p = 0; }\n"
+        "}\n"
+        "public class Child extends Parent {\n"
+        "    public int32 c;\n"
+        "    public Child(int32 g, int32 p, int32 c) {\n"
+        "        this.g = g;\n"
+        "        this.p = p;\n"
+        "        this.c = c;\n"
+        "    }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Child obj = new Child(100, 20, 3);\n"
+        "        return obj.g + obj.p + obj.c;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 123);
+}
+
+// #208 stress: mixed slot widths across inherited and own fields. The
+// parent's int32 field must be stored at i32 width (not promoted to i64
+// from a wide-default literal) so it doesn't trample the child's int64
+// field that sits right after. Also exercises the `(int64) c.a` cast on
+// an inherited field, which loads through the GEP to the i32 value and
+// sign-extends — without that load, the cast would ptrtoint the GEP
+// address and produce uninitialized-stack-shaped garbage.
+TEST(ErrorModelTests, twoLevelMixedFieldWidths) {
+    auto src =
+        "package test;\n"
+        "public class Parent {\n"
+        "    public int32 a;\n"
+        "    public Parent() { this.a = 0; }\n"
+        "}\n"
+        "public class Child extends Parent {\n"
+        "    public int64 q;\n"
+        "    public Child() {\n"
+        "        this.a = 7;\n"
+        "        this.q = 12345;\n"
+        "    }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int64 run() {\n"
+        "        Child c = new Child();\n"
+        "        return c.q + (int64) c.a;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI64(src), 12352LL);
 }
 
 // #211 regression: writing to a String-typed field of a regular class used
