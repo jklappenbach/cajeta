@@ -104,6 +104,12 @@ std::unique_ptr<CajetaJit> CajetaJit::compile(const std::string& source,
                                           archiveRoot.string());
     compiler->compile(module);
 
+    // AspectModel.md § A3: pointcut matching runs after parse and
+    // before any per-method codegen begins. Mirrors what
+    // Compiler::compile(entryMethod, ...) does on its multi-file
+    // path so JIT-based tests see the same advice-cache state.
+    cajeta::CajetaModule::resolveAdviceMatches();
+
     // Two-phase codegen (signature registration then body lowering). Mirrors what
     // Compiler::compile(entryMethod,...) does for multi-file builds.
     for (auto& m : compiler->getModules()) {

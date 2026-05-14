@@ -34,6 +34,39 @@ namespace cajeta {
 
     typedef shared_ptr<Method> MethodPtr;
 
+    // Advice kinds — which `@Before` / `@After` / etc. annotation
+    // sits on the advice method. A3's pointcut-matching pass tags
+    // each AdviceMatch with one of these so A4+'s codegen can pick
+    // the right wrapper shape per advice form.
+    enum class AdviceKind {
+        Before,
+        After,
+        Around,
+        AfterReturning,
+        AfterThrowing,
+    };
+
+    // Pointcut shape — how the advice method's pointcut argument
+    // resolved. Marker-annotation pointcut: the advice fires on
+    // every method annotated with the named annotation type.
+    // Type-based pointcut: the advice fires on every method on the
+    // named class or any subclass. v1's two recognized shapes.
+    enum class PointcutShape {
+        MarkerAnnotation,
+        Type,
+    };
+
+    // One (aspect, advice method, advice kind, pointcut shape)
+    // tuple cached on a user Method that the pointcut-matching
+    // pass deemed a match. A4+ walks the list at codegen time to
+    // generate the appropriate wrapper.
+    struct AdviceMatch {
+        CajetaClassPtr aspectClass;     // declaring @Aspect class
+        MethodPtr adviceMethod;         // method annotated @Before/etc.
+        AdviceKind kind;
+        PointcutShape shape;
+    };
+
     class MethodCallParameter;
 
     struct ParameterEntry {
@@ -104,6 +137,11 @@ namespace cajeta {
         // explicit `scope { }` the return is inside of — gets waited
         // and popped before the ret instruction.
         llvm::AllocaInst* scopeWatermark = nullptr;
+        // Advice matches: each entry says "this aspect's advice
+        // method applies to me." Populated by the pointcut-matching
+        // pass (AspectModel.md § A3) that runs once per Compiler
+        // after parse, before codegen. Read by A4+'s codegen wrapper.
+        vector<AdviceMatch> matchingAdvice;
     public:
         Method(CajetaModulePtr module,
             string& name,
@@ -128,6 +166,16 @@ namespace cajeta {
 
         const vector<QualifiedNamePtr>& getThrowsList() const { return throwsList; }
         void setThrowsList(vector<QualifiedNamePtr> list) { throwsList = std::move(list); }
+
+        // Advice-match cache (AspectModel.md § A3). The pointcut-
+        // matching pass appends; A4+ codegen iterates. Empty for
+        // every method by default — only the matching pass populates.
+        void addAdviceMatch(AdviceMatch m) {
+            matchingAdvice.push_back(std::move(m));
+        }
+        const vector<AdviceMatch>& getMatchingAdvice() const {
+            return matchingAdvice;
+        }
 
         llvm::Function* getLlvmFunction() { return llvmFunction; }
 

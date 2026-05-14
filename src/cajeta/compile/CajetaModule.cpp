@@ -136,6 +136,139 @@ namespace cajeta {
         Method::getArchive().clear();
     }
 
+    // Walks the registered aspects, identifies each advice method by
+    // its @Before/@After/@Around/@AfterReturning/@AfterThrowing
+    // annotation, resolves the pointcut's `.class` argument, and
+    // pushes an AdviceMatch onto every user method that satisfies the
+    // pointcut. See AspectModel.md § Implementation roadmap A3.
+    //
+    // Pointcut shape discriminator (v1): if the pointcut class name
+    // resolves to a registered class in the global structure map,
+    // it's type-based ("every method on this class"). Otherwise it's
+    // assumed to be marker-annotation mode ("every method annotated
+    // with this name") — annotation types declared via `@interface`
+    // don't register as classes today (visitAnnotationTypeDeclaration
+    // is inert), so absence-from-structures is a reliable proxy.
+    void CajetaModule::resolveAdviceMatches() {
+        if (aspectClasses.empty()) return;
+
+        auto classifyAdvice =
+            [](const MethodPtr& m, AdviceKind& outKind, string& outName) -> bool {
+                static const std::pair<const char*, AdviceKind> kinds[] = {
+                    { "Before",         AdviceKind::Before },
+                    { "After",          AdviceKind::After },
+                    { "Around",         AdviceKind::Around },
+                    { "AfterReturning", AdviceKind::AfterReturning },
+                    { "AfterThrowing",  AdviceKind::AfterThrowing },
+                };
+                for (auto& [name, kind] : kinds) {
+                    if (m->findAnnotation(name)) {
+                        outKind = kind;
+                        outName = name;
+                        return true;
+                    }
+                }
+                return false;
+            };
+
+        // Build a set of aspect classes for "is this method's owner
+        // an aspect?" checks during the user-method walk. Advice
+        // doesn't apply to other aspects' methods; users keep that
+        // separate (cross-aspect coordination is via DI, not AoP).
+        set<CajetaClassPtr> aspectSet(aspectClasses.begin(), aspectClasses.end());
+
+        // Resolve a short pointcut name (e.g. "Audited") to a
+        // registered class, if one exists. Walks strutureToModule
+        // and matches on short typeName — pointcuts in v1 are
+        // written without package qualifiers (`@Before(Audited.class)`),
+        // and short-name lookup matches how the rest of the
+        // compiler resolves user-written type names.
+        auto resolveClassByShortName =
+            [](const string& shortName) -> CajetaClassPtr {
+                for (auto& [canonical, mod] : strutureToModule) {
+                    if (!mod) continue;
+                    auto& structs = mod->getStructures();
+                    auto it = structs.find(canonical);
+                    if (it == structs.end() || !it->second) continue;
+                    auto qn = it->second->getQName();
+                    if (qn && qn->getTypeName() == shortName) {
+                        return it->second;
+                    }
+                }
+                return nullptr;
+            };
+
+        for (auto& aspect : aspectClasses) {
+            if (!aspect) continue;
+            for (auto& [methodKey, adviceMethod] : aspect->getMethods()) {
+                if (!adviceMethod) continue;
+                AdviceKind kind = AdviceKind::Before;
+                string adviceAnnotName;
+                if (!classifyAdvice(adviceMethod, kind, adviceAnnotName)) {
+                    continue;
+                }
+                auto ann = adviceMethod->findAnnotation(adviceAnnotName);
+                if (!ann) continue;  // shouldn't happen — classifyAdvice just found it
+                string pointcutClassName = ann->getClassRef();
+                if (pointcutClassName.empty()) {
+                    // Pointcut argument wasn't a class literal — v1
+                    // doesn't recognize any other form, so this
+                    // advice silently doesn't match anything.
+                    // Higher-quality diagnostics ship in a later
+                    // pass (deferred to A12 composition tests).
+                    continue;
+                }
+
+                CajetaClassPtr pointcutClass = resolveClassByShortName(pointcutClassName);
+                PointcutShape shape = pointcutClass
+                    ? PointcutShape::Type
+                    : PointcutShape::MarkerAnnotation;
+
+                // Walk every user class once via strutureToModule
+                // (the process-wide canonical->module map). For each
+                // class, walk its declared methods. Skip aspect-
+                // owned methods so advice doesn't fire on advice
+                // bodies.
+                for (auto& [canonical, mod] : strutureToModule) {
+                    if (!mod) continue;
+                    auto& structs = mod->getStructures();
+                    auto it = structs.find(canonical);
+                    if (it == structs.end() || !it->second) continue;
+                    auto userClass = it->second;
+                    if (aspectSet.count(userClass)) continue;
+
+                    for (auto& [umkey, userMethod] : userClass->getMethods()) {
+                        if (!userMethod) continue;
+                        bool matched = false;
+                        if (shape == PointcutShape::MarkerAnnotation) {
+                            if (userMethod->findAnnotation(pointcutClassName)) {
+                                matched = true;
+                            }
+                        } else {
+                            // Type-based pointcut: the method belongs
+                            // to the pointcut class. Inheritance walks
+                            // (the doc's "implementer-of-interface"
+                            // case) ship alongside A12 once the
+                            // ancestor-resolution path is stable for
+                            // post-vtable use.
+                            if (userClass == pointcutClass) {
+                                matched = true;
+                            }
+                        }
+                        if (matched) {
+                            AdviceMatch am;
+                            am.aspectClass = aspect;
+                            am.adviceMethod = adviceMethod;
+                            am.kind = kind;
+                            am.shape = shape;
+                            userMethod->addAdviceMatch(std::move(am));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     bool CajetaModule::linkRuntime() {
         // Tracked via presence of a sentinel runtime function in the module — if it's
         // already there, the runtime has been linked.

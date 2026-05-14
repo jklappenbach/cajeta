@@ -37,6 +37,7 @@ namespace cajeta {
         Int64,
         String,
         Bool,
+        ClassRef,                    // `Foo.class` — strVal holds the type name (no `.class` suffix)
         Int64List,
         StringList,
         BoolList,
@@ -46,7 +47,7 @@ namespace cajeta {
         string name;                 // "" for the unnamed-arg form (`@Order(2)`)
         AnnotationArgKind kind = AnnotationArgKind::String;
         int64_t i64Val = 0;
-        string strVal;
+        string strVal;               // also used by ClassRef (the type name)
         bool boolVal = false;
         vector<int64_t> i64List;
         vector<string> strList;
@@ -92,6 +93,14 @@ namespace cajeta {
         bool getBool(const string& key = "value", bool fallback = false) const {
             auto* a = findArg(key);
             return (a && a->kind == AnnotationArgKind::Bool) ? a->boolVal : fallback;
+        }
+        // Returns the captured type name (no `.class` suffix), or
+        // empty string if the arg is missing or not a class literal.
+        // Pointcut arguments — `@Before(Audited.class)` — capture as
+        // ClassRef with strVal = "Audited".
+        string getClassRef(const string& key = "value") const {
+            auto* a = findArg(key);
+            return (a && a->kind == AnnotationArgKind::ClassRef) ? a->strVal : string();
         }
         const vector<string>& getStringList(const string& key = "value") const {
             static const vector<string> empty;

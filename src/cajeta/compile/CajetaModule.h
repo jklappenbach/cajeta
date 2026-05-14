@@ -235,6 +235,17 @@ namespace cajeta {
             return aspectClasses;
         }
 
+        // A3 pointcut-matching pass. Run once after every module's
+        // parse completes and before any method's codegen begins —
+        // i.e., between Compiler::compile(module) and Phase 1 in
+        // Compiler::compile(entryMethod, ...). For each advice
+        // method on each registered aspect, resolve its pointcut
+        // class argument, classify it as marker-annotation or type-
+        // based, walk every user method, and push an AdviceMatch
+        // onto the ones that match. A4+ reads these matches at
+        // codegen.
+        static void resolveAdviceMatches();
+
         // Active-module accessor. Returns the module currently being walked,
         // or nullptr outside any walk. Call sites that didn't thread a module
         // parameter through (parse-time Expression / Type construction) read

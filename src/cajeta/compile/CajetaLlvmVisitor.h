@@ -484,13 +484,15 @@ namespace cajeta {
 
         // Classify a single element-value token text and write the
         // discriminated result into `out`. Recognized shapes:
-        //   "foo"   → AnnotationArgKind::String, strVal=foo
-        //   123     → AnnotationArgKind::Int64,  i64Val=123
-        //   true    → AnnotationArgKind::Bool,   boolVal=true
-        // Anything else falls through to String with the raw text — the
-        // user gets back what they typed, which is enough for the
-        // current annotation surface (no class-literals, no nested
-        // annotations in A1). Returns true on a confident classification.
+        //   "foo"     → AnnotationArgKind::String,   strVal=foo
+        //   123       → AnnotationArgKind::Int64,    i64Val=123
+        //   true      → AnnotationArgKind::Bool,     boolVal=true
+        //   Foo.class → AnnotationArgKind::ClassRef, strVal=Foo
+        // Anything else falls through to String with the raw text —
+        // the user gets back what they typed, which is enough for
+        // the current annotation surface (no nested annotations
+        // here; A2+ may add typed references). Returns true on a
+        // confident classification.
         static bool classifyLiteral(const std::string& raw, AnnotationArg& out) {
             std::string t = trimWs(raw);
             if (t.empty()) {
@@ -508,9 +510,25 @@ namespace cajeta {
                 out.boolVal = (t == "true");
                 return true;
             }
+            // Class literal — `Foo.class`. The grammar's primary
+            // production for `typeTypeOrVoid '.' CLASS` produces this
+            // text. Strip the suffix and capture the type-name
+            // prefix; pointcut matching (A3) then resolves it
+            // against the registered classes. Qualified names
+            // (`pkg.Foo.class`) keep the dots; the matcher looks up
+            // by short name first, then canonical.
+            {
+                static const std::string suffix = ".class";
+                if (t.size() > suffix.size()
+                        && std::equal(suffix.rbegin(), suffix.rend(), t.rbegin())) {
+                    out.kind = AnnotationArgKind::ClassRef;
+                    out.strVal = t.substr(0, t.size() - suffix.size());
+                    return true;
+                }
+            }
             // Integer (decimal, with optional leading sign). Hex/oct/
             // binary literals can land here later when annotations
-                // actually use them.
+            // actually use them.
             bool numeric = !t.empty();
             size_t i = 0;
             if (t[0] == '+' || t[0] == '-') ++i;

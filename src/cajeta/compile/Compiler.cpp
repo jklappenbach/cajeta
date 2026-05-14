@@ -220,6 +220,14 @@ public class UnrecoverableException extends Exception {
 //            return;
 //        }
 
+        // AspectModel.md § A3 pointcut-matching pass. Runs after
+        // every module has been parsed (all classes + advice methods
+        // registered, all annotations captured with their args) and
+        // before Phase 1 starts emitting prototypes. The pass
+        // populates each user method's matchingAdvice list so A4+'s
+        // codegen wrappers can find their advice at IR emit time.
+        CajetaModule::resolveAdviceMatches();
+
         // Phase 1: declaration/signature registration. Walk every method across every
         // module and register its prototype with the LLVM module. Cross-method and
         // cross-class references can resolve in Phase 2 because every name is already
