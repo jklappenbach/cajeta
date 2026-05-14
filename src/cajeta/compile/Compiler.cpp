@@ -67,6 +67,10 @@ package cajeta.lang;
 public class Throwable {
     public pointer message;
     public pointer cause;
+    public Throwable(pointer message) {
+        this.message = message;
+        this.cause = 0;
+    }
     public Throwable(pointer message, pointer cause) {
         this.message = message;
         this.cause = cause;
