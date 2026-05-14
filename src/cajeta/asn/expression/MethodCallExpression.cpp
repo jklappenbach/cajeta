@@ -889,6 +889,45 @@ namespace cajeta {
             }
         }
 
+        // R5/Error-model #201: uncaught-throws lint. If the resolved target
+        // declares `throws X, Y`, walk that list and warn for each entry
+        // that the enclosing method doesn't itself declare. Advisory only —
+        // no compile error, matching ErrorModel.md's "throws is
+        // documentation, not contract enforcement" position. Future work:
+        // also check enclosing try/catch coverage; today we conservatively
+        // warn regardless of try-wrapping, which is over-noisy but at least
+        // visible.
+        bool floatingParamsLint = true;
+        for (auto& p : entries) if (p.label.empty()) { floatingParamsLint = false; break; }
+        vector<ParameterEntry> entriesCopy = entries;
+        MethodPtr targetMethod = targetClass->resolveMethod(
+            methodCallName, entriesCopy, /*isConstructor=*/false, floatingParamsLint);
+        if (targetMethod) {
+            auto& throwsList = targetMethod->getThrowsList();
+            if (!throwsList.empty()) {
+                auto currentMethod = module->getCurrentMethod();
+                if (currentMethod) {
+                    auto& currentThrows = currentMethod->getThrowsList();
+                    for (auto& thrownType : throwsList) {
+                        bool declared = false;
+                        for (auto& declaredType : currentThrows) {
+                            if (thrownType->toCanonical() == declaredType->toCanonical()) {
+                                declared = true;
+                                break;
+                            }
+                        }
+                        if (!declared) {
+                            std::cerr << "warning: call to " << methodCallName
+                                << " can throw " << thrownType->toCanonical()
+                                << " but enclosing " << currentMethod->getName()
+                                << " neither catches nor declares it"
+                                << std::endl;
+                        }
+                    }
+                }
+            }
+        }
+
         return targetClass->invokeMethod(methodCallName, entries, /*isConstructor=*/false, thisValue);
     }
 
