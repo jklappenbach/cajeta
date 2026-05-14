@@ -436,8 +436,24 @@ namespace cajeta {
                 "__cajeta_scope_enter")) {
             builder->CreateCall(enterFn, {});
         }
-        if (block) block->generateCode(module);
-        // scope_exit only emits if the block didn't already terminate
+        // Manage the block's drop frame ourselves so scope_exit runs
+        // BEFORE emitTopFrameDrops fires. If drops fired first, a
+        // Task drop's free(task) would happen before scope_exit's
+        // exception-slot walk reads task->exception — use-after-free
+        // on the very pointer the scope holds. Method::generateCode's
+        // fall-through path has the same ordering rule (scope_exit_to
+        // before emitOwnerDrops at line 322-329 in Method.cpp); this
+        // matches it for explicit `scope { }` blocks. Mirrors the
+        // pattern Block::generateCode uses, just split apart so
+        // scope_exit can land between body and drops.
+        auto m = module->getCurrentMethod();
+        if (m) m->pushDropFrame();
+        if (block) {
+            for (auto& child : block->getChildren()) {
+                child->generateCode(module);
+            }
+        }
+        // scope_exit only emits if the body didn't already terminate
         // (return/throw mid-block). A terminator means control is
         // exiting the function instead of falling off the brace — the
         // surrounding cleanup paths will be responsible for waiting.
@@ -448,7 +464,9 @@ namespace cajeta {
                     "__cajeta_scope_exit")) {
                 builder->CreateCall(exitFn, {});
             }
+            if (m) m->emitTopFrameDrops(module);
         }
+        if (m) m->popDropFrame();
         return nullptr;
     }
 
