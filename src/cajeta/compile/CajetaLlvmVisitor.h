@@ -155,29 +155,31 @@ namespace cajeta {
             }
 
             // Capture user-supplied annotations from the enclosing
-            // typeDeclaration (e.g. `@Loggable public class Foo`). v1 stores
-            // them by name only — element-value pairs (`@MyAnn(key=v)`) are
-            // parsed but not yet captured. Annotations are accessible to
-            // future reflection / RTTI paths via Annotatable::getAnnotations.
+            // typeDeclaration (e.g. `@Component(name = "disk") public
+            // class DiskPersister`). parseAnnotationInstance walks the
+            // element-value-pair list and stores typed values on the
+            // resulting AnnotationInstance — consumers read them via
+            // Annotatable::findAnnotation. The by-name set is also
+            // populated for the call sites that only need presence.
+            // See AspectModel.md § Implementation roadmap A1.
             if (auto* typeDecl = dynamic_cast<CajetaParser::TypeDeclarationContext*>(ctx->parent)) {
                 for (auto* mod : typeDecl->classOrInterfaceModifier()) {
-                    auto* ann = mod->annotation();
-                    if (!ann) continue;
-                    QualifiedNamePtr qn;
-                    if (ann->qualifiedName()) {
-                        qn = QualifiedName::fromContext(ann->qualifiedName());
-                    } else if (auto* alt = ann->altAnnotationQualifiedName()) {
-                        // `pkg.@MyAnn` form: package prefix lives in
-                        // identifier(0..n-2), the annotation name is the
-                        // last identifier (after the '@'). v1 takes only
-                        // the leaf name.
-                        const auto& ids = alt->identifier();
-                        if (!ids.empty()) {
-                            qn = QualifiedName::getOrInsert(
-                                ids.back()->getText(), "");
+                    if (auto inst = parseAnnotationInstance(mod->annotation())) {
+                        structure->addAnnotationInstance(inst);
+                        // @SuppressLint on a class declaration: derive
+                        // the cached rule-ID list from the typed args
+                        // so isLintSuppressed stays O(N) over a tiny
+                        // vector rather than walking annotations each
+                        // call.
+                        if (inst->getName()->getTypeName() == "SuppressLint") {
+                            for (auto& id : inst->getStringList()) {
+                                structure->addSuppressedLint(id);
+                            }
+                            // Single-string form: SuppressLint("foo").
+                            const string& single = inst->getString();
+                            if (!single.empty()) structure->addSuppressedLint(single);
                         }
                     }
-                    if (qn) structure->addAnnotation(qn);
                 }
             }
 
@@ -453,40 +455,222 @@ namespace cajeta {
             }
         }
 
+        // Strip surrounding ASCII whitespace from a literal's text.
+        // Annotation argument tokens come from ANTLR's getText() which
+        // concatenates token text verbatim — array initializers in
+        // particular contain interior whitespace around the commas.
+        static std::string trimWs(const std::string& s) {
+            size_t b = 0, e = s.size();
+            while (b < e && std::isspace((unsigned char) s[b])) ++b;
+            while (e > b && std::isspace((unsigned char) s[e - 1])) --e;
+            return s.substr(b, e - b);
+        }
+
+        // Classify a single element-value token text and write the
+        // discriminated result into `out`. Recognized shapes:
+        //   "foo"   → AnnotationArgKind::String, strVal=foo
+        //   123     → AnnotationArgKind::Int64,  i64Val=123
+        //   true    → AnnotationArgKind::Bool,   boolVal=true
+        // Anything else falls through to String with the raw text — the
+        // user gets back what they typed, which is enough for the
+        // current annotation surface (no class-literals, no nested
+        // annotations in A1). Returns true on a confident classification.
+        static bool classifyLiteral(const std::string& raw, AnnotationArg& out) {
+            std::string t = trimWs(raw);
+            if (t.empty()) {
+                out.kind = AnnotationArgKind::String;
+                out.strVal = "";
+                return false;
+            }
+            if (t.size() >= 2 && t.front() == '"' && t.back() == '"') {
+                out.kind = AnnotationArgKind::String;
+                out.strVal = t.substr(1, t.size() - 2);
+                return true;
+            }
+            if (t == "true" || t == "false") {
+                out.kind = AnnotationArgKind::Bool;
+                out.boolVal = (t == "true");
+                return true;
+            }
+            // Integer (decimal, with optional leading sign). Hex/oct/
+            // binary literals can land here later when annotations
+                // actually use them.
+            bool numeric = !t.empty();
+            size_t i = 0;
+            if (t[0] == '+' || t[0] == '-') ++i;
+            if (i == t.size()) numeric = false;
+            for (; i < t.size() && numeric; ++i) {
+                if (!std::isdigit((unsigned char) t[i])) numeric = false;
+            }
+            if (numeric) {
+                try {
+                    out.kind = AnnotationArgKind::Int64;
+                    out.i64Val = (int64_t) std::stoll(t);
+                    return true;
+                } catch (...) {
+                    // Fall through to raw-string fallback.
+                }
+            }
+            // Unknown shape (identifier reference, enum constant, etc.).
+            // Keep as a raw string so consumers see the source text;
+            // A2+ may parse these into typed references.
+            out.kind = AnnotationArgKind::String;
+            out.strVal = t;
+            return false;
+        }
+
+        // Build an AnnotationInstance from an ANTLR annotation context.
+        // Walks elementValuePairs (name = value, name = value, ...) or
+        // a single bare elementValue (the unnamed-arg form, stored
+        // with name="" and looked up by callers as the conventional
+        // "value" key). Array initializers map to *List kinds; each
+        // element classifies independently and the list takes the
+        // dominant kind (all-strings → StringList, all-ints → Int64List,
+        // all-bools → BoolList; mixed lists fall back to StringList of
+        // the raw text). Unsupported elementValue shapes (nested
+        // annotation, expressions beyond literals) are captured with
+        // their raw getText() as a String; A2+ can refine.
+        //
+        // `ann` may be null — returns nullptr in that case. The
+        // returned instance always has a resolvable name (or nullptr
+        // if the annotation context didn't yield one, which is a
+        // malformed parser state we don't try to recover from).
+        static AnnotationInstancePtr parseAnnotationInstance(
+                CajetaParser::AnnotationContext* ann) {
+            if (!ann) return nullptr;
+            QualifiedNamePtr qn;
+            if (ann->qualifiedName()) {
+                qn = QualifiedName::fromContext(ann->qualifiedName());
+            } else if (auto* alt = ann->altAnnotationQualifiedName()) {
+                // `pkg.@MyAnn` form — leaf identifier is the
+                // annotation name. v1 takes the short name only;
+                // package-qualified annotation lookups can be added
+                // when reflection consumers need the full canonical.
+                const auto& ids = alt->identifier();
+                if (!ids.empty()) {
+                    qn = QualifiedName::getOrInsert(
+                        ids.back()->getText(), "");
+                }
+            }
+            if (!qn) return nullptr;
+
+            auto inst = std::make_shared<AnnotationInstance>(qn);
+
+            // Helper to populate a single AnnotationArg from one
+            // elementValue context. Recursively handles array
+            // initializers by collecting child element-value texts.
+            std::function<void(CajetaParser::ElementValueContext*,
+                               AnnotationArg&)> readArg =
+                [&](CajetaParser::ElementValueContext* ev, AnnotationArg& arg) {
+                    if (!ev) return;
+                    if (auto* arr = ev->elementValueArrayInitializer()) {
+                        // Array — first pass classifies each child,
+                        // second pass picks the dominant kind.
+                        std::vector<AnnotationArg> parts;
+                        for (auto* child : arr->elementValue()) {
+                            AnnotationArg p;
+                            readArg(child, p);
+                            parts.push_back(std::move(p));
+                        }
+                        // Pick dominant kind. All-same wins; mixed
+                        // collapses to StringList of the raw text.
+                        bool allString = !parts.empty(), allInt = !parts.empty(), allBool = !parts.empty();
+                        for (auto& p : parts) {
+                            if (p.kind != AnnotationArgKind::String) allString = false;
+                            if (p.kind != AnnotationArgKind::Int64)  allInt = false;
+                            if (p.kind != AnnotationArgKind::Bool)   allBool = false;
+                        }
+                        if (allInt) {
+                            arg.kind = AnnotationArgKind::Int64List;
+                            for (auto& p : parts) arg.i64List.push_back(p.i64Val);
+                        } else if (allBool) {
+                            arg.kind = AnnotationArgKind::BoolList;
+                            for (auto& p : parts) arg.boolList.push_back(p.boolVal);
+                        } else {
+                            arg.kind = AnnotationArgKind::StringList;
+                            for (auto& p : parts) {
+                                // For a homogeneous string array each
+                                // p.strVal is already the unquoted
+                                // payload; for mixed shapes, fall back
+                                // to whatever classifyLiteral put in
+                                // strVal (or stringify ints/bools).
+                                if (p.kind == AnnotationArgKind::String) {
+                                    arg.strList.push_back(p.strVal);
+                                } else if (p.kind == AnnotationArgKind::Int64) {
+                                    arg.strList.push_back(std::to_string(p.i64Val));
+                                } else if (p.kind == AnnotationArgKind::Bool) {
+                                    arg.strList.push_back(p.boolVal ? "true" : "false");
+                                } else {
+                                    arg.strList.push_back(p.strVal);
+                                }
+                            }
+                        }
+                        return;
+                    }
+                    if (auto* nested = ev->annotation()) {
+                        // Nested annotation — captured as raw text for
+                        // now; A2+ can promote to a real nested
+                        // AnnotationInstance.
+                        arg.kind = AnnotationArgKind::String;
+                        arg.strVal = nested->getText();
+                        return;
+                    }
+                    // expression — text-classify the leaf token.
+                    classifyLiteral(ev->getText(), arg);
+                };
+
+            if (auto* evp = ann->elementValuePairs()) {
+                // `@Foo(name = value, other = thing)`.
+                for (auto* pair : evp->elementValuePair()) {
+                    AnnotationArg arg;
+                    if (pair->identifier()) {
+                        arg.name = pair->identifier()->getText();
+                    }
+                    readArg(pair->elementValue(), arg);
+                    inst->addArg(std::move(arg));
+                }
+            } else if (auto* ev = ann->elementValue()) {
+                // `@Foo(value)` — single unnamed arg. Stored with
+                // empty name; findArg("value") routes through to it.
+                AnnotationArg arg;
+                readArg(ev, arg);
+                inst->addArg(std::move(arg));
+            }
+            // `@Foo` with no parens at all — empty args, the instance
+            // still records the annotation by name.
+            return inst;
+        }
+
         virtual std::any visitClassBodyDeclaration(CajetaParser::ClassBodyDeclarationContext* ctx) override {
             MemberDeclarationPtr memberDeclaration = any_cast<MemberDeclarationPtr>(visitMemberDeclaration(
                 ctx->memberDeclaration()));
-            // @SuppressLint("rule-id", ...) capture. Walk modifier list
-            // looking for annotation modifiers; when one's name is
-            // "SuppressLint", extract its string arguments and stash on
-            // the underlying Method. Other annotations fall through; the
-            // modifier-as-enum path below still runs unconditionally and
-            // returns NONE for annotation modifiers (no-op).
+            // Annotation capture for class-body members. Walks each
+            // modifier looking for annotations, builds a typed
+            // AnnotationInstance per occurrence, and attaches it to
+            // the underlying Method. The cached @SuppressLint rule-
+            // ID list is derived here from the captured args so the
+            // hot-path isLintSuppressed check stays O(N) over a tiny
+            // vector — same shape the class-level path uses.
             //
-            // Only operates on MethodDeclaration members today —
-            // FieldDeclaration doesn't carry an Annotatable yet. Class-
-            // level @SuppressLint lives on the CajetaClass via a separate
-            // path (visitClassDeclaration).
+            // FieldDeclaration doesn't carry an Annotatable yet —
+            // annotations on fields are silently dropped until A1
+            // follow-up extends the field-side hookup. Class-level
+            // annotations live on the CajetaClass via
+            // visitClassDeclaration's separate capture loop.
             if (auto methodDecl = std::dynamic_pointer_cast<MethodDeclaration>(memberDeclaration)) {
-                for (auto& modifierContext : ctx->modifier()) {
-                    auto* coim = modifierContext->classOrInterfaceModifier();
-                    if (!coim) continue;
-                    auto* ann = coim->annotation();
-                    if (!ann) continue;
-                    std::string aName = ann->qualifiedName()
-                        ? ann->qualifiedName()->getText()
-                        : (ann->altAnnotationQualifiedName()
-                            ? ann->altAnnotationQualifiedName()->getText()
-                            : std::string());
-                    if (aName == "SuppressLint") {
-                        std::vector<std::string> ids;
-                        if (auto* ev = ann->elementValue()) {
-                            parseLintIds(ev->getText(), ids);
-                        } else if (auto* evp = ann->elementValuePairs()) {
-                            parseLintIds(evp->getText(), ids);
-                        }
-                        if (auto m = methodDecl->getMethod()) {
-                            for (auto& id : ids) m->addSuppressedLint(id);
+                if (auto m = methodDecl->getMethod()) {
+                    for (auto& modifierContext : ctx->modifier()) {
+                        auto* coim = modifierContext->classOrInterfaceModifier();
+                        if (!coim) continue;
+                        if (auto inst = parseAnnotationInstance(coim->annotation())) {
+                            m->addAnnotationInstance(inst);
+                            if (inst->getName()->getTypeName() == "SuppressLint") {
+                                for (auto& id : inst->getStringList()) {
+                                    m->addSuppressedLint(id);
+                                }
+                                const std::string& single = inst->getString();
+                                if (!single.empty()) m->addSuppressedLint(single);
+                            }
                         }
                     }
                 }
