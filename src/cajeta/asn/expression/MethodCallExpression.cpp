@@ -891,12 +891,11 @@ namespace cajeta {
 
         // Uncaught-throws lint (rule ID `uncaught-throws`). If the resolved
         // target declares `throws X, Y`, walk that list and warn for each
-        // entry that the enclosing method doesn't itself declare.
-        // Advisory only — no compile error, matching ErrorModel.md's
-        // "throws is documentation" position. Suppressible per-method via
-        // `@SuppressLint("uncaught-throws")` — see LintRules.md for the
-        // catalog. Caveat: doesn't yet check try/catch coverage at the
-        // call site (#209 follow-up).
+        // entry that the enclosing method doesn't itself declare AND no
+        // enclosing try/catch covers. Advisory only — no compile error,
+        // matching ErrorModel.md's "throws is documentation" position.
+        // Suppressible per-method via `@SuppressLint("uncaught-throws")`
+        // — see LintRules.md for the catalog.
         bool floatingParamsLint = true;
         for (auto& p : entries) if (p.label.empty()) { floatingParamsLint = false; break; }
         vector<ParameterEntry> entriesCopy = entries;
@@ -909,6 +908,54 @@ namespace cajeta {
                 if (currentMethod
                         && !currentMethod->isLintSuppressed("uncaught-throws")) {
                     auto& currentThrows = currentMethod->getThrowsList();
+                    // isCaughtBy: the thrown name is caught by catchType when
+                    // they share a canonical name (or short name, since the
+                    // throwsList carries unqualified-by-default qNames just
+                    // like the existing declaration walk above), OR when
+                    // catchType is an ancestor of the thrown class. The
+                    // ancestor walk needs a resolved CajetaClass; if the
+                    // throwsList name doesn't resolve (e.g. unknown type),
+                    // we fall back to the name-only check.
+                    auto isCaughtBy = [&](const QualifiedNamePtr& thrownQ,
+                                          const CajetaTypePtr& catchType) -> bool {
+                        if (!thrownQ || !catchType) return false;
+                        const string& catchCanonical = catchType->toCanonical();
+                        if (thrownQ->toCanonical() == catchCanonical
+                                || thrownQ->getTypeName() == catchCanonical) {
+                            return true;
+                        }
+                        // Resolve thrown to a class so we can walk its
+                        // supertypes. Mirrors the resolution used in
+                        // TryStatement::generateCode when parsing catch
+                        // types (CajetaType::of by canonical, then by
+                        // short name).
+                        auto thrownType = CajetaType::of(thrownQ);
+                        if (!thrownType) {
+                            thrownType = CajetaType::of(thrownQ->getTypeName(), "");
+                        }
+                        auto thrownClass = dynamic_pointer_cast<CajetaClass>(thrownType);
+                        if (!thrownClass) return false;
+                        // Walk includes self — the name comparison at the top
+                        // catches throwsClause-name vs catchType-canonical
+                        // matches, but those canonicals can diverge when the
+                        // throws-clause parser defaults to package `code`
+                        // while the resolved class lives in the user's
+                        // declared package (e.g. `test.IOException`).
+                        // Walking from the resolved thrown class lets the
+                        // exact-match case route through the supertype path
+                        // using the same canonical string the catch type was
+                        // resolved to.
+                        std::function<bool(const CajetaClassPtr&)> walk =
+                            [&](const CajetaClassPtr& cls) -> bool {
+                                if (cls->toCanonical() == catchCanonical) return true;
+                                for (auto& parent : cls->getSuperClasses()) {
+                                    if (walk(parent)) return true;
+                                }
+                                return false;
+                            };
+                        return walk(thrownClass);
+                    };
+                    auto& tryCatchStack = module->getTryCatchStack();
                     for (auto& thrownType : throwsList) {
                         bool declared = false;
                         for (auto& declaredType : currentThrows) {
@@ -917,7 +964,22 @@ namespace cajeta {
                                 break;
                             }
                         }
-                        if (!declared) {
+                        if (declared) continue;
+                        // Coverage check (#209): any enclosing try whose catch
+                        // arms catch thrownType suppresses the warning. Walk
+                        // the stack innermost-out, but the order doesn't
+                        // actually matter — coverage anywhere suffices.
+                        bool covered = false;
+                        for (auto& frame : tryCatchStack) {
+                            for (auto& catchType : frame) {
+                                if (isCaughtBy(thrownType, catchType)) {
+                                    covered = true;
+                                    break;
+                                }
+                            }
+                            if (covered) break;
+                        }
+                        if (!covered) {
                             std::cerr << "warning: [uncaught-throws] call to "
                                 << methodCallName
                                 << " can throw " << thrownType->toCanonical()

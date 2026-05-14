@@ -616,6 +616,105 @@ TEST(ErrorModelTests, uncaughtRecoverableExitsClean) {
     }, ::testing::ExitedWithCode(1), "uncaught exception");
 }
 
+// #209: a call site wrapped in a try whose catch arm catches the
+// declared throw should suppress the [uncaught-throws] warning.
+// Captures stderr around the JIT compile to assert on the diagnostic
+// output (the warning prints with std::cerr in MethodCallExpression's
+// generateCode).
+TEST(ErrorModelTests, tryCatchSuppressesUncaughtThrowsWarning) {
+    auto src =
+        "package test;\n"
+        "public class IOException extends RecoverableException {\n"
+        "    public IOException() { this.message = \"io\"; }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 maybeFail() throws IOException { return 11; }\n"
+        "    public static int32 run() {\n"
+        "        int32 r = 0;\n"
+        "        try {\n"
+        "            r = maybeFail();\n"
+        "        } catch (IOException e) {\n"
+        "            r = -1;\n"
+        "        }\n"
+        "        return r;\n"
+        "    }\n"
+        "}\n";
+    testing::internal::CaptureStderr();
+    auto jit = CajetaJit::compile(src, "test.D");
+    std::string err = testing::internal::GetCapturedStderr();
+    EXPECT_EQ(err.find("[uncaught-throws]"), std::string::npos)
+        << "expected no [uncaught-throws] warning when call is inside "
+        << "try { ... } catch (IOException), but got: " << err;
+    auto fn = jit->lookup<int32_t (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    EXPECT_EQ(fn(), 11);
+}
+
+// #209: catching a SUPERTYPE of the declared throw also suppresses the
+// warning. RecoverableException catches IOException (subclass) — same
+// rule the runtime applies at throw-time.
+TEST(ErrorModelTests, tryCatchSupertypeSuppressesWarning) {
+    auto src =
+        "package test;\n"
+        "public class IOException extends RecoverableException {\n"
+        "    public IOException() { this.message = \"io\"; }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 maybeFail() throws IOException { return 11; }\n"
+        "    public static int32 run() {\n"
+        "        int32 r = 0;\n"
+        "        try {\n"
+        "            r = maybeFail();\n"
+        "        } catch (RecoverableException e) {\n"
+        "            r = -1;\n"
+        "        }\n"
+        "        return r;\n"
+        "    }\n"
+        "}\n";
+    testing::internal::CaptureStderr();
+    auto jit = CajetaJit::compile(src, "test.D");
+    std::string err = testing::internal::GetCapturedStderr();
+    EXPECT_EQ(err.find("[uncaught-throws]"), std::string::npos)
+        << "expected no [uncaught-throws] warning when call is inside "
+        << "try { ... } catch (RecoverableException), but got: " << err;
+    auto fn = jit->lookup<int32_t (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    EXPECT_EQ(fn(), 11);
+}
+
+// #209: an unrelated catch type (sibling, not supertype) does NOT
+// suppress the warning. UnrecoverableException is a sibling of
+// RecoverableException under Throwable — it doesn't catch IOException.
+// Regression guard for the supertype walk.
+TEST(ErrorModelTests, tryCatchUnrelatedTypeStillWarns) {
+    auto src =
+        "package test;\n"
+        "public class IOException extends RecoverableException {\n"
+        "    public IOException() { this.message = \"io\"; }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 maybeFail() throws IOException { return 11; }\n"
+        "    public static int32 run() {\n"
+        "        int32 r = 0;\n"
+        "        try {\n"
+        "            r = maybeFail();\n"
+        "        } catch (UnrecoverableException e) {\n"
+        "            r = -1;\n"
+        "        }\n"
+        "        return r;\n"
+        "    }\n"
+        "}\n";
+    testing::internal::CaptureStderr();
+    auto jit = CajetaJit::compile(src, "test.D");
+    std::string err = testing::internal::GetCapturedStderr();
+    EXPECT_NE(err.find("[uncaught-throws]"), std::string::npos)
+        << "expected [uncaught-throws] warning when catch type does not "
+        << "cover the declared throw, but got no warning";
+    auto fn = jit->lookup<int32_t (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    EXPECT_EQ(fn(), 11);
+}
+
 // Constructor throws clause — same grammar, separate parse path.
 TEST(ErrorModelTests, constructorThrowsParses) {
     auto src =

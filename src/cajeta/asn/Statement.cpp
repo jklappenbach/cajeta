@@ -814,7 +814,21 @@ namespace cajeta {
         builder->CreateCondBr(threw, catchBB, tryBB);
 
         builder->SetInsertPoint(tryBB);
+        // Make this try's catch types visible to nested call-site lints
+        // (#209). Only covers the try body — popped before catch-body
+        // codegen so a throw inside a catch handler isn't considered
+        // caught by the same try's clauses. Nested try statements push
+        // their own frames; the lint walks the whole stack.
+        {
+            std::vector<CajetaTypePtr> catchTypes;
+            catchTypes.reserve(catchClauses.size());
+            for (auto& c : catchClauses) {
+                if (c.type) catchTypes.push_back(c.type);
+            }
+            module->pushTryCatchContext(std::move(catchTypes));
+        }
         if (tryBlock) tryBlock->generateCode(module);
+        module->popTryCatchContext();
         if (!builder->GetInsertBlock()->getTerminator()) {
             builder->CreateCall(pop, {});
             builder->CreateBr(afterBB);

@@ -84,6 +84,15 @@ namespace cajeta {
         // after consumption so unrelated nested loops don't inherit it.
         std::string pendingLoopLabel;
 
+        // Stack of currently-active try-blocks' catch types. Pushed at the
+        // start of TryStatement's body codegen, popped before the catch
+        // body's codegen begins (so a throw inside a catch handler isn't
+        // considered caught by the same try's clauses). Each frame is the
+        // list of catch types declared on that try. Consulted by the
+        // uncaught-throws lint at call sites (#209) to suppress warnings
+        // when an enclosing try would catch the throw.
+        std::vector<std::vector<CajetaTypePtr>> tryCatchStack;
+
         // Type-parameter substitution stack for template instantiation. Each
         // frame is a map from parameter name (T, K, V, ...) to the concrete
         // CajetaTypePtr it resolves to during the current instantiation walk.
@@ -245,6 +254,16 @@ namespace cajeta {
         void popLoopContext() { if (!loopContextStack.empty()) loopContextStack.pop_back(); }
         bool hasLoopContext() const { return !loopContextStack.empty(); }
         const LoopContext& currentLoopContext() const { return loopContextStack.back(); }
+
+        void pushTryCatchContext(std::vector<CajetaTypePtr> catchTypes) {
+            tryCatchStack.push_back(std::move(catchTypes));
+        }
+        void popTryCatchContext() {
+            if (!tryCatchStack.empty()) tryCatchStack.pop_back();
+        }
+        const std::vector<std::vector<CajetaTypePtr>>& getTryCatchStack() const {
+            return tryCatchStack;
+        }
 
         void processMetadata(CajetaClassPtr structure);
 
