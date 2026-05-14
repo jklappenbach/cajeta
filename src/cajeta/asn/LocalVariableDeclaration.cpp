@@ -12,6 +12,7 @@
 #include "../type/CajetaStruct.h"
 #include "../type/CajetaFunctionType.h"
 #include "expression/Expression.h"
+#include "expression/DotExpression.h"
 #include "expression/MethodCallExpression.h"
 #include "../method/Method.h"
 #include "../error/CajetaExceptions.h"
@@ -198,20 +199,47 @@ namespace cajeta {
                 emitDropEntryFor(module, field, "__cajeta_closure_drop");
             }
 
-            // Singleton-source detection (A9): if the local's
-            // initializer is a MethodCallExpression named
-            // __cajeta_inject, the pointer returned is a borrowed
-            // reference to the process-wide DI singleton. Skip the
-            // drop entry — registering one would double-free the
-            // singleton on the second @Inject site, and would free
-            // state shared across the rest of the program.
-            bool initIsInjectBorrow = false;
+            // Borrow detection: when the RHS does NOT transfer
+            // ownership of a fresh allocation to the local, the
+            // local must NOT register a drop entry. Two recognized
+            // borrow sources:
+            //
+            //   1. __cajeta_inject() — returns the DI singleton
+            //      (A9). A drop here would double-free on the
+            //      second @Inject site or free state still in use
+            //      elsewhere.
+            //   2. DotExpression reading a class-typed field — the
+            //      local now points at an instance owned by
+            //      whatever object holds the field. The owner is
+            //      responsible for the drop; the borrowing local
+            //      must not duplicate it.
+            //
+            // Both shapes are observable directly from the
+            // initializer expression's AST type. NewExpression
+            // (fresh malloc) and most other initializers retain
+            // their ownership-transfer semantics.
+            bool initIsBorrow = false;
             if (auto varInit = dynamic_pointer_cast<VariableInitializer>(initializer)) {
                 auto& children = varInit->getChildren();
                 if (!children.empty()) {
                     if (auto mc = dynamic_pointer_cast<MethodCallExpression>(children[0])) {
                         if (mc->getMethodCallName() == "__cajeta_inject") {
-                            initIsInjectBorrow = true;
+                            initIsBorrow = true;
+                        }
+                    } else if (dynamic_pointer_cast<DotExpression>(children[0])) {
+                        // The RHS is a field read. If the field type
+                        // is class-like (and not a struct), the value
+                        // is a pointer to an object owned by the
+                        // receiver. Treat the local as a borrow.
+                        if (auto rhsExpr = dynamic_pointer_cast<Expression>(children[0])) {
+                            if (!rhsExpr->getResolvedType()) {
+                                rhsExpr->resolveTypes(module);
+                            }
+                            auto rhsClass = dynamic_pointer_cast<CajetaClass>(rhsExpr->getResolvedType());
+                            bool rhsIsStruct = dynamic_pointer_cast<CajetaStruct>(rhsExpr->getResolvedType()) != nullptr;
+                            if (rhsClass && !rhsIsStruct) {
+                                initIsBorrow = true;
+                            }
                         }
                     }
                 }
@@ -230,7 +258,7 @@ namespace cajeta {
             auto klass = dynamic_pointer_cast<CajetaClass>(type);
             bool isStructType = dynamic_pointer_cast<CajetaStruct>(type) != nullptr;
             if (klass && !isArray && !isStructType && !klass->isInterface()
-                    && !initIsInjectBorrow) {
+                    && !initIsBorrow) {
                 if (llvm::Function* dropFn = klass->getOrCreateDropFunction()) {
                     emitDropEntryForFn(module, field, dropFn);
                 }

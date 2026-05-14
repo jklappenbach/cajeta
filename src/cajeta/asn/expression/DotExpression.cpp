@@ -229,6 +229,33 @@ namespace cajeta {
         // walk the slot, not the object.
         if (auto* a = llvm::dyn_cast<llvm::AllocaInst>(base)) {
             base = module->getBuilder()->CreateLoad(a->getAllocatedType(), a);
+        } else if (llvm::isa<llvm::GetElementPtrInst>(base)) {
+            // Chained class-field access (`foo.bar.value`) or
+            // implicit-this class-typed field access (`t.v` inside
+            // a method where `t` is `this.t`). The previous step's
+            // generateCode returned a slot GEP into a struct field
+            // that holds a `ptr` to a class instance — not the
+            // instance pointer itself. Load through to dereference.
+            //
+            // The guard:
+            //   - resolvedType must be a CajetaClass (covers
+            //     interface too — CajetaInterface extends
+            //     CajetaClass).
+            //   - It must NOT be a CajetaStruct, since struct
+            //     fields are stored INLINE and the GEP already
+            //     gives the field's address directly.
+            //
+            // CajetaArray fields also store via pointer indirection
+            // but DotExpression on an array receiver isn't a
+            // supported shape in v1 (arrays go through the index
+            // expression path), so leaving them out doesn't open
+            // a new gap here.
+            auto lhsClass = dynamic_pointer_cast<CajetaClass>(lhs->getResolvedType());
+            bool lhsIsStruct = dynamic_pointer_cast<CajetaStruct>(lhs->getResolvedType()) != nullptr;
+            if (lhsClass && !lhsIsStruct) {
+                auto ptrTy = llvm::PointerType::get(*module->getLlvmContext(), 0);
+                base = module->getBuilder()->CreateLoad(ptrTy, base);
+            }
         }
         StructurePropertyPtr property = lookedUpProperty;
         // Set our own resolvedType so callers can load-through with the right

@@ -117,6 +117,43 @@ TEST(LifecycleHookTests, preDestroyNotFiredBeforeRunAtExit) {
     EXPECT_EQ(runI32(src, "test.Closer"), 0);
 }
 
+// Registry fires LIFO. Two @Components each stamp a digit into
+// a shared Tally singleton. A is injected first → registered
+// first → fires SECOND under LIFO. B is injected second →
+// registered second → fires FIRST under LIFO.
+//   B fires:  v = 0 * 10 + 2 = 2
+//   A fires:  v = 2 * 10 + 1 = 21
+// If LIFO were broken (A first), the result would be
+// (0 * 10 + 1) * 10 + 2 = 12.
+TEST(LifecycleHookTests, preDestroyFiresLifo) {
+    auto src =
+        "package test;\n"
+        "@Component public class Tally {\n"
+        "    public int32 v;\n"
+        "    public Tally() { v = 0; return; }\n"
+        "}\n"
+        "@Component public class A {\n"
+        "    @Inject Tally t;\n"
+        "    public A() { return; }\n"
+        "    @PreDestroy\n"
+        "    public void close() { t.v = t.v * 10 + 1; return; }\n"
+        "}\n"
+        "@Component public class B {\n"
+        "    @Inject Tally t;\n"
+        "    public B() { return; }\n"
+        "    @PreDestroy\n"
+        "    public void close() { t.v = t.v * 10 + 2; return; }\n"
+        "    public static int32 run() {\n"
+        "        A a = A.__cajeta_inject();\n"
+        "        B b = __cajeta_inject();\n"
+        "        Cajeta.runAtExit();\n"
+        "        Tally tt = Tally.__cajeta_inject();\n"
+        "        return tt.v;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src, "test.B"), 21);
+}
+
 // A @Component without @PostConstruct still works — the inject
 // helper's hook-scan must no-op cleanly when no method is
 // annotated. Catches an over-broad scan that would crash on

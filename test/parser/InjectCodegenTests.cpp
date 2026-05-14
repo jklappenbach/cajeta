@@ -56,13 +56,9 @@ TEST(InjectCodegenTests, singleComponentRoundTrip) {
 // A component with one @Inject field. __cajeta_inject on the
 // outer component creates an inner singleton (via the inner's
 // own __cajeta_inject), stores it in the outer's @Inject slot,
-// returns the outer. run() reads outer.inner.value to confirm
-// the field assignment landed. (Note: an intermediate local is
-// used because chained dot access through a class-typed field
-// hits a pre-existing DotExpression limitation — the GEP
-// returns the slot address rather than auto-loading the pointer.
-// Stashing into a local lets the lvalue->rvalue coercion fire
-// normally at the assignment.)
+// returns the outer. run() reads outer.bar.value via chained
+// dot access — the DotExpression auto-load through class-typed
+// intermediates makes this work directly.
 TEST(InjectCodegenTests, oneInjectFieldResolves) {
     auto src =
         "package test;\n"
@@ -75,8 +71,7 @@ TEST(InjectCodegenTests, oneInjectFieldResolves) {
         "    public Foo() { return; }\n"
         "    public static int32 run() {\n"
         "        Foo f = __cajeta_inject();\n"
-        "        Bar b = f.bar;\n"
-        "        return b.value;\n"
+        "        return f.bar.value;\n"
         "    }\n"
         "}\n";
     EXPECT_EQ(runI32(src, "test.Foo"), 7);
@@ -84,8 +79,8 @@ TEST(InjectCodegenTests, oneInjectFieldResolves) {
 
 // Three-level transitive resolve: A injects B, B injects C. All
 // three singletons are created on the first A.__cajeta_inject().
-// Each level is loaded through a local to sidestep the class-
-// field chained-dot-access gap.
+// Direct chained access a.b.c.value walks through two class-
+// typed intermediates.
 TEST(InjectCodegenTests, transitiveResolutionThroughThreeLevels) {
     auto src =
         "package test;\n"
@@ -102,9 +97,7 @@ TEST(InjectCodegenTests, transitiveResolutionThroughThreeLevels) {
         "    public A() { return; }\n"
         "    public static int32 run() {\n"
         "        A a = __cajeta_inject();\n"
-        "        B mid = a.b;\n"
-        "        C tail = mid.c;\n"
-        "        return tail.value;\n"
+        "        return a.b.c.value;\n"
         "    }\n"
         "}\n";
     EXPECT_EQ(runI32(src, "test.A"), 99);
@@ -145,6 +138,36 @@ TEST(InjectCodegenTests, componentWithoutInjectStillGetsHelper) {
         "    }\n"
         "}\n";
     EXPECT_EQ(runI32(src, "test.Standalone"), 100);
+}
+
+// Class-typed local from a field READ is a borrow (no drop).
+// Pre-fix this double-freed the singleton: the local registered
+// a drop, the receiving scope dropped, and the second @Inject
+// site dropped again. Test source: take a class-typed local
+// from a class field, then call __cajeta_inject again — under
+// the old behavior, the second call returns the same pointer
+// and a later scope-exit double-free crashed. Now the local is
+// a borrow, the singleton lives, the second call returns the
+// same (still-alive) instance, observed via mutation.
+TEST(InjectCodegenTests, classTypedLocalFromFieldReadIsBorrow) {
+    auto src =
+        "package test;\n"
+        "@Component public class Inner {\n"
+        "    public int32 v;\n"
+        "    public Inner() { v = 11; return; }\n"
+        "}\n"
+        "@Component public class Outer {\n"
+        "    @Inject Inner inner;\n"
+        "    public Outer() { return; }\n"
+        "    public static int32 run() {\n"
+        "        Outer o = __cajeta_inject();\n"
+        "        Inner i = o.inner;\n"
+        "        i.v = 33;\n"
+        "        Inner j = Inner.__cajeta_inject();\n"
+        "        return j.v;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src, "test.Outer"), 33);
 }
 
 // @Repository carries the same DI semantics as @Component — the
