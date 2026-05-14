@@ -6,9 +6,14 @@ Tracks the R1–R5 rollout of the async runtime described in `ThreadModel.md`. C
 
 ## Current status
 
-**Phase R1–R5-A' complete.** Stackful fiber executor with cooperative yield, arg capture for spawn, async-aware locks, and structured-concurrency scope joins (both explicit `scope { }` and implicit function-body scope) are all in. R5-C and R5-D are blocked on the error model decision.
+**Phases R1 through R5-D + error-model v1 complete.** Full structured-concurrency story functional end-to-end: stackful fibers, scope joins, cancellation, exception escalation. Error model has stdlib Throwable hierarchy (with `cause` chaining), `throws` clause grammar + advisory lint, runtime exception path on `void*`, Task<T> exception slot with await re-raise, and stack-trace capture at throw sites with auto-print on uncaught.
 
-**Next:** implement the error model per `ErrorModel.md` (exception-hierarchy design, settled). R5-C and R5-D land on top of the error-model work.
+**Next areas (post-v1 polish):**
+- Recoverable/Unrecoverable distinction via vtable type-check (task #210). Today the system catch path treats them identically.
+- Inherited-field write codegen fix (#208) — unblocks richer stdlib subclass constructors.
+- `String` parameter codegen fix (#211) — unblocks upgrading Throwable.message from `pointer` to `String`.
+- Lint refinements (#209) — try/catch coverage awareness, `@SuppressUncaughtThrow` annotation.
+- TLS-promote the exception chain + drop-chain head for multi-carrier safety.
 
 ---
 
