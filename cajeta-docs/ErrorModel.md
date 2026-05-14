@@ -134,10 +134,12 @@ throw new IOException("disk full");
 
 Unrecoverable exceptions are the alarm. The runtime wraps `main()` (and each spawned fiber's entry trampoline) in a default catch:
 
-- If `main()` exits via an uncaught `RecoverableException`: the runtime logs the type + message + (if available) stack trace to stdout, then returns a nonzero exit code. The process exits cleanly.
-- If `main()` exits via an uncaught `UnrecoverableException`: same logging, but the process aborts (nonzero exit). The "uncaught alarm" is itself a fatal condition.
-- If a fiber's body throws `UnrecoverableException`: log + abort the entire process. Per-fiber recovery from unrecoverables isn't safe — the runtime invariant has been violated.
+- If `main()` exits via an uncaught `RecoverableException`: the runtime emits `cajeta: uncaught exception: <message>` to stderr along with the captured stack trace, then exits with code 1 (clean exit).
+- If `main()` exits via an uncaught `UnrecoverableException`: the runtime emits `cajeta: unrecoverable exception: <message>` + stack trace to stderr, then `abort()`s — generates SIGABRT for core-dump / debugger inspection. The "uncaught alarm" is itself a fatal condition.
+- If a fiber's body throws `UnrecoverableException`: log + `abort()` the entire process. Per-fiber recovery from unrecoverables isn't safe — the runtime invariant has been violated, and propagating it through `await` would let the corruption hide.
 - If a fiber's body throws `RecoverableException`: store the exception on the `Task<T>`'s exception slot, signal done. The awaiter re-raises into its own frame when it does `await task`.
+
+Implementation: every class vtable carries a `parent_vtable` pointer (NULL at the root). A compiler-emitted global `__cajeta_unrecoverable_vtable_marker` points at `UnrecoverableException`'s vtable. The runtime helper `__cajeta_is_unrecoverable(Throwable*)` walks the chain from the thrown instance's vtable upward, matching against the marker — returns 1 for any descendant of `UnrecoverableException`, 0 otherwise.
 
 User code can absolutely `catch (UnrecoverableException e)` if it really wants to — the language doesn't forbid it. The convention is "don't, unless you have an extremely good reason" (a top-level supervisor in a long-running daemon may legitimately want to log-and-keep-going for some kinds of unrecoverable). The system catch is the safety net for everyone who doesn't.
 

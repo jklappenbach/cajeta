@@ -136,6 +136,32 @@ public class UnrecoverableException extends Exception {
         parseSource(module, stdlibInput, /*label=*/"");
         module->setQName(originalQName);
 
+        // Error-model #210: emit the marker global the runtime uses to
+        // detect Unrecoverable throws. After stdlib parse, every stdlib
+        // class's vtable global exists on the LLVM module; we publish
+        // UnrecoverableException's vtable address as
+        // `__cajeta_unrecoverable_vtable_marker`. The runtime helper
+        // __cajeta_is_unrecoverable does a chain walk against this
+        // address, returning 1 for any descendant of UnrecoverableException.
+        {
+            auto& structures = module->getStructures();
+            auto it = structures.find("cajeta.lang.UnrecoverableException");
+            if (it != structures.end()) {
+                CajetaClassPtr unrecClass = it->second;
+                llvm::GlobalVariable* unrecVT = unrecClass->getVirtualTableGlobal();
+                if (unrecVT) {
+                    auto& llvmCtx = *module->getLlvmContext();
+                    llvm::PointerType* ptrTy = llvm::PointerType::get(llvmCtx, 0);
+                    llvm::Module* lmod = module->getLlvmModule();
+                    new llvm::GlobalVariable(
+                        *lmod, ptrTy, /*isConstant=*/false,
+                        llvm::GlobalValue::ExternalLinkage,
+                        unrecVT,
+                        "__cajeta_unrecoverable_vtable_marker");
+                }
+            }
+        }
+
         ifstream stream;
         stream.open(module->getSourcePath());
         stream.seekg(0);

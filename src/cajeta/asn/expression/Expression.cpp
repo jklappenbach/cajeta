@@ -2478,12 +2478,21 @@ namespace cajeta {
         if (excPopFn) outerBuilder->CreateCall(excPopFn, {});
         outerBuilder->CreateBr(trampFinishBB);
 
-        // --- catch: stash the thrown ptr on task->exception ---
+        // --- catch: classify, then stash recoverable on task->exception ---
         outerBuilder->SetInsertPoint(trampCatchBB);
         llvm::Value* thrownPtr = getThrownFn
             ? outerBuilder->CreateCall(getThrownFn, {})
             : (llvm::Value*) llvm::ConstantPointerNull::get(ptrTy);
         if (excPopFn) outerBuilder->CreateCall(excPopFn, {});
+        // Error-model #210: if the thrown value is Unrecoverable, the
+        // runtime helper aborts the process (alarm semantics — runtime
+        // invariant violations must not propagate through await). If
+        // Recoverable, the helper returns and we store on the Task slot
+        // for await to re-raise.
+        if (llvm::Function* fhFn = module->getRuntimeFunction(
+                "__cajeta_fiber_handle_throw")) {
+            outerBuilder->CreateCall(fhFn, {thrownPtr});
+        }
         llvm::Value* trampExcSlot = outerBuilder->CreateStructGEP(
             taskTy, taskPtr, CajetaTask::EXCEPTION_FIELD_INDEX,
             "task_exception_slot");

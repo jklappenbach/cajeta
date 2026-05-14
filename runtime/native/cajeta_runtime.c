@@ -852,13 +852,23 @@ int64_t __cajeta_signature_hash(const char* s) {
 // dispatch — the static type guarantees the method exists on the receiver —
 // but is treated as a soft miss so a misuse aborts at the call site (NULL
 // fn-pointer call) rather than corrupting memory.
+// VTable byte layout (kept in sync with StructureMetadata::createVirtualTableType):
+//   [0..1]   i16 version
+//   [2..3]   i16 count
+//   [4..7]   pad (LLVM auto-inserts to align ptr to 8 bytes)
+//   [8..15]  ptr parent_vtable        (NULL at root)
+//   [16..]   [count x { i64 hash, ptr fn }] entries
+#define CAJETA_VTABLE_PARENT_OFFSET 8
+#define CAJETA_VTABLE_ENTRIES_OFFSET 16
+
 void* __cajeta_vtable_lookup(void* vptr, int64_t hash) {
     if (!vptr) return NULL;
     const int16_t* hdr = (const int16_t*) vptr;
     int32_t count = hdr[1];                 // slot 1 = count
     if (count <= 0) return NULL;
     const struct cajeta_vtable_entry* entries =
-        (const struct cajeta_vtable_entry*) ((const char*) vptr + 8);
+        (const struct cajeta_vtable_entry*)
+            ((const char*) vptr + CAJETA_VTABLE_ENTRIES_OFFSET);
     int lo = 0, hi = count;
     while (lo < hi) {
         int mid = (lo + hi) >> 1;
@@ -868,6 +878,52 @@ void* __cajeta_vtable_lookup(void* vptr, int64_t hash) {
         else return entries[mid].fn;
     }
     return NULL;
+}
+
+// Marker global set by codegen to UnrecoverableException's vtable address.
+// __cajeta_is_unrecoverable compares each ancestor vtable against this.
+// `extern` here; the user module's compilation emits the definition with
+// its initializer pointing at cajeta.lang.UnrecoverableException#VTable.
+extern void* __cajeta_unrecoverable_vtable_marker;
+
+// Walk a Throwable's vtable chain to determine whether it's an
+// UnrecoverableException (or any descendant thereof). Returns 1 if so,
+// 0 otherwise. Driven by the parent_vtable pointer at offset 8 of each
+// vtable global; walks until either a match is found or the chain hits
+// NULL (root).
+int32_t __cajeta_is_unrecoverable(void* throwable) {
+    if (!throwable) return 0;
+    // Defensive: the legacy `throw 42` idiom IntToPtrs an integer into
+    // the runtime; the resulting "pointer" is the integer's bit pattern
+    // and is virtually never a real heap address. Dereferencing it for
+    // the vtable read would SIGSEGV. Filter anything below the
+    // typical zero-page boundary so we treat legacy int throws as
+    // (definitely-not-)Unrecoverable. Long-term: phase out int throws
+    // in favor of real Throwable instances.
+    if ((uintptr_t) throwable < 4096) return 0;
+    void* vtable = *(void**) throwable;   // instance slot 0 = vtable ptr
+    if (!__cajeta_unrecoverable_vtable_marker) return 0;
+    while (vtable) {
+        if (vtable == __cajeta_unrecoverable_vtable_marker) return 1;
+        vtable = *(void**) ((char*) vtable + CAJETA_VTABLE_PARENT_OFFSET);
+    }
+    return 0;
+}
+
+// Forward decl — defined alongside __cajeta_throw further down.
+static void __cajeta_emit_uncaught(void* value, int is_unrec);
+
+// Called by the fiber trampoline's catch block (per Error-model #205 and
+// #210). If the thrown value is an Unrecoverable, print + abort the
+// whole process — propagating into the Task slot would let a runtime
+// invariant violation hide behind await suspension. Recoverable returns
+// normally; the trampoline's caller stores it on the Task's exception
+// slot for await to re-raise.
+void __cajeta_fiber_handle_throw(void* thrown) {
+    if (__cajeta_is_unrecoverable(thrown)) {
+        __cajeta_emit_uncaught(thrown, /*is_unrec=*/1);
+        abort();
+    }
 }
 
 struct cajeta_exception_frame {
@@ -972,13 +1028,48 @@ void __cajeta_print_trace(void* throwable, int32_t fd) {
     pthread_mutex_unlock(&__cajeta_trace_mutex);
 }
 
+// Helper for the uncaught-throw path: print the throwable's message
+// (if any) and stack trace to stderr. Mirrors Java/Python's "Exception
+// in thread main: ... \n Traceback: ..." shape. Throwable layout is
+// { vtable, message, ... } so the message field is at offset 8 in
+// any class derived from Throwable — see ErrorModel.md § hierarchy.
+// If the value isn't a Throwable instance (e.g. legacy int throw via
+// IntToPtr), the message read may yield garbage; we print the raw
+// pointer in that case as a hex fallback. The trace is recorded at
+// throw time regardless of whether the throwable carries a message.
+static void __cajeta_emit_uncaught(void* value, int is_unrec) {
+    const char* kind = is_unrec ? "unrecoverable" : "uncaught";
+    void* msg = NULL;
+    // Same low-address guard as __cajeta_is_unrecoverable: legacy int
+    // throws produce non-pointer "throwables" that we must not
+    // dereference. Skip the message read in that case; print the bare
+    // value as a hex fallback. Reads on legitimate Throwable instances
+    // (heap-allocated, vtable + message at slots 0/1) work as expected.
+    if (value && (uintptr_t) value >= 4096) {
+        msg = ((void**) value)[1];
+    }
+    if (msg) {
+        fprintf(stderr, "cajeta: %s exception: %s\n", kind, (const char*) msg);
+    } else {
+        fprintf(stderr, "cajeta: %s exception (value=%p)\n", kind, value);
+    }
+    __cajeta_print_trace(value, 2);
+}
+
 __attribute__((noreturn))
 void __cajeta_throw(void* value) {
     __cajeta_trace_record(value);
     if (!__cajeta_exc_top) {
-        fprintf(stderr, "cajeta: uncaught exception (value=%p)\n", value);
-        __cajeta_print_trace(value, 2);
-        abort();
+        int is_unrec = __cajeta_is_unrecoverable(value);
+        __cajeta_emit_uncaught(value, is_unrec);
+        if (is_unrec) {
+            // Alarm semantics — abort produces a SIGABRT, dump-friendly.
+            abort();
+        }
+        // Recoverable that escaped every handler. Exit cleanly with a
+        // nonzero code. The runtime's stderr emission above is the user-
+        // facing diagnostic.
+        exit(1);
     }
     // Unwind drops between the current top and the catching frame's watermark.
     // Each active entry runs its drop function once; the entry itself is

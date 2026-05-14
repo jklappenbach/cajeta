@@ -369,6 +369,51 @@ TEST(ErrorModelTests, suppressLintAcceptsArrayArg) {
     EXPECT_EQ(runI32(src), 13);
 }
 
+// #210: an uncaught Unrecoverable aborts the process and emits the
+// throwable's message + trace to stderr. Death test: spawn the JIT'd
+// program and verify it terminates with a SIGABRT-equivalent exit and
+// that stderr carries the diagnostic.
+TEST(ErrorModelTests, uncaughtUnrecoverableAborts) {
+    auto src =
+        "package test;\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        UnrecoverableException u = new UnrecoverableException(\"contract failure\");\n"
+        "        throw u;\n"
+        "        return 0;\n"
+        "    }\n"
+        "}\n";
+    // The throw escapes both the user code and any enclosing try/catch
+    // (there is none) — the runtime's __cajeta_throw path detects it as
+    // Unrecoverable via the parent-vtable walk and abort()s. EXPECT_DEATH
+    // verifies the abort + checks the stderr message.
+    EXPECT_DEATH({
+        auto jit = CajetaJit::compile(src, "test.D");
+        auto fn = jit->lookup<int32_t (*)()>("run");
+        fn();
+    }, "unrecoverable exception");
+}
+
+// Counterpart: an uncaught Recoverable exits cleanly with code 1 (not a
+// SIGABRT) and prints the message. The distinction matters for crash
+// reporting / debugger interaction — Unrecoverable is the alarm path.
+TEST(ErrorModelTests, uncaughtRecoverableExitsClean) {
+    auto src =
+        "package test;\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        RecoverableException r = new RecoverableException(\"io failure\");\n"
+        "        throw r;\n"
+        "        return 0;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EXIT({
+        auto jit = CajetaJit::compile(src, "test.D");
+        auto fn = jit->lookup<int32_t (*)()>("run");
+        fn();
+    }, ::testing::ExitedWithCode(1), "uncaught exception");
+}
+
 // Constructor throws clause — same grammar, separate parse path.
 TEST(ErrorModelTests, constructorThrowsParses) {
     auto src =

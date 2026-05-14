@@ -417,7 +417,8 @@ namespace cajeta {
     }
 
     // VTable layout:
-    //   { i16 version, i16 count, [count x { i64 hash, ptr fn }] entries }
+    //   { i16 version, i16 count, ptr parent_vtable,
+    //     [count x { i64 hash, ptr fn }] entries }
     //
     // Entries are sorted by hash (FNV-1a of method->toCanonical(false)) so
     // dispatch is a binary search via __cajeta_vtable_lookup. Hash-based
@@ -425,10 +426,15 @@ namespace cajeta {
     // many bases the class inherits from — multiple inheritance just works,
     // no thunks or per-base offset trickery.
     //
-    // Entry alignment: the entry struct is { i64, ptr } = 16 bytes natural-
-    // aligned. After the i16/i16 header (4 bytes), LLVM inserts 4 bytes of
-    // padding to bring the [N x entry] array to 8-byte alignment. The
-    // runtime's pointer arithmetic assumes entries start at byte offset 8.
+    // parent_vtable points at the direct superclass's vtable global (or
+    // NULL for the root). Used by __cajeta_is_unrecoverable to walk up the
+    // hierarchy at runtime, checking if any ancestor matches the
+    // UnrecoverableException sentinel — and by future RTTI helpers that
+    // need arbitrary up-the-chain queries.
+    //
+    // Layout note: i16/i16 (4 bytes) + 4 bytes pad + ptr (8 bytes) puts
+    // the entries array at byte offset 16. The runtime helper's pointer
+    // arithmetic uses that constant.
     llvm::Type* StructureMetadata::createVirtualTableType(CajetaClassPtr structure) {
         auto& ctx = *module->getLlvmContext();
         llvm::Type* ptrTy = llvm::PointerType::get(ctx, 0);
@@ -444,7 +450,8 @@ namespace cajeta {
         vector<llvm::Type*> members{
             llvmInt16Type,    // 0. version
             llvmInt16Type,    // 1. count
-            entriesTy,        // 2. entries
+            ptrTy,            // 2. parent_vtable
+            entriesTy,        // 3. entries
         };
         llvm::StructType* result = llvm::StructType::create(ctx,
             llvm::ArrayRef<llvm::Type*>(members),
@@ -459,13 +466,14 @@ namespace cajeta {
         // CajetaClass::buildVirtualTable, already hash-sorted).
         auto& ctx = *module->getLlvmContext();
         llvm::Type* i64Ty = llvm::IntegerType::getInt64Ty(ctx);
+        llvm::Type* ptrTy = llvm::PointerType::get(ctx, 0);
         const auto& slots = structure->getVirtualMethodList();
 
-        // Entry type matches createVirtualTableType. Anonymous structs with
-        // the same body are uniqued by LLVM's type table.
+        // Layout — index 3 now holds entries (after version/count/parent_vtable).
+        llvm::ArrayType* entriesArrTy = llvm::cast<llvm::ArrayType>(
+            structure->getVirtualTableType()->getTypeAtIndex(3));
         llvm::StructType* entryTy = llvm::cast<llvm::StructType>(
-            llvm::cast<llvm::ArrayType>(
-                structure->getVirtualTableType()->getTypeAtIndex(2))->getElementType());
+            entriesArrTy->getElementType());
 
         // Use the lock-step hash list from buildVirtualTable rather than
         // recomputing — interface entries store the implementing class's
@@ -487,13 +495,27 @@ namespace cajeta {
             ++hashIdx;
         }
         llvm::Constant* entriesArr = llvm::ConstantArray::get(
-            llvm::cast<llvm::ArrayType>(structure->getVirtualTableType()->getTypeAtIndex(2)),
-            llvm::ArrayRef<llvm::Constant*>(entryConstants));
+            entriesArrTy, llvm::ArrayRef<llvm::Constant*>(entryConstants));
+
+        // parent_vtable: pointer to the direct superclass's vtable global.
+        // NULL when the class has no parent (e.g. Throwable). For multi-
+        // parent (not supported today), we'd need a more elaborate
+        // representation; the first superclass wins for now.
+        llvm::Constant* parentVtable =
+            llvm::ConstantPointerNull::get(llvm::cast<llvm::PointerType>(ptrTy));
+        const auto& parents = structure->getSuperClasses();
+        if (!parents.empty()) {
+            auto firstParent = parents.front();
+            if (llvm::GlobalVariable* pv = firstParent->getVirtualTableGlobal()) {
+                parentVtable = pv;
+            }
+        }
 
         vector<llvm::Constant*> args{
             llvm::ConstantInt::get(llvmInt16Type, llvm::APInt(16, 0, false)),
             llvm::ConstantInt::get(llvmInt16Type,
                 llvm::APInt(16, slots.size(), false)),
+            parentVtable,
             entriesArr,
         };
         return llvm::ConstantStruct::get(structure->getVirtualTableType(),
