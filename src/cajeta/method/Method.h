@@ -70,6 +70,15 @@ namespace cajeta {
         bool varargsFlag = false;
         map<string, FormalParameterPtr> parameters;
         vector<FormalParameterPtr> parameterList;
+        // RecoverableException subtypes the method documents itself as
+        // throwing (Java-style `throws T1, T2` clause). Advisory only —
+        // no compile-time enforcement; the lint pass uses this list to
+        // emit uncaught-throws warnings at call sites. UnrecoverableException
+        // subtypes are not declared here (per ErrorModel.md). The list
+        // stores QualifiedNamePtrs because the named types may not have
+        // been resolved at parse time; resolution happens lazily when the
+        // lint pass walks them.
+        vector<QualifiedNamePtr> throwsList;
         int virtualTableIndex;
 
         // Stack of drop frames. Each Block::generateCode pushes a frame
@@ -116,6 +125,9 @@ namespace cajeta {
         }
 
         llvm::AllocaInst* getScopeWatermark() const { return scopeWatermark; }
+
+        const vector<QualifiedNamePtr>& getThrowsList() const { return throwsList; }
+        void setThrowsList(vector<QualifiedNamePtr> list) { throwsList = std::move(list); }
 
         llvm::Function* getLlvmFunction() { return llvmFunction; }
 

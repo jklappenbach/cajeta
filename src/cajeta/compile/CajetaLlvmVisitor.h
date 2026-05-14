@@ -546,6 +546,16 @@ namespace cajeta {
             if (ctx->typeTypeOrVoid() && ctx->typeTypeOrVoid()->REFERENCE() != nullptr) {
                 method->setReturnsOwnership(true);
             }
+            // `throws T1, T2` — advisory list of RecoverableException
+            // subtypes the body may produce. Carried on the Method for the
+            // lint pass; no enforcement here. See ErrorModel.md.
+            if (auto* qnList = ctx->qualifiedNameList()) {
+                vector<QualifiedNamePtr> throws;
+                for (auto* qn : qnList->qualifiedName()) {
+                    throws.push_back(QualifiedName::fromContext(qn));
+                }
+                method->setThrowsList(std::move(throws));
+            }
             return static_pointer_cast<MemberDeclaration>(make_shared<MethodDeclaration>(method, ctx->getStart()));
         }
 
@@ -580,6 +590,14 @@ namespace cajeta {
                 formalParameters,
                 block,
                 pModule->getStructureStack().back());
+            // Constructors can also declare `throws T1, T2` per the grammar.
+            if (auto* qnList = ctx->qualifiedNameList()) {
+                vector<QualifiedNamePtr> throws;
+                for (auto* qn : qnList->qualifiedName()) {
+                    throws.push_back(QualifiedName::fromContext(qn));
+                }
+                method->setThrowsList(std::move(throws));
+            }
             return static_pointer_cast<MemberDeclaration>(make_shared<MethodDeclaration>(method, ctx->getStart()));
         }
 
