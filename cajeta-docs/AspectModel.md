@@ -1,0 +1,432 @@
+# Cajeta Aspect-Oriented Programming + Dependency Injection — Specification v1
+
+## Goals
+
+- **AoT compilation, period.** Aspects and dependency injection are resolved at compile time by the Cajeta compiler itself. No runtime proxies, no IR weaving at deploy time, no annotation processors as a separate tool. The compiler reads the annotations and emits the wired/woven code directly into the binary.
+- **Zero runtime overhead for unaffected methods.** A method with no matching aspect and no `@Inject` dependencies compiles unchanged. Aspect resolution is a per-method check at codegen; if nothing matches, no extra IR.
+- **Type-safe advice and injection.** Advice receives a typed `JoinPoint<...>` parameterized by the matched method's signature. `@Around` proceed is a typed function pointer, not reflection. The DI graph is checked at compile time — missing implementations, cycles, ambiguous resolution are compile errors.
+- **Compose with the rest of the language.** Drop chain unwinds advice locals on every exit path. Fibers + scope + try/catch all work uniformly because the wrapper is just an ordinary Cajeta method.
+
+## Non-goals (v1)
+
+- **String-pattern pointcut expressions** (`execution(* com.example..*.save(..))`). Powerful but stringly-typed, slow to match, and divorces the pointcut from the targeted code. Deferred until annotation-based + type-based pointcuts prove insufficient — probably never.
+- **Runtime proxies / load-time weaving.** Architectural rejection. Aspects are a compile-time concern.
+- **Aspect-on-aspect.** Advising the advice. Spring forbids it; we follow.
+- **`@DeclareParents`-style introductions** (adding new interfaces to existing classes via aspects). Use ordinary inheritance.
+- **Prototype / request / session scopes.** Singleton is the default and only scope in v1. Other scopes add later if needed.
+- **Field injection** as primary style — supported but constructor injection is recommended in docs.
+- **Reflection / runtime registry**. The DI "container" is generated code with direct calls.
+
+---
+
+## Core concepts
+
+### Pointcut
+
+A predicate over methods: "does this method match?" Pointcuts come in three forms; v1 supports the first two:
+
+1. **Marker-annotation pointcut.** Targets methods annotated with a specific user-defined annotation. The most common shape.
+2. **Type-based pointcut.** Targets every method on a class or implementer-of-interface.
+3. **Expression pointcut** (v2+). String-pattern matching à la Spring's `execution()`. Deferred.
+
+### Advice
+
+Code that runs around a matched method. Five forms:
+
+- `@Before` — runs before the matched method body.
+- `@After` — runs on every exit path (normal return or thrown exception). Same shape as a finally arm.
+- `@Around` — wraps the call. Receives a typed function reference to the original; chooses if/when to invoke it.
+- `@AfterReturning` — runs only on normal return. Receives the return value.
+- `@AfterThrowing` — runs only on throw. Receives the thrown `Throwable`.
+
+### JoinPoint
+
+Carries context to the advice: which method was matched, its arguments, the matched annotation instance. Typed via templates.
+
+### Aspect
+
+A class annotated `@Aspect`. Holds one or more advice methods plus any state. Registered as a `@Component` so it can itself receive `@Inject` dependencies (an aspect can inject a logger or metrics collector).
+
+---
+
+## Annotation surface
+
+```cajeta
+// User-defined marker — applied to methods to opt them into advice.
+public @interface Audited {
+    String reason = "";   // optional annotation parameter
+}
+
+// User-defined aspect.
+@Aspect public class AuditAspect {
+
+    @Inject AuditLog log;
+
+    // `@Before(Audited.class)` — match every method annotated @Audited.
+    @Before(Audited.class)
+    void onCall(JoinPoint jp, Audited annot) {
+        log.write(jp.methodName + " — reason: " + annot.reason);
+    }
+
+    @AfterThrowing(Audited.class)
+    void onFail(JoinPoint jp, Throwable t) {
+        log.error(jp.methodName + " failed: " + t.message);
+    }
+
+    @Around(Audited.class)
+    int timedCall(@Original Function<int> proceed, JoinPoint jp) {
+        long start = nanos();
+        try {
+            return proceed();
+        } finally {
+            log.metric(jp.methodName, nanos() - start);
+        }
+    }
+}
+
+// Method opts in by tagging itself with the marker.
+class UserService {
+    @Audited(reason = "data deletion")
+    public void deleteUser(int id) { ... }
+}
+```
+
+### Where annotations apply
+
+- `@Aspect` on a class. Marks it as an aspect class.
+- `@Before`/`@After`/`@Around`/`@AfterReturning`/`@AfterThrowing` on advice methods inside an `@Aspect` class. Each takes a pointcut argument.
+- `@Order(n)` on advice methods to control execution order when multiple aspects match the same target.
+- `@Original` on a function-typed parameter of an `@Around` advice to bind it to the original method.
+
+### Pointcut parameter shapes
+
+```cajeta
+@Before(Audited.class)            // marker-annotation pointcut
+@Before(Repository.class)         // type-based: every method on a Repository (or impl)
+@Before(Repository.class, "save") // type-based, scoped to method-name (v1.1)
+```
+
+---
+
+## Typed JoinPoint
+
+The `JoinPoint<R, A...>` template carries the matched method's signature.
+
+```cajeta
+class JoinPoint<R, A...> {
+    public String methodName;
+    public String className;
+    public A... args;   // template-arg pack, accessible via .arg0, .arg1, ...
+}
+```
+
+The compiler enforces that the advice's declared JoinPoint type-parameters match (or are compatible with) the matched method's signature:
+
+```cajeta
+@Before(Audited.class)
+void log(JoinPoint<void, int, String> jp) {   // matches void m(int, String)
+    log.write("called " + jp.methodName + " with " + jp.arg0 + ", " + jp.arg1);
+}
+```
+
+If a method tagged `@Audited` has a different signature, the compiler rejects the aspect-target pair. Use `JoinPoint<*, *>` (wildcards) for advice that should match any signature; the `args` are accessible only as a runtime array (`jp.argsAsArray`) at that point — the tradeoff for being polymorphic.
+
+### Catching the matched annotation instance
+
+If the advice declares a parameter typed as the matched annotation, the compiler binds it to the annotation instance:
+
+```cajeta
+@Before(Audited.class)
+void log(JoinPoint jp, Audited annot) {
+    log.write("reason: " + annot.reason);   // typed access to annotation params
+}
+```
+
+The compiler synthesizes the annotation-instance construction at the call site — `Audited`'s element values become a struct accessible to the advice. Zero reflection.
+
+---
+
+## @Around and the proceed pattern
+
+`@Around` advice wraps the call. The original method is bound to a typed function parameter marked `@Original`:
+
+```cajeta
+@Around(Audited.class)
+int around(@Original Function<int, int> proceed, JoinPoint jp, int x) {
+    if (!authorized()) throw new AuthException("denied");
+    return proceed(x);   // typed call to the original
+}
+```
+
+`Function<int, int>` is the signature of the original method (returns int, takes int). The compiler binds `proceed` to a synthesized wrapper that invokes the original method's extracted body.
+
+### Codegen for @Around
+
+The compiler:
+1. Extracts the original method body into a private helper (`compute__original`).
+2. Generates a replacement public method (`compute`) whose body calls the @Around advice, passing `compute__original` as the proceed function.
+3. The advice's body is inlined (or called) inside the replacement.
+
+Result IR for `int compute(int x)` advised by `@Around timed`:
+
+```
+int compute__original(int x) { <original body> }
+
+int compute(int x) {
+    return AuditAspect_instance.timedCall(compute__original, joinPoint, x);
+}
+```
+
+The aspect instance is the singleton resolved via DI (see below). The joinPoint is a stack-allocated struct populated with the method's metadata.
+
+---
+
+## Multiple aspects on one method
+
+When multiple aspects match the same method, the compiler chains them in `@Order` order:
+
+```
+@Order(1) @Around(Audited.class) void aspect1(...) { ... }
+@Order(2) @Around(Audited.class) void aspect2(...) { ... }
+```
+
+Codegen produces nested wrappers — `aspect1` wraps `aspect2`, which wraps the original. `@Before`/`@After` flatten into a single wrapper with multiple before/after calls.
+
+Without `@Order`, source-declaration order in the aspect class is used. Across aspects without `@Order`, the order is implementation-defined (advice should not depend on it).
+
+---
+
+## Compile-time dependency injection
+
+### Component registration
+
+A class annotated `@Component` (or `@Service`, `@Repository` — aliases) becomes a singleton in the compile-time DI graph:
+
+```cajeta
+@Component public class Database {
+    public Database() { ... }
+}
+
+@Component public class UserService {
+    @Inject Database db;        // field injection
+    @Inject Logger log;
+}
+
+@Component public class ReportGenerator {
+    private UserService users;
+    private Database db;
+    public ReportGenerator(@Inject UserService users, @Inject Database db) {   // constructor injection
+        this.users = users;
+        this.db = db;
+    }
+}
+```
+
+### Compile-time graph resolution
+
+The compiler scans all source for `@Component` classes, builds a dependency graph, and:
+
+- **Missing implementation** → compile error. `Foo needs Bar, but no @Component class implements Bar`.
+- **Circular dependency** → compile error. `Cycle: Foo -> Bar -> Foo`.
+- **Ambiguous resolution** (two `@Component` classes implementing the same interface, no `@Named` qualifier) → compile error. `Two implementations of Persister: DiskPersister, MemoryPersister. Use @Named to disambiguate.`
+
+### Generated bootstrap
+
+The compiler synthesizes module-level lazy singletons:
+
+```cajeta
+// Compiler-generated:
+static Database __singleton_Database = null;
+static Database get_Database() {
+    if (__singleton_Database == null) {
+        __singleton_Database = new Database();
+    }
+    return __singleton_Database;
+}
+
+static UserService __singleton_UserService = null;
+static UserService get_UserService() {
+    if (__singleton_UserService == null) {
+        UserService u = new UserService();
+        u.db = get_Database();
+        u.log = get_Logger();
+        // ... after all fields injected, call lifecycle hook
+        u.__postConstruct();  // synthesized; calls @PostConstruct method if present
+        __singleton_UserService = u;
+    }
+    return __singleton_UserService;
+}
+```
+
+`@Inject` field reads become `get_X()` calls; constructor parameters with `@Inject` are passed `get_X()` at construction.
+
+### Qualifiers
+
+When more than one `@Component` implements the same interface, the user disambiguates with `@Named`:
+
+```cajeta
+@Component @Named("disk") public class DiskPersister implements Persister { ... }
+@Component @Named("memory") public class MemoryPersister implements Persister { ... }
+
+@Component public class Service {
+    @Inject @Named("disk") Persister p;   // selects DiskPersister
+}
+```
+
+Compile error if `@Named` doesn't match any registered component.
+
+### Lifecycle
+
+- **`@PostConstruct void init()`** — called after all `@Inject` fields are populated, before the singleton is exposed.
+- **`@PreDestroy void cleanup()`** — called on the singleton's drop. The compiler wires this into the singleton's drop function (which fires at program exit via the existing drop chain).
+
+---
+
+## Composition with the rest of the language
+
+### Drop chain
+
+Advice that owns local resources drops them on every exit path. The advice body is a normal Cajeta method; the drop chain wraps it naturally.
+
+### Exceptions
+
+`@AfterThrowing` IS the catch arm in the generated wrapper. `@After` IS the after-everything cleanup (matches the existing `__cajeta_scope_exit_to` semantics, in spirit). Cause chains and stack traces (from `ErrorModel.md`) propagate through aspects unchanged.
+
+### Fibers + async
+
+Async methods can be advised. The wrapper is itself async. The advice methods can themselves contain `await` — they'll suspend on the same carrier as any other async code.
+
+### Inheritance
+
+When a subclass overrides an advised parent method, the override **inherits the advice** by default. The compiler-generated wrapper on the parent dispatches through the vtable, which lands on the subclass's body — which is itself wrapped if the subclass's method also matches a pointcut. Avoids the Spring-AOP pitfall where calling `this.method()` skips the proxy.
+
+Opt-out with `@NoAdvice` on the subclass override if needed (rare).
+
+---
+
+## Examples
+
+### Example 1: logging via marker annotation
+
+```cajeta
+public @interface Logged { String level = "info"; }
+
+@Aspect public class LoggingAspect {
+    @Inject Logger log;
+
+    @Before(Logged.class)
+    void logCall(JoinPoint jp, Logged annot) {
+        log.at(annot.level).write("→ " + jp.methodName);
+    }
+}
+
+class PaymentProcessor {
+    @Logged(level = "warn")
+    public void chargeCard(Card card, int cents) { ... }
+}
+```
+
+### Example 2: transactional boundary via @Around
+
+```cajeta
+public @interface Transactional {}
+
+@Aspect public class TransactionalAspect {
+    @Inject TransactionManager txm;
+
+    @Around(Transactional.class)
+    int execute(@Original Function<int> proceed, JoinPoint jp) {
+        Transaction tx = txm.begin();
+        try {
+            int result = proceed();
+            tx.commit();
+            return result;
+        } catch (Throwable t) {
+            tx.rollback();
+            throw t;
+        }
+    }
+}
+```
+
+### Example 3: DI with constructor injection
+
+```cajeta
+@Component public class OrderService {
+    private Database db;
+    private MetricsClient metrics;
+    public OrderService(@Inject Database db, @Inject MetricsClient metrics) {
+        this.db = db;
+        this.metrics = metrics;
+    }
+    @PostConstruct void init() { metrics.gauge("order_service_initialized", 1); }
+}
+```
+
+### Example 4: composing AOP + DI
+
+The aspect itself is a `@Component` and can be `@Inject`-wired:
+
+```cajeta
+@Component @Aspect public class CachingAspect {
+    @Inject CacheStore cache;
+    @Around(Cached.class)
+    Object lookup(@Original Function<Object> proceed, JoinPoint jp) {
+        Object cached = cache.get(jp.methodName);
+        if (cached != null) return cached;
+        Object fresh = proceed();
+        cache.put(jp.methodName, fresh);
+        return fresh;
+    }
+}
+```
+
+The compiler instantiates `CachingAspect` once at DI bootstrap (with `cache` injected), and the woven `@Around` calls dispatch on that singleton.
+
+---
+
+## Rationale (why not the alternatives)
+
+- **Spring runtime proxies.** JDK/CGLIB proxies are slow to construct, opaque under debugger, and have the well-known "self-invocation bypass" footgun (`this.method()` skips the proxy). Our compile-time weaving rewrites the method body itself — `this.method()` IS the wrapped call.
+- **AspectJ bytecode weaving at deploy time.** Requires a load-time agent or post-compile weaver. Slow build, awkward tooling. We do it at codegen — one pass, no separate tool.
+- **Annotation processors generating proxy classes** (Micronaut, Quarkus). Better than runtime proxies — works with native-image — but still creates an extra layer (one proxy class per advised target). We skip that: the wrapper IS the public method's body. Zero proxy classes.
+- **Manual decorator pattern** (write your own wrappers by hand). Verbose, doesn't centralize, doesn't compose. AOP exists because manual decoration doesn't scale.
+
+The Cajeta-native wins:
+1. **Type-safe everything.** JoinPoint is parameterized; @Around proceed is typed; annotation parameters are typed at the advice. Compile errors catch mismatched aspects.
+2. **No proxies anywhere.** Methods are their wrapped selves. `this.method()` is the wrapped version.
+3. **Compile-time DI graph.** Missing impls, cycles, ambiguity all caught before the binary is built.
+4. **Composes with existing model.** Drop chain, fibers, exceptions, scope — the wrapper is a Cajeta method, not a synthetic proxy with its own rules.
+
+---
+
+## Implementation phases
+
+This is a substantial feature surface. A reasonable rollout:
+
+- **A1.** Annotation parsing: extend the existing `Annotatable` infrastructure to capture annotation parameter values (`@Order(2)`, `@Named("disk")`). Today we capture annotation names only.
+- **A2.** `@Aspect` class registration during compile. Compiler builds a list of aspect classes.
+- **A3.** Pointcut matching pass — for each method, check which aspects match. Per-method aspect list cached on the Method.
+- **A4.** Codegen wrapping for `@Before` / `@After` (simplest forms). Single advice; no `@Order` chaining yet.
+- **A5.** `@Around` + `@Original` typed proceed. Requires the method-extraction infrastructure (original body → private helper).
+- **A6.** `@AfterReturning` + `@AfterThrowing`. Both compose with the existing try/catch codegen.
+- **A7.** Multiple-aspect chaining via `@Order`.
+- **A8.** `@Component` registration + DI graph build.
+- **A9.** `@Inject` codegen: field reads → `get_X()`; constructor params → `get_X()` at instantiation.
+- **A10.** `@Named` qualifier support.
+- **A11.** `@PostConstruct` / `@PreDestroy` lifecycle hooks.
+- **A12.** Composition tests: aspect-on-aspect-class, DI'd aspects, inheritance + advice, fiber-spanning advice.
+
+Each phase is roughly session-sized. A1-A2 are foundation; A3-A4 deliver minimal AoP (logging-style aspects); A5+ extend.
+
+---
+
+## Deferred / known gaps
+
+- **Expression-pattern pointcuts.** String-DSL `execution(...)` etc. Hold off until a use case really demands it.
+- **Aspect-on-aspect / advising the advice.** Spring forbids; we follow.
+- **Scopes beyond singleton.** Prototype / request / session — add when stateful per-call DI matters.
+- **Optional injection.** `@Inject(optional=true)` to silently null-out unsatisfiable dependencies. Today: every `@Inject` must resolve or compile error.
+- **Lazy injection.** `Lazy<T>` to defer instantiation. Possible after singleton bootstrap stabilizes.
+- **Cross-module DI.** When Cajeta gains a package/module system, the DI graph spans modules. v1 assumes single-compilation-unit DI.
+- **Dynamic registration / overriding for tests.** Test code may want to swap a real DB with a mock. Today: define the mock as `@Component @Named("test")` and use a test-only build flag to control which name resolves. A first-class test-overrides mechanism is post-v1.
