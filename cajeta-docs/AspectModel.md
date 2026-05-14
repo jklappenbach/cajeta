@@ -14,7 +14,7 @@
 - **Aspect-on-aspect.** Advising the advice. Spring forbids it; we follow.
 - **`@DeclareParents`-style introductions** (adding new interfaces to existing classes via aspects). Use ordinary inheritance.
 - **Prototype / request / session scopes.** Singleton is the default and only scope in v1. Other scopes add later if needed.
-- **Constructor / setter injection.** Spring's docs prefer constructor injection so tests can `new SomeService(mockA, mockB)` directly — Spring's `ApplicationContext` is heavy enough at runtime that side-stepping it is the test idiom. Cajeta has no such context: DI is compile-time, no runtime registry, no lazy context to load. Tests substitute by recompiling with `@TestComponent` (or a `@Profile("test")` wiring), not by hand-constructing instances. Field injection is therefore the only injection vector; `@Inject` on a constructor parameter is a compile error.
+- **Setter injection.** A separate `setFoo(@Inject Foo f)` method per dependency is a Spring legacy from the era when bytecode rewriting wanted public mutators it could find by name. Both shapes Cajeta does support — field injection and constructor injection — express the dependency at its declaration site. Setter methods would add a third, implicitly-mutable, surface for no gain. Field and constructor `@Inject` cover the cases setter injection traditionally exists to solve.
 - **Reflection / runtime registry.** The DI "container" is generated code with direct calls.
 
 ---
@@ -228,14 +228,25 @@ A class annotated `@Component` becomes part of the compile-time DI graph. The an
     public Database() { ... }
 }
 
+// Field injection: @Inject on the field, the compiler-synthesized
+// __postConstruct assigns it after allocation.
 @Component public class UserService {
     @Inject Database db;
     @Inject Logger log;
 }
 
+// Constructor injection: @Inject on a constructor parameter, the
+// compiler passes the resolved instance at the construction site
+// of the receiver. Useful for immutable fields the body initializes
+// once. Both styles compose — a class can mix field and constructor
+// injection freely.
 @Component public class ReportGenerator {
-    @Inject UserService users;
-    @Inject Database db;
+    private UserService users;
+    private Database db;
+    public ReportGenerator(@Inject UserService users, @Inject Database db) {
+        this.users = users;
+        this.db = db;
+    }
 }
 
 // Multiple impls of an interface — disambiguate by name.
@@ -302,7 +313,7 @@ static RequestContext make_RequestContext() {
 }
 ```
 
-`@Inject` field reads become `get_X()` (singleton) or `make_X()` (transient) calls. The receiver's compiler-synthesized `__postConstruct` runs the assignments after the receiver itself is allocated, before any user-defined `@PostConstruct` method. Constructor parameters and setter methods are not valid injection sites — `@Inject` is field-only.
+`@Inject` field reads become `get_X()` (singleton) or `make_X()` (transient) calls. Field assignments run inside the receiver's compiler-synthesized `__postConstruct`, after allocation, before any user-defined `@PostConstruct` method. Constructor-parameter `@Inject` resolves at the construction site of the receiver: the calling code (whether user-written `new` or the generated `get_X` / `make_X` body for an upstream component) passes the resolved instance directly through the constructor call — no intermediate field, no post-construct write needed. Setter methods are not valid injection sites — see the Rejected list above.
 
 ### Qualifying an injection
 
@@ -432,7 +443,21 @@ public @interface Transactional {}
 }
 ```
 
-### Example 3: DI with field injection + lifecycle
+### Example 3: DI with constructor injection + lifecycle
+
+```cajeta
+@Component public class OrderService {
+    private Database db;
+    private MetricsClient metrics;
+    public OrderService(@Inject Database db, @Inject MetricsClient metrics) {
+        this.db = db;
+        this.metrics = metrics;
+    }
+    @PostConstruct void init() { metrics.gauge("order_service_initialized", 1); }
+}
+```
+
+The equivalent field-injection form, for callers that prefer it:
 
 ```cajeta
 @Component public class OrderService {
@@ -441,6 +466,8 @@ public @interface Transactional {}
     @PostConstruct void init() { metrics.gauge("order_service_initialized", 1); }
 }
 ```
+
+Both shapes resolve to the same dependency graph. Pick whichever fits the class — constructor injection for immutable fields the body initializes once, field injection when the body doesn't care about the moment of assignment.
 
 ### Example 4: composing AOP + DI
 
@@ -491,7 +518,7 @@ This is a substantial feature surface. A reasonable rollout:
 - **A6.** `@AfterReturning` + `@AfterThrowing`. Both compose with the existing try/catch codegen.
 - **A7.** Multiple-aspect chaining via `@Order`.
 - **A8.** `@Component` registration + DI graph build.
-- **A9.** `@Inject` codegen: field reads in `__postConstruct` resolve to `get_X()` (singleton) or `make_X()` (transient) calls. Reject `@Inject` on constructor parameters and setter methods with a clear "field-only injection" error.
+- **A9.** `@Inject` codegen. Field form: assignments emit in the receiver's compiler-synthesized `__postConstruct` body, with each read resolving to `get_X()` (singleton) or `make_X()` (transient). Constructor form: the constructor's caller (user-written `new`, or the generated `get_X` / `make_X` for an upstream component) threads `get_X()` / `make_X()` calls in at the corresponding parameter position. Reject `@Inject` on a regular setter method (a public-mutator pattern that adds an unneeded third injection surface — see Rejected).
 - **A10.** Name qualifier support: `@Component(name = "...")` registration + `@Inject(name = "...")` consumer-side selection.
 - **A11.** `@PostConstruct` / `@PreDestroy` lifecycle hooks.
 - **A12.** Composition tests: aspect-on-aspect-class, DI'd aspects, inheritance + advice, fiber-spanning advice.
