@@ -254,14 +254,42 @@ namespace cajeta {
                                 matched = true;
                             }
                         } else {
-                            // Type-based pointcut: the method belongs
-                            // to the pointcut class. Inheritance walks
-                            // (the doc's "implementer-of-interface"
-                            // case) ship alongside A12 once the
-                            // ancestor-resolution path is stable for
-                            // post-vtable use.
+                            // Type-based pointcut (A12): the method
+                            // belongs to the pointcut class OR to a
+                            // descendant of it. The pointcut declares
+                            // "every method on T or T's subtypes" —
+                            // walking the superClasses + implemented
+                            // interfaces lists from the user's class
+                            // catches the inheritance / implementation
+                            // chain.
                             if (userClass == pointcutClass) {
                                 matched = true;
+                            } else {
+                                // BFS over ancestors: superclass chain
+                                // plus implemented interfaces. The
+                                // implementedInterfaces list is
+                                // resolved at generatePrototype time
+                                // (CajetaClass::resolveImplementedInterfaces)
+                                // so by codegen-pointcut time the
+                                // pointers are stable.
+                                std::vector<CajetaClassPtr> queue;
+                                queue.push_back(userClass);
+                                std::set<CajetaClassPtr> seen;
+                                while (!queue.empty()) {
+                                    auto cur = queue.back();
+                                    queue.pop_back();
+                                    if (!cur || !seen.insert(cur).second) continue;
+                                    if (cur == pointcutClass) {
+                                        matched = true;
+                                        break;
+                                    }
+                                    for (auto& sup : cur->getSuperClasses()) {
+                                        if (sup) queue.push_back(sup);
+                                    }
+                                    for (auto& iface : cur->getImplementedInterfaces()) {
+                                        if (iface) queue.push_back(iface);
+                                    }
+                                }
                             }
                         }
                         if (matched) {
