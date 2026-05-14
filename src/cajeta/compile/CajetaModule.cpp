@@ -12,6 +12,7 @@
 #include "../logging/CajetaLogger.h"
 #include "Compiler.h"
 #include "../method/Method.h"
+#include "../method/ComponentInjectMethod.h"
 #include "../type/StructureMetadata.h"
 #include "../type/CajetaClass.h"
 #include "../runtime/EmbeddedRuntime.h"
@@ -441,10 +442,14 @@ namespace cajeta {
             };
 
         // Build per-component dependency edges and detect missing /
-        // ambiguous resolution in one pass.
+        // ambiguous resolution in one pass. The resolved (field →
+        // target) pairs are written back to the descriptor's
+        // resolvedFields list so A9 codegen has direct access to
+        // them without re-running lookup.
         map<ComponentDescriptorPtr, vector<ComponentDescriptorPtr>> edges;
         for (auto& c : active) {
             edges[c];   // ensure every node is in the graph
+            c->resolvedFields.clear();
             for (auto& [pname, prop] : c->klass->getProperties()) {
                 if (!prop) continue;
                 auto injectAnn = prop->findAnnotation("Inject");
@@ -494,6 +499,10 @@ namespace cajeta {
                         "CAJETA_ERROR_DI_AMBIGUOUS");
                 }
                 edges[c].push_back(resolved);
+                ResolvedDependency rd;
+                rd.field = prop;
+                rd.target = resolved;
+                c->resolvedFields.push_back(rd);
             }
         }
 
@@ -537,6 +546,35 @@ namespace cajeta {
             };
         for (auto& c : active) {
             if (color.find(c) == color.end()) dfs(c);
+        }
+
+        // A9 codegen prep: attach a synthesized __cajeta_inject()
+        // static method to every active component. The method's
+        // body emits the lazy-singleton pattern (alloc + ctor +
+        // field injection + cache) at Phase 2 codegen, reading
+        // resolvedFields populated above.
+        //
+        // The method registers on the class via addMethod, so
+        // Phase 1's getLlvmFunctionType walk and Phase 2's
+        // generateCode walk both pick it up without compiler
+        // changes. The method's owning module is the component's
+        // own module — multi-module DI graphs route each helper
+        // into the right IR module.
+        for (auto& c : active) {
+            if (!c->klass) continue;
+            // Skip if a manual __cajeta_inject already exists (idempotent
+            // across repeated Compiler-resets in the same process).
+            bool already = false;
+            for (auto& [k, m] : c->klass->getMethods()) {
+                if (m && m->getName() == "__cajeta_inject") {
+                    already = true;
+                    break;
+                }
+            }
+            if (already) continue;
+            auto inject = std::make_shared<ComponentInjectMethod>(
+                c->klass->getModule(), c->klass, c);
+            c->klass->addMethod(inject);
         }
     }
 

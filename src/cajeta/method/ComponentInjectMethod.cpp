@@ -1,0 +1,171 @@
+//
+// AspectModel.md § A9: synthesized __cajeta_inject() body.
+//
+// Pattern:
+//   static <C> __cajeta_inject() {
+//       if (__cajeta_singleton_<C> != null) return __cajeta_singleton_<C>;
+//       <C> instance = malloc(sizeof <C>);
+//       instance.vtable = &__vtable_<C>;
+//       <C>::<C>(instance);                          // constructor
+//       instance.fieldA = <FieldA>::__cajeta_inject();
+//       ...
+//       __cajeta_singleton_<C> = instance;
+//       return instance;
+//   }
+//
+// Emitted directly as IR rather than through an AST tree. The
+// branch is shaped as:
+//
+//   entry:
+//     %cur = load ptr, @__cajeta_singleton_<C>
+//     %hit = icmp ne ptr %cur, null
+//     br i1 %hit, label %cached, label %fresh
+//   cached:
+//     ret ptr %cur
+//   fresh:
+//     ... allocate + ctor + injections + store ...
+//     ret ptr %inst
+//
+
+#include "ComponentInjectMethod.h"
+#include "../type/CajetaClass.h"
+#include "../type/StructureProperty.h"
+#include "../util/MemoryManager.h"
+
+#include "llvm/IR/Constants.h"
+#include "llvm/IR/IRBuilder.h"
+
+namespace cajeta {
+    ComponentInjectMethod::ComponentInjectMethod(
+        CajetaModulePtr module,
+        CajetaClassPtr parent,
+        CajetaModule::ComponentDescriptorPtr descriptor)
+        : Method(module, std::string("__cajeta_inject"), parent, parent),
+          descriptor(std::move(descriptor)) {
+        // Method's base constructor leaves llvmFunction /
+        // llvmFunctionType uninitialized — user-written methods rely
+        // on CajetaClass::generatePrototype calling generatePrototype
+        // on each method right after construction. Our synthesized
+        // method is added AFTER the class's generatePrototype has
+        // run (during resolveDependencyGraph), so we'd inherit
+        // garbage pointers and skip the lazy prototype-build path
+        // (getLlvmFunctionType only triggers generatePrototype when
+        // its cached pointer is null). Clear them explicitly here
+        // so the lazy path works for our class.
+        llvmFunctionType = nullptr;
+        llvmFunction = nullptr;
+        // Static; no `this`. The Method base treats static methods
+        // correctly during generatePrototype (skips the implicit
+        // this param).
+        addModifier(STATIC);
+    }
+
+    void ComponentInjectMethod::generateCode() {
+        auto& ctx = *module->getLlvmContext();
+        auto* lmod = module->getLlvmModule();
+        llvm::Type* ptrTy = llvm::PointerType::get(ctx, 0);
+
+        // Lazy-create the module-level singleton storage on the
+        // first generateCode for this descriptor. Cached on the
+        // descriptor so transitive callers reuse the same global.
+        if (!descriptor->singletonGlobal) {
+            std::string globalName =
+                "__cajeta_singleton_" + parent->getQName()->toCanonical();
+            descriptor->singletonGlobal = new llvm::GlobalVariable(
+                *lmod, ptrTy, /*isConstant=*/false,
+                llvm::GlobalValue::InternalLinkage,
+                llvm::ConstantPointerNull::get(
+                    llvm::cast<llvm::PointerType>(ptrTy)),
+                globalName);
+        }
+        llvm::GlobalVariable* singletonGV = descriptor->singletonGlobal;
+
+        // Entry block: load singleton, branch on null check.
+        llvm::BasicBlock* entry =
+            llvm::BasicBlock::Create(ctx, "entry", llvmFunction);
+        llvm::BasicBlock* cached =
+            llvm::BasicBlock::Create(ctx, "cached", llvmFunction);
+        llvm::BasicBlock* fresh =
+            llvm::BasicBlock::Create(ctx, "fresh", llvmFunction);
+
+        builder = new llvm::IRBuilder<>(entry);
+        module->setBuilder(builder);
+        module->setCurrentMethod(shared_from_this());
+
+        llvm::Value* current =
+            builder->CreateLoad(ptrTy, singletonGV, "cur");
+        llvm::Value* isNull = builder->CreateICmpEQ(
+            current, llvm::ConstantPointerNull::get(
+                llvm::cast<llvm::PointerType>(ptrTy)),
+            "isnull");
+        builder->CreateCondBr(isNull, fresh, cached);
+
+        // Cached path — return existing singleton.
+        builder->SetInsertPoint(cached);
+        builder->CreateRet(current);
+
+        // Fresh path — alloc + ctor + inject fields + cache + return.
+        builder->SetInsertPoint(fresh);
+
+        llvm::Type* structTy = parent->getLlvmType();
+        const llvm::DataLayout& dl = lmod->getDataLayout();
+        llvm::Constant* allocSize = llvm::ConstantInt::get(
+            llvm::Type::getInt64Ty(ctx),
+            dl.getTypeAllocSize(structTy));
+        llvm::CallInst* instance = MemoryManager::createMallocInstruction(
+            module, allocSize, fresh);
+
+        // Vtable init — slot 0 of the new instance.
+        if (auto vtable = parent->getVirtualTableGlobal()) {
+            llvm::Value* vtableSlot = builder->CreateStructGEP(
+                structTy, instance, /*idx=*/0, "vtable_slot");
+            builder->CreateStore(vtable, vtableSlot);
+        }
+
+        // Constructor — invokeMethod dispatches the matching ctor
+        // (default or user-declared) with no user-supplied args.
+        // The instance pointer is the `this`. Returns nothing
+        // structured we need; we keep the instance ptr from malloc.
+        std::string ctorName = parent->getQName()->getTypeName();
+        std::vector<ParameterEntry> noArgs;
+        parent->invokeMethod(ctorName, noArgs,
+                             /*isConstructor=*/true, instance);
+
+        // Field injection. For every resolved @Inject field, fetch
+        // the target's singleton (via its own __cajeta_inject) and
+        // store into the field slot.
+        for (auto& rd : descriptor->resolvedFields) {
+            if (!rd.field || !rd.target || !rd.target->klass) continue;
+
+            // Locate the target's inject method. We added it on
+            // the target descriptor's class earlier in the same
+            // pass; the method map keys by canonical signature.
+            // Walk the methods looking for one named
+            // __cajeta_inject — same lookup the resolver uses.
+            MethodPtr targetInject;
+            for (auto& [mkey, m] : rd.target->klass->getMethods()) {
+                if (m && m->getName() == "__cajeta_inject") {
+                    targetInject = m;
+                    break;
+                }
+            }
+            if (!targetInject) continue;
+            llvm::Value* depPtr = builder->CreateCall(
+                targetInject->getLlvmFunctionType(),
+                targetInject->getLlvmFunction(),
+                {},
+                rd.field->getName() + "_dep");
+
+            unsigned fieldIdx =
+                (unsigned) parent->getFieldLlvmIndex(rd.field);
+            llvm::Value* slot = builder->CreateStructGEP(
+                structTy, instance, fieldIdx,
+                rd.field->getName() + "_slot");
+            builder->CreateStore(depPtr, slot);
+        }
+
+        // Cache and return the fresh instance.
+        builder->CreateStore(instance, singletonGV);
+        builder->CreateRet(instance);
+    }
+}

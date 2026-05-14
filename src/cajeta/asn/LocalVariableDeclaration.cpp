@@ -12,6 +12,7 @@
 #include "../type/CajetaStruct.h"
 #include "../type/CajetaFunctionType.h"
 #include "expression/Expression.h"
+#include "expression/MethodCallExpression.h"
 #include "../method/Method.h"
 #include "../error/CajetaExceptions.h"
 #include "../logging/CajetaLogger.h"
@@ -197,6 +198,25 @@ namespace cajeta {
                 emitDropEntryFor(module, field, "__cajeta_closure_drop");
             }
 
+            // Singleton-source detection (A9): if the local's
+            // initializer is a MethodCallExpression named
+            // __cajeta_inject, the pointer returned is a borrowed
+            // reference to the process-wide DI singleton. Skip the
+            // drop entry — registering one would double-free the
+            // singleton on the second @Inject site, and would free
+            // state shared across the rest of the program.
+            bool initIsInjectBorrow = false;
+            if (auto varInit = dynamic_pointer_cast<VariableInitializer>(initializer)) {
+                auto& children = varInit->getChildren();
+                if (!children.empty()) {
+                    if (auto mc = dynamic_pointer_cast<MethodCallExpression>(children[0])) {
+                        if (mc->getMethodCallName() == "__cajeta_inject") {
+                            initIsInjectBorrow = true;
+                        }
+                    }
+                }
+            }
+
             // User-defined-drop wiring for class-instance locals.
             // Arrays and structs are handled separately above; struct
             // values live inline (no heap), and arrays have their own
@@ -209,7 +229,8 @@ namespace cajeta {
             // to the caller.
             auto klass = dynamic_pointer_cast<CajetaClass>(type);
             bool isStructType = dynamic_pointer_cast<CajetaStruct>(type) != nullptr;
-            if (klass && !isArray && !isStructType && !klass->isInterface()) {
+            if (klass && !isArray && !isStructType && !klass->isInterface()
+                    && !initIsInjectBorrow) {
                 if (llvm::Function* dropFn = klass->getOrCreateDropFunction()) {
                     emitDropEntryForFn(module, field, dropFn);
                 }

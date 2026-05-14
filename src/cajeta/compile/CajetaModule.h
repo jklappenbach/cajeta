@@ -5,6 +5,7 @@
 #pragma once
 
 #include "../asn/AbstractSyntaxNode.h"
+#include "llvm/IR/GlobalVariable.h"
 #include "llvm/IR/Module.h"
 #include "../type/QualifiedName.h"
 #include "../type/CajetaClass.h"
@@ -62,13 +63,33 @@ namespace cajeta {
         // `isTestComponent` flag distinguishes @TestComponent
         // declarations so the resolver can drop them outside test
         // compilations and prefer them inside.
+        struct ComponentDescriptor;
+        typedef shared_ptr<ComponentDescriptor> ComponentDescriptorPtr;
+
+        // One resolved @Inject site on the owning component: the
+        // StructureProperty being assigned and the component whose
+        // singleton fills it. resolveDependencyGraph populates this
+        // list as it validates; A9 codegen reads it to emit the
+        // __postConstruct body without re-running lookup.
+        struct ResolvedDependency {
+            StructurePropertyPtr field;
+            ComponentDescriptorPtr target;
+        };
+
         struct ComponentDescriptor {
             CajetaClassPtr klass;
             string name;                 // "" if no name = qualifier
             vector<string> profiles;     // empty = profile-neutral
             bool isTestComponent = false;
+            // Populated by resolveDependencyGraph after validation.
+            // One entry per @Inject field on this component.
+            vector<ResolvedDependency> resolvedFields;
+            // The synthesized lazy singleton storage. Created on
+            // first reference in InjectMethod codegen and shared by
+            // every IR-level fetch (which is one per active call
+            // site). Nullptr until the inject helper's first emit.
+            llvm::GlobalVariable* singletonGlobal = nullptr;
         };
-        typedef shared_ptr<ComponentDescriptor> ComponentDescriptorPtr;
     private:
         static vector<ComponentDescriptorPtr> componentClasses;
 
