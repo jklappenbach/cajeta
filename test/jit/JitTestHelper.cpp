@@ -19,6 +19,7 @@
 #include "llvm/ExecutionEngine/Orc/ExecutionUtils.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/Verifier.h"
+#include "llvm/Linker/Linker.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/TargetSelect.h"
 #include "llvm/Support/raw_ostream.h"
@@ -87,37 +88,68 @@ std::unique_ptr<CajetaJit> CajetaJit::compile(const std::string& source,
 std::unique_ptr<CajetaJit> CajetaJit::compile(const std::string& source,
                                               const std::string& fqClassName,
                                               const Options& opts) {
+    // Single-source path is the multi-source one with a one-entry map.
+    std::map<std::string, std::string> sources;
+    sources.emplace(fqClassName, source);
+    return compile(sources, fqClassName, opts);
+}
+
+std::unique_ptr<CajetaJit> CajetaJit::compile(
+        const std::map<std::string, std::string>& sources,
+        const std::string& fqEntryClass) {
+    return compile(sources, fqEntryClass, Options{});
+}
+
+std::unique_ptr<CajetaJit> CajetaJit::compile(
+        const std::map<std::string, std::string>& sources,
+        const std::string& fqEntryClass,
+        const Options& opts) {
+    // Multi-source path. Lay every (fqClass, source) pair under a
+    // shared temp source-root that matches its declared package
+    // (so onPackageDeclaration's path/package check passes), then
+    // delegate to the single-source path's same parse/codegen/JIT
+    // pipeline by parsing each module into the same Compiler.
     ensureJitInitialized();
 
-    auto [sourceRoot, sourcePath] = writeSourceToTemp(source, fqClassName);
+    static std::mt19937_64 rng(std::random_device{}());
+    auto sourceRoot = std::filesystem::temp_directory_path()
+                    / ("cajeta_multi_" + std::to_string(rng()));
+    std::filesystem::create_directories(sourceRoot);
+
+    std::vector<std::filesystem::path> sourcePaths;
+    sourcePaths.reserve(sources.size());
+    for (auto& [fqClass, source] : sources) {
+        std::filesystem::path rel = classNameToRelativePath(fqClass);
+        std::filesystem::path full = sourceRoot / rel;
+        std::filesystem::create_directories(full.parent_path());
+        std::ofstream out(full);
+        out << source;
+        out.close();
+        sourcePaths.push_back(full);
+    }
 
     auto jitState = std::unique_ptr<CajetaJit>(new CajetaJit);
 
-    // Compiler keeps its own LLVMContext; we hand the resulting module off to LLJIT
-    // wrapped in a ThreadSafeModule that owns a copy of that context.
     auto compiler = std::make_unique<Compiler>();
     compiler->setBoundsCheckEnabled(opts.boundsCheckEnabled);
     auto archiveRoot = std::filesystem::temp_directory_path()
                      / ("cajeta_archive_" + sourceRoot.filename().string());
     std::filesystem::create_directories(archiveRoot);
-    auto module = compiler->createModule(sourcePath.string(), sourceRoot.string(),
-                                          archiveRoot.string());
-    compiler->compile(module);
 
-    // AspectModel.md § A3: pointcut matching runs after parse and
-    // before any per-method codegen begins. Mirrors what
-    // Compiler::compile(entryMethod, ...) does on its multi-file
-    // path so JIT-based tests see the same advice-cache state.
+    cajeta::CajetaModulePtr primary;
+    for (auto& sourcePath : sourcePaths) {
+        auto m = compiler->createModule(sourcePath.string(),
+                                        sourceRoot.string(),
+                                        archiveRoot.string());
+        compiler->compile(m);
+        if (!primary) primary = m;
+    }
+    (void) fqEntryClass;  // routing happens via the entry method name at lookup time
+
     cajeta::CajetaModule::resolveAdviceMatches();
-
-    // AspectModel.md § A8: DI graph validation. JIT-based tests
-    // default to the "test" profile so @TestComponent overrides
-    // and test-only @Profile("test") components are picked up.
     cajeta::CajetaModule::setActiveProfile("test");
     cajeta::CajetaModule::resolveDependencyGraph();
 
-    // Two-phase codegen (signature registration then body lowering). Mirrors what
-    // Compiler::compile(entryMethod,...) does for multi-file builds.
     for (auto& m : compiler->getModules()) {
         for (auto& method : m->getAllMethods()) {
             method->getLlvmFunctionType();
@@ -129,12 +161,42 @@ std::unique_ptr<CajetaJit> CajetaJit::compile(const std::string& source,
         }
     }
 
-    // Link the embedded runtime into the module (no-op if no runtime symbols were
-    // referenced; idempotent if linked already).
-    module->linkRuntime();
+    // Merge every secondary module into the primary's LLVM
+    // module. The stdlib prelude (`cajeta.error.*`) is re-parsed
+    // per CajetaModule (Compiler::parse), so its vtable/RTTI
+    // globals and method bodies appear in every module — they'd
+    // collide on a plain linkModules call. OverrideFromSrc lets
+    // the donor's symbols overwrite same-name globals/functions
+    // in the destination; the stdlib content is identical across
+    // modules so the overwrite is a semantic no-op for that
+    // subset.
+    //
+    // Caveat: OverrideFromSrc will ALSO overwrite a destination's
+    // legitimate definition with a donor-side forward-reference
+    // when the donor's IR has a cross-module CallInst referencing
+    // a function that's defined in the destination — the merge
+    // can drop the destination's body. This affects multi-source
+    // shapes where a user method in module B calls a user
+    // constructor defined in module A. The synthesized inject-
+    // method dispatch path used by cross-module DI is not
+    // affected (see CajetaModuleSourceCompileTests doc-comment).
+    // Promoting cross-module call references to proper extern
+    // declarations in the calling module is the underlying fix
+    // and is tracked as a follow-up.
+    auto modulesList = compiler->getModules();
+    for (auto& m : modulesList) {
+        if (m == primary) continue;
+        std::unique_ptr<llvm::Module> donor(m->getLlvmModule());
+        if (llvm::Linker::linkModules(*primary->getLlvmModule(),
+                                       std::move(donor),
+                                       llvm::Linker::Flags::OverrideFromSrc)) {
+            throw std::runtime_error("JIT module-merge failed");
+        }
+    }
 
-    // Capture short→full name mapping before transferring the module to JIT.
-    llvm::Module* llvmModule = module->getLlvmModule();
+    primary->linkRuntime();
+
+    llvm::Module* llvmModule = primary->getLlvmModule();
     for (auto& fn : *llvmModule) {
         if (fn.isDeclaration()) continue;
         std::string fullName = fn.getName().str();

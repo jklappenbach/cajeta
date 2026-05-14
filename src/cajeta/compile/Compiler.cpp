@@ -42,8 +42,18 @@ namespace cajeta {
         using recursive_directory_iterator = std::filesystem::recursive_directory_iterator;
         std::filesystem::path sourcePath(rootPath);
 
+        // The previous extension filter — `path.string().find(".code")`
+        // — was doubly broken: it used the wrong extension (`.code`)
+        // and used `find` as a presence test, where the return is a
+        // position that's nonzero for nearly every path, so every
+        // regular file passed. Today the walker is fed source trees
+        // that only contain `.cajeta` files, so the bug hasn't bitten,
+        // but it means a stray editor backup or generated artifact
+        // under the source root would crash the parser. Match the
+        // declared file extension explicitly.
         for (const auto& dirEntry: recursive_directory_iterator(sourcePath)) {
-            if (dirEntry.is_regular_file() && dirEntry.path().string().find(".code")) {
+            if (dirEntry.is_regular_file()
+                    && dirEntry.path().extension() == CAJETA_EXTENSION) {
                 result->push_back(dirEntry.path().string());
             }
         }

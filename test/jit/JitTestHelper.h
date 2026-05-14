@@ -6,6 +6,7 @@
 
 #pragma once
 
+#include <map>
 #include <memory>
 #include <string>
 
@@ -34,6 +35,22 @@ public:
     static std::unique_ptr<CajetaJit> compile(const std::string& source,
                                               const std::string& fqClassName,
                                               const Options& opts);
+
+    // Multi-source overload: each (fqClassName → source) pair lands
+    // at the matching path under a shared temp source-root, so the
+    // file's path-derived package matches its `package X;`
+    // declaration. The compiler then parses each file as its own
+    // module, runs the same A3/A8/Phase 1/Phase 2 passes the
+    // single-source path runs, and merges the resulting IR modules
+    // into one before handing to LLJIT. Cross-module DI, advice
+    // pointcuts, and method calls span the merged module.
+    static std::unique_ptr<CajetaJit> compile(
+        const std::map<std::string, std::string>& sources,
+        const std::string& fqEntryClass);
+    static std::unique_ptr<CajetaJit> compile(
+        const std::map<std::string, std::string>& sources,
+        const std::string& fqEntryClass,
+        const Options& opts);
 
     ~CajetaJit();
 

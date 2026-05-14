@@ -224,9 +224,42 @@ namespace cajeta {
                 auto it = canonicalMap.find(qName->toCanonical());
                 if (it != canonicalMap.end()) {
                     type = it->second;
+                } else if (module && qName->getPackageName().empty()) {
+                    // Import-aware short-name resolution. The user
+                    // wrote a bare type name (no package qualifier);
+                    // check the active module's imports map. The map
+                    // shape is imports[shortName][packageName] = qn,
+                    // populated by onImportDeclaration. A hit gives
+                    // us the fully-qualified canonical to look up,
+                    // disambiguating between same-short-name classes
+                    // in different packages. Doing this BEFORE the
+                    // short-name fallback below is what makes
+                    // `import a.b.Foo;` actually steer resolution.
+                    auto& imports = module->getImports();
+                    auto importIt = imports.find(qName->getTypeName());
+                    if (importIt != imports.end() && !importIt->second.empty()) {
+                        // First entry wins — multiple imports of
+                        // the same short name from different packages
+                        // is a future ambiguity-error condition, not
+                        // a quiet pick. v1 just takes one
+                        // deterministically.
+                        auto& imported = importIt->second.begin()->second;
+                        auto canonIt = canonicalMap.find(imported->toCanonical());
+                        if (canonIt != canonicalMap.end()) {
+                            type = canonIt->second;
+                        }
+                    }
+                    if (!type) {
+                        // Fall back to the native ("") package —
+                        // covers built-in aliases like
+                        // String/Exception that fromContext defaults
+                        // to package "code".
+                        auto nativeIt = canonicalMap.find(qName->getTypeName());
+                        if (nativeIt != canonicalMap.end()) {
+                            type = nativeIt->second;
+                        }
+                    }
                 } else {
-                    // Fall back to the native ("") package — covers built-in aliases like
-                    // String/Exception that fromContext defaults to package "code".
                     auto nativeIt = canonicalMap.find(qName->getTypeName());
                     if (nativeIt != canonicalMap.end()) {
                         type = nativeIt->second;
