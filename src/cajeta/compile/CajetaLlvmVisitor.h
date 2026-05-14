@@ -695,12 +695,30 @@ namespace cajeta {
 
         // TODO: Scrap this and replace with a
         virtual std::any visitFieldDeclaration(CajetaParser::FieldDeclarationContext* ctx) override {
-            CajetaTypePtr type;
-            list<VariableDeclaratorPtr> variableDeclarators;
-            antlr4::Token* token;
+            CajetaTypePtr type = any_cast<CajetaTypePtr>(visitTypeType(ctx->typeType()));
+            // Reject unknown field type names at the source. CajetaType::
+            // fromContext returns null silently for class-or-interface
+            // misses because forward references (e.g. `permits X` lists)
+            // and deferred-handler contexts (lambda LVTI params routed to
+            // NOT_IMPLEMENTED) depend on that tolerance. Field types
+            // don't have a deferred-resolution mechanism — a null here
+            // would propagate to CajetaClass::generatePrototype's struct
+            // layout and segfault on getLlvmType() with no diagnostic.
+            // Throw at the visit site so the error carries both the
+            // offending type name and the variable name(s) the user
+            // wrote.
+            if (!type) {
+                string typeName = ctx->typeType()->getText();
+                string declared = ctx->variableDeclarators()->getText();
+                throw Exception(
+                    "unknown field type '" + typeName
+                        + "' on declaration '" + declared
+                        + "'; not a primitive, native, or user-defined type",
+                    "CAJETA_ERROR_UNKNOWN_TYPE");
+            }
             return static_pointer_cast<MemberDeclaration>(
                 make_shared<FieldDeclaration>(
-                any_cast<CajetaTypePtr>(visitTypeType(ctx->typeType())),
+                type,
                 any_cast<list<VariableDeclaratorPtr>>(visitVariableDeclarators(ctx->variableDeclarators())),
                 ctx->getStart()));
         }

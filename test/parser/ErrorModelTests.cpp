@@ -8,6 +8,7 @@
 
 #include "gtest/gtest.h"
 #include "../jit/JitTestHelper.h"
+#include "cajeta/error/Exception.h"
 
 #include <cstdint>
 #include <string>
@@ -443,6 +444,77 @@ TEST(ErrorModelTests, threeLevelMixedFieldWidthsWithInt8) {
         "    }\n"
         "}\n";
     EXPECT_EQ(runI64(src), 12394LL);
+}
+
+// Unknown field type produces a clean CAJETA_ERROR_UNKNOWN_TYPE
+// instead of a silent null-deref segfault. CajetaType::fromContext
+// still returns null for class-or-interface misses because forward
+// references (e.g. `permits X` lists where X is declared later) and
+// deferred-handler contexts (lambda LVTI params routed to
+// NOT_IMPLEMENTED by downstream code) rely on that tolerance. The
+// guard sits at visitFieldDeclaration in CajetaLlvmVisitor — early
+// enough to capture the offending type-name token from the parser
+// context so the error message names what the user actually wrote.
+TEST(ErrorModelTests, unknownFieldTypeThrowsCleanError) {
+    auto src =
+        "package test;\n"
+        "public class Holder {\n"
+        "    public flot32 b;\n"
+        "    public Holder() { }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Holder h = new Holder();\n"
+        "        return 1;\n"
+        "    }\n"
+        "}\n";
+    try {
+        CajetaJit::compile(src, "test.D");
+        FAIL() << "expected cajeta::Exception (unknown type) but compile succeeded";
+    } catch (cajeta::Exception& e) {
+        EXPECT_EQ(e.getErrorId(), "CAJETA_ERROR_UNKNOWN_TYPE");
+        EXPECT_NE(e.getMessage().find("flot32"), std::string::npos)
+            << "exception message '" << e.getMessage()
+            << "' did not contain the unresolved field type name";
+        EXPECT_NE(e.getMessage().find("b"), std::string::npos)
+            << "exception message '" << e.getMessage()
+            << "' did not contain the field name";
+    } catch (std::exception& e) {
+        FAIL() << "expected cajeta::Exception, got std::exception: " << e.what();
+    }
+}
+
+// Same guard fires when an unknown type appears on a parent class —
+// the visit walks each class's field declarations in source order, so
+// Parent's `flot32 g` is rejected before Child is even visited.
+TEST(ErrorModelTests, unknownInheritedFieldTypeThrowsCleanError) {
+    auto src =
+        "package test;\n"
+        "public class Parent {\n"
+        "    public flot32 g;\n"
+        "    public Parent() { }\n"
+        "}\n"
+        "public class Child extends Parent {\n"
+        "    public int32 c;\n"
+        "    public Child() { }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Child ch = new Child();\n"
+        "        return 1;\n"
+        "    }\n"
+        "}\n";
+    try {
+        CajetaJit::compile(src, "test.D");
+        FAIL() << "expected cajeta::Exception (unknown type) but compile succeeded";
+    } catch (cajeta::Exception& e) {
+        EXPECT_EQ(e.getErrorId(), "CAJETA_ERROR_UNKNOWN_TYPE");
+        EXPECT_NE(e.getMessage().find("flot32"), std::string::npos)
+            << "exception message '" << e.getMessage()
+            << "' did not contain the unresolved field type name";
+    } catch (std::exception& e) {
+        FAIL() << "expected cajeta::Exception, got std::exception: " << e.what();
+    }
 }
 
 // #211 regression: writing to a String-typed field of a regular class used
