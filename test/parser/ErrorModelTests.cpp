@@ -66,7 +66,7 @@ TEST(ErrorModelTests, stdlibThrowableInstantiable) {
         "package test;\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        Throwable t = new Throwable(0);\n"
+        "        Throwable t = new Throwable(0, 0);\n"
         "        return 42;\n"
         "    }\n"
         "}\n";

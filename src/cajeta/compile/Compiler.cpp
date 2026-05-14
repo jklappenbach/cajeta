@@ -66,7 +66,11 @@ namespace cajeta {
 package cajeta.lang;
 public class Throwable {
     public pointer message;
-    public Throwable(pointer message) { this.message = message; }
+    public pointer cause;
+    public Throwable(pointer message, pointer cause) {
+        this.message = message;
+        this.cause = cause;
+    }
 }
 public class RecoverableException extends Throwable {
 }

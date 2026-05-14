@@ -33,7 +33,7 @@ Throwable                           (abstract root)
     └── ...
 ```
 
-- `Throwable` is the common base — anything that can be thrown.
+- `Throwable` is the common base — anything that can be thrown. It carries two payloads: `message` (the human-readable description) and `cause` (an optional `Throwable*` pointing at the underlying exception when this throw is itself the result of catching-and-rewrapping a lower-level failure). Walking the cause chain at print time gives the full "X was caused by Y was caused by Z" stack visibility every layer's catch site contributed.
 - `UnrecoverableException` is for conditions the program has no plan for: assertion failures, exhausted memory, contract violations, unreachable branches. Throwing one terminates the process (after the drop chain unwinds).
 - `RecoverableException` is for failures the caller is expected to deal with: I/O errors, parse failures, timeouts, business-rule violations.
 - User-defined exceptions extend one or the other. The choice is a design decision the author makes when defining the exception type.
@@ -180,12 +180,12 @@ The `throws` clause on the async method documents what the awaiter might see; th
 When a scope joins child tasks:
 
 1. Walk every registered child; await each.
-2. If any child threw a non-cancellation exception, record that child as the **trigger** — the first such child wins.
+2. If any child's task carried an exception in its slot, record the first one found as the **trigger**.
 3. Cancel every remaining still-running child (R5-C). They will surface `CancellationException` at their next await.
 4. Wait for all to finish unwinding.
-5. Re-raise the **trigger's** exception (not `CancellationException`, not an aggregate).
+5. Re-raise the **trigger's** original exception to the scope's containing frame — unwrapped, unwrapped, no `CancellationException` wrapper.
 
-The asymmetry matters: callers want the actual failure, not the synthetic cancellation we caused. Scope_exit must distinguish "real" exceptions from `CancellationException` when picking which to propagate. Cancellation surfaces as a `CancellationException extends RecoverableException` raised at the next `await` resume.
+The fiber model removes the thread-boundary that justified wrapping in older designs (Java's `ExecutionException`, etc.) — the trigger flows through await/scope the same way a thrown exception flows through any function call. Callers handle `catch (IOException e)` directly. Cancellation in siblings still uses `CancellationException`, but it's a local concern of the sibling's own handlers (which can use `e.getCause()` to see what triggered the cancel); it doesn't escape the scope.
 
 **No `AggregateException`.** Multiple-children-failing-simultaneously is rare and the caller usually wants one error to handle. If a use case ever demands collecting every child's outcome, a stdlib `scope.collectAll() -> List<Result<T>>` helper can be added without changing core semantics — it would build on top of the per-task exception slot the trampoline already populates.
 
