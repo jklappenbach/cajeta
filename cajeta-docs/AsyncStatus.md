@@ -49,6 +49,23 @@ Promotion landed on the same pattern `scope_top` already uses — per-fiber slot
 
 New test `SpawnDropTests.carrierDropsAccountedSeparately`: a spawned method declares its own `int32[]` local. The spawned-method's drop fires on the carrier's per-fiber chain; main's two `Task<int32>` drops fire on main's TLS chain. Atomic counter sums them. Without TLS promotion, the carrier's push/pop would corrupt main's chain (shared global head).
 
+### Real `detach` (fire-and-forget) + `#`-captures rule  ✅ complete
+
+`DetachExpression::generateCode` was previously a sync passthrough — it just `inner->generateCode(module)`'d the call, so `detach foo();` ran inline on the caller's thread, indistinguishable from a bare call. The fire-and-forget semantics `ThreadModel.md` describes weren't actually implemented.
+
+Spec tightened first (`ThreadModel.md` § detach Semantics (v1)): the inner must be a method call; captures must each be `#`-transferred, primitive, or a fresh `new T(...)`; the Task wrapper leaks for the process lifetime; exceptions in detached bodies are captured to the Task's exception slot but never observed (no awaiter, no scope). The leak is the explicit "use sparingly" trade-off.
+
+Implementation reuses `SpawnExpression`'s full trampoline + fiber-enqueue lowering — a new `detachMode` flag on `SpawnExpression` gates the two pieces detach skips:
+
+- `__cajeta_scope_register` is skipped — `scope_exit` won't wait on this Task.
+- The Task's drop-chain push is skipped — no scope owns the Task struct; it leaks.
+
+`DetachExpression::generateCode` resolves the inner's argument types, runs `enforceDetachMoveOnlyCaptures` (the `#`/primitive/`new` check, throwing `CAJETA_ERROR_DETACH_BORROW_CAPTURE` on violation), then constructs a transient `SpawnExpression` wrapping the same `MethodCallExpression` with `detachMode=true` and delegates. Single source of truth for the trampoline.
+
+Auxiliary fix: `SpawnExpression`'s value-store path now skips when the inner returns void (`isVoidTy()` check) and `CajetaTask::CajetaTask` substitutes an `i8` placeholder for the value slot when `elementType` is void — LLVM forbids storing void or putting it in a struct field. Previously latent because all spawn tests used int-returning inner functions; surfaced when `detach foo();` runs an `async void foo()`.
+
+New tests in `test/parser/DetachTests.cpp`: no-capture detach returns immediately; primitive captures work; `#`-transferred class captures work; bare class-typed identifier (borrow capture) is rejected at compile time. Fresh-allocator (`new T()` inline as arg) is documented as a Known gap rather than tested directly — the underlying NewExpression-as-method-call-argument codegen path is broken even for non-detach calls (`consume(new Payload())` crashes), so the detach-specific check accepting `NewExpression` will light up the moment that gap is fixed.
+
 ### Out of scope for this rollout
 
 - Task<T> as a field type on a user class.
@@ -141,7 +158,7 @@ Two alternatives considered and rejected:
 
 ## Known gaps surfaced by the rollout
 
-- **`detach` is still a synchronous pass-through, not a real async fire-and-forget.** Today's `DetachExpression::generateCode` just inline-calls the inner expression. Real detach should enqueue a fiber that outlives the current scope; lands when the doc's "detach requires `#` captures" check is also in place.
+- **Inline `new T(...)` as a method-call argument crashes during codegen** (e.g. `consume(new Payload())` in `run()`). Surfaced while writing the `freshAllocatorCaptureDetachAccepted` test for detach — the non-detach control `consume(new Payload())` exhibits the same crash, so it's a pre-existing NewExpression-as-argument gap, not a detach-specific issue. Workaround today: bind to a local, then pass via `#` (`Payload p = new Payload(); consume(#p);`). The detach captures rule already lists `NewExpression` as an accepted shape; once the underlying gap is fixed, `detach consume(new Payload())` lights up for free.
 
 ---
 

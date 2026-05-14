@@ -2490,10 +2490,18 @@ namespace cajeta {
         }
         auto task = CajetaTask::getOrCreate(module, innerType);
         llvm::Type* taskTy = task->getLlvmType();
-        llvm::Value* trampValueSlot = outerBuilder->CreateStructGEP(
-            taskTy, taskPtr, CajetaTask::VALUE_FIELD_INDEX,
-            "task_value_slot");
-        outerBuilder->CreateStore(innerResult, trampValueSlot);
+        // For void-returning inner functions there's nothing to store
+        // (LLVM forbids store of a void value). The Task<void> wrapper
+        // still tracks done/exception/fiber; the value slot just stays
+        // at its zero placeholder. await on a void Task already does
+        // the right thing — the value GEP is unused on that path
+        // because the result type has no LLVM representation.
+        if (!innerResult->getType()->isVoidTy()) {
+            llvm::Value* trampValueSlot = outerBuilder->CreateStructGEP(
+                taskTy, taskPtr, CajetaTask::VALUE_FIELD_INDEX,
+                "task_value_slot");
+            outerBuilder->CreateStore(innerResult, trampValueSlot);
+        }
         if (excPopFn) outerBuilder->CreateCall(excPopFn, {});
         outerBuilder->CreateBr(trampFinishBB);
 
@@ -2577,25 +2585,32 @@ namespace cajeta {
         // re-execution of the spawn site (e.g. a loop body) pushes and
         // pops the same entry per iteration, which is the same pattern
         // array-local drops already use.
-        if (llvm::Function* dropPush = module->getRuntimeFunction("__cajeta_drop_push")) {
-            if (llvm::Function* taskDropFn = task->getOrCreateDropFunction()) {
-                constexpr unsigned DROP_ENTRY_BYTES = 32;
-                llvm::Function* parentFnForDrop =
-                    outerBuilder->GetInsertBlock()->getParent();
-                llvm::IRBuilder<> dropEntryBuilder(
-                    &parentFnForDrop->getEntryBlock(),
-                    parentFnForDrop->getEntryBlock().begin());
-                llvm::Value* dropEntryPtr = dropEntryBuilder.CreateAlloca(
-                    llvm::ArrayType::get(i8Ty, DROP_ENTRY_BYTES));
-                outerBuilder->CreateCall(dropPush,
-                    {dropEntryPtr, taskInstance, taskDropFn});
-                if (auto m = module->getCurrentMethod()) {
-                    m->registerDropEntry(dropEntryPtr);
+        //
+        // detachMode skips this — `detach` deliberately opts out of
+        // scope-anchored cleanup (ThreadModel.md § detach semantics).
+        // The Task wrapper leaks for the process lifetime; the body's
+        // own locals still drop normally on the carrier-side chain.
+        if (!detachMode) {
+            if (llvm::Function* dropPush = module->getRuntimeFunction("__cajeta_drop_push")) {
+                if (llvm::Function* taskDropFn = task->getOrCreateDropFunction()) {
+                    constexpr unsigned DROP_ENTRY_BYTES = 32;
+                    llvm::Function* parentFnForDrop =
+                        outerBuilder->GetInsertBlock()->getParent();
+                    llvm::IRBuilder<> dropEntryBuilder(
+                        &parentFnForDrop->getEntryBlock(),
+                        parentFnForDrop->getEntryBlock().begin());
+                    llvm::Value* dropEntryPtr = dropEntryBuilder.CreateAlloca(
+                        llvm::ArrayType::get(i8Ty, DROP_ENTRY_BYTES));
+                    outerBuilder->CreateCall(dropPush,
+                        {dropEntryPtr, taskInstance, taskDropFn});
+                    if (auto m = module->getCurrentMethod()) {
+                        m->registerDropEntry(dropEntryPtr);
+                    }
+                    // Publish for ownership-transfer call sites — assignment
+                    // to a named local marks this entry inactive so the
+                    // local's class-instance drop becomes the canonical owner.
+                    dropEntry = dropEntryPtr;
                 }
-                // Publish for ownership-transfer call sites — assignment
-                // to a named local marks this entry inactive so the
-                // local's class-instance drop becomes the canonical owner.
-                dropEntry = dropEntryPtr;
             }
         }
         // Allocate the ctx struct on the heap and populate it.
@@ -2626,19 +2641,28 @@ namespace cajeta {
         // post-wait and re-raise any caught throw via the doc's first-
         // throw-wins escalation. R5-C: also the fiber slot so scope can
         // cancel remaining siblings when one throws.
-        llvm::Value* doneRegSlot = outerBuilder->CreateStructGEP(
-            taskTy, taskInstance, CajetaTask::DONE_FIELD_INDEX,
-            "scope_register_done");
-        llvm::Value* excRegSlot = outerBuilder->CreateStructGEP(
-            taskTy, taskInstance, CajetaTask::EXCEPTION_FIELD_INDEX,
-            "scope_register_exc");
+        //
+        // detachMode skips scope_register (the whole point of detach is
+        // to escape the enclosing scope). The fiber-slot GEP stays —
+        // __cajeta_task_run needs the slot address whether or not the
+        // scope is waiting on it. Cancellation via scope's first-throw
+        // walk is silently inapplicable for detached tasks: nothing
+        // registered them, so scope's iteration never finds them.
         llvm::Value* fiberRegSlot = outerBuilder->CreateStructGEP(
             taskTy, taskInstance, CajetaTask::FIBER_FIELD_INDEX,
             "scope_register_fiber");
-        if (llvm::Function* regFn = module->getRuntimeFunction(
-                "__cajeta_scope_register")) {
-            outerBuilder->CreateCall(regFn,
-                {doneRegSlot, excRegSlot, fiberRegSlot});
+        if (!detachMode) {
+            llvm::Value* doneRegSlot = outerBuilder->CreateStructGEP(
+                taskTy, taskInstance, CajetaTask::DONE_FIELD_INDEX,
+                "scope_register_done");
+            llvm::Value* excRegSlot = outerBuilder->CreateStructGEP(
+                taskTy, taskInstance, CajetaTask::EXCEPTION_FIELD_INDEX,
+                "scope_register_exc");
+            if (llvm::Function* regFn = module->getRuntimeFunction(
+                    "__cajeta_scope_register")) {
+                outerBuilder->CreateCall(regFn,
+                    {doneRegSlot, excRegSlot, fiberRegSlot});
+            }
         }
         // R5-C: __cajeta_task_run writes the freshly-allocated fiber's
         // pointer into the task's fiber slot before enqueueing — so
@@ -2649,6 +2673,10 @@ namespace cajeta {
             outerBuilder->CreateCall(runFn,
                 {ctxInstance, trampFn, fiberRegSlot});
         }
+        // detach is fire-and-forget — no Task handle escapes back to
+        // user code (DetachExpression::resolveTypes already typed the
+        // surrounding expression as void).
+        if (detachMode) return nullptr;
         return taskInstance;
     }
 
@@ -2665,11 +2693,69 @@ namespace cajeta {
         resolvedType = CajetaType::of("void");
     }
 
+    // ThreadModel.md § detach semantics requires every argument to the
+    // detached call to be either a #-transferred value, a primitive,
+    // or a fresh allocator (NewExpression — auto-promoted in transfer
+    // position per MemoryModel.md § Borrow / transfer rules). A bare
+    // class-typed identifier or any other expression that yields a
+    // heap pointer without an explicit transfer marker is rejected:
+    // the detached fiber outlives the spawning scope, so a borrow's
+    // lifetime can't be guaranteed.
+    static void enforceDetachMoveOnlyCaptures(const std::shared_ptr<MethodCallExpression>& innerCall) {
+        for (auto& param : innerCall->getParameters()) {
+            auto expr = param.expression;
+            if (!expr) continue;
+            // (a) Explicit #-transfer.
+            if (dynamic_pointer_cast<MoveExpression>(expr)) continue;
+            // (b) Fresh allocator — anonymous new, auto-promoted.
+            if (dynamic_pointer_cast<NewExpression>(expr)) continue;
+            // (c) Primitive value — pass-by-value, no aliasing.
+            auto t = expr->getResolvedType();
+            if (t && (t->getTypeFlags() & PRIMITIVE_FLAG)) continue;
+            // Anything else: heap class without an explicit transfer.
+            // Surface a clean error with the offending argument's
+            // expression text where we can extract it.
+            string detail = t ? t->toCanonical() : string("<unresolved>");
+            throw Exception(
+                "detach argument must be #-transferred, primitive, or a fresh "
+                "`new T(...)`; got an expression of type '" + detail + "' that "
+                "would be captured as a borrow",
+                "CAJETA_ERROR_DETACH_BORROW_CAPTURE");
+        }
+    }
+
     llvm::Value* DetachExpression::generateCode(CajetaModulePtr module) {
         if (children.empty()) return nullptr;
-        if (auto inner = dynamic_pointer_cast<Expression>(children[0])) {
-            inner->generateCode(module);
+        auto inner = dynamic_pointer_cast<Expression>(children[0]);
+        if (!inner) return nullptr;
+        auto innerCall = dynamic_pointer_cast<MethodCallExpression>(inner);
+        if (!innerCall) {
+            throw Exception(
+                "detach currently only supports a method-call expression as "
+                "its operand",
+                "CAJETA_ERROR_ASYNC_R3A");
         }
+        // Resolve types on the inner first so the capture check sees
+        // each argument's resolved type. resolveTypes is idempotent.
+        for (auto& param : innerCall->getParameters()) {
+            if (param.expression && !param.expression->getResolvedType()) {
+                param.expression->resolveTypes(module);
+            }
+        }
+        enforceDetachMoveOnlyCaptures(innerCall);
+        // Reuse SpawnExpression's full lowering — same trampoline, same
+        // fiber enqueue, same Task struct. Detach-mode flag skips
+        // scope_register and drop_push so the task escapes scope-anchored
+        // cleanup. See ThreadModel.md § detach semantics for the
+        // implementation-vs-spawn delta. Passing nullptr for the token
+        // is fine: SpawnExpression doesn't retain it beyond extracting
+        // source-position metadata for diagnostics, which here would
+        // duplicate this DetachExpression's metadata anyway.
+        auto spawn = make_shared<SpawnExpression>(nullptr);
+        spawn->addChild(innerCall);
+        spawn->setDetachMode(true);
+        spawn->resolveTypes(module);
+        spawn->generateCode(module);
         return nullptr;
     }
 }

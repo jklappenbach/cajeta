@@ -396,11 +396,20 @@ namespace cajeta {
         // spawn's transient entry shouldn't fire. See AsyncStatus.md §
         // Plan: Task<T> as user-typeable template / Ownership-transfer.
         llvm::Value* dropEntry = nullptr;
+        // Detach mode skips scope_register (so scope_exit won't wait for
+        // this task) and skips drop_push (no scope owns the Task; its
+        // heap allocation leaks for the process lifetime per
+        // ThreadModel.md § detach semantics). Set by DetachExpression
+        // before calling generateCode through this same trampoline path
+        // — single source of truth for the spawn/detach lowering.
+        bool detachMode = false;
     public:
         SpawnExpression(antlr4::Token* token) : Expression(token) { }
         void resolveTypes(CajetaModulePtr module) override;
         llvm::Value* generateCode(CajetaModulePtr module) override;
         llvm::Value* getDropEntry() const { return dropEntry; }
+        void setDetachMode(bool v) { detachMode = v; }
+        bool getDetachMode() const { return detachMode; }
     };
 
     class DetachExpression : public Expression {

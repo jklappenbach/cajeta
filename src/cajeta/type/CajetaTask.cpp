@@ -31,7 +31,17 @@ namespace cajeta {
         bool isClassLike = dynamic_pointer_cast<CajetaClass>(elementType) != nullptr;
         bool isPrim = elementType && (elementType->getTypeFlags() & PRIMITIVE_FLAG);
         bool storeAsPtr = (isClassLike && !isStruct) && (isArr || !isPrim);
-        if (storeAsPtr) {
+        // Void-returning async functions produce a Task<void>; LLVM
+        // doesn't allow void inside a struct, so substitute i8 as a
+        // dead placeholder at the value slot. SpawnExpression's
+        // value-store path detects the void case and skips the store
+        // entirely — the slot is never read either (await on void
+        // returns no value).
+        bool isVoid = elementType && elementType->getLlvmType()
+            && elementType->getLlvmType()->isVoidTy();
+        if (isVoid) {
+            valueLlvm = llvm::Type::getInt8Ty(*ctx);
+        } else if (storeAsPtr) {
             valueLlvm = llvm::PointerType::get(*ctx, 0);
         } else {
             valueLlvm = elementType->getLlvmType();

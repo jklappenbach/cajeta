@@ -72,6 +72,24 @@ detach backgroundWork();   // explicit opt-out of scope; rare
 
 `detach` requires the spawned function to capture only by `#` transfer (no borrows) — there's no scope to anchor lifetimes to.
 
+### Semantics (v1)
+
+`detach expr;` requires `expr` to be a method-call expression (same shape constraint as `spawn`). The call's value type is irrelevant — `detach` evaluates as `void`; any return value the call would produce is discarded by the runtime.
+
+**Runtime:** the call is enqueued as a fiber via the same `__cajeta_task_run` machinery `spawn` uses. The difference from `spawn`:
+- The Task struct is NOT registered with the enclosing scope (`__cajeta_scope_register` is skipped) — `scope_exit` won't wait for it.
+- The Task struct is NOT pushed onto the drop chain — no scope owns it, so nothing reclaims it. The Task's heap allocation leaks for the process lifetime, matching the explicit "use sparingly" framing in *Open* items below. Captured `#`-transferred values *do* end up owned by the detached task and are freed when the task's locals drop, but the Task wrapper itself leaks.
+- The expression's result is `void` — no Task handle escapes back to user code.
+
+**Captures rule.** Every argument to the immediate call must be one of:
+- A `#`-transferred value (`MoveExpression`) — explicit ownership transfer.
+- A primitive-typed value (int/float/bool family) — value semantics, no aliasing concern.
+- A fresh allocator that's auto-promoted in transfer position (a bare `new T(...)` whose result has no prior identity, per *MemoryModel.md* § Borrow / transfer rules).
+
+A class-typed identifier without `#`, or any expression whose resolved type is a heap class without an explicit transfer marker, is rejected at codegen with `CAJETA_ERROR_DETACH_BORROW_CAPTURE`. The check fires before the trampoline is synthesized; a violation never reaches IR generation.
+
+**Exceptions.** A throw inside a detached task body is captured to the Task's exception slot by the trampoline's existing try/catch (same code path as `spawn`), but nothing awaits the Task, so the exception is silently lost. This matches the doctrine that detach is for fire-and-forget where the caller has explicitly opted out of error propagation. If a detached body needs to surface failures, the body itself must arrange a channel/callback/log of its own choosing.
+
 ---
 
 ## Sendability — derived from the existing ownership model
