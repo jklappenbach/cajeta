@@ -19,21 +19,26 @@
 ## The hierarchy
 
 ```
-Throwable                           (abstract root)
-├── UnrecoverableException          (the alarm — terminates the process)
-│   ├── AssertionError
-│   ├── OutOfMemoryError
-│   ├── StackOverflowError
-│   └── ...
-└── RecoverableException            (caller may handle)
-    ├── IOException
-    │   ├── FileNotFoundException
-    │   └── TimeoutException
-    ├── ParseException
-    └── ...
+Throwable                           (abstract root, carries `message`)
+└── Exception                       (adds `cause` for chain-of-causality)
+    ├── UnrecoverableException      (the alarm — terminates the process)
+    │   ├── AssertionError
+    │   ├── OutOfMemoryError
+    │   ├── StackOverflowError
+    │   └── ...
+    └── RecoverableException        (caller may handle)
+        ├── IOException
+        │   ├── FileNotFoundException
+        │   └── TimeoutException
+        ├── ParseException
+        └── ...
 ```
 
-- `Throwable` is the common base — anything that can be thrown. It carries two payloads: `message` (the human-readable description) and `cause` (an optional `Throwable*` pointing at the underlying exception when this throw is itself the result of catching-and-rewrapping a lower-level failure). Walking the cause chain at print time gives the full "X was caused by Y was caused by Z" stack visibility every layer's catch site contributed.
+The split between `Throwable` and `Exception` is deliberate: `Throwable` is the root identity for "anything throwable" (catch-all type), while `Exception` is where the cause chain lives. Any `Exception` (and therefore any Recoverable or Unrecoverable) can record what caused it; bare `Throwable`s without a cause field are theoretically possible but in practice every thrown thing goes through `Exception` or a subclass.
+
+- `Throwable` is the common root — anything that can be thrown carries a `message`. `Exception` adds `cause` (a typed `Throwable` pointing at the underlying exception when this throw is itself the result of catching-and-rewrapping a lower-level failure). Walking the cause chain at print time gives the full "X was caused by Y was caused by Z" stack visibility every layer's catch site contributed.
+
+> **Why `pointer message`, not `String message`?** The stdlib types `message` as `pointer` in v1 even though semantically a string is the right type. The reason is a codegen issue tracked as #211: a `String`-typed constructor parameter in stdlib classes triggers a compile-time crash distinct from the inherited-field-write bug (#208, now fixed). The fix is queued; until it lands, `pointer` is the workaround. Users never see this distinction in practice — the message argument is still a string literal at the source level (LLVM stores both as ptrs).
 - `UnrecoverableException` is for conditions the program has no plan for: assertion failures, exhausted memory, contract violations, unreachable branches. Throwing one terminates the process (after the drop chain unwinds).
 - `RecoverableException` is for failures the caller is expected to deal with: I/O errors, parse failures, timeouts, business-rule violations.
 - User-defined exceptions extend one or the other. The choice is a design decision the author makes when defining the exception type.

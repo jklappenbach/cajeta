@@ -833,11 +833,19 @@ namespace cajeta {
                 auto type = c.type ? c.type : CajetaType::of("int64");
                 llvm::Type* bindTy = type->getLlvmType();
                 if (!bindTy) bindTy = i64Ty;
+                // Class-typed catch bindings (catch (Throwable e), etc.)
+                // hold a heap pointer, not a struct-by-value. The class's
+                // getLlvmType() returns the struct type, so we substitute
+                // `ptr` for the alloca's stored element. The thrown value
+                // is already a ptr, so it stores directly.
+                llvm::Type* ptrTy = llvm::PointerType::get(ctx, 0);
+                bool classTypedBinding =
+                    dynamic_pointer_cast<CajetaClass>(type) != nullptr;
+                if (classTypedBinding) bindTy = ptrTy;
                 llvm::Value* slot = entryBuilder.CreateAlloca(bindTy);
                 // Integer catch binding: PtrToInt to recover the legacy
-                // i64-throw shape. Pointer binding: store the ptr directly
-                // (the Throwable/RecoverableException/UnrecoverableException
-                // case — once class-typed catches start being used).
+                // i64-throw shape. Pointer/class binding: store the ptr
+                // directly.
                 llvm::Value* storeVal = thrownValPtr;
                 if (bindTy->isIntegerTy()) {
                     storeVal = builder->CreatePtrToInt(thrownValPtr, i64Ty);

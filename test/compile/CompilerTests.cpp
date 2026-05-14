@@ -22,7 +22,7 @@ TEST(CompilerTests, canThrowOnInvalidInput) {
 // — Throwable, RecoverableException, UnrecoverableException, today). Their
 // class entries land in the same global structure map as the user's classes,
 // so structure-count assertions add their fixed contribution.
-static constexpr size_t STDLIB_STRUCTURE_COUNT = 3;
+static constexpr size_t STDLIB_STRUCTURE_COUNT = 4;
 
 TEST(CompilerTests, canParseOnValidShortPackage) {
     string inputPath = CAJETA_TEST_ROOT + string("/compile/code/src/cajeta/Test.cajeta");
