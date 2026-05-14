@@ -200,7 +200,10 @@ Without `@Order`, source-declaration order in the aspect class is used. Across a
 
 ### Component registration
 
-A class annotated `@Component` (or `@Service`, `@Repository` — aliases) becomes a singleton in the compile-time DI graph:
+A class annotated `@Component` becomes part of the compile-time DI graph. The annotation takes two optional parameters:
+
+- `name = "..."` — a qualifier for disambiguation when multiple components implement the same interface. Default: no qualifier (the component matches unqualified injections of its declared types).
+- `allocate = ALLOCATE_SINGLETON | ALLOCATE_TRANSIENT` — the instantiation policy. Default: `ALLOCATE_SINGLETON` (one shared instance lazily constructed on first inject, lives until program exit). `ALLOCATE_TRANSIENT` constructs a fresh instance at every injection site, owned by the receiver and dropped via the normal drop chain when the receiver goes out of scope.
 
 ```cajeta
 @Component public class Database {
@@ -220,6 +223,23 @@ A class annotated `@Component` (or `@Service`, `@Repository` — aliases) become
         this.db = db;
     }
 }
+
+// Multiple impls of an interface — disambiguate by name.
+@Component(name = "disk") public class DiskPersister implements Persister { ... }
+@Component(name = "memory") public class MemoryPersister implements Persister { ... }
+
+// Transient: every @Inject yields a fresh instance.
+@Component(allocate = ALLOCATE_TRANSIENT)
+public class RequestContext { ... }
+```
+
+`@Repository` is a sibling annotation. Same parameters, same DI behavior — but the name signals "writes to / reads from a system of record" (the data-access layer). Cajeta doesn't add Spring's persistence-exception-translation behavior at this layer; the differentiation is documentary plus future hook (e.g., later we can attach transaction defaults or repository-specific lint to `@Repository` without touching `@Component`).
+
+```cajeta
+@Repository public class UserRepository {
+    @Inject Database db;
+    public User findById(int64 id) throws SqlException { ... }
+}
 ```
 
 ### Compile-time graph resolution
@@ -228,14 +248,14 @@ The compiler scans all source for `@Component` classes, builds a dependency grap
 
 - **Missing implementation** → compile error. `Foo needs Bar, but no @Component class implements Bar`.
 - **Circular dependency** → compile error. `Cycle: Foo -> Bar -> Foo`.
-- **Ambiguous resolution** (two `@Component` classes implementing the same interface, no `@Named` qualifier) → compile error. `Two implementations of Persister: DiskPersister, MemoryPersister. Use @Named to disambiguate.`
+- **Ambiguous resolution** (two `@Component` classes implementing the same interface, none of them name-less, and the consumer's `@Inject` lacks a name) → compile error. `Two implementations of Persister: DiskPersister(name="disk"), MemoryPersister(name="memory"). Add @Inject(name = "...") at the consumer.`
 
 ### Generated bootstrap
 
-The compiler synthesizes module-level lazy singletons:
+For `ALLOCATE_SINGLETON` components, the compiler synthesizes module-level lazy singletons:
 
 ```cajeta
-// Compiler-generated:
+// Compiler-generated for @Component class Database:
 static Database __singleton_Database = null;
 static Database get_Database() {
     if (__singleton_Database == null) {
@@ -250,35 +270,43 @@ static UserService get_UserService() {
         UserService u = new UserService();
         u.db = get_Database();
         u.log = get_Logger();
-        // ... after all fields injected, call lifecycle hook
-        u.__postConstruct();  // synthesized; calls @PostConstruct method if present
+        u.__postConstruct();   // synthesized; calls @PostConstruct if present
         __singleton_UserService = u;
     }
     return __singleton_UserService;
 }
 ```
 
-`@Inject` field reads become `get_X()` calls; constructor parameters with `@Inject` are passed `get_X()` at construction.
-
-### Qualifiers
-
-When more than one `@Component` implements the same interface, the user disambiguates with `@Named`:
+For `ALLOCATE_TRANSIENT` components, no singleton storage. Each injection site emits a fresh constructor call:
 
 ```cajeta
-@Component @Named("disk") public class DiskPersister implements Persister { ... }
-@Component @Named("memory") public class MemoryPersister implements Persister { ... }
-
-@Component public class Service {
-    @Inject @Named("disk") Persister p;   // selects DiskPersister
+// Compiler-generated for @Component(allocate = ALLOCATE_TRANSIENT) class RequestContext:
+static RequestContext make_RequestContext() {
+    RequestContext r = new RequestContext();
+    r.__postConstruct();
+    return r;          // caller owns it; drops at the receiver's scope end
 }
 ```
 
-Compile error if `@Named` doesn't match any registered component.
+`@Inject` field reads become `get_X()` (singleton) or `make_X()` (transient) calls; constructor parameters with `@Inject` are passed the call at the construction site of the receiver.
+
+### Qualifying an injection
+
+When more than one `@Component` of the same type or interface is registered, the consumer disambiguates with `@Inject(name = "...")`:
+
+```cajeta
+@Component public class Service {
+    @Inject(name = "disk") Persister p;     // selects DiskPersister
+    @Inject(name = "memory") Persister mp;  // selects MemoryPersister
+}
+```
+
+The match is by component name. Compile error if no `@Component` with the requested name is registered, or if multiple components match a name-less `@Inject` and none of the candidates is unqualified.
 
 ### Lifecycle
 
-- **`@PostConstruct void init()`** — called after all `@Inject` fields are populated, before the singleton is exposed.
-- **`@PreDestroy void cleanup()`** — called on the singleton's drop. The compiler wires this into the singleton's drop function (which fires at program exit via the existing drop chain).
+- **`@PostConstruct void init()`** — called after all `@Inject` fields are populated, before the singleton is exposed (or before a transient instance is returned from `make_X`).
+- **`@PreDestroy void cleanup()`** — called on the instance's drop. For singletons, fires at program exit via the runtime's at-exit chain. For transients, fires when the receiver's scope ends and the drop chain runs.
 
 ---
 
@@ -404,7 +432,7 @@ The Cajeta-native wins:
 
 This is a substantial feature surface. A reasonable rollout:
 
-- **A1.** Annotation parsing: extend the existing `Annotatable` infrastructure to capture annotation parameter values (`@Order(2)`, `@Named("disk")`). Today we capture annotation names only.
+- **A1.** Annotation parsing: extend the existing `Annotatable` infrastructure to capture annotation parameter values (`@Order(2)`, `@Component(name = "disk")`, `@Inject(name = "primary")`). Today we capture annotation names plus the `@SuppressLint` string-arg special case (see `LintRules.md`).
 - **A2.** `@Aspect` class registration during compile. Compiler builds a list of aspect classes.
 - **A3.** Pointcut matching pass — for each method, check which aspects match. Per-method aspect list cached on the Method.
 - **A4.** Codegen wrapping for `@Before` / `@After` (simplest forms). Single advice; no `@Order` chaining yet.
@@ -413,7 +441,7 @@ This is a substantial feature surface. A reasonable rollout:
 - **A7.** Multiple-aspect chaining via `@Order`.
 - **A8.** `@Component` registration + DI graph build.
 - **A9.** `@Inject` codegen: field reads → `get_X()`; constructor params → `get_X()` at instantiation.
-- **A10.** `@Named` qualifier support.
+- **A10.** Name qualifier support: `@Component(name = "...")` registration + `@Inject(name = "...")` consumer-side selection.
 - **A11.** `@PostConstruct` / `@PreDestroy` lifecycle hooks.
 - **A12.** Composition tests: aspect-on-aspect-class, DI'd aspects, inheritance + advice, fiber-spanning advice.
 
@@ -425,8 +453,8 @@ Each phase is roughly session-sized. A1-A2 are foundation; A3-A4 deliver minimal
 
 - **Expression-pattern pointcuts.** String-DSL `execution(...)` etc. Hold off until a use case really demands it.
 - **Aspect-on-aspect / advising the advice.** Spring forbids; we follow.
-- **Scopes beyond singleton.** Prototype / request / session — add when stateful per-call DI matters.
+- **Allocation modes beyond Singleton and Transient.** Request / session scopes that key the cache by something other than identity (e.g., HTTP request id) — add if the runtime ever grows request-context infrastructure that justifies it.
 - **Optional injection.** `@Inject(optional=true)` to silently null-out unsatisfiable dependencies. Today: every `@Inject` must resolve or compile error.
 - **Lazy injection.** `Lazy<T>` to defer instantiation. Possible after singleton bootstrap stabilizes.
 - **Cross-module DI.** When Cajeta gains a package/module system, the DI graph spans modules. v1 assumes single-compilation-unit DI.
-- **Dynamic registration / overriding for tests.** Test code may want to swap a real DB with a mock. Today: define the mock as `@Component @Named("test")` and use a test-only build flag to control which name resolves. A first-class test-overrides mechanism is post-v1.
+- **Dynamic registration / overriding for tests.** Test code may want to swap a real DB with a mock. Today: define the mock as `@Component(name = "test")` and use a test-only build flag to control which name resolves. A first-class test-overrides mechanism is post-v1.
