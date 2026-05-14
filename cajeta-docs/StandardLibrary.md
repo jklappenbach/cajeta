@@ -147,22 +147,82 @@ declarations land in `cajeta.lang.Integer` etc.
 
 ### `Object`
 
-The root of the class hierarchy. Methods every class inherits:
+The universal root of the class hierarchy. Every class implicitly extends
+Object. Three methods, all with compiler-synthesized structural defaults so
+the common case requires no boilerplate:
 
 ```cajeta
 public class Object {
-    public int64 hash();              // identity hash by default; subclasses override
-    public boolean equals(Object other);
-    public String toString();
+    public boolean operator==(Object obj);
+    public int64 hash();
+    public String toString(Encoding e = UTF_8);
 }
 ```
 
-Open question: do we want `Object` at all, or do we leave classes' base set
-implicit (the way Rust does)? Java's pattern of "everything extends Object" is
-familiar but couples every class to identity-hash bookkeeping. Cajeta's
-`Throwable` hierarchy already extends a concrete root (`Throwable`); we could
-do the same per-namespace rather than one universal root. **Recommended:** no
-`Object` root; classes declare what they implement, period.
+**Default implementations are structural, not identity-based.** Compiler
+synthesizes:
+
+- `operator==(Object obj)`: instanceof-check against the declaring class, cast,
+  field-by-field comparison. The Java pattern "always implement equals with
+  null-check, instanceof, cast, compare" — written for you by the compiler.
+- `hash()`: combines the same field set the structural `operator==` consults,
+  using a fast non-cryptographic mixer (FxHash family). Stable for the
+  lifetime of the values being hashed; not stable across process restarts (no
+  randomized seed yet, but plan to add per-process seed for hash-flooding
+  defense).
+- `toString(Encoding)`: `TypeName(field1=value1, field2=value2, ...)`. The
+  Rust `#[derive(Debug)]` shape, sufficient for `println(x)` debug output.
+  Encoding parameter defaults to UTF-8; other encodings supported via the
+  default-argument mechanism cajeta already has.
+
+**Override pair enforcement.** If a class declares `operator==` manually, it
+must also declare `hash()` (and vice versa). The compiler refuses to compile
+a class with one but not the other. The contract — equal values hash equally —
+is structurally protected by requiring both halves to be authored together.
+`toString` has no pair requirement; override it independently.
+
+**Universal participation in hash-based collections.** Any class — yours,
+third-party, stdlib — works as a `HashMap<K, V>` key or `HashSet<T>` element
+without a `derives` annotation, an `implements` clause, or any other opt-in.
+The synthesized defaults are real, useful implementations. No `Hashable` or
+`Equatable` interface exists; the methods live directly on Object.
+
+**`Comparable<T>` stays as an opt-in interface** because natural ordering is
+domain-specific — there's no sensible compiler default for "compare a class
+with an int field and a String field." `TreeMap<K, V>` and `TreeSet<T>` carry
+`K extends Comparable<K>` as a bound; HashMap and HashSet do not.
+
+**Cyclic-type detection at compile time.** When the compiler synthesizes
+`hash()` / `operator==` / `toString()` it walks the class's field type graph.
+If any field type can transitively reach back to the class itself, the
+naive synthesized walk would recurse forever, so the compiler refuses to
+emit the defaults and produces a diagnostic naming the offending field:
+
+```
+error: can't synthesize hash() / operator==() / toString() on `tree.Node`:
+       field `parent` (type `tree.Node`) creates a cycle through self.
+       Mark a field along the cycle as @transient, or implement these
+       methods manually.
+```
+
+User fixes:
+- **`@transient` field annotation** — the synthesizer skips the annotated
+  field when walking fields for hash/equals/toString. Java borrowed
+  `transient` from for-serialization-skip; cajeta repurposes it for
+  "compiler shouldn't traverse this when synthesizing." Cheap fix for the
+  common case (one back-reference closes the cycle).
+- **Manual implementation** — for complex shapes (mutual recursion across
+  N classes, diamonds, memoizing traversal). User implements both `hash()`
+  and `operator==` (the pair requirement still applies).
+
+The cycle analysis also runs through generic instantiations
+(`LinkedList<Node>` where `Node` references `LinkedList<Node>` is a cycle).
+
+**Identity hash as a separate intrinsic.** The rare case that genuinely wants
+pointer-based hashing — observer maps, graph node identity, weak-reference
+keys — goes through `Cajeta.identityHash(obj)` as a runtime intrinsic, and
+`IdentityHashMap<K, V>` ships as a separate type that uses it internally. No
+`Hashable` bound on K because IdentityHashMap doesn't ask K to hash itself.
 
 ---
 
@@ -543,9 +603,10 @@ Steps 1-6 unblock the server harness. Steps 7-9 fill out the library.
 
 ## Open questions for review
 
-1. **`Object` as root?** I've recommended *no* — keep class hierarchies
-   per-namespace, no universal root. java-style `Object` couples everything
-   to identity hashing and is rarely useful in cajeta's ownership model.
+1. ~~`Object` as root?~~ **Decided: yes.** Universal root with three methods —
+   `operator==(Object)`, `hash()`, `toString(Encoding)` — all with compiler-
+   synthesized structural defaults. Pair enforcement on operator==/hash; cycle
+   detection at compile time with `@transient` opt-out per field.
 2. **String internal encoding** — UTF-8 vs UTF-16. UTF-8 is more efficient
    for ASCII-dominant content, more standard on the wire. UTF-16 makes
    code-point indexing O(1) for the BMP. Recommended: UTF-8, with
