@@ -2,6 +2,8 @@
 // Created by James Klappenbach on 10/22/22.
 //
 
+#include <algorithm>
+#include <cstdint>
 #include <utility>
 
 #include "CajetaModule.h"
@@ -264,6 +266,45 @@ namespace cajeta {
                             userMethod->addAdviceMatch(std::move(am));
                         }
                     }
+                }
+            }
+        }
+
+        // A7: stable-sort each user method's matchingAdvice by the
+        // @Order(n) annotation on the advice method. Advice without
+        // @Order falls through with INT64_MAX (placed after
+        // explicitly-ordered advice; relative declaration order
+        // preserved among themselves thanks to stable_sort).
+        //
+        // This ordering propagates automatically through A4-A6: the
+        // emit helpers iterate matchingAdvice in vector order, so
+        // @Before/@After/@AfterReturning/@AfterThrowing all fire in
+        // the chosen sequence. emitAroundWrapper walks the same
+        // sorted list to build the @Around chain (A7's other half).
+        auto readOrder = [](const AdviceMatch& m) -> int64_t {
+            if (!m.adviceMethod) return INT64_MAX;
+            auto ann = m.adviceMethod->findAnnotation("Order");
+            if (!ann) return INT64_MAX;
+            // @Order(n) — unnamed integer arg. getInt routes through
+            // findArg("value") which matches the unnamed-arg form.
+            auto* arg = ann->findArg("value");
+            if (!arg || arg->kind != AnnotationArgKind::Int64) {
+                return INT64_MAX;
+            }
+            return arg->i64Val;
+        };
+        for (auto& [canonical, mod] : strutureToModule) {
+            if (!mod) continue;
+            for (auto& [structName, klass] : mod->getStructures()) {
+                if (!klass) continue;
+                for (auto& [mkey, method] : klass->getMethods()) {
+                    if (!method) continue;
+                    auto& matches = method->getMutableMatchingAdvice();
+                    if (matches.size() < 2) continue;
+                    std::stable_sort(matches.begin(), matches.end(),
+                        [&](const AdviceMatch& a, const AdviceMatch& b) {
+                            return readOrder(a) < readOrder(b);
+                        });
                 }
             }
         }

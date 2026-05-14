@@ -186,6 +186,13 @@ namespace cajeta {
         const vector<AdviceMatch>& getMatchingAdvice() const {
             return matchingAdvice;
         }
+        // Mutable accessor for the A7 sort pass — A3 appends in
+        // pointcut-match order, then resolveAdviceMatches restabilizes
+        // by @Order. Consumers in A4/A6 still iterate via the const
+        // getter and see the final order.
+        vector<AdviceMatch>& getMutableMatchingAdvice() {
+            return matchingAdvice;
+        }
 
         // A4 codegen wrappers. emitBeforeAdvice fires every matching
         // @Before advice at the current insert point (called from
