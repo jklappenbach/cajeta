@@ -54,6 +54,76 @@ namespace cajeta {
         typeFlags = STRUCT_FLAG | USER_DEFINED_FLAG;
     }
 
+    llvm::Function* CajetaTask::getOrCreateDropFunction() {
+        if (llvmDropFunction) return llvmDropFunction;
+        auto& ctx = *module->getLlvmContext();
+        auto* lmod = module->getLlvmModule();
+        llvm::PointerType* ptrTy = llvm::PointerType::get(ctx, 0);
+        llvm::FunctionType* fnTy = llvm::FunctionType::get(
+            llvm::Type::getVoidTy(ctx), {(llvm::Type*) ptrTy}, false);
+
+        // Sanitize the canonical to a valid C identifier so the symbol
+        // reads sensibly in stack traces — same convention CajetaClass
+        // uses, but prefixed `__cajeta_task_` to distinguish from
+        // regular class drop wrappers and to avoid colliding with a
+        // user class literally named `Task` (the synthesized type's
+        // canonical is `Task<...>` which includes angle brackets).
+        string dropName = string("__cajeta_task_") + canonical + "_drop";
+        for (char& c : dropName) {
+            if (c == ':' || c == '.' || c == '<' || c == '>'
+                    || c == ',' || c == ' ') {
+                c = '_';
+            }
+        }
+
+        // Reuse if the JIT module has built this drop fn before
+        // (Task<T> for the same T can be referenced from multiple
+        // spawn sites within one module).
+        if (llvm::Function* existing = lmod->getFunction(dropName)) {
+            llvmDropFunction = existing;
+            return existing;
+        }
+
+        llvmDropFunction = llvm::Function::Create(fnTy,
+            llvm::Function::ExternalLinkage, dropName, lmod);
+        llvm::BasicBlock* bb = llvm::BasicBlock::Create(
+            ctx, "entry", llvmDropFunction);
+        llvm::IRBuilder<> b(bb);
+        llvm::Value* task = llvmDropFunction->getArg(0);
+
+        llvm::BasicBlock* doDrop = llvm::BasicBlock::Create(
+            ctx, "doDrop", llvmDropFunction);
+        llvm::BasicBlock* done = llvm::BasicBlock::Create(
+            ctx, "done", llvmDropFunction);
+        llvm::Value* isNull = b.CreateICmpEQ(task,
+            llvm::ConstantPointerNull::get(ptrTy));
+        b.CreateCondBr(isNull, done, doDrop);
+
+        b.SetInsertPoint(doDrop);
+        // Wait for completion before freeing. On the normal fall-through
+        // path Method::generateCode runs __cajeta_scope_exit_to BEFORE
+        // emitOwnerDrops, so by the time this fires the task is already
+        // done and wait is a no-op atomic load. On the throw path, the
+        // unwind in __cajeta_throw fires drops directly (line 1078 of
+        // cajeta_runtime.c) — scope_exit_to doesn't run, so the wait
+        // here is what keeps the carrier from freeing a struct the
+        // worker still touches.
+        llvm::Function* waitFn = module->getRuntimeFunction("__cajeta_task_wait");
+        if (waitFn) {
+            llvm::Value* doneAddr = b.CreateStructGEP(
+                llvmType, task, DONE_FIELD_INDEX, "task_done");
+            b.CreateCall(waitFn, {doneAddr});
+        }
+        llvm::Function* freeFn = module->getRuntimeFunction("__cajeta_free");
+        if (freeFn) {
+            b.CreateCall(freeFn, {task});
+        }
+        b.CreateBr(done);
+        b.SetInsertPoint(done);
+        b.CreateRetVoid();
+        return llvmDropFunction;
+    }
+
     shared_ptr<CajetaTask> CajetaTask::getOrCreate(CajetaModulePtr module,
                                                     CajetaTypePtr elementType) {
         string key = string("Task<") + elementType->toCanonical() + ">";

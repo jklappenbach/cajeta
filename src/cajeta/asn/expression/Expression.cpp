@@ -2555,6 +2555,35 @@ namespace cajeta {
             "task_fiber_init");
         outerBuilder->CreateStore(
             llvm::ConstantPointerNull::get(ptrTy), fiberSlot);
+        // Wire the Task into the drop chain. Without this, the heap
+        // struct malloced above leaks until process exit (documented in
+        // AsyncStatus.md § Known gaps before this commit). The drop fn
+        // CajetaTask::getOrCreateDropFunction synthesizes waits for the
+        // task to complete before freeing — safe under both the normal
+        // fall-through path (where __cajeta_scope_exit_to has already
+        // joined the task) and the exception-unwind path (where it
+        // hasn't). Drop-entry alloca lives in the function entry block
+        // so its address is stable across the function's lifetime;
+        // re-execution of the spawn site (e.g. a loop body) pushes and
+        // pops the same entry per iteration, which is the same pattern
+        // array-local drops already use.
+        if (llvm::Function* dropPush = module->getRuntimeFunction("__cajeta_drop_push")) {
+            if (llvm::Function* taskDropFn = task->getOrCreateDropFunction()) {
+                constexpr unsigned DROP_ENTRY_BYTES = 32;
+                llvm::Function* parentFnForDrop =
+                    outerBuilder->GetInsertBlock()->getParent();
+                llvm::IRBuilder<> dropEntryBuilder(
+                    &parentFnForDrop->getEntryBlock(),
+                    parentFnForDrop->getEntryBlock().begin());
+                llvm::Value* dropEntryPtr = dropEntryBuilder.CreateAlloca(
+                    llvm::ArrayType::get(i8Ty, DROP_ENTRY_BYTES));
+                outerBuilder->CreateCall(dropPush,
+                    {dropEntryPtr, taskInstance, taskDropFn});
+                if (auto m = module->getCurrentMethod()) {
+                    m->registerDropEntry(dropEntryPtr);
+                }
+            }
+        }
         // Allocate the ctx struct on the heap and populate it.
         llvm::Function* allocFn = module->getRuntimeFunction("__cajeta_alloc");
         if (!allocFn) {

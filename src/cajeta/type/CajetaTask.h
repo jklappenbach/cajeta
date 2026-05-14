@@ -47,6 +47,14 @@ namespace cajeta {
         // the same T resolves to the same CajetaClass.
         static shared_ptr<CajetaTask> getOrCreate(CajetaModulePtr module,
                                                   CajetaTypePtr elementType);
+
+        // Override: the default CajetaClass drop wrapper just frees, which
+        // races the worker fiber if the task hasn't completed yet. Task's
+        // drop must wait for `done` before freeing. SpawnExpression pushes
+        // a drop entry that calls this wrapper, so every spawned Task gets
+        // reclaimed at scope exit (or during exception unwind), eliminating
+        // the leak documented in AsyncStatus.md § Known gaps.
+        llvm::Function* getOrCreateDropFunction() override;
     };
     typedef shared_ptr<CajetaTask> CajetaTaskPtr;
 }

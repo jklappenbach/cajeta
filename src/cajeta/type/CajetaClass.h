@@ -234,8 +234,11 @@ namespace cajeta {
         // pointing at this function for every class-typed local so
         // instances are reclaimed at scope exit. Returns null only when
         // the runtime helpers aren't yet linked, in which case the
-        // caller skips the drop-entry registration.
-        llvm::Function* getOrCreateDropFunction();
+        // caller skips the drop-entry registration. Virtual so subclasses
+        // (e.g. CajetaTask) can inject extra synchronization — Task's
+        // drop must wait for `done` before freeing or it races the
+        // worker fiber.
+        virtual llvm::Function* getOrCreateDropFunction();
 
         void setRttiGlobal(llvm::GlobalVariable* llvmRttiGlobal) {
             this->llvmRttiGlobal = llvmRttiGlobal;
