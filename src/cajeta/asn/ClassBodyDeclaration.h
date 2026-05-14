@@ -69,6 +69,8 @@ namespace cajeta {
     public:
         MethodDeclaration(MethodPtr method, antlr4::Token* token) : MemberDeclaration(token) { this->method = method; }
 
+        MethodPtr getMethod() const { return method; }
+
         void onModifier(Modifier modifier) override { this->method->addModifier(modifier); }
 
         void updateParent(CajetaClassPtr structure) override {

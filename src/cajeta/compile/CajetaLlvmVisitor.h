@@ -430,9 +430,67 @@ namespace cajeta {
             return visitChildren(ctx);
         }
 
+        // Parse `@SuppressLint(...)`'s string argument(s). Accepts either
+        // a single string literal (`"foo"`) or an array initializer
+        // (`{"foo", "bar"}`). Stripped of whitespace, braces, and quotes;
+        // each string token becomes a separate lint-rule ID. Escape
+        // sequences inside the literals aren't supported (lint IDs are
+        // ASCII kebab-case by convention — see LintRules.md).
+        static void parseLintIds(const std::string& argText,
+                                 std::vector<std::string>& out) {
+            std::string current;
+            bool inQuotes = false;
+            for (char c : argText) {
+                if (c == '"') {
+                    if (inQuotes && !current.empty()) {
+                        out.push_back(current);
+                        current.clear();
+                    }
+                    inQuotes = !inQuotes;
+                } else if (inQuotes) {
+                    current.push_back(c);
+                }
+            }
+        }
+
         virtual std::any visitClassBodyDeclaration(CajetaParser::ClassBodyDeclarationContext* ctx) override {
             MemberDeclarationPtr memberDeclaration = any_cast<MemberDeclarationPtr>(visitMemberDeclaration(
                 ctx->memberDeclaration()));
+            // @SuppressLint("rule-id", ...) capture. Walk modifier list
+            // looking for annotation modifiers; when one's name is
+            // "SuppressLint", extract its string arguments and stash on
+            // the underlying Method. Other annotations fall through; the
+            // modifier-as-enum path below still runs unconditionally and
+            // returns NONE for annotation modifiers (no-op).
+            //
+            // Only operates on MethodDeclaration members today —
+            // FieldDeclaration doesn't carry an Annotatable yet. Class-
+            // level @SuppressLint lives on the CajetaClass via a separate
+            // path (visitClassDeclaration).
+            if (auto methodDecl = std::dynamic_pointer_cast<MethodDeclaration>(memberDeclaration)) {
+                for (auto& modifierContext : ctx->modifier()) {
+                    auto* coim = modifierContext->classOrInterfaceModifier();
+                    if (!coim) continue;
+                    auto* ann = coim->annotation();
+                    if (!ann) continue;
+                    std::string aName = ann->qualifiedName()
+                        ? ann->qualifiedName()->getText()
+                        : (ann->altAnnotationQualifiedName()
+                            ? ann->altAnnotationQualifiedName()->getText()
+                            : std::string());
+                    if (aName == "SuppressLint") {
+                        std::vector<std::string> ids;
+                        if (auto* ev = ann->elementValue()) {
+                            parseLintIds(ev->getText(), ids);
+                        } else if (auto* evp = ann->elementValuePairs()) {
+                            parseLintIds(evp->getText(), ids);
+                        }
+                        if (auto m = methodDecl->getMethod()) {
+                            for (auto& id : ids) m->addSuppressedLint(id);
+                        }
+                    }
+                }
+            }
             for (auto& modifierContext: ctx->modifier()) {
                 memberDeclaration->onModifier(any_cast<Modifier>(visitModifier(modifierContext)));
             }

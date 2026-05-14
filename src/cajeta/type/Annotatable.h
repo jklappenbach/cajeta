@@ -6,6 +6,8 @@
 
 #include <set>
 #include <list>
+#include <string>
+#include <vector>
 #include "QualifiedName.h"
 
 using namespace std;
@@ -15,6 +17,12 @@ namespace cajeta {
     protected:
         set<QualifiedNamePtr> annotations;
         list<QualifiedNamePtr> annotationList;
+        // Lint rule IDs suppressed at this declaration via @SuppressLint(...).
+        // See cajeta-docs/LintRules.md. Today only the visitor's @SuppressLint
+        // handler populates this; future generic annotation-parameter capture
+        // (AspectModel.md task A1) will fold this into a typed annotation-arg
+        // table.
+        vector<string> suppressedLints;
     public:
         Annotatable() { }
 
@@ -32,6 +40,19 @@ namespace cajeta {
         }
 
         list<QualifiedNamePtr>& getAnnotationList() { return annotationList; }
+
+        void addSuppressedLint(const string& ruleId) {
+            suppressedLints.push_back(ruleId);
+        }
+
+        bool isLintSuppressed(const string& ruleId) const {
+            for (const auto& id : suppressedLints) {
+                if (id == ruleId) return true;
+            }
+            return false;
+        }
+
+        const vector<string>& getSuppressedLints() const { return suppressedLints; }
 
         string toCanonical() {
             string result;

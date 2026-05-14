@@ -889,14 +889,14 @@ namespace cajeta {
             }
         }
 
-        // R5/Error-model #201: uncaught-throws lint. If the resolved target
-        // declares `throws X, Y`, walk that list and warn for each entry
-        // that the enclosing method doesn't itself declare. Advisory only —
-        // no compile error, matching ErrorModel.md's "throws is
-        // documentation, not contract enforcement" position. Future work:
-        // also check enclosing try/catch coverage; today we conservatively
-        // warn regardless of try-wrapping, which is over-noisy but at least
-        // visible.
+        // Uncaught-throws lint (rule ID `uncaught-throws`). If the resolved
+        // target declares `throws X, Y`, walk that list and warn for each
+        // entry that the enclosing method doesn't itself declare.
+        // Advisory only — no compile error, matching ErrorModel.md's
+        // "throws is documentation" position. Suppressible per-method via
+        // `@SuppressLint("uncaught-throws")` — see LintRules.md for the
+        // catalog. Caveat: doesn't yet check try/catch coverage at the
+        // call site (#209 follow-up).
         bool floatingParamsLint = true;
         for (auto& p : entries) if (p.label.empty()) { floatingParamsLint = false; break; }
         vector<ParameterEntry> entriesCopy = entries;
@@ -906,7 +906,8 @@ namespace cajeta {
             auto& throwsList = targetMethod->getThrowsList();
             if (!throwsList.empty()) {
                 auto currentMethod = module->getCurrentMethod();
-                if (currentMethod) {
+                if (currentMethod
+                        && !currentMethod->isLintSuppressed("uncaught-throws")) {
                     auto& currentThrows = currentMethod->getThrowsList();
                     for (auto& thrownType : throwsList) {
                         bool declared = false;
@@ -917,7 +918,8 @@ namespace cajeta {
                             }
                         }
                         if (!declared) {
-                            std::cerr << "warning: call to " << methodCallName
+                            std::cerr << "warning: [uncaught-throws] call to "
+                                << methodCallName
                                 << " can throw " << thrownType->toCanonical()
                                 << " but enclosing " << currentMethod->getName()
                                 << " neither catches nor declares it"

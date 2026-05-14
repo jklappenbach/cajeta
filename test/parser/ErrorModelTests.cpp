@@ -336,6 +336,39 @@ TEST(ErrorModelTests, classWithStringField) {
     EXPECT_EQ(runI32(src), 42);
 }
 
+// #209: @SuppressLint("uncaught-throws") silences the lint warning on
+// the annotated method. The runtime behavior is unchanged — throws still
+// propagate, system catch still operates. This test just verifies the
+// annotation parses and the body still codegens + runs.
+TEST(ErrorModelTests, suppressLintAnnotationSilencesWarning) {
+    auto src =
+        "package test;\n"
+        "public final class D {\n"
+        "    public static int32 maybeFail() throws IOException { return 11; }\n"
+        "    @SuppressLint(\"uncaught-throws\")\n"
+        "    public static int32 run() {\n"
+        "        return maybeFail();\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 11);
+}
+
+// Multi-ID array form: @SuppressLint({"id-a", "id-b"}) silences multiple
+// rules at once. Today only uncaught-throws exists as a rule, but the
+// array-arg parsing must work for the form to be future-proof.
+TEST(ErrorModelTests, suppressLintAcceptsArrayArg) {
+    auto src =
+        "package test;\n"
+        "public final class D {\n"
+        "    public static int32 maybeFail() throws IOException { return 13; }\n"
+        "    @SuppressLint({\"uncaught-throws\", \"unused-local\"})\n"
+        "    public static int32 run() {\n"
+        "        return maybeFail();\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 13);
+}
+
 // Constructor throws clause — same grammar, separate parse path.
 TEST(ErrorModelTests, constructorThrowsParses) {
     auto src =
