@@ -110,6 +110,12 @@ std::unique_ptr<CajetaJit> CajetaJit::compile(const std::string& source,
     // path so JIT-based tests see the same advice-cache state.
     cajeta::CajetaModule::resolveAdviceMatches();
 
+    // AspectModel.md § A8: DI graph validation. JIT-based tests
+    // default to the "test" profile so @TestComponent overrides
+    // and test-only @Profile("test") components are picked up.
+    cajeta::CajetaModule::setActiveProfile("test");
+    cajeta::CajetaModule::resolveDependencyGraph();
+
     // Two-phase codegen (signature registration then body lowering). Mirrors what
     // Compiler::compile(entryMethod,...) does for multi-file builds.
     for (auto& m : compiler->getModules()) {

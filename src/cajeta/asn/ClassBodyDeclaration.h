@@ -26,6 +26,13 @@ namespace cajeta {
         list<VariableDeclaratorPtr> variableDeclarators;
         set<Modifier> modifiers;
         set<QualifiedNamePtr> annotations;
+        // Typed annotation captures (A8). Populated by
+        // visitClassBodyDeclaration's modifier walk in lockstep with
+        // `annotations`. Each entry is propagated to every
+        // StructureProperty produced by updateParent so DI's
+        // resolveDependencyGraph can inspect @Inject(name=...,
+        // allocate=...) per field.
+        vector<AnnotationInstancePtr> annotationInstances;
     public:
         FieldDeclaration(CajetaTypePtr type, list<VariableDeclaratorPtr> variableDeclarators, antlr4::Token* token)
             : MemberDeclaration(token) {
@@ -35,16 +42,15 @@ namespace cajeta {
 
         void onModifier(Modifier modifier) override { modifiers.insert(modifier); }
 
-        /**
-         * string name,
-              CajetaTypePtr type,
-              int arrayDimension,
-              bool reference,
-              Initializer* initializer,
-              set<Modifier>& modifiers,
-              set<QualifiedName*>& annotations
-         * @param structure
-         */
+        void addAnnotationInstance(AnnotationInstancePtr inst) {
+            if (inst && inst->getName()) annotations.insert(inst->getName());
+            annotationInstances.push_back(std::move(inst));
+        }
+
+        const vector<AnnotationInstancePtr>& getAnnotationInstances() const {
+            return annotationInstances;
+        }
+
         void updateParent(CajetaClassPtr structure) override {
             int i = structure->getProperties().size();
             for (auto variableDeclarator: variableDeclarators) {
@@ -54,6 +60,9 @@ namespace cajeta {
                     modifiers,
                     annotations,
                     i++);
+                for (auto& inst : annotationInstances) {
+                    property->addAnnotationInstance(inst);
+                }
                 structure->addProperty(property);
             }
         }

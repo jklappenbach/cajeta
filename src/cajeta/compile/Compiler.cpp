@@ -228,6 +228,13 @@ public class UnrecoverableException extends Exception {
         // codegen wrappers can find their advice at IR emit time.
         CajetaModule::resolveAdviceMatches();
 
+        // AspectModel.md § A8 DI graph validation. Same parse-
+        // complete point as A3; it validates @Component / @Inject
+        // shape and reports missing/cycle/ambiguous errors before
+        // any IR emission. A9 will read the resolved graph to
+        // synthesize singleton + factory helpers.
+        CajetaModule::resolveDependencyGraph();
+
         // Phase 1: declaration/signature registration. Walk every method across every
         // module and register its prototype with the LLVM module. Cross-method and
         // cross-class references can resolve in Phase 2 because every name is already

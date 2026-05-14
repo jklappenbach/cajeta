@@ -200,6 +200,40 @@ namespace cajeta {
             if (structure->findAnnotation("Aspect")) {
                 CajetaModule::registerAspectClass(structure);
             }
+            // Component registration (AspectModel.md § A8). @Component
+            // and @Repository are sibling annotations — both register
+            // as ordinary DI participants. @TestComponent registers
+            // the same shape but flips isTestComponent so the
+            // resolver can override a same-type @Component during
+            // test compilations and drop it otherwise. Profiles are
+            // collected by reading every @Profile annotation on the
+            // class (repeatable in spirit even if v1 only records
+            // each occurrence once per AnnotationInstance) — empty
+            // list = profile-neutral.
+            {
+                auto componentAnn = structure->findAnnotation("Component");
+                auto repositoryAnn = structure->findAnnotation("Repository");
+                auto testComponentAnn = structure->findAnnotation("TestComponent");
+                if (componentAnn || repositoryAnn || testComponentAnn) {
+                    auto desc = make_shared<CajetaModule::ComponentDescriptor>();
+                    desc->klass = structure;
+                    desc->isTestComponent = (testComponentAnn != nullptr);
+                    auto primary = componentAnn
+                        ? componentAnn
+                        : (repositoryAnn ? repositoryAnn : testComponentAnn);
+                    if (primary) {
+                        desc->name = primary->getString("name");
+                    }
+                    for (auto& inst : structure->getAnnotationInstances()) {
+                        if (inst && inst->getName()
+                                && inst->getName()->getTypeName() == "Profile") {
+                            const string& p = inst->getString();
+                            if (!p.empty()) desc->profiles.push_back(p);
+                        }
+                    }
+                    CajetaModule::registerComponent(desc);
+                }
+            }
             // Pre-register the class in canonicalMap (under both canonical
             // and short typeName) so self-references inside the body
             // resolve — e.g. `Vector operator+ (Vector other)` inside class
@@ -686,10 +720,11 @@ namespace cajeta {
             // hot-path isLintSuppressed check stays O(N) over a tiny
             // vector — same shape the class-level path uses.
             //
-            // FieldDeclaration doesn't carry an Annotatable yet —
-            // annotations on fields are silently dropped until A1
-            // follow-up extends the field-side hookup. Class-level
-            // annotations live on the CajetaClass via
+            // A8 extends field-side capture so @Inject(name=...,
+            // allocate=...) on a field is observable by the DI graph.
+            // Both branches share the same modifier walk; the body
+            // dispatches based on what member shape we resolved.
+            // Class-level annotations live on the CajetaClass via
             // visitClassDeclaration's separate capture loop.
             if (auto methodDecl = std::dynamic_pointer_cast<MethodDeclaration>(memberDeclaration)) {
                 if (auto m = methodDecl->getMethod()) {
@@ -706,6 +741,14 @@ namespace cajeta {
                                 if (!single.empty()) m->addSuppressedLint(single);
                             }
                         }
+                    }
+                }
+            } else if (auto fieldDecl = std::dynamic_pointer_cast<FieldDeclaration>(memberDeclaration)) {
+                for (auto& modifierContext : ctx->modifier()) {
+                    auto* coim = modifierContext->classOrInterfaceModifier();
+                    if (!coim) continue;
+                    if (auto inst = parseAnnotationInstance(coim->annotation())) {
+                        fieldDecl->addAnnotationInstance(inst);
                     }
                 }
             }

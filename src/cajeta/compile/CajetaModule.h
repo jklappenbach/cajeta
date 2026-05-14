@@ -46,6 +46,39 @@ namespace cajeta {
         // by resetGlobals.
         static vector<CajetaClassPtr> aspectClasses;
 
+    public:
+        // Component registry (AspectModel.md § A8). Holds every class
+        // annotated `@Component`, `@Repository`, or `@TestComponent`
+        // across all modules. Populated in lockstep with parsing —
+        // visitClassDeclaration registers the class right after the
+        // annotation-instance capture loop runs. resolveDependencyGraph
+        // walks this list to filter by profile, apply test overrides,
+        // and validate the DI graph.
+        //
+        // The ComponentDescriptor is a parse-time DTO that holds the
+        // already-extracted DI metadata so the resolver doesn't have
+        // to re-walk every annotation. `name` and `profiles` come from
+        // the @Component / @Profile annotations on the class; the
+        // `isTestComponent` flag distinguishes @TestComponent
+        // declarations so the resolver can drop them outside test
+        // compilations and prefer them inside.
+        struct ComponentDescriptor {
+            CajetaClassPtr klass;
+            string name;                 // "" if no name = qualifier
+            vector<string> profiles;     // empty = profile-neutral
+            bool isTestComponent = false;
+        };
+        typedef shared_ptr<ComponentDescriptor> ComponentDescriptorPtr;
+    private:
+        static vector<ComponentDescriptorPtr> componentClasses;
+
+        // The profile name passed to the compiler (`--profile=<name>`)
+        // or set by the test driver. Default `"prod"`; JIT test helper
+        // sets `"test"`. Resolved at graph-build time — a component's
+        // @Profile annotations must include this value, or carry no
+        // @Profile at all, to participate.
+        static string activeProfile;
+
         // The module currently being walked (parse pass or template-
         // instantiation walk). Used as a fallback by call sites that don't
         // thread `module` through their APIs — notably the parse-time
@@ -245,6 +278,34 @@ namespace cajeta {
         // onto the ones that match. A4+ reads these matches at
         // codegen.
         static void resolveAdviceMatches();
+
+        // Component registry (AspectModel.md § A8). Mirrors the
+        // aspect registry shape — registerComponent is called from
+        // visitClassDeclaration once per @Component / @Repository /
+        // @TestComponent class; resolveDependencyGraph walks the
+        // list at validate-time.
+        static void registerComponent(ComponentDescriptorPtr c) {
+            componentClasses.push_back(std::move(c));
+        }
+        static const vector<ComponentDescriptorPtr>& getComponentClasses() {
+            return componentClasses;
+        }
+
+        // Active profile selector for component filtering. Default
+        // "prod"; CLI flag `--profile=<name>` (compile entry) and the
+        // test driver (JitTestHelper) override before
+        // resolveDependencyGraph runs.
+        static const string& getActiveProfile() { return activeProfile; }
+        static void setActiveProfile(const string& p) { activeProfile = p; }
+
+        // DI graph validation pass (AspectModel.md § A8). Filter
+        // componentClasses by activeProfile, apply @TestComponent
+        // overrides, walk each surviving component's @Inject fields,
+        // and validate the graph. Throws Exception on missing
+        // implementation, circular dependency, or ambiguous
+        // resolution. Codegen (A9) reads the validated graph state
+        // populated by this pass.
+        static void resolveDependencyGraph();
 
         // Active-module accessor. Returns the module currently being walked,
         // or nullptr outside any walk. Call sites that didn't thread a module

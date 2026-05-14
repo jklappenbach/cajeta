@@ -4,7 +4,9 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <functional>
 #include <utility>
+#include "../error/Exception.h"
 
 #include "CajetaModule.h"
 #include "../logging/CajetaLogger.h"
@@ -25,6 +27,8 @@ namespace cajeta {
     CajetaModulePtr CajetaModule::activeModule;
     map<string, CajetaModulePtr> CajetaModule::moduleVariables;
     vector<CajetaClassPtr> CajetaModule::aspectClasses;
+    vector<CajetaModule::ComponentDescriptorPtr> CajetaModule::componentClasses;
+    string CajetaModule::activeProfile = "prod";
 
     CajetaModule::CajetaModule(llvm::LLVMContext* llvmContext,
         string sourcePath,
@@ -135,6 +139,8 @@ namespace cajeta {
         moduleVariables.clear();
         methods.clear();
         aspectClasses.clear();
+        componentClasses.clear();
+        activeProfile = "prod";
         Method::getArchive().clear();
     }
 
@@ -307,6 +313,230 @@ namespace cajeta {
                         });
                 }
             }
+        }
+    }
+
+    // Walks the registered components, filters by active profile,
+    // applies @TestComponent overrides, then validates the DI graph
+    // (missing implementation, circular dependency, ambiguous
+    // resolution). See AspectModel.md § A8.
+    //
+    // Field-level @Inject is the only injection shape inspected here;
+    // constructor-parameter @Inject lands alongside A9's codegen
+    // pass, which is where the new-call lowering needs the resolved
+    // dependency anyway.
+    //
+    // No codegen is emitted by this pass — A9 reads the validated
+    // graph state to synthesize get_X / make_X helpers.
+    void CajetaModule::resolveDependencyGraph() {
+        if (componentClasses.empty()) return;
+
+        // Filter by profile. A component with no @Profile is
+        // profile-neutral (always included). A component with one or
+        // more @Profile annotations is included only if at least
+        // one matches the active profile.
+        auto profileMatches = [](const ComponentDescriptorPtr& c) {
+            if (c->profiles.empty()) return true;
+            for (auto& p : c->profiles) {
+                if (p == activeProfile) return true;
+            }
+            return false;
+        };
+
+        // Active set after profile filtering. Two passes follow:
+        // (1) collect @TestComponent overrides keyed by target type;
+        // (2) walk the registry, dropping @TestComponent entries
+        //     when not in test mode, dropping @Component entries
+        //     whose type is overridden in test mode.
+        const bool testMode = (activeProfile == "test");
+
+        // Type → descriptor map built from the filtered + override-
+        // applied set. Used by the @Inject resolver below.
+        vector<ComponentDescriptorPtr> active;
+        // Test-mode override: when we see @TestComponent and we're
+        // compiling for tests, this descriptor's class type masks any
+        // same-class non-test @Component.
+        set<string> testOverriddenTypes;
+        if (testMode) {
+            for (auto& c : componentClasses) {
+                if (!c || !c->klass) continue;
+                if (!c->isTestComponent) continue;
+                if (!profileMatches(c)) continue;
+                if (c->klass->getQName()) {
+                    testOverriddenTypes.insert(c->klass->getQName()->toCanonical());
+                }
+            }
+        }
+        for (auto& c : componentClasses) {
+            if (!c || !c->klass) continue;
+            if (!profileMatches(c)) continue;
+            if (c->isTestComponent && !testMode) continue;
+            // In test mode, drop the non-test @Component whose type
+            // is overridden by a @TestComponent of the same type.
+            if (testMode && !c->isTestComponent && c->klass->getQName()
+                    && testOverriddenTypes.count(c->klass->getQName()->toCanonical())) {
+                continue;
+            }
+            active.push_back(c);
+        }
+
+        // Type-keyed lookup tables. v1 keys by both the canonical
+        // qualified name AND the short type name so consumers can
+        // write `@Inject Database db;` without writing the package.
+        // Inheritance / interface implementation walks (the doc's
+        // "implementer-of-Persister" case) ship with A12 once the
+        // ancestor-resolution path is stable.
+        map<string, vector<ComponentDescriptorPtr>> byCanonical;
+        map<string, vector<ComponentDescriptorPtr>> byShort;
+        for (auto& c : active) {
+            auto qn = c->klass->getQName();
+            if (!qn) continue;
+            byCanonical[qn->toCanonical()].push_back(c);
+            byShort[qn->getTypeName()].push_back(c);
+        }
+
+        // Resolve a dependency from a name-qualifier-aware lookup.
+        // Returns nullptr if no candidate matches; the caller turns
+        // that into a missing-impl / ambiguous error with context.
+        auto resolveDependency =
+            [&](const string& typeName, const string& nameQualifier,
+                vector<ComponentDescriptorPtr>& outCandidates) -> ComponentDescriptorPtr {
+                vector<ComponentDescriptorPtr> candidates;
+                auto itC = byCanonical.find(typeName);
+                if (itC != byCanonical.end()) {
+                    candidates.insert(candidates.end(),
+                        itC->second.begin(), itC->second.end());
+                }
+                if (candidates.empty()) {
+                    auto itS = byShort.find(typeName);
+                    if (itS != byShort.end()) {
+                        candidates.insert(candidates.end(),
+                            itS->second.begin(), itS->second.end());
+                    }
+                }
+                outCandidates = candidates;
+                if (candidates.empty()) return nullptr;
+                if (!nameQualifier.empty()) {
+                    ComponentDescriptorPtr named;
+                    for (auto& c : candidates) {
+                        if (c->name == nameQualifier) {
+                            if (named) return nullptr;  // duplicate names — ambiguous
+                            named = c;
+                        }
+                    }
+                    return named;
+                }
+                if (candidates.size() == 1) return candidates.front();
+                // Multiple candidates, no name on the @Inject site.
+                // Prefer a single name-less candidate as the
+                // unqualified default; otherwise ambiguous.
+                ComponentDescriptorPtr unqualified;
+                for (auto& c : candidates) {
+                    if (c->name.empty()) {
+                        if (unqualified) return nullptr;
+                        unqualified = c;
+                    }
+                }
+                return unqualified;
+            };
+
+        // Build per-component dependency edges and detect missing /
+        // ambiguous resolution in one pass.
+        map<ComponentDescriptorPtr, vector<ComponentDescriptorPtr>> edges;
+        for (auto& c : active) {
+            edges[c];   // ensure every node is in the graph
+            for (auto& [pname, prop] : c->klass->getProperties()) {
+                if (!prop) continue;
+                auto injectAnn = prop->findAnnotation("Inject");
+                if (!injectAnn) continue;
+
+                auto fieldType = prop->getType();
+                if (!fieldType || !fieldType->getQName()) {
+                    throw Exception(
+                        "@Inject on field '" + prop->getName()
+                            + "' of " + c->klass->getQName()->toCanonical()
+                            + " has no resolvable type",
+                        "CAJETA_ERROR_MISSING_COMPONENT");
+                }
+                const string& targetCanonical = fieldType->getQName()->toCanonical();
+                const string& targetShort = fieldType->getQName()->getTypeName();
+                const string nameQualifier = injectAnn->getString("name");
+
+                vector<ComponentDescriptorPtr> candidates;
+                auto resolved = resolveDependency(targetCanonical, nameQualifier, candidates);
+                if (!resolved && candidates.empty()) {
+                    resolved = resolveDependency(targetShort, nameQualifier, candidates);
+                }
+                if (candidates.empty()) {
+                    throw Exception(
+                        c->klass->getQName()->toCanonical()
+                            + " needs " + targetCanonical
+                            + ", but no @Component class implements " + targetCanonical
+                            + " (active profile: " + activeProfile + ")",
+                        "CAJETA_ERROR_MISSING_COMPONENT");
+                }
+                if (!resolved) {
+                    string detail;
+                    for (auto& cand : candidates) {
+                        if (!detail.empty()) detail += ", ";
+                        detail += cand->klass->getQName()->toCanonical();
+                        if (!cand->name.empty()) {
+                            detail += "(name=\"" + cand->name + "\")";
+                        }
+                    }
+                    throw Exception(
+                        "Ambiguous @Inject of " + targetCanonical
+                            + " in " + c->klass->getQName()->toCanonical()
+                            + ". Candidates: " + detail
+                            + (nameQualifier.empty()
+                                ? ". Add @Inject(name = \"...\") at the consumer."
+                                : (". No candidate has name=\"" + nameQualifier + "\".")),
+                        "CAJETA_ERROR_DI_AMBIGUOUS");
+                }
+                edges[c].push_back(resolved);
+            }
+        }
+
+        // Cycle detection via colored DFS. WHITE = unvisited,
+        // GRAY = on the current recursion path, BLACK = fully
+        // explored. A GRAY edge means we re-entered an ancestor —
+        // i.e., a cycle. Report the path from the cycle's entry to
+        // the offending edge so the error names every participant.
+        enum Color { WHITE, GRAY, BLACK };
+        map<ComponentDescriptorPtr, Color> color;
+        vector<ComponentDescriptorPtr> path;
+        std::function<void(const ComponentDescriptorPtr&)> dfs =
+            [&](const ComponentDescriptorPtr& node) {
+                color[node] = GRAY;
+                path.push_back(node);
+                for (auto& dep : edges[node]) {
+                    auto it = color.find(dep);
+                    Color cc = (it == color.end()) ? WHITE : it->second;
+                    if (cc == GRAY) {
+                        // Cycle. Render from first occurrence of dep
+                        // on path through the current node back to
+                        // dep — that's the cycle proper.
+                        string trace;
+                        bool started = false;
+                        for (auto& n : path) {
+                            if (n == dep) started = true;
+                            if (started) {
+                                if (!trace.empty()) trace += " -> ";
+                                trace += n->klass->getQName()->toCanonical();
+                            }
+                        }
+                        trace += " -> " + dep->klass->getQName()->toCanonical();
+                        throw Exception(
+                            "Cycle in @Component dependency graph: " + trace,
+                            "CAJETA_ERROR_DI_CYCLE");
+                    }
+                    if (cc == WHITE) dfs(dep);
+                }
+                color[node] = BLACK;
+                path.pop_back();
+            };
+        for (auto& c : active) {
+            if (color.find(c) == color.end()) dfs(c);
         }
     }
 
