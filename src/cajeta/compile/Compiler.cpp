@@ -51,27 +51,79 @@ namespace cajeta {
         return result;
     }
 
-    void parse(CajetaModulePtr module) {
-        ifstream stream;
-        stream.open(module->getSourcePath());
-        stream.seekg(0);
-        ANTLRInputStream input(stream);
+    // Stdlib prelude — the minimal class hierarchy every Cajeta compilation
+    // unit gets implicitly. v1 just carries the error-model types from
+    // ErrorModel.md; future stdlib growth (`String` class, collections,
+    // `Task<T>` exposed as a user-typeable template, etc.) extends this
+    // string. Kept inline rather than in a separate .caj file so the
+    // compiler binary is self-contained — distribution doesn't need to
+    // ship a stdlib directory alongside the executable.
+    //
+    // Constructors don't call super(...) — `super` is still
+    // UnsupportedExpression. Inherited fields are written directly via
+    // `this.message`. Each subclass repeats the field assignment.
+    static const char* const STDLIB_SOURCE = R"CAJETA(
+package cajeta.lang;
+public class Throwable {
+    public pointer message;
+    public Throwable(pointer message) { this.message = message; }
+}
+public class RecoverableException extends Throwable {
+}
+public class UnrecoverableException extends Throwable {
+}
+)CAJETA";
+
+    // Run one compilationUnit through the parser/visitor against `module`.
+    // Used twice from parse() — first to load the stdlib prelude, then the
+    // user source. Two calls on the same module both register their
+    // typeDeclarations into module->getStructures() and canonicalMap; the
+    // second call's package declaration overwrites the first (the user's
+    // package wins, which is what we want — stdlib's package only matters
+    // for canonical naming of its own types).
+    static void parseSource(CajetaModulePtr module,
+                            antlr4::ANTLRInputStream& input,
+                            const char* label) {
         CajetaLexer lexer(&input);
         CommonTokenStream tokens(&lexer);
         tokens.fill();
         CajetaParser parser(&tokens);
         antlr4::tree::ParseTree* parseTree = parser.compilationUnit();
-        // Make the module visible to parse-time helpers that didn't thread
-        // it through (CajetaType / Expression construction). See
-        // CajetaModule::activeModule for rationale.
         auto prevActive = CajetaModule::getActiveModule();
         CajetaModule::setActiveModule(module);
         auto visitor = new CajetaLlvmVisitor(module);
         parseTree->accept(visitor);
-        cout << "\n\n";
-        std::cout << parseTree->toStringTree(&parser, true) << std::endl;
+        // Skip the noisy tree dump for the stdlib parse — already-known
+        // content, would drown out the user's parse tree in test logs.
+        if (label && label[0] != '\0') {
+            cout << "\n\n";
+            std::cout << parseTree->toStringTree(&parser, true) << std::endl;
+        }
         delete visitor;
         CajetaModule::setActiveModule(prevActive);
+    }
+
+    void parse(CajetaModulePtr module) {
+        // Stdlib first — its types must be in canonicalMap before user code
+        // can reference them by simple name. The module's qName is path-
+        // derived (e.g. `test.D` from `test/D.cajeta`), but stdlib classes
+        // declare `package cajeta.lang;`, so we temporarily swap the
+        // module's qName to one whose package is `cajeta.lang` for the
+        // stdlib parse — that way visitClassDeclaration builds stdlib
+        // classes with `cajeta.lang.Throwable` canonical names. Restored
+        // before the user-source parse so user classes get their proper
+        // path-derived package.
+        QualifiedNamePtr originalQName = module->getQName();
+        module->setQName(QualifiedName::getOrInsert("stdlib", "cajeta.lang"));
+        antlr4::ANTLRInputStream stdlibInput(STDLIB_SOURCE);
+        parseSource(module, stdlibInput, /*label=*/"");
+        module->setQName(originalQName);
+
+        ifstream stream;
+        stream.open(module->getSourcePath());
+        stream.seekg(0);
+        antlr4::ANTLRInputStream userInput(stream);
+        parseSource(module, userInput, /*label=*/"user");
     }
 
     bool fileExists(string& sourcePath) {

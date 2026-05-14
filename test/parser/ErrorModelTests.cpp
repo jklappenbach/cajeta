@@ -58,6 +58,35 @@ TEST(ErrorModelTests, throwsClauseSingleEntry) {
     EXPECT_EQ(runI32(src), 7);
 }
 
+// Stdlib prelude — Throwable + RecoverableException + UnrecoverableException
+// load implicitly into every compilation unit. User code can reference them
+// by simple name without an import, and `extends` works against them.
+TEST(ErrorModelTests, stdlibThrowableInstantiable) {
+    auto src =
+        "package test;\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Throwable t = new Throwable(0);\n"
+        "        return 42;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 42);
+}
+
+TEST(ErrorModelTests, stdlibRecoverableExtendsThrowable) {
+    auto src =
+        "package test;\n"
+        "public class IOException extends RecoverableException {\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        IOException e = new IOException();\n"
+        "        return 7;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 7);
+}
+
 // Constructor throws clause — same grammar, separate parse path.
 TEST(ErrorModelTests, constructorThrowsParses) {
     auto src =

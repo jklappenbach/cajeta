@@ -18,6 +18,12 @@ TEST(CompilerTests, canThrowOnInvalidInput) {
     EXPECT_THROW(compiler.createModule(inputPath, sourceRootPath, outputPath), FileNotFoundException);
 }
 
+// Every Cajeta compilation implicitly loads the stdlib prelude (cajeta.lang.*
+// — Throwable, RecoverableException, UnrecoverableException, today). Their
+// class entries land in the same global structure map as the user's classes,
+// so structure-count assertions add their fixed contribution.
+static constexpr size_t STDLIB_STRUCTURE_COUNT = 3;
+
 TEST(CompilerTests, canParseOnValidShortPackage) {
     string inputPath = CAJETA_TEST_ROOT + string("/compile/code/src/cajeta/Test.cajeta");
     string sourceRootPath = CAJETA_TEST_ROOT + string("/compile/code/src");
@@ -26,7 +32,7 @@ TEST(CompilerTests, canParseOnValidShortPackage) {
     CajetaModulePtr pModule = compiler.createModule(inputPath, sourceRootPath, outputPath);
     compiler.compile(pModule);
     auto modules = CajetaModule::getStructureToModule();
-    EXPECT_EQ(modules.size(), 1);
+    EXPECT_EQ(modules.size(), 1 + STDLIB_STRUCTURE_COUNT);
 }
 
 TEST(CompilerTests, canParseOnValidLongPackage) {
@@ -38,7 +44,7 @@ TEST(CompilerTests, canParseOnValidLongPackage) {
     compiler.compile(pModule);
     auto modules = CajetaModule::getStructureToModule();
     auto structure = pModule->getStructures()["foo.bar.baz.Test"];
-    EXPECT_EQ(modules.size(), 1);
+    EXPECT_EQ(modules.size(), 1 + STDLIB_STRUCTURE_COUNT);
     EXPECT_EQ(structure->getProperties().size(), 2);
     EXPECT_EQ(structure->getMethods().size(), 3);
 }
