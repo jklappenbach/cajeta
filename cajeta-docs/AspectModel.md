@@ -206,22 +206,11 @@ Without `@Order`, source-declaration order in the aspect class is used. Across a
 
 ### Component registration
 
-A class annotated `@Component` becomes part of the compile-time DI graph. The annotation takes two optional parameters:
+A class annotated `@Component` becomes part of the compile-time DI graph. The annotation takes one optional parameter:
 
 - `name = "..."` — a qualifier for disambiguation when multiple components implement the same interface. Default: no qualifier (the component matches unqualified injections of its declared types).
-- `allocate = ALLOCATE_SINGLETON | ALLOCATE_CONTAINER_SCOPE | ALLOCATE_CALL_SCOPE | ALLOCATE_TRANSIENT` — the instantiation policy. Default: `ALLOCATE_SINGLETON`. The four modes form a hierarchy of decreasing lifetime:
 
-  | Mode | Lifetime | One instance per |
-  |------|----------|------------------|
-  | `ALLOCATE_SINGLETON` | program | process |
-  | `ALLOCATE_CONTAINER_SCOPE` | fiber | spawned task (or main, treated as one container) |
-  | `ALLOCATE_CALL_SCOPE` | call | method activation |
-  | `ALLOCATE_TRANSIENT` | injection | injection site |
-
-  - **`ALLOCATE_SINGLETON`** — one shared instance per process, lazily constructed on first inject, lives until program exit. `@PreDestroy` fires at exit.
-  - **`ALLOCATE_CONTAINER_SCOPE`** — one instance per fiber (or per main thread, when not in a fiber). Created on first inject within the fiber, shared by every other inject in that fiber, dropped when the fiber completes. Stored in a per-fiber cache on the `cajeta_fiber` struct. The natural fit for "this should be one-per-task" patterns: a `RequestContext`, a per-task tracing span, a connection-per-task lease.
-  - **`ALLOCATE_CALL_SCOPE`** — one instance per call activation, shared across the entire transitive call graph of one method invocation. Created on first inject within the call, dropped when the activation's drop chain runs (i.e., at the method's return or throw). The natural fit for "this single operation needs its own context" patterns: a transaction handle, a per-request audit trail, an in-progress message-builder. Implemented via the existing implicit function-body scope (R5-A').
-  - **`ALLOCATE_TRANSIENT`** — a fresh instance at every injection site. Owned by the receiver and dropped via the normal drop chain when the receiver goes out of scope. No caching at all.
+The component class itself does not declare how its instances are allocated — that decision belongs to each `@Inject` site (see *Injection lifespan* below). A single `@Component` class can therefore back many injection sites with different lifespans simultaneously.
 
 ```cajeta
 @Component public class Database {
@@ -252,10 +241,38 @@ A class annotated `@Component` becomes part of the compile-time DI graph. The an
 // Multiple impls of an interface — disambiguate by name.
 @Component(name = "disk") public class DiskPersister implements Persister { ... }
 @Component(name = "memory") public class MemoryPersister implements Persister { ... }
+```
 
-// Transient: every @Inject yields a fresh instance.
-@Component(allocate = ALLOCATE_TRANSIENT)
-public class RequestContext { ... }
+### Injection lifespan
+
+`@Inject` accepts an optional `allocate` parameter controlling the instantiation policy at this specific injection site. Default: `ALLOCATE_SINGLETON`. The four modes form a hierarchy of decreasing lifetime:
+
+| Mode | Lifetime | One instance per |
+|------|----------|------------------|
+| `ALLOCATE_SINGLETON` | program | process |
+| `ALLOCATE_OWNER_SCOPE` | owner | injecting object |
+| `ALLOCATE_CALL_SCOPE` | call | method activation |
+| `ALLOCATE_TRANSIENT` | injection | injection site |
+
+- **`ALLOCATE_SINGLETON`** — one shared instance per process, lazily constructed on first inject, lives until program exit. `@PreDestroy` fires at exit. All `@Inject(allocate = ALLOCATE_SINGLETON)` sites targeting the same component (and qualifier) share the same instance.
+- **`ALLOCATE_OWNER_SCOPE`** — the injected instance's lifespan is bound to the object that holds the `@Inject` field (the *owner*). Allocated as part of the owner's construction (via the synthesized `__postConstruct`); dropped as part of the owner's drop chain. Two distinct owners receive distinct instances. The natural fit for "this dependency belongs to me" patterns: a connection a service owns, a per-aggregate cache, an embedded helper whose lifetime should never outlive its container.
+- **`ALLOCATE_CALL_SCOPE`** — one instance per call activation, shared across the entire transitive call graph of one method invocation. Created on first inject within the call, dropped when the activation's drop chain runs (i.e., at the method's return or throw). The natural fit for "this single operation needs its own context" patterns: a transaction handle, a per-request audit trail, an in-progress message-builder. Implemented via the existing implicit function-body scope (R5-A').
+- **`ALLOCATE_TRANSIENT`** — a fresh instance at every injection site, every time the site is read. Owned by the receiver and dropped via the normal drop chain when the receiver goes out of scope. No caching at all.
+
+Because the lifespan declaration lives at the `@Inject` site, the same component class can fill different roles in different consumers. A single `Logger` component might be `@Inject(allocate = ALLOCATE_SINGLETON)` in one service (sharing the process-wide logger) and `@Inject(allocate = ALLOCATE_OWNER_SCOPE)` in another (a fresh logger per instance with its own configuration). The component declaration carries no lifespan opinion; only the consumer does.
+
+```cajeta
+@Component public class RequestContext { ... }
+
+@Component public class Handler {
+    // One RequestContext lives as long as this Handler instance does.
+    @Inject(allocate = ALLOCATE_OWNER_SCOPE) RequestContext ctx;
+}
+
+@Component public class Pipeline {
+    // A fresh RequestContext per @Inject read.
+    @Inject(allocate = ALLOCATE_TRANSIENT) RequestContext makeCtx;
+}
 ```
 
 `@Repository` is a sibling annotation. Same parameters, same DI behavior — but the name signals "writes to / reads from a system of record" (the data-access layer). Cajeta doesn't add Spring's persistence-exception-translation behavior at this layer; the differentiation is documentary plus future hook (e.g., later we can attach transaction defaults or repository-specific lint to `@Repository` without touching `@Component`).
@@ -277,7 +294,10 @@ The compiler scans all source for `@Component` classes, builds a dependency grap
 
 ### Generated bootstrap
 
-For `ALLOCATE_SINGLETON` components, the compiler synthesizes module-level lazy singletons:
+For each `@Component`, the compiler synthesizes two helpers:
+
+- `get_X()` — used by `@Inject(allocate = ALLOCATE_SINGLETON)` sites. Module-level lazy singleton; one shared instance, constructed on first call.
+- `make_X()` — used by `@Inject(allocate = ALLOCATE_OWNER_SCOPE | ALLOCATE_CALL_SCOPE | ALLOCATE_TRANSIENT)` sites. Returns a fresh instance; caller owns it. The site's allocate mode controls when it's dropped, not how it's constructed.
 
 ```cajeta
 // Compiler-generated for @Component class Database:
@@ -285,35 +305,33 @@ static Database __singleton_Database = null;
 static Database get_Database() {
     if (__singleton_Database == null) {
         __singleton_Database = new Database();
+        __singleton_Database.__postConstruct();
     }
     return __singleton_Database;
 }
+static Database make_Database() {
+    Database d = new Database();
+    d.__postConstruct();
+    return d;          // caller owns it
+}
 
+// Compiler-generated for @Component class UserService:
+//   @Inject Database db;                                  // default → ALLOCATE_SINGLETON
+//   @Inject(allocate = ALLOCATE_OWNER_SCOPE) Logger log;
 static UserService __singleton_UserService = null;
 static UserService get_UserService() {
     if (__singleton_UserService == null) {
         UserService u = new UserService();
-        u.db = get_Database();
-        u.log = get_Logger();
-        u.__postConstruct();   // synthesized; calls @PostConstruct if present
+        u.db = get_Database();        // singleton site
+        u.log = make_Logger();        // owner-scope site — tied to u's lifespan
+        u.__postConstruct();
         __singleton_UserService = u;
     }
     return __singleton_UserService;
 }
 ```
 
-For `ALLOCATE_TRANSIENT` components, no singleton storage. Each injection site emits a fresh constructor call:
-
-```cajeta
-// Compiler-generated for @Component(allocate = ALLOCATE_TRANSIENT) class RequestContext:
-static RequestContext make_RequestContext() {
-    RequestContext r = new RequestContext();
-    r.__postConstruct();
-    return r;          // caller owns it; drops at the receiver's scope end
-}
-```
-
-`@Inject` field reads become `get_X()` (singleton) or `make_X()` (transient) calls. Field assignments run inside the receiver's compiler-synthesized `__postConstruct`, after allocation, before any user-defined `@PostConstruct` method. Constructor-parameter `@Inject` resolves at the construction site of the receiver: the calling code (whether user-written `new` or the generated `get_X` / `make_X` body for an upstream component) passes the resolved instance directly through the constructor call — no intermediate field, no post-construct write needed. Setter methods are not valid injection sites — see the Rejected list above.
+`@Inject` field reads route to `get_X()` or `make_X()` based on the site's `allocate` mode. Field assignments run inside the receiver's compiler-synthesized `__postConstruct`, after allocation, before any user-defined `@PostConstruct` method. Constructor-parameter `@Inject` resolves at the construction site of the receiver: the calling code (whether user-written `new` or the generated `get_X` / `make_X` body for an upstream component) passes the resolved instance directly through the constructor call — no intermediate field, no post-construct write needed. Setter methods are not valid injection sites — see the Rejected list above.
 
 ### Qualifying an injection
 
@@ -327,6 +345,14 @@ When more than one `@Component` of the same type or interface is registered, the
 ```
 
 The match is by component name. Compile error if no `@Component` with the requested name is registered, or if multiple components match a name-less `@Inject` and none of the candidates is unqualified.
+
+`name` and `allocate` compose freely on a single `@Inject`:
+
+```cajeta
+@Component public class Service {
+    @Inject(name = "disk", allocate = ALLOCATE_OWNER_SCOPE) Persister p;
+}
+```
 
 ### Selecting a context (`@Profile`)
 
