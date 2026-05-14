@@ -1029,8 +1029,14 @@ namespace cajeta {
             // A4: fire @After advice before scope-exit + drops, on
             // the same ordering rule the fall-through return uses in
             // Method::generateCode (advice runs in body lifetime,
-            // cleanup runs after).
-            if (auto m = module->getCurrentMethod()) m->emitAfterAdvice(module);
+            // cleanup runs after). A6: @AfterReturning fires next
+            // on the normal-return path; then pop any try frame
+            // the enclosing method's @AfterThrowing wrapping set up.
+            if (auto m = module->getCurrentMethod()) {
+                m->emitAfterAdvice(module);
+                m->emitAfterReturningAdvice(module);
+                m->emitAfterThrowingTryPop(module);
+            }
             // Pop any open scope frames before the value-less return so
             // every pending child task is joined first.
             emitScopeExitToWatermark(module);
@@ -1200,8 +1206,14 @@ namespace cajeta {
         }
         // A4: fire @After advice before scope-exit + drops on the
         // typed-return path too. Same ordering rule as the void-
-        // return / fall-through paths.
-        if (auto m = module->getCurrentMethod()) m->emitAfterAdvice(module);
+        // return / fall-through paths. A6: @AfterReturning fires
+        // next on the normal-return path; then pop any
+        // @AfterThrowing try frame the enclosing method set up.
+        if (auto m = module->getCurrentMethod()) {
+            m->emitAfterAdvice(module);
+            m->emitAfterReturningAdvice(module);
+            m->emitAfterThrowingTryPop(module);
+        }
         // Pop any open scope frames before the typed return — joins every
         // pending child task (function-body scope + any explicit scope
         // the return is lexically inside of).

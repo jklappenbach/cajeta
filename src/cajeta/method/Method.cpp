@@ -131,6 +131,117 @@ namespace cajeta {
         }
     }
 
+    void Method::emitAfterReturningAdvice(CajetaModulePtr module) {
+        for (auto& m : matchingAdvice) {
+            if (m.kind != AdviceKind::AfterReturning) continue;
+            emitOneAdviceCall(module, m.adviceMethod);
+        }
+    }
+
+    void Method::emitAfterThrowingAdvice(CajetaModulePtr module) {
+        for (auto& m : matchingAdvice) {
+            if (m.kind != AdviceKind::AfterThrowing) continue;
+            emitOneAdviceCall(module, m.adviceMethod);
+        }
+    }
+
+    bool Method::hasAfterThrowingAdvice() const {
+        for (auto& m : matchingAdvice) {
+            if (m.kind == AdviceKind::AfterThrowing) return true;
+        }
+        return false;
+    }
+
+    // Shared try-frame allocation. Mirrors TryStatement::generateCode's
+    // shape: __cajeta_exc_push pushes a 512-byte frame onto the per-
+    // thread exception chain, setjmp records the recovery point. On
+    // normal flow setjmp returns 0 and we branch to tryBB. On a
+    // longjmp (from __cajeta_throw inside the body), setjmp returns
+    // non-zero and we branch to catchBB. The 512-byte size matches
+    // what TryStatement uses and is documented at the runtime's
+    // __cajeta_exc_frame_size() (cajeta_runtime.c).
+    Method::TryFrameInfo Method::emitAfterThrowingTryEntry(
+            CajetaModulePtr module, llvm::IRBuilder<>& wb,
+            llvm::Function* parentFn) {
+        auto& ctx = *module->getLlvmContext();
+        auto* lmod = module->getLlvmModule();
+        llvm::Type* i8Ty = llvm::Type::getInt8Ty(ctx);
+        llvm::Type* i32Ty = llvm::Type::getInt32Ty(ctx);
+        llvm::PointerType* ptrTy = llvm::PointerType::get(ctx, 0);
+
+        TryFrameInfo info{nullptr, nullptr, nullptr};
+        llvm::Function* push = module->getRuntimeFunction("__cajeta_exc_push");
+        if (!push) return info;
+        llvm::Function* setjmpFn = lmod->getFunction("setjmp");
+        if (!setjmpFn) {
+            llvm::FunctionType* sjt = llvm::FunctionType::get(
+                i32Ty, {ptrTy}, false);
+            setjmpFn = llvm::Function::Create(
+                sjt, llvm::Function::ExternalLinkage, "setjmp", lmod);
+            setjmpFn->addFnAttr(llvm::Attribute::ReturnsTwice);
+        }
+
+        constexpr unsigned frameBytes = 512;
+        llvm::IRBuilder<> entryBuilder(
+            &parentFn->getEntryBlock(),
+            parentFn->getEntryBlock().begin());
+        info.framePtr = entryBuilder.CreateAlloca(
+            llvm::ArrayType::get(i8Ty, frameBytes));
+
+        info.tryBB = llvm::BasicBlock::Create(ctx, "afterthrow_try", parentFn);
+        info.catchBB = llvm::BasicBlock::Create(ctx, "afterthrow_catch", parentFn);
+
+        wb.CreateCall(push, {info.framePtr});
+        llvm::Value* sjResult = wb.CreateCall(setjmpFn, {info.framePtr});
+        llvm::Value* threw = wb.CreateICmpNE(sjResult,
+            llvm::ConstantInt::get(i32Ty, 0));
+        wb.CreateCondBr(threw, info.catchBB, info.tryBB);
+        wb.SetInsertPoint(info.tryBB);
+        return info;
+    }
+
+    void Method::emitAfterThrowingTryPop(CajetaModulePtr module) {
+        if (!hasAfterThrowingAdvice()) return;
+        // Only valid when we're inside the BODY-level try frame.
+        // @Around-wrapped methods emit the body into
+        // llvmOriginalFunction without a frame at that level — the
+        // wrapper owns the try frame and pops it in
+        // emitAroundWrapper. Without this guard, ReturnStatement
+        // inside the original body would emit a stray exc_pop that
+        // unbalances the chain.
+        if (llvmOriginalFunction) return;
+        llvm::Function* pop = module->getRuntimeFunction("__cajeta_exc_pop");
+        if (!pop) return;
+        module->getBuilder()->CreateCall(pop, {});
+    }
+
+    void Method::emitAfterThrowingCatchArm(
+            CajetaModulePtr module, llvm::IRBuilder<>& wb) {
+        llvm::Function* getThrown = module->getRuntimeFunction("__cajeta_get_thrown");
+        llvm::Function* pop = module->getRuntimeFunction("__cajeta_exc_pop");
+        llvm::Function* throwFn = module->getRuntimeFunction("__cajeta_throw");
+        if (!getThrown || !pop || !throwFn) return;
+
+        llvm::Value* thrownVal = wb.CreateCall(getThrown, {}, "afterthrow_value");
+        wb.CreateCall(pop, {});
+        // Swap the module-level builder so the emitAdvice helpers
+        // target the catch arm. Restore afterward — the caller may
+        // expect its own builder state.
+        auto* prevBuilder = builder;
+        auto* modPrev = module->getBuilder();
+        builder = &wb;
+        module->setBuilder(&wb);
+        emitAfterThrowingAdvice(module);
+        // @After fires on every exit path per the spec; the throw
+        // path is one of them. (A4 deferred this; A6 closes the
+        // gap as part of landing the try/catch wrapping.)
+        emitAfterAdvice(module);
+        builder = prevBuilder;
+        module->setBuilder(modPrev);
+        wb.CreateCall(throwFn, {thrownVal});
+        wb.CreateUnreachable();
+    }
+
     void Method::createLocalVariable(CajetaModulePtr module, FieldPtr field) {
         ScopePtr scope = module->getScopeStack().peek();
         if (scope->getField(field->getName()) != nullptr) {
@@ -363,11 +474,26 @@ namespace cajeta {
             builder->CreateCall(enterFn, {});
         }
 
-        // A4: fire @Before advice right after scope_enter, before the
-        // body emits. Sequenced this way so the advice sees the same
-        // scope frame the body will populate — useful for advice
-        // bodies that might themselves spawn (when A4 relaxes to
-        // allow that). Empty matchingAdvice → no-op.
+        // A6: when @AfterThrowing matches (and this method isn't
+        // @Around-wrapped — the wrapper sets up its own try/catch
+        // around the advice call), wrap the body in a try frame.
+        // setjmp here records the recovery point; the body executes
+        // inside tryBB; on throw, control lands in catchBB which
+        // fires @AfterThrowing + @After then re-raises.
+        TryFrameInfo bodyTryFrame{nullptr, nullptr, nullptr};
+        bool wrapBodyForAfterThrowing =
+            !hasAroundWrapper && hasAfterThrowingAdvice();
+        if (wrapBodyForAfterThrowing) {
+            bodyTryFrame = emitAfterThrowingTryEntry(
+                module, *builder, bodyFn);
+        }
+
+        // A4: fire @Before advice right after scope_enter (and
+        // inside the try frame if any), before the body emits.
+        // Sequenced this way so the advice sees the same scope
+        // frame the body will populate — useful for advice bodies
+        // that might themselves spawn (when A4 relaxes to allow
+        // that). Empty matchingAdvice → no-op.
         //
         // A5: when an @Around wrapper exists, @Before fires in the
         // WRAPPER (around the call to advice), not in the extracted
@@ -393,7 +519,20 @@ namespace cajeta {
             // owned by the function. With an @Around wrapper,
             // @After fires in the wrapper instead (same composition
             // rule the @Before hook follows above).
-            if (!hasAroundWrapper) emitAfterAdvice(module);
+            // A6: @AfterReturning fires on the same hook (normal-
+            // return only). Ordered after @After to match the
+            // spec's "finally arm" semantics for @After.
+            if (!hasAroundWrapper) {
+                emitAfterAdvice(module);
+                emitAfterReturningAdvice(module);
+                // A6: pop the try frame so the caller's exception
+                // chain is restored. The throw path pops inside
+                // emitAfterThrowingCatchArm; this is the normal-
+                // return counterpart.
+                if (wrapBodyForAfterThrowing) {
+                    emitAfterThrowingTryPop(module);
+                }
+            }
             // Pop every scope frame this method pushed (function-body + any
             // explicit scopes still open at fall-through) by walking down
             // to the captured watermark. ScopeStatement-managed frames
@@ -427,6 +566,15 @@ namespace cajeta {
         destroyScope();
         if (pushedClass) {
             module->getStructureStack().pop_back();
+        }
+
+        // A6 catch-arm emission for the body-level try frame, if
+        // we set one up. Reached only via longjmp from a throw
+        // inside the body; fires @AfterThrowing + @After advice
+        // and re-raises so the throw still propagates outward.
+        if (wrapBodyForAfterThrowing && bodyTryFrame.catchBB) {
+            llvm::IRBuilder<> catchBuilder(bodyTryFrame.catchBB);
+            emitAfterThrowingCatchArm(module, catchBuilder);
         }
 
         // A5 wrapper emission. If the user body went into
@@ -575,12 +723,33 @@ namespace cajeta {
         module->setBuilder(wb);
         emitBeforeAdvice(module);
 
+        // A6: when @AfterThrowing matched, wrap the @Around advice
+        // call in a try frame at the wrapper level. The body's
+        // generateCode path is unwrapped for @Around methods —
+        // the wrapper is the right place to install the frame
+        // because it covers the @Around advice + any work the
+        // advice does (including calls to proceed). A throw
+        // anywhere under that lands in the wrapper's catchBB.
+        TryFrameInfo wrapTryFrame{nullptr, nullptr, nullptr};
+        if (hasAfterThrowingAdvice()) {
+            wrapTryFrame = emitAfterThrowingTryEntry(
+                module, *wb, llvmFunction);
+        }
+
         llvm::CallInst* result = wb->CreateCall(
             aroundAdvice->getLlvmFunctionType(),
             aroundAdvice->getLlvmFunction(),
             callArgs);
 
+        // Pop the try frame on the normal-return path. The catch
+        // arm (below) pops its own.
+        if (wrapTryFrame.catchBB) {
+            llvm::Function* pop = module->getRuntimeFunction("__cajeta_exc_pop");
+            if (pop) wb->CreateCall(pop, {});
+        }
+
         emitAfterAdvice(module);
+        emitAfterReturningAdvice(module);
 
         builder = prevBuilder;
         module->setBuilder(prevBuilder);
@@ -590,6 +759,12 @@ namespace cajeta {
             wb->CreateRetVoid();
         } else {
             wb->CreateRet(result);
+        }
+
+        // A6 catch arm for the wrapper-level try frame.
+        if (wrapTryFrame.catchBB) {
+            llvm::IRBuilder<> catchBuilder(wrapTryFrame.catchBB);
+            emitAfterThrowingCatchArm(module, catchBuilder);
         }
     }
 

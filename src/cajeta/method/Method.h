@@ -202,6 +202,46 @@ namespace cajeta {
         // silently skipped — A12's diagnostics pass surfaces them.
         void emitBeforeAdvice(CajetaModulePtr module);
         void emitAfterAdvice(CajetaModulePtr module);
+        // A6: @AfterReturning fires only on the normal-return path
+        // (same hook points as @After). @AfterThrowing fires only
+        // from inside the catch arm of the try/catch wrapping (see
+        // hasAfterThrowingAdvice). v1 advice keeps the no-arg shape
+        // — the return-value / Throwable parameters from the spec
+        // are deferred to a follow-up.
+        void emitAfterReturningAdvice(CajetaModulePtr module);
+        void emitAfterThrowingAdvice(CajetaModulePtr module);
+        bool hasAfterThrowingAdvice() const;
+
+        // A6 try-frame setup. Push an exception frame + setjmp at
+        // the current insert point; return the catch basic block
+        // (still empty — the caller emits the catch arm separately
+        // after the body finishes). The frame's storage is alloca'd
+        // in the function entry block to keep setjmp/alloca
+        // interaction sane. Reused by Method::generateCode (for
+        // non-@Around methods) and emitAroundWrapper (for the
+        // wrapper path). The body emits into the "try" block this
+        // function leaves the builder pointing at.
+        struct TryFrameInfo {
+            llvm::BasicBlock* tryBB;
+            llvm::BasicBlock* catchBB;
+            llvm::Value* framePtr;
+        };
+        TryFrameInfo emitAfterThrowingTryEntry(
+            CajetaModulePtr module, llvm::IRBuilder<>& wb,
+            llvm::Function* parentFn);
+        // Pops the try frame at a normal-exit point. Called from
+        // every normal-return site (Method::generateCode fall-
+        // through, ReturnStatement explicit returns) when the
+        // enclosing method has @AfterThrowing matched. No-op
+        // otherwise — call sites guard with hasAfterThrowingAdvice.
+        void emitAfterThrowingTryPop(CajetaModulePtr module);
+        // Catch arm body: get the thrown value, pop the frame,
+        // fire @AfterThrowing + @After advice, re-raise. The
+        // builder is left at an unreachable terminator. Caller
+        // should set the insert point to the catchBB before
+        // calling this.
+        void emitAfterThrowingCatchArm(
+            CajetaModulePtr module, llvm::IRBuilder<>& wb);
 
         // A5: emit the @Around wrapper. Called from generateCode
         // after the original body has been emitted into
