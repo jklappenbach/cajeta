@@ -32,6 +32,15 @@ namespace cajeta {
                 }
             }
         }
+        // Intentionally do NOT resolve class-name identifiers here.
+        // MethodReferenceExpression's resolver distinguishes a value-of-
+        // class-type receiver (`myInstance::next` → BOUND) from a
+        // class-name receiver (`Counter::next` → UNBOUND) using whether
+        // resolvedType is non-null on the LHS expression. Pinning a class
+        // type on the LHS for bare-class-name lookups would collapse the
+        // distinction and break that discriminator. Static-method calls
+        // (`Bar.work()`) handle the class-name fallback in
+        // MethodCallExpression directly.
     }
 
     llvm::Value* IdentifierExpression::generateCode(CajetaModulePtr module) {

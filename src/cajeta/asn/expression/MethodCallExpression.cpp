@@ -621,12 +621,37 @@ namespace cajeta {
             }
             // l-value -> r-value coercion. Local-variable receivers are AllocaInsts;
             // ArrayIndex receivers are slot addresses where the slot holds a `ptr` to
-            // the referenced object (CajetaArray inner header or class instance).
-            if (auto* a = llvm::dyn_cast<llvm::AllocaInst>(receiver)) {
-                receiver = builder->CreateLoad(a->getAllocatedType(), a);
-            } else if (dynamic_pointer_cast<ArrayIndexExpression>(exprChild)) {
-                receiver = builder->CreateLoad(
-                    llvm::PointerType::get(*module->getLlvmContext(), 0), receiver);
+            // the referenced object (CajetaArray inner header or class instance). A
+            // class-name receiver (`Bar.staticMethod()`) carries a null IR value with
+            // a null resolvedType (IdentifierExpression intentionally doesn't pin
+            // class names — see Identifier.cpp). Skip the coercion when the IR
+            // value is null; the class-name fallback below sets receiverType so the
+            // static-dispatch path picks up targetClass.
+            if (receiver) {
+                if (auto* a = llvm::dyn_cast<llvm::AllocaInst>(receiver)) {
+                    receiver = builder->CreateLoad(a->getAllocatedType(), a);
+                } else if (dynamic_pointer_cast<ArrayIndexExpression>(exprChild)) {
+                    receiver = builder->CreateLoad(
+                        llvm::PointerType::get(*module->getLlvmContext(), 0), receiver);
+                }
+            }
+            // Class-name receiver fallback. `Bar.staticMethod()` parses as
+            // expression-DOT-methodCall; the LHS IdentifierExpression
+            // doesn't resolve to a local or field, so generateCode returns
+            // null and resolveTypes leaves resolvedType null. Look up the
+            // bare identifier in canonicalMap (which is keyed by both
+            // short typeName and full canonical) — a match means the
+            // receiver named a class and we can route through static
+            // dispatch.
+            if (!receiver && !receiverType) {
+                if (auto idExpr = dynamic_pointer_cast<IdentifierExpression>(exprChild)) {
+                    auto& cmap = CajetaType::getCanonicalMap();
+                    auto it = cmap.find(idExpr->getTextValue());
+                    if (it != cmap.end()
+                            && dynamic_pointer_cast<CajetaClass>(it->second)) {
+                        receiverType = it->second;
+                    }
+                }
             }
         }
 

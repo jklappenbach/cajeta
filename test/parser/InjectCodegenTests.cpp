@@ -5,22 +5,15 @@
 // methods that lazy-create + cache a singleton, alloc + ctor +
 // field-inject + return. These tests exercise the full path
 // through the JIT: source declares @Components, a user-written
-// static method on the component itself calls __cajeta_inject()
-// bare (no receiver), and the test asserts on the return value.
-//
-// The receiver-eval for class-identifiers on the call side
-// (`Bar.__cajeta_inject()` from inside class D) hits a pre-
-// existing limitation in MethodCallExpression — a known gap
-// also observed in A4 tests when the work() target lived in a
-// different class. The bare-call form (`__cajeta_inject()` from
-// inside the same component) goes through the structure-stack
-// resolution path which works correctly today.
+// static method calls __cajeta_inject() (bare or via the class
+// name now that cross-class static dispatch works), and the
+// test asserts on the return value.
 //
 // __cajeta_inject is named with the double-underscore prefix
 // (same convention as __cajeta_alloc / __cajeta_drop_*) to
-// flag it as compiler-synthesized. A future user-facing entry
-// (likely `Cajeta.inject_<T>()`) can land alongside cross-class
-// static-call support.
+// flag it as compiler-synthesized. The cross-class form
+// (`Bar.__cajeta_inject()` from a non-component caller) is
+// validated separately in CrossClassStaticCallTests.
 //
 
 #include "gtest/gtest.h"
