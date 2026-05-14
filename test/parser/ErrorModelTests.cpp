@@ -66,7 +66,7 @@ TEST(ErrorModelTests, stdlibThrowableInstantiable) {
         "package test;\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        Throwable t = new Throwable(0);\n"
+        "        Throwable t = new Throwable(\"oops\");\n"
         "        return 42;\n"
         "    }\n"
         "}\n";
@@ -310,6 +310,27 @@ TEST(ErrorModelTests, subclassWritesOwnFieldAfterInherited) {
         "        int32 a = c.a;\n"
         "        int32 b = c.b;\n"
         "        return a + b;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 42);
+}
+
+// #211 regression: writing to a String-typed field of a regular class used
+// to crash codegen because the variable-size-field check (intended for
+// CajetaStruct zero-copy types) fired indiscriminately on any class with
+// a String field. The fix gates the check on dynamic_pointer_cast<
+// CajetaStruct> to limit it to view-struct fields.
+TEST(ErrorModelTests, classWithStringField) {
+    auto src =
+        "package test;\n"
+        "public class Holder {\n"
+        "    public String message;\n"
+        "    public Holder(String s) { this.message = s; }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Holder h = new Holder(\"hi\");\n"
+        "        return 42;\n"
         "    }\n"
         "}\n";
     EXPECT_EQ(runI32(src), 42);

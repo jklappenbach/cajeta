@@ -356,7 +356,17 @@ namespace cajeta {
                                     // Reject writes to variable-size struct
                                     // fields — they can't be resized in place.
                                     // See WireFormats.md § Mutation rules.
-                                    if (CajetaStruct::isVariableSize(it->second)) {
+                                    // ONLY applies to CajetaStruct (POD zero-
+                                    // copy) types — a String-typed field on a
+                                    // regular CajetaClass instance is a normal
+                                    // owned-pointer field, freely writable.
+                                    // CajetaStruct's String fields, by
+                                    // contrast, live inline in a wire-format
+                                    // buffer with a length prefix.
+                                    bool isViewStruct =
+                                        dynamic_pointer_cast<CajetaStruct>(klass) != nullptr;
+                                    if (isViewStruct
+                                            && CajetaStruct::isVariableSize(it->second)) {
                                         char buf[256];
                                         snprintf(buf, sizeof(buf),
                                             "cannot reassign variable-size struct field '%s'; "

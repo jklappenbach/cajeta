@@ -65,26 +65,26 @@ namespace cajeta {
     static const char* const STDLIB_SOURCE = R"CAJETA(
 package cajeta.lang;
 public class Throwable {
-    public pointer message;
-    public Throwable(pointer message) {
+    public String message;
+    public Throwable(String message) {
         this.message = message;
     }
 }
 public class Exception extends Throwable {
     public Throwable cause;
-    public Exception(pointer message) {
+    public Exception(String message) {
         this.message = message;
         this.cause = 0;
     }
 }
 public class RecoverableException extends Exception {
-    public RecoverableException(pointer message) {
+    public RecoverableException(String message) {
         this.message = message;
         this.cause = 0;
     }
 }
 public class UnrecoverableException extends Exception {
-    public UnrecoverableException(pointer message) {
+    public UnrecoverableException(String message) {
         this.message = message;
         this.cause = 0;
     }
