@@ -171,8 +171,44 @@ namespace cajeta {
         // indices 1..N even though `StructureProperty::getOrder()` is
         // 0-based. `CajetaStruct` overrides this to return the order
         // verbatim (no vtable slot).
+        // Count how many fields this class inherits from all ancestors. The
+        // subclass's LLVM struct layout is { vtable, <inherited>, <own> },
+        // so inherited fields occupy [1 .. 1+inherited_count) and own
+        // fields start at [1+inherited_count, ...). Recursive — each
+        // parent contributes its own inherited fields plus its own.
+        int countInheritedFields() const {
+            int count = 0;
+            for (auto& parent : superClasses) {
+                count += parent->countInheritedFields()
+                       + (int) parent->propertyList.size();
+            }
+            return count;
+        }
+
+        // Map a StructureProperty to its slot index in the LLVM struct.
+        // If `prop` is owned by this class, the index is
+        // countInheritedFields() + prop.order + 1 (the +1 skips the
+        // vtable slot). If `prop` is inherited from an ancestor, walk
+        // the parent chain to find its owning class and apply the same
+        // formula relative to that class. Since the subclass struct
+        // prepends parent fields in parent order, inherited fields land
+        // at the SAME LLVM index in any subclass struct as they do in
+        // their owning parent's struct — which makes
+        // parent->getFieldLlvmIndex(prop) the correct index for a GEP
+        // into a subclass instance too.
         virtual int getFieldLlvmIndex(const StructurePropertyPtr& prop) const {
-            return prop->getOrder() + 1;
+            int i = 0;
+            for (auto& p : propertyList) {
+                if (p.get() == prop.get()) {
+                    return countInheritedFields() + i + 1;
+                }
+                i++;
+            }
+            for (auto& parent : superClasses) {
+                int idx = parent->getFieldLlvmIndex(prop);
+                if (idx >= 0) return idx;
+            }
+            return -1;
         }
 
         void setVirtualTableType(llvm::StructType* llvmVirtualTableType) {

@@ -77,8 +77,24 @@ public class Throwable {
     }
 }
 public class RecoverableException extends Throwable {
+    public RecoverableException(pointer message) {
+        this.message = message;
+        this.cause = 0;
+    }
+    public RecoverableException(pointer message, pointer cause) {
+        this.message = message;
+        this.cause = cause;
+    }
 }
 public class UnrecoverableException extends Throwable {
+    public UnrecoverableException(pointer message) {
+        this.message = message;
+        this.cause = 0;
+    }
+    public UnrecoverableException(pointer message, pointer cause) {
+        this.message = message;
+        this.cause = cause;
+    }
 }
 )CAJETA";
 

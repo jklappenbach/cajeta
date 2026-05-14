@@ -256,6 +256,65 @@ TEST(ErrorModelTests, throwCapturesTraceAndCatchSucceeds) {
     EXPECT_EQ(runI32(src), 51);
 }
 
+// #208: subclass constructor writes inherited field. The fix gave the
+// subclass struct the same layout as the parent for inherited fields
+// (parent fields prepended), so a GEP for an inherited field works
+// on the subclass instance the same way it does on the parent. Before
+// the fix, the subclass struct only carried its own fields after the
+// vtable, so writing this.message (where message is defined on the
+// parent) wrote past the end of the subclass's storage.
+TEST(ErrorModelTests, subclassWritesInheritedField) {
+    auto src =
+        "package test;\n"
+        "public class Parent {\n"
+        "    public int32 marker;\n"
+        "    public Parent() { this.marker = 0; }\n"
+        "}\n"
+        "public class Child extends Parent {\n"
+        "    public Child(int32 value) {\n"
+        "        this.marker = value;\n"
+        "    }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Child c = new Child(73);\n"
+        "        int32 r = c.marker;\n"
+        "        return r;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 73);
+}
+
+// #208 follow-up: subclass own field still works after the layout
+// change. Subclass struct now has [vtable, parent_fields, own_fields];
+// own fields land at indices after the inherited ones, and
+// getFieldLlvmIndex's countInheritedFields() + order + 1 formula
+// produces the right slot.
+TEST(ErrorModelTests, subclassWritesOwnFieldAfterInherited) {
+    auto src =
+        "package test;\n"
+        "public class Parent {\n"
+        "    public int32 a;\n"
+        "    public Parent() { this.a = 0; }\n"
+        "}\n"
+        "public class Child extends Parent {\n"
+        "    public int32 b;\n"
+        "    public Child(int32 a, int32 b) {\n"
+        "        this.a = a;\n"
+        "        this.b = b;\n"
+        "    }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Child c = new Child(40, 2);\n"
+        "        int32 a = c.a;\n"
+        "        int32 b = c.b;\n"
+        "        return a + b;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 42);
+}
+
 // Constructor throws clause — same grammar, separate parse path.
 TEST(ErrorModelTests, constructorThrowsParses) {
     auto src =

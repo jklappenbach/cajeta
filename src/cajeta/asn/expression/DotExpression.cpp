@@ -7,6 +7,7 @@
 #include "../../type/CajetaClass.h"
 #include "../../type/CajetaStruct.h"
 #include "../../error/Exception.h"
+#include <functional>
 #include "Identifier.h"
 
 #include <climits>
@@ -48,10 +49,22 @@ namespace cajeta {
         if (!klass) {
             return;
         }
-        auto it = klass->getProperties().find(identifier);
-        if (it != klass->getProperties().end()) {
-            resolvedType = it->second->getType();
-        }
+        // Walk the inheritance chain — inherited fields live on ancestors'
+        // properties maps, not on the subclass's own. Mirrors the lookup
+        // in generateCode below.
+        std::function<bool(const CajetaClassPtr&)> findProp =
+            [&](const CajetaClassPtr& cls) -> bool {
+                auto pit = cls->getProperties().find(identifier);
+                if (pit != cls->getProperties().end()) {
+                    resolvedType = pit->second->getType();
+                    return true;
+                }
+                for (auto& parent : cls->getSuperClasses()) {
+                    if (findProp(parent)) return true;
+                }
+                return false;
+            };
+        findProp(klass);
     }
 
     // `a.b` lowers to a struct GEP. lhs may be the alloca holding the struct (stack-local)
@@ -177,9 +190,38 @@ namespace cajeta {
         if (!klass) {
             return nullptr;
         }
-        auto it = klass->getProperties().find(identifier);
-        if (it == klass->getProperties().end()) {
+        // Walk the inheritance chain to find the property. The subclass's
+        // own `properties` map only contains its own declared fields;
+        // inherited fields live on the parent's map. Property indices
+        // returned by getFieldLlvmIndex are valid for any descendant's
+        // LLVM struct because subclass structs prepend parent fields at
+        // the parent's indices.
+        StructurePropertyPtr lookedUpProperty;
+        std::function<bool(const CajetaClassPtr&)> findProp =
+            [&](const CajetaClassPtr& cls) -> bool {
+                auto pit = cls->getProperties().find(identifier);
+                if (pit != cls->getProperties().end()) {
+                    lookedUpProperty = pit->second;
+                    return true;
+                }
+                for (auto& parent : cls->getSuperClasses()) {
+                    if (findProp(parent)) return true;
+                }
+                return false;
+            };
+        if (!findProp(klass)) {
             return nullptr;
+        }
+        // Synthesize an iterator-like pair so the existing `it->second`
+        // code below continues to work unchanged. The found property is
+        // what we'd have gotten from a direct map lookup.
+        std::pair<string, StructurePropertyPtr> foundEntry(identifier, lookedUpProperty);
+        auto it = klass->getProperties().find(identifier);
+        bool inheritedFromAncestor = (it == klass->getProperties().end());
+        if (inheritedFromAncestor) {
+            // Use the synthesized entry so downstream code treats the
+            // inherited property the same as an own one. (it->second is
+            // referenced below; emulate it with the looked-up property.)
         }
         // If the receiver is an l-value (an alloca that holds a pointer to the
         // object), load through it first. The struct/class instance lives at
@@ -188,7 +230,7 @@ namespace cajeta {
         if (auto* a = llvm::dyn_cast<llvm::AllocaInst>(base)) {
             base = module->getBuilder()->CreateLoad(a->getAllocatedType(), a);
         }
-        StructurePropertyPtr property = it->second;
+        StructurePropertyPtr property = lookedUpProperty;
         // Set our own resolvedType so callers can load-through with the right
         // element type. The pre-pass resolveTypes can't always determine this
         // (locals aren't in scope until their declarations run at codegen).

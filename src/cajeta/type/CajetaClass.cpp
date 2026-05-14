@@ -190,21 +190,6 @@ namespace cajeta {
         typeFlags = STRUCT_FLAG | USER_DEFINED_FLAG;
         module->getScopeStack().add(make_shared<Scope>(toCanonical(), module));
 
-        // Class instance layout: { ptr vtable, <user fields...> }. The vtable
-        // pointer at LLVM index 0 is set by `new ClassName()` (see
-        // ClassCreatorRest) to point at the class's #VTable global. User
-        // properties get LLVM indices 1..N — `getFieldLlvmIndex` exposes
-        // the +1 shift to consumers (DotExpression and friends).
-        vector<llvm::Type*> llvmMembers;
-        llvmMembers.push_back(llvm::PointerType::get(*module->getLlvmContext(), 0));
-        // Iterate propertyList (insertion-ordered) so LLVM indices are
-        // deterministic; the `properties` map's iteration order is by
-        // string key and would scramble field offsets.
-        for (auto& property : propertyList) {
-            llvmMembers.push_back(property->getType()->getLlvmType());
-        }
-        ((llvm::StructType*) llvmType)->setBody(llvm::ArrayRef<llvm::Type*>(llvmMembers), false);
-
         // Register self in the module's structure map BEFORE method/vtable
         // generation so any later-declared subclass that lists us in its
         // `extends` clause can find us by name. Also: resolve our own
@@ -213,6 +198,40 @@ namespace cajeta {
         module->getStructures()[canonical] = static_pointer_cast<CajetaClass>(shared_from_this());
         resolveSuperClasses();
         resolveImplementedInterfaces();
+
+        // Class instance layout: { ptr vtable, <inherited fields…>, <own
+        // fields…> }. The vtable pointer at LLVM index 0 is set by `new
+        // ClassName()` (see ClassCreatorRest). Inherited fields land
+        // immediately after the vtable at the SAME indices they occupy
+        // in their declaring parent's struct — so a GEP for an inherited
+        // field works on a subclass instance the same way it works on
+        // the parent (single-inheritance C++-style layout). Subclass own
+        // fields come after the inherited block; getFieldLlvmIndex's
+        // `countInheritedFields() + order + 1` formula accounts for the
+        // shift.
+        vector<llvm::Type*> llvmMembers;
+        llvmMembers.push_back(llvm::PointerType::get(*module->getLlvmContext(), 0));
+        // Recursively prepend each ancestor's own fields, deepest-first.
+        // The lambda walks superClasses to flatten the inheritance chain
+        // into the order [grandparent fields, parent fields, this class's
+        // own fields]. Iterate parents in declared order so multi-
+        // inheritance (if it ever lands) produces a deterministic layout.
+        std::function<void(CajetaClassPtr)> appendInherited;
+        appendInherited = [&](CajetaClassPtr cls) {
+            for (auto& parent : cls->superClasses) {
+                appendInherited(parent);
+                for (auto& p : parent->propertyList) {
+                    llvmMembers.push_back(p->getType()->getLlvmType());
+                }
+            }
+        };
+        appendInherited(static_pointer_cast<CajetaClass>(shared_from_this()));
+        // Then this class's own fields, in declaration order for
+        // deterministic indices.
+        for (auto& property : propertyList) {
+            llvmMembers.push_back(property->getType()->getLlvmType());
+        }
+        ((llvm::StructType*) llvmType)->setBody(llvm::ArrayRef<llvm::Type*>(llvmMembers), false);
 
         ensureDefaultConstructor();
 
