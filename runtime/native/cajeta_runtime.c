@@ -11,6 +11,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <pthread.h>
+#include <execinfo.h>
 
 typedef void (*cajeta_ctor_fn)(void* self);
 
@@ -908,10 +909,75 @@ void __cajeta_exc_pop(void) {
     }
 }
 
+// --- R5/Error-model #203: stack-trace capture ---------------------------
+//
+// At every throw site, walk the native call stack via backtrace() and
+// store the return-address array in a side table keyed by the throwable
+// pointer. Auto-printed on uncaught throws (when the runtime aborts) and
+// retrievable via __cajeta_get_trace / __cajeta_print_trace for user-
+// invoked introspection. Side-table avoids the Throwable struct-layout
+// problem (subclasses don't carry parent fields in their memory image
+// today — see follow-up #208 — so we can't reliably stash the trace as
+// a field on Throwable). When that's fixed, this can migrate to a real
+// field with no API change at the Cajeta level.
+
+struct cajeta_trace_entry {
+    void* throwable;
+    void** frames;
+    int frame_count;
+    struct cajeta_trace_entry* next;
+};
+
+static struct cajeta_trace_entry* __cajeta_trace_table = NULL;
+static pthread_mutex_t __cajeta_trace_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+#define CAJETA_TRACE_MAX_FRAMES 64
+
+static void __cajeta_trace_record(void* throwable) {
+    if (!throwable) return;
+    void* buf[CAJETA_TRACE_MAX_FRAMES];
+    int n = backtrace(buf, CAJETA_TRACE_MAX_FRAMES);
+    if (n <= 0) return;
+    void** frames = (void**) malloc((size_t) n * sizeof(void*));
+    if (!frames) return;
+    memcpy(frames, buf, (size_t) n * sizeof(void*));
+    struct cajeta_trace_entry* e =
+        (struct cajeta_trace_entry*) malloc(sizeof(*e));
+    if (!e) { free(frames); return; }
+    e->throwable = throwable;
+    e->frames = frames;
+    e->frame_count = n;
+    pthread_mutex_lock(&__cajeta_trace_mutex);
+    e->next = __cajeta_trace_table;
+    __cajeta_trace_table = e;
+    pthread_mutex_unlock(&__cajeta_trace_mutex);
+}
+
+// Print the trace for `throwable` to fd (1=stdout, 2=stderr). No-op if
+// no trace was recorded for this throwable.
+void __cajeta_print_trace(void* throwable, int32_t fd) {
+    pthread_mutex_lock(&__cajeta_trace_mutex);
+    struct cajeta_trace_entry* e = __cajeta_trace_table;
+    while (e && e->throwable != throwable) e = e->next;
+    if (!e) { pthread_mutex_unlock(&__cajeta_trace_mutex); return; }
+    char** syms = backtrace_symbols(e->frames, e->frame_count);
+    if (syms) {
+        FILE* out = (fd == 1) ? stdout : stderr;
+        for (int i = 0; i < e->frame_count; i++) {
+            fprintf(out, "  %s\n", syms[i]);
+        }
+        fflush(out);
+        free(syms);
+    }
+    pthread_mutex_unlock(&__cajeta_trace_mutex);
+}
+
 __attribute__((noreturn))
 void __cajeta_throw(void* value) {
+    __cajeta_trace_record(value);
     if (!__cajeta_exc_top) {
         fprintf(stderr, "cajeta: uncaught exception (value=%p)\n", value);
+        __cajeta_print_trace(value, 2);
         abort();
     }
     // Unwind drops between the current top and the catching frame's watermark.
