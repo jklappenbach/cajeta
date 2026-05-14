@@ -14,8 +14,14 @@
 - **Aspect-on-aspect.** Advising the advice. Spring forbids it; we follow.
 - **`@DeclareParents`-style introductions** (adding new interfaces to existing classes via aspects). Use ordinary inheritance.
 - **Prototype / request / session scopes.** Singleton is the default and only scope in v1. Other scopes add later if needed.
-- **Field injection** as primary style — supported but constructor injection is recommended in docs.
-- **Reflection / runtime registry**. The DI "container" is generated code with direct calls.
+- **Constructor / setter injection.** Spring's docs prefer constructor injection so tests can `new SomeService(mockA, mockB)` directly — Spring's `ApplicationContext` is heavy enough at runtime that side-stepping it is the test idiom. Cajeta has no such context: DI is compile-time, no runtime registry, no lazy context to load. Tests substitute by recompiling with `@TestComponent` (or a `@Profile("test")` wiring), not by hand-constructing instances. Field injection is therefore the only injection vector; `@Inject` on a constructor parameter is a compile error.
+- **Reflection / runtime registry.** The DI "container" is generated code with direct calls.
+
+---
+
+## Package
+
+All framework-provided annotations and types in this document live in `package cajeta.aot;` — `@Aspect`, `@Before`, `@After`, `@Around`, `@AfterReturning`, `@AfterThrowing`, `@Order`, `@Original`, `@NoAdvice`, `@Component`, `@Repository`, `@Inject`, `@Profile`, `@TestComponent`, `@PostConstruct`, `@PreDestroy`, and the `JoinPoint` class. Same convention `cajeta.error` uses for the exception hierarchy — keeps the AoP/DI surface discoverable as a group and encourages reuse over re-rolling. Code samples below omit the package qualifier for brevity. User-defined marker annotations (`@Audited`, `@Logged`, `@Transactional`, ...) live wherever the user declares them — they're inputs to the framework, not part of it.
 
 ---
 
@@ -223,17 +229,13 @@ A class annotated `@Component` becomes part of the compile-time DI graph. The an
 }
 
 @Component public class UserService {
-    @Inject Database db;        // field injection
+    @Inject Database db;
     @Inject Logger log;
 }
 
 @Component public class ReportGenerator {
-    private UserService users;
-    private Database db;
-    public ReportGenerator(@Inject UserService users, @Inject Database db) {   // constructor injection
-        this.users = users;
-        this.db = db;
-    }
+    @Inject UserService users;
+    @Inject Database db;
 }
 
 // Multiple impls of an interface — disambiguate by name.
@@ -300,7 +302,7 @@ static RequestContext make_RequestContext() {
 }
 ```
 
-`@Inject` field reads become `get_X()` (singleton) or `make_X()` (transient) calls; constructor parameters with `@Inject` are passed the call at the construction site of the receiver.
+`@Inject` field reads become `get_X()` (singleton) or `make_X()` (transient) calls. The receiver's compiler-synthesized `__postConstruct` runs the assignments after the receiver itself is allocated, before any user-defined `@PostConstruct` method. Constructor parameters and setter methods are not valid injection sites — `@Inject` is field-only.
 
 ### Qualifying an injection
 
@@ -314,6 +316,47 @@ When more than one `@Component` of the same type or interface is registered, the
 ```
 
 The match is by component name. Compile error if no `@Component` with the requested name is registered, or if multiple components match a name-less `@Inject` and none of the candidates is unqualified.
+
+### Selecting a context (`@Profile`)
+
+`@Component` and `@Repository` can carry one or more `@Profile("name")` annotations. A profile is a label for a deployment context — `"prod"`, `"staging"`, `"ci"`, `"test"`, or any name the developer chooses.
+
+- **One active profile per compilation.** Set via the compiler CLI flag `--profile=<name>`; defaults to `"prod"`. Tests compiled through the test driver default to `"test"`.
+- **Profile filtering.** During graph resolution, a `@Component` annotated with one or more profiles is included only if at least one matches the active profile. A `@Component` with no `@Profile` annotation is profile-neutral and always included.
+- **Resolution rules carry over.** The `name = "..."` qualifier and ambiguity-error rules from the previous section apply across the profile-filtered set. A component filtered out for the active profile is invisible to name resolution — exactly as if it weren't declared.
+- **Missing implementation.** If filtering leaves no candidate for a required type, the compiler emits the standard "needs X, but no @Component implements X" error and names the active profile.
+
+```cajeta
+@Component @Profile("prod")    public class PostgresDatabase implements Database { ... }
+@Component @Profile("staging") public class StagingDatabase  implements Database { ... }
+@Component @Profile("test")    public class InMemoryDatabase implements Database { ... }
+```
+
+A component shared across contexts carries multiple profile annotations:
+
+```cajeta
+@Component @Profile("prod") @Profile("staging") public class S3Storage     implements Storage { ... }
+@Component @Profile("test")                     public class TempDirStorage implements Storage { ... }
+```
+
+Profile names are arbitrary strings; there's no fixed enumeration. The convention is `"prod"` as the default and `"test"` as the test driver's default, but a project that needs `"ci"` or `"e2e"` or `"localdev"` simply uses those labels.
+
+### Test-target overrides (`@TestComponent`)
+
+The profile mechanism covers multi-environment wiring, but most test code only needs one targeted swap: "for these tests, replace this one component with a fake; leave the rest alone." `@TestComponent` is the per-class shorthand for that case.
+
+```cajeta
+@TestComponent public class FakeClock implements Clock { ... }
+```
+
+Rules:
+
+- **Test-only.** `@TestComponent` classes are visible to test compilations only. Non-test builds ignore them entirely — no compiled code, no entry in the dependency graph.
+- **Overrides by type.** A `@TestComponent` replaces any profile-neutral or profile-matched `@Component` of the same declared type at test compile time. The overridden component is invisible to the test graph; only the `@TestComponent` remains.
+- **Name qualifier still applies.** Multiple `@TestComponent`s of the same declared type still need disambiguation via `name = "..."` at the consumer site, on the same rules as regular `@Component`s.
+- **Doesn't combine with `@Profile`.** `@TestComponent` is implicitly test-scoped; carrying both is a compile error (use one or the other). A test build that needs a richer wiring than per-class overrides allows still uses full `@Component @Profile("test")` declarations.
+
+`@TestComponent` is the right tool when a test wants to mock or stub a single dependency without owning the entire `"test"` profile's wiring. When a test suite needs a coherent alternate graph (an in-memory replacement of half the stack), use `@Profile("test")` on full `@Component` declarations.
 
 ### Lifecycle
 
@@ -389,16 +432,12 @@ public @interface Transactional {}
 }
 ```
 
-### Example 3: DI with constructor injection
+### Example 3: DI with field injection + lifecycle
 
 ```cajeta
 @Component public class OrderService {
-    private Database db;
-    private MetricsClient metrics;
-    public OrderService(@Inject Database db, @Inject MetricsClient metrics) {
-        this.db = db;
-        this.metrics = metrics;
-    }
+    @Inject Database db;
+    @Inject MetricsClient metrics;
     @PostConstruct void init() { metrics.gauge("order_service_initialized", 1); }
 }
 ```
@@ -452,7 +491,7 @@ This is a substantial feature surface. A reasonable rollout:
 - **A6.** `@AfterReturning` + `@AfterThrowing`. Both compose with the existing try/catch codegen.
 - **A7.** Multiple-aspect chaining via `@Order`.
 - **A8.** `@Component` registration + DI graph build.
-- **A9.** `@Inject` codegen: field reads → `get_X()`; constructor params → `get_X()` at instantiation.
+- **A9.** `@Inject` codegen: field reads in `__postConstruct` resolve to `get_X()` (singleton) or `make_X()` (transient) calls. Reject `@Inject` on constructor parameters and setter methods with a clear "field-only injection" error.
 - **A10.** Name qualifier support: `@Component(name = "...")` registration + `@Inject(name = "...")` consumer-side selection.
 - **A11.** `@PostConstruct` / `@PreDestroy` lifecycle hooks.
 - **A12.** Composition tests: aspect-on-aspect-class, DI'd aspects, inheritance + advice, fiber-spanning advice.
