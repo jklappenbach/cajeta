@@ -36,6 +36,15 @@ namespace cajeta {
         static map<string, MethodPtr> methods;
         static map<string, CajetaModulePtr> strutureToModule;
         static map<string, CajetaModulePtr> moduleVariables;
+        // Classes annotated `@Aspect`, in declaration order across all
+        // modules in the compile. AspectModel.md § Implementation
+        // roadmap A2: pointcut matching (A3) walks this list to find
+        // candidate aspects for each user method. Process-global so an
+        // aspect declared in one module can advise methods declared in
+        // another — matches the "compiler scans all source" model the
+        // doc's DI graph already uses. Cleared on each fresh Compiler
+        // by resetGlobals.
+        static vector<CajetaClassPtr> aspectClasses;
 
         // The module currently being walked (parse pass or template-
         // instantiation walk). Used as a fallback by call sites that don't
@@ -213,6 +222,17 @@ namespace cajeta {
 
         static map<string, CajetaModulePtr>& getStructureToModule() {
             return strutureToModule;
+        }
+
+        // Aspect registry — see the aspectClasses field. Callers that
+        // walk it (A3 pointcut matching) take the list as it stands at
+        // codegen time; aspect declarations all land during the parse
+        // phase, before any per-method codegen runs.
+        static void registerAspectClass(CajetaClassPtr klass) {
+            aspectClasses.push_back(std::move(klass));
+        }
+        static const vector<CajetaClassPtr>& getAspectClasses() {
+            return aspectClasses;
         }
 
         // Active-module accessor. Returns the module currently being walked,

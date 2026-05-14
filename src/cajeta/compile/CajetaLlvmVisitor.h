@@ -184,6 +184,22 @@ namespace cajeta {
             }
 
             pModule->getStructureStack().push_back(structure);
+            // Aspect registration (AspectModel.md § A2). A class
+            // annotated `@Aspect` joins the process-global aspect
+            // registry, which A3's pointcut-matching pass walks at
+            // codegen time to find advice candidates for each method.
+            // The annotation itself was captured in lockstep above —
+            // findAnnotation reads from the same AnnotationInstance
+            // list. Templates aren't registered as aspects: an
+            // `@Aspect class Box<T>` shape doesn't have a concrete
+            // class to advise from until instantiation, and v1's
+            // grammar tests have no shape that exercises that. When
+            // an instantiation lands it'll register itself the same
+            // way through this visit (template body re-parse runs
+            // visitClassDeclaration on the instantiated class).
+            if (structure->findAnnotation("Aspect")) {
+                CajetaModule::registerAspectClass(structure);
+            }
             // Pre-register the class in canonicalMap (under both canonical
             // and short typeName) so self-references inside the body
             // resolve — e.g. `Vector operator+ (Vector other)` inside class

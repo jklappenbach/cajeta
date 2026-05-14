@@ -22,6 +22,7 @@ namespace cajeta {
     map<string, CajetaModulePtr> CajetaModule::strutureToModule;
     CajetaModulePtr CajetaModule::activeModule;
     map<string, CajetaModulePtr> CajetaModule::moduleVariables;
+    vector<CajetaClassPtr> CajetaModule::aspectClasses;
 
     CajetaModule::CajetaModule(llvm::LLVMContext* llvmContext,
         string sourcePath,
@@ -131,6 +132,7 @@ namespace cajeta {
         strutureToModule.clear();
         moduleVariables.clear();
         methods.clear();
+        aspectClasses.clear();
         Method::getArchive().clear();
     }
 
