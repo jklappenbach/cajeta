@@ -1,212 +1,234 @@
 # Cajeta Error Model — Specification v1
 
-> ⚠️ **Open question — syntax for fallible types.** This doc currently uses `T!E` (success type left, error type right). That ordering is invented; the only existing language that uses `!` as the error-union operator is **Zig**, which puts the error set on the **left** (`E!T`, optionally `!T` with an inferred error set). Before any implementation lands, choose one of:
->
-> 1. **`E!T`** — match Zig precedent. Tighter alignment with prior art, supports `!T` shorthand later, asymmetry signals "the bang is the failure flag."
-> 2. **`T!E`** (this doc's current form) — reads left-to-right with Java/Cajeta's "return type first" convention. Idiosyncratic.
-> 3. **`Result<T, E>`** — drop the `!` operator entirely. Familiar from Rust/F#/etc., more verbose at signature sites.
->
-> If `E!T` or `Result<T, E>` is chosen, the examples and rationale section below need a search-and-replace pass. The semantic content (`try`, `catch`, `panic`, scope integration) doesn't change.
-
-
 ## Goals
 
-- **Errors are values, not out-of-band control flow.** No setjmp/longjmp, no DWARF unwind tables for recoverable errors. An `Err(e)` flows back through the call stack as a return value — type-checked, pattern-matchable, transformable like any other value.
-- **The signature carries one bit, not a list.** A function either can fail or it cannot. The shape of the error (`E`) is also part of the signature, but the caller's contract is "this can fail" — there's no Java-style `throws X, Y, Z` cascade that ossifies every refactor.
-- **Forced acknowledgment at every call site.** Calling a fallible function without a `try` is a compile error. No silent propagation; the reader can always see where errors can flow out of an expression.
-- **Two tiers.** Recoverable errors are typed values (`T!E`). Programmer bugs use `panic` — unrecoverable, no `try`/`catch`, terminates the fiber or program.
-- **Composes with what already exists.** Owned values drop on the `Err` path the same way they do on the `Ok` path (drop chain handles both). Async tasks carry their result — `Ok` or `Err` — across the wait queue. Structured concurrency joins propagate the first `Err` up to the scope.
+- **Familiar syntax.** Java/C++-style `try` / `catch` / `throw`. No new operators, no `T!E` value types, no `?` propagation sugar. The mental model carries over from every mainstream OO language.
+- **Two tiers, expressed through the type hierarchy.** `UnrecoverableException` is the alarm — the program (or task) shouldn't continue. `RecoverableException` is normal failure that the caller may want to handle.
+- **Signatures document, the compiler doesn't enforce.** A method's `throws` clause lists the `RecoverableException` subtypes that can flow out. The compiler emits a **warning** (not an error) when a call site doesn't acknowledge — never the Java-style enforced cascade that drives teams to wrap everything as `RuntimeException`.
+- **Default catch at every entry point.** Both `main()` and each spawned fiber are wrapped in a runtime-level catch. Recoverable exceptions are logged + the entry returns; unrecoverable exceptions log and abort the process. Programs don't crash silently.
+- **Composes with what exists.** Drop chain unwinds owned locals on the throw path the same way it does on the return path. Async tasks carry an exception slot; `await` re-raises into the awaiter's frame.
 
 ## Non-goals (v1)
 
-- Exception hierarchies / inheritance-based catch (`catch (IOException)`). We catch by pattern, not by type-tree.
-- Implicit conversion between error types (`Into`/`From` traits). User writes the conversion explicitly.
-- Resumable exceptions / effect handlers. Algebraic effects are interesting but academic for v1.
-- Multiple error types in one signature (`int32 ! (IoError | ParseError)`). One error type per fn; users compose via sealed sums when they need a union.
-- Carry stack traces in `Err` values automatically. Add later if there's demand; today the `E` carries whatever the producer puts in it.
+- Compiler-enforced `throws` cascades (Java's checked-exception failure mode).
+- Resumable exceptions / effect handlers.
+- `Result<T, E>`-style value-typed errors with a propagation operator. Reserved as a future opt-in stdlib pattern for hot paths if measurements demand it; not part of v1's surface.
+- Multiple-error-type unions in a signature beyond what subtyping already provides.
+- Stack trace capture on every `Recoverable` throw (cost — see Stack traces below).
 
-## Operator: `!` for fallible types
+## The hierarchy
 
-A function's return type can be written `T!E`, meaning "produces a `T` on success or an `E` on failure":
+```
+Throwable                           (abstract root)
+├── UnrecoverableException          (the alarm — terminates the process)
+│   ├── AssertionError
+│   ├── OutOfMemoryError
+│   ├── StackOverflowError
+│   └── ...
+└── RecoverableException            (caller may handle)
+    ├── IOException
+    │   ├── FileNotFoundException
+    │   └── TimeoutException
+    ├── ParseException
+    └── ...
+```
+
+- `Throwable` is the common base — anything that can be thrown.
+- `UnrecoverableException` is for conditions the program has no plan for: assertion failures, exhausted memory, contract violations, unreachable branches. Throwing one terminates the process (after the drop chain unwinds).
+- `RecoverableException` is for failures the caller is expected to deal with: I/O errors, parse failures, timeouts, business-rule violations.
+- User-defined exceptions extend one or the other. The choice is a design decision the author makes when defining the exception type.
+
+## Signatures
+
+A method that can throw a `RecoverableException` subtype declares it in its `throws` clause:
 
 ```cajeta
-int32 ! IoError readPort(int32 port) {
+public int32 readPort(int32 port) throws IOException {
     if (port < 0) {
-        return Err(IoError.invalidPort(port));
+        throw new IOException("invalid port: " + port);
     }
-    return 42;  // implicit Ok wrap
+    return 42;
 }
 ```
 
-- `T!E` is a sum type internally — conceptually `enum { Ok(T), Err(E) }` — but its surface ergonomics are tighter than writing the sum out by hand.
-- A bare `return value` in a `T!E` function implicitly wraps the value as `Ok`.
-- An explicit `Err(e)` constructs the failing variant.
-- Functions that cannot fail are written as plain `T` (no `!`).
+`UnrecoverableException` subtypes do **not** appear in `throws` clauses — any method can throw them. They're not part of the contract; they're the alarm.
 
-## `try` at call sites
-
-Every call to a fallible function MUST be preceded by `try`:
+Multiple recoverable types are comma-separated:
 
 ```cajeta
-int32 ! IoError useReadPort() {
-    int32 v = try readPort(8080);  // propagates Err to caller if readPort fails
-    return v + 1;
+public Response fetch(Url u) throws IOException, TimeoutException, AuthException {
+    ...
 }
 ```
 
-Without the `try`, the call is a compile error: `readPort` returns `int32!IoError`, and assigning that to `int32` without acknowledging the failure path won't type-check.
+A method declared `throws RecoverableException` (the root) can throw any recoverable type — useful for orchestrators that wrap many error sources.
 
-`try expr` has three forms:
+## Call-site behavior
 
-1. **Bare `try expr`** — propagate. The current function must itself return a compatible `T!E`. If `expr` evaluates to `Err(e)`, the current function returns `Err(e)` immediately; otherwise the expression's value is the unwrapped `T`.
-2. **`try expr catch pattern -> handler`** — single-arm catch. If `expr` is `Err(e)` and the pattern matches, the handler's value is used; otherwise the `Err` propagates (same rule as bare `try`).
-3. **`try expr catch { pat1 -> ...; pat2 -> ...; }`** — multi-arm catch. Pattern-match on the error value. A `default ->` arm catches anything; without it, unmatched errors propagate.
-
-The catch arms are ordinary Cajeta patterns — destructuring, variable binding, guards. No type-hierarchy dispatch.
-
-## `panic` for unrecoverable bugs
-
-`panic(message)` aborts the current fiber (or the whole program if called from the main thread before the executor takes over) with a diagnostic message. There is no `try`-style mechanism to catch a panic — by design.
+A call to a `throws`-declaring method does **not** require a surrounding `try`. The compiler emits a **warning** when no enclosing handler catches the declared exception type:
 
 ```cajeta
-int32 div(int32 a, int32 b) {
-    if (b == 0) {
-        panic("div() called with b == 0; caller failed precondition");
+public Response getOrLog(Url u) {
+    Response r = fetch(u);   // warning: uncaught throws IOException, TimeoutException, AuthException
+    return r;
+}
+```
+
+The warning is suppressible with an annotation:
+
+```cajeta
+@SuppressUncaughtThrow
+public Response getOrLog(Url u) {
+    return fetch(u);  // silent: caller accepts that these propagate
+}
+```
+
+Why warning rather than error: Java's hard requirement to handle or declare every checked exception is the failure mode the community revolted against. The throws clause's value is **documentation**; making it a soft signal preserves that value without the refactor cascade. Wrapping every fallible call in `try { ... } catch { ... }` was never the point.
+
+## try / catch / finally
+
+Catch by type. Multiple `catch` arms dispatch on the most-specific matching type:
+
+```cajeta
+public int32 robustRead() {
+    try {
+        return readPort(8080);
+    } catch (FileNotFoundException e) {
+        log.warn("no such port: " + e.message);
+        return -1;
+    } catch (IOException e) {
+        log.error("io: " + e.message);
+        return -2;
+    } catch (TimeoutException e) {
+        return readPort(8080);  // one retry
     }
-    return a / b;
 }
 ```
 
-Use panic for:
-- Assertion-style invariant violations.
-- Unreachable branches (an impossible enum tag, an interpreter dispatching on a known-good opcode that wasn't one).
-- Resource exhaustion the program has no plan for (failed mmap of the executor's task arena).
+No `finally` keyword — the drop chain already handles "run this cleanup on any exit path." If you need explicit cleanup, declare the resource as an owned local; its drop fires on every exit (return, throw, fall-through).
 
-Do NOT use panic for:
-- Bad user input → return `Err(...)`.
-- I/O failure → return `Err(...)`.
-- Anything the caller could reasonably want to handle differently.
-
-The runtime distinguishes panics from normal returns via a process-wide signal (currently `abort()` after writing the diagnostic). When the fiber executor is involved, a panic terminates the current fiber cleanly — the fiber's drop chain still runs so owned resources release — but the panic propagates up the scope as a fatal condition (the surrounding `scope { }` terminates with its own panic rather than re-throwing as a recoverable error).
-
-## Catch patterns
-
-Multi-arm catch:
+A bare `catch` (no type) catches everything:
 
 ```cajeta
-int32 robustRead() {
-    int32 v = try readPort(8080) catch {
-        IoError.Timeout(d) -> 0;          // bind the timeout duration, ignore it
-        IoError.Closed -> -1;
-        IoError.InvalidPort(p) -> {       // multi-statement arm
-            log.warn("invalid port: " + p);
-            -2
-        };
-        default -> {                       // catch-all; bind the error
-            log.error("unexpected: " + it);
-            -99
-        };
-    };
-    return v;
+try {
+    riskyOp();
+} catch (e) {
+    log.error("something failed: " + e);
 }
 ```
 
-The `default ->` arm matches any error. Without it, the unmatched error propagates (same rule as bare `try`).
+Catches by-type are dispatched in source order; the first arm whose type is a supertype (or exact match) of the thrown exception wins. Same rules as Java.
 
-`it` inside an arm is the bound error value; named bindings work too (`default e ->`).
-
-## Interaction with async / scope / drop chain
-
-### Async
-
-An `async` function can be fallible:
+## Throwing
 
 ```cajeta
-async int32 ! HttpError fetchScore(Url u) {
-    Response r = try await http.get(u);
+throw new IOException("disk full");
+```
+
+`throw` is a statement (like `return`). The exception value must be an instance of `Throwable` (or subtype). The drop chain unwinds owned locals on the way up.
+
+## Unrecoverable exceptions and the system default catch
+
+Unrecoverable exceptions are the alarm. The runtime wraps `main()` (and each spawned fiber's entry trampoline) in a default catch:
+
+- If `main()` exits via an uncaught `RecoverableException`: the runtime logs the type + message + (if available) stack trace to stdout, then returns a nonzero exit code. The process exits cleanly.
+- If `main()` exits via an uncaught `UnrecoverableException`: same logging, but the process aborts (nonzero exit). The "uncaught alarm" is itself a fatal condition.
+- If a fiber's body throws `UnrecoverableException`: log + abort the entire process. Per-fiber recovery from unrecoverables isn't safe — the runtime invariant has been violated.
+- If a fiber's body throws `RecoverableException`: store the exception on the `Task<T>`'s exception slot, signal done. The awaiter re-raises into its own frame when it does `await task`.
+
+User code can absolutely `catch (UnrecoverableException e)` if it really wants to — the language doesn't forbid it. The convention is "don't, unless you have an extremely good reason" (a top-level supervisor in a long-running daemon may legitimately want to log-and-keep-going for some kinds of unrecoverable). The system catch is the safety net for everyone who doesn't.
+
+## Stack traces
+
+Stack-trace capture is **opt-out for `UnrecoverableException`** (default: captured at construction) and **opt-in for `RecoverableException`** (default: not captured).
+
+Rationale: unrecoverables are rare and worth debugging — paying the stack-walk cost is fine. Recoverables can be thrown in hot loops (parser fast-fail, retry idioms) where the per-throw cost matters. Devs who want the trace on a specific recoverable can request it at construction:
+
+```cajeta
+throw new IOException("disk full", captureTrace: true);
+```
+
+If no trace was captured, the printed exception just shows type + message + cause chain.
+
+## Async / fiber integration
+
+### Task<T> carries an exception slot
+
+`CajetaTask`'s layout extends from `{ T value, i32 done }` to `{ T value, i32 done, Throwable* exception }`. The trampoline that runs a fiber wraps the inner call in a try:
+
+- Normal completion → store value, set done.
+- `RecoverableException` thrown by the body → store the exception, set done. (Don't propagate to the carrier OS thread.)
+- `UnrecoverableException` thrown by the body → log + abort the process.
+
+`await` checks the exception slot on resume; if non-null, re-raises into the awaiter's frame.
+
+```cajeta
+async int32 fetchScore(Url u) throws IOException {
+    Response r = http.get(u);  // can throw IOException
     return r.statusCode;
 }
+
+public int32 caller() throws IOException {
+    return await spawn fetchScore(u);  // IOException re-raised here at await
+}
 ```
 
-`await` on a `Task<T!E>` produces a `T!E` value at the suspension point — same semantics as any other fallible return. `try await spawn fetchScore(u)` is the canonical pattern: `await` unwraps the Task, `try` unwraps the `!E` (propagating if `Err`).
+The `throws` clause on the async method documents what the awaiter might see; the warning behavior at call sites still applies.
 
-### Scope
+### scope and exception escalation (R5-D)
 
-When the scope joins child tasks, each task's result is inspected. If any child completed with `Err`, the scope:
+When a scope joins child tasks:
 
-1. Cancels every other child still running (R5-C territory).
-2. Waits for those cancellations to unwind.
-3. Returns the first `Err` encountered up to the scope's own caller.
+1. Walk every registered child; await each.
+2. If any child threw, collect the exception(s).
+3. Cancel the remaining children (R5-C) and wait for them to unwind.
+4. Re-raise the first exception into the scope's containing frame.
 
-The user-visible shape: a `scope { ... }` block inside a `T!E` function can itself produce an `Err`; the surrounding function uses `try` (or doesn't, if it pre-catches inside the scope).
+Cancellation surfaces as a `CancellationException extends RecoverableException` raised at the next `await` resume.
 
-### Drop chain
+### Drop chain on the throw path
 
-`Err` doesn't change anything for drops. An owned local that exists at the point of an `Err` return drops the same way it would on an `Ok` return. The drop chain is path-agnostic — it just tracks owned bindings and fires them in LIFO order on scope exit, whether the exit carries `Ok`, `Err`, or `panic`.
+Owned locals drop on the throw path the same as on the return path. The existing drop-chain machinery (with the watermark) handles both; no exception-specific bookkeeping needed.
 
 ## Examples
 
-### Example 1: bare propagation
+### Example 1: catch and recover
 
 ```cajeta
-int32 ! ParseError parseTwoNumbers(String s) {
-    int32 first = try parseInt(s.before(','));
-    int32 second = try parseInt(s.after(','));
-    return first + second;
-}
-```
-
-If either `parseInt` returns `Err`, the function returns the same `Err` and the caller sees it.
-
-### Example 2: single-arm catch with default value
-
-```cajeta
-int32 readWithDefault(int32 port) {
-    return try readPort(port) catch _ -> 0;
-}
-```
-
-`_` is the wildcard pattern. Any `Err` becomes `0`. The function's return type is `int32` (not fallible) because the catch handles every case.
-
-### Example 3: pattern-matched recovery
-
-```cajeta
-int32 ! NetworkError robustFetch(Url u) {
-    return try fetchScore(u) catch {
-        HttpError.Timeout(_) -> try fetchScore(u);   // retry once
-        HttpError.NotFound -> 404;                    // sentinel value
-        HttpError.Unauthorized -> {
-            try refreshAuth();
-            try fetchScore(u)
-        };
-        default e -> return Err(NetworkError.upstream(e));   // re-wrap and propagate
-    };
-}
-```
-
-Multi-arm catch dispatches on the error's structure; the function is itself fallible (returns `int32 ! NetworkError`) so re-wrap-and-propagate via explicit `return Err(...)` is fine. The catch arms can themselves contain `try`s (nested fallibility composes).
-
-### Example 4: async with structured concurrency
-
-```cajeta
-async int32 ! NetworkError aggregateScores(List<Url> urls) {
-    int32 total = 0;
-    scope {
-        for (Url u in urls) {
-            int32 partial = try await spawn fetchScore(u);   // any spawn's Err aborts scope
-            total = total + partial;
-        }
+public Config loadConfig(String path) {
+    try {
+        return Config.parse(File.readAll(path));   // throws IOException, ParseException
+    } catch (FileNotFoundException e) {
+        return Config.defaultsFor(path);            // file's optional
+    } catch (ParseException e) {
+        log.error("config malformed: " + e.message);
+        return Config.empty();
     }
-    return total;
+    // IOException (other than FileNotFound) is uncaught — warning at compile,
+    // system catch at main if it propagates that far.
 }
 ```
 
-If any spawned `fetchScore` produces `Err`, the `try` propagates: control leaves the loop, the `scope` cancels the remaining children, waits for their unwinds, then returns the `Err` to the caller. The `total` local's drop fires in the unwind — same as on a normal `Err` return.
-
-### Example 5: panic — bug, not error
+### Example 2: declare and propagate
 
 ```cajeta
-int32 vtableLookup(VTable* v, int64 hash) {
+public Response fetchOrAuth(Url u) throws IOException, AuthException {
+    Response r = http.get(u);   // throws IOException, TimeoutException
+    if (r.statusCode == 401) {
+        Token t = refreshAuth();   // throws AuthException
+        r = http.get(u, t);
+    }
+    return r;
+    // TimeoutException is uncaught but undeclared — compiler warning.
+    // Suppress with @SuppressUncaughtThrow, or add it to the throws clause,
+    // or wrap with try/catch.
+}
+```
+
+### Example 3: unrecoverable (alarm)
+
+```cajeta
+public int32 vtableLookup(VTable v, int64 hash) {
     int32 lo = 0;
     int32 hi = v.entries.size() - 1;
     while (lo <= hi) {
@@ -216,47 +238,85 @@ int32 vtableLookup(VTable* v, int64 hash) {
         if (mhash < hash) lo = mid + 1;
         else hi = mid - 1;
     }
-    panic("vtable hash not found — caller invoked a method not in this vtable");
+    throw new AssertionError("vtable hash not found — caller invoked a method not in this vtable");
 }
 ```
 
-The hash should always be present (vtable construction guarantees it); seeing a miss means a contract violation. Returning `Err` would force every call site to handle a case that should never happen.
+`AssertionError extends UnrecoverableException`. The caller doesn't catch; if hit, the process aborts with a stack trace.
 
-### Example 6: try in async + lock
+### Example 4: async + scope
 
 ```cajeta
-async int32 ! StorageError snapshot(Mutex<Db> db) {
-    MutexGuard<Db> g = await db.lock();   // not fallible — lock always succeeds
-    return try g.value.snapshotTo(buffer);  // snapshotTo can fail
+public async int32 aggregateScores(List<Url> urls) throws IOException {
+    int32 total = 0;
+    scope {
+        for (Url u in urls) {
+            total = total + await spawn fetchScore(u);   // fetchScore throws IOException
+        }
+    }
+    return total;
 }
 ```
 
-`g`'s drop releases the lock on either path (`Ok` or `Err` from `snapshotTo`). The `try` propagates the storage error to the caller without any explicit cleanup code.
+If any spawned `fetchScore` throws, the `await` re-raises into the surrounding frame. Control leaves the loop; `scope` cancels the remaining children, waits for their unwinds, then propagates the exception up to the caller of `aggregateScores`. `total` drops on the throw path the same as on a normal return.
+
+### Example 5: suppressing the warning
+
+```cajeta
+@SuppressUncaughtThrow
+public void crashOnPurpose() {
+    riskyOp();   // declared throws WeirdException; we want it to propagate
+}
+```
+
+Used when a method is intentionally a thin pass-through and the documenting-throws-clause noise isn't worth it.
+
+### Example 6: per-task isolation in a daemon
+
+```cajeta
+public void daemonLoop() {
+    while (true) {
+        Request r = queue.take();
+        try {
+            handle(r);   // recoverables don't kill the daemon
+        } catch (RecoverableException e) {
+            log.warn("request failed: " + e.message);
+            // continue to next request
+        }
+        // Unrecoverable propagates → system catch → abort. Daemon stops.
+        // That's correct: an Unrecoverable is the alarm.
+    }
+}
+```
 
 ## Rationale (why not the alternatives)
 
-- **C++-style unchecked exceptions** — silent ABI risk, the worst sin in a language that prides itself on visible control flow. Cajeta already has drop chains and a fiber model; grafting EH unwind tables on top would duplicate cleanup mechanisms for no benefit.
-- **Java-style checked exceptions** — the `throws X, Y, Z` cascade is a pre-fact-checked-by-the-community failure. Lambdas become awkward, refactors cascade noise into every signature in the call tree, teams give up and wrap as `RuntimeException`. The dichotomy "type-system says fallible" → checked, "type-system silent" → unchecked is wrong: it should always be in the type system, but as a single bit, not a list.
-- **Java-style unchecked / C#** — nicer ergonomics than checked, but the caller has to read documentation to know what to handle. Reliability suffers in libraries you don't own.
-- **Go-style `if err != nil`** — errors are values (right!), but the boilerplate is brutal and there's no compiler enforcement that you check the error. We can do better with a `try` operator.
-- **Rust `Result<T, E>` + `?`** — closest to what we're proposing, and has shaken out a lot of the ergonomics issues. We borrow the structure but tighten the surface syntax (the `T!E` form is more compact than `Result<T, E>`; `try` is more readable than the postfix `?` for users coming from other languages).
-- **Swift `throws` / `try`** — also close. Swift's choice to type-erase the error (you don't say *what* you throw, just *whether* you throw) saves signature ink at the cost of giving up pattern-matched catches. We keep the error type explicit so multi-arm catches work without runtime introspection.
-- **Algebraic effects** — academically appealing, but the ergonomics in production languages (Koka, Eff) aren't proven. Reserve for v2+ if `T!E` proves limiting.
+- **C++-style unchecked exceptions** — no signature documentation, silent ABI contracts, teams either ban exceptions entirely or wrap everything. We keep the documentation value without the enforcement penalty.
+- **Java's enforced checked exceptions** — the `throws` cascade is the well-documented failure mode. Refactors force noise into every caller; lambdas can't carry checked exceptions cleanly; teams wrap everything as `RuntimeException` to escape. We retain Java's documentation idea but drop the enforcement.
+- **C#/Java unchecked-only** — no compile-time signal at all. Readers learn what a method throws by reading the source or testing it. We add the throws clause back as documentation.
+- **Rust `Result<T, E>` + `?`** — value-typed errors are clean but force a different control-flow paradigm. They also have real cost (every call site has the `?` branch, every fallible function's result has the sum tag at the ABI level). For Cajeta, the syntactic familiarity of try/catch and the zero happy-path cost of the existing setjmp/longjmp infrastructure are stronger arguments. (We may add a stdlib `Result<T, E>` later for hot paths where exception unwinding is too expensive.)
+- **Zig `E!T`** — same critique as Rust, plus the operator-order debate we already went through.
+- **Swift `throws` (untyped) + `try`** — closer to what we want, but Swift's choice to type-erase the error sacrifices the documentation value. We keep the type list.
+- **Effect systems** — academic; not worth the cognitive cost in v1.
 
 ## Deferred / out of scope (v1)
 
-- **Error-type conversion sugar.** Today re-wrapping an inner error type into an outer one is explicit (`catch default e -> return Err(Outer.from(e))`). A `from` trait or a `try? as Outer` operator could shorten this; deferred until we see how painful the explicit form is in practice.
-- **Stack traces in `Err` values.** Requires runtime cooperation (frame walk on Err construction). Pay the cost only when measurements demand it.
-- **`finally` block.** The drop chain already handles "run this cleanup on any exit path"; an explicit `finally` would be redundant.
-- **Catching panics.** Deliberate non-feature. If a panic isn't fatal, it should be an `Err`.
+- **`Result<T, E>` stdlib pattern.** Optional value-typed error returns for hot paths where exception unwind cost matters. Just a sealed sum + helpers, no compiler magic. Add when measurements demand.
+- **`@Throws(infer)`** — compiler-inferred throws lists. Possible future ergonomic; today the dev writes the list.
+- **`when` guards in catch arms** (`catch (IOException e) when (e.code == EBUSY)`). Add if patterns demand it.
+- **Conditional `@SuppressUncaughtThrow(IOException, TimeoutException)`** — suppress only specific types. Today the annotation is all-or-nothing.
 
 ## Known gaps (v1 spec → implementation)
 
 This document is the spec. Implementation lands incrementally:
 
-- [ ] Parser: `T ! E` type form, `Err(...)` constructor, `try`/`catch` syntax, `panic` keyword.
-- [ ] AST: `FallibleType`, `TryExpression`, `CatchClause`, `PanicStatement`, `ErrExpression`.
-- [ ] Codegen: lower `T!E` to a sum-tagged struct; lower `try` to a check + propagate; lower `catch` to pattern-match dispatch.
-- [ ] Runtime: `__cajeta_panic(msg)` — abort with diagnostic. Integrates with the fiber executor so a panic from inside a fiber terminates the fiber cleanly.
-- [ ] Async integration: `Task<T!E>` carries the `Err` through the wait queue. await unwraps the `T!E` after the task completes.
-- [ ] Scope integration (R5-D): joining children inspects each task's `Err` slot and re-raises the first one up the scope.
+- [ ] Stdlib: declare `Throwable`, `UnrecoverableException`, `RecoverableException` + a small set of built-in subtypes (`AssertionError`, `OutOfMemoryError`, `IOException`, `TimeoutException`, `CancellationException`).
+- [ ] Parser: `throws` clause on method declarations (`methodDecl : ... THROWS qualifiedNameList`).
+- [ ] Type-checker: parse and store the throws list on `Method`.
+- [ ] Lint pass: for each call site, walk the called method's throws clause; emit warning if the type isn't caught by an enclosing try, declared on the enclosing method's throws clause, or suppressed via `@SuppressUncaughtThrow`.
+- [ ] Runtime: extend the existing setjmp/longjmp infrastructure to carry a `Throwable*` rather than a bare `int64`. (Already mostly there.)
+- [ ] Codegen: stack-trace capture path for `UnrecoverableException` (default) and opt-in for `RecoverableException`.
+- [ ] System default catch: wrap `main()` and each fiber trampoline in a try that distinguishes recoverable from unrecoverable.
+- [ ] Async integration: extend `CajetaTask` layout with an exception slot; trampoline stores recoverable in the slot, propagates unrecoverable; `await` re-raises.
+- [ ] R5-C (cancellation): `CancellationException` subtype + per-task cancel flag; await checks on resume.
+- [ ] R5-D (scope exception escalation): scope_exit on join inspects each child's exception slot; first thrower wins; cancel siblings; re-raise.

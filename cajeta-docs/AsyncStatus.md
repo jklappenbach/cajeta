@@ -8,7 +8,7 @@ Tracks the R1–R5 rollout of the async runtime described in `ThreadModel.md`. C
 
 **Phase R1–R5-A' complete.** Stackful fiber executor with cooperative yield, arg capture for spawn, async-aware locks, and structured-concurrency scope joins (both explicit `scope { }` and implicit function-body scope) are all in. R5-C and R5-D are blocked on the error model decision.
 
-**Next:** resolve the `T!E` vs `E!T` vs `Result<T, E>` syntax decision in `ErrorModel.md`, then begin implementing the error model. R5-C and R5-D ride on top of that work.
+**Next:** implement the error model per `ErrorModel.md` (exception-hierarchy design, settled). R5-C and R5-D land on top of the error-model work.
 
 ---
 
@@ -74,18 +74,18 @@ Tracks the R1–R5 rollout of the async runtime described in `ThreadModel.md`. C
 
 ## Blocked / pending
 
+### Error model
+**Spec settled** — `ErrorModel.md` uses an exception-hierarchy design (Unrecoverable/Recoverable, advisory `throws` clause, system default catch). Implementation work list is at the bottom of the doc. Roughly: stdlib `Throwable`/`UnrecoverableException`/`RecoverableException` → `throws` grammar → lint warning → runtime carries `Throwable*` not `int64` → system catch wrapping main + each fiber trampoline → `CajetaTask` exception slot + `await` re-raise.
+
 ### R5-C — Cancellation tokens
-**Blocked on error-model decision.** Per the doc, cancellation surfaces as a thrown `CancellationException` at the next `await`. Without the new error model (`T!E` or whatever syntax is chosen), there's no clean surface for cancellation to surface through. Implementation outline:
-- Each `Task` gets an atomic cancel flag (extend the runtime's fiber struct).
+Now unblocked by the error-model decision. Surfaces as a `CancellationException extends RecoverableException`. Implementation:
+- Each `Task` (or fiber) gets an atomic cancel flag.
 - `__cajeta_task_cancel(task)` sets the flag.
-- `__cajeta_task_wait` checks the flag on resume and routes the cancel up to the user via the error mechanism (whatever shape it ends up being).
+- `__cajeta_task_wait` checks on resume and (via the new exception machinery) re-raises `CancellationException` into the awaiter's frame.
 - Scope-level cancel iterates registered children and sets each one's flag.
 
 ### R5-D — Exception escalation through scope
-**Blocked on error-model decision.** A child task that returns `Err` causes the scope to cancel siblings, wait for unwinds, then re-raise the first `Err` up to the scope's caller. The "first Err" surfacing needs the same surface as R5-C's cancel.
-
-### Error model implementation
-**Blocked on syntax decision.** `ErrorModel.md` has an open question banner at the top — pick one of `E!T` / `T!E` / `Result<T, E>` before implementation starts. Once chosen, the rollout outline at the bottom of `ErrorModel.md` ("Known gaps") is the work list.
+Unblocked by the error-model decision. When `scope_exit` joins children, walk each child's `Task.exception` slot; if any child threw, cancel remaining siblings, wait for their unwinds, re-raise the first exception into the scope's containing frame.
 
 ---
 
