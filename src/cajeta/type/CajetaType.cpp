@@ -53,8 +53,18 @@ namespace cajeta {
     void CajetaType::init(llvm::LLVMContext& ctx) {
         NATIVE_TYPE_ENTRY("void", llvm::Type::getVoidTy(ctx), VOID_TYPE_ID);
         NATIVE_TYPE_ENTRY("boolean", llvm::Type::getInt1Ty(ctx), BOOLEAN_TYPE_ID);
+        // `char` and `uchar` are the historical 8-bit names; `int8` / `uint8`
+        // are the width-uniform names matching the rest of the int* family
+        // (and what the README documents). All four share the same LLVM
+        // type — pass shareLlvmType=false on the aliases so the reverse
+        // i8 -> name lookup keeps `char`/`uchar` canonical (avoids
+        // gratuitous rename in error messages).
         NATIVE_TYPE_ENTRY("uchar", llvm::Type::getInt8Ty(ctx), UINT8_TYPE_ID);
         NATIVE_TYPE_ENTRY("char", llvm::Type::getInt8Ty(ctx), INT8_TYPE_ID);
+        CajetaType::create(QualifiedName::getOrInsert("uint8", CAJETA_NATIVE_PACKAGE),
+            llvm::Type::getInt8Ty(ctx), UINT8_TYPE_ID, /*shareLlvmType=*/false);
+        CajetaType::create(QualifiedName::getOrInsert("int8", CAJETA_NATIVE_PACKAGE),
+            llvm::Type::getInt8Ty(ctx), INT8_TYPE_ID, /*shareLlvmType=*/false);
         NATIVE_TYPE_ENTRY("uint16", llvm::Type::getInt16Ty(ctx), UINT16_TYPE_ID);
         NATIVE_TYPE_ENTRY("int16", llvm::Type::getInt16Ty(ctx), INT16_TYPE_ID);
         NATIVE_TYPE_ENTRY("uint32", llvm::Type::getInt32Ty(ctx), UINT32_TYPE_ID);

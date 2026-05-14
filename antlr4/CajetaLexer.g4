@@ -51,6 +51,8 @@ ENUM:               'enum';
 EXTENDS:            'extends';
 FINAL:              'final';
 CHAR:               'char';
+INT8:               'int8';
+UINT8:              'uint8';
 INT16:              'int16';
 UINT16:             'uint16';
 INT32:              'int32';

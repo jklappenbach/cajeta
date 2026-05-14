@@ -386,6 +386,65 @@ TEST(ErrorModelTests, twoLevelMixedFieldWidths) {
     EXPECT_EQ(runI64(src), 12352LL);
 }
 
+// int8 as a documented native type. Previously crashed during codegen
+// because `INT8` / `UINT8` were referenced in the parser grammar but
+// not defined in the lexer, so source `int8` lexed as IDENTIFIER and
+// fell through to class-type lookup. canonicalMap missed and returned
+// a null CajetaTypePtr that segfaulted when CajetaClass::generatePrototype
+// called getLlvmType() on it for the struct layout. Fix: add INT8/UINT8
+// lexer tokens and register `int8`/`uint8` in CajetaType::init.
+TEST(ErrorModelTests, int8FieldOnClass) {
+    auto src =
+        "package test;\n"
+        "public class Holder {\n"
+        "    public int8 b;\n"
+        "    public Holder() { this.b = (int8) 7; }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Holder h = new Holder();\n"
+        "        return (int32) h.b;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 7);
+}
+
+// int8 through three-level inheritance: the original shape that
+// surfaced the int8 crash. With the lexer tokens wired and the type
+// registered, this now exercises the same layout/codegen paths
+// that threeLevelInheritedFieldReadWrite and twoLevelMixedFieldWidths
+// already proved correct for int32/int64. Reads cast each level back
+// to int64 so the sum doesn't overflow the int8.
+TEST(ErrorModelTests, threeLevelMixedFieldWidthsWithInt8) {
+    auto src =
+        "package test;\n"
+        "public class Grandparent {\n"
+        "    public int8 gByte;\n"
+        "    public Grandparent() { this.gByte = (int8) 0; }\n"
+        "}\n"
+        "public class Parent extends Grandparent {\n"
+        "    public int64 pLong;\n"
+        "    public Parent() { this.pLong = 0; }\n"
+        "}\n"
+        "public class Child extends Parent {\n"
+        "    public int32 cInt;\n"
+        "    public Child() {\n"
+        "        this.gByte = (int8) 7;\n"
+        "        this.pLong = 12345;\n"
+        "        this.cInt = 42;\n"
+        "    }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int64 run() {\n"
+        "        Child obj = new Child();\n"
+        "        int64 g = (int64) obj.gByte;\n"
+        "        int64 c = (int64) obj.cInt;\n"
+        "        return obj.pLong + g + c;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI64(src), 12394LL);
+}
+
 // #211 regression: writing to a String-typed field of a regular class used
 // to crash codegen because the variable-size-field check (intended for
 // CajetaStruct zero-copy types) fired indiscriminately on any class with
