@@ -153,6 +153,26 @@ namespace cajeta {
                             field->setHasBorrowCaptures(true);
                         }
                     }
+                    // Ownership-transfer (option a) for spawn → local. The
+                    // spawn pushed its own drop entry inside its
+                    // generateCode so that bare-statement `spawn foo();`
+                    // (no local to attach to) still gets freed at scope
+                    // exit. When the result IS bound to a named local,
+                    // that local's class-instance drop entry below
+                    // becomes the canonical owner — mark the spawn's
+                    // transient entry inactive so it doesn't double-fire.
+                    // Mirrors how `#`-move-out marks the source inactive.
+                    // See AsyncStatus.md § Plan: Task<T> as user-typeable
+                    // template / Ownership-transfer model.
+                    if (auto spawn = dynamic_pointer_cast<SpawnExpression>(children[0])) {
+                        if (llvm::Value* spawnEntry = spawn->getDropEntry()) {
+                            if (llvm::Function* markInactive = module->getRuntimeFunction(
+                                    "__cajeta_drop_mark_inactive")) {
+                                module->getBuilder()->CreateCall(
+                                    markInactive, {spawnEntry});
+                            }
+                        }
+                    }
                 }
             }
 

@@ -386,10 +386,21 @@ namespace cajeta {
     };
 
     class SpawnExpression : public Expression {
+    private:
+        // Drop-chain entry alloca for the malloced Task. Populated during
+        // generateCode after __cajeta_drop_push runs. Consumed by
+        // assignment sites (LocalVariableDeclaration's initializer path
+        // and BinaryOpExpression ASSIGN) to call __cajeta_drop_mark_inactive
+        // when the spawn result is bound to a named owner — ownership
+        // transfers to the local's own class-instance drop entry, so the
+        // spawn's transient entry shouldn't fire. See AsyncStatus.md §
+        // Plan: Task<T> as user-typeable template / Ownership-transfer.
+        llvm::Value* dropEntry = nullptr;
     public:
         SpawnExpression(antlr4::Token* token) : Expression(token) { }
         void resolveTypes(CajetaModulePtr module) override;
         llvm::Value* generateCode(CajetaModulePtr module) override;
+        llvm::Value* getDropEntry() const { return dropEntry; }
     };
 
     class DetachExpression : public Expression {

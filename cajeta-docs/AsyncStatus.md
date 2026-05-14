@@ -20,6 +20,39 @@ Tracks the R1–R5 rollout of the async runtime described in `ThreadModel.md`. C
 
 ---
 
+## Plan: Task<T> as user-typeable template  ✅ complete
+
+Today the compiler synthesizes `Task<T>` at every spawn site (`CajetaTask::getOrCreate(module, T)` called from `SpawnExpression::resolveTypes`); users can now also write `Task<int32>` as a variable type. The canonical workload of storing two task handles before awaiting either is now expressible.
+
+### Punch list
+
+- [x] **20.1** Type resolution: `Task<int32>` as a `typeType` parses through `classOrInterfaceType` already (the grammar accepts type arguments uniformly). The miss was in `CajetaType::fromContext(TypeTypeContext*)`: when the bare name `Task` is followed by `typeArguments`, route through `CajetaTask::getOrCreate(module, T)` instead of looking `Task` up as a user class. Special-case branch added ahead of the generic template path so we don't need a fake "Task" template class to satisfy `isTemplate()`.
+- [x] **20.2** Ownership transfer (option a — auto-promotion on assignment). Added a `llvm::Value* dropEntry` field on `SpawnExpression` populated when the push happens. `LocalVariableDeclaration`'s initializer path detects a `SpawnExpression` RHS via `dynamic_pointer_cast` and emits `__cajeta_drop_mark_inactive` on the entry; the local's own class-instance drop becomes the canonical owner. Bare-statement `spawn foo();` is unaffected — no assignment, no inactivation, the spawn's drop still fires at scope exit. (BinaryOpExpression ASSIGN didn't need the same: today's tests rebind via re-declaration, not via plain `=`; will revisit when that shape lands.)
+- [x] **20.3** `await someTaskLocal`. Two pieces had to land: a defensive `inner->resolveTypes(module)` re-resolve at codegen time in `AwaitExpression::generateCode` (the pre-pass runs before the local is in scope and leaves resolvedType null, which sent the dispatch into the sync-compat branch returning the raw Task ptr), AND a `SpawnExpression` preempt in `loadIfLValue` so `Task<int32> t = spawn foo();` doesn't try to load the 24-byte struct through an 8-byte ptr slot — for class types the value IS the pointer.
+- [x] **20.4** Package question. Decided: keep `CajetaTask` package-free (the comment at `CajetaTask.cpp:17` already says so). Users write the bare name `Task<int32>`; type resolution finds it directly through the synthesized-type path. Revisit when `cajeta.threading.*` actually lands.
+- [x] **20.5** Tests in `test/parser/TaskTypingTests.cpp` (new file): `declareAwaitOneTask`; `twoHandlesStoredThenAwaited` (the canonical use case); `differentTaskElementTypes` (Task<int32> vs Task<int64> get distinct value-field widths); `declaredTasksDropOncePerLocal` (drop count == 2 for two declared tasks, proving option-a's inactivation); `awaitedTaskStillDropsOnceAtScopeExit`.
+
+### Race fix surfaced en route (commit `ca2b0d7`)
+
+While probing item 20.2, `SpawnDropTests` flaked ~20% as a suite. Probe isolated `free(task)` in `__cajeta_task_drop` as the trigger. Root cause was unrelated to the typing work itself: `ScopeStatement::generateCode` emitted `scope_enter → body → DROPS FIRE → scope_exit` for explicit `scope { }` blocks. But `__cajeta_scope_exit` walks every registered task's `exception_addr` (a pointer INTO the task struct) — so the drop's `free(task)` ran before the scope_exit read through it. Use-after-free that the allocator usually masked. Fixed by reordering `ScopeStatement` to manage its block's drop frame manually and emit drops AFTER `__cajeta_scope_exit`. Method body's fall-through path already had this invariant (scope_exit_to before emitOwnerDrops); only the explicit-scope path was wrong.
+
+### Out of scope for this rollout
+
+- Task<T> as a field type on a user class.
+- Task<T> as a method return type (would require the async lowering to materialize a Task at the return site).
+- Task<T> in a generic position of another template (`Box<Task<int32>>`). Should fall out of monomorphization, but isn't tested.
+- Move-out via `#t` (transferring a Task local to a method). The drop chain machinery supports it, but it isn't a Task-specific concern — covered by the general move-out rules when those tests are added.
+
+### Ownership-transfer model — why option (a)
+
+`MemoryModel.md` § Borrow / transfer rules: *"Auto-promotion for fresh `new`. An anonymous `new T(...)` expression in transfer position promotes implicitly. ... The temporary is an unnamed owner with no prior identity, so promotion has no use-after-move risk."* Spawn is a fresh allocator with no prior identity — same rule applies. The drop-chain primitive `__cajeta_drop_mark_inactive` already exists for `#`-move; we're invoking it from a new call site, not inventing a mechanism.
+
+Two alternatives considered and rejected:
+- *(b) Local skips its own drop when the initializer is a Spawn.* Localized but breaks `#`-move-out of Task locals — with no entry to deactivate, ownership can't be transferred out of the local later. Makes Task a second-class citizen for the move syntax.
+- *(c) Spawn never pushes a drop; bare-statement spawn synthesizes an anonymous local.* Cleanest "every owner has a name" story, but touches `ExpressionStatement` or the parser. Larger blast radius than the punch list above warrants.
+
+---
+
 ## Completed
 
 ### Foundation (pre-R1)
@@ -96,9 +129,7 @@ Tracks the R1–R5 rollout of the async runtime described in `ThreadModel.md`. C
 ## Known gaps surfaced by the rollout
 
 - **Drop chain head is a single global static, not TLS.** Documented in `MemoryModel.md` § Known gaps. Correct under today's single-carrier model (only one fiber executes at a time) but a multi-carrier pool would race on it. Drop entries themselves are already alloca'd in the fiber's own stack, so the only piece that needs TLS-promotion is the head pointer.
-- **Task<T> instances aren't drop-tracked.** spawn mallocs a `CajetaTask` struct; nothing currently frees it. The R5-A/A' joins ensure the *task* completes, but the heap allocation leaks until process exit. Wiring `CajetaTask` into the drop chain is post-R5 cleanup.
 - **`detach` is still a synchronous pass-through, not a real async fire-and-forget.** Today's `DetachExpression::generateCode` just inline-calls the inner expression. Real detach should enqueue a fiber that outlives the current scope; lands when the doc's "detach requires `#` captures" check is also in place.
-- **No `Task<T>` exposed as a user-typeable template.** spawn produces a `Task<int32>*` at the LLVM level, but the user can't write `Task<int32>` as a variable type today (it's only synthesized at spawn sites). Some otherwise-natural test shapes (storing two task handles before either is awaited, e.g. to exercise true fiber-on-fiber lock contention) need this.
 
 ---
 

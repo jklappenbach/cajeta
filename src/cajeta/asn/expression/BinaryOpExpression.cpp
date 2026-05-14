@@ -93,6 +93,17 @@ namespace cajeta {
                 }
             }
         }
+        // SpawnExpression returns the malloc'd Task<T>* directly — the
+        // pointer IS the language-level value (Task is a heap class;
+        // local Task<T> slots hold ptrs, not the struct itself). The
+        // generic "pointer-with-different-type" branch below would
+        // otherwise load the entire struct through the ptr because
+        // resolvedType's getLlvmType() returns the struct type, not
+        // the pointer-to-struct shape. Pre-empt it before that catch-
+        // all fires.
+        if (dynamic_pointer_cast<SpawnExpression>(ast)) {
+            return v;
+        }
         // IdentifierExpression that resolved to a class property via the
         // implicit-this fallback also returns a GEP — same load story.
         // We detect it by v being a pointer-typed value (the GEP) while

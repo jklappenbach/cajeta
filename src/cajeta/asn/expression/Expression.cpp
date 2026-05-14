@@ -2219,6 +2219,16 @@ namespace cajeta {
         if (!inner) return nullptr;
         llvm::Value* v = inner->generateCode(module);
         if (!v) return nullptr;
+        // Re-resolve the inner at codegen time. For an identifier referring
+        // to a local Task<T> declared later in the same method, the pre-
+        // pass resolveTypes ran before the local was in scope and left
+        // resolvedType null — the dynamic_pointer_cast below would then
+        // miss and we'd fall into the sync-compat branch, returning the
+        // raw Task ptr instead of unwrapping. Same pattern DotExpression
+        // and BinaryOpExpression ASSIGN use for their receiver lookups.
+        if (!inner->getResolvedType()) {
+            inner->resolveTypes(module);
+        }
         auto innerType = inner->getResolvedType();
         auto task = dynamic_pointer_cast<CajetaTask>(innerType);
         if (!task) {
@@ -2582,6 +2592,10 @@ namespace cajeta {
                 if (auto m = module->getCurrentMethod()) {
                     m->registerDropEntry(dropEntryPtr);
                 }
+                // Publish for ownership-transfer call sites — assignment
+                // to a named local marks this entry inactive so the
+                // local's class-instance drop becomes the canonical owner.
+                dropEntry = dropEntryPtr;
             }
         }
         // Allocate the ctx struct on the heap and populate it.

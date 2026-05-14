@@ -7,6 +7,7 @@
 #include "../compile/CajetaModule.h"
 #include "CajetaArray.h"
 #include "CajetaClass.h"
+#include "CajetaTask.h"
 #include "CajetaFunctionType.h"
 #include "../error/InvalidOperandException.h"
 
@@ -246,20 +247,41 @@ namespace cajeta {
             // explicit-args typeArguments; diamond inference is TPL-7's job
             // and lives in NewExpression / ClassCreatorRest.
             if (auto* targs = ctxClassOrInterface->typeArguments(0)) {
-                auto templateClass = dynamic_pointer_cast<CajetaClass>(type);
-                if (templateClass && templateClass->isTemplate()) {
-                    vector<CajetaTypePtr> args;
-                    for (auto* targ : targs->typeArgument()) {
-                        if (!targ->typeType()) {
-                            throw "wildcard type arguments not supported in v1";
-                        }
-                        CajetaTypePtr argType = fromContext(targ->typeType(), module);
+                // Built-in Task<T>: synthesized type, not a user template.
+                // CajetaTask::getOrCreate(module, T) materializes a fresh
+                // CajetaTask per (module, T) and caches it on the module
+                // structure map. Handled here — before the generic
+                // template path — so we don't need to register a fake
+                // "Task" template class just to satisfy the
+                // isTemplate() check. See cajeta-docs/AsyncStatus.md §
+                // Plan: Task<T> as user-typeable template.
+                if (qName->getTypeName() == "Task"
+                        && targs->typeArgument().size() == 1) {
+                    auto* singleArg = targs->typeArgument()[0];
+                    if (singleArg->typeType()) {
+                        CajetaTypePtr argType =
+                            fromContext(singleArg->typeType(), module);
                         if (!argType) {
-                            throw "unresolved template argument";
+                            throw "unresolved Task type argument";
                         }
-                        args.push_back(argType);
+                        type = CajetaTask::getOrCreate(module, argType);
                     }
-                    type = templateClass->instantiate(args);
+                } else {
+                    auto templateClass = dynamic_pointer_cast<CajetaClass>(type);
+                    if (templateClass && templateClass->isTemplate()) {
+                        vector<CajetaTypePtr> args;
+                        for (auto* targ : targs->typeArgument()) {
+                            if (!targ->typeType()) {
+                                throw "wildcard type arguments not supported in v1";
+                            }
+                            CajetaTypePtr argType = fromContext(targ->typeType(), module);
+                            if (!argType) {
+                                throw "unresolved template argument";
+                            }
+                            args.push_back(argType);
+                        }
+                        type = templateClass->instantiate(args);
+                    }
                 }
             }
         }
