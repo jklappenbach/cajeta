@@ -74,6 +74,7 @@ namespace cajeta {
         const vector<CajetaTypePtr>& getTypeArguments() const { return typeArguments; }
         bool getIsDiamond() const { return isDiamond; }
 
+        void resolveTypes(CajetaModulePtr module) override;
         llvm::Value* generateCode(CajetaModulePtr module) override;
     };
 

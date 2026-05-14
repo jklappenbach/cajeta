@@ -8,6 +8,35 @@
 #include "cajeta/error/Exception.h"
 
 namespace cajeta {
+    // Set resolvedType to the target class so call-site overload
+    // resolution sees the right type when a `new T(...)` flows in as
+    // a method-call argument or constructor argument. Previously this
+    // wasn't set, so MethodCallExpression's fallback path (CajetaType::
+    // of(value)) inferred the generic `pointer` type — Method::resolveMethod
+    // then built the wrong signature ("consume(pointer)" instead of
+    // "consume(test.Payload)"), missed the lookup, and invokeMethod
+    // returned null. ReturnStatement::generateCode then null-deref'd
+    // val->getType() and segfaulted. See AsyncStatus.md § Known gaps
+    // before this commit. Diamond inference is deferred to codegen
+    // time (it needs each arg's resolvedType, which the surrounding
+    // method's resolve-pass populates first); for now, resolvedType
+    // stays null on diamond forms until generateCode fills it in.
+    void NewExpression::resolveTypes(CajetaModulePtr module) {
+        AbstractSyntaxNode::resolveTypes(module);
+        if (typeName.empty()) return;
+        CajetaTypePtr type = CajetaType::of(typeName, package);
+        if (!type) type = CajetaType::of(typeName);
+        if (!type) return;
+        if (!typeArguments.empty()) {
+            auto klass = dynamic_pointer_cast<CajetaClass>(type);
+            if (klass && klass->isTemplate()) {
+                type = klass->instantiate(typeArguments);
+            }
+        }
+        // Skip diamond — needs inference that runs at generateCode.
+        resolvedType = type;
+    }
+
     llvm::Value* NewExpression::generateCode(CajetaModulePtr module) {
         if (!creatorRest) {
             return nullptr;

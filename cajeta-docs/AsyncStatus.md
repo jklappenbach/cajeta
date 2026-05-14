@@ -158,7 +158,7 @@ Two alternatives considered and rejected:
 
 ## Known gaps surfaced by the rollout
 
-- **Inline `new T(...)` as a method-call argument crashes during codegen** (e.g. `consume(new Payload())` in `run()`). Surfaced while writing the `freshAllocatorCaptureDetachAccepted` test for detach — the non-detach control `consume(new Payload())` exhibits the same crash, so it's a pre-existing NewExpression-as-argument gap, not a detach-specific issue. Workaround today: bind to a local, then pass via `#` (`Payload p = new Payload(); consume(#p);`). The detach captures rule already lists `NewExpression` as an accepted shape; once the underlying gap is fixed, `detach consume(new Payload())` lights up for free.
+_(None active. Earlier entries — TLS-promote, `detach` fire-and-forget, inline `new T(...)` as method-call argument — have all shipped.)_
 
 ---
 

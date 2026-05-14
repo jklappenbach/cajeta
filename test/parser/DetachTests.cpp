@@ -95,20 +95,28 @@ TEST(DetachTests, hashCaptureDetachAccepted) {
     EXPECT_EQ(runI32(src), 1);
 }
 
-// Fresh allocator captures should ALSO be acceptable per the rule
-// (MemoryModel.md § Borrow / transfer rules — auto-promotion for fresh
-// `new`). The detach captures check explicitly allows `NewExpression`
-// alongside `MoveExpression` and primitives. We don't have a direct
-// test for this here yet because passing `new T()` inline as a
-// method-call argument is broken even for plain non-detach calls
-// (an unrelated codegen gap in NewExpression-as-arg). Once that
-// gap is fixed, an obvious test is:
-//
-//   detach consume(new Payload());
-//
-// which today crashes during compilation in run()'s body — same crash
-// as the non-detach control `consume(new Payload())`. Tracked as a
-// follow-up.
+// Fresh allocator capture: a bare `new T(...)` is auto-promoted in
+// transfer position (MemoryModel.md § Borrow / transfer rules), so it
+// counts as a transfer for detach's captures rule — no explicit `#`
+// needed. Now testable since NewExpression sets its resolvedType
+// during the resolve pass (previously left null, which made every
+// inline `f(new T())` call segfault in ReturnStatement on a null val).
+TEST(DetachTests, freshAllocatorCaptureDetachAccepted) {
+    auto src =
+        "package test;\n"
+        "public class Payload {\n"
+        "    public int32 n;\n"
+        "    public Payload() { this.n = 0; }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static async void consume(Payload p) { return; }\n"
+        "    public static int32 run() {\n"
+        "        detach consume(new Payload());\n"
+        "        return 1;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 1);
+}
 
 // Bare class-typed identifier without `#`: rejected. The detached
 // fiber outlives the spawning scope, so the caller's `p` can't be
