@@ -2234,6 +2234,36 @@ namespace cajeta {
         if (llvm::Function* waitFn = module->getRuntimeFunction("__cajeta_task_wait")) {
             builder->CreateCall(waitFn, {doneSlot});
         }
+        // R5/Error-model #205: post-wait, check the task's exception slot.
+        // If non-null, re-raise into the awaiter's frame — the thrown
+        // value flows up via the existing setjmp/longjmp machinery, same
+        // as a direct throw. If NULL (success path), load .value and
+        // return the unwrapped result.
+        llvm::Type* ptrTy = llvm::PointerType::get(*ctx, 0);
+        llvm::Value* excSlot = builder->CreateStructGEP(
+            task->getLlvmType(), v, CajetaTask::EXCEPTION_FIELD_INDEX,
+            "task_exception_slot");
+        llvm::Value* excPtr = builder->CreateLoad(ptrTy, excSlot, "task_exception");
+        llvm::Value* hasExc = builder->CreateICmpNE(excPtr,
+            llvm::ConstantPointerNull::get(llvm::cast<llvm::PointerType>(ptrTy)),
+            "await_threw");
+        llvm::Function* parentFn = builder->GetInsertBlock()->getParent();
+        llvm::BasicBlock* rethrowBB = llvm::BasicBlock::Create(*ctx,
+            "await_rethrow", parentFn);
+        llvm::BasicBlock* normalBB = llvm::BasicBlock::Create(*ctx,
+            "await_normal", parentFn);
+        builder->CreateCondBr(hasExc, rethrowBB, normalBB);
+
+        builder->SetInsertPoint(rethrowBB);
+        if (llvm::Function* throwFn = module->getRuntimeFunction("__cajeta_throw")) {
+            builder->CreateCall(throwFn, {excPtr});
+        }
+        // Throw is noreturn from the user's POV; the runtime longjmps. Emit
+        // unreachable so LLVM knows this path doesn't continue. The
+        // normal-path block has the actual return value.
+        builder->CreateUnreachable();
+
+        builder->SetInsertPoint(normalBB);
         llvm::Value* valueSlot = builder->CreateStructGEP(
             task->getLlvmType(), v, CajetaTask::VALUE_FIELD_INDEX, "task_value");
         return builder->CreateLoad(
@@ -2355,6 +2385,53 @@ namespace cajeta {
             ctxStructTy, ctxParam, 0, "ctx_task_slot");
         llvm::Value* taskPtr = outerBuilder->CreateLoad(
             ptrTy, taskSlot, "task_ptr");
+
+        // R5/Error-model #205: wrap the inner call in a try/catch inside
+        // the trampoline so a thrown RecoverableException is captured onto
+        // the Task's exception slot rather than escaping the fiber's
+        // stack and crashing the carrier. Matches the TryStatement
+        // setjmp/__cajeta_exc_push pattern, but with a synthetic body:
+        // the try-body is the invokeMethod + result store; the catch
+        // reads the thrown ptr and stashes it on task->exception.
+        llvm::Type* i8Ty = llvm::Type::getInt8Ty(llvmCtx);
+        llvm::Type* i32Ty = llvm::Type::getInt32Ty(llvmCtx);
+        llvm::Function* excPushFn = module->getRuntimeFunction("__cajeta_exc_push");
+        llvm::Function* excPopFn  = module->getRuntimeFunction("__cajeta_exc_pop");
+        llvm::Function* getThrownFn = module->getRuntimeFunction("__cajeta_get_thrown");
+        llvm::Function* setjmpFn = lmod->getFunction("setjmp");
+        if (!setjmpFn) {
+            llvm::FunctionType* sjt = llvm::FunctionType::get(
+                i32Ty, {ptrTy}, false);
+            setjmpFn = llvm::Function::Create(sjt,
+                llvm::Function::ExternalLinkage, "setjmp", lmod);
+            setjmpFn->addFnAttr(llvm::Attribute::ReturnsTwice);
+        }
+
+        // Exception frame at trampoline entry — 512-byte blob covers
+        // jmp_buf + prev + thrown_value on the targets we support; same
+        // sizing TryStatement uses.
+        constexpr unsigned frameBytes = 512;
+        llvm::IRBuilder<> trampEntryBuilder(trampEntry, trampEntry->begin());
+        llvm::Value* trampFrame = trampEntryBuilder.CreateAlloca(
+            llvm::ArrayType::get(i8Ty, frameBytes), nullptr, "spawn_exc_frame");
+
+        llvm::BasicBlock* trampTryBB = llvm::BasicBlock::Create(
+            llvmCtx, "tramp_try", trampFn);
+        llvm::BasicBlock* trampCatchBB = llvm::BasicBlock::Create(
+            llvmCtx, "tramp_catch", trampFn);
+        llvm::BasicBlock* trampFinishBB = llvm::BasicBlock::Create(
+            llvmCtx, "tramp_finish", trampFn);
+
+        if (excPushFn) {
+            outerBuilder->CreateCall(excPushFn, {trampFrame});
+        }
+        llvm::Value* sjResult = outerBuilder->CreateCall(setjmpFn, {trampFrame});
+        llvm::Value* threwInTramp = outerBuilder->CreateICmpNE(sjResult,
+            llvm::ConstantInt::get(i32Ty, 0));
+        outerBuilder->CreateCondBr(threwInTramp, trampCatchBB, trampTryBB);
+
+        // --- try body: dispatch the inner call + capture result ---
+        outerBuilder->SetInsertPoint(trampTryBB);
         // Load each arg from ctx[i+1] and build the entries the invoke
         // path expects.
         vector<ParameterEntry> entries;
@@ -2369,8 +2446,6 @@ namespace cajeta {
                 /*label=*/string(), loaded));
         }
         string methodNameCopy = innerCall->getMethodCallName();
-        // Use the method name from the inner call. invokeMethod expects a
-        // non-const ref so we copy.
         // For static methods, thisValue is nullptr.
         llvm::Value* innerResult = targetClass->invokeMethod(
             methodNameCopy, entries, /*isConstructor=*/false,
@@ -2392,6 +2467,23 @@ namespace cajeta {
             taskTy, taskPtr, CajetaTask::VALUE_FIELD_INDEX,
             "task_value_slot");
         outerBuilder->CreateStore(innerResult, trampValueSlot);
+        if (excPopFn) outerBuilder->CreateCall(excPopFn, {});
+        outerBuilder->CreateBr(trampFinishBB);
+
+        // --- catch: stash the thrown ptr on task->exception ---
+        outerBuilder->SetInsertPoint(trampCatchBB);
+        llvm::Value* thrownPtr = getThrownFn
+            ? outerBuilder->CreateCall(getThrownFn, {})
+            : (llvm::Value*) llvm::ConstantPointerNull::get(ptrTy);
+        if (excPopFn) outerBuilder->CreateCall(excPopFn, {});
+        llvm::Value* trampExcSlot = outerBuilder->CreateStructGEP(
+            taskTy, taskPtr, CajetaTask::EXCEPTION_FIELD_INDEX,
+            "task_exception_slot");
+        outerBuilder->CreateStore(thrownPtr, trampExcSlot);
+        outerBuilder->CreateBr(trampFinishBB);
+
+        // --- finish: signal done + free ctx (runs on both paths) ---
+        outerBuilder->SetInsertPoint(trampFinishBB);
         llvm::Value* trampDoneSlot = outerBuilder->CreateStructGEP(
             taskTy, taskPtr, CajetaTask::DONE_FIELD_INDEX,
             "task_done_slot");
@@ -2421,6 +2513,14 @@ namespace cajeta {
         outerBuilder->CreateStore(
             llvm::ConstantInt::get(
                 llvm::Type::getInt32Ty(llvmCtx), 0), doneInit);
+        // R5/Error-model #205: zero the exception slot so the success path
+        // (no throw) leaves NULL there. The trampoline only writes this
+        // slot on the catch branch.
+        llvm::Value* excInit = outerBuilder->CreateStructGEP(
+            taskTy, taskInstance, CajetaTask::EXCEPTION_FIELD_INDEX,
+            "task_exception_init");
+        outerBuilder->CreateStore(
+            llvm::ConstantPointerNull::get(ptrTy), excInit);
         // Allocate the ctx struct on the heap and populate it.
         llvm::Function* allocFn = module->getRuntimeFunction("__cajeta_alloc");
         if (!allocFn) {

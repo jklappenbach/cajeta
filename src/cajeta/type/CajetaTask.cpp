@@ -37,14 +37,16 @@ namespace cajeta {
             valueLlvm = elementType->getLlvmType();
         }
 
-        // Layout: { T value, i32 done }. `done` is i32 (not i1) so the C
-        // runtime can atomic-store and read it without bit-packing
-        // arithmetic — the worker thread sets it under the global task
-        // mutex; await loads under the same mutex. R3 will extend with
-        // continuation pointers + per-task wait queue.
+        // Layout: { T value, i32 done, ptr exception }. `done` is i32 (not
+        // i1) so the C runtime can atomic-store and read it without bit-
+        // packing arithmetic. `exception` is a Throwable* (or NULL) — the
+        // fiber trampoline writes it on the throw path; await checks it
+        // post-resume and re-raises if non-null. Field indices stay stable
+        // for future R3-B2 / wait-queue extensions.
         vector<llvm::Type*> fields = {
             valueLlvm,
             llvm::Type::getInt32Ty(*ctx),
+            llvm::PointerType::get(*ctx, 0),
         };
         llvmType = CajetaType::getOrCreateLlvmType(ctx,
             string("#task.") + canonical, fields);

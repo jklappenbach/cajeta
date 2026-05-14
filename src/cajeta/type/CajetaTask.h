@@ -27,6 +27,11 @@ namespace cajeta {
         // Field indices in the heap struct's GEP layout.
         static constexpr unsigned VALUE_FIELD_INDEX = 0;
         static constexpr unsigned DONE_FIELD_INDEX = 1;
+        // R5/Error-model #205: Throwable* slot the fiber trampoline writes
+        // when the inner async fn throws. NULL on the success path. await
+        // checks this slot after task_wait — non-null means re-raise into
+        // the awaiter's frame.
+        static constexpr unsigned EXCEPTION_FIELD_INDEX = 2;
 
         CajetaTask(CajetaModulePtr module, CajetaTypePtr elementType);
 

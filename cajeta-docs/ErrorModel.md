@@ -180,15 +180,66 @@ The `throws` clause on the async method documents what the awaiter might see; th
 When a scope joins child tasks:
 
 1. Walk every registered child; await each.
-2. If any child threw, collect the exception(s).
-3. Cancel the remaining children (R5-C) and wait for them to unwind.
-4. Re-raise the first exception into the scope's containing frame.
+2. If any child threw a non-cancellation exception, record that child as the **trigger** — the first such child wins.
+3. Cancel every remaining still-running child (R5-C). They will surface `CancellationException` at their next await.
+4. Wait for all to finish unwinding.
+5. Re-raise the **trigger's** exception (not `CancellationException`, not an aggregate).
 
-Cancellation surfaces as a `CancellationException extends RecoverableException` raised at the next `await` resume.
+The asymmetry matters: callers want the actual failure, not the synthetic cancellation we caused. Scope_exit must distinguish "real" exceptions from `CancellationException` when picking which to propagate. Cancellation surfaces as a `CancellationException extends RecoverableException` raised at the next `await` resume.
+
+**No `AggregateException`.** Multiple-children-failing-simultaneously is rare and the caller usually wants one error to handle. If a use case ever demands collecting every child's outcome, a stdlib `scope.collectAll() -> List<Result<T>>` helper can be added without changing core semantics — it would build on top of the per-task exception slot the trampoline already populates.
+
+**TLS hardening (deferred).** The setjmp/longjmp exception chain (`__cajeta_exc_top`) is a single global, same as the drop-chain head — a known gap under the fiber model. Correct under today's single-carrier model (only one fiber executes at a time), but multi-carrier parallelism requires both to be promoted to TLS. Cheap fix when we go multi-carrier.
 
 ### Drop chain on the throw path
 
 Owned locals drop on the throw path the same as on the return path. The existing drop-chain machinery (with the watermark) handles both; no exception-specific bookkeeping needed.
+
+## Streams (forward-looking)
+
+Cajeta does not yet have a stream API; this section pins the policy for when one lands so the door doesn't get left open to drift toward a decorator model.
+
+The core position: **stream operations don't have their own error-handling sub-DSL.** Lambdas inside `.map(...)`, `.filter(...)`, `.flatMap(...)` can throw like any other code; the exception propagates through the pipeline; the caller wraps the **terminal operation** in `try/catch` if recovery is wanted.
+
+```cajeta
+try {
+    List<int32> codes = urls.stream()
+        .map(u -> http.get(u).statusCode)   // can throw IOException
+        .filter(c -> c >= 200 && c < 300)
+        .toList();
+} catch (IOException e) {
+    log.warn("fetch failed: " + e.message);
+}
+```
+
+Per-element recovery is per-element try/catch *inside the lambda*:
+
+```cajeta
+urls.stream()
+    .map(u -> {
+        try { return http.get(u).statusCode; }
+        catch (IOException e) { return -1; }
+    })
+    .toList();
+```
+
+Verbose for the per-element case, but explicit: a reader sees what's caught and where.
+
+**Convenience helpers (stdlib, not core).** Where the verbose pattern is too common to write out, the stdlib can supply named operators that codify a specific recovery shape:
+
+- `mapOrSkip(λ)` — drop elements whose lambda threw `RecoverableException`. Returns a shorter stream.
+- `mapOrLog(λ, logger)` — log and drop.
+- `mapOrFallback(λ, fallback)` — replace failed elements with a default.
+
+These are opt-in by name. The pipeline's intent stays readable: a reader doesn't have to scan a trailing `.onError(...)` decorator to discover that failures are being suppressed.
+
+**Parallel streams.** Mirror scope's join semantics: first-throw wins, sibling workers get cancelled, the trigger exception is re-raised at the terminal operation. No `AggregateException` at the stream layer either.
+
+**Explicitly NOT in the design:**
+
+- **Decorator chains** (RxJava-style `.onErrorReturn(...)` / `.onErrorResume(...)`). They live in the wrong place — separated from the producing operation that failed — and flatten per-step context. Avoid.
+- **Stream-element `Try<T>` / `Result<T, E>` wrapping** (Vavr-style). Conflicts with our exception model; mixing in streams confuses users about which world they're in.
+- **Stream-specific catch-by-step syntax** (`.map(λ).catch(IOException, λ).filter(λ)`). Treats the pipeline as a try/catch — but a pipeline isn't a region of code, it's a sequence of transformations applied to elements.
 
 ## Examples
 

@@ -87,6 +87,57 @@ TEST(ErrorModelTests, stdlibRecoverableExtendsThrowable) {
     EXPECT_EQ(runI32(src), 7);
 }
 
+// R5/Error-model #205: a throw inside an async fn body propagates to the
+// caller via the await. The fiber trampoline catches the throw, stashes
+// the value on the task's exception slot, and signals done. await reads
+// the slot post-wait and re-raises into the awaiter's frame, where the
+// surrounding try/catch picks it up. Without #205 the throw would
+// longjmp through setjmp boundaries the fiber never set up, and the
+// process would abort.
+TEST(ErrorModelTests, asyncFnThrowReraisedAtAwait) {
+    auto src =
+        "package test;\n"
+        "public final class D {\n"
+        "    public static async int32 failing() {\n"
+        "        throw 99;\n"
+        "        return 0;\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        int32 result = -1;\n"
+        "        try {\n"
+        "            result = await spawn failing();\n"
+        "        } catch (Exception e) {\n"
+        "            result = (int32) e;\n"
+        "        }\n"
+        "        return result;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 99);
+}
+
+// R5/Error-model #205 — corollary: successful async fns still return
+// their value through the await path unchanged. The exception slot
+// stays NULL, the rethrow branch isn't taken, the value comes back.
+// Verifies the new branching codegen in await doesn't accidentally
+// break the happy path.
+TEST(ErrorModelTests, asyncFnSuccessAwaitsValueThroughBranches) {
+    auto src =
+        "package test;\n"
+        "public final class D {\n"
+        "    public static async int32 succeeding() { return 17; }\n"
+        "    public static int32 run() {\n"
+        "        int32 result = -1;\n"
+        "        try {\n"
+        "            result = await spawn succeeding();\n"
+        "        } catch (Exception e) {\n"
+        "            result = -2;\n"
+        "        }\n"
+        "        return result;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 17);
+}
+
 // Constructor throws clause — same grammar, separate parse path.
 TEST(ErrorModelTests, constructorThrowsParses) {
     auto src =
