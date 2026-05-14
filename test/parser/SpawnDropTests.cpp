@@ -97,3 +97,40 @@ TEST(SpawnDropTests, spawnInsideInnerScopeDropsAtInnerExit) {
         "            int32 r = await spawn compute();\n"
         "        }"), 1);
 }
+
+// TLS-promote regression guard: a spawned method declares its OWN
+// owned local (an array). That local pushes a drop entry on the
+// CARRIER thread's chain (not main's). Before the drop_top + exc_top
+// TLS promotion, the carrier and main aliased a single global head,
+// so the spawned method's push/pop could corrupt main's chain. With
+// per-fiber heads, the carrier's chain is isolated; main only sees
+// its own drops plus the Task drop. The drop counter is atomic, so
+// both threads' increments are visible. Three drops fire: the carrier's
+// int32[] in compute_with_local(), then main's two Task<int32> drops
+// (one per declaration) at run()'s scope exit.
+TEST(SpawnDropTests, carrierDropsAccountedSeparately) {
+    auto src = std::string(
+        "package test;\n"
+        "public final class D {\n"
+        "    public static async int32 compute_with_local() {\n"
+        "        int32[] tmp = new int32[4];\n"
+        "        return 7;\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        Cajeta.dropCountReset();\n"
+        "        int32 a = await spawn compute_with_local();\n"
+        "        int32 b = await spawn compute_with_local();\n"
+        "        return 0;\n"
+        "    }\n"
+        "    public static int64 read() {\n"
+        "        return Cajeta.dropCount();\n"
+        "    }\n"
+        "}\n");
+    auto jit = CajetaJit::compile(src, "test.D");
+    auto runFn = jit->lookup<int32_t (*)()>("run");
+    auto readFn = jit->lookup<int64_t (*)()>("read");
+    runFn();
+    // 2 spawned-method-internal int32[] drops (one per spawn) +
+    // 2 Task<int32> drops (one per spawn) = 4 total.
+    EXPECT_EQ(readFn(), 4);
+}

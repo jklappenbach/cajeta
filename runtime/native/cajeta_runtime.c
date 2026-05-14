@@ -199,6 +199,12 @@ struct cajeta_scope_frame {
     struct cajeta_scope_frame* prev;
 };
 
+// Forward decls so cajeta_fiber can hold pointers to the drop and
+// exception chain heads. Both chains are defined further down in this
+// file (the file is ordered shared-infra first, then users).
+struct cajeta_drop_entry;
+struct cajeta_exception_frame;
+
 struct cajeta_fiber {
     ucontext_t ctx;
     void* stack;
@@ -211,6 +217,14 @@ struct cajeta_fiber {
     // each fiber owns its own stack of scope frames. Updated by
     // scope_enter/exit when invoked from a fiber context.
     struct cajeta_scope_frame* scope_top;
+    // Per-fiber drop chain head and exception chain head. Same rationale
+    // as scope_top: a single OS-thread-level `__thread` would alias
+    // across fiber switches on the same carrier, so each fiber owns its
+    // own chain. The main thread has its own `__thread` slot below;
+    // __cajeta_drop_top_ptr / __cajeta_exc_top_ptr pick the right one
+    // based on whether __cajeta_current_fiber is set.
+    struct cajeta_drop_entry* drop_top;
+    struct cajeta_exception_frame* exc_top;
     // R5-C: cancellation marker. When non-NULL, the fiber's next
     // __cajeta_task_wait resume will throw this Throwable* instead of
     // returning normally. Set by __cajeta_fiber_cancel from scope's
@@ -364,6 +378,8 @@ void __cajeta_task_run(void* arg, cajeta_task_trampoline_fn trampoline,
     f->trampoline_arg = arg;
     f->next = NULL;
     f->scope_top = NULL;
+    f->drop_top = NULL;
+    f->exc_top = NULL;
     f->cancel_with = NULL;
     if (fiber_slot) *fiber_slot = f;
 
@@ -752,9 +768,10 @@ void __cajeta_array_bounds_fail(int64_t index, int64_t dim) {
 // longjmps back to its setjmp point. The compiler emits the setjmp call inline
 // (it must run in the caller's frame), so the runtime never sees it directly.
 //
-// Single-threaded for now — the frame stack is a plain global. Promoting to
-// __thread / _Thread_local is a small change but unnecessary until JIT'd code
-// runs on multiple threads.
+// Per-thread: each OS thread has its own `__cajeta_main_exc_top` __thread
+// slot; each carrier-hosted fiber owns its own slot inside `cajeta_fiber`.
+// `__cajeta_exc_top_ptr` picks the right one based on whether the call
+// site is running inside a fiber. The drop-chain head uses the same model.
 
 // --- drop chain (Session 3 of the memory-model rollout) ---------------------
 //
@@ -775,35 +792,60 @@ size_t __cajeta_drop_entry_size(void) {
     return sizeof(struct cajeta_drop_entry);
 }
 
-static struct cajeta_drop_entry* __cajeta_drop_top = NULL;
+// Drop chain head — per-thread (main has its own __thread slot; carrier-
+// hosted fibers each own a slot inside their cajeta_fiber struct). Before
+// this rollout this was a single global static. With the carrier thread
+// running concurrently with main on shared globals, even a "single-
+// carrier" model races on the head pointer. Promoting to per-thread/
+// per-fiber is the doc's planned shape (AsyncStatus.md § TLS-promote
+// the exception chain + drop-chain head).
+static __thread struct cajeta_drop_entry* __cajeta_main_drop_top = NULL;
+
+// Returns a pointer to the current drop_top slot — either the running
+// fiber's slot or the main thread's TLS slot. Callers read or write
+// through this pointer, so push/pop works uniformly regardless of
+// fiber vs main context. Mirrors __cajeta_scope_top_ptr.
+static struct cajeta_drop_entry** __cajeta_drop_top_ptr(void) {
+    if (__cajeta_current_fiber) {
+        return &__cajeta_current_fiber->drop_top;
+    }
+    return &__cajeta_main_drop_top;
+}
 
 // Observability for tests: bumped every time a drop function actually fires
 // (i.e. an active entry pops or unwinds). Tests can read it to assert that
-// owned resources are freed at expected program points.
+// owned resources are freed at expected program points. Atomic so drops
+// fired on the carrier thread are visible to tests reading from main.
 static int64_t __cajeta_drop_count = 0;
 
-int64_t __cajeta_drop_count_get(void) { return __cajeta_drop_count; }
-void __cajeta_drop_count_reset(void) { __cajeta_drop_count = 0; }
+int64_t __cajeta_drop_count_get(void) {
+    return __atomic_load_n(&__cajeta_drop_count, __ATOMIC_SEQ_CST);
+}
+void __cajeta_drop_count_reset(void) {
+    __atomic_store_n(&__cajeta_drop_count, 0, __ATOMIC_SEQ_CST);
+}
 
 // Push an owner onto the drop chain. The entry storage is stack-allocated in
 // the caller's frame; we never own the memory, only chain pointers through it.
 void __cajeta_drop_push(struct cajeta_drop_entry* e, void* obj, void (*drop_fn)(void*)) {
+    struct cajeta_drop_entry** top = __cajeta_drop_top_ptr();
     e->obj = obj;
     e->drop_fn = drop_fn;
-    e->prev = __cajeta_drop_top;
+    e->prev = *top;
     e->active = 1;
-    __cajeta_drop_top = e;
+    *top = e;
 }
 
 // Pop the topmost entry and run its drop function if still active. Caller
 // passes the entry pointer so popping can verify shape (in debug builds; v1
 // trusts the caller).
 void __cajeta_drop_pop_run(struct cajeta_drop_entry* e) {
+    struct cajeta_drop_entry** top = __cajeta_drop_top_ptr();
     if (e->active && e->drop_fn) {
-        __cajeta_drop_count++;
+        __atomic_fetch_add(&__cajeta_drop_count, 1, __ATOMIC_SEQ_CST);
         e->drop_fn(e->obj);
     }
-    __cajeta_drop_top = e->prev;
+    *top = e->prev;
 }
 
 // Mark an entry inactive (the owner has been moved out via `#`). The entry
@@ -949,19 +991,35 @@ size_t __cajeta_exc_frame_size(void) {
     return sizeof(struct cajeta_exception_frame);
 }
 
-static struct cajeta_exception_frame* __cajeta_exc_top = NULL;
+// Exception chain head — per-thread (main has its own __thread slot;
+// carrier-hosted fibers each own a slot inside their cajeta_fiber
+// struct). Same rationale as the drop chain head above. The
+// drop_watermark stored in each frame snapshots the per-thread drop
+// top at try-entry time, so an unwind through __cajeta_throw works
+// against the same chain the user code pushed into.
+static __thread struct cajeta_exception_frame* __cajeta_main_exc_top = NULL;
+
+static struct cajeta_exception_frame** __cajeta_exc_top_ptr(void) {
+    if (__cajeta_current_fiber) {
+        return &__cajeta_current_fiber->exc_top;
+    }
+    return &__cajeta_main_exc_top;
+}
 
 void __cajeta_exc_push(struct cajeta_exception_frame* f) {
-    f->prev = __cajeta_exc_top;
+    struct cajeta_exception_frame** top = __cajeta_exc_top_ptr();
+    struct cajeta_drop_entry** dropTop = __cajeta_drop_top_ptr();
+    f->prev = *top;
     f->thrown_value = NULL;
     // Snapshot the current drop-chain top so a throw can unwind back to here.
-    f->drop_watermark = __cajeta_drop_top;
-    __cajeta_exc_top = f;
+    f->drop_watermark = *dropTop;
+    *top = f;
 }
 
 void __cajeta_exc_pop(void) {
-    if (__cajeta_exc_top) {
-        __cajeta_exc_top = __cajeta_exc_top->prev;
+    struct cajeta_exception_frame** top = __cajeta_exc_top_ptr();
+    if (*top) {
+        *top = (*top)->prev;
     }
 }
 
@@ -1059,7 +1117,8 @@ static void __cajeta_emit_uncaught(void* value, int is_unrec) {
 __attribute__((noreturn))
 void __cajeta_throw(void* value) {
     __cajeta_trace_record(value);
-    if (!__cajeta_exc_top) {
+    struct cajeta_exception_frame** excTop = __cajeta_exc_top_ptr();
+    if (!*excTop) {
         int is_unrec = __cajeta_is_unrecoverable(value);
         __cajeta_emit_uncaught(value, is_unrec);
         if (is_unrec) {
@@ -1075,22 +1134,24 @@ void __cajeta_throw(void* value) {
     // Each active entry runs its drop function once; the entry itself is
     // stack-allocated in the originating frame, so we only manipulate the
     // chain pointer here.
-    struct cajeta_drop_entry* watermark = __cajeta_exc_top->drop_watermark;
-    while (__cajeta_drop_top != watermark) {
-        struct cajeta_drop_entry* e = __cajeta_drop_top;
+    struct cajeta_drop_entry** dropTop = __cajeta_drop_top_ptr();
+    struct cajeta_drop_entry* watermark = (*excTop)->drop_watermark;
+    while (*dropTop != watermark) {
+        struct cajeta_drop_entry* e = *dropTop;
         if (!e) break;  // shouldn't happen, but bail rather than loop
         if (e->active && e->drop_fn) {
-            __cajeta_drop_count++;
+            __atomic_fetch_add(&__cajeta_drop_count, 1, __ATOMIC_SEQ_CST);
             e->drop_fn(e->obj);
         }
-        __cajeta_drop_top = e->prev;
+        *dropTop = e->prev;
     }
-    __cajeta_exc_top->thrown_value = value;
-    longjmp(__cajeta_exc_top->buf, 1);
+    (*excTop)->thrown_value = value;
+    longjmp((*excTop)->buf, 1);
 }
 
 void* __cajeta_get_thrown(void) {
-    return __cajeta_exc_top ? __cajeta_exc_top->thrown_value : NULL;
+    struct cajeta_exception_frame** top = __cajeta_exc_top_ptr();
+    return *top ? (*top)->thrown_value : NULL;
 }
 
 // --- I/O helpers: print / println / log (SLF4J-style {} templating) ----------

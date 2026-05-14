@@ -15,8 +15,7 @@ Tracks the R1–R5 rollout of the async runtime described in `ThreadModel.md`. C
 - [x] Lint refinements (#209) — commit `996cf21`. The uncaught-throws lint now walks an enclosing-try stack and suppresses warnings when any catch arm covers the throw (supertype-aware). The annotation generalized to `@SuppressLint("id")` in `e3d238e`.
 
 **Still open:**
-- TLS-promote the exception chain + drop-chain head for multi-carrier safety. Today's single-carrier model doesn't race; a worker pool would. See *Known gaps* below.
-- Several smaller known gaps and v2 concerns, also below.
+- A few smaller known gaps and v2 concerns — see *Known gaps* below.
 
 ---
 
@@ -35,6 +34,20 @@ Today the compiler synthesizes `Task<T>` at every spawn site (`CajetaTask::getOr
 ### Race fix surfaced en route (commit `ca2b0d7`)
 
 While probing item 20.2, `SpawnDropTests` flaked ~20% as a suite. Probe isolated `free(task)` in `__cajeta_task_drop` as the trigger. Root cause was unrelated to the typing work itself: `ScopeStatement::generateCode` emitted `scope_enter → body → DROPS FIRE → scope_exit` for explicit `scope { }` blocks. But `__cajeta_scope_exit` walks every registered task's `exception_addr` (a pointer INTO the task struct) — so the drop's `free(task)` ran before the scope_exit read through it. Use-after-free that the allocator usually masked. Fixed by reordering `ScopeStatement` to manage its block's drop frame manually and emit drops AFTER `__cajeta_scope_exit`. Method body's fall-through path already had this invariant (scope_exit_to before emitOwnerDrops); only the explicit-scope path was wrong.
+
+### TLS-promote drop-chain head + exception chain head  ✅ complete
+
+`MemoryModel.md` § Known gaps and `AsyncStatus.md` both flagged the drop and exception chain heads as single static globals, "correct under today's single-carrier model but a multi-carrier pool would race." That framing under-stated the actual risk: the carrier thread is already a separate OS thread from main, so even single-carrier work races on the globals when main and the carrier are both active.
+
+Promotion landed on the same pattern `scope_top` already uses — per-fiber slots for code running inside a fiber, a `__thread` TLS slot for the main thread:
+
+- `cajeta_fiber` gained `drop_top` and `exc_top` fields, zero-initialized in `__cajeta_task_run`.
+- `__cajeta_main_drop_top` / `__cajeta_main_exc_top` are `__thread`-qualified per-OS-thread slots.
+- `__cajeta_drop_top_ptr()` / `__cajeta_exc_top_ptr()` helpers return the right slot based on `__cajeta_current_fiber`, mirroring `__cajeta_scope_top_ptr()`.
+- `__cajeta_drop_count` stays a process-global (it's test observability across both threads), but increments and the get/reset accessors now go through `__atomic_*_n(..., __ATOMIC_SEQ_CST)` so drops fired on the carrier are visible to main.
+- All call sites (`drop_push`, `drop_pop_run`, `exc_push`, `exc_pop`, `throw`, `get_thrown`) read/write through the helpers.
+
+New test `SpawnDropTests.carrierDropsAccountedSeparately`: a spawned method declares its own `int32[]` local. The spawned-method's drop fires on the carrier's per-fiber chain; main's two `Task<int32>` drops fire on main's TLS chain. Atomic counter sums them. Without TLS promotion, the carrier's push/pop would corrupt main's chain (shared global head).
 
 ### Out of scope for this rollout
 
@@ -128,7 +141,6 @@ Two alternatives considered and rejected:
 
 ## Known gaps surfaced by the rollout
 
-- **Drop chain head is a single global static, not TLS.** Documented in `MemoryModel.md` § Known gaps. Correct under today's single-carrier model (only one fiber executes at a time) but a multi-carrier pool would race on it. Drop entries themselves are already alloca'd in the fiber's own stack, so the only piece that needs TLS-promotion is the head pointer.
 - **`detach` is still a synchronous pass-through, not a real async fire-and-forget.** Today's `DetachExpression::generateCode` just inline-calls the inner expression. Real detach should enqueue a fiber that outlives the current scope; lands when the doc's "detach requires `#` captures" check is also in place.
 
 ---
