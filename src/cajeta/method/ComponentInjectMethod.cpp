@@ -191,6 +191,34 @@ namespace cajeta {
             break;
         }
 
+        // @PreDestroy registration (AspectModel.md § A11 follow-up).
+        // The user's @PreDestroy method has signature
+        // `void (this:pointer)`, which is ABI-compatible with the
+        // C `void (*)(void*)` the atexit registry expects — no
+        // thunk synthesis needed. Register only on the fresh path
+        // so a singleton lands in the registry exactly once,
+        // matching the @PostConstruct firing pattern. The atexit
+        // registry stays in the runtime's stable memory; tests
+        // fire it explicitly via `Cajeta.runAtExit()`.
+        for (auto& [mkey, m] : parent->getMethods()) {
+            if (!m || !m->findAnnotation("PreDestroy")) continue;
+            if (m->getModifiers().find(STATIC) != m->getModifiers().end()) {
+                continue;
+            }
+            llvm::Function* userFn = m->getLlvmFunction();
+            if (!userFn) {
+                // Force prototype generation so the function pointer
+                // exists by the time the inject helper is called.
+                m->getLlvmFunctionType();
+                userFn = m->getLlvmFunction();
+            }
+            if (!userFn) break;   // give up — leave compile-time error to the spec follow-up
+            llvm::Function* pushFn = module->getRuntimeFunction("__cajeta_atexit_push");
+            if (!pushFn) break;
+            builder->CreateCall(pushFn, {userFn, instance});
+            break;
+        }
+
         // Cache and return the fresh instance.
         builder->CreateStore(instance, singletonGV);
         builder->CreateRet(instance);

@@ -1539,3 +1539,49 @@ void __cajeta_log(int32_t stream, const char* fmt, int64_t argc, const char* con
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// At-exit registry — used by @PreDestroy synthesis (AspectModel.md § A11).
+//
+// The DI singleton @PreDestroy hook needs to fire at "process exit"
+// semantics. libc's atexit() works for AOT binaries but dangles in
+// JIT'd test runs: each test compiles a fresh module that's freed
+// before the next test starts, so any function pointer registered
+// from inside the JIT becomes invalid once that test's LLJIT state
+// is destroyed. Routing through this runtime-internal registry lets
+// the caller (a test, or main() in a real binary) explicitly fire
+// handlers at a safe point and clear the list.
+//
+// Handlers run in LIFO order — the newest registration fires first.
+// Each callback receives the instance pointer captured at register
+// time; the user method must have signature `void (this:pointer)`
+// (the ABI-compatible C type used here is `void (*)(void*)`).
+
+typedef struct CajetaAtExitNode {
+    void (*fn)(void*);
+    void* arg;
+    struct CajetaAtExitNode* next;
+} CajetaAtExitNode;
+
+static CajetaAtExitNode* __cajeta_atexit_head = NULL;
+
+void __cajeta_atexit_push(void (*fn)(void*), void* arg) {
+    if (!fn) return;
+    CajetaAtExitNode* n = (CajetaAtExitNode*) malloc(sizeof(CajetaAtExitNode));
+    if (!n) return;
+    n->fn = fn;
+    n->arg = arg;
+    n->next = __cajeta_atexit_head;
+    __cajeta_atexit_head = n;
+}
+
+void __cajeta_run_atexit_handlers(void) {
+    CajetaAtExitNode* n = __cajeta_atexit_head;
+    __cajeta_atexit_head = NULL;
+    while (n) {
+        CajetaAtExitNode* next = n->next;
+        n->fn(n->arg);
+        free(n);
+        n = next;
+    }
+}

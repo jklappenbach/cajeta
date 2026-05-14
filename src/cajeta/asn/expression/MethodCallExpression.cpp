@@ -440,6 +440,16 @@ namespace cajeta {
                     llvm::Function* fn = module->getRuntimeFunction("__cajeta_drop_count_reset");
                     return builder->CreateCall(fn, {});
                 }
+                // @PreDestroy follow-up: explicit runtime trigger for
+                // the registered atexit handlers. AOT binaries call
+                // this from main() before returning; tests fire it
+                // mid-test to observe @PreDestroy side effects. The
+                // runtime clears its registry after handlers fire so
+                // a second call is a no-op (and safe).
+                if (ns == "Cajeta" && methodCallName == "runAtExit" && parameters.empty()) {
+                    llvm::Function* fn = module->getRuntimeFunction("__cajeta_run_atexit_handlers");
+                    return builder->CreateCall(fn, {});
+                }
                 // Threading sync primitives — Lock. These are low-level
                 // intrinsics; the user-facing `Lock` class (with an
                 // `acquire()` that returns a RAII guard) will wrap them

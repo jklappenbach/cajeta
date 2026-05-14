@@ -9,9 +9,12 @@
 // store, so the hook sees fully-initialized @Inject fields and
 // fires exactly once across any number of inject() calls.
 //
-// (@PreDestroy ships separately — it needs a runtime atexit-
-// style registry that handles JIT-module lifetime correctly,
-// not just a libc atexit call that would dangle on test exit.)
+// @PreDestroy ships through a runtime-internal atexit registry
+// (__cajeta_atexit_push / __cajeta_run_atexit_handlers). The
+// runtime's list lives in stable memory so JIT-module lifetime
+// doesn't dangle the registered function pointers; tests fire
+// the handlers via `Cajeta.runAtExit()` to observe side effects
+// without relying on libc atexit timing.
 //
 
 #include "gtest/gtest.h"
@@ -73,6 +76,45 @@ TEST(LifecycleHookTests, postConstructFiresExactlyOnce) {
         "    }\n"
         "}\n";
     EXPECT_EQ(runI32(src, "test.Once"), 1);
+}
+
+// @PreDestroy registered on first inject; firing Cajeta.runAtExit
+// invokes the user method on the singleton. The hook bumps an
+// instance field; run() returns the post-firing value.
+TEST(LifecycleHookTests, preDestroyFiresOnRunAtExit) {
+    auto src =
+        "package test;\n"
+        "@Component public class Closer {\n"
+        "    public int32 closedFlag;\n"
+        "    public Closer() { closedFlag = 0; return; }\n"
+        "    @PreDestroy\n"
+        "    public void close() { closedFlag = 7; return; }\n"
+        "    public static int32 run() {\n"
+        "        Closer c = __cajeta_inject();\n"
+        "        Cajeta.runAtExit();\n"
+        "        return c.closedFlag;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src, "test.Closer"), 7);
+}
+
+// @PreDestroy DOES NOT fire until runAtExit is called — before
+// that, the flag is still at its ctor value. Mirror test that
+// confirms the handler isn't run eagerly during inject().
+TEST(LifecycleHookTests, preDestroyNotFiredBeforeRunAtExit) {
+    auto src =
+        "package test;\n"
+        "@Component public class Closer {\n"
+        "    public int32 closedFlag;\n"
+        "    public Closer() { closedFlag = 0; return; }\n"
+        "    @PreDestroy\n"
+        "    public void close() { closedFlag = 7; return; }\n"
+        "    public static int32 run() {\n"
+        "        Closer c = __cajeta_inject();\n"
+        "        return c.closedFlag;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src, "test.Closer"), 0);
 }
 
 // A @Component without @PostConstruct still works — the inject
