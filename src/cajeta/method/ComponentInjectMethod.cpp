@@ -164,6 +164,33 @@ namespace cajeta {
             builder->CreateStore(depPtr, slot);
         }
 
+        // @PostConstruct dispatch (AspectModel.md § A11). The spec
+        // is clear that the user's hook runs after every @Inject
+        // field has been assigned — so it lands here, between field
+        // injection above and the singleton-cache store below. The
+        // hook must be an instance method (gets `this`), with no
+        // user-facing parameters. The cached entry below ensures
+        // the hook fires exactly once per singleton.
+        //
+        // v1 takes the first @PostConstruct in declaration order;
+        // multiple hooks on one class are reserved for a later
+        // commit (spec doesn't yet enumerate ordering rules).
+        for (auto& [mkey, m] : parent->getMethods()) {
+            if (!m || !m->findAnnotation("PostConstruct")) continue;
+            // Skip statics — @PostConstruct on a static makes no
+            // sense, and dispatching with `this` would mismatch
+            // the signature. The Method base passes static via the
+            // STATIC modifier set; consult that.
+            if (m->getModifiers().find(STATIC) != m->getModifiers().end()) {
+                continue;
+            }
+            std::vector<ParameterEntry> hookArgs;
+            std::string hookName = m->getName();
+            parent->invokeMethod(hookName, hookArgs,
+                                 /*isConstructor=*/false, instance);
+            break;
+        }
+
         // Cache and return the fresh instance.
         builder->CreateStore(instance, singletonGV);
         builder->CreateRet(instance);
