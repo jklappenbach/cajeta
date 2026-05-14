@@ -7,7 +7,7 @@
 - **Type-safe advice and injection.** Advice receives a typed `JoinPoint<...>` parameterized by the matched method's signature. `@Around` proceed is a typed function pointer, not reflection. The DI graph is checked at compile time — missing implementations, cycles, ambiguous resolution are compile errors.
 - **Compose with the rest of the language.** Drop chain unwinds advice locals on every exit path. Fibers + scope + try/catch all work uniformly because the wrapper is just an ordinary Cajeta method.
 
-## Non-goals (v1)
+## Rejected (v1)
 
 - **String-pattern pointcut expressions** (`execution(* com.example..*.save(..))`). Powerful but stringly-typed, slow to match, and divorces the pointcut from the targeted code. Deferred until annotation-based + type-based pointcuts prove insufficient — probably never.
 - **Runtime proxies / load-time weaving.** Architectural rejection. Aspects are a compile-time concern.
