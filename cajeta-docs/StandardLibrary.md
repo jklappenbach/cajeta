@@ -72,7 +72,7 @@ Immutable, encoding-aware character sequence. Internal storage: UTF-8 byte
 array plus a cached code-point count. A `String` carries a tagged mode
 internally — **owned** (heap-allocated; `new String(...)`) or **view**
 (borrowed over bytes that live elsewhere; `String.viewOf(...)`). See
-"Strings inside structs" below for the view path.
+"Strings over struct byte fields" below for the view path.
 
 ```cajeta
 public final class String implements Collection<int32>,
@@ -136,14 +136,20 @@ works and so `count()` is consistent across the rest of the collection
 hierarchy. Iteration is over code points, not bytes — bytes are accessible via
 `getBytes(Encoding.UTF_8)` when needed.
 
-#### Strings inside structs — zero-alloc views over the struct's bytes
+#### Strings over struct byte fields
 
-The earlier draft of this section proposed two patterns: `byte[N]` for
-fixed-width fields (convert to `String` at the boundary) and a special
-"variable-size *terminal* `String` field" that required compiler magic
-plus a "must be last" / "at most one" rule. That second pattern is now
-gone — replaced by a cleaner approach that uses `String` view-mode
-construction over the struct's own byte fields.
+Structs don't have `String` fields. A struct's job is to be an exact
+byte layout that overlays cleanly onto a buffer; an embedded heap
+`String` pointer would break that contract, and the earlier "inline
+variable-size `String` field" proposal required compiler magic plus a
+"must be last" / "at most one" rule that ate field-ordering freedom.
+Both are gone.
+
+The replacement: struct fields are plain bytes (`byte[N]` for
+fixed-width, `byte[?]` for a variable tail). At access time, code
+constructs a `String` **view** over the field — no allocation, no
+memcpy, the view borrows the struct's bytes for as long as the
+struct is alive.
 
 **The model.** A `String` carries a tagged internal representation:
 **owned** (heap-allocated, the existing path) or **view** (a borrow
