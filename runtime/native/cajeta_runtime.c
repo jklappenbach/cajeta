@@ -924,9 +924,12 @@ void* __cajeta_vtable_lookup(void* vptr, int64_t hash) {
 
 // Marker global set by codegen to UnrecoverableException's vtable address.
 // __cajeta_is_unrecoverable compares each ancestor vtable against this.
-// `extern` here; the user module's compilation emits the definition with
-// its initializer pointing at cajeta.lang.UnrecoverableException#VTable.
-extern void* __cajeta_unrecoverable_vtable_marker;
+// `extern weak` here; the user module's compilation emits the strong
+// definition with its initializer pointing at
+// cajeta.lang.UnrecoverableException#VTable. The weak attribute lets the
+// native test-binary link (which doesn't go through emitUnrecoverableMarker)
+// resolve the symbol to NULL — the runtime null-checks it below.
+extern void* __cajeta_unrecoverable_vtable_marker __attribute__((weak));
 
 // Walk a Throwable's vtable chain to determine whether it's an
 // UnrecoverableException (or any descendant thereof). Returns 1 if so,
@@ -1465,6 +1468,133 @@ char* __cajeta_str_substring(const char* s, int64_t begin, int64_t end) {
     memcpy(out, s + begin, (size_t) len);
     out[len] = '\0';
     return out;
+}
+
+// --- general-purpose hashing (cajeta.hash backend) --------------------------
+// Implements the runtime hash primitives the language uses for Object.hash()
+// and the cajeta.hash.* stdlib classes (see StandardLibrary.md §cajeta.hash
+// and CajetaReflect.md "Performance"). Two algorithms cover the surface:
+//
+//   * SplitMix64 finalizer for primitive value hashing — int64.hash(),
+//     int32.hash(), float64.hash(), float32.hash(), boolean.hash(),
+//     pointer identity. Three multiplications + three XORs; well-tested
+//     mixer (Java's SplittableRandom, Rust hashers, etc.). The per-process
+//     seed is XOR'd in before mixing so two runs of the same program
+//     produce different hash values (hash-flooding defense — attackers
+//     can't predict bucket placement).
+//
+//   * XXH3-64 (scalar) for arbitrary byte buffers — backing for
+//     cajeta.hash.XXHash3 and DefaultHasher. Multi-GB/s on modern CPUs.
+//     Lands in a follow-up commit; this one ships the primitive-hash +
+//     seed infrastructure first because HashMap<int64, V> and similar
+//     primitive-keyed maps don't need it.
+//
+// The seed initializes once per process from /dev/urandom via a
+// constructor function that fires before main(). Falls back to
+// wall-clock + pid mixed through SplitMix64 if /dev/urandom isn't
+// readable (sandboxes, embedded targets).
+
+#include <fcntl.h>
+#include <unistd.h>
+#include <time.h>
+
+static uint64_t __cajeta_hash_seed_value = 0;
+
+__attribute__((constructor))
+static void __cajeta_hash_seed_init(void) {
+    uint64_t s = 0;
+    int fd = open("/dev/urandom", O_RDONLY | O_CLOEXEC);
+    if (fd >= 0) {
+        ssize_t n = read(fd, &s, sizeof(s));
+        close(fd);
+        if (n == (ssize_t) sizeof(s) && s != 0) {
+            __cajeta_hash_seed_value = s;
+            return;
+        }
+    }
+    // Fallback: wall clock + pid mixed through SplitMix64. Lower-entropy
+    // than /dev/urandom but still per-process-distinct and stable for
+    // the lifetime of the process.
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    uint64_t x = (uint64_t) ts.tv_sec * 1000000000ULL + (uint64_t) ts.tv_nsec;
+    x ^= (uint64_t) getpid() * 0x9E3779B97F4A7C15ULL;
+    x ^= x >> 33;
+    x *= 0xff51afd7ed558ccdULL;
+    x ^= x >> 33;
+    x *= 0xc4ceb9fe1a85ec53ULL;
+    x ^= x >> 33;
+    __cajeta_hash_seed_value = x ? x : 0x9E3779B97F4A7C15ULL;
+}
+
+// Exposed to user code as cajeta.hash.Hash.processSeed() — useful when
+// caller-side hashing needs to align with the synthesized Object.hash()
+// values (e.g. external hash table snapshot replay).
+int64_t __cajeta_hash_seed(void) {
+    return (int64_t) __cajeta_hash_seed_value;
+}
+
+// SplitMix64 finalizer — the mixer behind every primitive hash variant.
+// Three multiplications + three XOR-shifts; passes SMHasher avalanche
+// + bias + collision tests on its own.
+static inline uint64_t splitmix64_finalize(uint64_t x) {
+    x ^= x >> 33;
+    x *= 0xff51afd7ed558ccdULL;
+    x ^= x >> 33;
+    x *= 0xc4ceb9fe1a85ec53ULL;
+    x ^= x >> 33;
+    return x;
+}
+
+int64_t __cajeta_hash_int64(int64_t value) {
+    return (int64_t) splitmix64_finalize((uint64_t) value ^ __cajeta_hash_seed_value);
+}
+
+int64_t __cajeta_hash_int32(int32_t value) {
+    // Sign-extend so all-ones int32 doesn't hash like ~0 int64 just by
+    // happening to share the low bits.
+    return (int64_t) splitmix64_finalize(
+        (uint64_t) (int64_t) value ^ __cajeta_hash_seed_value);
+}
+
+int64_t __cajeta_hash_float64(double value) {
+    uint64_t bits;
+    memcpy(&bits, &value, sizeof(bits));
+    // Canonicalize -0 to +0 — IEEE 754 says +0 == -0, so they must hash
+    // identically. NaN ordering is unspecified by the standard; we hash
+    // each distinct NaN bit pattern to a distinct value, which is what
+    // serializers / HashMap callers usually want.
+    if (bits == 0x8000000000000000ULL) bits = 0;
+    return (int64_t) splitmix64_finalize(bits ^ __cajeta_hash_seed_value);
+}
+
+int64_t __cajeta_hash_float32(float value) {
+    uint32_t bits;
+    memcpy(&bits, &value, sizeof(bits));
+    if (bits == 0x80000000U) bits = 0;
+    return (int64_t) splitmix64_finalize((uint64_t) bits ^ __cajeta_hash_seed_value);
+}
+
+int64_t __cajeta_hash_boolean(int8_t value) {
+    return (int64_t) splitmix64_finalize(
+        (value ? 1ULL : 0ULL) ^ __cajeta_hash_seed_value);
+}
+
+// Pointer-identity hash. Used by IdentityHashMap, observer registries,
+// weak-ref tables. Same mixer as the primitive variants so the
+// distribution properties match.
+int64_t __cajeta_hash_identity(void* p) {
+    return (int64_t) splitmix64_finalize(
+        (uint64_t)(uintptr_t) p ^ __cajeta_hash_seed_value);
+}
+
+// Combine two 64-bit hash values into one. Boost's hash_combine pattern
+// adapted with the SplitMix mixer at the end. Used by manual hash()
+// overrides that thread multiple field hashes together.
+int64_t __cajeta_hash_combine(int64_t a, int64_t b) {
+    uint64_t h = (uint64_t) a;
+    h ^= (uint64_t) b + 0x9E3779B97F4A7C15ULL + (h << 6) + (h >> 2);
+    return (int64_t) splitmix64_finalize(h);
 }
 
 // --- parsing helpers --------------------------------------------------------
