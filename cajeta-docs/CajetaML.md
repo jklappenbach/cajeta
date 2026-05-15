@@ -1,6 +1,6 @@
 # CajetaML.md
 
-A design for `cajeta-ml`, a separate-from-stdlib library scoped to make
+A design for `cajeta.ml`, a separate-from-stdlib library scoped to make
 cajeta a natural choice for machine-learning research and production:
 n-dimensional tensors, linear algebra, statistics, regression and
 classical ML, automatic differentiation, neural networks, geometry
@@ -14,7 +14,7 @@ precision-aware casting and interop surface that ML workloads need.
 
 Implementation lands incrementally as separate `.cajeta` files, the
 math foundation under `./runtime/src/cajeta/math/`, the ML library
-under `./libraries/cajeta-ml/src/` (separate tree — `cajeta-ml` ships
+under `./libraries/cajeta.ml/src/` (separate tree — `cajeta.ml` ships
 as its own package, not a stdlib component).
 
 ## Why a separate library
@@ -26,7 +26,7 @@ programs never touch them, the surface area is huge, the dependency
 weight is real (BLAS, LAPACK, eventually accelerator runtimes), and
 the API churn cycle is faster than stdlib should accept.
 
-Keeping `cajeta-ml` separate means: independent versioning, optional
+Keeping `cajeta.ml` separate means: independent versioning, optional
 dependency on accelerator backends, room for the API to evolve without
 stdlib stability constraints, and clarity for users about what they're
 opting into.
@@ -35,7 +35,7 @@ The math foundation (boxed primitives, precision-aware casting) stays
 in `cajeta.math` because every program with a hash map of doubles
 benefits from `Double` being a real Object — not just ML programs.
 
-## Goals (cajeta-ml)
+## Goals (cajeta.ml)
 
 - **Numpy parity for the everyday surface.** Arithmetic, broadcasting,
   reshape, slicing, reductions, linalg, fft, random, basic stats. If a
@@ -64,7 +64,7 @@ benefits from `Double` being a real Object — not just ML programs.
   OpenCL / oneAPI) but v1 lowers everything through the cajeta runtime
   on CPU, optionally vectorized via LLVM intrinsics.
 - **Distributed training.** Multi-host / multi-GPU coordination
-  belongs in a follow-up library that builds on `cajeta-ml`.
+  belongs in a follow-up library that builds on `cajeta.ml`.
 - **Pre-trained model zoo.** No bundled weights. The infrastructure
   supports loading from external sources (npy / safetensors / ONNX
   later); we don't curate a model library.
@@ -215,7 +215,7 @@ public enum RoundingMode {
 ```
 
 `STOCHASTIC` rounding is non-deterministic by design (samples from the
-RNG returned by `cajeta-ml.random.default()`); it's the standard
+RNG returned by `cajeta.ml.random.default()`); it's the standard
 technique for low-precision training to avoid systematic bias when
 quantizing gradients and weights.
 
@@ -262,55 +262,55 @@ cajeta.math.constants  — PI, E, TAU, GOLDEN, LN2, LN10, etc. as
 
 ---
 
-## cajeta-ml package layout
+## cajeta.ml package layout
 
 ```
-cajeta-ml.tensor          — N-d arrays with dtype, shape, strides;
+cajeta.ml.tensor          — N-d arrays with dtype, shape, strides;
                              broadcasting, slicing, reductions; the numpy core
-cajeta-ml.linalg          — matmul, dot, decompositions (LU, QR, SVD,
+cajeta.ml.linalg          — matmul, dot, decompositions (LU, QR, SVD,
                              Cholesky, eigvals), solvers, norms,
                              pseudoinverse
-cajeta-ml.random          — RNGs (PCG, Xoshiro), distributions
+cajeta.ml.random          — RNGs (PCG, Xoshiro), distributions
                              (uniform, normal, gamma, beta, multinomial,
                              dirichlet, ...), seeding + reproducibility
-cajeta-ml.stats           — descriptive (mean, std, var, quantiles,
+cajeta.ml.stats           — descriptive (mean, std, var, quantiles,
                              skew, kurtosis), distributions (pdf/cdf/
                              ppf), hypothesis tests (t, chi-sq, KS,
                              Mann-Whitney, ANOVA), correlation, EWMA
-cajeta-ml.fft             — forward / inverse FFT (1D / 2D / N-D),
+cajeta.ml.fft             — forward / inverse FFT (1D / 2D / N-D),
                              real FFT, DCT, windowing
-cajeta-ml.regression      — linear, ridge, lasso, elastic-net, logistic,
+cajeta.ml.regression      — linear, ridge, lasso, elastic-net, logistic,
                              polynomial; sklearn-shaped estimators
-cajeta-ml.cluster         — k-means, k-means++, mini-batch k-means,
+cajeta.ml.cluster         — k-means, k-means++, mini-batch k-means,
                              hierarchical (single/complete/average/Ward),
                              DBSCAN, OPTICS, GMM
-cajeta-ml.classify        — kNN, SVM (linear / kernel), naive Bayes
+cajeta.ml.classify        — kNN, SVM (linear / kernel), naive Bayes
                              (gaussian / multinomial / bernoulli),
                              discriminant analysis
-cajeta-ml.tree            — decision trees, random forests, extra
+cajeta.ml.tree            — decision trees, random forests, extra
                              trees, gradient boosting (sklearn-shape)
-cajeta-ml.preprocess      — scaling (standard, min-max, robust),
+cajeta.ml.preprocess      — scaling (standard, min-max, robust),
                              encoding (one-hot, ordinal), imputation,
                              PCA, t-SNE, UMAP
-cajeta-ml.metrics         — accuracy, precision, recall, F1, AUC,
+cajeta.ml.metrics         — accuracy, precision, recall, F1, AUC,
                              MSE, MAE, R^2, log-loss, confusion matrix
-cajeta-ml.autograd        — Tensor with grad tracking, backward(),
+cajeta.ml.autograd        — Tensor with grad tracking, backward(),
                              grad accumulation, no-grad scopes,
                              checkpointing
-cajeta-ml.nn              — Module base, layers (Linear, Conv*, BN,
+cajeta.ml.nn              — Module base, layers (Linear, Conv*, BN,
                              LayerNorm, Dropout, Embedding, attention),
                              activations, losses, optimizers (SGD, Adam,
                              AdamW, RMSProp, LAMB), LR schedulers,
                              parameter init
-cajeta-ml.geom            — quaternion, vec2/vec3/vec4, mat2/mat3/mat4,
+cajeta.ml.geom            — quaternion, vec2/vec3/vec4, mat2/mat3/mat4,
                              SE3 / SO3, axis-angle, Euler angles,
                              slerp, quaternion <-> matrix conversions
-cajeta-ml.io              — npy / npz read+write (numpy-compatible),
+cajeta.ml.io              — npy / npz read+write (numpy-compatible),
                              safetensors (later), csv loaders, image
                              loaders (later)
-cajeta-ml.signal          — convolution, correlation, filter design,
+cajeta.ml.signal          — convolution, correlation, filter design,
                              windowing, resampling
-cajeta-ml.optim           — separate from cajeta-ml.nn.optim — generic
+cajeta.ml.optim           — separate from cajeta.ml.nn.optim — generic
                              scalar / vector optimization (BFGS,
                              L-BFGS, Nelder-Mead, simulated annealing,
                              differential evolution)
@@ -318,9 +318,9 @@ cajeta-ml.optim           — separate from cajeta-ml.nn.optim — generic
 
 ---
 
-## cajeta-ml.tensor
+## cajeta.ml.tensor
 
-The foundational type. Everything in cajeta-ml flows through Tensor.
+The foundational type. Everything in cajeta.ml flows through Tensor.
 
 ```cajeta
 public final class Tensor<T> implements Collection<T> {
@@ -418,14 +418,14 @@ header for shape / strides / offset. Views (slice / reshape /
 transpose) share the underlying buffer; only `astype` and explicit
 copies allocate.
 
-`Tensor<T>` parameterizing on the cajeta-ml.tensor element type
+`Tensor<T>` parameterizing on the cajeta.ml.tensor element type
 (`int32`, `float32`, etc., not the boxed forms) lets the compiler
 specialize hot kernels per dtype. The `DType` runtime tag covers the
 generic-over-dtype API surface (`astype`, IO).
 
 ---
 
-## cajeta-ml.autograd
+## cajeta.ml.autograd
 
 PyTorch-style dynamic graphs. A `Tensor` carries a `grad` field and a
 `gradFn` reference; operations build the graph implicitly; `backward()`
@@ -457,7 +457,7 @@ softmax, log, sum, mean, ...) ship as built-ins.
 
 ---
 
-## cajeta-ml.nn
+## cajeta.ml.nn
 
 ```cajeta
 public abstract class Module {
@@ -512,7 +512,7 @@ momentum + Nesterov), `Adam`, `AdamW`, `RMSProp`, `Adagrad`, `LAMB`.
 
 ---
 
-## cajeta-ml.regression — sklearn estimator contract
+## cajeta.ml.regression — sklearn estimator contract
 
 ```cajeta
 public interface Estimator<X, Y> {
@@ -539,7 +539,7 @@ classical-ML model honors so users can swap implementations cleanly.
 
 ---
 
-## cajeta-ml.geom — quaternions and transforms
+## cajeta.ml.geom — quaternions and transforms
 
 ```cajeta
 public final class Quaternion<T> {
@@ -593,41 +593,41 @@ implementation.
 A reasonable order, given dependencies:
 
 1. **cajeta.math expansion: boxed primitives + RoundingMode + casting
-   API.** No cajeta-ml code can land cleanly without these. The
+   API.** No cajeta.ml code can land cleanly without these. The
    intrinsic-fp tests already in the suite (`Fp*Tests`) cover the
    underlying lowering; this step adds the user-visible Object API.
 2. **cajeta.math: BigInteger, BigDecimal, Rational.** Standalone,
    useful outside ML, lets later steps reuse the arbitrary-precision
    path (e.g. exact statistical computations).
-3. **cajeta-ml.tensor.** The foundation. Strided storage, broadcasting,
+3. **cajeta.ml.tensor.** The foundation. Strided storage, broadcasting,
    slicing, reductions, the dtype tag. Element-wise ops as a baseline
    (no autograd yet, no linalg yet).
-4. **cajeta-ml.linalg.** matmul + the basic decompositions. Wraps
+4. **cajeta.ml.linalg.** matmul + the basic decompositions. Wraps
    reference-implementation kernels initially; LAPACK / OpenBLAS
    backend can plug in later behind the same surface.
-5. **cajeta-ml.random + cajeta-ml.stats.** Self-contained, low
+5. **cajeta.ml.random + cajeta.ml.stats.** Self-contained, low
    dependency, useful immediately. Distributions need `linalg` for
    multivariate cases.
-6. **cajeta-ml.io: npy / npz.** Interop with the existing numpy
+6. **cajeta.ml.io: npy / npz.** Interop with the existing numpy
    ecosystem unblocks dataset use. Single-file format, well-specified.
-7. **cajeta-ml.regression + cajeta-ml.metrics.** Classical ML, no
+7. **cajeta.ml.regression + cajeta.ml.metrics.** Classical ML, no
    autograd needed, exercises the estimator contract end-to-end.
-8. **cajeta-ml.cluster + cajeta-ml.classify + cajeta-ml.tree.**
+8. **cajeta.ml.cluster + cajeta.ml.classify + cajeta.ml.tree.**
    Round out the sklearn-equivalent surface. Each is independent;
    ship as you go.
-9. **cajeta-ml.geom.** Quaternions, Vec/Mat, SE3. Independent of the
+9. **cajeta.ml.geom.** Quaternions, Vec/Mat, SE3. Independent of the
    rest of the stack; can land in parallel with classical ML.
-10. **cajeta-ml.autograd.** The Variable wrapper, backward graph,
-    function registration. Built on `cajeta-ml.tensor`.
-11. **cajeta-ml.nn.** Layers, optimizers, training loop. Built on
+10. **cajeta.ml.autograd.** The Variable wrapper, backward graph,
+    function registration. Built on `cajeta.ml.tensor`.
+11. **cajeta.ml.nn.** Layers, optimizers, training loop. Built on
     autograd. Transformer block early so language-model workloads
     are reachable.
-12. **cajeta-ml.fft + cajeta-ml.signal.** Numerical-methods-flavored
+12. **cajeta.ml.fft + cajeta.ml.signal.** Numerical-methods-flavored
     additions. Independent of the ML stack.
-13. **cajeta-ml.preprocess.** PCA / t-SNE / UMAP. Needs `linalg`
+13. **cajeta.ml.preprocess.** PCA / t-SNE / UMAP. Needs `linalg`
     + `random`. Round out for end-to-end ML pipelines.
 14. **Accelerator backend (separate effort).** Replace the CPU
-    kernels behind an abstraction so the same `cajeta-ml.tensor` API
+    kernels behind an abstraction so the same `cajeta.ml.tensor` API
     targets GPU / NPU. Out of scope for v1.
 
 The gating step is (1) — every other layer touches boxed numerics,
@@ -650,8 +650,8 @@ casting, and rounding. It's small in surface area but foundational.
   for the dtype-generic API.
 - **Stochastic rounding RNG sourcing.** `RoundingMode.STOCHASTIC`
   needs an RNG; current sketch reaches into
-  `cajeta-ml.random.default()`. That couples cajeta.math to
-  cajeta-ml. Alternative: stochastic rounding API takes an explicit
+  `cajeta.ml.random.default()`. That couples cajeta.math to
+  cajeta.ml. Alternative: stochastic rounding API takes an explicit
   RNG argument and isn't a `RoundingMode` enum value at all (it's a
   runtime-only mode that can't be requested via simple casts). Worth
   a decision before locking the API.
