@@ -54,7 +54,8 @@ cajeta.thread          — Thread, Fiber, Sleep, Mutex (extends what
 cajeta.math            — boxed Object equivalents for every native numeric
                          type (including the fp4 / fp6 / fp8 variants),
                          RoundingMode, precision-aware casting, BigInteger,
-                         BigDecimal, Rational, Math intrinsics. See
+                         BigDecimal, Rational, Math intrinsics; Random +
+                         SecureRandom; Guid32 / Guid64 / Guid128. See
                          CajetaML.md "Prerequisite: cajeta.math expansion"
                          for the full surface.
 ```

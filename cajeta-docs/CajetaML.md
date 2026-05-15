@@ -260,6 +260,250 @@ cajeta.math.constants  — PI, E, TAU, GOLDEN, LN2, LN10, etc. as
                          Float64 constants
 ```
 
+### Random number generation
+
+A general-purpose RNG for stdlib code — counters, sampling,
+shuffling, jitter, the everyday sources of stochasticity that
+have nothing to do with ML training (`cajeta.ml.random` covers
+ndarray-shaped sampling) or cryptography (`SecureRandom`, below).
+Mutable RNG object with `nextX()` methods, the shape Java / C++ /
+most stdlibs converged on.
+
+```cajeta
+public final class Random {
+    public Random();                              // seeded from entropy
+    public Random(int64 seed);                    // reproducible
+
+    // Algorithm choice via factory. Default = PCG64 (good
+    // statistical quality, fast, small state); Xoshiro256** as
+    // an alternative for callers wanting maximum throughput.
+    public static Random pcg64(int64 seed);
+    public static Random xoshiro256ss(int64 seed);
+
+    // Primitives — return values across the type's full range.
+    public boolean nextBoolean();
+    public int8    nextInt8();
+    public int16   nextInt16();
+    public int32   nextInt32();
+    public int64   nextInt64();
+    public float32 nextFloat32();                 // [0, 1)
+    public float64 nextFloat64();                 // [0, 1)
+
+    // Bounded variants. `nextInt32(bound)` returns [0, bound);
+    // `nextInt32(low, high)` returns [low, high). Rejection
+    // sampling so the distribution is exactly uniform (not the
+    // modulo-bias trap).
+    public int32 nextInt32(int32 boundExclusive);
+    public int32 nextInt32(int32 lowInclusive, int32 highExclusive);
+    public int64 nextInt64(int64 boundExclusive);
+    public int64 nextInt64(int64 lowInclusive, int64 highExclusive);
+
+    // Common distributions. Heavier sampling — multivariate,
+    // gamma, beta, etc. — lives in cajeta.ml.random; this is
+    // the everyday set.
+    public float64 nextGaussian(float64 mean = 0.0, float64 stddev = 1.0);
+    public float64 nextExponential(float64 lambda);
+
+    // Bytes (filling a buffer in one shot is faster than per-byte).
+    public void nextBytes(byte[] buffer);
+
+    // In-place shuffle (Fisher-Yates).
+    public <T> void shuffle(Array<T> arr);
+
+    // State save / restore — for reproducible test failures.
+    public byte[] saveState();
+    public void   restoreState(byte[] state);
+}
+
+// Process-global default. Per-fiber instance, lazily seeded from
+// the OS entropy source on first access, so concurrent fibers
+// don't contend on a shared RNG and don't produce identical
+// streams from a shared seed.
+public static Random Random.defaultRandom();
+```
+
+For cryptographic use:
+
+```cajeta
+public final class SecureRandom {
+    // Always seeded from the OS entropy source; never accepts
+    // a user seed. Backed by /dev/urandom on Linux,
+    // BCryptGenRandom on Windows, SecRandomCopyBytes on macOS.
+    public SecureRandom();
+
+    // Same primitive surface as Random, minus the bounded
+    // convenience helpers (callers needing crypto-grade ints
+    // typically want raw bytes, not range-bounded scalars).
+    public void    nextBytes(byte[] buffer);
+    public int64   nextInt64();
+    public float64 nextFloat64();
+}
+```
+
+Algorithm pinning is intentional: the default RNG's algorithm is
+documented and fixed across versions (PCG64 unless a future
+specification calls out a replacement) so a saved seed produces
+the same stream three years later. Quality / speed comparisons
+between PCG64 and Xoshiro256** are documented; users pick by name
+when it matters.
+
+### GUID — 32-bit, 64-bit, 128-bit globally unique identifiers
+
+Three sizes covering the spectrum from "small ID with low collision
+risk acceptable" through "snowflake-shaped sortable ID for high-
+volume systems" through "standard UUID, effectively zero collision
+risk."
+
+```
+cajeta.math.Guid32        — 4-byte globally unique identifier
+cajeta.math.Guid64        — 8-byte globally unique identifier
+cajeta.math.Guid128       — 16-byte UUID (RFC 4122 compatible)
+```
+
+#### `Guid32`
+
+4 bytes. ~4.3 billion possible values; collision probability ≈ 50%
+at ~77,000 generated IDs (birthday bound). Suitable for short-lived
+IDs (request IDs, transient objects, log correlation), local
+sequences augmented with a time epoch, or any scope where the
+generating process can detect and recover from collision.
+
+```cajeta
+public final class Guid32 implements Comparable<Guid32> {
+    // Random — 32 bits from the default Random source.
+    public static Guid32 random();
+    public static Guid32 random(Random rng);
+
+    // Time-ordered: 22-bit second-resolution timestamp (rolls
+    // over every ~48 days; treat as ephemeral) + 10-bit per-
+    // process counter. Sortable, monotonic per process.
+    public static Guid32 timeOrdered();
+
+    // Construction from bits / bytes for round-tripping.
+    public static Guid32 of(int32 bits);
+    public static Guid32 of(byte[4] bytes);
+
+    public int32   bits();
+    public byte[4] bytes();
+
+    // Hex representation: 8 lowercase hex digits.
+    public String toString();
+    public static Guid32 parse(String hex);
+
+    public boolean operator==(Object obj);
+    public int64   hash();
+    public int32   compare(Guid32 other);
+}
+```
+
+#### `Guid64`
+
+8 bytes. ~1.8 × 10^19 possible values; collision probability ≈ 50%
+at ~5 billion. Snowflake-shape time-ordered variant suitable for
+high-volume databases (sortable index, no UUID v4's pathological
+b-tree fragmentation). Random variant available for cases where
+ordering would leak information.
+
+```cajeta
+public final class Guid64 implements Comparable<Guid64> {
+    // Random — 64 bits from the default Random source.
+    public static Guid64 random();
+    public static Guid64 random(Random rng);
+
+    // Snowflake-shape time-ordered: 41-bit millisecond timestamp
+    // (~69-year range from a configurable epoch) + 13-bit node
+    // ID + 10-bit per-millisecond counter. Sortable, monotonic
+    // per-process even at millions of IDs/second.
+    public static Guid64 snowflake();
+    public static Guid64 snowflake(int16 nodeId);
+
+    // Construction from bits / bytes.
+    public static Guid64 of(int64 bits);
+    public static Guid64 of(byte[8] bytes);
+
+    public int64   bits();
+    public byte[8] bytes();
+
+    // Hex representation: 16 lowercase hex digits.
+    public String toString();
+    public static Guid64 parse(String hex);
+
+    // Snowflake field accessors (return zero / null on a
+    // random-shape instance).
+    public int64 timestampMillis();
+    public int16 nodeId();
+    public int16 counter();
+
+    public boolean operator==(Object obj);
+    public int64   hash();
+    public int32   compare(Guid64 other);
+}
+```
+
+#### `Guid128`
+
+16 bytes. RFC 4122 UUID compatible. Effectively zero collision
+risk for any realistic generation rate. The default for IDs that
+cross system boundaries (database keys exposed externally,
+distributed-system identifiers, file references, session tokens
+backed by SecureRandom).
+
+```cajeta
+public final class Guid128 implements Comparable<Guid128> {
+    // RFC 4122 v4 — 122 bits of randomness from the default
+    // SecureRandom source (since Guid128s often back externally-
+    // visible identifiers, the higher entropy floor matters).
+    public static Guid128 v4();
+    public static Guid128 v4(Random rng);
+
+    // RFC 9562 v7 — 48-bit unix-millisecond timestamp + 12 bits
+    // sub-millisecond + 62 bits randomness. Sortable, retains
+    // creation-time information, replaces v1 (which leaked MAC
+    // address) and v6 (less commonly supported).
+    public static Guid128 v7();
+
+    // Nil / Max for absent / wildcard semantics.
+    public static Guid128 nil();              // all zero
+    public static Guid128 max();              // all ones
+
+    // Construction from bits / bytes.
+    public static Guid128 of(int64 high, int64 low);
+    public static Guid128 of(byte[16] bytes);
+
+    public int64    high();
+    public int64    low();
+    public byte[16] bytes();
+
+    // Standard 8-4-4-4-12 hex representation:
+    //   "550e8400-e29b-41d4-a716-446655440000"
+    public String toString();
+    public static Guid128 parse(String text);
+
+    // Variant + version inspection.
+    public int8 variant();                    // RFC 4122 = 1
+    public int8 version();                    // 4 or 7 for our generators
+
+    public boolean operator==(Object obj);
+    public int64   hash();
+    public int32   compare(Guid128 other);
+}
+```
+
+#### Choosing between sizes
+
+| Use case                                            | Recommended  |
+|-----------------------------------------------------|--------------|
+| Short-lived request IDs, log correlation            | `Guid32`     |
+| Database keys for high-volume tables                | `Guid64`     |
+| Externally-visible identifiers, file references     | `Guid128.v4` |
+| Database keys where time ordering improves indexes  | `Guid128.v7` |
+| Session tokens, secrets                             | `Guid128.v4` |
+
+`Guid32` and `Guid64` carry collision risk that's acceptable for
+their typical uses; `Guid128` is the "won't collide" tier. The
+explicit size in the type name makes the trade-off visible at
+every read site instead of buried in choice of generator.
+
 ---
 
 ## cajeta.ml package layout
