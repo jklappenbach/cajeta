@@ -23,7 +23,11 @@ implementation lands incrementally as separate `.cajeta` files under
 
 - Locale-aware collation, normalization (Unicode NFC/NFD), full ICU.
 - Reflection / runtime annotation introspection beyond what AspectModel.md
-  already specifies.
+  already specifies — covered in detail in **CajetaReflect.md**. The
+  `cajeta.reflect` package surfaces the RTTI tables the compiler already
+  emits (Class, Field, Method, Constructor, Annotation, generic retention,
+  reflective invoke). Listed here in non-goals because the stdlib package
+  has its own design doc; not because reflection itself is out of scope.
 - A regex engine in this pass — defer to a later library.
 - Async primitives beyond `Thread.sleep` / `Fiber.sleep` — full reactor lives
   in cajeta-docs/ThreadModel.md.
@@ -80,6 +84,14 @@ cajeta.hash            — Hasher interface; XXHash3 (fast general-purpose,
                          (SHA-2, SHA-3, BLAKE2/3) and AEAD / signature /
                          KDF primitives live in the future cajeta.crypto
                          peer library.
+cajeta.reflect         — runtime type introspection: Class<T>, Field,
+                         Method, Constructor, Parameter, Annotation,
+                         TypeParameter / TypeArgument (with generic
+                         retention, not erasure), Modifiers; reflective
+                         get / set / invoke / newInstance; Class.forName
+                         lookup; @Reflectable / @Retained / UnsafeReflect
+                         access-control surface. See CajetaReflect.md
+                         for the full design.
 ```
 
 ---
