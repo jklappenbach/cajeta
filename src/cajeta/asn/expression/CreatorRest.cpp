@@ -41,9 +41,15 @@ namespace cajeta {
         // bytes), and the first virtual call segfaults.
         if (auto klass = dynamic_pointer_cast<CajetaClass>(targetType)) {
             if (llvm::GlobalVariable* vtable = klass->getVirtualTableGlobal()) {
+                // Cross-module: when targetType lives in a different
+                // llvm::Module than where the `new` is being emitted
+                // (multi-source compile), substitute a module-local
+                // extern decl so the merge can reconcile it.
+                llvm::Constant* vtableRef = CajetaModule::ensureGlobalInModule(
+                    module->getLlvmModule(), vtable);
                 llvm::Value* vtablePtrSlot = builder->CreateStructGEP(
                     structTy, instance, /*idx=*/0, "vtable_slot");
-                builder->CreateStore(vtable, vtablePtrSlot);
+                builder->CreateStore(vtableRef, vtablePtrSlot);
             }
         }
 
@@ -75,7 +81,8 @@ namespace cajeta {
         }
         if (auto klass = dynamic_pointer_cast<CajetaClass>(targetType)) {
             string ctorName = targetType->getQName()->getTypeName();
-            klass->invokeMethod(ctorName, entries, /*isConstructor=*/true, instance);
+            klass->invokeMethod(ctorName, entries, /*isConstructor=*/true, instance,
+                                /*callerModule=*/module);
         }
         return instance;
     }

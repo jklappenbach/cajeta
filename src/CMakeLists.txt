@@ -173,23 +173,26 @@ list(APPEND GENERATED_SOURCES ${CAJETA_RT_SRC})
 # Keeping them as real files (rather than inline C strings) makes the
 # stdlib reviewable / editable like any other cajeta code.
 set(CAJETA_STDLIB_ROOT ${PROJECT_SOURCE_DIR}/runtime/src)
-# Explicit ordered list rather than a recursive glob, for two reasons:
-#   (a) The runtime/src tree also contains skeletal stubs (codec/,
-#       lang/string/, math/) that aren't parseable yet — embedding those
-#       would crash the compiler at first use.
-#   (b) Order matters: base classes must parse before subclasses so the
-#       subclass's generatePrototype sees the parent's full property list
-#       when laying out its inherited-fields prefix. Cross-file forward
-#       references for type-as-field work via the placeholder mechanism,
-#       but inheritance doesn't yet — a subclass struct is laid out at
-#       end-of-visitClassDeclaration, so the base must already be filled
-#       in. Topological order of stdlib files keeps that invariant.
-# Add new files in dependency order as the stdlib grows.
-set(CAJETA_STDLIB_FILES
-        ${CAJETA_STDLIB_ROOT}/cajeta/error/Throwable.cajeta
-        ${CAJETA_STDLIB_ROOT}/cajeta/error/Exception.cajeta
-        ${CAJETA_STDLIB_ROOT}/cajeta/error/RecoverableException.cajeta
-        ${CAJETA_STDLIB_ROOT}/cajeta/error/UnrecoverableException.cajeta)
+# Explicit subset list rather than a recursive glob: the runtime/src tree
+# also contains skeletal stubs (codec/, lang/string/, math/) that aren't
+# parseable yet — embedding those would crash the compiler at first use.
+# Add directories here as their `.cajeta` files become real and pass the
+# stdlib parse pass. Glob inside the explicit subdirs so adding new
+# error/* files (etc.) is automatic.
+#
+# Order within each directory doesn't matter: cross-file forward
+# references for both "type-as-field" and "extends" use the placeholder
+# mechanism, and CajetaModule::buildPendingPrototypes runs a fixed-point
+# layout pass after parse so subclasses get their full inherited-field
+# layout regardless of parse order.
+set(CAJETA_STDLIB_DIRS
+        ${CAJETA_STDLIB_ROOT}/cajeta/error)
+set(CAJETA_STDLIB_FILES "")
+foreach(dir ${CAJETA_STDLIB_DIRS})
+    file(GLOB dir_files CONFIGURE_DEPENDS ${dir}/*.cajeta)
+    list(APPEND CAJETA_STDLIB_FILES ${dir_files})
+endforeach()
+list(SORT CAJETA_STDLIB_FILES)
 list(LENGTH CAJETA_STDLIB_FILES CAJETA_STDLIB_COUNT)
 set(CAJETA_STDLIB_EMBED ${CMAKE_CURRENT_BINARY_DIR}/cajeta_stdlib_embedded.cpp)
 

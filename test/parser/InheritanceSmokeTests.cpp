@@ -140,3 +140,59 @@ TEST(InheritanceSmokeTests, childExtendsWithoutOverriding) {
         "}\n";
     EXPECT_EQ(runI32(src), 30);
 }
+
+
+// Child in one file extends parent in another. Parses alphabetically:
+// "test.AChild" before "test.ZParent". Until cross-module vtable/RTTI
+// references were promoted to extern decls (see
+// CajetaModule::ensureGlobalInModule / ensureFunctionInModule), the
+// merged IR had `<badref>` placeholders in AChild's vtable initializer
+// (parent-vtable slot + inherited-method slot) and verifyModule SEGV'd.
+// Child in one file extends parent in another. Parses alphabetically:
+// "test.AChild" before "test.ZParent". Until cross-module vtable/RTTI
+// references were promoted to extern decls (see
+// CajetaModule::ensureGlobalInModule / ensureFunctionInModule), the
+// merged IR had `<badref>` placeholders in AChild's vtable initializer
+// (parent-vtable slot + inherited-method slot) and verifyModule SEGV'd.
+// Child in one file extends parent in another. Parses alphabetically
+// so AChild parses before ZParent — exercises the deferred-prototype
+// machinery (CajetaModule::buildPendingPrototypes) and the cross-
+// module vtable/RTTI extern-decl fixup
+// (CajetaModule::ensureGlobalInModule / ensureFunctionInModule).
+//
+// Behavior verified:
+//   1. AChild's struct picks up ZParent's inherited field at the
+//      right slot (read returns the value written through this).
+//   2. Cross-file `new AChild()` resolves the vtable pointer through
+//      the merged module's resolved-extern decls (would crash on
+//      `<badref>` before the fixup).
+//   3. Reading c.inherited produces i32, not the field-GEP pointer
+//      (ReturnStatement walks the inheritance chain to find the
+//      property's type).
+//
+// Super-constructor chaining is a separate gap (AChild() does not
+// implicitly call ZParent()), so this test sets the inherited slot
+// through `this` in the child's ctor.
+TEST(InheritanceSmokeTests, crossFileChildExtendsParentInOtherFile) {
+    std::map<std::string, std::string> sources;
+    sources["test.ZParent"] =
+        "package test;\n"
+        "public class ZParent {\n"
+        "    public int32 inherited;\n"
+        "    public ZParent() { return; }\n"
+        "    public int32 parentMethod() { return 1; }\n"
+        "}\n";
+    sources["test.AChild"] =
+        "package test;\n"
+        "public class AChild extends ZParent {\n"
+        "    public AChild() { this.inherited = 41; }\n"
+        "    public int32 childMethod() { return 2; }\n"
+        "    public static int32 run() {\n"
+        "        AChild c = new AChild();\n"
+        "        return c.inherited;\n"
+        "    }\n"
+        "}\n";
+    auto jit = CajetaJit::compile(sources, "test.AChild");
+    auto fn = jit->lookup<int32_t (*)()>("run");
+    EXPECT_EQ(fn(), 41);
+}

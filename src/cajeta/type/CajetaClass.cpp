@@ -138,6 +138,12 @@ namespace cajeta {
     }
 
     void CajetaClass::generatePrototype() {
+        // Idempotent — the deferred-prototype machinery
+        // (CajetaModule::buildPendingPrototypes) may attempt this multiple
+        // times as parents fill in. The flag is set at the end so a
+        // partial / aborted run doesn't claim done.
+        if (prototypeBuilt) return;
+
         // Templates aren't types — `Box` alone has no layout, no methods to
         // lower, no vtable to build. Defer the structural work until a
         // concrete `Box<int32>` is referenced and `instantiate(...)` runs.
@@ -183,6 +189,7 @@ namespace cajeta {
                 m.second->generatePrototype();
             }
             CajetaModule::getStructureToModule()[canonical] = module;
+            prototypeBuilt = true;
             return;
         }
 
@@ -255,6 +262,7 @@ namespace cajeta {
         writeVirtualTable();
 
         CajetaModule::getStructureToModule()[canonical] = module;
+        prototypeBuilt = true;
     }
 
     void CajetaClass::ensureDefaultConstructor() {
@@ -442,11 +450,64 @@ namespace cajeta {
                     break;
                 }
             }
-            (void) found;  // unresolved parents silently skip; future versions
-                           // should raise CAJETA_ERROR_UNRESOLVED_PARENT or
-                           // similar once a module-level resolution pass is
-                           // in place.
+            if (found) continue;
+            // Cross-module / forward-reference fallback: consult the
+            // process-global canonicalMap. The parent might be in a
+            // different module's structures, or it might still be a
+            // placeholder created by fromContext. Picking up the
+            // placeholder here keeps superClasses non-empty so
+            // tryGeneratePrototype can spot the placeholder and defer
+            // until the parent fills in.
+            auto& canon = canonicalMap;
+            auto canonIt = canon.find(qName->toCanonical());
+            if (canonIt == canon.end()) {
+                canonIt = canon.find(qName->getTypeName());
+            }
+            if (canonIt != canon.end()) {
+                if (auto klass = std::dynamic_pointer_cast<CajetaClass>(canonIt->second)) {
+                    superClasses.push_back(klass);
+                }
+            }
+            // Truly unresolved (no archive entry, no placeholder) parents
+            // silently skip today; CajetaModule::validatePlaceholders
+            // catches the post-parse case where a placeholder was created
+            // but never filled in.
         }
+    }
+
+    bool CajetaClass::tryGeneratePrototype() {
+        if (prototypeBuilt) return true;
+        // Resolve parents first so we can inspect them. resolveSuperClasses
+        // is idempotent and reflects whatever canonicalMap shows now.
+        resolveSuperClasses();
+        resolveImplementedInterfaces();
+        // Defer until every superclass has its struct laid out. A
+        // placeholder isn't enough — an already-filled-in but
+        // not-yet-prototyped parent's propertyList might still be empty
+        // OR the inheritance chain above it might not be built, which
+        // would leave OUR layout missing inherited fields. Wait until
+        // the parent's prototypeBuilt latches true (which only happens
+        // at the END of generatePrototype, after the parent's full
+        // ancestor walk has run).
+        for (auto& parent : superClasses) {
+            if (!parent) continue;
+            // Templates (uninstantiated) never set prototypeBuilt — they
+            // short-circuit in generatePrototype without laying out a
+            // struct. Treat them as "done" so a templated subclass like
+            // `class List<T> extends Container<T>` doesn't defer forever
+            // waiting on its template parent.
+            if (parent->isTemplate()) continue;
+            if (parent->isPlaceholder()) return false;
+            if (!parent->prototypeBuilt) return false;
+        }
+        for (auto& iface : implementedInterfaces) {
+            if (!iface) continue;
+            if (iface->isTemplate()) continue;
+            if (iface->isPlaceholder()) return false;
+            if (!iface->prototypeBuilt) return false;
+        }
+        generatePrototype();
+        return true;
     }
 
     void CajetaClass::resolveImplementedInterfaces() {
@@ -606,7 +667,8 @@ namespace cajeta {
         return nullptr;
     }
 
-    llvm::Value* CajetaClass::invokeMethod(string& methodName, vector<ParameterEntry> parameters, bool isConstructor, llvm::Value* thisValue) {
+    llvm::Value* CajetaClass::invokeMethod(string& methodName, vector<ParameterEntry> parameters, bool isConstructor, llvm::Value* thisValue,
+                                            CajetaModulePtr callerModule) {
         bool floatingParams = true;
         for (auto &param : parameters) {
             if (param.label.empty()) {
@@ -629,11 +691,22 @@ namespace cajeta {
         if (thisValue && !isStatic) {
             methodArgs.push_back(thisValue);
         }
+        // The caller's module owns the IRBuilder we need to insert into.
+        // Pre-refactor every CajetaModule re-parsed the stdlib, so the
+        // receiver class's own pModule == the caller's module and
+        // `this->module` was a safe fallback. With one shared stdlib
+        // module, that fallback would emit cross-module calls into the
+        // *stdlib* module (whose builder still points at whichever
+        // stdlib method was generateCode'd last) — appending instructions
+        // after a foreign function's terminator. Callers in user code
+        // pass their own module; the fallback is preserved for sites
+        // that haven't been threaded through yet.
+        CajetaModulePtr emitMod = callerModule ? callerModule : module;
         // Coerce each arg to match the function's parameter type. Integer
         // literals default to i64, but the function may expect i32 / i8 / etc.
         // Without coercion the JIT verifier rejects the call as a type
         // mismatch. Use the function's parameter types as the source of truth.
-        auto* coerceBuilder = module->getBuilder();
+        auto* coerceBuilder = emitMod->getBuilder();
         llvm::FunctionType* mft = method->getLlvmFunctionType();
         int thisOffset = (thisValue && !isStatic) ? 1 : 0;
         for (int i = 0; i < (int) parameters.size(); i++) {
@@ -658,8 +731,8 @@ namespace cajeta {
         // don't participate in the vtable. The compile-time `method` is the
         // statically-resolved entry; the runtime hash-based lookup is what
         // actually picks the override-correct function in a subclass.
-        auto* builder = module->getBuilder();
-        auto& llvmCtx = *module->getLlvmContext();
+        auto* builder = emitMod->getBuilder();
+        auto& llvmCtx = *emitMod->getLlvmContext();
         // Cross-module dispatch: when the receiver class lives in a
         // different llvm::Module than where the call is being
         // emitted (e.g. App's run() calling Provider's __cajeta_inject
@@ -673,7 +746,7 @@ namespace cajeta {
             method->getLlvmFunctionType());
         bool useVtable = thisValue && !isStatic && !isConstructor;
         if (useVtable) {
-            llvm::Function* lookupFn = module->getRuntimeFunction("__cajeta_vtable_lookup");
+            llvm::Function* lookupFn = emitMod->getRuntimeFunction("__cajeta_vtable_lookup");
             if (lookupFn) {
                 llvm::Type* ptrTy = llvm::PointerType::get(llvmCtx, 0);
                 llvm::Type* i64Ty = llvm::Type::getInt64Ty(llvmCtx);

@@ -288,7 +288,8 @@ namespace cajeta {
                 if (auto m = lhsClass->resolveMethod(opName, entries,
                         /*isConstructor=*/false, /*floatingParams=*/fp)) {
                     return lhsClass->invokeMethod(opName, entries,
-                        /*isConstructor=*/false, recvVal);
+                        /*isConstructor=*/false, recvVal,
+                        /*callerModule=*/module);
                 }
             }
         }

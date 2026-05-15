@@ -285,7 +285,15 @@ namespace cajeta {
             if (!structure->isTemplate()) {
                 structure->setClassBody(std::any_cast<ClassBodyDeclarationPtr>(visitChildren(ctx)));
             }
-            structure->generatePrototype();
+            // tryGeneratePrototype is the deferred-aware variant: if any
+            // superclass / implemented interface is still a placeholder
+            // (forward reference whose declaration hasn't been parsed
+            // yet), it returns false without touching the LLVM struct
+            // body. CajetaModule::buildPendingPrototypes runs after every
+            // module's parse completes and walks canonicalMap to
+            // fixed-point, so deferred classes get prototyped once their
+            // parents fill in.
+            structure->tryGeneratePrototype();
             pModule->getStructureStack().pop_back();
             CajetaModule::getStructureToModule()[structure->getQName()->toCanonical()] = pModule;
             return structure;

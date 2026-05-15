@@ -484,13 +484,23 @@ namespace cajeta {
         vector<llvm::Constant*> entryConstants;
         entryConstants.reserve(slots.size());
         size_t hashIdx = 0;
+        // Cross-module fixup: inherited-method slots reference the
+        // parent's llvm::Function, which lives in the parent's
+        // llvm::Module. The vtable constant lives in `module`'s
+        // llvm::Module. Replace any foreign reference with an
+        // extern decl in our module — the post-parse merge step
+        // resolves it to the real definition.
+        llvm::Module* hostModule = module->getLlvmModule();
         for (auto& method : slots) {
             int64_t hash = (hashIdx < slotHashes.size())
                 ? slotHashes[hashIdx]
                 : signatureHash(method->toCanonical(/*labeled=*/false));
+            llvm::Function* fn = method->getLlvmFunction();
+            llvm::Function* resolved = CajetaModule::ensureFunctionInModule(
+                hostModule, fn);
             entryConstants.push_back(llvm::ConstantStruct::get(entryTy, {
                 llvm::ConstantInt::get(i64Ty, llvm::APInt(64, (uint64_t) hash, false)),
-                method->getLlvmFunction(),
+                resolved,
             }));
             ++hashIdx;
         }
@@ -501,13 +511,18 @@ namespace cajeta {
         // NULL when the class has no parent (e.g. Throwable). For multi-
         // parent (not supported today), we'd need a more elaborate
         // representation; the first superclass wins for now.
+        //
+        // Cross-module fixup mirrors the method-pointer case above —
+        // the parent's vtable global lives in the parent's llvm::Module,
+        // not necessarily ours.
         llvm::Constant* parentVtable =
             llvm::ConstantPointerNull::get(llvm::cast<llvm::PointerType>(ptrTy));
         const auto& parents = structure->getSuperClasses();
         if (!parents.empty()) {
             auto firstParent = parents.front();
             if (llvm::GlobalVariable* pv = firstParent->getVirtualTableGlobal()) {
-                parentVtable = pv;
+                parentVtable = CajetaModule::ensureGlobalInModule(
+                    hostModule, pv);
             }
         }
 

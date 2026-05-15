@@ -211,26 +211,25 @@ namespace cajeta {
         CajetaModule::setActiveModule(prevActive);
     }
 
-    void parse(CajetaModulePtr module) {
-        // Stdlib first — its types must be in canonicalMap before user code
-        // can reference them by simple name. Two-step:
-        //
-        //   1. Pre-scan every embedded stdlib file's class names into the
-        //      archive registry. Forward references between stdlib files
-        //      (e.g. Exception.cajeta sorts alphabetically before
-        //      Throwable.cajeta but references Throwable) can then create
-        //      placeholders during the body walk, the same way cross-file
-        //      forward refs in user code do.
-        //
-        //   2. Walk each stdlib file. Each file declares its own
-        //      `package X;`; the package-mismatch check in
-        //      onPackageDeclaration compares that against the module's
-        //      path-derived qName, so we swap the module's qName to match
-        //      the file before each invocation. The relative path under
-        //      runtime/src — e.g. `cajeta/error/Throwable.cajeta` —
-        //      yields package `cajeta.error` and short name `Throwable`.
-        //      Restored before the user-source parse so user classes get
-        //      their proper path-derived package.
+    // Parse every embedded stdlib file into `module`. Called exactly
+    // once per Compiler instance, against the Compiler's dedicated
+    // stdlib module. Two-step:
+    //
+    //   1. Pre-scan each file's class names into the archive
+    //      registry so forward references between stdlib files
+    //      (Exception.cajeta sorts alphabetically before
+    //      Throwable.cajeta but references it) can create
+    //      placeholders during the body walk.
+    //   2. Walk each file. Per-file `package X;` declarations get
+    //      checked against the module's qName, so we swap qName to
+    //      match each file's path-derived package before invocation.
+    //
+    // The runtime bitcode is also linked into this module so
+    // runtime helpers (__cajeta_new_array, __cajeta_drop_push,
+    // etc.) have their definitions co-resident with stdlib code.
+    // User modules pick up the runtime through module-local extern
+    // declarations that resolve to these definitions at merge time.
+    void parseStdlibInto(CajetaModulePtr module) {
         for (size_t i = 0; i < cajeta::stdlib::g_fileCount; ++i) {
             const auto& f = cajeta::stdlib::g_files[i];
             antlr4::ANTLRInputStream prescanIn(
@@ -261,37 +260,68 @@ namespace cajeta {
         }
         module->setQName(originalQName);
 
-        // Error-model #210: emit the marker global the runtime uses to
-        // detect Unrecoverable throws. After stdlib parse, every stdlib
-        // class's vtable global exists on the LLVM module; we publish
-        // UnrecoverableException's vtable address as
-        // `__cajeta_unrecoverable_vtable_marker`. The runtime helper
-        // __cajeta_is_unrecoverable does a chain walk against this
-        // address, returning 1 for any descendant of UnrecoverableException.
-        {
-            auto& structures = module->getStructures();
-            auto it = structures.find("cajeta.error.UnrecoverableException");
-            if (it != structures.end()) {
-                CajetaClassPtr unrecClass = it->second;
-                llvm::GlobalVariable* unrecVT = unrecClass->getVirtualTableGlobal();
-                if (unrecVT) {
-                    auto& llvmCtx = *module->getLlvmContext();
-                    llvm::PointerType* ptrTy = llvm::PointerType::get(llvmCtx, 0);
-                    llvm::Module* lmod = module->getLlvmModule();
-                    new llvm::GlobalVariable(
-                        *lmod, ptrTy, /*isConstant=*/false,
-                        llvm::GlobalValue::ExternalLinkage,
-                        unrecVT,
-                        "__cajeta_unrecoverable_vtable_marker");
-                }
-            }
-        }
+        // Stdlib code may call runtime helpers (e.g. constructors
+        // pushing drop entries) — embed the runtime bitcode so
+        // those calls resolve in this module's IR.
+        module->linkRuntime();
+    }
 
+    void parse(CajetaModulePtr module) {
+        // User-source parse. Stdlib classes are already in canonicalMap
+        // from the Compiler's one-shot stdlib parse, so references like
+        // `Throwable` here resolve to the real (not placeholder)
+        // CajetaClass. Cross-module IR fixup
+        // (CajetaModule::ensureFunctionInModule /
+        // ensureGlobalInModule) inserts module-local extern decls when
+        // the user references stdlib vtables / methods, which the
+        // merge step resolves to the stdlib module's definitions.
         ifstream stream;
         stream.open(module->getSourcePath());
         stream.seekg(0);
         antlr4::ANTLRInputStream userInput(stream);
         parseSource(module, userInput, /*label=*/"user");
+    }
+
+    // Error-model #210: emit the marker global the runtime uses to
+    // detect Unrecoverable throws. UnrecoverableException's vtable
+    // address is published as `__cajeta_unrecoverable_vtable_marker`;
+    // the runtime helper `__cajeta_is_unrecoverable` walks a thrown
+    // instance's vtable chain and matches against this address to
+    // decide whether the throw should bypass user catch handlers.
+    //
+    // Must run AFTER CajetaModule::buildPendingPrototypes — the
+    // vtable global is created during UnrecoverableException's
+    // generatePrototype, which the deferred-prototype machinery may
+    // delay until after the module's parse finishes.
+    void emitUnrecoverableMarker(CajetaModulePtr module) {
+        auto& structures = module->getStructures();
+        auto it = structures.find("cajeta.error.UnrecoverableException");
+        if (it == structures.end()) return;
+        CajetaClassPtr unrecClass = it->second;
+        llvm::GlobalVariable* unrecVT = unrecClass->getVirtualTableGlobal();
+        if (!unrecVT) return;
+        llvm::Module* lmod = module->getLlvmModule();
+        // The runtime bitcode declares the marker as `extern void*` so
+        // its `__cajeta_is_unrecoverable` helper can read it.
+        // linkRuntime brings that declaration in; we then upgrade it
+        // to a definition by setting an initializer + external
+        // linkage. If there is no pre-existing entry (no runtime
+        // linked in this module) we create the global outright. The
+        // already-has-an-initializer case is the second-call no-op.
+        auto& llvmCtx = *module->getLlvmContext();
+        llvm::PointerType* ptrTy = llvm::PointerType::get(llvmCtx, 0);
+        if (auto* existing = lmod->getGlobalVariable(
+                "__cajeta_unrecoverable_vtable_marker", true)) {
+            if (existing->hasInitializer()) return;
+            existing->setInitializer(unrecVT);
+            existing->setLinkage(llvm::GlobalValue::ExternalLinkage);
+            return;
+        }
+        new llvm::GlobalVariable(
+            *lmod, ptrTy, /*isConstant=*/false,
+            llvm::GlobalValue::ExternalLinkage,
+            unrecVT,
+            "__cajeta_unrecoverable_vtable_marker");
     }
 
     bool fileExists(string& sourcePath) {
@@ -314,9 +344,46 @@ namespace cajeta {
         return module;
     }
 
+    CajetaModulePtr Compiler::ensureStdlibModule() {
+        auto existing = CajetaModule::getStdlibModule();
+        if (existing) return existing;
+
+        auto stdlibQName = QualifiedName::getOrInsert(
+            "__stdlib__", "cajeta.runtime");
+        auto stdlib = make_shared<CajetaModule>(
+            &llvmContext, stdlibQName, targetTriple, targetMachine);
+        stdlib->setBoundsCheckEnabled(boundsCheckEnabled);
+        CajetaModule::setStdlibModule(stdlib);
+        modules.push_back(stdlib);
+
+        auto prevActive = CajetaModule::getActiveModule();
+        CajetaModule::setActiveModule(stdlib);
+        parseStdlibInto(stdlib);
+        CajetaModule::setActiveModule(prevActive);
+
+        // Lay out every parsed stdlib class so its vtable / RTTI
+        // globals live in this module — user modules will reach
+        // them via extern decls and never need to re-prototype.
+        CajetaModule::buildPendingPrototypes();
+        emitUnrecoverableMarker(stdlib);
+        return stdlib;
+    }
+
     void Compiler::compile(CajetaModulePtr module) {
+        ensureStdlibModule();
         modules.push_back(module);
         parse(module);
+        // Single-module entry point — drive the prototype sweep so
+        // callers that use this entry directly (rather than the
+        // multi-file compile(entryMethod, ...) overload) don't have
+        // to remember to. Idempotent — when multiple modules go
+        // through this entry sequentially or when the multi-file
+        // overload also runs it at the end, the re-runs are cheap
+        // no-ops. The unrecoverable-marker emit was previously here
+        // too, but the marker now lives in the stdlib module and is
+        // emitted by ensureStdlibModule, so no per-user-module emit
+        // is required.
+        CajetaModule::buildPendingPrototypes();
     }
 
     void Compiler::compile(string entryMethod, string sourceRootPath, string archiveRootPath) {
@@ -329,6 +396,8 @@ namespace cajeta {
         }
 
 //        std::filesystem::path cwd = std::filesystem::current_path();
+
+        ensureStdlibModule();
 
         // Pre-scan: enumerate every class/interface/struct declared
         // anywhere under sourceRootPath into the archive registry.
@@ -356,6 +425,20 @@ namespace cajeta {
         // via a real declaration. Defense-in-depth; normal flow
         // sees zero placeholders left.
         CajetaModule::validatePlaceholders();
+
+        // Drive deferred-prototype layout to fixed point. Classes whose
+        // visitClassDeclaration deferred (parents were placeholders at
+        // visit time) get their generatePrototype call here once the
+        // parents are filled in.
+        CajetaModule::buildPendingPrototypes();
+
+        // The unrecoverable-vtable marker lives in the stdlib module
+        // (alongside UnrecoverableException's vtable and the runtime
+        // that reads it). User modules reach it through extern decls
+        // at merge time, so we only emit the definition once here.
+        if (auto stdlib = CajetaModule::getStdlibModule()) {
+            emitUnrecoverableMarker(stdlib);
+        }
 
         // AspectModel.md § A3 pointcut-matching pass. Runs after
         // every module has been parsed (all classes + advice methods
@@ -388,7 +471,9 @@ namespace cajeta {
             for (auto& method: module->getAllMethods()) {
                 method->generateCode();
             }
-            module->linkRuntime();
+            // Runtime is linked once into the stdlib module (see
+            // parseStdlibInto); user modules carry only extern decls
+            // for runtime helpers, resolved by the JIT/AOT link step.
             emitForModule(module);
         }
 

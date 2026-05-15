@@ -117,9 +117,11 @@ namespace cajeta {
 
         // Vtable init — slot 0 of the new instance.
         if (auto vtable = parent->getVirtualTableGlobal()) {
+            llvm::Constant* vtableRef = CajetaModule::ensureGlobalInModule(
+                lmod, vtable);
             llvm::Value* vtableSlot = builder->CreateStructGEP(
                 structTy, instance, /*idx=*/0, "vtable_slot");
-            builder->CreateStore(vtable, vtableSlot);
+            builder->CreateStore(vtableRef, vtableSlot);
         }
 
         // Constructor — invokeMethod dispatches the matching ctor
@@ -129,7 +131,8 @@ namespace cajeta {
         std::string ctorName = parent->getQName()->getTypeName();
         std::vector<ParameterEntry> noArgs;
         parent->invokeMethod(ctorName, noArgs,
-                             /*isConstructor=*/true, instance);
+                             /*isConstructor=*/true, instance,
+                             /*callerModule=*/module);
 
         // Field injection. The IR shape depends on the resolved
         // dependency's allocate mode:
@@ -211,14 +214,17 @@ namespace cajeta {
                 llvm::CallInst* freshInst = MemoryManager::createMallocInstruction(
                     module, targetSize, builder->GetInsertBlock());
                 if (auto vt = targetClass->getVirtualTableGlobal()) {
+                    llvm::Constant* vtRef = CajetaModule::ensureGlobalInModule(
+                        lmod, vt);
                     llvm::Value* vts = builder->CreateStructGEP(
                         targetStructTy, freshInst, /*idx=*/0, "vtable_slot");
-                    builder->CreateStore(vt, vts);
+                    builder->CreateStore(vtRef, vts);
                 }
                 std::string ctorN = targetClass->getQName()->getTypeName();
                 std::vector<ParameterEntry> noArgs2;
                 targetClass->invokeMethod(ctorN, noArgs2,
-                                          /*isConstructor=*/true, freshInst);
+                                          /*isConstructor=*/true, freshInst,
+                                          /*callerModule=*/module);
                 depPtr = freshInst;
             }
 
@@ -248,7 +254,8 @@ namespace cajeta {
             std::vector<ParameterEntry> hookArgs;
             std::string hookName = m->getName();
             parent->invokeMethod(hookName, hookArgs,
-                                 /*isConstructor=*/false, instance);
+                                 /*isConstructor=*/false, instance,
+                                 /*callerModule=*/module);
             break;
         }
 

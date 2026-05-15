@@ -26,10 +26,26 @@ namespace cajeta {
     map<string, MethodPtr> CajetaModule::methods;
     map<string, CajetaModulePtr> CajetaModule::strutureToModule;
     CajetaModulePtr CajetaModule::activeModule;
+    CajetaModulePtr CajetaModule::stdlibModule;
     map<string, CajetaModulePtr> CajetaModule::moduleVariables;
     vector<CajetaClassPtr> CajetaModule::aspectClasses;
     vector<CajetaModule::ComponentDescriptorPtr> CajetaModule::componentClasses;
     string CajetaModule::activeProfile = "prod";
+
+    CajetaModule::CajetaModule(llvm::LLVMContext* llvmContext,
+        QualifiedNamePtr qName,
+        string targetTriple,
+        llvm::TargetMachine* targetMachine) {
+        this->llvmContext = llvmContext;
+        this->targetTriple = targetTriple;
+        this->targetMachine = targetMachine;
+        this->qName = qName;
+        this->archivePath = qName->toCanonical() + CAJETA_IR_EXTENSION;
+        llvmModule = new llvm::Module(qName->toCanonical(), *llvmContext);
+        llvmModule->setSourceFileName(qName->toCanonical());
+        llvmModule->setDataLayout(targetMachine->createDataLayout());
+        llvmModule->setTargetTriple(targetTriple);
+    }
 
     CajetaModule::CajetaModule(llvm::LLVMContext* llvmContext,
         string sourcePath,
@@ -143,6 +159,8 @@ namespace cajeta {
         componentClasses.clear();
         activeProfile = "prod";
         Method::getArchive().clear();
+        stdlibModule.reset();
+        activeModule.reset();
     }
 
     // Walks the registered aspects, identifies each advice method by
@@ -726,6 +744,66 @@ namespace cajeta {
         return original;
     }
 
+    llvm::Function* CajetaModule::ensureFunctionInModule(
+            llvm::Module* targetModule,
+            llvm::Function* original) {
+        if (!original || !targetModule) return original;
+        if (original->getParent() == targetModule) return original;
+        // Mirror ensureFunctionVisible's getOrInsertFunction call,
+        // but key by the original's own llvm::FunctionType (no
+        // IRBuilder, so no caller-side signature to reconcile).
+        llvm::FunctionCallee callee = targetModule->getOrInsertFunction(
+            original->getName(), original->getFunctionType());
+        if (auto* fn = llvm::dyn_cast<llvm::Function>(callee.getCallee())) {
+            return fn;
+        }
+        return original;
+    }
+
+    llvm::Constant* CajetaModule::ensureGlobalInModule(
+            llvm::Module* targetModule,
+            llvm::GlobalVariable* original) {
+        if (!original || !targetModule) return original;
+        if (original->getParent() == targetModule) return original;
+        // getOrInsertGlobal returns the existing entry (decl or def)
+        // when one with the same name is already present, or creates
+        // a new declaration when absent. The declaration takes the
+        // same ValueType so the merge step matches it to the donor's
+        // definition.
+        return llvm::cast<llvm::GlobalVariable>(targetModule->getOrInsertGlobal(
+            original->getName(), original->getValueType()));
+    }
+
+    void CajetaModule::buildPendingPrototypes() {
+        // Fixed-point loop: iterate canonicalMap, calling
+        // tryGeneratePrototype on each not-yet-built class. As parents
+        // fill in, dependent children become eligible on the next
+        // iteration. Stop when a full pass actually built no new
+        // prototypes.
+        //
+        // Progress is detected by checking isPrototypeBuilt before and
+        // after each tryGeneratePrototype call rather than the call's
+        // return value: tryGeneratePrototype returns true both when it
+        // built fresh AND when the class was already built. Using the
+        // before/after state instead avoids infinite-looping on
+        // already-built classes.
+        bool changed = true;
+        while (changed) {
+            changed = false;
+            for (auto& [key, type] : CajetaType::getCanonicalMap()) {
+                auto klass = std::dynamic_pointer_cast<CajetaClass>(type);
+                if (!klass) continue;
+                if (klass->isPlaceholder()) continue;       // wait for fill-in
+                if (klass->isPrototypeBuilt()) continue;
+                if (klass->isTemplate()) continue;          // templates lay out only on instantiate
+                klass->tryGeneratePrototype();
+                if (klass->isPrototypeBuilt()) {
+                    changed = true;
+                }
+            }
+        }
+    }
+
     void CajetaModule::validatePlaceholders() {
         for (auto& [key, type] : CajetaType::getCanonicalMap()) {
             auto klass = std::dynamic_pointer_cast<CajetaClass>(type);
@@ -766,7 +844,31 @@ namespace cajeta {
     }
 
     llvm::Function* CajetaModule::getRuntimeFunction(const std::string& name) {
-        linkRuntime();
-        return llvmModule->getFunction(name);
+        // Runtime definitions live exclusively in the compiler-owned
+        // stdlib module (Compiler::ensureStdlibModule runs linkRuntime
+        // once on it). User modules get module-local extern decls
+        // referencing those definitions; the merge step (JIT linker
+        // or AOT object link) resolves them.
+        //
+        // Bootstrap edge case: when this IS the stdlib module — or
+        // when there is no stdlib module yet (Compiler ctor before
+        // ensureStdlibModule runs) — fall back to linking the runtime
+        // straight into this module so the lookup returns a usable
+        // function on first call.
+        auto stdlib = stdlibModule;
+        if (!stdlib || stdlib.get() == this) {
+            linkRuntime();
+            return llvmModule->getFunction(name);
+        }
+        llvm::Function* defFn = stdlib->getLlvmModule()->getFunction(name);
+        if (!defFn) {
+            // The named runtime helper isn't in the bitcode (or
+            // hasn't been linked yet). Force a link on the stdlib
+            // module's side and retry.
+            stdlib->linkRuntime();
+            defFn = stdlib->getLlvmModule()->getFunction(name);
+            if (!defFn) return nullptr;
+        }
+        return ensureFunctionInModule(llvmModule, defFn);
     }
 }

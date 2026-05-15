@@ -1161,10 +1161,25 @@ namespace cajeta {
                 if (recv) {
                     if (!recv->getResolvedType()) recv->resolveTypes(module);
                     if (auto klass = dynamic_pointer_cast<CajetaClass>(recv->getResolvedType())) {
-                        auto& props = klass->getProperties();
-                        auto it = props.find(dot->getIdentifier());
-                        if (it != props.end()) {
-                            if (llvm::Type* lt = it->second->getType()->getLlvmType()) {
+                        // Walk the inheritance chain — an inherited field
+                        // lives on an ancestor's properties map, not the
+                        // receiver's own. Mirrors DotExpression's own
+                        // findProp lambda.
+                        StructurePropertyPtr found;
+                        std::function<bool(const CajetaClassPtr&)> findProp =
+                            [&](const CajetaClassPtr& cls) -> bool {
+                                auto pit = cls->getProperties().find(dot->getIdentifier());
+                                if (pit != cls->getProperties().end()) {
+                                    found = pit->second;
+                                    return true;
+                                }
+                                for (auto& parent : cls->getSuperClasses()) {
+                                    if (findProp(parent)) return true;
+                                }
+                                return false;
+                            };
+                        if (findProp(klass) && found) {
+                            if (llvm::Type* lt = found->getType()->getLlvmType()) {
                                 val = builder->CreateLoad(lt, val);
                                 val = DotExpression::maybeBswap(module, val, recv);
                             }

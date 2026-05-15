@@ -66,6 +66,12 @@ namespace cajeta {
                                     llvm::Function* dropFn) {
         llvm::Function* push = module->getRuntimeFunction("__cajeta_drop_push");
         if (!push || !dropFn) return;
+        // Cross-module: when the class whose drop fn we're pushing
+        // lives in a different llvm::Module (a stdlib class
+        // referenced from user code), substitute a module-local
+        // extern decl so the merge step resolves the Constant.
+        dropFn = CajetaModule::ensureFunctionInModule(
+            module->getLlvmModule(), dropFn);
         auto* builder = module->getBuilder();
         auto& ctx = *module->getLlvmContext();
         llvm::Type* i8Ty = llvm::Type::getInt8Ty(ctx);

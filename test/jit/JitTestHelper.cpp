@@ -150,8 +150,18 @@ std::unique_ptr<CajetaJit> CajetaJit::compile(
         compiler->compile(m);
         if (!primary) primary = m;
     }
-    (void) fqEntryClass;  // routing happens via the entry method name at lookup time
+    (void) fqEntryClass;
 
+    // The compiler's stdlib module holds the parsed cajeta.error.*
+    // classes + the runtime bitcode (parsed once per Compiler, see
+    // Compiler::ensureStdlibModule). The merge below pulls it into
+    // `primary` alongside the user modules — that's where extern
+    // decls in user IR get resolved to real definitions.
+
+    // Cross-module sweeps. Compiler::compile(module) already runs
+    // buildPendingPrototypes + emitUnrecoverableMarker per call;
+    // the rest of these only make sense after every module has
+    // parsed, so they live here.
     cajeta::CajetaModule::validatePlaceholders();
     cajeta::CajetaModule::resolveAdviceMatches();
     cajeta::CajetaModule::setActiveProfile("test");
@@ -168,40 +178,21 @@ std::unique_ptr<CajetaJit> CajetaJit::compile(
         }
     }
 
-    // Merge every secondary module into the primary's LLVM
-    // module. The stdlib prelude (`cajeta.error.*`) is re-parsed
-    // per CajetaModule (Compiler::parse), so its vtable/RTTI
-    // globals and method bodies appear in every module — they'd
-    // collide on a plain linkModules call. OverrideFromSrc lets
-    // the donor's symbols overwrite same-name globals/functions
-    // in the destination; the stdlib content is identical across
-    // modules so the overwrite is a semantic no-op for that
-    // subset.
-    //
-    // Caveat: OverrideFromSrc will ALSO overwrite a destination's
-    // legitimate definition with a donor-side forward-reference
-    // when the donor's IR has a cross-module CallInst referencing
-    // a function that's defined in the destination — the merge
-    // can drop the destination's body. This affects multi-source
-    // shapes where a user method in module B calls a user
-    // constructor defined in module A. The synthesized inject-
-    // method dispatch path used by cross-module DI is not
-    // affected (see CajetaModuleSourceCompileTests doc-comment).
-    // Promoting cross-module call references to proper extern
-    // declarations in the calling module is the underlying fix
-    // and is tracked as a follow-up.
+    // Merge every secondary module into `primary`'s llvm::Module.
+    // After the parse-stdlib-once refactor, each module owns only
+    // its own classes' definitions + extern decls for everything
+    // else, so a plain linkModules call works (no need for the old
+    // OverrideFromSrc workaround). The Linker resolves each extern
+    // decl to the single definition it finds across all donors.
     auto modulesList = compiler->getModules();
     for (auto& m : modulesList) {
         if (m == primary) continue;
         std::unique_ptr<llvm::Module> donor(m->getLlvmModule());
         if (llvm::Linker::linkModules(*primary->getLlvmModule(),
-                                       std::move(donor),
-                                       llvm::Linker::Flags::OverrideFromSrc)) {
+                                       std::move(donor))) {
             throw std::runtime_error("JIT module-merge failed");
         }
     }
-
-    primary->linkRuntime();
 
     llvm::Module* llvmModule = primary->getLlvmModule();
     for (auto& fn : *llvmModule) {

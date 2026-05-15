@@ -1027,7 +1027,8 @@ namespace cajeta {
             }
         }
 
-        return targetClass->invokeMethod(methodCallName, entries, /*isConstructor=*/false, thisValue);
+        return targetClass->invokeMethod(methodCallName, entries, /*isConstructor=*/false, thisValue,
+                                          /*callerModule=*/module);
     }
 
 

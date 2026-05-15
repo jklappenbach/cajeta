@@ -74,6 +74,11 @@ namespace cajeta {
         // still set after all parsing is a leak — flagged by the
         // post-parse pass.
         bool placeholderFlag = false;
+        // True once generatePrototype has run successfully. The sweep in
+        // CajetaModule::buildPendingPrototypes uses this as the
+        // fixed-point marker: a class with all-non-placeholder parents
+        // and !prototypeBuilt is the next candidate to lay out.
+        bool prototypeBuilt = false;
         CajetaModulePtr module;
         ScopePtr scope;
 
@@ -140,6 +145,17 @@ namespace cajeta {
         void setIsInterface(bool v) { interfaceFlag = v; }
         bool isPlaceholder() const { return placeholderFlag; }
         void setPlaceholder(bool v) { placeholderFlag = v; }
+
+        bool isPrototypeBuilt() const { return prototypeBuilt; }
+
+        // Run generatePrototype if every superclass / implemented interface
+        // has been filled in (i.e. is no longer a placeholder). When a
+        // parent is still a placeholder, defer — the post-parse sweep in
+        // CajetaModule::buildPendingPrototypes runs again after each fill-in
+        // and will pick this class up once its parents are ready.
+        // Returns true if generatePrototype ran (or was already built),
+        // false if deferred. Idempotent.
+        bool tryGeneratePrototype();
 
         // Class instances flow by pointer in cajeta — field slots
         // of class type store the pointer to the instance, not the
@@ -353,7 +369,8 @@ namespace cajeta {
         CajetaClassPtr getTemplateOrigin() const { return templateOrigin; }
         void setTemplateOrigin(CajetaClassPtr origin) { templateOrigin = std::move(origin); }
 
-        llvm::Value* invokeMethod(string& methodName, vector<ParameterEntry> parameters, bool isConstructor, llvm::Value* thisInstance = nullptr);
+        llvm::Value* invokeMethod(string& methodName, vector<ParameterEntry> parameters, bool isConstructor, llvm::Value* thisInstance = nullptr,
+                                   CajetaModulePtr callerModule = nullptr);
 
         // Look up a method on this class or any of its ancestors. Each class
         // indexes methods under keys that embed its own class name, so the

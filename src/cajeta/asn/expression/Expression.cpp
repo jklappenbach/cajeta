@@ -1919,11 +1919,16 @@ namespace cajeta {
                     module, allocSize, tbb);
 
                 // Write the vtable pointer at slot 0 (required for any
-                // virtual dispatch on the new instance).
+                // virtual dispatch on the new instance). Same cross-
+                // module fixup as CreatorRest — targetClass's vtable
+                // global may live in a different llvm::Module than
+                // where this thunk is being emitted.
                 if (llvm::GlobalVariable* vtable = targetClass->getVirtualTableGlobal()) {
+                    llvm::Constant* vtableRef = CajetaModule::ensureGlobalInModule(
+                        lmod, vtable);
                     llvm::Value* vptrSlot = tb.CreateStructGEP(
                         structTy, instance, /*idx=*/0, "vtable_slot");
-                    tb.CreateStore(vtable, vptrSlot);
+                    tb.CreateStore(vtableRef, vptrSlot);
                 }
 
                 // Pass the new instance as `this`, then the thunk's
@@ -1934,8 +1939,9 @@ namespace cajeta {
                 for (unsigned i = 1; i < thunkArgCount; ++i) {
                     ctorArgs.push_back(thunk->getArg(i));
                 }
-                tb.CreateCall(ctor->getLlvmFunctionType(),
-                    ctor->getLlvmFunction(), ctorArgs);
+                llvm::Function* ctorFn = CajetaModule::ensureFunctionInModule(
+                    lmod, ctor->getLlvmFunction());
+                tb.CreateCall(ctor->getLlvmFunctionType(), ctorFn, ctorArgs);
                 tb.CreateRet(instance);
             }
 
@@ -2031,9 +2037,10 @@ namespace cajeta {
                     callArgs.push_back(thunk->getArg(i));
                 }
             }
+            llvm::Function* targetFn = CajetaModule::ensureFunctionInModule(
+                lmod, target->getLlvmFunction());
             llvm::Value* callResult = tb.CreateCall(
-                target->getLlvmFunctionType(), target->getLlvmFunction(),
-                callArgs);
+                target->getLlvmFunctionType(), targetFn, callArgs);
             if (thunk->getReturnType()->isVoidTy()) {
                 tb.CreateRetVoid();
             } else {

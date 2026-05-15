@@ -126,6 +126,15 @@ namespace cajeta {
         // ever parallelize parsing this becomes thread_local.
         static CajetaModulePtr activeModule;
 
+        // The compiler-owned module that holds the parsed stdlib
+        // (cajeta.error.* today) and the linked runtime bitcode.
+        // Set by Compiler's ctor, cleared in resetGlobals. User
+        // modules don't carry their own stdlib copy — references
+        // to stdlib classes and runtime functions resolve through
+        // module-local extern declarations whose definitions live
+        // here, and the JIT/AOT merge unifies them.
+        static CajetaModulePtr stdlibModule;
+
 
         map<string, map<string, QualifiedNamePtr>> imports;
         QualifiedNamePtr qName;
@@ -202,6 +211,15 @@ namespace cajeta {
             string sourcePath,
             string sourceRoot,
             string archiveRoot,
+            string targetTriple,
+            llvm::TargetMachine* targetMachine);
+
+        // Synthetic-module ctor for the compiler-owned stdlib module.
+        // No source path is parsed for package/module-name derivation;
+        // qName is set explicitly here and re-set per-file by
+        // parseStdlibInto as each stdlib source is walked.
+        CajetaModule(llvm::LLVMContext* llvmContext,
+            QualifiedNamePtr qName,
             string targetTriple,
             llvm::TargetMachine* targetMachine);
 
@@ -344,6 +362,20 @@ namespace cajeta {
         // populated by this pass.
         static void resolveDependencyGraph();
 
+        // Drive the deferred-prototype machinery to fixed point. Walk
+        // every CajetaClass in canonicalMap; for any that's not yet
+        // prototypeBuilt and whose superclasses / implemented
+        // interfaces are all non-placeholder (so layout is well-
+        // defined), call generatePrototype. Repeat until no new
+        // class became eligible — by then every class with a
+        // resolvable inheritance chain is laid out, and any that
+        // couldn't was waiting on a never-filled placeholder
+        // (validatePlaceholders flags those).
+        //
+        // This runs after every module's parse and after the placeholder-
+        // validation sweep, between parse and Phase 1.
+        static void buildPendingPrototypes();
+
         // Post-parse validation: scan canonicalMap for any
         // CajetaClass with placeholderFlag still set. A placeholder
         // marks a name that fromContext synthesized when the archive
@@ -376,12 +408,37 @@ namespace cajeta {
             llvm::Function* original,
             llvm::FunctionType* fnType);
 
+        // Module-targeted variants for cross-module references in
+        // CONSTANT contexts (vtable / RTTI initializers built outside
+        // any function body). The IRBuilder-based ensureFunctionVisible
+        // can't help here — there is no insertion point.
+        //
+        // ensureFunctionInModule: if `original` already lives in
+        // `targetModule`, return it; otherwise insert a module-local
+        // declaration with the same name + signature and return that.
+        // ensureGlobalInModule: same pattern for llvm::GlobalVariable
+        // (vtable / RTTI globals defined on a foreign module).
+        //
+        // The merge step (Linker::linkModules) collapses these extern
+        // decls with the real definitions when the donor module is
+        // pulled into primary, so the resulting IR has a single
+        // resolved symbol — no `<badref>` placeholders.
+        static llvm::Function* ensureFunctionInModule(
+            llvm::Module* targetModule,
+            llvm::Function* original);
+        static llvm::Constant* ensureGlobalInModule(
+            llvm::Module* targetModule,
+            llvm::GlobalVariable* original);
+
         // Active-module accessor. Returns the module currently being walked,
         // or nullptr outside any walk. Call sites that didn't thread a module
         // parameter through (parse-time Expression / Type construction) read
         // this. See the activeModule field for set/clear discipline.
         static CajetaModulePtr getActiveModule() { return activeModule; }
         static void setActiveModule(CajetaModulePtr m) { activeModule = m; }
+
+        static CajetaModulePtr getStdlibModule() { return stdlibModule; }
+        static void setStdlibModule(CajetaModulePtr m) { stdlibModule = m; }
 
         static map<string, CajetaModulePtr>& getModuleVariables() {
             return moduleVariables;
