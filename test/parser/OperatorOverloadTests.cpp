@@ -68,3 +68,54 @@ TEST(OperatorOverloadTests, classEqualsDispatchesToOperatorMethod) {
         "}\n";
     EXPECT_EQ(runI32(src), 7);
 }
+
+// Indexing operator: `obj[i]` for a class with `operator[]` defined
+// dispatches to the operator method. The receiver is `this`, the
+// index expression is the single named parameter, and the method's
+// return value is the index expression's value.
+//
+// This is the GET form — `T value = obj[i]`. Writing (`obj[i] = v`)
+// goes through BinaryOpExpression's assignment path which still
+// targets native arrays only; supporting operator[]-typed assignment
+// targets is a separate cut.
+TEST(OperatorOverloadTests, classIndexDispatchesToOperatorMethod) {
+    // resolveMethod's canonical-name match is strict on parameter
+    // type, so the index expression must literally be int64-typed —
+    // an int32 literal `0` would mismatch the `operator[] (int64)`
+    // declaration and fall through to the native-array path. Use an
+    // explicit int64 local to make the lookup succeed.
+    auto src =
+        "package test;\n"
+        "public class Lookup {\n"
+        "    public int32 operator[] (int64 i) { return 99; }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Lookup l = new Lookup();\n"
+        "        int64 i = 0;\n"
+        "        return l[i];\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 99);
+}
+
+// Index argument flows through to the operator body. Doubles the
+// passed index to prove the value reached the method correctly.
+TEST(OperatorOverloadTests, classIndexPassesArgumentToOperatorMethod) {
+    auto src =
+        "package test;\n"
+        "public class Doubler {\n"
+        "    public int32 operator[] (int64 i) {\n"
+        "        int64 v = i + i;\n"
+        "        return (int32) v;\n"
+        "    }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Doubler d = new Doubler();\n"
+        "        int64 i = 21;\n"
+        "        return d[i];\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 42);
+}

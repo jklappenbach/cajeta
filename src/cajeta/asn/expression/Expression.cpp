@@ -344,11 +344,39 @@ namespace cajeta {
     void ArrayIndexExpression::resolveTypes(CajetaModulePtr module) {
         AbstractSyntaxNode::resolveTypes(module);
         // One level of indexing unwraps one CajetaArray layer. `int[][]` indexed once
-        // yields `int[]`; indexed again yields `int`.
+        // yields `int[]`; indexed again yields `int`. For a non-array receiver
+        // (a class with operator[] overload), the resolved type is the
+        // operator's return type — look up the method to find out.
         if (!children.empty()) {
             if (auto exprChild = dynamic_pointer_cast<Expression>(children[0])) {
-                if (auto arr = dynamic_pointer_cast<CajetaArray>(exprChild->getResolvedType())) {
+                CajetaTypePtr lhsType = exprChild->getResolvedType();
+                if (auto arr = dynamic_pointer_cast<CajetaArray>(lhsType)) {
                     resolvedType = arr->getElementType();
+                } else if (auto klass = dynamic_pointer_cast<CajetaClass>(lhsType)) {
+                    // Try to find operator[] on the class. parameterList
+                    // computation needs the index expression's resolved
+                    // type; resolve children[1] first so the lookup has
+                    // a real parameter type.
+                    if (children.size() >= 2) {
+                        if (auto idxExpr = dynamic_pointer_cast<Expression>(children[1])) {
+                            if (!idxExpr->getResolvedType()) {
+                                idxExpr->resolveTypes(module);
+                            }
+                            CajetaTypePtr idxType = idxExpr->getResolvedType();
+                            if (idxType && !klass->isInterface()
+                                    && !(klass->getTypeFlags() & PRIMITIVE_FLAG)) {
+                                vector<ParameterEntry> entries;
+                                entries.push_back(
+                                    ParameterEntry(idxType, "", nullptr));
+                                std::string name = "operator[]";
+                                if (auto m = klass->resolveMethod(name, entries,
+                                        /*isConstructor=*/false,
+                                        /*floatingParams=*/false)) {
+                                    resolvedType = m->getReturnType();
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -367,6 +395,82 @@ namespace cajeta {
         llvm::LLVMContext& ctx = *module->getLlvmContext();
         llvm::Type* i64Ty = llvm::Type::getInt64Ty(ctx);
         llvm::Type* i32Ty = llvm::Type::getInt32Ty(ctx);
+
+        // Operator overload dispatch: if the LHS resolves to a class with
+        // an `operator[]` method, route through it instead of the native-
+        // array path. Mirrors BinaryOpExpression's operator-method
+        // dispatch shape (operator+, operator==, ...). v1 covers GET
+        // only — `arr[i]` reading. The assignment form `arr[i] = v` is
+        // handled by BinaryOpExpression's assignment path, which still
+        // assumes a native-array LHS; supporting operator[]-typed
+        // assignment targets is a separate cut.
+        auto lhsExprForOp = dynamic_pointer_cast<Expression>(children[0]);
+        if (lhsExprForOp) {
+            if (!lhsExprForOp->getResolvedType()) {
+                lhsExprForOp->resolveTypes(module);
+            }
+            auto lhsClass = dynamic_pointer_cast<CajetaClass>(
+                lhsExprForOp->getResolvedType());
+            bool isNativeArrType =
+                dynamic_pointer_cast<CajetaArray>(
+                    lhsExprForOp->getResolvedType()) != nullptr;
+            if (lhsClass && !isNativeArrType && !lhsClass->isInterface()
+                    && !(lhsClass->getTypeFlags() & PRIMITIVE_FLAG)) {
+                auto idxExprForOp = dynamic_pointer_cast<Expression>(children[1]);
+                if (idxExprForOp && !idxExprForOp->getResolvedType()) {
+                    idxExprForOp->resolveTypes(module);
+                }
+                CajetaTypePtr idxType = idxExprForOp
+                    ? idxExprForOp->getResolvedType() : nullptr;
+                llvm::Value* lhsForOp = children[0]->generateCode(module);
+                llvm::Value* idxForOp = children[1]->generateCode(module);
+                if (idxForOp && !idxType) {
+                    idxType = CajetaType::of(idxForOp);
+                }
+                if (!idxType) {
+                    // Without a usable index type the canonical lookup
+                    // crashes; fall through to native-array path.
+                    goto fall_through_to_native_array;
+                }
+                // l-value coercion mirrors BinaryOpExpression: identifier
+                // expressions evaluate to allocas holding the heap
+                // pointer; we want the loaded value as `this`.
+                if (auto* a = llvm::dyn_cast<llvm::AllocaInst>(lhsForOp)) {
+                    lhsForOp = builder->CreateLoad(a->getAllocatedType(), a);
+                }
+                if (auto* a = llvm::dyn_cast<llvm::AllocaInst>(idxForOp)) {
+                    idxForOp = builder->CreateLoad(a->getAllocatedType(), a);
+                }
+                vector<ParameterEntry> entries;
+                entries.push_back(ParameterEntry(idxType, "", idxForOp));
+                std::string opName = "operator[]";
+                if (auto m = lhsClass->resolveMethod(opName, entries,
+                        /*isConstructor=*/false,
+                        /*floatingParams=*/false)) {
+                    if (!resolvedType) {
+                        resolvedType = m->getReturnType();
+                    }
+                    llvm::Value* callResult = lhsClass->invokeMethod(
+                        opName, entries,
+                        /*isConstructor=*/false, lhsForOp,
+                        /*callerModule=*/module);
+                    if (!callResult) return nullptr;
+                    // Wrap the call result in an alloca so consumers
+                    // (ReturnStatement, assignment LHS, nested
+                    // expressions) see the same "load from this
+                    // address" shape they get from the native-array
+                    // GEP path. Native ArrayIndex returns a GEP
+                    // pointer; the caller loads to read. Without the
+                    // wrapper they'd issue a `load i32, i32 <value>`
+                    // on the raw value and the verifier rejects it.
+                    llvm::AllocaInst* slot = builder->CreateAlloca(
+                        callResult->getType(), nullptr, "opidx.slot");
+                    builder->CreateStore(callResult, slot);
+                    return slot;
+                }
+            }
+        }
+        fall_through_to_native_array:;
 
         // Resolve the array value (the header pointer).
         //   - Local-variable arrays: an alloca holding a `ptr` to the header. Load to get

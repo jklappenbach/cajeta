@@ -192,6 +192,7 @@ operatorOverloadDeclaration
     | typeType OPERATOR LSHIFT_ASSIGN formalParameters methodBody
     | typeType OPERATOR RSHIFT_ASSIGN formalParameters methodBody
     | typeType OPERATOR URSHIFT_ASSIGN formalParameters methodBody
+    | typeType OPERATOR LBRACK RBRACK formalParameters methodBody
     ;
 
 /* We use rule this even for void methods which cannot have [] after parameters.

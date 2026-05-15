@@ -854,6 +854,14 @@ namespace cajeta {
             else if (ctx->LSHIFT_ASSIGN()) sym = "<<=";
             else if (ctx->RSHIFT_ASSIGN()) sym = ">>=";
             else if (ctx->URSHIFT_ASSIGN()) sym = ">>>=";
+            // Indexing: `T operator[] (int64 i) { ... }`. The method's
+            // canonical name is `operator[]`. ArrayIndexExpression's
+            // codegen looks it up by that name when the receiver's
+            // resolved type is a class rather than a native array.
+            // v1 covers GET only — `arr[i]` reading dispatches through
+            // operator[]; writing (`arr[i] = v`) still uses the
+            // native-array path or method-based set().
+            else if (ctx->LBRACK() && ctx->RBRACK()) sym = "[]";
 
             string methodName = string("operator") + sym;
             vector<FormalParameterPtr> formals;
