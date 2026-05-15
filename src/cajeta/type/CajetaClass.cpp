@@ -8,7 +8,6 @@
 #include "../method/Method.h"
 #include "../asn/ClassBodyDeclaration.h"
 #include "../method/DefaultConstructorMethod.h"
-#include "../method/SynthesizedHashMethod.h"
 #include "../field/HeapField.h"
 
 #include <algorithm>
@@ -250,7 +249,6 @@ namespace cajeta {
         ((llvm::StructType*) llvmType)->setBody(llvm::ArrayRef<llvm::Type*>(llvmMembers), false);
 
         ensureDefaultConstructor();
-        synthesizeObjectOverrides();
 
         for (auto methodEntry: methods) {
             methodEntry.second->generatePrototype();
@@ -265,49 +263,6 @@ namespace cajeta {
 
         CajetaModule::getStructureToModule()[canonical] = module;
         prototypeBuilt = true;
-    }
-
-    void CajetaClass::synthesizeObjectOverrides() {
-        // Inject compiler-synthesized overrides of the universal-root
-        // Object methods when the user hasn't manually declared them.
-        // This cut handles `hash()` only; `toString()` and `clone()`
-        // arrive in follow-up cuts (they have their own dependencies —
-        // String construction and ownership-aware copy semantics).
-        //
-        // Skip Object itself — its manual @Native bridges to
-        // __cajeta_object_hash / __cajeta_object_to_string /
-        // __cajeta_object_clone are the load-bearing fallbacks the
-        // synthesized overrides delegate to for class-reference field
-        // hashing (identity hash) and for the rare case where a
-        // subclass instance is upcast to Object and `hash()` is called
-        // on it directly. The qualified-name check intentionally tests
-        // both the type name AND the package so a user-defined class
-        // also named "Object" in a different package doesn't get
-        // skipped.
-        bool isObjectItself =
-            qName->getTypeName() == "Object" &&
-            qName->getPackageName() == "cajeta.lang";
-        if (isObjectItself) return;
-
-        // Only synthesize hash() if the class doesn't already declare
-        // it manually. parameterList at this stage has the user-
-        // declared params only — Method::generatePrototype hasn't run
-        // yet to inject the implicit `this`, so a manual `hash()`
-        // override here has parameterList.size() == 0. If the user
-        // wrote `hash(SomethingElse)` we don't treat that as the
-        // override; it's an unrelated overload.
-        bool hashAlreadyDeclared = false;
-        for (auto& m : methodList) {
-            if (m->getName() == "hash" && m->getParameters().size() == 0) {
-                hashAlreadyDeclared = true;
-                break;
-            }
-        }
-        if (!hashAlreadyDeclared) {
-            addMethod(std::make_shared<SynthesizedHashMethod>(
-                module,
-                std::static_pointer_cast<CajetaClass>(shared_from_this())));
-        }
     }
 
     void CajetaClass::ensureDefaultConstructor() {

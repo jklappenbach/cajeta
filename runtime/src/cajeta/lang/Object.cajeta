@@ -3,44 +3,48 @@ package cajeta.lang;
 /**
  * The universal root of the cajeta class hierarchy.
  *
- * Every class **implicitly extends `Object`** once the auto-extend cut
- * lands — until then this type is declared on disk for downstream code
- * to reference, but no existing class actually inherits its methods.
- * See [StandardLibrary.md §Object](../../../../../cajeta-docs/StandardLibrary.md)
+ * Every class **implicitly extends `Object`** (via the auto-extend
+ * pass in `CajetaLlvmVisitor::visitClassDeclaration`), so the three
+ * methods declared here are inherited by every user class unless
+ * manually overridden. See
+ * [StandardLibrary.md §Object](../../../../../cajeta-docs/StandardLibrary.md)
  * for the full design.
  *
  * ## Default behaviour
  *
- * The methods declared here are **structural-synthesis targets**: when
- * the synthesizer pass lands, it overrides each method in every
- * concrete subclass with a body that walks the class's field layout.
- * Until that pass exists, the `@Native` stubs below provide the
- * fallback semantics:
+ * | Method      | Default                                                    |
+ * |-------------|------------------------------------------------------------|
+ * | `hash()`    | **pointer-identity**, mixed with the per-process seed     |
+ * | `toString()`| `null` placeholder until the String surface stabilizes    |
+ * | `clone()`   | `null` placeholder until ownership semantics stabilize    |
  *
- * | Method      | Stub semantics                        | Final semantics                          |
- * |-------------|---------------------------------------|------------------------------------------|
- * | `hash()`    | pointer-identity, XXH3-mixed          | structural field-walk via `DefaultHasher`|
- * | `toString()`| `null` placeholder                    | `TypeName(field=value, ...)` debug form  |
- * | `clone()`   | `null` placeholder                    | shallow field-by-field copy              |
+ * **Identity, not structural.** `Object.hash()` returns the object's
+ * heap address mixed through SplitMix64 with the per-process seed —
+ * matching Java's `Object.hashCode()` shape, not Rust's `derive(Hash)`.
+ * Two distinct instances with identical field values produce different
+ * hashes by default. Classes that need value-keyed semantics
+ * (`HashMap<Point, V>` where `Point(1, 2)` should equal `Point(1, 2)`)
+ * **override `hash()` manually**, or opt into structural synthesis
+ * via the `@AutoHash` annotation (planned — see §"Auto-hash opt-in"
+ * in StandardLibrary.md).
  *
- * Both stubs and synthesis use the **per-process random seed** from
- * `cajeta.hash.Hash.processSeed()`, so hash values are stable for the
- * value's lifetime within a process but not across restarts. That kills
- * hash-flooding attacks against `HashMap` keyed on user-controlled
- * input.
+ * The per-process seed is initialized from OS entropy at process
+ * start; hash values are stable for the value's lifetime within a
+ * process but not across restarts. That kills hash-flooding attacks
+ * against `HashMap` keyed on user-controlled input.
  *
  * ## Deferred items
  *
  * - `operator==(Object)` — needs the `@Native` bridge to handle
  *   boolean (`i1`) return-type coercion before its native stub can
- *   ship. Until then, override `==` manually or use `Hash.identity`
- *   for pointer comparison.
- * - **Override-pair enforcement** — when `operator==` lands, declaring
- *   one of (`operator==`, `hash`) without the other becomes a compile
- *   error. Pair is enforced at the synthesizer.
- * - **Cyclic-type detection** — synthesizer rejects classes whose
- *   field graph reaches itself unless a `@transient` annotation breaks
- *   the cycle.
+ *   ship. Until then, identity equality on class references uses
+ *   `Hash.identity` and manual override is the path for structural
+ *   equality.
+ * - `@AutoHash` annotation — opt-in structural-hash synthesis for
+ *   value-keyed classes. Synthesizer-generated diagnostics must
+ *   attribute every failure (unhashable field type, transitive
+ *   cycle, etc.) to the **annotated class + offending field name**
+ *   so the user can fix it without sifting through generated code.
  *
  * @see cajeta.hash.Hash
  * @see cajeta.hash.DefaultHasher
@@ -48,24 +52,26 @@ package cajeta.lang;
 public class Object {
 
     /**
-     * Returns a 64-bit hash code for this object.
+     * Returns a 64-bit identity hash for this object.
      *
-     * The default implementation is **pointer-identity** mixed through
-     * the SplitMix64 finalizer with the per-process seed — same path
-     * as `cajeta.hash.Hash.identity(this)`. The synthesizer pass will
-     * later replace this body in each concrete subclass with a
-     * field-walk that hashes every field through `DefaultHasher` and
-     * combines results via `Hash.combine`.
+     * The default implementation is **pointer-identity** — the
+     * object's heap address mixed through the SplitMix64 finalizer
+     * with the per-process seed, same path as
+     * `cajeta.hash.Hash.identity(this)`. Two distinct instances with
+     * identical field values produce different hashes; this is the
+     * `Object.hashCode()` shape, not `derive(Hash)`.
+     *
+     * Override manually for value-keyed semantics, or apply
+     * `@AutoHash` for compiler-synthesized structural hashing across
+     * the class's fields.
      *
      * Subclasses that override `hash()` **must** also override
      * `operator==()` once it lands, and vice versa — the
-     * "equal values hash equally" contract is enforced as a compile-
-     * time pair rule.
+     * "equal values hash equally" contract.
      *
-     * @returns 64-bit hash code, well-distributed for use as a
+     * @returns 64-bit identity hash, well-distributed for use as a
      *          `HashMap<K, V>` / `HashSet<T>` bucket key.
-     * @complexity O(1) for the default stub; O(fields) for the
-     *             synthesized field-walk override.
+     * @complexity O(1).
      */
     @Native("__cajeta_object_hash")
     public int64 hash() { }

@@ -370,8 +370,9 @@ declarations land in `cajeta.lang.Integer` etc.
 ### `Object`
 
 The universal root of the class hierarchy. Every class implicitly extends
-Object. Four methods, all with compiler-synthesized structural defaults so
-the common case requires no boilerplate:
+Object via the auto-extend pass in `CajetaLlvmVisitor::visitClassDeclaration`.
+Four methods, **identity-based defaults** (Java's `Object.hashCode()` shape,
+not Rust's `derive(Hash)`):
 
 ```cajeta
 public class Object {
@@ -382,84 +383,131 @@ public class Object {
 }
 ```
 
-**Default implementations are structural, not identity-based.** Compiler
-synthesizes:
+**Defaults are identity-based, not structural.** Two distinct instances with
+the same field values produce different hashes and compare unequal by default.
+This avoids the cliff of structural-by-default — where the compiler would have
+to synthesize correct walks across primitive, class-reference, inline-struct,
+array, generic, and self-referential fields, with each new field shape
+introducing a new edge case the synthesizer has to get right *silently* (a
+broken structural hash doesn't crash, it just returns wrong results, and
+HashMap quietly misbehaves).
 
-- `operator==(Object obj)`: instanceof-check against the declaring class, cast,
-  field-by-field comparison. The Java pattern "always implement equals with
-  null-check, instanceof, cast, compare" — written for you by the compiler.
-- `hash()`: combines the same field set the structural `operator==` consults,
-  using `cajeta.hash.DefaultHasher` (xxHash3-based, see `cajeta.hash`). The
-  compiler emits one `Hasher.writeX(...)` call per field, finishes with
-  `Hasher.finish()`, and inlines the whole thing when the field set is known
-  at compile time — no allocation, just register-level multiply-rotate-xor
-  ops per field. A per-process random seed (initialized from OS entropy at
-  startup) is mixed in, so hash values are stable for the value's lifetime
-  in this process but not stable across process restarts. The seed kills
-  hash-flooding attacks: an attacker can't predict bucket placement to
+The identity-default is paired with explicit opt-in: a class that wants
+value-keyed semantics either **overrides `hash()` manually** or applies the
+**`@AutoHash` annotation** (see below).
+
+- `operator==(Object obj)`: pointer identity by default. Override for value
+  equality.
+- `hash()`: pointer-identity hash mixed with the per-process random seed
+  (initialized from OS entropy at process start). Hash values are stable for
+  the object's lifetime within a process but not across restarts. The seed
+  kills hash-flooding attacks: an attacker can't predict bucket placement to
   force pathological O(n²) HashMap behavior.
-- `toString(Encoding)`: `TypeName(field1=value1, field2=value2, ...)`. The
-  Rust `#[derive(Debug)]` shape, sufficient for `println(x)` debug output.
-  Encoding parameter defaults to UTF-8; other encodings supported via the
-  default-argument mechanism cajeta already has.
-- `clone()`: field-by-field copy. For value-typed fields (primitives,
-  structs, enums) the copy is a memcpy of the bits; for class-typed
-  fields the copy is a shallow reference copy by default (both originals
-  point at the same heap instance — same semantics as Java's
-  `Object.clone()` shallow path). Override `clone()` manually to deep-
-  copy class-typed fields when that's the right thing. The return type
-  is `Object` in the base; the compiler narrows it to the declaring
-  class at every override site so call-site code doesn't cast.
+- `toString(Encoding)`: `TypeName@<address>` shape by default (debug-only).
+  Override for user-facing representation.
+- `clone()`: shallow field-by-field copy. For value-typed fields the copy
+  is a memcpy of the bits; for class-typed fields the copy is a shallow
+  reference copy (both originals point at the same heap instance — Java's
+  `Object.clone()` shallow path).
 
-**Override pair enforcement.** If a class declares `operator==` manually, it
-must also declare `hash()` (and vice versa). The compiler refuses to compile
-a class with one but not the other. The contract — equal values hash equally —
-is structurally protected by requiring both halves to be authored together.
-`toString` has no pair requirement; override it independently.
-
-**Universal participation in hash-based collections.** Any class — yours,
-third-party, stdlib — works as a `HashMap<K, V>` key or `HashSet<T>` element
-without a `derives` annotation, an `implements` clause, or any other opt-in.
-The synthesized defaults are real, useful implementations. No `Hashable` or
-`Equatable` interface exists; the methods live directly on Object.
+**Override pair enforcement.** If a class declares `operator==` manually,
+it must also declare `hash()` (and vice versa). The contract — equal values
+hash equally — is structurally protected by requiring both halves to be
+authored together. `toString` has no pair requirement; override it
+independently.
 
 **`Comparable<T>` stays as an opt-in interface** because natural ordering is
 domain-specific — there's no sensible compiler default for "compare a class
 with an int field and a String field." `TreeMap<K, V>` and `TreeSet<T>` carry
 `K extends Comparable<K>` as a bound; HashMap and HashSet do not.
 
-**Cyclic-type detection at compile time.** When the compiler synthesizes
-`hash()` / `operator==` / `toString()` it walks the class's field type graph.
-If any field type can transitively reach back to the class itself, the
-naive synthesized walk would recurse forever, so the compiler refuses to
-emit the defaults and produces a diagnostic naming the offending field:
+#### `@AutoHash` — opt-in structural hashing
+
+Apply `@AutoHash` to a class to have the compiler synthesize a structural
+`hash()` (and, paired, a structural `operator==`) by walking the class's
+fields. This is the cajeta equivalent of Rust's `#[derive(Hash, Eq)]`,
+Swift's automatic `Hashable` conformance, Kotlin's `data class` — opt-in,
+not default.
+
+```cajeta
+@AutoHash
+public class Point {
+    public int32 x;
+    public int32 y;
+}
+
+// Compiler synthesizes:
+//   public int64 hash() {
+//       int64 acc = Hash.processSeed();
+//       acc = Hash.combine(acc, Hash.int32(this.x));
+//       acc = Hash.combine(acc, Hash.int32(this.y));
+//       return acc;
+//   }
+//   public boolean operator==(Object other) { ... fieldwise compare ... }
+
+HashMap<Point, String> map = new HashMap<>();   // Just works
+```
+
+**Error attribution is load-bearing.** Synthesizer-emitted diagnostics must
+name the **annotated class**, the **offending field**, and the **specific
+reason** — a user looking at the error should know exactly what to change
+without reading generated code:
 
 ```
-error: can't synthesize hash() / operator==() / toString() on `tree.Node`:
-       field `parent` (type `tree.Node`) creates a cycle through self.
-       Mark a field along the cycle as @transient, or implement these
-       methods manually.
+error: @AutoHash on `app.User`: field `groups` (type `LinkedList<Group>`)
+       cannot be auto-hashed — collection types need either a manual
+       hash() override on `User` or @AutoHash on `Group` plus a
+       hashable element walk that v1 doesn't synthesize.
+       at app/User.cajeta:14:5
+
+error: @AutoHash on `tree.Node`: field `parent` (type `tree.Node`)
+       creates a cycle through self. Mark the field `@transient` to
+       exclude it from the hash walk, or implement hash() manually.
+       at tree/Node.cajeta:8:5
 ```
 
-User fixes:
+The annotation processor:
+
+- Carries the annotation's source location (file:line:col) through the
+  synthesizer so every emitted diagnostic points at the user's `@AutoHash`,
+  never at compiler internals.
+- Names the offending field by source identifier, not by LLVM index.
+- Includes a "what to do" line — the user shouldn't need to read this doc to
+  fix the error.
+
+**Cyclic-type detection.** The synthesizer walks the class's field type graph.
+If any field type can transitively reach back to the class itself, refuse to
+emit and produce the diagnostic above. Two user fixes:
+
 - **`@transient` field annotation** — the synthesizer skips the annotated
-  field when walking fields for hash/equals/toString. Java borrowed
-  `transient` from for-serialization-skip; cajeta repurposes it for
-  "compiler shouldn't traverse this when synthesizing." Cheap fix for the
-  common case (one back-reference closes the cycle).
-- **Manual implementation** — for complex shapes (mutual recursion across
-  N classes, diamonds, memoizing traversal). User implements both `hash()`
-  and `operator==` (the pair requirement still applies).
+  field when walking fields for hash/equals. Java borrowed `transient` from
+  for-serialization-skip; cajeta repurposes it for "compiler shouldn't
+  traverse this when synthesizing." Cheap fix for the common case (one
+  back-reference closes the cycle).
+- **Manual implementation** — for complex shapes (mutual recursion across N
+  classes, diamonds, memoizing traversal). User implements both `hash()` and
+  `operator==`.
 
 The cycle analysis also runs through generic instantiations
 (`LinkedList<Node>` where `Node` references `LinkedList<Node>` is a cycle).
+
+**Field-kind coverage** for the v1 `@AutoHash` synthesizer:
+
+| Field kind                       | Status                                    |
+|----------------------------------|-------------------------------------------|
+| Primitives (int*, float*, bool)  | Hashed via `__cajeta_hash_*` helpers      |
+| Class types (`Foo`)              | Virtual dispatch to `field.hash()`        |
+| Struct types                     | Recursive field-walk                      |
+| Array / collection types         | Element walk via iterator                 |
+| `String`                         | Byte hash via XXH3-64                     |
+| `@transient` field               | Skipped                                   |
+| Self-referential (cycle)         | Compile error unless cycle broken         |
 
 **Identity hash as a separate intrinsic.** The rare case that genuinely wants
 pointer-based hashing — observer maps, graph node identity, weak-reference
 keys — goes through `cajeta.hash.Hash.identity(obj)` as a runtime intrinsic,
 and `IdentityHashMap<K, V>` ships as a separate type that uses it internally.
-No
-`Hashable` bound on K because IdentityHashMap doesn't ask K to hash itself.
+No `Hashable` bound on K because IdentityHashMap doesn't ask K to hash itself.
 
 ---
 
