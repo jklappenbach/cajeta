@@ -99,6 +99,32 @@ TEST(OperatorOverloadTests, classIndexDispatchesToOperatorMethod) {
     EXPECT_EQ(runI32(src), 99);
 }
 
+// Write-form `obj[i] = v` dispatches to `operator[]=`. The class
+// declares both `operator[]` (read) and `operator[]= (write); each
+// records into a tag field so the test can verify the write actually
+// landed by reading back through `operator[]`.
+TEST(OperatorOverloadTests, classIndexedAssignmentDispatchesToOperatorSet) {
+    auto src =
+        "package test;\n"
+        "public class Cell {\n"
+        "    public int32 tag;\n"
+        "    public Cell() { this.tag = -1; }\n"
+        "    public int32 operator[] (int64 i) { return this.tag; }\n"
+        "    public void operator[]= (int64 i, int32 v) { this.tag = v; }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Cell c = new Cell();\n"
+        "        int64 i = 0;\n"
+        "        c[i] = 77;\n"
+        "        return c[i];\n"
+        "    }\n"
+        "}\n";
+    auto jit = CajetaJit::compile(src, "test.D");
+    auto fn = jit->lookup<int32_t (*)()>("run");
+    EXPECT_EQ(fn(), 77);
+}
+
 // Index argument flows through to the operator body. Doubles the
 // passed index to prove the value reached the method correctly.
 TEST(OperatorOverloadTests, classIndexPassesArgumentToOperatorMethod) {

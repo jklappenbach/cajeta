@@ -477,6 +477,20 @@ namespace cajeta {
         if (auto* a = llvm::dyn_cast_or_null<llvm::AllocaInst>(v)) {
             v = builder->CreateLoad(a->getAllocatedType(), a);
         }
+        // L-value coercion for non-alloca address forms — most notably
+        // ArrayIndexExpression and DotExpression, which return GEP
+        // pointers rather than loaded values. If v is a pointer but
+        // the condition's resolved type is a primitive scalar (boolean,
+        // any integer), load through to get the value. Without this,
+        // `while (arr[i])` / `if (this.field)` end up comparing a ptr
+        // to an integer-zero constant in CreateICmpNE below and the
+        // ICmp verifier rejects the type mismatch.
+        if (v && v->getType()->isPointerTy() && cond->getResolvedType()) {
+            llvm::Type* valTy = cond->getResolvedType()->getLlvmType();
+            if (valTy && valTy != v->getType() && !valTy->isStructTy()) {
+                v = builder->CreateLoad(valTy, v);
+            }
+        }
         if (!v) return llvm::ConstantInt::getFalse(*module->getLlvmContext());
         if (v->getType() != i1Ty) {
             llvm::Value* zero = llvm::ConstantInt::get(v->getType(), 0);

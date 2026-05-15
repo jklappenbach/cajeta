@@ -192,7 +192,21 @@ operatorOverloadDeclaration
     | typeType OPERATOR LSHIFT_ASSIGN formalParameters methodBody
     | typeType OPERATOR RSHIFT_ASSIGN formalParameters methodBody
     | typeType OPERATOR URSHIFT_ASSIGN formalParameters methodBody
-    | typeType OPERATOR LBRACK RBRACK formalParameters methodBody
+    // Indexing operators (read + write) collapsed into a single
+    // alternative with optional ASSIGN — ANTLR4 LL(*) prediction
+    // gets confused by two separate alternatives both starting with
+    // `OPERATOR LBRACK RBRACK` and prints "mismatched input
+    // 'operator'" diagnostics even though it eventually recovers.
+    // The visitor branches on ctx->ASSIGN() to pick the method name
+    // (`operator[]` vs `operator[]=`).
+    //
+    // Return type is `typeTypeOrVoid` (not bare `typeType`) so the
+    // setter form can declare `void` — `void operator[]= (...)`.
+    // The read form's return type can't be void in practice
+    // (subscript-read producing nothing is nonsensical) but the
+    // grammar permits it; the type-check enforces the semantic
+    // shape elsewhere.
+    | typeTypeOrVoid OPERATOR LBRACK RBRACK ASSIGN? formalParameters methodBody
     ;
 
 /* We use rule this even for void methods which cannot have [] after parameters.

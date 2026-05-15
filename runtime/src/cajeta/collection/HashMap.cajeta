@@ -1,0 +1,169 @@
+package cajeta.collection;
+
+/**
+ * Hash-based map from keys to values.
+ *
+ * ## Hashing and equality
+ *
+ * `HashMap` uses two contracts on the key type `K`:
+ *
+ * - **`key.hash()`** for the bucket index. By default this is the
+ *   identity hash inherited from `cajeta.lang.Object.hash()` — so
+ *   two distinct instances of the same class are different keys
+ *   even if their fields match. Override `hash()` on `K` (or apply
+ *   the planned `@AutoHash` annotation) for value-keyed semantics.
+ * - **`==` on keys** for equality within a bucket. For class types
+ *   this is pointer identity; if you override `hash()` for value
+ *   semantics you must also override `==` so equal keys compare
+ *   equal — the contract HashMap relies on.
+ *
+ * ## v1 constraint: K must be a class type
+ *
+ * Primitives don't carry `hash()` or override `==`, so this v1
+ * accepts only class-typed K. `HashMap<int32, V>` doesn't compile;
+ * box your int32 keys (or wait for the planned primitive-hash
+ * intrinsics + boxing helpers).
+ *
+ * ## Storage and probing
+ *
+ * Open addressing with linear probing — no entry chain, no
+ * indirection through a heap-allocated bucket list. Three parallel
+ * heap arrays at the same length: `keys`, `vals`, `occupied`.
+ *
+ * Capacity is **power-of-2**; the bucket index is
+ * `hash(key) & (capacity - 1)`. Faster than `% capacity`, equivalent
+ * distribution given a well-mixed hash. **Caller picks the initial
+ * capacity** — there's no resize in v1. A map that fills up performs
+ * linearly. Size your map.
+ *
+ * ## Missing in v1
+ *
+ * - **`remove`** — open-addressing remove needs tombstones or
+ *   backward-shift; both complicate the probe. Add when needed.
+ * - **`resize`** — doubles capacity, reinserts everything. Ship
+ *   after the simpler API gets exercise.
+ * - **Iterator over entries** — needs `cajeta.collection.Iterator<T>`,
+ *   not in place yet.
+ * - **Primitive K** — see "v1 constraint" above.
+ *
+ * @see cajeta.lang.Object
+ * @see cajeta.hash.Hash
+ */
+public class HashMap<K, V> {
+
+    /** Parallel storage: K bucket, V bucket, occupancy bitmap. */
+    private K[] keys;
+    private V[] vals;
+    private boolean[] occupied;
+    private int64 cap;
+    private int64 sizeCount;
+
+    /**
+     * Construct a new HashMap with the given initial capacity.
+     *
+     * @param initialCapacity number of buckets to allocate; **must
+     *        be a power of 2** (the mask-based index doesn't work
+     *        otherwise). v1 doesn't validate this.
+     */
+    public HashMap(int64 initialCapacity) {
+        this.cap = initialCapacity;
+        this.keys = new K[initialCapacity];
+        this.vals = new V[initialCapacity];
+        this.occupied = new boolean[initialCapacity];
+        this.sizeCount = 0;
+    }
+
+    /**
+     * Insert or replace the value at `key`.
+     *
+     * @param key the key. Hashed once via `key.hash()`.
+     * @param value the value to associate with `key`.
+     */
+    public void put(K key, V value) {
+        int64 h = key.hash();
+        int64 idx = h & (this.cap - 1);
+        while (this.occupied[idx]) {
+            if (this.keys[idx] == key) {
+                this.vals[idx] = value;
+                return;
+            }
+            idx = (idx + 1) & (this.cap - 1);
+        }
+        this.keys[idx] = key;
+        this.vals[idx] = value;
+        this.occupied[idx] = true;
+        this.sizeCount = this.sizeCount + 1;
+    }
+
+    /**
+     * Retrieve the value at `key`, or null/zero if absent.
+     *
+     * Use `containsKey` to distinguish "absent" from "present but
+     * the stored value is null/0."
+     *
+     * @param key the key to look up. Hashed once via `key.hash()`.
+     * @returns the value associated with `key`, or null/0 if not present.
+     */
+    public V get(K key) {
+        int64 h = key.hash();
+        int64 idx = h & (this.cap - 1);
+        while (this.occupied[idx]) {
+            if (this.keys[idx] == key) {
+                return this.vals[idx];
+            }
+            idx = (idx + 1) & (this.cap - 1);
+        }
+        return 0;
+    }
+
+    /**
+     * Test whether `key` is present in the map.
+     *
+     * @param key the key to test.
+     * @returns true iff `key` was previously inserted via `put`.
+     */
+    public boolean containsKey(K key) {
+        int64 h = key.hash();
+        int64 idx = h & (this.cap - 1);
+        while (this.occupied[idx]) {
+            if (this.keys[idx] == key) {
+                return true;
+            }
+            idx = (idx + 1) & (this.cap - 1);
+        }
+        return false;
+    }
+
+    /**
+     * @returns the number of (key, value) pairs stored.
+     */
+    public int64 size() {
+        return this.sizeCount;
+    }
+
+    // ----- Subscript-syntax sugar over get/put -------------------------
+
+    /**
+     * Subscript-read syntax: `v = m[key]` dispatches here. Delegates
+     * to `get`. Returns null/0 on miss; use `containsKey` to
+     * disambiguate "absent" from "present-and-null".
+     *
+     * @param key the key. Hashed once via `key.hash()`.
+     * @returns the value associated with `key`, or null/0.
+     */
+    public V operator[] (K key) {
+        return this.get(key);
+    }
+
+    /**
+     * Subscript-write syntax: `m[key] = value` dispatches here.
+     * Delegates to `put`. Replaces any existing value bound to a
+     * `==`-equal key.
+     *
+     * @param key the key. Hashed once via `key.hash()`.
+     * @param value the value to associate with `key`.
+     */
+    public void operator[]= (K key, V value) {
+        this.put(key, value);
+    }
+}

@@ -675,7 +675,17 @@ namespace cajeta {
         if (receiver && receiverType && receiverType->getQName()
                 && receiverType->getQName()->getTypeName() == "String") {
             receiverIsString = true;
-        } else if (receiver && receiver->getType()->isPointerTy()) {
+        } else if (receiver && receiver->getType()->isPointerTy()
+                && !dynamic_pointer_cast<CajetaClass>(receiverType)) {
+            // Fallback for chained calls where the inner call hasn't
+            // populated its resolvedType (e.g. `s.trim().isEmpty()`).
+            // Only fires when receiverType ISN'T a known CajetaClass —
+            // otherwise `someClass.size()` on a user class would
+            // hijack into __cajeta_str_len instead of dispatching to
+            // the class's own size() method. CajetaArray (which
+            // inherits CajetaClass) also blocks this path; the array's
+            // size() routes through the dedicated structural-accessor
+            // branch below.
             auto childExpr = children.empty() ? nullptr
                 : dynamic_pointer_cast<Expression>(children[0]);
             bool childIsArr = childExpr

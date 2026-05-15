@@ -61,7 +61,13 @@ namespace cajeta {
             CajetaTypePtr elemType = ast->getResolvedType();
             if (elemType) {
                 llvm::Type* loadTy;
-                if (dynamic_pointer_cast<CajetaArray>(elemType) ||
+                // Class-typed elements (CajetaArray, CajetaStruct, plain
+                // CajetaClass) are stored as pointers in the array's
+                // data slot. Loading the slot yields the heap reference,
+                // not the struct contents. CajetaArray and CajetaStruct
+                // both inherit from CajetaClass, so the dynamic_cast
+                // catches all three. Primitives load as their value type.
+                if (dynamic_pointer_cast<CajetaClass>(elemType) ||
                     (elemType->getTypeFlags() & STRUCT_FLAG)) {
                     loadTy = llvm::PointerType::get(*module->getLlvmContext(), 0);
                 } else {
@@ -229,6 +235,74 @@ namespace cajeta {
             return phi;
         }
 
+        // Indexed-assignment operator overload: `recv[idx] = value` on a
+        // class with `operator[]= (idx_t, value_t)` defined dispatches
+        // through it directly. Must short-circuit BEFORE the
+        // unconditional `lhs = children[0]->generateCode(module)` below
+        // — otherwise the LHS's ArrayIndexExpression would call
+        // `operator[]` (the read form) for its side effects, only to
+        // discard the result. Match the BinaryOpExpression operator-
+        // dispatch shape used for `+` / `==` / etc.
+        if (binaryOp == BINARY_OP_ASSIGN
+                && !children.empty()
+                && dynamic_pointer_cast<ArrayIndexExpression>(children[0])) {
+            auto arrIdxAst = dynamic_pointer_cast<Expression>(children[0]);
+            auto& arrIdxChildren = arrIdxAst->getChildren();
+            if (arrIdxChildren.size() >= 2) {
+                auto recvAst = dynamic_pointer_cast<Expression>(arrIdxChildren[0]);
+                auto idxAst  = dynamic_pointer_cast<Expression>(arrIdxChildren[1]);
+                auto valAst  = dynamic_pointer_cast<Expression>(children[1]);
+                if (recvAst && idxAst && valAst) {
+                    if (!recvAst->getResolvedType()) recvAst->resolveTypes(module);
+                    auto recvClass = dynamic_pointer_cast<CajetaClass>(
+                        recvAst->getResolvedType());
+                    bool recvIsArr = dynamic_pointer_cast<CajetaArray>(
+                        recvAst->getResolvedType()) != nullptr;
+                    if (recvClass && !recvIsArr && !recvClass->isInterface()
+                            && !(recvClass->getTypeFlags() & PRIMITIVE_FLAG)) {
+                        if (!idxAst->getResolvedType()) idxAst->resolveTypes(module);
+                        if (!valAst->getResolvedType()) valAst->resolveTypes(module);
+                        CajetaTypePtr idxType = idxAst->getResolvedType();
+                        CajetaTypePtr valType = valAst->getResolvedType();
+                        if (idxType && valType) {
+                            // Generate values fresh — recv as the `this`
+                            // pointer for the call, idx and val as the
+                            // operator's two named parameters. l-value
+                            // coercion mirrors the read-side dispatch
+                            // in ArrayIndexExpression::generateCode.
+                            llvm::Value* recvVal = recvAst->generateCode(module);
+                            llvm::Value* idxVal  = idxAst->generateCode(module);
+                            llvm::Value* valVal  = valAst->generateCode(module);
+                            if (auto* a = llvm::dyn_cast<llvm::AllocaInst>(recvVal)) {
+                                recvVal = builder->CreateLoad(a->getAllocatedType(), a);
+                            }
+                            if (auto* a = llvm::dyn_cast<llvm::AllocaInst>(idxVal)) {
+                                idxVal = builder->CreateLoad(a->getAllocatedType(), a);
+                            }
+                            if (auto* a = llvm::dyn_cast<llvm::AllocaInst>(valVal)) {
+                                valVal = builder->CreateLoad(a->getAllocatedType(), a);
+                            }
+                            std::vector<ParameterEntry> entries;
+                            entries.push_back(ParameterEntry(idxType, "", idxVal));
+                            entries.push_back(ParameterEntry(valType, "", valVal));
+                            std::string opName = "operator[]=";
+                            if (auto m = recvClass->resolveMethod(opName,
+                                    entries, /*isConstructor=*/false,
+                                    /*floatingParams=*/false)) {
+                                recvClass->invokeMethod(opName, entries,
+                                    /*isConstructor=*/false, recvVal,
+                                    /*callerModule=*/module);
+                                // The expression's value is the assigned r-value
+                                // (C/Java convention) so `if ((x = m[k]) ...)`
+                                // and `m[k] = n[k] = v` chain correctly.
+                                return valVal;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         llvm::Value* lhs = children[0]->generateCode(module);
         llvm::Value* rhs = children[1]->generateCode(module);
         ExpressionPtr lhsAst = dynamic_pointer_cast<Expression>(children[0]);
@@ -351,9 +425,11 @@ namespace cajeta {
                     slotTy = a->getAllocatedType();
                 } else if (lhsAst && dynamic_pointer_cast<ArrayIndexExpression>(lhsAst)) {
                     if (auto elemType = lhsAst->getResolvedType()) {
-                        // For reference-element arrays the slot holds a pointer;
-                        // primitive arrays hold the value directly.
-                        if (dynamic_pointer_cast<CajetaArray>(elemType) ||
+                        // Class-typed array elements (CajetaArray,
+                        // CajetaStruct, plain CajetaClass) — slot stores
+                        // a pointer to the heap instance. Primitive
+                        // arrays hold the value directly.
+                        if (dynamic_pointer_cast<CajetaClass>(elemType) ||
                             (elemType->getTypeFlags() & STRUCT_FLAG)) {
                             slotTy = llvm::PointerType::get(*module->getLlvmContext(), 0);
                         } else if (llvm::Type* lt = elemType->getLlvmType()) {

@@ -823,7 +823,13 @@ namespace cajeta {
             // taught yet — the methods are still registered for the day
             // somebody wires them in.
             const char* sym = "?";
-            if (ctx->ADD()) sym = "+";
+            // Bracket forms checked first — `OPERATOR LBRACK RBRACK
+            // (ASSIGN)?` overlaps with the bare ASSIGN check below
+            // (the indexed-assignment form has both LBRACK and ASSIGN
+            // tokens present), so the more specific match wins.
+            if (ctx->LBRACK() && ctx->RBRACK() && ctx->ASSIGN()) sym = "[]=";
+            else if (ctx->LBRACK() && ctx->RBRACK()) sym = "[]";
+            else if (ctx->ADD()) sym = "+";
             else if (ctx->SUB()) sym = "-";
             else if (ctx->MUL()) sym = "*";
             else if (ctx->DIV()) sym = "/";
@@ -853,14 +859,6 @@ namespace cajeta {
             else if (ctx->LSHIFT_ASSIGN()) sym = "<<=";
             else if (ctx->RSHIFT_ASSIGN()) sym = ">>=";
             else if (ctx->URSHIFT_ASSIGN()) sym = ">>>=";
-            // Indexing: `T operator[] (int64 i) { ... }`. The method's
-            // canonical name is `operator[]`. ArrayIndexExpression's
-            // codegen looks it up by that name when the receiver's
-            // resolved type is a class rather than a native array.
-            // v1 covers GET only — `arr[i]` reading dispatches through
-            // operator[]; writing (`arr[i] = v`) still uses the
-            // native-array path or method-based set().
-            else if (ctx->LBRACK() && ctx->RBRACK()) sym = "[]";
 
             string methodName = string("operator") + sym;
             vector<FormalParameterPtr> formals;
@@ -873,7 +871,17 @@ namespace cajeta {
                     }
                 }
             }
-            CajetaTypePtr returnType = CajetaType::fromContext(ctx->typeType(), pModule);
+            // Most operator overloads declare a non-void return via
+            // bare `typeType`; the indexed-assignment form (operator[]=)
+            // uses `typeTypeOrVoid` so `void` is acceptable as the
+            // return. Prefer typeType when present (the existing form);
+            // fall back to typeTypeOrVoid for the bracket-only path.
+            CajetaTypePtr returnType;
+            if (ctx->typeType()) {
+                returnType = CajetaType::fromContext(ctx->typeType(), pModule);
+            } else if (ctx->typeTypeOrVoid()) {
+                returnType = CajetaType::fromContext(ctx->typeTypeOrVoid(), pModule);
+            }
             BlockPtr block;
             if (ctx->methodBody()) {
                 auto bodyAny = visitMethodBody(ctx->methodBody());
