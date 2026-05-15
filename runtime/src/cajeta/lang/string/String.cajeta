@@ -1,7 +1,0 @@
-package cajeta.lang;
-
-public class String {
-    private byte[] data;
-    private byte[] hash;
-    private int length;
-}
