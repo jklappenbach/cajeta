@@ -5,6 +5,7 @@
 #include "Compiler.h"
 #include "CajetaModule.h"
 #include "CajetaLlvmVisitor.h"
+#include "StdlibEmbedded.h"
 #include "llvm/Bitcode/BitcodeReader.h"
 #include "llvm/IR/LegacyPassManager.h"
 #include "llvm/MC/TargetRegistry.h"
@@ -163,44 +164,23 @@ namespace cajeta {
     }
 
     // Stdlib prelude — the minimal class hierarchy every Cajeta compilation
-    // unit gets implicitly. v1 just carries the error-model types from
-    // ErrorModel.md; future stdlib growth (`String` class, collections,
-    // `Task<T>` exposed as a user-typeable template, etc.) extends this
-    // string. Kept inline rather than in a separate .caj file so the
-    // compiler binary is self-contained — distribution doesn't need to
-    // ship a stdlib directory alongside the executable.
+    // unit gets implicitly. v1 carries the error-model types from
+    // ErrorModel.md (Throwable / Exception / RecoverableException /
+    // UnrecoverableException); StandardLibrary.md describes the full
+    // intended scope.
     //
-    // Constructors don't call super(...) — `super` is still
+    // Sources live as actual `.cajeta` files under runtime/src/cajeta/ and
+    // are baked into the compiler binary at CMake-configure time by
+    // src/EmbedStdlib.cmake. The generated cajeta::stdlib::g_files manifest
+    // exposes each (relativePath, content, contentBytes) tuple; parse()
+    // iterates the manifest, treating each entry as a stdlib source.
+    // Keeping the stdlib on disk rather than as inline C strings makes it
+    // reviewable / editable like any other cajeta code; the bake-in keeps
+    // the distribution self-contained.
+    //
+    // Constructors in the stdlib don't call super(...) — `super` is still
     // UnsupportedExpression. Inherited fields are written directly via
     // `this.message`. Each subclass repeats the field assignment.
-    static const char* const STDLIB_SOURCE = R"CAJETA(
-package cajeta.error;
-public class Throwable {
-    public String message;
-    public Throwable(String message) {
-        this.message = message;
-    }
-}
-public class Exception extends Throwable {
-    public Throwable cause;
-    public Exception(String message) {
-        this.message = message;
-        this.cause = 0;
-    }
-}
-public class RecoverableException extends Exception {
-    public RecoverableException(String message) {
-        this.message = message;
-        this.cause = 0;
-    }
-}
-public class UnrecoverableException extends Exception {
-    public UnrecoverableException(String message) {
-        this.message = message;
-        this.cause = 0;
-    }
-}
-)CAJETA";
 
     // Run one compilationUnit through the parser/visitor against `module`.
     // Used twice from parse() — first to load the stdlib prelude, then the
@@ -233,20 +213,52 @@ public class UnrecoverableException extends Exception {
 
     void parse(CajetaModulePtr module) {
         // Stdlib first — its types must be in canonicalMap before user code
-        // can reference them by simple name. The module's qName is path-
-        // derived (e.g. `test.D` from `test/D.cajeta`), but the exception
-        // hierarchy declares `package cajeta.error;`, so we temporarily
-        // swap the module's qName to one whose package is `cajeta.error`
-        // for the stdlib parse — that way visitClassDeclaration builds
-        // stdlib classes with `cajeta.error.Throwable` canonical names.
-        // Restored before the user-source parse so user classes get their
-        // proper path-derived package. `cajeta.lang` is reserved for the
-        // future language-prelude bucket (String, Math, System, ...) and
-        // is intentionally not used today.
+        // can reference them by simple name. Two-step:
+        //
+        //   1. Pre-scan every embedded stdlib file's class names into the
+        //      archive registry. Forward references between stdlib files
+        //      (e.g. Exception.cajeta sorts alphabetically before
+        //      Throwable.cajeta but references Throwable) can then create
+        //      placeholders during the body walk, the same way cross-file
+        //      forward refs in user code do.
+        //
+        //   2. Walk each stdlib file. Each file declares its own
+        //      `package X;`; the package-mismatch check in
+        //      onPackageDeclaration compares that against the module's
+        //      path-derived qName, so we swap the module's qName to match
+        //      the file before each invocation. The relative path under
+        //      runtime/src — e.g. `cajeta/error/Throwable.cajeta` —
+        //      yields package `cajeta.error` and short name `Throwable`.
+        //      Restored before the user-source parse so user classes get
+        //      their proper path-derived package.
+        for (size_t i = 0; i < cajeta::stdlib::g_fileCount; ++i) {
+            const auto& f = cajeta::stdlib::g_files[i];
+            antlr4::ANTLRInputStream prescanIn(
+                std::string(f.content, f.contentBytes));
+            prescanSource(prescanIn);
+        }
+
         QualifiedNamePtr originalQName = module->getQName();
-        module->setQName(QualifiedName::getOrInsert("stdlib", "cajeta.error"));
-        antlr4::ANTLRInputStream stdlibInput(STDLIB_SOURCE);
-        parseSource(module, stdlibInput, /*label=*/"");
+        for (size_t i = 0; i < cajeta::stdlib::g_fileCount; ++i) {
+            const auto& f = cajeta::stdlib::g_files[i];
+            std::string relPath = f.relativePath;
+            auto lastSlash = relPath.find_last_of('/');
+            std::string pkg = (lastSlash == std::string::npos)
+                ? std::string()
+                : relPath.substr(0, lastSlash);
+            std::replace(pkg.begin(), pkg.end(), '/', '.');
+            std::string fileName = (lastSlash == std::string::npos)
+                ? relPath
+                : relPath.substr(lastSlash + 1);
+            auto dotIdx = fileName.find_last_of('.');
+            if (dotIdx != std::string::npos) {
+                fileName = fileName.substr(0, dotIdx);
+            }
+            module->setQName(QualifiedName::getOrInsert(fileName, pkg));
+            antlr4::ANTLRInputStream stdlibInput(
+                std::string(f.content, f.contentBytes));
+            parseSource(module, stdlibInput, /*label=*/"");
+        }
         module->setQName(originalQName);
 
         // Error-model #210: emit the marker global the runtime uses to

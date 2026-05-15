@@ -1,0 +1,13 @@
+package cajeta.error;
+
+// Recoverable subtype: errors a caller might reasonably handle and
+// proceed past (failed parse, missing record, transient I/O). Distinct
+// from UnrecoverableException so the runtime's Unrecoverable detection
+// can chain-walk a thrown instance's vtable to decide whether the
+// throw should propagate to abort.
+public class RecoverableException extends Exception {
+    public RecoverableException(String message) {
+        this.message = message;
+        this.cause = 0;
+    }
+}

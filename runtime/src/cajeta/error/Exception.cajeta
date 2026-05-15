@@ -1,0 +1,10 @@
+package cajeta.error;
+
+public class Exception extends Throwable {
+    public Throwable cause;
+
+    public Exception(String message) {
+        this.message = message;
+        this.cause = 0;
+    }
+}
