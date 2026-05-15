@@ -39,8 +39,10 @@ cajeta.time            — Instant, Duration, Period, LocalDate, LocalTime,
                          DateTimeFormatter, Clock (with nanoTime / millisTime)
 cajeta.collection      — Collection / Iterable / Iterator interfaces;
                          List, Set, Map, Deque, Stack interfaces;
-                         Sortable marker (only collections with
-                         sequence semantics — arrays, lists);
+                         Sortable / ArraySortable interfaces — sequence
+                         types that sort in place; the ArraySortable
+                         half adds user-pluggable SortAlgorithm support
+                         (Array-backed types only);
                          StructView marker for zero-alloc views over
                          external buffers;
                          Array (the variable-size, element-typed array
@@ -879,13 +881,13 @@ array into a heap zero-cost.
 
 ### Sorting
 
-In `cajeta.collection.sort`. A `Sort` namespace of static methods,
-not a `Sortable` interface — sorting is something you do *to* a
-collection, not a property *of* a collection. Operates on
-`Array<T>` (and by extension `ArrayList<T>` / `ArrayStack<T>`
-whose backing storage is an Array); pointer-linked collections
-(`LinkedList`, `TreeSet`, etc.) sort by extracting to an Array
-first.
+In `cajeta.collection.sort`. Two layers: a `Sort` namespace of
+static algorithms that operate on `Array<T>&` directly (the
+fast path, no abstraction overhead), and the `Sortable<T>` /
+`ArraySortable<T>` interfaces that collections implement to
+expose in-place sort through their own API surface. The
+algorithms are the substance; the interfaces are how user code
+reaches them through `myList.sort(...)`.
 
 ```cajeta
 public final class Sort {
@@ -1021,24 +1023,59 @@ Sort.radix(readings);                          // in-place
 Sort.quick(readings, byTimestampAsc);          // with comparator
 ```
 
-**2. `Sortable<T>` interface — collections that delegate to the
-Sort algorithms.** Array-backed collections expose `sort()` /
-`sort(Comparator)` as instance methods that hand off to
-`Sort.quick` (the introsort default) over their backing array.
-Convenience, not a separate algorithm.
+**2. `Sortable<T>` / `ArraySortable<T>` interfaces — collections
+that can sort in place.** Two interfaces, deliberately split.
+`Sortable<T>` is the minimum contract: "I'm a sequence you can
+sort." `ArraySortable<T>` adds "you can pick which algorithm" —
+which requires random-access contiguous storage, so it's only
+implemented by array-backed types. The split exists because
+some algorithms (quicksort, radix, counting, the parallel
+variants) need contiguous memory and random-access indexing to
+work efficiently; forcing those onto LinkedList would mean
+silently allocating a temporary array under the user's `sort()`
+call, which violates the "no hidden allocation" rule the
+stdlib design follows everywhere else.
 
 ```cajeta
+// Minimum sort contract — every sortable collection has at least this.
+// The implementation picks an algorithm that suits its storage shape
+// (introsort on Array-backed types, linked-list mergesort on LinkedList).
 public interface Sortable<T> {
-    public void sort();                        // requires T extends Comparable<T>
+    public void sort();                           // requires T extends Comparable<T>
     public void sort(Comparator<T> cmp);
-    public void sort(SortAlgorithm alg);       // for explicit algorithm choice
-    public void sort(SortAlgorithm alg, Comparator<T> cmp);
 }
 
-public enum SortAlgorithm {
-    QUICK, MERGE, TIMSORT, HEAP, RADIX,        // single-threaded
-    QUICK_PARALLEL, MERGE_PARALLEL, RADIX_PARALLEL;
+// Algorithm-selection contract — only collections with random-access
+// contiguous storage. Adds the SortAlgorithm-taking overloads.
+public interface ArraySortable<T> extends Sortable<T> {
+    public void sort(SortAlgorithm<T> alg);
+    public void sort(SortAlgorithm<T> alg, Comparator<T> cmp);
 }
+
+// Algorithms are values, not enum constants — users can write their
+// own and pass them where stdlib's would go. The algorithm contract
+// operates on Array<T>& for raw performance (no virtual dispatch per
+// element access; cache-line locality preserved).
+public abstract class SortAlgorithm<T> {
+    public abstract void sort(Array<T>& data, Comparator<T> cmp);
+
+    // Natural-order shortcut. Algorithms that work on raw bit
+    // patterns (radix, counting) override this directly and ignore
+    // the comparator path.
+    public void sortNatural(Array<T>& data) where T extends Comparable<T> {
+        sort(data, NaturalOrder.<T>get());
+    }
+}
+
+// Stdlib instances live as static factories on Sort:
+//   Sort.quickAlgorithm<T>()
+//   Sort.mergeAlgorithm<T>()
+//   Sort.timsortAlgorithm<T>()
+//   Sort.heapAlgorithm<T>()
+//   Sort.radixAlgorithm(/* numeric type-specific */)
+//   Sort.quickParallelAlgorithm<T>(int8 fiberCount = -1)
+//   Sort.mergeParallelAlgorithm<T>(int8 fiberCount = -1)
+//   Sort.radixParallelAlgorithm(/* numeric type-specific */, int8 fiberCount = -1)
 ```
 
 Sorting is only meaningful for collections with **sequence
@@ -1046,55 +1083,96 @@ semantics** — an order the user controls and that an in-place
 operation can rearrange. Sets and maps have no inherent
 positional order to rearrange (a `HashSet` stores by bucket; a
 `TreeSet` is already key-ordered by construction); calling
-`sort()` on them would be either nonsensical or a no-op, so the
-interface is deliberately not implemented on them. The compiler
-catches the misuse at the type level — there's no Sortable
-contract to call.
+`sort()` on them would be either nonsensical or a no-op, so
+neither interface is implemented on them. The compiler catches
+the misuse at the type level — there's no Sortable contract to
+call.
 
-| Collection         | `Sortable`? | Why                                                                  |
-|--------------------|-------------|----------------------------------------------------------------------|
-| `Array<T>`         | yes         | Canonical mutable sequence.                                          |
-| `ArrayList<T>`     | yes         | Backed by Array; delegates.                                          |
-| `ArrayStack<T>`    | yes         | Backed by Array; delegates.                                          |
-| `ArrayDeque<T>`    | yes         | Ring-buffer-backed; sort is meaningful but requires un-wrapping.     |
-| `LinkedList<T>`    | yes         | Sequence shape; uses linked-list mergesort (no Array delegation).    |
-| `HashSet<T>`       | no          | No inherent order; sort is undefined.                                |
-| `DenseSet<T>`      | no          | Same.                                                                |
-| `BitSet`           | no          | Always ordered by bit position; sort is a no-op.                     |
-| `TreeSet<T>`       | no          | Already ordered by construction.                                     |
-| `HashMap<K, V>`    | no          | No inherent order over entries.                                      |
-| `DenseMap<K, V>`   | no          | Same.                                                                |
-| `SparseMap<K, V>`  | no          | Same.                                                                |
-| `IdentityHashMap<K, V>` | no     | Same.                                                                |
-| `TreeMap<K, V>`    | no          | Already ordered by key.                                              |
-| `Heap<T>`          | no          | Sorts via `drainSorted` / `toSortedArray` — see "Heap and sorting" below. |
-| `BinaryTree<T>`    | no          | Tree shape, not sequence.                                            |
-| `RedBlackTree<T>`  | no          | Already ordered.                                                     |
-| `BTree` / `BPlusTree` | no       | Already ordered.                                                     |
+| Collection         | `Sortable<T>` | `ArraySortable<T>` | Default sort                                          |
+|--------------------|---------------|---------------------|-------------------------------------------------------|
+| `Array<T>`         | yes           | yes                 | introsort, plus any user-supplied `SortAlgorithm<T>`  |
+| `ArrayList<T>`     | yes           | yes                 | same — delegates to backing Array                     |
+| `ArrayStack<T>`    | yes           | yes                 | same                                                  |
+| `ArrayDeque<T>`    | yes           | yes                 | same (un-wraps the ring buffer internally)            |
+| `LinkedList<T>`    | yes           | **no**              | linked-list mergesort, in-place, no allocation        |
+| `HashSet<T>`       | no            | no                  | n/a — no inherent order to rearrange                  |
+| `DenseSet<T>`      | no            | no                  | same                                                  |
+| `BitSet`           | no            | no                  | always ordered by bit position; sort is a no-op       |
+| `TreeSet<T>`       | no            | no                  | already ordered by construction                       |
+| `HashMap<K, V>`    | no            | no                  | no inherent order over entries                        |
+| `DenseMap<K, V>`   | no            | no                  | same                                                  |
+| `SparseMap<K, V>`  | no            | no                  | same                                                  |
+| `IdentityHashMap<K, V>` | no       | no                  | same                                                  |
+| `TreeMap<K, V>`    | no            | no                  | already ordered by key                                |
+| `Heap<T>`          | no            | no                  | sorts via `drainSorted` / `toSortedArray` — see "Heap and sorting" |
+| `BinaryTree<T>`    | no            | no                  | tree shape, not sequence                              |
+| `RedBlackTree<T>`  | no            | no                  | already ordered                                       |
+| `BTree`/`BPlusTree`| no            | no                  | already ordered                                       |
 
-Array-backed implementers forward `sort()` to the corresponding
-`Sort.X` on their backing array. View-mode instances reject
-`sort()` at compile time (same rule as every other mutator — views
-are read-only).
+Array-backed implementers forward `sort()` to `Sort.quickAlgorithm`
+(introsort default) on their backing array; `sort(alg, cmp)`
+forwards to the user-supplied algorithm. View-mode instances
+reject any `sort` call at compile time (same rule as every other
+mutator — views are read-only).
 
-`LinkedList<T>` implements `Sortable<T>` differently from the
-Array-backed ones — it doesn't have backing-array storage to
-delegate to, so its `sort()` is a genuine merge-sort-on-linked-
-list implementation (the one place mergesort beats quicksort:
-O(n log n) with no extra storage and no random access required).
+**LinkedList is `Sortable` but not `ArraySortable`** — and that
+distinction is the whole point of the split. Linked-list mergesort
+is in-place, O(n log n), needs no random access and no extra
+allocation; that's what `LinkedList.sort()` runs. But arbitrary
+algorithms aren't supported because they'd require materializing
+the linked list into an array first, sorting that, and re-linking
+the nodes — a hidden cost the user wouldn't see at the call site.
+The type system makes that decision explicit instead:
 
 ```cajeta
 ArrayList<Event> events = loadEvents();
-events.sort(byTimestamp);                      // delegates to Sort.quick
-events.sort(SortAlgorithm.TIMSORT, byTimestamp);   // pick algorithm
+events.sort(byTimestamp);                            // introsort default
+events.sort(Sort.timsortAlgorithm<Event>(), byTimestamp);
+events.sort(Sort.radixParallelAlgorithm<Event>(   // pluggable algorithm
+    extractTimestamp), byTimestamp);
 
 LinkedList<Node> nodes = buildChain();
-nodes.sort(byDepth);                           // linked-list mergesort
+nodes.sort(byDepth);                                 // linked-list mergesort
+// nodes.sort(Sort.radixAlgorithm<Node>(...));       // compile error:
+                                                     //   LinkedList isn't ArraySortable
+
+// If radix on linked-list contents is what you need, the conversion
+// is your decision, written at the call site:
+Array<Node> arr = nodes.toArray();
+arr.sort(Sort.radixAlgorithm<Node>(extractDepth));
+// nodes still holds the unsorted linked list; arr is the sorted snapshot.
 
 HashSet<String> tags = readTags();
-// tags.sort();                                // compile error — Set has no Sortable
-Array<String> sorted = Sort.collected(tags);   // materialize-and-sort instead
+// tags.sort();                                      // compile error — Set has no Sortable
+Array<String> sorted = Sort.collected(tags);         // materialize-and-sort instead
 ```
+
+**User-defined sorts.** Because `SortAlgorithm<T>` is an abstract
+class, not an enum, users can publish their own algorithms and
+plug them into the same `ArraySortable.sort(alg, cmp)` entry
+point stdlib uses:
+
+```cajeta
+public class StoogeSort<T> extends SortAlgorithm<T> {
+    public void sort(Array<T>& data, Comparator<T> cmp) {
+        stoogeRecurse(data, 0, data.count() - 1, cmp);
+    }
+}
+
+ArrayList<Event> events = loadEvents();
+events.sort(new StoogeSort<Event>(), byTimestamp);
+```
+
+The dispatcher in `ArraySortable.sort(alg, cmp)` hands the
+backing array to the user's algorithm directly — no copies, no
+adapters. Research code, specialized domain sorts (timestamp-
+aware, locality-aware), and library-supplied algorithms (a future
+`cajeta.ml.sort.bucketed` for ML pipelines, say) all compose with
+the same instance method users already know. Linked-list-native
+algorithms are out of scope for the `SortAlgorithm<T>` family —
+they'd need a separate `LinkedSortAlgorithm<T>` operating on
+node pointers — and v1 doesn't ship that; `LinkedList.sort()`'s
+built-in mergesort covers the documented use case.
 
 **Heap and sorting.** A `Heap<T>` already satisfies a partial-order
 invariant — the root is the minimum (or maximum) by definition.
