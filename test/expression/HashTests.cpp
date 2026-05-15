@@ -29,6 +29,8 @@ extern "C" {
     int64_t __cajeta_hash_boolean(int8_t value);
     int64_t __cajeta_hash_identity(void* p);
     int64_t __cajeta_hash_combine(int64_t a, int64_t b);
+    int64_t __cajeta_hash_bytes(const uint8_t* data, int64_t len);
+    int64_t __cajeta_hash_bytes_seeded(const uint8_t* data, int64_t len, int64_t seed);
 }
 
 // --- seed ------------------------------------------------------------------
@@ -235,6 +237,78 @@ TEST(NativeAnnotationTests, deduplicatesRuntimeSymbolDeclarations) {
     auto fn2 = jit->lookup<int64_t (*)(int64_t)>("viaHash2");
     EXPECT_EQ(fn1(100), fn2(100));   // both routes resolve to the same runtime fn
     EXPECT_NE(fn1(100), 0);
+}
+
+// --- bytes (XXH3-64) -------------------------------------------------------
+// Backed by xxhash's XXH3_64bits_withSeed (vendored via libxxhash-dev,
+// header included with XXH_INLINE_ALL so the implementation lands in
+// the runtime bitcode + native object). The process-seeded variant is
+// the default; the explicit-seed variant is exposed for cases where
+// the caller controls the seed (snapshot replay, cross-process
+// rendezvous, deterministic tests).
+
+TEST(HashBytesTests, deterministic) {
+    const uint8_t input[] = {1, 2, 3, 4, 5, 6, 7, 8};
+    EXPECT_EQ(__cajeta_hash_bytes(input, 8), __cajeta_hash_bytes(input, 8));
+}
+
+TEST(HashBytesTests, lengthMatters) {
+    const uint8_t prefix[] = {1, 2, 3, 4};
+    const uint8_t same_prefix_longer[] = {1, 2, 3, 4, 5};
+    EXPECT_NE(__cajeta_hash_bytes(prefix, 4),
+              __cajeta_hash_bytes(same_prefix_longer, 5));
+}
+
+TEST(HashBytesTests, avalancheOnSingleBitFlip) {
+    const uint8_t a[] = {1, 2, 3, 4, 5, 6, 7, 8};
+    const uint8_t b[] = {1, 2, 3, 4, 5, 6, 7, 9};   // last byte +1
+    int64_t ha = __cajeta_hash_bytes(a, 8);
+    int64_t hb = __cajeta_hash_bytes(b, 8);
+    EXPECT_NE(ha, hb);
+    int diff = __builtin_popcountll((uint64_t) ha ^ (uint64_t) hb);
+    EXPECT_GE(diff, 10);    // healthy avalanche: roughly half the bits flip
+    EXPECT_LE(diff, 54);
+}
+
+TEST(HashBytesTests, emptyBufferStableAndNonzero) {
+    int64_t h0 = __cajeta_hash_bytes(nullptr, 0);
+    int64_t h1 = __cajeta_hash_bytes(nullptr, 0);
+    EXPECT_EQ(h0, h1);
+    // Process-seeded; the XXH3 algorithm produces non-zero for any
+    // non-zero seed even on an empty buffer.
+    EXPECT_NE(h0, 0);
+}
+
+TEST(HashBytesTests, manyDistinctInputsManyDistinctHashes) {
+    std::unordered_set<int64_t> seen;
+    for (int64_t i = 0; i < 4096; ++i) {
+        uint8_t buf[8];
+        std::memcpy(buf, &i, sizeof(i));
+        seen.insert(__cajeta_hash_bytes(buf, 8));
+    }
+    // XXH3 over 4096 distinct 8-byte inputs should produce 4096
+    // distinct 64-bit hashes (birthday bound is at ~2^32).
+    EXPECT_EQ(seen.size(), 4096u);
+}
+
+// --- bytes_seeded: bit-exact XXH3 ------------------------------------------
+
+TEST(HashBytesSeededTests, knownVector_emptyInputSeed0) {
+    // XXH3_64bits_withSeed("", 0, seed=0) per the xxhash reference
+    // implementation. If this test ever fails, the underlying
+    // libxxhash version has changed semantics — investigate before
+    // bumping. Value confirmed against libxxhash 0.8.x.
+    int64_t h = __cajeta_hash_bytes_seeded(nullptr, 0, 0);
+    EXPECT_EQ((uint64_t) h, 0x2D06800538D394C2ULL);
+}
+
+TEST(HashBytesSeededTests, deterministicWithExplicitSeed) {
+    const uint8_t input[] = {0xde, 0xad, 0xbe, 0xef};
+    int64_t s1 = __cajeta_hash_bytes_seeded(input, 4, 0x42);
+    int64_t s2 = __cajeta_hash_bytes_seeded(input, 4, 0x42);
+    int64_t s3 = __cajeta_hash_bytes_seeded(input, 4, 0x43);
+    EXPECT_EQ(s1, s2);    // same seed → same hash
+    EXPECT_NE(s1, s3);    // different seed → different hash
 }
 
 // --- cajeta.hash.Hash stdlib-class round-trip ------------------------------

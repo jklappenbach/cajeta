@@ -1498,6 +1498,15 @@ char* __cajeta_str_substring(const char* s, int64_t begin, int64_t end) {
 #include <unistd.h>
 #include <time.h>
 
+// XXH_INLINE_ALL: the xxhash header ships in two modes — declare-only
+// (link against libxxhash) and inline-all (full implementation in this
+// translation unit). We pick inline-all so the runtime's bitcode + native
+// build both carry the implementation; no separate libxxhash linkage step
+// on the JIT or AOT side. -O2 dead-code-strips the unused XXH32/XXH64/
+// XXH128 paths so binary growth is bounded to what we actually call.
+#define XXH_INLINE_ALL
+#include <xxhash.h>
+
 static uint64_t __cajeta_hash_seed_value = 0;
 
 __attribute__((constructor))
@@ -1611,6 +1620,26 @@ int64_t __cajeta_hash_combine(int64_t a, int64_t b) {
     uint64_t h = (uint64_t) a;
     h ^= (uint64_t) b + 0x9E3779B97F4A7C15ULL + (h << 6) + (h >> 2);
     return (int64_t) splitmix64_finalize(h);
+}
+
+// XXH3-64 over an arbitrary byte buffer. Backs cajeta.hash.XXHash3 and
+// String.hash() (where String is a UTF-8 sequence). Per-process seed
+// is mixed via XXH3's seed parameter — same hash-flooding defense
+// the primitive variants get. Multi-GB/s on modern CPUs; small-input
+// path (the typical field-hashing case) is a handful of cycles.
+int64_t __cajeta_hash_bytes(const uint8_t* data, int64_t len) {
+    if (len < 0) len = 0;
+    return (int64_t) XXH3_64bits_withSeed(
+        data, (size_t) len, __cajeta_hash_seed_load());
+}
+
+// Same algorithm with caller-supplied seed. For cases where the seed
+// is part of the input (snapshot replay, cross-process hash table
+// rendezvous, deterministic-test contexts).
+int64_t __cajeta_hash_bytes_seeded(const uint8_t* data, int64_t len, int64_t seed) {
+    if (len < 0) len = 0;
+    return (int64_t) XXH3_64bits_withSeed(
+        data, (size_t) len, (uint64_t) seed);
 }
 
 // --- parsing helpers --------------------------------------------------------
