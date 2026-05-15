@@ -501,6 +501,30 @@ namespace cajeta {
         // section calls out the flatten-into-wrapper composition.
         if (!hasAroundWrapper) emitBeforeAdvice(module);
 
+        // Implicit super-constructor call. Java semantics: a subclass
+        // ctor's body is preceded by `super()` unless the user wrote
+        // an explicit super-call (still unsupported — `super` is
+        // UnsupportedExpression today). Skip when the parent has no
+        // no-arg ctor; classes whose only ctor takes args (e.g.
+        // stdlib Throwable(String)) keep the current "manually
+        // assign inherited fields" pattern until explicit super(...)
+        // lands. Pass `this` (bodyFn arg 0) as the receiver.
+        if (constructor && parent && bodyFn->arg_size() > 0) {
+            for (auto& sup : parent->getSuperClasses()) {
+                if (!sup) continue;
+                std::vector<ParameterEntry> noArgs;
+                std::string supCtorName = sup->getQName()->getTypeName();
+                if (sup->resolveMethod(supCtorName, noArgs,
+                        /*isConstructor=*/true, /*floatingParams=*/false)) {
+                    sup->invokeMethod(supCtorName, noArgs,
+                        /*isConstructor=*/true,
+                        bodyFn->getArg(0),
+                        /*callerModule=*/module);
+                }
+                break;  // single inheritance chain; only the first parent
+            }
+        }
+
         // Type-resolver pre-pass: populates Expression::resolvedType so codegen can
         // distinguish e.g. fp8 from i8 when they share an LLVM type.
         if (block) {

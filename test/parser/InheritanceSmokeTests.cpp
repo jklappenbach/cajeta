@@ -173,19 +173,75 @@ TEST(InheritanceSmokeTests, childExtendsWithoutOverriding) {
 // Super-constructor chaining is a separate gap (AChild() does not
 // implicitly call ZParent()), so this test sets the inherited slot
 // through `this` in the child's ctor.
+// Implicit super-constructor chaining. Child has a no-arg ctor with
+// an empty body; parent has a no-arg ctor that initializes a field.
+// Without implicit super, the field stays zero; with it, the parent
+// ctor runs before the child's body and the field reads back as 41.
+TEST(InheritanceSmokeTests, implicitSuperCallChainsParentCtor) {
+    auto src =
+        "package test;\n"
+        "public class P {\n"
+        "    public int32 inherited;\n"
+        "    public P() { this.inherited = 41; }\n"
+        "}\n"
+        "public class C extends P {\n"
+        "    public C() { return; }\n"
+        "}\n"
+        "public final class I {\n"
+        "    public static int32 run() {\n"
+        "        C c = new C();\n"
+        "        return c.inherited;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 41);
+}
+
+// Three-level chain — implicit super propagates all the way to the
+// root. Each level's ctor stamps a different field; the test reads
+// all three through the deepest instance.
+TEST(InheritanceSmokeTests, implicitSuperChainsThreeLevels) {
+    auto src =
+        "package test;\n"
+        "public class A {\n"
+        "    public int32 a;\n"
+        "    public A() { this.a = 1; }\n"
+        "}\n"
+        "public class B extends A {\n"
+        "    public int32 b;\n"
+        "    public B() { this.b = 2; }\n"
+        "}\n"
+        "public class C extends B {\n"
+        "    public int32 c;\n"
+        "    public C() { this.c = 4; }\n"
+        "}\n"
+        "public final class I {\n"
+        "    public static int32 run() {\n"
+        "        C c = new C();\n"
+        "        return c.a + c.b + c.c;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 7);
+}
+
+// Cross-file inheritance end-to-end: deferred prototypes
+// (CajetaModule::buildPendingPrototypes), cross-module extern-decl
+// fixup (ensureGlobalInModule / ensureFunctionInModule), and
+// implicit super-constructor chaining all have to work for the
+// `new AChild()` here to lay out the inherited field, run ZParent's
+// ctor, and load the resulting value through c.inherited.
 TEST(InheritanceSmokeTests, crossFileChildExtendsParentInOtherFile) {
     std::map<std::string, std::string> sources;
     sources["test.ZParent"] =
         "package test;\n"
         "public class ZParent {\n"
         "    public int32 inherited;\n"
-        "    public ZParent() { return; }\n"
+        "    public ZParent() { this.inherited = 41; }\n"
         "    public int32 parentMethod() { return 1; }\n"
         "}\n";
     sources["test.AChild"] =
         "package test;\n"
         "public class AChild extends ZParent {\n"
-        "    public AChild() { this.inherited = 41; }\n"
+        "    public AChild() { return; }\n"
         "    public int32 childMethod() { return 2; }\n"
         "    public static int32 run() {\n"
         "        AChild c = new AChild();\n"
