@@ -155,36 +155,9 @@ boundary) always produce a fresh **owned** String.
 Construct a view via the `String.viewOf(...)` factory — never `new`.
 The convention across stdlib: **`new` always allocates; `viewOf` /
 `cString` / similar factories borrow.** Reading the call site tells
-you whether the heap got hit.
-
-```cajeta
-public final class String {
-    // Owned — `new` always allocates.
-    public String();
-    public String(byte[] bytes, Encoding encoding);
-
-    // Borrowed view over a fixed-size byte array. N is type-level,
-    // so no length argument: the buffer size comes from the type.
-    public static String viewOf(byte[N]& source,
-                                 Encoding encoding = Encoding.UTF_8);
-
-    // Borrowed view over a runtime-sized byte slice. Length must be
-    // supplied explicitly — the type doesn't know.
-    public static String viewOf(byte[]& source,
-                                 int64 byteCount,
-                                 Encoding encoding = Encoding.UTF_8);
-
-    // Null-terminated convenience: scans for the first null byte
-    // and views that prefix. For legacy C-style structs.
-    public static String cString(byte[N]& source,
-                                  Encoding encoding = Encoding.UTF_8);
-
-    // Promote a view to owned (allocates + memcpys). Required at any
-    // boundary where the view's lifetime would otherwise outrun the
-    // source — borrow checker points the developer here.
-    public String toOwned();
-}
-```
+you whether the heap got hit. The factory signatures are part of the
+canonical `String` declaration above; the rest of this section shows
+how the field-reference shape interacts with them.
 
 **The compiler does the address math.** When you write `s.name` in
 `String.viewOf(s.name)`, the field reference carries three pieces:
