@@ -39,6 +39,8 @@ cajeta.time            — Instant, Duration, Period, LocalDate, LocalTime,
                          DateTimeFormatter, Clock (with nanoTime / millisTime)
 cajeta.collection      — Collection / Iterable / Iterator interfaces;
                          List, Set, Map, Deque, Stack interfaces;
+                         Sortable marker (only collections with
+                         sequence semantics — arrays, lists);
                          StructView marker for zero-alloc views over
                          external buffers;
                          Array (the variable-size, element-typed array
@@ -49,6 +51,8 @@ cajeta.collection      — Collection / Iterable / Iterator interfaces;
                          ArrayDeque, LinkedDeque, ArrayStack;
                          Heap (priority queue); BitSet;
                          tree.{BinaryTree, RedBlackTree, BTree, BPlusTree};
+                         sort.{quick, merge, timsort, heap, insertion,
+                         radix, counting, parallel variants, external};
                          Immutable[List, Set, Map, Deque, Array, Heap] —
                          read-only variants
 cajeta.io              — InputStream, OutputStream, Reader, Writer, byte buffers;
@@ -873,7 +877,415 @@ exist for shipping a heap over the wire (sender heapifies once,
 receiver consumes via a view), not for converting an arbitrary
 array into a heap zero-cost.
 
-### Immutable variants
+### Sorting
+
+In `cajeta.collection.sort`. A `Sort` namespace of static methods,
+not a `Sortable` interface — sorting is something you do *to* a
+collection, not a property *of* a collection. Operates on
+`Array<T>` (and by extension `ArrayList<T>` / `ArrayStack<T>`
+whose backing storage is an Array); pointer-linked collections
+(`LinkedList`, `TreeSet`, etc.) sort by extracting to an Array
+first.
+
+```cajeta
+public final class Sort {
+    // ----- comparison-based, single-threaded -----
+
+    // General-purpose. Introsort: quicksort with median-of-three
+    // pivot + insertion-sort fallback for ranges under 32 +
+    // heapsort fallback when quicksort depth exceeds 2*log2(n).
+    // Unstable, in-place, O(n log n) worst case.
+    public static <T extends Comparable<T>> void quick(Array<T>& data);
+    public static <T> void quick(Array<T>& data, Comparator<T> cmp);
+
+    // Stable mergesort. O(n log n) worst case, O(n) extra space.
+    // Pick when equal-element relative order matters.
+    public static <T extends Comparable<T>> void merge(Array<T>& data);
+    public static <T> void merge(Array<T>& data, Comparator<T> cmp);
+
+    // Stable, adaptive. Timsort — exploits existing runs in the
+    // input (common in real-world data); same O(n log n) worst case
+    // but O(n) on already-sorted or reverse-sorted input. Python /
+    // Java default.
+    public static <T extends Comparable<T>> void timsort(Array<T>& data);
+    public static <T> void timsort(Array<T>& data, Comparator<T> cmp);
+
+    // Worst-case-guaranteed O(n log n), in-place, unstable. Heapsort.
+    // Slower than quicksort on average but with no bad-input
+    // pathologies — pick when worst-case timing matters more than
+    // common case (real-time systems, adversarial inputs).
+    public static <T extends Comparable<T>> void heap(Array<T>& data);
+    public static <T> void heap(Array<T>& data, Comparator<T> cmp);
+
+    // Adaptive O(n²). Fast on small / nearly-sorted data; used as
+    // the base case inside the other sorts for short ranges. Public
+    // because it's occasionally the right standalone answer.
+    public static <T extends Comparable<T>> void insertion(Array<T>& data);
+    public static <T> void insertion(Array<T>& data, Comparator<T> cmp);
+
+    // Partial sort — sorts only the first k elements, in O(n log k).
+    // Useful for "top k" queries without sorting the rest.
+    public static <T extends Comparable<T>> void partial(Array<T>& data, int64 k);
+
+    // ----- linear-time sorts for specific domains -----
+
+    // Counting sort. O(n + range). Only useful when the value range
+    // is small (caller supplies the min/max bound).
+    public static void countingInt32(Array<int32>& data, int32 min, int32 max);
+    public static void countingInt64(Array<int64>& data, int64 min, int64 max);
+
+    // Radix sort (LSB, byte-at-a-time). O(n · digits) — for fixed-
+    // width integer and float keys, beats comparison sorts on large
+    // arrays once n is past ~10K. Stable. Allocates O(n) scratch.
+    public static void radix(Array<int8>& data);
+    public static void radix(Array<int16>& data);
+    public static void radix(Array<int32>& data);
+    public static void radix(Array<int64>& data);
+    public static void radix(Array<uint8>& data);
+    public static void radix(Array<uint16>& data);
+    public static void radix(Array<uint32>& data);
+    public static void radix(Array<uint64>& data);
+    public static void radix(Array<float32>& data);    // bit-pattern-aware
+    public static void radix(Array<float64>& data);
+
+    // Radix sort over arbitrary keys via key-extraction. The key
+    // type must be one of the supported fixed-width numeric types.
+    public static <T, K> void radix(Array<T>& data, Function<T, K> keyOf);
+
+    // ----- fiber-parallel variants -----
+
+    // Parallel introsort. Splits the input recursively; each
+    // partition past a per-fiber threshold (~32K elements) spawns
+    // a new fiber. Below threshold, single-thread fallback. Useful
+    // when comparison is non-trivial (custom comparator does
+    // string work, etc.) — comparison sorts scale well when the
+    // comparator is the bottleneck.
+    public static <T extends Comparable<T>> void quickParallel(
+        Array<T>& data,
+        int8 fiberCount = -1);     // -1 = OS CPU count
+    public static <T> void quickParallel(
+        Array<T>& data,
+        Comparator<T> cmp,
+        int8 fiberCount = -1);
+
+    // Parallel mergesort. Splits the input into fiberCount chunks,
+    // sorts each on its own fiber, parallel-merges pairs in O(log
+    // fiberCount) rounds. Stable. Useful for large datasets where
+    // memory bandwidth isn't yet the binding constraint.
+    public static <T extends Comparable<T>> void mergeParallel(
+        Array<T>& data,
+        int8 fiberCount = -1);
+    public static <T> void mergeParallel(
+        Array<T>& data,
+        Comparator<T> cmp,
+        int8 fiberCount = -1);
+
+    // Parallel radix sort — see "Parallel radix sort" subsection
+    // below for the full description. Fiber-friendly LSB radix
+    // with cache-line-aware histogram partitioning, lock-free
+    // scatter. The fastest way to sort tens of millions of fixed-
+    // width keys on a multi-core CPU.
+    public static void radixParallel(Array<int32>& data, int8 fiberCount = -1);
+    public static void radixParallel(Array<int64>& data, int8 fiberCount = -1);
+    public static void radixParallel(Array<uint32>& data, int8 fiberCount = -1);
+    public static void radixParallel(Array<uint64>& data, int8 fiberCount = -1);
+    public static void radixParallel(Array<float32>& data, int8 fiberCount = -1);
+    public static void radixParallel(Array<float64>& data, int8 fiberCount = -1);
+    public static <T, K> void radixParallel(
+        Array<T>& data,
+        Function<T, K> keyOf,
+        int8 fiberCount = -1);
+
+    // ----- external sort (data doesn't fit in memory) -----
+
+    // Streams `input` into chunks of `chunkBytes`, sorts each chunk
+    // in memory, writes to `workspace`, then merges. Multi-way merge
+    // (typically 16-way) keeps disk I/O sequential. Returns the
+    // path of the sorted output.
+    public static Path external(Path input, Path workspace,
+                                 int64 chunkBytes,
+                                 Comparator<byte[]> cmp);
+}
+```
+
+**How sorts attach to collections.** Three layered entry points:
+
+**1. Static algorithms on `Array<T>` — the canonical mutable
+contiguous storage.** Every `Sort.X(...)` static method takes
+`Array<T>&` and sorts in place. This is the bare-metal API: pick
+the algorithm explicitly, no indirection.
+
+```cajeta
+Array<int32> readings = collectReadings();
+Sort.radix(readings);                          // in-place
+Sort.quick(readings, byTimestampAsc);          // with comparator
+```
+
+**2. `Sortable<T>` interface — collections that delegate to the
+Sort algorithms.** Array-backed collections expose `sort()` /
+`sort(Comparator)` as instance methods that hand off to
+`Sort.quick` (the introsort default) over their backing array.
+Convenience, not a separate algorithm.
+
+```cajeta
+public interface Sortable<T> {
+    public void sort();                        // requires T extends Comparable<T>
+    public void sort(Comparator<T> cmp);
+    public void sort(SortAlgorithm alg);       // for explicit algorithm choice
+    public void sort(SortAlgorithm alg, Comparator<T> cmp);
+}
+
+public enum SortAlgorithm {
+    QUICK, MERGE, TIMSORT, HEAP, RADIX,        // single-threaded
+    QUICK_PARALLEL, MERGE_PARALLEL, RADIX_PARALLEL;
+}
+```
+
+Sorting is only meaningful for collections with **sequence
+semantics** — an order the user controls and that an in-place
+operation can rearrange. Sets and maps have no inherent
+positional order to rearrange (a `HashSet` stores by bucket; a
+`TreeSet` is already key-ordered by construction); calling
+`sort()` on them would be either nonsensical or a no-op, so the
+interface is deliberately not implemented on them. The compiler
+catches the misuse at the type level — there's no Sortable
+contract to call.
+
+| Collection         | `Sortable`? | Why                                                                  |
+|--------------------|-------------|----------------------------------------------------------------------|
+| `Array<T>`         | yes         | Canonical mutable sequence.                                          |
+| `ArrayList<T>`     | yes         | Backed by Array; delegates.                                          |
+| `ArrayStack<T>`    | yes         | Backed by Array; delegates.                                          |
+| `ArrayDeque<T>`    | yes         | Ring-buffer-backed; sort is meaningful but requires un-wrapping.     |
+| `LinkedList<T>`    | yes         | Sequence shape; uses linked-list mergesort (no Array delegation).    |
+| `HashSet<T>`       | no          | No inherent order; sort is undefined.                                |
+| `DenseSet<T>`      | no          | Same.                                                                |
+| `BitSet`           | no          | Always ordered by bit position; sort is a no-op.                     |
+| `TreeSet<T>`       | no          | Already ordered by construction.                                     |
+| `HashMap<K, V>`    | no          | No inherent order over entries.                                      |
+| `DenseMap<K, V>`   | no          | Same.                                                                |
+| `SparseMap<K, V>`  | no          | Same.                                                                |
+| `IdentityHashMap<K, V>` | no     | Same.                                                                |
+| `TreeMap<K, V>`    | no          | Already ordered by key.                                              |
+| `Heap<T>`          | no          | Sorts via `drainSorted` / `toSortedArray` — see "Heap and sorting" below. |
+| `BinaryTree<T>`    | no          | Tree shape, not sequence.                                            |
+| `RedBlackTree<T>`  | no          | Already ordered.                                                     |
+| `BTree` / `BPlusTree` | no       | Already ordered.                                                     |
+
+Array-backed implementers forward `sort()` to the corresponding
+`Sort.X` on their backing array. View-mode instances reject
+`sort()` at compile time (same rule as every other mutator — views
+are read-only).
+
+`LinkedList<T>` implements `Sortable<T>` differently from the
+Array-backed ones — it doesn't have backing-array storage to
+delegate to, so its `sort()` is a genuine merge-sort-on-linked-
+list implementation (the one place mergesort beats quicksort:
+O(n log n) with no extra storage and no random access required).
+
+```cajeta
+ArrayList<Event> events = loadEvents();
+events.sort(byTimestamp);                      // delegates to Sort.quick
+events.sort(SortAlgorithm.TIMSORT, byTimestamp);   // pick algorithm
+
+LinkedList<Node> nodes = buildChain();
+nodes.sort(byDepth);                           // linked-list mergesort
+
+HashSet<String> tags = readTags();
+// tags.sort();                                // compile error — Set has no Sortable
+Array<String> sorted = Sort.collected(tags);   // materialize-and-sort instead
+```
+
+**Heap and sorting.** A `Heap<T>` already satisfies a partial-order
+invariant — the root is the minimum (or maximum) by definition.
+Heapsort and `drainSorted` are literally the same algorithm:
+repeatedly pop the root, sifting down each time; total cost O(n log
+n). They differ only in *output staging* — heapsort stashes each
+popped element back into the same underlying array (so the array
+ends up sorted), while `drainSorted` yields each popped element
+through an iterator and lets the storage shrink.
+
+Heap doesn't implement `Sortable` because the interface's contract
+doesn't fit: `Sortable.sort()` returns `void` and leaves the
+instance a valid example of its declared type. After a heap is
+sorted, the storage no longer satisfies the heap invariant —
+subsequent `push` / `pop` are on a non-heap and break the
+contract. Either `sort()` would have to re-heapify afterward (no-
+op visible behavior) or leave a broken heap (silent corruption).
+
+The right operations for heap-to-sorted-output return the result
+explicitly, so the consumption is visible at the call site:
+
+```cajeta
+// Streaming — yield one element at a time, no full materialization.
+Iterator<T> drainSorted();
+
+// Materialize — empty the heap, return a fresh sorted Array.
+Array<T> toSortedArray();
+```
+
+```cajeta
+Heap<Task> work = priorityQ;
+for (task in work.drainSorted()) {       // streaming, destructive
+    runTask(task);
+}
+// work is empty here; calling work.peek() throws.
+
+// Or materialize all at once:
+Array<Task> orderedBatch = work.toSortedArray();
+```
+
+The `Array<T>` / `Iterator<T>` return type makes the heap-becomes-
+unusable consequence visible. `Sortable.sort()`'s `void` return
+would hide exactly that. Sort.collected(heap) also works (it goes
+through Collection<T>'s iterator); pick whichever return shape
+the caller wants.
+
+**3. `Sort.collected(Collection<T>&)` — materialize and sort
+anything iterable.** When you have a `Collection<T>` and need a
+sorted snapshot, this is the entrypoint. Allocates a fresh
+`Array<T>`, copies elements in, sorts, returns. The source is
+unchanged.
+
+```cajeta
+// Convert any collection to a sorted array.
+public static <T extends Comparable<T>> Array<T> collected(
+    Collection<T>& source);
+public static <T> Array<T> collected(
+    Collection<T>& source,
+    Comparator<T> cmp);
+public static <T> Array<T> collected(
+    Collection<T>& source,
+    SortAlgorithm alg,
+    Comparator<T> cmp);
+```
+
+```cajeta
+HashSet<String> tags = readTags();
+Array<String> sortedTags = Sort.collected(tags);   // unique + sorted
+
+Map<UserId, Score> scores = loadScores();
+Array<Entry<UserId, Score>> ranked = Sort.collected(scores, byScoreDesc);
+```
+
+**`Heap<T>.drainSorted()` for streaming sorted output.** Adjacent
+to but distinct from `Sort`: a heap consumed in pop order yields
+its elements in sorted order incrementally — useful for k-smallest
+/ k-largest queries (don't sort the rest), or for merging N
+already-sorted streams (push the heads of each into a heap, pop
+the smallest, advance that stream). The `drainSorted` iterator
+returns elements one at a time without ever materializing the
+fully sorted array; cheaper than `Sort.collected` when the caller
+only consumes a prefix.
+
+```cajeta
+// k-smallest without sorting the whole input
+Heap<int64> topK = Heap<int64>.maxHeap();
+for (value in stream) {
+    topK.push(value);
+    if (topK.count() > k) topK.pop();
+}
+Array<int64> result = Array<int64>.fromIterator(topK.drainSorted());
+```
+
+**Comparison-sort selection guide:**
+
+| Use case                                              | Pick           |
+|-------------------------------------------------------|----------------|
+| General purpose, don't care about stability           | `Sort.quick`   |
+| Stable order required (sorting on multiple keys)      | `Sort.timsort` |
+| Worst-case timing matters (real-time, adversarial)    | `Sort.heap`    |
+| Small array (≤32) or already-near-sorted              | `Sort.insertion`|
+| Top-k only (don't waste work on the rest)             | `Sort.partial` |
+| Large array of integer / float keys (n > ~10K)        | `Sort.radix`   |
+| Same, multi-core CPU available                        | `Sort.radixParallel` |
+| Large array of arbitrary objects, multi-core          | `Sort.quickParallel` or `Sort.mergeParallel` |
+
+#### Parallel radix sort
+
+The fiber-friendly version of LSB radix sort. The contract is the
+same — stable, O(n · digits), beats comparison sort once n is large
+enough — but the work is split across fibers so wall-clock time
+scales near-linearly with CPU count until memory bandwidth saturates.
+
+**Algorithm sketch:**
+
+For each digit pass (default 8 bits / 256 buckets, configurable to
+11 bits / 2048 buckets for very large inputs where the wider
+buckets reduce pass count):
+
+1. **Partition.** The input array is split into `fiberCount`
+   contiguous slices. Each fiber owns one slice.
+2. **Local histogram.** Each fiber walks its slice and counts
+   per-bucket occurrences into a local 256-entry histogram. No
+   inter-fiber communication during this pass; the histograms
+   are stack-allocated, cache-line-aligned (8 bytes × 256 +
+   padding = ~2KB per fiber, fits in L1).
+3. **Histogram barrier.** Fibers synchronize via cajeta.thread
+   barrier primitive. After the barrier, all local histograms
+   are visible to all fibers.
+4. **Prefix-sum reduction.** Each fiber computes its **starting
+   offset per bucket in the output array** as:
+
+   ```
+   offset[bucket] = sum over earlier fibers' local counts
+                  + sum over lower-numbered buckets' total counts
+   ```
+
+   This is a single pass over `fiberCount × 256` ints — small
+   enough that one fiber can do it, or split among all fibers
+   in a parallel prefix sum for very large fiberCount.
+5. **Scatter.** Each fiber walks its slice again and writes each
+   element to `output[offset[bucket]++]`. Because each fiber's
+   per-bucket offset starts at a distinct position computed in
+   step 4, no two fibers write to overlapping output ranges, and
+   the writes are lock-free.
+6. **Swap.** Output buffer becomes input for the next digit pass.
+
+After all digit passes, the array is sorted.
+
+**Cache-line awareness:**
+
+- Local histograms are padded to a multiple of 64 bytes and aligned
+  to a cache line, so no two fibers share a cache line during the
+  histogram pass.
+- Output writes are coalesced: each fiber writes to its own range
+  of the output array. Since the ranges are contiguous and
+  non-overlapping, false sharing only happens at the boundary
+  between two fibers' ranges (one cache line at most). Negligible
+  in practice.
+- The histogram-barrier step uses cajeta.thread's barrier, which
+  yields the fiber if another fiber is still working — keeps the
+  scheduler responsive instead of busy-waiting.
+
+**Fiber count selection:**
+
+`fiberCount = -1` (default) means "use the OS CPU count" — the
+scheduler is fiber-based, but radix sort is CPU-bound and benefits
+from one fiber per hardware thread, no more. Going past the CPU
+count adds context-switch overhead without parallelism gain.
+
+For batch processing where multiple radix sorts run concurrently
+(several pipelines feeding into a server), set `fiberCount`
+explicitly to a fraction of CPU count so the sorts don't fight
+each other for cores.
+
+**When radix wins:**
+
+- n > ~10K for `int32` / `float32`.
+- n > ~50K for `int64` / `float64` (more digit passes).
+- Keys are fixed-width — radix is wrong for variable-length
+  comparison (use `Sort.timsort` with a string-comparator instead).
+- Keys cluster into a known range — counting sort beats it for
+  very small ranges (use `Sort.countingInt32` with explicit bounds).
+
+**Float bit-pattern handling.**
+
+IEEE-754 floats sort correctly by raw bit pattern *if* you flip
+the sign bit on positives and flip every bit on negatives — the
+implementation does this transparently in a pre-pass and reverses
+it after the sort. NaN ordering is unspecified by IEEE-754; the
+implementation places NaNs at one end (high) so deterministic.
 
 In a `cajeta.collection.immutable` sub-package:
 
