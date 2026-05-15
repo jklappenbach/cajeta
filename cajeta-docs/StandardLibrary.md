@@ -112,6 +112,120 @@ works and so `count()` is consistent across the rest of the collection
 hierarchy. Iteration is over code points, not bytes — bytes are accessible via
 `getBytes(Encoding.UTF_8)` when needed.
 
+#### Strings inside structs
+
+The `String` type above is a heap-allocated immutable class — the right shape
+for class fields, locals, returns, parameters. It is **not** the right shape
+for struct fields, where the struct's job is to be an exact byte layout that
+overlays cleanly onto a buffer. A struct holding a heap-`String` pointer
+ceases to be "the bytes on the wire" and starts being "a memory layout that
+happens to also reference some heap" — which is a different abstraction.
+
+For wire-format / overlay structs, two patterns:
+
+**1. `byte[N]` for fixed-width string fields.** Use when the byte count is
+known at design time (magic IDs, fixed-width ASCII names, padded
+identifiers). The `byte[N]` slot is a normal inline byte array — N bytes at
+this struct offset, no length prefix. Reading or writing is a direct
+GEP+memcpy. Convert to/from `String` at the boundary:
+
+```cajeta
+struct PacketHeader {
+    int32 magic;
+    byte[16] name;          // 16 bytes inline
+    int32 sequence;
+}
+
+PacketHeader p = ...;
+String n = String(p.name, Encoding.ASCII);   // decode the 16 bytes
+```
+
+**2. `String body` as a variable-size *terminal* field.** Use when the
+string content varies per message and you want to overlay onto a buffer of
+exactly the right size. The field's struct slot holds an `int32 length`
+prefix; the actual UTF-8 bytes live in the buffer immediately past the
+struct's fixed footprint. This leverages the existing variable-size struct
+mechanism in the compiler (the `isVariableSize` codepath in DotExpression).
+
+```cajeta
+struct LogMessage {
+    int64 timestamp;
+    int32 severity;
+    String body;            // length-prefixed inline UTF-8, must be last
+}
+```
+
+Layout in memory:
+
+```
++----------------+----------------+----------------+----------------+
+| timestamp (8)  | severity (4)   | body.length(4) | body bytes...  |
++----------------+----------------+----------------+----------------+
+^                                                  ^                ^
+struct base                                        end of fixed     end of buffer
+                                                    footprint        (length bytes)
+```
+
+Rules the compiler enforces:
+- A `String` field in a struct **must be the last field**. Otherwise the
+  offsets of subsequent fields would be runtime-dependent.
+- **At most one** variable-size field per struct in this form. (Multi-VLF
+  shapes need the bounded form below.)
+- The owning buffer must be sized to `sizeof(struct) + body_length` when the
+  struct is constructed or overlaid.
+
+Read and write semantics:
+
+```cajeta
+LogMessage m = LogMessage(buf);   // overlay onto byte[] buf
+String body = m.body;              // returns a borrowed view; same bytes,
+                                   // no allocation. Lifetime tied to buf.
+m.body = newString;                // copies bytes from newString into the
+                                   // trailing region; updates the length
+                                   // prefix; throws if buf is too small.
+```
+
+`m.body` returns a *borrowed* `String` view that aliases the buffer's bytes
+— no allocation, no copy. To own a String independent of the buffer, call
+`m.body.clone()` or `String(m.body.getBytes(UTF_8), UTF_8)`. Move-out
+semantics (`#m.body`) are disallowed because moving an inline-encoded
+string would leave the struct in an inconsistent state.
+
+**3. `String[max:N]` — bounded inline string (post-v1).** When you need
+multiple variable strings in one fixed-layout struct, each field gets a
+fixed slot of `int32 length + N bytes payload`. The struct's footprint is
+fully known at compile time; the length tells you how many bytes are
+actually used. Wastes space when the string is shorter than max, but
+allows multiple variable fields and any field ordering.
+
+```cajeta
+struct UserProfile {
+    int64 id;
+    String[64] username;    // 4 + 64 = 68 bytes inline, max 64-byte string
+    String[256] bio;        // 4 + 256 = 260 bytes inline, max 256-byte string
+}
+```
+
+This form is **deferred to a later commit** — the variable-terminal-field
+form covers the immediate need, and the multi-VLF case is more involved
+because it interacts with bounds-check codegen and struct-overlay validation.
+
+#### Where the heap `String` and inline-string forms meet
+
+Both produce / consume the same `String` type at the API boundary, so user
+code mostly doesn't notice. The difference shows up in:
+
+- **Field type ergonomics.** `String name;` in a class allocates on assign;
+  in a struct, depending on declaration form, it overlays inline.
+- **Lifetime.** A heap-class `String` outlives any single buffer; a borrowed
+  view from a struct field is valid only while the underlying buffer is.
+- **Move semantics.** Heap strings can be `#`-moved; inline-string struct
+  fields cannot (move would corrupt the struct's layout).
+
+The compiler's job is to enforce these distinctions at the declaration site
+and produce reasonable diagnostics when they're violated ("cannot move out
+of struct field `body`: inline-encoded; clone() to take ownership").
+
 ### `Encoding`
 
 Enum with the encodings cajeta supports natively. UTF-8 is the canonical
