@@ -41,13 +41,16 @@ cajeta.collection      — Collection / Iterable / Iterator interfaces;
                          List, Set, Map, Deque, Stack interfaces;
                          StructView marker for zero-alloc views over
                          external buffers;
-                         Array (the heap-allocated, variable-size,
-                         element-typed array — replaces T[] for non-inline use);
-                         ArrayList, LinkedList, HashSet, TreeSet, DenseSet,
-                         SparseSet, HashMap, TreeMap, DenseMap, SparseMap,
-                         ArrayDeque, LinkedDeque, ArrayStack, BitSet, Heap;
-                         Immutable[List,Set,Map,Deque,Array,Heap] read-only variants;
-                         tree.{BinaryTree, RedBlackTree, BTree, BPlusTree}
+                         Array (the variable-size, element-typed array
+                         — heap-resident, replaces T[] for non-inline use);
+                         ArrayList, LinkedList;
+                         HashSet, TreeSet, DenseSet, SparseSet;
+                         HashMap, TreeMap, DenseMap, SparseMap, IdentityHashMap;
+                         ArrayDeque, LinkedDeque, ArrayStack;
+                         Heap (priority queue); BitSet;
+                         tree.{BinaryTree, RedBlackTree, BTree, BPlusTree};
+                         Immutable[List, Set, Map, Deque, Array, Heap] —
+                         read-only variants
 cajeta.io              — InputStream, OutputStream, Reader, Writer, byte buffers;
                          the linked-list-of-buffers shape used by network code
 cajeta.net             — Socket, ServerSocket (later — needs the reactor)
@@ -315,7 +318,7 @@ declarations land in `cajeta.lang.Integer` etc.
 ### `Object`
 
 The universal root of the class hierarchy. Every class implicitly extends
-Object. Three methods, all with compiler-synthesized structural defaults so
+Object. Four methods, all with compiler-synthesized structural defaults so
 the common case requires no boilerplate:
 
 ```cajeta
@@ -323,6 +326,7 @@ public class Object {
     public boolean operator==(Object obj);
     public int64 hash();
     public String toString(Encoding e = UTF_8);
+    public Object clone();
 }
 ```
 
@@ -341,6 +345,14 @@ synthesizes:
   Rust `#[derive(Debug)]` shape, sufficient for `println(x)` debug output.
   Encoding parameter defaults to UTF-8; other encodings supported via the
   default-argument mechanism cajeta already has.
+- `clone()`: field-by-field copy. For value-typed fields (primitives,
+  structs, enums) the copy is a memcpy of the bits; for class-typed
+  fields the copy is a shallow reference copy by default (both originals
+  point at the same heap instance — same semantics as Java's
+  `Object.clone()` shallow path). Override `clone()` manually to deep-
+  copy class-typed fields when that's the right thing. The return type
+  is `Object` in the base; the compiler narrows it to the declaring
+  class at every override site so call-site code doesn't cast.
 
 **Override pair enforcement.** If a class declares `operator==` manually, it
 must also declare `hash()` (and vice versa). The compiler refuses to compile
@@ -727,6 +739,25 @@ Concrete types — same storage-policy split as sets:
   Implementation note: a HashMap with a default-value fallback semantically;
   the "sparse" framing is about API ergonomics, not a different algorithm.
 - **`TreeMap<K, V>`** — ordered by key.
+- **`IdentityHashMap<K, V>`** — keys compared by reference identity, not
+  by `operator==` / `hash()`. Use when the key's structural identity
+  doesn't model "same key" (graph node maps, observer registries,
+  weak-ref tables). The map calls `Cajeta.identityHash(key)` for
+  bucket selection and pointer equality for slot lookup, so `K` is
+  not required to override `hash()` — it works on any class
+  regardless of what its structural hash returns.
+
+  ```cajeta
+  // Tracking visited nodes during graph traversal — even two nodes
+  // with identical contents are distinct entries.
+  IdentityHashMap<GraphNode, VisitState> seen = new IdentityHashMap();
+  for (node in graph.nodes()) {
+      if (!seen.containsKey(node)) {
+          seen.put(node, VisitState.NEW);
+          visit(node);
+      }
+  }
+  ```
 
 Open question: do `SparseMap` and `HashMap` actually need to be separate
 types, or is `SparseMap` just `HashMap` with a `withDefault(V)` builder
@@ -873,20 +904,135 @@ separate concrete types, simpler.
 
 ### Trees
 
-In `cajeta.collection.tree`. These don't appear in everyday code but support
-"data larger than memory" patterns:
+In `cajeta.collection.tree`. None of these implement `StructView` — all
+are pointer-linked, so there's no contiguous representation to borrow.
 
-- **`BinaryTree<T>`** — bare binary tree, no balancing. The building-block
-  type if you want to write your own algorithms; rarely the right answer
-  on its own.
-- **`RedBlackTree<T>`** — backs `TreeSet` and `TreeMap`.
-- **`BTree<K, V>`** — disk-friendly multi-way tree. Use for ordered
-  collections that don't fit in memory.
-- **`BPlusTree<K, V>`** — leaf-linked variant, optimized for range scans.
+**`BinaryTree<T>`** — bare binary search tree, no balancing. The
+building-block type if you want to write your own algorithms (worst-case
+degenerates to O(n) on sorted insertion); rarely the right answer on its
+own. Implements `Collection<T>` so it composes into the rest of the
+hierarchy.
 
-v1: ship `RedBlackTree` (we need it for `TreeSet` / `TreeMap` anyway).
-`BinaryTree` is trivial — also ship. `BTree` / `BPlusTree` defer until
-someone actually uses them.
+```cajeta
+public final class BinaryTree<T> implements Collection<T> {
+    public BinaryTree();
+    public BinaryTree(Comparator<T> cmp);
+
+    public boolean add(T value);
+    public boolean remove(T value);
+    public boolean contains(T value);
+    public T       find(T probe);     // returns matching element or null
+
+    public int64   count();
+    public int64   height();          // depth of the tree
+    public boolean isEmpty();
+
+    // Traversal order is explicit — pick the one that matches the use.
+    public Iterator<T> iteratorInOrder();
+    public Iterator<T> iteratorPreOrder();
+    public Iterator<T> iteratorPostOrder();
+    public Iterator<T> iteratorLevelOrder();
+    public Iterator<T> iterator();    // defaults to in-order
+}
+```
+
+**`RedBlackTree<T extends Comparable<T>>`** — self-balancing binary
+search tree. Backs `TreeSet` and `TreeMap`; usable directly when you
+want ordered-by-value semantics without the Set/Map surface.
+
+```cajeta
+public final class RedBlackTree<T extends Comparable<T>> implements Set<T> {
+    public RedBlackTree();
+    public RedBlackTree(Comparator<T> cmp);
+
+    public boolean add(T value);          // O(log n), rebalances
+    public boolean remove(T value);       // O(log n)
+    public boolean contains(T value);     // O(log n)
+
+    // Ordered-set navigation
+    public T first();
+    public T last();
+    public T floor(T value);              // largest element ≤ value
+    public T ceiling(T value);            // smallest element ≥ value
+
+    // Range queries — O(log n) seek + O(k) walk for k results
+    public Iterable<T> range(T low, T high);
+    public Iterable<T> headSet(T high);   // elements < high
+    public Iterable<T> tailSet(T low);    // elements ≥ low
+
+    public int64 count();
+    public Iterator<T> iterator();        // in-order
+}
+```
+
+**`BTree<K extends Comparable<K>, V>`** — disk-friendly multi-way tree.
+Used when the dataset doesn't fit in memory; pages get loaded on
+demand and cached. Implements `Map<K, V>`.
+
+```cajeta
+public final class BTree<K extends Comparable<K>, V> implements Map<K, V> {
+    // In-memory construction. `order` controls fan-out per node;
+    // ~64 is a typical sweet spot for an in-memory tree.
+    public BTree(int8 order = 64);
+    public BTree(int8 order, Comparator<K> cmp);
+
+    // Disk-backed construction. The Storage abstraction (cajeta.io)
+    // provides the page-read / page-write hooks.
+    public static BTree<K, V> openOnDisk(Path path, int8 order = 64);
+
+    public V    get(K key);                       // O(log_order n)
+    public V    put(K key, V value);              // O(log_order n)
+    public V    remove(K key);
+    public boolean containsKey(K key);
+
+    public Iterable<Entry<K, V>> range(K low, K high);
+    public Iterable<Entry<K, V>> entriesInOrder();
+    public Set<K> keys();
+    public Collection<V> values();
+
+    // Disk-backed lifecycle.
+    public void flush();
+    public void close();
+}
+```
+
+**`BPlusTree<K extends Comparable<K>, V>`** — leaf-linked B-tree
+variant. All data lives in the leaves; internal nodes are pure index;
+leaves form a doubly-linked list so range scans are O(log n) seek
+plus O(k) sequential walk with no further tree traversal. The right
+pick when the workload is heavy on range scans (time-series, log
+indexes, ordered iteration over a slice).
+
+```cajeta
+public final class BPlusTree<K extends Comparable<K>, V> implements Map<K, V> {
+    public BPlusTree(int8 order = 64);
+    public BPlusTree(int8 order, Comparator<K> cmp);
+    public static BPlusTree<K, V> openOnDisk(Path path, int8 order = 64);
+
+    public V    get(K key);
+    public V    put(K key, V value);
+    public V    remove(K key);
+    public boolean containsKey(K key);
+
+    // The leaf-link advantage — range scan walks the leaf chain
+    // directly, no re-descent per element.
+    public Iterable<Entry<K, V>> range(K low, K high);
+    public Iterable<Entry<K, V>> entriesInOrder();
+    public Iterator<Entry<K, V>> iteratorFrom(K start);
+
+    public Set<K> keys();
+    public Collection<V> values();
+
+    public void flush();
+    public void close();
+}
+```
+
+**v1 ship order.** `RedBlackTree` is required (it backs
+`TreeSet` / `TreeMap`); `BinaryTree` is trivial so it ships alongside.
+`BTree` / `BPlusTree` are deferred until first real user — they bring
+the cajeta.io storage-page dependency along, which is its own scope
+and shouldn't gate stdlib v1.
 
 ---
 
