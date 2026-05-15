@@ -420,11 +420,6 @@ namespace cajeta {
         string canonical = Method::buildCanonical(parent, name, parameterList, true);
         llvmFunction = llvm::Function::Create(llvmFunctionType, llvm::Function::ExternalLinkage,
             canonical, module->getLlvmModule());
-        string all;
-        for (auto& fn: module->getLlvmModule()->getFunctionList()) {
-            cout << fn.getName().str();
-            all.append(fn.getName().str()).append(",");
-        }
 
         archive[canonical] = shared_from_this();
 

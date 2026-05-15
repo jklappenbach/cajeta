@@ -120,10 +120,6 @@ namespace cajeta {
 
         antlr4::Token* token = ctx->getStart();
 
-        if (ctx->statementExpression) {
-            cout << "Hit statementExpression in a Statement";
-        }
-
         // Order matters: TRY / SWITCH / FOR / WHILE / DO / IF can each contain a block
         // as a sub-rule, so `ctx->block()` is non-null for those too. Check the
         // discriminating keywords first; the bare-block form falls through to the
@@ -381,7 +377,6 @@ namespace cajeta {
             result = make_shared<ExpressionStatement>(Expression::fromContext(ctx->expression()), token);
         } else if (ctx->statementExpression) {
         } else if (ctx->switchExpression()) {
-            cout << "Hit switch expression";
             //result = new SwitchExpression;
         } else if (ctx->identifierLabel) {
             // `label: statement` — capture both the label name and the
@@ -393,7 +388,6 @@ namespace cajeta {
                 : Statement::fromContext(ctx->statement(0));
             result = make_shared<IdentifierLabel>(token, std::move(label), inner);
         } else if (ctx->SEMI()) {
-            cout << "Hit SEMI statement";
         }
 
         return result;

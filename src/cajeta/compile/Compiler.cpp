@@ -203,9 +203,18 @@ namespace cajeta {
         parseTree->accept(visitor);
         // Skip the noisy tree dump for the stdlib parse — already-known
         // content, would drown out the user's parse tree in test logs.
+        // For user code, the dump is **off by default** and gated behind
+        // the OUTPUT_PARSE_TREE env var. Set OUTPUT_PARSE_TREE=true in
+        // the test environment when debugging a parser issue; leaving it
+        // off in the common case keeps the test log readable and shaves
+        // a meaningful chunk of wall-clock off the suite (the tree dump
+        // is many KB per file × hundreds of test cases).
         if (label && label[0] != '\0') {
-            cout << "\n\n";
-            std::cout << parseTree->toStringTree(&parser, true) << std::endl;
+            const char* env = std::getenv("OUTPUT_PARSE_TREE");
+            if (env && std::string(env) == "true") {
+                cout << "\n\n";
+                std::cout << parseTree->toStringTree(&parser, true) << std::endl;
+            }
         }
         delete visitor;
         CajetaModule::setActiveModule(prevActive);

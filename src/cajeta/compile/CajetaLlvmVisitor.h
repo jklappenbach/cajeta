@@ -58,7 +58,6 @@ namespace cajeta {
         }
 
         virtual std::any visitTypeDeclaration(CajetaParser::TypeDeclarationContext* ctx) override {
-            cout << "What is going on with visitTypeDeclaration.";
             return visitChildren(ctx);
         }
 
