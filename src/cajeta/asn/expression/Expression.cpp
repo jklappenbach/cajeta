@@ -477,6 +477,11 @@ namespace cajeta {
         //     the header pointer.
         //   - Nested ArrayIndex (`arr[i][j]`): the parent ArrayIndex gave us a slot whose
         //     element is a `ptr` to the inner header — load `ptr` to get that.
+        //   - Class-field array (`obj.field`): DotExpression hands back a GEP to the
+        //     field slot, which holds a `ptr` to the heap header (per
+        //     CajetaClass::generatePrototype's `fieldLayoutType` rule that stores
+        //     array fields as pointers, not inline). Load the slot to get the header
+        //     pointer, same way the local-variable path does for an alloca.
         //   - Anything else (e.g. method-call returning an array): the value already IS
         //     the header pointer.
         llvm::Value* arrayVal = children[0]->generateCode(module);
@@ -486,6 +491,12 @@ namespace cajeta {
         } else if (lhsExpr && dynamic_pointer_cast<ArrayIndexExpression>(lhsExpr)) {
             arrayVal = builder->CreateLoad(
                 llvm::PointerType::get(ctx, 0), arrayVal);
+        } else if (lhsExpr && dynamic_pointer_cast<DotExpression>(lhsExpr)) {
+            if (!lhsExpr->getResolvedType()) lhsExpr->resolveTypes(module);
+            if (dynamic_pointer_cast<CajetaArray>(lhsExpr->getResolvedType())) {
+                arrayVal = builder->CreateLoad(
+                    llvm::PointerType::get(ctx, 0), arrayVal);
+            }
         }
 
         // Resolve element type from the CajetaArray annotation on the lhs. With opaque

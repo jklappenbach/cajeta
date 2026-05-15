@@ -39,7 +39,18 @@ namespace cajeta {
         this->returnType = returnType;
         this->parameterList = parameterList;
         this->block = block;
+        // Constructor detection: name matches parent's type name. For a
+        // template instantiation (e.g. parent = "Container<int32>") the
+        // source-parsed ctor is named after the unparameterized template
+        // ("Container") — fall through to the template-origin's name so
+        // it still gets recognized as a ctor. Without this, the source
+        // ctor gets registered as a regular method, ensureDefaultConstructor
+        // adds an empty default, and `new Container<int32>()` calls the
+        // empty default instead of the source body.
         constructor = parent->getQName()->getTypeName() == name;
+        if (!constructor && parent->getTemplateOrigin()) {
+            constructor = parent->getTemplateOrigin()->getQName()->getTypeName() == name;
+        }
         llvmBasicBlock = nullptr;
     }
 

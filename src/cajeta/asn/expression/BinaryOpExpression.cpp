@@ -112,6 +112,13 @@ namespace cajeta {
         // this; an explicit branch isn't needed here.
         if (v->getType()->isPointerTy() && ast) {
             if (auto resolved = ast->getResolvedType()) {
+                // CajetaArray-typed values are reference-typed: the
+                // pointer IS the heap header pointer, not a slot
+                // holding the array struct. Don't deref. Same shape
+                // the ArrayIndex branch above uses for array elements.
+                if (dynamic_pointer_cast<CajetaArray>(resolved)) {
+                    return v;
+                }
                 if (llvm::Type* loadTy = resolved->getLlvmType()) {
                     if (loadTy != v->getType()) {
                         return builder->CreateLoad(loadTy, v);
@@ -402,7 +409,21 @@ namespace cajeta {
                                         throw Exception(buf,
                                             "CAJETA_ERROR_VARSIZE_FIELD_ASSIGN");
                                     }
-                                    slotTy = found->getType()->getLlvmType();
+                                    // Array fields are stored as pointers in
+                                    // the class layout (see CajetaClass::
+                                    // generatePrototype's fieldLayoutType
+                                    // rule). The slot is `ptr`, not the
+                                    // inline `{ size, [0 x T] }` struct, so
+                                    // `slotTy` must reflect that or the
+                                    // store coerces a heap pointer down to
+                                    // the struct's first element type and
+                                    // overwrites only those bytes.
+                                    if (dynamic_pointer_cast<CajetaArray>(found->getType())) {
+                                        slotTy = llvm::PointerType::get(
+                                            *module->getLlvmContext(), 0);
+                                    } else {
+                                        slotTy = found->getType()->getLlvmType();
+                                    }
                                 }
                             }
                         }

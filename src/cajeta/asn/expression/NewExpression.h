@@ -7,6 +7,7 @@
 #include "Expression.h"
 #include "CreatorRest.h"
 #include "../../type/CajetaType.h"
+#include "../../compile/CajetaModule.h"
 
 namespace cajeta {
 
@@ -19,6 +20,13 @@ namespace cajeta {
         vector<CajetaTypePtr> typeArguments;
         bool isDiamond = false;
         CreatorRestPtr creatorRest;
+        // Captured at construction-time (parse walk) when `typeName` matches
+        // a template parameter active on the module's substitution stack.
+        // Required because resolveTypes/generateCode run later (after the
+        // walk) when the stack is gone — without this we'd resolve `new T[N]`
+        // inside an instantiated template's body to null and segfault. See
+        // CajetaModule::pushTypeSubstitution / lookupTypeParameter.
+        CajetaTypePtr boundElementType;
     public:
         NewExpression(antlr4::Token* token) : Expression(token) { }
 
@@ -69,6 +77,14 @@ namespace cajeta {
                 }
             }
             creatorRest = CreatorRest::fromContext(creatorContext, token);
+            // Capture template-parameter binding while the substitution
+            // stack is still live (we're in the parse walk now). See
+            // boundElementType comment above.
+            if (!typeName.empty()) {
+                if (auto am = CajetaModule::getActiveModule()) {
+                    boundElementType = am->lookupTypeParameter(typeName);
+                }
+            }
         }
 
         const vector<CajetaTypePtr>& getTypeArguments() const { return typeArguments; }

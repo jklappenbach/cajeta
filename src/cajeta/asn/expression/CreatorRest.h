@@ -67,6 +67,8 @@ namespace cajeta {
             }
         }
 
+        int getTotalBracketPairs() const { return totalBracketPairs; }
+
         llvm::Value* generateCode(CajetaModulePtr module) override;
     };
 

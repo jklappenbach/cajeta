@@ -80,7 +80,18 @@ namespace cajeta {
             entries.push_back(ParameterEntry(paramType, param.label, value));
         }
         if (auto klass = dynamic_pointer_cast<CajetaClass>(targetType)) {
+            // Constructor name is the class's simple type name. For a
+            // template instantiation (e.g. "Container<int32>") the
+            // source-parsed ctor was named after the unparameterized
+            // template ("Container") — fall through to the template
+            // origin's name so we find the real ctor instead of looking
+            // up "Container<int32>" and falling back to the empty
+            // auto-default. Pairs with the Method ctor's same fallback
+            // (Method.cpp's constructor-detection logic).
             string ctorName = targetType->getQName()->getTypeName();
+            if (klass->getTemplateOrigin()) {
+                ctorName = klass->getTemplateOrigin()->getQName()->getTypeName();
+            }
             klass->invokeMethod(ctorName, entries, /*isConstructor=*/true, instance,
                                 /*callerModule=*/module);
         }

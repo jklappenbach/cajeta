@@ -8,6 +8,7 @@
 #include "../method/Method.h"
 #include "../asn/ClassBodyDeclaration.h"
 #include "../method/DefaultConstructorMethod.h"
+#include "CajetaArray.h"
 #include "../field/HeapField.h"
 
 #include <algorithm>
@@ -224,8 +225,27 @@ namespace cajeta {
         // fields come after the inherited block; getFieldLlvmIndex's
         // `countInheritedFields() + order + 1` formula accounts for the
         // shift.
+        // Pick the LLVM type for a property when laying it out inside
+        // the enclosing class struct. Array-typed fields are stored as
+        // **pointers** to the heap-allocated `{ size, data }` header
+        // — embedding the header inline would leave nowhere for `new
+        // T[N]`'s returned pointer to land, producing a heap-corruption
+        // assignment. Other reference types (non-struct CajetaClass)
+        // are still embedded inline today; converting those to pointer
+        // storage too is a separate, broader change (touches every
+        // class-typed field's access path, including inherited fields
+        // like Throwable.message which is currently inline).
+        auto* lctx = module->getLlvmContext();
+        auto fieldLayoutType = [&](const StructurePropertyPtr& p) -> llvm::Type* {
+            CajetaTypePtr t = p->getType();
+            if (dynamic_pointer_cast<CajetaArray>(t)) {
+                return llvm::PointerType::get(*lctx, 0);
+            }
+            return t->getLlvmType();
+        };
+
         vector<llvm::Type*> llvmMembers;
-        llvmMembers.push_back(llvm::PointerType::get(*module->getLlvmContext(), 0));
+        llvmMembers.push_back(llvm::PointerType::get(*lctx, 0));
         // Recursively prepend each ancestor's own fields, deepest-first.
         // The lambda walks superClasses to flatten the inheritance chain
         // into the order [grandparent fields, parent fields, this class's
@@ -236,7 +256,7 @@ namespace cajeta {
             for (auto& parent : cls->superClasses) {
                 appendInherited(parent);
                 for (auto& p : parent->propertyList) {
-                    llvmMembers.push_back(p->getType()->getLlvmType());
+                    llvmMembers.push_back(fieldLayoutType(p));
                 }
             }
         };
@@ -244,7 +264,7 @@ namespace cajeta {
         // Then this class's own fields, in declaration order for
         // deterministic indices.
         for (auto& property : propertyList) {
-            llvmMembers.push_back(property->getType()->getLlvmType());
+            llvmMembers.push_back(fieldLayoutType(property));
         }
         ((llvm::StructType*) llvmType)->setBody(llvm::ArrayRef<llvm::Type*>(llvmMembers), false);
 

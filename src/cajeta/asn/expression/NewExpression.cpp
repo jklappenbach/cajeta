@@ -3,8 +3,10 @@
 //
 
 #include "NewExpression.h"
+#include "CreatorRest.h"
 #include "cajeta/compile/CajetaModule.h"
 #include "cajeta/type/CajetaClass.h"
+#include "cajeta/type/CajetaArray.h"
 #include "cajeta/error/Exception.h"
 
 namespace cajeta {
@@ -24,13 +26,32 @@ namespace cajeta {
     void NewExpression::resolveTypes(CajetaModulePtr module) {
         AbstractSyntaxNode::resolveTypes(module);
         if (typeName.empty()) return;
-        CajetaTypePtr type = CajetaType::of(typeName, package);
+        // boundElementType wins when set: it was captured at parse
+        // time when the template-substitution stack was live, so it
+        // already reflects T → concrete-arg even though the stack is
+        // long gone by the time resolveTypes runs.
+        CajetaTypePtr type = boundElementType;
+        if (!type) type = CajetaType::of(typeName, package);
         if (!type) type = CajetaType::of(typeName);
         if (!type) return;
         if (!typeArguments.empty()) {
             auto klass = dynamic_pointer_cast<CajetaClass>(type);
             if (klass && klass->isTemplate()) {
                 type = klass->instantiate(typeArguments);
+            }
+        }
+        // For `new T[N]` / `new T[N][M]`, the value's static type is T[],
+        // not T. Wrap in CajetaArray for each `[]` pair so consumers
+        // (loadIfLValue's catch-all, assignment slot-type computation,
+        // overload resolution) see the array type instead of the element
+        // type. Without this, the heap pointer returned by the array
+        // creator gets treated as a pointer-to-element, and any catch-
+        // all "load from this pointer" code reads sizeof(T) bytes from
+        // the size prefix of the header.
+        if (auto arr = dynamic_pointer_cast<ArrayCreatorRest>(creatorRest)) {
+            int depth = arr->getTotalBracketPairs();
+            for (int i = 0; i < depth; i++) {
+                type = make_shared<CajetaArray>(module, type);
             }
         }
         // Skip diamond — needs inference that runs at generateCode.
@@ -43,7 +64,10 @@ namespace cajeta {
         }
         // Look up the target type by name. typeName names the class for `new Foo()`, or
         // the element type for `new T[...]`. Package is "" for primitives (e.g. int32).
-        CajetaTypePtr type = CajetaType::of(typeName, package);
+        // boundElementType was captured at parse-walk time when the
+        // substitution stack was live; prefer it. See NewExpression.h.
+        CajetaTypePtr type = boundElementType;
+        if (!type) type = CajetaType::of(typeName, package);
         if (!type) {
             // Fallback to canonical lookup by bare typeName for primitives.
             type = CajetaType::of(typeName);
