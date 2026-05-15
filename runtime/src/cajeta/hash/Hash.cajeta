@@ -1,41 +1,116 @@
 package cajeta.hash;
 
-// Hash utility namespace. The static methods here are the cajeta-side
-// surface for the runtime hash primitives — pointer-based identity
-// hashing, manual hash combination, the per-process random seed.
-//
-// The HASH ALGORITHM classes (XXHash3, RapidHash, SipHash, MD5,
-// DefaultHasher) live alongside this file under runtime/src/cajeta/hash/
-// and follow the same pattern: cajeta-source declarations with @Native
-// methods bridging to the corresponding __cajeta_hash_* runtime symbols
-// in runtime/native/cajeta_runtime.c.
-//
-// See cajeta-docs/StandardLibrary.md §cajeta.hash for the full design.
+/**
+ * Hash utility namespace.
+ *
+ * The static methods here are the cajeta-side surface for the runtime
+ * hash primitives:
+ *
+ * - **identity hashing** for `IdentityHashMap` / observer registries
+ *   / weak-ref tables — anywhere *same heap object* is the equality
+ *   notion, not *structurally equal*
+ * - **manual combination** of two field hashes for hand-written
+ *   `hash()` overrides
+ * - **per-process random seed** access so external callers can align
+ *   with the compiler-synthesized `Object.hash()`
+ *
+ * ## Sibling classes
+ *
+ * The full **hash algorithm** classes live alongside this file under
+ * `runtime/src/cajeta/hash/` and follow the same pattern — cajeta-
+ * source declarations with `@Native` methods bridging to the
+ * corresponding `__cajeta_hash_*` runtime symbols in
+ * `runtime/native/cajeta_runtime.c`:
+ *
+ * | Class           | Algorithm                | Use case                                |
+ * |-----------------|--------------------------|-----------------------------------------|
+ * | `XXHash3`       | XXH3-64                  | fast general-purpose; default backing   |
+ * | `RapidHash`     | rapidhash                | maximum throughput, smaller code        |
+ * | `SipHash`       | SipHash-2-4              | DoS-resistant, key-derived              |
+ * | `MD5`           | MD5                      | checksum / identifier, **not security** |
+ * | `DefaultHasher` | XXH3-64 + seed           | what `Object.hash()` uses               |
+ *
+ * **Cryptographic hashes** (SHA-2, SHA-3, BLAKE2/3) and AEAD /
+ * signature / KDF primitives live in the future `cajeta.crypto` peer
+ * library — never inside `cajeta.hash`.
+ *
+ * @see cajeta.lang.Object
+ * @see [StandardLibrary.md §cajeta.hash](../../../../../cajeta-docs/StandardLibrary.md)
+ */
 public final class Hash {
 
-    // Pointer-based identity hash. Returns the obj pointer's bit pattern
-    // mixed with the per-process seed. Used by IdentityHashMap, observer
-    // registries, weak-ref tables — anywhere "same heap object" is the
-    // desired equality, not "structurally equal."
-    //
-    // Parameter type is `pointer` because the cajeta stdlib `Object`
-    // class hasn't landed in runtime/src/cajeta/lang/ yet. Once it does,
-    // the parameter type widens to `Object` (the API caller-visible
-    // type) while the runtime symbol's ABI stays a raw pointer.
+    /**
+     * Pointer-based identity hash.
+     *
+     * Returns `obj`'s pointer bit pattern mixed through the SplitMix64
+     * finalizer with the per-process seed. Used wherever *same heap
+     * object* is the desired equality — `IdentityHashMap`, observer
+     * registries, weak-ref tables, debugger pinning sets — instead of
+     * *structurally equal* (the default `Object.hash()` shape).
+     *
+     * Parameter type is the universal root `cajeta.lang.Object`. Every
+     * class implicitly extends `Object`, so any class reference passes
+     * here without an explicit cast. The underlying runtime symbol
+     * still takes a raw `void*`; the ABI is identical — only the
+     * cajeta-side type widens for static type checking.
+     *
+     * @param obj the object to hash; `null` is a valid input and
+     *            hashes to the seed-mixed bit pattern of the zero
+     *            pointer.
+     * @returns 64-bit identity hash of `obj`.
+     * @complexity O(1).
+     */
     @Native("__cajeta_hash_identity")
-    public static int64 identity(pointer obj) { }
+    public static int64 identity(Object obj) { }
 
-    // Combine two 64-bit hash values into one with good distribution.
-    // Boost's hash_combine pattern + SplitMix64 finalizer. Used by manual
-    // hash() overrides that thread multiple field hashes together when
-    // the standard DefaultHasher path isn't right for the use case.
+    /**
+     * Combines two 64-bit hash values into one with good distribution.
+     *
+     * Implementation pattern is Boost's `hash_combine` with the
+     * SplitMix64 finalizer appended — well-known mixer, no surprises
+     * around adversarial inputs (the per-process seed handles
+     * collision-flooding defense; `combine` itself is deterministic).
+     *
+     * Used by **manual `hash()` overrides** that thread multiple
+     * field hashes together when the structural-synthesis default
+     * isn't the right shape. The synthesizer itself emits this exact
+     * call between consecutive field hashes, so manual overrides and
+     * synthesized bodies produce identical hashes for identical field
+     * sets in identical order.
+     *
+     * @param a first hash input.
+     * @param b second hash input.
+     * @returns combined hash. **Order-sensitive**:
+     *          `combine(a, b) != combine(b, a)` in general.
+     * @complexity O(1).
+     */
     @Native("__cajeta_hash_combine")
     public static int64 combine(int64 a, int64 b) { }
 
-    // The process-wide random seed initialized from OS entropy at process
-    // start. The compiler-synthesized Object.hash() implicitly uses this;
-    // exposed here for direct callers that need to align with the
-    // synthesized hashing (e.g. external hash-table snapshot replay).
+    /**
+     * The process-wide random seed.
+     *
+     * Initialized from OS entropy (`/dev/urandom` on Linux, with a
+     * `clock + pid` fallback) at process start via a constructor
+     * function in the runtime. Stable for the process lifetime;
+     * differs across process restarts.
+     *
+     * The seed is **mixed into every hash this namespace produces** —
+     * `identity`, `combine`, the primitive specializations, the XXH3
+     * byte path. That kills hash-flooding attacks: an attacker can't
+     * precompute keys whose hashes collide for *your* process because
+     * they don't know your seed.
+     *
+     * Exposed here for direct callers that need to align with the
+     * compiler-synthesized `Object.hash()` — e.g. external hash-table
+     * snapshot replay where the seed must be threaded through and
+     * pinned to reproduce an in-process state on a separate machine.
+     *
+     * @returns the process-wide seed; **never zero** (the initializer
+     *          guarantees a non-zero value, falling through to the
+     *          `clock + pid` mix if entropy reads return all zeros).
+     * @complexity O(1).
+     */
     @Native("__cajeta_hash_seed")
     public static int64 processSeed() { }
 }

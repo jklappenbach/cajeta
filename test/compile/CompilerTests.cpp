@@ -19,12 +19,12 @@ TEST(CompilerTests, canThrowOnInvalidInput) {
 }
 
 // Every Cajeta compilation implicitly loads the stdlib prelude. Current
-// content: cajeta.error.{Throwable, Exception, RecoverableException,
-// UnrecoverableException} + cajeta.hash.Hash. Their class entries land in
-// the same global structure map as the user's classes, so structure-count
-// assertions add their fixed contribution. Bump this number when stdlib
-// grows.
-static constexpr size_t STDLIB_STRUCTURE_COUNT = 5;
+// content: cajeta.lang.Object + cajeta.error.{Throwable, Exception,
+// RecoverableException, UnrecoverableException} + cajeta.hash.Hash. Their
+// class entries land in the same global structure map as the user's
+// classes, so structure-count assertions add their fixed contribution.
+// Bump this number when stdlib grows.
+static constexpr size_t STDLIB_STRUCTURE_COUNT = 6;
 
 TEST(CompilerTests, canParseOnValidShortPackage) {
     string inputPath = CAJETA_TEST_ROOT + string("/compile/code/src/cajeta/Test.cajeta");

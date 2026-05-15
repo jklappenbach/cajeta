@@ -1,0 +1,116 @@
+package cajeta.lang;
+
+/**
+ * The universal root of the cajeta class hierarchy.
+ *
+ * Every class **implicitly extends `Object`** once the auto-extend cut
+ * lands — until then this type is declared on disk for downstream code
+ * to reference, but no existing class actually inherits its methods.
+ * See [StandardLibrary.md §Object](../../../../../cajeta-docs/StandardLibrary.md)
+ * for the full design.
+ *
+ * ## Default behaviour
+ *
+ * The methods declared here are **structural-synthesis targets**: when
+ * the synthesizer pass lands, it overrides each method in every
+ * concrete subclass with a body that walks the class's field layout.
+ * Until that pass exists, the `@Native` stubs below provide the
+ * fallback semantics:
+ *
+ * | Method      | Stub semantics                        | Final semantics                          |
+ * |-------------|---------------------------------------|------------------------------------------|
+ * | `hash()`    | pointer-identity, XXH3-mixed          | structural field-walk via `DefaultHasher`|
+ * | `toString()`| `null` placeholder                    | `TypeName(field=value, ...)` debug form  |
+ * | `clone()`   | `null` placeholder                    | shallow field-by-field copy              |
+ *
+ * Both stubs and synthesis use the **per-process random seed** from
+ * `cajeta.hash.Hash.processSeed()`, so hash values are stable for the
+ * value's lifetime within a process but not across restarts. That kills
+ * hash-flooding attacks against `HashMap` keyed on user-controlled
+ * input.
+ *
+ * ## Deferred items
+ *
+ * - `operator==(Object)` — needs the `@Native` bridge to handle
+ *   boolean (`i1`) return-type coercion before its native stub can
+ *   ship. Until then, override `==` manually or use `Hash.identity`
+ *   for pointer comparison.
+ * - **Override-pair enforcement** — when `operator==` lands, declaring
+ *   one of (`operator==`, `hash`) without the other becomes a compile
+ *   error. Pair is enforced at the synthesizer.
+ * - **Cyclic-type detection** — synthesizer rejects classes whose
+ *   field graph reaches itself unless a `@transient` annotation breaks
+ *   the cycle.
+ *
+ * @see cajeta.hash.Hash
+ * @see cajeta.hash.DefaultHasher
+ */
+public class Object {
+
+    /**
+     * Returns a 64-bit hash code for this object.
+     *
+     * The default implementation is **pointer-identity** mixed through
+     * the SplitMix64 finalizer with the per-process seed — same path
+     * as `cajeta.hash.Hash.identity(this)`. The synthesizer pass will
+     * later replace this body in each concrete subclass with a
+     * field-walk that hashes every field through `DefaultHasher` and
+     * combines results via `Hash.combine`.
+     *
+     * Subclasses that override `hash()` **must** also override
+     * `operator==()` once it lands, and vice versa — the
+     * "equal values hash equally" contract is enforced as a compile-
+     * time pair rule.
+     *
+     * @returns 64-bit hash code, well-distributed for use as a
+     *          `HashMap<K, V>` / `HashSet<T>` bucket key.
+     * @complexity O(1) for the default stub; O(fields) for the
+     *             synthesized field-walk override.
+     */
+    @Native("__cajeta_object_hash")
+    public int64 hash() { }
+
+    /**
+     * Returns a `String` representation of this object suitable for
+     * debug output.
+     *
+     * The default implementation returns `null` until both the
+     * structural synthesizer lands and the `cajeta.lang.String`
+     * construction surface stabilizes. The synthesized form will
+     * follow the `TypeName(field1=value1, field2=value2, ...)` shape —
+     * close to Rust's `#[derive(Debug)]`, sufficient for `println(x)`
+     * during development.
+     *
+     * Override manually to provide a user-facing representation —
+     * the synthesized form is intentionally debug-shaped, not
+     * presentation-quality.
+     *
+     * @returns debug-shaped string, or `null` until the synthesizer
+     *          lands.
+     */
+    @Native("__cajeta_object_to_string")
+    public String toString() { }
+
+    /**
+     * Returns a shallow copy of this object.
+     *
+     * The default implementation returns `null` until the synthesizer
+     * pass can walk field layouts and emit:
+     *
+     * - **value-typed fields** (primitives, structs, enums) — copied
+     *   by `memcpy` of the bits
+     * - **class-typed fields** — copied by reference (both originals
+     *   then point at the same heap instance, matching Java's shallow
+     *   `Object.clone()`)
+     *
+     * Override `clone()` manually to deep-copy class-typed fields when
+     * that's the right thing. The base return type is `Object`;
+     * subclass overrides narrow it to the declaring class at every
+     * site, so call-site code doesn't need a cast.
+     *
+     * @returns a shallow copy of this object, or `null` until the
+     *          synthesizer lands.
+     */
+    @Native("__cajeta_object_clone")
+    public Object clone() { }
+}

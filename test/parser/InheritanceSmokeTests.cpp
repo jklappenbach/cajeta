@@ -252,3 +252,42 @@ TEST(InheritanceSmokeTests, crossFileChildExtendsParentInOtherFile) {
     auto fn = jit->lookup<int32_t (*)()>("run");
     EXPECT_EQ(fn(), 41);
 }
+
+// --- Auto-extend Object ----------------------------------------------------
+//
+// Every class without an explicit `extends` clause implicitly inherits
+// cajeta.lang.Object. This test instantiates a bare class and calls
+// `hash()` on it — a method NOT declared on the bare class itself.
+// If auto-extend wired up correctly, name lookup walks the parent
+// chain to Object.hash(), which bridges through @Native to the
+// __cajeta_object_hash runtime function (identity-mixed-with-seed).
+//
+// Verification is structural: two calls on the same instance must
+// match (deterministic), and the hash of any object must be non-zero
+// (the seed initializer never produces zero — see
+// __cajeta_hash_seed_init).
+
+TEST(InheritanceSmokeTests, bareClassInheritsObjectHash) {
+    auto src =
+        "package test;\n"
+        "public class Bare {\n"
+        "    public Bare() { return; }\n"
+        "}\n"
+        "public final class I {\n"
+        "    public static int64 hashOnce() {\n"
+        "        Bare b = new Bare();\n"
+        "        return b.hash();\n"
+        "    }\n"
+        "    public static int64 hashTwiceSameInstance() {\n"
+        "        Bare b = new Bare();\n"
+        "        int64 h1 = b.hash();\n"
+        "        int64 h2 = b.hash();\n"
+        "        return h1 == h2 ? 1 : 0;\n"
+        "    }\n"
+        "}\n";
+    auto jit = CajetaJit::compile(src, "test.I");
+    auto hashOnce = jit->lookup<int64_t (*)()>("hashOnce");
+    auto twiceSame = jit->lookup<int64_t (*)()>("hashTwiceSameInstance");
+    EXPECT_NE(hashOnce(), 0);
+    EXPECT_EQ(twiceSame(), 1);
+}

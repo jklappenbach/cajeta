@@ -1642,6 +1642,61 @@ int64_t __cajeta_hash_bytes_seeded(const uint8_t* data, int64_t len, int64_t see
         data, (size_t) len, (uint64_t) seed);
 }
 
+// --- cajeta.lang.Object root methods ----------------------------------------
+// Default bodies for the universal-root methods. These are stubs the
+// compiler-side structural synthesizer will override per concrete class
+// later; until then they're the live implementations any caller would see
+// if `extends Object` were already implicit (it isn't yet — see the next
+// implementation cut). Keeping them functional now means once auto-extend
+// lands, every existing class without manual overrides immediately has
+// usable hash() / toString() / clone() — no further runtime changes
+// required.
+//
+// `operator==(Object)` is intentionally absent from this batch. Its
+// LLVM return type is i1 (cajeta boolean), but C `_Bool` / `int8_t`
+// lowers to i8, and the bitcode-runtime link step overrides the
+// @Native bridge's i1 declaration with i8 — producing a `ret i1 of
+// i8` verifier failure. Re-enabling it needs either return-type
+// coercion in Method::emitNativeForwardingBody or a cajeta-source body
+// using `this == other` pointer-equality. Tracked for the next cut.
+//
+// All functions take `void* this` as the first parameter — the @Native
+// bridge in Method::emitNativeForwardingBody passes the cajeta `this`
+// pointer through unchanged, matching the cajeta class type's pointer
+// ABI.
+
+// Identity hash — same path as __cajeta_hash_identity. Once the
+// synthesizer lands, each class's emitted hash() body replaces this call
+// with a field-walk; until then, every object key in a HashMap behaves
+// the same way Java's default Object.hashCode() does (identity-keyed).
+int64_t __cajeta_object_hash(void* self) {
+    return (int64_t) splitmix64_finalize(
+        (uint64_t)(uintptr_t) self ^ __cajeta_hash_seed_load());
+}
+
+// Placeholder toString — returns NULL until the String construction
+// surface lands. The structural synthesizer (when it arrives) will emit
+// per-class bodies that build "TypeName(field=value, ...)" via the
+// cajeta.lang.String stdlib. Callers that hit this stub today get a
+// null String, which is the same behaviour they'd have gotten before
+// Object existed — i.e. nothing currently calls it, since no class
+// inherits Object yet. The stub is here so the @Native bridge type-
+// checks; the day a class actually inherits it, the synthesizer will
+// be the live implementation.
+void* __cajeta_object_to_string(void* self) {
+    (void) self;
+    return NULL;
+}
+
+// Placeholder clone — same stub-with-NULL pattern as toString. The
+// field-walking memcpy/shallow-ref-copy implementation lands with the
+// synthesizer; until then, manual clone() overrides (or just avoiding
+// the call) are the workaround.
+void* __cajeta_object_clone(void* self) {
+    (void) self;
+    return NULL;
+}
+
 // --- parsing helpers --------------------------------------------------------
 // All return on error: 0 (for numeric forms) and false (for boolean). The
 // stdlib spec for Cajeta will likely tighten this to a thrown exception once

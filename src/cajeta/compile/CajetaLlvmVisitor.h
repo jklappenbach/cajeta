@@ -113,6 +113,21 @@ namespace cajeta {
                     bucket->push_back(QualifiedName::fromContext(tt->classOrInterfaceType()));
                 }
             }
+            // Auto-extend Object: every class without an explicit
+            // `extends` clause implicitly inherits cajeta.lang.Object,
+            // the universal root. Skip Object itself (would create a
+            // self-cycle). Interfaces and enums go through separate
+            // visitor paths and aren't affected. resolveSuperClasses's
+            // placeholder fallback handles the case where Object hasn't
+            // been parsed yet — the dependency closes once Object lands
+            // in canonicalMap.
+            bool isObjectItself =
+                qName->getTypeName() == "Object" &&
+                qName->getPackageName() == "cajeta.lang";
+            if (qExtended.empty() && !isObjectItself) {
+                qExtended.push_back(
+                    QualifiedName::getOrInsert("Object", "cajeta.lang"));
+            }
             // Placeholder reuse. If some earlier-parsed class held a
             // forward reference to this class (created via CajetaType
             // ::fromContext's miss path), the placeholder is already

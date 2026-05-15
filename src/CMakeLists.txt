@@ -186,14 +186,21 @@ set(CAJETA_STDLIB_ROOT ${PROJECT_SOURCE_DIR}/runtime/src)
 # layout pass after parse so subclasses get their full inherited-field
 # layout regardless of parse order.
 set(CAJETA_STDLIB_DIRS
+        ${CAJETA_STDLIB_ROOT}/cajeta/lang
         ${CAJETA_STDLIB_ROOT}/cajeta/error
         ${CAJETA_STDLIB_ROOT}/cajeta/hash)
 set(CAJETA_STDLIB_FILES "")
 foreach(dir ${CAJETA_STDLIB_DIRS})
     file(GLOB dir_files CONFIGURE_DEPENDS ${dir}/*.cajeta)
+    # Sort within each directory only — the directory order in
+    # CAJETA_STDLIB_DIRS is load-bearing: cajeta/lang (Object) must
+    # parse before classes that auto-extend it. Without ordering,
+    # alphabetical sort would put cajeta/error/* ahead of
+    # cajeta/lang/Object and force every Throwable-family class
+    # through the placeholder-resolution fallback unnecessarily.
+    list(SORT dir_files)
     list(APPEND CAJETA_STDLIB_FILES ${dir_files})
 endforeach()
-list(SORT CAJETA_STDLIB_FILES)
 list(LENGTH CAJETA_STDLIB_FILES CAJETA_STDLIB_COUNT)
 set(CAJETA_STDLIB_EMBED ${CMAKE_CURRENT_BINARY_DIR}/cajeta_stdlib_embedded.cpp)
 
