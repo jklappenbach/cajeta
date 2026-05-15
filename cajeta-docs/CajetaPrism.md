@@ -599,7 +599,7 @@ public static <S, T, D, G> Tensor<...>        reduceScatter(Tensor<S, T, D, G> x
 public static <S, T, D, G> Tensor<S, T, D, G> broadcast(Tensor<S, T, D, G> x, int8 srcDevice);
 ```
 
-Multi-host coordination uses cajeta.thread fibers + cajeta.net (when
+Multi-host coordination uses cajeta.thread fibers + cajeta.io.net (when
 it lands) for control-plane communication; tensor data moves over
 the highest-bandwidth fabric available (NVLink / Infiniband / ethernet
 fall-through).
@@ -680,7 +680,7 @@ A reasonable order, given dependencies:
     bounded prefetch). Real datasets.
 11. **cajeta.prism.distribute: Mesh + pjit + collectives.**
     Multi-CPU sharding works first; multi-host comes once
-    cajeta.net is in.
+    cajeta.io.net is in.
 12. **cajeta.prism.transform: pmap.** Layered on distribute.
 13. **cajeta.prism.autograd: jvp + vjp + jacobian + hessian.**
     Higher-order derivatives. Useful for second-order optimizers
@@ -740,8 +740,8 @@ Deferred to follow-ups (separate libraries):
   should be zero-copy via the shared backing buffer; same question
   raised in CajetaML.md / CajetaTorch.md. Cohesive resolution
   needed across all three before any goes public.
-- **Distributed control-plane minimum.** Multi-host needs cajeta.net.
-  cajeta.net needs the reactor work that's blocked on the harness.
+- **Distributed control-plane minimum.** Multi-host needs cajeta.io.net.
+  cajeta.io.net needs the reactor work that's blocked on the harness.
   Single-host pmap (across CPU "devices" — really just thread pools
   pretending) ships first; multi-host waits.
 - **Naming for the typed shape primitives.** `S2<A, B>` reads OK

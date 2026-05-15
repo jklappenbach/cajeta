@@ -172,7 +172,7 @@ single-pass preprocessor.
     // Direct dependencies. Transitive deps come along
     // automatically based on the resolution rules.
     "dependencies": {
-        "cajeta.http":   "1.2.*",
+        "cajeta.io.net.http":   "1.2.*",
         "cajeta.ml":     "0.5.0",
         "acme.metrics": {
             "version": "1.0.*",
@@ -280,15 +280,15 @@ machine-only, comments would just create merge conflicts).
     "resolved-at":        "2026-05-15T17:30:00Z",
     "packages": [
         {
-            "name":              "cajeta.http",
+            "name":              "cajeta.io.net.http",
             "version":           "1.2.4",
             "resolved-from":     "central",
             "checksum":          "sha256:8f...",
             "capabilities":      ["network", "filesystem", "clock"],
-            "transitive-deps":   ["cajeta.net", "cajeta.io", "cajeta.thread"]
+            "transitive-deps":   ["cajeta.io.net", "cajeta.io", "cajeta.thread"]
         },
         {
-            "name":              "cajeta.net",
+            "name":              "cajeta.io.net",
             "version":           "1.0.7",
             "resolved-from":     "central",
             "checksum":          "sha256:3c...",
@@ -343,8 +343,8 @@ dependency graph by:
 Conflict resolution prefers explicit pinning over inference:
 
 ```
-Direct dep:    "cajeta.http": "1.2.*"
-Transitive:    cajeta.http via dep X requires "1.2.3+"
+Direct dep:    "cajeta.io.net.http": "1.2.*"
+Transitive:    cajeta.io.net.http via dep X requires "1.2.3+"
 Resolution:    1.2.3 (lowest 1.2.* satisfying 1.2.3+)
 ```
 
@@ -370,15 +370,15 @@ The path contains a tree:
 
 ```
 /path/to/repo/
-├── cajeta.http/
+├── cajeta.io.net.http/
 │   ├── 1.0.0/
-│   │   └── cajeta.http-1.0.0.car
+│   │   └── cajeta.io.net.http-1.0.0.car
 │   ├── 1.2.4/
-│   │   └── cajeta.http-1.2.4.car
+│   │   └── cajeta.io.net.http-1.2.4.car
 │   └── versions.json          # { "versions": ["1.0.0", "1.2.4"] }
 ├── cajeta.ml/
 │   └── ...
-└── index.json                 # { "packages": ["cajeta.http", "cajeta.ml", ...] }
+└── index.json                 # { "packages": ["cajeta.io.net.http", "cajeta.ml", ...] }
 ```
 
 Used for dev overrides, vendoring, and CI scenarios that pre-stage
@@ -440,8 +440,8 @@ let developers locally override published versions without
 modifying the manifest:
 
 ```
-$ ls /home/me/cajeta-local/cajeta.http/1.2.5-dev/
-cajeta.http-1.2.5-dev.car
+$ ls /home/me/cajeta-local/cajeta.io.net.http/1.2.5-dev/
+cajeta.io.net.http-1.2.5-dev.car
 
 $ cajeta build       # uses the local 1.2.5-dev, not the central 1.2.4
 ```
@@ -461,7 +461,7 @@ actually-used set. Mismatch is a build error.
 
 | Capability         | What it gates                                                                          |
 |--------------------|---------------------------------------------------------------------------------------|
-| `network`          | TCP / UDP sockets, DNS, all of `cajeta.net` and `cajeta.http`.                        |
+| `network`          | TCP / UDP sockets, DNS, all of `cajeta.io.net` and `cajeta.io.net.http`.                        |
 | `filesystem`       | File I/O — read + write at any path the OS lets the process touch.                    |
 | `process`          | Spawning subprocesses, sending signals.                                                |
 | `env`              | Reading environment variables, command-line args.                                      |
@@ -486,7 +486,7 @@ Every capability-gated stdlib API carries an `@capability`
 annotation:
 
 ```cajeta
-package cajeta.net;
+package cajeta.io.net;
 
 /**
  * TCP socket. Reaching the network requires the `network`
@@ -523,7 +523,7 @@ manifest's declared set; enforces:
 
    ```
    error: capability `network` used but not declared in cajeta.json
-       cajeta.http.HttpClient.send (declared with @capability("network"))
+       cajeta.io.net.http.HttpClient.send (declared with @capability("network"))
        called from
        com.example.Main.fetchUrl
          at src/main/cajeta/com/example/Main.cajeta:42
@@ -684,7 +684,7 @@ Workspace manifest:
         // between members' versions are caught at workspace-load
         // time.
         "shared-dependencies": {
-            "cajeta.http": "1.2.*"
+            "cajeta.io.net.http": "1.2.*"
         }
     },
 
@@ -746,7 +746,7 @@ contribute non-determinism:
     "_type": "https://in-toto.io/Statement/v1",
     "subject": [
         {
-            "name": "cajeta.http-1.2.4.car",
+            "name": "cajeta.io.net.http-1.2.4.car",
             "digest": { "sha256": "..." }
         }
     ],

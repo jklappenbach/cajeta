@@ -255,8 +255,8 @@ cajeta lsp --port=2087              # TCP mode
 ### Cajeta-specific LSP behaviors
 
 - **Capability-aware completion.** If `cajeta.json` doesn't
-  declare `network`, network APIs (`cajeta.net.Socket`,
-  `cajeta.http.HttpClient`) don't appear in completion
+  declare `network`, network APIs (`cajeta.io.net.Socket`,
+  `cajeta.io.net.http.HttpClient`) don't appear in completion
   suggestions — and using them gets a diagnostic with a code
   action to add the capability.
 - **Aspect-affected markers.** Methods wrapped by `@Around` /

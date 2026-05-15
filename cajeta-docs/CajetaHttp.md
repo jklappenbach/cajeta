@@ -1,14 +1,14 @@
 # CajetaHttp.md
 
-A design for `cajeta.http`, a first-party library (separate from
+A design for `cajeta.io.net.http`, a first-party library (separate from
 stdlib) covering HTTP/1.1 + HTTP/2 + WebSockets, both client and
-server, with TLS for HTTPS / WSS. Built on `cajeta.net` (TCP / TLS
+server, with TLS for HTTPS / WSS. Built on `cajeta.io.net` (TCP / TLS
 sockets) and `cajeta.thread` (fiber scheduling) — neither of which
 forces HTTP into stdlib's footprint, so programs that don't touch
 HTTP don't pay for it.
 
 Implementation lands incrementally as `.cajeta` files under
-`./libraries/cajeta.http/src/`. Ships as its own package with its
+`./libraries/cajeta.io.net.http/src/`. Ships as its own package with its
 own version cadence — the spec churn around HTTP/2 / HTTP/3, header
 handling edge cases, and performance work is faster than stdlib's
 stability promise should accept.
@@ -17,7 +17,7 @@ stability promise should accept.
 
 The "small executables" / "most things need networking" tension
 resolves cleanly once you separate transport from application
-protocol. `cajeta.net` (sockets, in stdlib) is what most networked
+protocol. `cajeta.io.net` (sockets, in stdlib) is what most networked
 code actually needs at the transport layer; HTTP is one specific
 application protocol on top of it. Making HTTP opt-in via import
 means:
@@ -34,7 +34,7 @@ means:
 
 First-party rather than third-party means: one canonical
 implementation, doc / test / release coordination with the language,
-and ecosystem cohesion. Users add it via `import cajeta.http.X`;
+and ecosystem cohesion. Users add it via `import cajeta.io.net.http.X`;
 the build system pulls it in with no third-party registry hop.
 
 ## Goals (v1)
@@ -64,7 +64,7 @@ the build system pulls it in with no third-party registry hop.
   server on `:8080` for its REST API and an event-driven
   server on `:9090` for its WebSocket fan-out, both in the
   same process. See "Connectivity model" under
-  `cajeta.http.server` for guidance.
+  `cajeta.io.net.http.server` for guidance.
 - **Streaming request / response bodies** — chunked input and
   output exposed as readers / writers, not "load the whole body
   into a Buffer." Critical for upload/download endpoints,
@@ -80,15 +80,15 @@ the build system pulls it in with no third-party registry hop.
 ## Non-goals (v1)
 
 - **HTTP/3 / QUIC.** UDP-based QUIC transport is non-trivial; lands
-  as a follow-up once `cajeta.net` grows UDP socket support and the
+  as a follow-up once `cajeta.io.net` grows UDP socket support and the
   QUIC state machine work happens. The HTTP layer is designed to
   accommodate it (transport abstraction over HTTP semantics) but v1
   ships HTTP/1.1 + HTTP/2 only.
 - **gRPC.** Higher-level RPC sits on HTTP/2 but has its own service
   description (.proto), code generation, and streaming semantics.
   Belongs in a separate library (`cajeta.grpc`) that depends on
-  cajeta.http for transport.
-- **Server-side templating.** `cajeta.http` does HTTP, not HTML
+  cajeta.io.net.http for transport.
+- **Server-side templating.** `cajeta.io.net.http` does HTTP, not HTML
   rendering. A separate `cajeta.template` (or third-party) handles
   templates and feeds the output into a response body.
 - **Built-in session / cookie management beyond parsing + setting.**
@@ -96,61 +96,61 @@ the build system pulls it in with no third-party registry hop.
   (signed sessions, server-side stores, JWTs) is application logic
   not framework concern.
 - **OAuth / OIDC client.** Auth protocols built on HTTP belong in
-  their own library. cajeta.http exposes the primitives (Bearer
+  their own library. cajeta.io.net.http exposes the primitives (Bearer
   token headers, redirect handling) those libraries need.
 - **Custom TLS implementation.** v1 wraps the system TLS stack
   (OpenSSL on Linux, SChannel on Windows, Network.framework on
-  macOS) via cajeta.net. A pure-cajeta TLS implementation is a
+  macOS) via cajeta.io.net. A pure-cajeta TLS implementation is a
   separate, much larger effort.
 
 ## Package layout
 
 ```
-cajeta.http               — HTTP types: Method, Status, Headers, Url,
+cajeta.io.net.http               — HTTP types: Method, Status, Headers, Url,
                             Version, MediaType, parsing helpers
-cajeta.http.body          — Body abstraction: in-memory + streaming
+cajeta.io.net.http.body          — Body abstraction: in-memory + streaming
                             input / output; chunked encoding;
                             multipart parsing
-cajeta.http.client        — HttpClient with connection pooling,
+cajeta.io.net.http.client        — HttpClient with connection pooling,
                             request builder, redirect / retry policy,
                             timeout configuration
-cajeta.http.server        — HttpServer with fiber-per-request
+cajeta.io.net.http.server        — HttpServer with fiber-per-request
                             handling, request lifecycle, response
                             building, graceful shutdown
-cajeta.http.routing       — Route patterns, typed path parameter
+cajeta.io.net.http.routing       — Route patterns, typed path parameter
                             extraction, route trees, dispatch
-cajeta.http.middleware    — Middleware trait + bundled middleware
+cajeta.io.net.http.middleware    — Middleware trait + bundled middleware
                             (logging, request ID, auth, CORS,
                             compression, rate limit, recover)
-cajeta.http.tls           — TLS configuration, cert / key loading,
+cajeta.io.net.http.tls           — TLS configuration, cert / key loading,
                             ALPN, SNI, system trust store integration
-cajeta.http.websocket     — Frame protocol, message types, control
+cajeta.io.net.websocket     — Frame protocol, message types, control
                             frame handling, close codes
-cajeta.http.websocket.client — WebSocket client (handshake + frame
+cajeta.io.net.websocket.client — WebSocket client (handshake + frame
                             loop)
-cajeta.http.websocket.server — WebSocket server-side upgrade
-                            integration with cajeta.http.server
-cajeta.http.h1            — HTTP/1.1 protocol implementation
+cajeta.io.net.websocket.server — WebSocket server-side upgrade
+                            integration with cajeta.io.net.http.server
+cajeta.io.net.http.h1            — HTTP/1.1 protocol implementation
                             (internal — users go through .client /
                             .server)
-cajeta.http.h2            — HTTP/2 protocol implementation: HPACK,
+cajeta.io.net.http.h2            — HTTP/2 protocol implementation: HPACK,
                             frame framing, stream multiplexing,
                             flow control (internal)
-cajeta.http.compression   — gzip / deflate / brotli body encoding +
+cajeta.io.net.http.compression   — gzip / deflate / brotli body encoding +
                             decoding
-cajeta.http.sse           — Server-Sent Events (text/event-stream)
+cajeta.io.net.http.sse           — Server-Sent Events (text/event-stream)
                             server + client
 ```
 
 Deferred to follow-up libraries:
 ```
-cajeta.http.h3            — HTTP/3 over QUIC
+cajeta.io.net.http.h3            — HTTP/3 over QUIC
 cajeta.grpc               — gRPC client + server
 ```
 
 ---
 
-## cajeta.http — core types
+## cajeta.io.net.http — core types
 
 ```cajeta
 public enum Method {
@@ -260,7 +260,7 @@ public final class MediaType {
 
 ---
 
-## cajeta.http.body — streaming bodies
+## cajeta.io.net.http.body — streaming bodies
 
 ```cajeta
 public abstract class Body {
@@ -312,7 +312,7 @@ short-circuit.
 
 ---
 
-## cajeta.http.client
+## cajeta.io.net.http.client
 
 ```cajeta
 public final class HttpClient {
@@ -417,7 +417,7 @@ parallel sockets.
 
 ---
 
-## cajeta.http.server
+## cajeta.io.net.http.server
 
 ### Connectivity model
 
@@ -680,7 +680,7 @@ public abstract class Middleware {
     public abstract Response wrap(Request req, Handler next);
 }
 
-// Bundled middleware (cajeta.http.middleware):
+// Bundled middleware (cajeta.io.net.http.middleware):
 //   RequestId            — generates / propagates X-Request-Id header
 //   Logging              — structured access log (json-lines)
 //   Recover              — catches handler exceptions, returns 500
@@ -705,7 +705,7 @@ just function composition.
 
 ---
 
-## cajeta.http.websocket
+## cajeta.io.net.websocket
 
 WebSocket frame protocol per RFC 6455, plus the negotiated
 `permessage-deflate` extension per RFC 7692.
@@ -845,7 +845,7 @@ default but only used when both peers negotiate it.
 
 ---
 
-## cajeta.http.tls
+## cajeta.io.net.http.tls
 
 ```cajeta
 public final class TlsConfig {
@@ -882,14 +882,14 @@ public enum TlsVersion {
 }
 ```
 
-v1 wraps the platform TLS library through `cajeta.net.tls`
+v1 wraps the platform TLS library through `cajeta.io.net.tls`
 (OpenSSL on Linux, SChannel on Windows, Network.framework on
 macOS). A pure-cajeta TLS implementation is a separate effort
 (`cajeta.tls`) tracked independently.
 
 ---
 
-## cajeta.http.sse — Server-Sent Events
+## cajeta.io.net.http.sse — Server-Sent Events
 
 A minor surface but useful enough to ship in v1, since SSE
 solves the same problem WebSockets often get used for (server-
@@ -922,46 +922,46 @@ public final class SseClient {
 
 A reasonable order, given dependencies:
 
-1. **cajeta.http core types.** `Method`, `Status`, `Headers`,
+1. **cajeta.io.net.http core types.** `Method`, `Status`, `Headers`,
    `Url`, `MediaType`, `Version`. Pure data types, no IO. Used by
    every other layer.
-2. **cajeta.http.body.** `Body`, `BytesBody`, `StringBody`,
+2. **cajeta.io.net.http.body.** `Body`, `BytesBody`, `StringBody`,
    `StreamBody`. Multipart parser. Standalone, no protocol code.
-3. **cajeta.http.h1.** HTTP/1.1 wire protocol — request / response
+3. **cajeta.io.net.http.h1.** HTTP/1.1 wire protocol — request / response
    parsing, chunked transfer encoding, framing. Internal to .client
    and .server.
-4. **cajeta.http.client (HTTP/1.1).** HttpClient with connection
+4. **cajeta.io.net.http.client (HTTP/1.1).** HttpClient with connection
    pooling, request building, redirect / retry policy. The
    single-protocol path lands first; HTTP/2 plugs in behind the
    same surface.
-5. **cajeta.http.server (HTTP/1.1).** HttpServer + fiber-per-
-   request handling. Routing via cajeta.http.routing. Lets users
+5. **cajeta.io.net.http.server (HTTP/1.1).** HttpServer + fiber-per-
+   request handling. Routing via cajeta.io.net.http.routing. Lets users
    stand up a real HTTP/1.1 server.
-6. **cajeta.http.middleware.** The bundled middleware set —
+6. **cajeta.io.net.http.middleware.** The bundled middleware set —
    logging, request ID, recover, timeout, CORS, compression, basic
    / bearer auth, static file. Each middleware is an independent
    commit; ship as you go.
-7. **cajeta.http.tls.** TLS wrapper around the platform stack.
+7. **cajeta.io.net.http.tls.** TLS wrapper around the platform stack.
    HTTPS reachable; client cert verification works against system
-   trust store. Wraps cajeta.net.tls primitives (also v1 work
-   under cajeta.net).
-8. **cajeta.http.h2.** HTTP/2 — HPACK, framing, stream
+   trust store. Wraps cajeta.io.net.tls primitives (also v1 work
+   under cajeta.io.net).
+8. **cajeta.io.net.http.h2.** HTTP/2 — HPACK, framing, stream
    multiplexing, flow control. Negotiated via ALPN. Plugs in
    behind the .client and .server surfaces from steps (4) and (5);
    user code unchanged.
-9. **cajeta.http.compression.** gzip / deflate / brotli encoders
+9. **cajeta.io.net.http.compression.** gzip / deflate / brotli encoders
    + decoders. Used by the Compression middleware and by the
    client / server for Content-Encoding handling.
-10. **cajeta.http.websocket.** Frame protocol (RFC 6455). Just
+10. **cajeta.io.net.websocket.** Frame protocol (RFC 6455). Just
     the codec + state machine, no transport.
-11. **cajeta.http.websocket.server.** Upgrade integration with
-    cajeta.http.server. WebSocket endpoints reachable.
-12. **cajeta.http.websocket.client.** WebSocketClient. Standalone,
+11. **cajeta.io.net.websocket.server.** Upgrade integration with
+    cajeta.io.net.http.server. WebSocket endpoints reachable.
+12. **cajeta.io.net.websocket.client.** WebSocketClient. Standalone,
     independent of server work.
-13. **cajeta.http.websocket: permessage-deflate (RFC 7692).**
+13. **cajeta.io.net.websocket: permessage-deflate (RFC 7692).**
     Negotiated extension. Optional but expected by most modern
     WS deployments.
-14. **cajeta.http.sse.** Server-Sent Events server + client.
+14. **cajeta.io.net.http.sse.** Server-Sent Events server + client.
     Small layer over the streaming response support already
     landed in (5).
 
@@ -970,11 +970,11 @@ client and server are straightforward applications. (8) lifts the
 wire protocol to HTTP/2 without changing the surface above it.
 
 Deferred (separate libraries):
-- cajeta.http.h3 / QUIC transport — needs UDP socket + QUIC state
-  machine in cajeta.net first
+- cajeta.io.net.http.h3 / QUIC transport — needs UDP socket + QUIC state
+  machine in cajeta.io.net first
 - cajeta.grpc — RPC framework on HTTP/2
 - cajeta.tls — pure-cajeta TLS (replaces the platform-library
-  wrapper in cajeta.http.tls)
+  wrapper in cajeta.io.net.http.tls)
 
 ---
 
