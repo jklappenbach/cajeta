@@ -61,11 +61,34 @@ cajeta.collection      — Collection / Iterable / Iterator interfaces;
                          radix, counting, parallel variants, external};
                          Immutable[List, Set, Map, Deque, Array, Heap] —
                          read-only variants
-cajeta.io              — InputStream, OutputStream, Reader, Writer, byte buffers;
-                         the linked-list-of-buffers shape used by network code
-cajeta.net             — Socket, ServerSocket (later — needs the reactor)
+cajeta.io              — root I/O umbrella: Buffer, BufferChain (linked-
+                         list-of-buffers used by network code);
+                         InputStream, OutputStream, Reader, Writer
+                         abstractions; encoding-aware text codecs.
+                         Concrete I/O kinds live in subpackages below.
+cajeta.io.file         — Path, File, FileInfo, OpenMode, Watcher,
+                         FileEvent; readText / writeBytes / glob / walk /
+                         copy / move / delete; atomic writes by default;
+                         the @capability("filesystem")-gated surface.
+cajeta.io.net          — Address, SocketAddress, InetAddress (v4 / v6),
+                         Socket, ServerSocket, Selector — the reactor
+                         surface. Needs the fiber reactor; lands with
+                         the harness work.
+cajeta.io.net.tcp      — TcpSocket, TcpServerSocket, TcpListener,
+                         TcpStream.
+cajeta.io.net.udp      — UdpSocket, DatagramPacket.
+cajeta.io.net.tls      — TlsSocket wrapping any net socket; TlsContext,
+                         Certificate, PrivateKey.
+cajeta.io.net.http     — HTTP/1.1 + HTTP/2 + Server-Sent Events; full
+                         design in CajetaHttp.md.
+cajeta.io.net.websocket — WebSocket protocol with the http upgrade
+                         integration; also in CajetaHttp.md.
 cajeta.thread          — Thread, Fiber, Sleep, Mutex (extends what
                          ThreadModel.md already documents)
+cajeta.process         — Process, ProcessBuilder, Stdio, ExitStatus,
+                         Signal — subprocess management with fiber-aware
+                         stream pumps. Sibling of cajeta.io and
+                         cajeta.thread (not nested under either).
 cajeta.math            — boxed Object equivalents for every native numeric
                          type (including the fp4 / fp6 / fp8 variants),
                          RoundingMode, precision-aware casting, BigInteger,
@@ -1849,7 +1872,12 @@ many cajeta programs don't need any of it.
 
 ## cajeta.io
 
-The buffer infrastructure your server harness will need:
+Umbrella for everything that crosses the program / outside-world boundary.
+Direct members are the shared abstractions; concrete I/O kinds (file,
+network, subprocess) live in nested subpackages so a program that only
+needs files doesn't drag in a TLS stack.
+
+### Buffer + BufferChain — the byte substrate
 
 ```cajeta
 public class Buffer {
@@ -1868,15 +1896,415 @@ public class BufferChain {
 }
 ```
 
-`Buffer` wraps a single `byte[MAX_SIZE]`. `BufferChain` is the linked list of
-buffers you described. A struct overlay (via the existing
-`MyStruct(byte[] bytes)` zero-copy view) reads/writes fixed-layout records out
-of any `Buffer`.
+`Buffer` wraps a single `byte[MAX_SIZE]`. `BufferChain` is the linked list
+of buffers used by the harness. A struct overlay (via the zero-copy
+`MyStruct(byte[] bytes)` view) reads/writes fixed-layout records out of any
+`Buffer`.
 
-`InputStream` / `OutputStream` / `Reader` / `Writer` follow Java's shape but
-with byte buffers as the underlying mechanism. These can land alongside the
-harness once `cajeta.net` arrives — they're not blocking the harness if it
-uses `Buffer` / `BufferChain` directly.
+### Streams: InputStream / OutputStream / Reader / Writer
+
+Java-shaped abstractions, byte buffers underneath. `InputStream` /
+`OutputStream` are byte-level; `Reader` / `Writer` wrap them with an
+`Encoding` to give code-point-level access. The same interfaces back files,
+sockets, subprocess stdio, and in-memory byte streams — every concrete I/O
+type implements them so generic code (compress/decompress, parse/serialize)
+works over any source.
+
+These can land alongside the harness once `cajeta.io.net` arrives —
+they're not blocking the harness if it uses `Buffer` / `BufferChain`
+directly.
+
+---
+
+## cajeta.io.file
+
+File I/O modelled on Python's pathlib + Rust's `Path` + Go's
+`os.ReadFile` — the common cases are one line, the edge cases don't fight
+you. Every read / write / list / watch method carries
+`@capability("filesystem")`; a program that doesn't declare the capability
+fails at compile time (see BuildTool.md).
+
+### `Path` — value type, immutable
+
+```cajeta
+public final class Path {
+    // Construction
+    public static Path of(String s);
+    public static Path of(String... parts);          // joins as it builds
+    public static Path of(byte[] os_bytes);          // raw OS-native bytes
+    public static Path cwd();                        // process working dir
+    public static Path home();                       // user home dir
+    public static Path tempDir();                    // OS temp root
+
+    // Joining — `/` is the syntactic sugar; `resolve` is the verbose form
+    public Path operator/(String segment);
+    public Path operator/(Path other);
+    public Path resolve(String segment);
+
+    // Decomposition
+    public Path parent();                            // ".." semantics on root
+    public String name();                            // last segment, with ext
+    public String stem();                            // last segment, no ext
+    public String extension();                       // ".tar.gz" -> "gz"
+    public Array<String> parts();                    // split on separator
+    public boolean isAbsolute();
+    public boolean isRelative();
+
+    // Normalisation
+    public Path absolute();                          // resolve vs cwd()
+    public Path canonical();                         // resolves symlinks too
+    public Path normalize();                         // collapses "." / ".."
+    public Path relativeTo(Path base);               // throws if not under
+
+    // Predicates (single stat call each)
+    public boolean exists();
+    public boolean isFile();
+    public boolean isDir();
+    public boolean isSymlink();
+
+    // Metadata — one batched stat, returned as a value
+    public FileInfo info();                          // size + times + perms
+}
+```
+
+Path is one type, not split into `AbsolutePath` / `RelativePath`. The
+split adds boilerplate at every API boundary and is rarely load-bearing
+in practice — `isAbsolute()` covers the few places it matters.
+
+### `FileInfo` — batched stat result
+
+```cajeta
+public final value class FileInfo {
+    public int64 size();
+    public Instant created();
+    public Instant modified();
+    public Instant accessed();
+    public boolean isFile();
+    public boolean isDir();
+    public boolean isSymlink();
+    public int32 permissions();                      // POSIX mode bits
+}
+```
+
+Returned by `Path.info()`. Callers that want one field still pay one
+stat; callers that want six fields also pay one stat. Snapshots, so two
+reads of `modified()` give the same answer.
+
+### Reading and writing — the one-liners
+
+```cajeta
+// Whole-file reads
+String text = Path.of("data.json").readText();              // UTF-8
+String text = Path.of("data.json").readText(Encoding.LATIN1);
+byte[]  bin = Path.of("model.bin").readBytes();
+
+// Streaming reads
+for (String line in Path.of("huge.log").readLines()) {
+    process(line);
+}
+for (byte[] chunk in Path.of("video.mp4").readChunks(64 * 1024)) {
+    pump(chunk);
+}
+
+// Whole-file writes — atomic by default (see below)
+Path.of("output.txt").writeText("hello world");
+Path.of("output.txt").writeText(s, Encoding.UTF_16);
+Path.of("blob.bin").writeBytes(bytes);
+
+// Appends — non-atomic by definition
+Path.of("audit.log").appendText("entry\n");
+Path.of("audit.bin").appendBytes(bytes);
+
+// Filesystem ops
+Path.of("a.txt").copyTo(Path.of("b.txt"));
+Path.of("a.txt").moveTo(Path.of("b.txt"));               // atomic on same FS
+Path.of("a.txt").delete();
+Path.of("a.txt").deleteIfExists();
+```
+
+### `File` — when you need a handle (random access, partial reads)
+
+```cajeta
+public enum OpenMode { READ, WRITE, APPEND, READ_WRITE, CREATE_NEW }
+
+public final class File implements InputStream, OutputStream {
+    public static File open(Path p, OpenMode mode);
+    public static File openExclusive(Path p);            // O_CREAT | O_EXCL
+
+    public int64 read(Buffer dst);                       // returns bytes read
+    public int64 write(Buffer src);                      // returns bytes written
+    public int64 read(byte[] dst, int64 offset, int64 length);
+    public int64 write(byte[] src, int64 offset, int64 length);
+
+    public int64 position();
+    public void  seek(int64 absolute);
+    public void  seekFromEnd(int64 offset);
+    public int64 size();
+    public void  truncate(int64 size);
+    public void  flush();                                // userspace flush
+    public void  sync();                                 // fsync to disk
+    public void  lock();                                 // advisory, blocking
+    public boolean tryLock();
+    public void  unlock();
+
+    public void  close();                                // also called by drop
+}
+```
+
+`File` implements `InputStream` and `OutputStream`, so anything that takes
+a stream takes a file. The handle drops automatically when its owner
+scope exits — explicit `close()` is for the rare case you need to release
+before the scope ends.
+
+### Directories: children, walk, glob, mkdirs
+
+```cajeta
+// One level deep
+for (Path child in Path.of(".").children()) { ... }
+
+// Recursive (DFS by default; .bfs() for breadth-first)
+for (Path p in Path.of("src").walk()) { ... }
+for (Path p in Path.of("src").walk().bfs()) { ... }
+
+// Glob — `*` within a segment, `**` for any depth
+for (Path p in Path.of("src").glob("**/*.cajeta")) { ... }
+for (Path p in Path.of("logs").glob("2026-??-??.log")) { ... }
+
+// Create directories
+Path.of("a/b/c").mkdirs();                               // -p semantics
+Path.of("a").mkdir();                                    // single level
+```
+
+`children()` / `walk()` / `glob()` return `Iterator<Path>` — they stream,
+they don't materialise a list. For huge trees this is the only sensible
+shape; if you want a list, `.toArray()` it.
+
+### Atomic writes — what "by default" means
+
+`writeText` / `writeBytes` are atomic from the reader's perspective:
+the file at the target path either contains the old content or the new
+content, never a half-written mix. Implementation: write to
+`<name>.tmp.<rand>` in the same directory, `fsync` it, `rename` over the
+target. Same-directory rename is atomic on every POSIX filesystem and on
+NTFS via `MoveFileEx(..., REPLACE_EXISTING | WRITE_THROUGH)`.
+
+```cajeta
+Path.of("config.json").writeText(json);                  // atomic
+Path.of("config.json").writeTextDirect(json);            // not atomic — opt out
+```
+
+The direct form exists for filesystems that can't rename (some FUSE
+mounts, some network filesystems) or for performance when you genuinely
+don't care.
+
+### Watching the filesystem — `Watcher`
+
+```cajeta
+public enum WatchKind { CREATE, MODIFY, DELETE, RENAME }
+
+public final value class FileEvent {
+    public Path      path();
+    public WatchKind kind();
+    public Instant   timestamp();
+    public Path      renameTarget();                     // null unless RENAME
+}
+
+public final class Watcher {
+    public Iterator<FileEvent> events();                 // blocks fiber on read
+    public void close();
+}
+
+public final value class WatchOptions {
+    public WatchOptions recursive(boolean r);
+    public WatchOptions debounce(Duration window);       // coalesces bursts
+    public WatchOptions kinds(WatchKind... only);
+}
+```
+
+```cajeta
+Watcher w = Path.of("./config").watch(
+    WatchOptions().recursive(true).debounce(Duration.millis(100)));
+for (FileEvent e in w.events()) {
+    reload(e.path());
+}
+```
+
+Backed by `inotify` on Linux, `FSEvents` on macOS, `ReadDirectoryChangesW`
+on Windows. The fiber parks on the underlying handle — no polling thread.
+
+### Async forms
+
+Every blocking method has a `*Async` form returning `Task<T>`:
+
+```cajeta
+Task<String>  t1 = Path.of("data.json").readTextAsync();
+Task<byte[]>  t2 = Path.of("blob.bin").readBytesAsync();
+Task<void>    t3 = Path.of("out.txt").writeTextAsync("...");
+Task<FileInfo> t4 = Path.of("x").infoAsync();
+```
+
+The sync forms park the calling fiber on the reactor — they are
+**not** blocking the OS thread. The async forms exist for callers that
+want to launch many I/Os in parallel without one fiber per call (e.g.
+"prefetch these 200 files, await all").
+
+### Errors
+
+```cajeta
+public class IoException             extends RecoverableException;
+public class NotFoundException       extends IoException;
+public class PermissionException     extends IoException;
+public class AlreadyExistsException  extends IoException;
+public class IsDirectoryException    extends IoException;
+public class NotDirectoryException   extends IoException;
+public class CrossDeviceException    extends IoException;       // rename across FS
+public class DiskFullException       extends IoException;
+```
+
+Exceptions, not `Result<T>`. Consistent with the rest of the stdlib (see
+cajeta.error). Errors here are almost always programmer errors or
+environment failures — both want stack traces and the usual `try` /
+unwind path, not pervasive `?` propagation.
+
+### Capability gating
+
+Every method that touches the filesystem carries
+`@capability("filesystem")`:
+
+```cajeta
+public final class Path {
+    @capability("filesystem")
+    public String readText();
+
+    @capability("filesystem")
+    public void writeText(String content);
+
+    // ... etc. for every I/O-effecting method
+}
+```
+
+A program whose manifest doesn't declare `"filesystem"` in its
+`capabilities` array fails at compile time the moment it touches one of
+these methods. Pure path-manipulation methods (`parent`, `name`,
+`operator/`, `normalize`) are **not** gated — they're string operations
+on a value type. See BuildTool.md for the capability flag list.
+
+---
+
+## cajeta.io.net
+
+Lands with the fiber reactor / server harness. Surface sketch:
+
+```cajeta
+public interface Address { }
+public final value class InetAddress4 implements Address { ... }
+public final value class InetAddress6 implements Address { ... }
+public final value class SocketAddress { Address host; int32 port; ... }
+
+public interface Socket extends InputStream, OutputStream {
+    public SocketAddress localAddress();
+    public SocketAddress remoteAddress();
+    public void close();
+}
+
+public interface ServerSocket {
+    public Socket accept();                              // fiber-parks
+    public SocketAddress localAddress();
+    public void close();
+}
+
+public final class Selector { ... }                      // reactor surface
+```
+
+All concrete types live in the protocol-specific subpackages below.
+Listed here so generic code (a TLS wrapper, an HTTP client, a proxy) can
+program against `Socket` / `ServerSocket` without caring which protocol
+backs it.
+
+### cajeta.io.net.tcp
+
+```cajeta
+public final class TcpSocket implements Socket { ... }
+public final class TcpServerSocket implements ServerSocket { ... }
+public final class TcpListener { ... }                   // listen / bind config
+```
+
+### cajeta.io.net.udp
+
+```cajeta
+public final class UdpSocket { ... }
+public final value class DatagramPacket { ... }
+```
+
+### cajeta.io.net.tls
+
+```cajeta
+public final class TlsContext { ... }                    // certs, ciphers
+public final class TlsSocket implements Socket { ... }   // wraps another Socket
+public final value class Certificate { ... }
+public final value class PrivateKey { ... }
+```
+
+### cajeta.io.net.http
+
+Full design in CajetaHttp.md. Top-level surface: `HttpClient`,
+`HttpRequest`, `HttpResponse`, `HttpServer`, `Route`, `ServerMode`
+(FIBER_PER_CONNECTION / EVENT_DRIVEN / HYBRID).
+
+### cajeta.io.net.websocket
+
+Full design in CajetaHttp.md. Top-level surface: `WebSocketClient`,
+`WebSocketServer`, `WebSocket`, `Frame`. Uses the HTTP upgrade handshake
+from cajeta.io.net.http.
+
+---
+
+## cajeta.process
+
+Subprocess management. Sibling of `cajeta.io` and `cajeta.thread`, not
+nested under either — a subprocess is its own concern (fork/exec
+lifecycle, signal model, exit status). Stdin / stdout / stderr stream
+through the same
+`InputStream` / `OutputStream` interfaces used everywhere else, so the
+pumps are fiber-aware automatically.
+
+```cajeta
+public enum Stdio { INHERIT, PIPE, NULL, FILE }
+
+public final class ProcessBuilder {
+    public ProcessBuilder(String command);
+    public ProcessBuilder arg(String s);
+    public ProcessBuilder args(String... s);
+    public ProcessBuilder env(String key, String value);
+    public ProcessBuilder cwd(Path dir);
+    public ProcessBuilder stdin(Stdio mode);
+    public ProcessBuilder stdout(Stdio mode);
+    public ProcessBuilder stderr(Stdio mode);
+    @capability("process")
+    public Process start();
+}
+
+public final class Process {
+    public int32  pid();
+    public OutputStream stdin();                         // if Stdio.PIPE
+    public InputStream  stdout();                        // if Stdio.PIPE
+    public InputStream  stderr();                        // if Stdio.PIPE
+    public ExitStatus   waitFor();                       // fiber-parks
+    public ExitStatus   waitFor(Duration timeout);
+    public void         terminate();                     // SIGTERM
+    public void         kill();                          // SIGKILL
+    public void         signal(Signal sig);
+}
+
+public final value class ExitStatus {
+    public int32 code();
+    public boolean success();
+    public Signal terminatedBy();                        // null if exited normally
+}
+```
+
+`@capability("process")` gates `start()` — running subprocesses is a
+distinct capability from filesystem or network access.
 
 ---
 
@@ -1945,12 +2373,20 @@ A reasonable order, given dependencies:
 6. **cajeta.thread: Fiber.sleep, Fiber.yield, Thread.sleep, nanoTime.**
    The reactor + timer wheel land here.
 7. **cajeta.io: Buffer, BufferChain.** Server harness consumes these.
-8. **cajeta.time value types.** Instant first, then Duration, then the
+8. **cajeta.io.file: Path, FileInfo, readText / writeBytes / glob / walk.**
+   Sync surface first; sync methods park on the reactor so async forms
+   are a thin wrapper that lands later. Watcher is its own step (needs
+   per-OS backends) — defer until something actually wants it.
+9. **cajeta.time value types.** Instant first, then Duration, then the
    Local* types, then ZoneId / ZonedDateTime / DateTimeFormatter.
-9. **cajeta.collection: TreeMap, TreeSet, DenseMap/Set, Heap, immutable
-   variants, trees.** Less common; ship as needed.
+10. **cajeta.collection: TreeMap, TreeSet, DenseMap/Set, Heap, immutable
+    variants, trees.** Less common; ship as needed.
+11. **cajeta.io.net + .tcp + .tls.** Reactor surface and the protocol-
+    specific concrete sockets. Unblocks cajeta.io.net.http /
+    cajeta.io.net.websocket (which have their own design in CajetaHttp.md).
+12. **cajeta.process.** ProcessBuilder + fiber-aware stream pumps.
 
-Steps 1-6 unblock the server harness. Steps 7-9 fill out the library.
+Steps 1-6 unblock the server harness. Steps 7-12 fill out the library.
 
 ---
 
