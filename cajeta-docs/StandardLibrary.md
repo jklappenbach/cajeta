@@ -69,6 +69,17 @@ cajeta.math            — boxed Object equivalents for every native numeric
                          SecureRandom; Guid32 / Guid64 / Guid128. See
                          CajetaML.md "Prerequisite: cajeta.math expansion"
                          for the full surface.
+cajeta.hash            — Hasher interface; XXHash3 (fast general-purpose,
+                         the DefaultHasher backing); RapidHash (maximum
+                         throughput when ecosystem interop isn't needed);
+                         SipHash (DoS-resistant, key-derived); MD5
+                         (checksum / identifier, NOT for security);
+                         Hash utility namespace (identity, combine,
+                         seed); DefaultHasher used by the compiler-
+                         synthesized Object.hash(). Cryptographic hashes
+                         (SHA-2, SHA-3, BLAKE2/3) and AEAD / signature /
+                         KDF primitives live in the future cajeta.crypto
+                         peer library.
 ```
 
 ---
@@ -343,10 +354,15 @@ synthesizes:
   field-by-field comparison. The Java pattern "always implement equals with
   null-check, instanceof, cast, compare" — written for you by the compiler.
 - `hash()`: combines the same field set the structural `operator==` consults,
-  using a fast non-cryptographic mixer (FxHash family). Stable for the
-  lifetime of the values being hashed; not stable across process restarts (no
-  randomized seed yet, but plan to add per-process seed for hash-flooding
-  defense).
+  using `cajeta.hash.DefaultHasher` (xxHash3-based, see `cajeta.hash`). The
+  compiler emits one `Hasher.writeX(...)` call per field, finishes with
+  `Hasher.finish()`, and inlines the whole thing when the field set is known
+  at compile time — no allocation, just register-level multiply-rotate-xor
+  ops per field. A per-process random seed (initialized from OS entropy at
+  startup) is mixed in, so hash values are stable for the value's lifetime
+  in this process but not stable across process restarts. The seed kills
+  hash-flooding attacks: an attacker can't predict bucket placement to
+  force pathological O(n²) HashMap behavior.
 - `toString(Encoding)`: `TypeName(field1=value1, field2=value2, ...)`. The
   Rust `#[derive(Debug)]` shape, sufficient for `println(x)` debug output.
   Encoding parameter defaults to UTF-8; other encodings supported via the
@@ -405,8 +421,9 @@ The cycle analysis also runs through generic instantiations
 
 **Identity hash as a separate intrinsic.** The rare case that genuinely wants
 pointer-based hashing — observer maps, graph node identity, weak-reference
-keys — goes through `Cajeta.identityHash(obj)` as a runtime intrinsic, and
-`IdentityHashMap<K, V>` ships as a separate type that uses it internally. No
+keys — goes through `cajeta.hash.Hash.identity(obj)` as a runtime intrinsic,
+and `IdentityHashMap<K, V>` ships as a separate type that uses it internally.
+No
 `Hashable` bound on K because IdentityHashMap doesn't ask K to hash itself.
 
 ---
@@ -748,7 +765,7 @@ Concrete types — same storage-policy split as sets:
 - **`IdentityHashMap<K, V>`** — keys compared by reference identity, not
   by `operator==` / `hash()`. Use when the key's structural identity
   doesn't model "same key" (graph node maps, observer registries,
-  weak-ref tables). The map calls `Cajeta.identityHash(key)` for
+  weak-ref tables). The map calls `cajeta.hash.Hash.identity(key)` for
   bucket selection and pointer equality for slot lookup, so `K` is
   not required to override `hash()` — it works on any class
   regardless of what its structural hash returns.
@@ -1523,6 +1540,298 @@ public final class BPlusTree<K extends Comparable<K>, V> implements Map<K, V> {
 `BTree` / `BPlusTree` are deferred until first real user — they bring
 the cajeta.io storage-page dependency along, which is its own scope
 and shouldn't gate stdlib v1.
+
+---
+
+## cajeta.hash
+
+All hashing — the algorithms `Object.hash()` uses internally, the
+public surface user code reaches for content fingerprinting / cache
+key derivation / file integrity checks, the identity-hash intrinsic
+that `IdentityHashMap` is built on. Cryptographic hashes (SHA-2,
+SHA-3, BLAKE2 / BLAKE3) and the surrounding crypto primitives
+(AEAD, signatures, KDFs) live in the future **cajeta.crypto** peer
+library; `cajeta.hash` is for non-cryptographic and crypto-broken-
+but-still-useful (MD5) algorithms.
+
+### The `Hasher` interface
+
+Every hash algorithm implements `Hasher` so the same API works
+across single-shot, streaming, and structural cases:
+
+```cajeta
+public interface Hasher {
+    public Hasher writeBoolean(boolean v);
+    public Hasher writeInt8(int8 v);
+    public Hasher writeInt16(int16 v);
+    public Hasher writeInt32(int32 v);
+    public Hasher writeInt64(int64 v);
+    public Hasher writeUInt8(uint8 v);
+    public Hasher writeUInt16(uint16 v);
+    public Hasher writeUInt32(uint32 v);
+    public Hasher writeUInt64(uint64 v);
+    public Hasher writeFloat32(float32 v);
+    public Hasher writeFloat64(float64 v);
+    public Hasher writeBytes(byte[] data);
+    public Hasher writeBytes(byte[] data, int64 offset, int64 length);
+    public Hasher writeString(String s);
+
+    // Mixes obj.hash() into the running state. Used by the
+    // compiler-synthesized Object.hash() when walking class-typed
+    // fields.
+    public Hasher writeObject(Object obj);
+
+    // Finalize and produce a 64-bit value. Subsequent writes are
+    // undefined — most algorithms zero or reset state after.
+    public int64 finish();
+}
+```
+
+### `XXHash3` — fast general-purpose
+
+The default mixer behind `DefaultHasher` and the public choice for
+non-attacker-controlled hashing (file content, internal cache keys,
+ML embedding bucketing, blob deduplication, etc.). Multi-GB/s
+throughput on modern CPUs; excellent distribution proven by years
+of hash-table benchmark exposure (LZ4, zstd, RocksDB, ClickHouse).
+
+```cajeta
+public final class XXHash3 implements Hasher {
+    public XXHash3();                                  // process-seed
+    public XXHash3(int64 seed);                        // explicit seed
+
+    // One-shot factories.
+    public static int64 hash(byte[] data);
+    public static int64 hash(byte[] data, int64 seed);
+    public static int64 hash(byte[] data, int64 offset, int64 length, int64 seed = 0);
+    public static int64 hashString(String s);
+    public static int64 hashString(String s, int64 seed);
+
+    // Hasher interface — single contract for streaming use.
+    public Hasher writeInt8(int8 v);
+    // ... (full Hasher surface)
+    public int64 finish();
+}
+```
+
+### `RapidHash` — maximum throughput, smaller code
+
+Wang Yi's 2024 successor to wyhash. Public domain. Roughly 20-30%
+faster than xxHash3 on medium-to-large inputs (~12-15 GB/s on
+modern x86), smaller code footprint, passes SMHasher3 with no
+statistical anomalies. Pick this when raw throughput is the
+binding constraint and external interop with the xxHash3 ecosystem
+isn't required: high-volume content fingerprinting, log-pipeline
+keying, ML embedding bucketing where hash() is on the hot path.
+
+Not the `DefaultHasher` backing algorithm — that role goes to
+xxHash3 for ecosystem reasons (years of production exposure across
+zstd / LZ4 / RocksDB / ClickHouse, reference ports in every major
+language). The cost of getting `Object.hash()`'s algorithm "wrong"
+is everyone's downstream tooling (heap dumps, debug logs)
+producing different hash values forever after a future swap; the
+conservative pick now is cheaper than pivoting later. If RapidHash
+matures into the new consensus over the next few years, swapping
+DefaultHasher's backing algorithm is a one-line change with no
+public-API impact.
+
+```cajeta
+public final class RapidHash implements Hasher {
+    public RapidHash();                                // process-seed
+    public RapidHash(int64 seed);                      // explicit seed
+
+    public static int64 hash(byte[] data);
+    public static int64 hash(byte[] data, int64 seed);
+    public static int64 hash(byte[] data, int64 offset, int64 length, int64 seed = 0);
+    public static int64 hashString(String s);
+    public static int64 hashString(String s, int64 seed);
+
+    public Hasher writeInt8(int8 v);
+    // ... (full Hasher surface)
+    public int64 finish();
+}
+```
+
+### `SipHash` — DoS-resistant for untrusted input
+
+When the input is attacker-controlled (HTTP request body keys,
+shared-cache lookups keyed on user-supplied strings, untrusted JSON
+field names), the per-process seed alone isn't enough — an attacker
+who observes hash outputs once can sometimes reverse the seed and
+craft collisions. SipHash uses a 128-bit secret key with stronger
+mixing rounds (SipHash-2-4, the standard variant); cryptographically
+reasoned about as a PRF. Slower than xxHash3 (~600 MB/s vs ~10 GB/s)
+but the right answer for those cases. Used by Rust's HashMap default
+for the same reasons.
+
+```cajeta
+public final class SipHash implements Hasher {
+    public SipHash(byte[16] key);                     // explicit 128-bit key
+    public static SipHash withRandomKey();            // SecureRandom-sourced
+
+    public static int64 hash(byte[] data, byte[16] key);
+    public static int64 hash(byte[] data, int64 offset, int64 length, byte[16] key);
+    public static int64 hashString(String s, byte[16] key);
+
+    public Hasher writeInt8(int8 v);
+    // ... (full Hasher surface)
+    public int64 finish();
+}
+```
+
+### `MD5` — checksum / identifier, not for security
+
+MD5 is cryptographically broken — collisions can be constructed by
+an attacker — so it must not be used for signatures, password hashes,
+authentication tags, or any context where an adversary could forge
+input that hashes to a target value. But MD5 remains universally
+used for *non-security* purposes:
+
+- HTTP ETags
+- AWS S3 `Content-MD5` upload-integrity header
+- Asset / file content fingerprinting (Git uses SHA-1 similarly —
+  same trade-off: broken for crypto, fine for content addressing
+  against accidental corruption)
+- Cache key derivation
+- Database row fingerprinting
+- Test fixture / golden-output identity
+
+Java, Python, Go, .NET all ship MD5 in their standard libraries for
+exactly these reasons, and cajeta should too. The doc comment on
+every `MD5` method names the security caveat in its first line.
+
+```cajeta
+public final class MD5 implements Hasher {
+    public MD5();
+
+    // Conventional MD5 use — returns the full 16-byte digest.
+    public static byte[16] hash(byte[] data);
+    public static byte[16] hash(byte[] data, int64 offset, int64 length);
+    public static byte[16] hashString(String s);
+
+    // Hex-encoded, 32 lowercase hex chars. The format curl and the
+    // S3 SDKs (et al.) speak natively.
+    public static String hashHex(byte[] data);
+    public static String hashHex(byte[] data, int64 offset, int64 length);
+    public static String hashStringHex(String s);
+
+    // Streaming.
+    public MD5 update(byte[] data);
+    public MD5 update(byte[] data, int64 offset, int64 length);
+    public byte[16] digest();
+    public String   digestHex();
+
+    // Hasher conformance — returns the first 8 bytes of the digest
+    // as int64. Less useful for MD5 specifically (callers usually
+    // want the full 16-byte digest); provided for generic-Hasher
+    // code paths.
+    public Hasher writeInt8(int8 v);
+    // ...
+    public int64 finish();
+}
+```
+
+### `DefaultHasher` — what `Object.hash()` uses
+
+```cajeta
+public final class DefaultHasher implements Hasher {
+    // Process-seeded XXHash3 underneath. The seed is mixed in at
+    // construction; finish() reflects every write since.
+    public DefaultHasher();
+}
+```
+
+Manual `hash()` overrides thread fields into a `DefaultHasher` to
+stay consistent with the synthesized default's mixing behavior:
+
+```cajeta
+public class CaseInsensitiveString {
+    public String inner;
+
+    public boolean operator==(Object obj) {
+        if (!(obj instanceof CaseInsensitiveString)) return false;
+        return inner.toLowerCase().equals(((CaseInsensitiveString) obj).inner.toLowerCase());
+    }
+
+    public int64 hash() {
+        return new DefaultHasher()
+            .writeString(inner.toLowerCase())
+            .finish();
+    }
+}
+```
+
+### `Hash` utility namespace
+
+```cajeta
+public final class Hash {
+    // Pointer-based identity hash. Returns the obj pointer's bit
+    // pattern mixed with the per-process seed. Used by
+    // IdentityHashMap, observer / weak-ref tables, anywhere
+    // "same heap object" is the desired equality.
+    public static int64 identity(Object obj);
+
+    // Combine two 64-bit hash values into one with good
+    // distribution. For manual hash() implementations that
+    // can't or shouldn't go through a Hasher (rare).
+    public static int64 combine(int64 a, int64 b);
+
+    // The process-wide random seed initialized from OS entropy at
+    // process start. The compiler-synthesized hash() implicitly
+    // uses this; exposed here for direct use cases that need
+    // alignment with the synthesized hashing.
+    public static int64 processSeed();
+}
+```
+
+### Primitive specializations
+
+Compiler intrinsics, not real algorithm calls:
+
+| Type        | `hash()` returns                                                |
+|-------------|-----------------------------------------------------------------|
+| `int8` / `int16` / `int32` / `int64` | value mixed with the process seed (one multiply + xor) |
+| `uint8` / `uint16` / `uint32` / `uint64` | same as the signed variant — bit pattern is what matters |
+| `float32` / `float64` | bitcast to integer, canonicalize ±0 → 0, then mix         |
+| `boolean`   | 0 or 1 mixed with seed                                          |
+| `pointer`   | `Hash.identity(ptr)` — pointer mixed with seed                  |
+| `String`    | xxHash3 over UTF-8 bytes, process-seeded                        |
+| `byte[N]`   | xxHash3 over the N bytes, process-seeded                        |
+| class types | `obj.hash()` — recurses into the synthesized / overridden hash  |
+
+### When to pick which
+
+| Use case                                              | Pick                |
+|-------------------------------------------------------|---------------------|
+| Default Object.hash() (compiler does this)            | `DefaultHasher`     |
+| Hash a buffer / file / blob for fingerprinting        | `XXHash3.hash`      |
+| Cache key derivation, internal table keys             | `XXHash3.hash`      |
+| High-volume hashing, no external interop needed       | `RapidHash.hash`    |
+| Untrusted input (HTTP body, user strings, etc.)       | `SipHash.hash`      |
+| HTTP ETag / S3 Content-MD5 / asset fingerprinting     | `MD5.hashHex`       |
+| Identity-based (graph nodes, weak refs)               | `Hash.identity`     |
+| Real cryptographic security (signatures, passwords)   | **`cajeta.crypto`** (separate library) |
+
+### Future peer: `cajeta.crypto`
+
+A separate first-party library covering the cryptographic
+primitives that don't fit in `cajeta.hash`:
+
+- **Cryptographic hashes**: SHA-1 (deprecated), SHA-2 family
+  (SHA-256, SHA-384, SHA-512, SHA-224), SHA-3 family + SHAKE,
+  BLAKE2b / BLAKE2s, BLAKE3.
+- **HMAC** over the above.
+- **AEAD**: AES-128 / AES-256 (GCM, CCM, CTR), ChaCha20-Poly1305.
+- **Asymmetric**: Ed25519 (signatures), X25519 (key agreement),
+  RSA with strong defaults.
+- **KDFs**: PBKDF2, scrypt, Argon2, HKDF.
+- **Constant-time primitives** — `cajeta.crypto.constantTimeCompare`,
+  zero-on-drop byte arrays for secret material.
+
+Lives separately because cryptographic API churn (algorithm
+deprecation, side-channel mitigations, post-quantum migration)
+moves faster than stdlib stability promises should accept, and
+many cajeta programs don't need any of it.
 
 ---
 
