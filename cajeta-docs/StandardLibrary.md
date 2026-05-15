@@ -44,15 +44,19 @@ cajeta.collection      — Collection / Iterable / Iterator interfaces;
                          ArrayList, LinkedList, HashSet, TreeSet, DenseSet,
                          SparseSet, HashMap, TreeMap, DenseMap, SparseMap,
                          ArrayDeque, LinkedDeque, ArrayStack, BitSet;
-                         immutable.{List,Set,Map,Deque,Array} read-only variants;
+                         Immutable[List,Set,Map,Deque,Array] read-only variants;
                          tree.{BinaryTree, RedBlackTree, BTree, BPlusTree}
 cajeta.io              — InputStream, OutputStream, Reader, Writer, byte buffers;
                          the linked-list-of-buffers shape used by network code
 cajeta.net             — Socket, ServerSocket (later — needs the reactor)
-cajeta.concurrent      — Thread, Fiber, Sleep, Mutex (extends what
+cajeta.thread          — Thread, Fiber, Sleep, Mutex (extends what
                          ThreadModel.md already documents)
-cajeta.math            — Integer / Long / Double parse helpers, BigInteger,
-                         basic math utility methods (already partly intrinsic)
+cajeta.math            — boxed Object equivalents for every native numeric
+                         type (including the fp4 / fp6 / fp8 variants),
+                         RoundingMode, precision-aware casting, BigInteger,
+                         BigDecimal, Rational, Math intrinsics. See
+                         CajetaML.md "Prerequisite: cajeta.math expansion"
+                         for the full surface.
 ```
 
 ---
@@ -643,7 +647,7 @@ uses `Buffer` / `BufferChain` directly.
 
 ---
 
-## cajeta.concurrent
+## cajeta.thread
 
 Documented separately in cajeta-docs/ThreadModel.md. Stub here:
 
@@ -705,7 +709,7 @@ A reasonable order, given dependencies:
    trivial intrinsic wrappers. Enough for the harness.
 5. **cajeta.collection: ArrayList, LinkedList, ArrayDeque, ArrayStack,
    HashMap, HashSet, BitSet.** Daily-use containers.
-6. **cajeta.concurrent: Fiber.sleep, Fiber.yield, Thread.sleep, nanoTime.**
+6. **cajeta.thread: Fiber.sleep, Fiber.yield, Thread.sleep, nanoTime.**
    The reactor + timer wheel land here.
 7. **cajeta.io: Buffer, BufferChain.** Server harness consumes these.
 8. **cajeta.time value types.** Instant first, then Duration, then the
