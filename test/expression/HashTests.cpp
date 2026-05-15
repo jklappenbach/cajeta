@@ -152,6 +152,91 @@ TEST(HashIdentityTests, nullHashesConsistently) {
     EXPECT_EQ(__cajeta_hash_identity(nullptr), __cajeta_hash_identity(nullptr));
 }
 
+// --- @Native annotation bridge ---------------------------------------------
+// Validates that cajeta-source @Native methods correctly forward to the C
+// runtime. This is the bridge that lets cajeta stdlib classes (cajeta.hash.
+// Hash, cajeta.io.Buffer, etc.) live in runtime/src/cajeta/... and route
+// to C runtime helpers without compiler-side intrinsic dispatch.
+//
+// Notes for these tests: the C runtime is compiled twice — once to LLVM
+// bitcode (embedded + JIT-linked into user modules) and once natively
+// (linked into the test binary for direct C++ calls). Each copy has its
+// own static __cajeta_hash_seed_value, seeded independently from
+// /dev/urandom on first access. Tests can't expect bit-equal results
+// across the cajeta-JIT-path vs C-direct-call boundary; what they can
+// expect is that the same call shape produces consistent results within
+// each path.
+
+#include "../jit/JitTestHelper.h"
+using cajeta_test::CajetaJit;
+
+// @Native on a no-arg static method — the cajeta call resolves the
+// runtime symbol and returns a non-zero seed (the bitcode-side seed
+// was lazily initialized on this first call).
+TEST(NativeAnnotationTests, forwardsNoArgStatic) {
+    auto src =
+        "package test;\n"
+        "public final class Caller {\n"
+        "    @Native(\"__cajeta_hash_seed\")\n"
+        "    public static int64 seed() { }\n"
+        "    public static int64 run() {\n"
+        "        return seed();\n"
+        "    }\n"
+        "}\n";
+    auto jit = CajetaJit::compile(src, "test.Caller");
+    auto fn = jit->lookup<int64_t (*)()>("run");
+    int64_t fromCajeta = fn();
+    EXPECT_NE(fromCajeta, 0);
+    // Stable across repeated calls within the same JIT instance.
+    EXPECT_EQ(fn(), fromCajeta);
+}
+
+// @Native on a method that takes parameters and returns a value —
+// the wrapper must forward every argument to the runtime symbol.
+// Verifies via deterministic+distinct: same input → same output;
+// different inputs → different outputs.
+TEST(NativeAnnotationTests, forwardsArgumentsAndReturnValue) {
+    auto src =
+        "package test;\n"
+        "public final class Caller {\n"
+        "    @Native(\"__cajeta_hash_int64\")\n"
+        "    public static int64 hashInt64(int64 value) { }\n"
+        "    public static int64 hashOf(int64 v) {\n"
+        "        return hashInt64(v);\n"
+        "    }\n"
+        "}\n";
+    auto jit = CajetaJit::compile(src, "test.Caller");
+    auto fn = jit->lookup<int64_t (*)(int64_t)>("hashOf");
+    int64_t h42 = fn(42);
+    int64_t h7  = fn(7);
+    int64_t h42_again = fn(42);
+    EXPECT_EQ(h42, h42_again);     // deterministic
+    EXPECT_NE(h42, h7);            // distinct inputs → distinct hashes
+    EXPECT_NE(h42, 0);
+}
+
+// Two @Native methods pointing at the same runtime symbol — the wrapper
+// extern declaration must dedupe (one runtime function declaration per
+// module, not one per @Native call site). Verified by checking that
+// both wrappers produce the same value for the same input.
+TEST(NativeAnnotationTests, deduplicatesRuntimeSymbolDeclarations) {
+    auto src =
+        "package test;\n"
+        "public final class Caller {\n"
+        "    @Native(\"__cajeta_hash_int64\")\n"
+        "    public static int64 hash1(int64 v) { }\n"
+        "    @Native(\"__cajeta_hash_int64\")\n"
+        "    public static int64 hash2(int64 v) { }\n"
+        "    public static int64 viaHash1(int64 v) { return hash1(v); }\n"
+        "    public static int64 viaHash2(int64 v) { return hash2(v); }\n"
+        "}\n";
+    auto jit = CajetaJit::compile(src, "test.Caller");
+    auto fn1 = jit->lookup<int64_t (*)(int64_t)>("viaHash1");
+    auto fn2 = jit->lookup<int64_t (*)(int64_t)>("viaHash2");
+    EXPECT_EQ(fn1(100), fn2(100));   // both routes resolve to the same runtime fn
+    EXPECT_NE(fn1(100), 0);
+}
+
 // --- combine ---------------------------------------------------------------
 
 TEST(HashCombineTests, deterministic) {

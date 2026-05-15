@@ -1527,11 +1527,27 @@ static void __cajeta_hash_seed_init(void) {
     __cajeta_hash_seed_value = x ? x : 0x9E3779B97F4A7C15ULL;
 }
 
+// Lazy seed accessor. The constructor function above pre-initializes
+// the seed at process startup — but only in the native binary build
+// of this file. JIT-loaded bitcode copies have a separate static
+// __cajeta_hash_seed_value that the JIT doesn't auto-initialize (no
+// .init_array invocation at module-load). Checking-and-initializing
+// on first call keeps both paths correct. After the first call the
+// branch is predicted-not-taken and folds away in hot code.
+static inline uint64_t __cajeta_hash_seed_load(void) {
+    uint64_t s = __cajeta_hash_seed_value;
+    if (__builtin_expect(s == 0, 0)) {
+        __cajeta_hash_seed_init();
+        s = __cajeta_hash_seed_value;
+    }
+    return s;
+}
+
 // Exposed to user code as cajeta.hash.Hash.processSeed() — useful when
 // caller-side hashing needs to align with the synthesized Object.hash()
 // values (e.g. external hash table snapshot replay).
 int64_t __cajeta_hash_seed(void) {
-    return (int64_t) __cajeta_hash_seed_value;
+    return (int64_t) __cajeta_hash_seed_load();
 }
 
 // SplitMix64 finalizer — the mixer behind every primitive hash variant.
@@ -1547,14 +1563,14 @@ static inline uint64_t splitmix64_finalize(uint64_t x) {
 }
 
 int64_t __cajeta_hash_int64(int64_t value) {
-    return (int64_t) splitmix64_finalize((uint64_t) value ^ __cajeta_hash_seed_value);
+    return (int64_t) splitmix64_finalize((uint64_t) value ^ __cajeta_hash_seed_load());
 }
 
 int64_t __cajeta_hash_int32(int32_t value) {
     // Sign-extend so all-ones int32 doesn't hash like ~0 int64 just by
     // happening to share the low bits.
     return (int64_t) splitmix64_finalize(
-        (uint64_t) (int64_t) value ^ __cajeta_hash_seed_value);
+        (uint64_t) (int64_t) value ^ __cajeta_hash_seed_load());
 }
 
 int64_t __cajeta_hash_float64(double value) {
@@ -1565,19 +1581,19 @@ int64_t __cajeta_hash_float64(double value) {
     // each distinct NaN bit pattern to a distinct value, which is what
     // serializers / HashMap callers usually want.
     if (bits == 0x8000000000000000ULL) bits = 0;
-    return (int64_t) splitmix64_finalize(bits ^ __cajeta_hash_seed_value);
+    return (int64_t) splitmix64_finalize(bits ^ __cajeta_hash_seed_load());
 }
 
 int64_t __cajeta_hash_float32(float value) {
     uint32_t bits;
     memcpy(&bits, &value, sizeof(bits));
     if (bits == 0x80000000U) bits = 0;
-    return (int64_t) splitmix64_finalize((uint64_t) bits ^ __cajeta_hash_seed_value);
+    return (int64_t) splitmix64_finalize((uint64_t) bits ^ __cajeta_hash_seed_load());
 }
 
 int64_t __cajeta_hash_boolean(int8_t value) {
     return (int64_t) splitmix64_finalize(
-        (value ? 1ULL : 0ULL) ^ __cajeta_hash_seed_value);
+        (value ? 1ULL : 0ULL) ^ __cajeta_hash_seed_load());
 }
 
 // Pointer-identity hash. Used by IdentityHashMap, observer registries,
@@ -1585,7 +1601,7 @@ int64_t __cajeta_hash_boolean(int8_t value) {
 // distribution properties match.
 int64_t __cajeta_hash_identity(void* p) {
     return (int64_t) splitmix64_finalize(
-        (uint64_t)(uintptr_t) p ^ __cajeta_hash_seed_value);
+        (uint64_t)(uintptr_t) p ^ __cajeta_hash_seed_load());
 }
 
 // Combine two 64-bit hash values into one. Boost's hash_combine pattern

@@ -68,6 +68,46 @@ namespace cajeta {
         this->block = block;
     }
 
+    // Emit the body of an @Native-annotated method: a thin wrapper that
+    // forwards all parameters to the named C runtime symbol. The wrapper
+    // function (this method's llvmFunction) keeps its cajeta-mangled name
+    // so user-side calls resolve normally; the body is `return targetFn(
+    // args...)`. LLVM's optimizer inlines this single-call wrapper at any
+    // optimization level, so the cost after passes is identical to
+    // calling the runtime function directly. Signature mismatch between
+    // the cajeta declaration and the runtime symbol falls on the user —
+    // the declaration must mirror the runtime function's types exactly.
+    void Method::emitNativeForwardingBody(const std::string& symbol) {
+        llvm::Module* lmod = module->getLlvmModule();
+        // Insert (or reuse) the extern declaration of the runtime symbol.
+        llvm::Function* targetFn = lmod->getFunction(symbol);
+        if (!targetFn) {
+            targetFn = llvm::Function::Create(
+                llvmFunctionType,
+                llvm::Function::ExternalLinkage,
+                symbol,
+                lmod);
+        }
+
+        llvmBasicBlock = llvm::BasicBlock::Create(
+            *module->getLlvmContext(), "entry", llvmFunction);
+        llvm::IRBuilder<> b(llvmBasicBlock);
+
+        std::vector<llvm::Value*> args;
+        args.reserve(llvmFunction->arg_size());
+        for (auto& arg : llvmFunction->args()) {
+            args.push_back(&arg);
+        }
+
+        if (llvmFunction->getReturnType()->isVoidTy()) {
+            b.CreateCall(targetFn, args);
+            b.CreateRetVoid();
+        } else {
+            llvm::Value* result = b.CreateCall(targetFn, args);
+            b.CreateRet(result);
+        }
+    }
+
     void Method::emitTopFrameDrops(CajetaModulePtr module) {
         if (dropFrameStack.empty() || dropFrameStack.back().empty()) return;
         llvm::Function* popRun = module->getRuntimeFunction("__cajeta_drop_pop_run");
@@ -396,6 +436,25 @@ namespace cajeta {
         // implementation via the vtable.
         if (abstractFlag) return;
         if (llvmBasicBlock != nullptr) {
+            return;
+        }
+
+        // @Native("symbol") — the method's body is a forwarding call to
+        // a C runtime function with the given symbol name. Used by
+        // stdlib classes to bridge into runtime helpers (cajeta.hash.Hash.
+        // processSeed -> __cajeta_hash_seed, cajeta.io.Buffer.allocate ->
+        // __cajeta_alloc, etc.). The runtime function is declared extern
+        // in this module; its body is provided by the C runtime bitcode
+        // / object at link or JIT time. The wrapper is trivially
+        // inlinable so call overhead is zero after LLVM passes run.
+        if (auto nativeAnn = findAnnotation("Native")) {
+            std::string symbol = nativeAnn->getString("value");
+            if (symbol.empty()) {
+                cerr << "@Native on " << buildCanonical(parent, name, parameterList, true)
+                     << " requires a symbol-name argument" << std::endl;
+                return;
+            }
+            emitNativeForwardingBody(symbol);
             return;
         }
         // A5: when @Around advice matched this method, lazily create
