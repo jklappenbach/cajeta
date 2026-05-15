@@ -237,6 +237,46 @@ TEST(NativeAnnotationTests, deduplicatesRuntimeSymbolDeclarations) {
     EXPECT_NE(fn1(100), 0);
 }
 
+// --- cajeta.hash.Hash stdlib-class round-trip ------------------------------
+// First stdlib class using @Native lives at runtime/src/cajeta/hash/Hash.cajeta.
+// User code calls Hash.processSeed() / Hash.combine() and the stdlib parse
+// picks up the class, the @Native annotations bridge to the runtime symbols.
+
+TEST(CajetaHashClassTests, processSeedFromUserCode) {
+    auto src =
+        "package test;\n"
+        "public final class D {\n"
+        "    public static int64 run() {\n"
+        "        return Hash.processSeed();\n"
+        "    }\n"
+        "}\n";
+    auto jit = CajetaJit::compile(src, "test.D");
+    auto fn = jit->lookup<int64_t (*)()>("run");
+    int64_t seed = fn();
+    EXPECT_NE(seed, 0);
+    EXPECT_EQ(fn(), seed);   // stable across calls
+}
+
+TEST(CajetaHashClassTests, combineFromUserCode) {
+    auto src =
+        "package test;\n"
+        "public final class D {\n"
+        "    public static int64 run() {\n"
+        "        return Hash.combine(1, 2);\n"
+        "    }\n"
+        "    public static int64 run2() {\n"
+        "        return Hash.combine(2, 1);\n"
+        "    }\n"
+        "}\n";
+    auto jit = CajetaJit::compile(src, "test.D");
+    auto fn1 = jit->lookup<int64_t (*)()>("run");
+    auto fn2 = jit->lookup<int64_t (*)()>("run2");
+    int64_t v12 = fn1();
+    int64_t v21 = fn2();
+    EXPECT_NE(v12, 0);
+    EXPECT_NE(v12, v21);   // combine is not symmetric — order matters
+}
+
 // --- combine ---------------------------------------------------------------
 
 TEST(HashCombineTests, deterministic) {

@@ -186,7 +186,8 @@ set(CAJETA_STDLIB_ROOT ${PROJECT_SOURCE_DIR}/runtime/src)
 # layout pass after parse so subclasses get their full inherited-field
 # layout regardless of parse order.
 set(CAJETA_STDLIB_DIRS
-        ${CAJETA_STDLIB_ROOT}/cajeta/error)
+        ${CAJETA_STDLIB_ROOT}/cajeta/error
+        ${CAJETA_STDLIB_ROOT}/cajeta/hash)
 set(CAJETA_STDLIB_FILES "")
 foreach(dir ${CAJETA_STDLIB_DIRS})
     file(GLOB dir_files CONFIGURE_DEPENDS ${dir}/*.cajeta)

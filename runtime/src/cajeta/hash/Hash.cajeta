@@ -1,0 +1,41 @@
+package cajeta.hash;
+
+// Hash utility namespace. The static methods here are the cajeta-side
+// surface for the runtime hash primitives — pointer-based identity
+// hashing, manual hash combination, the per-process random seed.
+//
+// The HASH ALGORITHM classes (XXHash3, RapidHash, SipHash, MD5,
+// DefaultHasher) live alongside this file under runtime/src/cajeta/hash/
+// and follow the same pattern: cajeta-source declarations with @Native
+// methods bridging to the corresponding __cajeta_hash_* runtime symbols
+// in runtime/native/cajeta_runtime.c.
+//
+// See cajeta-docs/StandardLibrary.md §cajeta.hash for the full design.
+public final class Hash {
+
+    // Pointer-based identity hash. Returns the obj pointer's bit pattern
+    // mixed with the per-process seed. Used by IdentityHashMap, observer
+    // registries, weak-ref tables — anywhere "same heap object" is the
+    // desired equality, not "structurally equal."
+    //
+    // Parameter type is `pointer` because the cajeta stdlib `Object`
+    // class hasn't landed in runtime/src/cajeta/lang/ yet. Once it does,
+    // the parameter type widens to `Object` (the API caller-visible
+    // type) while the runtime symbol's ABI stays a raw pointer.
+    @Native("__cajeta_hash_identity")
+    public static int64 identity(pointer obj) { }
+
+    // Combine two 64-bit hash values into one with good distribution.
+    // Boost's hash_combine pattern + SplitMix64 finalizer. Used by manual
+    // hash() overrides that thread multiple field hashes together when
+    // the standard DefaultHasher path isn't right for the use case.
+    @Native("__cajeta_hash_combine")
+    public static int64 combine(int64 a, int64 b) { }
+
+    // The process-wide random seed initialized from OS entropy at process
+    // start. The compiler-synthesized Object.hash() implicitly uses this;
+    // exposed here for direct callers that need to align with the
+    // synthesized hashing (e.g. external hash-table snapshot replay).
+    @Native("__cajeta_hash_seed")
+    public static int64 processSeed() { }
+}
