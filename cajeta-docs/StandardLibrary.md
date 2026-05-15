@@ -12,7 +12,7 @@ implementation lands incrementally as separate `.cajeta` files under
 - Make the `Collection` hierarchy uniform — including arrays — so generic code
   doesn't need to special-case primitive-shaped containers.
 - Surface clear performance choices (sparse vs dense, ordered vs hashed,
-  growable vs frozen) instead of one "Map" / one "Set" that hides the trade-off.
+  growable vs immutable) instead of one "Map" / one "Set" that hides the trade-off.
 - Encoding-aware strings: a `String` holds character content, not bytes;
   conversion to/from bytes is explicit and parameterized by encoding.
 - Pay-for-what-you-use: nothing in the stdlib should require linking machinery
@@ -863,32 +863,34 @@ exist for shipping a heap over the wire (sender heapifies once,
 receiver consumes via a view), not for converting an arbitrary
 array into a heap zero-cost.
 
-### Frozen / immutable variants
+### Immutable variants
 
-In a `cajeta.collection.frozen` sub-package:
+In a `cajeta.collection.immutable` sub-package:
 
 ```cajeta
-public final class FrozenList<T> extends ArrayList<T> { ... }
-public final class FrozenSet<T> extends HashSet<T> { ... }
-public final class FrozenMap<K, V> extends HashMap<K, V> { ... }
-public final class FrozenHeap<T> extends Heap<T> { ... }
+public final class ImmutableList<T> extends ArrayList<T> { ... }
+public final class ImmutableSet<T> extends HashSet<T> { ... }
+public final class ImmutableMap<K, V> extends HashMap<K, V> { ... }
+public final class ImmutableDeque<T> extends ArrayDeque<T> { ... }
+public final class ImmutableArray<T> extends Array<T> { ... }
+public final class ImmutableHeap<T> extends Heap<T> { ... }
 ```
 
 Mutators (`add`, `put`, `remove`, `push`, `pop`, …) throw
-`UnsupportedOperationException`. The frozen types have stronger compiler
+`UnsupportedOperationException`. The immutable types have stronger compiler
 optimizations available because element identity is stable — no rehash,
 no resize, no concurrent-modification checks.
 
-`Frozen*` is distinct from `StructView` mode even when both render the
-collection effectively read-only. Frozen instances own their storage
+`Immutable*` is distinct from `StructView` mode even when both render the
+collection effectively read-only. Immutable instances own their storage
 (allocated by the construction call); views borrow storage from
 elsewhere. Both reject mutation; the difference is lifetime and
 ownership semantics, not the mutation contract.
 
-Alternative design: a `Frozen<T>` annotation on a collection variable that
-the compiler treats as immutable. Cleaner syntactically; harder to enforce
-once values escape across method boundaries. Recommended: separate concrete
-types, simpler.
+Alternative design: an `@Immutable` annotation on a collection variable
+that the compiler treats as read-only. Cleaner syntactically; harder to
+enforce once values escape across method boundaries. Recommended:
+separate concrete types, simpler.
 
 ### Trees
 
@@ -1009,8 +1011,8 @@ A reasonable order, given dependencies:
 7. **cajeta.io: Buffer, BufferChain.** Server harness consumes these.
 8. **cajeta.time value types.** Instant first, then Duration, then the
    Local* types, then ZoneId / ZonedDateTime / DateTimeFormatter.
-9. **cajeta.collection: TreeMap, TreeSet, DenseMap/Set, frozen variants,
-   trees.** Less common; ship as needed.
+9. **cajeta.collection: TreeMap, TreeSet, DenseMap/Set, Heap, immutable
+   variants, trees.** Less common; ship as needed.
 
 Steps 1-6 unblock the server harness. Steps 7-9 fill out the library.
 
@@ -1031,7 +1033,7 @@ Steps 1-6 unblock the server harness. Steps 7-9 fill out the library.
    "hashed" — already separate types because the algorithms differ; the
    sparse/dense distinction inside hashed doesn't warrant a separate
    public type.
-4. **Frozen variants** — separate subclasses vs annotation. Recommended:
+4. **Immutable variants** — separate subclasses vs annotation. Recommended:
    separate subclasses for now; the annotation form requires escape analysis
    we don't have.
 5. **Time zone database** — embed vs read from disk. Recommended:
