@@ -48,7 +48,10 @@ TEST(CompilerTests, canParseOnValidLongPackage) {
     auto structure = pModule->getStructures()["foo.bar.baz.Test"];
     EXPECT_EQ(modules.size(), 1 + STDLIB_STRUCTURE_COUNT);
     EXPECT_EQ(structure->getProperties().size(), 2);
-    EXPECT_EQ(structure->getMethods().size(), 3);
+    // 3 user-declared methods + 1 compiler-synthesized hash() override
+    // (the synthesizer injects it on every class that doesn't manually
+    // declare hash() — see SynthesizedHashMethod).
+    EXPECT_EQ(structure->getMethods().size(), 4);
 }
 
 TEST(CompilerTests, canWriteAndReadClassMetadata) {

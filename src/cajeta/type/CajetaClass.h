@@ -385,6 +385,14 @@ namespace cajeta {
 
         void ensureDefaultConstructor();
 
+        // Inject compiler-synthesized overrides of the universal-root
+        // cajeta.lang.Object methods that the user hasn't manually
+        // declared. Run from generatePrototype after
+        // ensureDefaultConstructor. See SynthesizedHashMethod for the
+        // hash() implementation; toString() / clone() arrive in
+        // follow-up cuts.
+        void synthesizeObjectOverrides();
+
         void createInheritanceMethodMap(CajetaClassPtr structure = shared_ptr<CajetaClass>(nullptr));
 
 

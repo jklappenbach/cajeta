@@ -291,3 +291,102 @@ TEST(InheritanceSmokeTests, bareClassInheritsObjectHash) {
     EXPECT_NE(hashOnce(), 0);
     EXPECT_EQ(twiceSame(), 1);
 }
+
+// --- Compiler-synthesized structural hash ---------------------------------
+//
+// The synthesizer pass injects a hash() override on every class that
+// doesn't manually declare one. The override walks every primitive
+// field through the matching __cajeta_hash_X runtime helper and
+// combines results via __cajeta_hash_combine, seeded by the per-
+// process random seed.
+//
+// Two structural properties we check:
+//
+//   - **Field-sensitivity**: two instances of the same class with
+//     DIFFERENT primitive field values must hash differently. (Not a
+//     strict guarantee — a collision is theoretically possible, but
+//     for the chosen distinct small-integer field values the mixer's
+//     avalanche makes a collision astronomically unlikely.)
+//   - **Equality-implies-equal-hash**: two instances with IDENTICAL
+//     primitive field values must hash identically. This is the
+//     contract HashMap relies on; the synthesizer's deterministic
+//     field-walk order is what makes it hold.
+
+TEST(InheritanceSmokeTests, synthesizedHashIsFieldSensitive) {
+    // Two instances of Point with different field values should
+    // produce different hashes.
+    auto src =
+        "package test;\n"
+        "public class Point {\n"
+        "    public int32 x;\n"
+        "    public int32 y;\n"
+        "    public Point() { return; }\n"
+        "}\n"
+        "public final class I {\n"
+        "    public static int64 hashDifferent() {\n"
+        "        Point a = new Point();\n"
+        "        a.x = 1;\n"
+        "        a.y = 2;\n"
+        "        Point b = new Point();\n"
+        "        b.x = 3;\n"
+        "        b.y = 4;\n"
+        "        int64 ha = a.hash();\n"
+        "        int64 hb = b.hash();\n"
+        "        return ha != hb ? 1 : 0;\n"
+        "    }\n"
+        "}\n";
+    auto jit = CajetaJit::compile(src, "test.I");
+    auto fn = jit->lookup<int64_t (*)()>("hashDifferent");
+    EXPECT_EQ(fn(), 1);
+}
+
+TEST(InheritanceSmokeTests, synthesizedHashAgreesOnEqualFieldValues) {
+    // Two distinct Point instances with the SAME primitive field
+    // values must hash identically — the HashMap-equality contract.
+    auto src =
+        "package test;\n"
+        "public class Point {\n"
+        "    public int32 x;\n"
+        "    public int32 y;\n"
+        "    public Point() { return; }\n"
+        "}\n"
+        "public final class I {\n"
+        "    public static int64 hashEqual() {\n"
+        "        Point a = new Point();\n"
+        "        a.x = 42;\n"
+        "        a.y = 99;\n"
+        "        Point b = new Point();\n"
+        "        b.x = 42;\n"
+        "        b.y = 99;\n"
+        "        int64 ha = a.hash();\n"
+        "        int64 hb = b.hash();\n"
+        "        return ha == hb ? 1 : 0;\n"
+        "    }\n"
+        "}\n";
+    auto jit = CajetaJit::compile(src, "test.I");
+    auto fn = jit->lookup<int64_t (*)()>("hashEqual");
+    EXPECT_EQ(fn(), 1);
+}
+
+TEST(InheritanceSmokeTests, synthesizedHashRespectsManualOverride) {
+    // When the user declares hash() manually, the synthesizer must
+    // skip injection so the manual version is what dispatch finds.
+    // Probe: manual hash() always returns 12345 regardless of fields.
+    auto src =
+        "package test;\n"
+        "public class Custom {\n"
+        "    public int32 x;\n"
+        "    public Custom() { return; }\n"
+        "    public int64 hash() { return 12345; }\n"
+        "}\n"
+        "public final class I {\n"
+        "    public static int64 hashCustom() {\n"
+        "        Custom c = new Custom();\n"
+        "        c.x = 7;\n"
+        "        return c.hash();\n"
+        "    }\n"
+        "}\n";
+    auto jit = CajetaJit::compile(src, "test.I");
+    auto fn = jit->lookup<int64_t (*)()>("hashCustom");
+    EXPECT_EQ(fn(), 12345);
+}
