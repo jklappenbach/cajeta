@@ -336,7 +336,7 @@ namespace cajeta {
             // and act like reference types at parameter slots), so we test
             // for CajetaArray and CajetaClass explicitly rather than
             // relying on the primitive bit. Structs (CajetaStruct, declared
-            // with `struct`) DO pass by value per WireFormats.md.
+            // with `struct`) DO pass by value per Structs.md.
             bool isStruct = dynamic_pointer_cast<CajetaStruct>(pt) != nullptr;
             bool isArr = dynamic_pointer_cast<CajetaArray>(pt) != nullptr;
             bool isClassLike = dynamic_pointer_cast<CajetaClass>(pt) != nullptr;

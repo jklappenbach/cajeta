@@ -328,7 +328,7 @@ namespace cajeta {
             // Pull wire-format annotations off the enclosing typeDeclaration.
             // The grammar parses them as classOrInterfaceModifier* before the
             // structDeclaration; from here we look upward at the parent and
-            // scan its modifier list. See WireFormats.md § Endianness / §
+            // scan its modifier list. See Structs.md § Endianness / §
             // Alignment for semantics.
             if (auto* typeDecl = dynamic_cast<CajetaParser::TypeDeclarationContext*>(ctx->parent)) {
                 for (auto* mod : typeDecl->classOrInterfaceModifier()) {

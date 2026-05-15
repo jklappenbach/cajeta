@@ -1,6 +1,6 @@
 //
 // CajetaStruct — POD aggregate with declared layout (Session 4 of the
-// memory-model rollout). See `WireFormats.md` for the full doctrine.
+// memory-model rollout). See `Structs.md` for the full doctrine.
 //
 // v1 covers: packed layout (host endian, fixed-size primitive fields).
 // Variable-size fields (`String`, `T[]` inline), endianness intrinsics,

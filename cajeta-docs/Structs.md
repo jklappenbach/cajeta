@@ -1,5 +1,5 @@
 # Cajeta Structs
-### Wire Formats & Zero-Copy Structs — Specification v1
+### Wire Formats & Zero-Copy — Specification v1
 
 ## Purpose
 

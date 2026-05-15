@@ -1,6 +1,6 @@
 //
 // `struct` types — POD aggregates with declared (not compiler-chosen) layout.
-// See WireFormats.md for full layout / endianness / packing / view-construction
+// See Structs.md for full layout / endianness / packing / view-construction
 // rules. v1 of this type is a stub: it identifies that a declaration is a
 // struct vs a class, but the actual layout computation, view-constructor
 // synthesis, and field-accessor codegen land in Session 4 of the rollout.
@@ -22,7 +22,7 @@ namespace cajeta {
     // `@BigEndian` / `@LittleEndian` annotations during type registration;
     // codegen consults it when emitting field accessors. Nested structs
     // inherit from their outer unless they carry their own annotation — see
-    // WireFormats.md § Endianness inheritance.
+    // Structs.md § Endianness inheritance.
     enum struct StructEndianness {
         Host,           // default — no annotation, use host order
         Big,            // @BigEndian
@@ -30,7 +30,7 @@ namespace cajeta {
     };
 
     // Alignment annotation. Default is packed (no padding); @Align(natural)
-    // opts into natural alignment per field. See WireFormats.md § Alignment.
+    // opts into natural alignment per field. See Structs.md § Alignment.
     enum struct StructAlignment {
         Packed,         // default
         Natural         // @Align(natural)
