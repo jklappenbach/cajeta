@@ -39,10 +39,12 @@ cajeta.time            — Instant, Duration, Period, LocalDate, LocalTime,
                          DateTimeFormatter, Clock (with nanoTime / millisTime)
 cajeta.collection      — Collection / Iterable / Iterator interfaces;
                          List, Set, Map, Deque, Stack interfaces;
+                         Array (the heap-allocated, variable-size,
+                         element-typed array — replaces T[] for non-inline use);
                          ArrayList, LinkedList, HashSet, TreeSet, DenseSet,
-                         HashMap, TreeMap, DenseMap, SparseSet, SparseMap,
-                         ArrayDeque, LinkedDeque, ArrayStack, BitSet,
-                         frozen.{List,Set,Map} immutable variants;
+                         SparseSet, HashMap, TreeMap, DenseMap, SparseMap,
+                         ArrayDeque, LinkedDeque, ArrayStack, BitSet;
+                         immutable.{List,Set,Map,Deque,Array} read-only variants;
                          tree.{BinaryTree, RedBlackTree, BTree, BPlusTree}
 cajeta.io              — InputStream, OutputStream, Reader, Writer, byte buffers;
                          the linked-list-of-buffers shape used by network code
