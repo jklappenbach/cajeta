@@ -324,6 +324,84 @@ TEST(StructCompositionTests, prefixMoveBlocksDeeperPathReads) {
     }
 }
 
+// ---------------------------------------------------------------------
+// S7.5 — remaining breadth: sizeof / layout pin, nested embedded
+// (already covered by S7.3's doublyNestedEmbeddedStructAccess but
+// extended here with classes-in-the-middle), and array-of-class
+// elements where each class instance carries an embedded struct.
+// ---------------------------------------------------------------------
+
+// Layout-size pin via surrounding-field probe. Distinct unique values
+// into `before`, the embedded struct's two fields, and `after`. If the
+// embedded struct's slot were sized wrong, writes would leak across
+// field boundaries and the read-back sum would diverge from the sum
+// of literals.
+TEST(StructCompositionTests, embeddedStructLayoutNoFieldOverlap) {
+    auto src =
+        "package test;\n"
+        "public struct Pair { int32 x; int32 y; }\n"
+        "public class Box {\n"
+        "    public int32 before;\n"
+        "    public Pair pair;\n"
+        "    public int32 after;\n"
+        "    public Box() { return; }\n"
+        "}\n"
+        "public final class S {\n"
+        "    public static int32 run() {\n"
+        "        Box b = new Box();\n"
+        "        b.before = 1000;\n"
+        "        b.pair.x = 200;\n"
+        "        b.pair.y = 30;\n"
+        "        b.after = 4;\n"
+        "        return b.before + b.pair.x + b.pair.y + b.after;\n"  // 1234
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 1234);
+}
+
+// S7.5's "array of embedded structs" test is deferred — it requires a
+// class-array element-layout fix that's orthogonal to embedded-struct
+// composition. CajetaArray::getElementLlvmType currently uses the
+// element type's full LLVM struct (16 bytes for `Cell { Point pt; }`)
+// for class elements, but the reader paths (loadIfLValue for
+// ArrayIndexExpression) treat slots as 8-byte pointers. The mismatch
+// silently misreads when class elements carry an embedded struct,
+// because the post-S7 read picks up vtable bytes instead of the
+// expected pointer. Fixing it correctly means deciding whether class
+// arrays store inline class values or pointer references — a wider
+// design call. Captured under "S7.5 limitations called out" in the
+// rollout doc.
+
+// Class containing a struct that contains a class ref. End-to-end:
+// alloc Class → allocates the embedded struct inline → struct's class
+// ref slot starts null → user assigns a heap Tag → class drop walks
+// struct drop → struct drop frees Tag. No leaks, no double-frees.
+// Combines layout, access, drop, and ownership-transfer pieces.
+TEST(StructCompositionTests, classStructClassEndToEnd) {
+    auto src =
+        "package test;\n"
+        "public class Tag {\n"
+        "    public int32 n;\n"
+        "    public Tag() { this.n = 0; return; }\n"
+        "}\n"
+        "public struct Holder { Tag t; int32 extra; }\n"
+        "public class Container {\n"
+        "    public Holder h;\n"
+        "    public Container() { return; }\n"
+        "}\n"
+        "public final class S {\n"
+        "    public static int32 run() {\n"
+        "        Container c = new Container();\n"
+        "        Tag tag = new Tag();\n"
+        "        tag.n = 41;\n"
+        "        c.h.t = #tag;\n"
+        "        c.h.extra = 1;\n"
+        "        return c.h.t.n + c.h.extra;\n"  // 42
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 42);
+}
+
 // Sibling paths (not the moved one) stay readable. The move-mark on
 // `w.p.a` must NOT poison reads of `w.p.b`. Compile-only check —
 // reaching this point means buildPath / isPathMoved scoped the move
