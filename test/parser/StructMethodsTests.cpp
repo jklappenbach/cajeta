@@ -108,3 +108,57 @@ TEST(StructMethodsTests, methodWithExtraParameter) {
         "}\n";
     EXPECT_EQ(runI32(src), 123);
 }
+
+// ---------------------------------------------------------------------
+// S8.3 — `this.field` GEP inside struct methods. Same DotExpression
+// path as external `p.field` reads; the `this` pointer comes from
+// the implicit first parameter at LLVM arg index 0.
+// ---------------------------------------------------------------------
+
+// One method calls another method on the same struct via `this.helper()`.
+// Tests that intra-struct dispatch routes back through the same
+// invokeMethod path with the current `this` as receiver.
+TEST(StructMethodsTests, methodCallsAnotherMethodOnSelf) {
+    auto src =
+        "package test;\n"
+        "public struct Point {\n"
+        "    int32 x;\n"
+        "    int32 y;\n"
+        "    public int32 sum() { return this.x + this.y; }\n"
+        "    public int32 sumPlusOne() { return this.sum() + 1; }\n"
+        "}\n"
+        "public final class S {\n"
+        "    public static int32 run() {\n"
+        "        Point p = Point { x: 5, y: 9 };\n"
+        "        return p.sumPlusOne();\n"  // 15
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 15);
+}
+
+// Method writes through a chained `this.embedded.field` path. Exercises
+// the same GEP chain as external `obj.embedded.field` writes — the
+// CajetaAggregate getFieldLlvmIndex override means the inner GEP
+// indexes correctly into a nested struct field laid out inline.
+TEST(StructMethodsTests, methodWritesThroughEmbeddedStructField) {
+    auto src =
+        "package test;\n"
+        "public struct Inner { int32 leaf; }\n"
+        "public struct Outer {\n"
+        "    Inner inner;\n"
+        "    public void writeLeaf(int32 v) {\n"
+        "        this.inner.leaf = v;\n"
+        "    }\n"
+        "    public int32 readLeaf() {\n"
+        "        return this.inner.leaf;\n"
+        "    }\n"
+        "}\n"
+        "public final class S {\n"
+        "    public static int32 run() {\n"
+        "        Outer o = Outer { inner: Inner { leaf: 0 } };\n"
+        "        o.writeLeaf(77);\n"
+        "        return o.readLeaf();\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 77);
+}

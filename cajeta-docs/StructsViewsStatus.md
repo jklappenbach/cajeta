@@ -9,7 +9,7 @@ This rollout supersedes the old "struct as wire-format view" implementation. Sig
 ## Current status
 
 **Phase:** Phase 2 complete (S4, S5, S5b done). Phase 3 in progress.
-**Current line item:** Session 6 complete. Session 7 complete. Session 8 in progress (S8.1, S8.2 done). Next: S8.3 (`this.field` GEP inside struct methods).
+**Current line item:** Session 6 complete. Session 7 complete. Session 8 in progress (S8.1, S8.2, S8.3 done). Next: S8.4 (struct method returning Self / own struct type) — needs investigation, probe showed a thrown exception.
 
 ---
 
@@ -142,7 +142,7 @@ Also during S5: a non-obvious bug surfaced and got fixed — `DotExpression` was
 #### Session 8 — Struct methods (direct calls only)
 - [x] **8.1** Parser: accept method declarations in `structDeclaration` (already accepted syntactically; just route to struct method codegen). **Already worked** — `structDeclaration` shares the `classBody` rule with `classDeclaration` and `viewDeclaration`, so method declarations have parsed since Session 1. With S6 / S7 in place, codegen for the method body also works through the same path that handles view methods (S4.2) — direct call (no vtable dispatch because aggregates skip the vtable path in `CajetaClass::invokeMethod`). New test file `test/parser/StructMethodsTests.cpp` with a simple-getter pin.
 - [x] **8.2** Codegen: struct method = LLVM function with `this` as struct pointer. Direct calls inline at the call site (or LLVM inliner takes care of it given the static target). **Already worked** — `CajetaClass::invokeMethod` skips the vtable indirection for aggregates (added in S4.2 for views), so the call site is a direct call passing the body alloca pointer as `this`. Method::generatePrototype's existing param-shape rule treats aggregate-typed `this` as `ptr`. 2 new tests in StructMethodsTests: mutatingMethodVisibleAfterCall (writes through `this.field` are visible after return — proves pass-by-pointer, not value), methodWithExtraParameter (parameter sits at LLVM index 1 after implicit `this`).
-- [ ] **8.3** `this` field accesses GEP into the struct slot via the existing aggregate calling convention.
+- [x] **8.3** `this` field accesses GEP into the struct slot via the existing aggregate calling convention. **Already worked** — `this` is the implicit first parameter (a `ptr` to the body alloca), and `this.field` parses as a DotExpression rooted at an IdentifierExpression("this") that resolves through the method scope's `this` field. Same GEP path as external `p.field`. 2 new tests in StructMethodsTests: methodCallsAnotherMethodOnSelf (one method calls `this.helper()` → intra-struct dispatch routes back through invokeMethod with current `this`), methodWritesThroughEmbeddedStructField (`this.inner.leaf = v` exercises the chained-GEP path through an inline embedded struct).
 - [ ] **8.4** Method may return `Self` for direct-call use; restriction only applies later under interface dispatch.
 - [ ] **8.5** 6 new tests: simple getter, mutating method, method calling another method on self, method taking another struct by value, method returning Self, method writing through embedded struct field.
 - [ ] **Pass criteria:** Struct methods work for all field types; direct-call IR is monomorphized.
