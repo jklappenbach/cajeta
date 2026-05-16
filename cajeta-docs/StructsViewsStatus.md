@@ -9,7 +9,7 @@ This rollout supersedes the old "struct as wire-format view" implementation. Sig
 ## Current status
 
 **Phase:** Phase 2 complete (S4, S5, S5b done). Phase 3 in progress.
-**Current line item:** Session 6 complete (S6.1–S6.7). Structs lay out, init via brace syntax, hold class refs, drop correctly with ownership-transfer + alias-as-move semantics, integrate with the borrow / path-borrow tracker, reject variable-tail fields, pass as parameters by pointer, and return by value (with the move chain threading class refs through the return). Next: Session 7 (inline composition — struct as a class field).
+**Current line item:** Session 6 complete (S6.1–S6.7). Session 7 in progress (S7.1 done). Next: S7.2 (class drop recurses into embedded struct fields).
 
 ---
 
@@ -126,7 +126,7 @@ Also during S5: a non-obvious bug surfaced and got fixed — `DotExpression` was
 - ~~Aliasing a struct local (`Foo a; Foo b = a;`)...~~ **Resolved as a S6.5 follow-up.** `LocalVariableDeclaration`'s IdentifierExpression-RHS borrow detection now treats struct aliases as moves: b's drop entry is suppressed (initIsBorrow=true) and `a` is marked moved via `scope->markMoved`. The body alloca stays bound to a's drop entry; b reads through it. No double-free, and `a.field` after the alias trips CAJETA_ERROR_USE_AFTER_MOVE. 3 new tests in StructStackTests: aliasing moves the source, alias reads source values, drop-count pin (would crash on the pre-fix double-free).
 
 #### Session 7 — Inline composition (struct as class field)
-- [ ] **7.1** Class layout pass: when a class field's type is a struct, inline the struct's LLVM type at that offset instead of a pointer slot.
+- [x] **7.1** Class layout pass: when a class field's type is a struct, inline the struct's LLVM type at that offset instead of a pointer slot. **Already worked under the existing `CajetaClass::generatePrototype` fieldLayoutType lambda** — its non-array branch returns `t->getLlvmType()`, which for a CajetaStruct field returns the struct's body type (which gets embedded inline). Same path that produces the wart of inlining class fields (acknowledged in CajetaClass.cpp:235-239); for structs the inline behavior is the spec-correct shape (Structs.md § "Embedded structs occupy their fixed byte count inline"). 3 new tests in StructCompositionTests: class with one embedded primitive struct, embedded struct surrounded by primitive fields (no byte bleed), class with two embedded structs (independent slots).
 - [ ] **7.2** Class drop codegen: recurse into embedded struct fields in reverse declaration order, calling each struct's drop function.
 - [ ] **7.3** Field access: `obj.embeddedStruct.field` GEPs through both the class layout and the struct layout in one chained operation.
 - [ ] **7.4** Borrow tracking: path borrow extends through embedded struct fields (`obj.struct.field` is a path-borrow rooted at `obj`).
