@@ -32,7 +32,7 @@ TEST(StructViewBoundsTests, sufficientBufferConstructs) {
     // 16 bytes (int32[4]) is exactly enough for struct of two int32 + int64.
     auto src =
         "package test;\n"
-        "public struct Hdr {\n"
+        "public view Hdr {\n"
         "    int32 a;\n"
         "    int64 b;\n"
         "    int32 c;\n"
@@ -57,7 +57,7 @@ TEST(StructViewBoundsTests, undersizeBufferThrows) {
     // returns 7 to signal it ran.
     auto src =
         "package test;\n"
-        "public struct Hdr {\n"
+        "public view Hdr {\n"
         "    int32 a;\n"
         "    int64 b;\n"
         "    int32 c;\n"
@@ -80,7 +80,7 @@ TEST(StructViewBoundsTests, exactSizeBufferConstructs) {
     // Exact-size buffer (no slop). Should succeed.
     auto src =
         "package test;\n"
-        "public struct Pair {\n"
+        "public view Pair {\n"
         "    int32 a;\n"
         "    int32 b;\n"
         "}\n"
@@ -103,7 +103,7 @@ TEST(StructViewBoundsTests, oneByteShortStillThrows) {
     // undersize buffer is rejected.
     auto src =
         "package test;\n"
-        "public struct Pair {\n"
+        "public view Pair {\n"
         "    int32 a;\n"
         "    int32 b;\n"
         "}\n"

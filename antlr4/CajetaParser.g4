@@ -48,7 +48,7 @@ importDeclaration
 
 typeDeclaration
     : classOrInterfaceModifier*
-      (classDeclaration | structDeclaration | enumDeclaration | interfaceDeclaration | annotationTypeDeclaration)
+      (classDeclaration | structDeclaration | viewDeclaration | enumDeclaration | interfaceDeclaration | annotationTypeDeclaration)
     | ';'
     ;
 
@@ -87,11 +87,21 @@ classDeclaration
       classBody
     ;
 
-// POD aggregate with declared layout. See WireFormats.md for layout, endianness,
-// annotation semantics. The body reuses classBody for fields/methods, but the
-// type system enforces no-vtable / no-inheritance / declared-layout semantics.
+// Stack-allocated value aggregate (Structs.md). Holds primitives, class refs,
+// nested structs; no vtable in the receiver; lifetime tied to enclosing scope;
+// may be embedded inline in class fields. Direct calls monomorphized; interface
+// dispatch via tagged fat pointer. Body reuses classBody.
 structDeclaration
     : STRUCT identifier typeParameters?
+      classBody
+    ;
+
+// Zero-copy memory overlay onto a byte buffer (Views.md). Fields restricted to
+// types directly encodable in bytes (primitives, fixed/variable arrays, nested
+// views). Endianness annotation required at the declaration. Body reuses
+// classBody. Lowered to CajetaStruct in S1; gets its own CajetaView node in S2.
+viewDeclaration
+    : VIEW identifier typeParameters?
       classBody
     ;
 

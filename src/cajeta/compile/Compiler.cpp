@@ -88,6 +88,12 @@ namespace cajeta {
             return defaultResult();
         }
 
+        std::any visitViewDeclaration(
+                CajetaParser::ViewDeclarationContext* ctx) override {
+            registerAndRecurse(ctx->identifier()->getText(), ctx);
+            return defaultResult();
+        }
+
     private:
         void registerAndRecurse(const std::string& shortName,
                                  antlr4::tree::ParseTree* tree) {

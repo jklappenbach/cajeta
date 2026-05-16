@@ -45,7 +45,7 @@ TEST(EndianAlignTests, bigEndianWriteReadRoundTrips) {
     auto src =
         "package test;\n"
         "@BigEndian\n"
-        "public struct Be {\n"
+        "public view Be {\n"
         "    int32 val;\n"
         "}\n"
         "public final class S {\n"
@@ -66,10 +66,10 @@ TEST(EndianAlignTests, bigEndianStorageVisibleAsReversedBytes) {
     auto src =
         "package test;\n"
         "@BigEndian\n"
-        "public struct Be {\n"
+        "public view Be {\n"
         "    int32 val;\n"
         "}\n"
-        "public struct LeHost {\n"
+        "public view LeHost {\n"
         "    int32 val;\n"
         "}\n"
         "public final class S {\n"
@@ -89,7 +89,7 @@ TEST(EndianAlignTests, hostEndianStructUnchanged) {
     // little-endian encoding of the value on x86_64.
     auto src =
         "package test;\n"
-        "public struct Plain {\n"
+        "public view Plain {\n"
         "    int32 val;\n"
         "}\n"
         "public final class S {\n"
@@ -108,7 +108,7 @@ TEST(EndianAlignTests, littleEndianOnLittleHostIsNoop) {
     auto src =
         "package test;\n"
         "@LittleEndian\n"
-        "public struct Le {\n"
+        "public view Le {\n"
         "    int32 val;\n"
         "}\n"
         "public final class S {\n"
@@ -128,7 +128,7 @@ TEST(EndianAlignTests, bigEndianInt64Roundtrips) {
     auto src =
         "package test;\n"
         "@BigEndian\n"
-        "public struct Be64 {\n"
+        "public view Be64 {\n"
         "    int64 val;\n"
         "}\n"
         "public final class S {\n"

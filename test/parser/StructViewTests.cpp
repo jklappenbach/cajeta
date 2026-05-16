@@ -30,7 +30,7 @@ namespace {
 
 std::string structSource(const std::string& body) {
     return "package test;\n"
-           "public struct Header {\n"
+           "public view Header {\n"
            "    int32 version;\n"
            "    int64 timestamp;\n"
            "    int32 payloadLen;\n"
@@ -57,7 +57,7 @@ TEST(StructViewTests, structDeclarationCompiles) {
     // the visitor + CajetaStruct prototype generation don't blow up.
     auto src =
         "package test;\n"
-        "public struct Header {\n"
+        "public view Header {\n"
         "    int32 version;\n"
         "    int64 timestamp;\n"
         "}\n"
@@ -127,7 +127,7 @@ TEST(StructViewTests, freshBufferReadsZero) {
 TEST(StructViewTests, structParamReadsCallerValues) {
     auto src =
         "package test;\n"
-        "public struct Header {\n"
+        "public view Header {\n"
         "    int32 version;\n"
         "    int64 timestamp;\n"
         "    int32 payloadLen;\n"
@@ -155,7 +155,7 @@ TEST(StructViewTests, structParamMutationsAreVisibleToCaller) {
     // the callee write directly to the caller's buffer.
     auto src =
         "package test;\n"
-        "public struct Header {\n"
+        "public view Header {\n"
         "    int32 version;\n"
         "    int64 timestamp;\n"
         "    int32 payloadLen;\n"
@@ -197,7 +197,7 @@ TEST(StructViewTests, structParamMutationsAreVisibleToCaller) {
 TEST(StructViewTests, returningViewOfLocalBufferIsRejected) {
     auto src =
         "package test;\n"
-        "public struct Header {\n"
+        "public view Header {\n"
         "    int32 version;\n"
         "    int64 timestamp;\n"
         "    int32 payloadLen;\n"
@@ -218,7 +218,7 @@ TEST(StructViewTests, returningViewOfParamBufferIsOK) {
     // is safe to return. View-escape check should NOT fire.
     auto src =
         "package test;\n"
-        "public struct Header {\n"
+        "public view Header {\n"
         "    int32 version;\n"
         "    int64 timestamp;\n"
         "    int32 payloadLen;\n"

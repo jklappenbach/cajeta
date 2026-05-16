@@ -325,11 +325,14 @@ namespace cajeta {
             return visitChildren(ctx);
         }
 
-        virtual std::any visitStructDeclaration(CajetaParser::StructDeclarationContext* ctx) override {
-            // POD struct declaration. Mirrors visitClassDeclaration's flow but
-            // produces a CajetaStruct (packed layout by default, no vtable/RTTI,
-            // view constructor synthesized on demand by MethodCallExpression).
-            string name = ctx->identifier()->getText();
+        // Shared body for visitStructDeclaration and visitViewDeclaration. In
+        // S1 both produce a CajetaStruct; the semantic split (struct = stack
+        // value, view = memory overlay) is staged in via the rollout plan
+        // documented in StructsViewsStatus.md (S2 introduces CajetaView).
+        std::any buildStructOrViewNode(
+                const string& name,
+                antlr4::tree::ParseTree* parent,
+                antlr4::ParserRuleContext* ctx) {
             string packageAdj;
             for (auto& structure : pModule->getStructureStack()) {
                 packageAdj.append(".");
@@ -339,12 +342,11 @@ namespace cajeta {
                 name, pModule->getQName()->getPackageName() + packageAdj);
             auto structure = make_shared<CajetaStruct>(pModule, qName);
 
-            // Pull wire-format annotations off the enclosing typeDeclaration.
-            // The grammar parses them as classOrInterfaceModifier* before the
-            // structDeclaration; from here we look upward at the parent and
-            // scan its modifier list. See Structs.md § Endianness / §
-            // Alignment for semantics.
-            if (auto* typeDecl = dynamic_cast<CajetaParser::TypeDeclarationContext*>(ctx->parent)) {
+            // Pull layout annotations off the enclosing typeDeclaration. Both
+            // `struct` and `view` declarations sit under typeDeclaration which
+            // carries the classOrInterfaceModifier* prefix; the annotations
+            // are the same set (@BigEndian / @LittleEndian / @Align).
+            if (auto* typeDecl = dynamic_cast<CajetaParser::TypeDeclarationContext*>(parent)) {
                 for (auto* mod : typeDecl->classOrInterfaceModifier()) {
                     auto* ann = mod->annotation();
                     if (!ann) continue;
@@ -358,8 +360,6 @@ namespace cajeta {
                     } else if (aName == "LittleEndian") {
                         structure->setEndianness(StructEndianness::Little);
                     } else if (aName == "Align") {
-                        // The argument should be `natural`. We treat any
-                        // Align(...) as a request for natural alignment in v1.
                         structure->setAlignment(StructAlignment::Natural);
                     }
                 }
@@ -371,6 +371,23 @@ namespace cajeta {
             pModule->getStructureStack().pop_back();
             CajetaModule::getStructureToModule()[structure->getQName()->toCanonical()] = pModule;
             return static_pointer_cast<CajetaClass>(structure);
+        }
+
+        virtual std::any visitStructDeclaration(CajetaParser::StructDeclarationContext* ctx) override {
+            // Stack value aggregate (Structs.md). In S1 still lowers to the
+            // existing CajetaStruct machinery; S2 will introduce a distinct
+            // CajetaStackStruct and route view-style declarations to a new
+            // CajetaView node, splitting the two semantics.
+            return buildStructOrViewNode(ctx->identifier()->getText(), ctx->parent, ctx);
+        }
+
+        virtual std::any visitViewDeclaration(CajetaParser::ViewDeclarationContext* ctx) override {
+            // Zero-copy memory overlay (Views.md). In S1 we route this through
+            // the same CajetaStruct path so existing view-style codegen
+            // (bswap, packed/aligned layout, length-prefix sweep, bounds
+            // check) keeps working without rewriting it. The semantic split
+            // happens in S2 when CajetaView becomes its own type.
+            return buildStructOrViewNode(ctx->identifier()->getText(), ctx->parent, ctx);
         }
 
         virtual std::any visitEnumDeclaration(CajetaParser::EnumDeclarationContext* ctx) override {

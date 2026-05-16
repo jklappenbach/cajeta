@@ -50,7 +50,7 @@ void expectErrorId(const std::string& src, const std::string& expectedId) {
 TEST(VariableSizeStructTests, structWithTrailingStringDeclares) {
     auto src =
         "package test;\n"
-        "public struct UserRecord {\n"
+        "public view UserRecord {\n"
         "    int32 id;\n"
         "    String name;\n"
         "}\n"
@@ -73,7 +73,7 @@ TEST(VariableSizeStructTests, readInlineStringContent) {
     // bounds check verifies that at view-construction time.
     auto src =
         "package test;\n"
-        "public struct UserRecord {\n"
+        "public view UserRecord {\n"
         "    int32 id;\n"
         "    String name;\n"
         "}\n"
@@ -100,7 +100,7 @@ TEST(VariableSizeStructTests, readInlineStringContent) {
 TEST(VariableSizeStructTests, sizeReportsInlineLength) {
     auto src =
         "package test;\n"
-        "public struct UserRecord {\n"
+        "public view UserRecord {\n"
         "    int32 id;\n"
         "    String name;\n"
         "}\n"
@@ -124,7 +124,7 @@ TEST(VariableSizeStructTests, sizeReportsInlineLength) {
 TEST(VariableSizeStructTests, varSizeFieldAssignmentRejected) {
     auto src =
         "package test;\n"
-        "public struct UserRecord {\n"
+        "public view UserRecord {\n"
         "    int32 id;\n"
         "    String name;\n"
         "}\n"
@@ -144,7 +144,7 @@ TEST(VariableSizeStructTests, varSizeFieldAssignmentRejected) {
 TEST(VariableSizeStructTests, varSizeFieldNotLastRejected) {
     auto src =
         "package test;\n"
-        "public struct Bad {\n"
+        "public view Bad {\n"
         "    String name;\n"
         "    int32 id;\n"                  // fixed-size field after variable-size
         "}\n"

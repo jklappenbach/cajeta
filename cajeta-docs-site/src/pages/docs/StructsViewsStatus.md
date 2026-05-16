@@ -13,8 +13,8 @@ This rollout supersedes the old "struct as wire-format view" implementation. Sig
 
 ## Current status
 
-**Phase:** Planning. No code changes yet.
-**Current line item:** S1.1 (next session start) — `view` lexer token + grammar split.
+**Phase:** Phase 1 in progress. Session 1 complete.
+**Current line item:** S2 (next session start) — repurpose `struct` for stack semantics; introduce `CajetaView` as the home for view-style codegen.
 
 ---
 
@@ -46,12 +46,12 @@ Sessions are sized for ~1 working day; each ends with full regression passing.
 
 ### Phase 1 — Keyword separation + view repurposing
 
-#### Session 1 — `view` keyword + migrate existing tests  ⬅ start here
-- [ ] **1.1** Lexer: add `VIEW` token.
-- [ ] **1.2** Parser grammar: add `viewDeclaration` rule structurally identical to `structDeclaration`; both lower to `CajetaStruct` for now (no semantic split yet).
-- [ ] **1.3** Migrate every existing view-style test (`StructViewTests`, `StructViewBoundsTests`, `EndianAlignTests`, `VariableSizeStructTests`) to use the `view` keyword instead of `struct`. Test source files only; the AST node stays `CajetaStruct` for this session.
-- [ ] **1.4** Add 3 parse-only tests confirming `view` declarations parse, `struct` declarations still parse, both produce equivalent IR for now.
-- [ ] **Pass criteria:** All 334 existing tests pass under the new keyword; no behavior change.
+#### Session 1 — `view` keyword + migrate existing tests  ✅ complete
+- [x] **1.1** Lexer: `VIEW` token added in `CajetaLexer.g4` between `TRY` and `VOID` (alphabetical).
+- [x] **1.2** Parser: `viewDeclaration` rule added in `CajetaParser.g4` mirroring `structDeclaration`; `typeDeclaration` accepts either. Visitor: `visitViewDeclaration` and `visitStructDeclaration` both delegate to a new private `buildStructOrViewNode` helper, so the two paths share the existing CajetaStruct codegen verbatim. `Compiler.cpp`'s archive pre-scan visitor also handles both.
+- [x] **1.3** Migrated 24 tests across `StructViewTests`, `StructViewBoundsTests`, `EndianAlignTests`, `VariableSizeStructTests` — `public struct` → `public view` in every cajeta source string. All pass under the new keyword.
+- [x] **1.4** New `KeywordEquivalenceTests.cpp` with 3 tests: view-keyword executes, struct-keyword still executes, both produce identical runtime results from the same source. The third test will need to evolve in S2 when struct gains stack-alloca semantics and diverges from view.
+- **Pass criteria met:** 718 / 718 tests pass (715 prior + 3 new equivalence).
 
 #### Session 2 — Repurpose `struct` for stack semantics (no-op layer)
 - [ ] **2.1** Create `CajetaView` class (sibling of `CajetaStruct`); migrate `viewDeclaration` to produce `CajetaView`. Existing codegen paths copy verbatim from `CajetaStruct`.

@@ -99,6 +99,7 @@ THROW:              'throw';
 THROWS:             'throws';
 TRANSIENT:          'transient';
 TRY:                'try';
+VIEW:               'view';
 VOID:               'void';
 VOLATILE:           'volatile';
 WHILE:              'while';
