@@ -13,6 +13,7 @@
 #include "../type/CajetaFunctionType.h"
 #include "expression/Expression.h"
 #include "expression/DotExpression.h"
+#include "expression/Identifier.h"
 #include "expression/MethodCallExpression.h"
 #include "../method/Method.h"
 #include "../error/CajetaExceptions.h"
@@ -184,31 +185,14 @@ namespace cajeta {
                 }
             }
 
-            // Wire the drop chain for owned heap allocations. v1 covers
-            // CajetaArray locals — the most concrete case where we already have
-            // a runtime free function. Class instances and String-owning locals
-            // join later as their drop semantics get pinned.
-            if (isArray) {
-                emitDropEntryFor(module, field, "__cajeta_free_array");
-            }
-
-            // L3-3: function-typed locals own the closure record they
-            // point at (for capturing closures) and need a drop entry
-            // that fires __cajeta_closure_drop at scope exit. Non-
-            // capturing closures store a stack-allocated record with
-            // drop_fn=null, so the runtime helper no-ops on them; the
-            // entry shape is therefore safe for every function-typed
-            // local regardless of what it holds. ReturnStatement
-            // deactivates the entry when the local is returned so
-            // ownership transfers to the caller without a double-free.
-            if (dynamic_pointer_cast<CajetaFunctionType>(type)) {
-                emitDropEntryFor(module, field, "__cajeta_closure_drop");
-            }
-
-            // Borrow detection: when the RHS does NOT transfer
-            // ownership of a fresh allocation to the local, the
-            // local must NOT register a drop entry. Two recognized
-            // borrow sources:
+            // Borrow detection runs FIRST so each drop-entry site
+            // below can honor it. Without this ordering, the array
+            // drop fires unconditionally and `T[] alias = paramArr`
+            // double-frees at scope exit.
+            //
+            // When the RHS does NOT transfer ownership of a fresh
+            // allocation to the local, the local must NOT register a
+            // drop entry. Recognized borrow sources:
             //
             //   1. __cajeta_inject() — returns the DI singleton
             //      (A9). A drop here would double-free on the
@@ -228,10 +212,24 @@ namespace cajeta {
             if (auto varInit = dynamic_pointer_cast<VariableInitializer>(initializer)) {
                 auto& children = varInit->getChildren();
                 if (!children.empty()) {
+                    auto rhsExpr = dynamic_pointer_cast<Expression>(children[0]);
                     if (auto mc = dynamic_pointer_cast<MethodCallExpression>(children[0])) {
                         if (mc->getMethodCallName() == "__cajeta_inject") {
                             initIsBorrow = true;
                         }
+                        // GAP: MethodCallExpression initializers should
+                        // distinguish move (called method returns
+                        // ownership via `#T foo()`) from borrow (called
+                        // method returns a plain T). That requires the
+                        // called method to be resolved here, but
+                        // resolution happens during generateCode rather
+                        // than at LocalVariableDeclaration time. Until
+                        // a resolve-at-decl-time path exists, every
+                        // method-call init defaults to MOVE — a
+                        // false-positive double-free is louder than a
+                        // false-negative leak, so leaning that way is
+                        // safer. Add a resolve pre-pass and consult
+                        // method->isReturnsOwnership() when wired.
                     } else if (dynamic_pointer_cast<DotExpression>(children[0])
                             || dynamic_pointer_cast<ArrayIndexExpression>(children[0])) {
                         // The RHS is a field read or an array element
@@ -243,7 +241,31 @@ namespace cajeta {
                         // a drop entry would double-free at scope
                         // exit since the owner still tracks the
                         // instance.
-                        if (auto rhsExpr = dynamic_pointer_cast<Expression>(children[0])) {
+                        if (rhsExpr) {
+                            if (!rhsExpr->getResolvedType()) {
+                                rhsExpr->resolveTypes(module);
+                            }
+                            auto rhsClass = dynamic_pointer_cast<CajetaClass>(rhsExpr->getResolvedType());
+                            bool rhsIsStruct = dynamic_pointer_cast<CajetaStruct>(rhsExpr->getResolvedType()) != nullptr;
+                            if (rhsClass && !rhsIsStruct) {
+                                initIsBorrow = true;
+                            }
+                        }
+                    } else if (dynamic_pointer_cast<IdentifierExpression>(children[0])) {
+                        // The RHS is another named binding (local var
+                        // or method parameter). For class-like, non-
+                        // struct types, the new local is just a second
+                        // pointer to the same heap object — the
+                        // original owner (the source local or param)
+                        // is responsible for the drop. Two locals each
+                        // registering their own drop entry would
+                        // double-free at scope exit.
+                        //
+                        // This complements the field-read and array-
+                        // element cases above; together they cover the
+                        // three common "alias an existing heap object"
+                        // shapes.
+                        if (rhsExpr) {
                             if (!rhsExpr->getResolvedType()) {
                                 rhsExpr->resolveTypes(module);
                             }
@@ -255,6 +277,28 @@ namespace cajeta {
                         }
                     }
                 }
+            }
+
+            // Array-typed locals own the heap header; register
+            // __cajeta_free_array unless this local is a borrow.
+            // The borrow case (e.g. `T[] alias = paramArr` or
+            // `T[] xs = obj.field`) already has an owner upstream;
+            // duplicating the drop here double-frees at scope exit.
+            if (isArray && !initIsBorrow) {
+                emitDropEntryFor(module, field, "__cajeta_free_array");
+            }
+
+            // L3-3: function-typed locals own the closure record they
+            // point at (for capturing closures) and need a drop entry
+            // that fires __cajeta_closure_drop at scope exit. Non-
+            // capturing closures store a stack-allocated record with
+            // drop_fn=null, so the runtime helper no-ops on them; the
+            // entry shape is therefore safe for every function-typed
+            // local regardless of what it holds. ReturnStatement
+            // deactivates the entry when the local is returned so
+            // ownership transfers to the caller without a double-free.
+            if (dynamic_pointer_cast<CajetaFunctionType>(type)) {
+                emitDropEntryFor(module, field, "__cajeta_closure_drop");
             }
 
             // User-defined-drop wiring for class-instance locals.
