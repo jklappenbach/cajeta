@@ -174,15 +174,17 @@ namespace cajeta {
         // keyed under the interface methods' canonical hashes (see
         // CajetaClass::buildVirtualTable).
         if (isInterface()) {
-            // Even though an interface has no allocation site of its own, it
-            // needs an LLVM struct type so variables typed at the interface
-            // can size their slot and load through their vtable pointer. The
-            // layout is just `{ ptr vtable }` — same prefix every implementing
-            // class shares — so reading slot 0 yields the concrete class's
-            // vtable global regardless of which class was assigned in.
+            // Interface fat pointer (S9.5.1): { ptr data, ptr vtable, i64 kind }
+            // = 24 bytes. data points at the underlying class instance or
+            // struct body; vtable points at the per-(impl, iface) global
+            // synthesized by S9.2 / S9.5.2; kind is one of
+            // IFACE_KIND_BORROWED_CLASS / OWNED_CLASS / BORROWED_STRUCT
+            // and drives drop-chain dispatch at scope exit (S10.4).
             llvmType = CajetaType::getOrCreateLlvmType(module->getLlvmContext(), canonical);
             typeMap[TypeKey(llvmType)] = shared_from_this();
-            vector<llvm::Type*> members{ llvm::PointerType::get(*module->getLlvmContext(), 0) };
+            llvm::Type* ptrTy = llvm::PointerType::get(*module->getLlvmContext(), 0);
+            llvm::Type* i64Ty = llvm::Type::getInt64Ty(*module->getLlvmContext());
+            vector<llvm::Type*> members{ ptrTy, ptrTy, i64Ty };
             ((llvm::StructType*) llvmType)->setBody(llvm::ArrayRef<llvm::Type*>(members), false);
 
             canonicalMap[canonical] = static_pointer_cast<CajetaType>(shared_from_this());
@@ -285,8 +287,96 @@ namespace cajeta {
         // dispatch arrives when inheritance and virtual calls are wired up.
         writeVirtualTable();
 
+        // S9.5.2 — synthesize per-(class, interface) vtable globals for
+        // every interface this class implements. Lands here, after method
+        // prototypes + writeVirtualTable, so each implementing method's
+        // LLVM function exists for fn-pointer harvesting and the per-pair
+        // tables can sit alongside the legacy hash-keyed vtable.
+        synthesizeInterfaceVTables();
+
         CajetaModule::getStructureToModule()[canonical] = module;
         prototypeBuilt = true;
+    }
+
+    void CajetaClass::synthesizeInterfaceVTables() {
+        if (implementedInterfaces.empty()) return;
+
+        auto& ctx = *module->getLlvmContext();
+        auto* lmod = module->getLlvmModule();
+        llvm::PointerType* ptrTy = llvm::PointerType::get(ctx, 0);
+        std::string classCanonical = qName->toCanonical();
+
+        auto sanitize = [](std::string s) {
+            for (char& c : s) {
+                if (c == ':' || c == '.' || c == '<' || c == '>'
+                        || c == ',' || c == ' ') {
+                    c = '_';
+                }
+            }
+            return s;
+        };
+
+        for (auto& iface : implementedInterfaces) {
+            std::string ifaceCanonical = iface->getQName()->toCanonical();
+
+            // Walk interface methods in declaration order; for each one
+            // find a same-name concrete method on this class. Signature
+            // compatibility for class implementers is already enforced
+            // at hash-vtable construction time (a mismatched signature
+            // would hash differently and fail to bind), so the lookup
+            // here is by name only — by the time we get here the user
+            // either has a matching impl or the hash-vtable build has
+            // already complained.
+            auto findByName = [&](const std::string& name) -> MethodPtr {
+                for (auto& [canon, m] : methods) {
+                    if (!m || m->isConstructor()) continue;
+                    if (m->getModifiers().find(STATIC) != m->getModifiers().end()) continue;
+                    if (m->getName() == name) return m;
+                }
+                // Walk superclasses too — inherited implementations
+                // count for satisfying an interface contract.
+                for (auto& parent : superClasses) {
+                    for (auto& [canon, m] : parent->getMethods()) {
+                        if (!m || m->isConstructor()) continue;
+                        if (m->getModifiers().find(STATIC) != m->getModifiers().end()) continue;
+                        if (m->getName() == name) return m;
+                    }
+                }
+                return nullptr;
+            };
+
+            std::vector<llvm::Constant*> entries;
+            for (auto& ifaceMethod : iface->getMethodList()) {
+                if (!ifaceMethod || ifaceMethod->isConstructor()) continue;
+                if (ifaceMethod->getModifiers().find(STATIC)
+                        != ifaceMethod->getModifiers().end()) continue;
+                MethodPtr concrete = findByName(ifaceMethod->getName());
+                if (!concrete || !concrete->getLlvmFunction()) {
+                    // Missing or unbuilt — leave a null slot. The hash-
+                    // vtable build will have surfaced the real diagnostic
+                    // earlier; null here just keeps the global well-formed.
+                    entries.push_back(llvm::ConstantPointerNull::get(ptrTy));
+                    continue;
+                }
+                entries.push_back(concrete->getLlvmFunction());
+            }
+
+            llvm::ArrayType* arrTy = llvm::ArrayType::get(
+                ptrTy, entries.size());
+            std::string globalName = std::string("class.")
+                + sanitize(classCanonical) + "_iface_"
+                + sanitize(ifaceCanonical) + "_VTable";
+            if (llvm::GlobalVariable* existing = lmod->getNamedGlobal(globalName)) {
+                interfaceVTables[ifaceCanonical] = existing;
+                continue;
+            }
+
+            llvm::Constant* init = llvm::ConstantArray::get(arrTy, entries);
+            auto* gv = new llvm::GlobalVariable(
+                *lmod, arrTy, /*isConstant=*/true,
+                llvm::GlobalValue::InternalLinkage, init, globalName);
+            interfaceVTables[ifaceCanonical] = gv;
+        }
     }
 
     void CajetaClass::synthesizeAutoHash() {
@@ -843,7 +933,61 @@ namespace cajeta {
         // path entirely; LLVM gets a direct call to the resolved method.
         bool isAggregate = dynamic_cast<CajetaAggregate*>(this) != nullptr;
         bool useVtable = thisValue && !isStatic && !isConstructor && !isAggregate;
-        if (useVtable) {
+        bool isInterfaceRecv = this->isInterface();
+        if (useVtable && isInterfaceRecv) {
+            // S9.5.6 — interface receiver via fat pointer body. Load the
+            // per-(impl, iface) vtable from word 1 (the runtime-resolved
+            // pointer set by the assignment site that built the fat
+            // pointer); load the underlying data from word 0 and use it
+            // as the actual `this` for the implementer's function. The
+            // vtable is a flat [N x ptr] array in interface-declaration
+            // order (per S9.2 / S9.5.2), so dispatch is a GEP-to-index
+            // load — no hash lookup needed.
+            llvm::Type* ptrTy = llvm::PointerType::get(llvmCtx, 0);
+            llvm::Type* bodyTy = this->getLlvmType();
+
+            llvm::Value* dataSlot = builder->CreateStructGEP(
+                bodyTy, thisValue, 0, "iface_data_slot");
+            llvm::Value* vtableSlot = builder->CreateStructGEP(
+                bodyTy, thisValue, 1, "iface_vtable_slot");
+            llvm::Value* dataPtr = builder->CreateLoad(
+                ptrTy, dataSlot, "iface_data");
+            llvm::Value* vtablePtr = builder->CreateLoad(
+                ptrTy, vtableSlot, "iface_vtable");
+
+            // Method's index in the interface's method list. Skips
+            // constructors and statics for parity with vtable emission
+            // (which also skips them per S9.2 and S9.5.2).
+            int methodIdx = -1;
+            int idx = 0;
+            for (auto& im : this->getMethodList()) {
+                if (!im || im->isConstructor()) { continue; }
+                if (im->getModifiers().find(STATIC) != im->getModifiers().end()) {
+                    continue;
+                }
+                if (im->getName() == method->getName()) {
+                    methodIdx = idx;
+                    break;
+                }
+                ++idx;
+            }
+
+            if (methodIdx >= 0) {
+                llvm::Value* methodSlot = builder->CreateInBoundsGEP(
+                    ptrTy, vtablePtr,
+                    llvm::ConstantInt::get(llvm::Type::getInt64Ty(llvmCtx),
+                        (uint64_t) methodIdx),
+                    "iface_method_slot");
+                callee = builder->CreateLoad(ptrTy, methodSlot, "iface_method_fn");
+            }
+
+            // Swap the body pointer for the data pointer at arg position
+            // 0 — the implementer's function expects its concrete class
+            // instance as `this`, not the interface body.
+            if (!methodArgs.empty()) {
+                methodArgs[0] = dataPtr;
+            }
+        } else if (useVtable) {
             llvm::Function* lookupFn = emitMod->getRuntimeFunction("__cajeta_vtable_lookup");
             if (lookupFn) {
                 llvm::Type* ptrTy = llvm::PointerType::get(llvmCtx, 0);

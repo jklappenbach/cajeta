@@ -161,6 +161,16 @@ namespace cajeta {
                 structTy, instance, fieldIdx,
                 rd.field->getName() + "_slot");
 
+            // S9.5.3 — if the field's declared type is an interface, the
+            // slot is a 24-byte fat-pointer body inline in the instance,
+            // not an 8-byte pointer cell. Compute depPtr as before
+            // (the underlying class instance), then either write three
+            // words (interface field) or one word (plain class ref).
+            CajetaClassPtr fieldIface;
+            if (auto fc = std::dynamic_pointer_cast<CajetaClass>(rd.field->getType())) {
+                if (fc->isInterface()) fieldIface = fc;
+            }
+
             llvm::Value* depPtr = nullptr;
             if (!rd.target || !rd.target->klass) {
                 // Optional injection with no candidate → store null.
@@ -228,7 +238,45 @@ namespace cajeta {
                 depPtr = freshInst;
             }
 
-            builder->CreateStore(depPtr, slot);
+            if (fieldIface) {
+                // Interface field: write the 24-byte fat pointer in place.
+                // word 0 = data (depPtr — underlying class instance)
+                // word 1 = vtable (per-(target class, iface) global from S9.5.2)
+                // word 2 = kind = IFACE_KIND_BORROWED_CLASS
+                //   DI singletons are conceptually borrowed by every
+                //   holder — the singleton-cache global owns the lifecycle;
+                //   the holder must not drop on scope exit. OWNED kinds
+                //   become reachable in Session 10.
+                llvm::Type* i64Ty = llvm::Type::getInt64Ty(ctx);
+                llvm::Type* fatTy = fieldIface->getLlvmType();
+                llvm::Value* dataSlot = builder->CreateStructGEP(
+                    fatTy, slot, 0, rd.field->getName() + "_data");
+                llvm::Value* vtableSlot = builder->CreateStructGEP(
+                    fatTy, slot, 1, rd.field->getName() + "_vtable");
+                llvm::Value* kindSlot = builder->CreateStructGEP(
+                    fatTy, slot, 2, rd.field->getName() + "_kind");
+                builder->CreateStore(depPtr, dataSlot);
+
+                std::string ifaceCanonical =
+                    fieldIface->getQName()->toCanonical();
+                llvm::Constant* vtableRef = nullptr;
+                if (rd.target && rd.target->klass) {
+                    if (auto gv = rd.target->klass->getInterfaceVTable(ifaceCanonical)) {
+                        vtableRef = CajetaModule::ensureGlobalInModule(lmod, gv);
+                    }
+                }
+                if (!vtableRef) {
+                    vtableRef = llvm::ConstantPointerNull::get(
+                        llvm::cast<llvm::PointerType>(ptrTy));
+                }
+                builder->CreateStore(vtableRef, vtableSlot);
+                builder->CreateStore(
+                    llvm::ConstantInt::get(i64Ty,
+                        (uint64_t) IFACE_KIND_BORROWED_CLASS),
+                    kindSlot);
+            } else {
+                builder->CreateStore(depPtr, slot);
+            }
         }
 
         // @PostConstruct dispatch (AspectModel.md § A11). The spec

@@ -87,6 +87,17 @@ namespace cajeta {
         // still needs the load.
         if (auto dot = dynamic_pointer_cast<DotExpression>(ast)) {
             if (auto resolved = ast->getResolvedType()) {
+                // S9.5.4 — interface fields are 24-byte fat-pointer
+                // bodies inline in the parent. Dispatch and assignment
+                // alike want a pointer to the body, not a loaded 24-byte
+                // value. Treat the GEP itself as the language-level
+                // interface value (mirrors how CajetaAggregate works:
+                // the value IS the pointer).
+                auto resolvedClass = dynamic_pointer_cast<CajetaClass>(resolved);
+                bool resolvedIsInterface = resolvedClass && resolvedClass->isInterface();
+                if (resolvedIsInterface && llvm::isa<llvm::GetElementPtrInst>(v)) {
+                    return v;
+                }
                 // Array-typed fields are stored in the parent class
                 // struct as `ptr` (see CajetaClass::generatePrototype's
                 // fieldLayoutType rule), not as the inline header
@@ -172,6 +183,17 @@ namespace cajeta {
                 // and corrupt the receiving HeapField slot.
                 if (dynamic_pointer_cast<CajetaAggregate>(resolved)) {
                     return v;
+                }
+                // S9.5.4 — interface values are 24-byte fat-pointer
+                // bodies; the language-level value is the pointer to
+                // the body (same convention as CajetaAggregate). The
+                // catch-all `loadTy != v->getType()` below would
+                // otherwise load 24 bytes through the body pointer and
+                // hand back the wrong shape.
+                if (auto rc = dynamic_pointer_cast<CajetaClass>(resolved)) {
+                    if (rc->isInterface()) {
+                        return v;
+                    }
                 }
                 if (llvm::Type* loadTy = resolved->getLlvmType()) {
                     if (loadTy != v->getType()) {

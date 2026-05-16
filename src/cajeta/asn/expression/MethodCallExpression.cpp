@@ -1238,6 +1238,24 @@ namespace cajeta {
                     }
                     break;
                 }
+                // S9.5.5 — interface returns also travel by value
+                // (per Method::generatePrototype's S9.5.5 carve-out).
+                // Repackage into a fresh caller-side body alloca so
+                // downstream code (HeapField slot store, dispatch) sees
+                // a body pointer.
+                if (auto retClass = dynamic_pointer_cast<CajetaClass>(rt)) {
+                    if (retClass->isInterface()) {
+                        if (llvm::Type* bodyTy = retClass->getLlvmType()) {
+                            if (callResult->getType() == bodyTy) {
+                                llvm::Value* bodyAlloca =
+                                    builder->CreateAlloca(bodyTy);
+                                builder->CreateStore(callResult, bodyAlloca);
+                                return bodyAlloca;
+                            }
+                        }
+                        break;
+                    }
+                }
                 break;
             }
         }
