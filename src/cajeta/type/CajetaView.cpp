@@ -15,6 +15,21 @@ namespace cajeta {
     void CajetaView::generatePrototype() {
         string canonical = qName->toCanonical();
 
+        // Views.md § Endianness: every view declaration must carry one of
+        // @BigEndian / @LittleEndian / @HostEndian. There is no silent
+        // default — host-endian assumptions break when code moves between
+        // architectures. Reject here so the error surfaces at type
+        // registration, before any usage codegen runs.
+        if (!endiannessExplicit) {
+            char buf[256];
+            snprintf(buf, sizeof(buf),
+                "view '%s' is missing an endianness annotation; declare it "
+                "with one of @BigEndian, @LittleEndian, or @HostEndian "
+                "(see Views.md \xc2\xa7 Endianness)",
+                canonical.c_str());
+            throw Exception(buf, "CAJETA_ERROR_VIEW_ENDIANNESS_REQUIRED");
+        }
+
         // Create the LLVM struct type. `getOrCreateLlvmType` also stuffs a
         // plain CajetaType into the canonical map; we'll overwrite that
         // immediately below so name lookups return this CajetaView instance.

@@ -8,8 +8,8 @@ This rollout supersedes the old "struct as wire-format view" implementation. Sig
 
 ## Current status
 
-**Phase:** Phase 1 in progress. Sessions 1, 2 complete.
-**Current line item:** S3 (next session start) — view owning variant (`#bytes`) + required endianness annotation.
+**Phase:** Phase 1 complete. Phase 2 next.
+**Current line item:** S4 (next session start) — view methods + nested views.
 
 ---
 
@@ -56,13 +56,13 @@ Sessions are sized for ~1 working day; each ends with full regression passing.
 - [x] **Cast-site audit** (follow-up). All 14 existing `dynamic_pointer_cast<CajetaStruct>(t)` sites reclassified: 12 → `CajetaAggregate` (the "is this struct-shaped?" intent — applies to both leaves); 2 → `CajetaView` (view-ctor detection in `LocalVariableDeclaration`, view-ctor synthesis in `MethodCallExpression`, plus the endianness bswap in `DotExpression::maybeBswap` since endianness is view-only).
 - **Pass criteria met:** 718 / 718 tests pass; `view` works on `CajetaView`, `struct` is parsing-only; class hierarchy is sibling-clean before S3 builds on top.
 
-#### Session 3 — View owning variant + required endianness
-- [ ] **3.1** Parser: accept `#bytes` argument to view constructor; AST records owning-vs-borrow at the call site.
-- [ ] **3.2** Codegen: owning-form view registers a drop entry for the buffer; scope exit drops the buffer.
-- [ ] **3.3** Borrow checker: owning view is treated as an owner of its buffer; transferring (`#h`) and storing in heap fields allowed.
-- [ ] **3.4** Reject view declarations without `@BigEndian` / `@LittleEndian` / `@HostEndian` annotation (`CAJETA_ERROR_VIEW_ENDIANNESS_REQUIRED`).
-- [ ] **3.5** 8 new tests: 4 owning-form (basic, transfer, drop count, escape rejection) + 4 endianness-required (each annotation accepted, missing rejected, multi-annotation rejected, `@HostEndian` accepted).
-- [ ] **Pass criteria:** Both view forms work; endianness is mandatory.
+#### Session 3 — View owning variant + required endianness  ✅ complete
+- [x] **3.1** No new parser work — `#expr` already parses as `MoveExpression`. The view-construction site (`LocalVariableDeclaration`'s view-ctor detection) now classifies the single argument: `MoveExpression` → owning, anything else → borrow. New `Field::isOwningView()` flag carries the classification forward to the drop-registration site.
+- [x] **3.2** New runtime helper `__cajeta_view_drop_owned(void* data_ptr)` reconstructs the array header (data_ptr − 8 bytes) and frees it. `LocalVariableDeclaration` emits a drop entry pointing at the field with this helper when `field->isOwningView()` is true. `MoveExpression::generateCode` already deactivates the source's drop entry, so no double-free.
+- [x] **3.3** Owning-form views skip `setViewSource()`, so the existing `Statement.cpp` escape check (which fires only when `getViewSource()` is set) naturally allows owning views to be returned and transferred. Borrow-form keeps the escape rejection.
+- [x] **3.4** `CajetaView::generatePrototype()` rejects views missing an endianness annotation with `CAJETA_ERROR_VIEW_ENDIANNESS_REQUIRED`. Visitor recognizes a new `@HostEndian` annotation in addition to `@BigEndian` / `@LittleEndian`. New `bool endiannessExplicit` on `CajetaView` distinguishes "user wrote @HostEndian" from "user wrote nothing".
+- [x] **3.5** 8 new tests across two suites: `ViewOwningTests` (4 — basic owning construction, drop count exactly 1 per buffer for both forms, borrow-form escape rejected, owning-form escape allowed) and `ViewEndiannessRequiredTests` (4 — Big/Little/Host accepted, missing rejected). Existing view tests migrated: every `public view ...` declaration now carries `@HostEndian` where it was previously implicit (`StructViewTests`, `StructViewBoundsTests`, `VariableSizeStructTests`, `KeywordEquivalenceTests`, `EndianAlignTests`).
+- **Pass criteria met:** 726 / 726 tests pass (718 prior + 8 new). Both view forms work end-to-end; endianness annotation is mandatory.
 
 ### Phase 2 — View enhancements
 

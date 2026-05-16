@@ -74,6 +74,19 @@ void __cajeta_free_array(void* ptr) {
     free(ptr);
 }
 
+// Drop helper for OWNING views (Views.md § Construction).
+// A view value is a pointer into the data region of a byte[] (the view-ctor
+// codegen GEPs past the 8-byte array header). For an owning view, scope-exit
+// must free the underlying array header, not the data pointer. This helper
+// recovers the header by subtracting the header offset and then calls
+// __cajeta_free_array. Kept as a dedicated symbol so the drop-fn pointer
+// types match (void(*)(void*)) without callers needing to know the offset.
+void __cajeta_view_drop_owned(void* data_ptr) {
+    if (data_ptr == NULL) return;
+    void* header = (void*) ((char*) data_ptr - 8);
+    free(header);
+}
+
 // Generic zero-fill allocation for compiler-emitted heap blocks that don't
 // match an array shape — used for closure records and captures structs in
 // L3-3. Mirrors __cajeta_new_array's failure mode so the compiler doesn't

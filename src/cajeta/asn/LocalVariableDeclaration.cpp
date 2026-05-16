@@ -207,13 +207,26 @@ namespace cajeta {
                         if (isViewCtor) {
                             auto& mceParams = mce->getParameters();
                             auto argExpr = mceParams[0].expression;
-                            if (auto idArg = dynamic_pointer_cast<IdentifierExpression>(argExpr)) {
-                                auto scope = module->getScopeStack().peek();
-                                FieldPtr src = scope
-                                    ? scope->getField(idArg->getTextValue())
-                                    : nullptr;
-                                if (src) {
-                                    field->setViewSource(src);
+                            // Owning vs borrow form (Views.md § Construction).
+                            // `View(#buf)` transfers buffer ownership to the
+                            // view; `View(buf)` borrows. The MoveExpression
+                            // wrapper at the argument site is the discriminator.
+                            // For owning form we skip setViewSource so the
+                            // borrow-checker treats the view as an owner
+                            // (returnable, transferable, no escape error);
+                            // a deferred drop-entry registration further down
+                            // handles scope-exit cleanup.
+                            bool isOwning = dynamic_pointer_cast<MoveExpression>(argExpr) != nullptr;
+                            field->setIsOwningView(isOwning);
+                            if (!isOwning) {
+                                if (auto idArg = dynamic_pointer_cast<IdentifierExpression>(argExpr)) {
+                                    auto scope = module->getScopeStack().peek();
+                                    FieldPtr src = scope
+                                        ? scope->getField(idArg->getTextValue())
+                                        : nullptr;
+                                    if (src) {
+                                        field->setViewSource(src);
+                                    }
                                 }
                             }
                         }
@@ -322,6 +335,16 @@ namespace cajeta {
             // duplicating the drop here double-frees at scope exit.
             if (isArray && !initIsBorrow) {
                 emitDropEntryFor(module, field, "__cajeta_free_array");
+            }
+
+            // Owning view (`View(#buf)`): the view took ownership of the
+            // buffer from its source (the MoveExpression deactivated the
+            // source's drop entry inside MoveExpression::generateCode).
+            // Register a fresh drop entry against the view's data pointer
+            // — __cajeta_view_drop_owned reconstructs the array header by
+            // subtracting the 8-byte header offset and frees it.
+            if (field->isOwningView()) {
+                emitDropEntryFor(module, field, "__cajeta_view_drop_owned");
             }
 
             // L3-3: function-typed locals own the closure record they

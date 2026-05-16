@@ -366,6 +366,8 @@ namespace cajeta {
                             viewStructure->setEndianness(ViewEndianness::Big);
                         } else if (aName == "LittleEndian") {
                             viewStructure->setEndianness(ViewEndianness::Little);
+                        } else if (aName == "HostEndian") {
+                            viewStructure->setEndianness(ViewEndianness::Host);
                         } else if (aName == "Align") {
                             viewStructure->setAlignment(ViewAlignment::Natural);
                         }

@@ -65,6 +65,13 @@ namespace cajeta {
         // a same-scope local buffer. nullptr for non-view structs and
         // for views over caller-provided buffers (parameters, fields).
         FieldPtr _viewSource;
+        // For view-mode locals: distinguishes the borrow form (`View(buf)`,
+        // false — default) from the owning form (`View(#buf)`, true). The
+        // owning form transfers buffer ownership to the view; scope-exit
+        // frees the underlying byte[] via __cajeta_view_drop_owned. The
+        // borrow form leaves ownership with the source field and only
+        // tracks the view-aliasing relationship via _viewSource above.
+        bool _isOwningView = false;
 
     public:
         Field(CajetaModulePtr module, string name, CajetaTypePtr type, FieldPtr parent = nullptr) {
@@ -182,6 +189,9 @@ namespace cajeta {
         // dangling view).
         FieldPtr getViewSource() const { return _viewSource; }
         void setViewSource(FieldPtr s) { _viewSource = std::move(s); }
+
+        bool isOwningView() const { return _isOwningView; }
+        void setIsOwningView(bool v) { _isOwningView = v; }
 
         virtual llvm::Value* createLoad() = 0;
 

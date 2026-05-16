@@ -69,6 +69,7 @@ TEST(EndianAlignTests, bigEndianStorageVisibleAsReversedBytes) {
         "public view Be {\n"
         "    int32 val;\n"
         "}\n"
+        "@HostEndian\n"
         "public view LeHost {\n"
         "    int32 val;\n"
         "}\n"
@@ -85,10 +86,13 @@ TEST(EndianAlignTests, bigEndianStorageVisibleAsReversedBytes) {
 }
 
 TEST(EndianAlignTests, hostEndianStructUnchanged) {
-    // No annotation → host order → no bswap → buffer bytes match the
-    // little-endian encoding of the value on x86_64.
+    // @HostEndian → host order → no bswap → buffer bytes match the
+    // little-endian encoding of the value on x86_64. The annotation is
+    // now required at the declaration (S3.4) — silent host-endian
+    // assumption is no longer permitted; the user has to opt in.
     auto src =
         "package test;\n"
+        "@HostEndian\n"
         "public view Plain {\n"
         "    int32 val;\n"
         "}\n"

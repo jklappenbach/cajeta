@@ -26,7 +26,11 @@ using cajeta_test::CajetaJit;
 namespace {
 
 std::string sourceWithKeyword(const std::string& keyword) {
+    // @HostEndian is harmless on struct (ignored — struct is host-only per
+    // Structs.md, struct path throws before annotation matters anyway) and
+    // mandatory on view (S3.4).
     return "package test;\n"
+           "@HostEndian\n"
            "public " + keyword + " Header {\n"
            "    int32 version;\n"
            "    int64 timestamp;\n"

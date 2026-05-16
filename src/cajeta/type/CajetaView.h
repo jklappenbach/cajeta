@@ -47,13 +47,19 @@ namespace cajeta {
     private:
         ViewEndianness endianness = ViewEndianness::Host;
         ViewAlignment alignment = ViewAlignment::Packed;
+        // Tracks whether endianness was explicitly annotated. Views.md
+        // requires every view declaration to carry @BigEndian / @LittleEndian
+        // / @HostEndian; the default value of `endianness` alone can't
+        // distinguish "user wrote @HostEndian" from "user wrote nothing".
+        bool endiannessExplicit = false;
     public:
         CajetaView(CajetaModulePtr module) : CajetaAggregate(module) { }
         CajetaView(CajetaModulePtr module, QualifiedNamePtr qName)
             : CajetaAggregate(module, qName) { }
 
         ViewEndianness getEndianness() const { return endianness; }
-        void setEndianness(ViewEndianness e) { endianness = e; }
+        void setEndianness(ViewEndianness e) { endianness = e; endiannessExplicit = true; }
+        bool hasExplicitEndianness() const { return endiannessExplicit; }
 
         ViewAlignment getAlignment() const { return alignment; }
         void setAlignment(ViewAlignment a) { alignment = a; }
