@@ -1,6 +1,6 @@
 # Async Runtime — Implementation Status
 
-Tracks the R1–R5 rollout of the async runtime described in `ThreadModel.md`. Counterpart to `ImplementationStatus.md` (which covers the MemoryModel + WireFormats rollout).
+Tracks the R1–R5 rollout of the async runtime described in `ThreadModel.md`. Counterpart to `ImplementationStatus.md` (which covers the MemoryModel rollout).
 
 ---
 
@@ -27,13 +27,13 @@ Today the compiler synthesizes `Task<T>` at every spawn site (`CajetaTask::getOr
 
 - [x] **20.1** Type resolution: `Task<int32>` as a `typeType` parses through `classOrInterfaceType` already (the grammar accepts type arguments uniformly). The miss was in `CajetaType::fromContext(TypeTypeContext*)`: when the bare name `Task` is followed by `typeArguments`, route through `CajetaTask::getOrCreate(module, T)` instead of looking `Task` up as a user class. Special-case branch added ahead of the generic template path so we don't need a fake "Task" template class to satisfy `isTemplate()`.
 - [x] **20.2** Ownership transfer (option a — auto-promotion on assignment). Added a `llvm::Value* dropEntry` field on `SpawnExpression` populated when the push happens. `LocalVariableDeclaration`'s initializer path detects a `SpawnExpression` RHS via `dynamic_pointer_cast` and emits `__cajeta_drop_mark_inactive` on the entry; the local's own class-instance drop becomes the canonical owner. Bare-statement `spawn foo();` is unaffected — no assignment, no inactivation, the spawn's drop still fires at scope exit. (BinaryOpExpression ASSIGN didn't need the same: today's tests rebind via re-declaration, not via plain `=`; will revisit when that shape lands.)
-- [x] **20.3** `await someTaskLocal`. Two pieces had to land: a defensive `inner->resolveTypes(module)` re-resolve at codegen time in `AwaitExpression::generateCode` (the pre-pass runs before the local is in scope and leaves resolvedType null, which sent the dispatch into the sync-compat branch returning the raw Task ptr), AND a `SpawnExpression` preempt in `loadIfLValue` so `Task<int32> t = spawn foo();` doesn't try to load the 24-byte struct through an 8-byte ptr slot — for class types the value IS the pointer.
+- [x] **20.3** `await someTaskLocal`. Two pieces had to land: a defensive `inner->resolveTypes(module)` re-resolve at codegen time in `AwaitExpression::generateCode` (the pre-pass runs before the local is in scope and leaves resolvedType null, which sent the dispatch into the sync-compat branch returning the raw Task ptr), AND a `SpawnExpression` preempt in `loadIfLValue` so `Task<int32> t = spawn foo();` doesn't try to load the 24-byte Task value through an 8-byte ptr slot — for class types the value IS the pointer.
 - [x] **20.4** Package question. Decided: keep `CajetaTask` package-free (the comment at `CajetaTask.cpp:17` already says so). Users write the bare name `Task<int32>`; type resolution finds it directly through the synthesized-type path. Revisit when `cajeta.threading.*` actually lands.
 - [x] **20.5** Tests in `test/parser/TaskTypingTests.cpp` (new file): `declareAwaitOneTask`; `twoHandlesStoredThenAwaited` (the canonical use case); `differentTaskElementTypes` (Task<int32> vs Task<int64> get distinct value-field widths); `declaredTasksDropOncePerLocal` (drop count == 2 for two declared tasks, proving option-a's inactivation); `awaitedTaskStillDropsOnceAtScopeExit`.
 
 ### Race fix surfaced en route (commit `ca2b0d7`)
 
-While probing item 20.2, `SpawnDropTests` flaked ~20% as a suite. Probe isolated `free(task)` in `__cajeta_task_drop` as the trigger. Root cause was unrelated to the typing work itself: `ScopeStatement::generateCode` emitted `scope_enter → body → DROPS FIRE → scope_exit` for explicit `scope { }` blocks. But `__cajeta_scope_exit` walks every registered task's `exception_addr` (a pointer INTO the task struct) — so the drop's `free(task)` ran before the scope_exit read through it. Use-after-free that the allocator usually masked. Fixed by reordering `ScopeStatement` to manage its block's drop frame manually and emit drops AFTER `__cajeta_scope_exit`. Method body's fall-through path already had this invariant (scope_exit_to before emitOwnerDrops); only the explicit-scope path was wrong.
+While probing item 20.2, `SpawnDropTests` flaked ~20% as a suite. Probe isolated `free(task)` in `__cajeta_task_drop` as the trigger. Root cause was unrelated to the typing work itself: `ScopeStatement::generateCode` emitted `scope_enter → body → DROPS FIRE → scope_exit` for explicit `scope { }` blocks. But `__cajeta_scope_exit` walks every registered task's `exception_addr` (a pointer INTO the task allocation) — so the drop's `free(task)` ran before the scope_exit read through it. Use-after-free that the allocator usually masked. Fixed by reordering `ScopeStatement` to manage its block's drop frame manually and emit drops AFTER `__cajeta_scope_exit`. Method body's fall-through path already had this invariant (scope_exit_to before emitOwnerDrops); only the explicit-scope path was wrong.
 
 ### TLS-promote drop-chain head + exception chain head  ✅ complete
 
@@ -58,11 +58,11 @@ Spec tightened first (`ThreadModel.md` § detach Semantics (v1)): the inner must
 Implementation reuses `SpawnExpression`'s full trampoline + fiber-enqueue lowering — a new `detachMode` flag on `SpawnExpression` gates the two pieces detach skips:
 
 - `__cajeta_scope_register` is skipped — `scope_exit` won't wait on this Task.
-- The Task's drop-chain push is skipped — no scope owns the Task struct; it leaks.
+- The Task's drop-chain push is skipped — no scope owns the Task; it leaks.
 
 `DetachExpression::generateCode` resolves the inner's argument types, runs `enforceDetachMoveOnlyCaptures` (the `#`/primitive/`new` check, throwing `CAJETA_ERROR_DETACH_BORROW_CAPTURE` on violation), then constructs a transient `SpawnExpression` wrapping the same `MethodCallExpression` with `detachMode=true` and delegates. Single source of truth for the trampoline.
 
-Auxiliary fix: `SpawnExpression`'s value-store path now skips when the inner returns void (`isVoidTy()` check) and `CajetaTask::CajetaTask` substitutes an `i8` placeholder for the value slot when `elementType` is void — LLVM forbids storing void or putting it in a struct field. Previously latent because all spawn tests used int-returning inner functions; surfaced when `detach foo();` runs an `async void foo()`.
+Auxiliary fix: `SpawnExpression`'s value-store path now skips when the inner returns void (`isVoidTy()` check) and `CajetaTask::CajetaTask` substitutes an `i8` placeholder for the value slot when `elementType` is void — LLVM forbids storing void or putting it in an aggregate field. Previously latent because all spawn tests used int-returning inner functions; surfaced when `detach foo();` runs an `async void foo()`.
 
 New tests in `test/parser/DetachTests.cpp`: no-capture detach returns immediately; primitive captures work; `#`-transferred class captures work; bare class-typed identifier (borrow capture) is rejected at compile time. Fresh-allocator (`new T()` inline as arg) is documented as a Known gap rather than tested directly — the underlying NewExpression-as-method-call-argument codegen path is broken even for non-detach calls (`consume(new Payload())` crashes), so the detach-specific check accepting `NewExpression` will light up the moment that gap is fixed.
 
@@ -91,11 +91,11 @@ Two alternatives considered and rejected:
 - Async modifier carried on `Method` (`ASYNC` bit in `Modifiable`).
 - Sync-lowering MVP — all five keywords parse and codegen as pass-throughs; the surface syntax is stable. Commit `2a5a11b`.
 
-### R1 — Task<T> wrapper struct
+### R1 — Task<T> wrapper
 - `CajetaTask` class synthesized per element type (like `CajetaArray`).
 - Layout: `{ T value, i32 done }`; cached on the module's structure map.
 - spawn allocates Task<T> on heap, packs result + done flag.
-- await unwraps via struct-GEP.
+- await unwraps via field GEP.
 - Commit `a98b6e7`.
 
 ### R2 — Pthread-backed task queue + worker scheduler
@@ -149,9 +149,9 @@ Two alternatives considered and rejected:
 - R5-C cancellation tokens (commit `fa7c7f8`) — `CancellationException extends RecoverableException`; scope-level cancel walks registered children and sets their atomic cancel flag.
 - R5-D exception escalation through scope — `scope_exit` joins children, cancels siblings on first throw, re-raises into the containing frame.
 - Comprehensive lint system: rule IDs + `@SuppressLint("id")` (commits `ded5897`, `e3d238e`); try/catch coverage awareness for `uncaught-throws` (#209, commit `996cf21`) — the lint walks an enclosing-try stack and suppresses warnings when any catch arm catches the throw (supertype-aware via `getSuperClasses()`).
-- Inherited-field write codegen fix (#208, commit `16434e5`) — subclass struct now prepends inherited fields, so GEPs for inherited fields share the parent's slot index. Follow-up (commit `0dda81b`) added the same walk to `BinaryOpExpression`'s ASSIGN slot-type lookup (mixed-width inherited fields were trampling neighbors with too-wide stores) and switched `CastExpression::generateCode` to `loadIfLValue` so `(T) obj.field` loads the value instead of ptrtoint'ing the GEP address.
+- Inherited-field write codegen fix (#208, commit `16434e5`) — subclass layout now prepends inherited fields, so GEPs for inherited fields share the parent's slot index. Follow-up (commit `0dda81b`) added the same walk to `BinaryOpExpression`'s ASSIGN slot-type lookup (mixed-width inherited fields were trampling neighbors with too-wide stores) and switched `CastExpression::generateCode` to `loadIfLValue` so `(T) obj.field` loads the value instead of ptrtoint'ing the GEP address.
 - `String`-parameter codegen fix (#211, commit `b987e59`) — variable-size-field check now gates on `dynamic_pointer_cast<CajetaStruct>`, so a `String` field on a regular class is freely writable. Unblocked `Throwable.message: String`.
-- `int8` / `uint8` wired as documented native types (commit `2a9655b`) — `INT8`/`UINT8` lexer rules and `CajetaType::init` registrations were missing, so `int8` lexed as IDENTIFIER and silently produced null types that segfaulted in struct layout.
+- `int8` / `uint8` wired as documented native types (commit `2a9655b`) — `INT8`/`UINT8` lexer rules and `CajetaType::init` registrations were missing, so `int8` lexed as IDENTIFIER and silently produced null types that segfaulted in class layout.
 - Unknown field types throw `CAJETA_ERROR_UNKNOWN_TYPE` at `visitFieldDeclaration` instead of silently leaking null (commit `ac122a6`) — turns the same segfault shape into a diagnostic with the user's original type-name token.
 
 ---

@@ -37,7 +37,7 @@ documentation.
 A block comment that opens with `/**` (slash, asterisk, asterisk)
 and closes with `*/` is a documentation comment. It documents the
 declaration that follows it — a class, interface, enum, struct,
-method, constructor, field, or annotation type.
+view, method, constructor, field, or annotation type.
 
 ```cajeta
 /**

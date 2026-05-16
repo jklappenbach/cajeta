@@ -948,12 +948,20 @@ A reasonable order, given dependencies:
 8. **cajeta.io.net.http.h2.** HTTP/2 — HPACK, framing, stream
    multiplexing, flow control. Negotiated via ALPN. Plugs in
    behind the .client and .server surfaces from steps (4) and (5);
-   user code unchanged.
+   user code unchanged. Frame parsing is the canonical
+   `view` use case (see `Views.md`): the 9-byte frame header has a
+   fixed big-endian layout and decodes zero-copy via `H2FrameHeader(buf)`.
+   Frame payloads (DATA, HEADERS, PRIORITY, etc.) get their own view
+   types, all sharing the same buffer pool, no per-frame allocation.
 9. **cajeta.io.net.http.compression.** gzip / deflate / brotli encoders
    + decoders. Used by the Compression middleware and by the
    client / server for Content-Encoding handling.
 10. **cajeta.io.net.websocket.** Frame protocol (RFC 6455). Just
-    the codec + state machine, no transport.
+    the codec + state machine, no transport. Frame headers (the
+    2–14 byte prefix with FIN, opcode, mask bit, payload-length
+    field) decode via a `view` (see `Views.md`); the variable
+    payload-length encoding fits the length-prefixed-field
+    pattern documented there.
 11. **cajeta.io.net.websocket.server.** Upgrade integration with
     cajeta.io.net.http.server. WebSocket endpoints reachable.
 12. **cajeta.io.net.websocket.client.** WebSocketClient. Standalone,

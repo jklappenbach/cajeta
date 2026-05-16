@@ -112,7 +112,7 @@ mixed with source), and survives multi-language projects (a future
     │
     ▼
 ┌──────────────┐
-│ 3. Lower     │   AST → LLVM IR. Per-class struct layout,
+│ 3. Lower     │   AST → LLVM IR. Per-class layout,
 │              │   vtables, RTTI, method body codegen. Cross-
 │              │   module extern decls for stdlib references.
 └──────────────┘
@@ -141,12 +141,12 @@ parses, so a class referenced before its declaration parses works.
 **Phase 2 — Resolve.** Class registry (canonicalMap) populated.
 Generic instantiations created on demand. Deferred prototypes
 build to fixed point: classes whose superclass was a placeholder at
-visit time get their struct layout deferred until the parent's
+visit time get their layout deferred until the parent's
 prototype lands. The post-parse sweep walks until no class can
 make further progress.
 
 **Phase 3 — Lower.** Each method becomes an LLVM function. Class
-layouts become LLVM struct types. Vtable globals + RTTI globals
+layouts become LLVM aggregate types. Vtable globals + RTTI globals
 get emitted. Cross-module references — calls to stdlib methods,
 references to stdlib vtables — go through `ensureFunctionInModule`
 / `ensureGlobalInModule` to insert extern declarations in the

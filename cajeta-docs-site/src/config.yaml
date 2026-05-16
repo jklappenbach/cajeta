@@ -1,0 +1,70 @@
+site:
+  name: Cajeta
+  site: 'https://cajeta.dev'
+  base: '/'
+  trailingSlash: false
+
+# Default SEO metadata
+metadata:
+  title:
+    default: Cajeta — language, library, toolchain
+    template: '%s — Cajeta'
+  description: 'Cajeta is a hybrid Java/C++/Rust-style language with a single-owner memory model, AoT aspect weaving, and a high-throughput async runtime. Specifications and implementation notes.'
+  robots:
+    index: true
+    follow: true
+  openGraph:
+    site_name: Cajeta
+    images:
+      - url: '~/assets/images/default.png'
+        width: 1200
+        height: 628
+    type: website
+  twitter:
+    handle: '@jklappenbach'
+    site: '@jklappenbach'
+    cardType: summary_large_image
+
+i18n:
+  language: en
+  textDirection: ltr
+
+apps:
+  blog:
+    isEnabled: true
+    postsPerPage: 6
+
+    post:
+      isEnabled: true
+      permalink: '/%slug%'
+      robots:
+        index: false
+
+    list:
+      isEnabled: true
+      pathname: 'blog'
+      robots:
+        index: false
+
+    category:
+      isEnabled: true
+      pathname: 'category'
+      robots:
+        index: false
+
+    tag:
+      isEnabled: true
+      pathname: 'tag'
+      robots:
+        index: false
+
+    isRelatedPostsEnabled: false
+    relatedPostsCount: 4
+
+analytics:
+  vendors:
+    googleAnalytics:
+      id: null
+
+ui:
+  theme: 'system'

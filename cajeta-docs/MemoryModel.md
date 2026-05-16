@@ -98,7 +98,7 @@ LIFO within a scope; inner scopes drop before outer. A borrow declared before it
 
 ## Fields
 
-- **Fields are always owners.** Field types are owned slots. Borrows cannot be stored in fields — this avoids inter-procedural lifetime annotations on structs.
+- **Fields are always owners.** Field types are owned slots. Borrows cannot be stored in fields — this avoids inter-procedural lifetime annotations on field-holders.
 - **Field assignment transfers.** `p.field = x` must transfer: either `p.field = #x` (explicit) or `p.field = new T(...)` (auto-promoted). Plain `p.field = y` where `y` is a named borrow is a static error.
 - **Field reads borrow.** `String n = p.field` makes `n` a borrow rooted at `p`.
 
@@ -154,48 +154,31 @@ A borrowing-container type may exist separately, but the default `List<T>` etc. 
 
 ---
 
-## Struct views (zero-copy)
+## Structs
 
-A `struct` type can be constructed as a view over a byte buffer. The view borrows the buffer; field accesses are direct loads against the buffer's bytes — no allocation, no copying. This is the zero-copy path for wire-format parsing on high-throughput servers.
+A `struct` is a stack-allocated value aggregate (full spec: `Structs.md`). Its interaction with the memory model:
 
-Full layout/endianness/packing/validation rules: see `WireFormats.md`. The interaction with the borrow model:
+- **Lifetime is the enclosing scope.** A struct local is allocated via `alloca` and drops at scope exit — same as any other stack-resident owner.
+- **Fields participate in drop chain.** A struct field that holds an owned class reference is itself an owner; when the struct drops, owned class fields drop in reverse declaration order before the struct's bytes are reclaimed.
+- **Borrowed class refs are tracked.** A struct field holding a borrowed class reference contributes to the path-borrow tracker; the borrow is rooted at whatever the field was assigned from.
+- **Embedded structs in class fields.** A struct used as a class field lives inline in the class's heap layout — no extra allocation. When the class drops, every embedded struct field drops with it (recursively).
+- **Field-path moves apply.** `#s.field` invalidates `s.field` for subsequent reads (existing `markMovedPath` machinery); siblings of the moved field remain readable.
+- **Pass-by-pointer.** Structs cross call boundaries via the existing aggregate pass-by-pointer rule; defensive copies happen at callee entry only when the callee mutates the parameter.
 
-```
-byte[] bytes = network.read();          // bytes is owner
-MyStruct s = MyStruct(bytes);           // s is a borrow-view of bytes
-s.version;                              // borrow into bytes, lifetime tied to bytes
-s.name;                                 // borrow into the same buffer (inline String)
-```
+The borrow checker treats structs uniformly with primitive locals — the only difference is that a struct's bytes can transitively own other resources, which the drop chain unwinds in declaration order.
 
-- `MyStruct(byte[])` is a compiler-synthesized view constructor.
-- `s` is a borrow of `bytes`.
-- `s.field` returns a borrow rooted at `bytes` per the field-path rule.
-- When `bytes` drops, `s` becomes invalid — static checker rejects later use.
+---
 
-**No `#` is needed at construction:** the constructor returns a borrow, the assignment is a borrow per the default `=` rule, and `bytes` retains ownership.
+## Views
 
-### Alias-mutation on shared buffers
+A `view` is a typed overlay onto a borrowed byte buffer (full spec: `Views.md`). Two construction forms:
 
-The path-based alias-mutation rule applies automatically. While `s` is a live borrow of `bytes`:
-- `bytes[i] = X` mutates the borrow-source path → static error.
-- `s.field = X` mutates `bytes` via a sub-path → invalidates any other live borrows of `bytes` (or its sub-paths); the checker catches it.
+- **Borrow form** — `RpcHeader h = RpcHeader(buf);` borrows `buf`. `h` is a path-borrow rooted at `buf`; the borrow checker enforces `h` cannot outlive `buf`, the buffer cannot be mutated through any other alias while `h` is live, and `h` cannot be sent to another fiber.
+- **Owning form** — `RpcHeader h = RpcHeader(#buf);` transfers `buf`'s ownership into `h`. The view is now an owner; standard transfer rules apply (`#h`, drop-on-scope-exit drops the contained buffer).
 
-Single-mutator-on-shared-buffer semantics fall out without new rules.
+Per-field access (`h.magic`, `h.payload[i]`) is a path-borrow rooted at the buffer — same machinery as struct-field access. Mutating one field while a borrow into another field of the same view is live is allowed (different paths); mutating the buffer directly while any view borrow is live is rejected (alias-mutation).
 
-### Owning variant (additive)
-
-If the struct takes the buffer by transfer, it becomes both the view and the buffer's owner:
-
-```
-MyStruct s = MyStruct(#bytes);   // takes ownership; bytes is moved
-// s owns the buffer; when s drops, bytes drops with it
-```
-
-Two constructors per struct, picked by whether the callsite uses `#`:
-- `MyStruct(byte[])` — borrow-view; original owner unchanged.
-- `MyStruct(#byte[])` — owning-view; struct drops the buffer when it drops.
-
-v1 ships borrow-view only; the owning variant is purely additive (no codegen rework, only an additional signature).
+Construction-time bounds and length-prefix validation are documented in `Views.md` § Security; they are the load-bearing guarantee that makes per-access reads bounds-check-free.
 
 ---
 
@@ -319,12 +302,8 @@ Recommend **path 1**. The codebase is small enough; the inconsistency of path 2 
 
 The rollout left a few items deliberately out of v1 scope; they're called out here so future work knows where to pick up.
 
-- **String stdlib helpers still leak.** Functions like `__cajeta_str_concat`, `__cajeta_str_substring`, `__cajeta_str_toUpperCase`, `__cajeta_str_view_to_owned` all return malloc'd memory that's never freed. Wiring them through the drop chain needs the type system to distinguish "this `String` is heap-owned" from "this `String` is a borrow/literal" — the current `String` type collapses both. A first step is a dedicated `OwnedString` flag on the type instance plus codegen that registers a drop entry only for the owned variant.
-- **`T[]` inline in a struct.** Session 5.5b shipped `String` as a variable-size struct field; `T[]` follows the same shape but needs slightly different field-read semantics (an array view, not an owned copy).
-- **Fields after a variable-size field.** Today every variable-size field must be last. Supporting interleaved fixed/variable layouts needs runtime-computed offsets stored alongside the view value (a small per-view metadata block).
+- **String stdlib helpers still leak.** Functions like `__cajeta_str_concat`, `__cajeta_str_substring`, `__cajeta_str_toUpperCase` all return malloc'd memory that's never freed. Wiring them through the drop chain needs the type system to distinguish "this `String` is heap-owned" from "this `String` is a borrow/literal" — the current `String` type collapses both. A first step is a dedicated `OwnedString` flag on the type instance plus codegen that registers a drop entry only for the owned variant.
 - **Alias-mutation through writes.** Path-based borrow tracking catches use-after-move; it does not yet catch "borrow into `person.name` invalidated by a later `person.name = #other` write." That needs a live-borrow tracking pass.
 - **Multi-parameter borrow-return with annotation.** Today multi-input free functions can't return a borrow at all. Rust-style explicit lifetime annotations would lift this restriction; not part of v1.
-- **Variable-size struct field write.** Reassigning a variable-size field is rejected because in-place resize isn't possible. A "rebuild the buffer" idiom is the workaround.
-- **Construction-time length-prefix validation for variable-size struct fields.** The current view bounds check verifies `count * elem_size >= fixed_prefix`; it doesn't (yet) walk inline length-prefixes to verify the variable region fits. A length-prefix value larger than the remaining buffer would read past the end — caller responsibility today.
 - **FFI / `unsafe` / multi-threading.** All explicitly deferred.
 - **Drop chain head is global, not per-fiber.** The stackful fiber executor (R3-B) added cooperative concurrency, but the drop-chain head is still a single static. Correct under today's single-carrier model (only one fiber executes at a time), but multi-carrier parallelism — or any change that lets two carriers run fibers simultaneously — needs the chain head promoted to TLS / fiber-local. Drop entries themselves are already alloca'd in the fiber's own stack, so the only piece moving is the head pointer.

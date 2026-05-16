@@ -4,7 +4,7 @@
 ## Class 
 ### Can Write & Read Class Metadata
 - Can write property block
-  - Can write size of struct
+  - Can write size of class
   - Can write count of all props
   - Can write 
 ### Memory Management

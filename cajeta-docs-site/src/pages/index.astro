@@ -1,0 +1,97 @@
+---
+import Layout from '~/layouts/PageLayout.astro';
+import HeroText from '~/components/widgets/HeroText.astro';
+import Features from '~/components/widgets/Features.astro';
+import CallToAction from '~/components/widgets/CallToAction.astro';
+import { getPermalink } from '~/utils/permalinks';
+
+const metadata = {
+  title: 'Cajeta — language, library, toolchain',
+  ignoreTitleTemplate: true,
+};
+---
+
+<Layout metadata={metadata}>
+  <HeroText
+    tagline="Cajeta"
+    title="A hybrid Java / C++ / Rust-style language."
+    subtitle="Single-owner memory model. AoT aspect weaving. High-throughput async runtime. LLVM-backed compilation, period."
+    callToAction={{ text: 'Read the docs', href: getPermalink('/docs'), icon: 'tabler:book' }}
+    callToAction2={{ text: 'GitHub', href: 'https://github.com/jklappenbach/cajeta', target: '_blank', icon: 'tabler:brand-github' }}
+  />
+
+  <Features
+    id="features"
+    tagline="What's in the box"
+    title="Where to start"
+    subtitle="Five reading paths into the specification. Pick the one that matches what you're trying to build."
+    columns={2}
+    items={[
+      {
+        title: 'Memory model',
+        description:
+          'Single-owner heap, # for ownership transfer, scope-based drops, path-based borrow tracking. The load-bearing design.',
+        icon: 'tabler:shield-check',
+        callToAction: { text: 'Read', href: getPermalink('/docs/MemoryModel') },
+      },
+      {
+        title: 'Structs',
+        description:
+          'Stack-allocated value aggregates. Can hold class refs. Implement interfaces via tagged fat pointers. No vtable, no heap.',
+        icon: 'tabler:layout-grid',
+        callToAction: { text: 'Read', href: getPermalink('/docs/Structs') },
+      },
+      {
+        title: 'Views',
+        description:
+          'Zero-copy memory overlay onto byte buffers. Read + write through to bytes. Length-prefixed variable fields, nested views, borrow or owning.',
+        icon: 'tabler:database',
+        callToAction: { text: 'Read', href: getPermalink('/docs/Views') },
+      },
+      {
+        title: 'Threading & async',
+        description:
+          'Fiber runtime, work-stealing scheduler, structured concurrency. Designed for high-throughput servers.',
+        icon: 'tabler:bolt',
+        callToAction: { text: 'Read', href: getPermalink('/docs/ThreadModel') },
+      },
+      {
+        title: 'Standard library',
+        description:
+          'Collections, iterators, primitives. Trait-dispatched, monomorphized through generic call sites.',
+        icon: 'tabler:package',
+        callToAction: { text: 'Read', href: getPermalink('/docs/StandardLibrary') },
+      },
+      {
+        title: 'Build, compile, debug',
+        description:
+          'Single `cajeta` binary covers init, build, test, doc, lint. LLVM backend, DAP + LSP for editors.',
+        icon: 'tabler:tools',
+        callToAction: { text: 'Read', href: getPermalink('/docs/BuildTool') },
+      },
+      {
+        title: 'Implementation status',
+        description:
+          'Live progress trackers for the memory-model + wire-format rollout, and the async runtime R1–R5 work.',
+        icon: 'tabler:progress',
+        callToAction: { text: 'Read', href: getPermalink('/docs/ImplementationStatus') },
+      },
+    ]}
+  />
+
+  <CallToAction
+    actions={[
+      {
+        variant: 'primary',
+        text: 'Browse all 24 documents',
+        href: getPermalink('/docs'),
+        icon: 'tabler:arrow-right',
+      },
+    ]}
+  >
+    <Fragment slot="title">Full documentation index</Fragment>
+    <Fragment slot="subtitle">
+      Specifications, implementation notes, and process documents — grouped by language, stdlib, tooling, process, and status.
+    </Fragment>
+  </CallToAction>
+</Layout>

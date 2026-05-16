@@ -47,8 +47,6 @@ cajeta.collection      — Collection / Iterable / Iterator interfaces;
                          types that sort in place; the ArraySortable
                          half adds user-pluggable SortAlgorithm support
                          (Array-backed types only);
-                         StructView marker for zero-alloc views over
-                         external buffers;
                          Array (the variable-size, element-typed array
                          — heap-resident, replaces T[] for non-inline use);
                          ArrayList, LinkedList;
@@ -126,12 +124,10 @@ cajeta.reflect         — runtime type introspection: Class<T>, Field,
 Immutable, encoding-aware character sequence. Internal storage: UTF-8 byte
 array plus a cached code-point count. A `String` carries a tagged mode
 internally — **owned** (heap-allocated; `new String(...)`) or **view**
-(borrowed over bytes that live elsewhere; `String.viewOf(...)`). See
-"Strings over struct byte fields" below for the view path.
+(borrowed over bytes that live elsewhere; `String.viewOf(...)`).
 
 ```cajeta
-public final class String implements Collection<int32>,
-                                      StructView<String, byte[]> {
+public final class String implements Collection<int32> {
     // Owned construction — `new` always allocates.
     public String();
     public String(byte[] bytes, Encoding encoding);
@@ -190,125 +186,6 @@ public final class String implements Collection<int32>,
 works and so `count()` is consistent across the rest of the collection
 hierarchy. Iteration is over code points, not bytes — bytes are accessible via
 `getBytes(Encoding.UTF_8)` when needed.
-
-#### Strings over struct byte fields
-
-Structs don't have `String` fields. A struct's job is to be an exact
-byte layout that overlays cleanly onto a buffer; an embedded heap
-`String` pointer would break that contract, and the earlier "inline
-variable-size `String` field" proposal required compiler magic plus a
-"must be last" / "at most one" rule that ate field-ordering freedom.
-Both are gone.
-
-The replacement: struct fields are plain bytes (`byte[N]` for
-fixed-width, `byte[?]` for a variable tail). At access time, code
-constructs a `String` **view** over the field — no allocation, no
-memcpy, the view borrows the struct's bytes for as long as the
-struct is alive.
-
-**The model.** A `String` carries a tagged internal representation:
-**owned** (heap-allocated, the existing path) or **view** (a borrow
-over bytes that live somewhere else — another struct, an array, a
-buffer). Read-only operations work the same on both modes;
-transformations (concat, replace, toUpperCase, substring crossing a
-boundary) always produce a fresh **owned** String.
-
-Construct a view via the `String.viewOf(...)` factory — never `new`.
-The convention across stdlib: **`new` always allocates; `viewOf` /
-`cString` / similar factories borrow.** Reading the call site tells
-you whether the heap got hit. The factory signatures are part of the
-canonical `String` declaration above; the rest of this section shows
-how the field-reference shape interacts with them.
-
-**The compiler does the address math.** When you write `s.name` in
-`String.viewOf(s.name)`, the field reference carries three pieces:
-`s`'s base address, the compile-time `offsetof(MyStruct, name)`, and
-the buffer size from `byte[N]`'s `N`. The view constructor receives a
-fat pointer for free — no length argument, no manual offset
-arithmetic, no `&` operator at the user level.
-
-**The fixed-width case.** Every field is plain bytes; Strings are
-constructed where needed:
-
-```cajeta
-struct PacketHeader {
-    int32 magic;
-    byte[16] name;          // 16 bytes inline, no length prefix
-    int32 sequence;
-    byte[16] tag;
-}
-
-PacketHeader p = PacketHeader(buf);
-
-// Zero-copy view over the 16 inline bytes. No allocation.
-String n = String.viewOf(p.name);
-
-// Equivalent — explicit encoding for a non-UTF-8 wire format.
-String n = String.viewOf(p.name, Encoding.ASCII);
-
-// Null-padded (C-string style) — scans up to the first null.
-String n = String.cString(p.name);
-
-// Use n freely within p's scope. The borrow checker rejects code
-// that stores n into a longer-lived field, returns it past p's
-// scope, or transfers it to another fiber:
-String persisted = n.toOwned();   // explicit materialization
-```
-
-Multiple String fields are fine — no "must be last," no "at most
-one." Each is just `byte[N]` from the struct's perspective; `String`
-construction is a per-call-site decision.
-
-**The variable-length case.** When the content varies per message,
-the struct uses `byte[?]` (the existing variable-tail mechanism in
-the compiler) plus an explicit length field. The `String` view is
-constructed exactly the same way — `viewOf(source, byteCount)` over
-the variable tail:
-
-```cajeta
-struct LogMessage {
-    int64 timestamp;
-    int32 severity;
-    int32 bodyLength;       // explicit, addressable, no magic
-    byte[?] body;           // variable-tail byte array
-}
-```
-
-Layout in memory:
-
-```
-+----------------+----------------+----------------+----------------+
-| timestamp (8)  | severity (4)   | bodyLength (4) | body bytes...  |
-+----------------+----------------+----------------+----------------+
-^                                                  ^                ^
-struct base                                        end of fixed     end of buffer
-                                                    footprint        (length bytes)
-```
-
-Read and write:
-
-```cajeta
-LogMessage m = LogMessage(buf);   // overlay onto byte[] buf
-
-// Zero-copy view over the variable tail. No allocation.
-String body = String.viewOf(m.body, m.bodyLength);
-
-// Use body freely; persist via .toOwned() if needed.
-String persisted = body.toOwned();
-
-// Writing back goes through the underlying byte[] field, not
-// through `String` (a view is read-only). For a wire-format
-// builder use Buffer or write the bytes directly:
-buf.writeBytesAt(offsetof(LogMessage, body), newContent);
-m.bodyLength = newContent.length;
-```
-
-The rule that remains is on the **byte[?]** terminal-variable field
-itself (it must be last; the offsets of subsequent fields would be
-runtime-dependent otherwise). That rule is about raw variable-tail
-storage, not about `String` — structs with multiple `String` *views*
-work because each view is constructed over a `byte[N]` field, and
-`byte[N]` is fixed-size.
 
 #### Where owned and view Strings meet
 
@@ -386,7 +263,7 @@ public class Object {
 **Defaults are identity-based, not structural.** Two distinct instances with
 the same field values produce different hashes and compare unequal by default.
 This avoids the cliff of structural-by-default — where the compiler would have
-to synthesize correct walks across primitive, class-reference, inline-struct,
+to synthesize correct walks across primitive, class-reference,
 array, generic, and self-referential fields, with each new field shape
 introducing a new edge case the synthesizer has to get right *silently* (a
 broken structural hash doesn't crash, it just returns wrong results, and
@@ -497,7 +374,6 @@ The cycle analysis also runs through generic instantiations
 |----------------------------------|-------------------------------------------|
 | Primitives (int*, float*, bool)  | Hashed via `__cajeta_hash_*` helpers      |
 | Class types (`Foo`)              | Virtual dispatch to `field.hash()`        |
-| Struct types                     | Recursive field-walk                      |
 | Array / collection types         | Element walk via iterator                 |
 | `String`                         | Byte hash via XXH3-64                     |
 | `@transient` field               | Skipped                                   |
@@ -623,14 +499,13 @@ public interface Collection<T> extends Iterable<T> {
 `Iterable` is separated so types that only need "give me an iterator" don't
 inherit `count()`. Streams, generators, file lines — those are `Iterable`
 but not `Collection`. The `Iterator<T>` design follows §"Iterator design"
-below — single-call `next()` returning `Optional<T>`, struct-based, no
-heap allocation, baked-in combinators, mutation-during-iteration is a
-compile error.
+below — single-call `next()` returning `Optional<T>`, baked-in combinators,
+mutation-during-iteration is a compile error.
 
 ### Iterator design
 
 Iterators in cajeta deliberately don't repeat the design mistakes other
-languages have made. Nine principles, in order from "must" to "nice":
+languages have made. Eight principles, in order from "must" to "nice":
 
 #### 1. Single-call `next()` returning `Optional<T>`
 
@@ -662,42 +537,34 @@ expensive two-call protocol. **Python** `__next__()` raising
 `StopIteration` is a single call but pays exception teardown per
 iteration. **Rust/Swift** match the cajeta shape.
 
-#### 2. Iterators are structs, not classes
-
-No vtable, no heap allocation, no virtual dispatch. The `for` loop
-monomorphizes against the concrete iterator type, so `.next()` inlines.
-Cajeta's struct-by-pointer calling convention (Method.cpp's pass-by-ptr
-rule for structs) means passing an iterator to a combinator is a
-pointer-push, not a memcpy.
+Concrete implementation — an array iterator declared as a `struct`
+(see `Structs.md`), implementing the `Iterator<T>` interface via
+the tagged-fat-pointer dispatch:
 
 ```cajeta
-// Array iterator — a tiny struct that holds the cursor and a borrow
-// of the array. No new allocation when you call arr.iter().
-public struct ArrayIter<T> {
-    private T[]   data;   // borrowed
+public struct ArrayIter<T> implements Iterator<T> {
+    private T[]   data;        // borrowed array reference
     private int64 idx;
     private int64 stop;
 
     public Optional<T> next() {
-        if (this.idx >= this.stop) {
-            return None();
-        }
-        T value = this.data[this.idx];
-        this.idx = this.idx + 1;
-        return Some(value);
+        if (this.idx >= this.stop) return Optional<T>.None();
+        T v = this.data[this.idx];
+        this.idx += 1;
+        return Optional<T>.Some(v);
     }
 }
 ```
 
-Languages compared: **Java/C#** allocate the iterator on the heap (every
-`for-each` is an allocation + virtual calls). **Rust/C++** use stack-
-allocated iterators that the compiler can inline through. Cajeta matches
-the cheap shape.
+Direct calls on `ArrayIter<T>` are monomorphized (zero vtable cost,
+inlinable). Calls through `Iterator<T>` go via the interface value's
+vtable — one indirection. Both work; pick based on whether the call
+site has a concrete type or an interface-typed receiver.
 
-#### 3. Combinators are default methods on `Iterator<T>`, present from day one
+#### 2. Combinators are default methods on `Iterator<T>`, present from day one
 
 `map`, `filter`, `fold`, `find`, `count`, `take`, `skip`, `chain`,
-`enumerate`, `reduce`, `any`, `all`. Each returns a struct that wraps
+`enumerate`, `reduce`, `any`, `all`. Each returns a type that wraps
 the inner iterator and implements `Iterator<T>` itself — composes lazily
 with no per-element allocation.
 
@@ -705,7 +572,7 @@ with no per-element allocation.
 public interface Iterator<T> {
     public Optional<T> next();
 
-    // Default-method combinators. Each returns a wrapper struct that
+    // Default-method combinators. Each returns a wrapper that
     // adapts `this` and re-implements `next()`. Lazy: nothing happens
     // until the consumer pulls.
 
@@ -746,7 +613,7 @@ added years after the iterator protocol; never as ergonomic as if they
 were native. **Rust/Swift** ship combinators on the trait from v1.
 Cajeta does the same.
 
-#### 4. Borrow-check integration — mutation during iteration is a compile error
+#### 3. Borrow-check integration — mutation during iteration is a compile error
 
 `m.iter()` registers a borrow on `m` via cajeta's existing borrow
 detection (the same machinery that catches `T[] alias = paramArr`). Any
@@ -770,11 +637,11 @@ behavior. **Rust** rejects at compile time (which is what cajeta does).
 **C++** is undefined behavior with iterator-invalidation rules nobody
 remembers.
 
-#### 5. Multi-yield via destructuring an `Entry` struct, no special syntax
+#### 4. Multi-yield via destructuring an `Entry` value, no special syntax
 
-`HashMap` iteration yields a single value per call — an `Entry<K, V>`
-struct. The `for (k, v in m)` Go-style form is sugar over destructuring
-that single entry. Same machinery handles N-element tuples
+`HashMap` iteration yields a single value per call — an `Entry<K, V>`.
+The `for (k, v in m)` Go-style form is sugar over destructuring that
+single entry. Same machinery handles N-element tuples
 (`Iterator<Triple<A, B, C>>`).
 
 ```cajeta
@@ -800,10 +667,10 @@ Languages compared: **Go** special-cases `for k, v := range m` as a
 language form — not extensible. **Python** unpacks tuples in `for k, v
 in m.items()` but the protocol uses `.items()` as a separate iter
 method. **Rust** uses `&(k, v)` destructuring on the tuple iterator
-type. Cajeta's `Entry` struct + destructuring sugar gives the same
+type. Cajeta's `Entry` + destructuring sugar gives the same
 ergonomics without special-casing maps.
 
-#### 6. No `IntoIterator` vs `Iterator` split
+#### 5. No `IntoIterator` vs `Iterator` split
 
 Rust's three-method `iter()` / `iter_mut()` / `into_iter()` is honest
 but a teaching obstacle. Cajeta has two:
@@ -836,7 +703,7 @@ Languages compared: **Rust** three traits (`iter`, `iter_mut`,
 no consuming form. Cajeta picks the middle: two methods, the common
 distinction, no triple-trait taxonomy.
 
-#### 7. No "end iterator"
+#### 6. No "end iterator"
 
 The C++ `begin()` / `end()` pair is the source of unending off-by-one
 bugs. Single-call `next()` returning `Optional<T>` removes the concept
@@ -862,7 +729,7 @@ loop {
 Languages compared: **C++** end-iterator footgun. **Everyone else** —
 including cajeta — terminates on a falsy signal from `next()`.
 
-#### 8. `for` desugars but exposes the iterator binding
+#### 7. `for` desugars but exposes the iterator binding
 
 Foreach syntax is sugar over `loop { match it.next() { ... } }`, but
 the iterator binding stays in scope. Callers can `.peek()`, `.skip(1)`,
@@ -898,12 +765,12 @@ manually. **Rust** has the same hiding problem (`for x in iter` doesn't
 bind the iter). Cajeta's `as it` clause is opt-in; most loops won't
 need it, but when you do, it's there.
 
-#### 9. Index iteration via `enumerate`, not a separate counter
+#### 8. Index iteration via `enumerate`, not a separate counter
 
 `for ((i, x) in arr.iter().enumerate())` instead of
 `for (i in 0..arr.length) { x = arr[i]; ... }`. Removes the "do I want
 indices or elements?" question — combinators handle both. `enumerate()`
-returns an iterator of `Entry<int64, T>` (using the same Entry struct
+returns an iterator of `Entry<int64, T>` (using the same Entry type
 as map iteration, but with index for key).
 
 ```cajeta
@@ -927,93 +794,21 @@ on top of the structural iterator.
 
 ### Prerequisites
 
-Two stdlib pieces have to land before the iterator interface ships:
+One stdlib piece has to land before the iterator interface ships:
 
-1. **`Optional<T>`** — `Some(T)` / `None()` value-typed sum, no heap
-   allocation. `Iterator.next()` returns it. Independently useful for
-   many things beyond iterators.
-2. **Generic struct support** — iterators are templated structs.
-   We've shipped templated *classes*; templated *structs* may need
-   compiler work (the field-layout pass for struct templates).
+1. **`Optional<T>`** — `Some(T)` / `None()` value-typed sum, declared as
+   a `struct` (see `Structs.md`), no heap allocation. `Iterator.next()`
+   returns it. Independently useful for many things beyond iterators.
 
-The biggest open design question: **trait dispatch on structs**.
-Cajeta's interfaces today are class-based with vtable dispatch.
-Iterator-as-struct means `Iterable<T>::iter()` returning a struct
-type — does that work with the existing interface machinery, or do
-iterators have to be classes after all? Answering this is the
-gating decision before drafting `cajeta.collection.Iterator`.
+Map iteration yields `Entry<K, V>` values, also declared as a `struct`
+— see the `Map<K, V>` section below. Both `Optional<T>` and `Entry<K, V>`
+are stack-allocated value bundles; method calls on them are direct
+(monomorphized), and they can participate in interface dispatch via the
+tagged-fat-pointer mechanism documented in `Structs.md`.
 
-### `StructView` — zero-alloc views over external storage
+### `Array<T>` implements `Collection<T>`
 
-Some collections can be constructed as a *view* over bytes that live
-elsewhere (a struct field, an existing array, a buffer slice) — no
-allocation, no memcpy, just a borrow of the source's memory.
-`StructView` marks the collection types that support this. The
-contract is a pair of static factories whose names start with
-`viewOf`; the convention across stdlib is that **`new` allocates,
-`viewOf` borrows**.
-
-```cajeta
-public interface StructView<Self, Source> {
-    // Construct an instance whose internal storage borrows from
-    // `source`. No allocation, no memcpy. The borrow checker ties
-    // the returned instance's lifetime to `source`.
-    public static Self viewOf(Source& source);
-
-    // Same, when the source's length isn't known at the type
-    // level (a runtime-sized byte[] tail in a struct, for example).
-    public static Self viewOf(Source& source, int64 length);
-}
-```
-
-**View-mode collections are read-only.** Mutating operations
-(`add`, `set`, `push`, `pop`, `sort` in-place) are rejected at
-compile time on view-mode instances — calling them prints a
-diagnostic pointing at `.toOwned()`:
-
-```
-error: cannot call `Heap<int32>.push` on a view-mode instance.
-       The heap views `source` (declared at line 14) and views
-       are read-only. Call `.toOwned()` to materialize a heap-
-       allocated, mutable copy.
-```
-
-Read-only operations (`count`, `iterator`, `peek`, `contains`,
-indexing, `equals`) work uniformly on owned and view modes — no
-branch on the caller's side.
-
-**The view's lifetime is tied to the source.** Returning a view
-past its source's scope, storing it in a longer-lived field, or
-transferring it to another fiber is a compile-time error.
-`.toOwned()` materializes a fresh heap-allocated, fully-owned
-instance — that crosses any boundary.
-
-**Which collections implement `StructView`:**
-
-| Collection         | Implements? | Storage shape                                                       |
-|--------------------|-------------|--------------------------------------------------------------------|
-| `Array<T>`         | yes         | Contiguous bytes of `T`. The canonical case.                       |
-| `String`           | yes         | UTF-8 bytes (other encodings supported).                           |
-| `BitSet`           | yes         | Packed bits over a backing word array.                             |
-| `Heap<T>`          | yes         | Binary heap stored as a contiguous array.                          |
-| `ArrayStack<T>`    | yes         | Same backing as Array.                                             |
-| `ArrayList<T>`     | yes         | View has no capacity slack — append rejected; reads fine.          |
-| `ArrayDeque<T>`    | no          | Head/tail offsets + wrap-around can't be inferred from raw bytes.  |
-| `LinkedList<T>`    | no          | Nodes scattered in memory.                                         |
-| `HashMap` / `HashSet` | no       | Hash table + chains, scattered.                                    |
-| `TreeMap` / `TreeSet` | no       | Pointer-linked tree.                                               |
-| `BinaryTree<T>`    | no          | Pointer-linked.                                                    |
-| `BTree` / `BPlusTree` | no       | Pointer-linked between pages.                                      |
-
-The "no" entries don't have a contiguous representation to borrow
-into. If you need to ship a `LinkedList<int32>` over the wire,
-convert to `Array<int32>` first (`list.toArray()`); the array can
-then participate in the view-construction story end-to-end.
-
-### `Array<T>` implements `Collection<T>`, `StructView<Array<T>, byte[]>`
-
-The load-bearing piece of "arrays included in Collection polymorphism,"
-and the canonical `StructView` implementor.
+The load-bearing piece of "arrays included in Collection polymorphism."
 
 - `int32[]`, `byte[]`, `Foo[]`, etc. all carry a length in their header
   (already true today — `__cajeta_new_array` does this). `count()` reads that
@@ -1023,56 +818,20 @@ and the canonical `StructView` implementor.
 - Code that takes `Collection<int32>` accepts an `int32[]` directly. No
   wrapping.
 
-**View construction.** The `viewOf` factory takes a byte buffer (any
-contiguous source) and produces a read-only Array of the element type
-viewed over those bytes — no allocation, no memcpy.
-
 ```cajeta
-public final class Array<T> implements Collection<T>, StructView<Array<T>, byte[]> {
-    // Owned — `new` always allocates.
+public final class Array<T> implements Collection<T> {
     public Array(int64 length);
 
-    // View over a typed slice of an external byte buffer. Element
-    // count comes from `byteCount / sizeof(T)`. Read-only.
-    public static Array<T> viewOf(byte[]& source, int64 byteCount);
-
-    // View over a fixed-size byte buffer (N comes from the type).
-    public static Array<T> viewOf(byte[N]& source);
-
-    public T at(int64 index);                 // both modes
-    public void set(int64 index, T value);    // owned only
-    public int64 count();                     // both modes
-    public Array<T> toOwned();                // promote view → owned
+    public T at(int64 index);
+    public void set(int64 index, T value);
+    public int64 count();
 }
-```
-
-Wire-format usage — overlay a typed array directly over the buffer
-that came off the socket:
-
-```cajeta
-struct ProbeBatch {
-    int32 batchId;
-    int32 sampleCount;
-    byte[?] samples;        // sampleCount * sizeof(int32) bytes
-}
-
-ProbeBatch b = ProbeBatch(buf);
-
-// Zero-copy view over the samples region as int32[].
-Array<int32> samples = Array<int32>.viewOf(b.samples,
-                                            b.sampleCount * 4);
-
-int32 total = 0;
-for (sample in samples) total += sample;     // pure read; works on view
-
-// Promote when we need to keep them past `b`'s scope:
-Array<int32> archived = samples.toOwned();
 ```
 
 Open question: does Array's interface participation require runtime magic
 (compiler treats `T[]` as having `Collection<T>` methods) or does it work
 through normal implements-interface resolution? Recommended: compiler-level
-— the array struct has a vtable slot that points at a generated
+— the array carries a vtable slot pointing at a generated
 `count`/`iterator` pair for the element type, so `(Collection<T>) myArr`
 dispatches normally.
 
@@ -1090,21 +849,9 @@ public interface List<T> extends Collection<T> {
 ```
 
 Concrete types:
-- **`ArrayList<T>`** — growable array, amortized O(1) append. Implements
-  `StructView<ArrayList<T>, byte[]>`; views are read-only (`add` rejected
-  because there's no capacity slack to grow into).
+- **`ArrayList<T>`** — growable array, amortized O(1) append.
 - **`LinkedList<T>`** — doubly-linked, O(1) insert/remove at known position,
-  O(1) at-ends. Also implements `Deque<T>`. **Not** `StructView` — nodes
-  are scattered.
-
-```cajeta
-// ArrayList view over wire bytes — read-only, zero-alloc.
-ArrayList<int64> ids = ArrayList<int64>.viewOf(batch.idsField,
-                                                batch.idCount * 8);
-for (id in ids) process(id);
-// ids.add(99);   // compile error: cannot mutate a view
-ArrayList<int64> kept = ids.toOwned();   // for storage past batch's scope
-```
+  O(1) at-ends. Also implements `Deque<T>`.
 
 ### `Set<T>` and concrete sets
 
@@ -1124,15 +871,7 @@ Concrete types — split along storage policy:
   Adds `first()`, `last()`, `floor(T)`, `ceiling(T)`, range queries.
 - **`BitSet`** — dense set of `int32` keys, one bit per possible value.
   Specialized; the right answer for "set of ints in a known small range."
-  Implements `Set<int32>` and `StructView<BitSet, byte[]>` — a view over
-  a packed bit field in an existing buffer:
-
-  ```cajeta
-  // Feature-flag bitmap viewed straight out of a config payload.
-  BitSet flags = BitSet.viewOf(payload.flagBytes, /*bitCount=*/256);
-  if (flags.contains(FLAG_FAST_PATH)) ...
-  // flags.add(99);   // compile error: view is read-only
-  ```
+  Implements `Set<int32>`.
 
 ### `Map<K, V>`
 
@@ -1146,7 +885,7 @@ public interface Map<K, V> extends Collection<Entry<K, V>> {
     public Collection<V> values();
 }
 
-public class Entry<K, V> {
+public struct Entry<K, V> {
     public K key();
     public V value();
 }
@@ -1204,22 +943,9 @@ public interface Stack<T> extends Collection<T> {
 ```
 
 Concrete:
-- **`ArrayDeque<T>`** — ring-buffer-backed Deque. Default. **Not**
-  `StructView` — head/tail offsets + wrap-around can't be inferred
-  from raw bytes.
+- **`ArrayDeque<T>`** — ring-buffer-backed Deque. Default.
 - **`LinkedDeque<T>`** — alias for `LinkedList<T>` (which already qualifies).
-  **Not** `StructView` — nodes are scattered.
-- **`ArrayStack<T>`** — Stack on top of ArrayList. Implements
-  `StructView<ArrayStack<T>, byte[]>`; views are read-only (`peek` and
-  iteration work, `push` / `pop` rejected).
-
-```cajeta
-// ArrayStack view over a wire-format frame's payload region.
-ArrayStack<int32> incoming = ArrayStack<int32>.viewOf(frame.payload,
-                                                      frame.count * 4);
-int32 top = incoming.peek();      // read-only ops work
-// incoming.pop();   // compile error: cannot mutate a view
-```
+- **`ArrayStack<T>`** — Stack on top of ArrayList.
 
 ### `Heap<T>` — priority queue
 
@@ -1229,9 +955,9 @@ heap-order invariant (parent at index `i`, children at `2i+1` and
 `2i+2`); operations are O(log n) push / pop, O(1) peek, O(n) heapify.
 
 ```cajeta
-public final class Heap<T> implements Collection<T>, StructView<Heap<T>, Array<T>> {
-    // Owned — `new` always allocates. Default ordering uses
-    // `Comparable<T>`; supply a comparator to override.
+public final class Heap<T> implements Collection<T> {
+    // Default ordering uses `Comparable<T>`; supply a comparator
+    // to override.
     public Heap();
     public Heap(Comparator<T> cmp);
     public Heap(Array<T> items);              // O(n) heapify
@@ -1239,26 +965,18 @@ public final class Heap<T> implements Collection<T>, StructView<Heap<T>, Array<T
     public static Heap<T> minHeap();
     public static Heap<T> maxHeap();
 
-    // View — read-only over an already heap-ordered array. The
-    // comparator must match what produced the ordering (callers
-    // either supply it or accept natural ordering).
-    public static Heap<T> viewOf(Array<T>& source);
-    public static Heap<T> viewOf(Array<T>& source, Comparator<T> cmp);
+    public void push(T value);
+    public T    pop();
+    public T    peek();
+    public int64 count();
+    public boolean isEmpty();
 
-    public void push(T value);                // owned only
-    public T    pop();                        // owned only
-    public T    peek();                       // both modes
-    public int64 count();                     // both modes
-    public boolean isEmpty();                 // both modes
-
-    public Iterator<T> drainSorted();         // owned only — destructive
-    public Iterator<T> iterator();            // both — heap order, NOT sorted
-
-    public Heap<T> toOwned();                 // promote view → owned
+    public Iterator<T> drainSorted();         // destructive
+    public Iterator<T> iterator();            // heap order, NOT sorted
 }
 ```
 
-Usage — owned, building up a priority queue:
+Usage — building up a priority queue:
 
 ```cajeta
 Heap<int64> nextAt = Heap<int64>.minHeap();
@@ -1267,32 +985,6 @@ nextAt.push(timestamp + 250);
 int64 due = nextAt.peek();        // 250-from-now wins
 nextAt.pop();
 ```
-
-Usage — view, consuming a wire-format frame that already holds a
-heap-ordered batch (e.g. an upstream-prioritized work queue):
-
-```cajeta
-struct PriorityBatch {
-    int32 jobCount;
-    byte[?] jobIds;       // jobCount * 8 bytes, already heap-ordered
-}
-
-PriorityBatch p = PriorityBatch(buf);
-Array<int64> jobs = Array<int64>.viewOf(p.jobIds, p.jobCount * 8);
-Heap<int64> priorityQ = Heap<int64>.viewOf(jobs);
-
-int64 next = priorityQ.peek();    // O(1), zero allocation
-// priorityQ.push(99);  // compile error: view is read-only
-```
-
-`Heap` is the only `StructView` implementor in the stdlib whose
-storage layout encodes a non-trivial invariant (the heap order).
-Callers that construct a heap view over arbitrary unsorted bytes
-get well-formed peek/iteration but undefined `pop`-like semantics
-— the contract is "the source is already heap-ordered." Views
-exist for shipping a heap over the wire (sender heapifies once,
-receiver consumes via a view), not for converting an arbitrary
-array into a heap zero-cost.
 
 ### Sorting
 
@@ -1796,12 +1488,6 @@ Mutators (`add`, `put`, `remove`, `push`, `pop`, …) throw
 optimizations available because element identity is stable — no rehash,
 no resize, no concurrent-modification checks.
 
-`Immutable*` is distinct from `StructView` mode even when both render the
-collection effectively read-only. Immutable instances own their storage
-(allocated by the construction call); views borrow storage from
-elsewhere. Both reject mutation; the difference is lifetime and
-ownership semantics, not the mutation contract.
-
 Alternative design: an `@Immutable` annotation on a collection variable
 that the compiler treats as read-only. Cleaner syntactically; harder to
 enforce once values escape across method boundaries. Recommended:
@@ -1809,8 +1495,7 @@ separate concrete types, simpler.
 
 ### Trees
 
-In `cajeta.collection.tree`. None of these implement `StructView` — all
-are pointer-linked, so there's no contiguous representation to borrow.
+In `cajeta.collection.tree`.
 
 **`BinaryTree<T>`** — bare binary search tree, no balancing. The
 building-block type if you want to write your own algorithms (worst-case
@@ -2260,9 +1945,7 @@ public class BufferChain {
 ```
 
 `Buffer` wraps a single `byte[MAX_SIZE]`. `BufferChain` is the linked list
-of buffers used by the harness. A struct overlay (via the zero-copy
-`MyStruct(byte[] bytes)` view) reads/writes fixed-layout records out of any
-`Buffer`.
+of buffers used by the harness.
 
 ### Streams: InputStream / OutputStream / Reader / Writer
 

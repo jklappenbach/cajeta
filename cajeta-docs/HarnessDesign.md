@@ -1,12 +1,12 @@
 # HarnessDesign.md
 
 A stress-test harness for measuring cajeta's threading model and
-buffer-of-structs performance, plus the methodology for comparing those
+buffer-pipeline performance, plus the methodology for comparing those
 numbers against other languages' concurrency primitives.
 
 ## What we're measuring
 
-**Goal:** characterize cajeta's fiber scheduler + buffer/struct overlay under
+**Goal:** characterize cajeta's fiber scheduler + buffer pipeline under
 realistic server-shaped load, well enough to defend (or refute) the
 architecture choices vs. mainstream alternatives.
 
@@ -39,10 +39,10 @@ Each simulated "connection" is a fiber that loops:
 1. Wait `T_inter_arrival` ms (Poisson-distributed around the test's target
    arrival rate; gives a realistic request stream rather than a closed loop).
 2. Grab a buffer from the inbound `BufferChain`.
-3. Decode a request struct overlay out of the buffer.
+3. Decode a request payload out of the buffer.
 4. **Simulate work:** `Fiber.sleep(work_ms + jitter)`.
-5. Compute a response (a constant transform on the request struct).
-6. Grab a buffer from the outbound `BufferChain`, encode the response struct.
+5. Compute a response (a constant transform on the request).
+6. Grab a buffer from the outbound `BufferChain`, encode the response.
 7. Record `now - request_start` into a per-fiber latency histogram.
 
 The sleep step is what makes this a *concurrency* benchmark rather than a
@@ -52,9 +52,7 @@ serializes and throughput collapses to `1 / work_time`. The contrast is
 meaningful.
 
 The buffer step exercises the design you sketched: pre-allocated
-`byte[MAX_SIZE]` chunks in a per-direction linked list. Decode is a
-zero-copy struct overlay (cajeta's `MyStruct(byte[] bytes)` view
-constructor). No allocation per request.
+`byte[MAX_SIZE]` chunks in a per-direction linked list.
 
 ## Carrier configuration
 
@@ -160,25 +158,28 @@ For each language and each dial setting, we'll learn:
 If any of these are pathological — say, `swapcontext` shows up at 30% of
 samples — that's a signpost for the next round of work.
 
-## Buffer-of-structs micro-benchmark
+## View-overlay micro-benchmark
 
-Separate from the server harness, a focused buffer test that isolates the
-"linked-list-of-byte[MAX_SIZE]-with-struct-overlay" pattern:
+Separate from the server harness, a focused buffer test that isolates
+the `view`-over-byte-buffer pattern (see `Views.md`):
 
 - N buffers, each 64 KB, linked.
-- Walk the chain, decoding `Record` structs (a fixed-size struct: say,
-  64 bytes — int64 key, int64 timestamp, int64[6] payload).
+- Walk the chain, decoding `view Record { int64 key; int64 timestamp; int64[6] payload; }` instances over each buffer's 64-byte sub-regions.
 - Sum a field across all records.
 - Measure: records-per-second decoded.
 
 Compare with:
-- Java: `ByteBuffer` + `getLong` (no overlay; per-field byte access).
-- Rust: `bytemuck::cast_slice::<u8, Record>(&buf)` (zero-copy too).
-- C: `(Record*) buf` (the bare-metal baseline).
+- **Java** — `ByteBuffer` + `getLong` (no overlay; per-field byte access).
+- **Rust** — `bytemuck::cast_slice::<u8, Record>(&buf)` (zero-copy too).
+- **C** — `(Record*) buf` (the bare-metal baseline).
+- **cajeta with `@HostEndian`** — should match C's numbers within noise; the view's per-access codegen is a plain load+GEP.
+- **cajeta with `@BigEndian` on a little-endian host** — measures the cost of `bswap` intrinsics. Expected ~5–10% over the host-endian case; if it's worse, the codegen is doing too much.
 
-This tells us whether cajeta's struct overlay actually delivers zero-copy
-performance or whether the compiler is inserting hidden copies / bounds
-checks we didn't intend.
+This tells us whether cajeta's view overlay actually delivers
+zero-copy performance or whether the compiler is inserting hidden
+copies / bounds checks we didn't intend. A secondary measurement
+runs the same loop with `@Align(natural)` to quantify the
+unaligned-access cost on ARM (negligible on x86).
 
 ## Sequence
 

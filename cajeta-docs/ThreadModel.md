@@ -77,8 +77,8 @@ detach backgroundWork();   // explicit opt-out of scope; rare
 `detach expr;` requires `expr` to be a method-call expression (same shape constraint as `spawn`). The call's value type is irrelevant — `detach` evaluates as `void`; any return value the call would produce is discarded by the runtime.
 
 **Runtime:** the call is enqueued as a fiber via the same `__cajeta_task_run` machinery `spawn` uses. The difference from `spawn`:
-- The Task struct is NOT registered with the enclosing scope (`__cajeta_scope_register` is skipped) — `scope_exit` won't wait for it.
-- The Task struct is NOT pushed onto the drop chain — no scope owns it, so nothing reclaims it. The Task's heap allocation leaks for the process lifetime, matching the explicit "use sparingly" framing in *Open* items below. Captured `#`-transferred values *do* end up owned by the detached task and are freed when the task's locals drop, but the Task wrapper itself leaks.
+- The Task is NOT registered with the enclosing scope (`__cajeta_scope_register` is skipped) — `scope_exit` won't wait for it.
+- The Task is NOT pushed onto the drop chain — no scope owns it, so nothing reclaims it. The Task's heap allocation leaks for the process lifetime, matching the explicit "use sparingly" framing in *Open* items below. Captured `#`-transferred values *do* end up owned by the detached task and are freed when the task's locals drop, but the Task wrapper itself leaks.
 - The expression's result is `void` — no Task handle escapes back to user code.
 
 **Captures rule.** Every argument to the immediate call must be one of:
