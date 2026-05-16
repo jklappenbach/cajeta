@@ -253,6 +253,114 @@ TEST(StructCompositionTests, doublyNestedEmbeddedStructAccess) {
     EXPECT_EQ(runI32(src), 77);
 }
 
+// ---------------------------------------------------------------------
+// S7.4 — path-borrow tracking through embedded structs. Paths like
+// `obj.embeddedStruct.classField` participate in the same Scope-based
+// markMovedPath / isPathMoved machinery as class field paths; `#path`
+// at any depth marks the prefix moved-from, and subsequent reads
+// through it (or through any deeper extension) trip use-after-move.
+// Same DotExpression::buildPath that handles every other dotted path.
+// ---------------------------------------------------------------------
+
+// Move out of an embedded struct's class-ref field. Reading the same
+// path afterward must trip use-after-move.
+TEST(StructCompositionTests, useAfterMoveOnPathThroughEmbeddedStruct) {
+    auto src =
+        "package test;\n"
+        "public class Tag {\n"
+        "    public int32 n;\n"
+        "    public Tag() { this.n = 0; return; }\n"
+        "}\n"
+        "public struct Holder { Tag t; }\n"
+        "public class Wrapper {\n"
+        "    public Holder h;\n"
+        "    public Wrapper() { return; }\n"
+        "}\n"
+        "public final class S {\n"
+        "    public static int32 run() {\n"
+        "        Wrapper w = new Wrapper();\n"
+        "        Tag tag = new Tag();\n"
+        "        w.h.t = #tag;\n"
+        "        Tag moved = #w.h.t;\n"  // transfer out of the embedded path
+        "        return w.h.t.n;\n"      // path was moved
+        "    }\n"
+        "}\n";
+    try {
+        CajetaJit::compile(src, "test.S");
+        FAIL() << "expected CAJETA_ERROR_USE_AFTER_MOVE on w.h.t.n after #w.h.t";
+    } catch (cajeta::Exception& e) {
+        EXPECT_EQ(e.getErrorId(), "CAJETA_ERROR_USE_AFTER_MOVE");
+    }
+}
+
+// Moving a prefix marks all deeper extensions too. Here `#w.h.t`
+// should poison reads of `w.h.t.n` (deeper than the moved prefix).
+TEST(StructCompositionTests, prefixMoveBlocksDeeperPathReads) {
+    auto src =
+        "package test;\n"
+        "public class Inner {\n"
+        "    public int32 v;\n"
+        "    public Inner() { this.v = 0; return; }\n"
+        "}\n"
+        "public struct Holder { Inner inner; }\n"
+        "public class Wrapper {\n"
+        "    public Holder h;\n"
+        "    public Wrapper() { return; }\n"
+        "}\n"
+        "public final class S {\n"
+        "    public static int32 run() {\n"
+        "        Wrapper w = new Wrapper();\n"
+        "        Inner i = new Inner();\n"
+        "        w.h.inner = #i;\n"
+        "        Inner stolen = #w.h.inner;\n"  // move out the inner
+        "        return w.h.inner.v;\n"          // any read through the moved prefix is poisoned
+        "    }\n"
+        "}\n";
+    try {
+        CajetaJit::compile(src, "test.S");
+        FAIL() << "expected CAJETA_ERROR_USE_AFTER_MOVE on w.h.inner.v after #w.h.inner";
+    } catch (cajeta::Exception& e) {
+        EXPECT_EQ(e.getErrorId(), "CAJETA_ERROR_USE_AFTER_MOVE");
+    }
+}
+
+// Sibling paths (not the moved one) stay readable. The move-mark on
+// `w.p.a` must NOT poison reads of `w.p.b`. Compile-only check —
+// reaching this point means buildPath / isPathMoved scoped the move
+// correctly to the specific path string. (The full run-and-return
+// shape would also exercise a runtime drop-chain on the moved-out
+// struct field, which is a separate gap: struct drop walks the
+// post-move slot as if it still owned the original pointer. Tracked
+// under S7.4 limitations in the rollout doc.)
+TEST(StructCompositionTests, siblingPathStaysReadableAfterMove) {
+    auto src =
+        "package test;\n"
+        "public class Tag {\n"
+        "    public int32 n;\n"
+        "    public Tag() { this.n = 7; return; }\n"
+        "}\n"
+        "public struct Pair { Tag a; Tag b; }\n"
+        "public class Wrapper {\n"
+        "    public Pair p;\n"
+        "    public Wrapper() { return; }\n"
+        "}\n"
+        "public final class S {\n"
+        "    public static int32 run() {\n"
+        "        Wrapper w = new Wrapper();\n"
+        "        Tag a = new Tag();\n"
+        "        Tag b = new Tag();\n"
+        "        w.p.a = #a;\n"
+        "        w.p.b = #b;\n"
+        "        Tag stolen = #w.p.a;\n"
+        // w.p.a is moved-from; the read below targets w.p.b which is
+        // a different path — must compile.
+        "        int32 ignored = w.p.b.n;\n"
+        "        return 0;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_NO_THROW(CajetaJit::compile(src, "test.S"));
+}
+
 // All three embedded class refs across two embedded structs' slots
 // fire their destructors. Observed:
 //   1 (Wrapper class drop entry)
