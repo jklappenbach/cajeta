@@ -665,6 +665,101 @@ namespace cajeta {
             }
         }
 
+        // Primitive-receiver intrinsic: `<int32>.hash()` and friends
+        // lower directly to the matching __cajeta_hash_X runtime
+        // helper, with sext/zext coercion for narrow ints / boolean
+        // (i1) so the call's argument type matches the helper's C
+        // ABI. Lets HashMap<int32, V> (and other primitive-keyed
+        // maps) work without boxing — the template body's
+        // `key.hash()` resolves to int32 after instantiation and
+        // hits this branch instead of trying to dispatch a method
+        // that primitives don't have.
+        //
+        // Narrow signed ints sign-extend; narrow unsigned ints zero-
+        // extend. Matches the coercion rules in
+        // SynthesizedHashMethod so a `int32 x` hashed via @AutoHash
+        // and a `int32 x` hashed via `x.hash()` produce the same
+        // value for the same x.
+        if (receiver && receiverType
+                && methodCallName == "hash"
+                && parameters.empty()
+                && (receiverType->getTypeFlags() & PRIMITIVE_FLAG)
+                && !dynamic_pointer_cast<CajetaClass>(receiverType)) {
+            auto& llvmCtx = *module->getLlvmContext();
+            llvm::Type* i64Ty = llvm::Type::getInt64Ty(llvmCtx);
+            llvm::Type* i32Ty = llvm::Type::getInt32Ty(llvmCtx);
+            llvm::Type* i8Ty  = llvm::Type::getInt8Ty(llvmCtx);
+
+            const char* symbol = nullptr;
+            llvm::Type* argTy = nullptr;
+            llvm::Value* arg = receiver;
+
+            switch (receiverType->getTypeFlags() & TYPE_ID_MASK) {
+                case BOOLEAN_ID:
+                    symbol = "__cajeta_hash_boolean";
+                    arg = builder->CreateZExt(receiver, i8Ty);
+                    argTy = i8Ty;
+                    break;
+                case INT8_ID:
+                    symbol = "__cajeta_hash_int32";
+                    arg = builder->CreateSExt(receiver, i32Ty);
+                    argTy = i32Ty;
+                    break;
+                case UINT8_ID:
+                    symbol = "__cajeta_hash_int32";
+                    arg = builder->CreateZExt(receiver, i32Ty);
+                    argTy = i32Ty;
+                    break;
+                case INT16_ID:
+                    symbol = "__cajeta_hash_int32";
+                    arg = builder->CreateSExt(receiver, i32Ty);
+                    argTy = i32Ty;
+                    break;
+                case UINT16_ID:
+                    symbol = "__cajeta_hash_int32";
+                    arg = builder->CreateZExt(receiver, i32Ty);
+                    argTy = i32Ty;
+                    break;
+                case INT32_ID:
+                case UINT32_ID:
+                    symbol = "__cajeta_hash_int32";
+                    argTy = i32Ty;
+                    break;
+                case INT64_ID:
+                case UINT64_ID:
+                    symbol = "__cajeta_hash_int64";
+                    argTy = i64Ty;
+                    break;
+                case FLOAT32_ID:
+                    symbol = "__cajeta_hash_float32";
+                    argTy = llvm::Type::getFloatTy(llvmCtx);
+                    break;
+                case FLOAT64_ID:
+                    symbol = "__cajeta_hash_float64";
+                    argTy = llvm::Type::getDoubleTy(llvmCtx);
+                    break;
+                default:
+                    // Extended-precision (fp4/6/8/16/128), int128/
+                    // uint128, bare `pointer` — no specialized hash
+                    // helper today. Fall through to the regular
+                    // dispatch path; it'll fail loudly because
+                    // primitives don't carry hash() as a method.
+                    break;
+            }
+            if (symbol) {
+                llvm::FunctionType* fnTy = llvm::FunctionType::get(
+                    i64Ty, { argTy }, false);
+                llvm::Module* lmod = module->getLlvmModule();
+                llvm::Function* fn = lmod->getFunction(symbol);
+                if (!fn) {
+                    fn = llvm::Function::Create(
+                        fnTy, llvm::Function::ExternalLinkage,
+                        symbol, lmod);
+                }
+                return builder->CreateCall(fn, { arg });
+            }
+        }
+
         // String built-in methods. String is a pointer alias, so the receiver value
         // is already the C-string ptr after the l-value coercion above. We detect a
         // String receiver via two paths: (a) static resolvedType says "String"; or
