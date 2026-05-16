@@ -9,7 +9,7 @@ This rollout supersedes the old "struct as wire-format view" implementation. Sig
 ## Current status
 
 **Phase:** Phase 2 complete (S4, S5, S5b done). Phase 3 in progress.
-**Current line item:** Sessions 6, 7, 8, 9 complete. Session 10 attempted; reverted pending an architectural plan — see "Session 10 — attempt and findings" below.
+**Current line item:** Sessions 6, 7, 8, 9 complete. Session 10 attempted, reverted, restructured. The fat-pointer migration turned out to be a foundational architectural shift rather than a single session's new functionality — pulled the migration into a new **Session 9.5** that lands before Session 10. Session 10 is now just the struct-specific assignment + ownership semantics built on top of that foundation. See "Session 10 — attempt and findings" for the full reasoning, and Session 9.5 for the new staging.
 
 ---
 
@@ -177,9 +177,28 @@ Also during S5: a non-obvious bug surfaced and got fixed — `DotExpression` was
   - method-generic-on-interface rejected — `rejectInterfaceMethodLevelGeneric` (S9.4)
 - [x] **Pass criteria:** Vtables generated correctly; concrete-type calls remain direct. Confirmed across 7 tests in `StructInterfaceTests`.
 
-#### Session 10 — Tagged fat pointer construction + borrow tracking
-- [ ] **10.1** Interface value LLVM layout: `{ data_ptr, vtable_ptr, kind_tag }`, total 24 bytes (with padding).
-- [ ] **10.2** Assignment codegen: assigning a struct to an interface variable builds the fat pointer with the right vtable + `kind_tag = BORROWED_STRUCT`. Assigning a class builds it with the class's vtable (loaded from class header) + `kind_tag = BORROWED_CLASS` or `OWNED_CLASS` depending on `#` at assignment site.
+#### Session 9.5 — Interface fat-pointer foundation (Phase 4 prelude)
+
+Originally folded into Session 10's S10.1; pulled out into its own session after the attempted S10.1 revealed the change is foundational rather than feature-scoped. Lands the 24-byte `{ data_ptr, vtable_ptr, kind_tag }` interface value layout and migrates every existing site that produces or consumes an interface value. Once this lands, Session 10's struct-→-interface assignment and ownership semantics drop in cleanly without touching DI, class-field initialization, or any other downstream codegen.
+
+The whole session executes on a branch (`phase4-interface-fat-pointer` or similar); intermediate commits intentionally fail regression while the migration is mid-flight. The branch is rebased / squashed into main once every test passes at the end.
+
+- [ ] **9.5.1** Interface LLVM layout. Replace CajetaClass's interface branch (the `if (isInterface())` block in `generatePrototype`) with the 3-word fat pointer: `{ ptr data, ptr vtable, i64 kind }`, total 24 bytes. Define `IFACE_KIND_BORROWED_CLASS = 0`, `IFACE_KIND_OWNED_CLASS = 1`, `IFACE_KIND_BORROWED_STRUCT = 2` as an enum on CajetaClass.h.
+- [ ] **9.5.2** Per-(class, interface) vtable globals — sibling of S9.2 for class implementers. Today classes carry a single hash-based vtable in their header (consumed by `__cajeta_vtable_lookup`); the fat-pointer dispatch model uses "GEP to method offset" (index-based, interface method order) and so needs a per-pair table just like structs got in S9.2. Same naming convention (`class.<sanitized>_iface_<sanitized>_VTable`), same emission shape, same code path in `CajetaClass::generatePrototype` — just for the class branch instead of the struct branch.
+- [ ] **9.5.3** Migrate runtime helpers that write or read interface values. `__cajeta_inject` currently writes an 8-byte class pointer into an interface field; needs to write all three words. Either change the helper signature to take (data, vtable, kind) or have it accept a pre-built struct-by-pointer. Audit other runtime helpers (`__cajeta_*`) for any that touch interface-typed slots and migrate the same way.
+- [ ] **9.5.4** Migrate class-field interface slots. A `class Caller { Greeter g; }` field is now 24 bytes inline. CajetaClass's field-layout code already handles the layout correctly via `t->getLlvmType()` returning the new 24-byte struct, but readers and writers of the field (DotExpression on the LHS or RHS of assignment, parameter binding via class field, etc.) must address it as a struct value rather than a pointer load. Update each call site.
+- [ ] **9.5.5** Migrate parameter passing + returns. Interface-typed parameters need pass-by-pointer (per CajetaAggregate calling convention) or pass-by-value-24-bytes; either way `Method::generatePrototype`'s parameter rule extends to recognize interface-typed parameters as aggregates. Returns mirror — S6.7's struct-return work is the template.
+- [ ] **9.5.6** Migrate the dispatch path. `CajetaClass::invokeMethod`'s vtable branch currently loads vtable from the receiver pointer's slot 0 (the class instance header). For interface receivers (`isInterface()` on the dispatching class), load vtable from slot 1 of the receiver's interface-body alloca and pass slot 0 (data) as the actual `this` for the implementer's function. The hash-based lookup via `__cajeta_vtable_lookup` continues to work; the fat-pointer-via-interface vtable is itself a hash-sorted table per 9.5.2, so dispatch returns the right function pointer.
+- [ ] **9.5.7** Verify regression on the migration branch. Existing `InterfaceTests`, `NamedInjectTests`, and any other interface-touching tests all pass on the new layout. No new tests in this session — the existing suite is the pin; Session 10 brings new tests for new capability.
+- [ ] **Pass criteria:** Every interface-using existing test passes against the 24-byte fat-pointer model. DI, class fields, parameter passing, and dispatch all round-trip cleanly. Branch lands on main with full regression green.
+
+#### Session 10 — Struct → interface assignment + ownership semantics
+
+Rewritten after Session 9.5 absorbed the foundational layout + migration work. Session 10 is now the *new functionality* the foundation unlocks: struct-rooted interface values with their borrow-restricted lifetime, plus the owned-vs-borrowed kind distinction for class-rooted ones.
+
+(Original S10 text preserved for context below this rewrite — see "Session 10 — attempt and findings" callout.)
+- [ ] **10.1** Struct → interface assignment. Assigning a struct value to an interface variable builds the fat pointer with `data_ptr = struct body ptr`, `vtable_ptr =` the per-(struct, interface) global from S9.2, `kind_tag = IFACE_KIND_BORROWED_STRUCT`. (The layout itself and class→interface assignment land in S9.5; this line item is the new struct path on top of that foundation.)
+- [ ] **10.2** Class → interface ownership semantics. S9.5 lands BORROWED_CLASS as the default for class→interface assignment. S10.2 wires the `#` operator: `Greeter g = #classExpr` sets `kind_tag = IFACE_KIND_OWNED_CLASS`. Required for the drop chain to know which interface values own their underlying data.
 - [ ] **10.3** Borrow tracker: struct-rooted interface value records a borrow rooted at the source struct. Storing in a heap field or returning from a function whose source struct is local → `CAJETA_ERROR_INTERFACE_VALUE_ESCAPE` pointing at the underlying struct.
 - [ ] **10.4** Interface value drop: switch on `kind_tag`. `BORROWED_*` → no action. `OWNED_CLASS` → drop the underlying class via `data_ptr`.
 - [ ] **10.5** 10 new tests: struct → interface assignment, class → interface assignment (borrowed), class → interface assignment (`#owned`), struct interface escape rejected, class-borrow escape rejected (existing rule), interface value transferred (`#it`), drop count verification per kind, mixed-implementation interface array, layout-size check (24 bytes), kind tag values match spec.
