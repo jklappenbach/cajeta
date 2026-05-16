@@ -26,7 +26,7 @@ namespace cajeta {
         // pass-by-reference at the LLVM level). Primitives store their LLVM
         // type directly.
         llvm::Type* valueLlvm;
-        bool isStruct = dynamic_pointer_cast<CajetaStruct>(elementType) != nullptr;
+        bool isStruct = dynamic_pointer_cast<CajetaAggregate>(elementType) != nullptr;
         bool isArr = dynamic_pointer_cast<CajetaArray>(elementType) != nullptr;
         bool isClassLike = dynamic_pointer_cast<CajetaClass>(elementType) != nullptr;
         bool isPrim = elementType && (elementType->getTypeFlags() & PRIMITIVE_FLAG);

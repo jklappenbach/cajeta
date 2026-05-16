@@ -1127,7 +1127,7 @@ namespace cajeta {
             // is returned (that's a separate pre-existing limitation).
             if (f) {
                 auto klass = dynamic_pointer_cast<CajetaClass>(f->getType());
-                auto isStruct = dynamic_pointer_cast<CajetaStruct>(f->getType());
+                auto isStruct = dynamic_pointer_cast<CajetaAggregate>(f->getType());
                 if (klass && !isStruct && !klass->isInterface()) {
                     if (llvm::Value* entry = f->getDropEntry()) {
                         if (llvm::Function* mark = module->getRuntimeFunction(

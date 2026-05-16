@@ -10,6 +10,7 @@
 #include "../type/CajetaArray.h"
 #include "../type/CajetaClass.h"
 #include "../type/CajetaStruct.h"
+#include "../type/CajetaView.h"
 #include "../type/CajetaFunctionType.h"
 #include "expression/Expression.h"
 #include "expression/DotExpression.h"
@@ -201,7 +202,7 @@ namespace cajeta {
                     if (auto mce = dynamic_pointer_cast<MethodCallExpression>(children[0])) {
                         bool isViewCtor = mce->getChildren().empty()
                             && mce->getParameters().size() == 1
-                            && dynamic_pointer_cast<CajetaStruct>(
+                            && dynamic_pointer_cast<CajetaView>(
                                 CajetaType::of(mce->getMethodCallName())) != nullptr;
                         if (isViewCtor) {
                             auto& mceParams = mce->getParameters();
@@ -281,7 +282,7 @@ namespace cajeta {
                                 rhsExpr->resolveTypes(module);
                             }
                             auto rhsClass = dynamic_pointer_cast<CajetaClass>(rhsExpr->getResolvedType());
-                            bool rhsIsStruct = dynamic_pointer_cast<CajetaStruct>(rhsExpr->getResolvedType()) != nullptr;
+                            bool rhsIsStruct = dynamic_pointer_cast<CajetaAggregate>(rhsExpr->getResolvedType()) != nullptr;
                             if (rhsClass && !rhsIsStruct) {
                                 initIsBorrow = true;
                             }
@@ -305,7 +306,7 @@ namespace cajeta {
                                 rhsExpr->resolveTypes(module);
                             }
                             auto rhsClass = dynamic_pointer_cast<CajetaClass>(rhsExpr->getResolvedType());
-                            bool rhsIsStruct = dynamic_pointer_cast<CajetaStruct>(rhsExpr->getResolvedType()) != nullptr;
+                            bool rhsIsStruct = dynamic_pointer_cast<CajetaAggregate>(rhsExpr->getResolvedType()) != nullptr;
                             if (rhsClass && !rhsIsStruct) {
                                 initIsBorrow = true;
                             }
@@ -347,7 +348,7 @@ namespace cajeta {
             // entry when the local is returned, transferring ownership
             // to the caller.
             auto klass = dynamic_pointer_cast<CajetaClass>(type);
-            bool isStructType = dynamic_pointer_cast<CajetaStruct>(type) != nullptr;
+            bool isStructType = dynamic_pointer_cast<CajetaAggregate>(type) != nullptr;
             if (klass && !isArray && !isStructType && !klass->isInterface()
                     && !initIsBorrow) {
                 if (llvm::Function* dropFn = klass->getOrCreateDropFunction()) {

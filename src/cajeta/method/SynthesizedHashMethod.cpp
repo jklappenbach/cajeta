@@ -100,7 +100,7 @@ namespace cajeta {
         std::string typeName = type->getQName()
             ? type->getQName()->toCanonical() : "<anonymous>";
 
-        bool isStruct = dynamic_pointer_cast<CajetaStruct>(type) != nullptr;
+        bool isStruct = dynamic_pointer_cast<CajetaAggregate>(type) != nullptr;
         bool isArr = dynamic_pointer_cast<CajetaArray>(type) != nullptr;
         bool isClassLike = dynamic_pointer_cast<CajetaClass>(type) != nullptr;
 

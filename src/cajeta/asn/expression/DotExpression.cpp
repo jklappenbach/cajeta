@@ -6,6 +6,7 @@
 #include "../../compile/CajetaModule.h"
 #include "../../type/CajetaClass.h"
 #include "../../type/CajetaStruct.h"
+#include "../../type/CajetaView.h"
 #include "../../error/Exception.h"
 #include <functional>
 #include "Identifier.h"
@@ -76,16 +77,19 @@ namespace cajeta {
         if (!v || !receiver) return v;
         auto recvType = receiver->getResolvedType();
         if (!recvType) return v;
-        auto structType = dynamic_pointer_cast<CajetaStruct>(recvType);
-        if (!structType) return v;
-        StructEndianness e = structType->getEndianness();
-        if (e == StructEndianness::Host) return v;
+        // Endianness is view-only — structs are host-endian per Structs.md.
+        // Cast specifically to CajetaView so a future struct receiver no-ops
+        // through here.
+        auto viewType = dynamic_pointer_cast<CajetaView>(recvType);
+        if (!viewType) return v;
+        ViewEndianness e = viewType->getEndianness();
+        if (e == ViewEndianness::Host) return v;
         // v1 assumption: host is little-endian (x86_64, aarch64). When we
         // grow cross-compile support, this picks the host's order from the
         // target triple instead.
         const bool hostLittle = true;
-        bool needBswap = (e == StructEndianness::Big && hostLittle)
-                      || (e == StructEndianness::Little && !hostLittle);
+        bool needBswap = (e == ViewEndianness::Big && hostLittle)
+                      || (e == ViewEndianness::Little && !hostLittle);
         if (!needBswap) return v;
         llvm::Type* t = v->getType();
         if (!t->isIntegerTy()) return v;          // float bswap is post-v1
@@ -251,7 +255,7 @@ namespace cajeta {
             // expression path), so leaving them out doesn't open
             // a new gap here.
             auto lhsClass = dynamic_pointer_cast<CajetaClass>(lhs->getResolvedType());
-            bool lhsIsStruct = dynamic_pointer_cast<CajetaStruct>(lhs->getResolvedType()) != nullptr;
+            bool lhsIsStruct = dynamic_pointer_cast<CajetaAggregate>(lhs->getResolvedType()) != nullptr;
             if (lhsClass && !lhsIsStruct) {
                 auto ptrTy = llvm::PointerType::get(*module->getLlvmContext(), 0);
                 base = module->getBuilder()->CreateLoad(ptrTy, base);
@@ -276,7 +280,7 @@ namespace cajeta {
         //      terminated owned copy that's compatible with the String stdlib.
         // The result is a fresh String pointer; callers that store it must
         // either own it (and free at scope-end) or use it transiently.
-        if (CajetaStruct::isVariableSize(property)) {
+        if (CajetaAggregate::isVariableSize(property)) {
             auto* builder = module->getBuilder();
             auto& ctx = *module->getLlvmContext();
             llvm::Type* i32Ty = llvm::Type::getInt32Ty(ctx);

@@ -8,6 +8,7 @@
 #include "CajetaParserVisitor.h"
 #include "cajeta/type/CajetaClass.h"
 #include "cajeta/type/CajetaStruct.h"
+#include "cajeta/type/CajetaView.h"
 #include <any>
 #include "cajeta/asn/Block.h"
 #include "cajeta/asn/Statement.h"
@@ -341,29 +342,33 @@ namespace cajeta {
             }
             QualifiedNamePtr qName = QualifiedName::getOrInsert(
                 name, pModule->getQName()->getPackageName() + packageAdj);
-            CajetaStructPtr structure = asView
-                ? static_pointer_cast<CajetaStruct>(make_shared<CajetaView>(pModule, qName))
-                : make_shared<CajetaStruct>(pModule, qName);
+            CajetaAggregatePtr structure = asView
+                ? static_pointer_cast<CajetaAggregate>(make_shared<CajetaView>(pModule, qName))
+                : static_pointer_cast<CajetaAggregate>(make_shared<CajetaStruct>(pModule, qName));
 
-            // Pull layout annotations off the enclosing typeDeclaration. Both
-            // `struct` and `view` declarations sit under typeDeclaration which
-            // carries the classOrInterfaceModifier* prefix; the annotations
-            // are the same set (@BigEndian / @LittleEndian / @Align).
-            if (auto* typeDecl = dynamic_cast<CajetaParser::TypeDeclarationContext*>(parent)) {
-                for (auto* mod : typeDecl->classOrInterfaceModifier()) {
-                    auto* ann = mod->annotation();
-                    if (!ann) continue;
-                    string aName = ann->qualifiedName()
-                        ? ann->qualifiedName()->getText()
-                        : (ann->altAnnotationQualifiedName()
-                            ? ann->altAnnotationQualifiedName()->getText()
-                            : string());
-                    if (aName == "BigEndian") {
-                        structure->setEndianness(StructEndianness::Big);
-                    } else if (aName == "LittleEndian") {
-                        structure->setEndianness(StructEndianness::Little);
-                    } else if (aName == "Align") {
-                        structure->setAlignment(StructAlignment::Natural);
+            // Endianness / alignment annotations apply only to views (per
+            // Structs.md, structs are host-endian with compiler-chosen
+            // layout; per Views.md, views require endianness and may opt
+            // into natural alignment). The annotations sit on the enclosing
+            // typeDeclaration's classOrInterfaceModifier* prefix.
+            if (asView) {
+                auto viewStructure = static_pointer_cast<CajetaView>(structure);
+                if (auto* typeDecl = dynamic_cast<CajetaParser::TypeDeclarationContext*>(parent)) {
+                    for (auto* mod : typeDecl->classOrInterfaceModifier()) {
+                        auto* ann = mod->annotation();
+                        if (!ann) continue;
+                        string aName = ann->qualifiedName()
+                            ? ann->qualifiedName()->getText()
+                            : (ann->altAnnotationQualifiedName()
+                                ? ann->altAnnotationQualifiedName()->getText()
+                                : string());
+                        if (aName == "BigEndian") {
+                            viewStructure->setEndianness(ViewEndianness::Big);
+                        } else if (aName == "LittleEndian") {
+                            viewStructure->setEndianness(ViewEndianness::Little);
+                        } else if (aName == "Align") {
+                            viewStructure->setAlignment(ViewAlignment::Natural);
+                        }
                     }
                 }
             }

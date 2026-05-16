@@ -488,7 +488,7 @@ namespace cajeta {
                                     // contrast, live inline in a wire-format
                                     // buffer with a length prefix.
                                     bool isViewStruct =
-                                        dynamic_pointer_cast<CajetaStruct>(klass) != nullptr;
+                                        dynamic_pointer_cast<CajetaAggregate>(klass) != nullptr;
                                     if (isViewStruct
                                             && CajetaStruct::isVariableSize(found)) {
                                         char buf[256];

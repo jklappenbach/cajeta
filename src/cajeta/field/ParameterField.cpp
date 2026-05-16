@@ -41,7 +41,7 @@ namespace cajeta {
             // class/array (non-struct) parameters are passed as `ptr`, so
             // the local slot is `ptr` too. Otherwise (primitives, structs)
             // alloc the type itself.
-            bool isStruct = dynamic_pointer_cast<CajetaStruct>(type) != nullptr;
+            bool isStruct = dynamic_pointer_cast<CajetaAggregate>(type) != nullptr;
             bool isArr = dynamic_pointer_cast<CajetaArray>(type) != nullptr;
             bool isClassLike = dynamic_pointer_cast<CajetaClass>(type) != nullptr;
             bool isPrim = type && (type->getTypeFlags() & PRIMITIVE_FLAG);

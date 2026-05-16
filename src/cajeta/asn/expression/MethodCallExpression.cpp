@@ -7,6 +7,7 @@
 #include "cajeta/type/CajetaArray.h"
 #include "cajeta/type/CajetaClass.h"
 #include "cajeta/type/CajetaStruct.h"
+#include "cajeta/type/CajetaView.h"
 #include "cajeta/type/CajetaFunctionType.h"
 #include "cajeta/method/Method.h"
 #include "Expression.h"
@@ -139,7 +140,7 @@ namespace cajeta {
         // Matches when the call is bare (no receiver) AND the method name is
         // the canonical name of a registered CajetaStruct.
         if (children.empty() && parameters.size() == 1) {
-            auto structType = dynamic_pointer_cast<CajetaStruct>(
+            auto structType = dynamic_pointer_cast<CajetaView>(
                 CajetaType::of(methodCallName));
             if (structType) {
                 // Evaluate the byte[] argument; load through if it's an alloca.

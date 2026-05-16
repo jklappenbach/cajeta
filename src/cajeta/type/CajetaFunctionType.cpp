@@ -77,7 +77,7 @@ namespace cajeta {
     // signature without per-arg coercion.
     llvm::Type* CajetaFunctionType::toCallingConvType(CajetaTypePtr p, llvm::Type* ptrTy) {
         if (!p) return nullptr;
-        bool isStruct = std::dynamic_pointer_cast<CajetaStruct>(p) != nullptr;
+        bool isStruct = std::dynamic_pointer_cast<CajetaAggregate>(p) != nullptr;
         bool isArr = std::dynamic_pointer_cast<CajetaArray>(p) != nullptr;
         bool isClassLike = std::dynamic_pointer_cast<CajetaClass>(p) != nullptr;
         bool isPrim = (p->getTypeFlags() & PRIMITIVE_FLAG) != 0;
