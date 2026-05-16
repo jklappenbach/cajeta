@@ -87,7 +87,21 @@ namespace cajeta {
         // still needs the load.
         if (auto dot = dynamic_pointer_cast<DotExpression>(ast)) {
             if (auto resolved = ast->getResolvedType()) {
-                if (llvm::Type* loadTy = resolved->getLlvmType()) {
+                // Array-typed fields are stored in the parent class
+                // struct as `ptr` (see CajetaClass::generatePrototype's
+                // fieldLayoutType rule), not as the inline header
+                // struct. Loading the slot must use ptr, not the
+                // header type — otherwise we read past the slot into
+                // the next field's bytes. Same rule that
+                // ArrayIndexExpression and the slot-type computation
+                // in BINARY_OP_ASSIGN already follow.
+                llvm::Type* loadTy;
+                if (dynamic_pointer_cast<CajetaArray>(resolved)) {
+                    loadTy = llvm::PointerType::get(*module->getLlvmContext(), 0);
+                } else {
+                    loadTy = resolved->getLlvmType();
+                }
+                if (loadTy) {
                     if (llvm::isa<llvm::GetElementPtrInst>(v)) {
                         llvm::Value* loaded = builder->CreateLoad(loadTy, v);
                         if (!dot->getChildren().empty()) {

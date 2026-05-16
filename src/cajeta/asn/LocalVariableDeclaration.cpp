@@ -232,11 +232,17 @@ namespace cajeta {
                         if (mc->getMethodCallName() == "__cajeta_inject") {
                             initIsBorrow = true;
                         }
-                    } else if (dynamic_pointer_cast<DotExpression>(children[0])) {
-                        // The RHS is a field read. If the field type
-                        // is class-like (and not a struct), the value
-                        // is a pointer to an object owned by the
-                        // receiver. Treat the local as a borrow.
+                    } else if (dynamic_pointer_cast<DotExpression>(children[0])
+                            || dynamic_pointer_cast<ArrayIndexExpression>(children[0])) {
+                        // The RHS is a field read or an array element
+                        // read. If the value type is class-like (and
+                        // not a struct), the local is a pointer to
+                        // an object owned by the receiver (for a
+                        // field) or by the array (for an element).
+                        // Treat the local as a borrow — registering
+                        // a drop entry would double-free at scope
+                        // exit since the owner still tracks the
+                        // instance.
                         if (auto rhsExpr = dynamic_pointer_cast<Expression>(children[0])) {
                             if (!rhsExpr->getResolvedType()) {
                                 rhsExpr->resolveTypes(module);
