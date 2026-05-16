@@ -933,7 +933,61 @@ namespace cajeta {
         // path entirely; LLVM gets a direct call to the resolved method.
         bool isAggregate = dynamic_cast<CajetaAggregate*>(this) != nullptr;
         bool useVtable = thisValue && !isStatic && !isConstructor && !isAggregate;
-        if (useVtable) {
+        bool isInterfaceRecv = this->isInterface();
+        if (useVtable && isInterfaceRecv) {
+            // S9.5.6 — interface receiver via fat pointer body. Load the
+            // per-(impl, iface) vtable from word 1 (the runtime-resolved
+            // pointer set by the assignment site that built the fat
+            // pointer); load the underlying data from word 0 and use it
+            // as the actual `this` for the implementer's function. The
+            // vtable is a flat [N x ptr] array in interface-declaration
+            // order (per S9.2 / S9.5.2), so dispatch is a GEP-to-index
+            // load — no hash lookup needed.
+            llvm::Type* ptrTy = llvm::PointerType::get(llvmCtx, 0);
+            llvm::Type* bodyTy = this->getLlvmType();
+
+            llvm::Value* dataSlot = builder->CreateStructGEP(
+                bodyTy, thisValue, 0, "iface_data_slot");
+            llvm::Value* vtableSlot = builder->CreateStructGEP(
+                bodyTy, thisValue, 1, "iface_vtable_slot");
+            llvm::Value* dataPtr = builder->CreateLoad(
+                ptrTy, dataSlot, "iface_data");
+            llvm::Value* vtablePtr = builder->CreateLoad(
+                ptrTy, vtableSlot, "iface_vtable");
+
+            // Method's index in the interface's method list. Skips
+            // constructors and statics for parity with vtable emission
+            // (which also skips them per S9.2 and S9.5.2).
+            int methodIdx = -1;
+            int idx = 0;
+            for (auto& im : this->getMethodList()) {
+                if (!im || im->isConstructor()) { continue; }
+                if (im->getModifiers().find(STATIC) != im->getModifiers().end()) {
+                    continue;
+                }
+                if (im->getName() == method->getName()) {
+                    methodIdx = idx;
+                    break;
+                }
+                ++idx;
+            }
+
+            if (methodIdx >= 0) {
+                llvm::Value* methodSlot = builder->CreateInBoundsGEP(
+                    ptrTy, vtablePtr,
+                    llvm::ConstantInt::get(llvm::Type::getInt64Ty(llvmCtx),
+                        (uint64_t) methodIdx),
+                    "iface_method_slot");
+                callee = builder->CreateLoad(ptrTy, methodSlot, "iface_method_fn");
+            }
+
+            // Swap the body pointer for the data pointer at arg position
+            // 0 — the implementer's function expects its concrete class
+            // instance as `this`, not the interface body.
+            if (!methodArgs.empty()) {
+                methodArgs[0] = dataPtr;
+            }
+        } else if (useVtable) {
             llvm::Function* lookupFn = emitMod->getRuntimeFunction("__cajeta_vtable_lookup");
             if (lookupFn) {
                 llvm::Type* ptrTy = llvm::PointerType::get(llvmCtx, 0);
