@@ -80,3 +80,72 @@ TEST(StructInterfaceTests, structImplementsTwoInterfaces) {
         "}\n";
     EXPECT_EQ(runI32(src), 31);
 }
+
+// ---------------------------------------------------------------------
+// S9.3 — vtable layout matches the interface's method order; signature
+// compatibility checked at struct declaration. Two error IDs surface
+// the failure modes cleanly.
+// ---------------------------------------------------------------------
+
+// Missing method: the interface requires `greet()` but the struct
+// provides nothing matching the name. Vtable synthesis raises
+// CAJETA_ERROR_INTERFACE_METHOD_NOT_IMPLEMENTED.
+TEST(StructInterfaceTests, rejectMissingInterfaceMethod) {
+    auto src =
+        "package test;\n"
+        "public interface Greeter { public int32 greet(); }\n"
+        "public struct Hi implements Greeter {\n"
+        "    int32 base;\n"
+        "}\n"
+        "public final class S { public static int32 run() { return 0; } }\n";
+    try {
+        CajetaJit::compile(src, "test.S");
+        FAIL() << "expected CAJETA_ERROR_INTERFACE_METHOD_NOT_IMPLEMENTED";
+    } catch (cajeta::Exception& e) {
+        EXPECT_EQ(e.getErrorId(),
+            "CAJETA_ERROR_INTERFACE_METHOD_NOT_IMPLEMENTED");
+    }
+}
+
+// Signature mismatch: struct has a `greet()` method but its return
+// type or parameters differ from the interface's declaration. The
+// name-match wins so the error points at the actual problem rather
+// than the missing-method one.
+TEST(StructInterfaceTests, rejectSignatureMismatch) {
+    auto src =
+        "package test;\n"
+        "public interface Greeter { public int32 greet(); }\n"
+        "public struct Hi implements Greeter {\n"
+        "    int32 base;\n"
+        "    public int64 greet() { return 7; }\n"  // wrong return type
+        "}\n"
+        "public final class S { public static int32 run() { return 0; } }\n";
+    try {
+        CajetaJit::compile(src, "test.S");
+        FAIL() << "expected CAJETA_ERROR_INTERFACE_METHOD_SIGNATURE_MISMATCH";
+    } catch (cajeta::Exception& e) {
+        EXPECT_EQ(e.getErrorId(),
+            "CAJETA_ERROR_INTERFACE_METHOD_SIGNATURE_MISMATCH");
+    }
+}
+
+// Signature mismatch via parameter list — interface declares
+// `apply(int32)` but the struct's method takes nothing. Same error
+// path as the return-type mismatch above.
+TEST(StructInterfaceTests, rejectParameterMismatch) {
+    auto src =
+        "package test;\n"
+        "public interface Applier { public int32 apply(int32 n); }\n"
+        "public struct Hi implements Applier {\n"
+        "    int32 base;\n"
+        "    public int32 apply() { return this.base; }\n"  // missing param
+        "}\n"
+        "public final class S { public static int32 run() { return 0; } }\n";
+    try {
+        CajetaJit::compile(src, "test.S");
+        FAIL() << "expected CAJETA_ERROR_INTERFACE_METHOD_SIGNATURE_MISMATCH";
+    } catch (cajeta::Exception& e) {
+        EXPECT_EQ(e.getErrorId(),
+            "CAJETA_ERROR_INTERFACE_METHOD_SIGNATURE_MISMATCH");
+    }
+}

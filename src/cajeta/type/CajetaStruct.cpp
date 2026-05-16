@@ -192,17 +192,43 @@ namespace cajeta {
         for (auto& iface : implementedInterfaces) {
             std::string ifaceCanonical = iface->getQName()->toCanonical();
 
-            // Build the vtable entries in the interface's method
-            // declaration order. Find each interface method's matching
-            // concrete implementation on this struct by name. S9.3
-            // tightens this with full signature matching.
-            auto findConcrete = [&](MethodPtr ifaceMethod) -> MethodPtr {
+            // S9.3 — build the vtable in interface-declaration order
+            // and check signature compatibility for each method. Two
+            // failure modes get specific error IDs:
+            //   - Missing impl: CAJETA_ERROR_INTERFACE_METHOD_NOT_IMPLEMENTED
+            //   - Found-by-name but signature differs:
+            //     CAJETA_ERROR_INTERFACE_METHOD_SIGNATURE_MISMATCH
+            //
+            // Signature comparison: same parameter count + same
+            // parameter type canonicals (skipping the implicit `this`
+            // slot on both sides) + same return type canonical. Method
+            // names are matched first; if a method with the same name
+            // exists but the signature differs, the mismatch error
+            // wins so the diagnostic points at the actual problem.
+            auto sigStr = [](MethodPtr m) -> std::string {
+                std::string s;
+                auto pl = m->getParameterList();
+                size_t start = 0;
+                if (!pl.empty() && pl.front()->getName() == "this") start = 1;
+                for (size_t i = start; i < pl.size(); ++i) {
+                    if (i > start) s += ",";
+                    auto t = pl[i]->getType();
+                    s += (t && t->getQName())
+                        ? t->getQName()->toCanonical()
+                        : std::string("?");
+                }
+                s += "->";
+                auto rt = m->getReturnType();
+                s += (rt && rt->getQName())
+                    ? rt->getQName()->toCanonical()
+                    : std::string("?");
+                return s;
+            };
+            auto findByName = [&](const std::string& name) -> MethodPtr {
                 for (auto& [canon, m] : methods) {
                     if (!m || m->isConstructor()) continue;
                     if (m->getModifiers().find(STATIC) != m->getModifiers().end()) continue;
-                    if (m->getName() == ifaceMethod->getName()) {
-                        return m;
-                    }
+                    if (m->getName() == name) return m;
                 }
                 return nullptr;
             };
@@ -212,12 +238,36 @@ namespace cajeta {
                 if (!ifaceMethod || ifaceMethod->isConstructor()) continue;
                 if (ifaceMethod->getModifiers().find(STATIC)
                         != ifaceMethod->getModifiers().end()) continue;
-                MethodPtr concrete = findConcrete(ifaceMethod);
-                if (!concrete || !concrete->getLlvmFunction()) {
-                    // Missing impl — S9.3 surfaces this with a clean
-                    // CAJETA_ERROR_INTERFACE_METHOD_NOT_IMPLEMENTED.
-                    // For now, fill the slot with null so the vtable
-                    // global still emits (other entries may be usable).
+                MethodPtr concrete = findByName(ifaceMethod->getName());
+                if (!concrete) {
+                    char buf[384];
+                    snprintf(buf, sizeof(buf),
+                        "struct '%s' implements interface '%s' but does not "
+                        "provide a concrete '%s' method matching the interface "
+                        "signature.",
+                        structCanonical.c_str(), ifaceCanonical.c_str(),
+                        ifaceMethod->getName().c_str());
+                    throw Exception(buf,
+                        "CAJETA_ERROR_INTERFACE_METHOD_NOT_IMPLEMENTED");
+                }
+                std::string ifaceSig = sigStr(ifaceMethod);
+                std::string concreteSig = sigStr(concrete);
+                if (ifaceSig != concreteSig) {
+                    char buf[512];
+                    snprintf(buf, sizeof(buf),
+                        "struct '%s' method '%s' has signature %s but interface "
+                        "'%s' requires %s; signatures must match exactly.",
+                        structCanonical.c_str(), concrete->getName().c_str(),
+                        concreteSig.c_str(), ifaceCanonical.c_str(),
+                        ifaceSig.c_str());
+                    throw Exception(buf,
+                        "CAJETA_ERROR_INTERFACE_METHOD_SIGNATURE_MISMATCH");
+                }
+                if (!concrete->getLlvmFunction()) {
+                    // Method matched but its LLVM function wasn't built
+                    // yet — fall back to null slot so emission proceeds.
+                    // Shouldn't happen for normal user code because the
+                    // method prototype runs earlier in generatePrototype.
                     entries.push_back(llvm::ConstantPointerNull::get(ptrTy));
                     continue;
                 }
