@@ -143,7 +143,7 @@ c.increment();    // direct call, inlinable
 int64 v = c.get();
 ```
 
-`this` is the struct's pointer (cajeta's existing pass-by-pointer calling convention for aggregate values). The method can read and write fields normally; the writes go directly to the struct's stack slot. Returning a `Self`-typed value from a method is allowed in the direct-call case (the compiler knows the size at every call site).
+`this` is the struct's pointer (cajeta's existing pass-by-pointer calling convention for aggregate values). The method can read and write fields normally; the writes go directly to the struct's stack slot. A method may return a value of the struct's own concrete type in the direct-call case — either by constructing a fresh instance (`return Point { ... };`) or by returning the receiver (`return this;`). The compiler knows the size at every call site, so the return slot is straightforward to allocate.
 
 ---
 
@@ -239,17 +239,17 @@ Net: interface values get bigger (3 words instead of 1), per-call dispatch gets 
 
 A method called through an interface value cannot:
 
-- **Return `Self`.** The interface value doesn't carry the concrete size; constructing a `Self` from inside a dyn-dispatched call doesn't have a place to land. Direct calls on the concrete type can return `Self` normally.
+- **Return a value of the struct's own concrete type.** The interface value doesn't carry the concrete size; constructing a same-typed return value from inside a dyn-dispatched call doesn't have a place to land. Direct calls on the concrete type can return same-typed values normally.
 - **Have its own generic type parameters.** Method-level generics need monomorphization, which requires knowing the concrete type. Interface-typed generics (`Iterator<T>`) on the *receiver* are fine — they're resolved at the interface-value construction site.
 
 Both restrictions apply only to the through-interface path. The same methods are callable directly on the concrete type without restriction.
 
-These can be relaxed later via more elaborate mechanisms (associated-type-style tricks for `Self`, dictionary-passing for method generics), but the v1 contract is strict.
+These can be relaxed later via more elaborate mechanisms (associated-type-style tricks for the same-concrete-type return, dictionary-passing for method generics), but the v1 contract is strict.
 
 ### Errors with concrete examples
 
 ```cajeta
-// Self-returning through dyn
+// Same-concrete-type return through dyn dispatch
 public interface Cloneable<T> {
     public T clone();
 }
@@ -260,8 +260,9 @@ public struct Foo implements Cloneable<Foo> {
 Foo f;
 Cloneable<Foo> c = f;
 Foo other = c.clone();
-// ERROR: method `clone` returns `Self`; cannot be dispatched through
-//        an interface value. Call directly on the concrete `Foo`.
+// ERROR: method `clone` returns its enclosing struct's own concrete
+//        type and cannot be dispatched through an interface value.
+//        Call directly on the concrete `Foo`.
 
 // Method-level generic through dyn
 public interface Searchable {
@@ -311,7 +312,7 @@ Implications:
 | Struct used after move | Path-based borrow tracking (`CAJETA_ERROR_USE_AFTER_MOVE`) |
 | Borrow into struct field outliving the struct | Borrow checker scope rule (`CAJETA_ERROR_BORROW_ESCAPE`) |
 | Mutating a struct while a field borrow is live | Path-based alias-mutation check |
-| `Self`-returning method called through interface value | Interface dispatch check at call site |
+| Same-concrete-type-returning method called through interface value | Interface dispatch check at call site |
 | Method-level generic on an interface method | Interface declaration check |
 | Struct-rooted interface value stored in a heap class field | Borrow-into-heap check |
 | Struct-rooted interface value returned from a function whose source struct is local | Borrow escape check at return |
@@ -331,7 +332,7 @@ For the language implementer:
 7. **Interface dispatch:** call site reads `vtable_ptr` (word 2), indexes by method offset, indirect-calls. Same shape regardless of underlying.
 8. **Interface value drop:** at scope exit, switch on `kind_tag`. `BORROWED_*` → no action (source owns the data). `OWNED_CLASS` → drop the underlying class.
 9. **Borrow tracking for struct-rooted interface values:** the interface value is recorded as a borrow rooted at the struct it was assigned from. Existing path-based borrow checker handles escape detection; the diagnostic points at the underlying struct, not at the interface type.
-10. **Method-restriction enforcement:** at every interface-value method call site, reject if the method returns `Self` or has its own type parameters. At interface declaration, reject methods with type parameters of their own.
+10. **Method-restriction enforcement:** at every interface-value method call site, reject if the method's return type is the implementing struct's own concrete type, or if the method has its own type parameters. At interface declaration, reject methods with type parameters of their own.
 11. **Calling convention:** struct values pass by pointer at call sites and return sites — already implemented for `CajetaStruct` via `Method::generatePrototype`'s `passByPointer` rule. No changes needed.
 
 ---
