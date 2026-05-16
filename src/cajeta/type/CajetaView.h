@@ -52,6 +52,9 @@ namespace cajeta {
         // / @HostEndian; the default value of `endianness` alone can't
         // distinguish "user wrote @HostEndian" from "user wrote nothing".
         bool endiannessExplicit = false;
+        // Count of variable-size fields. Populated during generatePrototype;
+        // used by getMinimumSize and the construction-time validation sweep.
+        int variableSizeFieldCount = 0;
     public:
         CajetaView(CajetaModulePtr module) : CajetaAggregate(module) { }
         CajetaView(CajetaModulePtr module, QualifiedNamePtr qName)
@@ -63,6 +66,18 @@ namespace cajeta {
 
         ViewAlignment getAlignment() const { return alignment; }
         void setAlignment(ViewAlignment a) { alignment = a; }
+
+        // Count of variable-size fields (`String`, `T[]`) declared on this
+        // view. Used by getMinimumSize and by the view-ctor's length-prefix
+        // validation sweep. Populated during generatePrototype.
+        int getVariableSizeFieldCount() const { return variableSizeFieldCount; }
+
+        // Minimum buffer size required to construct an instance of this
+        // view: fixed-prefix bytes + 4 bytes per variable-size field (each
+        // needs at least its i32 length-prefix to be readable; minimum data
+        // length is zero). The view-ctor's bounds check uses this; if the
+        // caller's buffer is smaller, construction throws.
+        uint64_t getMinimumSize() const;
 
         // Builds the LLVM struct body (packed or natural alignment), registers
         // the view in the module's canonical type map, and generates method

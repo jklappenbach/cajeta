@@ -52,25 +52,32 @@ namespace cajeta {
         // struct in the buffer and are accessed via specialized DotExpression
         // codegen. v1 restriction: at most one variable-size field, must be
         // last. S5 lifts both restrictions.
+        // Layout strategy:
+        //   - The LLVM struct holds all FIXED-SIZE fields in declaration order.
+        //   - Variable-size fields (`String`, `T[]`) are NOT in the LLVM struct.
+        //     Their inline `i32 length + data` payload lives past the struct's
+        //     footprint in the buffer. Field accessors compute their offsets
+        //     at runtime via a walk-the-prefixes scheme — for the Kth variable-
+        //     size field, walk K-1 prior length-prefixes to find the offset.
+        //   - All variable-size fields must be trailing. Fixed fields after a
+        //     variable-size field need a runtime offset cache (deferred to a
+        //     follow-up session — see StructsViewsStatus.md S5b notes).
+        //
+        // The shift from S4's "first var-size prefix lives in the struct" to
+        // S5's "no var-size in the struct" simplifies the multi-trailing case:
+        // every var-size accessor walks from the same starting point
+        // (fixedPrefixSize), and the LLVM struct represents purely the fixed
+        // prefix — no special-casing the first var-size field's slot index.
         vector<llvm::Type*> llvmMembers;
         llvmMembers.reserve(propertyList.size());
-        llvm::Type* i32Ty = llvm::Type::getInt32Ty(*module->getLlvmContext());
         bool sawVariableSize = false;
+        int variableSizeCount = 0;
         for (auto& property : propertyList) {
-            if (sawVariableSize) {
-                char buf[256];
-                snprintf(buf, sizeof(buf),
-                    "view '%s' has a fixed-size field '%s' after a variable-size field; "
-                    "variable-size fields must be last (v1 restriction)",
-                    canonical.c_str(), property->getName().c_str());
-                throw Exception(buf, "CAJETA_ERROR_VARSIZE_FIELD_NOT_LAST");
-            }
-            // Direct recursion guard: a view containing itself is
-            // infinite size. Layout-pass cycle detection in v1 only
-            // catches the direct case; deeper transitive cycles
-            // (A contains B, B contains A) need a fuller graph walk
-            // that's deferred until views compose into more complex
-            // shapes.
+            // Direct recursion guard: a view containing itself is infinite
+            // size. Layout-pass cycle detection in v1 only catches the
+            // direct case; deeper transitive cycles (A contains B, B
+            // contains A) need a fuller graph walk that's deferred until
+            // views compose into more complex shapes.
             auto fieldType = property->getType();
             if (fieldType && fieldType->getQName()
                     && fieldType->getQName()->toCanonical() == canonical) {
@@ -82,13 +89,31 @@ namespace cajeta {
                     canonical.c_str(), property->getName().c_str());
                 throw Exception(buf, "CAJETA_ERROR_VIEW_RECURSIVE");
             }
-            if (CajetaAggregate::isVariableSize(property)) {
-                llvmMembers.push_back(i32Ty);
+            bool isVar = CajetaAggregate::isVariableSize(property);
+            if (sawVariableSize && !isVar) {
+                // Fixed field after a variable-size field needs the runtime
+                // offset cache machinery — that lands in S5b. Until then we
+                // reject so users get a clear error instead of silent
+                // miscompilation. Trailing variable-size fields ARE allowed
+                // (each new var-size field appends to the trailing region).
+                char buf[256];
+                snprintf(buf, sizeof(buf),
+                    "view '%s' has a fixed-size field '%s' after a variable-size field; "
+                    "post-variable fixed fields need an offset cache, deferred to a "
+                    "follow-up session. Reorder so all variable-size fields are last.",
+                    canonical.c_str(), property->getName().c_str());
+                throw Exception(buf, "CAJETA_ERROR_VARSIZE_FIELD_NOT_LAST");
+            }
+            if (isVar) {
                 sawVariableSize = true;
+                variableSizeCount += 1;
+                // Variable-size field's bytes (i32 prefix + data) live past
+                // the LLVM struct's footprint. Nothing pushed onto llvmMembers.
             } else {
                 llvmMembers.push_back(property->getType()->getLlvmType());
             }
         }
+        variableSizeFieldCount = variableSizeCount;
         const bool packed = (alignment != ViewAlignment::Natural);
         ((llvm::StructType*) llvmType)->setBody(
             llvm::ArrayRef<llvm::Type*>(llvmMembers), packed);
@@ -112,6 +137,13 @@ namespace cajeta {
         }
         const llvm::DataLayout& dl = module->getLlvmModule()->getDataLayout();
         return dl.getTypeAllocSize(llvmType);
+    }
+
+    uint64_t CajetaView::getMinimumSize() const {
+        // Fixed-prefix bytes + 4 bytes per variable-size field's i32
+        // length prefix. Minimum data per variable-size field is zero, so
+        // this is the smallest buffer that can possibly back a valid view.
+        return getFixedSize() + (uint64_t) variableSizeFieldCount * 4;
     }
 
 } // namespace cajeta

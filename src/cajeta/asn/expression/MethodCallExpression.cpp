@@ -159,7 +159,9 @@ namespace cajeta {
                 // argument's resolved CajetaArray type. On failure we throw
                 // via the existing exception runtime so user code can catch
                 // it; an uncaught throw aborts, same as any other.
-                uint64_t structBytes = structType->getFixedSize();
+                // S5: use getMinimumSize so multi-trailing var-size views
+                // require their length-prefix bytes to be present too.
+                uint64_t structBytes = structType->getMinimumSize();
                 uint64_t elemBytes = 1;  // sensible default if resolution fails
                 if (auto argExpr = dynamic_pointer_cast<Expression>(parameters[0].expression)) {
                     if (!argExpr->getResolvedType()) argExpr->resolveTypes(module);
@@ -204,6 +206,62 @@ namespace cajeta {
                 llvm::Value* dataPtr = builder->CreateInBoundsGEP(
                     i8Ty, bytesPtr,
                     llvm::ConstantInt::get(i64Ty, 8), "view_data_ptr");
+
+                // S5.3 — length-prefix validation sweep. For each variable-
+                // size field in declaration order, verify that
+                // (offset + 4 + length-prefix-value) <= total buffer bytes.
+                // An oversize length-prefix would let later accessors read
+                // past the buffer end (a CVE class for wire-format parsers).
+                //
+                // running offset starts at fixedPrefixSize and grows by
+                // (4 + prefix value) per variable-size field. Throws on the
+                // first overrun. Per-access reads are then bounds-check-free.
+                int varSizeCount = structType->getVariableSizeFieldCount();
+                if (varSizeCount > 0) {
+                    uint64_t fixedPrefixSize = structType->getFixedSize();
+                    llvm::Value* offset = llvm::ConstantInt::get(
+                        i64Ty, fixedPrefixSize);
+                    for (int i = 0; i < varSizeCount; i++) {
+                        // Read the i32 prefix at (dataPtr + offset).
+                        llvm::Value* prefixPtr = builder->CreateInBoundsGEP(
+                            i8Ty, dataPtr, offset, "vlen_prefix_ptr");
+                        llvm::Value* prefix32 = builder->CreateLoad(
+                            llvm::Type::getInt32Ty(llvmCtx), prefixPtr,
+                            "vlen_prefix");
+                        llvm::Value* prefix64 = builder->CreateIntCast(
+                            prefix32, i64Ty, /*isSigned=*/true);
+                        // afterField = offset + 4 + prefix
+                        llvm::Value* fourPlus = builder->CreateAdd(
+                            prefix64, llvm::ConstantInt::get(i64Ty, 4),
+                            "vlen_after_prefix");
+                        llvm::Value* afterField = builder->CreateAdd(
+                            offset, fourPlus, "vlen_after_field");
+                        // afterField must be <= haveBytes; reject otherwise.
+                        llvm::Value* vlenOk = builder->CreateICmpULE(
+                            afterField, haveBytes, "vlen_ok");
+                        llvm::BasicBlock* vlenFailBB = llvm::BasicBlock::Create(
+                            llvmCtx, "vlen_fail", parentFn);
+                        llvm::BasicBlock* vlenOkBB = llvm::BasicBlock::Create(
+                            llvmCtx, "vlen_ok", parentFn);
+                        builder->CreateCondBr(vlenOk, vlenOkBB, vlenFailBB);
+                        builder->SetInsertPoint(vlenFailBB);
+                        if (llvm::Function* throwFn = module->getRuntimeFunction("__cajeta_throw")) {
+                            // Reuse the view-fail tag space; low bits = field
+                            // index to help diagnostic readers identify which
+                            // length-prefix overran.
+                            uint64_t tag = (uint64_t) 0xCA1E7A00 | (uint64_t)(i & 0xFF);
+                            llvm::PointerType* ptrTy = llvm::PointerType::get(llvmCtx, 0);
+                            llvm::Value* tagPtr = builder->CreateIntToPtr(
+                                llvm::ConstantInt::get(i64Ty, tag), ptrTy);
+                            builder->CreateCall(throwFn, {tagPtr});
+                        }
+                        builder->CreateUnreachable();
+                        builder->SetInsertPoint(vlenOkBB);
+                        // Advance the running offset for the next iteration.
+                        offset = afterField;
+                    }
+                }
+
                 return dataPtr;
             }
         }

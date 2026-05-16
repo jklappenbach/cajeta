@@ -8,8 +8,8 @@ This rollout supersedes the old "struct as wire-format view" implementation. Sig
 
 ## Current status
 
-**Phase:** Phase 2 in progress. Session 4 complete.
-**Current line item:** S5 (next session start) — multiple variable-size fields + post-variable fields + length-prefix validation.
+**Phase:** Phase 2 mostly complete. S5 delivered the tractable subset (multi-trailing var-size, length-prefix validation); the post-variable fixed-field offset-cache work is carved out as S5b.
+**Current line item:** S5b (offset cache for post-variable fixed fields, T[] view fields, deeply-nested length validation) OR S6 (stack-struct semantics). Pick the more pressing path.
 
 ---
 
@@ -78,14 +78,23 @@ Sessions are sized for ~1 working day; each ends with full regression passing.
 - [x] **4.6** 10 new tests across two files: `ViewMethodsTests` (5 — read-only method, write method, method calling another method, interleaved read/write, static method) and `NestedViewTests` (5 — fixed-size inner inlines, per-view endianness annotation, mixed endianness across nesting, doubly-nested view, recursive cycle rejected).
 - **Pass criteria met:** 736 / 736 tests pass (726 prior + 10 new). View methods callable; nested views work for fixed and variable inners; recursion rejected at layout time.
 
-#### Session 5 — Multiple variable-size fields + post-variable fields
-- [ ] **5.1** Layout pass: track all variable-size fields, not just one. Drop the "single trailing variable-size field" restriction.
-- [ ] **5.2** Construction-time offset cache: when a view has any variable-size field, allocate a stack-resident offset table; constructor walks length-prefixes in order, writes resolved offsets.
-- [ ] **5.3** Field accessor codegen: post-variable-size field GEPs load offset from the cache instead of using a compile-time constant.
-- [ ] **5.4** Fast-path detection: if all variable-size fields are at the end, skip the offset cache entirely (every fixed field has a compile-time-constant offset).
-- [ ] **5.5** Length-prefix validation: constructor sweeps every length-prefix, verifies `(currentOffset + 4 + prefix-value) <= buf.length`. Throws `ParseException` on overrun. Recurses into nested variable-size views.
-- [ ] **5.6** 12 new tests: multi-String, String + int32[], int32[] + String + int32, post-variable fixed field, post-variable nested view, oversize length-prefix throws, exact-fit, near-miss, fast-path triggered when all-trailing, fast-path NOT triggered when interleaved, deeply-nested length validation, offset cache size verification.
-- [ ] **Pass criteria:** Arbitrary variable-size layouts work; security: length-prefix attacks throw cleanly.
+#### Session 5 — Multi-trailing variable-size fields + length-prefix validation  ✅ tractable subset complete
+- [x] **5.1** Layout pass tracks all variable-size fields. The "single var-size field" restriction is lifted for the trailing case (multiple `String` fields in a row work). The "fixed field after var-size" restriction is RETAINED with a clearer error message pointing at S5b — supporting it needs the offset cache (carved out).
+- [skip→S5b] **5.2** Construction-time offset cache — deferred. The chosen approach is walk-the-prefixes at every accessor instead. Costs O(K) per access for the Kth var-size field, but no cache infrastructure (no stack alloca per view local, no fat-pointer view value). When post-variable fixed fields land in S5b, the cache becomes mandatory.
+- [skip→S5b] **5.3** Post-variable accessor codegen — N/A; the walk-the-prefixes path in S5.2 handles the trailing-only case without it.
+- [skip→S5b] **5.4** Fast-path detection — N/A under walk-the-prefixes; everything follows the same path. Relevant when S5b adds the cache.
+- [x] **5.5** Length-prefix validation: `MethodCallExpression`'s view-ctor synthesis now walks every variable-size field at construction, loads its i32 prefix, verifies `(currentOffset + 4 + prefix) <= buf.length`, and throws via `__cajeta_throw` (uncaught → aborts; user code can `try/catch`). One sweep at construction; per-access reads stay free.
+- [x] **5.6** 8 new tests in `MultiVarSizeViewTests`: declaration of multi-trailing strings, read first / read second / read third (walking), oversize length rejected, exact-fit accepted, one-byte-short rejected, second-prefix validated too. Deferred tests (T[] field, post-var fixed, offset-cache verification, deeply-nested validation) carved out as S5b.
+- **Pass criteria met for the tractable subset:** 744 / 744 tests pass (736 prior + 8 new). Multi-trailing var-size views work; length-prefix attacks throw at construction.
+
+Also during S5: a non-obvious bug surfaced and got fixed — `DotExpression` was treating a class field of type `String` as a variable-size view field (because `CajetaAggregate::isVariableSize` returned true for any String-typed property). The old code emitted bogus-but-non-null GEPs that callers happened to tolerate; my new walk-the-prefixes code returned `nullptr` in the same path, which downstream code did NOT tolerate (segfaulted on non-view tests). The fix: only enter the var-size path when the receiver type is `CajetaView` (cast first, then check `isVariableSize`). Class fields of String type fall through to the standard struct-GEP path.
+
+#### Session 5b — Offset cache, T[] views, deeply-nested validation (carved out)
+- [ ] **5b.1** Lift the "fixed field after var-size" restriction. Construction-time offset cache (a per-view stack-resident `int64[]` of resolved offsets, one per post-variable field). Field accessor codegen for those fields loads from the cache instead of computing via walk-the-prefixes.
+- [ ] **5b.2** T[] as a variable-size view field. Needs a per-element-size runtime helper (`__cajeta_array_view_to_owned`) and accessor codegen.
+- [ ] **5b.3** Length-prefix validation recurses into nested variable-size views.
+- [ ] **5b.4** Tests for the deferred S5 cases: post-variable fixed field, post-variable nested view, T[] read, deeply-nested validation, offset cache size verification.
+- **Why carved out:** the offset cache changes the view value's shape (fat pointer for slow-path views) which is a substantial calling-convention change. Walk-the-prefixes covers the common case (multi-trailing var-size) without that complexity, and lands today.
 
 ### Phase 3 — New struct (stack value aggregate)
 

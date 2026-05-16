@@ -271,37 +271,66 @@ namespace cajeta {
         // index getOrder()+1. CajetaStruct (POD) uses getOrder() directly.
         unsigned fieldIdx = (unsigned) klass->getFieldLlvmIndex(property);
 
-        // Variable-size struct fields (Session 5.5b): the LLVM struct holds
-        // only the i32 length prefix at this slot; the data bytes live past
-        // the struct's footprint in the buffer. Emit specialized codegen:
-        //   1. Load length from the prefix slot.
-        //   2. GEP past the LLVM struct to the data start.
-        //   3. Call __cajeta_str_view_to_owned to materialize a null-
-        //      terminated owned copy that's compatible with the String stdlib.
-        // The result is a fresh String pointer; callers that store it must
-        // either own it (and free at scope-end) or use it transiently.
-        if (CajetaAggregate::isVariableSize(property)) {
+        // Variable-size view fields (`String`, `T[]`) lay out in the wire
+        // format as i32 length + data bytes, all sitting past the LLVM
+        // struct's footprint. For the Kth variable-size field (0-indexed)
+        // we walk K prior length-prefixes at runtime to find this field's
+        // own prefix position. See Views.md § Variable-size fields.
+        //
+        // This branch fires only for view receivers. `isVariableSize`
+        // also returns true for class fields of type String, but those
+        // are normal heap pointers in a vtable-prefixed class layout —
+        // they fall through to the standard struct-GEP path below.
+        auto viewType = dynamic_pointer_cast<CajetaView>(klass);
+        if (viewType && CajetaAggregate::isVariableSize(property)) {
             auto* builder = module->getBuilder();
             auto& ctx = *module->getLlvmContext();
             llvm::Type* i32Ty = llvm::Type::getInt32Ty(ctx);
             llvm::Type* i64Ty = llvm::Type::getInt64Ty(ctx);
             llvm::Type* i8Ty = llvm::Type::getInt8Ty(ctx);
 
-            llvm::Value* lenPrefixPtr = builder->CreateStructGEP(
-                klass->getLlvmType(), base, fieldIdx, identifier + "_len_ptr");
-            llvm::Value* length = builder->CreateLoad(i32Ty, lenPrefixPtr, identifier + "_len");
-            llvm::Value* length64 = builder->CreateIntCast(length, i64Ty, /*isSigned=*/true);
+            // Count how many var-size fields precede this one in declaration
+            // order — that's the number of length-prefixes the walk skips.
+            int priorVarSize = 0;
+            for (auto& p : viewType->getPropertyList()) {
+                if (p == property) break;
+                if (CajetaAggregate::isVariableSize(p)) priorVarSize += 1;
+            }
 
-            // Data starts immediately after the LLVM struct. Use the struct's
-            // total byte size (DataLayout) as the offset.
-            const llvm::DataLayout& dl = module->getLlvmModule()->getDataLayout();
-            uint64_t structBytes = dl.getTypeAllocSize(klass->getLlvmType());
+            uint64_t fixedPrefixSize = viewType->getFixedSize();
+            llvm::Value* offset = llvm::ConstantInt::get(i64Ty, fixedPrefixSize);
+            for (int i = 0; i < priorVarSize; i++) {
+                llvm::Value* priorPrefixPtr = builder->CreateInBoundsGEP(
+                    i8Ty, base, offset, identifier + "_prior_prefix_ptr");
+                llvm::Value* priorLen32 = builder->CreateLoad(
+                    i32Ty, priorPrefixPtr, identifier + "_prior_prefix");
+                llvm::Value* priorLen64 = builder->CreateIntCast(
+                    priorLen32, i64Ty, /*isSigned=*/true);
+                llvm::Value* advance = builder->CreateAdd(
+                    priorLen64, llvm::ConstantInt::get(i64Ty, 4),
+                    identifier + "_advance");
+                offset = builder->CreateAdd(offset, advance, identifier + "_offset");
+            }
+
+            llvm::Value* prefixPtr = builder->CreateInBoundsGEP(
+                i8Ty, base, offset, identifier + "_len_ptr");
+            llvm::Value* length = builder->CreateLoad(
+                i32Ty, prefixPtr, identifier + "_len");
+            llvm::Value* length64 = builder->CreateIntCast(
+                length, i64Ty, /*isSigned=*/true);
+            llvm::Value* dataOffset = builder->CreateAdd(
+                offset, llvm::ConstantInt::get(i64Ty, 4),
+                identifier + "_data_offset");
             llvm::Value* dataPtr = builder->CreateInBoundsGEP(
-                i8Ty, base, llvm::ConstantInt::get(i64Ty, structBytes), identifier + "_data");
+                i8Ty, base, dataOffset, identifier + "_data");
 
-            llvm::Function* fn = module->getRuntimeFunction("__cajeta_str_view_to_owned");
-            if (!fn) return nullptr;
-            return builder->CreateCall(fn, {dataPtr, length64});
+            auto fieldQn = property->getType()->getQName();
+            if (fieldQn && fieldQn->getTypeName() == "String") {
+                llvm::Function* fn = module->getRuntimeFunction("__cajeta_str_view_to_owned");
+                if (!fn) return nullptr;
+                return builder->CreateCall(fn, {dataPtr, length64});
+            }
+            return dataPtr;
         }
         return module->getBuilder()->CreateStructGEP(klass->getLlvmType(), base,
             fieldIdx, identifier);
