@@ -58,6 +58,13 @@ namespace cajeta {
         llvm::AllocaInst* alloca;
         llvm::Value* dropEntry = nullptr;
         bool _hasBorrowCaptures = false;
+        // For struct view-mode locals (`Header h = Header(bytes)`):
+        // the field this view aliases. Set at LocalVariableDeclaration
+        // time when the initializer is a struct-view-construction call;
+        // consulted at ReturnStatement to reject returning a view of
+        // a same-scope local buffer. nullptr for non-view structs and
+        // for views over caller-provided buffers (parameters, fields).
+        FieldPtr _viewSource;
 
     public:
         Field(CajetaModulePtr module, string name, CajetaTypePtr type, FieldPtr parent = nullptr) {
@@ -166,6 +173,15 @@ namespace cajeta {
         // initializer codegen finds the RHS lambda's borrow flag.
         bool hasBorrowCaptures() const { return _hasBorrowCaptures; }
         void setHasBorrowCaptures(bool v) { _hasBorrowCaptures = v; }
+
+        // Struct view-aliasing: the field whose backing buffer this
+        // struct view points into. Set when the local is constructed
+        // via `Header h = Header(bytes)`; ReturnStatement consults it
+        // to reject returns where the source is a function-scope
+        // local (the buffer would drop and leave the caller with a
+        // dangling view).
+        FieldPtr getViewSource() const { return _viewSource; }
+        void setViewSource(FieldPtr s) { _viewSource = std::move(s); }
 
         virtual llvm::Value* createLoad() = 0;
 

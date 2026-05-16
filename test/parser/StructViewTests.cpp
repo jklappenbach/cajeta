@@ -178,3 +178,64 @@ TEST(StructViewTests, structParamMutationsAreVisibleToCaller) {
     auto fn = jit->lookup<int32_t (*)()>("run");
     EXPECT_EQ(fn(), 13);
 }
+
+// --- Struct view-aliasing escape check --------------------------------------
+//
+// `Header h = Header(bytes); return h;` — when `bytes` is a function-
+// scope local, the buffer drops as the function returns, leaving the
+// caller with a view of freed memory. The compiler should reject this
+// at compile time with CAJETA_ERROR_VIEW_ESCAPE rather than letting it
+// silently produce a use-after-free.
+//
+// The check fires only when the view's source is a function-scope
+// LOCAL. View over a PARAMETER (caller-owned buffer) is fine because
+// the caller's buffer outlives the call. Views over fields would also
+// be fine, but field-as-source isn't probed here since the LocalVar
+// detector only matches IdentifierExpression args (the bare-name case
+// covers locals AND parameters via the scope lookup).
+
+TEST(StructViewTests, returningViewOfLocalBufferIsRejected) {
+    auto src =
+        "package test;\n"
+        "public struct Header {\n"
+        "    int32 version;\n"
+        "    int64 timestamp;\n"
+        "    int32 payloadLen;\n"
+        "}\n"
+        "public final class S {\n"
+        "    public static Header makeView() {\n"
+        "        int32[] bytes = new int32[4];\n"
+        "        Header h = Header(bytes);\n"
+        "        return h;\n"
+        "    }\n"
+        "    public static int32 run() { return 0; }\n"
+        "}\n";
+    EXPECT_ANY_THROW(CajetaJit::compile(src, "test.S"));
+}
+
+TEST(StructViewTests, returningViewOfParamBufferIsOK) {
+    // `bytes` is a parameter — caller owns the buffer, so the view
+    // is safe to return. View-escape check should NOT fire.
+    auto src =
+        "package test;\n"
+        "public struct Header {\n"
+        "    int32 version;\n"
+        "    int64 timestamp;\n"
+        "    int32 payloadLen;\n"
+        "}\n"
+        "public final class S {\n"
+        "    public static Header asHeader(int32[] bytes) {\n"
+        "        Header h = Header(bytes);\n"
+        "        return h;\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        int32[] bytes = new int32[4];\n"
+        "        Header h = S.asHeader(bytes);\n"
+        "        h.version = 77;\n"
+        "        return h.version;\n"
+        "    }\n"
+        "}\n";
+    auto jit = CajetaJit::compile(src, "test.S");
+    auto fn = jit->lookup<int32_t (*)()>("run");
+    EXPECT_EQ(fn(), 77);
+}

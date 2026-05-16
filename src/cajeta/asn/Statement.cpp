@@ -9,6 +9,7 @@
 #include "../compile/CajetaModule.h"
 #include "../field/HeapField.h"
 #include "../field/StackField.h"
+#include "../field/ParameterField.h"
 #include "../type/CajetaArray.h"
 #include "../type/CajetaClass.h"
 #include "../type/CajetaStruct.h"
@@ -1077,6 +1078,30 @@ namespace cajeta {
                     "transfer the captures via `#name` to give the closure "
                     "ownership it can carry past this scope",
                     "CAJETA_ERROR_BORROW_ESCAPE");
+            }
+            // Struct view-aliasing escape check: returning a struct
+            // view whose underlying buffer is a function-scope local
+            // would leave the caller with a view of freed memory —
+            // the buffer drops as this function returns. View over
+            // a parameter (caller-owned buffer) or a field (some
+            // object's buffer that outlives the call) is fine; only
+            // function-locals end at return. Detected by walking
+            // viewSource and checking it's not a ParameterField.
+            if (f && f->getViewSource()) {
+                FieldPtr src = f->getViewSource();
+                bool srcIsParam =
+                    dynamic_pointer_cast<ParameterField>(src) != nullptr;
+                if (!srcIsParam) {
+                    throw Exception(
+                        "cannot return struct view '" + idExpr->getTextValue()
+                        + "' — it aliases the buffer '" + src->getName()
+                        + "' which is a function-scope local and would drop "
+                        "as this function returns, leaving the caller with "
+                        "a view of freed memory; allocate the buffer on the "
+                        "caller side and pass it in as a parameter, or have "
+                        "the function return the buffer instead of the view",
+                        "CAJETA_ERROR_VIEW_ESCAPE");
+                }
             }
             // L3-3: returning a function-typed local transfers closure
             // ownership to the caller. Deactivate the local's drop entry

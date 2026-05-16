@@ -407,24 +407,23 @@ namespace cajeta {
             }
             llvmTypes.push_back(ptLlvm);
         }
-        // Apply the same pass-by-pointer rule to the return type: a
-        // class-like (non-struct) return travels as `ptr`, matching the
-        // calling convention the param coercion above uses for class
-        // params. Without this the indirect-call type mismatches when a
-        // method returns a class instance and the caller stores it into
-        // a class-typed local.
+        // Apply the same pass-by-pointer rule to the return type so
+        // class instances, arrays, AND structs all travel as `ptr`.
+        // The struct case matches what the param convention now does
+        // (see the param loop above) — a returned struct view is a
+        // typed pointer into a buffer the caller (or someone the
+        // caller passed) owns. The view ctor's IR returns a `ptr`;
+        // declaring the function's return type as the inline struct
+        // would mismatch at the `ret` instruction.
         llvm::Type* llvmRet;
         {
             CajetaTypePtr rt = returnType;
-            bool isStructR = rt
-                && dynamic_pointer_cast<CajetaStruct>(rt) != nullptr;
             bool isArrR = rt
                 && dynamic_pointer_cast<CajetaArray>(rt) != nullptr;
             bool isClassLikeR = rt
                 && dynamic_pointer_cast<CajetaClass>(rt) != nullptr;
             bool isPrimR = rt && (rt->getTypeFlags() & PRIMITIVE_FLAG);
-            bool returnByPointer = (isClassLikeR && !isStructR)
-                && (isArrR || !isPrimR);
+            bool returnByPointer = isClassLikeR && (isArrR || !isPrimR);
             if (returnByPointer) {
                 llvmRet = llvm::PointerType::get(*module->getLlvmContext(), 0);
             } else {

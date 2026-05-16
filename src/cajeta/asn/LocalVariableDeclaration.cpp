@@ -182,6 +182,41 @@ namespace cajeta {
                             }
                         }
                     }
+                    // Struct view-aliasing: when the initializer is a
+                    // struct-view construction call like `Header(bytes)`,
+                    // record which field the view aliases. ReturnStatement
+                    // consults this to reject returning a view of a same-
+                    // scope local buffer. The shape we recognize:
+                    //   - MethodCallExpression with NO receiver (children[0]
+                    //     of the MCE itself is absent; we already filtered
+                    //     to the call here via children[0] of the
+                    //     VariableInitializer)
+                    //   - MCE's name matches a registered CajetaStruct
+                    //   - Exactly one parameter, an IdentifierExpression
+                    //     resolving to a field in the current scope
+                    // Anything else (multi-arg ctor, dynamically-built
+                    // buffer arg, etc.) is left untracked for v1 — the
+                    // common footgun is `Header h = Header(localBytes);
+                    // return h;` and that's what we catch.
+                    if (auto mce = dynamic_pointer_cast<MethodCallExpression>(children[0])) {
+                        bool isViewCtor = mce->getChildren().empty()
+                            && mce->getParameters().size() == 1
+                            && dynamic_pointer_cast<CajetaStruct>(
+                                CajetaType::of(mce->getMethodCallName())) != nullptr;
+                        if (isViewCtor) {
+                            auto& mceParams = mce->getParameters();
+                            auto argExpr = mceParams[0].expression;
+                            if (auto idArg = dynamic_pointer_cast<IdentifierExpression>(argExpr)) {
+                                auto scope = module->getScopeStack().peek();
+                                FieldPtr src = scope
+                                    ? scope->getField(idArg->getTextValue())
+                                    : nullptr;
+                                if (src) {
+                                    field->setViewSource(src);
+                                }
+                            }
+                        }
+                    }
                 }
             }
 
