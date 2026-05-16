@@ -49,3 +49,34 @@ TEST(StructInterfaceTests, structImplementsOneInterface) {
         "}\n";
     EXPECT_EQ(runI32(src), 11);
 }
+
+// ---------------------------------------------------------------------
+// S9.2 — synthesize a per-(struct, interface) vtable global. Each
+// pair gets its own static global containing function pointers to
+// the struct's concrete implementations of the interface's methods,
+// in interface-declaration order. Through-interface dispatch
+// (Sessions 10–11) loads from this global into the tagged fat
+// pointer at interface-value construction time.
+// ---------------------------------------------------------------------
+
+// Direct call still works when the struct implements two interfaces.
+// Pins that the extra metadata + dual vtable globals don't disturb the
+// direct-call path's signature/dispatch.
+TEST(StructInterfaceTests, structImplementsTwoInterfaces) {
+    auto src =
+        "package test;\n"
+        "public interface Greeter { public int32 greet(); }\n"
+        "public interface Counted { public int32 count(); }\n"
+        "public struct Both implements Greeter, Counted {\n"
+        "    int32 base;\n"
+        "    public int32 greet() { return this.base + 1; }\n"
+        "    public int32 count() { return this.base * 2; }\n"
+        "}\n"
+        "public final class S {\n"
+        "    public static int32 run() {\n"
+        "        Both b = Both { base: 10 };\n"
+        "        return b.greet() + b.count();\n"  // 11 + 20 = 31
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 31);
+}

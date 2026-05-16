@@ -157,6 +157,92 @@ namespace cajeta {
         for (auto& methodEntry : methods) {
             methodEntry.second->generatePrototype();
         }
+
+        // S9.2 — synthesize per-(struct, interface) vtable globals.
+        // Done after method prototypes so each method's LLVM function
+        // exists for fn-pointer harvesting. Resolves the implements
+        // clause's qualified names to actual CajetaInterface instances
+        // first (the inherited CajetaClass machinery — qImplemented was
+        // populated by buildStructOrViewNode in S9.1).
+        resolveImplementedInterfaces();
+        synthesizeInterfaceVTables();
+    }
+
+    void CajetaStruct::synthesizeInterfaceVTables() {
+        if (implementedInterfaces.empty()) return;
+
+        auto& ctx = *module->getLlvmContext();
+        auto* lmod = module->getLlvmModule();
+        llvm::PointerType* ptrTy = llvm::PointerType::get(ctx, 0);
+        std::string structCanonical = qName->toCanonical();
+
+        // Helper to sanitize a name into something LLVM accepts as a
+        // global symbol — mirrors the pattern in
+        // CajetaClass::getOrCreateDropFunction.
+        auto sanitize = [](std::string s) {
+            for (char& c : s) {
+                if (c == ':' || c == '.' || c == '<' || c == '>'
+                        || c == ',' || c == ' ') {
+                    c = '_';
+                }
+            }
+            return s;
+        };
+
+        for (auto& iface : implementedInterfaces) {
+            std::string ifaceCanonical = iface->getQName()->toCanonical();
+
+            // Build the vtable entries in the interface's method
+            // declaration order. Find each interface method's matching
+            // concrete implementation on this struct by name. S9.3
+            // tightens this with full signature matching.
+            auto findConcrete = [&](MethodPtr ifaceMethod) -> MethodPtr {
+                for (auto& [canon, m] : methods) {
+                    if (!m || m->isConstructor()) continue;
+                    if (m->getModifiers().find(STATIC) != m->getModifiers().end()) continue;
+                    if (m->getName() == ifaceMethod->getName()) {
+                        return m;
+                    }
+                }
+                return nullptr;
+            };
+
+            std::vector<llvm::Constant*> entries;
+            for (auto& ifaceMethod : iface->getMethodList()) {
+                if (!ifaceMethod || ifaceMethod->isConstructor()) continue;
+                if (ifaceMethod->getModifiers().find(STATIC)
+                        != ifaceMethod->getModifiers().end()) continue;
+                MethodPtr concrete = findConcrete(ifaceMethod);
+                if (!concrete || !concrete->getLlvmFunction()) {
+                    // Missing impl — S9.3 surfaces this with a clean
+                    // CAJETA_ERROR_INTERFACE_METHOD_NOT_IMPLEMENTED.
+                    // For now, fill the slot with null so the vtable
+                    // global still emits (other entries may be usable).
+                    entries.push_back(llvm::ConstantPointerNull::get(ptrTy));
+                    continue;
+                }
+                entries.push_back(concrete->getLlvmFunction());
+            }
+
+            // Even an empty vtable still gets a global (zero-length
+            // array). Through-interface dispatch sites consult the
+            // global's address; the runtime indexes by method offset.
+            llvm::ArrayType* arrTy = llvm::ArrayType::get(
+                ptrTy, entries.size());
+            std::string globalName = std::string("struct.")
+                + sanitize(structCanonical) + "_iface_"
+                + sanitize(ifaceCanonical) + "_VTable";
+            if (llvm::GlobalVariable* existing = lmod->getNamedGlobal(globalName)) {
+                interfaceVTables[ifaceCanonical] = existing;
+                continue;
+            }
+
+            llvm::Constant* init = llvm::ConstantArray::get(arrTy, entries);
+            auto* gv = new llvm::GlobalVariable(
+                *lmod, arrTy, /*isConstant=*/true,
+                llvm::GlobalValue::InternalLinkage, init, globalName);
+            interfaceVTables[ifaceCanonical] = gv;
+        }
     }
 
     uint64_t CajetaStruct::getFixedSize() const {

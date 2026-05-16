@@ -9,7 +9,7 @@ This rollout supersedes the old "struct as wire-format view" implementation. Sig
 ## Current status
 
 **Phase:** Phase 2 complete (S4, S5, S5b done). Phase 3 in progress.
-**Current line item:** Sessions 6, 7, 8 complete. Session 9 in progress (S9.1 done). Next: S9.2 (type system records interfaces + synthesizes per-(struct,interface) vtable).
+**Current line item:** Sessions 6, 7, 8 complete. Session 9 in progress (S9.1, S9.2 done). Next: S9.3 (signature compatibility check at struct declaration).
 
 ---
 
@@ -164,7 +164,7 @@ Also during S5: a non-obvious bug surfaced and got fixed — `DotExpression` was
 
 #### Session 9 — Vtable synthesis + interface implementation
 - [x] **9.1** Parser: accept `struct Foo implements Interface<T> { ... }` clause. Added `(IMPLEMENTS typeList)?` to the `structDeclaration` grammar (between `typeParameters?` and `classBody`); the visitor's `buildStructOrViewNode` now extracts the typeList for struct contexts (views still don't carry an implements clause per Views.md) and calls `setQImplemented` so the qualified-name list flows into the existing `CajetaClass` infrastructure. Forward refs resolve via `resolveImplementedInterfaces()` (already on CajetaClass). New test file `test/parser/StructInterfaceTests.cpp` with a direct-call pin (`structImplementsOneInterface`) confirming the implementing struct still dispatches through the monomorphized path when called on the concrete type.
-- [ ] **9.2** Type system: record per-struct list of implemented interfaces; for each (struct, interface) pair, synthesize a static vtable global containing function pointers to the struct's method implementations.
+- [x] **9.2** Type system: record per-struct list of implemented interfaces; for each (struct, interface) pair, synthesize a static vtable global containing function pointers to the struct's method implementations. CajetaStruct gains a `map<canonical, GlobalVariable*> interfaceVTables`; `synthesizeInterfaceVTables()` runs at the end of `generatePrototype` (after method prototypes exist so fn-pointer harvesting works), walks each implemented interface's method list in declaration order, finds each method's concrete implementation by name, and emits a `[N x ptr]` constant global named `struct.<sanitized-struct-canonical>_iface_<sanitized-iface-canonical>_VTable` with InternalLinkage. The implements-list itself flows via `setQImplemented` (called from `buildStructOrViewNode` in S9.1) → `resolveImplementedInterfaces()` (inherited from CajetaClass) → `implementedInterfaces`. Missing methods land null in the vtable for now; S9.3 surfaces them as an error. 1 new test in StructInterfaceTests pinning two-interface impl + dual-direct-call correctness.
 - [ ] **9.3** Vtable layout matches the interface's method order; method signature compatibility checked at struct declaration.
 - [ ] **9.4** Reject interface declarations whose methods have their own type parameters (`CAJETA_ERROR_INTERFACE_METHOD_GENERIC`).
 - [ ] **9.5** Direct calls on the concrete struct type still go through the monomorphized path — no vtable hit.

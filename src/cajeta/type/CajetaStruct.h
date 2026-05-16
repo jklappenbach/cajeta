@@ -22,10 +22,30 @@ namespace cajeta {
     typedef shared_ptr<CajetaStruct> CajetaStructPtr;
 
     class CajetaStruct : public CajetaAggregate {
+    private:
+        // S9.2 — per-(struct, interface) vtable globals. Key is the
+        // interface's canonical name; value is the LLVM global holding
+        // function pointers to the struct's concrete implementations,
+        // in the interface's method declaration order. The through-
+        // interface dispatch path (Sessions 10–11) loads from one of
+        // these into the tagged fat pointer at interface-value
+        // construction time.
+        std::map<std::string, llvm::GlobalVariable*> interfaceVTables;
     public:
         CajetaStruct(CajetaModulePtr module) : CajetaAggregate(module) { }
         CajetaStruct(CajetaModulePtr module, QualifiedNamePtr qName)
             : CajetaAggregate(module, qName) { }
+
+        // Get the synthesized vtable global for a specific implemented
+        // interface (looked up by canonical name). Returns nullptr if
+        // this struct doesn't implement that interface.
+        llvm::GlobalVariable* getInterfaceVTable(const std::string& interfaceCanonical) const {
+            auto it = interfaceVTables.find(interfaceCanonical);
+            return it != interfaceVTables.end() ? it->second : nullptr;
+        }
+
+        const std::map<std::string, llvm::GlobalVariable*>&
+        getInterfaceVTables() const { return interfaceVTables; }
 
         // Build the LLVM struct body, register the type, and prototype any
         // methods. Field types are validated here — v1 accepts primitives,
@@ -47,6 +67,14 @@ namespace cajeta {
         // body. Used by the alloca path in StackField. Returns 0 until
         // generatePrototype runs.
         uint64_t getFixedSize() const;
+
+    private:
+        // S9.2 — emit a static vtable global for each implemented
+        // interface. Called from generatePrototype after method
+        // prototypes exist (so each method's LLVM function pointer can
+        // be harvested). Naming convention:
+        //   `struct.<sanitized-struct-canonical>_iface_<sanitized-iface-canonical>_VTable`
+        void synthesizeInterfaceVTables();
     };
 
 } // namespace cajeta
