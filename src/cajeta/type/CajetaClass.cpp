@@ -8,6 +8,7 @@
 #include "../method/Method.h"
 #include "../asn/ClassBodyDeclaration.h"
 #include "../method/DefaultConstructorMethod.h"
+#include "../method/SynthesizedHashMethod.h"
 #include "CajetaArray.h"
 #include "../field/HeapField.h"
 
@@ -269,6 +270,7 @@ namespace cajeta {
         ((llvm::StructType*) llvmType)->setBody(llvm::ArrayRef<llvm::Type*>(llvmMembers), false);
 
         ensureDefaultConstructor();
+        synthesizeAutoHash();
 
         for (auto methodEntry: methods) {
             methodEntry.second->generatePrototype();
@@ -283,6 +285,35 @@ namespace cajeta {
 
         CajetaModule::getStructureToModule()[canonical] = module;
         prototypeBuilt = true;
+    }
+
+    void CajetaClass::synthesizeAutoHash() {
+        // Gated on @AutoHash class annotation. Inject a structural
+        // hash() that walks fields, hashes each via the matching
+        // __cajeta_hash_X primitive (or virtual dispatch for class-
+        // typed fields), and combines via __cajeta_hash_combine
+        // seeded with __cajeta_hash_seed.
+        //
+        // Skip when:
+        //   - The annotation isn't present (default identity hash
+        //     inherited from Object stands).
+        //   - The class already declares hash() manually (user
+        //     opt-out from the synthesizer for this class even with
+        //     @AutoHash present — the manual version wins).
+        //
+        // The synthesizer throws on unsupported field kinds with a
+        // diagnostic naming the class, field, and remediation. See
+        // SynthesizedHashMethod::generateCode for the rules.
+        if (!findAnnotation("AutoHash")) return;
+
+        for (auto& m : methodList) {
+            if (m->getName() == "hash" && m->getParameters().size() == 0) {
+                return;
+            }
+        }
+        addMethod(std::make_shared<SynthesizedHashMethod>(
+            module,
+            std::static_pointer_cast<CajetaClass>(shared_from_this())));
     }
 
     void CajetaClass::ensureDefaultConstructor() {

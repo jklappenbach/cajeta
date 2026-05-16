@@ -385,6 +385,14 @@ namespace cajeta {
 
         void ensureDefaultConstructor();
 
+        // Inject a compiler-synthesized structural hash() override
+        // when the class carries @AutoHash and doesn't manually
+        // declare hash(). Called from generatePrototype after
+        // ensureDefaultConstructor. See SynthesizedHashMethod for the
+        // field-walk implementation and the diagnostic shape used
+        // when an unsupported field type is encountered.
+        void synthesizeAutoHash();
+
         void createInheritanceMethodMap(CajetaClassPtr structure = shared_ptr<CajetaClass>(nullptr));
 
 
