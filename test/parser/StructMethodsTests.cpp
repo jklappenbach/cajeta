@@ -54,3 +54,57 @@ TEST(StructMethodsTests, simpleGetter) {
         "}\n";
     EXPECT_EQ(runI32(src), 42);
 }
+
+// ---------------------------------------------------------------------
+// S8.2 — codegen: struct method = LLVM function with `this` as struct
+// pointer. CajetaClass::invokeMethod recognizes aggregates and skips
+// the vtable indirection (added in S4.2 for views); the call site
+// passes the body alloca pointer directly, and the callee GEPs through
+// `this` to reach fields. LLVM's inliner takes care of monomorphizing
+// the call after layout.
+// ---------------------------------------------------------------------
+
+// Mutating method — writes to `this.field` must be visible after the
+// call returns, because `this` is a pointer to the caller's body
+// alloca, not a copy. If aggregates were pass-by-value here, the
+// mutation would land in a callee-local copy and be invisible.
+TEST(StructMethodsTests, mutatingMethodVisibleAfterCall) {
+    auto src =
+        "package test;\n"
+        "public struct Counter {\n"
+        "    int32 value;\n"
+        "    public void bump(int32 by) {\n"
+        "        this.value = this.value + by;\n"
+        "    }\n"
+        "}\n"
+        "public final class S {\n"
+        "    public static int32 run() {\n"
+        "        Counter c = Counter { value: 10 };\n"
+        "        c.bump(5);\n"
+        "        c.bump(7);\n"
+        "        return c.value;\n"  // 22
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 22);
+}
+
+// Method takes a parameter alongside `this`. The parameter sits at
+// LLVM index 1 (after the implicit `this`); the cajeta call site
+// supplies it positionally.
+TEST(StructMethodsTests, methodWithExtraParameter) {
+    auto src =
+        "package test;\n"
+        "public struct Holder {\n"
+        "    int32 value;\n"
+        "    public int32 plus(int32 n) {\n"
+        "        return this.value + n;\n"
+        "    }\n"
+        "}\n"
+        "public final class S {\n"
+        "    public static int32 run() {\n"
+        "        Holder h = Holder { value: 100 };\n"
+        "        return h.plus(23);\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 123);
+}
