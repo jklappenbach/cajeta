@@ -9,7 +9,7 @@ This rollout supersedes the old "struct as wire-format view" implementation. Sig
 ## Current status
 
 **Phase:** Phase 2 complete (S4, S5, S5b done). Phase 3 in progress.
-**Current line item:** Sessions 6, 7, 8, 9 complete. Next: Session 10 — interface value construction (tagged fat pointer at struct/class → interface assignment).
+**Current line item:** Sessions 6, 7, 8, 9 complete. Session 10 attempted; reverted pending an architectural plan — see "Session 10 — attempt and findings" below.
 
 ---
 
@@ -184,6 +184,28 @@ Also during S5: a non-obvious bug surfaced and got fixed — `DotExpression` was
 - [ ] **10.4** Interface value drop: switch on `kind_tag`. `BORROWED_*` → no action. `OWNED_CLASS` → drop the underlying class via `data_ptr`.
 - [ ] **10.5** 10 new tests: struct → interface assignment, class → interface assignment (borrowed), class → interface assignment (`#owned`), struct interface escape rejected, class-borrow escape rejected (existing rule), interface value transferred (`#it`), drop count verification per kind, mixed-implementation interface array, layout-size check (24 bytes), kind tag values match spec.
 - [ ] **Pass criteria:** Fat pointer construction is correct; borrow rules apply per kind.
+
+#### Session 10 — attempt and findings (reverted; needs broader plan)
+
+Tried the layout switch in a single working session and reverted because it cut across more code than the line items suggested. Recording the surface area here so the next attempt has a real plan.
+
+**What the change actually touches.** The current v0 interface layout is a single-pointer `{ ptr vtable }` that aliases the class instance's header (a class instance's slot 0 IS its vtable, so an interface variable holding a class pointer "is" the interface struct via that shared first word). Migrating to the spec's 3-word fat pointer `{ data_ptr, vtable_ptr, kind_tag }` (24 bytes) means every site that produces or consumes an interface value needs the new shape — they're spread across the compiler:
+
+  1. **Local declaration** — interface-typed locals (`Greeter g = ...`) need a 24-byte body alloca + 8-byte HeapField slot pointing at it (same shape as S6.1 struct locals).
+  2. **Assignment codegen** — class→interface needs to build the fat pointer (data = class ptr, vtable = load(class, 0), kind = BORROWED_CLASS or OWNED_CLASS). Struct→interface needs the per-(struct, iface) vtable global S9.2 emits + kind = BORROWED_STRUCT.
+  3. **Dispatch codegen** — through-interface call sites load vtable from word 1 of the body (not from the receiver pointer's slot 0) and pass word 0 (data) as the actual `this` to the implementer's function.
+  4. **Class-field interface slots** — `class Caller { @Inject Greeter g; }` makes `g` a 24-byte inline field; the embedded-aggregate layout works, but every reader/writer of `c.g` must address it as a struct value rather than a pointer.
+  5. **DI runtime** — `__cajeta_inject` currently writes an 8-byte class pointer into the field. With fat pointer it'd need to write all three words (data, vtable, kind). The runtime helper would have to take three args or take a struct-by-value.
+  6. **Parameter passing** — methods that take interface-typed params need pass-by-pointer (cf. CajetaAggregate's calling convention) or pass-by-value-24-bytes; both end up rewriting Method::generatePrototype's parameter rule.
+  7. **Returns** — interface returns need analogous treatment to S6.7's struct return work.
+  8. **Drop chain** — interface-typed local at scope exit reads kind_tag and conditionally calls the class drop (S10.4).
+  9. **Borrow tracker** — struct-rooted interface value escape rejection (S10.3).
+
+**What the partial attempt did**: changed CajetaClass's interface branch in `generatePrototype` from `{ ptr }` to `{ ptr, ptr, i64 }`, taught `LocalVariableDeclaration` to alloca a 24-byte body for interface-typed locals and detect class-pointer vs interface-struct RHS shapes, taught `CajetaClass::invokeMethod`'s vtable path to load from word 1 for interface receivers. The simple `InterfaceTests.*` cases passed; full regression dropped four shards via SIGSEGV in `NamedInjectTests` (DI writes the old 8-byte shape into a now-24-byte field) and `VariableSizeStructTests` (cascading from the failing shards).
+
+**What's needed before retry**: a checkpoint that lands all nine sites in a single coordinated change, or a strategy that keeps v0 single-pointer interfaces for class implementers (the only path real code currently uses) while introducing fat-pointer ONLY for struct implementers. The second option preserves DI and existing class-iface tests, but produces two interface-value shapes which the dispatch path must distinguish at call sites — needs a design decision.
+
+The good news is S9's per-(struct, iface) vtable globals are already in place and untouched by this work; whichever migration path lands, the struct-side data is ready.
 
 #### Session 11 — Dispatch through interface + method restrictions
 - [ ] **11.1** Method call through interface value: load `vtable_ptr`, GEP to method offset, indirect-call with `data_ptr` as first arg.
