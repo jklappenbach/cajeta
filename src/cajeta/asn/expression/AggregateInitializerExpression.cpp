@@ -3,10 +3,14 @@
 //
 
 #include "AggregateInitializerExpression.h"
+#include "Identifier.h"
 #include "../../compile/CajetaModule.h"
 #include "../../type/CajetaStruct.h"
 #include "../../type/CajetaView.h"
+#include "../../type/CajetaArray.h"
 #include "../../type/CajetaClass.h"
+#include "../../type/Scope.h"
+#include "../../field/Field.h"
 #include "../../error/Exception.h"
 
 namespace cajeta {
@@ -129,6 +133,39 @@ namespace cajeta {
             llvm::Value* slot = builder->CreateInBoundsGEP(
                 bodyTy, bodyAlloca, gepIndices, "agg_field_" + b.label);
             builder->CreateStore(value, slot);
+
+            // S6.4 ownership transfer. If the binding is a class-ref field
+            // sourced from a local identifier, the struct now owns the
+            // instance — deactivate the source local's drop entry so only
+            // the struct's drop fn frees it. Without this both the source
+            // local and the struct would call drop, double-freeing.
+            //
+            // v1 simplification: all class-ref bindings are treated as
+            // moves regardless of whether the user wrote `#` on the RHS.
+            // The borrow form (struct holding a borrowed class ref whose
+            // drop the struct should skip) is deferred — see S6.5's
+            // borrow-checker work and the "S6.4 limitations" doc note.
+            auto fieldClass = dynamic_pointer_cast<CajetaClass>(prop->getType());
+            bool fieldIsClassRef = fieldClass != nullptr
+                && !dynamic_pointer_cast<CajetaAggregate>(prop->getType())
+                && !dynamic_pointer_cast<CajetaArray>(prop->getType())
+                && !fieldClass->isInterface();
+            if (fieldIsClassRef) {
+                if (auto idExpr = dynamic_pointer_cast<IdentifierExpression>(b.expression)) {
+                    auto scope = module->getScopeStack().peek();
+                    if (scope) {
+                        FieldPtr srcField = scope->getField(idExpr->getTextValue());
+                        if (srcField) {
+                            if (llvm::Value* entry = srcField->getDropEntry()) {
+                                if (llvm::Function* mark = module->getRuntimeFunction(
+                                        "__cajeta_drop_mark_inactive")) {
+                                    builder->CreateCall(mark, {entry});
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
 
         return bodyAlloca;

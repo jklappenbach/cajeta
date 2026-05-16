@@ -28,10 +28,19 @@ namespace cajeta {
             : CajetaAggregate(module, qName) { }
 
         // Build the LLVM struct body, register the type, and prototype any
-        // methods. Field types are validated here — v1 accepts primitives
-        // and nested structs; arrays, views, classes, and recursive shapes
-        // are rejected with specific error IDs.
+        // methods. Field types are validated here — v1 accepts primitives,
+        // nested structs, and class refs (S6.3); arrays, views, interfaces,
+        // and recursive shapes are rejected with specific error IDs.
         void generatePrototype() override;
+
+        // Synthesize (or return the cached) drop function for this struct.
+        // Walks class-ref fields in reverse declaration order, loading each
+        // pointer and calling the referent class's own drop function. Does
+        // NOT free the body — structs are stack-resident. Primitives and
+        // nested-struct fields are skipped (primitives have no drop; nested
+        // structs land in a follow-up when struct fields participate in
+        // composition). See StructsViewsStatus.md S6.4.
+        llvm::Function* getOrCreateDropFunction() override;
 
         // Total byte size of an instance — driven by LLVM's data layout
         // computation over the (compiler-chosen, naturally-aligned) struct

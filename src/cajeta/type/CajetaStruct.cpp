@@ -16,6 +16,8 @@
 #include "../compile/CajetaModule.h"
 #include "../method/Method.h"
 #include "../error/Exception.h"
+#include <algorithm>
+#include <llvm/IR/IRBuilder.h>
 
 namespace cajeta {
 
@@ -150,6 +152,102 @@ namespace cajeta {
         }
         const llvm::DataLayout& dl = module->getLlvmModule()->getDataLayout();
         return dl.getTypeAllocSize(llvmType);
+    }
+
+    llvm::Function* CajetaStruct::getOrCreateDropFunction() {
+        if (llvmDropFunction) return llvmDropFunction;
+
+        auto& ctx = *module->getLlvmContext();
+        auto* lmod = module->getLlvmModule();
+        llvm::PointerType* ptrTy = llvm::PointerType::get(ctx, 0);
+        llvm::FunctionType* fnTy = llvm::FunctionType::get(
+            llvm::Type::getVoidTy(ctx), {(llvm::Type*) ptrTy},
+            /*isVarArg=*/false);
+
+        // Same name-sanitization pass as CajetaClass::getOrCreateDropFunction
+        // so symbols read cleanly in stack traces.
+        std::string dropName = std::string("__cajeta_struct_")
+            + qName->toCanonical() + "_drop";
+        for (char& c : dropName) {
+            if (c == ':' || c == '.' || c == '<' || c == '>' || c == ',' || c == ' ') {
+                c = '_';
+            }
+        }
+        if (llvm::Function* existing = lmod->getFunction(dropName)) {
+            llvmDropFunction = existing;
+            return existing;
+        }
+
+        llvmDropFunction = llvm::Function::Create(fnTy,
+            llvm::Function::ExternalLinkage, dropName, lmod);
+        llvm::BasicBlock* bb = llvm::BasicBlock::Create(
+            ctx, "entry", llvmDropFunction);
+        llvm::IRBuilder<> b(bb);
+        llvm::Value* instance = llvmDropFunction->getArg(0);
+
+        // Null guard. The drop chain shouldn't fire on a null body alloca
+        // in practice, but a deactivated entry whose owner pointer was
+        // never populated reaches here as null — bail rather than walk
+        // into garbage.
+        llvm::BasicBlock* doDrop = llvm::BasicBlock::Create(
+            ctx, "doDrop", llvmDropFunction);
+        llvm::BasicBlock* done = llvm::BasicBlock::Create(
+            ctx, "done", llvmDropFunction);
+        llvm::Value* isNull = b.CreateICmpEQ(instance,
+            llvm::ConstantPointerNull::get(ptrTy));
+        b.CreateCondBr(isNull, done, doDrop);
+
+        b.SetInsertPoint(doDrop);
+
+        // Walk properties in REVERSE declaration order. Per Structs.md
+        // § Drop chain: "owned class fields drop recursively in reverse
+        // declaration order." For each class-ref field, GEP the slot,
+        // load the pointer (the field slot is `ptr`-sized per S6.3),
+        // call the class's own drop fn if non-null.
+        //
+        // v1 simplification: every class-ref field is treated as owned.
+        // The aggregate initializer's per-binding ownership-transfer
+        // ensures the source local's drop entry is deactivated when its
+        // class instance flows into a struct field, so we don't double
+        // free. Explicit borrow form (struct field holding a borrowed
+        // reference whose drop the struct must skip) is deferred — it
+        // requires per-instance ownership tracking the current chain
+        // shape doesn't carry.
+        llvm::Type* i32Ty = llvm::Type::getInt32Ty(ctx);
+        std::vector<StructurePropertyPtr> reversed(
+            propertyList.begin(), propertyList.end());
+        std::reverse(reversed.begin(), reversed.end());
+        for (auto& property : reversed) {
+            auto fieldType = property->getType();
+            auto fieldClass = dynamic_pointer_cast<CajetaClass>(fieldType);
+            if (!fieldClass) continue;
+            if (dynamic_pointer_cast<CajetaAggregate>(fieldType)) continue;
+            if (dynamic_pointer_cast<CajetaArray>(fieldType)) continue;
+            if (fieldClass->isInterface()) continue;
+
+            unsigned fieldIdx = (unsigned) getFieldLlvmIndex(property);
+            llvm::Value* slotPtr = b.CreateStructGEP(
+                llvmType, instance, fieldIdx,
+                std::string("drop_field_") + property->getName());
+            llvm::Value* refPtr = b.CreateLoad(ptrTy, slotPtr);
+
+            // Call into the referent class's drop fn. Pull it through
+            // ensureFunctionInModule so a cross-module reference (stdlib
+            // class dropped from user code) gets a local extern decl that
+            // the linker resolves at merge time.
+            llvm::Function* refDrop = fieldClass->getOrCreateDropFunction();
+            if (!refDrop) continue;
+            refDrop = CajetaModule::ensureFunctionInModule(lmod, refDrop);
+            b.CreateCall(refDrop, {refPtr});
+        }
+
+        // No __cajeta_free here — the struct body is stack-resident; the
+        // function's epilogue reclaims it.
+
+        b.CreateBr(done);
+        b.SetInsertPoint(done);
+        b.CreateRetVoid();
+        return llvmDropFunction;
     }
 
 } // namespace cajeta

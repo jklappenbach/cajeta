@@ -397,6 +397,22 @@ namespace cajeta {
                     emitDropEntryForFn(module, field, dropFn);
                 }
             }
+
+            // S6.4 — struct local drop entry. Push a drop entry pointing at
+            // the struct's synthesized drop fn so any owned class-ref fields
+            // get reclaimed at scope exit. Views are excluded (they have
+            // their own owning-view drop wired earlier). The struct's drop
+            // fn doesn't free the body (stack-resident); it just walks
+            // class-ref fields and calls each referent's drop. Aggregate
+            // init's per-binding ownership-transfer (S6.4) is what keeps
+            // this from double-freeing the source locals whose class
+            // instances were moved into the struct.
+            if (auto structType = dynamic_pointer_cast<CajetaStruct>(type)) {
+                if (llvm::Function* structDropFn =
+                        structType->getOrCreateDropFunction()) {
+                    emitDropEntryForFn(module, field, structDropFn);
+                }
+            }
         }
 
         return nullptr;

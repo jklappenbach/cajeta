@@ -375,3 +375,108 @@ TEST(StructStackTests, rejectInterfaceFieldInStruct) {
         EXPECT_EQ(e.getErrorId(), "CAJETA_ERROR_STRUCT_FIELD_TYPE");
     }
 }
+
+// ---------------------------------------------------------------------
+// S6.4 — drop chain. Struct local pushes a drop entry that walks owned
+// class-ref fields in reverse declaration order. Aggregate init's per-
+// binding ownership transfer deactivates source locals' drop entries
+// so each class instance drops exactly once.
+// ---------------------------------------------------------------------
+
+namespace {
+
+// run/read pattern — drops fire at the producer method's exit, so a
+// separate method reads the post-drop count. Mirrors the helper in
+// ClassDropTests.
+int64_t observeStructDrops(const std::string& classBody,
+                            const std::string& runBody) {
+    std::string src =
+        std::string("package test;\n") + classBody +
+        "public final class S {\n"
+        "    public static int32 run() {\n"
+        "        Cajeta.dropCountReset();\n"
+        "        " + runBody + "\n"
+        "        return 0;\n"
+        "    }\n"
+        "    public static int64 read() {\n"
+        "        return Cajeta.dropCount();\n"
+        "    }\n"
+        "}\n";
+    auto jit = CajetaJit::compile(src, "test.S");
+    jit->lookup<int32_t (*)()>("run")();
+    return jit->lookup<int64_t (*)()>("read")();
+}
+
+} // namespace
+
+// Primitive-only struct: the local still gets a drop entry but the
+// struct's drop fn finds no class refs and no-ops. dropCount = 1.
+TEST(StructStackTests, primitiveOnlyStructFiresOneDrop) {
+    EXPECT_EQ(observeStructDrops(
+        "public struct Point { int32 x; int32 y; }\n",
+        "Point p = Point { x: 1, y: 2 };"
+    ), 1);
+}
+
+// Owned class-ref field: the source local's drop entry is deactivated
+// at aggregate-init time so only the struct's drop fires. Inside that
+// drop the class instance is freed via a direct call (no chain hop),
+// then the class's destructor runs — but it allocates nothing here, so
+// the only chain-tracked drop is the struct's own entry. dropCount = 1.
+TEST(StructStackTests, structOwnsClassRefDropsOnce) {
+    EXPECT_EQ(observeStructDrops(
+        "public class Tag {\n"
+        "    public int32 n;\n"
+        "    public Tag() { this.n = 0; return; }\n"
+        "}\n"
+        "public struct Holder { Tag t; }\n",
+        "Tag tag = new Tag();\n"
+        "        Holder h = Holder { t: tag };"
+    ), 1);
+}
+
+// Tracer with a destructor that allocates an int32[]. Each destructor
+// call adds one to dropCount when the array drops at the destructor's
+// scope exit. Total chain-counted drops:
+//   1 (struct's own entry)
+//   1 (the array drop fired inside ~Tracer())
+// The Tracer class instance itself is dropped via a direct call from
+// the struct's drop fn, which does not bump dropCount. So observed = 2.
+//
+// This also rules out double-free: if the source local's drop entry
+// stayed active, we'd run the destructor twice and the array drop
+// would fire twice → observed = 3 (or a crash on the second free).
+TEST(StructStackTests, structOwnedClassRefDestructorRunsExactlyOnce) {
+    EXPECT_EQ(observeStructDrops(
+        "public class Tracer {\n"
+        "    public Tracer() { return; }\n"
+        "    public ~Tracer() {\n"
+        "        int32[] arr = new int32[3];\n"
+        "    }\n"
+        "}\n"
+        "public struct Holder { Tracer t; }\n",
+        "Tracer tracer = new Tracer();\n"
+        "        Holder h = Holder { t: tracer };"
+    ), 2);
+}
+
+// Two owned class-ref fields side by side: both destructors run once,
+// in reverse declaration order. Observable count:
+//   1 (struct's own entry)
+//   1 (arr inside ~Tracer for `right`)
+//   1 (arr inside ~Tracer for `left`)
+// Total = 3.
+TEST(StructStackTests, structTwoOwnedClassRefsBothDestructorsRun) {
+    EXPECT_EQ(observeStructDrops(
+        "public class Tracer {\n"
+        "    public Tracer() { return; }\n"
+        "    public ~Tracer() {\n"
+        "        int32[] arr = new int32[3];\n"
+        "    }\n"
+        "}\n"
+        "public struct Pair { Tracer left; Tracer right; }\n",
+        "Tracer a = new Tracer();\n"
+        "        Tracer b = new Tracer();\n"
+        "        Pair p = Pair { left: a, right: b };"
+    ), 3);
+}
