@@ -136,6 +136,79 @@ TEST(StructMethodsTests, methodCallsAnotherMethodOnSelf) {
     EXPECT_EQ(runI32(src), 15);
 }
 
+// ---------------------------------------------------------------------
+// S8.4 — struct method may return a value of the enclosing struct's
+// own concrete type for direct-call use. Two shapes:
+//   - `return this;` returns the receiver itself.
+//   - `return MyStruct { ... };` constructs and returns a fresh
+//     same-type instance.
+//
+// Both work post-S8.4 fix: Method::generatePrototype now refreshes
+// returnType from canonicalMap so the placeholder CajetaClass parsed
+// inside the struct body gets replaced with the real CajetaStruct
+// once the struct's own generatePrototype runs. ReturnStatement
+// handles both `return this;` (ThisExpression) and `return localStruct;`
+// (IdentifierExpression on a struct-typed field) via a double-load
+// path: load the slot to get the body pointer, then load the body to
+// get the struct value the by-value return signature expects.
+//
+// (There's no `Self` keyword in cajeta — "Self" was earlier informal
+// shorthand in Structs.md. The code expects the concrete type name.)
+// ---------------------------------------------------------------------
+
+// `return this;` — return the receiver itself. Fluent / chaining style.
+TEST(StructMethodsTests, methodReturnsThis) {
+    auto src =
+        "package test;\n"
+        "public struct Counter {\n"
+        "    int32 value;\n"
+        "    public Counter bumped() {\n"
+        "        this.value = this.value + 1;\n"
+        "        return this;\n"
+        "    }\n"
+        "}\n"
+        "public final class S {\n"
+        "    public static int32 run() {\n"
+        "        Counter c = Counter { value: 5 };\n"
+        "        Counter d = c.bumped();\n"
+        "        return d.value;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 6);
+}
+
+// `return Point { ... };` — construct and return a fresh same-type
+// instance. Common shape for immutable APIs (`shift` returns a new
+// translated point instead of mutating).
+TEST(StructMethodsTests, methodReturnsFreshSameTypeInstance) {
+    auto src =
+        "package test;\n"
+        "public struct Point {\n"
+        "    int32 x;\n"
+        "    int32 y;\n"
+        "    public Point shift(int32 dx, int32 dy) {\n"
+        "        return Point { x: this.x + dx, y: this.y + dy };\n"
+        "    }\n"
+        "}\n"
+        "public final class S {\n"
+        "    public static int32 run() {\n"
+        "        Point p = Point { x: 3, y: 4 };\n"
+        "        Point q = p.shift(10, 20);\n"
+        "        return q.x + q.y;\n"  // 13 + 24 = 37
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 37);
+}
+
+// Chaining (`p.shift(...).shift(...)`) is deferred — the second
+// method call on the immediately-returned struct value hits a
+// separate codegen gap in MethodCallExpression's receiver handling
+// (the returned-then-repackaged body alloca's lifetime + dispatch
+// don't line up cleanly for an immediate chain). Tracked under
+// "S8.4 limitations called out" in the rollout doc; works fine
+// when the intermediate value is bound to a local first
+// (`Point mid = p.shift(...); Point q = mid.shift(...);`).
+
 // Method writes through a chained `this.embedded.field` path. Exercises
 // the same GEP chain as external `obj.embedded.field` writes — the
 // CajetaAggregate getFieldLlvmIndex override means the inner GEP

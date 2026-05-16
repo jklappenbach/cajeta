@@ -324,6 +324,38 @@ namespace cajeta {
     }
 
     void Method::generatePrototype() {
+        // S8.4 — refresh returnType and parameter types from canonicalMap.
+        //
+        // At parse time, a method declared inside `struct Foo` whose
+        // return type or parameter type references Foo gets the type
+        // resolved to a placeholder CajetaClass (per CajetaType::fromContext's
+        // forward-reference handling): the real CajetaStruct hasn't been
+        // registered yet because we're still inside buildStructOrViewNode's
+        // visit-children pass when the method signature is parsed. When
+        // the struct's generatePrototype runs later and overwrites
+        // canonicalMap[canonical] with the real CajetaStruct (a fresh
+        // shared_ptr — buildStructOrViewNode doesn't reuse the placeholder
+        // the way visitClassDeclaration does via fillFromDeclaration), the
+        // method still holds the stale placeholder. Downstream
+        // dynamic_pointer_cast<CajetaStruct>(returnType) fails, the
+        // function signature falls through to the `ptr` return convention,
+        // and ReturnStatement emits a struct value — LLVM verify rejects
+        // the mismatch. Refresh both sides here, just-in-time.
+        auto refreshType = [](CajetaTypePtr t) -> CajetaTypePtr {
+            if (!t || !t->getQName()) return t;
+            const std::string& canonical = t->getQName()->toCanonical();
+            auto& cmap = CajetaType::getCanonicalMap();
+            auto it = cmap.find(canonical);
+            if (it != cmap.end() && it->second && it->second != t) {
+                return it->second;
+            }
+            return t;
+        };
+        returnType = refreshType(returnType);
+        for (auto& p : parameterList) {
+            if (p) p->setType(refreshType(p->getType()));
+        }
+
         vector<llvm::Type*> llvmTypes;
         // The implicit `this` parameter is inserted at position 0 for non-
         // static methods. This function gets called multiple times in

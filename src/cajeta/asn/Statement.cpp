@@ -1186,28 +1186,60 @@ namespace cajeta {
         // `ret ptr` against a struct return signature).
         if (auto m = module->getCurrentMethod()) {
             if (auto structRet = dynamic_pointer_cast<CajetaStruct>(m->getReturnType())) {
+                // Both shapes load the slot to get a body pointer, then
+                // load the body to get the struct value:
+                //   (a) Struct local: field type is CajetaStruct, the
+                //       HeapField slot holds a pointer to the body
+                //       alloca (S6.1 setup). Detected via the binding
+                //       name in scope.
+                //   (b) `this` on a struct method: ThisExpression
+                //       resolves through a ParameterField also named
+                //       "this" whose type is "pointer"; the slot holds
+                //       the caller-supplied body pointer.
+                // For `return this;` ThisExpression generates the alloca
+                // directly (see ThisExpression::generateCode); for
+                // `return localStruct;` IdentifierExpression returns the
+                // HeapField slot. Both go through the same double-load
+                // path below.
+                std::string fieldName;
+                bool tryDoubleLoad = false;
                 if (auto idExpr = dynamic_pointer_cast<IdentifierExpression>(expression)) {
+                    fieldName = idExpr->getTextValue();
                     auto scope = module->getScopeStack().peek();
                     if (scope) {
-                        if (auto field = scope->getField(idExpr->getTextValue())) {
-                            if (dynamic_pointer_cast<CajetaStruct>(field->getType())) {
-                                llvm::AllocaInst* slot = field->getOrCreateAllocation();
-                                llvm::Value* bodyPtr = builder->CreateLoad(
-                                    slot->getAllocatedType(), slot);
-                                val = builder->CreateLoad(
-                                    structRet->getLlvmType(), bodyPtr);
-                                // Skip the rest of the load logic — val
-                                // is already the right struct value.
-                                if (auto curM = module->getCurrentMethod()) {
-                                    curM->emitAfterAdvice(module);
-                                    curM->emitAfterReturningAdvice(module);
-                                    curM->emitAfterThrowingTryPop(module);
-                                }
-                                emitScopeExitToWatermark(module);
-                                if (auto curM = module->getCurrentMethod())
-                                    curM->emitOwnerDrops(module);
-                                return builder->CreateRet(val);
+                        if (auto field = scope->getField(fieldName)) {
+                            bool isStructLocal = dynamic_pointer_cast<CajetaStruct>(
+                                field->getType()) != nullptr;
+                            bool isThisParam = (fieldName == "this");
+                            if (isStructLocal || isThisParam) {
+                                tryDoubleLoad = true;
                             }
+                        }
+                    }
+                } else if (dynamic_pointer_cast<ThisExpression>(expression)) {
+                    fieldName = "this";
+                    tryDoubleLoad = true;
+                }
+                if (tryDoubleLoad) {
+                    auto scope = module->getScopeStack().peek();
+                    if (scope) {
+                        if (auto field = scope->getField(fieldName)) {
+                            llvm::AllocaInst* slot = field->getOrCreateAllocation();
+                            llvm::Value* bodyPtr = builder->CreateLoad(
+                                slot->getAllocatedType(), slot);
+                            val = builder->CreateLoad(
+                                structRet->getLlvmType(), bodyPtr);
+                            // Skip the rest of the load logic — val
+                            // is already the right struct value.
+                            if (auto curM = module->getCurrentMethod()) {
+                                curM->emitAfterAdvice(module);
+                                curM->emitAfterReturningAdvice(module);
+                                curM->emitAfterThrowingTryPop(module);
+                            }
+                            emitScopeExitToWatermark(module);
+                            if (auto curM = module->getCurrentMethod())
+                                curM->emitOwnerDrops(module);
+                            return builder->CreateRet(val);
                         }
                     }
                 }
