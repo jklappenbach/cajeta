@@ -46,7 +46,7 @@ TEST(LambdaL3Tests, transferCaptureRunsWithinScope) {
         "public final class D {\n"
         "    public static int32 run() {\n"
         "        int32[] arr = new int32[5];\n"
-        "        () -> int64 fn = () -> #arr.size();\n"
+        "        () -> int64 fn = () -> #arr.count();\n"
         "        return (int32) fn();\n"
         "    }\n"
         "}\n";
@@ -63,8 +63,8 @@ TEST(LambdaL3Tests, outerUseAfterTransferIsCompileError) {
         "public final class D {\n"
         "    public static int32 run() {\n"
         "        int32[] arr = new int32[3];\n"
-        "        () -> int64 fn = () -> #arr.size();\n"
-        "        int64 size = arr.size();\n"  // use-after-move
+        "        () -> int64 fn = () -> #arr.count();\n"
+        "        int64 size = arr.count();\n"  // use-after-move
         "        return (int32) size;\n"
         "    }\n"
         "}\n";
@@ -105,8 +105,8 @@ TEST(LambdaL3Tests, transferAndBorrowCoexist) {
         "    public static int32 run() {\n"
         "        int32[] taken = new int32[2];\n"
         "        int32[] kept = new int32[7];\n"
-        "        () -> int64 fn = () -> #taken.size() + kept.size();\n"
-        "        int64 keptSize = kept.size();\n"  // still readable
+        "        () -> int64 fn = () -> #taken.count() + kept.count();\n"
+        "        int64 keptSize = kept.count();\n"  // still readable
         "        return (int32) fn() + (int32) keptSize;\n"
         "    }\n"
         "}\n";
@@ -144,7 +144,7 @@ TEST(LambdaL3Tests, returnClosureWithBorrowCaptureIsError) {
         "public final class D {\n"
         "    public static () -> int64 mkFn() {\n"
         "        int32[] arr = new int32[3];\n"
-        "        () -> int64 fn = () -> arr.size();\n"
+        "        () -> int64 fn = () -> arr.count();\n"
         "        return fn;\n"
         "    }\n"
         "    public static int32 run() { return 0; }\n"
@@ -161,7 +161,7 @@ TEST(LambdaL3Tests, returnFreshLambdaWithBorrowCaptureIsError) {
         "public final class D {\n"
         "    public static () -> int64 mkFn() {\n"
         "        int32[] arr = new int32[3];\n"
-        "        return () -> arr.size();\n"
+        "        return () -> arr.count();\n"
         "    }\n"
         "    public static int32 run() { return 0; }\n"
         "}\n";
@@ -201,7 +201,7 @@ TEST(LambdaL3Tests, returnClosureWithOnlyTransferCapturesAllowed) {
         "public final class D {\n"
         "    public static () -> int64 mkFn() {\n"
         "        int32[] arr = new int32[4];\n"
-        "        () -> int64 fn = () -> #arr.size();\n"
+        "        () -> int64 fn = () -> #arr.count();\n"
         "        return fn;\n"
         "    }\n"
         "    public static int32 run() { return 0; }\n"
@@ -266,7 +266,7 @@ int64_t observeDrops(const std::string& body) {
 TEST(LambdaL3Tests, transferCaptureClosureDropsOnce) {
     EXPECT_EQ(observeDrops(
         "int32[] arr = new int32[3];\n"
-        "        () -> int64 fn = () -> #arr.size();"), 1);
+        "        () -> int64 fn = () -> #arr.count();"), 1);
 }
 
 // Borrow capture: outer's array keeps its active drop entry (closure
@@ -276,7 +276,7 @@ TEST(LambdaL3Tests, transferCaptureClosureDropsOnce) {
 TEST(LambdaL3Tests, borrowCaptureClosureDropsBothEntries) {
     EXPECT_EQ(observeDrops(
         "int32[] arr = new int32[3];\n"
-        "        () -> int64 fn = () -> arr.size();"), 2);
+        "        () -> int64 fn = () -> arr.count();"), 2);
 }
 
 // Value capture: outer primitive has no drop entry. Closure's drop
@@ -309,7 +309,7 @@ TEST(LambdaL3Tests, returnedTransferCaptureClosureCallable) {
         "public final class D {\n"
         "    public static () -> int64 mkFn() {\n"
         "        int32[] arr = new int32[5];\n"
-        "        () -> int64 fn = () -> #arr.size();\n"
+        "        () -> int64 fn = () -> #arr.count();\n"
         "        return fn;\n"
         "    }\n"
         "    public static int32 run() {\n"
@@ -369,7 +369,7 @@ TEST(LambdaL3Tests, escapedClosureDropFiresInCaller) {
         "public final class D {\n"
         "    public static () -> int64 mkFn() {\n"
         "        int32[] arr = new int32[4];\n"
-        "        () -> int64 fn = () -> #arr.size();\n"
+        "        () -> int64 fn = () -> #arr.count();\n"
         "        return fn;\n"
         "    }\n"
         "    public static int32 run() {\n"

@@ -45,12 +45,12 @@ TEST(VarargsTests, threeArgsPackIntoArray) {
     EXPECT_EQ(runI32(src), 20);
 }
 
-// size() on the packed array reports the trailing-arg count.
+// count() on the packed array reports the trailing-arg count.
 TEST(VarargsTests, sizeMatchesTrailingArgCount) {
     auto src =
         "package test;\n"
         "public class Calc {\n"
-        "    public int32 count(int32... xs) { return (int32) xs.size(); }\n"
+        "    public int32 count(int32... xs) { return (int32) xs.count(); }\n"
         "}\n"
         "public final class D {\n"
         "    public static int32 run() {\n"

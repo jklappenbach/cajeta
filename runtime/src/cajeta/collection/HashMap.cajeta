@@ -290,7 +290,7 @@ public class HashMap<K, V> {
     /**
      * @returns the number of (key, value) pairs stored.
      */
-    public int64 size() {
+    public int64 count() {
         return this.sizeCount;
     }
 

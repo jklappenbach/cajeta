@@ -49,14 +49,14 @@ TEST(ArrayInitializerTests, allSlotsRetainValues) {
     EXPECT_EQ(runI32(src), 7);
 }
 
-// size() reads the runtime-known length from the array header.
+// count() reads the runtime-known length from the array header.
 TEST(ArrayInitializerTests, sizeMatchesLiteralLength) {
     auto src =
         "package test;\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
         "        int32[] xs = {1, 2, 3, 4, 5};\n"
-        "        return (int32) xs.size();\n"
+        "        return (int32) xs.count();\n"
         "    }\n"
         "}\n";
     EXPECT_EQ(runI32(src), 5);

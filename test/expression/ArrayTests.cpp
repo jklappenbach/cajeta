@@ -77,12 +77,12 @@ TEST(ArrayTests, doubleElement) {
     EXPECT_DOUBLE_EQ(fn(), 8.25);
 }
 
-// --- size() --------------------------------------------------------------------
+// --- count() -------------------------------------------------------------------
 
 TEST(ArrayTests, sizeMatchesAllocation) {
     auto jit = CajetaJit::compile(makeSource("int64",
         "int32[] arr = new int32[42];\n"
-        "return arr.size();"), "test.A");
+        "return arr.count();"), "test.A");
     auto fn = jit->lookup<int64_t (*)()>("run");
     EXPECT_EQ(fn(), 42);
 }
@@ -90,18 +90,18 @@ TEST(ArrayTests, sizeMatchesAllocation) {
 TEST(ArrayTests, sizeOfDifferentElementType) {
     auto jit = CajetaJit::compile(makeSource("int64",
         "float64[] arr = new float64[7];\n"
-        "return arr.size();"), "test.A");
+        "return arr.count();"), "test.A");
     auto fn = jit->lookup<int64_t (*)()>("run");
     EXPECT_EQ(fn(), 7);
 }
 
 TEST(ArrayTests, sizeUsedInComparison) {
     // WhileStatement codegen is still a stub (separate from array work); verify
-    // size() in expression position without a loop.
+    // count() in expression position without a loop.
     auto jit = CajetaJit::compile(makeSource("boolean",
         "int32[] arr = new int32[5];\n"
         "int64 expected = 5;\n"
-        "return arr.size() == expected;"), "test.A");
+        "return arr.count() == expected;"), "test.A");
     auto fn = jit->lookup<bool (*)()>("run");
     EXPECT_TRUE(fn());
 }
@@ -159,7 +159,7 @@ TEST(ArrayTests, twoDimRowsIndependent) {
 TEST(ArrayTests, twoDimSizeOfOuter) {
     auto jit = CajetaJit::compile(makeSource("int64",
         "int32[][] arr = new int32[5][3];\n"
-        "return arr.size();"), "test.A");
+        "return arr.count();"), "test.A");
     auto fn = jit->lookup<int64_t (*)()>("run");
     EXPECT_EQ(fn(), 5);
 }
@@ -167,7 +167,7 @@ TEST(ArrayTests, twoDimSizeOfOuter) {
 TEST(ArrayTests, twoDimSizeOfInner) {
     auto jit = CajetaJit::compile(makeSource("int64",
         "int32[][] arr = new int32[5][3];\n"
-        "return arr[0].size();"), "test.A");
+        "return arr[0].count();"), "test.A");
     auto fn = jit->lookup<int64_t (*)()>("run");
     EXPECT_EQ(fn(), 3);
 }

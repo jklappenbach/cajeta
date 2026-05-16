@@ -183,9 +183,7 @@ TEST(PostVariableFieldTests, intArrayVarSizeFieldRead) {
 
 TEST(PostVariableFieldTests, intArrayElementsRoundTrip) {
     // Pick an element from deep in the materialized array — verifies the
-    // memcpy covered the full length and didn't truncate. (Calling
-    // .length() on a heap array works in general but trips a separate
-    // alloca-related codegen path that's unrelated to S5b; deferred.)
+    // memcpy covered the full length and didn't truncate.
     auto src =
         "package test;\n"
         "@HostEndian\n"
@@ -207,4 +205,30 @@ TEST(PostVariableFieldTests, intArrayElementsRoundTrip) {
         "    }\n"
         "}\n";
     EXPECT_EQ(runI32(src), 500);
+}
+
+TEST(PostVariableFieldTests, intArrayCountFromViewMatches) {
+    // Materialized array's count() returns the right element count.
+    // count() is the structural accessor on T[] — matches Collection.
+    auto src =
+        "package test;\n"
+        "@HostEndian\n"
+        "public view R {\n"
+        "    int32[] xs;\n"
+        "}\n"
+        "public final class V {\n"
+        "    public static int32 run() {\n"
+        "        int32[] bytes = new int32[6];\n"
+        "        bytes[0] = 5;\n"
+        "        bytes[1] = 100;\n"
+        "        bytes[2] = 200;\n"
+        "        bytes[3] = 300;\n"
+        "        bytes[4] = 400;\n"
+        "        bytes[5] = 500;\n"
+        "        R r = R(bytes);\n"
+        "        int32[] xs = r.xs;\n"
+        "        return (int32) xs.count();\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 5);
 }

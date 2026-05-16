@@ -19,9 +19,9 @@
 namespace cajeta {
 
     // Codegen dispatches three shapes:
-    //   1. `arr.size()` on a CajetaArray receiver — structural accessor, loads the i64
-    //      size field from the array header. Same shape will apply to every collection
-    //      type per the project memory ("collections expose size() returning int64").
+    //   1. `arr.count()` on a CajetaArray receiver — structural accessor, loads the i64
+    //      size field from the array header. Matches `Collection<T>.count()` so generic
+    //      code over `Collection` works on T[] without special-casing.
     //   2. `obj.foo(args)` with a class receiver — invokeMethod on the receiver's type.
     //   3. Bare `foo(args)` — resolves on the enclosing class with `this` as receiver.
     // Map a System.<stream> name to its POSIX file descriptor. Returns -1 if the
@@ -941,8 +941,11 @@ namespace cajeta {
             }
         }
 
-        // Structural accessors on arrays: size() reads the header's first field.
-        if (receiver && methodCallName == "size") {
+        // Structural accessor on arrays. `count()` is the only name —
+        // matches the Collection interface so generic code that operates
+        // on Collection<T> works on T[] without special-casing. Reads
+        // the header's first field (i64 count).
+        if (receiver && methodCallName == "count") {
             if (auto arrayType = dynamic_pointer_cast<CajetaArray>(receiverType)) {
                 llvm::Value* sizePtr = builder->CreateStructGEP(
                     arrayType->getLlvmType(), receiver, CajetaArray::SIZE_FIELD_INDEX);

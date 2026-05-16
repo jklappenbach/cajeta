@@ -131,7 +131,7 @@ TEST(LambdaL2Tests, capturesStringByBorrow) {
     EXPECT_EQ(runI32(src), 7);
 }
 
-// L2-3: heap capture by borrow on an array. arr.size() reads the array
+// L2-3: heap capture by borrow on an array. arr.count() reads the array
 // header through the captured pointer.
 TEST(LambdaL2Tests, capturesArrayByBorrow) {
     auto src =
@@ -139,7 +139,7 @@ TEST(LambdaL2Tests, capturesArrayByBorrow) {
         "public final class D {\n"
         "    public static int32 run() {\n"
         "        int32[] arr = new int32[7];\n"
-        "        () -> int64 fn = () -> arr.size();\n"
+        "        () -> int64 fn = () -> arr.count();\n"
         "        return (int32) fn();\n"
         "    }\n"
         "}\n";

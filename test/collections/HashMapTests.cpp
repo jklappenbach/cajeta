@@ -2,7 +2,7 @@
 // (runtime/src/cajeta/collection/HashMap.cajeta) so it's already
 // loaded by the time these tests JIT — they instantiate it with
 // concrete K, V types and exercise both the method form (put/get/
-// containsKey/size) and the bracket form (m[k] / m[k] = v).
+// containsKey/count) and the bracket form (m[k] / m[k] = v).
 //
 // v1 constraint: K must be a class type. Primitives don't carry
 // hash() (they're not Objects), so HashMap<int32, V> doesn't
@@ -96,7 +96,7 @@ TEST(HashMapTests, containsKeyReportsPresence) {
     EXPECT_EQ(fn(), 10);
 }
 
-TEST(HashMapTests, sizeTracksInsertions) {
+TEST(HashMapTests, countTracksInsertions) {
     auto src =
         "package test;\n"
         "import cajeta.collection.HashMap;\n"
@@ -109,7 +109,7 @@ TEST(HashMapTests, sizeTracksInsertions) {
         "        m.put(new Tag(), 1);\n"
         "        m.put(new Tag(), 2);\n"
         "        m.put(new Tag(), 3);\n"
-        "        return m.size();\n"
+        "        return m.count();\n"
         "    }\n"
         "}\n";
     auto jit = CajetaJit::compile(src, "test.D");
@@ -133,7 +133,7 @@ TEST(HashMapTests, replaceUpdatesExistingValue) {
         "        m.put(t, 10);\n"
         "        m.put(t, 99);\n"
         "        int32 v = m.get(t);\n"
-        "        int64 sz = m.size();\n"
+        "        int64 sz = m.count();\n"
         "        if (sz == 1) { return v; }\n"
         "        return -1;\n"
         "    }\n"
@@ -158,7 +158,7 @@ TEST(HashMapTests, distinctInstancesAreDifferentKeys) {
         "        HashMap<Tag, int32> m = new HashMap<Tag, int32>(16);\n"
         "        m.put(new Tag(), 1);\n"
         "        m.put(new Tag(), 2);\n"
-        "        return m.size();\n"
+        "        return m.count();\n"
         "    }\n"
         "}\n";
     auto jit = CajetaJit::compile(src, "test.D");
@@ -219,7 +219,7 @@ TEST(HashMapTests, growsBeyondInitialCapacityAndKeepsAllEntries) {
         "        m.put(t3, 30);\n"
         "        m.put(t4, 40);\n"
         "        m.put(t5, 50);\n"
-        "        int64 sz = m.size();\n"
+        "        int64 sz = m.count();\n"
         "        int32 v1 = m.get(t1);\n"
         "        int32 v2 = m.get(t2);\n"
         "        int32 v3 = m.get(t3);\n"
@@ -269,7 +269,7 @@ TEST(HashMapTests, resizeClearsTombstones) {
         "        Tag x2 = new Tag();\n"
         "        m.put(x1, 1);\n"
         "        m.put(x2, 2);\n"
-        "        int64 sz = m.size();\n"
+        "        int64 sz = m.count();\n"
         "        int32 vk1 = m.get(keep1);\n"
         "        int32 vk2 = m.get(keep2);\n"
         "        int32 vx1 = m.get(x1);\n"
@@ -309,7 +309,7 @@ TEST(HashMapTests, removeReturnsTrueAndShrinksSize) {
         "        m.put(t, 42);\n"
         "        int32 removed = 0;\n"
         "        if (m.remove(t)) { removed = 1; }\n"
-        "        int64 sz = m.size();\n"
+        "        int64 sz = m.count();\n"
         "        int32 stillThere = 0;\n"
         "        if (m.containsKey(t)) { stillThere = 1; }\n"
         "        int32 score = (removed * 100) + (sz == 0 ? 10 : 0) + (stillThere == 0 ? 1 : 0);\n"
@@ -338,7 +338,7 @@ TEST(HashMapTests, removeReturnsFalseWhenAbsent) {
         "        m.put(inserted, 1);\n"
         "        int32 falseyRemove = 0;\n"
         "        if (m.remove(missing)) { falseyRemove = 1; }\n"
-        "        int64 sz = m.size();\n"
+        "        int64 sz = m.count();\n"
         "        if (falseyRemove == 0 && sz == 1) { return 1; }\n"
         "        return 0;\n"
         "    }\n"
@@ -376,7 +376,7 @@ TEST(HashMapTests, removeThenPutReusesTombstoneSlot) {
         "        int32 va = m.get(a);\n"
         "        int32 vb = m.get(b);\n"
         "        int32 vc = m.get(c);\n"
-        "        int64 sz = m.size();\n"
+        "        int64 sz = m.count();\n"
         "        if (sz == 3 && va == 10 && vb == 99 && vc == 30) {\n"
         "            return 1;\n"
         "        }\n"
@@ -404,7 +404,7 @@ TEST(HashMapTests, bracketReplaceUpdatesValue) {
         "        m[t] = 10;\n"
         "        m[t] = 99;\n"
         "        int32 v = m[t];\n"
-        "        int64 sz = m.size();\n"
+        "        int64 sz = m.count();\n"
         "        if (sz == 1) { return v; }\n"
         "        return -1;\n"
         "    }\n"

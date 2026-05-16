@@ -103,13 +103,13 @@ TEST(ControlFlowTests, whileNeverEntersOnFalseCondition) {
     EXPECT_EQ(fn(), 0);
 }
 
-// Restore the array-size-as-loop-bound test that was deferred.
+// Restore the array-count-as-loop-bound test that was deferred.
 TEST(ControlFlowTests, whileUsingArraySize) {
     auto jit = CajetaJit::compile(makeSource("int32",
         "int32[] arr = new int32[5];\n"
         "int32 total = 0;\n"
         "int32 i = 0;\n"
-        "while (i < arr.size()) {\n"
+        "while (i < arr.count()) {\n"
         "    arr[i] = i + 1;\n"
         "    total = total + arr[i];\n"
         "    i = i + 1;\n"
