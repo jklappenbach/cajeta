@@ -240,13 +240,29 @@ namespace cajeta {
                             }
                             builder->CreateStore(vtableRef, vtSlot);
 
-                            // S10.1 — struct RHS sets BORROWED_STRUCT; plain
-                            // class RHS sets BORROWED_CLASS in v1.
-                            // The OWNED_CLASS variant for `#` lands in S10.2.
+                            // S10.1 — struct RHS sets BORROWED_STRUCT.
+                            // S10.2 — class RHS wrapped in MoveExpression
+                            // (`Greeter g = #h;` or `Greeter g = #new Hello();`)
+                            // sets OWNED_CLASS; bare class RHS sets
+                            // BORROWED_CLASS in v1. MoveExpression's own
+                            // generateCode has already marked the source
+                            // moved + deactivated its drop entry, so
+                            // ownership transfers cleanly to the interface
+                            // value's drop chain (S10.4 dispatches on kind).
+                            // Note: `#` on a struct RHS is a no-op for the
+                            // kind tag — structs are stack-resident and can't
+                            // be owned by an interface value; the BORROWED
+                            // tag stands.
                             bool rhsIsStruct = dynamic_pointer_cast<CajetaStruct>(rhsType) != nullptr;
-                            int64_t kindValue = rhsIsStruct
-                                ? IFACE_KIND_BORROWED_STRUCT
-                                : IFACE_KIND_BORROWED_CLASS;
+                            bool rhsIsMove = dynamic_pointer_cast<MoveExpression>(rhsExpr) != nullptr;
+                            int64_t kindValue;
+                            if (rhsIsStruct) {
+                                kindValue = IFACE_KIND_BORROWED_STRUCT;
+                            } else if (rhsIsMove) {
+                                kindValue = IFACE_KIND_OWNED_CLASS;
+                            } else {
+                                kindValue = IFACE_KIND_BORROWED_CLASS;
+                            }
                             builder->CreateStore(
                                 llvm::ConstantInt::get(i64Ty,
                                     (uint64_t) kindValue),
