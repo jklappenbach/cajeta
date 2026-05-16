@@ -162,6 +162,94 @@ namespace cajeta {
                 builder->CreateStore(bodyAlloca, field->getOrCreateAllocation());
             }
 
+            // S9.5.4 — interface local handling. An interface local's
+            // HeapField slot holds a `ptr` pointing at a 24-byte
+            // fat-pointer body. Three init shapes:
+            //   - No initializer: allocate empty body, zero-init, store
+            //     body ptr in slot.
+            //   - Initializer RHS is an interface value (already a body
+            //     ptr after loadIfLValue's S9.5.4 branch): HeapField
+            //     stored the body ptr in the slot; the local aliases the
+            //     source body (borrow). No additional work here.
+            //   - Initializer RHS is a non-interface class value (e.g.
+            //     `Greeter g = new Hello()`): HeapField stored the
+            //     class instance pointer in the slot, but the local
+            //     needs a 24-byte fat-pointer body. Build the body
+            //     (data = class ptr, vtable = per-(class, iface) global,
+            //     kind = BORROWED_CLASS for v1 — `#`-marked owned land
+            //     in S10.2) and overwrite the slot to point at it.
+            if (auto ifaceKlass = dynamic_pointer_cast<CajetaClass>(type)) {
+                if (ifaceKlass->isInterface()) {
+                    auto* builder = module->getBuilder();
+                    auto& lctx = *module->getLlvmContext();
+                    llvm::Type* bodyTy = type->getLlvmType();
+                    llvm::Type* ptrTy = llvm::PointerType::get(lctx, 0);
+                    llvm::Type* i64Ty = llvm::Type::getInt64Ty(lctx);
+
+                    if (!initializer) {
+                        llvm::Value* bodyAlloca = builder->CreateAlloca(bodyTy);
+                        builder->CreateStore(
+                            llvm::Constant::getNullValue(bodyTy), bodyAlloca);
+                        builder->CreateStore(bodyAlloca,
+                            field->getOrCreateAllocation());
+                    } else {
+                        auto varInit = dynamic_pointer_cast<VariableInitializer>(initializer);
+                        ExpressionPtr rhsExpr;
+                        if (varInit && !varInit->getChildren().empty()) {
+                            rhsExpr = dynamic_pointer_cast<Expression>(
+                                varInit->getChildren()[0]);
+                            if (rhsExpr && !rhsExpr->getResolvedType()) {
+                                rhsExpr->resolveTypes(module);
+                            }
+                        }
+                        CajetaTypePtr rhsType = rhsExpr
+                            ? rhsExpr->getResolvedType() : nullptr;
+                        auto rhsClass = dynamic_pointer_cast<CajetaClass>(rhsType);
+                        bool rhsIsInterface = rhsClass && rhsClass->isInterface();
+
+                        if (rhsClass && !rhsIsInterface) {
+                            // Re-load whatever HeapField stored in the slot —
+                            // that's the class instance pointer the initializer
+                            // returned. Then build a fat-pointer body in a
+                            // fresh alloca and overwrite the slot.
+                            llvm::Value* classPtr = builder->CreateLoad(
+                                ptrTy, field->getOrCreateAllocation());
+
+                            llvm::Value* bodyAlloca = builder->CreateAlloca(bodyTy);
+                            llvm::Value* dataSlot = builder->CreateStructGEP(
+                                bodyTy, bodyAlloca, 0, "iface_data");
+                            llvm::Value* vtSlot = builder->CreateStructGEP(
+                                bodyTy, bodyAlloca, 1, "iface_vtable");
+                            llvm::Value* kindSlot = builder->CreateStructGEP(
+                                bodyTy, bodyAlloca, 2, "iface_kind");
+                            builder->CreateStore(classPtr, dataSlot);
+
+                            std::string ifaceCanonical =
+                                ifaceKlass->getQName()->toCanonical();
+                            llvm::Constant* vtableRef = nullptr;
+                            if (auto gv = rhsClass->getInterfaceVTable(ifaceCanonical)) {
+                                vtableRef = CajetaModule::ensureGlobalInModule(
+                                    module->getLlvmModule(), gv);
+                            }
+                            if (!vtableRef) {
+                                vtableRef = llvm::ConstantPointerNull::get(
+                                    llvm::cast<llvm::PointerType>(ptrTy));
+                            }
+                            builder->CreateStore(vtableRef, vtSlot);
+                            builder->CreateStore(
+                                llvm::ConstantInt::get(i64Ty,
+                                    (uint64_t) IFACE_KIND_BORROWED_CLASS),
+                                kindSlot);
+                            builder->CreateStore(bodyAlloca,
+                                field->getOrCreateAllocation());
+                        }
+                        // RHS is interface: loadIfLValue returned a body
+                        // ptr, HeapField stored it. Local now aliases the
+                        // source body (BORROWED). No fix-up needed.
+                    }
+                }
+            }
+
             // L3-2 escape-check wiring: a function-typed local initialized
             // from a lambda or bound method reference inherits the RHS's
             // borrow-capture state. After the initializer has run
