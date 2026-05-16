@@ -480,3 +480,119 @@ TEST(StructStackTests, structTwoOwnedClassRefsBothDestructorsRun) {
         "        Pair p = Pair { left: a, right: b };"
     ), 3);
 }
+
+// ---------------------------------------------------------------------
+// S6.5 — borrow checker: paths into struct fields are tracked by the
+// same machinery as class-field paths. Aggregate init also marks the
+// source local as moved-from so subsequent reads trip use-after-move
+// (closes S6.4 limitation #1 — the prior soundness gap where the
+// struct owned the instance but the source local was still readable).
+// ---------------------------------------------------------------------
+
+// Reading the source local AFTER it's been moved into a struct field
+// trips CAJETA_ERROR_USE_AFTER_MOVE. Without this, the struct could
+// later free the instance via its drop chain while the local still
+// aliased it.
+TEST(StructStackTests, useAfterMoveOnSourceConsumedByStructInit) {
+    auto src =
+        "package test;\n"
+        "public class Tag {\n"
+        "    public int32 n;\n"
+        "    public Tag() { this.n = 0; return; }\n"
+        "}\n"
+        "public struct Holder { Tag t; }\n"
+        "public final class S {\n"
+        "    public static int32 run() {\n"
+        "        Tag tag = new Tag();\n"
+        "        Holder h = Holder { t: tag };\n"
+        "        return tag.n;\n"  // use-after-move
+        "    }\n"
+        "}\n";
+    try {
+        CajetaJit::compile(src, "test.S");
+        FAIL() << "expected CAJETA_ERROR_USE_AFTER_MOVE on tag.n after struct init";
+    } catch (cajeta::Exception& e) {
+        EXPECT_EQ(e.getErrorId(), "CAJETA_ERROR_USE_AFTER_MOVE");
+    }
+}
+
+// Two class-ref bindings in the same struct init each mark their own
+// source moved. After the init, both locals must trip use-after-move.
+TEST(StructStackTests, useAfterMoveAffectsAllConsumedSources) {
+    auto src =
+        "package test;\n"
+        "public class Tag {\n"
+        "    public int32 n;\n"
+        "    public Tag() { this.n = 0; return; }\n"
+        "}\n"
+        "public struct Pair { Tag left; Tag right; }\n"
+        "public final class S {\n"
+        "    public static int32 run() {\n"
+        "        Tag a = new Tag();\n"
+        "        Tag b = new Tag();\n"
+        "        Pair p = Pair { left: a, right: b };\n"
+        "        return b.n;\n"  // b also moved, even though it was the second binding
+        "    }\n"
+        "}\n";
+    try {
+        CajetaJit::compile(src, "test.S");
+        FAIL() << "expected CAJETA_ERROR_USE_AFTER_MOVE on b.n";
+    } catch (cajeta::Exception& e) {
+        EXPECT_EQ(e.getErrorId(), "CAJETA_ERROR_USE_AFTER_MOVE");
+    }
+}
+
+// Locals that aren't consumed by the init stay readable. The move-mark
+// must be scoped to the specific source identifier, not blanket
+// applied. Here `other` is never bound into the struct — reading it
+// after the struct init is fine.
+TEST(StructStackTests, structInitOnlyMovesBoundSources) {
+    auto src =
+        "package test;\n"
+        "public class Tag {\n"
+        "    public int32 n;\n"
+        "    public Tag() { this.n = 0; return; }\n"
+        "}\n"
+        "public struct Holder { Tag t; }\n"
+        "public final class S {\n"
+        "    public static int32 run() {\n"
+        "        Tag tag = new Tag();\n"
+        "        Tag other = new Tag();\n"
+        "        other.n = 99;\n"
+        "        Holder h = Holder { t: tag };\n"
+        "        return other.n;\n"  // other untouched by the init
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 99);
+}
+
+// Path-borrow through a struct field. `#h.t` moves the class instance
+// out of the struct via the field path; subsequent reads through the
+// same path must trip use-after-move. This exercises the existing
+// DotExpression buildPath + Scope::markMovedPath machinery — S6.5's
+// promise is that struct field paths plug into the same tracker as
+// class field paths, no new code required.
+TEST(StructStackTests, useAfterMoveOnStructFieldPathAfterTransfer) {
+    auto src =
+        "package test;\n"
+        "public class Tag {\n"
+        "    public int32 n;\n"
+        "    public Tag() { this.n = 0; return; }\n"
+        "}\n"
+        "public struct Holder { Tag t; }\n"
+        "public final class S {\n"
+        "    public static int32 run() {\n"
+        "        Tag tag = new Tag();\n"
+        "        tag.n = 5;\n"
+        "        Holder h = Holder { t: tag };\n"
+        "        Tag moved = #h.t;\n"  // transfer out of h.t
+        "        return h.t.n;\n"      // path was moved
+        "    }\n"
+        "}\n";
+    try {
+        CajetaJit::compile(src, "test.S");
+        FAIL() << "expected CAJETA_ERROR_USE_AFTER_MOVE on h.t.n after #h.t";
+    } catch (cajeta::Exception& e) {
+        EXPECT_EQ(e.getErrorId(), "CAJETA_ERROR_USE_AFTER_MOVE");
+    }
+}

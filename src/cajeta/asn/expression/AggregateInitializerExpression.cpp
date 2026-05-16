@@ -134,17 +134,27 @@ namespace cajeta {
                 bodyTy, bodyAlloca, gepIndices, "agg_field_" + b.label);
             builder->CreateStore(value, slot);
 
-            // S6.4 ownership transfer. If the binding is a class-ref field
-            // sourced from a local identifier, the struct now owns the
-            // instance — deactivate the source local's drop entry so only
-            // the struct's drop fn frees it. Without this both the source
-            // local and the struct would call drop, double-freeing.
+            // S6.4 + S6.5 ownership transfer for class-ref bindings.
+            // When the binding sources a class instance from a local
+            // identifier, the struct now owns it — two side effects:
             //
-            // v1 simplification: all class-ref bindings are treated as
-            // moves regardless of whether the user wrote `#` on the RHS.
-            // The borrow form (struct holding a borrowed class ref whose
-            // drop the struct should skip) is deferred — see S6.5's
-            // borrow-checker work and the "S6.4 limitations" doc note.
+            //   (S6.4) Deactivate the source's drop entry so only the
+            //          struct's drop fn frees the instance; without this
+            //          both the source local and the struct would call
+            //          drop, double-freeing at scope exit.
+            //
+            //   (S6.5) Mark the source identifier as moved in the current
+            //          scope. Subsequent reads (e.g. `tag.n` after `Holder
+            //          { t: tag }`) trip CAJETA_ERROR_USE_AFTER_MOVE,
+            //          closing the soundness gap from S6.4 limitation #1:
+            //          the struct now owns the instance and may free it
+            //          via its drop chain at any point past this line.
+            //
+            // v1 simplification: every class-ref binding is treated as a
+            // move regardless of whether the user wrote `#` on the RHS.
+            // Borrow-form bindings (struct field holding a borrowed class
+            // ref whose drop the struct must skip) still need per-instance
+            // ownership tracking and remain deferred.
             auto fieldClass = dynamic_pointer_cast<CajetaClass>(prop->getType());
             bool fieldIsClassRef = fieldClass != nullptr
                 && !dynamic_pointer_cast<CajetaAggregate>(prop->getType())
@@ -163,6 +173,7 @@ namespace cajeta {
                                 }
                             }
                         }
+                        scope->markMoved(idExpr->getTextValue());
                     }
                 }
             }
