@@ -45,7 +45,7 @@ namespace cajeta {
         // NOT free the body — structs are stack-resident. Primitives and
         // nested-struct fields are skipped (primitives have no drop; nested
         // structs land in a follow-up when struct fields participate in
-        // composition). See StructsViewsStatus.md S6.4.
+        // composition). See cajeta-docs/history/StructsViewsStatus.md S6.4.
         llvm::Function* getOrCreateDropFunction() override;
 
         // Total byte size of an instance — driven by LLVM's data layout

@@ -14,7 +14,7 @@
 // element boundaries align with field boundaries — keeps the hand-packed
 // numeric literals readable.
 //
-// Out of scope (deferred to S5b — see StructsViewsStatus.md):
+// Out of scope (deferred to S5b — see cajeta-docs/history/StructsViewsStatus.md):
 //   - Fixed fields after a variable-size field (needs runtime offset cache)
 //   - T[] as a variable-size view field (needs per-element-size runtime helper)
 //   - Nested variable-size view in another view's tail

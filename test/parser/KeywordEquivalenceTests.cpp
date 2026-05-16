@@ -15,7 +15,8 @@
 // that path enters dispatch code that segfaults rather than cleanly
 // rejecting. The "struct rejects view-ctor syntax with a clear error"
 // assertion is a real test worth having, but the rejection path needs
-// a focused fix first. See StructsViewsStatus.md S6.1 notes.
+// a focused fix first. See cajeta-docs/history/StructsViewsStatus.md S6.1
+// notes (also carried in ToDo.md as a deferred item).
 //
 
 #include "gtest/gtest.h"

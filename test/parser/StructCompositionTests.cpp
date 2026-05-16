@@ -1,7 +1,7 @@
 //
 // Session 7 — inline composition: structs embedded as class fields.
 //
-// Per StructsViewsStatus.md S7, when a class has a struct-typed field the
+// Per cajeta-docs/history/StructsViewsStatus.md S7, when a class has a struct-typed field the
 // struct's body lays out INLINE inside the class's heap allocation (not
 // as a pointer). Field access chains GEP through the class layout into
 // the struct layout in one operation. Class drops recurse into the

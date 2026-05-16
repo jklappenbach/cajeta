@@ -61,7 +61,7 @@ namespace cajeta {
         //     size field, walk K-1 prior length-prefixes to find the offset.
         //   - All variable-size fields must be trailing. Fixed fields after a
         //     variable-size field need a runtime offset cache (deferred to a
-        //     follow-up session — see StructsViewsStatus.md S5b notes).
+        //     follow-up session — see cajeta-docs/history/StructsViewsStatus.md S5b notes).
         //
         // The shift from S4's "first var-size prefix lives in the struct" to
         // S5's "no var-size in the struct" simplifies the multi-trailing case:

@@ -1,6 +1,6 @@
 # Async Runtime — Implementation Status
 
-Tracks the R1–R5 rollout of the async runtime described in `ThreadModel.md`. Counterpart to `ImplementationStatus.md` (which covers the MemoryModel rollout).
+Tracks the R1–R5 rollout of the async runtime described in `ThreadModel.md`. Counterpart to `history/ImplementationStatus.md` (which covers the now-complete MemoryModel rollout).
 
 ---
 

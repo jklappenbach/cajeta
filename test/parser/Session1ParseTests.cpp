@@ -10,7 +10,7 @@
 // These tests run the lexer + parser directly and confirm the parser accepts
 // (or rejects) the input. They DO NOT run codegen — the AST and semantic
 // machinery for these constructs lands in later sessions per
-// `ImplementationStatus.md`.
+// `cajeta-docs/history/ImplementationStatus.md`.
 //
 
 #include "gtest/gtest.h"

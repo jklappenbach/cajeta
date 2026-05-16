@@ -1,7 +1,7 @@
 //
 // S6.1 — stack-allocated struct locals (alloca + zero-init).
 //
-// Covers the first slice of Session 6 from StructsViewsStatus.md:
+// Covers the first slice of Session 6 from cajeta-docs/history/StructsViewsStatus.md:
 //   - struct declarations with primitive-only fields lay out successfully
 //   - `struct Foo f;` declares a local that's a stack alloca of the
 //     struct body, zero-initialized

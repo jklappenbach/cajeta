@@ -1,7 +1,7 @@
 //
 // Session 8 — struct methods (direct calls only).
 //
-// Per StructsViewsStatus.md S8, a struct can declare methods just like a
+// Per cajeta-docs/history/StructsViewsStatus.md S8, a struct can declare methods just like a
 // class. The `this` parameter is the struct pointer (aggregate-by-pointer
 // per CajetaAggregate's calling convention). Direct calls inline at the
 // call site; LLVM's inliner takes care of the rest given the static

@@ -132,7 +132,7 @@ CAJETA_DUMP_IR=1 CAJETA_SOURCE_ROOT="$PWD" \
 | `CompilerOptionTests`       | `--bounds=off` toggle, `--emit` mode round-trip, target-triple setter |
 | `FpTests`                   | fp32/fp64 arithmetic, fp16 declare/store, fp4/fp6/fp8 storage |
 
-#### Memory model + wire formats (Sessions 1–3.5 of the memory-model rollout — see `cajeta-docs/ImplementationStatus.md`)
+#### Memory model + wire formats (Sessions 1–3.5 of the memory-model rollout — see `cajeta-docs/history/ImplementationStatus.md`)
 
 | Suite                       | What it covers                                                |
 | --------------------------- | ------------------------------------------------------------- |
@@ -142,7 +142,7 @@ CAJETA_DUMP_IR=1 CAJETA_SOURCE_ROOT="$PWD" \
 | `ElisionTests`              | Multi-parameter free functions can't return a borrow (`CAJETA_ERROR_BORROW_RETURN_MULTI_PARAM`); single-param / `#`-returning / primitive-returning signatures pass |
 | `PathBorrowTests`           | `#person.name` records the path; reads through that path (or any prefix) are rejected |
 
-#### Aggregate types — views + structs + interface dispatch (Sessions 1–12 of the struct/view rollout — see `cajeta-docs/StructsViewsStatus.md`)
+#### Aggregate types — views + structs + interface dispatch (Sessions 1–12 of the struct/view rollout — see `cajeta-docs/history/StructsViewsStatus.md`)
 
 | Suite                       | What it covers                                                |
 | --------------------------- | ------------------------------------------------------------- |
