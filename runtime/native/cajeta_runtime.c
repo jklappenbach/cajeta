@@ -87,6 +87,34 @@ void __cajeta_view_drop_owned(void* data_ptr) {
     free(header);
 }
 
+// Materialize a heap-allocated T[] from a view's variable-size T[] field
+// (S5b — Views.md § Variable-size fields). The view's bytes don't include
+// an array header — they're just `count * elem_size` packed element bytes.
+// This helper allocates a fresh array header + data block and memcpys the
+// element bytes into it. Returns the header pointer (matches the layout
+// __cajeta_new_array_header produces).
+//
+// Caller responsibility: free the returned pointer via the standard array
+// drop path when the result goes out of scope. The drop entry for the
+// caller's local is registered by LocalVariableDeclaration as usual.
+void* __cajeta_array_view_to_owned(const void* data, int64_t count, int64_t elem_size) {
+    if (count < 0) count = 0;
+    if (elem_size <= 0) elem_size = 1;
+    uint64_t header_size = 8;
+    uint64_t total = header_size + (uint64_t) count * (uint64_t) elem_size;
+    void* hdr = calloc(1, (size_t) total);
+    if (hdr == NULL) {
+        fprintf(stderr, "cajeta: __cajeta_array_view_to_owned failed (count=%lld elem=%lld)\n",
+                (long long) count, (long long) elem_size);
+        abort();
+    }
+    *((int64_t*) hdr) = (int64_t) count;
+    if (data != NULL && count > 0) {
+        memcpy((char*) hdr + header_size, data, (size_t) count * (size_t) elem_size);
+    }
+    return hdr;
+}
+
 // Generic zero-fill allocation for compiler-emitted heap blocks that don't
 // match an array shape — used for closure records and captures structs in
 // L3-3. Mirrors __cajeta_new_array's failure mode so the compiler doesn't

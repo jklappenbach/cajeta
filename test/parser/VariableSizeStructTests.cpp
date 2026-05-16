@@ -143,18 +143,23 @@ TEST(VariableSizeStructTests, varSizeFieldAssignmentRejected) {
     expectErrorId(src, "CAJETA_ERROR_VARSIZE_FIELD_ASSIGN");
 }
 
-// --- Layout rule: variable-size field must be last -------------------------
+// --- Layout rule: fixed field after variable-size used to be rejected -----
+//
+// S5 rejected fixed fields after a variable-size field; S5b lifted the
+// restriction by extending walk-the-prefixes to post-var fixed fields.
+// The test now confirms the previously-rejected shape compiles. See
+// PostVariableFixedFieldTests for the full read/write coverage.
 
-TEST(VariableSizeStructTests, varSizeFieldNotLastRejected) {
+TEST(VariableSizeStructTests, varSizeFieldNotLastNowAccepted) {
     auto src =
         "package test;\n"
         "@HostEndian\n"
-        "public view Bad {\n"
+        "public view R {\n"
         "    String name;\n"
-        "    int32 id;\n"                  // fixed-size field after variable-size
+        "    int32 id;\n"                  // post-variable fixed — used to be an error
         "}\n"
         "public final class V {\n"
         "    public static int32 run() { return 0; }\n"
         "}\n";
-    expectErrorId(src, "CAJETA_ERROR_VARSIZE_FIELD_NOT_LAST");
+    EXPECT_NO_THROW(CajetaJit::compile(src, "test.V"));
 }

@@ -90,25 +90,20 @@ namespace cajeta {
                 throw Exception(buf, "CAJETA_ERROR_VIEW_RECURSIVE");
             }
             bool isVar = CajetaAggregate::isVariableSize(property);
-            if (sawVariableSize && !isVar) {
-                // Fixed field after a variable-size field needs the runtime
-                // offset cache machinery — that lands in S5b. Until then we
-                // reject so users get a clear error instead of silent
-                // miscompilation. Trailing variable-size fields ARE allowed
-                // (each new var-size field appends to the trailing region).
-                char buf[256];
-                snprintf(buf, sizeof(buf),
-                    "view '%s' has a fixed-size field '%s' after a variable-size field; "
-                    "post-variable fixed fields need an offset cache, deferred to a "
-                    "follow-up session. Reorder so all variable-size fields are last.",
-                    canonical.c_str(), property->getName().c_str());
-                throw Exception(buf, "CAJETA_ERROR_VARSIZE_FIELD_NOT_LAST");
-            }
             if (isVar) {
                 sawVariableSize = true;
                 variableSizeCount += 1;
                 // Variable-size field's bytes (i32 prefix + data) live past
                 // the LLVM struct's footprint. Nothing pushed onto llvmMembers.
+            } else if (sawVariableSize) {
+                // Fixed field AFTER a variable-size field. The LLVM struct's
+                // member list only contains the pre-first-var-size fixed
+                // fields (those have compile-time-constant offsets). Post-
+                // variable fixed fields aren't represented in the LLVM struct
+                // at all — DotExpression's accessor walks all preceding
+                // var-size length-prefixes at runtime to find them.
+                // S5b drops the "fixed field after var-size is an error"
+                // rejection that was in place during S5.
             } else {
                 llvmMembers.push_back(property->getType()->getLlvmType());
             }

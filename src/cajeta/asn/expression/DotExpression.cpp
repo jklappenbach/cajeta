@@ -7,6 +7,7 @@
 #include "../../type/CajetaClass.h"
 #include "../../type/CajetaStruct.h"
 #include "../../type/CajetaView.h"
+#include "../../type/CajetaArray.h"
 #include "../../error/Exception.h"
 #include <functional>
 #include "Identifier.h"
@@ -324,14 +325,107 @@ namespace cajeta {
             llvm::Value* dataPtr = builder->CreateInBoundsGEP(
                 i8Ty, base, dataOffset, identifier + "_data");
 
+            // Materialize an owned value via the right runtime helper
+            // for the field's element type. String → null-terminated UTF-8
+            // copy. T[] → fresh heap array (header + memcpy of data bytes).
             auto fieldQn = property->getType()->getQName();
             if (fieldQn && fieldQn->getTypeName() == "String") {
                 llvm::Function* fn = module->getRuntimeFunction("__cajeta_str_view_to_owned");
                 if (!fn) return nullptr;
                 return builder->CreateCall(fn, {dataPtr, length64});
             }
+            if (auto arrType = dynamic_pointer_cast<CajetaArray>(property->getType())) {
+                llvm::Function* fn = module->getRuntimeFunction("__cajeta_array_view_to_owned");
+                if (!fn) return nullptr;
+                // Element size from the array's element LLVM type. Required
+                // by the runtime to compute total byte count for memcpy.
+                uint64_t elemBytes = 1;
+                if (auto elemTy = arrType->getElementLlvmType(&ctx)) {
+                    elemBytes = module->getLlvmModule()->getDataLayout()
+                        .getTypeAllocSize(elemTy);
+                    if (elemBytes == 0) elemBytes = 1;
+                }
+                llvm::Value* elemBytesConst = llvm::ConstantInt::get(
+                    i64Ty, elemBytes);
+                return builder->CreateCall(fn, {dataPtr, length64, elemBytesConst});
+            }
             return dataPtr;
         }
+
+        // Post-variable fixed field access (S5b). A view may now declare
+        // fixed-size fields after a variable-size field. Their LLVM-struct
+        // slot doesn't exist; we walk all preceding var-size length-prefixes
+        // at runtime to find this field's offset, then GEP from `base`.
+        //
+        // The pre-variable fixed fields fall through to the standard
+        // CreateStructGEP path below — their offsets are compile-time-constant
+        // and live in the LLVM struct.
+        if (auto viewType = dynamic_pointer_cast<CajetaView>(klass)) {
+            // Find this property's position in propertyList AND count
+            // var-size fields that precede it. If there are no preceding
+            // var-size fields, the field is pre-variable and the standard
+            // path handles it.
+            int priorVarSize = 0;
+            bool isPostVariable = false;
+            for (auto& p : viewType->getPropertyList()) {
+                if (p == property) {
+                    isPostVariable = (priorVarSize > 0);
+                    break;
+                }
+                if (CajetaAggregate::isVariableSize(p)) priorVarSize += 1;
+            }
+            if (isPostVariable) {
+                auto* builder = module->getBuilder();
+                auto& ctx = *module->getLlvmContext();
+                llvm::Type* i32Ty = llvm::Type::getInt32Ty(ctx);
+                llvm::Type* i64Ty = llvm::Type::getInt64Ty(ctx);
+                llvm::Type* i8Ty = llvm::Type::getInt8Ty(ctx);
+
+                uint64_t fixedPrefixSize = viewType->getFixedSize();
+                llvm::Value* offset = llvm::ConstantInt::get(i64Ty, fixedPrefixSize);
+
+                // Walk every property up to (not including) THIS field,
+                // tracking the running offset. var-size fields advance by
+                // (4 + prefix-value); post-var fixed fields advance by
+                // their own static size.
+                const llvm::DataLayout& dl = module->getLlvmModule()->getDataLayout();
+                bool sawVar = false;
+                for (auto& p : viewType->getPropertyList()) {
+                    if (p == property) break;
+                    if (CajetaAggregate::isVariableSize(p)) {
+                        sawVar = true;
+                        llvm::Value* priorPrefixPtr = builder->CreateInBoundsGEP(
+                            i8Ty, base, offset, identifier + "_walk_prefix_ptr");
+                        llvm::Value* priorLen32 = builder->CreateLoad(
+                            i32Ty, priorPrefixPtr, identifier + "_walk_prefix");
+                        llvm::Value* priorLen64 = builder->CreateIntCast(
+                            priorLen32, i64Ty, /*isSigned=*/true);
+                        llvm::Value* advance = builder->CreateAdd(
+                            priorLen64, llvm::ConstantInt::get(i64Ty, 4),
+                            identifier + "_walk_advance");
+                        offset = builder->CreateAdd(offset, advance, identifier + "_walk_offset");
+                    } else if (sawVar) {
+                        // Post-var fixed field BEFORE our target. Advance
+                        // by its static size.
+                        uint64_t skipBytes = dl.getTypeAllocSize(
+                            p->getType()->getLlvmType());
+                        offset = builder->CreateAdd(
+                            offset, llvm::ConstantInt::get(i64Ty, skipBytes),
+                            identifier + "_walk_skipfixed");
+                    }
+                    // Pre-var fixed fields contribute to fixedPrefixSize
+                    // already (handled by the starting offset).
+                }
+
+                llvm::Value* fieldPtr = builder->CreateInBoundsGEP(
+                    i8Ty, base, offset, identifier + "_ptr");
+                // Return as an l-value pointer; caller's loadIfLValue will
+                // load through with the right element type. Mirrors what
+                // CreateStructGEP returns in the standard path.
+                return fieldPtr;
+            }
+        }
+
         return module->getBuilder()->CreateStructGEP(klass->getLlvmType(), base,
             fieldIdx, identifier);
     }
