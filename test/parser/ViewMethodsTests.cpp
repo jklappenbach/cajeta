@@ -144,18 +144,19 @@ TEST(ViewMethodsTests, staticMethodOnView) {
     EXPECT_EQ(runI32(src), 1234567);
 }
 
-// Deferred negative tests (called out in the S4 plan but kept here as
-// TODO markers rather than skipped tests, to avoid masking later work):
+// Deferred negative test, kept as a TODO marker so it doesn't silently
+// disappear from the S4 plan:
 //
-//   - methodLevelGenericsRejected: method-level <T> on a view method
-//     should be rejected with a clear diagnostic. Today the parser
-//     errors via stderr but doesn't throw; the malformed AST then
-//     segfaults downstream. Proper handling needs either a parser-
-//     error-to-exception bridge or a pre-codegen AST validation pass.
 //   - methodReturningSelfBorrowRejected: returning a borrow into
-//     `this` (e.g. a String field) should be rejected per Views.md
-//     § Methods. Detection requires a data-flow pass that traces
-//     return-value provenance back through field reads; deferred.
+//     `this` (e.g. a String field of the view) should be rejected per
+//     Views.md § Methods. Detection requires a data-flow pass that
+//     traces return-value provenance back through field reads; deferred.
 //
-// Both restrictions are documented as v1 limitations and live in the
-// CajetaView codegen comments. Enforcement lands in a follow-up.
+// Note on the S4 plan's "method-level generics rejected" item: that
+// turned out to be a non-restriction. The grammar (CajetaParser.g4
+// methodDeclaration) doesn't include typeParameters on methods at all
+// — method-level generics aren't supported anywhere in cajeta, by
+// design (see interfaceMemberDeclaration comment in the grammar).
+// There's nothing view-specific to enforce. The parser does mishandle
+// `<T>` written on a method (stderr error then segfault), but that's
+// a general parser-error-handling issue, not part of S4 scope.
