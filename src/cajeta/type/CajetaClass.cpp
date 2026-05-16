@@ -346,6 +346,16 @@ namespace cajeta {
             };
 
             std::vector<llvm::Constant*> entries;
+            // S10.4 — slot 0 of every per-(impl, iface) vtable holds the
+            // implementer's drop function. The interface drop helper
+            // (__cajeta_iface_drop) reads this slot when kind ==
+            // OWNED_CLASS. Method entries follow at slots 1..N; the
+            // dispatch path adds +1 to its interface-method index.
+            if (llvm::Function* dropFn = this->getOrCreateDropFunction()) {
+                entries.push_back(dropFn);
+            } else {
+                entries.push_back(llvm::ConstantPointerNull::get(ptrTy));
+            }
             for (auto& ifaceMethod : iface->getMethodList()) {
                 if (!ifaceMethod || ifaceMethod->isConstructor()) continue;
                 if (ifaceMethod->getModifiers().find(STATIC)
@@ -973,10 +983,11 @@ namespace cajeta {
             }
 
             if (methodIdx >= 0) {
+                // +1 to skip the drop-fn slot at vtable[0] (S10.4).
                 llvm::Value* methodSlot = builder->CreateInBoundsGEP(
                     ptrTy, vtablePtr,
                     llvm::ConstantInt::get(llvm::Type::getInt64Ty(llvmCtx),
-                        (uint64_t) methodIdx),
+                        (uint64_t) (methodIdx + 1)),
                     "iface_method_slot");
                 callee = builder->CreateLoad(ptrTy, methodSlot, "iface_method_fn");
             }

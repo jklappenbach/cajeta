@@ -556,6 +556,17 @@ namespace cajeta {
                     }
                 }
             }
+
+            // S10.4 — interface local drop entry. Pushes a drop entry
+            // pointing at __cajeta_iface_drop, the kind-tag dispatcher.
+            // The helper reads the fat pointer's kind word and either
+            // invokes the per-(class, iface) vtable's drop slot
+            // (OWNED_CLASS) or no-ops (BORROWED_*). Cheap to push for
+            // every interface local because the BORROWED branches are
+            // bare return statements.
+            if (klass && klass->isInterface()) {
+                emitDropEntryFor(module, field, "__cajeta_iface_drop");
+            }
         }
 
         return nullptr;

@@ -896,6 +896,35 @@ void __cajeta_drop_mark_inactive(struct cajeta_drop_entry* e) {
     e->active = 0;
 }
 
+// S10.4 — kind-tag dispatched interface value drop. Called at scope exit
+// for every interface-typed local. Reads the fat pointer's kind word
+// and either invokes the underlying class's drop (OWNED_CLASS) or
+// no-ops (BORROWED_*). Mirrors the layout established in S9.5.1 and the
+// per-(impl, iface) vtable convention from S10.4: vtable slot 0 holds
+// the implementer's drop function; method entries start at slot 1.
+//
+// Layout reminder:
+//   body + 0  = data_ptr
+//   body + 8  = vtable_ptr  (vtable[0] = drop_fn, vtable[1..N] = methods)
+//   body + 16 = kind (i64)
+void __cajeta_iface_drop(void* body) {
+    if (!body) return;
+    void** words = (void**) body;
+    void* data_ptr = words[0];
+    void** vtable = (void**) words[1];
+    int64_t kind = *((int64_t*) (((char*) body) + 16));
+    if (kind == 1 /* IFACE_KIND_OWNED_CLASS */) {
+        if (vtable && data_ptr) {
+            void (*drop_fn)(void*) = (void (*)(void*)) vtable[0];
+            if (drop_fn) drop_fn(data_ptr);
+        }
+    }
+    /* BORROWED_CLASS (0) / BORROWED_STRUCT (2) — no-op. The
+     * underlying class lifetime is owned by another holder (DI cache,
+     * class field, etc.) and the struct body is owned by its source
+     * local's own drop entry. */
+}
+
 // --- VTable: hash-based dispatch ---------------------------------------------
 //
 // Each class's vtable is a sorted array of (signature-hash, function-pointer)

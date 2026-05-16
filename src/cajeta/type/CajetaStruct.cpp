@@ -234,6 +234,15 @@ namespace cajeta {
             };
 
             std::vector<llvm::Constant*> entries;
+            // S10.4 — slot 0 of the per-(struct, iface) vtable carries
+            // the implementer's drop function for parity with the
+            // class-implementer layout in S9.5.2 / S10.4. Struct
+            // interfaces always have kind BORROWED_STRUCT, and the
+            // interface drop helper no-ops on BORROWED_*, so this slot
+            // is never read — but the parallel shape keeps the
+            // dispatch index math (`methodIdx + 1`) uniform across
+            // class and struct implementers.
+            entries.push_back(llvm::ConstantPointerNull::get(ptrTy));
             for (auto& ifaceMethod : iface->getMethodList()) {
                 if (!ifaceMethod || ifaceMethod->isConstructor()) continue;
                 if (ifaceMethod->getModifiers().find(STATIC)
