@@ -143,6 +143,25 @@ namespace cajeta {
             module->getScopeStack().peek()->putField(field);
             field->getOrCreateAllocation();
 
+            // S6.1 — `struct Foo f;` lays a fresh stack alloca of the struct
+            // body and zero-initializes it; the HeapField's pointer slot
+            // points at that body. Treating the local as a pointer to an
+            // aggregate keeps DotExpression / parameter-passing identical
+            // to the view path (also aggregate-by-pointer). View locals
+            // skip this — their pointer comes from the view-ctor result.
+            // Aggregate-initializer support (`Foo { x: 1, y: 2 }`) lands
+            // in S6.2 and will replace the zero-init with per-field stores.
+            if (dynamic_pointer_cast<CajetaStruct>(type)
+                    && !dynamic_pointer_cast<CajetaView>(type)
+                    && !initializer) {
+                auto* builder = module->getBuilder();
+                llvm::Type* bodyTy = type->getLlvmType();
+                llvm::Value* bodyAlloca = builder->CreateAlloca(bodyTy);
+                builder->CreateStore(llvm::Constant::getNullValue(bodyTy),
+                    bodyAlloca);
+                builder->CreateStore(bodyAlloca, field->getOrCreateAllocation());
+            }
+
             // L3-2 escape-check wiring: a function-typed local initialized
             // from a lambda or bound method reference inherits the RHS's
             // borrow-capture state. After the initializer has run
