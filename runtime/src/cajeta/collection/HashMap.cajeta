@@ -24,24 +24,37 @@ package cajeta.collection;
  * box your int32 keys (or wait for the planned primitive-hash
  * intrinsics + boxing helpers).
  *
- * ## Storage and probing
+ * ## Storage, probing, and tombstones
  *
  * Open addressing with linear probing — no entry chain, no
  * indirection through a heap-allocated bucket list. Three parallel
- * heap arrays at the same length: `keys`, `vals`, `occupied`.
+ * heap arrays at the same length: `keys`, `vals`, `state`.
+ *
+ * The `state` array tracks each slot's lifecycle: `EMPTY` (never
+ * written, or freshly allocated), `OCCUPIED` (holds a live entry),
+ * `TOMBSTONE` (held an entry that was removed). Tombstones are
+ * needed because a deleted entry can't simply revert to `EMPTY`
+ * without breaking lookup: a probe walking past a slot needs to
+ * know whether to continue (a real key might live further along
+ * because of an earlier collision at this slot) or stop. Tombstones
+ * say "continue, but this slot is reusable."
+ *
+ * `put` opportunistically reuses the first tombstone it walks past
+ * when inserting a new key, keeping the table compact across remove
+ * + insert cycles. `get` / `containsKey` walk past tombstones
+ * transparently.
  *
  * Capacity is **power-of-2**; the bucket index is
  * `hash(key) & (capacity - 1)`. Faster than `% capacity`, equivalent
  * distribution given a well-mixed hash. **Caller picks the initial
- * capacity** — there's no resize in v1. A map that fills up performs
- * linearly. Size your map.
+ * capacity**; the table auto-grows when the load factor (counting
+ * tombstones, since they cost probe steps too) exceeds 0.75. Each
+ * resize doubles capacity and reinserts every live entry into a
+ * fresh table — that pass also clears tombstones, so a workload
+ * that thrashes on `remove` + `put` eventually compacts.
  *
  * ## Missing in v1
  *
- * - **`remove`** — open-addressing remove needs tombstones or
- *   backward-shift; both complicate the probe. Add when needed.
- * - **`resize`** — doubles capacity, reinserts everything. Ship
- *   after the simpler API gets exercise.
  * - **Iterator over entries** — needs `cajeta.collection.Iterator<T>`,
  *   not in place yet.
  * - **Primitive K** — see "v1 constraint" above.
@@ -51,26 +64,41 @@ package cajeta.collection;
  */
 public class HashMap<K, V> {
 
-    /** Parallel storage: K bucket, V bucket, occupancy bitmap. */
+    // Slot states. Inlined as integer literals at the call sites
+    // because cajeta lacks `const` / `enum` for class-level constants
+    // today — the comments name them.
+    //   0 = EMPTY      (never written, or freshly allocated)
+    //   1 = OCCUPIED   (live entry: keys[i] and vals[i] are valid)
+    //   2 = TOMBSTONE  (deleted entry: probe past, but slot is reusable)
+
+    /** Parallel storage: K bucket, V bucket, slot lifecycle. */
     private K[] keys;
     private V[] vals;
-    private boolean[] occupied;
+    private int8[] state;
     private int64 cap;
     private int64 sizeCount;
+    // Number of slots that aren't EMPTY (OCCUPIED + TOMBSTONE). Both
+    // cost probe steps, so resize decisions count both. sizeCount
+    // alone would let a thrash-on-remove workload accumulate
+    // tombstones until probes are linear; this counter triggers
+    // the rebuild.
+    private int64 usedSlots;
 
     /**
      * Construct a new HashMap with the given initial capacity.
      *
      * @param initialCapacity number of buckets to allocate; **must
      *        be a power of 2** (the mask-based index doesn't work
-     *        otherwise). v1 doesn't validate this.
+     *        otherwise). v1 doesn't validate this. The table grows
+     *        from here as entries are added.
      */
     public HashMap(int64 initialCapacity) {
         this.cap = initialCapacity;
         this.keys = new K[initialCapacity];
         this.vals = new V[initialCapacity];
-        this.occupied = new boolean[initialCapacity];
+        this.state = new int8[initialCapacity];
         this.sizeCount = 0;
+        this.usedSlots = 0;
     }
 
     /**
@@ -82,17 +110,108 @@ public class HashMap<K, V> {
     public void put(K key, V value) {
         int64 h = key.hash();
         int64 idx = h & (this.cap - 1);
-        while (this.occupied[idx]) {
-            if (this.keys[idx] == key) {
-                this.vals[idx] = value;
-                return;
+        int64 firstTombstone = -1;
+        // Probe until we hit an EMPTY slot. Along the way:
+        //   - OCCUPIED slot with matching key → replace, done.
+        //   - TOMBSTONE → remember the first one we see; if we
+        //     eventually hit EMPTY without finding the key, we'll
+        //     insert at the tombstone (compacts the table).
+        while (this.state[idx] != 0) {
+            if (this.state[idx] == 1) {
+                if (this.keys[idx] == key) {
+                    this.vals[idx] = value;
+                    return;
+                }
+            } else {
+                // state == 2 (TOMBSTONE)
+                if (firstTombstone == -1) {
+                    firstTombstone = idx;
+                }
             }
             idx = (idx + 1) & (this.cap - 1);
         }
-        this.keys[idx] = key;
-        this.vals[idx] = value;
-        this.occupied[idx] = true;
+        // Reached EMPTY. Prefer the first tombstone if any —
+        // compacting the table across remove + put cycles.
+        int64 insertAt = idx;
+        boolean reusingTombstone = false;
+        if (firstTombstone != -1) {
+            insertAt = firstTombstone;
+            reusingTombstone = true;
+        }
+        this.keys[insertAt] = key;
+        this.vals[insertAt] = value;
+        this.state[insertAt] = 1;
         this.sizeCount = this.sizeCount + 1;
+        // usedSlots only grows when we claim a fresh EMPTY slot;
+        // reusing a tombstone repurposes a slot that was already
+        // counted.
+        if (reusingTombstone == false) {
+            this.usedSlots = this.usedSlots + 1;
+        }
+        // Auto-grow at 0.75 load factor (usedSlots * 4 > cap * 3,
+        // using the multiplied form to avoid integer-division
+        // rounding). Triggers after the insert so the threshold
+        // reflects the table's current state.
+        if (this.usedSlots * 4 > this.cap * 3) {
+            this.resize();
+        }
+    }
+
+    /**
+     * Double the capacity and reinsert every live entry. Clears all
+     * tombstones in the process (the new table starts EMPTY). Called
+     * from `put` when the load factor exceeds 0.75. Public surface
+     * doesn't observe it directly — only the side effect (lookups
+     * stay O(1) average even as the map grows).
+     *
+     * Implementation strategy: allocate the new arrays into locals,
+     * walk `this.keys / vals / state` (the OLD arrays, still
+     * reachable through `this`) to rebuild into the locals, then
+     * publish the locals onto `this`. Avoids the local-of-class-
+     * field-pointer pattern, which interacts awkwardly with
+     * cajeta's drop chain (the local's scope-exit drop would race
+     * with the field reassignment).
+     */
+    private void resize() {
+        int64 oldCap = this.cap;
+        int64 newCap = oldCap * 2;
+        K[] newKeys = new K[newCap];
+        V[] newVals = new V[newCap];
+        int8[] newState = new int8[newCap];
+        int64 newSize = 0;
+        int64 i = 0;
+        while (i < oldCap) {
+            if (this.state[i] == 1) {
+                // Inline insert into the new table. No tombstones
+                // exist yet; every probe terminates at an EMPTY
+                // slot. No duplicate-key check needed either — old
+                // slots are already unique by construction.
+                K k = this.keys[i];
+                V v = this.vals[i];
+                int64 h = k.hash();
+                int64 idx = h & (newCap - 1);
+                while (newState[idx] != 0) {
+                    idx = (idx + 1) & (newCap - 1);
+                }
+                newKeys[idx] = k;
+                newVals[idx] = v;
+                newState[idx] = 1;
+                newSize = newSize + 1;
+            }
+            i = i + 1;
+        }
+        // Publish the rebuilt table onto `this` via `#` (ownership
+        // transfer). Without `#`, the locals' scope-exit drop chain
+        // fires `__cajeta_free_array` on the new buffers right
+        // after we hand them to `this`, leaving the map pointing at
+        // freed memory and turning the next probe into an infinite
+        // loop (garbage `state` bytes are unlikely to be EMPTY=0).
+        this.keys = #newKeys;
+        this.vals = #newVals;
+        this.state = #newState;
+        this.cap = newCap;
+        this.sizeCount = newSize;
+        this.usedSlots = newSize;
     }
 
     /**
@@ -107,9 +226,13 @@ public class HashMap<K, V> {
     public V get(K key) {
         int64 h = key.hash();
         int64 idx = h & (this.cap - 1);
-        while (this.occupied[idx]) {
-            if (this.keys[idx] == key) {
-                return this.vals[idx];
+        // Walk past TOMBSTONE (state==2) slots; stop only at EMPTY
+        // (state==0). A matching OCCUPIED key (state==1) wins.
+        while (this.state[idx] != 0) {
+            if (this.state[idx] == 1) {
+                if (this.keys[idx] == key) {
+                    return this.vals[idx];
+                }
             }
             idx = (idx + 1) & (this.cap - 1);
         }
@@ -120,14 +243,44 @@ public class HashMap<K, V> {
      * Test whether `key` is present in the map.
      *
      * @param key the key to test.
-     * @returns true iff `key` was previously inserted via `put`.
+     * @returns true iff `key` was previously inserted via `put`
+     *          and not subsequently removed.
      */
     public boolean containsKey(K key) {
         int64 h = key.hash();
         int64 idx = h & (this.cap - 1);
-        while (this.occupied[idx]) {
-            if (this.keys[idx] == key) {
-                return true;
+        while (this.state[idx] != 0) {
+            if (this.state[idx] == 1) {
+                if (this.keys[idx] == key) {
+                    return true;
+                }
+            }
+            idx = (idx + 1) & (this.cap - 1);
+        }
+        return false;
+    }
+
+    /**
+     * Remove the entry at `key`.
+     *
+     * Leaves a tombstone in the slot so subsequent probes still
+     * traverse past it correctly. The tombstone is reusable by a
+     * future `put` whose probe reaches it before an `EMPTY` slot.
+     *
+     * @param key the key to remove. Hashed once via `key.hash()`.
+     * @returns true iff `key` was present and removed; false if
+     *          no such key was in the map.
+     */
+    public boolean remove(K key) {
+        int64 h = key.hash();
+        int64 idx = h & (this.cap - 1);
+        while (this.state[idx] != 0) {
+            if (this.state[idx] == 1) {
+                if (this.keys[idx] == key) {
+                    this.state[idx] = 2;
+                    this.sizeCount = this.sizeCount - 1;
+                    return true;
+                }
             }
             idx = (idx + 1) & (this.cap - 1);
         }
