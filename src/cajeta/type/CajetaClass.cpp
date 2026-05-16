@@ -174,15 +174,17 @@ namespace cajeta {
         // keyed under the interface methods' canonical hashes (see
         // CajetaClass::buildVirtualTable).
         if (isInterface()) {
-            // Even though an interface has no allocation site of its own, it
-            // needs an LLVM struct type so variables typed at the interface
-            // can size their slot and load through their vtable pointer. The
-            // layout is just `{ ptr vtable }` — same prefix every implementing
-            // class shares — so reading slot 0 yields the concrete class's
-            // vtable global regardless of which class was assigned in.
+            // Interface fat pointer (S9.5.1): { ptr data, ptr vtable, i64 kind }
+            // = 24 bytes. data points at the underlying class instance or
+            // struct body; vtable points at the per-(impl, iface) global
+            // synthesized by S9.2 / S9.5.2; kind is one of
+            // IFACE_KIND_BORROWED_CLASS / OWNED_CLASS / BORROWED_STRUCT
+            // and drives drop-chain dispatch at scope exit (S10.4).
             llvmType = CajetaType::getOrCreateLlvmType(module->getLlvmContext(), canonical);
             typeMap[TypeKey(llvmType)] = shared_from_this();
-            vector<llvm::Type*> members{ llvm::PointerType::get(*module->getLlvmContext(), 0) };
+            llvm::Type* ptrTy = llvm::PointerType::get(*module->getLlvmContext(), 0);
+            llvm::Type* i64Ty = llvm::Type::getInt64Ty(*module->getLlvmContext());
+            vector<llvm::Type*> members{ ptrTy, ptrTy, i64Ty };
             ((llvm::StructType*) llvmType)->setBody(llvm::ArrayRef<llvm::Type*>(members), false);
 
             canonicalMap[canonical] = static_pointer_cast<CajetaType>(shared_from_this());

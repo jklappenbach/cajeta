@@ -25,6 +25,22 @@ namespace cajeta {
     class CajetaClass;
     typedef shared_ptr<CajetaClass> CajetaClassPtr;
 
+    // Discriminator written into word 2 of an interface fat pointer.
+    // Selected at the assignment site that builds the fat pointer
+    // (class→iface, struct→iface, #class→iface) and consumed by
+    // the kind-tag drop dispatch (S10.4).
+    enum InterfaceValueKind : int64_t {
+        IFACE_KIND_BORROWED_CLASS = 0,
+        IFACE_KIND_OWNED_CLASS = 1,
+        IFACE_KIND_BORROWED_STRUCT = 2
+    };
+
+    // Size of an interface fat-pointer value in bytes. Three machine
+    // words: data_ptr (8) + vtable_ptr (8) + kind_tag (8) = 24.
+    // Centralized here so layout / parameter passing / DI synthesis
+    // all agree on the size.
+    constexpr unsigned IFACE_FAT_POINTER_BYTES = 24;
+
     class CajetaClass : public CajetaType {
     protected:
         // Methods maintains the methods declared / overridden in this particular method
