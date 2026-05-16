@@ -381,18 +381,27 @@ namespace cajeta {
         for (auto formalParameter: parameterList) {
             CajetaTypePtr pt = formalParameter->getType();
             llvm::Type* ptLlvm = pt->getLlvmType();
-            // Class instances and arrays pass by pointer, not by value.
-            // CajetaArray::getTypeFlags() returns ARRAY_TYPE_ID which happens
-            // to include PRIMITIVE_FLAG (because arrays are heap-allocated
-            // and act like reference types at parameter slots), so we test
-            // for CajetaArray and CajetaClass explicitly rather than
-            // relying on the primitive bit. Structs (CajetaStruct, declared
-            // with `struct`) DO pass by value per Structs.md.
-            bool isStruct = dynamic_pointer_cast<CajetaStruct>(pt) != nullptr;
+            // Class instances, arrays, AND structs pass by pointer.
+            // Structs were pass-by-value historically, but that
+            // contradicts their zero-copy view-mode design intent
+            // (per Structs.md): a struct IS a typed view over a
+            // wire-format buffer; memcpying the bytes at every call
+            // boundary defeats the whole point. Now the call site
+            // pushes the struct's address; the callee accesses
+            // fields by GEP from the param ptr (same code path
+            // that already handled struct-fields-on-classes).
+            //
+            // Primitives stay by-value. CajetaArray's typeFlags
+            // include PRIMITIVE_FLAG (arrays are reference-typed
+            // but technically marked primitive), so we test for the
+            // CajetaArray subtype explicitly rather than reading
+            // the bit. Pass-by-pointer is true for any non-primitive
+            // class-like type — and CajetaStruct, CajetaArray, and
+            // plain CajetaClass are all CajetaClass subclasses.
             bool isArr = dynamic_pointer_cast<CajetaArray>(pt) != nullptr;
             bool isClassLike = dynamic_pointer_cast<CajetaClass>(pt) != nullptr;
             bool isPrim = pt && (pt->getTypeFlags() & PRIMITIVE_FLAG);
-            bool passByPointer = (isClassLike && !isStruct) && (isArr || !isPrim);
+            bool passByPointer = isClassLike && (isArr || !isPrim);
             if (passByPointer) {
                 ptLlvm = llvm::PointerType::get(*module->getLlvmContext(), 0);
             }

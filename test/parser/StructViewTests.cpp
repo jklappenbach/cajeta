@@ -113,3 +113,68 @@ TEST(StructViewTests, freshBufferReadsZero) {
         "Header h = Header(bytes);\n"
         "return h.version;"), 0);   // calloc zeros the buffer
 }
+
+// --- Struct passed as parameter is pass-by-pointer --------------------------
+//
+// Structs are zero-copy views over wire-format buffers (Structs.md).
+// Method::generatePrototype passes them by pointer, not by value —
+// otherwise every call-boundary memcpy would defeat the whole point of
+// the view. These probes confirm:
+//   - The receiver reads the same field values the caller set.
+//   - Mutations through the receiver are visible to the caller after
+//     return (aliasing, not copying).
+
+TEST(StructViewTests, structParamReadsCallerValues) {
+    auto src =
+        "package test;\n"
+        "public struct Header {\n"
+        "    int32 version;\n"
+        "    int64 timestamp;\n"
+        "    int32 payloadLen;\n"
+        "}\n"
+        "public final class S {\n"
+        "    public static int32 readVersion(Header h) {\n"
+        "        return h.version;\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        int32[] bytes = new int32[4];\n"
+        "        Header h = Header(bytes);\n"
+        "        h.version = 99;\n"
+        "        return S.readVersion(h);\n"
+        "    }\n"
+        "}\n";
+    auto jit = CajetaJit::compile(src, "test.S");
+    auto fn = jit->lookup<int32_t (*)()>("run");
+    EXPECT_EQ(fn(), 99);
+}
+
+TEST(StructViewTests, structParamMutationsAreVisibleToCaller) {
+    // The callee writes through the param; the caller reads back and
+    // sees the new value. By-value semantics would lose the write
+    // when the callee returned. By-pointer (the new default) makes
+    // the callee write directly to the caller's buffer.
+    auto src =
+        "package test;\n"
+        "public struct Header {\n"
+        "    int32 version;\n"
+        "    int64 timestamp;\n"
+        "    int32 payloadLen;\n"
+        "}\n"
+        "public final class S {\n"
+        "    public static void bump(Header h) {\n"
+        "        h.version = h.version + 1;\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        int32[] bytes = new int32[4];\n"
+        "        Header h = Header(bytes);\n"
+        "        h.version = 10;\n"
+        "        S.bump(h);\n"
+        "        S.bump(h);\n"
+        "        S.bump(h);\n"
+        "        return h.version;\n"
+        "    }\n"
+        "}\n";
+    auto jit = CajetaJit::compile(src, "test.S");
+    auto fn = jit->lookup<int32_t (*)()>("run");
+    EXPECT_EQ(fn(), 13);
+}
