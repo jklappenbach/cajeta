@@ -13,6 +13,7 @@
 #include "../method/SynthesizedHashMethod.h"
 #include "CajetaArray.h"
 #include "../field/HeapField.h"
+#include "../error/Exception.h"
 
 #include <algorithm>
 #include <functional>
@@ -945,6 +946,58 @@ namespace cajeta {
         bool useVtable = thisValue && !isStatic && !isConstructor && !isAggregate;
         bool isInterfaceRecv = this->isInterface();
         if (useVtable && isInterfaceRecv) {
+            // S11.2 — reject same-concrete-type return through dyn
+            // dispatch. The interface value's fat pointer doesn't carry
+            // the underlying struct's size, so a method whose return
+            // type is its own implementing struct has nowhere to land
+            // the sret slot at the call site. The same call on the
+            // concrete struct type (which bypasses this branch entirely
+            // via the `isAggregate` skip above) keeps working — the
+            // restriction is dyn-dispatch-only. Trigger: return type is
+            // a CajetaStruct that itself implements this receiver
+            // interface. Implementers that are classes (1-word) or
+            // structs returning a different concrete type aren't
+            // affected.
+            CajetaTypePtr resolvedRet = method->getReturnType();
+            if (resolvedRet && resolvedRet->getQName()) {
+                // The interface's method may carry a placeholder for a
+                // type registered after the interface itself (interfaces
+                // tend to forward-reference their implementers). Method::
+                // generatePrototype's S8.4 refresh runs once at proto
+                // build time, but a CajetaStruct registered later
+                // replaces the canonicalMap entry without back-patching
+                // existing MethodPtrs. Refresh just-in-time here so the
+                // CajetaStruct cast below succeeds.
+                auto& cmap = CajetaType::getCanonicalMap();
+                auto it = cmap.find(resolvedRet->getQName()->toCanonical());
+                if (it != cmap.end() && it->second) {
+                    resolvedRet = it->second;
+                }
+            }
+            if (auto structRet = std::dynamic_pointer_cast<CajetaStruct>(
+                    resolvedRet)) {
+                std::string ifaceCanonical = qName->toCanonical();
+                for (auto& iface : structRet->getImplementedInterfaces()) {
+                    if (!iface || !iface->getQName()) continue;
+                    if (iface->getQName()->toCanonical() == ifaceCanonical) {
+                        char buf[640];
+                        snprintf(buf, sizeof(buf),
+                            "method '%s' on interface '%s' returns its "
+                            "implementing struct's own concrete type '%s' "
+                            "and cannot be dispatched through an interface "
+                            "value; the fat pointer doesn't carry the "
+                            "concrete size needed for an sret slot. Call "
+                            "the method directly on the concrete struct "
+                            "type instead.",
+                            method->getName().c_str(),
+                            ifaceCanonical.c_str(),
+                            structRet->getQName()->toCanonical().c_str());
+                        throw Exception(buf,
+                            "CAJETA_ERROR_DYN_DISPATCH_OWN_TYPE_RETURN");
+                    }
+                }
+            }
+
             // S9.5.6 — interface receiver via fat pointer body. Load the
             // per-(impl, iface) vtable from word 1 (the runtime-resolved
             // pointer set by the assignment site that built the fat
