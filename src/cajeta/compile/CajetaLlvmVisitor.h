@@ -1437,6 +1437,15 @@ namespace cajeta {
             return visitChildren(ctx);
         }
 
+        virtual std::any
+        visitAggregateInitializer(CajetaParser::AggregateInitializerContext* ctx) override {
+            // S6.2 — `Foo { field: expr, ... }`. The AST node + codegen live
+            // in AggregateInitializerExpression and are built lazily by
+            // PrimaryExpression::fromContext; this visit just descends so
+            // any nested expressions in the parameterList are walked too.
+            return visitChildren(ctx);
+        }
+
         virtual std::any visitSwitchExpression(CajetaParser::SwitchExpressionContext* ctx) override {
             return visitChildren(ctx);
         }

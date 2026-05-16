@@ -700,9 +700,22 @@ primary
     | THIS
     | SUPER
     | literal
+    | aggregateInitializer
     | identifier
     | typeTypeOrVoid '.' CLASS
     | nonWildcardTypeArguments (explicitTemplateInvocationSuffix | THIS arguments)
+    ;
+
+// S6.2 — struct aggregate initializer (Structs.md). Syntax mirrors Rust:
+// `Foo { field: expr, field: expr }`. Reuses parameterList (the same
+// `parameterLabel? expression` shape methodCall uses for keyword args)
+// so labeled bindings parse with no new lex tokens.
+//
+// Listed before `identifier` in the primary alternatives so ANTLR's
+// adaptive lookahead prefers the longer match — a bare `Foo` falls
+// back to the identifier alternative cleanly.
+aggregateInitializer
+    : identifier '{' parameterList? '}'
     ;
 
 // Java17

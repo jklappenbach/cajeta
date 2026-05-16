@@ -12,6 +12,7 @@
 #include "CajetaStruct.h"
 #include "CajetaArray.h"
 #include "CajetaView.h"
+#include "CajetaInterface.h"
 #include "../compile/CajetaModule.h"
 #include "../method/Method.h"
 #include "../error/Exception.h"
@@ -80,22 +81,51 @@ namespace cajeta {
                 throw Exception(buf, "CAJETA_ERROR_STRUCT_FIELD_TYPE");
             }
 
-            // Allow nested CajetaStruct fields — their LLVM type inlines
-            // naturally. Allow primitives. Reject everything else
-            // (class refs land in S6.3).
+            // Allowed field types:
+            //   - primitives (inline LLVM type)
+            //   - nested CajetaStruct (inline LLVM struct type)
+            //   - plain CajetaClass refs (8-byte pointer slot per Structs.md
+            //     § "Class references occupy a single pointer-width slot")
+            // Interfaces land in S10 (fat pointer, 24 bytes); rejected here
+            // with a separate error ID so the message points at the right
+            // future work.
+            // Interface detection uses the isInterface flag rather than
+            // dynamic_pointer_cast<CajetaInterface> because the visitor
+            // stores interfaces as plain CajetaClass with isInterface()=true
+            // (see CajetaLlvmVisitor::visitInterfaceDeclaration).
             bool isPrimitive = fieldType && (fieldType->getTypeFlags() & PRIMITIVE_FLAG);
             bool isNestedStruct = dynamic_pointer_cast<CajetaStruct>(fieldType) != nullptr;
-            if (!isPrimitive && !isNestedStruct) {
+            auto fieldClass = dynamic_pointer_cast<CajetaClass>(fieldType);
+            bool isInterface = fieldClass && fieldClass->isInterface();
+            bool isClassRef = fieldClass != nullptr
+                && !dynamic_pointer_cast<CajetaAggregate>(fieldType)
+                && !isInterface;
+            if (isInterface) {
                 char buf[256];
                 snprintf(buf, sizeof(buf),
-                    "struct '%s' field '%s' has non-primitive non-struct type — "
-                    "class-ref fields in structs land in S6.3 of the rollout "
-                    "(see StructsViewsStatus.md).",
+                    "struct '%s' field '%s' has interface type — interface "
+                    "fields are S10 of the rollout (tagged fat pointer support).",
+                    canonical.c_str(), property->getName().c_str());
+                throw Exception(buf, "CAJETA_ERROR_STRUCT_FIELD_TYPE");
+            }
+            if (!isPrimitive && !isNestedStruct && !isClassRef) {
+                char buf[256];
+                snprintf(buf, sizeof(buf),
+                    "struct '%s' field '%s' has unsupported field type",
                     canonical.c_str(), property->getName().c_str());
                 throw Exception(buf, "CAJETA_ERROR_STRUCT_FIELD_TYPE");
             }
 
-            llvmMembers.push_back(fieldType->getLlvmType());
+            // LLVM slot type: primitives + nested structs use the type's
+            // own LLVM body inline; class refs use a single ptr slot so the
+            // struct doesn't grow with the referent's body size and so the
+            // class layout is decoupled from the struct's layout pass.
+            if (isClassRef) {
+                llvmMembers.push_back(
+                    llvm::PointerType::get(*module->getLlvmContext(), 0));
+            } else {
+                llvmMembers.push_back(fieldType->getLlvmType());
+            }
         }
 
         // Structs use compiler-chosen (natural) layout — packing is a view

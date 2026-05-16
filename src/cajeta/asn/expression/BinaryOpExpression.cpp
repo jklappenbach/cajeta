@@ -95,8 +95,31 @@ namespace cajeta {
                 // the next field's bytes. Same rule that
                 // ArrayIndexExpression and the slot-type computation
                 // in BINARY_OP_ASSIGN already follow.
+                //
+                // S6.3: same `ptr` rule when the PARENT is a CajetaStruct
+                // and the field is a plain class ref. Structs lay out
+                // class-typed fields as pointer slots (per Structs.md
+                // § "Class references occupy a single pointer-width slot");
+                // loading the receiver's class struct body through an
+                // 8-byte slot would walk past the slot into neighbor
+                // bytes. Class-of-class still loads as the class struct
+                // because CajetaClass embeds class fields inline today
+                // (the known wart noted in CajetaClass::generatePrototype).
                 llvm::Type* loadTy;
+                bool parentIsStruct = false;
+                if (!dot->getChildren().empty()) {
+                    auto recv = dynamic_pointer_cast<Expression>(dot->getChildren()[0]);
+                    if (recv && recv->getResolvedType()) {
+                        parentIsStruct = dynamic_pointer_cast<CajetaStruct>(
+                            recv->getResolvedType()) != nullptr;
+                    }
+                }
+                bool fieldIsClassRef = dynamic_pointer_cast<CajetaClass>(resolved) != nullptr
+                    && !dynamic_pointer_cast<CajetaAggregate>(resolved)
+                    && !dynamic_pointer_cast<CajetaArray>(resolved);
                 if (dynamic_pointer_cast<CajetaArray>(resolved)) {
+                    loadTy = llvm::PointerType::get(*module->getLlvmContext(), 0);
+                } else if (parentIsStruct && fieldIsClassRef) {
                     loadTy = llvm::PointerType::get(*module->getLlvmContext(), 0);
                 } else {
                     loadTy = resolved->getLlvmType();
@@ -137,6 +160,17 @@ namespace cajeta {
                 // holding the array struct. Don't deref. Same shape
                 // the ArrayIndex branch above uses for array elements.
                 if (dynamic_pointer_cast<CajetaArray>(resolved)) {
+                    return v;
+                }
+                // Same rule for struct/view aggregates — Cajeta passes
+                // these by pointer, so the value IS the pointer. Pre-S6.2
+                // this was reachable only when an aggregate-producing
+                // expression (e.g. view ctor) left resolvedType null;
+                // AggregateInitializerExpression now sets resolvedType to
+                // the struct type, so without this branch the catch-all
+                // below would load the whole struct through the pointer
+                // and corrupt the receiving HeapField slot.
+                if (dynamic_pointer_cast<CajetaAggregate>(resolved)) {
                     return v;
                 }
                 if (llvm::Type* loadTy = resolved->getLlvmType()) {

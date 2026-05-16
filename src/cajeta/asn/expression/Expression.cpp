@@ -18,6 +18,7 @@
 #include "BinaryOpExpression.h"
 #include "DotExpression.h"
 #include "LiteralExpression.h"
+#include "AggregateInitializerExpression.h"
 #include "MethodCallExpression.h"
 #include "NewExpression.h"
 #include "../Block.h"
@@ -715,6 +716,14 @@ namespace cajeta {
             result = Expression::fromContext(ctx->expression());
         } else if (ctx->literal()) {
             result = LiteralExpression::fromContext(ctx->literal());
+        } else if (ctx->aggregateInitializer()) {
+            // S6.2 — `Foo { field: expr, ... }`. Matched before the
+            // identifier alternative so the parser picks the longer form;
+            // a bare `Foo` still routes through the identifier branch
+            // below because aggregateInitializer requires the trailing
+            // `{ ... }`.
+            result = make_shared<AggregateInitializerExpression>(
+                ctx->aggregateInitializer(), ctx->getStart());
         } else if (ctx->identifier()) {
             result = make_shared<IdentifierExpression>(ctx->identifier(), true);
         } else if (ctx->THIS()) {
