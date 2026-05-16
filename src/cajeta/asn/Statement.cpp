@@ -1103,6 +1103,26 @@ namespace cajeta {
                         "CAJETA_ERROR_VIEW_ESCAPE");
                 }
             }
+            // S10.3 — interface escape check for BORROWED_STRUCT values.
+            // The interface local's data ptr roots in a struct body
+            // (the source struct local or an inline aggregate literal)
+            // that lives in this function's frame. Returning the
+            // interface value would hand the caller a fat pointer
+            // whose data dangles past the frame's death. The
+            // OWNED_CLASS / BORROWED_CLASS variants don't trigger —
+            // their data pointers root in heap allocations whose
+            // lifetime is independent of this frame.
+            if (f && f->interfaceBorrowsStructLocal()) {
+                throw Exception(
+                    "cannot return interface value '" + idExpr->getTextValue()
+                    + "' — its data pointer roots in a function-scope "
+                    "struct whose body lives only as long as this frame; "
+                    "returning the value would leave the caller with a "
+                    "fat pointer to freed stack memory. Box the underlying "
+                    "data in a class and assign via `#` to transfer "
+                    "ownership across the return.",
+                    "CAJETA_ERROR_INTERFACE_VALUE_ESCAPE");
+            }
             // L3-3: returning a function-typed local transfers closure
             // ownership to the caller. Deactivate the local's drop entry
             // so this scope's exit pop doesn't free the closure out from

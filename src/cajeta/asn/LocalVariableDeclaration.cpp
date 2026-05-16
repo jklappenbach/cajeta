@@ -258,6 +258,12 @@ namespace cajeta {
                             int64_t kindValue;
                             if (rhsIsStruct) {
                                 kindValue = IFACE_KIND_BORROWED_STRUCT;
+                                // S10.3 — mark the interface local as
+                                // borrowing a struct that lives in the
+                                // current function frame. ReturnStatement
+                                // consults this to reject returns that
+                                // would dangle the data ptr.
+                                field->setInterfaceBorrowsStructLocal(true);
                             } else if (rhsIsMove) {
                                 kindValue = IFACE_KIND_OWNED_CLASS;
                             } else {
