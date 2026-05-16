@@ -9,7 +9,7 @@ This rollout supersedes the old "struct as wire-format view" implementation. Sig
 ## Current status
 
 **Phase:** Phase 2 complete (S4, S5, S5b done). Phase 3 in progress.
-**Current line item:** Session 6 complete. Session 7 complete. Session 8 in progress (S8.1, S8.2, S8.3, S8.4 done). Next: S8.5 (remaining test breadth — method calling another method on self, method taking another struct by value already covered; rest land in this session's close-out).
+**Current line item:** Sessions 6, 7, 8 all complete (S8.1–S8.5). Next: Session 9 — vtable synthesis + interface implementation (Phase 4 — struct interface dispatch).
 
 ---
 
@@ -150,7 +150,14 @@ Also during S5: a non-obvious bug surfaced and got fixed — `DotExpression` was
 
 #### S8.4 limitations called out
 - Direct chaining on a struct-returning method call (`p.shift(10, 20).shift(100, 200)`) segfaults. The intermediate return value is wrapped into a fresh body alloca by `MethodCallExpression`'s S6.7 repackaging, but using that wrapped pointer as a receiver for the next chained call doesn't line up cleanly — the inner call's drop-chain interaction and the outer call's receiver-load conflict. Works fine when the intermediate value is bound to a local first. Compose-via-local is the v1-supported pattern; full chaining needs MCE's receiver-handling to recognize an aggregate value (vs. a stable l-value) as a callable receiver. Tracked as a follow-up.
-- [ ] **8.5** 6 new tests: simple getter, mutating method, method calling another method on self, method taking another struct by value, method returning the enclosing struct's own concrete type (both `return this;` and `return MyStruct { ... };` forms), method writing through embedded struct field.
+- [x] **8.5** 6 new tests covered across S8.1–S8.5:
+  - simple getter — `simpleGetter` (S8.1)
+  - mutating method — `mutatingMethodVisibleAfterCall` (S8.2)
+  - method calling another method on self — `methodCallsAnotherMethodOnSelf` (S8.3)
+  - method taking another struct by value — `methodTakesAnotherStructByValue` (S8.5, added in this commit)
+  - method returning the enclosing struct's own concrete type — `methodReturnsThis` and `methodReturnsFreshSameTypeInstance` (S8.4)
+  - method writing through embedded struct field — `methodWritesThroughEmbeddedStructField` (S8.3)
+- [x] **Pass criteria:** Struct methods work for all field types; direct-call IR is monomorphized. Confirmed across 9 tests in `StructMethodsTests` plus the broader struct/composition test suites.
 - [ ] **Pass criteria:** Struct methods work for all field types; direct-call IR is monomorphized.
 
 ### Phase 4 — Struct interface dispatch

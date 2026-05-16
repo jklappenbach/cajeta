@@ -209,6 +209,39 @@ TEST(StructMethodsTests, methodReturnsFreshSameTypeInstance) {
 // when the intermediate value is bound to a local first
 // (`Point mid = p.shift(...); Point q = mid.shift(...);`).
 
+// ---------------------------------------------------------------------
+// S8.5 — close out the spec's 6-test list. The only shape not already
+// pinned by S8.1–S8.4 is "method taking another struct by value" (the
+// other five are simple getter, mutating method, method calling
+// another method on self, method returning the enclosing struct's
+// own concrete type, and method writing through embedded struct
+// field — all covered above).
+// ---------------------------------------------------------------------
+
+// Instance method on Span takes a different struct (Offset) by value.
+// Both flow as pointers per CajetaAggregate's calling convention; the
+// callee GEPs through each parameter pointer for field access.
+TEST(StructMethodsTests, methodTakesAnotherStructByValue) {
+    auto src =
+        "package test;\n"
+        "public struct Offset { int32 dx; int32 dy; }\n"
+        "public struct Span {\n"
+        "    int32 width;\n"
+        "    int32 height;\n"
+        "    public int32 measure(Offset o) {\n"
+        "        return this.width + this.height + o.dx + o.dy;\n"
+        "    }\n"
+        "}\n"
+        "public final class S {\n"
+        "    public static int32 run() {\n"
+        "        Span s = Span { width: 10, height: 20 };\n"
+        "        Offset o = Offset { dx: 3, dy: 4 };\n"
+        "        return s.measure(o);\n"  // 10+20+3+4 = 37
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 37);
+}
+
 // Method writes through a chained `this.embedded.field` path. Exercises
 // the same GEP chain as external `obj.embedded.field` writes — the
 // CajetaAggregate getFieldLlvmIndex override means the inner GEP
