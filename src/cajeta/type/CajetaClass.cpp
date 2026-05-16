@@ -3,6 +3,7 @@
 //
 
 #include "CajetaClass.h"
+#include "CajetaAggregate.h"
 #include "StructureMetadata.h"
 #include "../field/Field.h"
 #include "../method/Method.h"
@@ -795,7 +796,12 @@ namespace cajeta {
         llvm::Value* callee = CajetaModule::ensureFunctionVisible(
             builder, method->getLlvmFunction(),
             method->getLlvmFunctionType());
-        bool useVtable = thisValue && !isStatic && !isConstructor;
+        // Aggregates (struct, view) have no vtable header. Methods on them
+        // are statically dispatched — the receiver's concrete type is known
+        // at the call site (no inheritance, no overrides). Skip the vtable
+        // path entirely; LLVM gets a direct call to the resolved method.
+        bool isAggregate = dynamic_cast<CajetaAggregate*>(this) != nullptr;
+        bool useVtable = thisValue && !isStatic && !isConstructor && !isAggregate;
         if (useVtable) {
             llvm::Function* lookupFn = emitMod->getRuntimeFunction("__cajeta_vtable_lookup");
             if (lookupFn) {

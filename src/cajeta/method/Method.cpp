@@ -325,6 +325,19 @@ namespace cajeta {
 
     void Method::generatePrototype() {
         vector<llvm::Type*> llvmTypes;
+        // The implicit `this` parameter is inserted at position 0 for non-
+        // static methods. This function gets called multiple times in
+        // normal compilation flow (class generatePrototype iterates,
+        // visitClassBody re-iterates after the body walk, lazy
+        // getLlvmFunctionType fallback, etc.), and each call would
+        // re-insert another `this` — ballooning the signature
+        // ("this:pointer, this:pointer, ...") and breaking call sites.
+        // Skip the insertion if `this` is already at position 0. Other
+        // work in this function (re-computing llvmTypes, re-creating
+        // the LLVM Function) is idempotent enough that re-running it
+        // is harmless.
+        bool thisAlreadyInserted = !parameterList.empty()
+            && parameterList.front()->getName() == "this";
 
         // Abstract method (declared on an interface, no body): build the
         // signature so callers can compute its canonical / vtable hash, but
@@ -334,7 +347,7 @@ namespace cajeta {
         // any vtable-typed indirect call has the right function type.
         if (abstractFlag) {
             bool staticAbstract = modifiers.find(STATIC) != modifiers.end();
-            if (!staticAbstract) {
+            if (!staticAbstract && !thisAlreadyInserted) {
                 auto thisParam = make_shared<FormalParameter>(string("this"), CajetaType::of("pointer"));
                 thisParam->setParent(shared_from_this());
                 parameterList.insert(parameterList.begin(), thisParam);
@@ -371,7 +384,7 @@ namespace cajeta {
             throw Exception(buf, "CAJETA_ERROR_BORROW_RETURN_MULTI_PARAM");
         }
 
-        if (!staticMethod) {
+        if (!staticMethod && !thisAlreadyInserted) {
             auto thisParam = make_shared<FormalParameter>(string("this"), CajetaType::of("pointer"));
             thisParam->setParent(shared_from_this());
             parameterList.insert(parameterList.begin(), thisParam);

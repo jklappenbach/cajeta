@@ -65,6 +65,23 @@ namespace cajeta {
                     canonical.c_str(), property->getName().c_str());
                 throw Exception(buf, "CAJETA_ERROR_VARSIZE_FIELD_NOT_LAST");
             }
+            // Direct recursion guard: a view containing itself is
+            // infinite size. Layout-pass cycle detection in v1 only
+            // catches the direct case; deeper transitive cycles
+            // (A contains B, B contains A) need a fuller graph walk
+            // that's deferred until views compose into more complex
+            // shapes.
+            auto fieldType = property->getType();
+            if (fieldType && fieldType->getQName()
+                    && fieldType->getQName()->toCanonical() == canonical) {
+                char buf[256];
+                snprintf(buf, sizeof(buf),
+                    "view '%s' has field '%s' of its own type; recursive views are "
+                    "forbidden (would have infinite size). Use a class reference if "
+                    "you need recursive structure.",
+                    canonical.c_str(), property->getName().c_str());
+                throw Exception(buf, "CAJETA_ERROR_VIEW_RECURSIVE");
+            }
             if (CajetaAggregate::isVariableSize(property)) {
                 llvmMembers.push_back(i32Ty);
                 sawVariableSize = true;
