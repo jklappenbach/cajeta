@@ -202,6 +202,57 @@ TEST(StructCompositionTests, classDropFiresAllEmbeddedStructDrops) {
     ), 3);
 }
 
+// ---------------------------------------------------------------------
+// S7.3 — chained field access through embedded structs. `obj.s.field`
+// GEPs through the class layout into the struct layout in one chained
+// operation. Same DotExpression chain that handles class-class field
+// paths; struct embedded slots just become inline-LLVM-struct slots
+// in the parent class layout.
+// ---------------------------------------------------------------------
+
+// Compound expression: read + write through the embedded struct in the
+// same line. Verifies the GEP/load/store chain isn't disturbed by
+// other intervening expression sites.
+TEST(StructCompositionTests, embeddedStructReadAndWriteInSameExpression) {
+    auto src =
+        "package test;\n"
+        "public struct Counter { int32 value; }\n"
+        "public class Box {\n"
+        "    public Counter c;\n"
+        "    public Box() { return; }\n"
+        "}\n"
+        "public final class S {\n"
+        "    public static int32 run() {\n"
+        "        Box b = new Box();\n"
+        "        b.c.value = 10;\n"
+        "        b.c.value = b.c.value + 5;\n"
+        "        return b.c.value;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 15);
+}
+
+// Deeply nested chained access: class → embedded struct → embedded
+// struct → primitive field. Three GEP layers, written and read.
+TEST(StructCompositionTests, doublyNestedEmbeddedStructAccess) {
+    auto src =
+        "package test;\n"
+        "public struct Inner { int32 leaf; }\n"
+        "public struct Outer { Inner inner; }\n"
+        "public class Container {\n"
+        "    public Outer outer;\n"
+        "    public Container() { return; }\n"
+        "}\n"
+        "public final class S {\n"
+        "    public static int32 run() {\n"
+        "        Container c = new Container();\n"
+        "        c.outer.inner.leaf = 77;\n"
+        "        return c.outer.inner.leaf;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 77);
+}
+
 // All three embedded class refs across two embedded structs' slots
 // fire their destructors. Observed:
 //   1 (Wrapper class drop entry)
