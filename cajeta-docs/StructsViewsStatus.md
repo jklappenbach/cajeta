@@ -9,7 +9,7 @@ This rollout supersedes the old "struct as wire-format view" implementation. Sig
 ## Current status
 
 **Phase:** Phase 2 complete (S4, S5, S5b done). Phase 3 in progress.
-**Current line item:** Session 6 complete. Session 7 complete (S7.1–S7.5). Next: Session 8 — struct methods (direct calls only).
+**Current line item:** Session 6 complete. Session 7 complete. Session 8 in progress (S8.1 done). Next: S8.2 (struct method codegen with `this` as pointer).
 
 ---
 
@@ -140,7 +140,7 @@ Also during S5: a non-obvious bug surfaced and got fixed — `DotExpression` was
 - Array of class instances that carry embedded structs (`Cell[] cells` where `class Cell { Point pt; }`) misreads because of an orthogonal class-array element-layout gap. `CajetaArray::getElementLlvmType` returns the full class LLVM struct (16 bytes for the Cell example) for class elements, but the read path (loadIfLValue's ArrayIndexExpression branch) treats slots as 8-byte pointers. Without an embedded struct the mismatch happens to read the vtable pointer as a class reference which is almost-right; with an embedded struct after the vtable, the indirection picks up the wrong bytes entirely. Fix needs a design call: class arrays store inline class values OR pointer references — Cajeta has been ambiguous about which. Captured as a follow-up for after Session 7.
 
 #### Session 8 — Struct methods (direct calls only)
-- [ ] **8.1** Parser: accept method declarations in `structDeclaration` (already accepted syntactically; just route to struct method codegen).
+- [x] **8.1** Parser: accept method declarations in `structDeclaration` (already accepted syntactically; just route to struct method codegen). **Already worked** — `structDeclaration` shares the `classBody` rule with `classDeclaration` and `viewDeclaration`, so method declarations have parsed since Session 1. With S6 / S7 in place, codegen for the method body also works through the same path that handles view methods (S4.2) — direct call (no vtable dispatch because aggregates skip the vtable path in `CajetaClass::invokeMethod`). New test file `test/parser/StructMethodsTests.cpp` with a simple-getter pin.
 - [ ] **8.2** Codegen: struct method = LLVM function with `this` as struct pointer. Direct calls inline at the call site (or LLVM inliner takes care of it given the static target).
 - [ ] **8.3** `this` field accesses GEP into the struct slot via the existing aggregate calling convention.
 - [ ] **8.4** Method may return `Self` for direct-call use; restriction only applies later under interface dispatch.
