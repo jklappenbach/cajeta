@@ -502,8 +502,22 @@ namespace cajeta {
         }
 
         string canonical = Method::buildCanonical(parent, name, parameterList, true);
-        llvmFunction = llvm::Function::Create(llvmFunctionType, llvm::Function::ExternalLinkage,
-            canonical, module->getLlvmModule());
+        // Generate-prototype runs multiple times on the same method
+        // (CajetaClass::generatePrototype iterates, visitClassBody
+        // re-iterates, lazy getLlvmFunctionType fallback) — without
+        // this reuse, llvm::Function::Create produces a fresh
+        // auto-renamed Function (`name.1`, `name.2`...) on each call,
+        // orphaning the earlier ones as declarations with no body.
+        // Vtable globals captured at the first emission point then
+        // reference an orphan declaration — JIT-link unable to find
+        // `name` at dispatch time. Reusing the existing Function*
+        // keeps llvmFunction stable across reprototype calls.
+        if (llvm::Function* existing = module->getLlvmModule()->getFunction(canonical)) {
+            llvmFunction = existing;
+        } else {
+            llvmFunction = llvm::Function::Create(llvmFunctionType, llvm::Function::ExternalLinkage,
+                canonical, module->getLlvmModule());
+        }
 
         archive[canonical] = shared_from_this();
 

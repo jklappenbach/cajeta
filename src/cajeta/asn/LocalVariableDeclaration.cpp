@@ -208,11 +208,14 @@ namespace cajeta {
                         bool rhsIsInterface = rhsClass && rhsClass->isInterface();
 
                         if (rhsClass && !rhsIsInterface) {
-                            // Re-load whatever HeapField stored in the slot —
-                            // that's the class instance pointer the initializer
-                            // returned. Then build a fat-pointer body in a
-                            // fresh alloca and overwrite the slot.
-                            llvm::Value* classPtr = builder->CreateLoad(
+                            // Re-load whatever HeapField stored in the slot.
+                            // For a class instance RHS that's the heap class
+                            // pointer; for a struct RHS that's the struct
+                            // body pointer (S6.2 / S6.7 / aliasing flows
+                            // all hand off ptr-to-body as the struct value).
+                            // Either way the value goes into the fat
+                            // pointer's data slot.
+                            llvm::Value* sourcePtr = builder->CreateLoad(
                                 ptrTy, field->getOrCreateAllocation());
 
                             llvm::Value* bodyAlloca = builder->CreateAlloca(bodyTy);
@@ -222,7 +225,7 @@ namespace cajeta {
                                 bodyTy, bodyAlloca, 1, "iface_vtable");
                             llvm::Value* kindSlot = builder->CreateStructGEP(
                                 bodyTy, bodyAlloca, 2, "iface_kind");
-                            builder->CreateStore(classPtr, dataSlot);
+                            builder->CreateStore(sourcePtr, dataSlot);
 
                             std::string ifaceCanonical =
                                 ifaceKlass->getQName()->toCanonical();
@@ -236,9 +239,17 @@ namespace cajeta {
                                     llvm::cast<llvm::PointerType>(ptrTy));
                             }
                             builder->CreateStore(vtableRef, vtSlot);
+
+                            // S10.1 — struct RHS sets BORROWED_STRUCT; plain
+                            // class RHS sets BORROWED_CLASS in v1.
+                            // The OWNED_CLASS variant for `#` lands in S10.2.
+                            bool rhsIsStruct = dynamic_pointer_cast<CajetaStruct>(rhsType) != nullptr;
+                            int64_t kindValue = rhsIsStruct
+                                ? IFACE_KIND_BORROWED_STRUCT
+                                : IFACE_KIND_BORROWED_CLASS;
                             builder->CreateStore(
                                 llvm::ConstantInt::get(i64Ty,
-                                    (uint64_t) IFACE_KIND_BORROWED_CLASS),
+                                    (uint64_t) kindValue),
                                 kindSlot);
                             builder->CreateStore(bodyAlloca,
                                 field->getOrCreateAllocation());

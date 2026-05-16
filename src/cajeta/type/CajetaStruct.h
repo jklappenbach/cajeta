@@ -22,30 +22,16 @@ namespace cajeta {
     typedef shared_ptr<CajetaStruct> CajetaStructPtr;
 
     class CajetaStruct : public CajetaAggregate {
-    private:
-        // S9.2 — per-(struct, interface) vtable globals. Key is the
-        // interface's canonical name; value is the LLVM global holding
-        // function pointers to the struct's concrete implementations,
-        // in the interface's method declaration order. The through-
-        // interface dispatch path (Sessions 10–11) loads from one of
-        // these into the tagged fat pointer at interface-value
-        // construction time.
-        std::map<std::string, llvm::GlobalVariable*> interfaceVTables;
+        // S9.2 emits per-(struct, interface) vtable globals; S9.5.2
+        // added the parallel per-(class, interface) emission. Both
+        // store their result in the inherited `interfaceVTables` map
+        // on CajetaClass, with the only difference being the global's
+        // naming prefix (`struct.` vs `class.`). The getInterfaceVTable
+        // / getInterfaceVTables accessors on CajetaClass cover both.
     public:
         CajetaStruct(CajetaModulePtr module) : CajetaAggregate(module) { }
         CajetaStruct(CajetaModulePtr module, QualifiedNamePtr qName)
             : CajetaAggregate(module, qName) { }
-
-        // Get the synthesized vtable global for a specific implemented
-        // interface (looked up by canonical name). Returns nullptr if
-        // this struct doesn't implement that interface.
-        llvm::GlobalVariable* getInterfaceVTable(const std::string& interfaceCanonical) const {
-            auto it = interfaceVTables.find(interfaceCanonical);
-            return it != interfaceVTables.end() ? it->second : nullptr;
-        }
-
-        const std::map<std::string, llvm::GlobalVariable*>&
-        getInterfaceVTables() const { return interfaceVTables; }
 
         // Build the LLVM struct body, register the type, and prototype any
         // methods. Field types are validated here — v1 accepts primitives,
