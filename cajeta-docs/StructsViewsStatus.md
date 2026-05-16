@@ -9,7 +9,7 @@ This rollout supersedes the old "struct as wire-format view" implementation. Sig
 ## Current status
 
 **Phase:** Phase 2 complete (S4, S5, S5b done). Phase 3 in progress.
-**Current line item:** Session 6 complete (S6.1–S6.7). Session 7 in progress (S7.1 done). Next: S7.2 (class drop recurses into embedded struct fields).
+**Current line item:** Session 6 complete (S6.1–S6.7). Session 7 in progress (S7.1, S7.2 done). Next: S7.3 (chained field access through embedded struct).
 
 ---
 
@@ -127,7 +127,7 @@ Also during S5: a non-obvious bug surfaced and got fixed — `DotExpression` was
 
 #### Session 7 — Inline composition (struct as class field)
 - [x] **7.1** Class layout pass: when a class field's type is a struct, inline the struct's LLVM type at that offset instead of a pointer slot. **Already worked under the existing `CajetaClass::generatePrototype` fieldLayoutType lambda** — its non-array branch returns `t->getLlvmType()`, which for a CajetaStruct field returns the struct's body type (which gets embedded inline). Same path that produces the wart of inlining class fields (acknowledged in CajetaClass.cpp:235-239); for structs the inline behavior is the spec-correct shape (Structs.md § "Embedded structs occupy their fixed byte count inline"). 3 new tests in StructCompositionTests: class with one embedded primitive struct, embedded struct surrounded by primitive fields (no byte bleed), class with two embedded structs (independent slots).
-- [ ] **7.2** Class drop codegen: recurse into embedded struct fields in reverse declaration order, calling each struct's drop function.
+- [x] **7.2** Class drop codegen: recurse into embedded struct fields in reverse declaration order, calling each struct's drop function. `CajetaClass::getOrCreateDropFunction` now walks `propertyList` in reverse before the `__cajeta_free` call; for each CajetaStruct-typed field, GEPs into the class instance and calls the struct's synthesized drop fn (which in turn walks its own owned class-ref fields). Required a paired fix in `ClassCreatorRest::generateCode` — `new ClassName()` now memsets the malloc'd heap block to zero before setting the vtable. Without it, embedded struct's class-ref slots would hold whatever malloc returned (garbage), and the recursive struct drop's `load ptr + call drop` would slip a non-null garbage pointer past the Tracer drop fn's null guard and crash on `free()`. Zero-init also matches the JVM / .NET default — class-ref fields read as null until the ctor writes them. 3 new tests in StructCompositionTests: classDropRecursesIntoEmbeddedStruct (dropCount = 2: class entry + ~Tracer array drop), classDropFiresAllEmbeddedStructDrops (two embedded structs, dropCount = 3), classDropEmbeddedStructsAllRun (mixed shape with three Tracers across two embedded Pair structs, dropCount = 4).
 - [ ] **7.3** Field access: `obj.embeddedStruct.field` GEPs through both the class layout and the struct layout in one chained operation.
 - [ ] **7.4** Borrow tracking: path borrow extends through embedded struct fields (`obj.struct.field` is a path-borrow rooted at `obj`).
 - [ ] **7.5** 8 new tests: class with embedded primitive-only struct, class with embedded struct holding class refs, drop order verification, field access through embedded struct, path-borrow through embedded, embedded struct sized correctly (sizeof match), nested embedded (class → struct → struct), array of embedded structs.

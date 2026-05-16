@@ -133,3 +133,101 @@ TEST(StructCompositionTests, classWithTwoEmbeddedStructs) {
         "}\n";
     EXPECT_EQ(runI32(src), 330);
 }
+
+// ---------------------------------------------------------------------
+// S7.2 — class drop recurses into embedded struct fields. For each
+// CajetaStruct-typed field of the class, the class's drop fn calls
+// the struct's drop fn (which in turn calls drop on its own class-ref
+// fields) BEFORE freeing the heap block. Order is reverse declaration
+// per Structs.md § Drop chain.
+// ---------------------------------------------------------------------
+
+// Class drop must call the embedded struct's drop fn so the struct's
+// owned class refs are released. Without the recursion, the embedded
+// Tracer would leak — its destructor wouldn't run. Observable drops:
+//   1 (class instance's chain entry firing)
+//   1 (Tracer's destructor allocates int32[3]; that array drops when
+//      ~Tracer scope exits)
+// = 2. A missing class→struct→class drop recursion would yield 1
+// (just the class entry, with the Tracer leaked).
+//
+// We populate the embedded slot via per-field assignment with `#`-move
+// rather than `w.h = Holder { ... }` (the latter is an open codegen gap:
+// aggregate-init returns a body pointer that doesn't copy cleanly into
+// an inline embedded slot — separate from S7.2 proper, tracked as a
+// follow-up).
+TEST(StructCompositionTests, classDropRecursesIntoEmbeddedStruct) {
+    EXPECT_EQ(observeCompositionDrops(
+        "public class Tracer {\n"
+        "    public Tracer() { return; }\n"
+        "    public ~Tracer() {\n"
+        "        int32[] arr = new int32[3];\n"
+        "    }\n"
+        "}\n"
+        "public struct Holder { Tracer t; }\n"
+        "public class Wrapper {\n"
+        "    public Holder h;\n"
+        "    public Wrapper() { return; }\n"
+        "}\n",
+        "Wrapper w = new Wrapper();\n"
+        "        Tracer tracer = new Tracer();\n"
+        "        w.h.t = #tracer;"
+    ), 2);
+}
+
+// Class with two embedded structs, each owning a Tracer. Both structs'
+// drops fire, both ~Tracer() destructors run. Observed:
+//   1 (Wrapper class drop entry)
+//   2 (two array drops, one from each ~Tracer)
+// = 3.
+TEST(StructCompositionTests, classDropFiresAllEmbeddedStructDrops) {
+    EXPECT_EQ(observeCompositionDrops(
+        "public class Tracer {\n"
+        "    public Tracer() { return; }\n"
+        "    public ~Tracer() {\n"
+        "        int32[] arr = new int32[3];\n"
+        "    }\n"
+        "}\n"
+        "public struct Single { Tracer t; }\n"
+        "public class Wrapper {\n"
+        "    public Single first;\n"
+        "    public Single second;\n"
+        "    public Wrapper() { return; }\n"
+        "}\n",
+        "Wrapper w = new Wrapper();\n"
+        "        Tracer a = new Tracer();\n"
+        "        Tracer b = new Tracer();\n"
+        "        w.first.t = #a;\n"
+        "        w.second.t = #b;"
+    ), 3);
+}
+
+// All three embedded class refs across two embedded structs' slots
+// fire their destructors. Observed:
+//   1 (Wrapper class drop entry)
+//   3 (one ~Tracer array drop per Tracer)
+// = 4. Pins the "all struct drops + all referent class drops fire"
+// invariant for a wider shape.
+TEST(StructCompositionTests, classDropEmbeddedStructsAllRun) {
+    EXPECT_EQ(observeCompositionDrops(
+        "public class Tracer {\n"
+        "    public Tracer() { return; }\n"
+        "    public ~Tracer() {\n"
+        "        int32[] arr = new int32[2];\n"
+        "    }\n"
+        "}\n"
+        "public struct Pair { Tracer left; Tracer right; }\n"
+        "public class Wrapper {\n"
+        "    public Pair p;\n"
+        "    public Pair q;\n"
+        "    public Wrapper() { return; }\n"
+        "}\n",
+        "Wrapper w = new Wrapper();\n"
+        "        Tracer l = new Tracer();\n"
+        "        Tracer r = new Tracer();\n"
+        "        Tracer x = new Tracer();\n"
+        "        w.p.left = #l;\n"
+        "        w.p.right = #r;\n"
+        "        w.q.left = #x;"
+    ), 4);
+}

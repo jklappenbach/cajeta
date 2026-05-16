@@ -34,11 +34,25 @@ namespace cajeta {
         llvm::CallInst* instance = MemoryManager::createMallocInstruction(
             module, allocSize, builder->GetInsertBlock());
 
+        // S7.2 — zero-init the heap block. malloc returns uninitialized
+        // bytes; the vtable slot below gets overwritten, and most fields
+        // get written by the user's constructor body. But fields the ctor
+        // doesn't explicitly initialize stay at whatever malloc gave us —
+        // garbage. That's load-bearing now for class-drop recursion into
+        // embedded struct fields (S7.2): the recursive struct drop reads
+        // class-ref slots inside the embedded struct, and a non-null
+        // garbage pointer slips past the Tracer-drop null guard and
+        // crashes on free(). Zero-init matches JVM / .NET defaults too;
+        // class-ref fields read as null until the ctor writes them.
+        builder->CreateMemSet(instance,
+            llvm::ConstantInt::get(llvm::Type::getInt8Ty(*module->getLlvmContext()), 0),
+            allocSize, llvm::MaybeAlign(8));
+
         // Initialize the vtable pointer at instance slot 0. Required for
         // dynamic dispatch — `dog.speak()` reads slot 0 to find Dog's vtable
         // before binary-searching for `speak`'s hash. Without this write the
-        // instance's vtable pointer is whatever malloc returned (uninitialized
-        // bytes), and the first virtual call segfaults.
+        // instance's vtable pointer is zero from the memset above, and the
+        // first virtual call segfaults.
         if (auto klass = dynamic_pointer_cast<CajetaClass>(targetType)) {
             if (llvm::GlobalVariable* vtable = klass->getVirtualTableGlobal()) {
                 // Cross-module: when targetType lives in a different

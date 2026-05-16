@@ -4,6 +4,7 @@
 
 #include "CajetaClass.h"
 #include "CajetaAggregate.h"
+#include "CajetaStruct.h"
 #include "StructureMetadata.h"
 #include "../field/Field.h"
 #include "../method/Method.h"
@@ -412,6 +413,46 @@ namespace cajeta {
         if (userDrop && userDrop->getLlvmFunction()) {
             b.CreateCall(userDrop->getLlvmFunctionType(),
                 userDrop->getLlvmFunction(), {instance});
+        }
+
+        // S7.2 — recurse into embedded struct fields in REVERSE
+        // declaration order (per Structs.md § "Inline composition,"
+        // mirroring Cajeta's general drop-order rule: last-declared
+        // drops first). For each CajetaStruct-typed field, GEP into
+        // the class instance to obtain the embedded body's address,
+        // then call the struct's synthesized drop fn. Primitive,
+        // class-ref, view-typed, etc. fields are left to other drop
+        // paths (or are not drop-bearing) and skipped here.
+        //
+        // The embedded struct's drop walks its own owned class-ref
+        // fields, calling each referent's class drop fn. Same shape
+        // as S6.4's struct-local drop; the only difference here is
+        // the body's address comes from the class instance's GEP
+        // rather than a stack alloca.
+        //
+        // Done BEFORE __cajeta_free so the embedded class refs are
+        // released while the surrounding heap block is still valid;
+        // freeing the block first would leave dangling pointers
+        // unobservable from outside but still UB to dereference.
+        {
+            std::vector<StructurePropertyPtr> reversed(
+                propertyList.begin(), propertyList.end());
+            std::reverse(reversed.begin(), reversed.end());
+            for (auto& property : reversed) {
+                auto fieldType = property->getType();
+                auto fieldStruct = dynamic_pointer_cast<CajetaStruct>(fieldType);
+                if (!fieldStruct) continue;
+                llvm::Function* structDropFn =
+                    fieldStruct->getOrCreateDropFunction();
+                if (!structDropFn) continue;
+                structDropFn = CajetaModule::ensureFunctionInModule(
+                    lmod, structDropFn);
+                unsigned fieldIdx = (unsigned) getFieldLlvmIndex(property);
+                llvm::Value* embedPtr = b.CreateStructGEP(
+                    llvmType, instance, fieldIdx,
+                    std::string("drop_embed_") + property->getName());
+                b.CreateCall(structDropFn, {embedPtr});
+            }
         }
 
         // Free the heap allocation. __cajeta_free is part of the
