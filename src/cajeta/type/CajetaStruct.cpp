@@ -46,34 +46,47 @@ namespace cajeta {
             // Direct recursion guard: a struct containing itself has
             // infinite size. Matches the same shape view uses; transitive
             // cycles (A holds B, B holds A) are deferred until composition
-            // is exercised by real code.
+            // is exercised by real code. Class refs land in S6.3, which
+            // has shipped — use one if you need recursive structure.
             if (fieldType && fieldType->getQName()
                     && fieldType->getQName()->toCanonical() == canonical) {
                 char buf[256];
                 snprintf(buf, sizeof(buf),
                     "struct '%s' has field '%s' of its own type; recursive structs "
                     "are forbidden (would have infinite size). Use a class reference "
-                    "if you need recursive structure (lands in S6.3).",
+                    "if you need recursive structure.",
                     canonical.c_str(), property->getName().c_str());
                 throw Exception(buf, "CAJETA_ERROR_STRUCT_RECURSIVE");
             }
 
-            // Reject T[] and String — both are variable-tail/heap-backed
-            // and have no place in a fixed-size stack aggregate. Views
-            // accept these via length-prefix encoding; structs don't.
-            // S6.6 generalizes this rejection.
+            // S6.6 — reject variable-tail fields. In view declarations,
+            // `T[]` (and `String`) fields lay out inline as a length-prefix
+            // followed by data bytes — the variable-tail encoding. That
+            // shape needs a backing buffer and a fixed framing, which is
+            // a view's whole job. Structs are fixed-size stack aggregates;
+            // every field must have a compile-time-known size (Structs.md
+            // § Allowed field types). `T[]` in a struct would have to mean
+            // a heap-allocated array reference — that's exactly what a
+            // class-ref field gives you, so use a wrapper class instead.
+            //
+            // `String` IS allowed as a struct field (a class-ref slot per
+            // S6.3) — it carries a pointer to a heap String whose internal
+            // layout is the String's own concern.
             if (dynamic_pointer_cast<CajetaArray>(fieldType)) {
-                char buf[256];
+                char buf[320];
                 snprintf(buf, sizeof(buf),
-                    "struct '%s' field '%s' has array type — arrays are heap-backed "
-                    "and don't fit in a fixed-size stack aggregate. Put the array in "
-                    "an enclosing class instead.",
+                    "struct '%s' field '%s' has array type T[] — that's a "
+                    "variable-tail shape only valid in views (where it lays "
+                    "out as length-prefix + data bytes). Structs require "
+                    "fixed-size fields; for a heap array, wrap it in a "
+                    "class and hold a class reference.",
                     canonical.c_str(), property->getName().c_str());
                 throw Exception(buf, "CAJETA_ERROR_STRUCT_FIELD_TYPE");
             }
-            // Views in struct fields are deferred — viable in principle
+            // Views as struct fields are deferred — viable in principle
             // (a view is itself an aggregate) but unexercised; reject for
-            // now with a clear pointer.
+            // now. Independent from the variable-tail rejection above:
+            // even a view with all fixed-size fields is rejected here.
             if (dynamic_pointer_cast<CajetaView>(fieldType)) {
                 char buf[256];
                 snprintf(buf, sizeof(buf),

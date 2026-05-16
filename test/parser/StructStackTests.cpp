@@ -92,8 +92,9 @@ TEST(StructStackTests, mixedPrimitiveLayout) {
     EXPECT_EQ(runI32(src), 0);
 }
 
-// Reject T[] fields — they're heap-backed and don't fit a fixed-size
-// stack aggregate. Surfaces at layout pass with CAJETA_ERROR_STRUCT_FIELD_TYPE.
+// S6.6 — reject T[] fields. T[] is the variable-tail encoding views
+// use (length-prefix + bytes); structs need fixed-size fields. Wrap
+// heap arrays in a class and hold a class reference instead.
 TEST(StructStackTests, rejectArrayFieldInStruct) {
     auto src =
         "package test;\n"
@@ -109,6 +110,51 @@ TEST(StructStackTests, rejectArrayFieldInStruct) {
     } catch (cajeta::Exception& e) {
         EXPECT_EQ(e.getErrorId(), "CAJETA_ERROR_STRUCT_FIELD_TYPE");
     }
+}
+
+// S6.6 — view-as-struct-field rejection. Independent from the
+// variable-tail rejection above: even a view with all fixed-size
+// fields is rejected here (the composition shape is deferred). When
+// view-in-struct lands later, this test will flip.
+TEST(StructStackTests, rejectViewFieldInStruct) {
+    auto src =
+        "package test;\n"
+        "@HostEndian\n"
+        "public view Header {\n"
+        "    int32 version;\n"
+        "}\n"
+        "public struct Bad {\n"
+        "    Header h;\n"
+        "}\n"
+        "public final class S {\n"
+        "    public static int32 run() { return 0; }\n"
+        "}\n";
+    try {
+        CajetaJit::compile(src, "test.S");
+        FAIL() << "expected CAJETA_ERROR_STRUCT_FIELD_TYPE on view field";
+    } catch (cajeta::Exception& e) {
+        EXPECT_EQ(e.getErrorId(), "CAJETA_ERROR_STRUCT_FIELD_TYPE");
+    }
+}
+
+// S6.6 — String is NOT a variable-tail field in a struct context.
+// It's a class reference (8-byte pointer per S6.3); the heap String
+// instance handles its own internal layout. Compile-and-run sanity
+// check that the layout pass accepts a String field, no error fires.
+TEST(StructStackTests, stringFieldInStructAllowed) {
+    auto src =
+        "package test;\n"
+        "public struct Greeting {\n"
+        "    String message;\n"
+        "    int32 code;\n"
+        "}\n"
+        "public final class S {\n"
+        "    public static int32 run() {\n"
+        "        Greeting g = Greeting { message: \"hi\", code: 7 };\n"
+        "        return g.code;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 7);
 }
 
 // Reject a struct that holds itself directly — infinite size.
