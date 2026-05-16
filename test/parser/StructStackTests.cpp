@@ -596,3 +596,70 @@ TEST(StructStackTests, useAfterMoveOnStructFieldPathAfterTransfer) {
         EXPECT_EQ(e.getErrorId(), "CAJETA_ERROR_USE_AFTER_MOVE");
     }
 }
+
+// ---------------------------------------------------------------------
+// Struct-local aliasing (`Foo b = a;`) now treated as a move under
+// S6.5's borrow-checker integration. Pre-fix, both locals registered
+// independent drop entries that fired on the same body alloca, double-
+// calling the struct's drop on shared inner class refs. Fix: suppress
+// `b`'s drop entry registration AND mark `a` as moved.
+// ---------------------------------------------------------------------
+
+// Aliasing a struct local moves the source: reading `a` after `Foo b =
+// a;` trips CAJETA_ERROR_USE_AFTER_MOVE.
+TEST(StructStackTests, structLocalAliasingMovesSource) {
+    auto src =
+        "package test;\n"
+        "public struct Point { int32 x; int32 y; }\n"
+        "public final class S {\n"
+        "    public static int32 run() {\n"
+        "        Point a = Point { x: 3, y: 4 };\n"
+        "        Point b = a;\n"
+        "        return a.x;\n"  // use-after-move on a
+        "    }\n"
+        "}\n";
+    try {
+        CajetaJit::compile(src, "test.S");
+        FAIL() << "expected CAJETA_ERROR_USE_AFTER_MOVE on a.x after struct alias";
+    } catch (cajeta::Exception& e) {
+        EXPECT_EQ(e.getErrorId(), "CAJETA_ERROR_USE_AFTER_MOVE");
+    }
+}
+
+// The destination of an alias inherits the source's values — both
+// names point at the same body alloca, so reading `b.x` returns
+// whatever `a.x` held. Primitive fields only, so no drop concerns.
+TEST(StructStackTests, structLocalAliasReadsSourceValues) {
+    auto src =
+        "package test;\n"
+        "public struct Point { int32 x; int32 y; }\n"
+        "public final class S {\n"
+        "    public static int32 run() {\n"
+        "        Point a = Point { x: 7, y: 11 };\n"
+        "        Point b = a;\n"
+        "        return b.x + b.y;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 18);
+}
+
+// The headline correctness pin for this fix: aliasing must not
+// double-call the struct's drop fn on shared inner class refs.
+// Pre-fix observed dropCount = 3 (struct entry × 2 + array drop × 2,
+// with the second array drop likely crashing on a double-free of the
+// underlying Tag); post-fix observed = 2 (one struct entry firing,
+// one array drop inside ~Tracer).
+TEST(StructStackTests, structAliasNoDoubleDrop) {
+    EXPECT_EQ(observeStructDrops(
+        "public class Tracer {\n"
+        "    public Tracer() { return; }\n"
+        "    public ~Tracer() {\n"
+        "        int32[] arr = new int32[3];\n"
+        "    }\n"
+        "}\n"
+        "public struct Holder { Tracer t; }\n",
+        "Tracer tracer = new Tracer();\n"
+        "        Holder a = Holder { t: tracer };\n"
+        "        Holder b = a;"
+    ), 2);
+}

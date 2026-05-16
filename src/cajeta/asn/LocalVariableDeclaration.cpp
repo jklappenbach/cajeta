@@ -319,15 +319,28 @@ namespace cajeta {
                                 initIsBorrow = true;
                             }
                         }
-                    } else if (dynamic_pointer_cast<IdentifierExpression>(children[0])) {
+                    } else if (auto rhsId = dynamic_pointer_cast<IdentifierExpression>(children[0])) {
                         // The RHS is another named binding (local var
-                        // or method parameter). For class-like, non-
-                        // struct types, the new local is just a second
-                        // pointer to the same heap object — the
-                        // original owner (the source local or param)
-                        // is responsible for the drop. Two locals each
-                        // registering their own drop entry would
-                        // double-free at scope exit.
+                        // or method parameter). Two cases:
+                        //
+                        //   - Class-like, non-struct: the new local is
+                        //     a second pointer to the same heap object;
+                        //     the original owner is responsible for the
+                        //     drop. Mark as borrow so the drop chain
+                        //     doesn't double-free.
+                        //
+                        //   - Struct: the new local aliases the source
+                        //     struct's body alloca. With both locals
+                        //     registering independent drop entries (the
+                        //     pre-fix behavior) the struct drop fn ran
+                        //     twice on the same body — double-freeing
+                        //     any owned class-ref fields. Fix: treat
+                        //     `Foo b = a;` as a MOVE — suppress b's
+                        //     drop registration AND mark `a` as moved.
+                        //     The source local's drop entry stays
+                        //     active (since `a` keeps the body
+                        //     pointer); reads of `a` after this point
+                        //     trip CAJETA_ERROR_USE_AFTER_MOVE.
                         //
                         // This complements the field-read and array-
                         // element cases above; together they cover the
@@ -338,9 +351,14 @@ namespace cajeta {
                                 rhsExpr->resolveTypes(module);
                             }
                             auto rhsClass = dynamic_pointer_cast<CajetaClass>(rhsExpr->getResolvedType());
-                            bool rhsIsStruct = dynamic_pointer_cast<CajetaAggregate>(rhsExpr->getResolvedType()) != nullptr;
+                            bool rhsIsStruct = dynamic_pointer_cast<CajetaStruct>(rhsExpr->getResolvedType()) != nullptr;
                             if (rhsClass && !rhsIsStruct) {
                                 initIsBorrow = true;
+                            } else if (rhsIsStruct) {
+                                initIsBorrow = true;
+                                if (auto scope = module->getScopeStack().peek()) {
+                                    scope->markMoved(rhsId->getTextValue());
+                                }
                             }
                         }
                     }
@@ -406,11 +424,15 @@ namespace cajeta {
             // class-ref fields and calls each referent's drop. Aggregate
             // init's per-binding ownership-transfer (S6.4) is what keeps
             // this from double-freeing the source locals whose class
-            // instances were moved into the struct.
+            // instances were moved into the struct. `initIsBorrow` gates
+            // the alias case (`Foo b = a;`) — the source local keeps the
+            // drop entry, b doesn't register a second one.
             if (auto structType = dynamic_pointer_cast<CajetaStruct>(type)) {
-                if (llvm::Function* structDropFn =
-                        structType->getOrCreateDropFunction()) {
-                    emitDropEntryForFn(module, field, structDropFn);
+                if (!initIsBorrow) {
+                    if (llvm::Function* structDropFn =
+                            structType->getOrCreateDropFunction()) {
+                        emitDropEntryForFn(module, field, structDropFn);
+                    }
                 }
             }
         }
