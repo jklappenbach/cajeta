@@ -151,6 +151,37 @@ TEST(StructInterfaceTests, rejectInterfaceMethodLevelGeneric) {
     }
 }
 
+// ---------------------------------------------------------------------
+// S9.5 — direct calls on the concrete struct type stay monomorphized
+// even when the struct implements interfaces. The interface vtable
+// globals exist (S9.2 emits them) but the direct-call path through
+// CajetaClass::invokeMethod's aggregate-bypass branch (added in S4.2
+// for views, used by structs since S6) doesn't consult them.
+// ---------------------------------------------------------------------
+
+// A struct with both interface methods AND additional non-interface
+// methods. Direct calls to either route through the monomorphized
+// path; the interface methods aren't dispatched via vtable hop.
+TEST(StructInterfaceTests, directCallsMonomorphizedAlongsideInterface) {
+    auto src =
+        "package test;\n"
+        "public interface Greeter { public int32 greet(); }\n"
+        "public struct Hi implements Greeter {\n"
+        "    int32 base;\n"
+        "    public int32 greet() { return this.base + 1; }\n"
+        // Non-interface method on the same struct — only callable
+        // directly, never through the Greeter vtable.
+        "    public int32 squared() { return this.base * this.base; }\n"
+        "}\n"
+        "public final class S {\n"
+        "    public static int32 run() {\n"
+        "        Hi h = Hi { base: 7 };\n"
+        "        return h.greet() + h.squared();\n"  // 8 + 49 = 57
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 57);
+}
+
 // Signature mismatch via parameter list — interface declares
 // `apply(int32)` but the struct's method takes nothing. Same error
 // path as the return-type mismatch above.
