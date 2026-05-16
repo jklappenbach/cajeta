@@ -9,7 +9,7 @@ This rollout supersedes the old "struct as wire-format view" implementation. Sig
 ## Current status
 
 **Phase:** Phase 2 complete (S4, S5, S5b done). Phase 3 in progress.
-**Current line item:** Sessions 6, 7, 8 all complete (S8.1–S8.5). Next: Session 9 — vtable synthesis + interface implementation (Phase 4 — struct interface dispatch).
+**Current line item:** Sessions 6, 7, 8 complete. Session 9 in progress (S9.1 done). Next: S9.2 (type system records interfaces + synthesizes per-(struct,interface) vtable).
 
 ---
 
@@ -163,7 +163,7 @@ Also during S5: a non-obvious bug surfaced and got fixed — `DotExpression` was
 ### Phase 4 — Struct interface dispatch
 
 #### Session 9 — Vtable synthesis + interface implementation
-- [ ] **9.1** Parser: accept `struct Foo implements Interface<T> { ... }` clause.
+- [x] **9.1** Parser: accept `struct Foo implements Interface<T> { ... }` clause. Added `(IMPLEMENTS typeList)?` to the `structDeclaration` grammar (between `typeParameters?` and `classBody`); the visitor's `buildStructOrViewNode` now extracts the typeList for struct contexts (views still don't carry an implements clause per Views.md) and calls `setQImplemented` so the qualified-name list flows into the existing `CajetaClass` infrastructure. Forward refs resolve via `resolveImplementedInterfaces()` (already on CajetaClass). New test file `test/parser/StructInterfaceTests.cpp` with a direct-call pin (`structImplementsOneInterface`) confirming the implementing struct still dispatches through the monomorphized path when called on the concrete type.
 - [ ] **9.2** Type system: record per-struct list of implemented interfaces; for each (struct, interface) pair, synthesize a static vtable global containing function pointers to the struct's method implementations.
 - [ ] **9.3** Vtable layout matches the interface's method order; method signature compatibility checked at struct declaration.
 - [ ] **9.4** Reject interface declarations whose methods have their own type parameters (`CAJETA_ERROR_INTERFACE_METHOD_GENERIC`).

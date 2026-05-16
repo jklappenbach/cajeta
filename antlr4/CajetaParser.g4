@@ -91,8 +91,13 @@ classDeclaration
 // nested structs; no vtable in the receiver; lifetime tied to enclosing scope;
 // may be embedded inline in class fields. Direct calls monomorphized; interface
 // dispatch via tagged fat pointer. Body reuses classBody.
+//
+// `implements` clause (S9.1): a struct can implement one or more interfaces;
+// each (struct, interface) pair gets a static vtable global the dispatch site
+// uses through the tagged-fat-pointer mechanism.
 structDeclaration
     : STRUCT identifier typeParameters?
+      (IMPLEMENTS typeList)?
       classBody
     ;
 

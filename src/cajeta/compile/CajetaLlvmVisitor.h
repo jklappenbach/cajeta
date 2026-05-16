@@ -375,6 +375,26 @@ namespace cajeta {
                 }
             }
 
+            // S9.1 — `struct Foo implements I1, I2 { ... }`. Parse the
+            // implements clause from the struct's context (views don't
+            // have implements per Views.md). Stored as qImplemented
+            // QualifiedNames; resolved to actual CajetaInterface
+            // instances during CajetaStruct::generatePrototype via
+            // resolveImplementedInterfaces() so forward-refs work.
+            if (!asView) {
+                if (auto* structCtx = dynamic_cast<CajetaParser::StructDeclarationContext*>(ctx)) {
+                    list<QualifiedNamePtr> qImpl;
+                    if (auto* tl = structCtx->typeList()) {
+                        for (auto& tt : tl->typeType()) {
+                            qImpl.push_back(QualifiedName::fromContext(tt->classOrInterfaceType()));
+                        }
+                    }
+                    if (!qImpl.empty()) {
+                        structure->setQImplemented(std::move(qImpl));
+                    }
+                }
+            }
+
             pModule->getStructureStack().push_back(structure);
             structure->setClassBody(std::any_cast<ClassBodyDeclarationPtr>(visitChildren(ctx)));
             structure->generatePrototype();
