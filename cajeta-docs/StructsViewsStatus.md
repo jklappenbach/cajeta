@@ -8,8 +8,8 @@ This rollout supersedes the old "struct as wire-format view" implementation. Sig
 
 ## Current status
 
-**Phase:** Phase 2 complete (S4, S5, S5b done). Phase 3 + Phase 4 (Sessions 6 through 11 inclusive) complete.
-**Current line item:** Sessions 6, 7, 8, 9, 9.5, 10, and 11 all complete. The struct + interface dispatch model is live end-to-end with v1 restrictions enforced: struct → interface assignment, class → interface (BORROWED) and `#class` → interface (OWNED), the kind-tag dispatched drop chain, the struct-rooted escape rejection, and the same-concrete-type-return-through-interface rejection. 832 / 832 tests passing on main. Session 12 starts next: cleanup, docs, and final regression.
+**Phase:** Rollout **complete**. Phases 1 through 5 (Sessions 1 through 12 inclusive) done.
+**Current line item:** none — Session 12 cleanup landed. The struct + view + interface dispatch model is live end-to-end with v1 restrictions enforced. 832 / 832 tests passing across three consecutive regression runs. See the deferred / known-gaps lists at the bottom of this doc for items intentionally pushed past v1.
 
 ---
 
@@ -237,13 +237,13 @@ The good news is S9's per-(struct, iface) vtable globals are already in place an
 ### Phase 5 — Wrap-up
 
 #### Session 12 — Cleanup + docs + final regression
-- [ ] **12.1** Update `ImplementationStatus.md` to note that struct/view rollout has separate tracker (`StructsViewsStatus.md`), and that this rollout completed.
-- [ ] **12.2** README test-suite table: add ViewKeyword, ViewOwning, ViewMethods, ViewNested, ViewMultiVar, StructStack, StructComposition, StructMethods, StructInterface, FatPointerDispatch sub-suites.
-- [ ] **12.3** Remove the stub error from `struct` keyword (Session 2.2); all paths now have real implementations.
-- [ ] **12.4** Remove any remaining "old-struct-was-view" deprecation shims.
-- [ ] **12.5** Final regression: 3 consecutive clean runs of full test suite.
-- [ ] **12.6** Update `MemoryModel.md`'s Structs and Views sections if any rules changed during implementation.
-- [ ] **Pass criteria:** All tests pass three times in a row; no `XXX_UNIMPLEMENTED` paths remain.
+- [x] **12.1** `ImplementationStatus.md` now carries a top-block pointer to `StructsViewsStatus.md` noting that the struct/view rollout is on its own tracker and is complete as of Session 12.
+- [x] **12.2** README test-suite table extended with a dedicated "Aggregate types — views + structs + interface dispatch" section listing every new suite from the S1–S11 work: `KeywordEquivalenceTests`, `ViewOwningTests`, `ViewEndiannessRequiredTests`, `ViewMethodsTests`, `NestedViewTests`, `MultiVarSizeViewTests`, `PostVariableFieldTests`, `StructStackTests`, `StructCompositionTests`, `StructMethodsTests`, `StructInterfaceTests`, `StructInterfaceDispatchTests`, `FatPointerDispatchTests`. The pre-existing view tests (`StructViewTests`, `StructViewBoundsTests`, `EndianAlignTests`, `VariableSizeStructTests`) moved into the same section since they live on the `view` keyword post-S1 migration.
+- [x] **12.3** Stub-error remnants gone. The `CAJETA_ERROR_STRUCT_UNIMPLEMENTED` throw was already removed when S6 landed real codegen; the only remaining trace was a stale comment in `CajetaLlvmVisitor.h::visitStructDeclaration` referring to it. Refreshed the comment to describe what struct codegen actually does (S6/S7/S8/S9–S11). Grep across `src/` confirms no other reference.
+- [x] **12.4** No `old-struct-was-view` deprecation shims found in the codebase. The `view` / `struct` keyword separation in S1 + the sibling-class refactor in S2 produced a clean split — no compat layer needed at any call site. The only architectural breadcrumb is a doc-level note in `Structs.md` framing the original dual-role mistake; that's intentional context, not a shim.
+- [x] **12.5** Three consecutive clean regression runs: 832 / 832 each, no crashed shards, ~10s per run.
+- [x] **12.6** `MemoryModel.md`'s Structs and Views sections accurately describe what shipped — no rule changes during implementation. The interface fat-pointer + dyn-dispatch + same-concrete-type restrictions live in `Structs.md` (the design-doc home for the dispatch model) rather than `MemoryModel.md` (the doctrine doc, which stays focused on borrow / move / drop). No-op for this line item.
+- [x] **Pass criteria met:** All tests pass 832 / 832 across three consecutive runs; no `XXX_UNIMPLEMENTED` paths remain.
 
 ---
 

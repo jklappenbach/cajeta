@@ -132,7 +132,7 @@ CAJETA_DUMP_IR=1 CAJETA_SOURCE_ROOT="$PWD" \
 | `CompilerOptionTests`       | `--bounds=off` toggle, `--emit` mode round-trip, target-triple setter |
 | `FpTests`                   | fp32/fp64 arithmetic, fp16 declare/store, fp4/fp6/fp8 storage |
 
-#### Memory model + wire formats (Sessions 1–5.5b of the rollout — see `cajeta-docs/ImplementationStatus.md`)
+#### Memory model + wire formats (Sessions 1–3.5 of the memory-model rollout — see `cajeta-docs/ImplementationStatus.md`)
 
 | Suite                       | What it covers                                                |
 | --------------------------- | ------------------------------------------------------------- |
@@ -141,10 +141,28 @@ CAJETA_DUMP_IR=1 CAJETA_SOURCE_ROOT="$PWD" \
 | `DropChainTests`            | Owned-array drops fire on normal return, are suppressed on move-out, and unwind on `throw` |
 | `ElisionTests`              | Multi-parameter free functions can't return a borrow (`CAJETA_ERROR_BORROW_RETURN_MULTI_PARAM`); single-param / `#`-returning / primitive-returning signatures pass |
 | `PathBorrowTests`           | `#person.name` records the path; reads through that path (or any prefix) are rejected |
-| `StructViewTests`           | `struct` declaration, `MyStruct(byte[])` view construction, field reads/writes through the view |
-| `StructViewBoundsTests`     | View constructor's `count * elem_size >= sizeof(struct)` check fires on undersize buffer, catchable via `try/catch` |
+
+#### Aggregate types — views + structs + interface dispatch (Sessions 1–12 of the struct/view rollout — see `cajeta-docs/StructsViewsStatus.md`)
+
+| Suite                       | What it covers                                                |
+| --------------------------- | ------------------------------------------------------------- |
+| `KeywordEquivalenceTests`   | `view` and `struct` keywords compile through their own codegen paths; positive pin for declare + use of each (S1, S2, S6) |
+| `StructViewTests`           | View declaration, `MyView(byte[])` borrow construction, field reads/writes through the view (legacy view tests, migrated to `view` keyword in S1) |
+| `StructViewBoundsTests`     | View constructor's `count * elem_size >= sizeof(view)` check fires on undersize buffer, catchable via `try/catch` |
 | `EndianAlignTests`          | `@BigEndian` emits `bswap` on field access (verified by reading the same bytes through a host-order view); `@LittleEndian` on a little-host is a no-op |
 | `VariableSizeStructTests`   | Inline `String` field reads materialize an owned copy; reassignment rejected; layout rule (variable-size must be last) enforced |
+| `ViewOwningTests`           | Owning-form view (`MyView(#buf)`) takes ownership of the buffer and drops it at scope exit; borrow form rejects escape; owning form allows escape (S3) |
+| `ViewEndiannessRequiredTests` | View declarations must carry `@BigEndian` / `@LittleEndian` / `@HostEndian` — missing annotation is rejected at layout time (S3) |
+| `ViewMethodsTests`          | Methods declared on views compile and dispatch directly (no vtable); intra-method `this.field` reads and writes work (S4) |
+| `NestedViewTests`           | Views containing other views inline at layout; per-view endianness independent across nesting; direct-recursion rejected (S4) |
+| `MultiVarSizeViewTests`     | Multiple trailing variable-size fields per view; per-field walk-the-prefixes access; length-prefix attacks throw at construction (S5) |
+| `PostVariableFieldTests`    | Fixed-size fields after a variable-size field; `T[]` view fields with element round-trip (S5b) |
+| `StructStackTests`          | Stack-allocated structs with primitive and class-ref fields; aggregate-initializer syntax; drop chain fires owned-class-ref drops in reverse declaration order; use-after-move on struct fields; struct returns by value (S6) |
+| `StructCompositionTests`    | Structs embedded inline as class fields; drops recurse through embedded structs in reverse declaration order; field access through chained GEPs; path-borrow through embedded struct fields (S7) |
+| `StructMethodsTests`        | Methods on structs (direct calls only — aggregates skip vtable dispatch); mutating methods, intra-struct dispatch, struct-returning methods, struct-by-value parameters (S8) |
+| `StructInterfaceTests`      | `struct implements Iface { ... }` — vtable synthesis per (struct, iface) pair; signature mismatch and missing-method rejected; interface-method-level generics rejected at declaration (S9) |
+| `StructInterfaceDispatchTests` | Struct → interface assignment (BORROWED_STRUCT), class → interface (BORROWED_CLASS / `#` for OWNED_CLASS); kind-tag dispatched drop chain; struct-rooted interface value escape rejection (S10) |
+| `FatPointerDispatchTests`   | Through-interface dispatch lands on the correct struct + class implementers; same-concrete-type return through dyn dispatch rejected at call site; mixed class/struct dispatch is uniform; vtable method-indexing pinned across multi-method interfaces (S11) |
 
 - Type
     - Number

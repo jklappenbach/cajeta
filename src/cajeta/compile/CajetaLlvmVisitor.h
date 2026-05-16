@@ -404,9 +404,10 @@ namespace cajeta {
         }
 
         virtual std::any visitStructDeclaration(CajetaParser::StructDeclarationContext* ctx) override {
-            // Stack value aggregate (Structs.md). S2 produces a CajetaStruct
-            // whose generatePrototype throws CAJETA_ERROR_STRUCT_UNIMPLEMENTED
-            // — real codegen lands S6.
+            // Stack value aggregate (Structs.md) — full codegen lands via
+            // CajetaStruct: stack alloca + aggregate init (S6), inline
+            // composition into class fields (S7), methods (S8), interface
+            // dispatch through the fat-pointer model (S9–S11).
             return buildStructOrViewNode(ctx->identifier()->getText(), ctx->parent, ctx, /*asView=*/false);
         }
 

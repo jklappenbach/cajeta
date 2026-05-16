@@ -2,6 +2,8 @@
 
 Tracks rollout progress for the doctrine in `MemoryModel.md`. Update as work proceeds — when a step completes, change `[ ]` to `[x]` and move the **← currently here** marker.
 
+> The follow-on **struct + view rollout** (Sessions 1 through 12 of the aggregate-type design — `view` keyword separation, owning views, view methods + nesting, multi-trailing variable-size fields, stack structs, inline composition, struct methods, interface dispatch through fat pointers, dyn-dispatch restrictions) has its own tracker: see `StructsViewsStatus.md`. That rollout is **complete** as of Session 12; 832+ tests passing.
+
 ---
 
 ## Current status
