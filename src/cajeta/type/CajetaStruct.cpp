@@ -1,10 +1,12 @@
 //
-// CajetaStruct — POD aggregate with declared layout (Session 4 of the
-// memory-model rollout). See `Structs.md` for the full doctrine.
+// CajetaStruct / CajetaView — see StructsViewsStatus.md for rollout context.
 //
-// v1 covers: packed layout (host endian, fixed-size primitive fields).
-// Variable-size fields (`String`, `T[]` inline), endianness intrinsics,
-// `@Align(natural)`, and nested-struct layout land in Session 5.
+// CajetaStruct is the in-progress stack-value-aggregate construct; its
+// generatePrototype throws CAJETA_ERROR_STRUCT_UNIMPLEMENTED until Session 6.
+//
+// CajetaView (defined inline in the header) inherits CajetaStruct and
+// delegates generatePrototype to generatePrototypeImpl, which is the
+// view-style layout + codegen lifted from the prior wire-format-view work.
 //
 
 #include "CajetaStruct.h"
@@ -19,11 +21,25 @@ namespace cajeta {
         auto qn = property->getType()->getQName();
         if (qn && qn->getTypeName() == "String") return true;
         // CajetaArray-typed fields are variable-size too; handled in a later
-        // pass when nested arrays-in-structs land.
+        // pass when nested arrays-in-views land.
         return false;
     }
 
     void CajetaStruct::generatePrototype() {
+        // Stack-struct semantics (alloca on declaration, class-ref fields,
+        // inline composition, interface dispatch via tagged fat pointer)
+        // land in Sessions 6-11 of the rollout. Until then the struct
+        // keyword parses but instantiating one fails here.
+        char buf[256];
+        snprintf(buf, sizeof(buf),
+            "struct '%s' cannot be compiled yet — stack-struct semantics "
+            "land in Session 6 of the rollout (see StructsViewsStatus.md). "
+            "Use `view` for memory-overlay types in the meantime.",
+            qName ? qName->toCanonical().c_str() : "?");
+        throw Exception(buf, "CAJETA_ERROR_STRUCT_UNIMPLEMENTED");
+    }
+
+    void CajetaStruct::generatePrototypeImpl() {
         string canonical = qName->toCanonical();
 
         // Create the LLVM struct type. `getOrCreateLlvmType` also stuffs a

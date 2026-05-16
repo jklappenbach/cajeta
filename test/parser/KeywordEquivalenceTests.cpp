@@ -1,12 +1,18 @@
 //
-// S1 — view / struct keyword equivalence.
+// `view` / `struct` keyword behavior pins.
 //
-// In Session 1 of the Structs+Views rollout (see StructsViewsStatus.md),
-// both `view` and `struct` keywords parse and lower to the same
-// CajetaStruct AST node. The semantic split happens in S2.
+// S1 added both keywords with shared lowering. S2 split them:
+//   - view  -> CajetaView   (generatePrototype runs the view-style codegen).
+//   - struct -> CajetaStruct (generatePrototype throws
+//                              CAJETA_ERROR_STRUCT_UNIMPLEMENTED until S6).
 //
-// These three tests pin that equivalence so subsequent sessions can
-// diverge the two paths intentionally rather than by drift.
+// These tests pin the S2 behavior:
+//   1. view declarations compile and execute as before.
+//   2. struct declarations parse but fail at codegen with a stub error.
+//   3. Declaring + instantiating a struct local also fails (S2.4 negative).
+//
+// In S6, when stack-struct codegen lands, tests 2 and 3 invert their
+// expectations and become positive coverage for the new construct.
 //
 
 #include "gtest/gtest.h"
@@ -45,27 +51,28 @@ TEST(KeywordEquivalenceTests, viewKeywordParsesAndExecutes) {
     EXPECT_EQ(fn(), 42);
 }
 
-TEST(KeywordEquivalenceTests, structKeywordStillParsesAndExecutes) {
-    // Backwards compatibility: existing struct-using code keeps working
-    // until S2 routes struct to a distinct AST node.
-    auto jit = CajetaJit::compile(sourceWithKeyword("struct"), "test.S");
-    auto fn = jit->lookup<int32_t (*)()>("run");
-    EXPECT_EQ(fn(), 42);
+TEST(KeywordEquivalenceTests, structKeywordParsesButRejectsAtCodegen) {
+    // S2 contract: struct declarations parse cleanly but fail at codegen.
+    // Inverts in S6 when stack-struct semantics land.
+    EXPECT_ANY_THROW(CajetaJit::compile(sourceWithKeyword("struct"), "test.S"));
 }
 
-TEST(KeywordEquivalenceTests, bothKeywordsProduceEquivalentBehavior) {
-    // Same source written two ways; same runtime answer. In S2 the
-    // expected answer for the struct path will change (struct gains
-    // stack-alloca semantics) and this test will need to evolve.
-    auto viewJit = CajetaJit::compile(sourceWithKeyword("view"), "test.S");
-    auto structJit = CajetaJit::compile(sourceWithKeyword("struct"), "test.S");
-
-    auto viewFn = viewJit->lookup<int32_t (*)()>("run");
-    auto structFn = structJit->lookup<int32_t (*)()>("run");
-
-    int32_t viewResult = viewFn();
-    int32_t structResult = structFn();
-
-    EXPECT_EQ(viewResult, structResult);
-    EXPECT_EQ(viewResult, 42);
+TEST(KeywordEquivalenceTests, structDeclaredAndUsedAsLocalIsRejected) {
+    // S2.4 negative test: struct Foo { int32 x; }; Foo f; — both the
+    // declaration codegen and the local instantiation hit the stub error
+    // path. Today the declaration's generatePrototype is what throws;
+    // when S6 introduces stack alloca for struct locals, this test pins
+    // that the post-S6 error mode also rejects pre-implementation usage.
+    auto src =
+        "package test;\n"
+        "public struct Foo {\n"
+        "    int32 x;\n"
+        "}\n"
+        "public final class S {\n"
+        "    public static int32 run() {\n"
+        "        Foo f;\n"
+        "        return 0;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_ANY_THROW(CajetaJit::compile(src, "test.S"));
 }

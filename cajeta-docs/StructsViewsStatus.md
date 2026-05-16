@@ -8,8 +8,8 @@ This rollout supersedes the old "struct as wire-format view" implementation. Sig
 
 ## Current status
 
-**Phase:** Phase 1 in progress. Session 1 complete.
-**Current line item:** S2 (next session start) — repurpose `struct` for stack semantics; introduce `CajetaView` as the home for view-style codegen.
+**Phase:** Phase 1 in progress. Sessions 1, 2 complete.
+**Current line item:** S3 (next session start) — view owning variant (`#bytes`) + required endianness annotation.
 
 ---
 
@@ -48,12 +48,12 @@ Sessions are sized for ~1 working day; each ends with full regression passing.
 - [x] **1.4** New `KeywordEquivalenceTests.cpp` with 3 tests: view-keyword executes, struct-keyword still executes, both produce identical runtime results from the same source. The third test will need to evolve in S2 when struct gains stack-alloca semantics and diverges from view.
 - **Pass criteria met:** 718 / 718 tests pass (715 prior + 3 new equivalence).
 
-#### Session 2 — Repurpose `struct` for stack semantics (no-op layer)
-- [ ] **2.1** Create `CajetaView` class (sibling of `CajetaStruct`); migrate `viewDeclaration` to produce `CajetaView`. Existing codegen paths copy verbatim from `CajetaStruct`.
-- [ ] **2.2** `CajetaStruct` reduced to a stub for the new stack-struct construct. The `struct` keyword still parses but produces a `CajetaStruct` that rejects with `CAJETA_ERROR_UNIMPLEMENTED` at codegen time.
-- [ ] **2.3** All view tests now route through `CajetaView`; struct tests don't exist yet.
-- [ ] **2.4** 1 negative test: `struct Foo { int32 x; }; Foo f;` rejected with the stub error.
-- [ ] **Pass criteria:** All view tests pass on `CajetaView`; struct keyword is parsing-only.
+#### Session 2 — Repurpose `struct` for stack semantics (no-op layer)  ✅ complete
+- [x] **2.1** `CajetaView` added in `CajetaStruct.h` as a subclass of `CajetaStruct`. Subclassing rather than sibling-classing means every existing `dynamic_pointer_cast<CajetaStruct>(t)` in codegen (DotExpression, ParameterField, SynthesizedHashMethod, LocalVariableDeclaration, Statement, CajetaTask, CajetaFunctionType, Method) continues to match view instances without modification — views ARE struct-shaped at the LLVM layer, that's the right semantics.
+- [x] **2.2** `CajetaStruct::generatePrototype()` throws `CAJETA_ERROR_STRUCT_UNIMPLEMENTED` with a message pointing at the rollout doc. The legacy view-style codegen body moved to a protected `generatePrototypeImpl()` that `CajetaView::generatePrototype()` calls.
+- [x] **2.3** `buildStructOrViewNode` gained an `asView` parameter; `visitViewDeclaration` passes `true` (constructs `CajetaView`), `visitStructDeclaration` passes `false` (constructs `CajetaStruct`). All 24 view tests pass on the new `CajetaView` path.
+- [x] **2.4** `KeywordEquivalenceTests` evolved as planned in S1: `structKeywordParsesButRejectsAtCodegen` confirms struct declarations throw at compile time; `structDeclaredAndUsedAsLocalIsRejected` is the S2.4 negative test. Both expect the stub error today and flip to positive coverage in S6 when stack-struct semantics land.
+- **Pass criteria met:** 718 / 718 tests pass; `view` works on `CajetaView`, `struct` is parsing-only.
 
 #### Session 3 — View owning variant + required endianness
 - [ ] **3.1** Parser: accept `#bytes` argument to view constructor; AST records owning-vs-borrow at the call site.

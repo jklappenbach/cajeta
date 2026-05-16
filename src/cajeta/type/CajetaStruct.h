@@ -1,12 +1,18 @@
 //
-// `struct` types — POD aggregates with declared (not compiler-chosen) layout.
-// See Structs.md for full layout / endianness / packing / view-construction
-// rules. v1 of this type is a stub: it identifies that a declaration is a
-// struct vs a class, but the actual layout computation, view-constructor
-// synthesis, and field-accessor codegen land in Session 4 of the rollout.
+// `struct` types — stack-allocated value aggregates (Structs.md).
 //
-// Created during the Memory Model + Wire Formats implementation (Session 2 /
-// Step 2.3).
+// Rollout note (StructsViewsStatus.md / S2): CajetaStruct is the in-progress
+// new stack-struct construct. Its real semantics (alloca-on-declaration,
+// class-ref fields, inline composition into classes, interface dispatch via
+// tagged fat pointer) land in Sessions 6-11. Until then, the struct keyword
+// parses but generatePrototype() throws CAJETA_ERROR_STRUCT_UNIMPLEMENTED.
+//
+// The existing wire-format-view machinery (packed/aligned layout, bswap,
+// length-prefix sweep, bounds check, view-constructor synthesis) moves to
+// the CajetaView sibling type. CajetaView inherits from CajetaStruct so all
+// existing dynamic_pointer_cast<CajetaStruct>(t) checks in codegen continue
+// to match view types — that's the correct shape because views ARE struct-
+// shaped at the LLVM layer.
 //
 
 #pragma once
@@ -17,6 +23,8 @@ namespace cajeta {
 
     class CajetaStruct;
     typedef shared_ptr<CajetaStruct> CajetaStructPtr;
+    class CajetaView;
+    typedef shared_ptr<CajetaView> CajetaViewPtr;
 
     // Endianness annotation on a struct declaration. Resolved from the
     // `@BigEndian` / `@LittleEndian` annotations during type registration;
@@ -37,21 +45,25 @@ namespace cajeta {
     };
 
     /**
-     * POD struct type. Sibling to CajetaClass. Real layout + view constructor
-     * + field-accessor codegen are wired in Sessions 4 and 5 of the rollout.
+     * Stack-allocated value aggregate. Real semantics (S6-S11) not yet wired;
+     * generatePrototype() throws CAJETA_ERROR_STRUCT_UNIMPLEMENTED.
      *
-     * Variable-size field support (Session 5.5b): String-typed fields lay out
-     * as an inline `i32 length` followed by `length` bytes. The LLVM struct
-     * type substitutes the length prefix for the field's slot; the data bytes
-     * live past the LLVM struct's footprint in the buffer. Restriction in
-     * v1: at most one variable-size field, and it must be the last field.
-     * Reading such a field allocates a null-terminated copy so the result is
-     * compatible with the existing String stdlib.
+     * Subclassed by CajetaView, which calls generatePrototypeImpl() to get
+     * the packed-layout / endianness-aware / variable-size-field codegen
+     * inherited from the prior wire-format-view implementation. The shared
+     * code lives in this class (protected) so the view subclass can reuse it
+     * without duplicating; the struct path will replace it in S6 with stack-
+     * alloca semantics.
      */
     class CajetaStruct : public CajetaClass {
     private:
         StructEndianness endianness = StructEndianness::Host;
         StructAlignment alignment = StructAlignment::Packed;
+    protected:
+        // The legacy view-style layout + LLVM struct body generation. CajetaView
+        // calls this directly; CajetaStruct does not (S6 will replace it with
+        // stack-struct semantics).
+        void generatePrototypeImpl();
     public:
         CajetaStruct(CajetaModulePtr module) : CajetaClass(module) { }
         CajetaStruct(CajetaModulePtr module, QualifiedNamePtr qName)
@@ -63,29 +75,53 @@ namespace cajeta {
         StructAlignment getAlignment() const { return alignment; }
         void setAlignment(StructAlignment a) { alignment = a; }
 
-        // True iff `property` is a variable-size struct field (String today;
-        // T[] support to follow). Variable-size fields are laid out as an
-        // inline i32 length prefix followed by `length` bytes.
+        // True iff `property` is a variable-size field (String today; T[]
+        // support to follow). Variable-size fields are laid out as an inline
+        // i32 length prefix followed by `length` bytes.
         static bool isVariableSize(const StructurePropertyPtr& property);
 
-        // Override: packed layout (no padding by default), no default
-        // constructor, no vtable/RTTI. Register the struct itself in the
-        // canonical type map so name lookups return this instance (not a
-        // generic placeholder).
+        // Stack-struct codegen is not yet implemented. Throws
+        // CAJETA_ERROR_STRUCT_UNIMPLEMENTED until S6.
         void generatePrototype() override;
 
-        // Byte size of the struct's fixed prefix (sum of fixed-size fields,
-        // with packed or natural alignment depending on this struct's
-        // annotation). Variable-size fields contribute their i32 length-prefix
-        // here; their data bytes are not counted (they live past the LLVM
-        // struct's footprint in the buffer).
+        // Byte size of the fixed prefix (sum of fixed-size fields, packed or
+        // natural alignment depending on annotation). Variable-size fields
+        // contribute their i32 length-prefix; their data bytes are not counted
+        // (they live past the LLVM struct's footprint in the buffer). Returns
+        // 0 if the LLVM type hasn't been built yet (CajetaStruct never builds
+        // one in v1; CajetaView does).
         uint64_t getFixedSize() const;
 
-        // Structs are POD — no vtable header — so user properties stay at
-        // their 0-based LLVM indices.
+        // No vtable header — user properties stay at 0-based LLVM indices.
         int getFieldLlvmIndex(const StructurePropertyPtr& prop) const override {
             return prop->getOrder();
         }
+    };
+
+    /**
+     * Zero-copy memory overlay onto a byte buffer (Views.md). Inherits the
+     * shared layout / codegen machinery from CajetaStruct via
+     * generatePrototypeImpl(). v1 capabilities (carried over from the prior
+     * struct-as-view work):
+     *
+     *   - Packed layout by default; @Align(natural) opts into padding.
+     *   - @BigEndian / @LittleEndian / @HostEndian annotations.
+     *   - View constructor synthesis (`MyView(byte[])`) with bounds check.
+     *   - Single trailing String field with inline length-prefix encoding.
+     *
+     * S3-S5 expand this: required endianness annotation, owning variant
+     * (`MyView(#bytes)`), multiple variable-size fields, fields after a
+     * variable-size field, nested views, methods, length-prefix validation.
+     */
+    class CajetaView : public CajetaStruct {
+    public:
+        CajetaView(CajetaModulePtr module) : CajetaStruct(module) { }
+        CajetaView(CajetaModulePtr module, QualifiedNamePtr qName)
+            : CajetaStruct(module, qName) { }
+
+        // Wires up the legacy view codegen via the shared impl. Overrides
+        // CajetaStruct's stub.
+        void generatePrototype() override { generatePrototypeImpl(); }
     };
 
 } // namespace cajeta

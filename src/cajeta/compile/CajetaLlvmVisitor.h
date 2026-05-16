@@ -325,14 +325,15 @@ namespace cajeta {
             return visitChildren(ctx);
         }
 
-        // Shared body for visitStructDeclaration and visitViewDeclaration. In
-        // S1 both produce a CajetaStruct; the semantic split (struct = stack
-        // value, view = memory overlay) is staged in via the rollout plan
-        // documented in StructsViewsStatus.md (S2 introduces CajetaView).
+        // Shared body for visitStructDeclaration and visitViewDeclaration.
+        // S2: struct produces CajetaStruct (stub — generatePrototype throws),
+        // view produces CajetaView (real codegen via generatePrototypeImpl).
+        // Both share annotation parsing and module-registration plumbing.
         std::any buildStructOrViewNode(
                 const string& name,
                 antlr4::tree::ParseTree* parent,
-                antlr4::ParserRuleContext* ctx) {
+                antlr4::ParserRuleContext* ctx,
+                bool asView) {
             string packageAdj;
             for (auto& structure : pModule->getStructureStack()) {
                 packageAdj.append(".");
@@ -340,7 +341,9 @@ namespace cajeta {
             }
             QualifiedNamePtr qName = QualifiedName::getOrInsert(
                 name, pModule->getQName()->getPackageName() + packageAdj);
-            auto structure = make_shared<CajetaStruct>(pModule, qName);
+            CajetaStructPtr structure = asView
+                ? static_pointer_cast<CajetaStruct>(make_shared<CajetaView>(pModule, qName))
+                : make_shared<CajetaStruct>(pModule, qName);
 
             // Pull layout annotations off the enclosing typeDeclaration. Both
             // `struct` and `view` declarations sit under typeDeclaration which
@@ -374,20 +377,18 @@ namespace cajeta {
         }
 
         virtual std::any visitStructDeclaration(CajetaParser::StructDeclarationContext* ctx) override {
-            // Stack value aggregate (Structs.md). In S1 still lowers to the
-            // existing CajetaStruct machinery; S2 will introduce a distinct
-            // CajetaStackStruct and route view-style declarations to a new
-            // CajetaView node, splitting the two semantics.
-            return buildStructOrViewNode(ctx->identifier()->getText(), ctx->parent, ctx);
+            // Stack value aggregate (Structs.md). S2 produces a CajetaStruct
+            // whose generatePrototype throws CAJETA_ERROR_STRUCT_UNIMPLEMENTED
+            // — real codegen lands S6.
+            return buildStructOrViewNode(ctx->identifier()->getText(), ctx->parent, ctx, /*asView=*/false);
         }
 
         virtual std::any visitViewDeclaration(CajetaParser::ViewDeclarationContext* ctx) override {
-            // Zero-copy memory overlay (Views.md). In S1 we route this through
-            // the same CajetaStruct path so existing view-style codegen
-            // (bswap, packed/aligned layout, length-prefix sweep, bounds
-            // check) keeps working without rewriting it. The semantic split
-            // happens in S2 when CajetaView becomes its own type.
-            return buildStructOrViewNode(ctx->identifier()->getText(), ctx->parent, ctx);
+            // Zero-copy memory overlay (Views.md). S2 routes to CajetaView,
+            // which inherits the legacy view-style codegen via
+            // generatePrototypeImpl. S3-S5 extend it (owning variant,
+            // required endianness, multiple var-size fields, nested views).
+            return buildStructOrViewNode(ctx->identifier()->getText(), ctx->parent, ctx, /*asView=*/true);
         }
 
         virtual std::any visitEnumDeclaration(CajetaParser::EnumDeclarationContext* ctx) override {
