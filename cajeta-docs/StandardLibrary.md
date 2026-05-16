@@ -611,12 +611,8 @@ implements a clear contract, arrays included.
 
 ```cajeta
 public interface Iterable<T> {
-    public Iterator<T> iterator();
-}
-
-public interface Iterator<T> {
-    public boolean hasNext();
-    public T next();
+    public Iterator<T> iter();
+    public Iterator<T> iterOwned();   // consuming iteration
 }
 
 public interface Collection<T> extends Iterable<T> {
@@ -625,8 +621,327 @@ public interface Collection<T> extends Iterable<T> {
 ```
 
 `Iterable` is separated so types that only need "give me an iterator" don't
-inherit `count()` they'd have to implement. Streams, generators, file lines
-— those will be `Iterable` but not `Collection`.
+inherit `count()`. Streams, generators, file lines — those are `Iterable`
+but not `Collection`. The `Iterator<T>` design follows §"Iterator design"
+below — single-call `next()` returning `Optional<T>`, struct-based, no
+heap allocation, baked-in combinators, mutation-during-iteration is a
+compile error.
+
+### Iterator design
+
+Iterators in cajeta deliberately don't repeat the design mistakes other
+languages have made. Nine principles, in order from "must" to "nice":
+
+#### 1. Single-call `next()` returning `Optional<T>`
+
+The Rust shape, not the Java shape. One call per element, termination
+encoded in the return value — no separate `hasNext()` + `next()` pair (two
+virtual calls per element, the perennial Java tax), no
+exception-on-termination (Python's StopIteration overhead). Implementations
+that don't have a cheap probe-before-take get a single `next()` to
+implement.
+
+```cajeta
+public interface Iterator<T> {
+    public Optional<T> next();
+    // ... default-method combinators (see §3)
+}
+
+// Hand-rolled consumption:
+Iterator<int32> it = xs.iter();
+loop {
+    match it.next() {
+        Some(x) => print(x),
+        None    => break,
+    }
+}
+```
+
+Languages compared: **Java/Kotlin/C#** `hasNext()+next()` is the
+expensive two-call protocol. **Python** `__next__()` raising
+`StopIteration` is a single call but pays exception teardown per
+iteration. **Rust/Swift** match the cajeta shape.
+
+#### 2. Iterators are structs, not classes
+
+No vtable, no heap allocation, no virtual dispatch. The `for` loop
+monomorphizes against the concrete iterator type, so `.next()` inlines.
+Cajeta's struct-by-pointer calling convention (Method.cpp's pass-by-ptr
+rule for structs) means passing an iterator to a combinator is a
+pointer-push, not a memcpy.
+
+```cajeta
+// Array iterator — a tiny struct that holds the cursor and a borrow
+// of the array. No new allocation when you call arr.iter().
+public struct ArrayIter<T> {
+    private T[]   data;   // borrowed
+    private int64 idx;
+    private int64 stop;
+
+    public Optional<T> next() {
+        if (this.idx >= this.stop) {
+            return None();
+        }
+        T value = this.data[this.idx];
+        this.idx = this.idx + 1;
+        return Some(value);
+    }
+}
+```
+
+Languages compared: **Java/C#** allocate the iterator on the heap (every
+`for-each` is an allocation + virtual calls). **Rust/C++** use stack-
+allocated iterators that the compiler can inline through. Cajeta matches
+the cheap shape.
+
+#### 3. Combinators are default methods on `Iterator<T>`, present from day one
+
+`map`, `filter`, `fold`, `find`, `count`, `take`, `skip`, `chain`,
+`enumerate`, `reduce`, `any`, `all`. Each returns a struct that wraps
+the inner iterator and implements `Iterator<T>` itself — composes lazily
+with no per-element allocation.
+
+```cajeta
+public interface Iterator<T> {
+    public Optional<T> next();
+
+    // Default-method combinators. Each returns a wrapper struct that
+    // adapts `this` and re-implements `next()`. Lazy: nothing happens
+    // until the consumer pulls.
+
+    public MapIter<T, U> map<U>((T) -> U fn) {
+        return MapIter<T, U>(this, fn);
+    }
+
+    public FilterIter<T> filter((T) -> boolean pred) {
+        return FilterIter<T>(this, pred);
+    }
+
+    public Optional<T> find((T) -> boolean pred) {
+        // Eager — drains until a match or end.
+        for (x in this) {
+            if (pred(x)) { return Some(x); }
+        }
+        return None();
+    }
+
+    public int64 count() {
+        int64 n = 0;
+        for (_ in this) { n = n + 1; }
+        return n;
+    }
+
+    // ... etc.
+}
+
+// Usage — chain composes without per-element heap traffic:
+int32 sumOfSquares = xs.iter()
+    .filter((x) -> x > 0)
+    .map((x) -> x * x)
+    .fold(0, (acc, x) -> acc + x);
+```
+
+Languages compared: **Java Stream API**, **C# LINQ** — combinators
+added years after the iterator protocol; never as ergonomic as if they
+were native. **Rust/Swift** ship combinators on the trait from v1.
+Cajeta does the same.
+
+#### 4. Borrow-check integration — mutation during iteration is a compile error
+
+`m.iter()` registers a borrow on `m` via cajeta's existing borrow
+detection (the same machinery that catches `T[] alias = paramArr`). Any
+mutating call on `m` while the iterator is live is rejected at compile
+time. No `ConcurrentModificationException` runtime band-aid, no
+undefined behavior.
+
+```cajeta
+HashMap<int32, String> m = ...;
+Iterator<Entry<int32, String>> it = m.iter();
+for (entry in it) {
+    m.put(entry.key + 1, "added");  // ← compile error:
+                                     //    cannot mutate `m` while
+                                     //    `it` (line N) borrows it
+}
+```
+
+Languages compared: **Java's ConcurrentModificationException** detects
+this *at runtime* on the next iteration. **Python** is undefined
+behavior. **Rust** rejects at compile time (which is what cajeta does).
+**C++** is undefined behavior with iterator-invalidation rules nobody
+remembers.
+
+#### 5. Multi-yield via destructuring an `Entry` struct, no special syntax
+
+`HashMap` iteration yields a single value per call — an `Entry<K, V>`
+struct. The `for (k, v in m)` Go-style form is sugar over destructuring
+that single entry. Same machinery handles N-element tuples
+(`Iterator<Triple<A, B, C>>`).
+
+```cajeta
+public struct Entry<K, V> {
+    public K key;
+    public V value;
+}
+
+// HashMap exposes both forms:
+for (entry in m.iter()) {
+    print(entry.key);
+    print(entry.value);
+}
+
+// Destructuring sugar:
+for (k, v in m.iter()) {
+    print(k);
+    print(v);
+}
+```
+
+Languages compared: **Go** special-cases `for k, v := range m` as a
+language form — not extensible. **Python** unpacks tuples in `for k, v
+in m.items()` but the protocol uses `.items()` as a separate iter
+method. **Rust** uses `&(k, v)` destructuring on the tuple iterator
+type. Cajeta's `Entry` struct + destructuring sugar gives the same
+ergonomics without special-casing maps.
+
+#### 6. No `IntoIterator` vs `Iterator` split
+
+Rust's three-method `iter()` / `iter_mut()` / `into_iter()` is honest
+but a teaching obstacle. Cajeta has two:
+
+- `iter()` — borrowing iteration; container outlives the iterator.
+- `iterOwned()` — consuming iteration; takes ownership of the container,
+  yields owned elements, container is gone after the loop.
+
+Mutating iteration is a separate concern handled by the borrow checker
+plus a `set(idx, T)`-style method on the underlying container.
+
+```cajeta
+// Borrowing — the common case
+for (x in xs.iter()) {
+    print(x);
+}
+print(xs.count());  // still usable
+
+// Consuming — when you want to drain into something else
+HashMap<int32, String> source = ...;
+HashMap<int32, String> dest = new HashMap<int32, String>(64);
+for (entry in source.iterOwned()) {
+    dest.put(entry.key, entry.value);
+}
+// `source` is gone here — moved into the iter, drained by the loop
+```
+
+Languages compared: **Rust** three traits (`iter`, `iter_mut`,
+`into_iter`) — explicit but heavy. **Java/Kotlin** only borrow-iterate;
+no consuming form. Cajeta picks the middle: two methods, the common
+distinction, no triple-trait taxonomy.
+
+#### 7. No "end iterator"
+
+The C++ `begin()` / `end()` pair is the source of unending off-by-one
+bugs. Single-call `next()` returning `Optional<T>` removes the concept
+entirely.
+
+```cajeta
+// C++ style (don't do this):
+//   for (auto it = v.begin(); it != v.end(); ++it) { ... }
+//
+// Cajeta:
+for (x in v.iter()) { ... }
+//
+// Or hand-rolled:
+Iterator<T> it = v.iter();
+loop {
+    match it.next() {
+        Some(x) => /* use x */,
+        None    => break,
+    }
+}
+```
+
+Languages compared: **C++** end-iterator footgun. **Everyone else** —
+including cajeta — terminates on a falsy signal from `next()`.
+
+#### 8. `for` desugars but exposes the iterator binding
+
+Foreach syntax is sugar over `loop { match it.next() { ... } }`, but
+the iterator binding stays in scope. Callers can `.peek()`, `.skip(1)`,
+or check `.count()` from inside the body. Or use the explicit `loop` /
+`match` form if they need finer control.
+
+```cajeta
+// Sugar form, iterator binding exposed:
+for (x in xs.iter() as it) {
+    if (x < 0) {
+        it.skip(3);   // skip the next 3 negatives
+        continue;
+    }
+    process(x);
+}
+
+// Equivalent without sugar:
+Iterator<T> it = xs.iter();
+loop {
+    match it.next() {
+        Some(x) => {
+            if (x < 0) { it.skip(3); continue; }
+            process(x);
+        },
+        None => break,
+    }
+}
+```
+
+Languages compared: **Java** foreach hides the iterator — accessing it
+requires writing the explicit loop. **Python** same — `iter()` + `next()`
+manually. **Rust** has the same hiding problem (`for x in iter` doesn't
+bind the iter). Cajeta's `as it` clause is opt-in; most loops won't
+need it, but when you do, it's there.
+
+#### 9. Index iteration via `enumerate`, not a separate counter
+
+`for ((i, x) in arr.iter().enumerate())` instead of
+`for (i in 0..arr.length) { x = arr[i]; ... }`. Removes the "do I want
+indices or elements?" question — combinators handle both. `enumerate()`
+returns an iterator of `Entry<int64, T>` (using the same Entry struct
+as map iteration, but with index for key).
+
+```cajeta
+// Sum of (index * value):
+int64 weighted = xs.iter()
+    .enumerate()
+    .fold(0, (acc, e) -> acc + (e.key * e.value));
+
+// With destructuring:
+for (i, x in xs.iter().enumerate()) {
+    print(i);
+    print(x);
+}
+```
+
+Languages compared: **Java** writes an external counter or
+`IntStream.range(0, list.size())`. **Python** has `enumerate()` as a
+builtin — same ergonomics, different surface. **Rust** has
+`.enumerate()` on iterators. Cajeta matches the Rust/Python ergonomics
+on top of the structural iterator.
+
+### Prerequisites
+
+Two stdlib pieces have to land before the iterator interface ships:
+
+1. **`Optional<T>`** — `Some(T)` / `None()` value-typed sum, no heap
+   allocation. `Iterator.next()` returns it. Independently useful for
+   many things beyond iterators.
+2. **Generic struct support** — iterators are templated structs.
+   We've shipped templated *classes*; templated *structs* may need
+   compiler work (the field-layout pass for struct templates).
+
+The biggest open design question: **trait dispatch on structs**.
+Cajeta's interfaces today are class-based with vtable dispatch.
+Iterator-as-struct means `Iterable<T>::iter()` returning a struct
+type — does that work with the existing interface machinery, or do
+iterators have to be classes after all? Answering this is the
+gating decision before drafting `cajeta.collection.Iterator`.
 
 ### `StructView` — zero-alloc views over external storage
 
