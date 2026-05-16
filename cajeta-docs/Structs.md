@@ -1,11 +1,15 @@
 # Cajeta Structs
-### Wire Formats & Zero-Copy — Specification v1
+### POD Aggregates: Wire-Format Views + Inline Values — Specification v1
 
 ## Purpose
 
-High-throughput server applications process fixed-format messages — RPC requests, protocol frames, file-format records — where each message arrives as a byte buffer. Allocating a new object per message (copying each field out, parsing inline strings, building an object graph) is the dominant cost in many such services.
+A `struct` in cajeta is a **plain-old-data aggregate**: a named layout of fields, with no vtable, no inheritance, no heap allocation of its own. It has two equally first-class use cases:
 
-Cajeta supports **zero-copy struct views**: a `struct` type can be overlaid onto an existing byte buffer, with field accesses lowered to direct loads against the buffer. No allocation; no copying; no object graph. Safety is guaranteed by the memory model — the view is a borrow of the buffer, and lifetime/aliasing rules apply automatically (see `MemoryModel.md` § Struct views).
+1. **Wire-format view over a byte buffer.** High-throughput server applications process fixed-format messages — RPC requests, protocol frames, file-format records — where each message arrives as a byte buffer. Allocating a new object per message (copying each field out, parsing inline strings, building an object graph) is the dominant cost. A struct can be overlaid onto the existing buffer with field accesses lowered to direct loads. No allocation, no copying, no object graph.
+
+2. **Inline value aggregate.** A struct can also live where it's declared — stack-resident as a local variable, in-line as a class field, passed by pointer through methods. Useful when you want a typed tuple with named fields and no heap overhead — coordinate pairs, `Optional<T>` discriminants, iterator state, the result of a "function that wants to return two values."
+
+The same struct *definition* serves both — the difference is at **construction time** (see "Construction modes" below). Safety in the wire-format-view case is guaranteed by the memory model — the view is a borrow of the buffer, and lifetime/aliasing rules apply automatically (see `MemoryModel.md` § Struct views).
 
 ---
 
@@ -14,9 +18,9 @@ Cajeta supports **zero-copy struct views**: a `struct` type can be overlaid onto
 Cajeta has two type kinds for user-defined aggregates:
 
 - **`class`** — managed object. May have a vtable, may inherit, layout is compiler-chosen for execution efficiency. Backed by heap allocation. Field access via the compiler's chosen offsets.
-- **`struct`** — POD aggregate. No vtable, no inheritance, layout is **declared** (compiler emits the exact byte offsets the source implies). Constructible as a view over any byte buffer. Intended for wire formats, memory-mapped data, FFI, and other layout-stable use cases.
+- **`struct`** — POD aggregate. No vtable, no inheritance, layout is **declared** (compiler emits the exact byte offsets the source implies). Can be either a view over a byte buffer or an inline value at the point of declaration. Intended for wire formats, memory-mapped data, FFI, and small named tuples (coordinates, `Optional<T>`, iterator state).
 
-Use `class` for objects with behavior; use `struct` for data with a known on-the-wire shape.
+Use `class` for objects with behavior; use `struct` for data with a known shape.
 
 ---
 
@@ -31,7 +35,70 @@ struct RequestHeader {
 }
 ```
 
-Each field has a declared type. Primitive types lay out as their native LLVM width. `String` and arrays (`T[]`) are variable-size and lay out as inline length-prefix + data (see below).
+Each field has a declared type. Primitive types lay out as their native LLVM width. `String` and arrays (`T[]`) are variable-size and lay out as inline length-prefix + data (see "Variable-size fields" below).
+
+Methods (static or instance) can be defined on a struct using the same syntax as a class. Constructors are synthesized by the compiler (see "Construction modes").
+
+---
+
+## Construction modes
+
+A struct definition is just a layout. Two construction modes pick which *kind* of storage backs an instance:
+
+### Inline mode — `MyStruct s;`
+
+The struct's bytes live wherever the declaration sits — a stack alloca for a local, a slot in the enclosing struct or class for a field, a pass-by-pointer parameter slot, a return-value sret slot. **No buffer needed**; the compiler allocates the bytes for you.
+
+```
+struct Pair {
+    int32 a;
+    int32 b;
+}
+
+Pair p;          // 8 bytes on the stack, zero-initialized
+p.a = 7;
+p.b = 11;
+return p.a + p.b;
+```
+
+Inline mode is the "value aggregate" use case. Lifetime is the enclosing scope (locals) or the enclosing object (fields). No borrow tracking of any backing buffer because there is none.
+
+**Constraint**: every field in an inline-mode-constructed struct must be **fixed-size**. The compiler needs a compile-time-known total size to allocate the slot. Variable-size fields (`String`, `T[]`) require from-bytes construction (see below) where the buffer encodes the actual size at runtime.
+
+### From-bytes mode — `MyStruct s = MyStruct.from(buffer);`
+
+The struct's bytes are an existing `byte[]` (or other byte-typed source). The struct is a **typed view** over those bytes — reads/writes go through to the buffer; no copy. Lifetime is bounded by the buffer's lifetime (statically checked — see "Borrow semantics integration"). Variable-size fields are supported because the buffer carries their length-prefixes.
+
+```
+@BigEndian
+struct RpcHeader {
+    int32 magic;
+    int16 version;
+    int16 messageType;
+    int64 messageId;
+    int32 payloadLen;
+}
+
+byte[] frame = network.read();
+RpcHeader h = RpcHeader.from(frame);    // typed view over frame
+if (h.magic != 0xDEADBEEF) throw new ProtocolException();
+```
+
+`MyStruct.from(buffer)` is the canonical spelling. The direct call form `MyStruct(buffer)` is also accepted (and is what the parser actually produces today); they lower to the same code path. Earlier drafts of this spec also listed `MyStruct.view(buffer)` — that alias has been **removed**; use `from`.
+
+### Picking the mode
+
+| Use case                              | Mode                          |
+|---------------------------------------|-------------------------------|
+| Parsing a network frame / file record | from-bytes                    |
+| Carrying a `(key, value)` pair around | inline                        |
+| Implementing `Optional<T>`            | inline                        |
+| Iterator state for a `for` loop       | inline                        |
+| Mapping over a memory-mapped file     | from-bytes                    |
+| Returning multiple values from a fn   | inline                        |
+| Coordinates `(x, y)` in a graphics call | inline                      |
+
+The *struct declaration* doesn't pick the mode — the **construction site** does. Most structs will only ever be used one way, but the language doesn't enforce that. A `Pair` can be either, depending on whether the caller writes `Pair p;` or `Pair p = Pair.from(bytes);` (the latter only valid if `Pair`'s fields are fixed-size, which `int32 a; int32 b;` is).
 
 ---
 
@@ -93,6 +160,8 @@ Endianness is per-struct, not per-field.
 ---
 
 ## Variable-size fields
+
+> Applies to **from-bytes mode only**. Inline-mode structs must have all fixed-size fields; the compiler needs a known total size to allocate the stack slot. A struct declared with any variable-size field cannot be constructed inline; it can only be viewed over a buffer that supplies the actual lengths.
 
 `String` and `T[]` are variable-size. Their inline layout is **length-prefix + data**:
 
@@ -168,12 +237,12 @@ Recursive shapes need indirection (a pointer/reference type), which is not in v1
 
 ---
 
-## View construction
+## From-bytes construction
 
-For each `struct` type, the compiler synthesizes a view constructor:
+For each `struct` type, the compiler synthesizes a from-bytes constructor:
 
 ```
-MyStruct(byte[] data) -> MyStruct       // borrow-view
+MyStruct.from(byte[] data) -> MyStruct       // borrow-view
 ```
 
 The constructor:
@@ -184,23 +253,16 @@ The constructor:
 
 After this, all field accesses are **bounds-check-free**: the constructor has guaranteed every offset lies within the buffer.
 
-### Constructor aliases
+The direct call form `MyStruct(data)` is equivalent and is what the parser actually lowers today. `MyStruct.from(data)` is the recommended spelling because it reads as a deliberate construction-mode choice at the call site, distinct from inline declaration (`MyStruct s;`).
 
-The compiler also generates these aliases for readability:
-
-```
-MyStruct.from(byte[] data)
-MyStruct.view(byte[] data)
-```
-
-All three call the same underlying function; use whichever reads best at the call site.
+> The earlier draft of this spec listed a third alias, `MyStruct.view(data)`. It has been **removed**. Use `from`. The duplication confused the call-site distinction without adding expressiveness.
 
 ### Owning variant (additive)
 
 A second constructor takes the buffer by transfer:
 
 ```
-MyStruct(#byte[] data) -> #MyStruct     // owning-view
+MyStruct.from(#byte[] data) -> #MyStruct     // owning-view
 ```
 
 The struct now owns the buffer. When the struct drops (scope exit or move-out), the buffer drops with it. Useful for parse → build → respond flows where one allocation covers the entire request lifecycle.
@@ -217,22 +279,24 @@ The exception type is a built-in (TBD when stdlib classes land); it carries the 
 
 ## Field access
 
+Read and write IR is the same shape in both construction modes — GEP from the struct's base pointer to the field's offset, then load/store. The only difference is where the base pointer comes from: the from-bytes ctor returns a pointer into the buffer; inline declaration produces a pointer to the stack alloca.
+
 ### Reads
 
-Field reads are direct loads against the buffer:
-
-- Fixed-offset primitive: `load <type>, ptr (buffer + offset)`.
-- With endian mismatch: `bswap` after the load.
-- After a variable-size field: the resolved offset is cached at construction time; subsequent reads are constant-offset against the cached pointer.
+- Fixed-offset primitive: `load <type>, ptr (base + offset)`.
+- With endian mismatch (from-bytes mode only — inline mode is host-order by definition): `bswap` after the load.
+- After a variable-size field (from-bytes mode only): the resolved offset is cached at construction time; subsequent reads are constant-offset against the cached pointer.
 
 ### Writes
 
-Field writes are direct stores into the buffer:
-
-- Fixed-offset primitive: `store <type>, ptr (buffer + offset)`.
+- Fixed-offset primitive: `store <type>, ptr (base + offset)`.
 - With endian mismatch: `bswap` before the store.
 
 ### Mutation rules
+
+For **inline-mode** structs: no restrictions. The storage belongs to the enclosing scope; all fields are fixed-size; mutation is uniformly safe.
+
+For **from-bytes-mode** structs:
 
 | Operation                          | Allowed?         |
 |------------------------------------|------------------|
@@ -248,9 +312,11 @@ Variable-size field reassignment requires a buffer of a different size — not s
 
 ## Borrow semantics integration
 
-A struct view is a **borrow of its backing buffer**. The standard memory-model rules apply:
+Applies to **from-bytes mode**. Inline-mode structs don't borrow anything — they own their own stack-resident storage, with the same lifetime story as a primitive local.
 
-- `s` borrows `bytes`; `s` cannot outlive `bytes` (static error otherwise).
+A from-bytes struct is a **borrow of its backing buffer**. The standard memory-model rules apply:
+
+- `s` borrows `bytes`; `s` cannot outlive `bytes` (static error otherwise — see the view-aliasing escape check in `LocalVariableDeclaration` and `Statement.cpp`'s `CAJETA_ERROR_VIEW_ESCAPE`).
 - `s.field` is a borrow rooted at `bytes` (path-based tracking).
 - Mutating `bytes` directly while `s` is live → static error (alias-mutation).
 - Mutating through `s.field = X` invalidates other live borrows of `bytes`.
@@ -301,12 +367,13 @@ Network protocols are typically big-endian (network byte order). Use `@BigEndian
 
 | Error                                              | Caught by                          |
 |----------------------------------------------------|------------------------------------|
-| Struct view outliving its buffer                   | Memory model § scope check         |
+| From-bytes struct outliving its buffer             | Memory model § scope check (`CAJETA_ERROR_VIEW_ESCAPE`) |
 | Mutating the backing buffer while view is live     | Memory model § alias-mutation rule |
 | Reassigning a variable-size field through a view   | Wire-format mutation rule          |
 | Reading/writing past the end of the buffer         | Construction-time bounds + length-prefix validation (runtime, once per view) |
 | Recursive struct definition (direct or transitive) | Layout-cycle detection during type registration |
 | Reassigning a variable-size nested-struct field    | Wire-format mutation rule (same as variable-size leaf) |
+| Inline-mode declaration of a struct with variable-size fields | Layout pass — needs known total size at the alloca site |
 
 ---
 
@@ -314,18 +381,81 @@ Network protocols are typically big-endian (network byte order). Use `@BigEndian
 
 1. **Parser:** recognize `struct` keyword as distinct from `class`. Accept `@Align(...)`, `@BigEndian`, `@LittleEndian` annotations on struct declarations.
 2. **Type system:** add `CajetaStruct` (sibling to `CajetaClass`) with explicit layout computation. Compute fixed-prefix size; identify variable-size fields; pre-compute the constant-offset fast path when applicable. Recurse into nested struct fields, inheriting endianness/alignment from the outer unless overridden. Detect layout cycles (recursive struct definitions) during this pass and reject.
-3. **Constructor synthesis:** for each `struct`, emit a function `MyStruct(byte[])` returning a borrow view, plus `.from(...)` and `.view(...)` aliases. Emit the size-check and length-prefix-validation sweep.
-4. **Field accessor codegen:** for each field, emit a getter and setter that performs the offset computation, byte-swap if needed, and the load/store.
-5. **Variable-size offset cache:** at view-construction time, walk variable-size fields and cache resolved offsets in the view's internal layout. Recurse into nested variable-size structs so every length-prefix at every nesting level is validated and offsets are resolved before the view is returned. For all-fixed structs (including those with all-fixed nested structs), this step is a no-op.
-6. **Borrow checker integration:** treat view construction as a borrow of the byte array; treat each field access as a path-based borrow. Reject struct views whose backing buffer goes out of scope before the view does.
-7. **Mutation rule enforcement:** at the AST level, reject reassignment of variable-size struct fields.
-8. **Endianness intrinsics:** emit `bswap` only when struct endianness differs from host endianness (resolved at compile time per target triple).
+3. **From-bytes constructor synthesis:** for each `struct`, emit a function `MyStruct.from(byte[])` returning a borrow view (and accept the direct `MyStruct(byte[])` form as the same lowering). Emit the size-check and length-prefix-validation sweep. The earlier `MyStruct.view(...)` alias is no longer emitted.
+4. **Inline-mode construction:** for `MyStruct s;` declarations, allocate a stack slot of the struct's fixed total size, zero-initialize, and treat field reads/writes as GEPs from the slot. Reject the declaration at the layout pass if the struct contains any variable-size field.
+5. **Field accessor codegen:** for each field, emit a getter and setter that performs the offset computation, byte-swap if needed, and the load/store. Same shape in both construction modes — the only difference is where the base pointer comes from (buffer for from-bytes, alloca for inline).
+6. **Variable-size offset cache (from-bytes only):** at construction time, walk variable-size fields and cache resolved offsets in the view's internal layout. Recurse into nested variable-size structs so every length-prefix at every nesting level is validated and offsets are resolved before the view is returned. For all-fixed structs (including those with all-fixed nested structs), this step is a no-op.
+7. **Borrow checker integration (from-bytes only):** treat from-bytes construction as a borrow of the byte array; treat each field access as a path-based borrow. Reject from-bytes structs whose backing buffer goes out of scope before the struct does (see `CAJETA_ERROR_VIEW_ESCAPE`).
+8. **Mutation rule enforcement:** at the AST level, reject reassignment of variable-size struct fields (from-bytes mode only — inline mode can't have variable-size fields, so the rule is vacuous there).
+9. **Endianness intrinsics:** emit `bswap` only when struct endianness differs from host endianness (resolved at compile time per target triple). Annotations apply identically to both modes; inline-mode endianness is rare but legal.
+10. **Calling convention:** struct values pass by pointer at both call sites and return sites (see `Method::generatePrototype`'s `passByPointer` rule). Applies uniformly to inline and from-bytes structs. Returning a struct from a function follows the same pointer-passing convention.
 
 ---
 
 ## Examples
 
-### Simple fixed-size record (host endian, packed)
+### Inline-mode: named tuple as a local
+
+```
+struct Pair {
+    int32 a;
+    int32 b;
+}
+
+public static int32 sumPair() {
+    Pair p;          // 8 bytes on the stack, zero-initialized
+    p.a = 7;
+    p.b = 11;
+    return p.a + p.b;
+}
+```
+
+No buffer, no view, no heap. `p` is just two int32 slots in the caller's frame; `p.a = 7` is a `store i32 7, ptr <p>+0`.
+
+### Inline-mode: `Optional<T>` as a value-typed sum
+
+```
+public struct Optional<T> {
+    private boolean present;
+    private T       value;
+
+    public static Optional<T> Some(T v) {
+        Optional<T> o;
+        o.present = true;
+        o.value = v;
+        return o;
+    }
+    public static Optional<T> None() {
+        Optional<T> o;       // present defaults to false from zero-init
+        return o;
+    }
+    public boolean isSome() { return this.present; }
+    public T unwrap()       { return this.value; }
+}
+```
+
+Each `Optional<T>` is `{ boolean present; T value; }` — one byte plus T-sized payload, on whatever frame holds it. No allocation. Pass-by-pointer to a method follows the same convention any other struct param does.
+
+### Inline-mode: iterator state for a `for` loop
+
+```
+public struct ArrayIter<T> {
+    private T[]   data;     // borrowed reference to the heap array
+    private int64 idx;
+    private int64 stop;
+
+    public Optional<T> next() {
+        if (this.idx >= this.stop) { return Optional<T>.None(); }
+        T value = this.data[this.idx];
+        this.idx = this.idx + 1;
+        return Optional<T>.Some(value);
+    }
+}
+```
+
+The iterator carries its cursor + a borrow of the array. Inline mode means `arr.iter()` returns an `ArrayIter<T>` value that lives in the calling scope — no per-loop heap allocation. The `for` loop monomorphizes `.next()` against `ArrayIter<T>` and inlines through.
+
+### From-bytes mode: simple fixed-size record (host endian, packed)
 
 ```
 struct PixelRGBA {
@@ -336,7 +466,7 @@ struct PixelRGBA {
 }
 
 byte[] frame = readPixels();
-PixelRGBA p = PixelRGBA(frame.subarray(0, 4));
+PixelRGBA p = PixelRGBA.from(frame.subarray(0, 4));
 println(p.r + ", " + p.g + ", " + p.b);
 ```
 
@@ -353,12 +483,12 @@ struct RpcHeader {
 }
 
 byte[] frame = network.read();
-RpcHeader h = RpcHeader(frame);
+RpcHeader h = RpcHeader.from(frame);
 if (h.magic != 0xDEADBEEF) throw new ProtocolException();
 dispatch(h.messageType, frame.subarray(20, 20 + h.payloadLen));
 ```
 
-### Variable-size fields
+### From-bytes mode: variable-size fields
 
 ```
 struct UserRecord {
@@ -369,13 +499,13 @@ struct UserRecord {
 }
 
 byte[] recordBytes = db.read(key);
-UserRecord u = UserRecord(recordBytes);
+UserRecord u = UserRecord.from(recordBytes);
 println(u.username + " has " + u.permissions.size() + " permissions");
 ```
 
-The compiler resolves offsets for `displayName` and `permissions` at view-construction by reading the preceding length-prefixes once.
+The compiler resolves offsets for `displayName` and `permissions` at from-bytes construction by reading the preceding length-prefixes once. `UserRecord` cannot be constructed inline (`UserRecord u;` would be a static error) because its variable-size fields need a buffer to live in.
 
-### Nested structs
+### From-bytes mode: nested structs
 
 ```
 @BigEndian
@@ -392,7 +522,7 @@ struct BoundingBox {
 }
 
 byte[] frame = readBox();
-BoundingBox box = BoundingBox(frame);
+BoundingBox box = BoundingBox.from(frame);
 println(box.topLeft.x + ", " + box.bottomRight.y);
 ```
 
