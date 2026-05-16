@@ -467,18 +467,28 @@ namespace cajeta {
         // large structs); the caller alloca's a fresh body and stores
         // the returned value into it (handled in MethodCallExpression's
         // call-site repackaging).
+        //
+        // S9.5.5 — interface returns get the same treatment: a 24-byte
+        // fat-pointer body returned by value via the small-struct ABI
+        // (typically sret for 24 bytes on x86-64 SysV), with the caller
+        // repackaging into a fresh body alloca. The body might point at
+        // a class instance that outlives the call, but the body
+        // STRUCTURE itself (the three-word tuple) is callee-local stack
+        // for any synthesized interface value, so by-value return is
+        // the only safe shape.
         llvm::Type* llvmRet;
         {
             CajetaTypePtr rt = returnType;
             bool isArrR = rt
                 && dynamic_pointer_cast<CajetaArray>(rt) != nullptr;
-            bool isClassLikeR = rt
-                && dynamic_pointer_cast<CajetaClass>(rt) != nullptr;
+            auto rtClass = dynamic_pointer_cast<CajetaClass>(rt);
+            bool isClassLikeR = rtClass != nullptr;
             bool isPrimR = rt && (rt->getTypeFlags() & PRIMITIVE_FLAG);
             bool isStructR = rt
                 && dynamic_pointer_cast<CajetaStruct>(rt) != nullptr;
+            bool isInterfaceR = rtClass && rtClass->isInterface();
             bool returnByPointer = isClassLikeR && (isArrR || !isPrimR)
-                && !isStructR;
+                && !isStructR && !isInterfaceR;
             if (returnByPointer) {
                 llvmRet = llvm::PointerType::get(*module->getLlvmContext(), 0);
             } else {

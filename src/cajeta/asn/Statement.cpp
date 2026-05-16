@@ -1185,12 +1185,22 @@ namespace cajeta {
         // a body pointer where a struct value is expected, producing
         // `ret ptr` against a struct return signature).
         if (auto m = module->getCurrentMethod()) {
+            // Pick up either a CajetaStruct return (S6.7) or an interface
+            // return (S9.5.5). Both travel by VALUE per the small-struct
+            // ABI; both need the same double-load when the source is a
+            // named local whose HeapField slot holds a body pointer.
+            CajetaTypePtr byValRet;
             if (auto structRet = dynamic_pointer_cast<CajetaStruct>(m->getReturnType())) {
+                byValRet = structRet;
+            } else if (auto ifaceRet = dynamic_pointer_cast<CajetaClass>(m->getReturnType())) {
+                if (ifaceRet->isInterface()) byValRet = ifaceRet;
+            }
+            if (byValRet) {
                 // Both shapes load the slot to get a body pointer, then
-                // load the body to get the struct value:
-                //   (a) Struct local: field type is CajetaStruct, the
-                //       HeapField slot holds a pointer to the body
-                //       alloca (S6.1 setup). Detected via the binding
+                // load the body to get the value:
+                //   (a) Struct / interface local: field type is the
+                //       aggregate, the HeapField slot holds a pointer
+                //       to the body alloca. Detected via the binding
                 //       name in scope.
                 //   (b) `this` on a struct method: ThisExpression
                 //       resolves through a ParameterField also named
@@ -1210,8 +1220,10 @@ namespace cajeta {
                         if (auto field = scope->getField(fieldName)) {
                             bool isStructLocal = dynamic_pointer_cast<CajetaStruct>(
                                 field->getType()) != nullptr;
+                            auto fldClass = dynamic_pointer_cast<CajetaClass>(field->getType());
+                            bool isInterfaceLocal = fldClass && fldClass->isInterface();
                             bool isThisParam = (fieldName == "this");
-                            if (isStructLocal || isThisParam) {
+                            if (isStructLocal || isInterfaceLocal || isThisParam) {
                                 tryDoubleLoad = true;
                             }
                         }
@@ -1228,7 +1240,7 @@ namespace cajeta {
                             llvm::Value* bodyPtr = builder->CreateLoad(
                                 slot->getAllocatedType(), slot);
                             val = builder->CreateLoad(
-                                structRet->getLlvmType(), bodyPtr);
+                                byValRet->getLlvmType(), bodyPtr);
                             // Skip the rest of the load logic — val
                             // is already the right struct value.
                             if (auto curM = module->getCurrentMethod()) {
