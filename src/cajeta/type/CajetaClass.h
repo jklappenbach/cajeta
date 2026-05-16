@@ -136,6 +136,15 @@ namespace cajeta {
         // registration is a constant-time lookup per declaration site.
         llvm::Function* llvmDropFunction = nullptr;
 
+        // S9.5.2 — per-(class, interface) vtable globals. Sibling of
+        // CajetaStruct::interfaceVTables. Keyed by interface canonical
+        // name; value is a `[N x ptr]` constant whose entries point at
+        // this class's concrete implementations in interface-declaration
+        // order. The fat-pointer dispatch model uses these as the
+        // vtable_ptr word of the interface value, regardless of whether
+        // the implementer is a class or a struct.
+        std::map<std::string, llvm::GlobalVariable*> interfaceVTables;
+
         MethodPtr getClosestMethod(string methodName, vector<ParameterEntry> parameters, map<string, MethodPtr> canonical);
         MethodPtr getClosestConstructor(string methodName, vector<ParameterEntry> parameters, map<string, MethodPtr> canonical);
 
@@ -314,6 +323,25 @@ namespace cajeta {
         // drop must wait for `done` before freeing or it races the
         // worker fiber.
         virtual llvm::Function* getOrCreateDropFunction();
+
+        // S9.5.2 — synthesize a per-(class, interface) vtable global for
+        // every interface this class implements. Called from
+        // generatePrototype after method prototypes exist. Same emission
+        // shape as CajetaStruct::synthesizeInterfaceVTables — flat
+        // `[N x ptr]` constant in interface-declaration order, named
+        // `class.<sanitized>_iface_<sanitized>_VTable` (the prefix
+        // distinguishes from the struct case).
+        void synthesizeInterfaceVTables();
+
+        // Lookup for the synthesized global by interface canonical name.
+        // Returns nullptr if this class doesn't implement that interface.
+        llvm::GlobalVariable* getInterfaceVTable(const std::string& interfaceCanonical) const {
+            auto it = interfaceVTables.find(interfaceCanonical);
+            return it != interfaceVTables.end() ? it->second : nullptr;
+        }
+
+        const std::map<std::string, llvm::GlobalVariable*>&
+        getInterfaceVTables() const { return interfaceVTables; }
 
         void setRttiGlobal(llvm::GlobalVariable* llvmRttiGlobal) {
             this->llvmRttiGlobal = llvmRttiGlobal;

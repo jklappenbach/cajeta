@@ -287,8 +287,96 @@ namespace cajeta {
         // dispatch arrives when inheritance and virtual calls are wired up.
         writeVirtualTable();
 
+        // S9.5.2 — synthesize per-(class, interface) vtable globals for
+        // every interface this class implements. Lands here, after method
+        // prototypes + writeVirtualTable, so each implementing method's
+        // LLVM function exists for fn-pointer harvesting and the per-pair
+        // tables can sit alongside the legacy hash-keyed vtable.
+        synthesizeInterfaceVTables();
+
         CajetaModule::getStructureToModule()[canonical] = module;
         prototypeBuilt = true;
+    }
+
+    void CajetaClass::synthesizeInterfaceVTables() {
+        if (implementedInterfaces.empty()) return;
+
+        auto& ctx = *module->getLlvmContext();
+        auto* lmod = module->getLlvmModule();
+        llvm::PointerType* ptrTy = llvm::PointerType::get(ctx, 0);
+        std::string classCanonical = qName->toCanonical();
+
+        auto sanitize = [](std::string s) {
+            for (char& c : s) {
+                if (c == ':' || c == '.' || c == '<' || c == '>'
+                        || c == ',' || c == ' ') {
+                    c = '_';
+                }
+            }
+            return s;
+        };
+
+        for (auto& iface : implementedInterfaces) {
+            std::string ifaceCanonical = iface->getQName()->toCanonical();
+
+            // Walk interface methods in declaration order; for each one
+            // find a same-name concrete method on this class. Signature
+            // compatibility for class implementers is already enforced
+            // at hash-vtable construction time (a mismatched signature
+            // would hash differently and fail to bind), so the lookup
+            // here is by name only — by the time we get here the user
+            // either has a matching impl or the hash-vtable build has
+            // already complained.
+            auto findByName = [&](const std::string& name) -> MethodPtr {
+                for (auto& [canon, m] : methods) {
+                    if (!m || m->isConstructor()) continue;
+                    if (m->getModifiers().find(STATIC) != m->getModifiers().end()) continue;
+                    if (m->getName() == name) return m;
+                }
+                // Walk superclasses too — inherited implementations
+                // count for satisfying an interface contract.
+                for (auto& parent : superClasses) {
+                    for (auto& [canon, m] : parent->getMethods()) {
+                        if (!m || m->isConstructor()) continue;
+                        if (m->getModifiers().find(STATIC) != m->getModifiers().end()) continue;
+                        if (m->getName() == name) return m;
+                    }
+                }
+                return nullptr;
+            };
+
+            std::vector<llvm::Constant*> entries;
+            for (auto& ifaceMethod : iface->getMethodList()) {
+                if (!ifaceMethod || ifaceMethod->isConstructor()) continue;
+                if (ifaceMethod->getModifiers().find(STATIC)
+                        != ifaceMethod->getModifiers().end()) continue;
+                MethodPtr concrete = findByName(ifaceMethod->getName());
+                if (!concrete || !concrete->getLlvmFunction()) {
+                    // Missing or unbuilt — leave a null slot. The hash-
+                    // vtable build will have surfaced the real diagnostic
+                    // earlier; null here just keeps the global well-formed.
+                    entries.push_back(llvm::ConstantPointerNull::get(ptrTy));
+                    continue;
+                }
+                entries.push_back(concrete->getLlvmFunction());
+            }
+
+            llvm::ArrayType* arrTy = llvm::ArrayType::get(
+                ptrTy, entries.size());
+            std::string globalName = std::string("class.")
+                + sanitize(classCanonical) + "_iface_"
+                + sanitize(ifaceCanonical) + "_VTable";
+            if (llvm::GlobalVariable* existing = lmod->getNamedGlobal(globalName)) {
+                interfaceVTables[ifaceCanonical] = existing;
+                continue;
+            }
+
+            llvm::Constant* init = llvm::ConstantArray::get(arrTy, entries);
+            auto* gv = new llvm::GlobalVariable(
+                *lmod, arrTy, /*isConstant=*/true,
+                llvm::GlobalValue::InternalLinkage, init, globalName);
+            interfaceVTables[ifaceCanonical] = gv;
+        }
     }
 
     void CajetaClass::synthesizeAutoHash() {
