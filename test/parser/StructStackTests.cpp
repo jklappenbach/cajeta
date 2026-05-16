@@ -709,3 +709,216 @@ TEST(StructStackTests, structAliasNoDoubleDrop) {
         "        Holder b = a;"
     ), 2);
 }
+
+// ---------------------------------------------------------------------
+// S6.7 — broader use-shape coverage. Field assignment after declaration
+// (`p.x = N;`) and pass-by-pointer when a struct is a method parameter.
+// Both already worked under the existing DotExpression + ParameterField
+// + CajetaAggregate calling-convention plumbing; tests pin the shapes
+// so future codegen changes can't quietly regress them.
+// ---------------------------------------------------------------------
+
+// `Point p; p.x = ...;` — declare a zero-initialized struct then write
+// to fields individually. Tests the assignment LHS path on a DotExpression
+// rooted at a struct local.
+TEST(StructStackTests, structFieldAssignment) {
+    auto src =
+        "package test;\n"
+        "public struct Point { int32 x; int32 y; }\n"
+        "public final class S {\n"
+        "    public static int32 run() {\n"
+        "        Point p;\n"
+        "        p.x = 7;\n"
+        "        p.y = 11;\n"
+        "        return p.x + p.y;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 18);
+}
+
+// Mixed shapes: aggregate init + later field assignment overrides one
+// field. Confirms field assignment doesn't disturb the surrounding
+// slots (no over-write of neighbors via wrong slot type).
+TEST(StructStackTests, structFieldAssignmentAfterAggregateInit) {
+    auto src =
+        "package test;\n"
+        "public struct Triple { int32 a; int32 b; int32 c; }\n"
+        "public final class S {\n"
+        "    public static int32 run() {\n"
+        "        Triple t = Triple { a: 1, b: 2, c: 3 };\n"
+        "        t.b = 20;\n"
+        "        return t.a + t.b + t.c;\n"  // 1 + 20 + 3
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 24);
+}
+
+// Struct passed to a static method by pointer. Per CajetaAggregate's
+// calling convention (header comment), aggregates flow as `ptr`. The
+// callee GEPs through the parameter pointer to read fields.
+TEST(StructStackTests, structAsStaticMethodParameter) {
+    auto src =
+        "package test;\n"
+        "public struct Point { int32 x; int32 y; }\n"
+        "public final class S {\n"
+        "    public static int32 sumPoint(Point p) {\n"
+        "        return p.x + p.y;\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        Point p = Point { x: 3, y: 4 };\n"
+        "        return sumPoint(p);\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 7);
+}
+
+// Struct with a class-ref field passed to a method, field accessed
+// inside the callee. Confirms the by-pointer convention chains through
+// to the class-ref load.
+TEST(StructStackTests, structWithClassRefAsParameter) {
+    auto src =
+        "package test;\n"
+        "public class Tag {\n"
+        "    public int32 n;\n"
+        "    public Tag() { this.n = 0; return; }\n"
+        "}\n"
+        "public struct Holder { Tag t; }\n"
+        "public final class S {\n"
+        "    public static int32 readTag(Holder h) {\n"
+        "        return h.t.n;\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        Tag tag = new Tag();\n"
+        "        tag.n = 42;\n"
+        "        Holder h = Holder { t: tag };\n"
+        "        return readTag(h);\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 42);
+}
+
+// ---------------------------------------------------------------------
+// S6.7 — struct as return value. Returns travel by value (Method's
+// generatePrototype uses the struct LLVM type for the return slot, not
+// `ptr`) so the callee's body alloca dying with its stack frame
+// doesn't dangle the result. The call site allocas a fresh body in the
+// caller, stores the returned struct value into it, and feeds the body
+// pointer into the existing HeapField / field-access plumbing.
+// ---------------------------------------------------------------------
+
+// Return an inline aggregate initializer. Caller binds to a local and
+// reads back the fields. Most direct shape of struct return.
+TEST(StructStackTests, returnAggregateInit) {
+    auto src =
+        "package test;\n"
+        "public struct Point { int32 x; int32 y; }\n"
+        "public final class S {\n"
+        "    public static Point mkPoint() {\n"
+        "        return Point { x: 5, y: 9 };\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        Point p = mkPoint();\n"
+        "        return p.x + p.y;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 14);
+}
+
+// Return a named struct local. The body lives on the callee's frame
+// while being read; the return copies the struct value into the
+// caller's slot before the callee frame dies.
+TEST(StructStackTests, returnNamedStructLocal) {
+    auto src =
+        "package test;\n"
+        "public struct Point { int32 x; int32 y; }\n"
+        "public final class S {\n"
+        "    public static Point mkPoint() {\n"
+        "        Point p = Point { x: 11, y: 22 };\n"
+        "        return p;\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        Point p = mkPoint();\n"
+        "        return p.x + p.y;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 33);
+}
+
+// Multi-field struct with mixed primitive widths. Exercises LLVM's
+// small-struct return ABI on a wider payload than the i32+i32 case.
+TEST(StructStackTests, returnMixedWidthStruct) {
+    auto src =
+        "package test;\n"
+        "public struct Wide {\n"
+        "    int8 a;\n"
+        "    int32 b;\n"
+        "    int64 c;\n"
+        "}\n"
+        "public final class S {\n"
+        "    public static Wide mkWide() {\n"
+        "        return Wide { a: 1, b: 200, c: 30000 };\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        Wide w = mkWide();\n"
+        "        return (int32) w.a + w.b + (int32) w.c;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 30201);
+}
+
+// Return a struct that holds an owned class ref. The move chain has
+// to thread through correctly: the source local's drop entry is
+// deactivated by aggregate init (S6.4); the returned struct value
+// copies the class pointer to the caller's body; caller's struct
+// drop entry frees the class instance. The Tag persists across
+// mkHolder's frame death because nothing freed it there.
+TEST(StructStackTests, returnStructWithClassRef) {
+    auto src =
+        "package test;\n"
+        "public class Tag {\n"
+        "    public int32 n;\n"
+        "    public Tag() { this.n = 0; return; }\n"
+        "}\n"
+        "public struct Holder { Tag t; }\n"
+        "public final class S {\n"
+        "    public static Holder mkHolder() {\n"
+        "        Tag tag = new Tag();\n"
+        "        tag.n = 99;\n"
+        "        return Holder { t: tag };\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        Holder h = mkHolder();\n"
+        "        return h.t.n;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 99);
+}
+
+// Drop-count pin for the move-chain-through-return case. Builder.mkHolder
+// allocates the Tag (whose destructor allocates an int32[3] to leave a
+// chain-tracked trace), constructs a Holder, returns it. Caller stores
+// into its own Holder body and registers the struct drop entry. At
+// scope exit:
+//   1 (caller's Holder drop entry)
+//   1 (the int32[3] dropped inside ~Tracer)
+// = 2. A double-free of the Tag would push the count to 3 (or crash).
+// Confirms the move chain threads through struct returns correctly.
+TEST(StructStackTests, returnStructWithClassRefDropsOnce) {
+    EXPECT_EQ(observeStructDrops(
+        "public class Tracer {\n"
+        "    public Tracer() { return; }\n"
+        "    public ~Tracer() {\n"
+        "        int32[] arr = new int32[3];\n"
+        "    }\n"
+        "}\n"
+        "public struct Holder { Tracer t; }\n"
+        "public class Builder {\n"
+        "    public Builder() { return; }\n"
+        "    public static Holder mkHolder() {\n"
+        "        Tracer tracer = new Tracer();\n"
+        "        return Holder { t: tracer };\n"
+        "    }\n"
+        "}\n",
+        "Holder h = Builder.mkHolder();"
+    ), 2);
+}

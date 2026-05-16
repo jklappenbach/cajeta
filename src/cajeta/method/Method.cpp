@@ -421,13 +421,20 @@ namespace cajeta {
             llvmTypes.push_back(ptLlvm);
         }
         // Apply the same pass-by-pointer rule to the return type so
-        // class instances, arrays, AND structs all travel as `ptr`.
-        // The struct case matches what the param convention now does
-        // (see the param loop above) — a returned struct view is a
-        // typed pointer into a buffer the caller (or someone the
-        // caller passed) owns. The view ctor's IR returns a `ptr`;
-        // declaring the function's return type as the inline struct
-        // would mismatch at the `ret` instruction.
+        // class instances, arrays, AND views all travel as `ptr`. The
+        // view case is the live one — a returned view is a typed pointer
+        // into a buffer the caller owns; the view ctor's IR returns
+        // a `ptr`.
+        //
+        // S6.7 — CajetaStruct returns are the exception: declared
+        // return type is the struct's LLVM body type, not `ptr`. The
+        // body alloca that ReturnStatement loaded from dies with the
+        // callee's stack frame, so returning the pointer would dangle.
+        // Returning the struct VALUE lets LLVM's small-struct ABI pack
+        // it into a register (or fall back to sret transparently for
+        // large structs); the caller alloca's a fresh body and stores
+        // the returned value into it (handled in MethodCallExpression's
+        // call-site repackaging).
         llvm::Type* llvmRet;
         {
             CajetaTypePtr rt = returnType;
@@ -436,7 +443,10 @@ namespace cajeta {
             bool isClassLikeR = rt
                 && dynamic_pointer_cast<CajetaClass>(rt) != nullptr;
             bool isPrimR = rt && (rt->getTypeFlags() & PRIMITIVE_FLAG);
-            bool returnByPointer = isClassLikeR && (isArrR || !isPrimR);
+            bool isStructR = rt
+                && dynamic_pointer_cast<CajetaStruct>(rt) != nullptr;
+            bool returnByPointer = isClassLikeR && (isArrR || !isPrimR)
+                && !isStructR;
             if (returnByPointer) {
                 llvmRet = llvm::PointerType::get(*module->getLlvmContext(), 0);
             } else {

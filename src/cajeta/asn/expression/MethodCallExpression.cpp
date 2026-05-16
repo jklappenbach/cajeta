@@ -1211,8 +1211,37 @@ namespace cajeta {
             }
         }
 
-        return targetClass->invokeMethod(methodCallName, entries, /*isConstructor=*/false, thisValue,
-                                          /*callerModule=*/module);
+        llvm::Value* callResult = targetClass->invokeMethod(methodCallName, entries,
+            /*isConstructor=*/false, thisValue, /*callerModule=*/module);
+
+        // S6.7 — repackage a struct-returning call. The callee returns the
+        // struct VALUE (per Method::generatePrototype, CajetaStruct returns
+        // travel by value to dodge the dangling-pointer-on-stack-death that
+        // a `ptr` return convention would create). Downstream consumers
+        // (HeapField slots, parameter pass-by-pointer) all expect a body
+        // pointer though, so wrap the result in a fresh caller-side alloca
+        // + store. Skips void / non-CajetaStruct returns — those return
+        // values that already fit the existing flow.
+        if (callResult && targetClass) {
+            for (auto& mEntry : targetClass->getMethods()) {
+                auto& m = mEntry.second;
+                if (!m || m->getName() != methodCallName) continue;
+                auto rt = m->getReturnType();
+                if (auto structRet = dynamic_pointer_cast<CajetaStruct>(rt)) {
+                    if (llvm::Type* bodyTy = structRet->getLlvmType()) {
+                        if (callResult->getType() == bodyTy) {
+                            llvm::Value* bodyAlloca =
+                                builder->CreateAlloca(bodyTy);
+                            builder->CreateStore(callResult, bodyAlloca);
+                            return bodyAlloca;
+                        }
+                    }
+                    break;
+                }
+                break;
+            }
+        }
+        return callResult;
     }
 
 

@@ -1164,6 +1164,56 @@ namespace cajeta {
                     "CAJETA_ERROR_BORROW_ESCAPE");
             }
         }
+        // S6.7 — struct return type. Methods returning CajetaStruct travel
+        // by VALUE (not by ptr) so the body alloca dying with the callee's
+        // frame doesn't dangle the result. Three shapes for `val` here:
+        //
+        //   (1) IdentifierExpression of a struct local: val is the
+        //       HeapField slot (alloca ptr); slot holds the body ptr.
+        //       Double-load: first the slot → body ptr, then body ptr →
+        //       struct value.
+        //   (2) AggregateInitializerExpression: val is the body alloca
+        //       itself (alloca of struct LLVM type); single load gives
+        //       the struct value. The general AllocaInst branch below
+        //       handles this correctly.
+        //   (3) MethodCallExpression (struct-returning call): MCE
+        //       already repackages the result into a fresh body alloca
+        //       and returns its ptr; same shape as (2) — single load.
+        //
+        // The shape (1) branch must fire BEFORE the general AllocaInst
+        // load to avoid loading the slot just once (which would give us
+        // a body pointer where a struct value is expected, producing
+        // `ret ptr` against a struct return signature).
+        if (auto m = module->getCurrentMethod()) {
+            if (auto structRet = dynamic_pointer_cast<CajetaStruct>(m->getReturnType())) {
+                if (auto idExpr = dynamic_pointer_cast<IdentifierExpression>(expression)) {
+                    auto scope = module->getScopeStack().peek();
+                    if (scope) {
+                        if (auto field = scope->getField(idExpr->getTextValue())) {
+                            if (dynamic_pointer_cast<CajetaStruct>(field->getType())) {
+                                llvm::AllocaInst* slot = field->getOrCreateAllocation();
+                                llvm::Value* bodyPtr = builder->CreateLoad(
+                                    slot->getAllocatedType(), slot);
+                                val = builder->CreateLoad(
+                                    structRet->getLlvmType(), bodyPtr);
+                                // Skip the rest of the load logic — val
+                                // is already the right struct value.
+                                if (auto curM = module->getCurrentMethod()) {
+                                    curM->emitAfterAdvice(module);
+                                    curM->emitAfterReturningAdvice(module);
+                                    curM->emitAfterThrowingTryPop(module);
+                                }
+                                emitScopeExitToWatermark(module);
+                                if (auto curM = module->getCurrentMethod())
+                                    curM->emitOwnerDrops(module);
+                                return builder->CreateRet(val);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         // Load if the expression returned an l-value (alloca, array-slot GEP, or
         // struct/class field GEP) — return wants a value, not an address.
         if (auto* a = llvm::dyn_cast<llvm::AllocaInst>(val)) {
