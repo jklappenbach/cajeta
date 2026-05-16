@@ -533,6 +533,25 @@ namespace cajeta {
                     if (!imd) continue;
                     auto* common = imd->interfaceCommonBodyDeclaration();
                     if (!common) continue;
+                    // S9.4 — reject method-level generics on interface
+                    // methods. The interface's vtable layout reserves
+                    // one slot per method; method-level generics would
+                    // need either monomorphization (requires knowing
+                    // the type argument at declaration time) or
+                    // dictionary-passing (out of scope for v1).
+                    if (common->typeParameters()) {
+                        char buf[320];
+                        snprintf(buf, sizeof(buf),
+                            "interface '%s' method '%s' declares its own "
+                            "type parameters; method-level generics on "
+                            "interface methods are not supported in v1 "
+                            "(no place in the vtable for per-call template "
+                            "instantiations to land).",
+                            interface->getQName()->toCanonical().c_str(),
+                            common->identifier()->getText().c_str());
+                        throw Exception(buf,
+                            "CAJETA_ERROR_INTERFACE_METHOD_GENERIC");
+                    }
                     string methodName = common->identifier()->getText();
                     vector<FormalParameterPtr> formals;
                     if (auto* fps = common->formalParameters()) {

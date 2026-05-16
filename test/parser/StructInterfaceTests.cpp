@@ -129,6 +129,28 @@ TEST(StructInterfaceTests, rejectSignatureMismatch) {
     }
 }
 
+// ---------------------------------------------------------------------
+// S9.4 — reject interface declarations with method-level generics.
+// The grammar accepts `<T>` syntactically (so we can surface a clean
+// error rather than ANTLR's "no viable alternative"), and the visitor
+// throws CAJETA_ERROR_INTERFACE_METHOD_GENERIC when it sees one.
+// ---------------------------------------------------------------------
+
+TEST(StructInterfaceTests, rejectInterfaceMethodLevelGeneric) {
+    auto src =
+        "package test;\n"
+        "public interface Searchable {\n"
+        "    public <T> int32 find(int32 n);\n"
+        "}\n"
+        "public final class S { public static int32 run() { return 0; } }\n";
+    try {
+        CajetaJit::compile(src, "test.S");
+        FAIL() << "expected CAJETA_ERROR_INTERFACE_METHOD_GENERIC";
+    } catch (cajeta::Exception& e) {
+        EXPECT_EQ(e.getErrorId(), "CAJETA_ERROR_INTERFACE_METHOD_GENERIC");
+    }
+}
+
 // Signature mismatch via parameter list — interface declares
 // `apply(int32)` but the struct's method takes nothing. Same error
 // path as the return-type mismatch above.

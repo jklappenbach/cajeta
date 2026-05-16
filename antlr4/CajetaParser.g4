@@ -312,8 +312,16 @@ interfaceMethodModifier
     | STRICTFP
     ;
 
+// Accepts an optional `typeParameters` prefix so the visitor can detect
+// method-level generics on interface methods and reject them cleanly
+// with CAJETA_ERROR_INTERFACE_METHOD_GENERIC (S9.4). Without the rule
+// extension, the syntax would parse as a "no viable alternative" error
+// at the `<` token and the rest of the file would partial-recover —
+// giving the user an unhelpful diagnostic. v1 doesn't support method-
+// level generics on interface methods (or on concrete struct/class
+// methods either, but those don't go through this rule).
 interfaceCommonBodyDeclaration
-    : annotation* typeTypeOrVoid identifier formalParameters ('[' ']')* (THROWS qualifiedNameList)? methodBody
+    : annotation* typeParameters? typeTypeOrVoid identifier formalParameters ('[' ']')* (THROWS qualifiedNameList)? methodBody
     ;
 
 variableDeclarators
