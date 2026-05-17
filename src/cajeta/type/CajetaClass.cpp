@@ -4,7 +4,6 @@
 
 #include "CajetaClass.h"
 #include "CajetaView.h"
-#include "CajetaStruct.h"
 #include "StructureMetadata.h"
 #include "../field/Field.h"
 #include "../method/Method.h"
@@ -1125,8 +1124,8 @@ namespace cajeta {
         // Walk owned class-ref fields in REVERSE declaration order. For
         // each plain class-ref (not aggregate, not array, not interface),
         // GEP the slot, load the pointer, call the referent class's
-        // own heap-drop fn. Mirrors CajetaStruct::getOrCreateDropFunction
-        // — preserves the auto-walk-owned-fields behavior structs have
+        // own heap-drop fn. (Pre-unified-class history: this mirrored
+        // the auto-walk-owned-fields behavior CajetaStruct's drop had
         // today, generalized to any class allocated on the stack.
         std::vector<StructurePropertyPtr> reversed(
             propertyList.begin(), propertyList.end());
@@ -1151,23 +1150,9 @@ namespace cajeta {
             b.CreateCall(refDrop, {refPtr});
         }
 
-        // Recurse into embedded struct fields (same as heap drop above).
-        // Skips the trailing __cajeta_free — that's the only difference.
-        for (auto& property : reversed) {
-            auto fieldType = property->getType();
-            auto fieldStruct = dynamic_pointer_cast<CajetaStruct>(fieldType);
-            if (!fieldStruct) continue;
-            llvm::Function* structDropFn =
-                fieldStruct->getOrCreateDropFunction();
-            if (!structDropFn) continue;
-            structDropFn = CajetaModule::ensureFunctionInModule(
-                lmod, structDropFn);
-            unsigned fieldIdx = (unsigned) getFieldLlvmIndex(property);
-            llvm::Value* embedPtr = b.CreateStructGEP(
-                llvmType, instance, fieldIdx,
-                std::string("stack_drop_embed_") + property->getName());
-            b.CreateCall(structDropFn, {embedPtr});
-        }
+        // (Historical recurse-into-embedded-struct-fields path retired
+        // with CajetaStruct under the unified-class model — embedded
+        // class-ref fields above already handle reachable owned state.)
 
         // No __cajeta_free — stack body is reclaimed by the function
         // epilogue. This is the only structural difference from
@@ -1264,10 +1249,6 @@ namespace cajeta {
         // Per-field-type emission (see cajeta-docs/stdlib/FieldOwnership.md
         // § Solution B for the doctrine):
         //
-        //   - CajetaStruct: GEP the embedded body, call the struct's
-        //     synthesized drop fn (which walks its own owned fields).
-        //     The body itself isn't separately freed — it lives
-        //     inline in this instance's block.
         //   - CajetaArray: load the heap-array pointer and call
         //     __cajeta_free_array. The runtime helper is idempotent
         //     (claims through the live-allocation set), so when the
@@ -1303,19 +1284,10 @@ namespace cajeta {
             if (!fieldType) continue;
             unsigned fieldIdx = (unsigned) getFieldLlvmIndex(property);
 
-            // Struct field — recurse into the embedded body in place.
-            if (auto fieldStruct = dynamic_pointer_cast<CajetaStruct>(fieldType)) {
-                llvm::Function* structDropFn =
-                    fieldStruct->getOrCreateDropFunction();
-                if (!structDropFn) continue;
-                structDropFn = CajetaModule::ensureFunctionInModule(
-                    lmod, structDropFn);
-                llvm::Value* embedPtr = b.CreateStructGEP(
-                    llvmType, instance, fieldIdx,
-                    std::string("drop_embed_") + property->getName());
-                b.CreateCall(structDropFn, {embedPtr});
-                continue;
-            }
+            // (Historical "struct field — recurse into embedded body" path
+            // retired with CajetaStruct under the unified-class model;
+            // embedded class-ref fields fall through to the plain-class
+            // branch below.)
 
             // Array field — idempotent free via the live-allocation set.
             if (dynamic_pointer_cast<CajetaArray>(fieldType)) {
@@ -1987,64 +1959,20 @@ namespace cajeta {
         // views are statically dispatched — the receiver's concrete
         // type is known at the call site. Skip the vtable path
         // entirely; LLVM gets a direct call to the resolved method.
-        // P7.6: this used to also cover CajetaStruct; under the
-        // unified-class model `struct` is just `class` and gets the
-        // normal vtable-dispatch treatment.
+        // (Pre-unified-class history: this branch also covered
+        // CajetaStruct; under the unified model `struct` is just
+        // `class` and gets the normal vtable-dispatch treatment.)
         bool isView = dynamic_cast<CajetaView*>(this) != nullptr;
         bool useVtable = thisValue && !isStatic && !isConstructor && !isView && !forceDirectCall;
         bool isInterfaceRecv = this->isInterface();
         if (useVtable && isInterfaceRecv) {
-            // S11.2 — reject same-concrete-type return through dyn
-            // dispatch. The interface value's fat pointer doesn't carry
-            // the underlying struct's size, so a method whose return
-            // type is its own implementing struct has nowhere to land
-            // the sret slot at the call site. The same call on the
-            // concrete struct type (which bypasses this branch entirely
-            // via the `isView` skip above) keeps working — the
-            // restriction is dyn-dispatch-only. Trigger: return type is
-            // a CajetaStruct that itself implements this receiver
-            // interface. Implementers that are classes (1-word) or
-            // structs returning a different concrete type aren't
-            // affected.
-            CajetaTypePtr resolvedRet = method->getReturnType();
-            if (resolvedRet && resolvedRet->getQName()) {
-                // The interface's method may carry a placeholder for a
-                // type registered after the interface itself (interfaces
-                // tend to forward-reference their implementers). Method::
-                // generatePrototype's S8.4 refresh runs once at proto
-                // build time, but a CajetaStruct registered later
-                // replaces the canonicalMap entry without back-patching
-                // existing MethodPtrs. Refresh just-in-time here so the
-                // CajetaStruct cast below succeeds.
-                auto& cmap = CajetaType::getCanonicalMap();
-                auto it = cmap.find(resolvedRet->getQName()->toCanonical());
-                if (it != cmap.end() && it->second) {
-                    resolvedRet = it->second;
-                }
-            }
-            if (auto structRet = std::dynamic_pointer_cast<CajetaStruct>(
-                    resolvedRet)) {
-                std::string ifaceCanonical = qName->toCanonical();
-                for (auto& iface : structRet->getImplementedInterfaces()) {
-                    if (!iface || !iface->getQName()) continue;
-                    if (iface->getQName()->toCanonical() == ifaceCanonical) {
-                        char buf[640];
-                        snprintf(buf, sizeof(buf),
-                            "method '%s' on interface '%s' returns its "
-                            "implementing struct's own concrete type '%s' "
-                            "and cannot be dispatched through an interface "
-                            "value; the fat pointer doesn't carry the "
-                            "concrete size needed for an sret slot. Call "
-                            "the method directly on the concrete struct "
-                            "type instead.",
-                            method->getName().c_str(),
-                            ifaceCanonical.c_str(),
-                            structRet->getQName()->toCanonical().c_str());
-                        throw Exception(buf,
-                            "CAJETA_ERROR_DYN_DISPATCH_OWN_TYPE_RETURN");
-                    }
-                }
-            }
+            // (Historical S11.2 "same-concrete-type return through dyn
+            // dispatch" rejection retired with CajetaStruct under the
+            // unified-class model — the equivalent check for a class
+            // implementer returning its own class type would never have
+            // fired because class instances are pass-by-pointer
+            // throughout, dodging the sret-slot problem this branch
+            // guarded against.)
 
             // S9.5.6 — interface receiver via fat pointer body. Load the
             // per-(impl, iface) vtable from word 1 (the runtime-resolved

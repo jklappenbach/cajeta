@@ -7,9 +7,6 @@
 #include "cajeta/type/CajetaArray.h"
 #include "cajeta/type/CajetaClass.h"
 #include "cajeta/type/CajetaView.h"
-#include "cajeta/type/CajetaStruct.h"
-#include "cajeta/type/CajetaView.h"
-#include "cajeta/type/CajetaStruct.h"
 #include "cajeta/type/CajetaFunctionType.h"
 #include "cajeta/method/Method.h"
 #include "cajeta/error/Exception.h"
@@ -209,7 +206,7 @@ namespace cajeta {
         // accesses GEP off it.
         //
         // Matches when the call is bare (no receiver) AND the method name is
-        // the canonical name of a registered CajetaStruct.
+        // the canonical name of a registered view.
         if (children.empty() && parameters.size() == 1) {
             auto structType = dynamic_pointer_cast<CajetaView>(
                 CajetaType::of(methodCallName));
@@ -1605,30 +1602,15 @@ namespace cajeta {
             }
         }
 
-        // S6.7 — repackage a struct-returning call. The callee returns the
-        // struct VALUE (per Method::generatePrototype, CajetaStruct returns
-        // travel by value to dodge the dangling-pointer-on-stack-death that
-        // a `ptr` return convention would create). Downstream consumers
-        // (HeapField slots, parameter pass-by-pointer) all expect a body
-        // pointer though, so wrap the result in a fresh caller-side alloca
-        // + store. Skips void / non-CajetaStruct returns — those return
-        // values that already fit the existing flow.
+        // S9.5.5 — repackage an interface-returning call. The callee returns
+        // the interface fat-pointer VALUE; downstream consumers (HeapField
+        // slots, parameter pass-by-pointer) expect a body pointer, so wrap
+        // the result in a fresh caller-side alloca + store.
         if (callResult && targetClass) {
             for (auto& mEntry : targetClass->getMethods()) {
                 auto& m = mEntry.second;
                 if (!m || m->getName() != methodCallName) continue;
                 auto rt = m->getReturnType();
-                if (auto structRet = dynamic_pointer_cast<CajetaStruct>(rt)) {
-                    if (llvm::Type* bodyTy = structRet->getLlvmType()) {
-                        if (callResult->getType() == bodyTy) {
-                            llvm::Value* bodyAlloca =
-                                builder->CreateAlloca(bodyTy);
-                            builder->CreateStore(callResult, bodyAlloca);
-                            return bodyAlloca;
-                        }
-                    }
-                    break;
-                }
                 // S9.5.5 — interface returns also travel by value
                 // (per Method::generatePrototype's S9.5.5 carve-out).
                 // Repackage into a fresh caller-side body alloca so

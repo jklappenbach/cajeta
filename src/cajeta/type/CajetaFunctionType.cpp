@@ -9,7 +9,6 @@
 #include "CajetaArray.h"
 #include "CajetaClass.h"
 #include "CajetaView.h"
-#include "CajetaStruct.h"
 
 namespace cajeta {
 

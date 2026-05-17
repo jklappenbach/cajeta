@@ -5,7 +5,6 @@
 #include "Method.h"
 #include "../type/CajetaClass.h"
 #include "../type/CajetaView.h"
-#include "../type/CajetaStruct.h"
 #include "../type/CajetaArray.h"
 #include "../compile/CajetaModule.h"
 #include "../compile/Compiler.h"
@@ -330,18 +329,17 @@ namespace cajeta {
         // At parse time, a method declared inside `struct Foo` whose
         // return type or parameter type references Foo gets the type
         // resolved to a placeholder CajetaClass (per CajetaType::fromContext's
-        // forward-reference handling): the real CajetaStruct hasn't been
-        // registered yet because we're still inside buildStructOrViewNode's
-        // visit-children pass when the method signature is parsed. When
-        // the struct's generatePrototype runs later and overwrites
-        // canonicalMap[canonical] with the real CajetaStruct (a fresh
-        // shared_ptr — buildStructOrViewNode doesn't reuse the placeholder
+        // forward-reference handling): the real CajetaClass hasn't been
+        // registered yet because we're still inside the struct/view
+        // builder's visit-children pass when the method signature is parsed.
+        // When the class's generatePrototype runs later and overwrites
+        // canonicalMap[canonical] with the real CajetaClass (a fresh
+        // shared_ptr — the struct/view builder doesn't reuse the placeholder
         // the way visitClassDeclaration does via fillFromDeclaration), the
-        // method still holds the stale placeholder. Downstream
-        // dynamic_pointer_cast<CajetaStruct>(returnType) fails, the
-        // function signature falls through to the `ptr` return convention,
-        // and ReturnStatement emits a struct value — LLVM verify rejects
-        // the mismatch. Refresh both sides here, just-in-time.
+        // method still holds the stale placeholder. Downstream dispatch
+        // picks the wrong return convention, ReturnStatement emits a
+        // mismatched value, and LLVM verify rejects it. Refresh both
+        // sides here, just-in-time.
         auto refreshType = [](CajetaTypePtr t) -> CajetaTypePtr {
             if (!t || !t->getQName()) return t;
             const std::string& canonical = t->getQName()->toCanonical();
@@ -442,8 +440,8 @@ namespace cajeta {
             // but technically marked primitive), so we test for the
             // CajetaArray subtype explicitly rather than reading
             // the bit. Pass-by-pointer is true for any non-primitive
-            // class-like type — and CajetaStruct, CajetaArray, and
-            // plain CajetaClass are all CajetaClass subclasses.
+            // class-like type — and CajetaArray and plain CajetaClass
+            // are CajetaClass subclasses under the unified-class model.
             bool isArr = dynamic_pointer_cast<CajetaArray>(pt) != nullptr;
             bool isClassLike = dynamic_pointer_cast<CajetaClass>(pt) != nullptr;
             bool isPrim = pt && (pt->getTypeFlags() & PRIMITIVE_FLAG);
@@ -459,17 +457,7 @@ namespace cajeta {
         // into a buffer the caller owns; the view ctor's IR returns
         // a `ptr`.
         //
-        // S6.7 — CajetaStruct returns are the exception: declared
-        // return type is the struct's LLVM body type, not `ptr`. The
-        // body alloca that ReturnStatement loaded from dies with the
-        // callee's stack frame, so returning the pointer would dangle.
-        // Returning the struct VALUE lets LLVM's small-struct ABI pack
-        // it into a register (or fall back to sret transparently for
-        // large structs); the caller alloca's a fresh body and stores
-        // the returned value into it (handled in MethodCallExpression's
-        // call-site repackaging).
-        //
-        // S9.5.5 — interface returns get the same treatment: a 24-byte
+        // S9.5.5 — interface returns get a by-value treatment: a 24-byte
         // fat-pointer body returned by value via the small-struct ABI
         // (typically sret for 24 bytes on x86-64 SysV), with the caller
         // repackaging into a fresh body alloca. The body might point at
@@ -485,11 +473,9 @@ namespace cajeta {
             auto rtClass = dynamic_pointer_cast<CajetaClass>(rt);
             bool isClassLikeR = rtClass != nullptr;
             bool isPrimR = rt && (rt->getTypeFlags() & PRIMITIVE_FLAG);
-            bool isStructR = rt
-                && dynamic_pointer_cast<CajetaStruct>(rt) != nullptr;
             bool isInterfaceR = rtClass && rtClass->isInterface();
             bool returnByPointer = isClassLikeR && (isArrR || !isPrimR)
-                && !isStructR && !isInterfaceR;
+                && !isInterfaceR;
             if (returnByPointer) {
                 llvmRet = llvm::PointerType::get(*module->getLlvmContext(), 0);
             } else {

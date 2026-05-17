@@ -6,9 +6,6 @@
 #include "Identifier.h"
 #include "../../compile/CajetaModule.h"
 #include "../../type/CajetaView.h"
-#include "../../type/CajetaStruct.h"
-#include "../../type/CajetaView.h"
-#include "../../type/CajetaStruct.h"
 #include "../../type/CajetaArray.h"
 #include "../../type/CajetaClass.h"
 #include "../../type/Scope.h"
@@ -37,7 +34,7 @@ namespace cajeta {
         auto* builder = module->getBuilder();
         auto& ctx = *module->getLlvmContext();
 
-        // Resolve typeName → CajetaStruct. View / plain-class receivers are
+        // Resolve typeName → CajetaClass. View / interface receivers are
         // rejected with specific messages so users get a useful error.
         CajetaTypePtr type = CajetaType::of(typeName);
         if (!type) {
@@ -55,7 +52,6 @@ namespace cajeta {
                 typeName.c_str(), typeName.c_str());
             throw Exception(buf, "CAJETA_ERROR_AGGREGATE_INIT_ON_VIEW");
         }
-        auto structType = dynamic_pointer_cast<CajetaStruct>(type);
         auto classType  = dynamic_pointer_cast<CajetaClass>(type);
         if (classType && classType->isInterface()) {
             char buf[256];
@@ -79,10 +75,8 @@ namespace cajeta {
         }
 
         resolvedType = type;
-        // Field-index access lives on CajetaAggregate (which CajetaStruct
-        // and CajetaView both extend). For the plain-class heap path the
-        // index resolution falls through CajetaClass's inherited
-        // getFieldLlvmIndex.
+        // Field-index access uses CajetaClass's getFieldLlvmIndex for the
+        // plain-class path; views override it to skip the vtable header.
         llvm::Type* bodyTy = classType->getLlvmType();
 
         // Allocate the body. Stack: entry-block alloca to keep the alloca
@@ -104,20 +98,15 @@ namespace cajeta {
                 llvm::ConstantInt::get(llvm::Type::getInt8Ty(ctx), 0),
                 allocSize, llvm::MaybeAlign(8));
         }
-        // Initialize vtable pointer at slot 0 for plain CajetaClass —
-        // matches the ClassCreatorRest heap path. Skipped for structs
-        // (no vtable slot in v1) and for any class that doesn't have
-        // a vtable global yet (e.g. abstract or unresolved at this point).
-        // Applied uniformly to both stack and heap paths so dispatch on
-        // an aggregate-init'd class works regardless of storage.
-        if (!structType) {
-            if (llvm::GlobalVariable* vt = classType->getVirtualTableGlobal()) {
-                llvm::Constant* vtRef = CajetaModule::ensureGlobalInModule(
-                    module->getLlvmModule(), vt);
-                llvm::Value* vtableSlot = builder->CreateStructGEP(
-                    bodyTy, bodyPtr, /*idx=*/0, "vtable_slot");
-                builder->CreateStore(vtRef, vtableSlot);
-            }
+        // Initialize vtable pointer at slot 0 — matches the ClassCreatorRest
+        // heap path. Applied uniformly to both stack and heap paths so
+        // dispatch on an aggregate-init'd class works regardless of storage.
+        if (llvm::GlobalVariable* vt = classType->getVirtualTableGlobal()) {
+            llvm::Constant* vtRef = CajetaModule::ensureGlobalInModule(
+                module->getLlvmModule(), vt);
+            llvm::Value* vtableSlot = builder->CreateStructGEP(
+                bodyTy, bodyPtr, /*idx=*/0, "vtable_slot");
+            builder->CreateStore(vtRef, vtableSlot);
         }
         llvm::Value* bodyAlloca = bodyPtr;  // keep the downstream name
 
@@ -134,10 +123,8 @@ namespace cajeta {
                     typeName.c_str());
                 throw Exception(buf, "CAJETA_ERROR_AGGREGATE_INIT_UNLABELED");
             }
-            // classType is non-null for both struct (via CajetaStruct → CajetaAggregate
-            // → CajetaClass) and plain class. getFieldLlvmIndex dispatches via the
-            // virtual override: CajetaAggregate skips the vtable header (no vtable
-            // for v1 structs / views); CajetaClass adds the vtable-header offset.
+            // getFieldLlvmIndex dispatches via the virtual override:
+            // CajetaView skips the vtable header; CajetaClass adds it.
             auto& props = classType->getProperties();
             auto it = props.find(b.label);
             if (it == props.end()) {

@@ -10,9 +10,6 @@
 #include "../type/CajetaArray.h"
 #include "../type/CajetaClass.h"
 #include "../type/CajetaView.h"
-#include "../type/CajetaStruct.h"
-#include "../type/CajetaView.h"
-#include "../type/CajetaStruct.h"
 #include "../type/CajetaFunctionType.h"
 #include "expression/Expression.h"
 #include "expression/DotExpression.h"
@@ -255,8 +252,7 @@ namespace cajeta {
             // body ptr in the slot regardless of initializer).
             if (!initializer) {
                 bool implicitZeroInit =
-                    dynamic_pointer_cast<CajetaStruct>(type) != nullptr
-                    || dynamic_pointer_cast<CajetaView>(type) != nullptr;
+                    dynamic_pointer_cast<CajetaView>(type) != nullptr;
                 bool isInterface = false;
                 if (auto kc = dynamic_pointer_cast<CajetaClass>(type)) {
                     isInterface = kc->isInterface();
@@ -267,24 +263,11 @@ namespace cajeta {
                 }
             }
 
-            // S6.1 — `struct Foo f;` lays a fresh stack alloca of the struct
-            // body and zero-initializes it; the HeapField's pointer slot
-            // points at that body. Treating the local as a pointer to an
-            // aggregate keeps DotExpression / parameter-passing identical
-            // to the view path (also aggregate-by-pointer). View locals
-            // skip this — their pointer comes from the view-ctor result.
-            // Aggregate-initializer support (`Foo { x: 1, y: 2 }`) lands
-            // in S6.2 and will replace the zero-init with per-field stores.
-            if (dynamic_pointer_cast<CajetaStruct>(type)
-                    && !dynamic_pointer_cast<CajetaView>(type)
-                    && !initializer) {
-                auto* builder = module->getBuilder();
-                llvm::Type* bodyTy = type->getLlvmType();
-                llvm::Value* bodyAlloca = builder->CreateAlloca(bodyTy);
-                builder->CreateStore(llvm::Constant::getNullValue(bodyTy),
-                    bodyAlloca);
-                builder->CreateStore(bodyAlloca, field->getOrCreateAllocation());
-            }
+            // (Historical S6.1 implicit struct-body alloca retired with
+            // CajetaStruct under the unified-class model. `class Foo f;`
+            // without an initializer lands as an NYA-marked null class
+            // ref via the path above; `heap Foo()` / `stack Foo()` /
+            // `Foo { x: 1, y: 2 }` cover instantiation explicitly.)
 
             // S9.5.4 — interface local handling. An interface local's
             // HeapField slot holds a `ptr` pointing at a 24-byte
@@ -373,22 +356,14 @@ namespace cajeta {
                             // moved + deactivated its drop entry, so
                             // ownership transfers cleanly to the interface
                             // value's drop chain (S10.4 dispatches on kind).
-                            // Note: `#` on a struct RHS is a no-op for the
-                            // kind tag — structs are stack-resident and can't
-                            // be owned by an interface value; the BORROWED
-                            // tag stands.
-                            bool rhsIsStruct = dynamic_pointer_cast<CajetaStruct>(rhsType) != nullptr;
+                            // (Note: the historical IFACE_KIND_BORROWED_STRUCT
+                            // path retired with CajetaStruct under the
+                            // unified-class model — structs are now plain
+                            // CajetaClass instances and fall into the
+                            // BORROWED_CLASS bucket.)
                             bool rhsIsMove = dynamic_pointer_cast<MoveExpression>(rhsExpr) != nullptr;
                             int64_t kindValue;
-                            if (rhsIsStruct) {
-                                kindValue = IFACE_KIND_BORROWED_STRUCT;
-                                // S10.3 — mark the interface local as
-                                // borrowing a struct that lives in the
-                                // current function frame. ReturnStatement
-                                // consults this to reject returns that
-                                // would dangle the data ptr.
-                                field->setInterfaceBorrowsStructLocal(true);
-                            } else if (rhsIsMove) {
+                            if (rhsIsMove) {
                                 kindValue = IFACE_KIND_OWNED_CLASS;
                             } else {
                                 kindValue = IFACE_KIND_BORROWED_CLASS;
@@ -620,14 +595,8 @@ namespace cajeta {
                                 rhsExpr->resolveTypes(module);
                             }
                             auto rhsClass = dynamic_pointer_cast<CajetaClass>(rhsExpr->getResolvedType());
-                            bool rhsIsStruct = dynamic_pointer_cast<CajetaStruct>(rhsExpr->getResolvedType()) != nullptr;
-                            if (rhsClass && !rhsIsStruct) {
+                            if (rhsClass) {
                                 initIsBorrow = true;
-                            } else if (rhsIsStruct) {
-                                initIsBorrow = true;
-                                if (auto scope = module->getScopeStack().peek()) {
-                                    scope->markMoved(rhsId->getTextValue());
-                                }
                             }
                         }
                     }
@@ -836,25 +805,11 @@ namespace cajeta {
                 }
             }
 
-            // S6.4 — struct local drop entry. Push a drop entry pointing at
-            // the struct's synthesized drop fn so any owned class-ref fields
-            // get reclaimed at scope exit. Views are excluded (they have
-            // their own owning-view drop wired earlier). The struct's drop
-            // fn doesn't free the body (stack-resident); it just walks
-            // class-ref fields and calls each referent's drop. Aggregate
-            // init's per-binding ownership-transfer (S6.4) is what keeps
-            // this from double-freeing the source locals whose class
-            // instances were moved into the struct. `initIsBorrow` gates
-            // the alias case (`Foo b = a;`) — the source local keeps the
-            // drop entry, b doesn't register a second one.
-            if (auto structType = dynamic_pointer_cast<CajetaStruct>(type)) {
-                if (!initIsBorrow) {
-                    if (llvm::Function* structDropFn =
-                            structType->getOrCreateDropFunction()) {
-                        emitDropEntryForFn(module, field, structDropFn, getSourceLine());
-                    }
-                }
-            }
+            // (Historical S6.4 struct-local drop-entry registration retired
+            // with CajetaStruct under the unified-class model — stack-
+            // resident class instances now flow through the regular
+            // stack-drop path via klass->getOrCreateStackDropFunction()
+            // wired earlier in this method.)
 
             // S10.4 — interface local drop entry. Pushes a drop entry
             // pointing at __cajeta_iface_drop, the kind-tag dispatcher.

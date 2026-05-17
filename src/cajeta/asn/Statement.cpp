@@ -13,7 +13,6 @@
 #include "../type/CajetaArray.h"
 #include "../type/CajetaClass.h"
 #include "../type/CajetaView.h"
-#include "../type/CajetaStruct.h"
 #include "../type/CajetaFunctionType.h"
 #include "Block.h"
 #include "LocalVariableDeclaration.h"
@@ -582,6 +581,14 @@ namespace cajeta {
         llvm::Value* condVal = evalCondition(module, condition);
         builder->CreateCondBr(condVal, bodyBB, exitBB);
 
+        // P6.3 — definite-assignment flow for while. Body may execute zero
+        // times, so any markAssigned the body emits is conditional. Snapshot
+        // the NYA set before the body and restore after so the body's
+        // assignments don't leak out as DA-after.
+        auto scope = module->getScopeStack().peek();
+        std::set<std::string> preBodyNYA;
+        if (scope) preBodyNYA = scope->snapshotNotYetAssigned();
+
         builder->SetInsertPoint(bodyBB);
         module->pushLoopContext(headBB, exitBB);
         if (body) body->generateCode(module);
@@ -589,6 +596,8 @@ namespace cajeta {
         if (!builder->GetInsertBlock()->getTerminator()) {
             builder->CreateBr(headBB);
         }
+
+        if (scope) scope->restoreNotYetAssigned(preBodyNYA);
 
         builder->SetInsertPoint(exitBB);
         return nullptr;
@@ -623,6 +632,13 @@ namespace cajeta {
         llvm::Value* condVal = evalCondition(module, condition);
         builder->CreateCondBr(condVal, bodyBB, exitBB);
 
+        // P6.3 — same DA-flow rule as while: for-body may execute zero
+        // times. Snapshot pre, restore post so conditional assignments
+        // inside the body don't leak.
+        auto scope = module->getScopeStack().peek();
+        std::set<std::string> preBodyNYA;
+        if (scope) preBodyNYA = scope->snapshotNotYetAssigned();
+
         builder->SetInsertPoint(bodyBB);
         // continue jumps to the update block, not the head — so the update fires
         // before the next condition test. Matches Java semantics.
@@ -638,6 +654,8 @@ namespace cajeta {
             if (u) u->generateCode(module);
         }
         builder->CreateBr(headBB);
+
+        if (scope) scope->restoreNotYetAssigned(preBodyNYA);
 
         builder->SetInsertPoint(exitBB);
         return nullptr;
@@ -864,6 +882,15 @@ namespace cajeta {
             llvm::ConstantInt::get(i32Ty, 0));
         builder->CreateCondBr(threw, catchBB, tryBB);
 
+        // P6.3 — DA flow for try/catch. Try body may throw at any point,
+        // so its assignments are conditional. Snapshot pre-try, run try
+        // (snapshot post-try NYA), restore pre-try, run catch (snapshot
+        // post-catch NYA), then post-after NYA = post-try ∪ post-catch
+        // (variable is DA-after iff DA in both arms).
+        auto daScope = module->getScopeStack().peek();
+        std::set<std::string> preTryNYA;
+        if (daScope) preTryNYA = daScope->snapshotNotYetAssigned();
+
         builder->SetInsertPoint(tryBB);
         // Make this try's catch types visible to nested call-site lints
         // (#209). Only covers the try body — popped before catch-body
@@ -880,11 +907,16 @@ namespace cajeta {
         }
         if (tryBlock) tryBlock->generateCode(module);
         module->popTryCatchContext();
+        std::set<std::string> postTryNYA = preTryNYA;
+        if (daScope) postTryNYA = daScope->snapshotNotYetAssigned();
         if (!builder->GetInsertBlock()->getTerminator()) {
             builder->CreateCall(pop, {});
             builder->CreateBr(afterBB);
         }
 
+        // Reset to pre-try so catch starts from the same baseline (its
+        // assignments are independent of the try's).
+        if (daScope) daScope->restoreNotYetAssigned(preTryNYA);
         builder->SetInsertPoint(catchBB);
         // R5/Error-model #202: getThrown now returns void*. Read it BEFORE
         // popping — pop unwinds the runtime stack and the helper reads from
@@ -931,6 +963,22 @@ namespace cajeta {
         }
         if (!builder->GetInsertBlock()->getTerminator()) {
             builder->CreateBr(afterBB);
+        }
+
+        // Merge post-try and post-catch NYA: a name is NYA-after iff
+        // NYA in either arm (the union). When there are no catch clauses
+        // (try {…} alone, or try-with-resources with no `catch`), any
+        // throw propagates out of the enclosing method — the only
+        // reachable post-after state is the post-try one, so skip the
+        // union with the catch arm.
+        if (daScope) {
+            if (!catchClauses.empty()) {
+                std::set<std::string> postCatchNYA = daScope->snapshotNotYetAssigned();
+                daScope->restoreNotYetAssigned(postTryNYA);
+                daScope->mergeNotYetAssigned(postCatchNYA);
+            } else {
+                daScope->restoreNotYetAssigned(postTryNYA);
+            }
         }
 
         builder->SetInsertPoint(afterBB);
@@ -996,10 +1044,27 @@ namespace cajeta {
 
         llvm::SwitchInst* sw = builder->CreateSwitch(subjVal, defaultBB, caseCount);
 
+        // P6.3 — DA flow for switch. Pre-switch NYA snapshot is the
+        // starting point for each group (modulo fall-through, which we
+        // approximate conservatively below). After each group runs, snap
+        // its post-group NYA; the post-switch NYA is the UNION across
+        // groups (variable is NYA-after iff NYA in some arm). When no
+        // `default:` is present, the "no case matched" path also
+        // contributes — union in pre-switch NYA too.
+        auto scope = module->getScopeStack().peek();
+        std::set<std::string> preSwitchNYA;
+        if (scope) preSwitchNYA = scope->snapshotNotYetAssigned();
+        std::set<std::string> mergedPostNYA = preSwitchNYA;
+        bool hasDefault = false;
+        for (auto& g : groups) {
+            if (g.isDefault) { hasDefault = true; break; }
+        }
+
         // Populate cases and emit each group's statements. Fall-through is implicit
         // — if a group's terminator hasn't been set after emitting its body, we
         // branch to the next group's block (or after, if last).
         module->pushLoopContext(afterBB, afterBB);  // `break` jumps out
+        bool anyArmMerged = false;
         for (size_t i = 0; i < groups.size(); i++) {
             auto& g = groups[i];
             for (auto& valExpr : g.caseValues) {
@@ -1017,16 +1082,39 @@ namespace cajeta {
                 }
                 sw->addCase(ci, groupBBs[i]);
             }
+            // Reset to pre-switch NYA so each group starts from the same
+            // baseline (conservative wrt fall-through, which would
+            // actually inherit prior arm's deltas).
+            if (scope) scope->restoreNotYetAssigned(preSwitchNYA);
             builder->SetInsertPoint(groupBBs[i]);
             for (auto& s : g.statements) {
                 if (s) s->generateCode(module);
             }
+            std::set<std::string> postGroupNYA;
+            if (scope) postGroupNYA = scope->snapshotNotYetAssigned();
             if (!builder->GetInsertBlock()->getTerminator()) {
                 llvm::BasicBlock* fallTo = (i + 1 < groups.size()) ? groupBBs[i + 1] : afterBB;
                 builder->CreateBr(fallTo);
             }
+            // Merge: a name is NYA-after iff NYA in SOME arm.
+            if (anyArmMerged) {
+                for (auto& n : postGroupNYA) mergedPostNYA.insert(n);
+            } else {
+                mergedPostNYA = postGroupNYA;
+                anyArmMerged = true;
+            }
         }
         module->popLoopContext();
+
+        // No default → "no case matched" path didn't assign anything;
+        // union pre-switch NYA back in. (anyArmMerged guards the empty-
+        // switch case where there are no groups at all.)
+        if (!hasDefault && anyArmMerged) {
+            for (auto& n : preSwitchNYA) mergedPostNYA.insert(n);
+        } else if (!anyArmMerged) {
+            mergedPostNYA = preSwitchNYA;
+        }
+        if (scope) scope->restoreNotYetAssigned(mergedPostNYA);
 
         builder->SetInsertPoint(afterBB);
         return nullptr;
@@ -1229,14 +1317,11 @@ namespace cajeta {
         // a body pointer where a struct value is expected, producing
         // `ret ptr` against a struct return signature).
         if (auto m = module->getCurrentMethod()) {
-            // Pick up either a CajetaStruct return (S6.7) or an interface
-            // return (S9.5.5). Both travel by VALUE per the small-struct
-            // ABI; both need the same double-load when the source is a
+            // Interface returns (S9.5.5) travel by VALUE per the small-
+            // struct ABI; they need a double-load when the source is a
             // named local whose HeapField slot holds a body pointer.
             CajetaTypePtr byValRet;
-            if (auto structRet = dynamic_pointer_cast<CajetaStruct>(m->getReturnType())) {
-                byValRet = structRet;
-            } else if (auto ifaceRet = dynamic_pointer_cast<CajetaClass>(m->getReturnType())) {
+            if (auto ifaceRet = dynamic_pointer_cast<CajetaClass>(m->getReturnType())) {
                 if (ifaceRet->isInterface()) byValRet = ifaceRet;
             }
             if (byValRet) {
@@ -1262,12 +1347,10 @@ namespace cajeta {
                     auto scope = module->getScopeStack().peek();
                     if (scope) {
                         if (auto field = scope->getField(fieldName)) {
-                            bool isStructLocal = dynamic_pointer_cast<CajetaStruct>(
-                                field->getType()) != nullptr;
                             auto fldClass = dynamic_pointer_cast<CajetaClass>(field->getType());
                             bool isInterfaceLocal = fldClass && fldClass->isInterface();
                             bool isThisParam = (fieldName == "this");
-                            if (isStructLocal || isInterfaceLocal || isThisParam) {
+                            if (isInterfaceLocal || isThisParam) {
                                 tryDoubleLoad = true;
                             }
                         }

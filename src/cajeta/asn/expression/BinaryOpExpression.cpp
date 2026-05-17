@@ -8,7 +8,6 @@
 #include "../../compile/CajetaModule.h"
 #include "../../type/CajetaClass.h"
 #include "../../type/CajetaView.h"
-#include "../../type/CajetaStruct.h"
 #include "../../type/CajetaArray.h"
 #include "Expression.h"
 #include "DotExpression.h"

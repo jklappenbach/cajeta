@@ -5,7 +5,6 @@
 #include "CajetaTask.h"
 #include "CajetaArray.h"
 #include "CajetaView.h"
-#include "CajetaStruct.h"
 #include "../compile/CajetaModule.h"
 
 namespace cajeta {
