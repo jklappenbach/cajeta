@@ -6,11 +6,11 @@ Convention: each entry is a brief description, why it matters, where it bites to
 
 ---
 
-## Current state (2026-05-17, late session)
+## Current state (2026-05-17, end-of-session)
 
-Tree at 813/813 — zero disabled tests.
+Tree at 831/831 — zero disabled tests.
 
-Recently landed (Phase 7 + P6.5/P6.7 + memory-model gap pass + Priority 1 push):
+Recently landed (Phase 7 + P6.5/P6.7 + memory-model gap pass + Priority 1 push + mode/debug-features push):
 - `struct` is a transitional alias for `class`; CajetaAggregate retired.
 - `(T) -> void` parses as a method-parameter type; lambda-arg expectedType inference works.
 - `cajeta.lang.Stream.forEach` + `cajeta.collection.ArrayList<T>` landed.
@@ -21,6 +21,10 @@ Recently landed (Phase 7 + P6.5/P6.7 + memory-model gap pass + Priority 1 push):
 - **[GAP 4] Alias-mutation borrow check — done.** `Scope::liveBorrows`; assignment-site check throws on prefix overlap. Pinned by `test/parser/AliasMutationBorrowTests.cpp` (3 tests).
 - **[GAP 5] Owned-string drops — done.** Owned-string shapes (binary `+`, routed string method intrinsics) register `__cajeta_free`. Pinned by `test/parser/OwnedStringDropTests.cpp` (4 tests).
 - **Static class fields — done.** `CajetaClass::getOrCreateStaticFieldGlobal` emits LLVM globals named `<class.canonical>.<field>`; DotExpression resolves class-name LHS via `canonicalMap`. Literal initializers (`= 100`, `= -7`, floats) constant-fold into the global's initializer. Lambdas reading/writing statics work because statics resolve as globals, not captures. Pinned by `test/parser/StaticFieldTests.cpp` (9 tests) + `test/parser/LambdaStaticCaptureTests.cpp` (2 tests).
+- **Automatic field drops — done.** Per-thread live-allocation set discriminates owner vs alias at drop time; auto-drop calls type-specific helpers that atomically claim out of the set so the second drop attempt on an aliased address (ArrayStream.data aliasing ArrayList.data, Optional<Hello>.value aliasing a local) silently no-ops. Doctrine in `cajeta-docs/FieldOwnership.md`; spec at `cajeta-docs/MemoryModel.md` § Destructors. Pinned by `test/parser/AutoFieldDropTests.cpp` (6 tests) + `test/parser/FieldOwnershipAliasingTests.cpp` (6 tests).
+- **Compiler mode infrastructure — done.** `CompilerMode` enum (Debug, DebugRelease, Release, Fast, Minimal) + `CompilerFlags` struct with 13 toggle fields; CLI parses `--mode=`, flavor aliases, and per-feature overrides. Threaded through `Compiler` → `CajetaModule`. Doc: `cajeta-docs/CompilerModes.md`.
+- **Source-tagged drop-chain entries — done.** When `flags.sourceTags` is on (default under `--debug`), every drop-chain push carries the alloc-site file + line via `cajeta_drop_entry_debug` (40 B vs 32 B base). Pinned by `test/parser/SourceTaggedDropTests.cpp` (6 tests).
+- **SIGABRT handler with chain walk — done.** Runtime constructor installs the handler at load; on abort, dumps the per-thread drop chain (with source tags when available) and chains to the previous handler.
 
 Stack vs heap class instantiation is fully working: `heap T(args)`, `stack T(args)`, `heap T { … }`, `stack T { … }`, all with vtable init + ctor invocation + correct virtual destructor dispatch. See `test/parser/UnifiedClassSyntaxTests.cpp:44,137,184,249,317,576`, `test/parser/ClassDropTests.cpp`, and `test/parser/VirtualDropDispatchTests.cpp`.
 
@@ -30,23 +34,21 @@ Stack vs heap class instantiation is fully working: `heap T(args)`, `stack T(arg
 
 Priority is rough effort × user-visible correctness impact.
 
-### Priority 1 — compiler infrastructure (foundational; unblocks the per-mode + Lombok work)
+### Priority 1 — compiler infrastructure
 
-1. **Compiler mode infrastructure — ~1 session.** `[both]` — `CompilerMode` enum + `CompilerFlags` struct holding all per-feature toggles + CLI parsing for `--mode=...`, flavor flags (`--debug`, `--release`, `--fast`, `--debug-release`, `--minimal`), and per-feature overrides (`--bounds`, `--source-tags`, `--poison-free`, `--live-set`, `--drop-chain-validate`, `--ub-traps`, `--use-after-move-rt`, `--overflow-checks`, `--stack-trace-capture`, `--diag-verbosity`, `--diag-hints`, `--profile-counters`). Migrate existing `boundsCheckEnabled` into the struct. Threaded through `Compiler` → `CajetaModule` like the existing bounds-check flag. Foundation for every other mode-conditional feature. Doc: `cajeta-docs/CompilerModes.md`.
-
-2. **Annotation argument capture for all annotations — ~1 session.** `[mode-agnostic]` — Today only `@SuppressLint` and `@Native` parse their args (`Annotatable::findAnnotation` handles names uniformly, but value extraction is per-annotation). Generalize so `@Order(2)`, `@Component(name="primary")`, `@Inject(name="primary")`, `@Builder(...)`, `@Encoding(EncoderClass)`, and all the Lombok-mirror annotation configuration parameters work. Doc: `cajeta-docs/Annotations.md` § Implementation notes; spec at `AspectModel.md` § A1.
+(Empty — both prior items landed. P1.1 compiler mode infrastructure and P1.2 annotation argument capture are both done; P1.2's machinery in `Annotatable` (typed `getString`/`getInt`/`getBool`/`getClassRef`/`getStringList`/`getIntList` accessors) + `CajetaLlvmVisitor::parseAnnotationInstance` populates args for every annotation site. Live consumers: `@Order(n)`, `@Component(name=...)`, `@Inject(name=..., allocate=...)`, `@SuppressLint(...)`, `@Native(value=...)`. New annotations that take args (`@Builder(...)`, `@Encoding(...)`, etc.) plug into the same machinery — no new infrastructure needed.)
 
 ### Priority 2 — language surface
 
-1. **More collections — multi-session.** `[mode-agnostic]` — HashSet (HashMap-backed thin wrapper), HashMap.entries/keys/values() returning Streams, LinkedList, `Collector<T,R>` + `cajeta.lang.Collectors`. Each is its own piece.
+1. **More collections — multi-session.** `[mode-agnostic]` — HashSet (HashMap-backed thin wrapper), `HashMap.entries()/keys()/values()` returning Streams (`HashMap` itself already exists in `runtime/src/cajeta/collection/HashMap.cajeta`), LinkedList, `Collector<T,R>` + `cajeta.lang.Collectors`. Each is its own piece.
 
-2. **Stream lambda combinators — multi-session.** `[mode-agnostic]` — map, filter, flatMap, take, skip, peek, fold, reduce, anyMatch, allMatch, noneMatch, findFirst, collect. Each is its own concrete `*Stream` wrapper class plus the method on `Stream<T>`. The forEach pattern generalizes; combinators that return a new stream need wrapper construction.
+2. **Stream lambda combinators — multi-session.** `[mode-agnostic]` — Terminals **anyMatch, allMatch, noneMatch, findFirst, reduce** landed (pinned by `test/parser/StreamTerminalTests.cpp`, 13 tests). Remaining: intermediate combinators that need new `*Stream<T>` wrapper classes (map, filter, flatMap, take, skip, peek) + terminal `collect` (needs `Collector<T,R>` from P2.1) + generic `fold<R>` (blocked on P2.3 method-level type parameters).
 
 3. **Generic-static-factory call syntax — needs method-level generics first.** `[mode-agnostic]` — `Optional<int32>.Some(42)` doesn't parse. Grammar rejects `public static <T> Box of(T arg)`. Add `typeParameters?` to `methodDeclaration`, then wire visitor + dispatch.
 
-4. **`@Encoding(EncoderClass)` for views — ~1.5 sessions.** `[mode-agnostic]` — `Encoder<T>` interface in `cajeta.wire`; view constructor synthesizes a `Encoder.decode(bytes)` call; `toBytes()` synthesizes `Encoder.encode(this)`. Mutually exclusive with `@BigEndian`/`@LittleEndian`/`@HostEndian`/`@Align` (encoder owns wire layout). Depends on P1.2 (annotation arg capture). Doc: `cajeta-docs/Annotations.md` § `@Encoding` for views.
+4. **`@Encoding(EncoderClass)` for views — ~1.5 sessions.** `[mode-agnostic]` — `Encoder<T>` interface in `cajeta.wire`; view constructor synthesizes a `Encoder.decode(bytes)` call; `toBytes()` synthesizes `Encoder.encode(this)`. Mutually exclusive with `@BigEndian`/`@LittleEndian`/`@HostEndian`/`@Align` (encoder owns wire layout). Annotation-arg machinery already in place; consume via `findAnnotation("Encoding")->getClassRef("value")`. Doc: `cajeta-docs/Annotations.md` § `@Encoding` for views.
 
-### Priority 3 — Lombok-mirror annotations (all `[mode-agnostic]`; depend on P1.2)
+### Priority 3 — Lombok-mirror annotations (all `[mode-agnostic]`)
 
 In Lombok's recommended adoption order:
 
@@ -62,21 +64,19 @@ In Lombok's recommended adoption order:
 
 ### Priority 4 — debug-mode features (CompilerModes.md phasing order)
 
-All `[debug]`. Land on top of P1.1 (mode infrastructure).
+All `[debug]`. P4.1 source-tagged drop-chain entries and P4.2 SIGABRT chain-walk handler landed; remaining items below renumbered.
 
-1. **Source-tagged drop-chain entries — ~1 session.** Extend `cajeta_drop_entry` with alloc/drop source positions in debug mode; debug variants of `__cajeta_drop_push` / `__cajeta_drop_pop_run`; codegen passes source positions from each `emitDropEntry*` site. Foundation for all source-tagged diagnostics. Doc: `cajeta-docs/CompilerModes.md` § Source-tagged drop-chain entries.
-2. **SIGABRT handler with chain walk — ~0.5 session.** Install in debug-mode runtime init; on fire, walk the per-thread drop chain and print the head entry's source tags. Catches every glibc heap-corruption abort with a useful diagnostic. Doc: `CompilerModes.md` § Phasing #2.
-3. **`--live-set=strict` — ~0.5 session.** Unbounded growth + rehash; assert on duplicate-add (catches compiler-codegen bugs in the live-set hook path). Doc: `CompilerModes.md` § `--live-set`.
-4. **`--poison-free=on` — ~0.5 session.** memset freed body with sentinel pattern before glibc free. Doc: `CompilerModes.md` § `--poison-free`.
-5. **`--drop-chain-validate=on` — ~0.5 session.** Per-push/pop linked-list integrity checks; assert + diagnostic on corruption. Doc: `CompilerModes.md` § `--drop-chain-validate`.
-6. **`--diag-hints=on` (compile-time) — ~1 session.** "Did you mean..." for typo'd identifiers; recommend `#`-transfer when a borrow violates lifetime; suggest `@SuppressLint(...)` for noisy lints. Doc: `CompilerModes.md` § `--diag-hints`.
-7. **Stack-trace capture on throw — ~1 session.** `backtrace(3)` + DWARF + source-map symbolization in the exception payload. Doc: `CompilerModes.md` § `--stack-trace-capture`.
-8. **`--use-after-move-rt=on` — ~0.5 session.** Sentinel in moved slot header; trap on read. Backs up the static use-after-move tracker. Doc: `CompilerModes.md` § `--use-after-move-rt`.
-9. **`--ub-traps=on` — ~0.5 session.** Trap instructions for signed overflow, divide-by-zero, oversized shift, unaligned atomic. Catches "compiler made my code do something weird" early. Doc: `CompilerModes.md` § `--ub-traps`.
+1. **`--live-set=strict` — ~0.5 session.** Unbounded growth + rehash; assert on duplicate-add (catches compiler-codegen bugs in the live-set hook path). Doc: `CompilerModes.md` § `--live-set`.
+2. **`--poison-free=on` — ~0.5 session.** memset freed body with sentinel pattern before glibc free. Doc: `CompilerModes.md` § `--poison-free`.
+3. **`--drop-chain-validate=on` — ~0.5 session.** Per-push/pop linked-list integrity checks; assert + diagnostic on corruption. Doc: `CompilerModes.md` § `--drop-chain-validate`.
+4. **`--diag-hints=on` (compile-time) — ~1 session.** "Did you mean..." for typo'd identifiers; recommend `#`-transfer when a borrow violates lifetime; suggest `@SuppressLint(...)` for noisy lints. Doc: `CompilerModes.md` § `--diag-hints`.
+5. **Stack-trace capture on throw — ~1 session.** `backtrace(3)` + DWARF + source-map symbolization in the exception payload. Doc: `CompilerModes.md` § `--stack-trace-capture`.
+6. **`--use-after-move-rt=on` — ~0.5 session.** Sentinel in moved slot header; trap on read. Backs up the static use-after-move tracker. Doc: `CompilerModes.md` § `--use-after-move-rt`.
+7. **`--ub-traps=on` — ~0.5 session.** Trap instructions for signed overflow, divide-by-zero, oversized shift, unaligned atomic. Catches "compiler made my code do something weird" early. Doc: `CompilerModes.md` § `--ub-traps`.
 
 ### Priority 5 — release-mode features
 
-All `[release]`. Land on top of P1.1 (mode infrastructure).
+All `[release]`.
 
 1. **`--bounds=trap` codegen — ~0.5 session.** Skip the exception throw; emit `@llvm.trap` for the fastest bail. Doc: `CompilerModes.md` § `--bounds`.
 2. **`--overflow-checks=wrapping`/`off` codegen — ~1 session.** Today integer arithmetic is implicit wrapping; make the choice explicit via the flag and wire `--overflow-checks=off` so the compiler can assume no overflow and optimize accordingly. Doc: `CompilerModes.md` § `--overflow-checks`.
@@ -93,7 +93,7 @@ All `[mode-agnostic]`.
 
 3. **P3c switch/loops/try-catch DA merging — 0.5 sessions each.** Implementation pattern is clear from P3a/P3b; deferred until consumed.
 
-4. **Phase 7 cleanup — 0.5 sessions, not urgent.** Strip the 15 dead `dynamic_pointer_cast<CajetaStruct>` expressions and delete CajetaStruct.h. Cosmetic.
+4. **Phase 7 cleanup — 0.5 sessions, not urgent.** Strip the 8 remaining `dynamic_pointer_cast<CajetaStruct>` expressions in `src/` and delete `CajetaStruct.h`. Cosmetic.
 
 5. **Restore lost test coverage from Phase 7 — incremental.** The 9 deleted struct test files contained ~105 tests. Many exercised happy-path behavior still valid under the unified model.
 

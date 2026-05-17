@@ -613,7 +613,6 @@ Roughly in dependency order:
    everything else.
 2. **`@Getter` / `@Setter`** — simplest field-walk synthesizers.
 3. **`@ToString`** — same pattern.
-4. **`@EqualsAndHashCode`** — composes with existing `@AutoHash`.
 5. **`@NoArgsConstructor` / `@AllArgsConstructor` / `@RequiredArgsConstructor`** —
    constructor synthesis machinery.
 6. **`@Data` / `@Value`** — bundle annotations, expand into the

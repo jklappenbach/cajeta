@@ -62,4 +62,83 @@ public class Stream<T> {
             o = this.next();
         }
     }
+
+    /**
+     * Returns true if any remaining element matches `pred`. Short-
+     * circuits on the first match. Empty stream → false.
+     */
+    public boolean anyMatch((T) -> boolean pred) {
+        Optional<T> o = this.next();
+        while (o.isPresent()) {
+            if (pred(o.get())) {
+                return true;
+            }
+            o = this.next();
+        }
+        return false;
+    }
+
+    /**
+     * Returns true iff every remaining element matches `pred`. Short-
+     * circuits on the first non-match. Empty stream → true
+     * (vacuously).
+     */
+    public boolean allMatch((T) -> boolean pred) {
+        Optional<T> o = this.next();
+        while (o.isPresent()) {
+            if (!pred(o.get())) {
+                return false;
+            }
+            o = this.next();
+        }
+        return true;
+    }
+
+    /**
+     * Returns true iff no remaining element matches `pred`. Short-
+     * circuits on the first match. Empty stream → true (vacuously).
+     */
+    public boolean noneMatch((T) -> boolean pred) {
+        Optional<T> o = this.next();
+        while (o.isPresent()) {
+            if (pred(o.get())) {
+                return false;
+            }
+            o = this.next();
+        }
+        return true;
+    }
+
+    /**
+     * Returns the first remaining element matching `pred` wrapped in
+     * a present Optional, or an empty Optional if none match.
+     */
+    public Optional<T> findFirst((T) -> boolean pred) {
+        Optional<T> o = this.next();
+        while (o.isPresent()) {
+            T v = o.get();
+            if (pred(v)) {
+                return heap Optional<T>(true, v);
+            }
+            o = this.next();
+        }
+        return heap Optional<T>(false, null);
+    }
+
+    /**
+     * Left-fold with an explicit seed. `acc = fn(acc, element)` for
+     * each element in order; returns the final accumulator. The seed
+     * and result share the element type T at v1 (Java's `reduce(T,
+     * BinaryOperator<T>)`); the generic `fold<R>(R seed, (R, T) -> R
+     * fn)` form lands once method-level type parameters parse.
+     */
+    public T reduce(T seed, (T, T) -> T fn) {
+        T acc = seed;
+        Optional<T> o = this.next();
+        while (o.isPresent()) {
+            acc = fn(acc, o.get());
+            o = this.next();
+        }
+        return acc;
+    }
 }
