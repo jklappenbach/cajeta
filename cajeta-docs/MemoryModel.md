@@ -38,7 +38,7 @@ Single token. Appears in three positions:
 | `f(x)` | f borrows x | f takes ownership; x moved |
 | `return x` | caller borrows x (signature: `T f(...)`) | caller takes ownership (signature: `#T f(...)`) |
 
-**Auto-promotion for fresh `new`.** An anonymous `new T(...)` expression in transfer position promotes implicitly. `p.field = new T()` and `return new T()` (in a `#T` function) work without explicit `#`. The temporary is an unnamed owner with no prior identity, so promotion has no use-after-move risk.
+**Auto-promotion for fresh heap allocations.** An anonymous `heap T(...)` expression in transfer position promotes implicitly. `p.field = heap T()` and `return heap T()` (in a `#T` function) work without explicit `#`. The temporary is an unnamed owner with no prior identity, so promotion has no use-after-move risk.
 
 ---
 
@@ -98,9 +98,10 @@ LIFO within a scope; inner scopes drop before outer. A borrow declared before it
 
 ## Fields
 
-- **Fields are always owners.** Field types are owned slots. Borrows cannot be stored in fields — this avoids inter-procedural lifetime annotations on field-holders.
-- **Field assignment transfers.** `p.field = x` must transfer: either `p.field = #x` (explicit) or `p.field = new T(...)` (auto-promoted). Plain `p.field = y` where `y` is a named borrow is a static error.
+- **Fields may be owners or borrows.** A field's ownership status is resolved at drop time, not at declaration. The per-fiber drop chain is the registry: at parent drop, the synthesized auto-drop helper walks the chain — if the field's address has an outstanding chain entry, this scope owns it (cancel the entry, drop now); if not, the address is aliased elsewhere (no-op). See `cajeta-docs/FieldOwnership.md`.
+- **Field assignment.** `p.field = #x` and `p.field = heap T(...)` register the field as an owner (the heap-call's chain entry is the registration). `p.field = y` where `y` is a borrow stores the borrow; the field aliases `y`'s source and the chain-walk at drop sees it's owned elsewhere.
 - **Field reads borrow.** `String n = p.field` makes `n` a borrow rooted at `p`.
+- **Use-after-free of an aliased field whose source has already dropped is the programmer's responsibility at v1.** A lifetime tracker (Phase 6+) will catch this statically.
 
 ---
 
@@ -135,7 +136,7 @@ The runtime mechanism — "drop chain" — is the same machinery the borrow chec
 Limitations (v1 / known gaps):
 
 - **Virtual dispatch on drop.** ✅ Done. The vtable header carries a dedicated `drop_fn` slot (index 3, byte offset 16; see `StructureMetadata::createVirtualTableType`). Heap class locals register the runtime helper `__cajeta_class_virtual_drop`, which loads the instance's vtable pointer and dispatches through `vtable.drop_fn` — so `Base b = heap Derived()` fires `~Derived()`, not `~Base()`. Pinned by `test/parser/VirtualDropDispatchTests.cpp`. Stack allocations stay on static dispatch (alloca size fixes the dynamic type); Task<T>-style custom layouts opt out via `CajetaClass::hasVtablePointerAtSlotZero()`.
-- **No automatic field drops.** If a class owns a heap field (an array, a class instance, another `Lock`), the user's destructor must release it explicitly. Rust auto-generates these; we don't yet.
+- **Automatic field drops via chain self-discrimination.** ✅ Done. `CajetaClass::getOrCreateDropFunction` synthesizes an auto-drop loop that calls `__cajeta_field_drop_if_owned(field_ptr)` for each owned-shape field. The helper walks the per-fiber drop chain; if an active entry matches the field's address, the helper cancels the entry and runs the drop function directly (so the chain doesn't double-fire). If no entry matches, the field is aliased elsewhere and the helper no-ops. Doctrine and walk-throughs in `cajeta-docs/FieldOwnership.md`. Pinned by `test/parser/AutoFieldDropTests.cpp`.
 - **No `super.~Class()` chaining.** Derived destructors don't implicitly chain to the base class's. With single-class hierarchies this hasn't bitten yet; needs care now that virtual dispatch lands the override.
 - **Block-scoped firing.** ✅ Done. Drop entries fire at the closing `}` of the declaring lexical block, not method exit. RAII patterns like back-to-back `LockGuard`s in inline blocks now work. Pinned by `test/parser/BlockScopedDropTests.cpp`.
 
@@ -264,7 +265,8 @@ Cost: +8 bytes per heap object, ~one load + compare per borrow access. **Debug b
 | Drop-order error | LIFO scope analysis |
 | Borrow-of-frame-local returned | Signature conformance check |
 | Anonymous-owner chained borrow | Expression-level lifetime check |
-| Borrow stored in long-lived owned field | "Fields are owners" rule (field type bans borrows) |
+| Double-free of aliased field | Runtime chain self-discrimination (see `FieldOwnership.md`) |
+| Use-after-free of aliased field whose source dropped first | Programmer responsibility at v1 (Phase 6+ lifetime tracker) |
 
 ---
 

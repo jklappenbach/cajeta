@@ -808,44 +808,126 @@ namespace cajeta {
                 userDrop->getLlvmFunction(), {instance});
         }
 
-        // S7.2 — recurse into embedded struct fields in REVERSE
-        // declaration order (per Structs.md § "Inline composition,"
-        // mirroring Cajeta's general drop-order rule: last-declared
-        // drops first). For each CajetaStruct-typed field, GEP into
-        // the class instance to obtain the embedded body's address,
-        // then call the struct's synthesized drop fn. Primitive,
-        // class-ref, view-typed, etc. fields are left to other drop
-        // paths (or are not drop-bearing) and skipped here.
+        // Auto field drops (MemoryModel.md § Known gaps — automatic
+        // field drops). In REVERSE declaration order, walk every
+        // owned heap field and route to its appropriate drop helper.
+        // The stack-drop wrapper already does this (see
+        // getOrCreateStackDropFunction); the heap-drop wrapper was
+        // the gap. Done BEFORE __cajeta_free so the field slots
+        // still address the live body — freeing the block first
+        // would leave the dropped pointers dangling, unobservable
+        // from outside but still UB to dereference.
         //
-        // The embedded struct's drop walks its own owned class-ref
-        // fields, calling each referent's class drop fn. Same shape
-        // as S6.4's struct-local drop; the only difference here is
-        // the body's address comes from the class instance's GEP
-        // rather than a stack alloca.
+        // Per-field-type emission (see cajeta-docs/FieldOwnership.md
+        // § Solution B for the doctrine):
         //
-        // Done BEFORE __cajeta_free so the embedded class refs are
-        // released while the surrounding heap block is still valid;
-        // freeing the block first would leave dangling pointers
-        // unobservable from outside but still UB to dereference.
-        {
-            std::vector<StructurePropertyPtr> reversed(
-                propertyList.begin(), propertyList.end());
-            std::reverse(reversed.begin(), reversed.end());
-            for (auto& property : reversed) {
-                auto fieldType = property->getType();
-                auto fieldStruct = dynamic_pointer_cast<CajetaStruct>(fieldType);
-                if (!fieldStruct) continue;
+        //   - CajetaStruct: GEP the embedded body, call the struct's
+        //     synthesized drop fn (which walks its own owned fields).
+        //     The body itself isn't separately freed — it lives
+        //     inline in this instance's block.
+        //   - CajetaArray: load the heap-array pointer and call
+        //     __cajeta_free_array. The runtime helper is idempotent
+        //     (claims through the live-allocation set), so when the
+        //     field aliases a local-owned buffer (e.g. ArrayStream.data
+        //     aliasing ArrayList.data) the first drop wins and the
+        //     second is a silent no-op rather than a double-free.
+        //   - CajetaInterface: the slot IS the 24-byte fat-pointer
+        //     body. Pass its address to __cajeta_iface_drop, which
+        //     reads the kind word and only fires the underlying drop
+        //     for OWNED_CLASS variants (BORROWED_* kinds no-op).
+        //   - Plain CajetaClass ref: load the instance pointer and call
+        //     __cajeta_class_virtual_drop, which atomically claims the
+        //     address out of the live-allocation set and dispatches
+        //     through the dynamic type's vtable.drop_fn. Same
+        //     idempotency story as arrays — aliased fields (e.g.
+        //     Optional<Hello>.value aliasing a local) drop once.
+        //
+        // Null-safe by construction: instance bytes were memset to
+        // zero by ClassCreatorRest, so an unassigned class-ref or
+        // array field reads as a null pointer; each runtime helper
+        // null-checks.
+        std::vector<StructurePropertyPtr> reversed(
+            propertyList.begin(), propertyList.end());
+        std::reverse(reversed.begin(), reversed.end());
+
+        llvm::Function* freeArrayFn = nullptr;
+        llvm::Function* virtualDropFn = nullptr;
+        llvm::Function* ifaceDropFn = nullptr;
+
+        for (auto& property : reversed) {
+            if (property->isStatic()) continue;  // statics live in globals
+            auto fieldType = property->getType();
+            if (!fieldType) continue;
+            unsigned fieldIdx = (unsigned) getFieldLlvmIndex(property);
+
+            // Struct field — recurse into the embedded body in place.
+            if (auto fieldStruct = dynamic_pointer_cast<CajetaStruct>(fieldType)) {
                 llvm::Function* structDropFn =
                     fieldStruct->getOrCreateDropFunction();
                 if (!structDropFn) continue;
                 structDropFn = CajetaModule::ensureFunctionInModule(
                     lmod, structDropFn);
-                unsigned fieldIdx = (unsigned) getFieldLlvmIndex(property);
                 llvm::Value* embedPtr = b.CreateStructGEP(
                     llvmType, instance, fieldIdx,
                     std::string("drop_embed_") + property->getName());
                 b.CreateCall(structDropFn, {embedPtr});
+                continue;
             }
+
+            // Array field — idempotent free via the live-allocation set.
+            if (dynamic_pointer_cast<CajetaArray>(fieldType)) {
+                if (!freeArrayFn) {
+                    freeArrayFn = module->getRuntimeFunction("__cajeta_free_array");
+                }
+                if (!freeArrayFn) continue;
+                llvm::Value* slot = b.CreateStructGEP(
+                    llvmType, instance, fieldIdx,
+                    std::string("drop_arr_slot_") + property->getName());
+                llvm::Value* arrPtr = b.CreateLoad(ptrTy, slot,
+                    std::string("drop_arr_ptr_") + property->getName());
+                b.CreateCall(freeArrayFn, {arrPtr});
+                continue;
+            }
+
+            if (auto fieldClass = dynamic_pointer_cast<CajetaClass>(fieldType)) {
+                if (dynamic_pointer_cast<CajetaView>(fieldType)) continue;
+
+                // Interface field — kind-tagged drop already discriminates.
+                if (fieldClass->isInterface()) {
+                    if (!ifaceDropFn) {
+                        ifaceDropFn = module->getRuntimeFunction("__cajeta_iface_drop");
+                    }
+                    if (!ifaceDropFn) continue;
+                    llvm::Value* bodyPtr = b.CreateStructGEP(
+                        llvmType, instance, fieldIdx,
+                        std::string("drop_iface_body_") + property->getName());
+                    b.CreateCall(ifaceDropFn, {bodyPtr});
+                    continue;
+                }
+
+                // Plain class-ref — virtual dispatch through the
+                // referent's vtable. Skip types with no vtable slot at
+                // offset 0 (Task<T> et al.) — virtual_drop assumes a
+                // vtable at instance[0]. Their handful of users hold
+                // them as locals, not class fields.
+                if (!fieldClass->hasVtablePointerAtSlotZero()) continue;
+                if (!virtualDropFn) {
+                    virtualDropFn = module->getRuntimeFunction(
+                        "__cajeta_class_virtual_drop");
+                }
+                if (!virtualDropFn) continue;
+                // Materialize the field class's drop wrapper so the
+                // vtable.drop_fn slot is patched before dispatch.
+                fieldClass->patchVirtualTableDropFn();
+                llvm::Value* slot = b.CreateStructGEP(
+                    llvmType, instance, fieldIdx,
+                    std::string("drop_ref_slot_") + property->getName());
+                llvm::Value* refPtr = b.CreateLoad(ptrTy, slot,
+                    std::string("drop_ref_ptr_") + property->getName());
+                b.CreateCall(virtualDropFn, {refPtr});
+                continue;
+            }
+            // Primitive / pointer / function-typed / etc. — no drop.
         }
 
         // Free the heap allocation. __cajeta_free is part of the

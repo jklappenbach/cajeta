@@ -15,6 +15,94 @@
 
 typedef void (*cajeta_ctor_fn)(void* self);
 
+// ============================================================================
+// Live-allocation set (FieldOwnership.md § Solution B).
+//
+// The auto field-drop scheme is "try to drop all fields; if the address is
+// already gone, no-op." That requires a quick "is this address still live?"
+// answer at every drop site. The live-set tracks every heap allocation we
+// hand out; drop dispatchers atomically remove-and-claim, so the first call
+// wins and subsequent calls (auto-drop and chain pop racing on the same
+// aliased field, e.g. ArrayStream.data and ArrayList.data) no-op safely.
+//
+// Implementation: single global open-addressed hash table, fixed power-of-2
+// capacity, pointer-shifted hash. Cross-fiber correctness needs the global
+// (allocations may be freed on a different carrier than they were made on).
+// Capacity is fixed; no resize — at 75% load we warn and start leaking the
+// excess (correctness-preserving — leaked entries just mean future double-
+// frees on those addresses won't be caught).
+// ============================================================================
+#define CAJETA_LIVE_SET_CAPACITY (1 << 16)   // 64K slots; 512KB total
+#define CAJETA_LIVE_SET_LOAD_CAP ((CAJETA_LIVE_SET_CAPACITY * 3) / 4)
+#define CAJETA_LIVE_SET_TOMBSTONE ((void*) 1)  // page 0 unmapped; safe sentinel
+
+static void* __cajeta_live_set[CAJETA_LIVE_SET_CAPACITY];
+static int __cajeta_live_set_count = 0;
+static pthread_mutex_t __cajeta_live_set_mu = PTHREAD_MUTEX_INITIALIZER;
+
+static void __cajeta_live_set_add_locked(void* p) {
+    if (!p || p == CAJETA_LIVE_SET_TOMBSTONE) return;
+    if (__cajeta_live_set_count >= CAJETA_LIVE_SET_LOAD_CAP) {
+        static int warned = 0;
+        if (!warned) {
+            fprintf(stderr,
+                "cajeta: live-allocation set reached load cap (%d / %d). "
+                "Subsequent allocations won't be tracked; field auto-drop "
+                "may double-free aliased addresses past this point. "
+                "Raise CAJETA_LIVE_SET_CAPACITY in runtime/native/cajeta_runtime.c "
+                "(see cajeta-docs/FieldOwnership.md).\n",
+                __cajeta_live_set_count, CAJETA_LIVE_SET_CAPACITY);
+            warned = 1;
+        }
+        return;
+    }
+    size_t mask = CAJETA_LIVE_SET_CAPACITY - 1;
+    size_t bucket = ((uintptr_t) p >> 3) & mask;
+    for (size_t i = 0; i < CAJETA_LIVE_SET_CAPACITY; i++) {
+        size_t idx = (bucket + i) & mask;
+        void* cur = __cajeta_live_set[idx];
+        if (cur == NULL || cur == CAJETA_LIVE_SET_TOMBSTONE) {
+            __cajeta_live_set[idx] = p;
+            __cajeta_live_set_count++;
+            return;
+        }
+        if (cur == p) return;  // already present (shouldn't happen — alloc gave a fresh address)
+    }
+}
+
+static int __cajeta_live_set_remove_locked(void* p) {
+    if (!p || p == CAJETA_LIVE_SET_TOMBSTONE) return 0;
+    size_t mask = CAJETA_LIVE_SET_CAPACITY - 1;
+    size_t bucket = ((uintptr_t) p >> 3) & mask;
+    for (size_t i = 0; i < CAJETA_LIVE_SET_CAPACITY; i++) {
+        size_t idx = (bucket + i) & mask;
+        void* cur = __cajeta_live_set[idx];
+        if (cur == NULL) return 0;  // empty slot — search ends
+        if (cur == p) {
+            __cajeta_live_set[idx] = CAJETA_LIVE_SET_TOMBSTONE;
+            __cajeta_live_set_count--;
+            return 1;
+        }
+    }
+    return 0;
+}
+
+void __cajeta_live_set_add(void* p) {
+    pthread_mutex_lock(&__cajeta_live_set_mu);
+    __cajeta_live_set_add_locked(p);
+    pthread_mutex_unlock(&__cajeta_live_set_mu);
+}
+
+// Returns 1 if the address was in the set and has been removed; 0 otherwise.
+// This is the atomic "claim" used by drop dispatchers: only the first caller
+// gets a 1 and is responsible for running the destructor + free.
+int __cajeta_live_set_claim(void* p) {
+    pthread_mutex_lock(&__cajeta_live_set_mu);
+    int r = __cajeta_live_set_remove_locked(p);
+    pthread_mutex_unlock(&__cajeta_live_set_mu);
+    return r;
+}
+
 // Allocate and zero-fill a buffer holding total_count elements of elem_size bytes.
 // Used for primitive-element arrays.
 void* __cajeta_new_array(uint64_t elem_size, uint64_t total_count) {
@@ -27,6 +115,7 @@ void* __cajeta_new_array(uint64_t elem_size, uint64_t total_count) {
                 (unsigned long long) total_count, (unsigned long long) elem_size);
         abort();
     }
+    __cajeta_live_set_add(buf);
     return buf;
 }
 
@@ -67,10 +156,17 @@ void* __cajeta_new_array_header(uint64_t header_size, uint64_t elem_size, uint64
     }
     // Store count at the size field (first 8 bytes of the header).
     *((int64_t*) hdr) = (int64_t) count;
+    __cajeta_live_set_add(hdr);
     return hdr;
 }
 
+// Idempotent — see FieldOwnership.md § Solution B. Auto field drop and the
+// owning local's chain pop both call this for the same array address; the
+// first one wins the live-set claim and actually frees, the second sees
+// the address is gone and returns silently.
 void __cajeta_free_array(void* ptr) {
+    if (!ptr) return;
+    if (!__cajeta_live_set_claim(ptr)) return;
     free(ptr);
 }
 
@@ -84,6 +180,7 @@ void __cajeta_free_array(void* ptr) {
 void __cajeta_view_drop_owned(void* data_ptr) {
     if (data_ptr == NULL) return;
     void* header = (void*) ((char*) data_ptr - 8);
+    if (!__cajeta_live_set_claim(header)) return;
     free(header);
 }
 
@@ -112,6 +209,7 @@ void* __cajeta_array_view_to_owned(const void* data, int64_t count, int64_t elem
     if (data != NULL && count > 0) {
         memcpy((char*) hdr + header_size, data, (size_t) count * (size_t) elem_size);
     }
+    __cajeta_live_set_add(hdr);
     return hdr;
 }
 
@@ -127,13 +225,21 @@ void* __cajeta_alloc(uint64_t size) {
                 (unsigned long long) size);
         abort();
     }
+    __cajeta_live_set_add(p);
     return p;
 }
 
 // Mirror of __cajeta_free_array for non-array heap blocks. Kept as a
 // separate symbol so the drop-fn function-pointer types match what the
 // emitted IR uses for arrays (both are `void(*)(void*)`).
+//
+// Unconditional: this is the actual body-free that runs at the end of
+// every class drop wrapper, after __cajeta_class_virtual_drop has
+// already claimed the instance out of the live-set. Idempotency for
+// class instances lives in virtual_drop's claim, not here.
 void __cajeta_free(void* ptr) {
+    if (!ptr) return;
+    __cajeta_live_set_claim(ptr);  // remove if present; ignore result
     free(ptr);
 }
 
@@ -896,6 +1002,7 @@ void __cajeta_drop_mark_inactive(struct cajeta_drop_entry* e) {
     e->active = 0;
 }
 
+
 // S10.4 — kind-tag dispatched interface value drop. Called at scope exit
 // for every interface-typed local. Reads the fat pointer's kind word
 // and either invokes the underlying class's drop (OWNED_CLASS) or
@@ -992,6 +1099,13 @@ int64_t __cajeta_signature_hash(const char* s) {
 //                 vtable global holds this class's heap-drop wrapper.
 void __cajeta_class_virtual_drop(void* instance) {
     if (!instance) return;
+    // Idempotent claim — FieldOwnership.md § Solution B. Auto field drop
+    // and the owning local's chain pop both route through here for the
+    // same address (e.g. Optional<Hello>.value aliases a heap Hello
+    // local). First caller wins the live-set claim and runs the
+    // destructor + free; second caller no-ops without re-running the
+    // user's ~Class() body.
+    if (!__cajeta_live_set_claim(instance)) return;
     void* vptr = *(void**) instance;
     if (!vptr) return;
     void (*drop_fn)(void*) =

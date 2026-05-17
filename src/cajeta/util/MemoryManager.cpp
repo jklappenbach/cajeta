@@ -42,25 +42,43 @@ namespace cajeta {
         return fnCallee;
     }
 
+    // After every malloc, register the result with the live-allocation set
+    // so the auto field-drop scheme (FieldOwnership.md § Solution B) can
+    // distinguish "this address is live, drop it" from "already freed by
+    // an aliasing owner, no-op." Without this, class instances allocated
+    // via libc malloc directly never appear in the set and auto-drop
+    // silently skips them.
+    static void emitLiveSetAdd(CajetaModulePtr module, llvm::CallInst* malloc, llvm::BasicBlock* basicBlock) {
+        llvm::Function* addFn = module->getRuntimeFunction("__cajeta_live_set_add");
+        if (!addFn) return;
+        std::vector<llvm::Value*> args = {malloc};
+        llvm::CallInst::Create(addFn, llvm::ArrayRef<llvm::Value*>(args),
+            "", basicBlock);
+    }
+
     llvm::CallInst* MemoryManager::createMallocInstruction(CajetaModulePtr module, string registerName,
         llvm::Constant* allocSize,
         llvm::BasicBlock* basicBlock) {
         vector<llvm::Value*> args;
         args.push_back(allocSize);
-        return llvm::CallInst::Create(getMalloc(module),
+        llvm::CallInst* malloc = llvm::CallInst::Create(getMalloc(module),
             llvm::ArrayRef<llvm::Value*>(args),
             registerName,
             basicBlock);
+        emitLiveSetAdd(module, malloc, basicBlock);
+        return malloc;
     }
 
     llvm::CallInst* MemoryManager::createMallocInstruction(CajetaModulePtr module, llvm::Constant* allocSize,
         llvm::BasicBlock* basicBlock) {
         vector<llvm::Value*> args;
         args.push_back(allocSize);
-        return llvm::CallInst::Create(getMalloc(module),
+        llvm::CallInst* malloc = llvm::CallInst::Create(getMalloc(module),
             llvm::ArrayRef<llvm::Value*>(args),
             "",
             basicBlock);
+        emitLiveSetAdd(module, malloc, basicBlock);
+        return malloc;
     }
 
     llvm::CallInst* MemoryManager::createFreeInstruction(CajetaModulePtr module, llvm::Value* pointer,
