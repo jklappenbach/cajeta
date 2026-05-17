@@ -175,3 +175,95 @@ TEST(UnifiedClassSyntaxTests, stackConstructorCallRejectedAsPhase2) {
         EXPECT_EQ(e.getErrorId(), "CAJETA_ERROR_STACK_CTOR_UNIMPLEMENTED");
     }
 }
+
+// ---------------------------------------------------------------------
+// Phase 1b — bare `MyClass(args)` rejected; use heap/stack/new prefix.
+// ---------------------------------------------------------------------
+
+TEST(UnifiedClassSyntaxTests, bareClassConstructionRejected) {
+    // `MyClass(args)` without an allocation prefix used to parse as a
+    // method call and crash downstream. Now: clean rejection with a
+    // message pointing at the heap/stack/new alternatives.
+    auto src =
+        "package test;\n"
+        "public class Counter {\n"
+        "    int32 n;\n"
+        "    public Counter() { this.n = 0; }\n"
+        "}\n"
+        "public final class S {\n"
+        "    public static int32 run() {\n"
+        "        Counter c = Counter();\n"  // ← bare construction
+        "        return 0;\n"
+        "    }\n"
+        "}\n";
+    try {
+        CajetaJit::compile(src, "test.S");
+        FAIL() << "expected CAJETA_ERROR_BARE_CLASS_CONSTRUCTION";
+    } catch (cajeta::Exception& e) {
+        EXPECT_EQ(e.getErrorId(), "CAJETA_ERROR_BARE_CLASS_CONSTRUCTION");
+    }
+}
+
+TEST(UnifiedClassSyntaxTests, bareStructConstructionRejected) {
+    // Same rejection applies to struct types — v1 had `Foo(args)` on a
+    // struct segfault (S6.1); the rejection turns that into a clean
+    // diagnostic. Aggregate-init via `Foo { ... }` continues to work.
+    auto src =
+        "package test;\n"
+        "public struct Point {\n"
+        "    int32 x;\n"
+        "    int32 y;\n"
+        "}\n"
+        "public final class S {\n"
+        "    public static int32 run() {\n"
+        "        Point p = Point(3, 4);\n"  // ← bare construction on struct
+        "        return p.x;\n"
+        "    }\n"
+        "}\n";
+    try {
+        CajetaJit::compile(src, "test.S");
+        FAIL() << "expected CAJETA_ERROR_BARE_CLASS_CONSTRUCTION";
+    } catch (cajeta::Exception& e) {
+        EXPECT_EQ(e.getErrorId(), "CAJETA_ERROR_BARE_CLASS_CONSTRUCTION");
+    }
+}
+
+TEST(UnifiedClassSyntaxTests, viewConstructionStillWorks) {
+    // Views keep their legacy `MyView(bytes)` construction form. The
+    // bare-class-rejection above must not catch this path. Backing array
+    // is `int32[]` matching the pattern used elsewhere in view tests.
+    auto src =
+        "package test;\n"
+        "@HostEndian\n"
+        "public view Header {\n"
+        "    int32 magic;\n"
+        "    int32 version;\n"
+        "}\n"
+        "public final class S {\n"
+        "    public static int32 run() {\n"
+        "        int32[] buf = new int32[4];\n"
+        "        Header h = Header(buf);\n"  // ← legacy view-construction
+        "        h.version = 42;\n"
+        "        return h.version;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 42);
+}
+
+TEST(UnifiedClassSyntaxTests, newKeywordStillWorks) {
+    // `new` continues to work during the deprecation cycle. No warning
+    // emitted yet — warnings land when the alias retires.
+    auto src =
+        "package test;\n"
+        "public class Holder {\n"
+        "    int32 value;\n"
+        "    public Holder(int32 v) { this.value = v; }\n"
+        "}\n"
+        "public final class S {\n"
+        "    public static int32 run() {\n"
+        "        Holder h = new Holder(99);\n"
+        "        return h.value;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 99);
+}

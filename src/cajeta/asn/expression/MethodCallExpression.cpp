@@ -10,6 +10,7 @@
 #include "cajeta/type/CajetaView.h"
 #include "cajeta/type/CajetaFunctionType.h"
 #include "cajeta/method/Method.h"
+#include "cajeta/error/Exception.h"
 #include "Expression.h"
 #include "DotExpression.h"
 #include "Identifier.h"
@@ -280,6 +281,32 @@ namespace cajeta {
                 }
 
                 return dataPtr;
+            }
+        }
+
+        // ----- Bare class-construction syntax rejected (UnifiedClasses.md P1b) -----
+        // `MyClass(args)` without an explicit `heap` / `stack` / `new`
+        // prefix is ambiguous (parses as a methodCall) and now rejected in
+        // v2. Catches the case where the "method name" resolves to a class
+        // type. Views keep their legacy `MyView(bytes)` form (handled
+        // above via the view-construction path); interfaces aren't
+        // constructible at all and would fail downstream anyway.
+        if (children.empty()) {
+            auto resolvedType = CajetaType::of(methodCallName);
+            auto classType = std::dynamic_pointer_cast<CajetaClass>(resolvedType);
+            auto viewType  = std::dynamic_pointer_cast<CajetaView>(resolvedType);
+            if (classType && !classType->isInterface() && !viewType) {
+                char buf[640];
+                snprintf(buf, sizeof(buf),
+                    "class '%s' cannot be constructed via bare `%s(...)` "
+                    "syntax in the unified-class model. Use `heap %s(...)` "
+                    "for heap allocation or `stack %s(...)` for stack "
+                    "allocation (`stack` lands fully in Phase 2). The "
+                    "`new` keyword continues to work during the deprecation "
+                    "cycle.",
+                    methodCallName.c_str(), methodCallName.c_str(),
+                    methodCallName.c_str(), methodCallName.c_str());
+                throw Exception(buf, "CAJETA_ERROR_BARE_CLASS_CONSTRUCTION");
             }
         }
 
