@@ -58,10 +58,11 @@ Convention: each entry is a brief description, why it matters, where it bites to
 - ⏭️ **P5** — live-borrow tracker for iterator invalidation (Q10 in Open questions).
 - 🟡 **P6** — stdlib rollout: in progress.
   - ✅ **P6.1** (`1f1f39a`) — `cajeta.lang.Pair<K,V>` two-field generic class with first()/second() accessors, ctor. 3 tests.
-  - ⏭️ **P6.2 Optional<T>** — attempted minimal surface (Some/None/isPresent/get/orElse). Hit two compiler gaps that need their own sessions:
-    1. **Generic static factory call syntax** — `Optional<int32>.Some(42)` doesn't parse. Grammar accepts `Optional.Some(42)` (no type args between identifier and `.method()`) but that loses the explicit type binding. Java's `Optional.<int32>of(42)` shape or implicit inference is the workaround.
-    2. **Generic class boolean-field codegen** — even without explicit type args, an LLVM ICmp type mismatch fires when reading the `boolean present` field on a generic instantiation. Suggests a boolean-coercion or type-instantiation gap in TemplateInstantiator for boolean fields. Needs a focused probe.
-  - ⏭️ **P6.3+** — Stream / AbstractStream / ArrayStream / HashMap.entries()/keys()/values() / Collector / Collectors. Each is its own piece. Stream is the biggest (combinator implementations).
+  - ✅ **P6.2** (`2e3f331`) — `cajeta.lang.Optional<T>` minimal surface: ctor + isPresent/isEmpty/get/orElse. Fixed a pre-existing PrefixExpression bug (loadOperand didn't handle DotExpression GEPs → `!boolField` triggered LLVM ICmp type mismatch). 4 Optional tests + 3 GenericBoolProbe tests pinning the fix.
+  - ⏭️ **Generic static factory call syntax** — `Optional<int32>.Some(42)` doesn't parse. Grammar accepts `Optional.Some(42)` (no type args between identifier and `.method()`) but that loses the explicit type binding. Workaround in v1 Optional: direct ctor (`heap Optional<int32>(true, 42)`). Java's `Optional.<int32>of(42)` shape or implicit inference is the proper fix.
+  - ⏭️ **Optional.get() throw on empty** — v1 returns the zero-init value. Throw integration with stdlib-side throw machinery is its own piece.
+  - ⏭️ **P6.3** — Optional lambda combinators (map/filter/flatMap/fold/orElseGet/orElseThrow/ifPresent/inspect). Need function-typed parameters inside generic stdlib classes verified.
+  - ⏭️ **P6.4+** — Stream / AbstractStream / ArrayStream / HashMap.entries()/keys()/values() / Collector / Collectors. Each is its own piece. Stream is the biggest (combinator implementations).
 
 ### Open questions (pinned)
 
