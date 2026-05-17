@@ -235,19 +235,43 @@ namespace cajeta {
         // `countInheritedFields() + order + 1` formula accounts for the
         // shift.
         // Pick the LLVM type for a property when laying it out inside
-        // the enclosing class struct. Array-typed fields are stored as
-        // **pointers** to the heap-allocated `{ size, data }` header
-        // — embedding the header inline would leave nowhere for `new
-        // T[N]`'s returned pointer to land, producing a heap-corruption
-        // assignment. Other reference types (non-struct CajetaClass)
-        // are still embedded inline today; converting those to pointer
-        // storage too is a separate, broader change (touches every
-        // class-typed field's access path, including inherited fields
-        // like Throwable.message which is currently inline).
+        // the enclosing class struct. Reference-typed fields — arrays
+        // AND plain class refs — are stored as **pointers** to the
+        // heap-allocated body, not inline.
+        //
+        // Why: embedding the body inline (a) leaves nowhere for the
+        // heap-returned pointer to land (the slot's bit-pattern would
+        // be the inline body, not a reference), and (b) for template
+        // instantiations whose body is a named/anonymous struct (e.g.
+        // `Stream<int32>` lowers to a `{ ptr vtable }` `%union.anon`),
+        // any call site passing the loaded field value to a `ptr`-typed
+        // parameter trips the LLVM verifier ("Call parameter type does
+        // not match function signature"). The methods-only / single-
+        // word case happens to round-trip under opaque pointers because
+        // the slot's bit-pattern is one pointer wide; classes with
+        // additional fields or distinct named types would crash
+        // unpredictably. Uniform `ptr` storage matches the Method
+        // signature convention (class params/returns are `ptr` — see
+        // Method.cpp:451) and the existing GEP+load code path that
+        // already loads class-ref fields through as `ptr`.
+        //
+        // CajetaView (zero-copy struct) and CajetaInterface (24-byte
+        // fat pointer) keep inline storage: views are by-design typed
+        // overlays on a wire-format buffer, and interface values are
+        // their fat pointer body.
         auto* lctx = module->getLlvmContext();
         auto fieldLayoutType = [&](const StructurePropertyPtr& p) -> llvm::Type* {
             CajetaTypePtr t = p->getType();
             if (dynamic_pointer_cast<CajetaArray>(t)) {
+                return llvm::PointerType::get(*lctx, 0);
+            }
+            if (auto cls = dynamic_pointer_cast<CajetaClass>(t)) {
+                if (dynamic_pointer_cast<CajetaView>(t)) {
+                    return t->getLlvmType();  // inline view body
+                }
+                if (cls->isInterface()) {
+                    return t->getLlvmType();  // inline 24-byte fat pointer
+                }
                 return llvm::PointerType::get(*lctx, 0);
             }
             return t->getLlvmType();

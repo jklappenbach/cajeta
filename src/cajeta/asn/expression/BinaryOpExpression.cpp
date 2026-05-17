@@ -101,39 +101,34 @@ namespace cajeta {
                 if (resolvedIsInterface && llvm::isa<llvm::GetElementPtrInst>(v)) {
                     return v;
                 }
-                // Array-typed fields are stored in the parent class
-                // struct as `ptr` (see CajetaClass::generatePrototype's
-                // fieldLayoutType rule), not as the inline header
-                // struct. Loading the slot must use ptr, not the
-                // header type — otherwise we read past the slot into
-                // the next field's bytes. Same rule that
-                // ArrayIndexExpression and the slot-type computation
-                // in BINARY_OP_ASSIGN already follow.
-                //
-                // S6.3: same `ptr` rule when the PARENT is a CajetaStruct
-                // and the field is a plain class ref. Structs lay out
-                // class-typed fields as pointer slots (per Structs.md
-                // § "Class references occupy a single pointer-width slot");
-                // loading the receiver's class struct body through an
-                // 8-byte slot would walk past the slot into neighbor
-                // bytes. Class-of-class still loads as the class struct
-                // because CajetaClass embeds class fields inline today
-                // (the known wart noted in CajetaClass::generatePrototype).
+                // Reference-typed fields — arrays and plain class refs —
+                // are stored in the parent struct as `ptr` (see
+                // CajetaClass::generatePrototype's fieldLayoutType
+                // rule), not as the inline header / body struct.
+                // Loading the slot must use ptr, not the body type,
+                // or (a) we'd read past the slot into neighbor bytes
+                // for multi-pointer bodies, and (b) for template-
+                // instantiation field types the loaded value would be
+                // an inline struct (e.g. `%union.anon` for
+                // `Stream<int32>`) that doesn't unify with `ptr` at
+                // function-arg slots (verify failure). The CajetaArray
+                // and parent-is-struct branches were the predecessors;
+                // the unified rule below subsumes both. Interfaces
+                // (24-byte fat pointer body) and CajetaView (zero-copy
+                // overlays) keep inline storage and load as the body
+                // type — handled by the catch-all `loadTy =
+                // resolved->getLlvmType()` after the explicit rejects.
                 llvm::Type* loadTy;
-                bool parentIsStruct = false;
-                if (!dot->getChildren().empty()) {
-                    auto recv = dynamic_pointer_cast<Expression>(dot->getChildren()[0]);
-                    if (recv && recv->getResolvedType()) {
-                        parentIsStruct = dynamic_pointer_cast<CajetaStruct>(
-                            recv->getResolvedType()) != nullptr;
-                    }
-                }
                 bool fieldIsClassRef = dynamic_pointer_cast<CajetaClass>(resolved) != nullptr
                     && !dynamic_pointer_cast<CajetaView>(resolved)
                     && !dynamic_pointer_cast<CajetaArray>(resolved);
+                bool fieldIsInterface = false;
+                if (auto rc = dynamic_pointer_cast<CajetaClass>(resolved)) {
+                    fieldIsInterface = rc->isInterface();
+                }
                 if (dynamic_pointer_cast<CajetaArray>(resolved)) {
                     loadTy = llvm::PointerType::get(*module->getLlvmContext(), 0);
-                } else if (parentIsStruct && fieldIsClassRef) {
+                } else if (fieldIsClassRef && !fieldIsInterface) {
                     loadTy = llvm::PointerType::get(*module->getLlvmContext(), 0);
                 } else {
                     loadTy = resolved->getLlvmType();
@@ -632,16 +627,25 @@ namespace cajeta {
                                         throw Exception(buf,
                                             "CAJETA_ERROR_VARSIZE_FIELD_ASSIGN");
                                     }
-                                    // Array fields are stored as pointers in
-                                    // the class layout (see CajetaClass::
-                                    // generatePrototype's fieldLayoutType
-                                    // rule). The slot is `ptr`, not the
-                                    // inline `{ size, [0 x T] }` struct, so
-                                    // `slotTy` must reflect that or the
-                                    // store coerces a heap pointer down to
-                                    // the struct's first element type and
-                                    // overwrites only those bytes.
-                                    if (dynamic_pointer_cast<CajetaArray>(found->getType())) {
+                                    // Reference-typed fields — arrays and
+                                    // plain class refs — are stored as
+                                    // pointers in the class layout (see
+                                    // CajetaClass::generatePrototype's
+                                    // fieldLayoutType rule). The slot is
+                                    // `ptr`, not the inline `{ size, [0 x T] }`
+                                    // (array) / class body, so `slotTy`
+                                    // must reflect that or the store coerces
+                                    // the heap pointer down to the body's
+                                    // first element type and overwrites
+                                    // only those bytes. Views (zero-copy
+                                    // overlays) and interfaces (24-byte
+                                    // fat pointers) keep inline storage.
+                                    auto foundCls = dynamic_pointer_cast<CajetaClass>(found->getType());
+                                    bool foundIsView = dynamic_pointer_cast<CajetaView>(found->getType()) != nullptr;
+                                    bool foundIsArray = dynamic_pointer_cast<CajetaArray>(found->getType()) != nullptr;
+                                    bool foundIsInterface = foundCls && foundCls->isInterface();
+                                    if (foundIsArray
+                                            || (foundCls && !foundIsView && !foundIsInterface)) {
                                         slotTy = llvm::PointerType::get(
                                             *module->getLlvmContext(), 0);
                                     } else {

@@ -1,0 +1,35 @@
+package cajeta.lang;
+
+/**
+ * Intermediate combinator: wraps another Stream and yields at most
+ * `n` elements from it. Lazy — only pulls from the source as the
+ * downstream consumer calls next(). Constructed via
+ * `someStream.take(n)`; not typically instantiated directly.
+ *
+ * Implementation note (P1.1): `Stream<T> source;` is a template-
+ * instantiated class-typed field. The enclosing class struct lays
+ * it out as a `ptr` slot per CajetaClass::generatePrototype's
+ * fieldLayoutType rule; the JIT signature for the ctor and method
+ * calls follows the same `ptr` convention.
+ */
+public class TakeStream<T> extends Stream<T> {
+    Stream<T> source;
+    int32 remaining;
+
+    public TakeStream(Stream<T> source, int32 n) {
+        this.source = source;
+        this.remaining = n;
+    }
+
+    public Optional<T> next() {
+        if (this.remaining <= 0) {
+            return heap Optional<T>(false, null);
+        }
+        Optional<T> o = this.source.next();
+        if (o.isEmpty()) {
+            return o;
+        }
+        this.remaining = this.remaining - 1;
+        return o;
+    }
+}

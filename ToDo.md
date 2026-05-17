@@ -8,9 +8,9 @@ Convention: each entry is a brief description, why it matters, where it bites to
 
 ## Current state (2026-05-17, end-of-session)
 
-Tree at 831/831 — zero disabled tests.
+Tree at 849/849 — zero disabled tests.
 
-Recently landed (Phase 7 + P6.5/P6.7 + memory-model gap pass + Priority 1 push + mode/debug-features push):
+Recently landed (Phase 7 + P6.5/P6.7 + memory-model gap pass + Priority 1 push + mode/debug-features push + P1.1 template-field codegen):
 - `struct` is a transitional alias for `class`; CajetaAggregate retired.
 - `(T) -> void` parses as a method-parameter type; lambda-arg expectedType inference works.
 - `cajeta.lang.Stream.forEach` + `cajeta.collection.ArrayList<T>` landed.
@@ -25,6 +25,7 @@ Recently landed (Phase 7 + P6.5/P6.7 + memory-model gap pass + Priority 1 push +
 - **Compiler mode infrastructure — done.** `CompilerMode` enum (Debug, DebugRelease, Release, Fast, Minimal) + `CompilerFlags` struct with 13 toggle fields; CLI parses `--mode=`, flavor aliases, and per-feature overrides. Threaded through `Compiler` → `CajetaModule`. Doc: `cajeta-docs/CompilerModes.md`.
 - **Source-tagged drop-chain entries — done.** When `flags.sourceTags` is on (default under `--debug`), every drop-chain push carries the alloc-site file + line via `cajeta_drop_entry_debug` (40 B vs 32 B base). Pinned by `test/parser/SourceTaggedDropTests.cpp` (6 tests).
 - **SIGABRT handler with chain walk — done.** Runtime constructor installs the handler at load; on abort, dumps the per-thread drop chain (with source tags when available) and chains to the previous handler.
+- **Template-instantiation field codegen — done.** All class-typed fields (templated or plain) now lay out as `ptr` rather than the inline class body; matches the `pass class by pointer` rule in Method.cpp. Also fixed companion issues: BinaryOpExpression loadIfLValue + BINARY_OP_ASSIGN slot-type unified to `ptr` for class refs, and MethodCallExpression receiver-load now load-throughs chained DotExpression field GEPs for class-ref receivers (`this.field.method()`). Unblocks the wrapper-stream pattern: `TakeStream<T>` landed as the first intermediate combinator with a `Stream<T> source;` field. Pinned by `test/parser/StreamIntermediateTests.cpp` (5 tests).
 
 Stack vs heap class instantiation is fully working: `heap T(args)`, `stack T(args)`, `heap T { … }`, `stack T { … }`, all with vtable init + ctor invocation + correct virtual destructor dispatch. See `test/parser/UnifiedClassSyntaxTests.cpp:44,137,184,249,317,576`, `test/parser/ClassDropTests.cpp`, and `test/parser/VirtualDropDispatchTests.cpp`.
 
@@ -36,15 +37,17 @@ Priority is rough effort × user-visible correctness impact.
 
 ### Priority 1 — compiler infrastructure
 
-P1.1 (compiler mode infrastructure) and P1.2 (annotation argument capture) both landed. The annotation-arg machinery in `Annotatable` (typed `getString`/`getInt`/`getBool`/`getClassRef`/`getStringList`/`getIntList` accessors) + `CajetaLlvmVisitor::parseAnnotationInstance` populates args for every annotation site. Live consumers: `@Order(n)`, `@Component(name=...)`, `@Inject(name=..., allocate=...)`, `@SuppressLint(...)`, `@Native(value=...)`. New annotations that take args plug into the same machinery — no new infrastructure needed.
+P1.1 (compiler mode infrastructure), P1.2 (annotation argument capture), and P1.1-template-field-codegen all landed. The annotation-arg machinery in `Annotatable` (typed `getString`/`getInt`/`getBool`/`getClassRef`/`getStringList`/`getIntList` accessors) + `CajetaLlvmVisitor::parseAnnotationInstance` populates args for every annotation site. Live consumers: `@Order(n)`, `@Component(name=...)`, `@Inject(name=..., allocate=...)`, `@SuppressLint(...)`, `@Native(value=...)`. New annotations that take args plug into the same machinery — no new infrastructure needed.
 
-1. **Template-instantiation field codegen — ~1 session.** `[mode-agnostic]` — When a class field's declared type is a template instantiation (`Stream<T> source;`, `Optional<Hello> value;`, `Pair<Hello, Hello>`), the field is laid out as the by-value struct contents of the instantiated class (`{ ptr }`, i.e. `%union.anon` in IR) instead of `ptr` (a reference to a heap instance). Breaks ctor signatures + field access. Does NOT hit non-templated class-typed fields — `Tracer t;` in a non-templated `Holder` lays out as `ptr` correctly. Workaround today: avoid template-instantiated class types as field types. Fix path: in the field-LLVM-type lookup, treat any class-typed field (templated or not) uniformly as `ptr`. **Blocks**: P2.2 intermediate combinators (TakeStream/SkipStream/FilterStream/PeekStream all need `Stream<T> source;`), P2.4 `@Encoding<JsonEncoder<X>>`, idiomatic stdlib `Optional<Class>` / `Pair<Class, Class>` usage. Surfaced when P2.2's TakeStream<T> hit "Call parameter type does not match function signature" with `%union.anon` vs `ptr`.
+1. **Intrinsic-result upcast to parent template type — ~0.5 session.** `[mode-agnostic]` — `Stream<int32> src = xs.stream();` (where `.stream()` returns `ArrayStream<int32>`) trips a JIT symbol-resolution failure at lookup time: "Symbols not found: cajeta.lang.ArrayStream<int32>::ArrayStream(...)". Exact-type local works (`ArrayStream<int32> as = xs.stream()`), as does explicit two-step `ArrayStream<int32> as = …; Stream<int32> src = as;`. Likely a cross-module instantiation issue where the LHS type drives which module gets the ArrayStream<int32> body. Doesn't block correctness — the explicit two-step pattern works today; see `test/parser/StreamIntermediateTests.cpp` for the working shape.
+
+2. **Subtype-aware ctor / method param matching — ~1 session.** `[mode-agnostic]` — `Method::buildGeneric` keys lookups by exact param canonical names; passing an `ArrayStream<int32>` arg where a `Stream<int32>` param is declared misses the lookup unless the local is typed exactly as `Stream<int32>`. Fix path: in `resolveMethod`'s fallback after the exact lookup fails, try alternative keys with each class-typed arg walked up through its `superClasses`. Surfaced while testing TakeStream — workaround is to declare the local at the parent type.
 
 ### Priority 2 — language surface
 
 1. **More collections — multi-session.** `[mode-agnostic]` — HashSet (HashMap-backed thin wrapper), `HashMap.entries()/keys()/values()` returning Streams (`HashMap` itself already exists in `runtime/src/cajeta/collection/HashMap.cajeta`), LinkedList, `Collector<T,R>` + `cajeta.lang.Collectors`. Each is its own piece.
 
-2. **Stream lambda combinators — multi-session.** `[mode-agnostic]` — Terminals **anyMatch, allMatch, noneMatch, findFirst, reduce** landed (pinned by `test/parser/StreamTerminalTests.cpp`, 13 tests). Remaining: intermediate combinators (take, skip, filter, peek, map, flatMap) + terminal collect + method-level-templated fold<R>. **Intermediate combinators blocked on P1.1 (template-instantiation field codegen)** — wrapper-stream pattern needs `Stream<T> source;` field. `collect` needs `Collector<T,R>` from P2.1. `fold<R>` needs P2.3 method-level type parameters.
+2. **Stream lambda combinators — multi-session.** `[mode-agnostic]` — Terminals **anyMatch, allMatch, noneMatch, findFirst, reduce** landed (pinned by `test/parser/StreamTerminalTests.cpp`, 13 tests). **TakeStream<T>** landed as the first intermediate combinator (pinned by `test/parser/StreamIntermediateTests.cpp`, 5 tests). Remaining intermediate combinators: skip, filter, peek, map, flatMap — same wrapper-stream shape as TakeStream. Remaining terminals: collect (needs `Collector<T,R>` from P2.1) + method-level-templated fold<R> (needs P2.3 method-level type parameters).
 
 3. **Templated-static-factory call syntax — needs method-level template parameters first.** `[mode-agnostic]` — `Optional<int32>.Some(42)` doesn't parse. Grammar rejects `public static <T> Box of(T arg)`. Add `typeParameters?` to `methodDeclaration`, then wire visitor + dispatch.
 
@@ -56,7 +59,7 @@ In Lombok's recommended adoption order:
 
 1. **`@Getter` / `@Setter` — ~1 session.** Field-walk synthesizers. Visibility via `(level="private")`. Doc: `cajeta-docs/Annotations.md` § Accessors.
 2. **`@ToString` — ~0.5 session.** `(exclude={"...","..."})` variants. Doc: `Annotations.md` § Equality + hashing + toString.
-3. **`@EqualsAndHashCode` — ~1 session.** Subsumes `@AutoHash` as a soft-deprecation alias. Doc: same.
+3. **`@EqualsAndHashCode` — Rejected.  We already have @AutoHash planned, perhaps could rename to @Hash.  There's no equals.  We have operator ==()
 4. **`@NoArgsConstructor` / `@AllArgsConstructor` / `@RequiredArgsConstructor` — ~1 session.** Constructor synthesizers. Doc: `Annotations.md` § Constructors.
 5. **`@Data` / `@Value` — ~0.5 session.** Bundle annotations expanding into the above. Doc: `Annotations.md` § Bundles.
 6. **`@NonNull` — ~1 session.** `[both]` — synthesis is mode-agnostic, but the emitted null-check composes with `--null-checks` (P5 below). Doc: `Annotations.md` § Null safety.

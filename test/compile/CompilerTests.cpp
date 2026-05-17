@@ -19,13 +19,14 @@ TEST(CompilerTests, canThrowOnInvalidInput) {
 }
 
 // Every Cajeta compilation implicitly loads the stdlib prelude. Current
-// content: cajeta.lang.{Object, Pair, Optional, Stream, ArrayStream} +
-// cajeta.error.{Throwable, Exception, RecoverableException,
-// UnrecoverableException} + cajeta.hash.Hash + cajeta.collection.HashMap.
-// Each source file under runtime/src/cajeta/ adds one entry to
-// CajetaModule::strutureToModule via CajetaModule::create(), counted
-// whether the class is template or concrete. Bump when stdlib grows.
-static constexpr size_t STDLIB_STRUCTURE_COUNT = 12;
+// content: cajeta.lang.{Object, Pair, Optional, Stream, ArrayStream,
+// TakeStream} + cajeta.error.{Throwable, Exception, RecoverableException,
+// UnrecoverableException} + cajeta.hash.Hash + cajeta.collection.HashMap
+// + cajeta.collection.ArrayList. Each source file under runtime/src/cajeta/
+// adds one entry to CajetaModule::strutureToModule via
+// CajetaModule::create(), counted whether the class is template or concrete.
+// Bump when stdlib grows.
+static constexpr size_t STDLIB_STRUCTURE_COUNT = 13;
 
 TEST(CompilerTests, canParseOnValidShortPackage) {
     string inputPath = CAJETA_TEST_ROOT + string("/compile/code/src/cajeta/Test.cajeta");
