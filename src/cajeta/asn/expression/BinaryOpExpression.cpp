@@ -12,6 +12,7 @@
 #include "../../type/CajetaArray.h"
 #include "Expression.h"
 #include "DotExpression.h"
+#include "MethodCallExpression.h"
 #include "Identifier.h"
 #include "AggregateInitializerExpression.h"
 #include "NewExpression.h"
@@ -183,6 +184,20 @@ namespace cajeta {
         // vtable address. Then the stack-drop walking h calls free on
         // the vtable address (invalid pointer crash).
         if (dynamic_pointer_cast<NewExpression>(ast)) {
+            return v;
+        }
+        // MethodCallExpression: the return value of a call IS the
+        // language-level value. For class returns the callee returns
+        // `ptr` (per Method::generatePrototype's pass-by-pointer
+        // convention), and the pointer IS the instance reference —
+        // not a slot to load through. Without this pre-empt the
+        // catch-all `loadTy != v->getType()` branch below would see
+        // resolvedType's body struct type, decide loadTy differs from
+        // ptr, and load the entire body through the pointer — handing
+        // back a struct value that won't pass as a `ptr` arg at a
+        // ctor / method call site. NewExpression has the same carve-
+        // out for the same reason.
+        if (dynamic_pointer_cast<MethodCallExpression>(ast)) {
             return v;
         }
         // IdentifierExpression that resolved to a class property via the

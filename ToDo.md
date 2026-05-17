@@ -8,9 +8,9 @@ Convention: each entry is a brief description, why it matters, where it bites to
 
 ## Current state (2026-05-17, end-of-session)
 
-Tree at 855/855 — zero disabled tests.
+Tree at 858/858 — zero disabled tests.
 
-Recently landed (Phase 7 + P6.5/P6.7 + memory-model gap pass + Priority 1 push + mode/debug-features push + P1.1 template-field codegen + P1.1 follow-ups):
+Recently landed (Phase 7 + P6.5/P6.7 + memory-model gap pass + Priority 1 push + mode/debug-features push + P1.1 template-field codegen + P1.1 follow-ups + inline-MCE-as-ctor-arg):
 - `struct` is a transitional alias for `class`; CajetaAggregate retired.
 - `(T) -> void` parses as a method-parameter type; lambda-arg expectedType inference works.
 - `cajeta.lang.Stream.forEach` + `cajeta.collection.ArrayList<T>` landed.
@@ -28,6 +28,7 @@ Recently landed (Phase 7 + P6.5/P6.7 + memory-model gap pass + Priority 1 push +
 - **Template-instantiation field codegen — done.** All class-typed fields (templated or plain) now lay out as `ptr` rather than the inline class body; matches the `pass class by pointer` rule in Method.cpp. Also fixed companion issues: BinaryOpExpression loadIfLValue + BINARY_OP_ASSIGN slot-type unified to `ptr` for class refs, and MethodCallExpression receiver-load now load-throughs chained DotExpression field GEPs for class-ref receivers (`this.field.method()`). Unblocks the wrapper-stream pattern: `TakeStream<T>` landed as the first intermediate combinator with a `Stream<T> source;` field. Pinned by `test/parser/StreamIntermediateTests.cpp` (5 tests).
 - **Subtype-aware ctor / method param matching — done.** `resolveMethod` now falls back from exact canonical-key lookup to a positional scan that walks each arg's `superClasses` via BFS, returning the most specific match. Lets `ArrayStream<int32>` args bind to `Stream<int32>` params (ctor or otherwise) without an explicit upcast local. Pinned by `test/parser/SubtypeArgLookupTests.cpp` (4 tests, both user-defined hierarchy and stdlib templates).
 - **Intrinsic-result upcast JIT symbol resolution — done.** A user method body that triggers a stdlib template instantiation mid-codegen (e.g. `xs.stream()` lowers to `ArrayStream<int32>::ArrayStream(...)`) used to leave that instantiation's method bodies un-emitted because the Phase 2 loop had already swept stdlib. The Phase 2 (and Phase 1) walk now loops until the total method count across all modules stops growing — `Method::getLlvmFunctionType` and `Method::generateCode` are both idempotent, so revisiting already-emitted methods is a no-op. Applied to both `Compiler::compile` and the JIT test harness. Pinned by `test/parser/UpcastInitializerTests.cpp` (2 tests).
+- **Inline-MCE-as-ctor-arg — done.** `heap T(xs.stream(), n)` or `heap T(Mk.make(xs), n)` used to crash because `MethodCallExpression` never set its own `resolvedType`. ClassCreatorRest fell back to `CajetaType::of(value)` which returns the generic `pointer` type for an opaque-pointer Value; `Method::buildGeneric` then built the wrong lookup key, the lookup failed, and downstream code crashed. Fix mirrors `NewExpression::resolveTypes`: MCE now pins `resolvedType` from the called method's return type (both the `.stream()` intrinsic and the general dispatch path), and `loadIfLValue` gets the same NewExpression-style carve-out — for MCE-typed expressions the returned pointer IS the language-level value and shouldn't be load-throughed. Pinned by `test/parser/InlineCtorArgTests.cpp` (3 tests covering intrinsic, user-method, and nested-heap forms).
 
 Stack vs heap class instantiation is fully working: `heap T(args)`, `stack T(args)`, `heap T { … }`, `stack T { … }`, all with vtable init + ctor invocation + correct virtual destructor dispatch. See `test/parser/UnifiedClassSyntaxTests.cpp:44,137,184,249,317,576`, `test/parser/ClassDropTests.cpp`, and `test/parser/VirtualDropDispatchTests.cpp`.
 
@@ -39,9 +40,9 @@ Priority is rough effort × user-visible correctness impact.
 
 ### Priority 1 — compiler infrastructure
 
-P1.1 (compiler mode infrastructure), P1.2 (annotation argument capture), P1.1-template-field-codegen, P1.1-subtype-ctor-lookup, and P1.1-intrinsic-upcast-jit all landed. The annotation-arg machinery in `Annotatable` (typed `getString`/`getInt`/`getBool`/`getClassRef`/`getStringList`/`getIntList` accessors) + `CajetaLlvmVisitor::parseAnnotationInstance` populates args for every annotation site. Live consumers: `@Order(n)`, `@Component(name=...)`, `@Inject(name=..., allocate=...)`, `@SuppressLint(...)`, `@Native(value=...)`. New annotations that take args plug into the same machinery — no new infrastructure needed.
+P1.1 (compiler mode infrastructure), P1.2 (annotation argument capture), P1.1-template-field-codegen, P1.1-subtype-ctor-lookup, P1.1-intrinsic-upcast-jit, and inline-MCE-as-ctor-arg all landed. The annotation-arg machinery in `Annotatable` (typed `getString`/`getInt`/`getBool`/`getClassRef`/`getStringList`/`getIntList` accessors) + `CajetaLlvmVisitor::parseAnnotationInstance` populates args for every annotation site. Live consumers: `@Order(n)`, `@Component(name=...)`, `@Inject(name=..., allocate=...)`, `@SuppressLint(...)`, `@Native(value=...)`. New annotations that take args plug into the same machinery — no new infrastructure needed.
 
-1. **Inline-intrinsic-as-ctor-arg crash — ~0.5 session.** `[mode-agnostic]` — `heap TakeStream<int32>(xs.stream(), 4)` (passing the intrinsic result straight in without binding to a local) crashes the test process. The two-step form (`Stream<int32> src = xs.stream(); heap TakeStream<int32>(src, 4)`) works. Likely a resolveTypes/generateCode ordering issue specific to the inline form. Tracked separately from the subtype-aware ctor lookup that lets the upcast itself succeed.
+No open P1 items.
 
 ### Priority 2 — language surface
 
@@ -59,13 +60,13 @@ In Lombok's recommended adoption order:
 
 1. **`@Getter` / `@Setter` — ~1 session.** Field-walk synthesizers. Visibility via `(level="private")`. Doc: `cajeta-docs/Annotations.md` § Accessors.
 2. **`@ToString` — ~0.5 session.** `(exclude={"...","..."})` variants. Doc: `Annotations.md` § Equality + hashing + toString.
-3. **`@EqualsAndHashCode` — Rejected.  We already have @AutoHash planned, perhaps could rename to @Hash.  There's no equals.  We have operator ==()
+3. **`@EqualsAndHashCode` — Rejected.  We already have @AutoHash planned, perhaps could rename to @Hash.  There's no equals on Object in Cajeta.  We have operator ==() overrides
 4. **`@NoArgsConstructor` / `@AllArgsConstructor` / `@RequiredArgsConstructor` — ~1 session.** Constructor synthesizers. Doc: `Annotations.md` § Constructors.
 5. **`@Data` / `@Value` — ~0.5 session.** Bundle annotations expanding into the above. Doc: `Annotations.md` § Bundles.
 6. **`@NonNull` — ~1 session.** `[both]` — synthesis is mode-agnostic, but the emitted null-check composes with `--null-checks` (P5 below). Doc: `Annotations.md` § Null safety.
 7. **`@Builder` — ~2 sessions.** Largest piece; synthesizes a Builder inner class + chained setters + `.build()` with `@NonNull` validation. `@Builder.Default` on a field. Doc: `Annotations.md` § Builders.
 8. **`@With` — ~1 session.** Per-field copy-with mutators (`withX(value)` returns a new instance with `x` replaced). Doc: `Annotations.md` § Immutability friend.
-9. **`@Cleanup("method"="close")` — ~0.5 session.** try/finally synthesis around the annotated local. Doc: `Annotations.md` § Resource cleanup.
+9. **`@Cleanup("method"="close")` — Rejected, we have destructors.  
 
 ### Priority 4 — debug-mode features (CompilerModes.md phasing order)
 
@@ -106,7 +107,7 @@ All `[mode-agnostic]`.
 
 - ✅ **Automatic field drops.** Landed via FieldOwnership.md § Solution B: the per-thread live-allocation set lets every heap allocation track its liveness; auto-drop calls the type-specific helper (`__cajeta_class_virtual_drop` / `__cajeta_free_array`) which atomically claims out of the set, so aliased fields no-op safely. Spec at `MemoryModel.md:138` updated; doctrine at `cajeta-docs/FieldOwnership.md`; tests at `test/parser/AutoFieldDropTests.cpp` and `test/parser/FieldOwnershipAliasingTests.cpp`. Trade-off: use-after-free of an aliased field whose source has dropped is now the programmer's responsibility (Phase 6+ lifetime tracker can re-tighten).
 - **No `super.~Class()` chaining.** Now reachable via virtual dispatch (Gap 1) — needs design pass for whether the base destructor should chain implicitly. Doc: `MemoryModel.md:139`.
-- **Multi-parameter borrow-return needs lifetime annotations.** Multi-input free functions can't return a borrow. Rust-style explicit lifetimes would lift it. Doc: `MemoryModel.md:307`.
+- **Multi-parameter borrow-return needs lifetime annotations.  [I don't like those.  They're cumbersome and confusing.   Find other ways to solve the initial problems] ** Multi-input free functions can't return a borrow. Rust-style explicit lifetimes would lift it. Doc: `MemoryModel.md:307`.
 
 ---
 

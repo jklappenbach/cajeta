@@ -1089,6 +1089,13 @@ namespace cajeta {
                         string ctorName = "ArrayStream";
                         instantiated->invokeMethod(ctorName, entries,
                             /*isConstructor=*/true, instance, module);
+                        // Pin resolvedType so a caller using this MCE as a
+                        // ctor / method argument can recover the static type
+                        // (ArrayStream<T>) instead of falling back to the
+                        // generic `pointer` type CajetaType::of(value)
+                        // returns for an opaque-pointer Value. Mirrors what
+                        // NewExpression::resolveTypes does for `new T(...)`.
+                        resolvedType = instantiated;
                         return instance;
                     }
                 }
@@ -1410,6 +1417,29 @@ namespace cajeta {
 
         llvm::Value* callResult = targetClass->invokeMethod(methodCallName, entries,
             /*isConstructor=*/false, thisValue, /*callerModule=*/module);
+
+        // Pin resolvedType to the called method's return type so a caller
+        // using this MCE as a ctor / method argument can recover the
+        // static type instead of CajetaType::of(value)'s opaque-pointer
+        // fallback (which returns the generic `pointer` type and tripped
+        // Method::buildGeneric into building the wrong lookup key — see
+        // NewExpression::resolveTypes for the parallel rationale).
+        // resolveMethod is cheap and idempotent: invokeMethod already
+        // ran it; calling it again hits the same cached lookup. We
+        // pre-check `!resolvedType` so intrinsic paths above (.stream(),
+        // primitive .hash(), string intrinsics) that already pinned the
+        // type aren't clobbered with a possibly-null follow-up.
+        if (!resolvedType && targetClass) {
+            bool callFloating = true;
+            for (auto& e : entries) {
+                if (e.label.empty()) { callFloating = false; break; }
+            }
+            MethodPtr resolved = targetClass->resolveMethod(
+                methodCallName, entries, /*isConstructor=*/false, callFloating);
+            if (resolved && resolved->getReturnType()) {
+                resolvedType = resolved->getReturnType();
+            }
+        }
 
         // S6.7 — repackage a struct-returning call. The callee returns the
         // struct VALUE (per Method::generatePrototype, CajetaStruct returns
