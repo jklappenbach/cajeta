@@ -52,7 +52,7 @@ Convention: each entry is a brief description, why it matters, where it bites to
 - ⏭️ **P2c/P2d** — CajetaStruct collapse into CajetaClass + drop isAggregate skip + struct keyword aliasing + 9-file struct test migration. **Experiment crashed 22/32 shards on a naive collapse**; needs dedicated session with per-test migration + drop-chain unification + field-index offset reconciliation (struct's no-vtable layout vs class's vtable-at-0 layout disagree on every field offset).
 - ⏭️ **Owned class-ref fields on stack owners** — currently leak. KNOWN LIMITATION from P2a; needs a stack-drop variant that walks owned fields without freeing the body. Schedule alongside the P2c/P2d work.
 - ⏭️ **P3** — definite-assignment analysis (Q3 in Open questions).
-- ⏭️ **P4** — covariant return types (Q2 in Open questions).
+- ✅ **P4** — covariant return types: already supported by the hash-based vtable; no compiler change needed. Pinned with two tests in UnifiedClassSyntaxTests.
 - ⏭️ **P5** — live-borrow tracker for iterator invalidation (Q10 in Open questions).
 - ⏭️ **P6** — stdlib rollout (Optional, Stream, Pair, Collector, collections).
 
@@ -64,11 +64,15 @@ Convention: each entry is a brief description, why it matters, where it bites to
 
 **Resolution:** use `AbstractStream<T>` abstract class for the concrete combinator bodies; implementers extend it (`class Optional<T> extends AbstractStream<T>, AbstractHashable<T>`). Stream<T> stays as a thin interface (protocol marker). No new compiler feature.
 
-#### Q2 — Covariant return types on overrides — DECIDED: land as a feature
+#### Q2 — Covariant return types on overrides — ALREADY WORKS (probe confirmed)
 
-Schedule the half-session work to support covariant returns. Probe cajeta's current state first (hash-based vtable may already permit it), but commit to landing it explicitly with test coverage so Optional's `Optional<U> map() override` reliably works.
+Cajeta's hash-based vtable already supports covariant returns. `Method::buildCanonical` produces `parent::name(paramTypes)` — return type is NOT part of the canonical, so subclass overrides with narrower returns collide with the base entry in `CajetaClass::buildVirtualTable`'s `uniqueByCanonical` map and correctly replace it.
 
-**Implementation:** relax the signature compatibility check from "exact return type match" to "implementer's return type must be assignment-compatible with the base's return type." Vtable still types as wider; concrete-receiver call sites see the narrower override.
+Test coverage in `UnifiedClassSyntaxTests`:
+- `covariantReturnConcreteReceiverSeesNarrower` — Dog.copy() returning Dog (narrower than Animal.copy() returning Animal); concrete-Dog call site sees Dog return type and chains into Dog-specific method.
+- `covariantReturnBaseReceiverSeesWider` — same override; base-Animal call site sees Animal return type; dispatch lands on Dog::copy correctly.
+
+No compiler change needed. Phase 4 of the rollout retires.
 
 #### Q3 — Definite-assignment analysis rules — DECIDED
 

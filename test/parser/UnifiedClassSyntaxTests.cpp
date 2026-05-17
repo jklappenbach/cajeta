@@ -272,6 +272,73 @@ TEST(UnifiedClassSyntaxTests, stackConstructorCallAllocates) {
     EXPECT_EQ(runI32(src), 12);
 }
 
+// ---------------------------------------------------------------------
+// Phase 4 probe — covariant return types.
+//
+// Q2 in the rollout doc proposed landing covariant returns as a feature.
+// Probe: cajeta's hash-based vtable hashes the canonical signature, which
+// (per Method::buildCanonical) is `parent::name(paramTypes)` — return
+// type is NOT part of the canonical. Override detection in
+// CajetaClass::buildVirtualTable keys by canonical, so subclass overrides
+// with narrower (covariant) returns should already collide with the base
+// entry and replace it. Tests below verify this without needing any
+// compiler change.
+// ---------------------------------------------------------------------
+
+TEST(UnifiedClassSyntaxTests, covariantReturnConcreteReceiverSeesNarrower) {
+    // Base returns Base; subclass overrides with Derived return. Concrete-
+    // receiver call site should see the narrower (Derived) return type so
+    // the result can flow into a Derived-typed binding.
+    auto src =
+        "package test;\n"
+        "public class Animal {\n"
+        "    int32 id;\n"
+        "    public Animal(int32 i) { this.id = i; }\n"
+        "    public Animal copy() { return heap Animal(this.id); }\n"
+        "}\n"
+        "public class Dog extends Animal {\n"
+        "    public Dog(int32 i) { this.id = i; }\n"
+        "    public Dog copy() { return heap Dog(this.id); }\n"  // covariant: Dog narrower than Animal
+        "    public int32 dogTag() { return this.id + 7; }\n"
+        "}\n"
+        "public final class S {\n"
+        "    public static int32 run() {\n"
+        "        Dog d = heap Dog(5);\n"
+        "        Dog d2 = d.copy();\n"  // concrete: Dog return, Dog binding works only if covariant
+        "        return d2.dogTag();\n"  // 5 + 7 = 12 — proves d2 is a Dog (has dogTag)
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 12);
+}
+
+TEST(UnifiedClassSyntaxTests, covariantReturnBaseReceiverSeesWider) {
+    // Same override shape; receiver typed as the base. The call site
+    // sees the base's return type (Animal); the runtime still dispatches
+    // to the override (Dog's body returns a Dog, but the caller binding
+    // sees it as Animal). Confirms the override is wired through the
+    // base-typed reference too.
+    auto src =
+        "package test;\n"
+        "public class Animal {\n"
+        "    int32 id;\n"
+        "    public Animal(int32 i) { this.id = i; }\n"
+        "    public Animal copy() { return heap Animal(this.id); }\n"
+        "    public int32 tag() { return this.id; }\n"
+        "}\n"
+        "public class Dog extends Animal {\n"
+        "    public Dog(int32 i) { this.id = i; }\n"
+        "    public Dog copy() { return heap Dog(this.id); }\n"
+        "}\n"
+        "public final class S {\n"
+        "    public static int32 run() {\n"
+        "        Animal a = heap Dog(42);\n"
+        "        Animal b = a.copy();\n"  // copy() goes to Dog::copy via vtable
+        "        return b.tag();\n"  // 42 — dispatches through Animal's vtable slot
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 42);
+}
+
 TEST(UnifiedClassSyntaxTests, stackAndHeapInstancesShareConcreteDispatch) {
     // Concrete-receiver dispatch through the vtable lands on the same
     // method whether the instance is stack- or heap-allocated. The vtable
