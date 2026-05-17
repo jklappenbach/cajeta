@@ -819,9 +819,10 @@ typeType
 
 // First-class function type: `(T1, T2) -> R`. See cajeta-docs/Lambdas.md.
 // Distinct from Java's @FunctionalInterface SAM conversion; this is a real
-// type-former, callable directly, with no boxing for primitives.
+// type-former, callable directly, with no boxing for primitives. Return is
+// typeTypeOrVoid so `(T) -> void` is a legal type (Stream.forEach etc.).
 functionType
-    : '(' (typeType (',' typeType)*)? ')' '->' typeType
+    : '(' (typeType (',' typeType)*)? ')' '->' typeTypeOrVoid
     ;
 
 primitiveType

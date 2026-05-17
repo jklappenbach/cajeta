@@ -10,6 +10,7 @@
 #include "CajetaTask.h"
 #include "CajetaFunctionType.h"
 #include "../error/InvalidOperandException.h"
+#include "../error/Exception.h"
 
 namespace cajeta {
 
@@ -201,18 +202,32 @@ namespace cajeta {
         }
         // Function type: `(T1, T2) -> R`. Resolve each component and build
         // (or look up by canonical) a CajetaFunctionType. See
-        // cajeta-docs/Lambdas.md.
+        // cajeta-docs/Lambdas.md. The return slot is typeTypeOrVoid so
+        // `(T) -> void` is a legal function-type shape (P6.5).
         if (auto* fnt = ctx->functionType()) {
-            auto typeTypes = fnt->typeType();
-            if (typeTypes.empty()) {
-                throw "function type must have a return type";
-            }
             std::vector<CajetaTypePtr> paramTypes;
-            paramTypes.reserve(typeTypes.size() - 1);
-            for (size_t i = 0; i + 1 < typeTypes.size(); ++i) {
-                paramTypes.push_back(fromContext(typeTypes[i], module));
+            for (auto* p : fnt->typeType()) {
+                paramTypes.push_back(fromContext(p, module));
             }
-            CajetaTypePtr ret = fromContext(typeTypes.back(), module);
+            CajetaTypePtr ret;
+            if (auto* rt = fnt->typeTypeOrVoid()) {
+                if (rt->VOID()) {
+                    // Resolve void via canonicalMap (registered by the
+                    // primitive-bootstrap path).
+                    QualifiedNamePtr voidQ = QualifiedName::getOrInsert(
+                        "void", CAJETA_NATIVE_PACKAGE);
+                    ret = canonicalMap[voidQ->toCanonical()];
+                } else if (rt->typeType()) {
+                    ret = fromContext(rt->typeType(), module);
+                }
+            }
+            // ret may be null when the return slot names an unknown
+            // identifier — pre-P6.5 fromContext returned null for an
+            // unresolved name without throwing, and downstream codegen
+            // (e.g. method-reference NOT_IMPLEMENTED) surfaced the
+            // original problem. Preserve that shape: build the
+            // CajetaFunctionType with a null return; buildCanonical
+            // already handles it ("?" slot).
             std::string canon = CajetaFunctionType::buildCanonical(paramTypes, ret);
             auto it = canonicalMap.find(canon);
             if (it != canonicalMap.end()) return it->second;
