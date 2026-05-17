@@ -1,0 +1,54 @@
+package cajeta.collection;
+
+/**
+ * Dynamic array. Backed by a heap-allocated T[] that grows on demand.
+ * v1 minimal surface: ctor, size, get/set, add. No bounds checks yet
+ * (lands with the error model wiring); no insert/remove yet.
+ *
+ * stream() lands once stack-allocation of generic instantiations
+ * (`stack ArrayStream<T>`) works — for now callers go through the
+ * heap form: `heap cajeta.lang.ArrayStream<T>(list.data(), list.size())`.
+ */
+public class ArrayList<T> {
+    T[] data;
+    int32 size;
+    int32 capacity;
+
+    public ArrayList() {
+        this.capacity = 16;
+        this.data = new T[16];
+        this.size = 0;
+    }
+
+    public int32 size() {
+        return this.size;
+    }
+
+    public boolean isEmpty() {
+        return this.size == 0;
+    }
+
+    public T get(int32 i) {
+        return this.data[i];
+    }
+
+    public void set(int32 i, T v) {
+        this.data[i] = v;
+    }
+
+    public void add(T v) {
+        if (this.size >= this.capacity) {
+            int32 newCap = this.capacity * 2;
+            T[] grown = new T[newCap];
+            int32 i = 0;
+            while (i < this.size) {
+                grown[i] = this.data[i];
+                i = i + 1;
+            }
+            this.data = grown;
+            this.capacity = newCap;
+        }
+        this.data[this.size] = v;
+        this.size = this.size + 1;
+    }
+}
