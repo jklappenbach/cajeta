@@ -13,6 +13,7 @@
 #include "DotExpression.h"
 #include "Identifier.h"
 #include "AggregateInitializerExpression.h"
+#include "NewExpression.h"
 
 namespace cajeta {
 
@@ -166,6 +167,18 @@ namespace cajeta {
         // unified-class rollout broadens aggregate-init to any class
         // for both heap and stack paths).
         if (dynamic_pointer_cast<AggregateInitializerExpression>(ast)) {
+            return v;
+        }
+        // P7.3+ — NewExpression also returns a body pointer (malloc for
+        // `new`/`heap`, alloca for `stack`). Same shape as Aggregate-
+        // InitExpression: the value IS the reference. Without this
+        // bypass, an assignment like `this.h = heap Hello()` loads the
+        // entire Hello struct (which for a vtable-only class is just
+        // the vtable pointer's 8 bytes) through the heap ptr and stores
+        // those bytes into h's slot — leaving h pointing at the static
+        // vtable address. Then the stack-drop walking h calls free on
+        // the vtable address (invalid pointer crash).
+        if (dynamic_pointer_cast<NewExpression>(ast)) {
             return v;
         }
         // IdentifierExpression that resolved to a class property via the

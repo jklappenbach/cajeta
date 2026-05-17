@@ -181,6 +181,42 @@ TEST(UnifiedClassSyntaxTests, heapAggregateInitOnClassDirectFieldRead) {
 // at scope exit (without freeing the stack body).
 // ---------------------------------------------------------------------
 
+TEST(UnifiedClassSyntaxTests, stackClassWithOwnedHeapField) {
+    // Stack-allocated class with an owned heap-class-ref field.
+    // Holder's stack-drop walks the field at scope exit, calls Hello's
+    // heap-drop on the heap pointer, freeing it. The stack-drop entry
+    // itself pops once (the count). Hello's drop is called directly
+    // inside the body — not through the drop chain — so its free
+    // doesn't bump the counter.
+    //
+    // Pre-P7.3+ this crashed with `free(): invalid pointer` because
+    // BinaryOpExpression's `=` LHS load coerced the heap Hello return
+    // into a load of the 8-byte Hello struct (a vtable pointer), and
+    // h ended up holding the vtable address — which Hello's drop then
+    // freed. Fix: loadIfLValue bypasses NewExpression results.
+    auto src =
+        "package test;\n"
+        "public class Hello {\n"
+        "    public Hello() { }\n"
+        "}\n"
+        "public class Holder {\n"
+        "    Hello h;\n"
+        "    public Holder() { this.h = heap Hello(); }\n"
+        "}\n"
+        "public final class S {\n"
+        "    public static int32 inner() {\n"
+        "        Holder owner = stack Holder();\n"
+        "        return 0;\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        Cajeta.dropCountReset();\n"
+        "        inner();\n"
+        "        return (int32) Cajeta.dropCount();\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 1);
+}
+
 TEST(UnifiedClassSyntaxTests, stackClassNoOwnedFieldsScopeExits) {
     // Probe: stack-allocated class with only primitive fields. The
     // stack-drop fires (1 pop) but has nothing to walk.
