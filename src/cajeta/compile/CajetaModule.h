@@ -10,6 +10,7 @@
 #include "../type/QualifiedName.h"
 #include "../type/CajetaClass.h"
 #include "../method/Method.h"
+#include "CompilerMode.h"
 #include "support/Any.h"
 #include <string>
 #include <fstream>
@@ -149,8 +150,16 @@ namespace cajeta {
 
         // Compiler-level options that codegen consults. Set on the module by the
         // Compiler at creation time (so each module produces IR consistent with the
-        // current invocation's CLI flags).
-        bool boundsCheckEnabled = true;
+        // current invocation's CLI flags). The CompilerFlags struct (cajeta-docs/
+        // CompilerModes.md) is the authoritative store; getFlags() / setFlags()
+        // are the new accessors. boundsCheckEnabled is a backward-compat shim.
+        CompilerFlags compilerFlags = CompilerFlags::defaultsForMode(CompilerMode::Debug);
+
+        // Cache of interned source-file `const char*` globals — populated on
+        // demand by getOrCreateSourceFileConstant. One entry per source
+        // path emitted into this module; reused across all chain-push
+        // codegen sites that need to tag with the same file.
+        std::map<std::string, llvm::Constant*> sourceFileConstants;
 
     public:
         // Active loop targets for break/continue. Each loop pushes its targets on
@@ -450,8 +459,22 @@ namespace cajeta {
 
         llvm::IRBuilder<>* getBuilder() const;
 
-        bool isBoundsCheckEnabled() const { return boundsCheckEnabled; }
-        void setBoundsCheckEnabled(bool v) { boundsCheckEnabled = v; }
+        bool isBoundsCheckEnabled() const {
+            return compilerFlags.bounds != BoundsCheck::Off;
+        }
+        void setBoundsCheckEnabled(bool v) {
+            compilerFlags.bounds = v ? BoundsCheck::On : BoundsCheck::Off;
+        }
+        const CompilerFlags& getFlags() const { return compilerFlags; }
+        void setFlags(const CompilerFlags& f) { compilerFlags = f; }
+
+        // Intern a source-file path as a module-global constant `const char*`
+        // for the debug-mode source-tagging machinery. Subsequent calls with
+        // the same path return the same Constant (no duplicate globals).
+        // Used by the drop-chain push-debug codegen to pass an alloc-site
+        // file pointer along with the line number. Per CompilerModes.md
+        // § Source-tagged drop-chain entries.
+        llvm::Constant* getOrCreateSourceFileConstant(const std::string& path);
 
         void pushLoopContext(llvm::BasicBlock* cont, llvm::BasicBlock* brk) {
             loopContextStack.push_back({cont, brk, pendingLoopLabel});

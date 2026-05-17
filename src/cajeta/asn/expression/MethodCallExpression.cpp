@@ -546,6 +546,28 @@ namespace cajeta {
                     llvm::Function* fn = module->getRuntimeFunction("__cajeta_drop_count_reset");
                     return builder->CreateCall(fn, {});
                 }
+                // Source-tagged drop-chain entry diagnostics (CompilerModes.md
+                // § Source-tagged drop-chain entries). Reads the head entry's
+                // alloc-site tags as recorded by __cajeta_drop_push_debug.
+                // Returns 0 / null when sourceTags is off or the chain is
+                // empty. Test-only intrinsics; the production diagnostic
+                // surface is the SIGABRT handler (P4.2).
+                if (ns == "Cajeta" && methodCallName == "dropChainHeadAllocLine" && parameters.empty()) {
+                    llvm::Function* fn = module->getRuntimeFunction("__cajeta_drop_chain_head_alloc_line");
+                    return builder->CreateCall(fn, {});
+                }
+                if (ns == "Cajeta" && methodCallName == "dropChainHeadAllocFile" && parameters.empty()) {
+                    llvm::Function* fn = module->getRuntimeFunction("__cajeta_drop_chain_head_alloc_file");
+                    return builder->CreateCall(fn, {});
+                }
+                // Walk the chain and print every entry to stderr; returns
+                // the count printed. Exposed both for the SIGABRT handler
+                // (which calls the runtime helper directly) and for tests
+                // that want to verify the dump shape without aborting.
+                if (ns == "Cajeta" && methodCallName == "dumpDropChain" && parameters.empty()) {
+                    llvm::Function* fn = module->getRuntimeFunction("__cajeta_dump_drop_chain");
+                    return builder->CreateCall(fn, {});
+                }
                 // @PreDestroy follow-up: explicit runtime trigger for
                 // the registered atexit handlers. AOT binaries call
                 // this from main() before returning; tests fire it

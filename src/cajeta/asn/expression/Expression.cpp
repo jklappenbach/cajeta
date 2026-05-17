@@ -2774,18 +2774,33 @@ namespace cajeta {
         // The Task wrapper leaks for the process lifetime; the body's
         // own locals still drop normally on the carrier-side chain.
         if (!detachMode) {
-            if (llvm::Function* dropPush = module->getRuntimeFunction("__cajeta_drop_push")) {
+            // Pick the push variant + entry size based on the CompilerFlags
+            // (cajeta-docs/CompilerModes.md). Mirrors the LVD path's choice
+            // so the chain has uniformly-shaped entries within a build.
+            bool debugTags = module->getFlags().sourceTags;
+            llvm::Function* dropPush = module->getRuntimeFunction(
+                debugTags ? "__cajeta_drop_push_debug" : "__cajeta_drop_push");
+            if (dropPush) {
                 if (llvm::Function* taskDropFn = task->getOrCreateDropFunction()) {
-                    constexpr unsigned DROP_ENTRY_BYTES = 32;
+                    unsigned dropEntryBytes = debugTags ? 40 : 32;
                     llvm::Function* parentFnForDrop =
                         outerBuilder->GetInsertBlock()->getParent();
                     llvm::IRBuilder<> dropEntryBuilder(
                         &parentFnForDrop->getEntryBlock(),
                         parentFnForDrop->getEntryBlock().begin());
                     llvm::Value* dropEntryPtr = dropEntryBuilder.CreateAlloca(
-                        llvm::ArrayType::get(i8Ty, DROP_ENTRY_BYTES));
-                    outerBuilder->CreateCall(dropPush,
-                        {dropEntryPtr, taskInstance, taskDropFn});
+                        llvm::ArrayType::get(i8Ty, dropEntryBytes));
+                    if (debugTags) {
+                        llvm::Constant* fileConst = module->getOrCreateSourceFileConstant(
+                            module->getSourcePath());
+                        llvm::Constant* lineConst = llvm::ConstantInt::get(
+                            llvm::Type::getInt32Ty(llvmCtx), getSourceLine());
+                        outerBuilder->CreateCall(dropPush,
+                            {dropEntryPtr, taskInstance, taskDropFn, fileConst, lineConst});
+                    } else {
+                        outerBuilder->CreateCall(dropPush,
+                            {dropEntryPtr, taskInstance, taskDropFn});
+                    }
                     if (auto m = module->getCurrentMethod()) {
                         m->registerDropEntry(dropEntryPtr);
                     }

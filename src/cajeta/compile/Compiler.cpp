@@ -355,7 +355,7 @@ namespace cajeta {
             targetTriple,
             targetMachine);
         // Propagate compiler-level flags so codegen for this module respects them.
-        module->setBoundsCheckEnabled(boundsCheckEnabled);
+        module->setFlags(flags);
         return module;
     }
 
@@ -367,7 +367,7 @@ namespace cajeta {
             "__stdlib__", "cajeta.runtime");
         auto stdlib = make_shared<CajetaModule>(
             &llvmContext, stdlibQName, targetTriple, targetMachine);
-        stdlib->setBoundsCheckEnabled(boundsCheckEnabled);
+        stdlib->setFlags(flags);
         CajetaModule::setStdlibModule(stdlib);
         modules.push_back(stdlib);
 

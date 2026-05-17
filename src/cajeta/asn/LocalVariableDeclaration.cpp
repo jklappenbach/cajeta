@@ -26,25 +26,54 @@
 #include "../logging/CajetaLogger.h"
 
 namespace cajeta {
-    // Size in bytes of the runtime's cajeta_drop_entry struct on the target
-    // platform. The runtime exposes __cajeta_drop_entry_size() if we ever need
-    // to validate this; for x86-64 and aarch64 the struct fits in 32 bytes
-    // (8 byte obj ptr + 8 byte drop fn ptr + 8 byte prev ptr + 1 byte active +
-    // padding).
+    // Sizes in bytes of the runtime's drop-entry structs on the target
+    // platform. Release shape is 32 bytes (obj + drop_fn + prev + active +
+    // padding); debug shape is 40 (release + alloc_line + alloc_file). The
+    // compiler picks which size to allocate based on CompilerFlags::sourceTags.
+    // Runtime exposes __cajeta_drop_entry_size() / _size_debug() if these
+    // ever need to be validated against the actual C struct sizes.
     static constexpr unsigned DROP_ENTRY_BYTES = 32;
+    static constexpr unsigned DROP_ENTRY_BYTES_DEBUG = 40;
+
+    // Pick the right entry-allocation size + push helper name + push-arg
+    // shape for the active CompilerFlags. When sourceTags is on, the
+    // returned helper takes 5 args (entry, obj, drop_fn, alloc_file,
+    // alloc_line); when off, the original 3-arg push.
+    struct DropPushChoice {
+        llvm::Function* pushFn;
+        unsigned entryBytes;
+        bool debug;
+    };
+    static DropPushChoice pickDropPush(CajetaModulePtr module) {
+        DropPushChoice c{};
+        if (module->getFlags().sourceTags) {
+            c.pushFn = module->getRuntimeFunction("__cajeta_drop_push_debug");
+            c.entryBytes = DROP_ENTRY_BYTES_DEBUG;
+            c.debug = true;
+        } else {
+            c.pushFn = module->getRuntimeFunction("__cajeta_drop_push");
+            c.entryBytes = DROP_ENTRY_BYTES;
+            c.debug = false;
+        }
+        return c;
+    }
 
     // Emit drop-chain wiring for an owner local. Allocates a DropEntry blob on
     // the stack at function entry, pushes it onto the runtime's chain right
     // after the owner is materialized, and records the entry on both the field
-    // and the enclosing method so scope-exit emits the matching pop.
+    // and the enclosing method so scope-exit emits the matching pop. In debug
+    // mode (CompilerFlags::sourceTags) the push variant carries the LVD's
+    // source file + line for runtime diagnostics.
     static void emitDropEntryFor(CajetaModulePtr module, FieldPtr field,
-                                  const std::string& dropFnName) {
-        llvm::Function* push = module->getRuntimeFunction("__cajeta_drop_push");
+                                  const std::string& dropFnName,
+                                  int allocLine = 0) {
+        DropPushChoice push = pickDropPush(module);
         llvm::Function* dropFn = module->getRuntimeFunction(dropFnName);
-        if (!push || !dropFn) return;
+        if (!push.pushFn || !dropFn) return;
         auto* builder = module->getBuilder();
         auto& ctx = *module->getLlvmContext();
         llvm::Type* i8Ty = llvm::Type::getInt8Ty(ctx);
+        llvm::Type* i32Ty = llvm::Type::getInt32Ty(ctx);
         llvm::Type* ptrTy = llvm::PointerType::get(ctx, 0);
 
         // Allocate the DropEntry in the function's entry block so its address
@@ -54,11 +83,18 @@ namespace cajeta {
         llvm::IRBuilder<> entryBuilder(&parentFn->getEntryBlock(),
             parentFn->getEntryBlock().begin());
         llvm::Value* entryPtr = entryBuilder.CreateAlloca(
-            llvm::ArrayType::get(i8Ty, DROP_ENTRY_BYTES));
+            llvm::ArrayType::get(i8Ty, push.entryBytes));
 
         // Load the owner pointer to pass as the drop function's `obj` arg.
         llvm::Value* ownerPtr = builder->CreateLoad(ptrTy, field->getOrCreateAllocation());
-        builder->CreateCall(push, {entryPtr, ownerPtr, dropFn});
+        if (push.debug) {
+            llvm::Constant* fileConst = module->getOrCreateSourceFileConstant(
+                module->getSourcePath());
+            llvm::Constant* lineConst = llvm::ConstantInt::get(i32Ty, allocLine);
+            builder->CreateCall(push.pushFn, {entryPtr, ownerPtr, dropFn, fileConst, lineConst});
+        } else {
+            builder->CreateCall(push.pushFn, {entryPtr, ownerPtr, dropFn});
+        }
 
         field->setDropEntry(entryPtr);
         if (auto m = module->getCurrentMethod()) m->registerDropEntry(entryPtr);
@@ -70,9 +106,10 @@ namespace cajeta {
     // is specific to the class, so there's no global symbol to look up
     // via getRuntimeFunction.
     static void emitDropEntryForFn(CajetaModulePtr module, FieldPtr field,
-                                    llvm::Function* dropFn) {
-        llvm::Function* push = module->getRuntimeFunction("__cajeta_drop_push");
-        if (!push || !dropFn) return;
+                                    llvm::Function* dropFn,
+                                    int allocLine = 0) {
+        DropPushChoice push = pickDropPush(module);
+        if (!push.pushFn || !dropFn) return;
         // Cross-module: when the class whose drop fn we're pushing
         // lives in a different llvm::Module (a stdlib class
         // referenced from user code), substitute a module-local
@@ -82,16 +119,24 @@ namespace cajeta {
         auto* builder = module->getBuilder();
         auto& ctx = *module->getLlvmContext();
         llvm::Type* i8Ty = llvm::Type::getInt8Ty(ctx);
+        llvm::Type* i32Ty = llvm::Type::getInt32Ty(ctx);
         llvm::Type* ptrTy = llvm::PointerType::get(ctx, 0);
 
         llvm::Function* parentFn = builder->GetInsertBlock()->getParent();
         llvm::IRBuilder<> entryBuilder(&parentFn->getEntryBlock(),
             parentFn->getEntryBlock().begin());
         llvm::Value* entryPtr = entryBuilder.CreateAlloca(
-            llvm::ArrayType::get(i8Ty, DROP_ENTRY_BYTES));
+            llvm::ArrayType::get(i8Ty, push.entryBytes));
 
         llvm::Value* ownerPtr = builder->CreateLoad(ptrTy, field->getOrCreateAllocation());
-        builder->CreateCall(push, {entryPtr, ownerPtr, dropFn});
+        if (push.debug) {
+            llvm::Constant* fileConst = module->getOrCreateSourceFileConstant(
+                module->getSourcePath());
+            llvm::Constant* lineConst = llvm::ConstantInt::get(i32Ty, allocLine);
+            builder->CreateCall(push.pushFn, {entryPtr, ownerPtr, dropFn, fileConst, lineConst});
+        } else {
+            builder->CreateCall(push.pushFn, {entryPtr, ownerPtr, dropFn});
+        }
 
         field->setDropEntry(entryPtr);
         if (auto m = module->getCurrentMethod()) m->registerDropEntry(entryPtr);
@@ -547,7 +592,7 @@ namespace cajeta {
             // `T[] xs = obj.field`) already has an owner upstream;
             // duplicating the drop here double-frees at scope exit.
             if (isArray && !initIsBorrow) {
-                emitDropEntryFor(module, field, "__cajeta_free_array");
+                emitDropEntryFor(module, field, "__cajeta_free_array", getSourceLine());
             }
 
             // Gap 4 — record a live read-borrow on the scope so a later
@@ -629,7 +674,7 @@ namespace cajeta {
                         }
 
                         if (producesOwnedString) {
-                            emitDropEntryFor(module, field, "__cajeta_free");
+                            emitDropEntryFor(module, field, "__cajeta_free", getSourceLine());
                         } else {
                             // Borrow recording (Gap 4).
                             string borrowedPath;
@@ -655,7 +700,7 @@ namespace cajeta {
             // — __cajeta_view_drop_owned reconstructs the array header by
             // subtracting the 8-byte header offset and frees it.
             if (field->isOwningView()) {
-                emitDropEntryFor(module, field, "__cajeta_view_drop_owned");
+                emitDropEntryFor(module, field, "__cajeta_view_drop_owned", getSourceLine());
             }
 
             // L3-3: function-typed locals own the closure record they
@@ -668,7 +713,7 @@ namespace cajeta {
             // deactivates the entry when the local is returned so
             // ownership transfers to the caller without a double-free.
             if (dynamic_pointer_cast<CajetaFunctionType>(type)) {
-                emitDropEntryFor(module, field, "__cajeta_closure_drop");
+                emitDropEntryFor(module, field, "__cajeta_closure_drop", getSourceLine());
             }
 
             // User-defined-drop wiring for class-instance locals.
@@ -716,7 +761,7 @@ namespace cajeta {
                 if (initIsStackAlloc) {
                     if (llvm::Function* stackDropFn =
                             klass->getOrCreateStackDropFunction()) {
-                        emitDropEntryForFn(module, field, stackDropFn);
+                        emitDropEntryForFn(module, field, stackDropFn, getSourceLine());
                     }
                 } else if (klass->hasVtablePointerAtSlotZero()) {
                     // Patch this class's vtable drop_fn slot with the
@@ -728,7 +773,7 @@ namespace cajeta {
                     // destructor.
                     klass->patchVirtualTableDropFn();
                     emitDropEntryFor(module, field,
-                        "__cajeta_class_virtual_drop");
+                        "__cajeta_class_virtual_drop", getSourceLine());
                 } else {
                     // Custom-layout classes (CajetaTask<T> — no vtable
                     // pointer at slot 0). The virtual dispatcher can't
@@ -738,7 +783,7 @@ namespace cajeta {
                     // per-class drop fn is both correct and sufficient.
                     if (llvm::Function* dropFn =
                             klass->getOrCreateDropFunction()) {
-                        emitDropEntryForFn(module, field, dropFn);
+                        emitDropEntryForFn(module, field, dropFn, getSourceLine());
                     }
                 }
             }
@@ -758,7 +803,7 @@ namespace cajeta {
                 if (!initIsBorrow) {
                     if (llvm::Function* structDropFn =
                             structType->getOrCreateDropFunction()) {
-                        emitDropEntryForFn(module, field, structDropFn);
+                        emitDropEntryForFn(module, field, structDropFn, getSourceLine());
                     }
                 }
             }
@@ -771,7 +816,7 @@ namespace cajeta {
             // every interface local because the BORROWED branches are
             // bare return statements.
             if (klass && klass->isInterface()) {
-                emitDropEntryFor(module, field, "__cajeta_iface_drop");
+                emitDropEntryFor(module, field, "__cajeta_iface_drop", getSourceLine());
             }
         }
 

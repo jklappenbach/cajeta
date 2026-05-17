@@ -12,6 +12,7 @@
 #include <string.h>
 #include <pthread.h>
 #include <execinfo.h>
+#include <signal.h>
 
 typedef void (*cajeta_ctor_fn)(void* self);
 
@@ -935,8 +936,34 @@ struct cajeta_drop_entry {
     int8_t active;  // i8 instead of bool — fixed ABI for the IR side
 };
 
+// Debug-mode variant — extends the base entry with source-position
+// tags (cajeta-docs/CompilerModes.md § Source-tagged drop-chain
+// entries). The first four fields share the base entry's layout, so
+// a debug entry passed to pop_run (which only touches obj/drop_fn/
+// prev/active) works without a separate pop helper.
+//
+// The compiler emits debug entries when CompilerFlags::sourceTags is
+// on, allocating CAJETA_DROP_ENTRY_BYTES_DEBUG (40) instead of the
+// release-mode 32, and calls __cajeta_drop_push_debug to populate
+// the tag fields. SIGABRT handler / diagnostic dumps read the tags
+// via the helpers below.
+struct cajeta_drop_entry_debug {
+    void* obj;                                  // +0
+    void (*drop_fn)(void*);                     // +8
+    struct cajeta_drop_entry* prev;             // +16  (same shape as base)
+    int8_t active;                              // +24
+    int8_t _pad[3];                             // +25
+    int32_t alloc_line;                         // +28
+    const char* alloc_file;                     // +32
+    /* total: 40 bytes */
+};
+
 size_t __cajeta_drop_entry_size(void) {
     return sizeof(struct cajeta_drop_entry);
+}
+
+size_t __cajeta_drop_entry_size_debug(void) {
+    return sizeof(struct cajeta_drop_entry_debug);
 }
 
 // Drop chain head — per-thread (main has its own __thread slot; carrier-
@@ -981,6 +1008,139 @@ void __cajeta_drop_push(struct cajeta_drop_entry* e, void* obj, void (*drop_fn)(
     e->prev = *top;
     e->active = 1;
     *top = e;
+}
+
+// Tracks whether any debug-shape entry has been pushed in this process.
+// Flipped by __cajeta_drop_push_debug; read by the SIGABRT handler so it
+// knows whether reading the extended (alloc_file, alloc_line) fields is
+// safe. Release-mode builds never call push_debug, so this stays 0 and
+// the handler dumps just the base fields.
+static int __cajeta_has_debug_entries = 0;
+
+// Debug variant — same wiring as __cajeta_drop_push, plus alloc-site source
+// tags written into the extended cajeta_drop_entry_debug shape. Compiler
+// emits a call to this helper instead of the release variant when
+// CompilerFlags::sourceTags is on. Pop unchanged (uses the base layout's
+// active + prev offsets which match).
+void __cajeta_drop_push_debug(struct cajeta_drop_entry_debug* e, void* obj,
+                              void (*drop_fn)(void*),
+                              const char* alloc_file, int32_t alloc_line) {
+    struct cajeta_drop_entry** top = __cajeta_drop_top_ptr();
+    e->obj = obj;
+    e->drop_fn = drop_fn;
+    e->prev = *top;
+    e->active = 1;
+    e->_pad[0] = e->_pad[1] = e->_pad[2] = 0;
+    e->alloc_line = alloc_line;
+    e->alloc_file = alloc_file;
+    *top = (struct cajeta_drop_entry*) e;
+    __cajeta_has_debug_entries = 1;
+}
+
+// Diagnostic accessors used by the SIGABRT handler and by tests. Reads the
+// debug-shape extended fields from an entry. Caller is responsible for
+// passing a pointer to a debug-shape entry — the compiler only emits
+// debug entries when sourceTags is on, so within a debug-mode build
+// every chain entry is debug-shape. Mixed-shape chains are out of scope
+// for v1.
+const char* __cajeta_drop_chain_head_alloc_file(void) {
+    struct cajeta_drop_entry* head = *__cajeta_drop_top_ptr();
+    if (!head) return NULL;
+    return ((struct cajeta_drop_entry_debug*) head)->alloc_file;
+}
+
+int32_t __cajeta_drop_chain_head_alloc_line(void) {
+    struct cajeta_drop_entry* head = *__cajeta_drop_top_ptr();
+    if (!head) return 0;
+    return ((struct cajeta_drop_entry_debug*) head)->alloc_line;
+}
+
+// Walk the per-thread drop chain and print each entry to stderr. Returns
+// the number of entries dumped. Reads alloc tags from each entry when
+// __cajeta_has_debug_entries is set (i.e. push_debug was used at least
+// once in this process); otherwise prints just the base fields.
+//
+// Capped at MAX_ENTRIES so a runaway / corrupt chain doesn't hang the
+// abort path. SIGABRT handler calls this; tests may also call it through
+// Cajeta.dumpDropChain() to verify the dump shape without aborting.
+//
+// Not signal-safe (fprintf), but the SIGABRT context — typically glibc
+// detecting heap corruption — already uses fprintf in __libc_message, so
+// the loose-signal-safety pragmatism is consistent with the platform's
+// own abort path. If this bites in practice, replace with write(2) +
+// snprintf'd buffer.
+int32_t __cajeta_dump_drop_chain(void) {
+    const int MAX_ENTRIES = 32;
+    struct cajeta_drop_entry** top = __cajeta_drop_top_ptr();
+    struct cajeta_drop_entry* e = *top;
+    int count = 0;
+    fprintf(stderr, "cajeta: drop chain (head first, %d entries max shown):\n",
+            MAX_ENTRIES);
+    while (e && count < MAX_ENTRIES) {
+        if (__cajeta_has_debug_entries) {
+            struct cajeta_drop_entry_debug* d = (struct cajeta_drop_entry_debug*) e;
+            fprintf(stderr,
+                "  [%d] obj=%p drop_fn=%p active=%d   alloc=%s:%d\n",
+                count, e->obj, (void*) e->drop_fn, (int) e->active,
+                d->alloc_file ? d->alloc_file : "(null)",
+                (int) d->alloc_line);
+        } else {
+            fprintf(stderr,
+                "  [%d] obj=%p drop_fn=%p active=%d\n",
+                count, e->obj, (void*) e->drop_fn, (int) e->active);
+        }
+        e = e->prev;
+        count++;
+    }
+    if (e) {
+        fprintf(stderr,
+            "  ... (more entries; cap reached, raise MAX_ENTRIES to see them)\n");
+    }
+    return count;
+}
+
+// SIGABRT handler — installed by the runtime constructor below. On abort
+// (typically glibc heap-corruption detection), dump the drop chain to
+// stderr with source tags when available, then chain to the previous
+// handler so the abort still kills the process.
+static struct sigaction __cajeta_prev_sigabrt;
+
+static void __cajeta_sigabrt_handler(int signo, siginfo_t* info, void* uctx) {
+    fprintf(stderr,
+        "\ncajeta: SIGABRT caught — likely heap corruption or assertion.\n");
+    __cajeta_dump_drop_chain();
+    // Chain to the previous handler so the process still dies. If there
+    // wasn't one (or it was SIG_DFL/SIG_IGN), restore the default and
+    // re-raise.
+    if (__cajeta_prev_sigabrt.sa_flags & SA_SIGINFO) {
+        if (__cajeta_prev_sigabrt.sa_sigaction) {
+            __cajeta_prev_sigabrt.sa_sigaction(signo, info, uctx);
+            return;
+        }
+    } else if (__cajeta_prev_sigabrt.sa_handler != SIG_DFL
+               && __cajeta_prev_sigabrt.sa_handler != SIG_IGN
+               && __cajeta_prev_sigabrt.sa_handler != NULL) {
+        __cajeta_prev_sigabrt.sa_handler(signo);
+        return;
+    }
+    signal(SIGABRT, SIG_DFL);
+    raise(SIGABRT);
+}
+
+void __cajeta_install_sigabrt_handler(void) {
+    struct sigaction sa;
+    sa.sa_sigaction = __cajeta_sigabrt_handler;
+    sa.sa_flags = SA_SIGINFO;
+    sigemptyset(&sa.sa_mask);
+    sigaction(SIGABRT, &sa, &__cajeta_prev_sigabrt);
+}
+
+// Auto-install at runtime load. Constructor runs before main(); the handler
+// is then armed for the program lifetime, including before any Cajeta code
+// has executed (so a stdlib-load-time abort is also caught).
+__attribute__((constructor))
+static void __cajeta_runtime_init(void) {
+    __cajeta_install_sigabrt_handler();
 }
 
 // Pop the topmost entry and run its drop function if still active. Caller

@@ -871,4 +871,29 @@ namespace cajeta {
         }
         return ensureFunctionInModule(llvmModule, defFn);
     }
+
+    llvm::Constant* CajetaModule::getOrCreateSourceFileConstant(const std::string& path) {
+        auto it = sourceFileConstants.find(path);
+        if (it != sourceFileConstants.end()) return it->second;
+
+        // Emit as a private constant char array; return a ptr-to-first-element.
+        // CreateGlobalStringPtr would also work, but it needs an active
+        // IRBuilder, and this helper is callable from any codegen context
+        // (including the function-entry-block builder that drop entries are
+        // allocated through). Doing it via plain LLVM C++ APIs keeps the
+        // call site free of builder-context concerns.
+        auto& ctx = *llvmContext;
+        llvm::Constant* strConst = llvm::ConstantDataArray::getString(ctx, path, /*AddNull=*/true);
+        std::string globalName = ".cajeta.src." + std::to_string(sourceFileConstants.size());
+        auto* gv = new llvm::GlobalVariable(
+            *llvmModule, strConst->getType(), /*isConstant=*/true,
+            llvm::GlobalValue::PrivateLinkage, strConst, globalName);
+        gv->setUnnamedAddr(llvm::GlobalValue::UnnamedAddr::Global);
+        // The runtime helpers take `const char*`, i.e. a pointer to i8. The
+        // global's type is an `[N x i8]` constant; bitcast to ptr.
+        llvm::Constant* ptr = llvm::ConstantExpr::getBitCast(
+            gv, llvm::PointerType::get(ctx, 0));
+        sourceFileConstants[path] = ptr;
+        return ptr;
+    }
 }

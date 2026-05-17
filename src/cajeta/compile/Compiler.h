@@ -18,6 +18,7 @@
 #include "CajetaModule.h"
 #include "CajetaLexer.h"
 #include "CajetaParser.h"
+#include "CompilerMode.h"
 #include <string>
 #include "../error/Exception.h"
 
@@ -61,9 +62,14 @@ namespace cajeta {
         llvm::TargetOptions opt;
         std::optional<llvm::Reloc::Model> RM;
         list<CajetaModulePtr> modules;
-        // Default-on. Set false by --bounds=off; propagated to each CajetaModule on
-        // creation so ArrayIndexExpression can choose whether to emit the check.
-        bool boundsCheckEnabled = true;
+        // Compiler mode + per-feature toggle struct (cajeta-docs/CompilerModes.md).
+        // CLI flavor flags (--debug, --release, ...) set `mode` and reset `flags`
+        // to that mode's defaults; per-feature flags (--bounds=, --source-tags=, ...)
+        // override individual fields after. Forwarded to each CajetaModule on creation
+        // so codegen sites can read the effective toggle (bounds-check emission,
+        // source-tag passing, etc.).
+        CompilerMode mode = CompilerMode::Debug;
+        CompilerFlags flags = CompilerFlags::defaultsForMode(CompilerMode::Debug);
         // Output mode. Default IR (write .ll). --emit=obj or --emit=exe switches to
         // native codegen for the configured target.
         EmitMode emitMode = EmitMode::IR;
@@ -135,8 +141,25 @@ namespace cajeta {
             this->features = features;
         }
 
-        bool isBoundsCheckEnabled() const { return boundsCheckEnabled; }
-        void setBoundsCheckEnabled(bool v) { boundsCheckEnabled = v; }
+        // Bounds-check accessors — convenience over the new flags struct.
+        // Existing callers (CLI parser, CajetaModule plumbing) read these;
+        // new sites should go through getFlags() / setFlags() instead.
+        bool isBoundsCheckEnabled() const { return flags.bounds != BoundsCheck::Off; }
+        void setBoundsCheckEnabled(bool v) {
+            flags.bounds = v ? BoundsCheck::On : BoundsCheck::Off;
+        }
+
+        // Compiler mode + per-feature flag accessors. setMode resets the
+        // entire flag set to that mode's defaults; per-feature overrides
+        // should follow setMode in the CLI parser.
+        CompilerMode getMode() const { return mode; }
+        void setMode(CompilerMode m) {
+            mode = m;
+            flags = CompilerFlags::defaultsForMode(m);
+        }
+        const CompilerFlags& getFlags() const { return flags; }
+        CompilerFlags& getMutableFlags() { return flags; }
+        void setFlags(const CompilerFlags& f) { flags = f; }
 
         const string& getTargetTriple() const { return targetTriple; }
         void setTargetTriple(const string& triple) { targetTriple = triple; rebuildTargetMachine(); }

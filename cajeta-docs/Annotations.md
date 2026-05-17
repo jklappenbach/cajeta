@@ -158,29 +158,16 @@ For fields that hold class refs, the setter takes ownership of
 the new value (`#`-style transfer in) and drops the previous
 holder via the live-set claim.
 
-### Equality + hashing + toString
-
-#### `@EqualsAndHashCode` on class
-
-Synthesizes `equals(Object other)` and `hash()` walking all
-non-static, non-`@EqualsAndHashCode.Exclude` fields. Subsumes
-the existing `@AutoHash`; `@AutoHash` becomes a thin alias for
-`@EqualsAndHashCode(onlyHash = true)` for backwards compatibility.
-
-```cajeta
-@EqualsAndHashCode
-public class Point {
-    int32 x;
-    int32 y;
-    @EqualsAndHashCode.Exclude String label;   // not part of identity
-}
-```
+### hashing + toString
 
 #### `@ToString` on class
 
-Synthesizes `String toString()` returning `ClassName(field1=val,
-field2=val, ...)`. `@ToString.Exclude` on a field omits it. By
-default, walks fields in declaration order.
+Accepts an enum with several options:
+- TO_STRING_JSON
+- TO_STRING_COMPACT
+
+Synthesizes `String toString()` returning either a JSON element representing the class, or the compact form: 
+`ClassName(field1=val,field2=val, ...)`. `@ToString.Exclude` on a field omits it. By default, walks fields in declaration order.
 
 ### Constructors
 
