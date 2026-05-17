@@ -311,6 +311,111 @@ TEST(UnifiedClassSyntaxTests, covariantReturnConcreteReceiverSeesNarrower) {
     EXPECT_EQ(runI32(src), 12);
 }
 
+// ---------------------------------------------------------------------
+// Phase 3a — definite-assignment analysis (sequential case).
+//
+// `MyClass x;` declares the variable but does not assign; the scope's
+// not-yet-assigned set tracks it. Reading before an assignment is a
+// compile error (CAJETA_ERROR_VARIABLE_NOT_ASSIGNED). Assigning the
+// variable removes the NYA mark; subsequent reads succeed.
+//
+// Sequential case only — control-flow merging (if/else, loops, switch,
+// try/catch) lands in P3b.
+// ---------------------------------------------------------------------
+
+TEST(UnifiedClassSyntaxTests, definitelyAssignedRejectsReadBeforeInit) {
+    auto src =
+        "package test;\n"
+        "public class Counter {\n"
+        "    int32 n;\n"
+        "    public Counter() { this.n = 0; }\n"
+        "    public int32 value() { return this.n; }\n"
+        "}\n"
+        "public final class S {\n"
+        "    public static int32 run() {\n"
+        "        Counter c;\n"
+        "        return c.value();\n"  // ← read before assignment
+        "    }\n"
+        "}\n";
+    try {
+        CajetaJit::compile(src, "test.S");
+        FAIL() << "expected CAJETA_ERROR_VARIABLE_NOT_ASSIGNED";
+    } catch (cajeta::Exception& e) {
+        EXPECT_EQ(e.getErrorId(), "CAJETA_ERROR_VARIABLE_NOT_ASSIGNED");
+    }
+}
+
+TEST(UnifiedClassSyntaxTests, definitelyAssignedAllowsReadAfterAssignment) {
+    // Simpler shape: primitive assignment to bypass the heap-class
+    // drop-chain interaction. Tests just the NYA → DA transition for
+    // a bare int32 local.
+    auto src =
+        "package test;\n"
+        "public final class S {\n"
+        "    public static int32 run() {\n"
+        "        int32 x;\n"
+        "        x = 42;\n"
+        "        return x;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 42);
+}
+
+TEST(UnifiedClassSyntaxTests, definitelyAssignedInitializerCountsAsAssignment) {
+    // A local declared WITH an initializer is DA from birth; no NYA mark.
+    auto src =
+        "package test;\n"
+        "public class Counter {\n"
+        "    int32 n;\n"
+        "    public Counter(int32 v) { this.n = v; }\n"
+        "    public int32 value() { return this.n; }\n"
+        "}\n"
+        "public final class S {\n"
+        "    public static int32 run() {\n"
+        "        Counter c = heap Counter(7);\n"
+        "        return c.value();\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 7);
+}
+
+TEST(UnifiedClassSyntaxTests, definitelyAssignedTracksMultipleLocalsIndependently) {
+    // Two unrelated locals declared without initializers; reading either
+    // before assignment is rejected independently. One gets assigned;
+    // the other doesn't and is read — that's the error.
+    auto src =
+        "package test;\n"
+        "public final class S {\n"
+        "    public static int32 run() {\n"
+        "        int32 a;\n"
+        "        int32 b;\n"
+        "        a = 10;\n"
+        "        return b;\n"  // ← b never assigned
+        "    }\n"
+        "}\n";
+    try {
+        CajetaJit::compile(src, "test.S");
+        FAIL() << "expected CAJETA_ERROR_VARIABLE_NOT_ASSIGNED";
+    } catch (cajeta::Exception& e) {
+        EXPECT_EQ(e.getErrorId(), "CAJETA_ERROR_VARIABLE_NOT_ASSIGNED");
+    }
+}
+
+TEST(UnifiedClassSyntaxTests, definitelyAssignedAcceptsMultipleLocalsAllInitialized) {
+    auto src =
+        "package test;\n"
+        "public final class S {\n"
+        "    public static int32 run() {\n"
+        "        int32 a;\n"
+        "        int32 b;\n"
+        "        a = 10;\n"
+        "        b = 32;\n"
+        "        return a + b;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 42);
+}
+
 TEST(UnifiedClassSyntaxTests, covariantReturnBaseReceiverSeesWider) {
     // Same override shape; receiver typed as the base. The call site
     // sees the base's return type (Animal); the runtime still dispatches

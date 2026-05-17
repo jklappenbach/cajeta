@@ -383,6 +383,21 @@ namespace cajeta {
             }
         }
 
+        // P3 — definite-assignment: for a bare-identifier LHS of an
+        // assignment, mark the name assigned BEFORE evaluating the LHS.
+        // The identifier's generateCode would otherwise trip the NYA
+        // check on its way to producing the slot address — but the LHS
+        // of an assignment is a write target, not a read. Marking
+        // pre-eval lets the LHS slot fetch succeed; the assignment that
+        // follows then writes the value into the slot.
+        if (binaryOp == BINARY_OP_ASSIGN && !children.empty()) {
+            if (auto lhsId = dynamic_pointer_cast<IdentifierExpression>(children[0])) {
+                if (auto sc = module->getScopeStack().peek()) {
+                    sc->markAssigned(lhsId->getTextValue());
+                }
+            }
+        }
+
         llvm::Value* lhs = children[0]->generateCode(module);
         llvm::Value* rhs = children[1]->generateCode(module);
         ExpressionPtr lhsAst = dynamic_pointer_cast<Expression>(children[0]);
@@ -615,6 +630,16 @@ namespace cajeta {
                     rhsVal = DotExpression::maybeBswap(module, rhsVal, dotRecv);
                 }
                 builder->CreateStore(rhsVal, lhs);
+                // P3 — definite-assignment: if the LHS is a bare identifier,
+                // mark it assigned. Subsequent reads no longer trip the
+                // CAJETA_ERROR_VARIABLE_NOT_ASSIGNED check. Compound LHS
+                // forms (a.b, arr[i]) don't apply — those mutate through a
+                // receiver that was itself already assigned.
+                if (auto lhsId = dynamic_pointer_cast<IdentifierExpression>(lhsAst)) {
+                    if (auto sc = module->getScopeStack().peek()) {
+                        sc->markAssigned(lhsId->getTextValue());
+                    }
+                }
                 // The expression's value is the assigned r-value (C/Java convention),
                 // not the StoreInst — that way `x = 100` can be used inside a ternary
                 // or other surrounding expression.

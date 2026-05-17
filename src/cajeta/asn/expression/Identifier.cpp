@@ -53,6 +53,16 @@ namespace cajeta {
                 + "' was transferred via `#` and cannot be read here",
                 "CAJETA_ERROR_USE_AFTER_MOVE");
         }
+        // P3 — definite-assignment check. A local declared without an
+        // initializer is in the scope's NYA set until an assignment
+        // fires; reading it before then is a compile error.
+        if (scope && scope->isNotYetAssigned(identifier)) {
+            throw Exception("variable '" + identifier
+                + "' may not have been initialized; assign before reading "
+                "or declare with an initializer (`= null` for an explicit "
+                "null reference, `stack T()` / `heap T()` for an instance)",
+                "CAJETA_ERROR_VARIABLE_NOT_ASSIGNED");
+        }
         // First: local scope. This is the common path — locals, params,
         // captures.
         FieldPtr field = scope ? scope->getField(identifier) : nullptr;

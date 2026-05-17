@@ -48,6 +48,14 @@ namespace cajeta {
         // moved out. Read paths through DotExpression check this set with
         // prefix semantics — see DotExpression.cpp.
         set<string> movedPaths;
+        // P3 — definite-assignment analysis (UnifiedClasses.md § Definite
+        // assignment). Names that were declared in this scope without an
+        // initializer and have not yet been assigned. Read paths check this
+        // set and reject. Variables with initializers, parameters, and
+        // fields owned by an enclosing class are never NYA. The set
+        // shrinks as assignments fire; once a name is removed, it stays
+        // removed (sequential codegen).
+        set<string> notYetAssigned;
 
         void putField(FieldPtr field, string propertyPath);
 
@@ -99,6 +107,26 @@ namespace cajeta {
         // (in this scope or any ancestor). `"a.b.c"` is considered moved if
         // any of "a", "a.b", or "a.b.c" was marked.
         bool isPathMoved(const string& path);
+
+        // P3 — mark a name as declared-but-not-yet-assigned. Called by
+        // LocalVariableDeclaration when a local is declared without an
+        // initializer (`MyClass x;`). The mark is recorded on this
+        // scope; subsequent reads in this or any child scope must see
+        // an assignment first.
+        void markNotYetAssigned(const string& name);
+
+        // P3 — mark a name as definitely assigned (removes any NYA mark
+        // for that name in the declaring scope). Called from the
+        // assignment-codegen path (BinaryOpExpression's `=` branch on
+        // an identifier LHS, LocalVariableDeclaration when the local
+        // has an initializer, etc.).
+        void markAssigned(const string& name);
+
+        // P3 — true iff `name` was declared without an initializer in
+        // this or any ancestor scope and has not been assigned since.
+        // Reading such a name is a compile error (the catch-all read
+        // path in IdentifierExpression consults this).
+        bool isNotYetAssigned(const string& name);
     };
 }
 

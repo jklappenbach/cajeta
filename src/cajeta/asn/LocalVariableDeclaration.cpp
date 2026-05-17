@@ -145,6 +145,32 @@ namespace cajeta {
             module->getScopeStack().peek()->putField(field);
             field->getOrCreateAllocation();
 
+            // P3 — definite-assignment tracking. A local declared without
+            // an initializer enters the scope's NYA set; reading it before
+            // an assignment is a compile error. Applies to both class-
+            // typed locals (a null reference is meaningful, but reading
+            // it would be a runtime null-deref) and primitive locals (the
+            // alloca contents are undefined until written). Skipped for
+            // view/struct locals that get their body pointer wired via
+            // the S6.1 implicit alloca path below — those are stack-
+            // resident with zero-init bodies, "assigned" by virtue of
+            // pointing at a real body. Also skipped for interface-typed
+            // locals (the interface-local handling block above stores a
+            // body ptr in the slot regardless of initializer).
+            if (!initializer) {
+                bool implicitZeroInit =
+                    dynamic_pointer_cast<CajetaStruct>(type) != nullptr
+                    || dynamic_pointer_cast<CajetaView>(type) != nullptr;
+                bool isInterface = false;
+                if (auto kc = dynamic_pointer_cast<CajetaClass>(type)) {
+                    isInterface = kc->isInterface();
+                }
+                if (!implicitZeroInit && !isInterface) {
+                    module->getScopeStack().peek()->markNotYetAssigned(
+                        declarator->getIdentifier());
+                }
+            }
+
             // S6.1 — `struct Foo f;` lays a fresh stack alloca of the struct
             // body and zero-initializes it; the HeapField's pointer slot
             // points at that body. Treating the local as a pointer to an
@@ -556,8 +582,19 @@ namespace cajeta {
             // to the caller.
             auto klass = dynamic_pointer_cast<CajetaClass>(type);
             bool isStructType = dynamic_pointer_cast<CajetaAggregate>(type) != nullptr;
+            // P3 — when there's no initializer, the slot's contents are
+            // undefined at declaration time. Registering a drop here
+            // would capture the slot's value at PUSH time (garbage), so
+            // a later `c = heap Counter()` assignment would leave the
+            // drop entry pointing at the original garbage and free that
+            // address at scope exit (crash). Skip the drop registration
+            // in the no-initializer case; this leaks the heap instance
+            // assigned via the later `c = heap X()` but doesn't crash.
+            // Follow-on work: defer drop registration until first
+            // assignment (or shift the drop entry to load the slot at
+            // fire time instead of push time).
             if (klass && !isArray && !isStructType && !klass->isInterface()
-                    && !initIsBorrow && !initIsStackAlloc) {
+                    && !initIsBorrow && !initIsStackAlloc && initializer) {
                 if (llvm::Function* dropFn = klass->getOrCreateDropFunction()) {
                     emitDropEntryForFn(module, field, dropFn);
                 }

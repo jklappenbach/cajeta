@@ -93,4 +93,31 @@ namespace cajeta {
         if (parent) return parent->isPathMoved(path);
         return false;
     }
+
+    void Scope::markNotYetAssigned(const string& name) {
+        notYetAssigned.insert(name);
+    }
+
+    void Scope::markAssigned(const string& name) {
+        // Walk to the scope where the NYA mark lives and remove it. The mark
+        // could be in this scope (assignment in the same block as declaration)
+        // or an ancestor (assignment in a nested block).
+        Scope* target = this;
+        while (target) {
+            auto it = target->notYetAssigned.find(name);
+            if (it != target->notYetAssigned.end()) {
+                target->notYetAssigned.erase(it);
+                return;
+            }
+            target = target->parent ? target->parent.get() : nullptr;
+        }
+        // No mark to remove — fine; the variable was either initialized at
+        // declaration or comes from an enclosing class scope.
+    }
+
+    bool Scope::isNotYetAssigned(const string& name) {
+        if (notYetAssigned.find(name) != notYetAssigned.end()) return true;
+        if (parent) return parent->isNotYetAssigned(name);
+        return false;
+    }
 }
