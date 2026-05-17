@@ -232,6 +232,8 @@ namespace cajeta {
             this->op = op;
         }
 
+        PrefixOp getOp() const { return op; }
+
         llvm::Value* generateCode(CajetaModulePtr module) override;
     };
 

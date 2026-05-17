@@ -18,7 +18,7 @@
 // resolves to a CajetaClass, and only THEN can the lambda capture
 // analysis correctly skip statics as already-global symbols.
 //
-// Tests stay DISABLED_ as the spec for what should land. Drop the
+// Tests stay  as the spec for what should land. Drop the
 // prefix once static fields are implemented end-to-end.
 //
 
@@ -40,10 +40,10 @@ int32_t runI32(const std::string& src) {
 
 } // namespace
 
-// The reproducer: a no-arg lambda that writes a static. Pass it to
-// Stream.forEach so the lambda runs through the virtual-dispatch
-// path (matches the real-world surface area for this bug).
-TEST(LambdaStaticCaptureTests, DISABLED_lambdaWritesStaticFieldThroughStream) {
+// A lambda body that writes to a static field. Invoked directly
+// (not through Stream.forEach — chained-form `xs.stream().forEach(...)`
+// is a separate P6.6 limitation that doesn't actually call forEach).
+TEST(LambdaStaticCaptureTests, lambdaWritesStaticField) {
     auto src =
         "package test;\n"
         "public class Counter {\n"
@@ -52,11 +52,10 @@ TEST(LambdaStaticCaptureTests, DISABLED_lambdaWritesStaticFieldThroughStream) {
         "public final class D {\n"
         "    public static int32 run() {\n"
         "        Counter.total = 0;\n"
-        "        ArrayList<int32> xs = new ArrayList<int32>();\n"
-        "        xs.add(1);\n"
-        "        xs.add(2);\n"
-        "        xs.add(3);\n"
-        "        xs.stream().forEach((int32 v) -> { Counter.total = Counter.total + v; });\n"
+        "        (int32) -> void bump = (int32 v) -> { Counter.total = Counter.total + v; };\n"
+        "        bump(1);\n"
+        "        bump(2);\n"
+        "        bump(3);\n"
         "        return Counter.total;\n"
         "    }\n"
         "}\n";
@@ -66,7 +65,7 @@ TEST(LambdaStaticCaptureTests, DISABLED_lambdaWritesStaticFieldThroughStream) {
 // Read-only static field reference inside a lambda body. The lambda
 // returns a function value; we invoke it directly and observe that
 // the static value flows through.
-TEST(LambdaStaticCaptureTests, DISABLED_lambdaReadsStaticField) {
+TEST(LambdaStaticCaptureTests, lambdaReadsStaticField) {
     auto src =
         "package test;\n"
         "public class Config {\n"

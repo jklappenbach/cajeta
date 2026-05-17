@@ -139,7 +139,15 @@ namespace cajeta {
                     loadTy = resolved->getLlvmType();
                 }
                 if (loadTy) {
-                    if (llvm::isa<llvm::GetElementPtrInst>(v)) {
+                    // Static fields land here too: DotExpression returns
+                    // the GlobalVariable* for `Counter.total`, which is a
+                    // pointer slot — load through it the same way as a
+                    // GEP'd field slot. The bswap pass only fires for
+                    // view-typed parent receivers; class-name receivers
+                    // (statics) never carry an endianness annotation, so
+                    // maybeBswap is a no-op there.
+                    if (llvm::isa<llvm::GetElementPtrInst>(v)
+                            || llvm::isa<llvm::GlobalVariable>(v)) {
                         llvm::Value* loaded = builder->CreateLoad(loadTy, v);
                         if (!dot->getChildren().empty()) {
                             auto recv = dynamic_pointer_cast<Expression>(dot->getChildren()[0]);

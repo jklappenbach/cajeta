@@ -46,6 +46,23 @@ namespace cajeta {
                 resolvedType = CajetaType::of("int32");
                 return;
             }
+            // Static field reference: `Counter.total`. LHS names a class
+            // (it isn't a local variable). Pin LHS's resolvedType to the
+            // class and our own resolvedType to the field's declared
+            // type. The class-name lookup tries the canonical map (which
+            // is keyed by both short name and fully-qualified canonical).
+            // Falling through to the instance-path below would set
+            // klass=null because IdentifierExpression doesn't resolve
+            // class names by default.
+            if (!lhs->getResolvedType()) {
+                auto& cmap = CajetaType::getCanonicalMap();
+                auto cit = cmap.find(ns);
+                if (cit != cmap.end()) {
+                    if (auto staticKlass = dynamic_pointer_cast<CajetaClass>(cit->second)) {
+                        lhs->setResolvedType(staticKlass);
+                    }
+                }
+            }
         }
         auto klass = dynamic_pointer_cast<CajetaClass>(lhs->getResolvedType());
         if (!klass) {
@@ -172,6 +189,44 @@ namespace cajeta {
             if (auto v = CajetaType::lookupEnumConstant(ns, identifier)) {
                 return llvm::ConstantInt::get(
                     llvm::Type::getInt32Ty(ctx), *v, /*isSigned=*/true);
+            }
+        }
+
+        // Static-field-on-class-name shortcut: `Counter.total`. LHS is a
+        // bare identifier naming a class (not a local). The instance
+        // GEP path below assumes LHS resolves to an instance and would
+        // bail at `if (!base)` because IdentifierExpression returns
+        // null for class names. Route to the class's static-field
+        // global instead — returned as an l-value pointer so
+        // loadIfLValue handles reads and BinaryOpExpression's assign
+        // path handles writes.
+        if (auto idLhs = dynamic_pointer_cast<IdentifierExpression>(children[0])) {
+            auto& cmap = CajetaType::getCanonicalMap();
+            auto cit = cmap.find(idLhs->getTextValue());
+            if (cit != cmap.end()) {
+                if (auto staticKlass = dynamic_pointer_cast<CajetaClass>(cit->second)) {
+                    // Walk the hierarchy: a static declared on a base
+                    // class is visible through derived-class names too.
+                    StructurePropertyPtr staticProp;
+                    std::function<bool(const CajetaClassPtr&)> findStatic =
+                        [&](const CajetaClassPtr& cls) -> bool {
+                            auto pit = cls->getProperties().find(identifier);
+                            if (pit != cls->getProperties().end()
+                                    && pit->second->isStatic()) {
+                                staticProp = pit->second;
+                                return true;
+                            }
+                            for (auto& parent : cls->getSuperClasses()) {
+                                if (findStatic(parent)) return true;
+                            }
+                            return false;
+                        };
+                    if (findStatic(staticKlass)) {
+                        resolvedType = staticProp->getType();
+                        return staticKlass->getOrCreateStaticFieldGlobal(
+                            staticProp, module);
+                    }
+                }
             }
         }
 

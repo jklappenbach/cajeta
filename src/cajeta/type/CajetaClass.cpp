@@ -14,6 +14,9 @@
 #include "CajetaArray.h"
 #include "../field/HeapField.h"
 #include "../error/Exception.h"
+#include "../asn/expression/LiteralExpression.h"
+#include "../asn/VariableDeclarator.h"
+#include <cstdlib>
 
 #include <algorithm>
 #include <functional>
@@ -262,14 +265,18 @@ namespace cajeta {
             for (auto& parent : cls->superClasses) {
                 appendInherited(parent);
                 for (auto& p : parent->propertyList) {
+                    if (p->isStatic()) continue;  // statics live in globals
                     llvmMembers.push_back(fieldLayoutType(p));
                 }
             }
         };
         appendInherited(static_pointer_cast<CajetaClass>(shared_from_this()));
         // Then this class's own fields, in declaration order for
-        // deterministic indices.
+        // deterministic indices. Skip static properties — they're
+        // backed by LLVM globals (CajetaClass::getOrCreateStaticFieldGlobal)
+        // rather than instance slots.
         for (auto& property : propertyList) {
+            if (property->isStatic()) continue;
             llvmMembers.push_back(fieldLayoutType(property));
         }
         ((llvm::StructType*) llvmType)->setBody(llvm::ArrayRef<llvm::Type*>(llvmMembers), false);
@@ -442,6 +449,141 @@ namespace cajeta {
         for (auto& method: methodList) {
             method->generateCode();
         }
+    }
+
+    // Static class fields. Each STATIC property gets a dedicated LLVM
+    // global variable, defined in the class's home module and named
+    // `<class.canonical>.<propertyName>`. Lazy — created on first
+    // access from any module. Cross-module callers receive an extern
+    // decl in their own llvm::Module that resolves to the home
+    // definition at JIT link.
+    //
+    // Storage shape mirrors what StackField uses for the equivalent
+    // local: primitives store their value directly (i32, i64, double,
+    // ...); reference types (String, class instances, arrays) store
+    // a ptr — they're heap-allocated and the slot holds the address.
+    //
+    // v1 initializer: zero (`llvm::Constant::getNullValue`). User-
+    // supplied initializers (`public static int32 base = 100;`) are
+    // a follow-on landing — until then the initial value is 0 / null
+    // and `Class.field = literal` writes from method body do the
+    // initialization at runtime.
+    // Fold a static-field initializer expression to an llvm::Constant if
+    // the shape is a known compile-time literal. Returns null for any
+    // shape we don't statically evaluate yet — caller falls back to
+    // zeroinitializer. Supported v1:
+    //   - IntegerLiteralExpression (any radix); coerced to `storedType`
+    //     when the field is an integer
+    //   - FloatLiteralExpression; coerced to `storedType` when the
+    //     field is a floating-point type
+    //   - PrefixExpression with NEGATIVE applied to either of the above
+    // Out of scope (would need a `<clinit>`-style runtime init function):
+    //   computed expressions, method calls, references to other
+    //   statics, string literals (which materialize through global
+    //   string constants — supportable but deferred).
+    static llvm::Constant* foldStaticInitializer(
+            AbstractSyntaxNodePtr init, llvm::Type* storedType) {
+        if (!init || !storedType) return nullptr;
+        // VariableInitializer wraps the actual expression as its single
+        // child. Unwrap once.
+        if (auto vi = dynamic_pointer_cast<VariableInitializer>(init)) {
+            auto& kids = vi->getChildren();
+            if (kids.empty()) return nullptr;
+            init = kids[0];
+        }
+        bool negate = false;
+        if (auto pe = dynamic_pointer_cast<PrefixExpression>(init)) {
+            if (pe->getOp() != PREFIX_OP_NEGATIVE) return nullptr;
+            auto& kids = pe->getChildren();
+            if (kids.empty()) return nullptr;
+            init = kids[0];
+            negate = true;
+        }
+        if (auto il = dynamic_pointer_cast<IntegerLiteralExpression>(init)) {
+            if (!storedType->isIntegerTy()) return nullptr;
+            uint8_t radix;
+            switch (il->getIntegerLiteralType()) {
+                case INTEGER_LITERAL_TYPE_BINARY: radix = 2;  break;
+                case INTEGER_LITERAL_TYPE_OCT:    radix = 8;  break;
+                case INTEGER_LITERAL_TYPE_HEX:    radix = 16; break;
+                default:                          radix = 10; break;
+            }
+            // Strip the radix prefix (`0b`, `0x`) and any trailing `L`
+            // / `l` suffix the grammar may have captured.
+            std::string raw = il->getRawValue();
+            if (raw.size() >= 2 && raw[0] == '0'
+                    && (raw[1] == 'b' || raw[1] == 'B'
+                        || raw[1] == 'x' || raw[1] == 'X')) {
+                raw = raw.substr(2);
+            }
+            if (!raw.empty() && (raw.back() == 'L' || raw.back() == 'l')) {
+                raw = raw.substr(0, raw.size() - 1);
+            }
+            unsigned bits = storedType->getIntegerBitWidth();
+            llvm::APInt apint(64, raw, radix);
+            if (negate) apint = -apint;
+            if (bits < 64) {
+                apint = apint.trunc(bits);
+            } else if (bits > 64) {
+                apint = apint.sext(bits);
+            }
+            return llvm::ConstantInt::get(storedType, apint);
+        }
+        if (auto fl = dynamic_pointer_cast<FloatLiteralExpression>(init)) {
+            if (!storedType->isFloatingPointTy()) return nullptr;
+            double v = std::strtod(fl->getRawValue().c_str(), nullptr);
+            if (negate) v = -v;
+            return llvm::ConstantFP::get(storedType, v);
+        }
+        return nullptr;
+    }
+
+    llvm::GlobalVariable* CajetaClass::getOrCreateStaticFieldGlobal(
+            StructurePropertyPtr prop, CajetaModulePtr callerModule) {
+        if (!prop || !prop->isStatic()) return nullptr;
+        if (!prop->getType() || !prop->getType()->getLlvmType()) return nullptr;
+
+        auto* lmod = module->getLlvmModule();
+        const std::string globalName =
+            qName->toCanonical() + "." + prop->getName();
+
+        auto it = staticFieldGlobals.find(prop->getName());
+        llvm::GlobalVariable* g;
+        if (it != staticFieldGlobals.end()) {
+            g = it->second;
+        } else if (auto* existing = lmod->getNamedGlobal(globalName)) {
+            // Already declared in this module (e.g. an earlier extern
+            // ref) — adopt it. If it lacks an initializer we'll
+            // promote it to a definition below.
+            g = existing;
+        } else {
+            llvm::Type* storedType = prop->getType()->getLlvmType();
+            if (!(prop->getType()->getTypeFlags() & PRIMITIVE_FLAG)) {
+                storedType = llvm::PointerType::get(
+                    *module->getLlvmContext(), 0);
+            }
+            // Constant-fold the declared initializer if shape allows;
+            // otherwise zero-init. Folding handles `= 100`, `= -7`, and
+            // float literals — broad enough to cover what user code
+            // routinely writes for class-level constants.
+            llvm::Constant* init = foldStaticInitializer(
+                prop->getInitializer(), storedType);
+            if (!init) init = llvm::Constant::getNullValue(storedType);
+            g = new llvm::GlobalVariable(
+                *lmod, storedType, /*isConstant=*/false,
+                llvm::GlobalValue::ExternalLinkage,
+                init, globalName);
+            staticFieldGlobals[prop->getName()] = g;
+        }
+
+        // Cross-module: the caller is emitting IR into a different
+        // llvm::Module. Insert an extern decl there and return that.
+        if (callerModule && callerModule->getLlvmModule() != lmod) {
+            llvm::Constant* shim = CajetaModule::ensureGlobalInModule(
+                callerModule->getLlvmModule(), g);
+            return llvm::cast<llvm::GlobalVariable>(shim);
+        }
+        return g;
     }
 
     // Gap 1 (virtual dispatch on drop). Patch the vtable global's drop_fn

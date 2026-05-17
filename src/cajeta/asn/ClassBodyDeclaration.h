@@ -63,6 +63,10 @@ namespace cajeta {
                 for (auto& inst : annotationInstances) {
                     property->addAnnotationInstance(inst);
                 }
+                // Thread the per-declarator initializer through so static
+                // fields can fold a literal `= value` into the LLVM
+                // global's initializer at class-build time.
+                property->setInitializer(variableDeclarator->getInitializer());
                 structure->addProperty(property);
             }
         }

@@ -157,6 +157,14 @@ namespace cajeta {
         // the implementer is a class or a struct.
         std::map<std::string, llvm::GlobalVariable*> interfaceVTables;
 
+        // Static class fields — one llvm::GlobalVariable per static
+        // property, lazily defined in this class's home module on
+        // first use. Keyed by property name. Cross-module references
+        // route through `ensureGlobalInModule` so callers in a
+        // different module see an extern decl resolved at JIT link
+        // time. See `getOrCreateStaticFieldGlobal`.
+        std::map<std::string, llvm::GlobalVariable*> staticFieldGlobals;
+
         MethodPtr getClosestMethod(string methodName, vector<ParameterEntry> parameters, map<string, MethodPtr> canonical);
         MethodPtr getClosestConstructor(string methodName, vector<ParameterEntry> parameters, map<string, MethodPtr> canonical);
 
@@ -275,8 +283,11 @@ namespace cajeta {
         int countInheritedFields() const {
             int count = 0;
             for (auto& parent : superClasses) {
-                count += parent->countInheritedFields()
-                       + (int) parent->propertyList.size();
+                int ownNonStatic = 0;
+                for (auto& p : parent->propertyList) {
+                    if (!p->isStatic()) ownNonStatic++;
+                }
+                count += parent->countInheritedFields() + ownNonStatic;
             }
             return count;
         }
@@ -293,8 +304,14 @@ namespace cajeta {
         // parent->getFieldLlvmIndex(prop) the correct index for a GEP
         // into a subclass instance too.
         virtual int getFieldLlvmIndex(const StructurePropertyPtr& prop) const {
+            // Static properties have no slot in the instance struct —
+            // they live in dedicated globals. Return -1 so a caller
+            // that mistakenly GEPs by index gets a quick failure
+            // rather than indexing into someone else's slot.
+            if (prop && prop->isStatic()) return -1;
             int i = 0;
             for (auto& p : propertyList) {
+                if (p->isStatic()) continue;  // statics aren't in instance layout
                 if (p.get() == prop.get()) {
                     return countInheritedFields() + i + 1;
                 }
@@ -354,6 +371,19 @@ namespace cajeta {
         // Idempotent: the patch only runs once per class (tracked via
         // llvmDropFunctionPatched). Safe to call multiple times.
         void patchVirtualTableDropFn();
+
+        // Static class fields. Lazily defines (or fetches) the LLVM
+        // global variable backing this class's static property `prop`.
+        // The definition lives in the class's home module; if
+        // `callerModule` differs, the returned global is the
+        // module-local extern decl produced by ensureGlobalInModule
+        // (resolved at JIT link time to the home module's definition).
+        //
+        // Returns nullptr when prop is null, not actually static, or
+        // has no usable LLVM type.
+        llvm::GlobalVariable* getOrCreateStaticFieldGlobal(
+            StructurePropertyPtr prop,
+            CajetaModulePtr callerModule = nullptr);
 
         // Virtual hook — true iff this class's instance layout has a
         // vtable pointer at LLVM struct index 0, the convention required

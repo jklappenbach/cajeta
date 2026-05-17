@@ -24,6 +24,8 @@ namespace cajeta {
     public:
         LiteralExpression(antlr4::Token* token) : PrimaryExpression(token) { }
 
+        const string& getRawValue() const { return value; }
+
         static ExpressionPtr fromContext(CajetaParser::LiteralContext* ctx);
     };
 
@@ -64,6 +66,8 @@ namespace cajeta {
     private:
         IntegerLiteralType integerLiteralType;
     public:
+        IntegerLiteralType getIntegerLiteralType() const { return integerLiteralType; }
+
         IntegerLiteralExpression(CajetaParser::IntegerLiteralContext* ctx) : LiteralExpression(ctx->getStart()) {
             value = ctx->getText();
             if (ctx->BINARY_LITERAL()) {

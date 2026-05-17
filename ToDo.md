@@ -8,9 +8,9 @@ Convention: each entry is a brief description, why it matters, where it bites to
 
 ## Current state (2026-05-17, late session)
 
-Tree at 802/802 enabled (+2 DISABLED_ documenting the static-field landing).
+Tree at 813/813 — zero disabled tests.
 
-Recently landed (Phase 7 + P6.5/P6.7 + memory-model gap pass + P1 push):
+Recently landed (Phase 7 + P6.5/P6.7 + memory-model gap pass + Priority 1 push):
 - `struct` is a transitional alias for `class`; CajetaAggregate retired.
 - `(T) -> void` parses as a method-parameter type; lambda-arg expectedType inference works.
 - `cajeta.lang.Stream.forEach` + `cajeta.collection.ArrayList<T>` landed.
@@ -18,8 +18,9 @@ Recently landed (Phase 7 + P6.5/P6.7 + memory-model gap pass + P1 push):
 - **[GAP 1] Virtual dispatch on drop — done.** Vtable header carries `drop_fn` slot; `__cajeta_class_virtual_drop` loads through the dynamic type's vtable.
 - **[GAP 2] Block-exit drops — verified done** (already worked).
 - **[GAP 3] TLS / per-fiber drop chain — verified done** (already worked).
-- **[GAP 4] Alias-mutation borrow check — done.** `Scope::liveBorrows` populated at LocalVariableDeclaration for pointer-shaped path-read initializers; `BinaryOpExpression`'s assignment branch consults `findInvalidatingBorrow` and throws `CAJETA_ERROR_USE_AFTER_MOVE` when the write path overlaps a live borrow. Pinned by `test/parser/AliasMutationBorrowTests.cpp` (3 tests).
-- **[GAP 5] Owned-string drops — done.** `LocalVariableDeclaration` recognizes binary `+` lowered to `__cajeta_str_concat` plus the routed string method intrinsics (substring/toUpperCase/toLowerCase/trim/replace) and registers `__cajeta_free` as the local's drop fn. Pinned by `test/parser/OwnedStringDropTests.cpp` (4 tests).
+- **[GAP 4] Alias-mutation borrow check — done.** `Scope::liveBorrows`; assignment-site check throws on prefix overlap. Pinned by `test/parser/AliasMutationBorrowTests.cpp` (3 tests).
+- **[GAP 5] Owned-string drops — done.** Owned-string shapes (binary `+`, routed string method intrinsics) register `__cajeta_free`. Pinned by `test/parser/OwnedStringDropTests.cpp` (4 tests).
+- **Static class fields — done.** `CajetaClass::getOrCreateStaticFieldGlobal` emits LLVM globals named `<class.canonical>.<field>`; DotExpression resolves class-name LHS via `canonicalMap`. Literal initializers (`= 100`, `= -7`, floats) constant-fold into the global's initializer. Lambdas reading/writing statics work because statics resolve as globals, not captures. Pinned by `test/parser/StaticFieldTests.cpp` (9 tests) + `test/parser/LambdaStaticCaptureTests.cpp` (2 tests).
 
 Stack vs heap class instantiation is fully working: `heap T(args)`, `stack T(args)`, `heap T { … }`, `stack T { … }`, all with vtable init + ctor invocation + correct virtual destructor dispatch. See `test/parser/UnifiedClassSyntaxTests.cpp:44,137,184,249,317,576`, `test/parser/ClassDropTests.cpp`, and `test/parser/VirtualDropDispatchTests.cpp`.
 
@@ -29,21 +30,23 @@ Stack vs heap class instantiation is fully working: `heap T(args)`, `stack T(arg
 
 Priority is rough effort × user-visible correctness impact.
 
-### Priority 1 — open correctness gaps
+### Priority 1 — open correctness items
 
-1. **Static class fields not yet implemented — multi-session.** `public static int32 total = 0;` parses but emits no LLVM global. STATIC modifier is honored for methods only. Lambdas reading/writing statics segfault because the field reference resolves to nothing. Fix needs: a `StaticField` type alongside StackField/HeapField, per-class static-property global emission (with optional initializers in `<clinit>`-style globals), and `DotExpression` / `IdentifierExpression` resolution to look up class-static-properties when the LHS resolves to a `CajetaClass`. Spec'd by `test/parser/LambdaStaticCaptureTests.cpp` (`DISABLED_`).
+(All of the items previously listed at P1 — Gap 4, lambda static fields, Gap 5 — have landed. New P1 items will appear here as they surface.)
 
 ### Priority 2 — language surface
 
-2. **More collections — multi-session.** HashSet (HashMap-backed thin wrapper), HashMap.entries/keys/values() returning Streams, LinkedList, `Collector<T,R>` + `cajeta.lang.Collectors`. Each is its own piece.
+1. **More collections — multi-session.** HashSet (HashMap-backed thin wrapper), HashMap.entries/keys/values() returning Streams, LinkedList, `Collector<T,R>` + `cajeta.lang.Collectors`. Each is its own piece.
 
-3. **Stream lambda combinators — multi-session.** map, filter, flatMap, take, skip, peek, fold, reduce, anyMatch, allMatch, noneMatch, findFirst, collect. Each is its own concrete `*Stream` wrapper class plus the method on `Stream<T>`. The forEach pattern generalizes; combinators that return a new stream need wrapper construction.
+2. **Stream lambda combinators — multi-session.** map, filter, flatMap, take, skip, peek, fold, reduce, anyMatch, allMatch, noneMatch, findFirst, collect. Each is its own concrete `*Stream` wrapper class plus the method on `Stream<T>`. The forEach pattern generalizes; combinators that return a new stream need wrapper construction.
 
-4. **Generic-static-factory call syntax — needs method-level generics first.** `Optional<int32>.Some(42)` doesn't parse. Grammar rejects `public static <T> Box of(T arg)`. Add `typeParameters?` to `methodDeclaration`, then wire visitor + dispatch.
+3. **Generic-static-factory call syntax — needs method-level generics first.** `Optional<int32>.Some(42)` doesn't parse. Grammar rejects `public static <T> Box of(T arg)`. Add `typeParameters?` to `methodDeclaration`, then wire visitor + dispatch.
 
 ### Priority 3 — completeness / cleanup
 
-5. **P6.6 chained-form completion — ~1 session.** `xs.stream().count()` direct chain. Setting `resolvedType` on the inner stream MCE in generateCode breaks ~100 unrelated tests; cleaner path is to thread the user module into `TemplateInstantiator`'s structures map or override `resolveTypes` to do the lookup without instantiation.
+4. **P6.6 chained-form completion — ~1 session.** `xs.stream().count()` direct chain. Setting `resolvedType` on the inner stream MCE in generateCode breaks ~100 unrelated tests; cleaner path is to thread the user module into `TemplateInstantiator`'s structures map or override `resolveTypes` to do the lookup without instantiation. **Also covers `xs.stream().forEach(lambda)`** — surfaced during the static-field landing; the chained call currently swallows the second method (forEach never runs).
+
+5. **Non-literal static field initializers — ~1 session.** Today only integer / float literals (with optional `-` prefix) constant-fold into the global's initializer. Method calls, references to other statics, computed expressions, and string literals fall back to zero. Implementation path: emit a per-module `<clinit>`-style init function registered via `llvm.global_ctors` that runs the user expression and stores into the global at module load.
 
 6. **P3c switch/loops/try-catch DA merging — 0.5 sessions each.** Implementation pattern is clear from P3a/P3b; deferred until consumed.
 

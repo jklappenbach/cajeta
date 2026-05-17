@@ -11,12 +11,20 @@
 namespace cajeta {
     class CajetaType;
     typedef shared_ptr<CajetaType> CajetaTypePtr;
+    class AbstractSyntaxNode;
+    typedef shared_ptr<AbstractSyntaxNode> AbstractSyntaxNodePtr;
 
     class StructureProperty : public Modifiable, public Annotatable {
     protected:
         string name;
         CajetaTypePtr type;
         int order;
+        // Optional declared initializer (`public static int32 base = 100;`,
+        // or instance-field defaults once those land). For static
+        // properties, evaluated at class-vtable build time and threaded
+        // into the LLVM global's initializer. For instance fields, kept
+        // for future <init> emission. nullptr when no initializer.
+        AbstractSyntaxNodePtr initializer;
     public:
         StructureProperty(string name, int order) {
             this->name = name;
@@ -59,6 +67,9 @@ namespace cajeta {
         void setOrder(int order) { this->order = order; }
 
         int getOrder() { return order; }
+
+        AbstractSyntaxNodePtr getInitializer() const { return initializer; }
+        void setInitializer(AbstractSyntaxNodePtr init) { initializer = init; }
     };
 
     typedef shared_ptr<StructureProperty> StructurePropertyPtr;
