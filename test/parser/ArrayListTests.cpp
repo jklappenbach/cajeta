@@ -92,6 +92,28 @@ TEST(ArrayListTests, setReplacesElement) {
     EXPECT_EQ(runI32(src), 101);
 }
 
+TEST(ArrayListTests, streamWalksAddedElements) {
+    // ArrayList.stream() returns a heap-allocated ArrayStream<T>
+    // walking the live elements. count() walks via next() to
+    // exhaustion.
+    auto src =
+        "package test;\n"
+        "import cajeta.collection.ArrayList;\n"
+        "import cajeta.lang.ArrayStream;\n"
+        "import cajeta.lang.Stream;\n"
+        "public final class S {\n"
+        "    public static int32 run() {\n"
+        "        ArrayList<int32> list = heap ArrayList<int32>();\n"
+        "        list.add(5);\n"
+        "        list.add(10);\n"
+        "        list.add(15);\n"
+        "        ArrayStream<int32> s = list.stream();\n"
+        "        return s.count();\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 3);
+}
+
 TEST(ArrayListTests, growsBeyondInitialCapacity) {
     // Default capacity is 16 — push 20 elements to exercise the grow
     // path.

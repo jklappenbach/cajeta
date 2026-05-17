@@ -1,13 +1,18 @@
 package cajeta.collection;
 
+import cajeta.lang.ArrayStream;
+import cajeta.lang.Stream;
+
 /**
  * Dynamic array. Backed by a heap-allocated T[] that grows on demand.
- * v1 minimal surface: ctor, size, get/set, add. No bounds checks yet
- * (lands with the error model wiring); no insert/remove yet.
+ * v1 minimal surface: ctor, size, get/set, add, stream(). No bounds
+ * checks yet (lands with the error model wiring); no insert/remove
+ * yet.
  *
- * stream() lands once stack-allocation of generic instantiations
- * (`stack ArrayStream<T>`) works — for now callers go through the
- * heap form: `heap cajeta.lang.ArrayStream<T>(list.data(), list.size())`.
+ * stream() lands a heap-allocated ArrayStream<T> walking the backing
+ * array up to the current size. Stack-allocated variant follows when
+ * `stack ArrayStream<T>` aggregate-init on a generic instantiation
+ * is verified.
  */
 public class ArrayList<T> {
     T[] data;
@@ -50,5 +55,15 @@ public class ArrayList<T> {
         }
         this.data[this.size] = v;
         this.size = this.size + 1;
+    }
+
+    /**
+     * Heap-allocated stream walking the live elements
+     * (data[0..size-1]). Stack-allocated variant follows when
+     * `stack ArrayStream<T>` aggregate-init on a generic
+     * instantiation is verified.
+     */
+    public ArrayStream<T> stream() {
+        return heap ArrayStream<T>(this.data, this.size);
     }
 }
