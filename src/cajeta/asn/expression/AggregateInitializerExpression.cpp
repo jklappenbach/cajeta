@@ -5,8 +5,10 @@
 #include "AggregateInitializerExpression.h"
 #include "Identifier.h"
 #include "../../compile/CajetaModule.h"
+#include "../../type/CajetaView.h"
 #include "../../type/CajetaStruct.h"
 #include "../../type/CajetaView.h"
+#include "../../type/CajetaStruct.h"
 #include "../../type/CajetaArray.h"
 #include "../../type/CajetaClass.h"
 #include "../../type/Scope.h"
@@ -208,7 +210,7 @@ namespace cajeta {
             // ownership tracking and remain deferred.
             auto fieldClass = dynamic_pointer_cast<CajetaClass>(prop->getType());
             bool fieldIsClassRef = fieldClass != nullptr
-                && !dynamic_pointer_cast<CajetaAggregate>(prop->getType())
+                && !dynamic_pointer_cast<CajetaView>(prop->getType())
                 && !dynamic_pointer_cast<CajetaArray>(prop->getType())
                 && !fieldClass->isInterface();
             if (fieldIsClassRef) {

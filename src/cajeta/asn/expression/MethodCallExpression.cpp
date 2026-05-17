@@ -6,8 +6,10 @@
 #include "cajeta/compile/CajetaModule.h"
 #include "cajeta/type/CajetaArray.h"
 #include "cajeta/type/CajetaClass.h"
+#include "cajeta/type/CajetaView.h"
 #include "cajeta/type/CajetaStruct.h"
 #include "cajeta/type/CajetaView.h"
+#include "cajeta/type/CajetaStruct.h"
 #include "cajeta/type/CajetaFunctionType.h"
 #include "cajeta/method/Method.h"
 #include "cajeta/error/Exception.h"
@@ -231,7 +233,7 @@ namespace cajeta {
                     bool sawVar = false;
                     int diagIdx = 0;
                     for (auto& p : structType->getPropertyList()) {
-                        bool isVar = CajetaAggregate::isVariableSize(p);
+                        bool isVar = CajetaView::isVariableSize(p);
                         if (!sawVar && !isVar) {
                             // Pre-first-var fixed field: already in fixedPrefixSize.
                             continue;

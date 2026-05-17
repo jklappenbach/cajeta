@@ -9,8 +9,10 @@
 #include "../field/StackField.h"
 #include "../type/CajetaArray.h"
 #include "../type/CajetaClass.h"
+#include "../type/CajetaView.h"
 #include "../type/CajetaStruct.h"
 #include "../type/CajetaView.h"
+#include "../type/CajetaStruct.h"
 #include "../type/CajetaFunctionType.h"
 #include "expression/Expression.h"
 #include "expression/DotExpression.h"
@@ -487,7 +489,7 @@ namespace cajeta {
                                 rhsExpr->resolveTypes(module);
                             }
                             auto rhsClass = dynamic_pointer_cast<CajetaClass>(rhsExpr->getResolvedType());
-                            bool rhsIsStruct = dynamic_pointer_cast<CajetaAggregate>(rhsExpr->getResolvedType()) != nullptr;
+                            bool rhsIsStruct = dynamic_pointer_cast<CajetaView>(rhsExpr->getResolvedType()) != nullptr;
                             if (rhsClass && !rhsIsStruct) {
                                 initIsBorrow = true;
                             }
@@ -581,7 +583,7 @@ namespace cajeta {
             // entry when the local is returned, transferring ownership
             // to the caller.
             auto klass = dynamic_pointer_cast<CajetaClass>(type);
-            bool isStructType = dynamic_pointer_cast<CajetaAggregate>(type) != nullptr;
+            bool isStructType = dynamic_pointer_cast<CajetaView>(type) != nullptr;
             // P3 — when there's no initializer, the slot's contents are
             // undefined at declaration time. Registering a drop here
             // would capture the slot's value at PUSH time (garbage), so

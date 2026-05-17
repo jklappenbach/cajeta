@@ -1,9 +1,12 @@
 //
 // CajetaView — zero-copy memory overlay onto a byte buffer (Views.md).
 //
-// Sibling of CajetaStruct under CajetaAggregate. Owns the legacy wire-format-
-// view codegen (packed/aligned layout, bswap, length-prefix sweep, bounds
-// check, view-constructor synthesis) that previously lived on CajetaStruct.
+// Direct child of CajetaClass (P7.6 — CajetaAggregate and CajetaStruct
+// retired with the unified-class collapse). Owns the wire-format-view
+// codegen (packed/aligned layout, bswap, length-prefix sweep, bounds
+// check, view-constructor synthesis) plus the no-vtable field-index
+// override and the variable-size-field predicate that the old
+// CajetaAggregate carried for both view and struct.
 //
 // v1 capabilities:
 //   - Packed layout by default; @Align(natural) opts into padding.
@@ -18,7 +21,8 @@
 
 #pragma once
 
-#include "CajetaAggregate.h"
+#include "CajetaClass.h"
+#include "StructureProperty.h"
 
 namespace cajeta {
 
@@ -43,7 +47,7 @@ namespace cajeta {
         Natural         // @Align(natural)
     };
 
-    class CajetaView : public CajetaAggregate {
+    class CajetaView : public CajetaClass {
     private:
         ViewEndianness endianness = ViewEndianness::Host;
         ViewAlignment alignment = ViewAlignment::Packed;
@@ -56,9 +60,24 @@ namespace cajeta {
         // used by getMinimumSize and the construction-time validation sweep.
         int variableSizeFieldCount = 0;
     public:
-        CajetaView(CajetaModulePtr module) : CajetaAggregate(module) { }
+        CajetaView(CajetaModulePtr module) : CajetaClass(module) { }
         CajetaView(CajetaModulePtr module, QualifiedNamePtr qName)
-            : CajetaAggregate(module, qName) { }
+            : CajetaClass(module, qName, {}, {}) { }
+
+        // True iff `property` is a variable-size field — String today,
+        // T[]-as-inline-field once that lands. Migrated from
+        // CajetaAggregate (P7.6); used by view layout (length-prefix
+        // substitution) and view field accessors (DotExpression.cpp).
+        static bool isVariableSize(const StructurePropertyPtr& property);
+
+        // No vtable header — view properties stay at 0-based LLVM
+        // indices. CajetaClass's default reserves slot 0 for the vtable
+        // pointer. Override carried over from the retired
+        // CajetaAggregate so views keep the same wire-format layout
+        // (Views.md § Layout).
+        int getFieldLlvmIndex(const StructurePropertyPtr& prop) const override {
+            return prop->getOrder();
+        }
 
         ViewEndianness getEndianness() const { return endianness; }
         void setEndianness(ViewEndianness e) { endianness = e; endiannessExplicit = true; }

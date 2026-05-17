@@ -1,6 +1,6 @@
 #include "SynthesizedHashMethod.h"
 #include "../type/CajetaClass.h"
-#include "../type/CajetaStruct.h"
+#include "../type/CajetaView.h"
 #include "../type/CajetaArray.h"
 #include "../compile/CajetaModule.h"
 #include "../error/Exception.h"
@@ -100,7 +100,7 @@ namespace cajeta {
         std::string typeName = type->getQName()
             ? type->getQName()->toCanonical() : "<anonymous>";
 
-        bool isStruct = dynamic_pointer_cast<CajetaAggregate>(type) != nullptr;
+        bool isStruct = dynamic_pointer_cast<CajetaView>(type) != nullptr;
         bool isArr = dynamic_pointer_cast<CajetaArray>(type) != nullptr;
         bool isClassLike = dynamic_pointer_cast<CajetaClass>(type) != nullptr;
 

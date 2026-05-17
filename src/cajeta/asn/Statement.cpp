@@ -12,6 +12,7 @@
 #include "../field/ParameterField.h"
 #include "../type/CajetaArray.h"
 #include "../type/CajetaClass.h"
+#include "../type/CajetaView.h"
 #include "../type/CajetaStruct.h"
 #include "../type/CajetaFunctionType.h"
 #include "Block.h"
@@ -1170,7 +1171,7 @@ namespace cajeta {
             // is returned (that's a separate pre-existing limitation).
             if (f) {
                 auto klass = dynamic_pointer_cast<CajetaClass>(f->getType());
-                auto isStruct = dynamic_pointer_cast<CajetaAggregate>(f->getType());
+                auto isStruct = dynamic_pointer_cast<CajetaView>(f->getType());
                 if (klass && !isStruct && !klass->isInterface()) {
                     if (llvm::Value* entry = f->getDropEntry()) {
                         if (llvm::Function* mark = module->getRuntimeFunction(

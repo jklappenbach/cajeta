@@ -5,7 +5,7 @@
 #include "ParameterField.h"
 #include "../compile/CajetaModule.h"
 #include "../type/CajetaArray.h"
-#include "../type/CajetaStruct.h"
+#include "../type/CajetaView.h"
 
 namespace cajeta {
 
@@ -41,7 +41,7 @@ namespace cajeta {
             // class/array (non-struct) parameters are passed as `ptr`, so
             // the local slot is `ptr` too. Otherwise (primitives, structs)
             // alloc the type itself.
-            bool isStruct = dynamic_pointer_cast<CajetaAggregate>(type) != nullptr;
+            bool isStruct = dynamic_pointer_cast<CajetaView>(type) != nullptr;
             bool isArr = dynamic_pointer_cast<CajetaArray>(type) != nullptr;
             bool isClassLike = dynamic_pointer_cast<CajetaClass>(type) != nullptr;
             bool isPrim = type && (type->getTypeFlags() & PRIMITIVE_FLAG);

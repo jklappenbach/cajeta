@@ -3,7 +3,7 @@
 //
 
 #include "CajetaClass.h"
-#include "CajetaAggregate.h"
+#include "CajetaView.h"
 #include "CajetaStruct.h"
 #include "StructureMetadata.h"
 #include "../field/Field.h"
@@ -513,7 +513,7 @@ namespace cajeta {
             auto fieldType = property->getType();
             auto fieldClass = dynamic_pointer_cast<CajetaClass>(fieldType);
             if (!fieldClass) continue;
-            if (dynamic_pointer_cast<CajetaAggregate>(fieldType)) continue;
+            if (dynamic_pointer_cast<CajetaView>(fieldType)) continue;
             if (dynamic_pointer_cast<CajetaArray>(fieldType)) continue;
             if (fieldClass->isInterface()) continue;
 
@@ -1108,12 +1108,16 @@ namespace cajeta {
         llvm::Value* callee = CajetaModule::ensureFunctionVisible(
             builder, method->getLlvmFunction(),
             method->getLlvmFunctionType());
-        // Aggregates (struct, view) have no vtable header. Methods on them
-        // are statically dispatched — the receiver's concrete type is known
-        // at the call site (no inheritance, no overrides). Skip the vtable
-        // path entirely; LLVM gets a direct call to the resolved method.
-        bool isAggregate = dynamic_cast<CajetaAggregate*>(this) != nullptr;
-        bool useVtable = thisValue && !isStatic && !isConstructor && !isAggregate;
+        // Views have no vtable header (they are typed overlays onto
+        // byte buffers; the byte buffer is the value). Methods on
+        // views are statically dispatched — the receiver's concrete
+        // type is known at the call site. Skip the vtable path
+        // entirely; LLVM gets a direct call to the resolved method.
+        // P7.6: this used to also cover CajetaStruct; under the
+        // unified-class model `struct` is just `class` and gets the
+        // normal vtable-dispatch treatment.
+        bool isView = dynamic_cast<CajetaView*>(this) != nullptr;
+        bool useVtable = thisValue && !isStatic && !isConstructor && !isView;
         bool isInterfaceRecv = this->isInterface();
         if (useVtable && isInterfaceRecv) {
             // S11.2 — reject same-concrete-type return through dyn
@@ -1122,7 +1126,7 @@ namespace cajeta {
             // type is its own implementing struct has nowhere to land
             // the sret slot at the call site. The same call on the
             // concrete struct type (which bypasses this branch entirely
-            // via the `isAggregate` skip above) keeps working — the
+            // via the `isView` skip above) keeps working — the
             // restriction is dyn-dispatch-only. Trigger: return type is
             // a CajetaStruct that itself implements this receiver
             // interface. Implementers that are classes (1-word) or

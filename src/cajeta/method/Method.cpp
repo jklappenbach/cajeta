@@ -4,6 +4,7 @@
 
 #include "Method.h"
 #include "../type/CajetaClass.h"
+#include "../type/CajetaView.h"
 #include "../type/CajetaStruct.h"
 #include "../type/CajetaArray.h"
 #include "../compile/CajetaModule.h"

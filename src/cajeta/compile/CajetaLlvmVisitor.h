@@ -7,7 +7,7 @@
 #include "antlr4-runtime.h"
 #include "CajetaParserVisitor.h"
 #include "cajeta/type/CajetaClass.h"
-#include "cajeta/type/CajetaStruct.h"
+#include "cajeta/type/CajetaView.h"
 #include "cajeta/type/CajetaView.h"
 #include <any>
 #include "cajeta/asn/Block.h"
@@ -327,9 +327,11 @@ namespace cajeta {
         }
 
         // Shared body for visitStructDeclaration and visitViewDeclaration.
-        // S2: struct produces CajetaStruct (stub — generatePrototype throws),
-        // view produces CajetaView (real codegen via generatePrototypeImpl).
-        // Both share annotation parsing and module-registration plumbing.
+        // Per Q5 the `struct` keyword is a transitional alias for `class`
+        // (unified-class model): visitStructDeclaration now builds a
+        // CajetaClass instead of CajetaStruct. View keeps its dedicated
+        // CajetaView path (Q5 carves views out of the unification — they
+        // are typed overlays onto byte buffers, not value aggregates).
         std::any buildStructOrViewNode(
                 const string& name,
                 antlr4::tree::ParseTree* parent,
@@ -342,9 +344,10 @@ namespace cajeta {
             }
             QualifiedNamePtr qName = QualifiedName::getOrInsert(
                 name, pModule->getQName()->getPackageName() + packageAdj);
-            CajetaAggregatePtr structure = asView
-                ? static_pointer_cast<CajetaAggregate>(make_shared<CajetaView>(pModule, qName))
-                : static_pointer_cast<CajetaAggregate>(make_shared<CajetaStruct>(pModule, qName));
+            CajetaClassPtr structure = asView
+                ? static_pointer_cast<CajetaClass>(make_shared<CajetaView>(pModule, qName))
+                : make_shared<CajetaClass>(pModule, qName,
+                    list<QualifiedNamePtr>{}, list<QualifiedNamePtr>{});
 
             // Endianness / alignment annotations apply only to views (per
             // Structs.md, structs are host-endian with compiler-chosen

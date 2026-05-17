@@ -7,6 +7,7 @@
 #include "../../error/Exception.h"
 #include "../../compile/CajetaModule.h"
 #include "../../type/CajetaClass.h"
+#include "../../type/CajetaView.h"
 #include "../../type/CajetaStruct.h"
 #include "../../type/CajetaArray.h"
 #include "Expression.h"
@@ -128,7 +129,7 @@ namespace cajeta {
                     }
                 }
                 bool fieldIsClassRef = dynamic_pointer_cast<CajetaClass>(resolved) != nullptr
-                    && !dynamic_pointer_cast<CajetaAggregate>(resolved)
+                    && !dynamic_pointer_cast<CajetaView>(resolved)
                     && !dynamic_pointer_cast<CajetaArray>(resolved);
                 if (dynamic_pointer_cast<CajetaArray>(resolved)) {
                     loadTy = llvm::PointerType::get(*module->getLlvmContext(), 0);
@@ -204,7 +205,7 @@ namespace cajeta {
                 // the struct type, so without this branch the catch-all
                 // below would load the whole struct through the pointer
                 // and corrupt the receiving HeapField slot.
-                if (dynamic_pointer_cast<CajetaAggregate>(resolved)) {
+                if (dynamic_pointer_cast<CajetaView>(resolved)) {
                     return v;
                 }
                 // S9.5.4 — interface values are 24-byte fat-pointer
@@ -582,9 +583,9 @@ namespace cajeta {
                                     // contrast, live inline in a wire-format
                                     // buffer with a length prefix.
                                     bool isViewStruct =
-                                        dynamic_pointer_cast<CajetaAggregate>(klass) != nullptr;
+                                        dynamic_pointer_cast<CajetaView>(klass) != nullptr;
                                     if (isViewStruct
-                                            && CajetaStruct::isVariableSize(found)) {
+                                            && CajetaView::isVariableSize(found)) {
                                         char buf[256];
                                         snprintf(buf, sizeof(buf),
                                             "cannot reassign variable-size struct field '%s'; "

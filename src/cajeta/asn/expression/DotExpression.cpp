@@ -5,7 +5,7 @@
 #include "DotExpression.h"
 #include "../../compile/CajetaModule.h"
 #include "../../type/CajetaClass.h"
-#include "../../type/CajetaStruct.h"
+#include "../../type/CajetaView.h"
 #include "../../type/CajetaView.h"
 #include "../../type/CajetaArray.h"
 #include "../../error/Exception.h"
@@ -256,7 +256,7 @@ namespace cajeta {
             // expression path), so leaving them out doesn't open
             // a new gap here.
             auto lhsClass = dynamic_pointer_cast<CajetaClass>(lhs->getResolvedType());
-            bool lhsIsStruct = dynamic_pointer_cast<CajetaAggregate>(lhs->getResolvedType()) != nullptr;
+            bool lhsIsStruct = dynamic_pointer_cast<CajetaView>(lhs->getResolvedType()) != nullptr;
             if (lhsClass && !lhsIsStruct) {
                 auto ptrTy = llvm::PointerType::get(*module->getLlvmContext(), 0);
                 base = module->getBuilder()->CreateLoad(ptrTy, base);
@@ -283,7 +283,7 @@ namespace cajeta {
         // are normal heap pointers in a vtable-prefixed class layout —
         // they fall through to the standard struct-GEP path below.
         auto viewType = dynamic_pointer_cast<CajetaView>(klass);
-        if (viewType && CajetaAggregate::isVariableSize(property)) {
+        if (viewType && CajetaView::isVariableSize(property)) {
             auto* builder = module->getBuilder();
             auto& ctx = *module->getLlvmContext();
             llvm::Type* i32Ty = llvm::Type::getInt32Ty(ctx);
@@ -295,7 +295,7 @@ namespace cajeta {
             int priorVarSize = 0;
             for (auto& p : viewType->getPropertyList()) {
                 if (p == property) break;
-                if (CajetaAggregate::isVariableSize(p)) priorVarSize += 1;
+                if (CajetaView::isVariableSize(p)) priorVarSize += 1;
             }
 
             uint64_t fixedPrefixSize = viewType->getFixedSize();
@@ -372,7 +372,7 @@ namespace cajeta {
                     isPostVariable = (priorVarSize > 0);
                     break;
                 }
-                if (CajetaAggregate::isVariableSize(p)) priorVarSize += 1;
+                if (CajetaView::isVariableSize(p)) priorVarSize += 1;
             }
             if (isPostVariable) {
                 auto* builder = module->getBuilder();
@@ -392,7 +392,7 @@ namespace cajeta {
                 bool sawVar = false;
                 for (auto& p : viewType->getPropertyList()) {
                     if (p == property) break;
-                    if (CajetaAggregate::isVariableSize(p)) {
+                    if (CajetaView::isVariableSize(p)) {
                         sawVar = true;
                         llvm::Value* priorPrefixPtr = builder->CreateInBoundsGEP(
                             i8Ty, base, offset, identifier + "_walk_prefix_ptr");

@@ -6,11 +6,27 @@
 //
 
 #include "CajetaView.h"
+#include "CajetaArray.h"
 #include "../compile/CajetaModule.h"
 #include "../method/Method.h"
 #include "../error/Exception.h"
 
 namespace cajeta {
+
+    bool CajetaView::isVariableSize(const StructurePropertyPtr& property) {
+        if (!property || !property->getType()) return false;
+        auto type = property->getType();
+        // String: stored inline as i32 length + UTF-8 bytes.
+        auto qn = type->getQName();
+        if (qn && qn->getTypeName() == "String") return true;
+        // T[] where T is fixed-size: stored inline as i32 length +
+        // length * sizeof(T) bytes (S5b). Variable-size element types
+        // (T = String, T = nested-var-size-view) are not supported in v1
+        // — the var-size codegen path doesn't handle the nested
+        // length-prefix walk for them.
+        if (dynamic_pointer_cast<CajetaArray>(type)) return true;
+        return false;
+    }
 
     void CajetaView::generatePrototype() {
         string canonical = qName->toCanonical();
@@ -89,7 +105,7 @@ namespace cajeta {
                     canonical.c_str(), property->getName().c_str());
                 throw Exception(buf, "CAJETA_ERROR_VIEW_RECURSIVE");
             }
-            bool isVar = CajetaAggregate::isVariableSize(property);
+            bool isVar = CajetaView::isVariableSize(property);
             if (isVar) {
                 sawVariableSize = true;
                 variableSizeCount += 1;
