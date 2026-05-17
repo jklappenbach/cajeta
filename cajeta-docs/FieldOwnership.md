@@ -97,7 +97,7 @@ print(h.greet());      // expected: still works
 `opt.value` aliases `h`. Naive auto-drop frees Hello when opt pops;
 h's own chain entry frees it again. Double free.
 
-Generic wrinkle: `Optional<int32>` has nothing to drop. `Optional<Hello>`
+Template wrinkle: `Optional<int32>` has nothing to drop. `Optional<Hello>`
 does. Same class declaration, different instantiations — the field
 discriminator can't be syntactic.
 
@@ -186,7 +186,7 @@ Mark fields that hold borrows; auto-drop skips them. Tried and reverted
 in this session. Verdict: "It's a hack and an ugly one." (User feedback.)
 
 Problems:
-- Generic types like `Optional<T>` need it for the worst case (T is a
+- Templated types like `Optional<T>` need it for the worst case (T is a
   class) even when T is a primitive — annotation can't be conditional on
   the instantiation.
 - Annotation noise across the stdlib.
