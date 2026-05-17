@@ -51,15 +51,17 @@ public class Stream<T> {
         return n;
     }
 
-    // forEach((T) -> void) parses today (P6.5 grammar fix). Wiring
-    // it into the stdlib hits a separate codegen issue: dispatching
-    // a virtual method that accepts a closure-typed parameter
-    // through the runtime vtable doesn't yet route the closure
-    // pointer correctly (the parameter-positioned closure ABI works
-    // for direct/static calls — see FunctionTypeParamProbe — but
-    // virtual dispatch over template-parameter-typed function
-    // signatures needs the generic-instantiation pass to substitute
-    // `(T)->void` into `(int32)->void` consistently across the
-    // declared method's signature and the call-site canonical).
-    // Lands in a follow-up; see ToDo.md "P6.5 stdlib forEach".
+    // forEach((T) -> void) compiles when added here (P6.5 grammar
+    // + lambda-arg expectedType propagation), but virtual dispatch
+    // on the call site (s.forEach(fn) on an ArrayStream<int32>
+    // receiver) doesn't find the inherited method: template
+    // instantiation of Stream<T>::forEach for T=int32 registers
+    // under a canonical that still mentions `(T)->void` rather
+    // than the substituted `(int32)->void`, while the call site
+    // looks up by the substituted shape. The substitution pass
+    // in TemplateInstantiator needs to be taught about function-
+    // typed parameter signatures. Tracked in ToDo.md as
+    // "P6.5 stdlib forEach: template substitution for function-
+    // typed params". Local-variable callable form still works
+    // (FunctionTypeParamProbe).
 }
