@@ -555,11 +555,15 @@ namespace cajeta {
         }
         llvm::Type* headerTy = arrayType->getLlvmType();
 
-        // Resolve the index expression.
+        // Resolve the index expression. Same l-value-to-r-value coercion
+        // needed for class-field indices (`this.data[this.idx]`) — the
+        // DotExpression for `this.idx` returns a GEP, not an AllocaInst,
+        // and without loadIfLValue the GEP stays a ptr and CreateIntCast
+        // sext'd it as a pointer (LLVM verify error: "SExt only operates
+        // on integer").
         llvm::Value* idx = children[1]->generateCode(module);
-        if (auto* a = llvm::dyn_cast<llvm::AllocaInst>(idx)) {
-            idx = builder->CreateLoad(a->getAllocatedType(), a);
-        }
+        auto idxAst = dynamic_pointer_cast<Expression>(children[1]);
+        idx = loadIfLValue(module, idx, idxAst);
         if (idx->getType() != i64Ty) {
             idx = builder->CreateIntCast(idx, i64Ty, /*isSigned=*/true);
         }

@@ -1,0 +1,39 @@
+package cajeta.lang;
+
+/**
+ * The pull-protocol base for everything iteration-related in the
+ * stdlib (Collections.md § Stream). Implementers override `next()`
+ * to yield elements; combinator methods on Stream itself consume
+ * `next()` and inherit to every subclass.
+ *
+ * ## v1 minimal surface
+ *
+ * Just the pull primitive plus `count()` and `forEach((T) -> void)`
+ * terminals. The intermediate-combinator wrappers (MapStream,
+ * FilterStream, TakeStream, ...) and the rest of the terminal set
+ * (fold, reduce, anyMatch, ..., collect) land in P6.5+.
+ *
+ * ## "Abstract" via empty-default convention
+ *
+ * Cajeta doesn't have abstract-method enforcement at vtable build
+ * today, so Stream's `next()` lands as a concrete method returning
+ * `None` by default. Implementers override; the default is never
+ * meaningfully invoked because user code only calls `next()` on
+ * subclasses. (Future work: real abstract-method support so
+ * forgetting to override is a compile-time error.)
+ *
+ * ## Stream vs Optional integration
+ *
+ * Per Collections.md, Optional<T> extends Stream<T> with single-
+ * shot next(). That lands once method-override on generic stdlib
+ * classes is verified end-to-end via ArrayStream below.
+ */
+public class Stream<T> {
+    /**
+     * Pull the next element. Implementers override; default returns
+     * an empty Optional.
+     */
+    public Optional<T> next() {
+        return heap Optional<T>(false, null);
+    }
+}
