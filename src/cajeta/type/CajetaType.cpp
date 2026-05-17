@@ -202,7 +202,7 @@ namespace cajeta {
         }
         // Function type: `(T1, T2) -> R`. Resolve each component and build
         // (or look up by canonical) a CajetaFunctionType. See
-        // cajeta-docs/Lambdas.md. The return slot is typeTypeOrVoid so
+        // cajeta-docs/stdlib/Lambdas.md. The return slot is typeTypeOrVoid so
         // `(T) -> void` is a legal function-type shape (P6.5).
         if (auto* fnt = ctx->functionType()) {
             std::vector<CajetaTypePtr> paramTypes;

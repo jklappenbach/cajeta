@@ -173,7 +173,7 @@ namespace cajeta {
             // function type down to the lambda so it can use the declared
             // return type (and, eventually, expected param types) rather
             // than trying to infer them from a body whose own resolvedType
-            // isn't always populated. See cajeta-docs/Lambdas.md.
+            // isn't always populated. See cajeta-docs/stdlib/Lambdas.md.
             if (auto varInit = dynamic_pointer_cast<VariableInitializer>(initializer)) {
                 auto& children = varInit->getChildren();
                 if (!children.empty()) {

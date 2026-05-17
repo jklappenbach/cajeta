@@ -79,7 +79,7 @@ benefits from `Double` being a real Object — not just ML programs.
 
 ## Prerequisite: cajeta.math expansion
 
-The current `cajeta.math` is a one-line entry in `StandardLibrary.md`
+The current `cajeta.math` is a one-line entry in `cajeta-docs/stdlib/`
 ("Integer / Long / Double parse helpers, BigInteger, basic math
 utility methods"). For ML use it needs to grow into the home for
 **every** numeric type's boxed Object form, and into the precision-
@@ -112,7 +112,7 @@ cajeta.math.Float64        (boxed float64)
 ```
 
 `cajeta.lang.Integer / Long / Double / Boolean` (the shapes already
-documented in StandardLibrary.md) become aliases / re-exports of
+documented in cajeta-docs/stdlib/) become aliases / re-exports of
 `cajeta.math.Int32 / Int64 / Float64 / Boolean`. The math package is
 the source of truth; cajeta.lang carries the Java-style names for
 ergonomics.

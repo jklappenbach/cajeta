@@ -95,7 +95,7 @@ namespace cajeta {
         if (!v || !receiver) return v;
         auto recvType = receiver->getResolvedType();
         if (!recvType) return v;
-        // Endianness is view-only — structs are host-endian per Structs.md.
+        // Endianness is view-only — structs are host-endian per cajeta-docs/Views.md.
         // Cast specifically to CajetaView so a future struct receiver no-ops
         // through here.
         auto viewType = dynamic_pointer_cast<CajetaView>(recvType);

@@ -373,7 +373,7 @@ namespace cajeta {
 
         // Emit a thin forwarding wrapper to a C-runtime symbol named
         // `symbol`. Called by generateCode() when the method carries an
-        // @Native annotation. See cajeta-docs/StandardLibrary.md
+        // @Native annotation. See cajeta-docs/stdlib/
         // "Native methods" for the user-facing contract.
         void emitNativeForwardingBody(const std::string& symbol);
 

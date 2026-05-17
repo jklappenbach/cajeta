@@ -11,7 +11,7 @@
 
 ## Non-goals (v1)
 
-- Per-lambda type parameters (`<U> (U) -> U`). Same virtual-vtable reasoning as method-level templates — see `cajeta-docs/MemoryModel.md` and the grammar note above `memberDeclaration` in `antlr4/CajetaParser.g4`. Class-level `<T>` referenced inside a lambda body is fine; T is bound by the enclosing class.
+- Per-lambda type parameters (`<U> (U) -> U`). Same virtual-vtable reasoning as method-level templates — see `cajeta-docs/stdlib/MemoryModel.md` and the grammar note above `memberDeclaration` in `antlr4/CajetaParser.g4`. Class-level `<T>` referenced inside a lambda body is fine; T is bound by the enclosing class.
 - Target-type inference for ambiguous method references. The LHS function type or method-parameter type must disambiguate; if it can't, the user writes an explicit lambda.
 - "By-reference" capture of primitives. Primitives capture by value. If you need shared mutable primitive state across closures, wrap it in a heap value.
 - Variadic lambdas (`(T...) -> R`). Out of scope for v1; revisit if there's demand.

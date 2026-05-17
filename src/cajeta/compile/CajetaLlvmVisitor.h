@@ -350,7 +350,7 @@ namespace cajeta {
                     list<QualifiedNamePtr>{}, list<QualifiedNamePtr>{});
 
             // Endianness / alignment annotations apply only to views (per
-            // Structs.md, structs are host-endian with compiler-chosen
+            // cajeta-docs/Views.md, structs are host-endian with compiler-chosen
             // layout; per Views.md, views require endianness and may opt
             // into natural alignment). The annotations sit on the enclosing
             // typeDeclaration's classOrInterfaceModifier* prefix.
@@ -407,7 +407,7 @@ namespace cajeta {
         }
 
         virtual std::any visitStructDeclaration(CajetaParser::StructDeclarationContext* ctx) override {
-            // Stack value aggregate (Structs.md) — full codegen lands via
+            // Stack value aggregate (cajeta-docs/Views.md) — full codegen lands via
             // CajetaStruct: stack alloca + aggregate init (S6), inline
             // composition into class fields (S7), methods (S8), interface
             // dispatch through the fat-pointer model (S9–S11).
@@ -1057,7 +1057,7 @@ namespace cajeta {
         // class-drop wrapper machinery (CajetaClass::getOrCreateDropFunction)
         // picks it up unchanged. The identifier between ~ and ( must
         // match the enclosing class name, same convention as the
-        // constructor's identifier. See cajeta-docs/MemoryModel.md §
+        // constructor's identifier. See cajeta-docs/stdlib/MemoryModel.md §
         // Destructors.
         virtual std::any visitDestructorDeclaration(CajetaParser::DestructorDeclarationContext* ctx) override {
             string declaredName = ctx->identifier()->getText();

@@ -1190,7 +1190,7 @@ namespace cajeta {
 
     // Collect the names of outer-scope identifiers transferred into the
     // closure via `#name` in the lambda body. Rule 3 from
-    // cajeta-docs/Lambdas.md: ownership moves into the closure and the
+    // cajeta-docs/stdlib/Lambdas.md: ownership moves into the closure and the
     // outer name becomes unreadable afterwards. Uses the same statement-
     // shape recursion as collectFreeIdentifiers so block bodies pick up
     // `#name` anywhere it appears (return value, initializer, condition,
@@ -1241,7 +1241,7 @@ namespace cajeta {
         }
     }
 
-    // Rule 5 from cajeta-docs/Lambdas.md: writing to a primitive that was
+    // Rule 5 from cajeta-docs/stdlib/Lambdas.md: writing to a primitive that was
     // captured by value is a compile error — the lambda is mutating a
     // private copy, so the write would silently fail to propagate. The
     // user must use a mutable wrapper (Cell-style) to opt into shared

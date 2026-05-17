@@ -4,7 +4,7 @@
 // copied into a captures struct at the lambda creation site and unpacked
 // inside the synthesized function via the implicit captures-ptr first arg.
 // Capture-by-value semantics: subsequent mutation of the outer local does
-// not affect what the lambda sees. See cajeta-docs/Lambdas.md.
+// not affect what the lambda sees. See cajeta-docs/stdlib/Lambdas.md.
 //
 // Out of scope (later L2 sub-slices):
 //   - Heap captures by borrow
@@ -242,7 +242,7 @@ TEST(LambdaL2Tests, blockBodyDirectReturnHeapCap) {
 // L2-5: writing to a value-captured primitive must be rejected at
 // compile time. The lambda would silently mutate a private copy of the
 // captured value — that's a footgun the language pins down per Rule 5
-// in cajeta-docs/Lambdas.md. The exception carries the offending name
+// in cajeta-docs/stdlib/Lambdas.md. The exception carries the offending name
 // so error messages stay actionable.
 TEST(LambdaL2Tests, writingValueCaptureIsCompileError) {
     auto src =

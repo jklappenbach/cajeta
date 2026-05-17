@@ -2,7 +2,7 @@ package cajeta.lang.stream;
 
 /**
  * The pull-protocol base for everything iteration-related in the
- * stdlib (Collections.md § Stream). Implementers override `next()`
+ * stdlib (stdlib/Streams.md § Stream). Implementers override `next()`
  * to yield elements; combinator methods on Stream itself consume
  * `next()` and inherit to every subclass.
  *
@@ -24,7 +24,7 @@ package cajeta.lang.stream;
  *
  * ## Stream vs Optional integration
  *
- * Per Collections.md, Optional<T> extends Stream<T> with single-
+ * Per stdlib/Streams.md, Optional<T> extends Stream<T> with single-
  * shot next(). That lands once method-override on generic stdlib
  * classes is verified end-to-end via ArrayStream below.
  */

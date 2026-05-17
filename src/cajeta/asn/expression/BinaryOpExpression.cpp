@@ -82,7 +82,7 @@ namespace cajeta {
         }
         // DotExpression usually returns a field's GEP slot pointer that
         // needs loading through. The exception is variable-size struct
-        // fields (Structs.md § Inline length-prefix layout), where
+        // fields (Views.md § Inline length-prefix layout), where
         // DotExpression returns a runtime helper's already-materialized
         // String pointer — that's the value, not a slot to load. Gate
         // on v being an actual GEP so we don't double-load the helper
@@ -622,7 +622,7 @@ namespace cajeta {
                                 if (findProp(klass)) {
                                     // Reject writes to variable-size struct
                                     // fields — they can't be resized in place.
-                                    // See Structs.md § Mutation rules.
+                                    // See Views.md § Mutation rules.
                                     // ONLY applies to CajetaStruct (POD zero-
                                     // copy) types — a String-typed field on a
                                     // regular CajetaClass instance is a normal

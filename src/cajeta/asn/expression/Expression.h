@@ -290,7 +290,7 @@ namespace cajeta {
     // L4-1 implements only the static-method form
     // (`Type::staticMethod`); bound instance refs, unbound instance
     // refs, and constructor refs throw NOT_IMPLEMENTED until the
-    // matching sub-slices land. See cajeta-docs/Lambdas.md § Method
+    // matching sub-slices land. See cajeta-docs/stdlib/Lambdas.md § Method
     // references.
     class MethodReferenceExpression : public Expression {
     public:

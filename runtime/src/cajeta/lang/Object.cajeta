@@ -7,7 +7,7 @@ package cajeta.lang;
  * pass in `CajetaLlvmVisitor::visitClassDeclaration`), so the three
  * methods declared here are inherited by every user class unless
  * manually overridden. See
- * [StandardLibrary.md §Object](../../../../../cajeta-docs/StandardLibrary.md)
+ * [stdlib/Lang.md § Object](../../../../../cajeta-docs/stdlib/Lang.md)
  * for the full design.
  *
  * ## Default behaviour
@@ -26,7 +26,7 @@ package cajeta.lang;
  * (`HashMap<Point, V>` where `Point(1, 2)` should equal `Point(1, 2)`)
  * **override `hash()` manually**, or opt into structural synthesis
  * via the `@AutoHash` annotation (planned — see §"Auto-hash opt-in"
- * in StandardLibrary.md).
+ * in stdlib/Lang.md).
  *
  * The per-process seed is initialized from OS entropy at process
  * start; hash values are stable for the value's lifetime within a

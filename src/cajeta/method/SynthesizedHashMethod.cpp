@@ -47,7 +47,7 @@ namespace cajeta {
 
     // Throw a diagnostic naming the @AutoHash'd class, the offending
     // field, and a concrete remediation. The format intentionally
-    // mirrors the example diagnostics in StandardLibrary.md so users
+    // mirrors the example diagnostics in stdlib/ so users
     // see what the doc promises.
     [[noreturn]] static void rejectField(
             const CajetaClassPtr& parent,

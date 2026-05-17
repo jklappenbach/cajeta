@@ -98,7 +98,7 @@ LIFO within a scope; inner scopes drop before outer. A borrow declared before it
 
 ## Fields
 
-- **Fields may be owners or borrows.** A field's ownership status is resolved at drop time, not at declaration. The per-fiber drop chain is the registry: at parent drop, the synthesized auto-drop helper walks the chain — if the field's address has an outstanding chain entry, this scope owns it (cancel the entry, drop now); if not, the address is aliased elsewhere (no-op). See `cajeta-docs/FieldOwnership.md`.
+- **Fields may be owners or borrows.** A field's ownership status is resolved at drop time, not at declaration. The per-fiber drop chain is the registry: at parent drop, the synthesized auto-drop helper walks the chain — if the field's address has an outstanding chain entry, this scope owns it (cancel the entry, drop now); if not, the address is aliased elsewhere (no-op). See `cajeta-docs/stdlib/FieldOwnership.md`.
 - **Field assignment.** `p.field = #x` and `p.field = heap T(...)` register the field as an owner (the heap-call's chain entry is the registration). `p.field = y` where `y` is a borrow stores the borrow; the field aliases `y`'s source and the chain-walk at drop sees it's owned elsewhere.
 - **Field reads borrow.** `String n = p.field` makes `n` a borrow rooted at `p`.
 - **Use-after-free of an aliased field whose source has already dropped is the programmer's responsibility at v1.** A lifetime tracker (Phase 6+) will catch this statically.
@@ -136,7 +136,7 @@ The runtime mechanism — "drop chain" — is the same machinery the borrow chec
 Limitations (v1 / known gaps):
 
 - **Virtual dispatch on drop.** ✅ Done. The vtable header carries a dedicated `drop_fn` slot (index 3, byte offset 16; see `StructureMetadata::createVirtualTableType`). Heap class locals register the runtime helper `__cajeta_class_virtual_drop`, which loads the instance's vtable pointer and dispatches through `vtable.drop_fn` — so `Base b = heap Derived()` fires `~Derived()`, not `~Base()`. Pinned by `test/parser/VirtualDropDispatchTests.cpp`. Stack allocations stay on static dispatch (alloca size fixes the dynamic type); Task<T>-style custom layouts opt out via `CajetaClass::hasVtablePointerAtSlotZero()`.
-- **Automatic field drops via chain self-discrimination.** ✅ Done. `CajetaClass::getOrCreateDropFunction` synthesizes an auto-drop loop that calls `__cajeta_field_drop_if_owned(field_ptr)` for each owned-shape field. The helper walks the per-fiber drop chain; if an active entry matches the field's address, the helper cancels the entry and runs the drop function directly (so the chain doesn't double-fire). If no entry matches, the field is aliased elsewhere and the helper no-ops. Doctrine and walk-throughs in `cajeta-docs/FieldOwnership.md`. Pinned by `test/parser/AutoFieldDropTests.cpp`.
+- **Automatic field drops via chain self-discrimination.** ✅ Done. `CajetaClass::getOrCreateDropFunction` synthesizes an auto-drop loop that calls `__cajeta_field_drop_if_owned(field_ptr)` for each owned-shape field. The helper walks the per-fiber drop chain; if an active entry matches the field's address, the helper cancels the entry and runs the drop function directly (so the chain doesn't double-fire). If no entry matches, the field is aliased elsewhere and the helper no-ops. Doctrine and walk-throughs in `cajeta-docs/stdlib/FieldOwnership.md`. Pinned by `test/parser/AutoFieldDropTests.cpp`.
 - **No `super.~Class()` chaining.** Derived destructors don't implicitly chain to the base class's. With single-class hierarchies this hasn't bitten yet; needs care now that virtual dispatch lands the override.
 - **Block-scoped firing.** ✅ Done. Drop entries fire at the closing `}` of the declaring lexical block, not method exit. RAII patterns like back-to-back `LockGuard`s in inline blocks now work. Pinned by `test/parser/BlockScopedDropTests.cpp`.
 
@@ -157,7 +157,7 @@ A borrowing-container type may exist separately, but the default `List<T>` etc. 
 
 ## Structs
 
-A `struct` is a stack-allocated value aggregate (full spec: `Structs.md`). Its interaction with the memory model:
+A `struct` is a stack-allocated value aggregate (full spec: `cajeta-docs/Views.md`). Its interaction with the memory model:
 
 - **Lifetime is the enclosing scope.** A struct local is allocated via `alloca` and drops at scope exit — same as any other stack-resident owner.
 - **Fields participate in drop chain.** A struct field that holds an owned class reference is itself an owner; when the struct drops, owned class fields drop in reverse declaration order before the struct's bytes are reclaimed.

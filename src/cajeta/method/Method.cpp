@@ -430,7 +430,7 @@ namespace cajeta {
             // Class instances, arrays, AND structs pass by pointer.
             // Structs were pass-by-value historically, but that
             // contradicts their zero-copy view-mode design intent
-            // (per Structs.md): a struct IS a typed view over a
+            // (per cajeta-docs/Views.md): a struct IS a typed view over a
             // wire-format buffer; memcpying the bytes at every call
             // boundary defeats the whole point. Now the call site
             // pushes the struct's address; the callee accesses

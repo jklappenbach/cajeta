@@ -3,7 +3,7 @@
 // Extends L1's typed-param-only support: when a lambda's params have no
 // explicit types, the parameter types come from the surrounding context's
 // CajetaFunctionType (set by the LHS of a function-typed variable
-// declaration). See cajeta-docs/Lambdas.md.
+// declaration). See cajeta-docs/stdlib/Lambdas.md.
 //
 // Out of scope (L2+):
 //   - Captures

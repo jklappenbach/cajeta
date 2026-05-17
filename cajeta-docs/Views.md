@@ -12,7 +12,7 @@ A `view` declaration names a layout — a sequence of fields with declared byte 
 
 Views are **not** for self-describing formats — Ion, JSON, CBOR, MessagePack, BSON, Protobuf. Those have variable-length, tag-encoded structure where offsets depend on the data; they need streaming parsers (see `cajeta.codec.*` libraries), not overlay. The line: **if field offsets are determined by the type alone, view works. If they depend on the data, you need a parser.**
 
-Views are not for value aggregates with class references or behavior. That is `struct`'s job — see `Structs.md`.
+Views are not for value aggregates with class references or behavior. That is the unified `class` keyword's job — see `cajeta-docs/UnifiedClasses.md`. (`struct` is a transitional alias for `class`; the legacy stand-alone struct design doc has been retired.)
 
 ---
 

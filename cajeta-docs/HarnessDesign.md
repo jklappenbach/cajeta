@@ -183,7 +183,7 @@ unaligned-access cost on ARM (negligible on x86).
 
 ## Sequence
 
-Following StandardLibrary.md's implementation order:
+Following cajeta-docs/stdlib/'s implementation order:
 
 1. **Externalize stdlib + parse-once refactor.** Unblocks everything else.
 2. **`Fiber.sleep` + timer reactor + `nanoTime` intrinsic.** The

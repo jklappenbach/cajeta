@@ -1,6 +1,6 @@
 package cajeta.error;
 
-// Root of the cajeta exception hierarchy. See cajeta-docs/ErrorModel.md.
+// Root of the cajeta exception hierarchy. See cajeta-docs/stdlib/ErrorModel.md.
 // Constructors don't call super(...) — `super` is still
 // UnsupportedExpression. Inherited fields are written directly via
 // `this.message`. Each subclass repeats the field assignment.

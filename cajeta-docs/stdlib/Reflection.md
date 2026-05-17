@@ -1,4 +1,4 @@
-# CajetaReflect.md
+# Reflection — `cajeta.reflect`
 
 A design for `cajeta.reflect`, the stdlib package for runtime
 type introspection. Reads the per-class RTTI tables the compiler

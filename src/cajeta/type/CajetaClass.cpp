@@ -843,7 +843,7 @@ namespace cajeta {
         // would leave the dropped pointers dangling, unobservable
         // from outside but still UB to dereference.
         //
-        // Per-field-type emission (see cajeta-docs/FieldOwnership.md
+        // Per-field-type emission (see cajeta-docs/stdlib/FieldOwnership.md
         // § Solution B for the doctrine):
         //
         //   - CajetaStruct: GEP the embedded body, call the struct's

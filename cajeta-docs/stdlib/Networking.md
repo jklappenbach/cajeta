@@ -1,4 +1,4 @@
-# CajetaHttp.md
+# Networking — `cajeta.io.net.http` / `cajeta.io.net.websocket`
 
 A design for `cajeta.io.net.http`, a first-party library (separate from
 stdlib) covering HTTP/1.1 + HTTP/2 + WebSockets, both client and

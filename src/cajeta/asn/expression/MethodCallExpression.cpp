@@ -77,7 +77,7 @@ namespace cajeta {
         // both fields, and indirect-dispatch with captures prepended to the
         // user args. Matches when the call is bare (no receiver) AND a
         // scope lookup of methodCallName yields a function-typed field.
-        // See cajeta-docs/Lambdas.md.
+        // See cajeta-docs/stdlib/Lambdas.md.
         if (children.empty() && !module->getScopeStack().isEmpty()) {
             auto scope = module->getScopeStack().peek();
             FieldPtr field = scope ? scope->getField(methodCallName) : nullptr;

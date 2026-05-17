@@ -1,6 +1,6 @@
 //
 // First-class function type — value-type representation of a callable
-// `(T1, T2, ..., Tn) -> R`. See cajeta-docs/Lambdas.md for the full design.
+// `(T1, T2, ..., Tn) -> R`. See cajeta-docs/stdlib/Lambdas.md for the full design.
 //
 // v1 (L1): non-capturing lambdas only. The LLVM-level value of a function-
 // typed expression is a bare function pointer (`ptr`). Captures (L2) will

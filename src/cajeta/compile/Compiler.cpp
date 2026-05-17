@@ -172,7 +172,7 @@ namespace cajeta {
     // Stdlib prelude — the minimal class hierarchy every Cajeta compilation
     // unit gets implicitly. v1 carries the error-model types from
     // ErrorModel.md (Throwable / Exception / RecoverableException /
-    // UnrecoverableException); StandardLibrary.md describes the full
+    // UnrecoverableException); stdlib/ describes the full
     // intended scope.
     //
     // Sources live as actual `.cajeta` files under runtime/src/cajeta/ and
