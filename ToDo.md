@@ -8,7 +8,7 @@ Convention: each entry is a brief description, why it matters, where it bites to
 
 ## Active design discussion — Unified class model + Optional/Stream
 
-**Status:** in design. No code yet. Pivoted mid-design from "land Optional first" to "unify class + struct first, then Optional rides on top." Conversation traced through Java's Optional, the Java/Rust/Scala/Swift/Kotlin/Haskell/C++ surveys, then the realization that most S6–S11 contortions trace back to the struct/class split. New target: drop the split, use stack/heap allocation per use site, generalize the S6–S11 machinery to live under `CajetaClass`.
+**Status:** Phase 1 + Phase 2a/2b LANDED (847/847 tests passing). Phases 2c/2d (CajetaStruct collapse, isAggregate skip removal, struct keyword aliasing, test migration) deferred to a focused future session — a one-line collapse experiment crashed 22/32 shards, indicating significant test + codegen coupling that requires its own dedicated migration. Heap/stack syntax + bare-construction rejection + aggregate-init lifting are all wired and usable today. See § Rollout progress below for the per-sub-phase status.
 
 ### Committed decisions (sealed)
 
@@ -41,6 +41,20 @@ Convention: each entry is a brief description, why it matters, where it bites to
 - **`get()` / `expect(msg)` on Optional None throws a catchable exception** (CAJETA_ERROR_NONE_UNWRAP); matches the existing error model.
 - **Stream is sync only for v1.** Async stream is a separate type when the fiber runtime lands; parallel stream is a separate entry (`coll.parIter()`) integrated with the fiber pool. No `.parallel()` flag (universally regretted in Java).
 - **No backpressure / error channel / reactive ops in v1 Stream** — those are async-stream concerns.
+
+### Rollout progress (UnifiedClasses.md phases)
+
+- ✅ **P1a** (`f153568`) — heap/stack expression-prefix syntax (lexer + grammar + visitor).
+- ✅ **P1b** (`543eaff`) — bare `MyClass(args)` rejected; cleans up S6.1 segfault.
+- ✅ **P2a stack** (`19a8465`) — `stack MyClass(args)` wires alloca + vtable init + ctor.
+- ✅ **P2a heap** (`9c81d93`) — `heap MyClass { ... }` wires malloc + vtable + per-field stores; loadIfLValue bypass for aggregate-init.
+- ✅ **P2b** (`47ae5b9`) — stack aggregate-init "struct only" restriction lifted; vtable init on stack path too.
+- ⏭️ **P2c/P2d** — CajetaStruct collapse into CajetaClass + drop isAggregate skip + struct keyword aliasing + 9-file struct test migration. **Experiment crashed 22/32 shards on a naive collapse**; needs dedicated session with per-test migration + drop-chain unification + field-index offset reconciliation (struct's no-vtable layout vs class's vtable-at-0 layout disagree on every field offset).
+- ⏭️ **Owned class-ref fields on stack owners** — currently leak. KNOWN LIMITATION from P2a; needs a stack-drop variant that walks owned fields without freeing the body. Schedule alongside the P2c/P2d work.
+- ⏭️ **P3** — definite-assignment analysis (Q3 in Open questions).
+- ⏭️ **P4** — covariant return types (Q2 in Open questions).
+- ⏭️ **P5** — live-borrow tracker for iterator invalidation (Q10 in Open questions).
+- ⏭️ **P6** — stdlib rollout (Optional, Stream, Pair, Collector, collections).
 
 ### Open questions (pinned)
 
