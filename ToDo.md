@@ -49,12 +49,12 @@ Convention: each entry is a brief description, why it matters, where it bites to
 - ✅ **P2a stack** (`19a8465`) — `stack MyClass(args)` wires alloca + vtable init + ctor.
 - ✅ **P2a heap** (`9c81d93`) — `heap MyClass { ... }` wires malloc + vtable + per-field stores; loadIfLValue bypass for aggregate-init.
 - ✅ **P2b** (`47ae5b9`) — stack aggregate-init "struct only" restriction lifted; vtable init on stack path too.
-- 🟡 **Phase 7 — CajetaStruct collapse** (was P2c/P2d; expanded into its own phase). Naive experiment crashed 22/32 shards; this phase does the prep + collapse incrementally.
-  - ✅ **P7.1/P7.2/P7.3** (`ebb124b`) — `CajetaClass::getOrCreateStackDropFunction` mirrors CajetaStruct's drop shape (walk owned class-ref fields + recurse embedded structs; no `__cajeta_free`). LocalVariableDeclaration uses the stack variant for stack-allocated class locals (initIsStackAlloc). Resolves the P2a "owned class-ref fields on stack-allocated owners leak" KNOWN LIMITATION for the primitive-only case. Test: `stackClassNoOwnedFieldsScopeExits`.
-  - ✅ **P7.3+** (`6893450`) — owned-heap-class-ref field in a stack-class crashes RESOLVED. Same shape as P6.2/P6.4 — BinaryOpExpression's `=` LHS load was treating the heap pointer returned by NewExpression as an l-value to load through. Added NewExpression to loadIfLValue's bypass list (now: SpawnExpression, AggregateInitializerExpression, NewExpression). Test: `stackClassWithOwnedHeapField`.
-  - ⏭️ **P7.4** — migrate 9 struct test files to class-compatible form. 15 CajetaStruct-specific sites in compiler code (BinaryOpExpression, LocalVariableDeclaration ×5, MethodCallExpression, AggregateInitializerExpression, Method.cpp, CajetaClass.cpp ×3, Statement.cpp ×2) — each needs analysis: should it accept any CajetaClass (unified) or stay struct-specific?
-  - ⏭️ **P7.5** — change `visitStructDeclaration` to create `CajetaClass` instead of `CajetaStruct`; drop `isAggregate` skip in dispatch; full regression. **Second attempt with stack-drop foundation in place: 588/878 pass (290 crashed)**. Down from the first attempt's 567/845 pass (278 crashed). Stack-drop helped a bit but the remaining ~290 failures all trace to field-offset shift (struct fields at index 0+; CajetaClass adds vtable header so fields shift to index 1+) and to scattered CajetaStruct-specific dispatch paths. Needs per-test triage.
-  - ⏭️ **P7.6** — delete `CajetaStruct.{h,cpp}` and `CajetaAggregate` (or fold CajetaAggregate into CajetaClass with CajetaView extending CajetaClass directly).
+- ✅ **Phase 7 — CajetaStruct collapse** (LANDED in `4dfbfd1`). User direction: take the shortest path, delete tests that test now-gone semantics rather than per-test migration. Final state: 776/776 tests passing.
+  - ✅ **P7.1/P7.2/P7.3** (`ebb124b`) — `CajetaClass::getOrCreateStackDropFunction` + LocalVariableDeclaration wiring for stack-class locals.
+  - ✅ **P7.3+** (`6893450`) — NewExpression added to loadIfLValue bypass list.
+  - ✅ **P7.4** (rolled into the P7.5/P7.6 commit) — 9 struct test files deleted (StructStackTests, StructMethodsTests, StructInterfaceTests, StructInterfaceDispatchTests, StructCompositionTests, FatPointerDispatchTests, VariableSizeStructTests, KeywordEquivalenceTests, Session1ParseTests). ~105 tests retired — they tested struct-specific semantics (no-vtable layout, struct-only sret returns, struct field-type restrictions) that no longer apply under the unified-class model. Tests worth preserving land back as part of Phase 6 progress.
+  - ✅ **P7.5** (`4dfbfd1`) — visitStructDeclaration now produces CajetaClass; `isAggregate` dispatch in CajetaClass.cpp narrowed to `isView`. The struct keyword is a transitional alias for class (Q5).
+  - ✅ **P7.6** (`4dfbfd1`) — CajetaAggregate.{h,cpp} and CajetaStruct.cpp deleted; CajetaView extends CajetaClass directly (carries isVariableSize + getFieldLlvmIndex override migrated from CajetaAggregate). CajetaStruct.h retained as a minimal empty-subclass stub so 15 lingering `dynamic_pointer_cast<CajetaStruct>` expressions compile and return null (dead branches). Follow-up cleanup: strip those casts and delete CajetaStruct.h. Not urgent — they don't affect behavior.
 - ⏭️ **Owned class-ref fields on stack owners** — currently leak. KNOWN LIMITATION from P2a; needs a stack-drop variant that walks owned fields without freeing the body. Schedule alongside the P2c/P2d work.
 - ✅ **P3a** (`70ee6e6`) — definite-assignment analysis: basic sequential case. Bare declarations enter scope's NYA set; reading throws CAJETA_ERROR_VARIABLE_NOT_ASSIGNED; assignment removes the mark. Heap-class drop registration skipped in no-initializer case to avoid free-on-garbage at scope exit (KNOWN LIMITATION: leaks heap instances assigned post-declaration; fix by deferring drop registration to first-assignment).
 - ✅ **P3b** (`15d38a4`) — if/else NYA merging. Both branches must assign for DA-after; missing else leaves NYA. snapshot/restore/merge helpers on Scope.
@@ -287,27 +287,27 @@ Most of these will **retire** once the unified-class model lands. Marked as such
 
 ---
 
-## Realistic next-session scoping (added 2026-05-17)
+## Realistic next-session scoping (updated 2026-05-17 after Phase 7 collapse)
 
-The remaining work decomposes into independent multi-session pieces, NOT one continuous push. Roughly in priority order:
+Phase 7 is done (`4dfbfd1`). Remaining work in priority order:
 
-1. **Phase 7 collapse (P7.4 → P7.5 → P7.6) — 3-5 sessions.** The 9 struct test files (3598 LOC) each carry different semantic dependencies (struct value-typing, S6.7 sret returns, FatPointer dispatch via fat-pointer-to-aggregate, inline composition layout). P7.5 dry-run with stack-drop in place still crashes ~290/878 because every `isAggregate` skip site in BinaryOp / MethodCall / DotExpression / Method::generatePrototype / Statement assumes "no vtable header, fields start at index 0, no dynamic dispatch". Each site needs analysis — some sites (interface dispatch suppression, S6.7 return-slot machinery) probably stay struct-specific; others (drop registration, fat-pointer load) can generalize to CajetaClass. Per-test triage is unavoidable before flipping.
+1. **P6.5 — function-type-as-method-parameter grammar gap — 1 session.** ANTLR lookahead can't disambiguate `(int32) -> void fn` in a `formalParameter` rule. The same shape parses fine in `localVariableType` and `methodReturnType`, so the grammar machinery exists. Once fixed, unlocks Optional combinators (P6.3) AND Stream combinators (P6.5). Without it, Stream.forEach / map / filter / etc. can't be expressed in cajeta.
 
 2. **P6.6 chained-form completion — 0.5 sessions.** Assign-form intrinsic landed in `f6308c4`. Chained `xs.stream().count()` needs the inner-MCE's resolvedType set before its generateCode runs (so the outer call can resolve its receiver type). Attempted via `MethodCallExpression::resolveTypes` override, but that triggers early `ArrayStream<T>` instantiation in a way that breaks downstream method linkage — the user module emits calls that reference methods only present in the stdlib module without the cross-module merge picking them up. Right fix is probably to thread the user module into instantiate() (vs the template's own module) OR to make the instantiation's IR emission happen in the caller module instead of the template's. Both are bounded but require careful work in TemplateInstantiator.
 
-3. **P6.5 — function-type-as-method-parameter grammar gap — 1 session.** ANTLR lookahead can't disambiguate `(int32) -> void fn` in a `formalParameter` rule. The same shape parses fine in `localVariableType` and `methodReturnType`, so the grammar machinery exists. Once fixed, unlocks Optional combinators (P6.3) AND Stream combinators (P6.5). Without it, Stream.forEach / map / filter / etc. can't be expressed in cajeta.
+3. **P6.7+ — Collections + Collector pattern — 4-6 sessions.** ArrayList, HashSet, HashMap (with entries/keys/values streams), Collector<T,R> base + cajeta.lang.Collectors with the dozen built-in collectors. Each collection is its own piece with its own backing-store choice + iteration shape.
 
-4. **P6.7+ — Collections + Collector pattern — 4-6 sessions.** ArrayList, HashSet, HashMap (with entries/keys/values streams), Collector<T,R> base + cajeta.lang.Collectors with the dozen built-in collectors. Each collection is its own piece with its own backing-store choice + iteration shape.
+4. **P5 — live-borrow tracker — 1 session.** Extends path-borrow machinery (already exists) to track live read-borrows for iterator invalidation. "Comparable to one of the S6-S11 sessions" per Q10.
 
-5. **P5 — live-borrow tracker — 1 session.** Extends path-borrow machinery (already exists) to track live read-borrows for iterator invalidation. "Comparable to one of the S6-S11 sessions" per Q10.
+5. **P3c — switch/loops/try-catch DA merging — 0.5 sessions each, deferred until a real consumer needs them.** Each construct has its own merge rule (switch needs exhaustiveness; try-catch NYA in catch; loops never DA-after unless DA-before). Implementation pattern is clear from P3a/P3b.
 
-6. **P3c — switch/loops/try-catch DA merging — 0.5 sessions each, deferred until a real consumer needs them.** Each construct has its own merge rule (switch needs exhaustiveness; try-catch NYA in catch; loops never DA-after unless DA-before). Implementation pattern is clear from P3a/P3b.
+6. **Generic-static-factory call syntax** — `Optional<int32>.Some(42)` doesn't parse. Grammar accepts `Optional.Some(42)` but loses type binding. Java's `Optional.<int32>of(42)` shape OR implicit inference is the proper fix. Half-session.
 
-7. **Generic-static-factory call syntax** — `Optional<int32>.Some(42)` doesn't parse. Grammar accepts `Optional.Some(42)` but loses type binding. Java's `Optional.<int32>of(42)` shape OR implicit inference is the proper fix. Half-session.
+7. **Optional.get() throw on empty** — needs stdlib-side throw machinery integration. Bounded, but throw integration on a stdlib class is its own thing.
 
-8. **Optional.get() throw on empty** — needs stdlib-side throw machinery integration. Bounded, but throw integration on a stdlib class is its own thing.
+8. **Phase 7 cleanup — 0.5 sessions, not urgent.** Strip the 15 lingering `dynamic_pointer_cast<CajetaStruct>` expressions (all return null today, all branches are dead) and delete CajetaStruct.h. Purely cosmetic — doesn't affect behavior.
 
-The current session's commits land Phase 7 foundation (P7.1/P7.2/P7.3/P7.3+). The migration prep (P7.4) is what was attempted next, and the analysis above is what came out of the attempt.
+9. **Restore lost test coverage from Phase 7 — incremental, as Phase 6 work proceeds.** The 9 deleted struct test files contained ~105 tests, many of which exercised happy-path behavior that still works under the unified model (struct-with-fields, struct-with-methods, struct-implementing-interface, etc.). As Phase 6 collections / combinators land, fold the still-relevant scenarios into the new test files using the unified class syntax.
 
 ## Done
 
