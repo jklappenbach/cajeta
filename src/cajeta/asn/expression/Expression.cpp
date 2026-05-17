@@ -605,6 +605,22 @@ namespace cajeta {
         if (auto* a = llvm::dyn_cast<llvm::AllocaInst>(raw)) {
             return {a, module->getBuilder()->CreateLoad(a->getAllocatedType(), a)};
         }
+        // P3+ Optional fix — child may be a DotExpression returning a
+        // GEP into a class field (e.g. `!this.flag`). loadIfLValue
+        // recognizes the field-load shape via the AST's resolvedType
+        // and loads the field at the right element type. Without this,
+        // PrefixExpression LOGNOT/BITNOT/etc. saw a ptr and produced
+        // an ICmpEQ(ptr, i?-zero) → LLVM type mismatch.
+        auto exprAst = std::dynamic_pointer_cast<Expression>(child);
+        if (exprAst) {
+            llvm::Value* loaded = loadIfLValue(module, raw, exprAst);
+            // l-value address is `raw` only when it's an alloca slot;
+            // for GEP-into-field, the slot isn't writable through the
+            // same primitive (the existing increment/decrement uses
+            // `addr` which is alloca-only — that's fine; increment
+            // through a field is a DotExpression-write concern).
+            return {nullptr, loaded};
+        }
         return {nullptr, raw};
     }
 

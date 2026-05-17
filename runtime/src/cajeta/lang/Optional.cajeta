@@ -1,0 +1,64 @@
+package cajeta.lang;
+
+/**
+ * Value-typed sum: present or empty. Stack-allocated by default;
+ * `T` may be any type — primitive, class reference, struct, even
+ * another Optional.
+ *
+ * ## v1 surface
+ *
+ * Minimal Java-style core: construction (via ctor for now;
+ * Some/None static factories land once generic-static-call syntax
+ * is wired), inspection (isPresent/isEmpty), extraction (get/
+ * orElse). The lambda-taking combinators (map/filter/flatMap/fold/
+ * orElseGet/orElseThrow/ifPresent/inspect) land in P6.3 once
+ * function-typed parameters inside generic stdlib classes are
+ * verified.
+ *
+ * ## get() on None
+ *
+ * v1 returns the unset value (zero-initialized) rather than throwing
+ * — exception integration with stdlib-side throw machinery is its
+ * own piece. Callers are expected to guard with isPresent() until
+ * the throw lands.
+ *
+ * ## Storage
+ *
+ * Same semantics as any other class in the unified-class model. Use
+ * `heap Optional<T>(...)` for a heap-allocated instance or
+ * `stack Optional<T>(...)` for a stack-resident one (with the usual
+ * lifetime rules).
+ *
+ * ## Stream integration (deferred)
+ *
+ * Collections.md commits to Optional extending Stream<T> with
+ * single-shot next(); that lands when Stream<T> itself does (P6.4+).
+ */
+public class Optional<T> {
+    boolean present;
+    T value;
+
+    public Optional(boolean present, T value) {
+        this.present = present;
+        this.value = value;
+    }
+
+    public boolean isPresent() {
+        return this.present;
+    }
+
+    public boolean isEmpty() {
+        return !this.present;
+    }
+
+    public T get() {
+        return this.value;
+    }
+
+    public T orElse(T fallback) {
+        if (this.present) {
+            return this.value;
+        }
+        return fallback;
+    }
+}
