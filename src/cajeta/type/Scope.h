@@ -57,6 +57,24 @@ namespace cajeta {
         // removed (sequential codegen).
         set<string> notYetAssigned;
 
+        // Gap 4 (MemoryModel.md § Known gaps) — live read-borrows.
+        // Maps a borrowed path (e.g. "p.name", or just "p") to the set
+        // of local names borrowing from it (so disposing borrowers
+        // doesn't blank out unrelated borrows of the same source).
+        //
+        // A borrow is recorded by LocalVariableDeclaration when the
+        // initializer is a borrow-shaped read (field-read or local
+        // alias of a class instance, see initIsBorrow). The
+        // assignment site in BinaryOpExpression checks before
+        // writing: if the target path overlaps any live borrow's
+        // path (either is a prefix of the other), the write is
+        // rejected with CAJETA_ERROR_USE_AFTER_MOVE — the borrower
+        // would dangle the moment the source is mutated.
+        //
+        // Recorded on the borrower's scope; cleaned up when that
+        // scope is destroyed, matching the borrower's lifetime.
+        map<string, set<string>> liveBorrows;
+
         void putField(FieldPtr field, string propertyPath);
 
     public:
@@ -127,6 +145,24 @@ namespace cajeta {
         // Reading such a name is a compile error (the catch-all read
         // path in IdentifierExpression consults this).
         bool isNotYetAssigned(const string& name);
+
+        // Gap 4 — record a live read-borrow on this scope. `borrower`
+        // is the local that holds the borrow (e.g. "alias");
+        // `borrowedPath` is the dotted source path (e.g. "p.name", or
+        // just "p" if borrowing a whole local). Called from
+        // LocalVariableDeclaration when initIsBorrow detects a
+        // field-read or local-alias initializer.
+        void recordLiveBorrow(const string& borrower, const string& borrowedPath);
+
+        // Gap 4 — check whether writing to `writePath` would
+        // invalidate any live borrow in this scope or any ancestor.
+        // A write to W invalidates a borrow B if either path is a
+        // prefix of the other (writing through a borrowed structure
+        // mutates what it points at; writing through an ancestor
+        // path clobbers the borrowed slot). Returns the offending
+        // borrow's path on the first match, or empty string when
+        // the write is safe.
+        string findInvalidatingBorrow(const string& writePath);
 
         // P3b — flow-analysis snapshot helpers. IfStatement (and other
         // branching control-flow nodes) save the NYA set before each

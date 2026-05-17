@@ -444,6 +444,43 @@ namespace cajeta {
         }
     }
 
+    // Gap 1 (virtual dispatch on drop). Patch the vtable global's drop_fn
+    // slot (index 3 in the vtable struct layout — see StructureMetadata::
+    // createVirtualTableType) so __cajeta_class_virtual_drop's
+    // vtable->drop_fn load returns this class's heap-drop wrapper.
+    //
+    // The slot was set to NULL by createVirtualTableConstant: emitting
+    // the drop wrapper from inside vtable construction breaks stdlib
+    // linkage (see comment there). Instead, every heap class local's
+    // drop-registration site at LocalVariableDeclaration::generateCode
+    // calls patch + ensures the wrapper has been generated.
+    //
+    // Both globals (vtable + drop wrapper) live in this class's home
+    // module by construction, so the patch is module-local. Idempotent
+    // via llvmDropFunctionPatched.
+    void CajetaClass::patchVirtualTableDropFn() {
+        if (llvmDropFunctionPatched) return;
+        llvm::Function* dropFn = getOrCreateDropFunction();
+        if (!dropFn) return;
+        if (!llvmVirtualTableGlobal || !llvmVirtualTableType) return;
+        llvm::Constant* init = llvmVirtualTableGlobal->getInitializer();
+        if (!init) return;
+        auto* structInit = llvm::dyn_cast<llvm::ConstantStruct>(init);
+        if (!structInit) return;
+        // Rebuild the constant with drop_fn replaced (slot index 3).
+        std::vector<llvm::Constant*> elems;
+        elems.reserve(structInit->getNumOperands());
+        for (unsigned i = 0; i < structInit->getNumOperands(); ++i) {
+            elems.push_back(structInit->getOperand(i));
+        }
+        if (elems.size() < 4) return;
+        elems[3] = dropFn;
+        llvmVirtualTableGlobal->setInitializer(
+            llvm::ConstantStruct::get(llvmVirtualTableType,
+                llvm::ArrayRef<llvm::Constant*>(elems)));
+        llvmDropFunctionPatched = true;
+    }
+
     llvm::Function* CajetaClass::getOrCreateStackDropFunction() {
         if (llvmStackDropFunction) return llvmStackDropFunction;
         if (interfaceFlag) return nullptr;

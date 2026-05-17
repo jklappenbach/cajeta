@@ -141,6 +141,12 @@ namespace cajeta {
         // epilogue. Walks owned class-ref fields (matching CajetaStruct's
         // existing auto-walk behavior) so embedded ownership doesn't leak.
         llvm::Function* llvmStackDropFunction = nullptr;
+        // Gap 1 (virtual dispatch on drop) — set true after the vtable
+        // global's drop_fn slot has been patched to point at
+        // llvmDropFunction. Keeps patchVirtualTableDropFn idempotent so
+        // multiple heap-class local sites all see a no-op after the
+        // first patch.
+        bool llvmDropFunctionPatched = false;
 
         // S9.5.2 — per-(class, interface) vtable globals. Sibling of
         // CajetaStruct::interfaceVTables. Keyed by interface canonical
@@ -335,6 +341,28 @@ namespace cajeta {
         // the end. For stack-allocated class locals where the body is
         // owned by the stack frame, not the heap allocator.
         llvm::Function* getOrCreateStackDropFunction();
+
+        // Gap 1 (MemoryModel.md § Known gaps) — virtual dispatch on drop.
+        // Patch the vtable global's drop_fn slot (index 3 in the vtable
+        // layout) to point at this class's synthesized heap-drop wrapper.
+        // Called lazily from LocalVariableDeclaration::generateCode when
+        // a heap class local first registers its drop entry — the runtime
+        // helper __cajeta_class_virtual_drop loads this slot to dispatch
+        // through the dynamic type, so `Animal a = heap Dog()` fires
+        // ~Dog() at scope exit.
+        //
+        // Idempotent: the patch only runs once per class (tracked via
+        // llvmDropFunctionPatched). Safe to call multiple times.
+        void patchVirtualTableDropFn();
+
+        // Virtual hook — true iff this class's instance layout has a
+        // vtable pointer at LLVM struct index 0, the convention required
+        // for __cajeta_class_virtual_drop to dispatch correctly. Plain
+        // CajetaClass returns true. Subclasses with custom layouts
+        // (CajetaTask<T>'s { fn, arg, done, ... } body has no vtable
+        // slot) override to return false so callers fall back to static
+        // dispatch through getOrCreateDropFunction.
+        virtual bool hasVtablePointerAtSlotZero() const { return true; }
 
         // S9.5.2 — synthesize a per-(class, interface) vtable global for
         // every interface this class implements. Called from

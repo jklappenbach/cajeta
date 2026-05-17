@@ -969,9 +969,35 @@ int64_t __cajeta_signature_hash(const char* s) {
 //   [2..3]   i16 count
 //   [4..7]   pad (LLVM auto-inserts to align ptr to 8 bytes)
 //   [8..15]  ptr parent_vtable        (NULL at root)
-//   [16..]   [count x { i64 hash, ptr fn }] entries
+//   [16..23] ptr drop_fn              (this class's synthesized drop wrapper —
+//                                      __cajeta_class_virtual_drop loads this
+//                                      to route drops through the dynamic type)
+//   [24..]   [count x { i64 hash, ptr fn }] entries
 #define CAJETA_VTABLE_PARENT_OFFSET 8
-#define CAJETA_VTABLE_ENTRIES_OFFSET 16
+#define CAJETA_VTABLE_DROP_FN_OFFSET 16
+#define CAJETA_VTABLE_ENTRIES_OFFSET 24
+
+// Gap-1 fix — virtual dispatch on drop. Heap class locals push this as
+// their drop fn (in place of the static per-class drop wrapper). At
+// fire time we load the instance's vtable pointer (slot 0 of the
+// instance body) and call through the drop_fn slot in the vtable
+// header (CAJETA_VTABLE_DROP_FN_OFFSET) — which routes to the dynamic
+// type's destructor regardless of the declared type of the binding.
+// Without this, `Animal a = heap Dog()` at scope exit calls
+// __cajeta_test_Animal_drop (statically bound at the push site),
+// skipping ~Dog().
+//
+// instance layout (class body):
+//   instance[0] = vtable_ptr → CAJETA_VTABLE_DROP_FN_OFFSET into that
+//                 vtable global holds this class's heap-drop wrapper.
+void __cajeta_class_virtual_drop(void* instance) {
+    if (!instance) return;
+    void* vptr = *(void**) instance;
+    if (!vptr) return;
+    void (*drop_fn)(void*) =
+        *(void (**)(void*)) ((char*) vptr + CAJETA_VTABLE_DROP_FN_OFFSET);
+    if (drop_fn) drop_fn(instance);
+}
 
 void* __cajeta_vtable_lookup(void* vptr, int64_t hash) {
     if (!vptr) return NULL;

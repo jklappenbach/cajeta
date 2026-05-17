@@ -447,11 +447,22 @@ namespace cajeta {
         llvm::StructType* entryTy = llvm::StructType::get(ctx, {i64Ty, ptrTy});
         llvm::ArrayType* entriesTy = llvm::ArrayType::get(entryTy, slots.size());
 
+        // Layout (kept in sync with runtime CAJETA_VTABLE_* offsets):
+        //   0. i16 version
+        //   1. i16 count
+        //   2. ptr parent_vtable   — drives ancestor walks (e.g. is-unrecoverable)
+        //   3. ptr drop_fn         — points at this class's synthesized
+        //                            drop wrapper; used by
+        //                            __cajeta_class_virtual_drop to route
+        //                            scope-exit drops through the dynamic
+        //                            type (Gap 1: virtual dispatch on drop)
+        //   4. entries [N x {i64 hash, ptr fn}]
         vector<llvm::Type*> members{
             llvmInt16Type,    // 0. version
             llvmInt16Type,    // 1. count
             ptrTy,            // 2. parent_vtable
-            entriesTy,        // 3. entries
+            ptrTy,            // 3. drop_fn
+            entriesTy,        // 4. entries
         };
         llvm::StructType* result = llvm::StructType::create(ctx,
             llvm::ArrayRef<llvm::Type*>(members),
@@ -469,9 +480,9 @@ namespace cajeta {
         llvm::Type* ptrTy = llvm::PointerType::get(ctx, 0);
         const auto& slots = structure->getVirtualMethodList();
 
-        // Layout — index 3 now holds entries (after version/count/parent_vtable).
+        // Entries live at index 4 (after version, count, parent_vtable, drop_fn).
         llvm::ArrayType* entriesArrTy = llvm::cast<llvm::ArrayType>(
-            structure->getVirtualTableType()->getTypeAtIndex(3));
+            structure->getVirtualTableType()->getTypeAtIndex(4));
         llvm::StructType* entryTy = llvm::cast<llvm::StructType>(
             entriesArrTy->getElementType());
 
@@ -526,11 +537,39 @@ namespace cajeta {
             }
         }
 
+        // Slot 3: drop_fn — populated lazily.
+        //
+        // Calling getOrCreateDropFunction here (eagerly, during vtable
+        // construction) breaks the build: vtable populate runs as part
+        // of prototype generation, before the host module has linked
+        // the runtime — and the synthesized drop body references
+        // __cajeta_free, so the call cascades into runtime linkage
+        // that re-enters prototype work and loses the Object#VTable
+        // initializer. Diagnosed by null-slot-only builds passing
+        // (basic tests work) while eager-population builds fail with
+        // "Symbols not found: cajeta.lang.Object#VTable" at JIT load.
+        //
+        // Instead we leave NULL here, and patch the vtable's drop_fn
+        // slot from CajetaClass::patchVirtualTableDropFn at the first
+        // site that needs it (the heap class local drop-registration
+        // in LocalVariableDeclaration::generateCode). The vtable
+        // global and its initializer live in the class's home module,
+        // and so does the drop wrapper, so the patch stays
+        // module-local and replaces the ConstantStruct's drop_fn
+        // element with the real function pointer.
+        //
+        // The runtime dispatcher (__cajeta_class_virtual_drop)
+        // null-checks the slot, so vtables for unused classes (no
+        // heap local of that type) stay valid with a NULL slot.
+        llvm::Constant* dropFnConstant =
+            llvm::ConstantPointerNull::get(llvm::cast<llvm::PointerType>(ptrTy));
+
         vector<llvm::Constant*> args{
             llvm::ConstantInt::get(llvmInt16Type, llvm::APInt(16, 0, false)),
             llvm::ConstantInt::get(llvmInt16Type,
                 llvm::APInt(16, slots.size(), false)),
             parentVtable,
+            dropFnConstant,
             entriesArr,
         };
         return llvm::ConstantStruct::get(structure->getVirtualTableType(),

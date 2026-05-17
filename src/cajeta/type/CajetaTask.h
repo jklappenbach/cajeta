@@ -55,6 +55,14 @@ namespace cajeta {
         // reclaimed at scope exit (or during exception unwind), eliminating
         // the leak documented in AsyncStatus.md § Known gaps.
         llvm::Function* getOrCreateDropFunction() override;
+
+        // Task<T>'s instance layout is { fn, arg, done, ... } — no
+        // vtable pointer at slot 0. The virtual-drop dispatcher would
+        // misread the function pointer at slot 0 as a vtable and
+        // segfault on the drop_fn lookup. Static dispatch through
+        // getOrCreateDropFunction (overridden above) is both correct
+        // and sufficient: Task is monomorphic, no subclassing exists.
+        bool hasVtablePointerAtSlotZero() const override { return false; }
     };
     typedef shared_ptr<CajetaTask> CajetaTaskPtr;
 }

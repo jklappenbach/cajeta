@@ -412,6 +412,36 @@ namespace cajeta {
             }
         }
 
+        // Gap 4 (MemoryModel.md § Known gaps) — alias-mutation guard.
+        // Reject assignments whose target path overlaps any live
+        // read-borrow recorded by an earlier `String alias = p.name`
+        // style initializer. Without this, `p.name = #other` would
+        // silently dangle `alias`. The write path is the dotted
+        // sequence rooted at a local — IdentifierExpression (root
+        // write like `p = ...`) or DotExpression (`p.name = ...`).
+        // ArrayIndexExpression on LHS isn't covered here: array
+        // borrows aren't path-tracked yet (would need element-index
+        // semantics in the borrow tracker).
+        if (binaryOp == BINARY_OP_ASSIGN && !children.empty()) {
+            std::string writePath;
+            if (auto idExpr = dynamic_pointer_cast<IdentifierExpression>(children[0])) {
+                writePath = idExpr->getTextValue();
+            } else if (auto dotExpr = dynamic_pointer_cast<DotExpression>(children[0])) {
+                writePath = DotExpression::buildPath(dotExpr);
+            }
+            if (!writePath.empty()) {
+                if (auto sc = module->getScopeStack().peek()) {
+                    std::string offender = sc->findInvalidatingBorrow(writePath);
+                    if (!offender.empty()) {
+                        throw Exception(
+                            "write to '" + writePath
+                            + "' invalidates live borrow of '" + offender + "'",
+                            "CAJETA_ERROR_USE_AFTER_MOVE");
+                    }
+                }
+            }
+        }
+
         llvm::Value* lhs = children[0]->generateCode(module);
         llvm::Value* rhs = children[1]->generateCode(module);
         ExpressionPtr lhsAst = dynamic_pointer_cast<Expression>(children[0]);

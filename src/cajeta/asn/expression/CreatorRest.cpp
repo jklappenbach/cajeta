@@ -84,6 +84,23 @@ namespace cajeta {
                     structTy, instance, /*idx=*/0, "vtable_slot");
                 builder->CreateStore(vtableRef, vtablePtrSlot);
             }
+            // Gap 1 (virtual dispatch on drop). The instance carries this
+            // class's vtable regardless of the declared type of the
+            // binding (`Animal a = heap Dog()` stores Dog's vtable). At
+            // scope exit __cajeta_class_virtual_drop loads vtable.drop_fn
+            // — patch this class's vtable slot now so dispatch routes to
+            // ~Dog() rather than ~Animal(). Stack allocations skip this
+            // path (no malloc, vtable still set for method dispatch, but
+            // the drop chain registers a static stack-drop fn — see
+            // LocalVariableDeclaration::generateCode).
+            //
+            // Custom-layout classes (CajetaTask<T>'s { fn, arg, done,
+            // ... } body has no vtable pointer at slot 0) skip the
+            // patch — their drop registration site falls back to
+            // static dispatch.
+            if (!stackAlloc && klass->hasVtablePointerAtSlotZero()) {
+                klass->patchVirtualTableDropFn();
+            }
         }
 
         // Resolve parameters and call the constructor. Prefer the expression's

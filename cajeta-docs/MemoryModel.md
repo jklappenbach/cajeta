@@ -134,10 +134,10 @@ The runtime mechanism — "drop chain" — is the same machinery the borrow chec
 
 Limitations (v1 / known gaps):
 
-- **No virtual dispatch.** Dropping a `Bar` local that holds a `Foo extends Bar` fires `~Bar()`, not `~Foo()`. Adding `drop` to the vtable is the proper fix; deferred.
+- **Virtual dispatch on drop.** ✅ Done. The vtable header carries a dedicated `drop_fn` slot (index 3, byte offset 16; see `StructureMetadata::createVirtualTableType`). Heap class locals register the runtime helper `__cajeta_class_virtual_drop`, which loads the instance's vtable pointer and dispatches through `vtable.drop_fn` — so `Base b = heap Derived()` fires `~Derived()`, not `~Base()`. Pinned by `test/parser/VirtualDropDispatchTests.cpp`. Stack allocations stay on static dispatch (alloca size fixes the dynamic type); Task<T>-style custom layouts opt out via `CajetaClass::hasVtablePointerAtSlotZero()`.
 - **No automatic field drops.** If a class owns a heap field (an array, a class instance, another `Lock`), the user's destructor must release it explicitly. Rust auto-generates these; we don't yet.
-- **No `super.~Class()` chaining.** Derived destructors don't implicitly chain to the base class's. With single-class hierarchies this hasn't bitten yet; needs care when virtual dispatch lands.
-- **Method-scoped, not block-scoped firing.** Drop entries fire at method exit, not at the closing `}` of an inner block. RAII patterns that need release-on-block-exit (a `LockGuard` declared in an inner scope releasing before the rest of the method runs) currently require splitting the critical section into its own method.
+- **No `super.~Class()` chaining.** Derived destructors don't implicitly chain to the base class's. With single-class hierarchies this hasn't bitten yet; needs care now that virtual dispatch lands the override.
+- **Block-scoped firing.** ✅ Done. Drop entries fire at the closing `}` of the declaring lexical block, not method exit. RAII patterns like back-to-back `LockGuard`s in inline blocks now work. Pinned by `test/parser/BlockScopedDropTests.cpp`.
 
 ---
 
@@ -186,7 +186,7 @@ Construction-time bounds and length-prefix validation are documented in `Views.m
 
 ### Layout
 
-Linked list of cleanup entries (currently single global head — promotion to TLS is a known gap under the fiber model). Each `DropEntry` is alloca'd in the declaring function's frame, so when a fiber suspends mid-call its drop entries sit dormant on the fiber's own stack — but the global chain-head pointer is shared across fibers, which means today's drop chain assumes one fiber at a time touches it (true for the cooperative single-carrier model, but per-fiber-TLS-head is the correct long-term fix). See `ThreadModel.md` § Runtime requirements for the fiber executor.
+Linked list of cleanup entries. The chain head is **TLS + per-fiber**: `__cajeta_main_drop_top` (declared `__thread` in `cajeta_runtime.c`) is the main thread's head, and `__cajeta_drop_top_ptr()` returns the running fiber's `cajeta_fiber.drop_top` slot when one is active, falling back to the TLS main slot otherwise. Each `DropEntry` is alloca'd in the declaring function's frame, so a fiber's entries sit on the fiber's own stack and the per-fiber head pointer keeps the chains independent — safe under multi-carrier execution as long as each fiber's chain is touched by at most one carrier at a time.
 
 ```c
 struct DropEntry {
@@ -302,8 +302,8 @@ Recommend **path 1**. The codebase is small enough; the inconsistency of path 2 
 
 The rollout left a few items deliberately out of v1 scope; they're called out here so future work knows where to pick up.
 
-- **String stdlib helpers still leak.** Functions like `__cajeta_str_concat`, `__cajeta_str_substring`, `__cajeta_str_toUpperCase` all return malloc'd memory that's never freed. Wiring them through the drop chain needs the type system to distinguish "this `String` is heap-owned" from "this `String` is a borrow/literal" — the current `String` type collapses both. A first step is a dedicated `OwnedString` flag on the type instance plus codegen that registers a drop entry only for the owned variant.
-- **Alias-mutation through writes.** Path-based borrow tracking catches use-after-move; it does not yet catch "borrow into `person.name` invalidated by a later `person.name = #other` write." That needs a live-borrow tracking pass.
+- **String stdlib helpers leak fix.** ✅ Done. `LocalVariableDeclaration` recognizes the owned-allocating shapes — binary `+` lowered to `__cajeta_str_concat`, and the routed method intrinsics `substring` / `toUpperCase` / `toLowerCase` / `trim` / `replace` on a String receiver — and registers `__cajeta_free` as the local's drop fn. String literal aliases and `p.name` field-reads remain borrow-shaped (no drop). Pinned by `test/parser/OwnedStringDropTests.cpp`. The pragmatic detection at the assignment site replaces the proposed type-system `OwnedString` flag for v1; the flag can land later if a non-LocalVariable owner site appears.
+- **Alias-mutation through writes.** ✅ Done. `Scope` carries a `liveBorrows` map (path → borrower set) populated by `LocalVariableDeclaration` for pointer-shaped path-read initializers; `BinaryOpExpression`'s assignment branch consults `findInvalidatingBorrow` and throws `CAJETA_ERROR_USE_AFTER_MOVE` when the write path overlaps any live borrow. Pinned by `test/parser/AliasMutationBorrowTests.cpp`.
 - **Multi-parameter borrow-return with annotation.** Today multi-input free functions can't return a borrow at all. Rust-style explicit lifetime annotations would lift this restriction; not part of v1.
 - **FFI / `unsafe` / multi-threading.** All explicitly deferred.
-- **Drop chain head is global, not per-fiber.** The stackful fiber executor (R3-B) added cooperative concurrency, but the drop-chain head is still a single static. Correct under today's single-carrier model (only one fiber executes at a time), but multi-carrier parallelism — or any change that lets two carriers run fibers simultaneously — needs the chain head promoted to TLS / fiber-local. Drop entries themselves are already alloca'd in the fiber's own stack, so the only piece moving is the head pointer.
+- **Static class fields not yet implemented.** Investigation during the lambda-capture work surfaced that `public static int32 total = 0;` parses but emits no LLVM global for the field — STATIC is honored for methods only. Lambdas reading/writing statics segfault because the field reference resolves to nothing. The fix is multi-session: introduce a `StaticField` type, emit per-class static-property globals (with optional initializers), and wire `DotExpression` / `IdentifierExpression` resolution to look up class-static-properties when the LHS resolves to a `CajetaClass`. Spec'd tests live at `test/parser/LambdaStaticCaptureTests.cpp` (`DISABLED_`-prefixed).

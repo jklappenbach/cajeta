@@ -18,6 +18,7 @@
 #include "expression/DotExpression.h"
 #include "expression/Identifier.h"
 #include "expression/MethodCallExpression.h"
+#include "expression/BinaryOpExpression.h"
 #include "expression/NewExpression.h"
 #include "expression/AggregateInitializerExpression.h"
 #include "../method/Method.h"
@@ -549,6 +550,104 @@ namespace cajeta {
                 emitDropEntryFor(module, field, "__cajeta_free_array");
             }
 
+            // Gap 4 — record a live read-borrow on the scope so a later
+            // write through the borrowed path (or any prefix of it)
+            // rejects with CAJETA_ERROR_USE_AFTER_MOVE before clobbering
+            // the borrowed slot. Triggered for the borrow shapes
+            // detected above: field/array reads of class refs
+            // (`String alias = p.name`) and local-to-local aliases of
+            // class refs (`String alias = other`). Struct-typed locals
+            // initIsBorrow shape ALSO goes through here, which the
+            // existing alias machinery already treats as a move — the
+            // borrow record is harmless there since the source is
+            // simultaneously marked moved.
+            // Gap 4 (live read-borrows) and Gap 5 (owned String drops).
+            // A String / class / array local with a path-shaped
+            // initializer (`String alias = p.name;`, `Foo b = a;`)
+            // aliases its source — record a live borrow so a later
+            // write to the source's path rejects.
+            // A String local initialized from a known-allocating
+            // string helper (`String r = "hello".concat(" world");`
+            // or `String r = a + b;`) owns the malloc'd buffer —
+            // register a free drop entry so the buffer doesn't leak
+            // at scope exit. Two paths handled here:
+            //   1. MethodCallExpression on a String receiver with an
+            //      allocating method name (concat/substring/
+            //      toUpperCase/toLowerCase/trim/replace).
+            //   2. BinaryOpExpression with operator + producing a
+            //      pointer-typed result (lowered via
+            //      __cajeta_str_concat in BinaryOpExpression::ADD).
+            //
+            // The two categories are mutually exclusive: only one of
+            // borrow / owned applies to a given initializer.
+            if (field && initializer && type
+                    && type->getLlvmType()
+                    && type->getLlvmType()->isPointerTy()) {
+                if (auto varInit = dynamic_pointer_cast<VariableInitializer>(initializer)) {
+                    auto& children = varInit->getChildren();
+                    if (!children.empty()) {
+                        auto child = children[0];
+
+                        // Owned-string detection.
+                        bool producesOwnedString = false;
+                        if (auto mc = dynamic_pointer_cast<MethodCallExpression>(child)) {
+                            const std::string& name = mc->getMethodCallName();
+                            if (name == "concat" || name == "substring"
+                                    || name == "toUpperCase" || name == "toLowerCase"
+                                    || name == "trim" || name == "replace") {
+                                auto& mcChildren = mc->getChildren();
+                                if (!mcChildren.empty()) {
+                                    auto recv = dynamic_pointer_cast<Expression>(mcChildren[0]);
+                                    if (recv) {
+                                        if (!recv->getResolvedType()) {
+                                            recv->resolveTypes(module);
+                                        }
+                                        auto rt = recv->getResolvedType();
+                                        if (rt && rt->getQName()
+                                                && rt->getQName()->getTypeName() == "String") {
+                                            producesOwnedString = true;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        if (!producesOwnedString) {
+                            if (auto bo = dynamic_pointer_cast<BinaryOpExpression>(child)) {
+                                if (bo->getBinaryOp() == BINARY_OP_ADD) {
+                                    if (!bo->getResolvedType()) {
+                                        bo->resolveTypes(module);
+                                    }
+                                    auto rt = bo->getResolvedType();
+                                    if (rt && rt->getQName()
+                                            && rt->getQName()->getTypeName() == "String"
+                                            && rt->getLlvmType()
+                                            && rt->getLlvmType()->isPointerTy()) {
+                                        producesOwnedString = true;
+                                    }
+                                }
+                            }
+                        }
+
+                        if (producesOwnedString) {
+                            emitDropEntryFor(module, field, "__cajeta_free");
+                        } else {
+                            // Borrow recording (Gap 4).
+                            string borrowedPath;
+                            if (auto dot = dynamic_pointer_cast<DotExpression>(child)) {
+                                borrowedPath = DotExpression::buildPath(dot);
+                            } else if (auto id = dynamic_pointer_cast<IdentifierExpression>(child)) {
+                                borrowedPath = id->getTextValue();
+                            }
+                            if (!borrowedPath.empty()) {
+                                if (auto sc = module->getScopeStack().peek()) {
+                                    sc->recordLiveBorrow(field->getName(), borrowedPath);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
             // Owning view (`View(#buf)`): the view took ownership of the
             // buffer from its source (the MoveExpression deactivated the
             // source's drop entry inside MoveExpression::generateCode).
@@ -602,13 +701,45 @@ namespace cajeta {
                 // get the stack-drop variant: walks owned class-ref
                 // fields + recurses into embedded structs, but does
                 // NOT free the body (function epilogue handles that).
-                // Heap-class locals continue to use the regular drop
-                // (which calls __cajeta_free at the end).
-                llvm::Function* dropFn = initIsStackAlloc
-                    ? klass->getOrCreateStackDropFunction()
-                    : klass->getOrCreateDropFunction();
-                if (dropFn) {
-                    emitDropEntryForFn(module, field, dropFn);
+                // Stack allocation fixes the dynamic type (alloca size
+                // is sized for the declared class), so static dispatch
+                // here is correct.
+                //
+                // Heap-class locals go through __cajeta_class_virtual_drop
+                // — the dispatcher loads the instance's vtable and calls
+                // the drop_fn slot, so a base-typed local holding a
+                // derived instance (`Animal a = heap Dog()`) fires
+                // ~Dog() rather than ~Animal() (MemoryModel.md Gap 1).
+                // The static per-class drop wrappers are still emitted
+                // and reachable: they live in vtable.drop_fn and the
+                // dispatcher routes through them.
+                if (initIsStackAlloc) {
+                    if (llvm::Function* stackDropFn =
+                            klass->getOrCreateStackDropFunction()) {
+                        emitDropEntryForFn(module, field, stackDropFn);
+                    }
+                } else if (klass->hasVtablePointerAtSlotZero()) {
+                    // Patch this class's vtable drop_fn slot with the
+                    // synthesized heap-drop wrapper, then register the
+                    // runtime dispatcher (Gap 1 — virtual dispatch on
+                    // drop). The dispatcher loads vtable.drop_fn from
+                    // the instance at scope exit, so a base-typed local
+                    // holding a derived instance fires the derived's
+                    // destructor.
+                    klass->patchVirtualTableDropFn();
+                    emitDropEntryFor(module, field,
+                        "__cajeta_class_virtual_drop");
+                } else {
+                    // Custom-layout classes (CajetaTask<T> — no vtable
+                    // pointer at slot 0). The virtual dispatcher can't
+                    // safely read from instance[0], so fall back to
+                    // static dispatch. These types are monomorphic by
+                    // construction (no user subclassing), so the static
+                    // per-class drop fn is both correct and sufficient.
+                    if (llvm::Function* dropFn =
+                            klass->getOrCreateDropFunction()) {
+                        emitDropEntryForFn(module, field, dropFn);
+                    }
                 }
             }
 

@@ -120,4 +120,34 @@ namespace cajeta {
         if (parent) return parent->isNotYetAssigned(name);
         return false;
     }
+
+    void Scope::recordLiveBorrow(const string& borrower, const string& borrowedPath) {
+        if (borrowedPath.empty() || borrower.empty()) return;
+        liveBorrows[borrowedPath].insert(borrower);
+    }
+
+    string Scope::findInvalidatingBorrow(const string& writePath) {
+        if (writePath.empty()) return "";
+        // Check this scope's borrows: writing to W invalidates B if
+        // W == B, or W is a strict prefix of B (clobbering a parent
+        // path under which a sub-path is borrowed), or B is a strict
+        // prefix of W (writing through a sub-field of a borrowed
+        // structure mutates what the borrow points at).
+        for (auto& entry : liveBorrows) {
+            const string& borrowed = entry.first;
+            if (borrowed == writePath) return borrowed;
+            if (writePath.size() < borrowed.size()
+                    && borrowed.compare(0, writePath.size(), writePath) == 0
+                    && borrowed[writePath.size()] == '.') {
+                return borrowed;
+            }
+            if (borrowed.size() < writePath.size()
+                    && writePath.compare(0, borrowed.size(), borrowed) == 0
+                    && writePath[borrowed.size()] == '.') {
+                return borrowed;
+            }
+        }
+        if (parent) return parent->findInvalidatingBorrow(writePath);
+        return "";
+    }
 }
