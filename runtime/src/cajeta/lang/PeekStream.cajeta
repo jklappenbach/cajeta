@@ -1,0 +1,28 @@
+package cajeta.lang;
+
+/**
+ * Intermediate combinator: invokes `fn` as a side effect on each
+ * element pulled, then passes the element through unchanged. Useful
+ * for debugging stream pipelines — `s.peek(v -> printValue(v)).count()`
+ * logs every element on the way past.
+ *
+ * Lazy: fn is called once per pull, not eagerly. Empty stream
+ * propagates without invoking fn.
+ */
+public class PeekStream<T> extends Stream<T> {
+    Stream<T> source;
+    (T) -> void fn;
+
+    public PeekStream(Stream<T> source, (T) -> void fn) {
+        this.source = source;
+        this.fn = fn;
+    }
+
+    public Optional<T> next() {
+        Optional<T> o = this.source.next();
+        if (o.isPresent()) {
+            this.fn(o.get());
+        }
+        return o;
+    }
+}

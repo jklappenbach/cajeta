@@ -1,0 +1,33 @@
+package cajeta.lang;
+
+/**
+ * Intermediate combinator: wraps another Stream and yields only those
+ * elements for which `pred` returns true. Lazy — the predicate is
+ * invoked on each pull, not eagerly over the whole source.
+ * Constructed via `someStream.filter(pred)`.
+ *
+ * Empty inner stream short-circuits; otherwise next() loops pulling
+ * from the source until either a matching element is found or the
+ * source exhausts.
+ */
+public class FilterStream<T> extends Stream<T> {
+    Stream<T> source;
+    (T) -> boolean pred;
+
+    public FilterStream(Stream<T> source, (T) -> boolean pred) {
+        this.source = source;
+        this.pred = pred;
+    }
+
+    public Optional<T> next() {
+        Optional<T> o = this.source.next();
+        while (o.isPresent()) {
+            T v = o.get();
+            if (this.pred(v)) {
+                return heap Optional<T>(true, v);
+            }
+            o = this.source.next();
+        }
+        return o;
+    }
+}

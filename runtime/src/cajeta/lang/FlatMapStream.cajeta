@@ -1,0 +1,49 @@
+package cajeta.lang;
+
+/**
+ * Intermediate combinator: wraps a Stream<T> and applies
+ * `fn: (T) -> Stream<R>` to each element, then flattens by draining
+ * each returned inner stream before pulling the next outer element.
+ * Yields Stream<R>.
+ *
+ * State between pulls: the inner stream `current` is retained across
+ * calls to next() until exhausted, then a new outer element triggers
+ * fn() to produce the next inner stream. `current.isEmpty()` is the
+ * initial-state marker — null Optional<...> can't be expressed with a
+ * non-templated reference type.
+ *
+ * Lazy: fn invoked per outer pull, inner stream pulled on demand.
+ * Outer empty → fmt empty. Inner stream returns empty → loop pulls
+ * next outer until something yields or outer exhausts.
+ */
+public class FlatMapStream<T, R> extends Stream<R> {
+    Stream<T> source;
+    (T) -> Stream<R> fn;
+    Stream<R> current;
+    boolean primed;
+
+    public FlatMapStream(Stream<T> source, (T) -> Stream<R> fn) {
+        this.source = source;
+        this.fn = fn;
+        this.primed = false;
+    }
+
+    public Optional<R> next() {
+        while (true) {
+            if (this.primed) {
+                Optional<R> r = this.current.next();
+                if (r.isPresent()) {
+                    return r;
+                }
+                this.primed = false;
+            }
+            Optional<T> o = this.source.next();
+            if (o.isEmpty()) {
+                return heap Optional<R>(false, null);
+            }
+            this.current = this.fn(o.get());
+            this.primed = true;
+        }
+        return heap Optional<R>(false, null);
+    }
+}

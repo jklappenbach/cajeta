@@ -1,0 +1,33 @@
+package cajeta.lang;
+
+/**
+ * Intermediate combinator: wraps another Stream and discards the first
+ * `n` elements from it, then passes everything else through. Lazy —
+ * the skip happens on the first `next()` pull, not at construction.
+ * Constructed via `someStream.skip(n)`; not typically instantiated
+ * directly.
+ *
+ * Symmetric counterpart to TakeStream: `take(n)` keeps the first n,
+ * `skip(n)` discards them. Combined: `someStream.skip(2).take(3)`
+ * yields elements 3..5 (Java's slice idiom).
+ */
+public class SkipStream<T> extends Stream<T> {
+    Stream<T> source;
+    int32 remaining;
+
+    public SkipStream(Stream<T> source, int32 n) {
+        this.source = source;
+        this.remaining = n;
+    }
+
+    public Optional<T> next() {
+        while (this.remaining > 0) {
+            Optional<T> dropped = this.source.next();
+            if (dropped.isEmpty()) {
+                return dropped;
+            }
+            this.remaining = this.remaining - 1;
+        }
+        return this.source.next();
+    }
+}

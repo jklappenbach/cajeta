@@ -1,0 +1,29 @@
+package cajeta.lang;
+
+/**
+ * Intermediate combinator: wraps another Stream<T> and applies
+ * `fn: (T) -> R` to each element, yielding a Stream<R>. The element
+ * type may change — exercises template multi-arg substitution
+ * (MapStream<T,R> extends Stream<R>, not Stream<T>).
+ *
+ * Lazy — fn is invoked on each pull, not eagerly. Empty inner stream
+ * passes through.
+ */
+public class MapStream<T, R> extends Stream<R> {
+    Stream<T> source;
+    (T) -> R fn;
+
+    public MapStream(Stream<T> source, (T) -> R fn) {
+        this.source = source;
+        this.fn = fn;
+    }
+
+    public Optional<R> next() {
+        Optional<T> o = this.source.next();
+        if (o.isEmpty()) {
+            return heap Optional<R>(false, null);
+        }
+        R mapped = this.fn(o.get());
+        return heap Optional<R>(true, mapped);
+    }
+}

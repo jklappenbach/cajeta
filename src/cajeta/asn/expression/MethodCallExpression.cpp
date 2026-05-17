@@ -817,6 +817,92 @@ namespace cajeta {
             }
         }
 
+        // Function-typed field invocation: `recv.fieldName(args)` where
+        // fieldName is a CajetaFunctionType-typed property on recv's
+        // class. Same closure layout as the bare-name local-lambda
+        // path above ({ ptr fn, ptr captures, ptr drop_fn }); the
+        // only difference is sourcing the closure-ptr from a GEP'd
+        // field slot rather than a stack alloca. Without this branch
+        // the lookup falls through to invokeMethod, which has no
+        // method named fieldName, returns null, and downstream
+        // codegen silently emits a default (e.g. `i1 false` for a
+        // boolean-typed call result) — masking the missing call as a
+        // wrong-answer bug rather than a hard error.
+        if (receiver && receiverType) {
+            auto recvClass = dynamic_pointer_cast<CajetaClass>(receiverType);
+            if (recvClass) {
+                StructurePropertyPtr fnField;
+                CajetaClassPtr fieldOwner;
+                std::function<bool(const CajetaClassPtr&)> findFnField =
+                    [&](const CajetaClassPtr& cls) -> bool {
+                        auto& props = cls->getProperties();
+                        auto it = props.find(methodCallName);
+                        if (it != props.end()
+                                && dynamic_pointer_cast<CajetaFunctionType>(
+                                    it->second->getType())) {
+                            fnField = it->second;
+                            fieldOwner = cls;
+                            return true;
+                        }
+                        for (auto& parent : cls->getSuperClasses()) {
+                            if (findFnField(parent)) return true;
+                        }
+                        return false;
+                    };
+                if (findFnField(recvClass)) {
+                    auto fnType = dynamic_pointer_cast<CajetaFunctionType>(
+                        fnField->getType());
+                    llvm::Type* ptrTy = llvm::PointerType::get(llvmCtx, 0);
+                    llvm::StructType* closureTy = llvm::StructType::get(
+                        llvmCtx, {ptrTy, ptrTy, ptrTy});
+                    unsigned fieldIdx =
+                        (unsigned) fieldOwner->getFieldLlvmIndex(fnField);
+                    llvm::Value* slot = builder->CreateStructGEP(
+                        recvClass->getLlvmType(), receiver, fieldIdx,
+                        methodCallName + "_slot");
+                    llvm::Value* closurePtr = builder->CreateLoad(
+                        ptrTy, slot, "closure_ptr");
+                    llvm::Value* fnSlot = builder->CreateStructGEP(
+                        closureTy, closurePtr, 0, "closure.fn");
+                    llvm::Value* callee = builder->CreateLoad(
+                        ptrTy, fnSlot, "fn_ptr");
+                    llvm::Value* capSlot = builder->CreateStructGEP(
+                        closureTy, closurePtr, 1, "closure.captures");
+                    llvm::Value* captures = builder->CreateLoad(
+                        ptrTy, capSlot, "captures_ptr");
+                    vector<llvm::Value*> args;
+                    args.push_back(captures);
+                    llvm::FunctionType* sig = fnType->getLlvmFunctionType();
+                    for (size_t i = 0; i < parameters.size(); ++i) {
+                        llvm::Value* v = parameters[i].expression->generateCode(module);
+                        if (auto* a = llvm::dyn_cast_or_null<llvm::AllocaInst>(v)) {
+                            v = builder->CreateLoad(a->getAllocatedType(), a);
+                        }
+                        size_t sigIdx = i + 1;
+                        if (sig && sigIdx < sig->getNumParams() && v
+                                && v->getType() != sig->getParamType(sigIdx)) {
+                            llvm::Type* expected = sig->getParamType(sigIdx);
+                            if (expected->isIntegerTy() && v->getType()->isIntegerTy()) {
+                                v = builder->CreateIntCast(v, expected, /*isSigned=*/true);
+                            } else if (expected->isFloatingPointTy()
+                                    && v->getType()->isFloatingPointTy()) {
+                                v = builder->CreateFPCast(v, expected);
+                            }
+                        }
+                        args.push_back(v);
+                    }
+                    // Pin resolvedType so a caller using this MCE as an
+                    // argument can recover the lambda's declared return
+                    // type (mirrors the post-invokeMethod resolvedType
+                    // pinning further below).
+                    if (fnType->getReturnType()) {
+                        resolvedType = fnType->getReturnType();
+                    }
+                    return builder->CreateCall(sig, callee, args);
+                }
+            }
+        }
+
         // Primitive-receiver intrinsic: `<int32>.hash()` and friends
         // lower directly to the matching __cajeta_hash_X runtime
         // helper, with sext/zext coercion for narrow ints / boolean
