@@ -51,10 +51,12 @@ Convention: each entry is a brief description, why it matters, where it bites to
 - ✅ **P2b** (`47ae5b9`) — stack aggregate-init "struct only" restriction lifted; vtable init on stack path too.
 - ⏭️ **P2c/P2d** — CajetaStruct collapse into CajetaClass + drop isAggregate skip + struct keyword aliasing + 9-file struct test migration. **Experiment crashed 22/32 shards on a naive collapse**; needs dedicated session with per-test migration + drop-chain unification + field-index offset reconciliation (struct's no-vtable layout vs class's vtable-at-0 layout disagree on every field offset).
 - ⏭️ **Owned class-ref fields on stack owners** — currently leak. KNOWN LIMITATION from P2a; needs a stack-drop variant that walks owned fields without freeing the body. Schedule alongside the P2c/P2d work.
-- ⏭️ **P3** — definite-assignment analysis (Q3 in Open questions).
-- ✅ **P4** — covariant return types: already supported by the hash-based vtable; no compiler change needed. Pinned with two tests in UnifiedClassSyntaxTests.
+- ✅ **P3a** (`70ee6e6`) — definite-assignment analysis: basic sequential case. Bare declarations enter scope's NYA set; reading throws CAJETA_ERROR_VARIABLE_NOT_ASSIGNED; assignment removes the mark. Heap-class drop registration skipped in no-initializer case to avoid free-on-garbage at scope exit (KNOWN LIMITATION: leaks heap instances assigned post-declaration; fix by deferring drop registration to first-assignment).
+- ✅ **P3b** (`15d38a4`) — if/else NYA merging. Both branches must assign for DA-after; missing else leaves NYA. snapshot/restore/merge helpers on Scope.
+- ⏭️ **P3c** — switch / loops / try/catch NYA merging. Defer until a real consumer needs them (each has its own merge semantics: switch needs exhaustiveness; try-catch NYA in catch because try-assignment may have thrown; loops never guarantee DA-after unless DA before).
+- ✅ **P4** — covariant return types (`6eea5f9`): already supported by the hash-based vtable (return type isn't part of the canonical signature). Pinned with two tests.
 - ⏭️ **P5** — live-borrow tracker for iterator invalidation (Q10 in Open questions).
-- ⏭️ **P6** — stdlib rollout (Optional, Stream, Pair, Collector, collections).
+- ⏭️ **P6** — stdlib rollout (Pair, Optional, Stream, Collector, collections).
 
 ### Open questions (pinned)
 
@@ -74,7 +76,11 @@ Test coverage in `UnifiedClassSyntaxTests`:
 
 No compiler change needed. Phase 4 of the rollout retires.
 
-#### Q3 — Definite-assignment analysis rules — DECIDED
+#### Q3 — Definite-assignment analysis rules — LANDED (P3a + P3b)
+
+Sequential case + if/else merging landed in commits 70ee6e6 + 15d38a4. Switch / loops / try/catch merging deferred to P3c when consumed. See "Rollout progress" entries above for details. Original decision retained below for reference.
+
+#### Q3 (original) — Definite-assignment analysis rules — DECIDED
 
 **Q3a — Keep definite-assignment analysis.** `MyClass x;` declares a null reference; reading before assignment is a **compile error**. Forward-flow analysis tracks each local as DA (definitely-assigned) or NYA (not-yet-assigned).
 
