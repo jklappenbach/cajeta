@@ -470,22 +470,40 @@ namespace cajeta {
         // synthesize singleton + factory helpers.
         CajetaModule::resolveDependencyGraph();
 
-        // Phase 1: declaration/signature registration. Walk every method across every
-        // module and register its prototype with the LLVM module. Cross-method and
-        // cross-class references can resolve in Phase 2 because every name is already
-        // in the symbol table.
-        for (auto& module: modules) {
-            for (auto& method: module->getAllMethods()) {
-                method->getLlvmFunctionType();
+        // Phase 1 (signatures) + Phase 2 (bodies), looped until quiescent.
+        // A user method body can trigger a stdlib template instantiation
+        // mid-codegen (e.g. `xs.stream()` → ArrayStream<int32>); the new
+        // methods land in the stdlib module's structures AFTER stdlib's
+        // earlier pass already ran. The do/while re-iterates both
+        // phases — both Method::getLlvmFunctionType and ::generateCode
+        // are idempotent so already-emitted methods cost nothing to
+        // revisit. Per-module emitForModule moves out of the loop and
+        // runs once after quiescence so each module's IR / .o is written
+        // exactly once, with the freshest method set.
+        size_t prevMethodCount = 0;
+        while (true) {
+            size_t methodCount = 0;
+            for (auto& module: modules) {
+                methodCount += module->getAllMethods().size();
             }
+            for (auto& module: modules) {
+                for (auto& method: module->getAllMethods()) {
+                    method->getLlvmFunctionType();
+                }
+            }
+            for (auto& module: modules) {
+                for (auto& method: module->getAllMethods()) {
+                    method->generateCode();
+                }
+            }
+            size_t after = 0;
+            for (auto& module: modules) {
+                after += module->getAllMethods().size();
+            }
+            if (after == methodCount && after == prevMethodCount) break;
+            prevMethodCount = after;
         }
-
-        // Phase 2: body lowering. Codegen now operates against a fully-populated symbol
-        // table so calls resolve in any order.
         for (auto& module: modules) {
-            for (auto& method: module->getAllMethods()) {
-                method->generateCode();
-            }
             // Runtime is linked once into the stdlib module (see
             // parseStdlibInto); user modules carry only extern decls
             // for runtime helpers, resolved by the JIT/AOT link step.

@@ -8,9 +8,9 @@ Convention: each entry is a brief description, why it matters, where it bites to
 
 ## Current state (2026-05-17, end-of-session)
 
-Tree at 849/849 — zero disabled tests.
+Tree at 855/855 — zero disabled tests.
 
-Recently landed (Phase 7 + P6.5/P6.7 + memory-model gap pass + Priority 1 push + mode/debug-features push + P1.1 template-field codegen):
+Recently landed (Phase 7 + P6.5/P6.7 + memory-model gap pass + Priority 1 push + mode/debug-features push + P1.1 template-field codegen + P1.1 follow-ups):
 - `struct` is a transitional alias for `class`; CajetaAggregate retired.
 - `(T) -> void` parses as a method-parameter type; lambda-arg expectedType inference works.
 - `cajeta.lang.Stream.forEach` + `cajeta.collection.ArrayList<T>` landed.
@@ -26,6 +26,8 @@ Recently landed (Phase 7 + P6.5/P6.7 + memory-model gap pass + Priority 1 push +
 - **Source-tagged drop-chain entries — done.** When `flags.sourceTags` is on (default under `--debug`), every drop-chain push carries the alloc-site file + line via `cajeta_drop_entry_debug` (40 B vs 32 B base). Pinned by `test/parser/SourceTaggedDropTests.cpp` (6 tests).
 - **SIGABRT handler with chain walk — done.** Runtime constructor installs the handler at load; on abort, dumps the per-thread drop chain (with source tags when available) and chains to the previous handler.
 - **Template-instantiation field codegen — done.** All class-typed fields (templated or plain) now lay out as `ptr` rather than the inline class body; matches the `pass class by pointer` rule in Method.cpp. Also fixed companion issues: BinaryOpExpression loadIfLValue + BINARY_OP_ASSIGN slot-type unified to `ptr` for class refs, and MethodCallExpression receiver-load now load-throughs chained DotExpression field GEPs for class-ref receivers (`this.field.method()`). Unblocks the wrapper-stream pattern: `TakeStream<T>` landed as the first intermediate combinator with a `Stream<T> source;` field. Pinned by `test/parser/StreamIntermediateTests.cpp` (5 tests).
+- **Subtype-aware ctor / method param matching — done.** `resolveMethod` now falls back from exact canonical-key lookup to a positional scan that walks each arg's `superClasses` via BFS, returning the most specific match. Lets `ArrayStream<int32>` args bind to `Stream<int32>` params (ctor or otherwise) without an explicit upcast local. Pinned by `test/parser/SubtypeArgLookupTests.cpp` (4 tests, both user-defined hierarchy and stdlib templates).
+- **Intrinsic-result upcast JIT symbol resolution — done.** A user method body that triggers a stdlib template instantiation mid-codegen (e.g. `xs.stream()` lowers to `ArrayStream<int32>::ArrayStream(...)`) used to leave that instantiation's method bodies un-emitted because the Phase 2 loop had already swept stdlib. The Phase 2 (and Phase 1) walk now loops until the total method count across all modules stops growing — `Method::getLlvmFunctionType` and `Method::generateCode` are both idempotent, so revisiting already-emitted methods is a no-op. Applied to both `Compiler::compile` and the JIT test harness. Pinned by `test/parser/UpcastInitializerTests.cpp` (2 tests).
 
 Stack vs heap class instantiation is fully working: `heap T(args)`, `stack T(args)`, `heap T { … }`, `stack T { … }`, all with vtable init + ctor invocation + correct virtual destructor dispatch. See `test/parser/UnifiedClassSyntaxTests.cpp:44,137,184,249,317,576`, `test/parser/ClassDropTests.cpp`, and `test/parser/VirtualDropDispatchTests.cpp`.
 
@@ -37,11 +39,9 @@ Priority is rough effort × user-visible correctness impact.
 
 ### Priority 1 — compiler infrastructure
 
-P1.1 (compiler mode infrastructure), P1.2 (annotation argument capture), and P1.1-template-field-codegen all landed. The annotation-arg machinery in `Annotatable` (typed `getString`/`getInt`/`getBool`/`getClassRef`/`getStringList`/`getIntList` accessors) + `CajetaLlvmVisitor::parseAnnotationInstance` populates args for every annotation site. Live consumers: `@Order(n)`, `@Component(name=...)`, `@Inject(name=..., allocate=...)`, `@SuppressLint(...)`, `@Native(value=...)`. New annotations that take args plug into the same machinery — no new infrastructure needed.
+P1.1 (compiler mode infrastructure), P1.2 (annotation argument capture), P1.1-template-field-codegen, P1.1-subtype-ctor-lookup, and P1.1-intrinsic-upcast-jit all landed. The annotation-arg machinery in `Annotatable` (typed `getString`/`getInt`/`getBool`/`getClassRef`/`getStringList`/`getIntList` accessors) + `CajetaLlvmVisitor::parseAnnotationInstance` populates args for every annotation site. Live consumers: `@Order(n)`, `@Component(name=...)`, `@Inject(name=..., allocate=...)`, `@SuppressLint(...)`, `@Native(value=...)`. New annotations that take args plug into the same machinery — no new infrastructure needed.
 
-1. **Intrinsic-result upcast to parent template type — ~0.5 session.** `[mode-agnostic]` — `Stream<int32> src = xs.stream();` (where `.stream()` returns `ArrayStream<int32>`) trips a JIT symbol-resolution failure at lookup time: "Symbols not found: cajeta.lang.ArrayStream<int32>::ArrayStream(...)". Exact-type local works (`ArrayStream<int32> as = xs.stream()`), as does explicit two-step `ArrayStream<int32> as = …; Stream<int32> src = as;`. Likely a cross-module instantiation issue where the LHS type drives which module gets the ArrayStream<int32> body. Doesn't block correctness — the explicit two-step pattern works today; see `test/parser/StreamIntermediateTests.cpp` for the working shape.
-
-2. **Subtype-aware ctor / method param matching — ~1 session.** `[mode-agnostic]` — `Method::buildGeneric` keys lookups by exact param canonical names; passing an `ArrayStream<int32>` arg where a `Stream<int32>` param is declared misses the lookup unless the local is typed exactly as `Stream<int32>`. Fix path: in `resolveMethod`'s fallback after the exact lookup fails, try alternative keys with each class-typed arg walked up through its `superClasses`. Surfaced while testing TakeStream — workaround is to declare the local at the parent type.
+1. **Inline-intrinsic-as-ctor-arg crash — ~0.5 session.** `[mode-agnostic]` — `heap TakeStream<int32>(xs.stream(), 4)` (passing the intrinsic result straight in without binding to a local) crashes the test process. The two-step form (`Stream<int32> src = xs.stream(); heap TakeStream<int32>(src, 4)`) works. Likely a resolveTypes/generateCode ordering issue specific to the inline form. Tracked separately from the subtype-aware ctor lookup that lets the upcast itself succeed.
 
 ### Priority 2 — language surface
 

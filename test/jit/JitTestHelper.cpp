@@ -167,15 +167,37 @@ std::unique_ptr<CajetaJit> CajetaJit::compile(
     cajeta::CajetaModule::setActiveProfile("test");
     cajeta::CajetaModule::resolveDependencyGraph();
 
-    for (auto& m : compiler->getModules()) {
-        for (auto& method : m->getAllMethods()) {
-            method->getLlvmFunctionType();
+    // Phase 1 (signature registration) + Phase 2 (body codegen),
+    // looped until quiescent. A user method's body can codegen an
+    // intrinsic that instantiates a stdlib template (e.g. `xs.stream()`
+    // → ArrayStream<int32>), which lands the new methods in stdlib's
+    // structures AFTER stdlib's earlier pass already ran. The do/while
+    // re-runs both phases over every module until no new methods
+    // surface — Method::generateCode and ::getLlvmFunctionType are
+    // both idempotent so re-visiting already-emitted methods is a
+    // cheap no-op.
+    size_t prevMethodCount = 0;
+    while (true) {
+        size_t methodCount = 0;
+        for (auto& m : compiler->getModules()) {
+            methodCount += m->getAllMethods().size();
         }
-    }
-    for (auto& m : compiler->getModules()) {
-        for (auto& method : m->getAllMethods()) {
-            method->generateCode();
+        for (auto& m : compiler->getModules()) {
+            for (auto& method : m->getAllMethods()) {
+                method->getLlvmFunctionType();
+            }
         }
+        for (auto& m : compiler->getModules()) {
+            for (auto& method : m->getAllMethods()) {
+                method->generateCode();
+            }
+        }
+        size_t after = 0;
+        for (auto& m : compiler->getModules()) {
+            after += m->getAllMethods().size();
+        }
+        if (after == methodCount && after == prevMethodCount) break;
+        prevMethodCount = after;
     }
 
     // Merge every secondary module into `primary`'s llvm::Module.

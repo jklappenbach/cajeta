@@ -21,6 +21,7 @@
 #include <algorithm>
 #include <functional>
 #include <cstdint>
+#include <limits>
 
 namespace {
     // FNV-1a 64-bit — must match the runtime's __cajeta_signature_hash
@@ -1280,6 +1281,100 @@ namespace cajeta {
             static_pointer_cast<CajetaClass>(shared_from_this()));
     }
 
+    // Subtype distance between an arg type and a method's declared param
+    // type. Returns 0 when types match exactly, 1+ when `argType` derives
+    // from `declaredType` (one per inheritance hop), -1 when there's no
+    // assignable relationship. Used by the subtype-aware fallback in
+    // resolveMethod so an `ArrayStream<int32>` arg can bind to a
+    // `Stream<int32>` param.
+    //
+    // Non-class types (primitives, arrays, etc.) only match by exact
+    // canonical-name equality — no upcast walk. Class types try identity
+    // first, then BFS up `superClasses`.
+    static int subtypeDistance(CajetaTypePtr declaredType, CajetaTypePtr argType) {
+        if (!declaredType || !argType) return -1;
+        if (declaredType->getQName() && argType->getQName()
+                && declaredType->getQName()->toCanonical()
+                    == argType->getQName()->toCanonical()) {
+            return 0;
+        }
+        auto argClass = dynamic_pointer_cast<CajetaClass>(argType);
+        auto declaredClass = dynamic_pointer_cast<CajetaClass>(declaredType);
+        if (!argClass || !declaredClass) return -1;
+        // BFS up the hierarchy from argClass; return the shallowest hop
+        // count to declaredClass. Templated stdlib classes can have
+        // diamond shapes once interfaces land, hence BFS rather than
+        // first-match DFS.
+        const string declaredCanonical = declaredClass->getQName()->toCanonical();
+        std::vector<std::pair<CajetaClassPtr, int>> frontier{ {argClass, 0} };
+        size_t cursor = 0;
+        while (cursor < frontier.size()) {
+            auto [cls, depth] = frontier[cursor++];
+            for (auto& parent : cls->getSuperClasses()) {
+                if (!parent || !parent->getQName()) continue;
+                if (parent->getQName()->toCanonical() == declaredCanonical) {
+                    return depth + 1;
+                }
+                frontier.push_back({parent, depth + 1});
+            }
+        }
+        return -1;
+    }
+
+    // Scan a method bucket for a positional-args match where each arg is
+    // type-compatible (same or subclass) with the declared param. Returns
+    // the method whose cumulative subtype distance is smallest — i.e. the
+    // most specific override. Skips the implicit `this` parameter the
+    // ctor-detection logic doesn't strip.
+    static MethodPtr findSubtypeMatch(
+            const map<string, map<string, MethodPtr>>& genericMap,
+            const string& methodName,
+            const vector<ParameterEntry>& parameters) {
+        MethodPtr best;
+        int bestScore = std::numeric_limits<int>::max();
+        const size_t argCount = parameters.size();
+        for (auto& bucket : genericMap) {
+            for (auto& entry : bucket.second) {
+                MethodPtr method = entry.second;
+                if (!method) continue;
+                // Method name match required — the genericMap aggregates
+                // every method on the class, so without this filter a
+                // `count()` call could pick up a 0-arg `next()` method
+                // and trip the JIT verifier when their return types
+                // disagree.
+                if (method->getName() != methodName) continue;
+                // Method::generatePrototype injects `this` at position 0
+                // for instance methods; the caller's parameters list never
+                // includes `this`, so skip it when present. Stays robust if
+                // generatePrototype hasn't run yet (registered key was
+                // built without `this`).
+                std::vector<FormalParameterPtr> ordered = method->getParameterList();
+                bool isStatic = method->getModifiers().find(STATIC)
+                    != method->getModifiers().end();
+                size_t paramOffset = 0;
+                if (!isStatic && !ordered.empty()
+                        && ordered.front()->getName() == "this") {
+                    paramOffset = 1;
+                }
+                if (ordered.size() - paramOffset != argCount) continue;
+                int score = 0;
+                bool ok = true;
+                for (size_t i = 0; i < argCount; ++i) {
+                    int dist = subtypeDistance(
+                        ordered[i + paramOffset]->getType(),
+                        parameters[i].type);
+                    if (dist < 0) { ok = false; break; }
+                    score += dist;
+                }
+                if (ok && score < bestScore) {
+                    bestScore = score;
+                    best = method;
+                }
+            }
+        }
+        return best;
+    }
+
     MethodPtr CajetaClass::resolveMethod(string& methodName, vector<ParameterEntry>& parameters, bool isConstructor, bool floatingParams) {
         // Each class indexes its declared methods under keys built with its
         // own class name (Method::buildGeneric/buildCanonical embed the
@@ -1304,6 +1399,18 @@ namespace cajeta {
             }
             MethodPtr m = getClosestMethod(methodName, parameters, canonicalMap);
             if (m) return m;
+        }
+
+        // Subtype-aware fallback. The exact generic-key lookup matches by
+        // arg type canonicals; an `ArrayStream<int32>` arg misses a
+        // `Stream<int32>` param even though the upcast is well-defined.
+        // Scan every bucket positionally and pick the most specific match
+        // (smallest cumulative inheritance distance). Only runs for the
+        // *current* class; the parent walk below picks up inherited
+        // methods via recursion, which itself triggers this fallback at
+        // each level.
+        if (MethodPtr m = findSubtypeMatch(*genericMap, methodName, parameters)) {
+            return m;
         }
 
         // Constructors are NOT inherited; only walk parents for instance methods.
