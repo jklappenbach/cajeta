@@ -12,6 +12,7 @@
 #include "Expression.h"
 #include "DotExpression.h"
 #include "Identifier.h"
+#include "AggregateInitializerExpression.h"
 
 namespace cajeta {
 
@@ -157,6 +158,18 @@ namespace cajeta {
         // all fires.
         if (dynamic_pointer_cast<SpawnExpression>(ast)) {
             return v;
+        }
+        // P2a — heap aggregate-init on a plain class (`heap MyClass { ... }`)
+        // returns the malloc'd class pointer; the value IS the reference,
+        // not an l-value to load through. CajetaStruct cases land in the
+        // CajetaAggregate branch above; this catches the plain-class case
+        // the unified-class rollout enables. The stack-allocated variant
+        // is already handled — its body pointer IS the value too, but
+        // CajetaAggregate's resolved type catches it via the branch above.
+        if (auto agg = dynamic_pointer_cast<AggregateInitializerExpression>(ast)) {
+            if (!agg->getStackAlloc()) {
+                return v;
+            }
         }
         // IdentifierExpression that resolved to a class property via the
         // implicit-this fallback also returns a GEP — same load story.

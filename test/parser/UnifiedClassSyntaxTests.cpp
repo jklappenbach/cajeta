@@ -130,9 +130,15 @@ TEST(UnifiedClassSyntaxTests, stackAggregateAndBareAggregateProduceSameValue) {
 // Phase 1a deferred forms — parse, reject at codegen with a clear message.
 // ---------------------------------------------------------------------
 
-TEST(UnifiedClassSyntaxTests, heapAggregateInitRejectedAsPhase2) {
-    // `heap MyClass { ... }` needs new codegen (heap-alloc + per-field
-    // stores). Defers to Phase 2 alongside the CajetaStruct collapse.
+// ---------------------------------------------------------------------
+// Phase 2a — `heap MyClass { f: v }` now works: malloc + per-field stores.
+// ---------------------------------------------------------------------
+
+TEST(UnifiedClassSyntaxTests, heapAggregateInitAllocatesStruct) {
+    // `heap Foo { ... }` on a struct type allocates the body on the heap
+    // (via malloc + memset) and stores each labeled binding into the
+    // matching field. The resulting reference can be passed around like
+    // any heap-allocated value; lifetime is owner-managed.
     auto src =
         "package test;\n"
         "public struct Point {\n"
@@ -141,16 +147,53 @@ TEST(UnifiedClassSyntaxTests, heapAggregateInitRejectedAsPhase2) {
         "}\n"
         "public final class S {\n"
         "    public static int32 run() {\n"
-        "        Point p = heap Point { x: 1, y: 2 };\n"
-        "        return p.x;\n"
+        "        Point p = heap Point { x: 3, y: 4 };\n"
+        "        return p.x * p.x + p.y * p.y;\n"  // 25
         "    }\n"
         "}\n";
-    try {
-        CajetaJit::compile(src, "test.S");
-        FAIL() << "expected CAJETA_ERROR_HEAP_AGGREGATE_INIT_UNIMPLEMENTED";
-    } catch (cajeta::Exception& e) {
-        EXPECT_EQ(e.getErrorId(), "CAJETA_ERROR_HEAP_AGGREGATE_INIT_UNIMPLEMENTED");
-    }
+    EXPECT_EQ(runI32(src), 25);
+}
+
+TEST(UnifiedClassSyntaxTests, heapAggregateInitOnClassDirectFieldRead) {
+    // `heap` aggregate-init on a plain class returns the malloc'd
+    // reference; field reads through that reference work normally. The
+    // bypass in loadIfLValue keeps the catch-all from loading the full
+    // class struct through the reference (which would corrupt the
+    // receiving slot to only the first 8 bytes — the vtable pointer).
+    auto src =
+        "package test;\n"
+        "public class Counter {\n"
+        "    int32 n;\n"
+        "    public Counter() { this.n = 0; }\n"  // ctor not called by aggregate-init
+        "    public int32 value() { return this.n; }\n"
+        "}\n"
+        "public final class S {\n"
+        "    public static int32 run() {\n"
+        "        Counter c = heap Counter { n: 99 };\n"
+        "        return c.n;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 99);
+}
+
+TEST(UnifiedClassSyntaxTests, heapAggregateInitOnClassVtableDispatches) {
+    // The heap path also writes the class's vtable into slot 0. Method
+    // calls on the aggregate-init'd instance dispatch normally — same
+    // vtable layout as `new Counter()` / `heap Counter()`.
+    auto src =
+        "package test;\n"
+        "public class Counter {\n"
+        "    int32 n;\n"
+        "    public Counter() { this.n = 0; }\n"  // ctor not called
+        "    public int32 value() { return this.n; }\n"
+        "}\n"
+        "public final class S {\n"
+        "    public static int32 run() {\n"
+        "        Counter c = heap Counter { n: 42 };\n"
+        "        return c.value();\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 42);
 }
 
 // ---------------------------------------------------------------------

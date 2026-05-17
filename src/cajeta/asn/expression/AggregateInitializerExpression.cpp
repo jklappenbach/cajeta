@@ -12,6 +12,7 @@
 #include "../../type/Scope.h"
 #include "../../field/Field.h"
 #include "../../error/Exception.h"
+#include "../../util/MemoryManager.h"
 
 namespace cajeta {
 
@@ -53,24 +54,75 @@ namespace cajeta {
             throw Exception(buf, "CAJETA_ERROR_AGGREGATE_INIT_ON_VIEW");
         }
         auto structType = dynamic_pointer_cast<CajetaStruct>(type);
-        if (!structType) {
+        auto classType  = dynamic_pointer_cast<CajetaClass>(type);
+        if (classType && classType->isInterface()) {
+            char buf[256];
+            snprintf(buf, sizeof(buf),
+                "aggregate initializer `%s { ... }` cannot target an "
+                "interface; provide a concrete implementer",
+                typeName.c_str());
+            throw Exception(buf, "CAJETA_ERROR_AGGREGATE_INIT_ON_INTERFACE");
+        }
+        // Stack path: struct-only (v1 restriction; lifts in Phase 2 when
+        // CajetaStruct collapses into CajetaClass). Heap path: any
+        // non-view non-interface class works.
+        if (stackAlloc && !structType) {
             char buf[256];
             snprintf(buf, sizeof(buf),
                 "aggregate initializer `%s { ... }` requires '%s' to be a "
-                "struct; got a class or interface",
-                typeName.c_str(), typeName.c_str());
+                "struct for stack allocation; use `heap %s { ... }` to "
+                "aggregate-init a plain class onto the heap",
+                typeName.c_str(), typeName.c_str(), typeName.c_str());
             throw Exception(buf, "CAJETA_ERROR_AGGREGATE_INIT_NOT_STRUCT");
+        }
+        if (!classType) {
+            char buf[256];
+            snprintf(buf, sizeof(buf),
+                "aggregate initializer `%s { ... }` requires '%s' to be a "
+                "class or struct",
+                typeName.c_str(), typeName.c_str());
+            throw Exception(buf, "CAJETA_ERROR_AGGREGATE_INIT_NOT_CLASS");
         }
 
         resolvedType = type;
-        llvm::Type* bodyTy = structType->getLlvmType();
+        // Field-index access lives on CajetaAggregate (which CajetaStruct
+        // and CajetaView both extend). For the plain-class heap path the
+        // index resolution falls through CajetaClass's inherited
+        // getFieldLlvmIndex.
+        llvm::Type* bodyTy = classType->getLlvmType();
 
-        // Stack-allocate the struct body and zero-init so any field the
-        // initializer omits lands at 0 / null. The zero store also covers
-        // any LLVM-inserted padding between fields, which matters for
-        // memcmp-style equality and for predictable hashes.
-        llvm::Value* bodyAlloca = builder->CreateAlloca(bodyTy);
-        builder->CreateStore(llvm::Constant::getNullValue(bodyTy), bodyAlloca);
+        // Allocate the body. Stack: entry-block alloca to keep the alloca
+        // out of loops + zero-store via Constant null-value (LLVM lowers
+        // the same as memset). Heap: malloc + memset zero-init for parity
+        // with ClassCreatorRest's heap path.
+        llvm::Value* bodyPtr;
+        const llvm::DataLayout& dl = module->getLlvmModule()->getDataLayout();
+        llvm::Constant* allocSize = llvm::ConstantInt::get(
+            llvm::Type::getInt64Ty(ctx),
+            dl.getTypeAllocSize(bodyTy));
+        if (stackAlloc) {
+            bodyPtr = builder->CreateAlloca(bodyTy);
+            builder->CreateStore(llvm::Constant::getNullValue(bodyTy), bodyPtr);
+        } else {
+            bodyPtr = MemoryManager::createMallocInstruction(
+                module, allocSize, builder->GetInsertBlock());
+            builder->CreateMemSet(bodyPtr,
+                llvm::ConstantInt::get(llvm::Type::getInt8Ty(ctx), 0),
+                allocSize, llvm::MaybeAlign(8));
+            // Initialize vtable pointer at slot 0 — matches the
+            // ClassCreatorRest heap path. Skipped for structs (no vtable
+            // in v1; will gain one in Phase 2b).
+            if (!structType) {
+                if (llvm::GlobalVariable* vt = classType->getVirtualTableGlobal()) {
+                    llvm::Constant* vtRef = CajetaModule::ensureGlobalInModule(
+                        module->getLlvmModule(), vt);
+                    llvm::Value* vtableSlot = builder->CreateStructGEP(
+                        bodyTy, bodyPtr, /*idx=*/0, "vtable_slot");
+                    builder->CreateStore(vtRef, vtableSlot);
+                }
+            }
+        }
+        llvm::Value* bodyAlloca = bodyPtr;  // keep the downstream name
 
         // Per-binding field stores. v1 requires labels; positional init is
         // out of scope (Structs.md uses the labeled form too, and label-less
@@ -85,18 +137,22 @@ namespace cajeta {
                     typeName.c_str());
                 throw Exception(buf, "CAJETA_ERROR_AGGREGATE_INIT_UNLABELED");
             }
-            auto& props = structType->getProperties();
+            // classType is non-null for both struct (via CajetaStruct → CajetaAggregate
+            // → CajetaClass) and plain class. getFieldLlvmIndex dispatches via the
+            // virtual override: CajetaAggregate skips the vtable header (no vtable
+            // for v1 structs / views); CajetaClass adds the vtable-header offset.
+            auto& props = classType->getProperties();
             auto it = props.find(b.label);
             if (it == props.end()) {
                 char buf[512];
                 snprintf(buf, sizeof(buf),
                     "aggregate initializer for '%s' names field '%s' that the "
-                    "struct does not declare",
+                    "type does not declare",
                     typeName.c_str(), b.label.c_str());
                 throw Exception(buf, "CAJETA_ERROR_AGGREGATE_INIT_UNKNOWN_FIELD");
             }
             StructurePropertyPtr prop = it->second;
-            unsigned fieldIdx = (unsigned) structType->getFieldLlvmIndex(prop);
+            unsigned fieldIdx = (unsigned) classType->getFieldLlvmIndex(prop);
 
             // Evaluate the binding expression; load through if it's still
             // an alloca slot (same coercion the StackField initializer

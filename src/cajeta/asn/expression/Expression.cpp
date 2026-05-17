@@ -84,20 +84,20 @@ namespace cajeta {
         } else if (ctx->NEW()) {
             result = make_shared<NewExpression>(ctx->creator(), token);
         } else if (ctx->HEAP()) {
-            // Unified-class allocation prefix (UnifiedClasses.md). Phase 1a:
-            // `heap MyClass(args)` is a synonym for today's `NEW creator`
-            // path (malloc + ctor). The aggregate-init form
-            // (`heap MyClass { ... }`) needs new codegen that lands in
-            // Phase 2 with the CajetaStruct collapse.
+            // Unified-class allocation prefix (UnifiedClasses.md). Phase 2a:
+            // both forms codegen.
+            // - `heap MyClass(args)` routes through NewExpression (today's
+            //   `NEW creator` path; malloc + ctor).
+            // - `heap MyClass { ... }` routes through AggregateInitializer-
+            //   Expression with stackAlloc=false; malloc + memset + vtable
+            //   init (for classes with vtables) + per-field stores.
             if (ctx->creator()) {
                 result = make_shared<NewExpression>(ctx->creator(), token);
-            } else {
-                throw Exception(
-                    "`heap` allocation of aggregate-init expressions is not "
-                    "yet implemented; lands in Phase 2 of the unified-class "
-                    "rollout. For now, use `heap MyClass(args)` with a "
-                    "constructor call.",
-                    "CAJETA_ERROR_HEAP_AGGREGATE_INIT_UNIMPLEMENTED");
+            } else if (ctx->aggregateInitializer()) {
+                auto agg = make_shared<AggregateInitializerExpression>(
+                    ctx->aggregateInitializer(), token);
+                agg->setStackAlloc(false);
+                result = agg;
             }
         } else if (ctx->STACK()) {
             // Unified-class allocation prefix (UnifiedClasses.md). Phase 2a:

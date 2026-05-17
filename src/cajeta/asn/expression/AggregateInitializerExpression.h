@@ -27,7 +27,16 @@ namespace cajeta {
         // with method-call keyword arguments; the parser surface is the
         // same `parameterList` rule.
         vector<MethodCallParameter> bindings;
+        // P2a: when true (default), allocates the body via stack alloca
+        // — bare aggregate-init `Foo { ... }` and `stack Foo { ... }`.
+        // When false, allocates via malloc — `heap Foo { ... }`. The
+        // heap path also initializes the vtable slot if the target is a
+        // CajetaClass with one.
+        bool stackAlloc = true;
     public:
+        void setStackAlloc(bool v) { stackAlloc = v; }
+        bool getStackAlloc() const { return stackAlloc; }
+
         AggregateInitializerExpression(
                 CajetaParser::AggregateInitializerContext* ctx,
                 antlr4::Token* token)
