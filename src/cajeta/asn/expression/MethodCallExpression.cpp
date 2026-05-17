@@ -1073,6 +1073,62 @@ namespace cajeta {
             }
         }
 
+        // Lambda-as-arg expectedType propagation. If any arg is a
+        // LambdaExpression with no resolvedType yet, look up the
+        // target method by name + arg count on targetClass and
+        // populate each lambda's expectedType from the matching
+        // formal parameter. This lets `s.forEach((T x) -> ...)`
+        // resolve the lambda's signature from the method's
+        // declared `(T) -> void` parameter rather than falling back
+        // to void (LambdaExpression::resolveTypes' default when
+        // the body is a block). Targets a single same-name method
+        // with matching arg count; if the lookup is ambiguous
+        // (overloaded by arity match), no propagation runs and the
+        // lambda lands at the default — at which point overload
+        // resolution fails downstream the same way it did before.
+        bool anyLambda = false;
+        for (auto& param : parameters) {
+            if (std::dynamic_pointer_cast<LambdaExpression>(param.expression)
+                    && !param.expression->getResolvedType()) {
+                anyLambda = true;
+                break;
+            }
+        }
+        if (anyLambda && targetClass) {
+            MethodPtr candidate;
+            int matches = 0;
+            for (auto& mEntry : targetClass->getMethods()) {
+                auto& m = mEntry.second;
+                if (m->getName() != methodCallName) continue;
+                bool isStaticM = m->getModifiers().find(STATIC)
+                    != m->getModifiers().end();
+                int declared = (int) m->getParameterList().size()
+                    - (isStaticM ? 0 : 1);
+                if (declared != (int) parameters.size()) continue;
+                candidate = m;
+                ++matches;
+            }
+            if (candidate && matches == 1) {
+                auto paramList = candidate->getParameterList();
+                bool isStaticM = candidate->getModifiers().find(STATIC)
+                    != candidate->getModifiers().end();
+                int paramOffset = isStaticM ? 0 : 1;
+                size_t i = 0;
+                for (auto& p : paramList) {
+                    if ((int) i < paramOffset) { ++i; continue; }
+                    size_t argIdx = i - paramOffset;
+                    if (argIdx >= parameters.size()) break;
+                    if (auto lambda = std::dynamic_pointer_cast<LambdaExpression>(
+                            parameters[argIdx].expression)) {
+                        if (!lambda->getResolvedType() && p->getType()) {
+                            lambda->setExpectedType(p->getType());
+                        }
+                    }
+                    ++i;
+                }
+            }
+        }
+
         // Evaluate args, loading any l-values. Each entry carries the
         // expression's resolved type when known (fall back to of(value) for
         // primitive values that have a clean LLVM type).

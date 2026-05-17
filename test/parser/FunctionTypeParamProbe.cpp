@@ -85,6 +85,27 @@ TEST(FunctionTypeParamProbe, callFnTypeParamViaTypedLocal) {
     EXPECT_EQ(fn(), 42);
 }
 
+TEST(FunctionTypeParamProbe, lambdaLiteralDirectlyAsMethodArg) {
+    // The MCE arg-eval loop now propagates expectedType to lambda
+    // arguments from the target method's declared parameter types
+    // (when a single-arity-matching same-name candidate exists).
+    // Lets `apply((int32 v) -> ..., 41)` work without binding to a
+    // typed local first.
+    auto src =
+        "package test;\n"
+        "public final class S {\n"
+        "    public static int32 apply((int32) -> int32 fn, int32 x) {\n"
+        "        return fn(x);\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        return apply((int32 v) -> { return v + 1; }, 41);\n"
+        "    }\n"
+        "}\n";
+    auto jit = CajetaJit::compile(src, "test.S");
+    auto fn = jit->lookup<int32_t (*)()>("run");
+    EXPECT_EQ(fn(), 42);
+}
+
 TEST(FunctionTypeParamProbe, fnTypeOnGenericClassMethod) {
     // The shape that originally motivated the fix: generic stdlib
     // class with a method that accepts a function-typed parameter
