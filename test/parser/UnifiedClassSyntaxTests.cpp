@@ -401,6 +401,69 @@ TEST(UnifiedClassSyntaxTests, definitelyAssignedTracksMultipleLocalsIndependentl
     }
 }
 
+// ---------------------------------------------------------------------
+// Phase 3b — if/else merging for definite-assignment.
+//
+// Variable is DA after if/else iff DA in BOTH branches. Missing else
+// means the un-taken path doesn't assign, so post-if NYA = pre-if NYA.
+// ---------------------------------------------------------------------
+
+TEST(UnifiedClassSyntaxTests, definitelyAssignedIfElseBothBranchesAssign) {
+    // Both branches assign x; post-if x is DA.
+    auto src =
+        "package test;\n"
+        "public final class S {\n"
+        "    public static int32 run() {\n"
+        "        int32 x;\n"
+        "        boolean cond = true;\n"
+        "        if (cond) { x = 10; } else { x = 20; }\n"
+        "        return x;\n"  // OK
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 10);
+}
+
+TEST(UnifiedClassSyntaxTests, definitelyAssignedIfWithoutElseLeavesNya) {
+    // Only the then-branch assigns; post-if x is still NYA (the not-taken
+    // path didn't assign, so we can't guarantee assignment).
+    auto src =
+        "package test;\n"
+        "public final class S {\n"
+        "    public static int32 run() {\n"
+        "        int32 x;\n"
+        "        boolean cond = true;\n"
+        "        if (cond) { x = 10; }\n"
+        "        return x;\n"  // ← rejected — missing else
+        "    }\n"
+        "}\n";
+    try {
+        CajetaJit::compile(src, "test.S");
+        FAIL() << "expected CAJETA_ERROR_VARIABLE_NOT_ASSIGNED";
+    } catch (cajeta::Exception& e) {
+        EXPECT_EQ(e.getErrorId(), "CAJETA_ERROR_VARIABLE_NOT_ASSIGNED");
+    }
+}
+
+TEST(UnifiedClassSyntaxTests, definitelyAssignedIfElseElseOnlyAssignsLeavesNya) {
+    // Only the else-branch assigns; post-if x is NYA (then path skips).
+    auto src =
+        "package test;\n"
+        "public final class S {\n"
+        "    public static int32 run() {\n"
+        "        int32 x;\n"
+        "        boolean cond = true;\n"
+        "        if (cond) { } else { x = 20; }\n"
+        "        return x;\n"  // ← rejected
+        "    }\n"
+        "}\n";
+    try {
+        CajetaJit::compile(src, "test.S");
+        FAIL() << "expected CAJETA_ERROR_VARIABLE_NOT_ASSIGNED";
+    } catch (cajeta::Exception& e) {
+        EXPECT_EQ(e.getErrorId(), "CAJETA_ERROR_VARIABLE_NOT_ASSIGNED");
+    }
+}
+
 TEST(UnifiedClassSyntaxTests, definitelyAssignedAcceptsMultipleLocalsAllInitialized) {
     auto src =
         "package test;\n"

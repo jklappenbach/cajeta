@@ -520,18 +520,41 @@ namespace cajeta {
 
         builder->CreateCondBr(condVal, thenBB, elseBB ? elseBB : mergeBB);
 
+        // P3b — definite-assignment flow analysis for if/else.
+        // Snapshot the NYA set before the branches; run each branch with
+        // its own deltas; merge at the join. Variable is DA-after iff DA
+        // in BOTH branches → variable is NYA-after iff NYA in EITHER
+        // branch → merged set is the UNION of post-branch NYA sets.
+        // Missing else: post-else equals pre-if (the else "ran" without
+        // touching anything). Union with post-then yields pre-if (since
+        // markAssigned can only shrink NYA — post-then ⊆ pre-if).
+        auto scope = module->getScopeStack().peek();
+        std::set<std::string> preIfNYA;
+        if (scope) preIfNYA = scope->snapshotNotYetAssigned();
+
         builder->SetInsertPoint(thenBB);
         if (thenBranch) thenBranch->generateCode(module);
+        std::set<std::string> postThenNYA = preIfNYA;
+        if (scope) postThenNYA = scope->snapshotNotYetAssigned();
         if (!builder->GetInsertBlock()->getTerminator()) {
             builder->CreateBr(mergeBB);
         }
 
+        std::set<std::string> postElseNYA = preIfNYA;
         if (elseBB) {
+            if (scope) scope->restoreNotYetAssigned(preIfNYA);
             builder->SetInsertPoint(elseBB);
             if (elseBranch) elseBranch->generateCode(module);
+            if (scope) postElseNYA = scope->snapshotNotYetAssigned();
             if (!builder->GetInsertBlock()->getTerminator()) {
                 builder->CreateBr(mergeBB);
             }
+        }
+
+        // Reset to post-then, then union in post-else.
+        if (scope) {
+            scope->restoreNotYetAssigned(postThenNYA);
+            scope->mergeNotYetAssigned(postElseNYA);
         }
 
         builder->SetInsertPoint(mergeBB);

@@ -127,6 +127,21 @@ namespace cajeta {
         // Reading such a name is a compile error (the catch-all read
         // path in IdentifierExpression consults this).
         bool isNotYetAssigned(const string& name);
+
+        // P3b — flow-analysis snapshot helpers. IfStatement (and other
+        // branching control-flow nodes) save the NYA set before each
+        // branch, run the branch, save the result, then merge across
+        // branches to produce the post-control-flow NYA set.
+        //
+        // mergeNYA(other) sets this scope's NYA to the union of its
+        // current set and `other`. Semantically: a variable is NYA
+        // after the join iff it was NYA in EITHER branch (DA after
+        // iff DA in BOTH).
+        set<string> snapshotNotYetAssigned() const { return notYetAssigned; }
+        void restoreNotYetAssigned(const set<string>& s) { notYetAssigned = s; }
+        void mergeNotYetAssigned(const set<string>& other) {
+            for (auto& n : other) notYetAssigned.insert(n);
+        }
     };
 }
 
