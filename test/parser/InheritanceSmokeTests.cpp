@@ -54,6 +54,56 @@ TEST(InheritanceSmokeTests, simpleExtendsCompiles) {
 
 // --- Override reuses the parent's slot -------------------------------------
 
+// P6.4 vtable-override fix: subclass overrides correctly dispatch
+// through the parent's vtable slot. Pre-existing gap was that override
+// detection keyed by full canonical (parent::name(params)) so the
+// child's method went into a different slot than the parent's; calls
+// through a base reference landed on the parent's body.
+
+TEST(InheritanceSmokeTests, overrideDispatchesThroughBaseReference) {
+    // Receiver typed as the base; call through the base's method name.
+    // Should dispatch to Dog's override, not Animal's body.
+    auto src =
+        "package test;\n"
+        "public class Animal {\n"
+        "    public int32 speak() { return 1; }\n"
+        "}\n"
+        "public class Dog extends Animal {\n"
+        "    public int32 speak() { return 42; }\n"
+        "}\n"
+        "public final class I {\n"
+        "    public static int32 run() {\n"
+        "        Animal a = heap Dog();\n"
+        "        return a.speak();\n"   // 42 — virtual dispatch to Dog::speak
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 42);
+}
+
+TEST(InheritanceSmokeTests, overrideDispatchesFromParentMethodCallingOverridden) {
+    // Parent's concrete method calls this.virtualMethod() — vtable
+    // should land on the child's override even though the call site
+    // is in the parent's source. This was the shape Stream.count()
+    // hit (calling this.next() from Stream's body must dispatch to
+    // ArrayStream::next()).
+    auto src =
+        "package test;\n"
+        "public class Base {\n"
+        "    public int32 produce() { return 10; }\n"
+        "    public int32 consume() { return this.produce() + 1; }\n"
+        "}\n"
+        "public class Sub extends Base {\n"
+        "    public int32 produce() { return 100; }\n"
+        "}\n"
+        "public final class I {\n"
+        "    public static int32 run() {\n"
+        "        Sub s = heap Sub();\n"
+        "        return s.consume();\n"  // produce() dispatches to Sub::produce → 101
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 101);
+}
+
 TEST(InheritanceSmokeTests, overrideReusesParentSlot) {
     // Dog declares `speak()` with the same canonical signature as Animal's.
     // buildVirtualTable walks parent-first, assigns Animal::speak slot 0;

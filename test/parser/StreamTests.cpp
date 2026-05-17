@@ -63,6 +63,38 @@ TEST(StreamTests, arrayStreamEmptyArray) {
     EXPECT_EQ(runI32(src), 1);
 }
 
+TEST(StreamTests, arrayStreamCount) {
+    // count() walks next() until exhaustion. Returns 3 for a 3-element
+    // backing array. Verifies the inherited combinator dispatches to
+    // the ArrayStream override of next() (not the empty default).
+    auto src =
+        "package test;\n"
+        "import cajeta.lang.ArrayStream;\n"
+        "public final class S {\n"
+        "    public static int32 run() {\n"
+        "        int32[] xs = {10, 20, 30};\n"
+        "        ArrayStream<int32> s = heap ArrayStream<int32>(xs, 3);\n"
+        "        return s.count();\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 3);
+}
+
+TEST(StreamTests, baseStreamCountIsZero) {
+    // Bare Stream<int32>'s count() walks the empty-default next() →
+    // immediately None → count is 0.
+    auto src =
+        "package test;\n"
+        "import cajeta.lang.Stream;\n"
+        "public final class S {\n"
+        "    public static int32 run() {\n"
+        "        Stream<int32> s = heap Stream<int32>();\n"
+        "        return s.count();\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 0);
+}
+
 TEST(StreamTests, streamBaseDefaultIsEmpty) {
     // Bare Stream<T> (not ArrayStream) — default next() returns empty.
     auto src =

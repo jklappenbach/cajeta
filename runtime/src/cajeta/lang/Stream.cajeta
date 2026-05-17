@@ -36,4 +36,18 @@ public class Stream<T> {
     public Optional<T> next() {
         return heap Optional<T>(false, null);
     }
+
+    /**
+     * Count elements by walking next() to exhaustion. The simplest
+     * terminal; no lambda needed.
+     */
+    public int32 count() {
+        int32 n = 0;
+        Optional<T> o = this.next();
+        while (o.isPresent()) {
+            n = n + 1;
+            o = this.next();
+        }
+        return n;
+    }
 }

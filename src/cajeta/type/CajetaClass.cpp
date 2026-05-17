@@ -746,6 +746,19 @@ namespace cajeta {
         virtualSlotHashList.clear();
         map<string, MethodPtr> uniqueByCanonical;
 
+        // Override detection: a child's override has a DIFFERENT canonical
+        // than the parent's method because canonical includes `parent::`
+        // (e.g. `test.Animal::speak()` vs `test.Dog::speak()`). To make
+        // overrides replace the parent's vtable slot, we match by SUFFIX
+        // (name + params, stripping the leading `parent::`). When the
+        // suffix is already in `uniqueByCanonical`, remove the existing
+        // entry (the parent's) and insert the child's keyed by the
+        // child's canonical. Result: dispatch by either the parent's or
+        // child's canonical-hash lands on the child's method.
+        auto suffixOf = [](const string& canon) -> string {
+            auto pos = canon.rfind("::");
+            return (pos == string::npos) ? canon : canon.substr(pos + 2);
+        };
         std::function<void(CajetaClassPtr)> walk = [&](CajetaClassPtr c) {
             for (auto& sup : c->getSuperClasses()) walk(sup);
             for (auto& m : c->getMethodList()) {
@@ -753,10 +766,54 @@ namespace cajeta {
                 if (m->getModifiers().find(STATIC) != m->getModifiers().end()) continue;
                 if (m->isAbstract()) continue;   // interface markers don't sit here
                 string canon = m->toCanonical(/*labeled=*/false);
-                uniqueByCanonical[canon] = m;   // overrides naturally replace
+                string suffix = suffixOf(canon);
+                // Find + replace any existing entry with the same suffix
+                // (the parent's method this overrides).
+                for (auto it = uniqueByCanonical.begin();
+                        it != uniqueByCanonical.end(); ) {
+                    if (suffixOf(it->first) == suffix) {
+                        it = uniqueByCanonical.erase(it);
+                    } else {
+                        ++it;
+                    }
+                }
+                uniqueByCanonical[canon] = m;
             }
         };
         walk(static_pointer_cast<CajetaClass>(shared_from_this()));
+
+        // Also re-key the resulting entries so a dispatch using the
+        // BASE class's canonical-hash also finds the override. Build a
+        // parallel map keyed by suffix; for each entry, walk all its
+        // superclasses' equivalent (same-suffix) methods and re-publish
+        // under THEIR canonical hashes pointing at the same impl.
+        {
+            map<string, MethodPtr> bySuffix;
+            for (auto& [canon, m] : uniqueByCanonical) {
+                bySuffix[suffixOf(canon)] = m;
+            }
+            // Walk superclasses and add entries under any base-canonical
+            // that has a matching suffix. Multiple superclasses with the
+            // same-suffix method all alias to the most-derived impl.
+            std::function<void(CajetaClassPtr)> aliasWalk = [&](CajetaClassPtr c) {
+                for (auto& sup : c->getSuperClasses()) {
+                    for (auto& m : sup->getMethodList()) {
+                        if (m->isConstructor()) continue;
+                        if (m->getModifiers().find(STATIC) != m->getModifiers().end()) continue;
+                        if (m->isAbstract()) continue;
+                        string supCanon = m->toCanonical(/*labeled=*/false);
+                        auto it = bySuffix.find(suffixOf(supCanon));
+                        if (it != bySuffix.end()) {
+                            // Add alias entry under the parent's canonical
+                            // pointing at the most-derived impl.
+                            uniqueByCanonical[supCanon] = it->second;
+                        }
+                    }
+                    aliasWalk(sup);
+                }
+            };
+            aliasWalk(static_pointer_cast<CajetaClass>(shared_from_this()));
+        }
 
         // Interface dispatch: for each implemented interface method, find
         // the class's matching concrete method (by short name + param
