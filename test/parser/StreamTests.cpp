@@ -160,6 +160,29 @@ TEST(StreamTests, arrayStreamIntrinsicAssignFormCount) {
     EXPECT_EQ(runI32(src), 4);
 }
 
+// P6.5 — Stream.forEach + ArrayStream<int32>. No-capture lambda
+// works through virtual dispatch over an int32-instantiated
+// generic method. Lambdas that capture state (static-field
+// references) hit a separate pre-existing lambda-codegen
+// limitation — see tests for direct-call patterns and the
+// non-capturing forms here.
+TEST(StreamTests, arrayStreamForEachNoCaptureLambdaWalks) {
+    auto src =
+        "package test;\n"
+        "import cajeta.lang.ArrayStream;\n"
+        "import cajeta.lang.Stream;\n"
+        "public final class S {\n"
+        "    public static int32 run() {\n"
+        "        int32[] xs = {1, 2, 3};\n"
+        "        ArrayStream<int32> s = xs.stream();\n"
+        "        (int32) -> void noop = (int32 v) -> { return; };\n"
+        "        s.forEach(noop);\n"
+        "        return 7;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 7);
+}
+
 TEST(StreamTests, arrayStreamIntrinsicEmptyArray) {
     // Empty array → first next() returns None → count is 0.
     auto src =
