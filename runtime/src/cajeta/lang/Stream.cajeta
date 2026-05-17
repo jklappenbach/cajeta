@@ -52,7 +52,9 @@ public class Stream<T> {
     }
 
     // forEach and other lambda-taking combinators land once
-    // function-typed parameters with type-parameter substitution
-    // (`(T) -> void`) parse in stdlib generics. Currently the parser
-    // rejects the shape; tracked in ToDo.md as a P6.5 prerequisite.
+    // type-parameter substitution inside function-type parameters
+    // works (`(T) -> void fn` doesn't parse in a generic stdlib
+    // class today; the same shape with a concrete type — e.g.
+    // `(int32) -> void fn` — does parse). Tracked in ToDo.md as a
+    // P6.5 prerequisite.
 }
