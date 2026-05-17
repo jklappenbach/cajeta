@@ -159,17 +159,14 @@ namespace cajeta {
         if (dynamic_pointer_cast<SpawnExpression>(ast)) {
             return v;
         }
-        // P2a — heap aggregate-init on a plain class (`heap MyClass { ... }`)
-        // returns the malloc'd class pointer; the value IS the reference,
-        // not an l-value to load through. CajetaStruct cases land in the
-        // CajetaAggregate branch above; this catches the plain-class case
-        // the unified-class rollout enables. The stack-allocated variant
-        // is already handled — its body pointer IS the value too, but
-        // CajetaAggregate's resolved type catches it via the branch above.
-        if (auto agg = dynamic_pointer_cast<AggregateInitializerExpression>(ast)) {
-            if (!agg->getStackAlloc()) {
-                return v;
-            }
+        // P2a/P2b — aggregate-init always returns a body pointer (alloca
+        // for stack, malloc for heap); the value IS the reference, not
+        // an l-value to load through. Covers both struct (via the
+        // CajetaAggregate branch above) and plain CajetaClass (the
+        // unified-class rollout broadens aggregate-init to any class
+        // for both heap and stack paths).
+        if (dynamic_pointer_cast<AggregateInitializerExpression>(ast)) {
+            return v;
         }
         // IdentifierExpression that resolved to a class property via the
         // implicit-this fallback also returns a GEP — same load story.

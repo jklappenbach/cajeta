@@ -63,18 +63,10 @@ namespace cajeta {
                 typeName.c_str());
             throw Exception(buf, "CAJETA_ERROR_AGGREGATE_INIT_ON_INTERFACE");
         }
-        // Stack path: struct-only (v1 restriction; lifts in Phase 2 when
-        // CajetaStruct collapses into CajetaClass). Heap path: any
-        // non-view non-interface class works.
-        if (stackAlloc && !structType) {
-            char buf[256];
-            snprintf(buf, sizeof(buf),
-                "aggregate initializer `%s { ... }` requires '%s' to be a "
-                "struct for stack allocation; use `heap %s { ... }` to "
-                "aggregate-init a plain class onto the heap",
-                typeName.c_str(), typeName.c_str(), typeName.c_str());
-            throw Exception(buf, "CAJETA_ERROR_AGGREGATE_INIT_NOT_STRUCT");
-        }
+        // P2b — `stack` and `heap` aggregate-init both accept any
+        // non-view non-interface class. Vtable initialization is the
+        // only thing that differs per type (structs have no vtable in
+        // v1; plain CajetaClass does); handled below.
         if (!classType) {
             char buf[256];
             snprintf(buf, sizeof(buf),
@@ -109,17 +101,20 @@ namespace cajeta {
             builder->CreateMemSet(bodyPtr,
                 llvm::ConstantInt::get(llvm::Type::getInt8Ty(ctx), 0),
                 allocSize, llvm::MaybeAlign(8));
-            // Initialize vtable pointer at slot 0 — matches the
-            // ClassCreatorRest heap path. Skipped for structs (no vtable
-            // in v1; will gain one in Phase 2b).
-            if (!structType) {
-                if (llvm::GlobalVariable* vt = classType->getVirtualTableGlobal()) {
-                    llvm::Constant* vtRef = CajetaModule::ensureGlobalInModule(
-                        module->getLlvmModule(), vt);
-                    llvm::Value* vtableSlot = builder->CreateStructGEP(
-                        bodyTy, bodyPtr, /*idx=*/0, "vtable_slot");
-                    builder->CreateStore(vtRef, vtableSlot);
-                }
+        }
+        // Initialize vtable pointer at slot 0 for plain CajetaClass —
+        // matches the ClassCreatorRest heap path. Skipped for structs
+        // (no vtable slot in v1) and for any class that doesn't have
+        // a vtable global yet (e.g. abstract or unresolved at this point).
+        // Applied uniformly to both stack and heap paths so dispatch on
+        // an aggregate-init'd class works regardless of storage.
+        if (!structType) {
+            if (llvm::GlobalVariable* vt = classType->getVirtualTableGlobal()) {
+                llvm::Constant* vtRef = CajetaModule::ensureGlobalInModule(
+                    module->getLlvmModule(), vt);
+                llvm::Value* vtableSlot = builder->CreateStructGEP(
+                    bodyTy, bodyPtr, /*idx=*/0, "vtable_slot");
+                builder->CreateStore(vtRef, vtableSlot);
             }
         }
         llvm::Value* bodyAlloca = bodyPtr;  // keep the downstream name

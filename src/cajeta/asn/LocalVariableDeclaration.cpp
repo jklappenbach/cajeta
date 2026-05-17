@@ -17,6 +17,7 @@
 #include "expression/Identifier.h"
 #include "expression/MethodCallExpression.h"
 #include "expression/NewExpression.h"
+#include "expression/AggregateInitializerExpression.h"
 #include "../method/Method.h"
 #include "../error/CajetaExceptions.h"
 #include "../logging/CajetaLogger.h"
@@ -415,6 +416,15 @@ namespace cajeta {
                     auto rhsExpr = dynamic_pointer_cast<Expression>(children[0]);
                     if (auto newExpr = dynamic_pointer_cast<NewExpression>(children[0])) {
                         if (newExpr->getStackAlloc()) {
+                            initIsStackAlloc = true;
+                        }
+                    }
+                    // P2b — `stack MyClass { f: v }` on a plain class
+                    // returns an alloca'd body pointer; the class-drop
+                    // would free a stack pointer. Detect by inspecting
+                    // for stack-flagged AggregateInitializerExpression.
+                    if (auto aggExpr = dynamic_pointer_cast<AggregateInitializerExpression>(children[0])) {
+                        if (aggExpr->getStackAlloc()) {
                             initIsStackAlloc = true;
                         }
                     }

@@ -176,6 +176,54 @@ TEST(UnifiedClassSyntaxTests, heapAggregateInitOnClassDirectFieldRead) {
     EXPECT_EQ(runI32(src), 99);
 }
 
+// ---------------------------------------------------------------------
+// Phase 2b — stack aggregate-init lifted from struct-only to any class.
+// ---------------------------------------------------------------------
+
+TEST(UnifiedClassSyntaxTests, stackAggregateInitOnClass) {
+    // `stack MyClass { ... }` on a plain class allocs the body on the
+    // caller's frame, initializes the vtable slot, stores per-field
+    // bindings, and returns a body pointer. Lifts the v1 struct-only
+    // restriction on stack aggregate-init.
+    auto src =
+        "package test;\n"
+        "public class Counter {\n"
+        "    int32 n;\n"
+        "    public Counter() { this.n = 0; }\n"
+        "    public int32 value() { return this.n; }\n"
+        "}\n"
+        "public final class S {\n"
+        "    public static int32 run() {\n"
+        "        Counter c = stack Counter { n: 7 };\n"
+        "        return c.value();\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 7);
+}
+
+TEST(UnifiedClassSyntaxTests, stackAggregateInitInitializesVtable) {
+    // Confirms the stack path writes the class's vtable into slot 0.
+    // Without that write, method dispatch on the stack instance would
+    // segfault (loads slot 0 as the vtable pointer; null vtable + ptr
+    // hash lookup → crash). The test passing proves the slot is
+    // correctly initialized.
+    auto src =
+        "package test;\n"
+        "public class Holder {\n"
+        "    int32 a;\n"
+        "    int32 b;\n"
+        "    public Holder() { this.a = 0; this.b = 0; }\n"
+        "    public int32 sum() { return this.a + this.b; }\n"
+        "}\n"
+        "public final class S {\n"
+        "    public static int32 run() {\n"
+        "        Holder h = stack Holder { a: 10, b: 20 };\n"
+        "        return h.sum();\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 30);
+}
+
 TEST(UnifiedClassSyntaxTests, heapAggregateInitOnClassVtableDispatches) {
     // The heap path also writes the class's vtable into slot 0. Method
     // calls on the aggregate-init'd instance dispatch normally — same
