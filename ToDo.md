@@ -287,6 +287,28 @@ Most of these will **retire** once the unified-class model lands. Marked as such
 
 ---
 
+## Realistic next-session scoping (added 2026-05-17)
+
+The remaining work decomposes into independent multi-session pieces, NOT one continuous push. Roughly in priority order:
+
+1. **Phase 7 collapse (P7.4 → P7.5 → P7.6) — 3-5 sessions.** The 9 struct test files (3598 LOC) each carry different semantic dependencies (struct value-typing, S6.7 sret returns, FatPointer dispatch via fat-pointer-to-aggregate, inline composition layout). P7.5 dry-run with stack-drop in place still crashes ~290/878 because every `isAggregate` skip site in BinaryOp / MethodCall / DotExpression / Method::generatePrototype / Statement assumes "no vtable header, fields start at index 0, no dynamic dispatch". Each site needs analysis — some sites (interface dispatch suppression, S6.7 return-slot machinery) probably stay struct-specific; others (drop registration, fat-pointer load) can generalize to CajetaClass. Per-test triage is unavoidable before flipping.
+
+2. **P6.6 — T[].stream() intrinsic — 1 session.** Tractable but needs auto-load of cajeta.lang.ArrayStream (it isn't auto-imported today even though it's in cajeta.lang), synthetic NewExpression-equivalent codegen in MethodCallExpression, and integration with the existing template instantiation cache. Pattern matches the `count()` intrinsic on arrays.
+
+3. **P6.5 — function-type-as-method-parameter grammar gap — 1 session.** ANTLR lookahead can't disambiguate `(int32) -> void fn` in a `formalParameter` rule. The same shape parses fine in `localVariableType` and `methodReturnType`, so the grammar machinery exists. Once fixed, unlocks Optional combinators (P6.3) AND Stream combinators (P6.5). Without it, Stream.forEach / map / filter / etc. can't be expressed in cajeta.
+
+4. **P6.7+ — Collections + Collector pattern — 4-6 sessions.** ArrayList, HashSet, HashMap (with entries/keys/values streams), Collector<T,R> base + cajeta.lang.Collectors with the dozen built-in collectors. Each collection is its own piece with its own backing-store choice + iteration shape.
+
+5. **P5 — live-borrow tracker — 1 session.** Extends path-borrow machinery (already exists) to track live read-borrows for iterator invalidation. "Comparable to one of the S6-S11 sessions" per Q10.
+
+6. **P3c — switch/loops/try-catch DA merging — 0.5 sessions each, deferred until a real consumer needs them.** Each construct has its own merge rule (switch needs exhaustiveness; try-catch NYA in catch; loops never DA-after unless DA-before). Implementation pattern is clear from P3a/P3b.
+
+7. **Generic-static-factory call syntax** — `Optional<int32>.Some(42)` doesn't parse. Grammar accepts `Optional.Some(42)` but loses type binding. Java's `Optional.<int32>of(42)` shape OR implicit inference is the proper fix. Half-session.
+
+8. **Optional.get() throw on empty** — needs stdlib-side throw machinery integration. Bounded, but throw integration on a stdlib class is its own thing.
+
+The current session's commits land Phase 7 foundation (P7.1/P7.2/P7.3/P7.3+). The migration prep (P7.4) is what was attempted next, and the analysis above is what came out of the attempt.
+
 ## Done
 
 (empty)
