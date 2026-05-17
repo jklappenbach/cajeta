@@ -51,7 +51,16 @@ public class Optional<T> {
         return !this.present;
     }
 
+    /**
+     * Extract the value. Throws on empty (Q11 — CAJETA_ERROR_NONE_UNWRAP
+     * encoded as int 1, matching the error-model #205 throw shape that
+     * user code already uses; specific exception class lands when
+     * stdlib-side exception types are wired).
+     */
     public T get() {
+        if (!this.present) {
+            throw 1;
+        }
         return this.value;
     }
 

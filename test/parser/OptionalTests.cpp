@@ -73,3 +73,38 @@ TEST(OptionalTests, orElseReturnsValueOnPresent) {
         "}\n";
     EXPECT_EQ(runI32(src), 7);
 }
+
+// Q11 — Optional.get() throws CAJETA_ERROR_NONE_UNWRAP (encoded as
+// int 1) when called on an empty Optional. Caller catches with the
+// existing error-model #205 try/catch shape.
+TEST(OptionalTests, getOnEmptyThrows) {
+    auto src =
+        "package test;\n"
+        "import cajeta.lang.Optional;\n"
+        "public final class S {\n"
+        "    public static int32 run() {\n"
+        "        Optional<int32> empty = heap Optional<int32>(false, 0);\n"
+        "        int32 result = -1;\n"
+        "        try {\n"
+        "            result = empty.get();\n"
+        "        } catch (Exception e) {\n"
+        "            result = (int32) e;\n"
+        "        }\n"
+        "        return result;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 1);
+}
+
+TEST(OptionalTests, getOnPresentReturnsValue) {
+    auto src =
+        "package test;\n"
+        "import cajeta.lang.Optional;\n"
+        "public final class S {\n"
+        "    public static int32 run() {\n"
+        "        Optional<int32> opt = heap Optional<int32>(true, 42);\n"
+        "        return opt.get();\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 42);
+}
