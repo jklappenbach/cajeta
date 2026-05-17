@@ -111,3 +111,66 @@ TEST(StreamTests, streamBaseDefaultIsEmpty) {
         "}\n";
     EXPECT_EQ(runI32(src), 1);
 }
+
+// P6.6 — `arr.stream()` compiler intrinsic. Lowers to a fresh
+// ArrayStream<T> walking the receiver array. Assign-to-typed-local
+// form works today. Chained form (`xs.stream().count()`) is deferred:
+// the outer call needs the inner MCE's resolvedType to dispatch
+// count() to ArrayStream<T>, but pre-resolving in MethodCallExpression::
+// resolveTypes early-triggers ArrayStream<T> instantiation in a way
+// that breaks downstream method linkage (the user module's IR ends up
+// referencing methods that the instantiation pass emitted into the
+// stdlib module without the cross-module merge picking them up).
+// Resolving that is its own follow-up — see ToDo.md P6.6 notes.
+TEST(StreamTests, arrayStreamIntrinsicYieldsElements) {
+    // Verify the intrinsic-produced stream actually walks the receiver
+    // array — not an empty default. Sums first three of four values.
+    auto src =
+        "package test;\n"
+        "import cajeta.lang.Optional;\n"
+        "import cajeta.lang.ArrayStream;\n"
+        "public final class S {\n"
+        "    public static int32 run() {\n"
+        "        int32[] xs = {1, 2, 3, 4};\n"
+        "        ArrayStream<int32> s = xs.stream();\n"
+        "        Optional<int32> a = s.next();\n"
+        "        Optional<int32> b = s.next();\n"
+        "        Optional<int32> c = s.next();\n"
+        "        return a.get() + b.get() + c.get();\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 6);
+}
+
+TEST(StreamTests, arrayStreamIntrinsicAssignFormCount) {
+    // Same intrinsic, terminated via the inherited count(). Routed
+    // through an explicitly-typed local so the assignment pins
+    // ArrayStream<int32>'s type without requiring the chained-call
+    // resolveTypes machinery.
+    auto src =
+        "package test;\n"
+        "import cajeta.lang.ArrayStream;\n"
+        "public final class S {\n"
+        "    public static int32 run() {\n"
+        "        int32[] xs = {10, 20, 30, 40};\n"
+        "        ArrayStream<int32> s = xs.stream();\n"
+        "        return s.count();\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 4);
+}
+
+TEST(StreamTests, arrayStreamIntrinsicEmptyArray) {
+    // Empty array → first next() returns None → count is 0.
+    auto src =
+        "package test;\n"
+        "import cajeta.lang.ArrayStream;\n"
+        "public final class S {\n"
+        "    public static int32 run() {\n"
+        "        int32[] xs = new int32[0];\n"
+        "        ArrayStream<int32> s = xs.stream();\n"
+        "        return s.count();\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 0);
+}

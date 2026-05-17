@@ -11,6 +11,7 @@
 #include "cajeta/type/CajetaFunctionType.h"
 #include "cajeta/method/Method.h"
 #include "cajeta/error/Exception.h"
+#include "cajeta/util/MemoryManager.h"
 #include "Expression.h"
 #include "DotExpression.h"
 #include "Identifier.h"
@@ -978,6 +979,71 @@ namespace cajeta {
                     arrayType->getLlvmType(), receiver, CajetaArray::SIZE_FIELD_INDEX);
                 return builder->CreateLoad(
                     llvm::Type::getInt64Ty(*module->getLlvmContext()), sizePtr);
+            }
+        }
+
+        // P6.6 — `arr.stream()` intrinsic. Lowers to
+        // `heap ArrayStream<T>(arr, arr.length())`. The stdlib parse
+        // populates the cajeta.lang.ArrayStream template into
+        // canonicalMap before user code runs, so template lookup
+        // by canonical name succeeds even without an explicit import.
+        // Mirrors the count() intrinsic immediately above — same
+        // receiver-shape gate (CajetaArray), no params, structural
+        // construction inline rather than going through NewExpression
+        // (we'd have to fabricate a parsed-AST creator + parameters,
+        // which loses the resolved receiver value we already have).
+        if (receiver && methodCallName == "stream" && parameters.empty()) {
+            if (auto arrayType = dynamic_pointer_cast<CajetaArray>(receiverType)) {
+                auto elemType = arrayType->getElementType();
+                CajetaTypePtr streamTemplate =
+                    CajetaType::of("ArrayStream", "cajeta.lang");
+                auto streamKlass = dynamic_pointer_cast<CajetaClass>(streamTemplate);
+                if (streamKlass && streamKlass->isTemplate()) {
+                    auto instantiated = dynamic_pointer_cast<CajetaClass>(
+                        streamKlass->instantiate({elemType}));
+                    if (instantiated) {
+                        auto& llvmCtx = *module->getLlvmContext();
+                        llvm::Type* structTy = instantiated->getLlvmType();
+                        const llvm::DataLayout& dl =
+                            module->getLlvmModule()->getDataLayout();
+                        llvm::Constant* allocSize = llvm::ConstantInt::get(
+                            llvm::Type::getInt64Ty(llvmCtx),
+                            dl.getTypeAllocSize(structTy));
+                        llvm::Value* instance = MemoryManager::createMallocInstruction(
+                            module, allocSize, builder->GetInsertBlock());
+                        builder->CreateMemSet(instance,
+                            llvm::ConstantInt::get(llvm::Type::getInt8Ty(llvmCtx), 0),
+                            allocSize, llvm::MaybeAlign(8));
+                        if (auto* vt = instantiated->getVirtualTableGlobal()) {
+                            llvm::Constant* vtableRef = CajetaModule::ensureGlobalInModule(
+                                module->getLlvmModule(), vt);
+                            llvm::Value* slot = builder->CreateStructGEP(
+                                structTy, instance, /*idx=*/0, "vtable_slot");
+                            builder->CreateStore(vtableRef, slot);
+                        }
+                        // Load count from the receiver's i64 size header,
+                        // then truncate to i32 (the ctor's limit param).
+                        llvm::Value* sizePtr = builder->CreateStructGEP(
+                            arrayType->getLlvmType(), receiver,
+                            CajetaArray::SIZE_FIELD_INDEX);
+                        llvm::Value* sizeI64 = builder->CreateLoad(
+                            llvm::Type::getInt64Ty(llvmCtx), sizePtr);
+                        llvm::Value* sizeI32 = builder->CreateIntCast(
+                            sizeI64, llvm::Type::getInt32Ty(llvmCtx), true);
+                        vector<ParameterEntry> entries;
+                        // Use the ctor's declared parameter labels so
+                        // invokeMethod takes the labeled-lookup path
+                        // (ArrayStream's ctor was registered there
+                        // since the source declares labels).
+                        entries.push_back(ParameterEntry(arrayType, "data", receiver));
+                        entries.push_back(ParameterEntry(
+                            CajetaType::of("int32"), "limit", sizeI32));
+                        string ctorName = "ArrayStream";
+                        instantiated->invokeMethod(ctorName, entries,
+                            /*isConstructor=*/true, instance, module);
+                        return instance;
+                    }
+                }
             }
         }
 
