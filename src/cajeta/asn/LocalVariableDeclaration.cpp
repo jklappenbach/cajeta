@@ -594,8 +594,18 @@ namespace cajeta {
             // assignment (or shift the drop entry to load the slot at
             // fire time instead of push time).
             if (klass && !isArray && !isStructType && !klass->isInterface()
-                    && !initIsBorrow && !initIsStackAlloc && initializer) {
-                if (llvm::Function* dropFn = klass->getOrCreateDropFunction()) {
+                    && !initIsBorrow && initializer) {
+                // P7.1/P7.2 — stack-allocated class locals (init via
+                // `stack ClassName(...)` or `stack ClassName { ... }`)
+                // get the stack-drop variant: walks owned class-ref
+                // fields + recurses into embedded structs, but does
+                // NOT free the body (function epilogue handles that).
+                // Heap-class locals continue to use the regular drop
+                // (which calls __cajeta_free at the end).
+                llvm::Function* dropFn = initIsStackAlloc
+                    ? klass->getOrCreateStackDropFunction()
+                    : klass->getOrCreateDropFunction();
+                if (dropFn) {
                     emitDropEntryForFn(module, field, dropFn);
                 }
             }

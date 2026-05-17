@@ -135,6 +135,12 @@ namespace cajeta {
         // Cached on first request so LocalVariableDeclaration's drop-entry
         // registration is a constant-time lookup per declaration site.
         llvm::Function* llvmDropFunction = nullptr;
+        // P7.1 — synthesized stack-drop wrapper. Same shape as the heap
+        // drop above but does NOT free the body; intended for stack-
+        // allocated class locals whose body is reclaimed by the function
+        // epilogue. Walks owned class-ref fields (matching CajetaStruct's
+        // existing auto-walk behavior) so embedded ownership doesn't leak.
+        llvm::Function* llvmStackDropFunction = nullptr;
 
         // S9.5.2 — per-(class, interface) vtable globals. Sibling of
         // CajetaStruct::interfaceVTables. Keyed by interface canonical
@@ -323,6 +329,12 @@ namespace cajeta {
         // drop must wait for `done` before freeing or it races the
         // worker fiber.
         virtual llvm::Function* getOrCreateDropFunction();
+
+        // P7.1 — synthesize (or return cached) stack-drop function. Same
+        // contract as getOrCreateDropFunction except no __cajeta_free at
+        // the end. For stack-allocated class locals where the body is
+        // owned by the stack frame, not the heap allocator.
+        llvm::Function* getOrCreateStackDropFunction();
 
         // S9.5.2 — synthesize a per-(class, interface) vtable global for
         // every interface this class implements. Called from

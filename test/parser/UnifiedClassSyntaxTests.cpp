@@ -177,6 +177,36 @@ TEST(UnifiedClassSyntaxTests, heapAggregateInitOnClassDirectFieldRead) {
 }
 
 // ---------------------------------------------------------------------
+// Phase 7.3 — owned class-ref fields in stack-allocated classes drop
+// at scope exit (without freeing the stack body).
+// ---------------------------------------------------------------------
+
+TEST(UnifiedClassSyntaxTests, stackClassNoOwnedFieldsScopeExits) {
+    // Probe: stack-allocated class with only primitive fields. The
+    // stack-drop fires (1 pop) but has nothing to walk.
+    auto src =
+        "package test;\n"
+        "public class Counter {\n"
+        "    int32 n;\n"
+        "    public Counter(int32 v) { this.n = v; }\n"
+        "}\n"
+        "public final class S {\n"
+        "    public static int32 inner() {\n"
+        "        Counter c = stack Counter(7);\n"
+        "        return c.n;\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        Cajeta.dropCountReset();\n"
+        "        inner();\n"
+        "        return (int32) Cajeta.dropCount();\n"
+        "    }\n"
+        "}\n";
+    // Stack-drop entry registered for `c`; fires at inner's scope exit.
+    // Body isn't freed. Drop count = 1 (the stack-drop entry pop).
+    EXPECT_EQ(runI32(src), 1);
+}
+
+// ---------------------------------------------------------------------
 // Phase 2b — stack aggregate-init lifted from struct-only to any class.
 // ---------------------------------------------------------------------
 

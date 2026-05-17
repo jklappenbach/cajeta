@@ -444,6 +444,119 @@ namespace cajeta {
         }
     }
 
+    llvm::Function* CajetaClass::getOrCreateStackDropFunction() {
+        if (llvmStackDropFunction) return llvmStackDropFunction;
+        if (interfaceFlag) return nullptr;
+        auto& ctx = *module->getLlvmContext();
+        auto* lmod = module->getLlvmModule();
+        llvm::PointerType* ptrTy = llvm::PointerType::get(ctx, 0);
+        llvm::FunctionType* fnTy = llvm::FunctionType::get(
+            llvm::Type::getVoidTy(ctx), {(llvm::Type*) ptrTy},
+            /*isVarArg=*/false);
+
+        std::string dropName = std::string("__cajeta_stack_")
+            + qName->toCanonical() + "_drop";
+        for (char& c : dropName) {
+            if (c == ':' || c == '.' || c == '<' || c == '>' || c == ',' || c == ' ') {
+                c = '_';
+            }
+        }
+        if (llvm::Function* existing = lmod->getFunction(dropName)) {
+            llvmStackDropFunction = existing;
+            return existing;
+        }
+
+        llvmStackDropFunction = llvm::Function::Create(fnTy,
+            llvm::Function::ExternalLinkage, dropName, lmod);
+        llvm::BasicBlock* bb = llvm::BasicBlock::Create(
+            ctx, "entry", llvmStackDropFunction);
+        llvm::IRBuilder<> b(bb);
+        llvm::Value* instance = llvmStackDropFunction->getArg(0);
+
+        llvm::BasicBlock* doDrop = llvm::BasicBlock::Create(
+            ctx, "doDrop", llvmStackDropFunction);
+        llvm::BasicBlock* done = llvm::BasicBlock::Create(
+            ctx, "done", llvmStackDropFunction);
+        llvm::Value* isNull = b.CreateICmpEQ(instance,
+            llvm::ConstantPointerNull::get(ptrTy));
+        b.CreateCondBr(isNull, done, doDrop);
+        b.SetInsertPoint(doDrop);
+
+        // Call user-defined drop() if present. Same lookup pattern as
+        // the heap drop above.
+        MethodPtr userDrop;
+        for (auto& entry : methods) {
+            MethodPtr m = entry.second;
+            if (!m || m->isConstructor()) continue;
+            if (m->getName() != "drop") continue;
+            auto pl = m->getParameterList();
+            if (pl.size() == 1) {
+                userDrop = m;
+                break;
+            }
+        }
+        if (userDrop && userDrop->getLlvmFunction()) {
+            b.CreateCall(userDrop->getLlvmFunctionType(),
+                userDrop->getLlvmFunction(), {instance});
+        }
+
+        // Walk owned class-ref fields in REVERSE declaration order. For
+        // each plain class-ref (not aggregate, not array, not interface),
+        // GEP the slot, load the pointer, call the referent class's
+        // own heap-drop fn. Mirrors CajetaStruct::getOrCreateDropFunction
+        // — preserves the auto-walk-owned-fields behavior structs have
+        // today, generalized to any class allocated on the stack.
+        std::vector<StructurePropertyPtr> reversed(
+            propertyList.begin(), propertyList.end());
+        std::reverse(reversed.begin(), reversed.end());
+        for (auto& property : reversed) {
+            auto fieldType = property->getType();
+            auto fieldClass = dynamic_pointer_cast<CajetaClass>(fieldType);
+            if (!fieldClass) continue;
+            if (dynamic_pointer_cast<CajetaAggregate>(fieldType)) continue;
+            if (dynamic_pointer_cast<CajetaArray>(fieldType)) continue;
+            if (fieldClass->isInterface()) continue;
+
+            unsigned fieldIdx = (unsigned) getFieldLlvmIndex(property);
+            llvm::Value* slotPtr = b.CreateStructGEP(
+                llvmType, instance, fieldIdx,
+                std::string("stack_drop_field_") + property->getName());
+            llvm::Value* refPtr = b.CreateLoad(ptrTy, slotPtr);
+
+            llvm::Function* refDrop = fieldClass->getOrCreateDropFunction();
+            if (!refDrop) continue;
+            refDrop = CajetaModule::ensureFunctionInModule(lmod, refDrop);
+            b.CreateCall(refDrop, {refPtr});
+        }
+
+        // Recurse into embedded struct fields (same as heap drop above).
+        // Skips the trailing __cajeta_free — that's the only difference.
+        for (auto& property : reversed) {
+            auto fieldType = property->getType();
+            auto fieldStruct = dynamic_pointer_cast<CajetaStruct>(fieldType);
+            if (!fieldStruct) continue;
+            llvm::Function* structDropFn =
+                fieldStruct->getOrCreateDropFunction();
+            if (!structDropFn) continue;
+            structDropFn = CajetaModule::ensureFunctionInModule(
+                lmod, structDropFn);
+            unsigned fieldIdx = (unsigned) getFieldLlvmIndex(property);
+            llvm::Value* embedPtr = b.CreateStructGEP(
+                llvmType, instance, fieldIdx,
+                std::string("stack_drop_embed_") + property->getName());
+            b.CreateCall(structDropFn, {embedPtr});
+        }
+
+        // No __cajeta_free — stack body is reclaimed by the function
+        // epilogue. This is the only structural difference from
+        // getOrCreateDropFunction.
+
+        b.CreateBr(done);
+        b.SetInsertPoint(done);
+        b.CreateRetVoid();
+        return llvmStackDropFunction;
+    }
+
     llvm::Function* CajetaClass::getOrCreateDropFunction() {
         if (llvmDropFunction) return llvmDropFunction;
         if (interfaceFlag) return nullptr;
