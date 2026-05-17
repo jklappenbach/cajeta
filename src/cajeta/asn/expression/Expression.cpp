@@ -83,6 +83,39 @@ namespace cajeta {
             result = make_shared<MethodCallExpression>(ctx->methodCall(), token);
         } else if (ctx->NEW()) {
             result = make_shared<NewExpression>(ctx->creator(), token);
+        } else if (ctx->HEAP()) {
+            // Unified-class allocation prefix (UnifiedClasses.md). Phase 1a:
+            // `heap MyClass(args)` is a synonym for today's `NEW creator`
+            // path (malloc + ctor). The aggregate-init form
+            // (`heap MyClass { ... }`) needs new codegen that lands in
+            // Phase 2 with the CajetaStruct collapse.
+            if (ctx->creator()) {
+                result = make_shared<NewExpression>(ctx->creator(), token);
+            } else {
+                throw Exception(
+                    "`heap` allocation of aggregate-init expressions is not "
+                    "yet implemented; lands in Phase 2 of the unified-class "
+                    "rollout. For now, use `heap MyClass(args)` with a "
+                    "constructor call.",
+                    "CAJETA_ERROR_HEAP_AGGREGATE_INIT_UNIMPLEMENTED");
+            }
+        } else if (ctx->STACK()) {
+            // Unified-class allocation prefix (UnifiedClasses.md). Phase 1a:
+            // `stack MyClass { ... }` is a synonym for today's bare
+            // aggregate-init (struct-only stack allocation). The
+            // constructor-call form (`stack MyClass(args)`) needs new
+            // codegen — stack alloca + ctor call — that lands in Phase 2.
+            if (ctx->aggregateInitializer()) {
+                result = make_shared<AggregateInitializerExpression>(
+                    ctx->aggregateInitializer(), token);
+            } else {
+                throw Exception(
+                    "`stack` allocation of classes via constructor call is "
+                    "not yet implemented; lands in Phase 2 of the unified-"
+                    "class rollout. For now, use `stack MyClass { ... }` "
+                    "aggregate-init form.",
+                    "CAJETA_ERROR_STACK_CTOR_UNIMPLEMENTED");
+            }
         } else if (ctx->identifier()) {
             result = make_shared<IdentifierExpression>(ctx->identifier(), ctx->primary() != nullptr);
         } else if (ctx->LPAREN()) {

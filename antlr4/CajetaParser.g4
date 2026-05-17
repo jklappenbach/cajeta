@@ -644,6 +644,14 @@ expression
     | expression '[' expression ']'
     | methodCall
     | NEW creator
+    // Unified-class allocation prefixes (UnifiedClasses.md). `heap` and
+    // `stack` are mandatory at the allocation site — bare `MyClass(args)`
+    // is a compile error. Both forms wrap either a constructor call (via
+    // `creator`) or an aggregate-init expression. `heap` is for now a
+    // synonym for `NEW creator`; `stack` lowers to a stack alloca + ctor
+    // call.
+    | HEAP  (creator | aggregateInitializer)
+    | STACK (creator | aggregateInitializer)
     | '(' annotation* typeType ('&' typeType)* ')' expression
     | expression postfix=('++' | '--')
     | prefix=('+'|'-'|'++'|'--') expression
