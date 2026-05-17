@@ -406,7 +406,7 @@ The outer `adder` takes an int32 and returns a closure. The returned closure cap
 
 ## Threading interactions
 
-Lambdas compose with the threading model (see `cajeta-docs/ThreadModel.md`) according to the same capture rules:
+Lambdas compose with the threading model (see `cajeta-docs/stdlib/Thread.md`) according to the same capture rules:
 
 ### `spawn` inside `scope` — borrows allowed
 

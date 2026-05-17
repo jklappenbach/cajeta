@@ -1,6 +1,6 @@
 # Async Runtime — Implementation Status
 
-Tracks the R1–R5 rollout of the async runtime described in `ThreadModel.md`. Counterpart to `history/ImplementationStatus.md` (which covers the now-complete MemoryModel rollout).
+Tracks the R1–R5 rollout of the async runtime described in `cajeta-docs/stdlib/Thread.md`. Counterpart to `history/ImplementationStatus.md` (which covers the now-complete MemoryModel rollout).
 
 ---
 
@@ -51,9 +51,9 @@ New test `SpawnDropTests.carrierDropsAccountedSeparately`: a spawned method decl
 
 ### Real `detach` (fire-and-forget) + `#`-captures rule  ✅ complete
 
-`DetachExpression::generateCode` was previously a sync passthrough — it just `inner->generateCode(module)`'d the call, so `detach foo();` ran inline on the caller's thread, indistinguishable from a bare call. The fire-and-forget semantics `ThreadModel.md` describes weren't actually implemented.
+`DetachExpression::generateCode` was previously a sync passthrough — it just `inner->generateCode(module)`'d the call, so `detach foo();` ran inline on the caller's thread, indistinguishable from a bare call. The fire-and-forget semantics `cajeta-docs/stdlib/Thread.md` describes weren't actually implemented.
 
-Spec tightened first (`ThreadModel.md` § detach Semantics (v1)): the inner must be a method call; captures must each be `#`-transferred, primitive, or a fresh `new T(...)`; the Task wrapper leaks for the process lifetime; exceptions in detached bodies are captured to the Task's exception slot but never observed (no awaiter, no scope). The leak is the explicit "use sparingly" trade-off.
+Spec tightened first (`cajeta-docs/stdlib/Thread.md` § detach Semantics (v1)): the inner must be a method call; captures must each be `#`-transferred, primitive, or a fresh `new T(...)`; the Task wrapper leaks for the process lifetime; exceptions in detached bodies are captured to the Task's exception slot but never observed (no awaiter, no scope). The leak is the explicit "use sparingly" trade-off.
 
 Implementation reuses `SpawnExpression`'s full trampoline + fiber-enqueue lowering — a new `detachMode` flag on `SpawnExpression` gates the two pieces detach skips:
 
@@ -116,7 +116,7 @@ Two alternatives considered and rejected:
 - Single carrier OS thread runs many fibers cooperatively.
 - `await` from inside a fiber parks (swap to carrier); main-thread `await` OS-blocks on a condvar.
 - `__cajeta_task_complete` wakes all parked fibers (polling-wake; per-task wait queues are a future optimization).
-- ThreadModel.md updated to reflect the stackful decision and document the global drop-chain-head as a known gap.
+- cajeta-docs/stdlib/Thread.md updated to reflect the stackful decision and document the global drop-chain-head as a known gap.
 - Commit `afc60fc`.
 
 ### R4 — Async-aware Lock

@@ -10,7 +10,7 @@
 // S6.2 scope: receiver type must be a CajetaStruct (not CajetaView, not
 // a plain CajetaClass). Field names must match declared properties; the
 // labelled-binding form is required (positional aggregate init isn't
-// supported in v1 — labels match cajeta-docs/Views.md's documented syntax and
+// supported in v1 — labels match cajeta-docs/stdlib/Views.md's documented syntax and
 // match the keyword-arg parser shape we already accept on methodCall).
 //
 

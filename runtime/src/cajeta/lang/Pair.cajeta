@@ -13,7 +13,7 @@ package cajeta.lang;
  * ## Storage
  *
  * Same semantics as any other class in the unified-class model
- * (UnifiedClasses.md). Use `stack Pair(k, v)` for a stack instance
+ * (cajeta-docs/stdlib/UnifiedClasses.md). Use `stack Pair(k, v)` for a stack instance
  * (lifetime tied to the enclosing scope; no heap traffic) or
  * `heap Pair(k, v)` when the pair needs to escape. Aggregate-init
  * also works: `stack Pair { first: k, second: v }`.

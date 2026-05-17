@@ -416,7 +416,7 @@ namespace cajeta {
         return nullptr;
     }
 
-    // ThreadModel.md — `scope { ... }` is a structured-concurrency block.
+    // cajeta-docs/stdlib/Thread.md — `scope { ... }` is a structured-concurrency block.
     // R5-A: every spawn site inside the block registers its task's done-
     // addr with the active scope frame; at the closing `}` we wait for
     // each one before letting control past. The scope frame stack is

@@ -157,7 +157,7 @@ A borrowing-container type may exist separately, but the default `List<T>` etc. 
 
 ## Structs
 
-A `struct` is a stack-allocated value aggregate (full spec: `cajeta-docs/Views.md`). Its interaction with the memory model:
+A `struct` is a stack-allocated value aggregate (full spec: `cajeta-docs/stdlib/Views.md`). Its interaction with the memory model:
 
 - **Lifetime is the enclosing scope.** A struct local is allocated via `alloca` and drops at scope exit — same as any other stack-resident owner.
 - **Fields participate in drop chain.** A struct field that holds an owned class reference is itself an owner; when the struct drops, owned class fields drop in reverse declaration order before the struct's bytes are reclaimed.

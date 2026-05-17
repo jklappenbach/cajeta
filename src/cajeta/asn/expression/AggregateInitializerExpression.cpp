@@ -122,7 +122,7 @@ namespace cajeta {
         llvm::Value* bodyAlloca = bodyPtr;  // keep the downstream name
 
         // Per-binding field stores. v1 requires labels; positional init is
-        // out of scope (cajeta-docs/Views.md uses the labeled form too, and label-less
+        // out of scope (cajeta-docs/stdlib/Views.md uses the labeled form too, and label-less
         // init would silently couple field order to declaration order).
         llvm::Type* i32Ty = llvm::Type::getInt32Ty(ctx);
         for (auto& b : bindings) {

@@ -5,7 +5,7 @@
 // carrier thread, the spawning method returns without waiting for it,
 // and the Task wrapper is deliberately not scope-tracked (no
 // scope_register) or drop-tracked (no drop_push for the Task struct).
-// ThreadModel.md § detach semantics has the spec; this suite covers:
+// cajeta-docs/stdlib/Thread.md § detach semantics has the spec; this suite covers:
 //
 //   - detach with no captures runs and run() returns immediately.
 //   - detach with primitive captures works (primitives are pass-by-

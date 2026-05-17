@@ -371,7 +371,7 @@ namespace cajeta {
         llvm::Value* generateCode(CajetaModulePtr module) override;
     };
 
-    // Structured-concurrency expressions (ThreadModel.md). All three wrap a
+    // Structured-concurrency expressions (cajeta-docs/stdlib/Thread.md). All three wrap a
     // single inner expression in children[0]. In the sync-lowering MVP:
     //   - AwaitExpression: takes a Task<T> value, returns the inner T.
     //   - SpawnExpression: takes a method-call invocation, runs it immediately,
@@ -401,7 +401,7 @@ namespace cajeta {
         // Detach mode skips scope_register (so scope_exit won't wait for
         // this task) and skips drop_push (no scope owns the Task; its
         // heap allocation leaks for the process lifetime per
-        // ThreadModel.md § detach semantics). Set by DetachExpression
+        // cajeta-docs/stdlib/Thread.md § detach semantics). Set by DetachExpression
         // before calling generateCode through this same trampoline path
         // — single source of truth for the spawn/detach lowering.
         bool detachMode = false;

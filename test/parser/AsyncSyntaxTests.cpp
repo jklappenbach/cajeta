@@ -1,5 +1,5 @@
 //
-// Sync-lowering MVP for the structured-concurrency keywords (ThreadModel.md):
+// Sync-lowering MVP for the structured-concurrency keywords (cajeta-docs/stdlib/Thread.md):
 // async / await / spawn / scope / detach. With no real scheduler yet, every
 // spawn runs inline and finishes before the surrounding code continues —
 // await/spawn collapse to direct calls, scope is just `{ ... }`, detach

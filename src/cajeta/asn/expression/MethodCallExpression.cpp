@@ -287,7 +287,7 @@ namespace cajeta {
             }
         }
 
-        // ----- Bare class-construction syntax rejected (UnifiedClasses.md P1b) -----
+        // ----- Bare class-construction syntax rejected (cajeta-docs/stdlib/UnifiedClasses.md P1b) -----
         // `MyClass(args)` without an explicit `heap` / `stack` / `new`
         // prefix is ambiguous (parses as a methodCall) and now rejected in
         // v2. Catches the case where the "method name" resolves to a class
@@ -583,7 +583,7 @@ namespace cajeta {
                 // `acquire()` that returns a RAII guard) will wrap them
                 // once user-defined-drop-on-class machinery lands. For
                 // now Cajeta source can use them directly. See
-                // ThreadModel.md § Synchronization primitives.
+                // cajeta-docs/stdlib/Thread.md § Synchronization primitives.
                 if (ns == "Cajeta" && methodCallName == "lockNew" && parameters.empty()) {
                     llvm::Function* fn = module->getRuntimeFunction("__cajeta_lock_new");
                     return builder->CreateCall(fn, {});

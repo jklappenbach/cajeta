@@ -13,15 +13,15 @@ Status legend:
 
 | ID | Name | Description | Status | Doc / tests |
 |----|------|-------------|--------|-------------|
-| L-01 | Class declarations (`class T`) | Single-inheritance, fields + methods + ctors | shipped | `cajeta-docs/UnifiedClasses.md`; `test/parser/UnifiedClassSyntaxTests.cpp` |
-| L-02 | Templates (`<T>`, `<T, R>`) | C++-style monomorphization; not generics | shipped | `cajeta-docs/UnifiedClasses.md` § Templates; `test/parser/TemplateBasicTests.cpp` |
+| L-01 | Class declarations (`class T`) | Single-inheritance, fields + methods + ctors | shipped | `cajeta-docs/stdlib/UnifiedClasses.md`; `test/parser/UnifiedClassSyntaxTests.cpp` |
+| L-02 | Templates (`<T>`, `<T, R>`) | C++-style monomorphization; not generics | shipped | `cajeta-docs/stdlib/UnifiedClasses.md` § Templates; `test/parser/TemplateBasicTests.cpp` |
 | L-03 | Multiple inheritance | Class extends multiple classes/interfaces; required for "container IS a stream" pattern | designed | `cajeta-docs/stdlib/Streams.md`, Collections.md |
-| L-04 | Interfaces (`interface T`) | Fat-pointer dispatch, multiple implementation | shipped | `cajeta-docs/UnifiedClasses.md` § Interfaces; `test/parser/InterfaceTests.cpp` |
+| L-04 | Interfaces (`interface T`) | Fat-pointer dispatch, multiple implementation | shipped | `cajeta-docs/stdlib/UnifiedClasses.md` § Interfaces; `test/parser/InterfaceTests.cpp` |
 | L-05 | Lambdas + function types | `(T) -> R` types, closure capture, indirect call | shipped | `cajeta-docs/stdlib/Lambdas.md`; `test/parser/LambdaL{1,15,2,3,4}Tests.cpp` |
 | L-06 | Function-typed field invocation | `this.fn(args)` where `fn` is a `(T) -> R` field | shipped | `src/cajeta/asn/expression/MethodCallExpression.cpp`; covered by `test/parser/StreamIntermediateTests.cpp` (filter/map/peek tests would fail without it) |
-| L-07 | `heap` / `stack` allocation prefix | Unified-class storage selection | shipped | `cajeta-docs/UnifiedClasses.md`; `test/parser/UnifiedClassSyntaxTests.cpp` |
+| L-07 | `heap` / `stack` allocation prefix | Unified-class storage selection | shipped | `cajeta-docs/stdlib/UnifiedClasses.md`; `test/parser/UnifiedClassSyntaxTests.cpp` |
 | L-08 | Memory model (`#` transfer, drop chain) | Single-owner heap; static + runtime checks | shipped | `cajeta-docs/stdlib/MemoryModel.md`, `cajeta-docs/stdlib/FieldOwnership.md`; many parser tests |
-| L-09 | Wire-format views (`struct`) | Zero-copy typed overlays; `@BigEndian`/`@Align` | shipped | `cajeta-docs/Views.md`; `test/parser/StructView*.cpp` |
+| L-09 | Wire-format views (`struct`) | Zero-copy typed overlays; `@BigEndian`/`@Align` | shipped | `cajeta-docs/stdlib/Views.md`; `test/parser/StructView*.cpp` |
 | L-10 | Switch expressions | Pattern-matching syntax | shipped | `test/expression/SwitchExpressionTests.cpp` |
 | L-11 | Static class fields | `static T field` lowered to LLVM global | shipped | `test/parser/StaticFieldTests.cpp` (9), `test/parser/LambdaStaticCaptureTests.cpp` (2) |
 | L-12 | `@AutoHash` synthesis | Structural `hash()` walk over fields | shipped | `cajeta-docs/stdlib/Hashing.md`; `test/parser/AutoHashTests.cpp` |
@@ -31,7 +31,7 @@ Status legend:
 | L-16 | SIGABRT handler with chain walk | Runtime ctor installs handler; dumps per-thread drop chain | shipped | runtime smoke-tested via existing crash paths |
 | L-17 | Template-instantiation field codegen | Class-ref fields lay out as `ptr` (not inline body) | shipped | recent commits `ef521b9`, `78981f6`, `4cbd88c`, `8fcfaf5` |
 | L-18 | Subtype-aware ctor/method lookup | BFS over arg's superClasses for parameter binding | shipped | `test/parser/SubtypeArgLookupTests.cpp` |
-| L-19 | `super.method()` calls | Direct upcall to parent's implementation | designed | `cajeta-docs/UnifiedClasses.md` § super; UnsupportedExpression today |
+| L-19 | `super.method()` calls | Direct upcall to parent's implementation | designed | `cajeta-docs/stdlib/UnifiedClasses.md` § super; UnsupportedExpression today |
 | L-20 | Lambda capture by reference | `let captures = ...` semantics | shipped (partial) | `cajeta-docs/stdlib/Lambdas.md`; full closure semantics in Lambda tests |
 | L-21 | Chained call form (`a.b().c()`) | `xs.stream().filter(p).map(f).count()` | partial | works for simple chains; P6.6 covers the remaining cases |
 | L-22 | Method-level type parameters (`<T> void f(T x)`) | Per-method `<T>` declaration | designed | blocks `Stream.fold<R>`, `Optional<int32>.Some(42)` |

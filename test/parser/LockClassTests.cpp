@@ -2,7 +2,7 @@
 // User-facing Lock and LockGuard classes — the package-cajeta.threading
 // API that wraps the low-level lock intrinsics with RAII semantics.
 // LockGuard's user-defined drop() calls release; the class-drop
-// infrastructure auto-fires it at scope exit. See ThreadModel.md §
+// infrastructure auto-fires it at scope exit. See cajeta-docs/stdlib/Thread.md §
 // Synchronization primitives.
 //
 // These tests inline the Cajeta source for Lock and LockGuard into

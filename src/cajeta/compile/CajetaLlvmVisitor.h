@@ -350,7 +350,7 @@ namespace cajeta {
                     list<QualifiedNamePtr>{}, list<QualifiedNamePtr>{});
 
             // Endianness / alignment annotations apply only to views (per
-            // cajeta-docs/Views.md, structs are host-endian with compiler-chosen
+            // cajeta-docs/stdlib/Views.md, structs are host-endian with compiler-chosen
             // layout; per Views.md, views require endianness and may opt
             // into natural alignment). The annotations sit on the enclosing
             // typeDeclaration's classOrInterfaceModifier* prefix.
@@ -407,7 +407,7 @@ namespace cajeta {
         }
 
         virtual std::any visitStructDeclaration(CajetaParser::StructDeclarationContext* ctx) override {
-            // Stack value aggregate (cajeta-docs/Views.md) — full codegen lands via
+            // Stack value aggregate (cajeta-docs/stdlib/Views.md) — full codegen lands via
             // CajetaStruct: stack alloca + aggregate init (S6), inline
             // composition into class fields (S7), methods (S8), interface
             // dispatch through the fat-pointer model (S9–S11).

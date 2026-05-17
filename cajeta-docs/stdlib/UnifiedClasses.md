@@ -499,7 +499,7 @@ After Phase 7, the unified-class rollout is complete. The stdlib (`Optional`, `S
 ## Related documents
 
 - `cajeta-docs/stdlib/MemoryModel.md` — the borrow / move / drop doctrine. v2 preserves all rules; only the storage-choice mechanism (stack vs heap) is new.
-- `cajeta-docs/Views.md` — typed overlays onto byte buffers. Unaffected.
+- `cajeta-docs/stdlib/Views.md` — typed overlays onto byte buffers. Unaffected.
 - `cajeta-docs/history/StructsViewsStatus.md` — v1 struct/view rollout (S1–S12). Already archived; preserved for diagnostic context.
 - `cajeta-docs/history/ImplementationStatus.md` — v1 memory-model rollout. Already archived.
 - `ToDo.md` — working tracker; the committed-decisions section near the top documents the design state this doc formalizes.
