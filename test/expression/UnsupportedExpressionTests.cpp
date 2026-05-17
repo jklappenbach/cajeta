@@ -77,12 +77,12 @@ TEST(UnsupportedExpressionTests, methodReferenceNewThrowsNotImplemented) {
     expectNotImplemented(src, "method reference");
 }
 
-TEST(UnsupportedExpressionTests, superCallThrowsNotImplemented) {
-    // `obj.super.foo()` triggers the DOT branch's super-suffix sub-case.
-    auto src = makeSource("int32",
-        "return super.something();");
-    expectNotImplemented(src, "super");
-}
+// `super.method()` (primary-super form) is now implemented — see
+// MultipleInheritanceGapTests.superMethodCallReachesParent. The
+// remaining unimplemented super form is the qualified `obj.super.foo()`
+// shape (DOT-branch super-suffix), which only makes sense once inner
+// classes exist — and they're already covered by
+// innerCreatorThrowsNotImplemented below.
 
 TEST(UnsupportedExpressionTests, innerCreatorThrowsNotImplemented) {
     // `obj.new Inner()` — DOT branch detects the innerCreator suffix.

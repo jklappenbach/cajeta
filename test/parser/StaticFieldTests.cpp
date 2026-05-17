@@ -181,6 +181,60 @@ TEST(StaticFieldTests, negativeLiteralInitializer) {
     EXPECT_EQ(runI32(src), -7);
 }
 
+// P6.2 — computed (non-literal) initializer: arithmetic on integer
+// literals. Today only `<literal>` and `-<literal>` constant-fold
+// into the global's initializer; anything else silently zeroes the
+// global. The fix is a per-module clinit-style init function
+// registered via `llvm.global_ctors` that runs the user expression
+// and stores into the global at module load.
+TEST(StaticFieldTests, computedIntInitializer) {
+    auto src =
+        "package test;\n"
+        "public class Calc {\n"
+        "    public static int32 sum = 1 + 2;\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        return Calc.sum;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 3);
+}
+
+// P6.2 — initializer referencing another static. Order matters: the
+// referenced static must already be initialized when this one runs.
+// The clinit function emits stores in declaration order; cross-class
+// is fine because each class's clinit is independently registered.
+TEST(StaticFieldTests, initReferencesAnotherStatic) {
+    auto src =
+        "package test;\n"
+        "public class Two {\n"
+        "    public static int32 a = 10;\n"
+        "    public static int32 b = a + 5;\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        return Two.b;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 15);
+}
+
+// P6.2 — multi-term arithmetic.
+TEST(StaticFieldTests, multiTermArithmeticInitializer) {
+    auto src =
+        "package test;\n"
+        "public class Math {\n"
+        "    public static int32 v = (2 * 3) + (10 / 2);\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        return Math.v;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 11);
+}
+
 // Cross-class read/write — class B touches A's statics. Confirms the
 // global is module-scoped, not class-instance-scoped, and accessible
 // by canonical name from any compilation unit that names the class.

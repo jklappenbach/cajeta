@@ -983,7 +983,14 @@ namespace cajeta {
                 }
             }
             CajetaTypePtr returnType = CajetaType::fromContext(ctx->typeTypeOrVoid(), pModule);
-            BlockPtr block = any_cast<BlockPtr>(visitMethodBody(ctx->methodBody()));
+            // methodBody is either `block` or `;` (abstract methods, interface
+            // body methods). For the `;` form, visitMethodBody returns an
+            // empty std::any and any_cast<BlockPtr> would throw bad_any_cast.
+            // Guard so abstract methods land as Method with a null block.
+            BlockPtr block;
+            if (ctx->methodBody() && ctx->methodBody()->block()) {
+                block = any_cast<BlockPtr>(visitMethodBody(ctx->methodBody()));
+            }
             MethodPtr method = Method::create(
                 this->pModule,
                 name,
@@ -992,6 +999,15 @@ namespace cajeta {
                 block,
                 pModule->getStructureStack().front());
             method->setVarargs(varargs);
+            // No body (methodBody was `;`) = abstract method. Method::generate*
+            // already skips function emission when abstractFlag is set;
+            // CajetaClass::buildVirtualTable also uses isAbstract() to gate
+            // override-vs-introduce semantics. Without this flag the method
+            // would land as an empty-body method (codegen-default zero
+            // return) and silently mask missing overrides.
+            if (!block) {
+                method->setAbstract(true);
+            }
             // `#T foo()` — return transfers ownership. The grammar puts the `#`
             // on typeTypeOrVoid (`REFERENCE? typeType`); see MemoryModel.md.
             if (ctx->typeTypeOrVoid() && ctx->typeTypeOrVoid()->REFERENCE() != nullptr) {

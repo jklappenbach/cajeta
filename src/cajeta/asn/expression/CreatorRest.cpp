@@ -84,6 +84,30 @@ namespace cajeta {
                     structTy, instance, /*idx=*/0, "vtable_slot");
                 builder->CreateStore(vtableRef, vtablePtrSlot);
             }
+
+            // Polymorphic-MI: secondary vtable per non-first-parent
+            // sub-object. The primary vtable above lives at slot 0 and
+            // is read when dispatching through this class's own type;
+            // dispatching through a non-first-parent-typed binding
+            // reads the vptr at the start of that parent's sub-object,
+            // which is one of the slots enumerated by
+            // klass->getNonFirstSubObjects(). Each such slot gets a
+            // dedicated secondary vtable (built lazily and cached on
+            // klass), structurally compatible with the parent's
+            // standalone vtable but carrying this class's overrides
+            // (via offset thunks where the impl lives elsewhere).
+            for (const auto& sub : klass->getNonFirstSubObjects()) {
+                llvm::GlobalVariable* secVT =
+                    klass->getOrCreateSecondaryVTable(sub.ancestor);
+                if (!secVT) continue;
+                llvm::Constant* secRef = CajetaModule::ensureGlobalInModule(
+                    module->getLlvmModule(), secVT);
+                llvm::Value* secSlot = builder->CreateStructGEP(
+                    structTy, instance, (unsigned) sub.slot,
+                    std::string("sec_vtable_slot_")
+                        + sub.ancestor->getQName()->getTypeName());
+                builder->CreateStore(secRef, secSlot);
+            }
             // Gap 1 (virtual dispatch on drop). The instance carries this
             // class's vtable regardless of the declared type of the
             // binding (`Animal a = heap Dog()` stores Dog's vtable). At

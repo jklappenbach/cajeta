@@ -70,6 +70,73 @@ namespace cajeta {
         auto* builder = module->getBuilder();
         llvm::LLVMContext& llvmCtx = *module->getLlvmContext();
 
+        // `super(args)` ctor delegation. Look up the enclosing class's
+        // first declared parent, resolve a constructor matching the args,
+        // invoke it on `this` with isConstructor=true and forceDirectCall
+        // (ctor invocation is never vtable-dispatched anyway, but the
+        // flag keeps the path explicit). Method::generateCode's implicit
+        // super-call only fires when a parent's no-arg ctor resolves, so
+        // an explicit super(args) doesn't double-init unless the parent
+        // happens to also have a no-arg ctor; we suppress that case here
+        // by recording in the module that an explicit super-call has run
+        // in this constructor body (TODO when needed). For Gap 6's test
+        // shape (parent has only args-ctor), the implicit path is a
+        // no-op anyway.
+        if (superCtorCall) {
+            if (module->getStructureStack().empty()) {
+                throw Exception("`super(...)` used outside of a class ctor",
+                    "CAJETA_ERROR_SUPER_OUTSIDE_CLASS");
+            }
+            auto here = std::dynamic_pointer_cast<CajetaClass>(
+                module->getStructureStack().back());
+            if (!here || here->getSuperClasses().empty()) {
+                throw Exception("`super(...)` used in a class with no parent",
+                    "CAJETA_ERROR_SUPER_NO_PARENT");
+            }
+            CajetaClassPtr parentCls = here->getSuperClasses().front();
+            // Build the ParameterEntry list (same shape as the normal
+            // dispatch path further down). Lift expressions to IR and
+            // pin resolved types so resolveMethod's lookup keys match.
+            std::vector<ParameterEntry> entries;
+            for (auto& p : parameters) {
+                if (p.expression && !p.expression->getResolvedType()) {
+                    p.expression->resolveTypes(module);
+                }
+                llvm::Value* v = p.expression ? p.expression->generateCode(module) : nullptr;
+                CajetaTypePtr t = p.expression ? p.expression->getResolvedType() : nullptr;
+                entries.emplace_back(t, p.label, v);
+            }
+            // The receiver is `this` (the same instance). The parent
+            // ctor writes its inherited slots through `this`.
+            auto scope = module->getScopeStack().peek();
+            FieldPtr thisField = scope ? scope->getField("this") : nullptr;
+            if (!thisField) {
+                throw Exception("`super(...)` used in a static context with no `this`",
+                    "CAJETA_ERROR_SUPER_IN_STATIC");
+            }
+            llvm::Value* thisValue = builder->CreateLoad(
+                thisField->getOrCreateAllocation()->getAllocatedType(),
+                thisField->getOrCreateAllocation());
+            // Per-parent sub-object adjustment (Gap 8). For the FIRST parent
+            // offset is 0 (shares primary vtable). For non-first parents
+            // we shift the receiver to the parent's sub-object start so
+            // the parent ctor's pre-compiled IR uses correct slot indices.
+            uint64_t off = here->getSubObjectByteOffset(parentCls.get());
+            if (off != 0) {
+                llvm::Type* i8Ty = llvm::Type::getInt8Ty(
+                    *module->getLlvmContext());
+                thisValue = builder->CreateInBoundsGEP(i8Ty, thisValue,
+                    llvm::ConstantInt::get(
+                        llvm::Type::getInt64Ty(*module->getLlvmContext()),
+                        off),
+                    "super_ctor_subobj");
+            }
+            std::string ctorName = parentCls->getQName()->getTypeName();
+            return parentCls->invokeMethod(ctorName, entries,
+                /*isConstructor=*/true, thisValue, /*callerModule=*/module,
+                /*forceDirectCall=*/true);
+        }
+
         // ----- Indirect call through a function-typed local -----
         // `add(3, 4)` where `add` was declared as `(int32, int32) -> int32`.
         // The local's slot holds a `ptr` to a closure record
@@ -1501,8 +1568,19 @@ namespace cajeta {
             }
         }
 
+        // `super.method()` — bypass vtable dispatch and direct-call the
+        // parent's body. Without this, the instance's vtable (which
+        // belongs to the most-derived class) would route back to the
+        // override and infinite-loop. SuperExpression as the receiver
+        // child is the trigger; SuperExpression::resolveTypes set the
+        // receiverType to the first declared parent, so targetClass
+        // above is already the right class for resolution.
+        bool isSuperCall = !children.empty()
+            && std::dynamic_pointer_cast<SuperExpression>(children[0]) != nullptr;
+
         llvm::Value* callResult = targetClass->invokeMethod(methodCallName, entries,
-            /*isConstructor=*/false, thisValue, /*callerModule=*/module);
+            /*isConstructor=*/false, thisValue, /*callerModule=*/module,
+            /*forceDirectCall=*/isSuperCall);
 
         // Pin resolvedType to the called method's return type so a caller
         // using this MCE as a ctor / method argument can recover the

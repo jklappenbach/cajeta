@@ -662,19 +662,46 @@ namespace cajeta {
         // stdlib Throwable(String)) keep the current "manually
         // assign inherited fields" pattern until explicit super(...)
         // lands. Pass `this` (bodyFn arg 0) as the receiver.
+        //
+        // Multi-inheritance: invoke the no-arg ctor on EVERY parent in
+        // declared order. Each parent's ctor writes only into fields
+        // it owns (slots laid out by appendInherited / resolved by
+        // getFieldLlvmIndex). Skipping a parent leaves its inherited
+        // state uninitialized — required for `Optional<T> extends
+        // Stream<T>, AbstractHashable<T>` (the AbstractHashable side
+        // wouldn't initialize otherwise).
         if (constructor && parent && bodyFn->arg_size() > 0) {
+            llvm::Value* receiver = bodyFn->getArg(0);
             for (auto& sup : parent->getSuperClasses()) {
                 if (!sup) continue;
                 std::vector<ParameterEntry> noArgs;
                 std::string supCtorName = sup->getQName()->getTypeName();
                 if (sup->resolveMethod(supCtorName, noArgs,
                         /*isConstructor=*/true, /*floatingParams=*/false)) {
+                    // Per-parent sub-object adjustment (Gap 8). The receiver
+                    // is the subclass instance pointer; the parent ctor was
+                    // compiled against the parent's standalone struct layout,
+                    // so we must pass a pointer to where the parent's
+                    // sub-object actually lives inside the subclass instance.
+                    // First parent's offset is 0 (shares the primary vtable
+                    // slot); non-first parents have their sub-object further
+                    // down.
+                    llvm::Value* supThis = receiver;
+                    uint64_t off = parent->getSubObjectByteOffset(sup.get());
+                    if (off != 0) {
+                        llvm::Type* i8Ty = llvm::Type::getInt8Ty(
+                            *module->getLlvmContext());
+                        supThis = builder->CreateInBoundsGEP(i8Ty, receiver,
+                            llvm::ConstantInt::get(
+                                llvm::Type::getInt64Ty(*module->getLlvmContext()),
+                                off),
+                            "super_ctor_subobj");
+                    }
                     sup->invokeMethod(supCtorName, noArgs,
                         /*isConstructor=*/true,
-                        bodyFn->getArg(0),
+                        supThis,
                         /*callerModule=*/module);
                 }
-                break;  // single inheritance chain; only the first parent
             }
         }
 

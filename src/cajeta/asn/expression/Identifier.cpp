@@ -81,6 +81,16 @@ namespace cajeta {
             if (klass) {
                 auto it = klass->getProperties().find(identifier);
                 if (it != klass->getProperties().end()) {
+                    // Static field shorthand — `a` inside class Two
+                    // resolves to Two's static field `a` when `a` is
+                    // declared static. Return the global pointer (an
+                    // lvalue); the caller load-throughs as needed.
+                    // This path also covers P6.2 clinit initializers
+                    // where there's no `this` to fall back on.
+                    if (it->second->isStatic()) {
+                        return static_cast<llvm::Value*>(
+                            klass->getOrCreateStaticFieldGlobal(it->second, module));
+                    }
                     FieldPtr thisField = scope ? scope->getField("this") : nullptr;
                     if (thisField) {
                         auto* builder = module->getBuilder();

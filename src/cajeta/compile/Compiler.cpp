@@ -503,6 +503,18 @@ namespace cajeta {
             if (after == methodCount && after == prevMethodCount) break;
             prevMethodCount = after;
         }
+        // P6.2 — after Phase 1/2 quiescence, emit any per-class clinit
+        // for static fields whose initializers didn't constant-fold.
+        // Runs once at this point (not inside the loop) so the
+        // expression codegen sees the final method set, and so we
+        // don't pay the cost on each Phase 2 iteration. Registered
+        // with llvm.global_ctors so the JIT (and AOT) module-load
+        // step executes it before any user code.
+        for (auto& module: modules) {
+            for (auto& [name, klass] : module->getStructures()) {
+                if (klass) klass->generateStaticInitializers();
+            }
+        }
         for (auto& module: modules) {
             // Runtime is linked once into the stdlib module (see
             // parseStdlibInto); user modules carry only extern decls

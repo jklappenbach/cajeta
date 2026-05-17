@@ -785,9 +785,11 @@ namespace cajeta {
             // on getStart(). The token-taking overload sidesteps that.
             result = make_shared<ThisExpression>(ctx->getStart());
         } else if (ctx->SUPER()) {
-            // `super` as a primary expression (e.g. `super.foo()`); the actual call
-            // dispatch is the bigger feature we haven't built yet.
-            result = make_shared<UnsupportedExpression>("super call", ctx->getStart());
+            // `super` as a primary expression (e.g. `super.foo()`). The
+            // call dispatch lives in MethodCallExpression — when its
+            // receiver is a SuperExpression, the call bypasses vtable
+            // lookup and direct-calls the parent's method.
+            result = make_shared<SuperExpression>(ctx->getStart());
         }
         return result;
     }
@@ -2368,6 +2370,50 @@ namespace cajeta {
         // loadIfLValue if they need the pointer itself.
         FieldPtr thisField = module->getScopeStack().peek()->getField("this");
         return thisField ? static_cast<llvm::Value*>(thisField->getOrCreateAllocation()) : nullptr;
+    }
+
+    void SuperExpression::resolveTypes(CajetaModulePtr module) {
+        // `super` is statically typed as the current class's first declared
+        // parent. The instance pointer is the same `this` pointer (Cajeta
+        // single-object-per-class layout); only the dispatch target differs
+        // (parent's method, direct-called by MethodCallExpression). For
+        // multi-inheritance, picking the first parent matches Java's
+        // single-parent rule; explicit per-parent selection (`super[B]`)
+        // is not yet a language feature.
+        if (module->getStructureStack().empty()) {
+            throw Exception(
+                "`super` used outside of a class context",
+                "CAJETA_ERROR_SUPER_OUTSIDE_CLASS");
+        }
+        auto here = std::dynamic_pointer_cast<CajetaClass>(
+            module->getStructureStack().back());
+        if (!here) {
+            throw Exception(
+                "`super` used outside of a class context",
+                "CAJETA_ERROR_SUPER_OUTSIDE_CLASS");
+        }
+        auto& supers = here->getSuperClasses();
+        if (supers.empty()) {
+            throw Exception(
+                "`super` used in class '" + here->getQName()->toCanonical()
+                + "' which has no declared superclass",
+                "CAJETA_ERROR_SUPER_NO_PARENT");
+        }
+        resolvedType = supers.front();
+    }
+
+    llvm::Value* SuperExpression::generateCode(CajetaModulePtr module) {
+        // Same value as `this` — there's no separate "super pointer"; the
+        // distinction is purely in resolvedType (parent's class) and the
+        // direct-call routing in MethodCallExpression.
+        auto scope = module->getScopeStack().peek();
+        FieldPtr thisField = scope ? scope->getField("this") : nullptr;
+        if (!thisField) {
+            throw Exception(
+                "`super` used in a static context with no `this`",
+                "CAJETA_ERROR_SUPER_IN_STATIC");
+        }
+        return static_cast<llvm::Value*>(thisField->getOrCreateAllocation());
     }
 
     // Sync-lowering MVP for the three concurrency expressions. They all wrap a

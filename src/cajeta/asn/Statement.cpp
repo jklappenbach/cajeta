@@ -1304,7 +1304,11 @@ namespace cajeta {
 
         // Load if the expression returned an l-value (alloca, array-slot GEP, or
         // struct/class field GEP) — return wants a value, not an address.
-        if (auto* a = llvm::dyn_cast<llvm::AllocaInst>(val)) {
+        // val may be nullptr when the inner expression failed to lower (e.g.
+        // a chained MCE whose method lookup didn't pin a return type); guard
+        // dyn_cast which asserts on null inputs.
+        if (val && llvm::dyn_cast<llvm::AllocaInst>(val)) {
+            auto* a = llvm::cast<llvm::AllocaInst>(val);
             val = builder->CreateLoad(a->getAllocatedType(), a);
         } else if (auto idx = dynamic_pointer_cast<ArrayIndexExpression>(expression)) {
             // ArrayIndex returned a slot address. Element type determines the load size:
@@ -1377,6 +1381,11 @@ namespace cajeta {
         // so cast/extend at the boundary so the return inst matches the function type.
         llvm::Function* fn = builder->GetInsertBlock()->getParent();
         llvm::Type* retTy = fn->getReturnType();
+        if (!val) {
+            std::cerr << "[cajeta] return value lowered to null"
+                << " — method " << fn->getName().str() << std::endl;
+            return builder->CreateRet(llvm::Constant::getNullValue(retTy));
+        }
         llvm::Type* valTy = val->getType();
         if (valTy != retTy) {
             if (retTy->isIntegerTy() && valTy->isIntegerTy()) {

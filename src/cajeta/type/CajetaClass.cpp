@@ -16,6 +16,7 @@
 #include "../error/Exception.h"
 #include "../asn/expression/LiteralExpression.h"
 #include "../asn/VariableDeclarator.h"
+#include <llvm/Transforms/Utils/ModuleUtils.h>
 #include <cstdlib>
 
 #include <algorithm>
@@ -40,6 +41,10 @@ namespace {
 using namespace std;
 
 namespace cajeta {
+    // Forward declaration — defined further down. Needed by
+    // generateStaticInitializers, which lives above the definition.
+    static llvm::Constant* foldStaticInitializer(
+        AbstractSyntaxNodePtr init, llvm::Type* storedType);
     CajetaClass::CajetaClass(CajetaModulePtr module, QualifiedNamePtr qName, list<QualifiedNamePtr> qImplemented) : CajetaType(qName) {
         this->qImplemented = qImplemented;
         this->module = module;
@@ -144,6 +149,261 @@ namespace cajeta {
     void CajetaClass::addProperty(StructurePropertyPtr field) {
         properties[field->getName()] = field;
         propertyList.push_back(field);
+    }
+
+    uint64_t CajetaClass::getSubObjectByteOffset(const CajetaClass* ancestor) const {
+        if (!ancestor || ancestor == this) return 0;
+        auto it = subObjectSlotMap.find(ancestor);
+        if (it == subObjectSlotMap.end() || it->second == 0) return 0;
+        if (!llvmType || !llvm::isa<llvm::StructType>(llvmType)) return 0;
+        auto* st = llvm::cast<llvm::StructType>(llvmType);
+        if (!st->isSized()) return 0;
+        const llvm::DataLayout& dl = module->getLlvmModule()->getDataLayout();
+        return dl.getStructLayout(st)->getElementOffset((unsigned) it->second);
+    }
+
+    std::vector<CajetaClass::NonFirstSubObject>
+    CajetaClass::getNonFirstSubObjects() {
+        std::vector<NonFirstSubObject> result;
+        if (!llvmType || !llvm::isa<llvm::StructType>(llvmType)) return result;
+        auto* st = llvm::cast<llvm::StructType>(llvmType);
+        if (!st->isSized()) return result;
+        const llvm::DataLayout& dl = module->getLlvmModule()->getDataLayout();
+        const auto* layout = dl.getStructLayout(st);
+        // Walk the layout in the SAME order as embedSubObject in
+        // generatePrototype. Emit (ancestor, slot, byteOffset) for every
+        // sub-object that has its own vtable slot — i.e., not the
+        // primary chain (self + first-parent + first-parent's first-
+        // parent ...). The slot ALWAYS corresponds to a vptr because we
+        // only push when ownVtable=true.
+        //
+        // We can't reuse subObjectSlotMap here because in diamond-shaped
+        // hierarchies (any class implicitly extending Object via two
+        // chains, for example) the same ancestor appears multiple times
+        // and the map keeps only the last visit. Walking the layout
+        // directly is the only way to enumerate each vptr-bearing
+        // sub-object once.
+        int slot = 0;
+        bool isSelf = true;
+        std::function<void(CajetaClassPtr, bool)> walk =
+            [&](CajetaClassPtr cls, bool ownVtable) {
+                int subObjectStart = -1;
+                if (ownVtable) {
+                    subObjectStart = slot;
+                    if (!isSelf) {
+                        uint64_t off = layout->getElementOffset(
+                            (unsigned) subObjectStart);
+                        result.push_back({cls, subObjectStart, off});
+                    }
+                    isSelf = false;
+                    slot++;
+                }
+                int idx = 0;
+                for (auto& parent : cls->superClasses) {
+                    walk(parent, /*ownVtable=*/(idx != 0));
+                    idx++;
+                }
+                for (auto& p : cls->propertyList) {
+                    if (p->isStatic()) continue;
+                    slot++;
+                }
+            };
+        walk(std::static_pointer_cast<CajetaClass>(shared_from_this()),
+            /*ownVtable=*/true);
+        return result;
+    }
+
+    llvm::Value* CajetaClass::adjustForUpcast(
+            CajetaModulePtr module,
+            llvm::Value* srcValue,
+            CajetaTypePtr srcType,
+            CajetaTypePtr dstType) {
+        if (!srcValue || !srcType || !dstType) return srcValue;
+        auto srcClass = std::dynamic_pointer_cast<CajetaClass>(srcType);
+        auto dstClass = std::dynamic_pointer_cast<CajetaClass>(dstType);
+        if (!srcClass || !dstClass) return srcValue;
+        if (srcClass.get() == dstClass.get()) return srcValue;
+        // Interface upcast uses the fat-pointer path (see
+        // LocalVariableDeclaration § interface block).
+        if (dstClass->isInterface() || srcClass->isInterface()) return srcValue;
+        uint64_t off = srcClass->getSubObjectByteOffset(dstClass.get());
+        if (off == 0) return srcValue;
+        auto* builder = module->getBuilder();
+        auto& ctx = *module->getLlvmContext();
+        llvm::Type* i8Ty = llvm::Type::getInt8Ty(ctx);
+        return builder->CreateInBoundsGEP(i8Ty, srcValue,
+            llvm::ConstantInt::get(llvm::Type::getInt64Ty(ctx), off),
+            "upcast_subobj");
+    }
+
+    static std::string sanitizeSymbol(std::string s) {
+        for (char& c : s) {
+            if (c == ':' || c == '.' || c == '<' || c == '>'
+                    || c == ',' || c == ' ' || c == '(' || c == ')') {
+                c = '_';
+            }
+        }
+        return s;
+    }
+
+    llvm::Function* CajetaClass::synthesizeOffsetThunk(
+            CajetaClassPtr parent,
+            MethodPtr impl,
+            uint64_t parentOffsetInThis) {
+        if (!impl || !impl->getLlvmFunctionType()) return nullptr;
+        auto& ctx = *module->getLlvmContext();
+        auto* lmod = module->getLlvmModule();
+        llvm::FunctionType* fnTy = impl->getLlvmFunctionType();
+
+        std::string name = sanitizeSymbol(
+            "__cajeta_thunk_" + qName->toCanonical()
+            + "_via_" + parent->getQName()->toCanonical()
+            + "_to_" + impl->toCanonical(/*labeled=*/false));
+        if (auto* existing = lmod->getFunction(name)) return existing;
+
+        llvm::Function* implFn = CajetaModule::ensureFunctionInModule(
+            lmod, impl->getLlvmFunction());
+
+        llvm::Function* thunk = llvm::Function::Create(fnTy,
+            llvm::Function::PrivateLinkage, name, lmod);
+        llvm::BasicBlock* bb = llvm::BasicBlock::Create(ctx, "entry", thunk);
+        llvm::IRBuilder<> b(bb);
+
+        std::vector<llvm::Value*> args;
+        args.reserve(thunk->arg_size());
+        unsigned idx = 0;
+        for (auto& a : thunk->args()) {
+            if (idx == 0 && parentOffsetInThis != 0) {
+                llvm::Type* i8Ty = llvm::Type::getInt8Ty(ctx);
+                llvm::Value* off = llvm::ConstantInt::get(
+                    llvm::Type::getInt64Ty(ctx),
+                    (uint64_t) -(int64_t) parentOffsetInThis, /*isSigned=*/true);
+                args.push_back(b.CreateInBoundsGEP(i8Ty, &a, off, "thunk_this"));
+            } else {
+                args.push_back(&a);
+            }
+            idx++;
+        }
+        llvm::CallInst* call = b.CreateCall(fnTy, implFn, args);
+        call->setTailCall(true);
+        if (fnTy->getReturnType()->isVoidTy()) {
+            b.CreateRetVoid();
+        } else {
+            b.CreateRet(call);
+        }
+        return thunk;
+    }
+
+    llvm::GlobalVariable* CajetaClass::getOrCreateSecondaryVTable(
+            CajetaClassPtr parent) {
+        if (!parent) return nullptr;
+        std::string parentCanon = parent->getQName()->toCanonical();
+        auto cached = secondaryVTables.find(parentCanon);
+        if (cached != secondaryVTables.end()) return cached->second;
+
+        // Make sure parent's standalone vtable exists so we can reuse
+        // its LLVM struct type for layout-compatible dispatch.
+        if (!parent->getVirtualTableGlobal()) {
+            parent->writeVirtualTable();
+        }
+        llvm::StructType* parentVtableType = parent->getVirtualTableType();
+        if (!parentVtableType) return nullptr;
+
+        auto& ctx = *module->getLlvmContext();
+        auto* lmod = module->getLlvmModule();
+        std::string vtName = sanitizeSymbol(
+            qName->toCanonical() + "$as$" + parentCanon + "#VTable");
+        if (auto* existing = lmod->getGlobalVariable(vtName)) {
+            secondaryVTables[parentCanon] = existing;
+            return existing;
+        }
+
+        uint64_t parentOffset = getSubObjectByteOffset(parent.get());
+
+        llvm::Type* i16Ty = llvm::IntegerType::getInt16Ty(ctx);
+        llvm::Type* i64Ty = llvm::IntegerType::getInt64Ty(ctx);
+        llvm::Type* ptrTy = llvm::PointerType::get(ctx, 0);
+
+        const auto& parentSlots = parent->getVirtualMethodList();
+        const auto& parentHashes = parent->getVirtualSlotHashList();
+
+        // Index our own primary vtable by hash so we can pick up
+        // most-derived overrides (buildVirtualTable already aliased
+        // parent canonicals to our impls).
+        std::map<int64_t, MethodPtr> ourByHash;
+        {
+            auto mIt = virtualMethodList.begin();
+            for (size_t i = 0; i < virtualSlotHashList.size()
+                    && mIt != virtualMethodList.end(); ++i, ++mIt) {
+                ourByHash[virtualSlotHashList[i]] = *mIt;
+            }
+        }
+
+        llvm::ArrayType* entriesArrTy = llvm::cast<llvm::ArrayType>(
+            parentVtableType->getTypeAtIndex(4));
+        llvm::StructType* entryTy = llvm::cast<llvm::StructType>(
+            entriesArrTy->getElementType());
+
+        std::vector<llvm::Constant*> entryConstants;
+        entryConstants.reserve(parentSlots.size());
+        auto pIt = parentSlots.begin();
+        for (size_t i = 0; i < parentHashes.size() && pIt != parentSlots.end();
+                ++i, ++pIt) {
+            int64_t hash = parentHashes[i];
+            MethodPtr parentMethod = *pIt;
+            MethodPtr ourImpl;
+            auto found = ourByHash.find(hash);
+            if (found != ourByHash.end()) ourImpl = found->second;
+
+            llvm::Function* fn = nullptr;
+            bool isOverride = ourImpl && parentMethod
+                && ourImpl.get() != parentMethod.get()
+                && ourImpl->getParent()
+                && ourImpl->getParent().get() != parent.get();
+            if (isOverride) {
+                fn = synthesizeOffsetThunk(parent, ourImpl, parentOffset);
+            } else if (parentMethod && parentMethod->getLlvmFunction()) {
+                fn = CajetaModule::ensureFunctionInModule(
+                    lmod, parentMethod->getLlvmFunction());
+            }
+            llvm::Constant* fnConst = fn
+                ? (llvm::Constant*) fn
+                : llvm::ConstantPointerNull::get(
+                    llvm::cast<llvm::PointerType>(ptrTy));
+            entryConstants.push_back(llvm::ConstantStruct::get(entryTy, {
+                llvm::ConstantInt::get(i64Ty,
+                    llvm::APInt(64, (uint64_t) hash, false)),
+                fnConst,
+            }));
+        }
+
+        llvm::Constant* entriesArr = llvm::ConstantArray::get(
+            entriesArrTy, llvm::ArrayRef<llvm::Constant*>(entryConstants));
+
+        llvm::Constant* parentVtableRef =
+            llvm::ConstantPointerNull::get(llvm::cast<llvm::PointerType>(ptrTy));
+        if (auto pv = parent->getVirtualTableGlobal()) {
+            parentVtableRef = CajetaModule::ensureGlobalInModule(lmod, pv);
+        }
+        llvm::Constant* dropFnConst =
+            llvm::ConstantPointerNull::get(llvm::cast<llvm::PointerType>(ptrTy));
+
+        std::vector<llvm::Constant*> initArgs{
+            llvm::ConstantInt::get(i16Ty, llvm::APInt(16, 0, false)),
+            llvm::ConstantInt::get(i16Ty,
+                llvm::APInt(16, parentSlots.size(), false)),
+            parentVtableRef,
+            dropFnConst,
+            entriesArr,
+        };
+        llvm::Constant* initializer = llvm::ConstantStruct::get(parentVtableType,
+            llvm::ArrayRef<llvm::Constant*>(initArgs));
+
+        auto* g = (llvm::GlobalVariable*) lmod->getOrInsertGlobal(
+            vtName, parentVtableType);
+        g->setInitializer(initializer);
+        secondaryVTables[parentCanon] = g;
+        return g;
     }
 
     void CajetaClass::generatePrototype() {
@@ -278,32 +538,50 @@ namespace cajeta {
             return t->getLlvmType();
         };
 
+        // Per-parent sub-object layout (Gap 8). For C extends A, B:
+        //   { vtable_primary, A's-sub-object-content (shares vtable),
+        //     vtable_secondary_for_B, B's-sub-object-content,
+        //     C's own fields }
+        // The FIRST parent shares this class's primary vtable pointer
+        // (saves a slot and matches C++'s single-inheritance fast path).
+        // Every non-first parent gets a fresh vtable slot at the start
+        // of its sub-object so a `Parent*` view into that region looks
+        // structurally identical to `Parent` standalone — which means
+        // the parent's pre-compiled ctor/method IR (using the parent's
+        // own struct GEP indices) "just works" when handed a pointer
+        // adjusted by getSubObjectByteOffset.
+        //
+        // We populate subObjectSlotMap in lockstep so getSubObjectByteOffset
+        // can compute the byte adjustment for any ancestor.
         vector<llvm::Type*> llvmMembers;
-        llvmMembers.push_back(llvm::PointerType::get(*lctx, 0));
-        // Recursively prepend each ancestor's own fields, deepest-first.
-        // The lambda walks superClasses to flatten the inheritance chain
-        // into the order [grandparent fields, parent fields, this class's
-        // own fields]. Iterate parents in declared order so multi-
-        // inheritance (if it ever lands) produces a deterministic layout.
-        std::function<void(CajetaClassPtr)> appendInherited;
-        appendInherited = [&](CajetaClassPtr cls) {
+        subObjectSlotMap.clear();
+        llvm::PointerType* vptrTy = llvm::PointerType::get(*lctx, 0);
+
+        // 'enclosingStart' = slot where the surrounding sub-object's vtable
+        // sits. Used to record `subObjectSlotMap[firstParent]` (which shares).
+        std::function<void(CajetaClassPtr, bool, int)> embedSubObject;
+        embedSubObject = [&](CajetaClassPtr cls, bool ownVtable, int enclosingStart) {
+            int subObjectStart;
+            if (ownVtable) {
+                subObjectStart = (int) llvmMembers.size();  // about-to-add vtable slot
+                llvmMembers.push_back(vptrTy);
+            } else {
+                subObjectStart = enclosingStart;
+            }
+            subObjectSlotMap[cls.get()] = subObjectStart;
+
+            int idx = 0;
             for (auto& parent : cls->superClasses) {
-                appendInherited(parent);
-                for (auto& p : parent->propertyList) {
-                    if (p->isStatic()) continue;  // statics live in globals
-                    llvmMembers.push_back(fieldLayoutType(p));
-                }
+                embedSubObject(parent, /*ownVtable=*/(idx != 0), subObjectStart);
+                idx++;
+            }
+            for (auto& p : cls->propertyList) {
+                if (p->isStatic()) continue;
+                llvmMembers.push_back(fieldLayoutType(p));
             }
         };
-        appendInherited(static_pointer_cast<CajetaClass>(shared_from_this()));
-        // Then this class's own fields, in declaration order for
-        // deterministic indices. Skip static properties — they're
-        // backed by LLVM globals (CajetaClass::getOrCreateStaticFieldGlobal)
-        // rather than instance slots.
-        for (auto& property : propertyList) {
-            if (property->isStatic()) continue;
-            llvmMembers.push_back(fieldLayoutType(property));
-        }
+        embedSubObject(static_pointer_cast<CajetaClass>(shared_from_this()),
+            /*ownVtable=*/true, /*enclosingStart=*/0);
         ((llvm::StructType*) llvmType)->setBody(llvm::ArrayRef<llvm::Type*>(llvmMembers), false);
 
         ensureDefaultConstructor();
@@ -474,6 +752,146 @@ namespace cajeta {
         for (auto& method: methodList) {
             method->generateCode();
         }
+        // P6.2 — emit clinit for any static field whose initializer
+        // didn't constant-fold at global-creation time. Runs after
+        // method codegen so the IRBuilder + module state are fully
+        // initialized; the clinit body uses the same expression
+        // codegen pipeline as ordinary method bodies.
+        generateStaticInitializers();
+    }
+
+    void CajetaClass::generateStaticInitializers() {
+        // First pass — pick out static properties that have an
+        // initializer AND whose shape isn't covered by the
+        // constant-folder. Anything covered by foldStaticInitializer
+        // is already baked into the global's initializer and would be
+        // re-stored to the same value by the clinit, so skip it.
+        std::vector<StructurePropertyPtr> needsClinit;
+        for (auto& prop : propertyList) {
+            if (!prop || !prop->isStatic()) continue;
+            if (!prop->getInitializer()) continue;
+            if (!prop->getType() || !prop->getType()->getLlvmType()) continue;
+            llvm::Type* storedType = prop->getType()->getLlvmType();
+            if (!(prop->getType()->getTypeFlags() & PRIMITIVE_FLAG)) {
+                storedType = llvm::PointerType::get(
+                    *module->getLlvmContext(), 0);
+            }
+            if (foldStaticInitializer(prop->getInitializer(), storedType)) {
+                continue;
+            }
+            needsClinit.push_back(prop);
+        }
+        if (needsClinit.empty()) return;
+
+        auto& ctx = *module->getLlvmContext();
+        auto* lmod = module->getLlvmModule();
+
+        std::string fnName = std::string("__cajeta_clinit_")
+            + qName->toCanonical();
+        for (char& c : fnName) {
+            if (c == ':' || c == '.' || c == '<' || c == '>'
+                    || c == ',' || c == ' ') {
+                c = '_';
+            }
+        }
+        if (lmod->getFunction(fnName)) return;  // re-entry guard
+
+        llvm::FunctionType* fnTy = llvm::FunctionType::get(
+            llvm::Type::getVoidTy(ctx), /*isVarArg=*/false);
+        llvm::Function* clinit = llvm::Function::Create(fnTy,
+            llvm::Function::PrivateLinkage, fnName, lmod);
+        llvm::BasicBlock* entry = llvm::BasicBlock::Create(
+            ctx, "entry", clinit);
+
+        // Save the module's current insert point so callers that emit
+        // more code after generateCode don't see a clinit-internal
+        // builder state.
+        auto* builder = module->getBuilder();
+        auto savedBB = builder->GetInsertBlock();
+        auto savedIP = savedBB
+            ? builder->GetInsertPoint()
+            : llvm::BasicBlock::iterator();
+        builder->SetInsertPoint(entry);
+
+        // Push self onto the structure stack so bare identifier
+        // references inside an initializer (e.g. `b = a + 5;`)
+        // resolve against this class's static fields. Method::
+        // generateCode does the same push for method bodies; without
+        // it, IdentifierExpression returns null and BinaryOp crashes.
+        bool pushedSelf = false;
+        if (qName) {
+            module->getStructureStack().push_back(
+                std::static_pointer_cast<CajetaClass>(shared_from_this()));
+            pushedSelf = true;
+        }
+
+        for (auto& prop : needsClinit) {
+            llvm::GlobalVariable* g = getOrCreateStaticFieldGlobal(prop);
+            if (!g) continue;
+            auto initAst = prop->getInitializer();
+            // Unwrap VariableInitializer to get the actual expression.
+            ExpressionPtr expr;
+            if (auto vi = std::dynamic_pointer_cast<VariableInitializer>(initAst)) {
+                auto& kids = vi->getChildren();
+                if (!kids.empty()) {
+                    expr = std::dynamic_pointer_cast<Expression>(kids[0]);
+                }
+            } else {
+                expr = std::dynamic_pointer_cast<Expression>(initAst);
+            }
+            if (!expr) continue;
+
+            if (!expr->getResolvedType()) {
+                expr->resolveTypes(module);
+            }
+            llvm::Value* val = expr->generateCode(module);
+            if (!val) continue;
+
+            // Load-through if the expression returned an l-value
+            // (DotExpression on a class-static returns the global, an
+            // alloca, or a field GEP). For the supported v1 shapes
+            // (arithmetic on int/float literals + static field refs),
+            // we expect rvalues; only the static-field-ref case
+            // returns a global directly that hasn't been loaded yet.
+            if (auto* gv = llvm::dyn_cast<llvm::GlobalVariable>(val)) {
+                val = builder->CreateLoad(gv->getValueType(), gv);
+            }
+
+            // Coerce to the stored type so the verifier accepts the store.
+            llvm::Type* storedType = g->getValueType();
+            if (val->getType() != storedType) {
+                if (val->getType()->isIntegerTy() && storedType->isIntegerTy()) {
+                    val = builder->CreateIntCast(val, storedType,
+                        /*isSigned=*/true);
+                } else if (val->getType()->isFloatingPointTy()
+                        && storedType->isFloatingPointTy()) {
+                    val = builder->CreateFPCast(val, storedType);
+                } else if (val->getType()->isIntegerTy()
+                        && storedType->isFloatingPointTy()) {
+                    val = builder->CreateSIToFP(val, storedType);
+                } else if (val->getType()->isFloatingPointTy()
+                        && storedType->isIntegerTy()) {
+                    val = builder->CreateFPToSI(val, storedType);
+                }
+            }
+            if (val->getType() != storedType) continue;  // skip on mismatch
+            builder->CreateStore(val, g);
+        }
+        builder->CreateRetVoid();
+
+        if (pushedSelf) {
+            module->getStructureStack().pop_back();
+        }
+        if (savedBB) {
+            builder->SetInsertPoint(savedBB, savedIP);
+        }
+
+        // Register the clinit with llvm.global_ctors. Default priority
+        // 65535 — same bucket as the runtime's __cajeta_runtime_init /
+        // __cajeta_hash_seed_init, which is fine: the constructors
+        // are independent and order among same-priority ctors is
+        // unspecified but doesn't matter here.
+        llvm::appendToGlobalCtors(*lmod, clinit, /*Priority=*/65535);
     }
 
     // Static class fields. Each STATIC property gets a dedicated LLVM
@@ -1243,10 +1661,74 @@ namespace cajeta {
                     // to the class's concrete implementation. The vtable
                     // entry's function is concrete->getLlvmFunction().
                     uniqueByCanonical[m->toCanonical(/*labeled=*/false)] = concrete;
+                    continue;
                 }
-                // No concrete impl = unsatisfied interface obligation. A
-                // future version should raise CAJETA_ERROR_INTERFACE_NOT_IMPLEMENTED
-                // here; today we skip and the vtable simply omits the entry.
+                // Unsatisfied interface obligation. Before this enforcement,
+                // the vtable silently omitted the entry and the implementing
+                // class compiled successfully — dispatch through the
+                // interface produced null/garbage at runtime. Raise now so
+                // the failure is caught at the source declaration.
+                std::string msg = "class '" + qName->toCanonical()
+                    + "' implements interface '" + iface->getQName()->toCanonical()
+                    + "' but does not provide '" + m->toCanonical(/*labeled=*/false)
+                    + "'";
+                throw Exception(msg, "CAJETA_ERROR_INTERFACE_NOT_IMPLEMENTED");
+            }
+        }
+
+        // Abstract-method enforcement: every abstract method declared on
+        // any ancestor must have a concrete override on the implementing
+        // chain. Without this, `class Bad extends Base` where Base has
+        // `abstract int32 must()` and Bad has no override would compile,
+        // and `new Bad().must()` would dispatch to a missing vtable slot
+        // and crash at runtime.
+        //
+        // Heuristic for "this class is itself abstract" until class-level
+        // abstract modifier tracking lands: if THIS class declares its
+        // own abstract method, treat the class as abstract and skip the
+        // enforcement (it's intentionally incomplete; subclasses are
+        // expected to fill the gap and they'll get re-checked). Same
+        // rationale Java has — abstract classes are allowed to have
+        // unimplemented abstract methods; concrete classes are not.
+        {
+            bool selfIsAbstract = false;
+            for (auto& m : methodList) {
+                if (m && m->isAbstract()) { selfIsAbstract = true; break; }
+            }
+            if (!selfIsAbstract) {
+                auto suffixOf = [](const std::string& canon) -> std::string {
+                    auto pos = canon.rfind("::");
+                    return (pos == std::string::npos) ? canon : canon.substr(pos + 2);
+                };
+                std::function<void(CajetaClassPtr)> checkAbstracts =
+                    [&](CajetaClassPtr c) {
+                        for (auto& m : c->getMethodList()) {
+                            if (!m || !m->isAbstract()) continue;
+                            std::string targetSuffix = suffixOf(
+                                m->toCanonical(/*labeled=*/false));
+                            bool covered = false;
+                            for (auto& [canon, mm] : uniqueByCanonical) {
+                                if (!mm || mm->isAbstract()) continue;
+                                if (suffixOf(canon) == targetSuffix) {
+                                    covered = true;
+                                    break;
+                                }
+                            }
+                            if (!covered) {
+                                std::string msg = "class '" + qName->toCanonical()
+                                    + "' inherits abstract method '"
+                                    + m->toCanonical(/*labeled=*/false)
+                                    + "' from '" + c->getQName()->toCanonical()
+                                    + "' but does not override it";
+                                throw Exception(msg,
+                                    "CAJETA_ERROR_ABSTRACT_NOT_IMPLEMENTED");
+                            }
+                        }
+                        for (auto& sup : c->getSuperClasses()) {
+                            if (sup) checkAbstracts(sup);
+                        }
+                    };
+                checkAbstracts(static_pointer_cast<CajetaClass>(shared_from_this()));
             }
         }
 
@@ -1424,7 +1906,7 @@ namespace cajeta {
     }
 
     llvm::Value* CajetaClass::invokeMethod(string& methodName, vector<ParameterEntry> parameters, bool isConstructor, llvm::Value* thisValue,
-                                            CajetaModulePtr callerModule) {
+                                            CajetaModulePtr callerModule, bool forceDirectCall) {
         bool floatingParams = true;
         for (auto &param : parameters) {
             if (param.label.empty()) {
@@ -1509,7 +1991,7 @@ namespace cajeta {
         // unified-class model `struct` is just `class` and gets the
         // normal vtable-dispatch treatment.
         bool isView = dynamic_cast<CajetaView*>(this) != nullptr;
-        bool useVtable = thisValue && !isStatic && !isConstructor && !isView;
+        bool useVtable = thisValue && !isStatic && !isConstructor && !isView && !forceDirectCall;
         bool isInterfaceRecv = this->isInterface();
         if (useVtable && isInterfaceRecv) {
             // S11.2 — reject same-concrete-type return through dyn
@@ -1635,6 +2117,33 @@ namespace cajeta {
                 callee = fnPtr;
             }
         }
+
+        // Per-parent sub-object adjustment for the dispatched `this` arg
+        // (Gap 8). When the resolved method is declared on an ancestor
+        // whose sub-object lives at non-zero offset inside this receiver
+        // class, shift methodArgs[0] to point at the ancestor's
+        // sub-object — the parent's pre-compiled IR uses the parent's
+        // own struct slot indices and expects a pointer into that view.
+        // Skip when:
+        //   - no `this` (statics) — methodArgs[0] is a real parameter
+        //   - interface dispatch — already handled by the iface fat-pointer
+        //     dataPtr swap above
+        //   - declaring class == this — first-parent share or self
+        if (thisValue && !isStatic && !isInterfaceRecv && method->getParent()) {
+            const CajetaClass* declaring = method->getParent().get();
+            if (declaring && declaring != this) {
+                uint64_t off = this->getSubObjectByteOffset(declaring);
+                if (off != 0 && !methodArgs.empty()) {
+                    llvm::Type* i8Ty = llvm::Type::getInt8Ty(llvmCtx);
+                    methodArgs[0] = builder->CreateInBoundsGEP(
+                        i8Ty, methodArgs[0],
+                        llvm::ConstantInt::get(
+                            llvm::Type::getInt64Ty(llvmCtx), off),
+                        "subobj_this");
+                }
+            }
+        }
+
         return builder->CreateCall(method->getLlvmFunctionType(),
             callee, llvm::ArrayRef<llvm::Value*>(methodArgs));
     }

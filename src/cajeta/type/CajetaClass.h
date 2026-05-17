@@ -165,6 +165,27 @@ namespace cajeta {
         // time. See `getOrCreateStaticFieldGlobal`.
         std::map<std::string, llvm::GlobalVariable*> staticFieldGlobals;
 
+        // Sub-object slot-start map — for every ancestor class (including
+        // self), the LLVM struct slot index where that ancestor's
+        // sub-object begins inside THIS class's layout. Populated by
+        // generatePrototype. Used by getSubObjectByteOffset to compute
+        // the byte adjustment that `this` needs at parent-method call
+        // sites under the per-parent sub-object layout (Gap 8 fix).
+        //
+        //   subObjectSlotMap[self] = 0
+        //   subObjectSlotMap[firstParent] = 0 (shares primary vtable)
+        //   subObjectSlotMap[secondParent] = slot where its own vtable sits
+        //
+        // Keyed by raw pointer because CajetaClass holds shared_ptrs to
+        // its ancestors and we just need identity comparison.
+        std::map<const CajetaClass*, int> subObjectSlotMap;
+
+        // Secondary-vtable cache. One entry per non-first-parent ancestor
+        // for which a secondary vtable has been materialized. Keyed by
+        // parent's canonical name (since CajetaClassPtr identity may
+        // shift after a template instantiation refresh).
+        std::map<std::string, llvm::GlobalVariable*> secondaryVTables;
+
         MethodPtr getClosestMethod(string methodName, vector<ParameterEntry> parameters, map<string, MethodPtr> canonical);
         MethodPtr getClosestConstructor(string methodName, vector<ParameterEntry> parameters, map<string, MethodPtr> canonical);
 
@@ -292,37 +313,109 @@ namespace cajeta {
             return count;
         }
 
-        // Map a StructureProperty to its slot index in the LLVM struct.
-        // If `prop` is owned by this class, the index is
-        // countInheritedFields() + prop.order + 1 (the +1 skips the
-        // vtable slot). If `prop` is inherited from an ancestor, walk
-        // the parent chain to find its owning class and apply the same
-        // formula relative to that class. Since the subclass struct
-        // prepends parent fields in parent order, inherited fields land
-        // at the SAME LLVM index in any subclass struct as they do in
-        // their owning parent's struct — which makes
-        // parent->getFieldLlvmIndex(prop) the correct index for a GEP
-        // into a subclass instance too.
+        // Map a StructureProperty to its slot index in this class's LLVM
+        // struct. Walks the layout in the SAME order as the layout builder
+        // in CajetaClass::generatePrototype (per-parent sub-object layout
+        // — Gap 8 fix). For each class we visit:
+        //   1. If it owns a vtable slot here (always for self / non-first
+        //      parents; never for a first-parent share), advance past it.
+        //   2. Recurse into its parents — the first parent shares this
+        //      sub-object's leading vtable, subsequent parents get their
+        //      own.
+        //   3. Append its own non-static fields.
+        // This mirrors the layout exactly so a field's slot index lines
+        // up with where setBody put it.
         virtual int getFieldLlvmIndex(const StructurePropertyPtr& prop) const {
             // Static properties have no slot in the instance struct —
             // they live in dedicated globals. Return -1 so a caller
             // that mistakenly GEPs by index gets a quick failure
             // rather than indexing into someone else's slot.
             if (prop && prop->isStatic()) return -1;
-            int i = 0;
-            for (auto& p : propertyList) {
-                if (p->isStatic()) continue;  // statics aren't in instance layout
-                if (p.get() == prop.get()) {
-                    return countInheritedFields() + i + 1;
-                }
-                i++;
-            }
-            for (auto& parent : superClasses) {
-                int idx = parent->getFieldLlvmIndex(prop);
-                if (idx >= 0) return idx;
-            }
-            return -1;
+            int slot = 0;
+            int result = -1;
+            std::function<void(const CajetaClass*, bool)> walk =
+                [&](const CajetaClass* cls, bool ownVtable) {
+                    if (result >= 0) return;
+                    if (ownVtable) slot++;  // claim sub-object vtable slot
+                    int idx = 0;
+                    for (const auto& parent : cls->superClasses) {
+                        walk(parent.get(), /*ownVtable=*/(idx != 0));
+                        if (result >= 0) return;
+                        idx++;
+                    }
+                    for (const auto& p : cls->propertyList) {
+                        if (result >= 0) return;
+                        if (p->isStatic()) continue;
+                        if (p.get() == prop.get()) { result = slot; return; }
+                        slot++;
+                    }
+                };
+            walk(this, /*ownVtable=*/true);
+            return result;
         }
+
+        // Byte offset of an ancestor's sub-object inside this class's
+        // instance layout. Returns 0 for self and the first-parent chain
+        // (they share this class's primary vtable). Returns the byte
+        // offset of the sub-object's vtable slot for any non-first-parent
+        // chain.
+        //
+        // Computed from subObjectSlotMap + the LLVM DataLayout. Used at
+        // parent-method/ctor call sites to adjust `this` so the parent's
+        // pre-compiled IR (which uses the parent's own struct indices)
+        // lands on the correct sub-object inside the subclass instance.
+        uint64_t getSubObjectByteOffset(const CajetaClass* ancestor) const;
+
+        // List of (ancestor, slot, byteOffset) for every non-first-parent
+        // sub-object in this class's layout. Used by ClassCreatorRest to
+        // initialize each secondary vptr slot at `new` time and by the
+        // secondary-vtable builder to enumerate which (this-class, parent)
+        // pairs need a synthesized vtable.
+        struct NonFirstSubObject {
+            CajetaClassPtr ancestor;
+            int slot;
+            uint64_t byteOffset;
+        };
+        std::vector<NonFirstSubObject> getNonFirstSubObjects();
+
+        // Secondary vtable for the (this class, parent) pair — a vtable
+        // structurally compatible with `parent`'s standalone vtable
+        // (same hash entries / sort order) but whose function pointers
+        // are this class's most-derived implementations. When the impl
+        // lives on a different class than `parent` (i.e., a cross-class
+        // override), the entry points at a synthesized thunk that
+        // adjusts `this` back to this class's primary pointer before
+        // tail-calling the override.
+        //
+        // Cached per (this-class, parent) — idempotent. The global
+        // lives in this class's home module.
+        llvm::GlobalVariable* getOrCreateSecondaryVTable(
+            CajetaClassPtr parent);
+
+        // Polymorphic-MI upcast adjustment. When assigning a class value
+        // of static type `srcType` to a slot of declared type `dstType`,
+        // and dstType is an ancestor of srcType whose sub-object lives at
+        // non-zero offset inside srcType's instance layout, shift the
+        // pointer to that sub-object's start. Returns `srcValue` unchanged
+        // when no adjustment is needed (same class, first-parent chain,
+        // interface, or non-class types). Used by LocalVariableDeclaration,
+        // assignment, return, and parameter-passing sites that hand a
+        // subclass instance to a parent-typed slot.
+        static llvm::Value* adjustForUpcast(
+            CajetaModulePtr module,
+            llvm::Value* srcValue,
+            CajetaTypePtr srcType,
+            CajetaTypePtr dstType);
+
+        // Synthesize a this-offset thunk. Used when a secondary vtable
+        // entry points at a cross-class override: the thunk receives
+        // `this` as the parent-sub-object pointer, subtracts
+        // `parentOffsetInThis`, and tail-calls `impl` with the adjusted
+        // pointer. Idempotent — looks up by symbol name first.
+        llvm::Function* synthesizeOffsetThunk(
+            CajetaClassPtr parent,
+            MethodPtr impl,
+            uint64_t parentOffsetInThis);
 
         void setVirtualTableType(llvm::StructType* llvmVirtualTableType) {
             this->llvmVirtualTableType = llvmVirtualTableType;
@@ -484,7 +577,8 @@ namespace cajeta {
         void setTemplateOrigin(CajetaClassPtr origin) { templateOrigin = std::move(origin); }
 
         llvm::Value* invokeMethod(string& methodName, vector<ParameterEntry> parameters, bool isConstructor, llvm::Value* thisInstance = nullptr,
-                                   CajetaModulePtr callerModule = nullptr);
+                                   CajetaModulePtr callerModule = nullptr,
+                                   bool forceDirectCall = false);
 
         // Look up a method on this class or any of its ancestors. Each class
         // indexes methods under keys that embed its own class name, so the
@@ -494,6 +588,14 @@ namespace cajeta {
         virtual void generatePrototype();
 
         virtual void generateCode();
+
+        // P6.2 — emit a per-class clinit-style function that evaluates
+        // any static-field initializer whose shape didn't constant-fold
+        // (anything beyond a leading-sign integer/float literal) and
+        // stores the result into the global. Registered with
+        // llvm.global_ctors at default priority so it runs at module
+        // load. No-op when every static field's initializer folded.
+        void generateStaticInitializers();
 
         void generateMetadata();
 

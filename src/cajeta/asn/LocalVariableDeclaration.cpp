@@ -193,6 +193,54 @@ namespace cajeta {
             module->getScopeStack().peek()->putField(field);
             field->getOrCreateAllocation();
 
+            // Polymorphic-MI upcast adjustment. After HeapField stored
+            // the RHS pointer into the slot, check whether the static
+            // RHS type is a non-self class subclass of the LHS class
+            // type. If so — and the LHS isn't on the RHS's first-parent
+            // chain (offset != 0) — reload, shift to the LHS's sub-
+            // object start, and store back. This makes
+            // `B b = c` actually point at C's B sub-object rather than
+            // at C itself, so dispatch via b lands on the secondary
+            // vtable + B-shaped field offsets.
+            if (initializer && type) {
+                auto dstClass = dynamic_pointer_cast<CajetaClass>(type);
+                if (dstClass && !dstClass->isInterface()) {
+                    auto varInit = dynamic_pointer_cast<VariableInitializer>(
+                        initializer);
+                    CajetaTypePtr srcType;
+                    if (varInit && !varInit->getChildren().empty()) {
+                        if (auto expr = dynamic_pointer_cast<Expression>(
+                                varInit->getChildren()[0])) {
+                            if (!expr->getResolvedType()) {
+                                expr->resolveTypes(module);
+                            }
+                            srcType = expr->getResolvedType();
+                        }
+                    }
+                    auto srcClass = dynamic_pointer_cast<CajetaClass>(srcType);
+                    if (srcClass && srcClass.get() != dstClass.get()
+                            && !srcClass->isInterface()) {
+                        uint64_t off = srcClass->getSubObjectByteOffset(
+                            dstClass.get());
+                        if (off != 0) {
+                            auto* builder = module->getBuilder();
+                            auto& ctx = *module->getLlvmContext();
+                            llvm::Type* ptrTy = llvm::PointerType::get(ctx, 0);
+                            llvm::Type* i8Ty = llvm::Type::getInt8Ty(ctx);
+                            llvm::Value* slot = field->getOrCreateAllocation();
+                            llvm::Value* raw = builder->CreateLoad(
+                                ptrTy, slot, "upcast_raw");
+                            llvm::Value* adjusted = builder->CreateInBoundsGEP(
+                                i8Ty, raw,
+                                llvm::ConstantInt::get(
+                                    llvm::Type::getInt64Ty(ctx), off),
+                                "upcast_subobj");
+                            builder->CreateStore(adjusted, slot);
+                        }
+                    }
+                }
+            }
+
             // P3 — definite-assignment tracking. A local declared without
             // an initializer enters the scope's NYA set; reading it before
             // an assignment is a compile error. Applies to both class-

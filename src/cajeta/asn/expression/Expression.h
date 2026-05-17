@@ -145,6 +145,22 @@ namespace cajeta {
         llvm::Value* generateCode(CajetaModulePtr module) override;
     };
 
+    // `super` as a primary expression. Value is the same pointer as
+    // `this` (a super-reference doesn't physically point to a different
+    // object); the distinction is in resolvedType — it's the current
+    // class's first declared parent — so a `super.foo()` call lands
+    // on the PARENT's method via direct dispatch (bypassing the
+    // instance's vtable, which would loop back to the override). For
+    // multi-inheritance, `super` resolves to the first declared parent;
+    // `super[Base].foo()` for explicit selection is a separate
+    // language feature (not yet designed).
+    class SuperExpression : public PrimaryExpression {
+    public:
+        SuperExpression(antlr4::Token* token) : PrimaryExpression(token) { }
+        void resolveTypes(CajetaModulePtr module) override;
+        llvm::Value* generateCode(CajetaModulePtr module) override;
+    };
+
     enum ReservedIdentifiers {
         UNKNOWN = -1,
         MODULE,

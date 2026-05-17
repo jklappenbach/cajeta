@@ -199,6 +199,14 @@ std::unique_ptr<CajetaJit> CajetaJit::compile(
         if (after == methodCount && after == prevMethodCount) break;
         prevMethodCount = after;
     }
+    // P6.2 — after quiescence, emit per-class clinit-style ctors for
+    // any static fields with non-foldable initializers. Mirrors what
+    // Compiler.cpp does for non-JIT compilation.
+    for (auto& m : compiler->getModules()) {
+        for (auto& [name, klass] : m->getStructures()) {
+            if (klass) klass->generateStaticInitializers();
+        }
+    }
 
     // Merge every secondary module into `primary`'s llvm::Module.
     // After the parse-stdlib-once refactor, each module owns only
@@ -286,6 +294,20 @@ std::unique_ptr<CajetaJit> CajetaJit::compile(
         throw std::runtime_error("LLJIT process-symbol generator failed");
     }
     mainDylib.addGenerator(std::move(*generator));
+
+    // Run any global ctors / static initializers (P6.2 clinit, etc.)
+    // before handing control to test code. LLJIT does NOT run
+    // llvm.global_ctors automatically — the host runtime's
+    // `__attribute__((constructor))` functions (__cajeta_runtime_init,
+    // __cajeta_hash_seed_init) only fire because the runtime is also
+    // statically linked into the test binary. Anything that lives ONLY
+    // in the JIT module (per-class clinit emitted by
+    // CajetaClass::generateStaticInitializers) needs this initialize
+    // call to execute its initializer.
+    if (auto err = jitState->jit->initialize(mainDylib)) {
+        throw std::runtime_error("LLJIT initialize failed: "
+            + llvm::toString(std::move(err)));
+    }
 
     return jitState;
 }
