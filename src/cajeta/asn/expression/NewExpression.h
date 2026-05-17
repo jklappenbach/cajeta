@@ -27,7 +27,15 @@ namespace cajeta {
         // inside an instantiated template's body to null and segfault. See
         // CajetaModule::pushTypeSubstitution / lookupTypeParameter.
         CajetaTypePtr boundElementType;
+        // P2a: `stack ClassName(args)` routes through NewExpression with
+        // this flag set so ClassCreatorRest emits an entry-block alloca
+        // instead of a malloc. `heap ClassName(args)` and bare `new
+        // ClassName(args)` keep the default (heap).
+        bool stackAlloc = false;
     public:
+        void setStackAlloc(bool v) { stackAlloc = v; }
+        bool getStackAlloc() const { return stackAlloc; }
+
         NewExpression(antlr4::Token* token) : Expression(token) { }
 
         NewExpression(CajetaParser::CreatorContext* creatorContext, antlr4::Token* token) : Expression(token) {

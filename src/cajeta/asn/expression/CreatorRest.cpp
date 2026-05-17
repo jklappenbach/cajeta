@@ -19,33 +19,52 @@ namespace cajeta {
         }
     }
 
-    // Emits `malloc(sizeof(struct))` then dispatches to the matching constructor with the
-    // user-supplied arguments. Returns the malloc'd pointer.
+    // Emits `malloc(sizeof(struct))` (or, when stackAlloc is set, an entry-
+    // block alloca) then dispatches to the matching constructor with the
+    // user-supplied arguments. Returns the instance pointer either way.
     llvm::Value* ClassCreatorRest::generateCode(CajetaModulePtr module) {
         if (!targetType) {
             return nullptr;
         }
         auto* builder = module->getBuilder();
+        llvm::LLVMContext& llvmCtx = *module->getLlvmContext();
         llvm::Type* structTy = targetType->getLlvmType();
         const llvm::DataLayout& dataLayout = module->getLlvmModule()->getDataLayout();
         llvm::Constant* allocSize = llvm::ConstantInt::get(
-            llvm::Type::getInt64Ty(*module->getLlvmContext()),
+            llvm::Type::getInt64Ty(llvmCtx),
             dataLayout.getTypeAllocSize(structTy));
-        llvm::CallInst* instance = MemoryManager::createMallocInstruction(
-            module, allocSize, builder->GetInsertBlock());
 
-        // S7.2 — zero-init the heap block. malloc returns uninitialized
-        // bytes; the vtable slot below gets overwritten, and most fields
-        // get written by the user's constructor body. But fields the ctor
-        // doesn't explicitly initialize stay at whatever malloc gave us —
-        // garbage. That's load-bearing now for class-drop recursion into
-        // embedded struct fields (S7.2): the recursive struct drop reads
-        // class-ref slots inside the embedded struct, and a non-null
-        // garbage pointer slips past the Tracer-drop null guard and
-        // crashes on free(). Zero-init matches JVM / .NET defaults too;
-        // class-ref fields read as null until the ctor writes them.
+        llvm::Value* instance;
+        if (stackAlloc) {
+            // P2a — entry-block alloca for `stack MyClass(args)`. Hoist the
+            // alloca to the function entry so it lives for the whole frame
+            // (LLVM convention; allocas in arbitrary blocks are legal but
+            // confuse mem2reg + can grow the stack frame across loop
+            // iterations). Lifetime is the enclosing scope; the borrow
+            // checker rejects escape (return / heap-field-store) per the
+            // S10.3-generalized check.
+            llvm::Function* parentFn = builder->GetInsertBlock()->getParent();
+            llvm::IRBuilder<> entryBuilder(&parentFn->getEntryBlock(),
+                parentFn->getEntryBlock().begin());
+            instance = entryBuilder.CreateAlloca(structTy);
+        } else {
+            instance = MemoryManager::createMallocInstruction(
+                module, allocSize, builder->GetInsertBlock());
+        }
+
+        // S7.2 — zero-init the instance block. malloc returns uninitialized
+        // bytes; alloca's contents are also unspecified. The vtable slot
+        // below gets overwritten, and most fields get written by the
+        // user's constructor body. But fields the ctor doesn't explicitly
+        // initialize stay at whatever the allocator gave us — garbage.
+        // That's load-bearing for class-drop recursion into embedded
+        // struct fields (S7.2): the recursive struct drop reads class-ref
+        // slots inside the embedded struct, and a non-null garbage pointer
+        // slips past the Tracer-drop null guard and crashes on free().
+        // Zero-init matches JVM / .NET defaults too; class-ref fields read
+        // as null until the ctor writes them.
         builder->CreateMemSet(instance,
-            llvm::ConstantInt::get(llvm::Type::getInt8Ty(*module->getLlvmContext()), 0),
+            llvm::ConstantInt::get(llvm::Type::getInt8Ty(llvmCtx), 0),
             allocSize, llvm::MaybeAlign(8));
 
         // Initialize the vtable pointer at instance slot 0. Required for

@@ -119,6 +119,16 @@ namespace cajeta {
             type = klass->instantiate(klass->inferDiamondArgs(argTypes));
         }
         creatorRest->setTargetType(type);
+        // P2a: propagate stack-alloc choice down to ClassCreatorRest so
+        // it picks alloca over malloc. Array creators ignore the flag —
+        // arrays are always heap-allocated in v1 regardless of allocation
+        // prefix (no `stack int32[10]` syntax has user-facing semantics
+        // yet; would land as a future feature if needed).
+        if (stackAlloc) {
+            if (auto ccr = dynamic_pointer_cast<ClassCreatorRest>(creatorRest)) {
+                ccr->setStackAlloc(true);
+            }
+        }
         return creatorRest->generateCode(module);
     }
 } // code

@@ -16,6 +16,7 @@
 #include "expression/DotExpression.h"
 #include "expression/Identifier.h"
 #include "expression/MethodCallExpression.h"
+#include "expression/NewExpression.h"
 #include "../method/Method.h"
 #include "../error/CajetaExceptions.h"
 #include "../logging/CajetaLogger.h"
@@ -398,10 +399,25 @@ namespace cajeta {
             // (fresh malloc) and most other initializers retain
             // their ownership-transfer semantics.
             bool initIsBorrow = false;
+            // P2a — `stack MyClass(args)` produces an instance owned by
+            // the current frame (alloca-backed body); the class's heap
+            // destructor would free a stack pointer if we registered the
+            // usual drop entry. Detect by inspecting the init AST for a
+            // NewExpression with stackAlloc=true and skip the heap-drop
+            // registration. KNOWN LIMITATION: owned class-ref FIELDS of
+            // a stack-allocated owner leak in v1 because we skip the
+            // drop entirely; Phase 2b adds a stack-drop variant that
+            // walks owned fields without freeing the body.
+            bool initIsStackAlloc = false;
             if (auto varInit = dynamic_pointer_cast<VariableInitializer>(initializer)) {
                 auto& children = varInit->getChildren();
                 if (!children.empty()) {
                     auto rhsExpr = dynamic_pointer_cast<Expression>(children[0]);
+                    if (auto newExpr = dynamic_pointer_cast<NewExpression>(children[0])) {
+                        if (newExpr->getStackAlloc()) {
+                            initIsStackAlloc = true;
+                        }
+                    }
                     if (auto mc = dynamic_pointer_cast<MethodCallExpression>(children[0])) {
                         if (mc->getMethodCallName() == "__cajeta_inject") {
                             initIsBorrow = true;
@@ -531,7 +547,7 @@ namespace cajeta {
             auto klass = dynamic_pointer_cast<CajetaClass>(type);
             bool isStructType = dynamic_pointer_cast<CajetaAggregate>(type) != nullptr;
             if (klass && !isArray && !isStructType && !klass->isInterface()
-                    && !initIsBorrow) {
+                    && !initIsBorrow && !initIsStackAlloc) {
                 if (llvm::Function* dropFn = klass->getOrCreateDropFunction()) {
                     emitDropEntryForFn(module, field, dropFn);
                 }

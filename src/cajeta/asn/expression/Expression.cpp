@@ -100,21 +100,20 @@ namespace cajeta {
                     "CAJETA_ERROR_HEAP_AGGREGATE_INIT_UNIMPLEMENTED");
             }
         } else if (ctx->STACK()) {
-            // Unified-class allocation prefix (UnifiedClasses.md). Phase 1a:
-            // `stack MyClass { ... }` is a synonym for today's bare
-            // aggregate-init (struct-only stack allocation). The
-            // constructor-call form (`stack MyClass(args)`) needs new
-            // codegen — stack alloca + ctor call — that lands in Phase 2.
+            // Unified-class allocation prefix (UnifiedClasses.md). Phase 2a:
+            // both forms now codegen.
+            // - `stack MyClass { ... }` routes through aggregate-init
+            //   (today's bare aggregate-init path; stack-allocated body).
+            // - `stack MyClass(args)` routes through NewExpression with
+            //   stackAlloc=true; ClassCreatorRest emits an entry-block
+            //   alloca + vtable init + ctor invocation instead of malloc.
             if (ctx->aggregateInitializer()) {
                 result = make_shared<AggregateInitializerExpression>(
                     ctx->aggregateInitializer(), token);
-            } else {
-                throw Exception(
-                    "`stack` allocation of classes via constructor call is "
-                    "not yet implemented; lands in Phase 2 of the unified-"
-                    "class rollout. For now, use `stack MyClass { ... }` "
-                    "aggregate-init form.",
-                    "CAJETA_ERROR_STACK_CTOR_UNIMPLEMENTED");
+            } else if (ctx->creator()) {
+                auto newExpr = make_shared<NewExpression>(ctx->creator(), token);
+                newExpr->setStackAlloc(true);
+                result = newExpr;
             }
         } else if (ctx->identifier()) {
             result = make_shared<IdentifierExpression>(ctx->identifier(), ctx->primary() != nullptr);

@@ -153,27 +153,60 @@ TEST(UnifiedClassSyntaxTests, heapAggregateInitRejectedAsPhase2) {
     }
 }
 
-TEST(UnifiedClassSyntaxTests, stackConstructorCallRejectedAsPhase2) {
-    // `stack MyClass(args)` needs new codegen (alloca + ctor invocation).
-    // Defers to Phase 2 alongside the CajetaStruct collapse.
+// ---------------------------------------------------------------------
+// Phase 2a — `stack MyClass(args)` now works: alloca + vtable + ctor.
+// ---------------------------------------------------------------------
+
+TEST(UnifiedClassSyntaxTests, stackConstructorCallAllocates) {
+    // `stack MyClass(args)` allocates the class body in the caller's
+    // frame, initializes the vtable slot, and dispatches to the matching
+    // constructor with the supplied arguments. Lifetime is tied to the
+    // enclosing scope; the borrow checker rejects escape (return / heap-
+    // field-store) via the S10.3-generalized check.
     auto src =
         "package test;\n"
         "public class Counter {\n"
         "    int32 n;\n"
-        "    public Counter() { this.n = 0; }\n"
+        "    public Counter(int32 initial) { this.n = initial; }\n"
+        "    public void increment() { this.n = this.n + 1; }\n"
+        "    public int32 value() { return this.n; }\n"
         "}\n"
         "public final class S {\n"
         "    public static int32 run() {\n"
-        "        Counter c = stack Counter();\n"
-        "        return 0;\n"
+        "        Counter c = stack Counter(10);\n"
+        "        c.increment(); c.increment();\n"
+        "        return c.value();\n"  // 12
         "    }\n"
         "}\n";
-    try {
-        CajetaJit::compile(src, "test.S");
-        FAIL() << "expected CAJETA_ERROR_STACK_CTOR_UNIMPLEMENTED";
-    } catch (cajeta::Exception& e) {
-        EXPECT_EQ(e.getErrorId(), "CAJETA_ERROR_STACK_CTOR_UNIMPLEMENTED");
-    }
+    EXPECT_EQ(runI32(src), 12);
+}
+
+TEST(UnifiedClassSyntaxTests, stackAndHeapInstancesShareConcreteDispatch) {
+    // Concrete-receiver dispatch through the vtable lands on the same
+    // method whether the instance is stack- or heap-allocated. The vtable
+    // slot at offset 0 is initialized identically by both allocation
+    // paths.
+    //
+    // Receiver typed as the concrete class (not the base). Polymorphic
+    // dispatch through a base-typed reference is a separate concern (the
+    // hash-based vtable lookup uses the receiver's declared method
+    // canonical, which today resolves by declared class name — Phase 2c
+    // work will reconcile override-by-name with vtable-by-hash).
+    auto src =
+        "package test;\n"
+        "public class Counter {\n"
+        "    int32 n;\n"
+        "    public Counter(int32 initial) { this.n = initial; }\n"
+        "    public int32 value() { return this.n; }\n"
+        "}\n"
+        "public final class S {\n"
+        "    public static int32 run() {\n"
+        "        Counter onStack = stack Counter(5);\n"
+        "        Counter onHeap  = heap  Counter(7);\n"
+        "        return onStack.value() + onHeap.value();\n"  // 12
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 12);
 }
 
 // ---------------------------------------------------------------------

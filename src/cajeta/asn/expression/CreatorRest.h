@@ -26,7 +26,13 @@ namespace cajeta {
 
     class ClassCreatorRest : public CreatorRest {
         vector<MethodCallParameter> parameters;
+        // P2a: when true, generateCode emits an entry-block alloca + vtable
+        // init + ctor call. When false, the legacy malloc + memset + vtable
+        // init + ctor call path. NewExpression propagates this from its
+        // own stackAlloc flag before invoking generateCode.
+        bool stackAlloc = false;
     public:
+        void setStackAlloc(bool v) { stackAlloc = v; }
         ClassCreatorRest(CajetaParser::ClassCreatorRestContext* ctx, antlr4::Token* token) : CreatorRest(token) {
             if (ctx->arguments()->parameterList()) {
                 for (auto& ctxParameterEntry: ctx->arguments()->parameterList()->parameterEntry()) {
