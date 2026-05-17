@@ -1,4 +1,4 @@
-package cajeta.lang;
+package cajeta.lang.stream;
 
 /**
  * Intermediate combinator: invokes `fn` as a side effect on each

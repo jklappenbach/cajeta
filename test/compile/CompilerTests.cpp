@@ -19,10 +19,11 @@ TEST(CompilerTests, canThrowOnInvalidInput) {
 }
 
 // Every Cajeta compilation implicitly loads the stdlib prelude. Current
-// content: cajeta.lang.{Object, Pair, Optional, Stream, ArrayStream,
-// TakeStream, SkipStream, FilterStream, MapStream, PeekStream,
-// FlatMapStream} + cajeta.error.{Throwable, Exception,
-// RecoverableException, UnrecoverableException} + cajeta.hash.Hash +
+// content: cajeta.lang.{Object, Pair, Optional} +
+// cajeta.lang.stream.{Stream, ArrayStream, TakeStream, SkipStream,
+// FilterStream, MapStream, PeekStream, FlatMapStream} +
+// cajeta.error.{Throwable, Exception, RecoverableException,
+// UnrecoverableException} + cajeta.hash.Hash +
 // cajeta.collection.HashMap + cajeta.collection.ArrayList. Each source
 // file under runtime/src/cajeta/ adds one entry to
 // CajetaModule::strutureToModule via CajetaModule::create(), counted

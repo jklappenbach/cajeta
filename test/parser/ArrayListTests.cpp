@@ -99,8 +99,8 @@ TEST(ArrayListTests, streamWalksAddedElements) {
     auto src =
         "package test;\n"
         "import cajeta.collection.ArrayList;\n"
-        "import cajeta.lang.ArrayStream;\n"
-        "import cajeta.lang.Stream;\n"
+        "import cajeta.lang.stream.ArrayStream;\n"
+        "import cajeta.lang.stream.Stream;\n"
         "public final class S {\n"
         "    public static int32 run() {\n"
         "        ArrayList<int32> list = heap ArrayList<int32>();\n"

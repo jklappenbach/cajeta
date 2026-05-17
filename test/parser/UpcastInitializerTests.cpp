@@ -36,7 +36,7 @@ int32_t runI32(const std::string& src) {
 TEST(UpcastInitializerTests, dotStreamAssignedToBaseStreamLocal) {
     auto src =
         "package test;\n"
-        "import cajeta.lang.Stream;\n"
+        "import cajeta.lang.stream.Stream;\n"
         "public final class S {\n"
         "    public static int32 run() {\n"
         "        int32[] xs = {1, 2, 3, 4, 5};\n"
@@ -52,8 +52,8 @@ TEST(UpcastInitializerTests, dotStreamAssignedToBaseStreamLocalThenIntoCtor) {
     // P1.1 sub-item) — direct chain through TakeStream.
     auto src =
         "package test;\n"
-        "import cajeta.lang.Stream;\n"
-        "import cajeta.lang.TakeStream;\n"
+        "import cajeta.lang.stream.Stream;\n"
+        "import cajeta.lang.stream.TakeStream;\n"
         "public final class S {\n"
         "    public static int32 run() {\n"
         "        int32[] xs = {1, 2, 3, 4, 5};\n"

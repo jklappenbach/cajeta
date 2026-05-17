@@ -32,7 +32,7 @@ int32_t runI32(const std::string& src) {
 TEST(InlineCtorArgTests, dotStreamIntrinsicAsCtorArg) {
     auto src =
         "package test;\n"
-        "import cajeta.lang.TakeStream;\n"
+        "import cajeta.lang.stream.TakeStream;\n"
         "public final class S {\n"
         "    public static int32 run() {\n"
         "        int32[] xs = {1, 2, 3, 4, 5};\n"
@@ -46,8 +46,8 @@ TEST(InlineCtorArgTests, dotStreamIntrinsicAsCtorArg) {
 TEST(InlineCtorArgTests, nestedHeapInCtorArg) {
     auto src =
         "package test;\n"
-        "import cajeta.lang.ArrayStream;\n"
-        "import cajeta.lang.TakeStream;\n"
+        "import cajeta.lang.stream.ArrayStream;\n"
+        "import cajeta.lang.stream.TakeStream;\n"
         "public final class S {\n"
         "    public static int32 run() {\n"
         "        int32[] xs = {1, 2, 3, 4, 5};\n"
@@ -66,8 +66,8 @@ TEST(InlineCtorArgTests, userMethodResultAsCtorArg) {
     // the .stream() form doesn't, the bug is intrinsic-specific.
     auto src =
         "package test;\n"
-        "import cajeta.lang.ArrayStream;\n"
-        "import cajeta.lang.TakeStream;\n"
+        "import cajeta.lang.stream.ArrayStream;\n"
+        "import cajeta.lang.stream.TakeStream;\n"
         "public final class Mk {\n"
         "    public static ArrayStream<int32> make(int32[] xs) {\n"
         "        return heap ArrayStream<int32>(xs, 5);\n"

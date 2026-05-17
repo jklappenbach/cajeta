@@ -42,9 +42,9 @@ TEST(StreamIntermediateTests, takeStreamLimitsElementCount) {
     // 5-element source, take(3), then count → 3.
     auto src =
         "package test;\n"
-        "import cajeta.lang.ArrayStream;\n"
-        "import cajeta.lang.Stream;\n"
-        "import cajeta.lang.TakeStream;\n"
+        "import cajeta.lang.stream.ArrayStream;\n"
+        "import cajeta.lang.stream.Stream;\n"
+        "import cajeta.lang.stream.TakeStream;\n"
         "public final class S {\n"
         "    public static int32 run() {\n"
         "        int32[] xs = {1, 2, 3, 4, 5};\n"
@@ -62,9 +62,9 @@ TEST(StreamIntermediateTests, takeStreamSumsLimitedPrefix) {
     // 5-element source, take(3) → {1,2,3}, reduce + → 6.
     auto src =
         "package test;\n"
-        "import cajeta.lang.ArrayStream;\n"
-        "import cajeta.lang.Stream;\n"
-        "import cajeta.lang.TakeStream;\n"
+        "import cajeta.lang.stream.ArrayStream;\n"
+        "import cajeta.lang.stream.Stream;\n"
+        "import cajeta.lang.stream.TakeStream;\n"
         "public final class S {\n"
         "    public static int32 run() {\n"
         "        int32[] xs = {1, 2, 3, 4, 5};\n"
@@ -83,9 +83,9 @@ TEST(StreamIntermediateTests, takeStreamLargerThanSourceStops) {
     // stream exhausts first and the wrapper propagates the empty Optional.
     auto src =
         "package test;\n"
-        "import cajeta.lang.ArrayStream;\n"
-        "import cajeta.lang.Stream;\n"
-        "import cajeta.lang.TakeStream;\n"
+        "import cajeta.lang.stream.ArrayStream;\n"
+        "import cajeta.lang.stream.Stream;\n"
+        "import cajeta.lang.stream.TakeStream;\n"
         "public final class S {\n"
         "    public static int32 run() {\n"
         "        int32[] xs = {10, 20, 30};\n"
@@ -101,9 +101,9 @@ TEST(StreamIntermediateTests, takeStreamLargerThanSourceStops) {
 TEST(StreamIntermediateTests, takeStreamZeroYieldsEmpty) {
     auto src =
         "package test;\n"
-        "import cajeta.lang.ArrayStream;\n"
-        "import cajeta.lang.Stream;\n"
-        "import cajeta.lang.TakeStream;\n"
+        "import cajeta.lang.stream.ArrayStream;\n"
+        "import cajeta.lang.stream.Stream;\n"
+        "import cajeta.lang.stream.TakeStream;\n"
         "public final class S {\n"
         "    public static int32 run() {\n"
         "        int32[] xs = {1, 2, 3};\n"
@@ -121,9 +121,9 @@ TEST(StreamIntermediateTests, takeStreamFindFirstSearchesLimitedPrefix) {
     // — even though 4 satisfies the predicate, the take window stopped at 3.
     auto src =
         "package test;\n"
-        "import cajeta.lang.ArrayStream;\n"
-        "import cajeta.lang.Stream;\n"
-        "import cajeta.lang.TakeStream;\n"
+        "import cajeta.lang.stream.ArrayStream;\n"
+        "import cajeta.lang.stream.Stream;\n"
+        "import cajeta.lang.stream.TakeStream;\n"
         "import cajeta.lang.Optional;\n"
         "public final class S {\n"
         "    public static int32 run() {\n"
@@ -148,7 +148,7 @@ TEST(StreamIntermediateTests, skipStreamCountAfterSkip) {
     // 5 elements, skip 2 → 3 remaining.
     auto src =
         "package test;\n"
-        "import cajeta.lang.SkipStream;\n"
+        "import cajeta.lang.stream.SkipStream;\n"
         "public final class S {\n"
         "    public static int32 run() {\n"
         "        int32[] xs = {1, 2, 3, 4, 5};\n"
@@ -163,7 +163,7 @@ TEST(StreamIntermediateTests, skipStreamSumsTail) {
     // skip(2) over {1,2,3,4,5} → {3,4,5}, sum = 12.
     auto src =
         "package test;\n"
-        "import cajeta.lang.SkipStream;\n"
+        "import cajeta.lang.stream.SkipStream;\n"
         "public final class S {\n"
         "    public static int32 run() {\n"
         "        int32[] xs = {1, 2, 3, 4, 5};\n"
@@ -179,7 +179,7 @@ TEST(StreamIntermediateTests, skipStreamLargerThanSource) {
     // skip(99) on a 3-element source → empty.
     auto src =
         "package test;\n"
-        "import cajeta.lang.SkipStream;\n"
+        "import cajeta.lang.stream.SkipStream;\n"
         "public final class S {\n"
         "    public static int32 run() {\n"
         "        int32[] xs = {1, 2, 3};\n"
@@ -193,7 +193,7 @@ TEST(StreamIntermediateTests, skipStreamLargerThanSource) {
 TEST(StreamIntermediateTests, skipStreamZeroKeepsAll) {
     auto src =
         "package test;\n"
-        "import cajeta.lang.SkipStream;\n"
+        "import cajeta.lang.stream.SkipStream;\n"
         "public final class S {\n"
         "    public static int32 run() {\n"
         "        int32[] xs = {1, 2, 3, 4, 5};\n"
@@ -211,7 +211,7 @@ TEST(StreamIntermediateTests, skipStreamZeroKeepsAll) {
 TEST(StreamIntermediateTests, filterStreamEvensCount) {
     auto src =
         "package test;\n"
-        "import cajeta.lang.FilterStream;\n"
+        "import cajeta.lang.stream.FilterStream;\n"
         "public final class S {\n"
         "    public static int32 run() {\n"
         "        int32[] xs = {1, 2, 3, 4, 5, 6};\n"
@@ -226,7 +226,7 @@ TEST(StreamIntermediateTests, filterStreamEvensCount) {
 TEST(StreamIntermediateTests, filterStreamSumOfMatching) {
     auto src =
         "package test;\n"
-        "import cajeta.lang.FilterStream;\n"
+        "import cajeta.lang.stream.FilterStream;\n"
         "public final class S {\n"
         "    public static int32 run() {\n"
         "        int32[] xs = {1, 2, 3, 4, 5, 6};\n"
@@ -242,7 +242,7 @@ TEST(StreamIntermediateTests, filterStreamSumOfMatching) {
 TEST(StreamIntermediateTests, filterStreamNoMatches) {
     auto src =
         "package test;\n"
-        "import cajeta.lang.FilterStream;\n"
+        "import cajeta.lang.stream.FilterStream;\n"
         "public final class S {\n"
         "    public static int32 run() {\n"
         "        int32[] xs = {1, 2, 3};\n"
@@ -261,7 +261,7 @@ TEST(StreamIntermediateTests, filterStreamNoMatches) {
 TEST(StreamIntermediateTests, mapStreamDoubles) {
     auto src =
         "package test;\n"
-        "import cajeta.lang.MapStream;\n"
+        "import cajeta.lang.stream.MapStream;\n"
         "public final class S {\n"
         "    public static int32 run() {\n"
         "        int32[] xs = {1, 2, 3};\n"
@@ -277,7 +277,7 @@ TEST(StreamIntermediateTests, mapStreamDoubles) {
 TEST(StreamIntermediateTests, mapStreamCountUnchanged) {
     auto src =
         "package test;\n"
-        "import cajeta.lang.MapStream;\n"
+        "import cajeta.lang.stream.MapStream;\n"
         "public final class S {\n"
         "    public static int32 run() {\n"
         "        int32[] xs = {10, 20, 30, 40};\n"
@@ -292,7 +292,7 @@ TEST(StreamIntermediateTests, mapStreamCountUnchanged) {
 TEST(StreamIntermediateTests, mapStreamEmptyPassesThrough) {
     auto src =
         "package test;\n"
-        "import cajeta.lang.MapStream;\n"
+        "import cajeta.lang.stream.MapStream;\n"
         "public final class S {\n"
         "    public static int32 run() {\n"
         "        int32[] xs = new int32[0];\n"
@@ -314,7 +314,7 @@ TEST(StreamIntermediateTests, peekStreamFiresOnEachPull) {
     // mutable state). Count the visits by checking the resulting sum.
     auto src =
         "package test;\n"
-        "import cajeta.lang.PeekStream;\n"
+        "import cajeta.lang.stream.PeekStream;\n"
         "public final class S {\n"
         "    public static int32 total;\n"
         "    public static int32 run() {\n"
@@ -334,7 +334,7 @@ TEST(StreamIntermediateTests, peekStreamPassesValuesThrough) {
     // filter / map / drop anything.
     auto src =
         "package test;\n"
-        "import cajeta.lang.PeekStream;\n"
+        "import cajeta.lang.stream.PeekStream;\n"
         "public final class S {\n"
         "    public static int32 run() {\n"
         "        int32[] xs = {1, 2, 3, 4, 5};\n"
@@ -355,9 +355,9 @@ TEST(StreamIntermediateTests, flatMapStreamRepeatedSingletonStreams) {
     // containing v*10. Flatten → {10, 20, 30}. Count = 3.
     auto src =
         "package test;\n"
-        "import cajeta.lang.ArrayStream;\n"
-        "import cajeta.lang.FlatMapStream;\n"
-        "import cajeta.lang.Stream;\n"
+        "import cajeta.lang.stream.ArrayStream;\n"
+        "import cajeta.lang.stream.FlatMapStream;\n"
+        "import cajeta.lang.stream.Stream;\n"
         "public final class S {\n"
         "    public static int32 run() {\n"
         "        int32[] xs = {1, 2, 3};\n"
@@ -381,9 +381,9 @@ TEST(StreamIntermediateTests, flatMapStreamEmptyInnerStreamsSkipped) {
     // pulls the next outer element rather than yielding empty itself.
     auto src =
         "package test;\n"
-        "import cajeta.lang.ArrayStream;\n"
-        "import cajeta.lang.FlatMapStream;\n"
-        "import cajeta.lang.Stream;\n"
+        "import cajeta.lang.stream.ArrayStream;\n"
+        "import cajeta.lang.stream.FlatMapStream;\n"
+        "import cajeta.lang.stream.Stream;\n"
         "public final class S {\n"
         "    public static int32 run() {\n"
         "        int32[] xs = {1, 2, 3, 4, 5};\n"

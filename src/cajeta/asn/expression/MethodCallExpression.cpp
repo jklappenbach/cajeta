@@ -1118,7 +1118,7 @@ namespace cajeta {
 
         // P6.6 — `arr.stream()` intrinsic. Lowers to
         // `heap ArrayStream<T>(arr, arr.length())`. The stdlib parse
-        // populates the cajeta.lang.ArrayStream template into
+        // populates the cajeta.lang.stream.ArrayStream template into
         // canonicalMap before user code runs, so template lookup
         // by canonical name succeeds even without an explicit import.
         // Mirrors the count() intrinsic immediately above — same
@@ -1130,7 +1130,7 @@ namespace cajeta {
             if (auto arrayType = dynamic_pointer_cast<CajetaArray>(receiverType)) {
                 auto elemType = arrayType->getElementType();
                 CajetaTypePtr streamTemplate =
-                    CajetaType::of("ArrayStream", "cajeta.lang");
+                    CajetaType::of("ArrayStream", "cajeta.lang.stream");
                 auto streamKlass = dynamic_pointer_cast<CajetaClass>(streamTemplate);
                 if (streamKlass && streamKlass->isTemplate()) {
                     auto instantiated = dynamic_pointer_cast<CajetaClass>(

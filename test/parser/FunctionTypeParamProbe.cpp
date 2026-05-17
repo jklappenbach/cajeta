@@ -111,7 +111,7 @@ TEST(FunctionTypeParamProbe, fnTypeOnGenericClassMethod) {
     // class with a method that accepts a function-typed parameter
     // referencing the class's type parameter (Stream.forEach,
     // Optional.ifPresent, etc.). Concrete-type version here; generic
-    // version is exercised in cajeta.lang.Stream.forEach once it
+    // version is exercised in cajeta.lang.stream.Stream.forEach once it
     // lands as part of P6.5 stream combinators.
     auto src =
         "package test;\n"

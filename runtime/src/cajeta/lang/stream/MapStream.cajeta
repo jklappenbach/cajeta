@@ -1,4 +1,4 @@
-package cajeta.lang;
+package cajeta.lang.stream;
 
 /**
  * Intermediate combinator: wraps another Stream<T> and applies

@@ -32,7 +32,7 @@ int32_t runI32(const std::string& src) {
 TEST(StreamTerminalTests, anyMatchFindsMatchingElement) {
     auto src =
         "package test;\n"
-        "import cajeta.lang.ArrayStream;\n"
+        "import cajeta.lang.stream.ArrayStream;\n"
         "public final class S {\n"
         "    public static int32 run() {\n"
         "        int32[] xs = {1, 2, 3, 4};\n"
@@ -48,7 +48,7 @@ TEST(StreamTerminalTests, anyMatchFindsMatchingElement) {
 TEST(StreamTerminalTests, anyMatchReturnsFalseWhenNoneMatch) {
     auto src =
         "package test;\n"
-        "import cajeta.lang.ArrayStream;\n"
+        "import cajeta.lang.stream.ArrayStream;\n"
         "public final class S {\n"
         "    public static int32 run() {\n"
         "        int32[] xs = {1, 2, 3};\n"
@@ -64,7 +64,7 @@ TEST(StreamTerminalTests, anyMatchReturnsFalseWhenNoneMatch) {
 TEST(StreamTerminalTests, anyMatchOnEmptyStreamIsFalse) {
     auto src =
         "package test;\n"
-        "import cajeta.lang.ArrayStream;\n"
+        "import cajeta.lang.stream.ArrayStream;\n"
         "public final class S {\n"
         "    public static int32 run() {\n"
         "        int32[] xs = new int32[0];\n"
@@ -80,7 +80,7 @@ TEST(StreamTerminalTests, anyMatchOnEmptyStreamIsFalse) {
 TEST(StreamTerminalTests, allMatchAllPass) {
     auto src =
         "package test;\n"
-        "import cajeta.lang.ArrayStream;\n"
+        "import cajeta.lang.stream.ArrayStream;\n"
         "public final class S {\n"
         "    public static int32 run() {\n"
         "        int32[] xs = {2, 4, 6};\n"
@@ -96,7 +96,7 @@ TEST(StreamTerminalTests, allMatchAllPass) {
 TEST(StreamTerminalTests, allMatchShortCircuitsOnFailure) {
     auto src =
         "package test;\n"
-        "import cajeta.lang.ArrayStream;\n"
+        "import cajeta.lang.stream.ArrayStream;\n"
         "public final class S {\n"
         "    public static int32 run() {\n"
         "        int32[] xs = {2, 3, 4};\n"
@@ -113,7 +113,7 @@ TEST(StreamTerminalTests, allMatchOnEmptyStreamIsTrue) {
     // Vacuous truth — Java's Stream.allMatch matches.
     auto src =
         "package test;\n"
-        "import cajeta.lang.ArrayStream;\n"
+        "import cajeta.lang.stream.ArrayStream;\n"
         "public final class S {\n"
         "    public static int32 run() {\n"
         "        int32[] xs = new int32[0];\n"
@@ -129,7 +129,7 @@ TEST(StreamTerminalTests, allMatchOnEmptyStreamIsTrue) {
 TEST(StreamTerminalTests, noneMatchAllFail) {
     auto src =
         "package test;\n"
-        "import cajeta.lang.ArrayStream;\n"
+        "import cajeta.lang.stream.ArrayStream;\n"
         "public final class S {\n"
         "    public static int32 run() {\n"
         "        int32[] xs = {1, 2, 3};\n"
@@ -145,7 +145,7 @@ TEST(StreamTerminalTests, noneMatchAllFail) {
 TEST(StreamTerminalTests, noneMatchShortCircuitsOnFirstMatch) {
     auto src =
         "package test;\n"
-        "import cajeta.lang.ArrayStream;\n"
+        "import cajeta.lang.stream.ArrayStream;\n"
         "public final class S {\n"
         "    public static int32 run() {\n"
         "        int32[] xs = {1, 2, 3};\n"
@@ -161,7 +161,7 @@ TEST(StreamTerminalTests, noneMatchShortCircuitsOnFirstMatch) {
 TEST(StreamTerminalTests, findFirstReturnsMatchingElement) {
     auto src =
         "package test;\n"
-        "import cajeta.lang.ArrayStream;\n"
+        "import cajeta.lang.stream.ArrayStream;\n"
         "import cajeta.lang.Optional;\n"
         "public final class S {\n"
         "    public static int32 run() {\n"
@@ -179,7 +179,7 @@ TEST(StreamTerminalTests, findFirstReturnsMatchingElement) {
 TEST(StreamTerminalTests, findFirstReturnsEmptyWhenNoneMatch) {
     auto src =
         "package test;\n"
-        "import cajeta.lang.ArrayStream;\n"
+        "import cajeta.lang.stream.ArrayStream;\n"
         "import cajeta.lang.Optional;\n"
         "public final class S {\n"
         "    public static int32 run() {\n"
@@ -197,7 +197,7 @@ TEST(StreamTerminalTests, findFirstReturnsEmptyWhenNoneMatch) {
 TEST(StreamTerminalTests, reduceSumsElements) {
     auto src =
         "package test;\n"
-        "import cajeta.lang.ArrayStream;\n"
+        "import cajeta.lang.stream.ArrayStream;\n"
         "public final class S {\n"
         "    public static int32 run() {\n"
         "        int32[] xs = {1, 2, 3, 4, 5};\n"
@@ -212,7 +212,7 @@ TEST(StreamTerminalTests, reduceSumsElements) {
 TEST(StreamTerminalTests, reduceOnEmptyStreamReturnsSeed) {
     auto src =
         "package test;\n"
-        "import cajeta.lang.ArrayStream;\n"
+        "import cajeta.lang.stream.ArrayStream;\n"
         "public final class S {\n"
         "    public static int32 run() {\n"
         "        int32[] xs = new int32[0];\n"
@@ -229,7 +229,7 @@ TEST(StreamTerminalTests, reduceMultipliesElements) {
     // somewhere in the codegen path.
     auto src =
         "package test;\n"
-        "import cajeta.lang.ArrayStream;\n"
+        "import cajeta.lang.stream.ArrayStream;\n"
         "public final class S {\n"
         "    public static int32 run() {\n"
         "        int32[] xs = {2, 3, 4};\n"

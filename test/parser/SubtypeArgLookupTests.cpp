@@ -3,8 +3,8 @@
 // `ArrayStream<int32>` argument to a constructor or method that declares
 // a `Stream<int32>` parameter misses the lookup — the generic key
 // embeds the arg's exact canonical name (`...::TakeStream(
-// cajeta.lang.ArrayStream<int32>,int32)`) and never matches the
-// registered key (`...::TakeStream(cajeta.lang.Stream<int32>,int32)`).
+// cajeta.lang.stream.ArrayStream<int32>,int32)`) and never matches the
+// registered key (`...::TakeStream(cajeta.lang.stream.Stream<int32>,int32)`).
 // The fallback walks the arg's superClasses to find a compatible param
 // shape and picks the most specific match.
 //
@@ -44,8 +44,8 @@ TEST(SubtypeArgLookupTests, derivedClassArgBindsToBaseClassParamUserDefined) {
     // ctor takes a Stream<T>; we pass an ArrayStream<T>.
     auto src =
         "package test;\n"
-        "import cajeta.lang.Stream;\n"
-        "import cajeta.lang.ArrayStream;\n"
+        "import cajeta.lang.stream.Stream;\n"
+        "import cajeta.lang.stream.ArrayStream;\n"
         "public class Holder<T> {\n"
         "    public Stream<T> field;\n"
         "    public int32 n;\n"
@@ -71,8 +71,8 @@ TEST(SubtypeArgLookupTests, derivedClassArgBindsToBaseClassParamStdlib) {
     // arg directly — no explicit upcast local needed.
     auto src =
         "package test;\n"
-        "import cajeta.lang.ArrayStream;\n"
-        "import cajeta.lang.TakeStream;\n"
+        "import cajeta.lang.stream.ArrayStream;\n"
+        "import cajeta.lang.stream.TakeStream;\n"
         "public final class S {\n"
         "    public static int32 run() {\n"
         "        int32[] xs = {1, 2, 3, 4, 5};\n"

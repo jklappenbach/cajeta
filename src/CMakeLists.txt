@@ -187,6 +187,7 @@ set(CAJETA_STDLIB_ROOT ${PROJECT_SOURCE_DIR}/runtime/src)
 # layout regardless of parse order.
 set(CAJETA_STDLIB_DIRS
         ${CAJETA_STDLIB_ROOT}/cajeta/lang
+        ${CAJETA_STDLIB_ROOT}/cajeta/lang/stream
         ${CAJETA_STDLIB_ROOT}/cajeta/error
         ${CAJETA_STDLIB_ROOT}/cajeta/hash
         ${CAJETA_STDLIB_ROOT}/cajeta/collection)

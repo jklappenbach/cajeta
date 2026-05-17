@@ -1,7 +1,7 @@
 package cajeta.collection;
 
-import cajeta.lang.ArrayStream;
-import cajeta.lang.Stream;
+import cajeta.lang.stream.ArrayStream;
+import cajeta.lang.stream.Stream;
 
 /**
  * Dynamic array. Backed by a heap-allocated T[] that grows on demand.

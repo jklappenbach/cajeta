@@ -828,7 +828,7 @@ The Collections rollout lands **after** the unified-class rollout (`UnifiedClass
 
 ### Phase 2 — Stream abstract class and combinators
 
-- `cajeta.lang.Stream<T>` — abstract class with `next()` abstract + ~25 concrete combinators (per § Stream).
+- `cajeta.lang.stream.Stream<T>` — abstract class with `next()` abstract + ~25 concrete combinators (per § Stream).
 - Concrete combinator wrappers: `MapStream`, `FilterStream`, `FlatMapStream`, `TakeStream`, `SkipStream`, `TakeWhileStream`, `DropWhileStream`, `PeekStream`, `DistinctStream`, `EnumerateStream`, `ZipStream`, `ChainStream`, `SortedStream`, `WindowedStream`.
 - Optional re-declared to `extends Stream<T>`; single-shot `next()`; covariant `map`/`filter`/`flatMap` overrides.
 - Tests: combinator behavior, chaining, terminal correctness, Optional-as-Stream.
@@ -836,7 +836,7 @@ The Collections rollout lands **after** the unified-class rollout (`UnifiedClass
 ### Phase 3 — Array integration
 
 - `T[].stream()` compiler intrinsic — visitor recognizes the call, lowers to `stack ArrayStream<T>`.
-- `cajeta.lang.ArrayStream<T>` (used internally; not directly user-instantiated typically).
+- `cajeta.lang.stream.ArrayStream<T>` (used internally; not directly user-instantiated typically).
 - For-loop desugaring path 1: `for (T x : arr)` and `for (T x in arr.stream())` both work.
 - Tests: streaming over arrays of all primitive types + class arrays.
 

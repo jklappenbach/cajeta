@@ -1,5 +1,5 @@
 //
-// Tests for cajeta.lang.Stream<T> and ArrayStream<T> — the pull-protocol
+// Tests for cajeta.lang.stream.Stream<T> and ArrayStream<T> — the pull-protocol
 // base for stdlib iteration (Collections.md § Stream, P6.4 of the
 // unified-class rollout).
 //
@@ -29,7 +29,7 @@ TEST(StreamTests, arrayStreamYieldsElementsThenNone) {
     auto src =
         "package test;\n"
         "import cajeta.lang.Optional;\n"
-        "import cajeta.lang.ArrayStream;\n"
+        "import cajeta.lang.stream.ArrayStream;\n"
         "public final class S {\n"
         "    public static int32 run() {\n"
         "        int32[] xs = {10, 20, 30};\n"
@@ -50,7 +50,7 @@ TEST(StreamTests, arrayStreamEmptyArray) {
     auto src =
         "package test;\n"
         "import cajeta.lang.Optional;\n"
-        "import cajeta.lang.ArrayStream;\n"
+        "import cajeta.lang.stream.ArrayStream;\n"
         "public final class S {\n"
         "    public static int32 run() {\n"
         "        int32[] xs = new int32[0];\n"
@@ -69,7 +69,7 @@ TEST(StreamTests, arrayStreamCount) {
     // the ArrayStream override of next() (not the empty default).
     auto src =
         "package test;\n"
-        "import cajeta.lang.ArrayStream;\n"
+        "import cajeta.lang.stream.ArrayStream;\n"
         "public final class S {\n"
         "    public static int32 run() {\n"
         "        int32[] xs = {10, 20, 30};\n"
@@ -85,7 +85,7 @@ TEST(StreamTests, baseStreamCountIsZero) {
     // immediately None → count is 0.
     auto src =
         "package test;\n"
-        "import cajeta.lang.Stream;\n"
+        "import cajeta.lang.stream.Stream;\n"
         "public final class S {\n"
         "    public static int32 run() {\n"
         "        Stream<int32> s = heap Stream<int32>();\n"
@@ -100,7 +100,7 @@ TEST(StreamTests, streamBaseDefaultIsEmpty) {
     auto src =
         "package test;\n"
         "import cajeta.lang.Optional;\n"
-        "import cajeta.lang.Stream;\n"
+        "import cajeta.lang.stream.Stream;\n"
         "public final class S {\n"
         "    public static int32 run() {\n"
         "        Stream<int32> s = heap Stream<int32>();\n"
@@ -128,7 +128,7 @@ TEST(StreamTests, arrayStreamIntrinsicYieldsElements) {
     auto src =
         "package test;\n"
         "import cajeta.lang.Optional;\n"
-        "import cajeta.lang.ArrayStream;\n"
+        "import cajeta.lang.stream.ArrayStream;\n"
         "public final class S {\n"
         "    public static int32 run() {\n"
         "        int32[] xs = {1, 2, 3, 4};\n"
@@ -149,7 +149,7 @@ TEST(StreamTests, arrayStreamIntrinsicAssignFormCount) {
     // resolveTypes machinery.
     auto src =
         "package test;\n"
-        "import cajeta.lang.ArrayStream;\n"
+        "import cajeta.lang.stream.ArrayStream;\n"
         "public final class S {\n"
         "    public static int32 run() {\n"
         "        int32[] xs = {10, 20, 30, 40};\n"
@@ -169,8 +169,8 @@ TEST(StreamTests, arrayStreamIntrinsicAssignFormCount) {
 TEST(StreamTests, arrayStreamForEachNoCaptureLambdaWalks) {
     auto src =
         "package test;\n"
-        "import cajeta.lang.ArrayStream;\n"
-        "import cajeta.lang.Stream;\n"
+        "import cajeta.lang.stream.ArrayStream;\n"
+        "import cajeta.lang.stream.Stream;\n"
         "public final class S {\n"
         "    public static int32 run() {\n"
         "        int32[] xs = {1, 2, 3};\n"
@@ -187,7 +187,7 @@ TEST(StreamTests, arrayStreamIntrinsicEmptyArray) {
     // Empty array → first next() returns None → count is 0.
     auto src =
         "package test;\n"
-        "import cajeta.lang.ArrayStream;\n"
+        "import cajeta.lang.stream.ArrayStream;\n"
         "public final class S {\n"
         "    public static int32 run() {\n"
         "        int32[] xs = new int32[0];\n"
