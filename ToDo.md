@@ -6,309 +6,39 @@ Convention: each entry is a brief description, why it matters, where it bites to
 
 ---
 
-## Active design discussion — Unified class model + Optional/Stream
+## Current state (2026-05-17, late session)
 
-**Status:** Phase 1 + Phase 2a/2b LANDED (847/847 tests passing). Phases 2c/2d (CajetaStruct collapse, isAggregate skip removal, struct keyword aliasing, test migration) deferred to a focused future session — a one-line collapse experiment crashed 22/32 shards, indicating significant test + codegen coupling that requires its own dedicated migration. Heap/stack syntax + bare-construction rejection + aggregate-init lifting are all wired and usable today. See § Rollout progress below for the per-sub-phase status.
+Tree at 791/791. Recently landed:
 
-### Committed decisions (sealed)
+- ✅ **Phase 7 collapse** (`4dfbfd1`) — `struct` is a transitional alias for `class`; CajetaAggregate retired; CajetaView rebased on CajetaClass; 9 struct-specific test files deleted; ~105 now-irrelevant tests retired.
+- ✅ **P6.5 grammar** (`1beedc7`) — `(T) -> void` parses as a method-parameter type.
+- ✅ **P6.5 lambda-arg expectedType propagation** (`87fa4a2`) — lambda literals as direct method args inherit expectedType from the target method's signature when the lookup is unambiguous (same name + arg count).
+- ✅ **P6.5 Stream.forEach** (`40d1e55`) — first lambda-taking terminal lands in `cajeta.lang.Stream`. No-capture lambdas walk correctly through the virtual-dispatch path on ArrayStream<int32>.
+- ✅ **Q11 Optional.get throw** (`3f0d99a`) — Optional.get() throws CAJETA_ERROR_NONE_UNWRAP (encoded int 1) on empty. Standard try/catch shape catches it.
+- ✅ **P6.7 ArrayList** (`f44dcb6` + `bcc9f05`) — `cajeta.collection.ArrayList<T>` with ctor / size / isEmpty / get / set / add / stream(). T[] backing array, doubles capacity on grow.
 
-- **One unified `class` keyword.** `struct` retires (deprecation alias during migration).
-- **`heap MyClass(args)` / `stack MyClass(args)` as mandatory expression prefixes** for allocation. Bare `MyClass(args)` is a compile error. Relax later only if real ergonomic demand appears.
-- **`new` keyword retires** (deprecation alias during migration, then deleted).
-- **`MyClass x;` declares a null reference.** Definite-assignment analysis (see open Q below) prevents reading before assignment.
-- **Storage-agnostic type system.** `MyClass` is one type whether stack- or heap-allocated. Borrow checker tracks storage as metadata for escape analysis; the type system stays uniform.
-- **Class instances always pass and return by pointer, never by value.** Sidesteps C++'s object-slicing problem entirely. Same vtable, same dispatch, polymorphism works for stack and heap uniformly.
-- **Vtable slot at offset 0 on every class instance** (stack or heap). 8-byte cost worth uniform dispatch.
-- **`extends` works for both stack- and heap-allocated classes.** No difference in dispatch, inheritance, or interface conformance — only in lifetime (which the borrow checker handles).
-- **`return this` returns a pointer** — no copy under pointer-only return semantics. Builder pattern works identically across storage modes.
-- **`view` keyword stays separate** — views are typed overlays onto byte buffers, conceptually different from value aggregates.
-- **`T[]` stays as primitive** — ultra-fast, vtable-free, length-prefixed.
-- **Optional, Iterator, Stream live in `runtime/src/cajeta/lang/`** — fundamental types, not collection machinery.
-- **Combinator DRY via abstract base classes + multi-inheritance** — cajeta already supports `class C extends A, B` (verified in grammar, visitor, type resolver, and `DynamicDispatchTests.multipleInheritanceDispatchesCorrectly`). Abstract base classes hold concrete combinator bodies; implementers inherit via `extends`. No need for default methods on interfaces.
-- **Single Stream<T> abstraction — no separate Iterable / Iterator layer.** Abstract `next()` returning `Optional<T>`. Concrete combinator implementations (map/filter/flatMap/take/skip/fold/count/forEach/collect/findFirst/anyMatch/allMatch/noneMatch/...) all built on top of `next()`. Everything implementing the pull protocol — leaf nodes (ArrayStream, HashMapEntryStream), wrapper nodes (MapStream, FilterStream, TakeStream), single-shot streams (Optional) — extends `Stream<T>`.
-- **Collections produce streams via `stream()`, not by extending Stream directly.** Avoids the cursor-in-collection problem (concurrent iterators trampling each other, forgot-to-reset bugs). Each collection's `stream()` returns a fresh stream walking its own storage:
-  - `ArrayList<T>.stream()` → `Stream<T>` (over `ArrayStream<T>`)
-  - `HashMap<K,V>.entries() / .keys() / .values()` → `Stream<Pair<K,V>>` / `Stream<K>` / `Stream<V>`
-  - Optional itself IS a Stream (single-shot); no separate `stream()` method needed.
-- **Call sites go through `.stream()` for collections:** `list.stream().map(fn).filter(p).count()`. The `list.map(fn)` shorthand from the prior two-level design is sacrificed for conceptual simplicity (one type, one role, no abstract-class delegation chain).
-- **Optional<T> extends Stream<T>** with single-shot `next()`. Inherits the full combinator vocabulary. Overrides `map`/`filter`/`flatMap` with covariant `Optional<U>` returns for cardinality-1 preservation. Carries cardinality-1-aware methods (isPresent, get, orElse, expect, contains, exists, forall, fold, inspect, ifPresent, ifPresentOrElse, or, orElseGet, orElseThrow) that aren't on Stream.
-- **Children may override any inherited combinator** where the implementation can be smarter than the default (e.g., a sorted-stream wrapper's findFirst returns the head without walking, Optional's covariant map). Standard subclass behavior.
-- **Stream<T> as both concrete-impl class and protocol type.** Consumers can type against `Stream<T>` directly; implementers extend it. No separate interface layer needed (no analog to Java's `Iterable<T>` + `Iterator<T>` + `Stream<T>` triple split — that exists only for backward compatibility we don't have).
-- **Iterator<T> as a separate concept retires.** Naming convention: every implementer is `*Stream` (ArrayStream, HashMapEntryStream, MapStream, FilterStream, etc.). No `*Iter` suffix.
-- **For-loop desugaring** lowers `for (T x in s)` to `Stream<T>.next()` in a loop until `Optional<T>.None()`.
-- **Lambda parameter types are bare structural function types** in stdlib signatures — no `Predicate<T>` / `Consumer<T>` / `Function<T,U>` named wrappers.
-- **Java method names** for Optional/Stream combinators (map, flatMap, filter, orElse, ifPresent, etc.).
-- **`get()` / `expect(msg)` on Optional None throws a catchable exception** (CAJETA_ERROR_NONE_UNWRAP); matches the existing error model.
-- **Stream is sync only for v1.** Async stream is a separate type when the fiber runtime lands; parallel stream is a separate entry (`coll.parIter()`) integrated with the fiber pool. No `.parallel()` flag (universally regretted in Java).
-- **No backpressure / error channel / reactive ops in v1 Stream** — those are async-stream concerns.
+## Remaining work (in priority order)
 
-### Rollout progress (UnifiedClasses.md phases)
+1. **Lambda capture of static fields — pre-existing limitation, 1 session.** Lambdas that read or write static fields (`S.total`) crash at runtime. Surfaces when calling Stream.forEach with a capture lambda (works for no-capture lambdas; see StreamTests). The L2 closure ABI carries captures, but static-field references aren't real "captures" in the locals sense — they're module-level globals reached through static resolution. Fix: either (a) treat static-field refs as non-captures and resolve at the lambda body's emission site, or (b) add them to the captures struct correctly. Probe to reproduce: any lambda body that does `S.someStaticField = ...` then call lambda directly.
 
-- ✅ **P1a** (`f153568`) — heap/stack expression-prefix syntax (lexer + grammar + visitor).
-- ✅ **P1b** (`543eaff`) — bare `MyClass(args)` rejected; cleans up S6.1 segfault.
-- ✅ **P2a stack** (`19a8465`) — `stack MyClass(args)` wires alloca + vtable init + ctor.
-- ✅ **P2a heap** (`9c81d93`) — `heap MyClass { ... }` wires malloc + vtable + per-field stores; loadIfLValue bypass for aggregate-init.
-- ✅ **P2b** (`47ae5b9`) — stack aggregate-init "struct only" restriction lifted; vtable init on stack path too.
-- ✅ **Phase 7 — CajetaStruct collapse** (LANDED in `4dfbfd1`). User direction: take the shortest path, delete tests that test now-gone semantics rather than per-test migration. Final state: 776/776 tests passing.
-  - ✅ **P7.1/P7.2/P7.3** (`ebb124b`) — `CajetaClass::getOrCreateStackDropFunction` + LocalVariableDeclaration wiring for stack-class locals.
-  - ✅ **P7.3+** (`6893450`) — NewExpression added to loadIfLValue bypass list.
-  - ✅ **P7.4** (rolled into the P7.5/P7.6 commit) — 9 struct test files deleted (StructStackTests, StructMethodsTests, StructInterfaceTests, StructInterfaceDispatchTests, StructCompositionTests, FatPointerDispatchTests, VariableSizeStructTests, KeywordEquivalenceTests, Session1ParseTests). ~105 tests retired — they tested struct-specific semantics (no-vtable layout, struct-only sret returns, struct field-type restrictions) that no longer apply under the unified-class model. Tests worth preserving land back as part of Phase 6 progress.
-  - ✅ **P7.5** (`4dfbfd1`) — visitStructDeclaration now produces CajetaClass; `isAggregate` dispatch in CajetaClass.cpp narrowed to `isView`. The struct keyword is a transitional alias for class (Q5).
-  - ✅ **P7.6** (`4dfbfd1`) — CajetaAggregate.{h,cpp} and CajetaStruct.cpp deleted; CajetaView extends CajetaClass directly (carries isVariableSize + getFieldLlvmIndex override migrated from CajetaAggregate). CajetaStruct.h retained as a minimal empty-subclass stub so 15 lingering `dynamic_pointer_cast<CajetaStruct>` expressions compile and return null (dead branches). Follow-up cleanup: strip those casts and delete CajetaStruct.h. Not urgent — they don't affect behavior.
-- ⏭️ **Owned class-ref fields on stack owners** — currently leak. KNOWN LIMITATION from P2a; needs a stack-drop variant that walks owned fields without freeing the body. Schedule alongside the P2c/P2d work.
-- ✅ **P3a** (`70ee6e6`) — definite-assignment analysis: basic sequential case. Bare declarations enter scope's NYA set; reading throws CAJETA_ERROR_VARIABLE_NOT_ASSIGNED; assignment removes the mark. Heap-class drop registration skipped in no-initializer case to avoid free-on-garbage at scope exit (KNOWN LIMITATION: leaks heap instances assigned post-declaration; fix by deferring drop registration to first-assignment).
-- ✅ **P3b** (`15d38a4`) — if/else NYA merging. Both branches must assign for DA-after; missing else leaves NYA. snapshot/restore/merge helpers on Scope.
-- ⏭️ **P3c** — switch / loops / try/catch NYA merging. Defer until a real consumer needs them (each has its own merge semantics: switch needs exhaustiveness; try-catch NYA in catch because try-assignment may have thrown; loops never guarantee DA-after unless DA before).
-- ✅ **P4** — covariant return types (`6eea5f9`): already supported by the hash-based vtable (return type isn't part of the canonical signature). Pinned with two tests.
-- ⏭️ **P5** — live-borrow tracker for iterator invalidation (Q10 in Open questions).
-- 🟡 **P6** — stdlib rollout: in progress.
-  - ✅ **P6.1** (`1f1f39a`) — `cajeta.lang.Pair<K,V>` two-field generic class with first()/second() accessors, ctor. 3 tests.
-  - ✅ **P6.2** (`2e3f331`) — `cajeta.lang.Optional<T>` minimal surface: ctor + isPresent/isEmpty/get/orElse. Fixed a pre-existing PrefixExpression bug (loadOperand didn't handle DotExpression GEPs → `!boolField` triggered LLVM ICmp type mismatch). 4 Optional tests + 3 GenericBoolProbe tests pinning the fix.
-  - ⏭️ **Generic static factory call syntax** — `Optional<int32>.Some(42)` doesn't parse. Grammar accepts `Optional.Some(42)` (no type args between identifier and `.method()`) but that loses the explicit type binding. Workaround in v1 Optional: direct ctor (`heap Optional<int32>(true, 42)`). Java's `Optional.<int32>of(42)` shape or implicit inference is the proper fix.
-  - ⏭️ **Optional.get() throw on empty** — v1 returns the zero-init value. Throw integration with stdlib-side throw machinery is its own piece.
-  - ✅ **P6.4** (`b4dfdf9`) — `cajeta.lang.Stream<T>` base class with default-empty `next()` + `cajeta.lang.ArrayStream<T> extends Stream<T>` walking a T[] backing array. Fixed pre-existing ArrayIndexExpression bug (index expression's GEP-from-field result not loaded → `sext ptr to i64` LLVM verify error). 3 Stream tests + 1 generic-array probe.
-  - ✅ **P6.4+** (`27dc6fb`) — Stream.count() terminal + fix to pre-existing vtable override-dispatch bug. CajetaClass::buildVirtualTable keyed overrides by full canonical (`parent::name(params)`) so child overrides landed under their own canonical hash, separate from the parent's slot. Now matches by suffix (name+params, strips `parent::`); child overrides replace parent's entry, and a second pass aliases under every parent's canonical so dispatch via either hash lands on the override. count() exercised the gap (Stream's count() called this.next() → hit Stream's empty default instead of ArrayStream's override). 2 Stream tests + 2 InheritanceSmokeTests pinning the fix.
-  - ⏭️ **P6.5 — Stream lambda combinators** (forEach, map, filter, flatMap, fold, reduce, anyMatch, allMatch, noneMatch, ...). Pre-existing grammar gap blocks: function types as **method parameters** don't parse, even with concrete types — `public void apply((int32) -> void fn) { ... }` fails with "no viable alternative at input '(int32) -> void'". Function types DO parse as return types (`public (int32) -> int32 mk()`) and as local-variable types (`(int32) -> int32 fn = ...`), so the grammar machinery is mostly there; just the formalParameter path has an ambiguity ANTLR's lookahead can't resolve. This is its own focused fix and blocks Optional combinators (P6.3) too.
-  - 🟡 **P6.6** (`f6308c4`) — `T[].stream()` compiler intrinsic, assign-to-typed-local form. Lowers `xs.stream()` to malloc + memset + vtable init + ctor call against an instantiated `ArrayStream<T>` where T is the array's element type. Mirrors the existing `count()` array intrinsic shape. Chained form (`xs.stream().count()`) deferred: needs the inner MCE's resolvedType set before generateCode so the outer call dispatches correctly, but pre-resolving in `MethodCallExpression::resolveTypes` triggers early ArrayStream<T> instantiation that breaks downstream method linkage (the user module emits calls referencing methods that the instantiation pass put into the stdlib module without the cross-module merge picking them up). Three StreamTests pin the assign-form; chained-form follow-up captured in StreamTests' P6.6 comment block.
-  - ⏭️ **P6.7+** — collections (ArrayList, HashSet, HashMap.entries()/keys()/values()), Collector + Collectors. Each is its own piece.
+2. **P6.7+ — more collections — multi-session.** HashSet (HashMap-backed thin wrapper), HashMap.entries() / keys() / values() returning Streams (the missing axis-wise iteration), LinkedList, Collector<T,R> + cajeta.lang.Collectors. Each is its own piece.
 
-### Open questions (pinned)
+3. **Stream lambda combinators — multi-session.** map, filter, flatMap, take, skip, peek, fold, reduce, anyMatch, allMatch, noneMatch, findFirst, collect. Each is its own concrete *Stream wrapper class plus the corresponding method on Stream<T>. The forEach pattern (`(T)->void` lambda) generalizes to most of these; those returning a new stream need to construct wrapper instances.
 
-#### Q1 — Default methods on interfaces — CLOSED, not landing
+4. **Generic-static-factory call syntax — needs method-level generics first.** `Optional<int32>.Some(42)` doesn't parse. The grammar rejects `public static <T> Box of(T arg)` — the typeParameters slot exists for interface methods (interfaceCommonBodyDeclaration) but not for concrete methodDeclaration. Add `typeParameters?` to methodDeclaration, then wire visitor + dispatch.
 
-**Context:** Stream<T>'s combinator vocabulary needs to be inherited by every implementer (Optional, ArrayIter, ...) to avoid copy-paste duplication. Earlier draft proposed default methods on interfaces as the solution. Closed once it was confirmed cajeta already supports multi-inheritance (grammar + visitor + type resolver + `DynamicDispatchTests`) — abstract base classes + multi-inheritance accomplish the same DRY win without new compiler work.
+5. **P6.6 chained-form completion — 1 session.** `xs.stream().count()` direct chain. Setting resolvedType on the inner stream MCE in generateCode breaks ~100 unrelated tests; the cleaner path is to either thread the user module into TemplateInstantiator's structures map (so cross-module merge picks up the methods) or override resolveTypes to do the lookup without instantiation.
 
-**Resolution:** use `AbstractStream<T>` abstract class for the concrete combinator bodies; implementers extend it (`class Optional<T> extends AbstractStream<T>, AbstractHashable<T>`). Stream<T> stays as a thin interface (protocol marker). No new compiler feature.
+6. **P5 — live-borrow tracker — 1 session.** Extends path-borrow machinery to track live read-borrows for iterator invalidation. "Comparable to one of the S6-S11 sessions" per Q10.
 
-#### Q2 — Covariant return types on overrides — ALREADY WORKS (probe confirmed)
+7. **P3c — switch/loops/try-catch DA merging — 0.5 sessions each, deferred until consumed.** Implementation pattern is clear from P3a/P3b.
 
-Cajeta's hash-based vtable already supports covariant returns. `Method::buildCanonical` produces `parent::name(paramTypes)` — return type is NOT part of the canonical, so subclass overrides with narrower returns collide with the base entry in `CajetaClass::buildVirtualTable`'s `uniqueByCanonical` map and correctly replace it.
+8. **Phase 7 cleanup — 0.5 sessions, not urgent.** Strip the 15 dead `dynamic_pointer_cast<CajetaStruct>` expressions and delete CajetaStruct.h. Cosmetic.
 
-Test coverage in `UnifiedClassSyntaxTests`:
-- `covariantReturnConcreteReceiverSeesNarrower` — Dog.copy() returning Dog (narrower than Animal.copy() returning Animal); concrete-Dog call site sees Dog return type and chains into Dog-specific method.
-- `covariantReturnBaseReceiverSeesWider` — same override; base-Animal call site sees Animal return type; dispatch lands on Dog::copy correctly.
-
-No compiler change needed. Phase 4 of the rollout retires.
-
-#### Q3 — Definite-assignment analysis rules — LANDED (P3a + P3b)
-
-Sequential case + if/else merging landed in commits 70ee6e6 + 15d38a4. Switch / loops / try/catch merging deferred to P3c when consumed. See "Rollout progress" entries above for details. Original decision retained below for reference.
-
-#### Q3 (original) — Definite-assignment analysis rules — DECIDED
-
-**Q3a — Keep definite-assignment analysis.** `MyClass x;` declares a null reference; reading before assignment is a **compile error**. Forward-flow analysis tracks each local as DA (definitely-assigned) or NYA (not-yet-assigned).
-
-**Q3b — Constructor field init: Java semantics.** All fields zero-initialized (null for class refs, 0 for primitives) when the instance is allocated. Constructors may leave fields untouched — they stay zero/null. No static check on field init in constructors.
-
-**What counts as assignment:**
-- `x = expr;` (direct assignment, in any form: stack/heap construction, borrow, `#` move)
-- Anything that re-binds `x`
-
-**What does NOT count:**
-- Passing `x` to a method as an argument (no out-params in cajeta; methods get a pointer but can't rebind the caller's local)
-- Reading a field of `x` (`x.field`) — this REQUIRES `x` to be DA already
-
-**Loop rule (Java JLS §16):**
-- A variable assigned only inside a loop body is **NOT** DA after the loop (loop may not execute, may exit via break before assignment).
-- Provably-infinite loops with DA at every exit are technically DA-after, but v1 doesn't bother with the analysis. Workaround: assign before the loop.
-
-**Conditional rule (if/else, switch):**
-- DA after `if/else` iff DA in BOTH branches. Missing else → NOT DA.
-- DA after `switch` iff DA in every case AND (default case assigns OR switch is exhaustive over an enum).
-
-**Special forms:**
-- `return` / `throw` / `break` / `continue` — code after is unreachable; trivially DA for everything.
-- `try/catch` — variables assigned in `try` are NYA in `catch` (assignment may have thrown); DA after the try/catch iff DA in both `try` block AND every `catch` block.
-- `while(true)` with `break` — DA after the loop equals intersection of DA-at-every-break.
-
-**Implementation:** new forward-flow analysis pass on scope-tracked locals. Existing `Scope` infrastructure (path-borrow tracker, move-marked-names set) is the shape to mirror — add a third set for "definitely-assigned." Sized comparable to one of the S6-S11 sessions.
-
-#### Q4 — Factory return semantics for stack-allocated values — DECIDED: RVO / sret slot
-
-Caller pre-allocates the return body; factory writes into the caller-provided slot. No heap, no escape error. The S6.7 / S9.5.5 struct-return-by-value machinery carries forward unchanged into the unified-class model.
-
-#### Q5 — `struct` keyword fate — DECIDED: drop entirely
-
-One-cycle deprecation alias during migration (`struct` keyword treated as `class`), then retire. Cleanest end state.
-
-#### Q6 — `stack` keyword optional vs required for local stack allocation
-
-**Context:** committed to "every allocation says where" — no bare `MyClass(args)`. Question is whether `stack` is mandatory at every allocation site or whether some shorthand emerges later. Currently committed as mandatory.
-
-**Status:** committed as required for v1; revisit if ergonomic pressure appears.
-
-#### Q7 — `override` marker — DECIDED: `@Override` annotation, optional, lint-checked
-
-Java's exact pattern. Annotation rather than keyword; optional but recommended; lint warning when overriding a concrete inherited method without it (catches typo'd signatures that silently create new methods instead of overriding). No grammar change beyond the annotation declaration.
-
-#### Q8 — `default` keyword on interface methods — CLOSED, retires
-
-**Context:** was needed if default methods on interfaces landed (Java-style explicit keyword). Closed because Q1 closed — no default methods on interfaces, no need for the keyword.
-
-#### Q9 — Sequencing of the rollout — DECIDED
-
-Phased order:
-
-1. **Unified-class rollout** — drop struct/class split, `heap`/`stack` syntax, generalize S6–S11 machinery, retire `new` keyword, drop `struct` keyword (deprecation alias during migration). Several sessions; the big foundational pivot.
-2. **Compiler features for stdlib enablement** — definite-assignment analysis (Q3) and covariant return types (Q2). Each its own focused session.
-3. **Live-borrow tracker** (Q10) — extends path-borrow tracker to live read-borrows; catches iterator-invalidation at compile time before any iteration code ships.
-4. **Stdlib rollout** — Pair, Optional, Stream, AbstractStream + the per-stream wrappers (MapStream/FilterStream/...), ArrayStream (intrinsic), ArrayList, HashMap, HashSet, Collector<T,R> + built-in Collectors, for-loop desugaring through Stream.
-
-#### Q10 — Live-borrow tracker for iterator invalidation — DECIDED: land before stdlib
-
-Iterator invalidation is a compile-time error from day one. The live-borrow tracker extends the existing path-borrow machinery from "moved paths" to "paths currently borrowed by some still-in-scope owner." When a stream borrows from a collection (`list.stream()` registers list's path as live-borrowed by the resulting ArrayStream), any write through that path while the stream is alive is rejected. Lands in the sequencing right after the compiler features (Q9 phase 3), before any stdlib iteration code ships.
-
-**Implementation estimate:** comparable to one of the S6-S11 sessions. Adds a live-borrow registry on `Scope`; registration at struct-field-binding-from-borrow sites; release at the borrower's scope exit / move-out; check at any write site (assignment, index-store, mutating method call).
-
-#### Q11 — Optional method additions — DECIDED
-
-Landing in v1:
-- **`inspect((T) -> void fn)`** (Rust) — apply side effect, return same Optional for chaining
-- **`fold(() -> R ifNone, (T) -> R ifSome)`** (Scala) — expression-form extraction
-
-Not landing:
-- `expect()` — Java's `orElseThrow(() -> Exception)` already covers the "logging or other error handling on unwrap-of-None" case; no need for a separate name.
-- `contains(v)` / `exists(pred)` / `forall(pred)` — not selected.
-
-#### Q12 — Stream<T> operator surface for v1 — DECIDED: richer set
-
-Landing in v1:
-- **Intermediates (lazy):** `map`, `flatMap`, `filter`, `take`, `skip`, `peek`, `distinct`, `enumerate`, `takeWhile`, `dropWhile`, `zip`, `chain`, `concat`, `sorted`, `windowed`
-- **Terminals (eager):** `forEach`, `fold`, `reduce`, `count`, `sum`, `findFirst`, `anyMatch`, `allMatch`, `noneMatch`, `toArray`, **`collect(<target collection type>)`** — polymorphic, supporting arrays, lists, sets, maps, and user-defined collections (see Q17 for the API shape)
-- **`groupBy`** (Scala / Kotlin-style) — group elements by key function into a Map<K, List<T>>
-
-Real consumers later may add things like cursor windows, distinctBy, etc.; the v1 surface is rich enough to be useful out of the box.
-
-#### Q13 — How `T[].stream()` attaches to array types — DECIDED: compiler intrinsic
-
-Visitor recognizes `arr.stream()` as a special form and lowers it to a freshly-allocated `ArrayStream<T>` walking the array. `T[]` stays a primitive type; no Array class needed in the stdlib. Cleanest separation — array primitive in compiler, iteration class in stdlib.
-
-#### Q16 — `expect()` lambda signature — DECIDED: drop `expect()` from Optional
-
-Java's `orElseThrow(() -> Exception fn)` already covers the "side-effect-y unwrap that throws a custom exception" case. Drop `expect()` from the v1 surface; users wanting that pattern call `orElseThrow` with a lambda.
-
-#### Q17 — Polymorphic `collect()` API — DECIDED: Collector<T,R> pattern
-
-Java's mature `Collector` pattern. Adds one stdlib abstraction.
-
-```cajeta
-public abstract class Collector<T, R> {
-    public abstract R supply();                        // create empty container
-    public abstract void accumulate(R container, T element);
-    public R finish(R container) { return container; } // optional final transform
-}
-
-// Stream<T>:
-public <R> R collect(Collector<T, R> c) {
-    R container = c.supply();
-    for (T x in this) { c.accumulate(container, x); }
-    return c.finish(container);
-}
-
-// Built-in collectors in cajeta.lang.Collectors:
-public class Collectors {
-    public static <T> Collector<T, ArrayList<T>>     toArrayList() { ... }
-    public static <T> Collector<T, HashSet<T>>       toHashSet()   { ... }
-    public static <K,V> Collector<Pair<K,V>, HashMap<K,V>> toHashMap() { ... }
-    public static <T> Collector<T, T[]>              toArray()     { ... }
-    public static Collector<String, String>          joining(String sep) { ... }
-    // ... groupingBy, partitioningBy, summing, counting, ...
-}
-```
-
-User-defined collectors slot in by implementing `Collector<T,R>`. Handles both Collection targets (lists, sets, maps) and non-Collection targets (String joining, summing).
-
-#### Q15 — Pair<K,V> + HashMap iteration shape — DECIDED
-
-- Add `cajeta.lang.Pair<K,V>` — two-field generic class, aggregate-init friendly (`Pair { first: k, second: v }`), with `first()` / `second()` accessors.
-- HashMap doesn't extend Stream directly. Provides three explicit entry points:
-  - `entries()` returning `Stream<Pair<K,V>>`
-  - `keys()` returning `Stream<K>`
-  - `values()` returning `Stream<V>`
-- Matches Java's approach; explicit reads better than guessing which iteration `for (x in map)` should pick.
-
-#### Q14 — Bridging direction Optional ↔ Stream — DECIDED: Optional IS a Stream
-
-Implicitly settled by the "Optional extends Stream<T>" commit during the Streamable/Stream collapse. Optional has a single-shot `next()` that mutates the `present` flag; first call yields the value, subsequent calls return None. `for (x in opt)` works directly. The "separate OptionalIter wrapper" alternative is retired — keeping Optional immutable wasn't worth the extra type.
+9. **Restore lost test coverage from Phase 7 — incremental, as Phase 6 progresses.** The 9 deleted struct test files contained ~105 tests. Many exercised happy-path behavior still valid under the unified model.
 
 ---
-
-## Carried-over deferreds from the struct/view rollout
-
-Most of these will **retire** once the unified-class model lands. Marked as such; the rest remain as work items.
-
-### S6.1 — `Foo(args)` constructor-call syntax on a struct segfaults
-
-**Status under unified-class:** **retires**. There's no more "struct receiver"; all classes accept constructor calls via `stack ClassName(args)` / `heap ClassName(args)`.
-
-**Lives in:** `cajeta-docs/history/StructsViewsStatus.md` § "S6.1 limitations called out".
-
----
-
-### S7.4 — Move out of struct field doesn't clear runtime pointer (double-free risk)
-
-**Status under unified-class:** **generalizes**. The same per-instance ownership-tracking gap exists for moves out of any class field. Still needs to be solved; just becomes a general class-field-move issue, not struct-specific.
-
-**Fix shape:** runtime drop fn consults a per-instance ownership bitmap, OR move-out point writes null into the slot.
-
-**Lives in:** `cajeta-docs/history/StructsViewsStatus.md` § "S7.4 limitations called out".
-
----
-
-### S7.5 / S10.5 — Class-array element-layout ambiguity (blocks polymorphic interface arrays)
-
-**Status under unified-class:** **active**. Still needs the design call — class/interface arrays store inline values or pointer references? Pick one consistently. Blocks polymorphic interface arrays (`Stream<T>[]`, `Greeter[]`).
-
-**Lives in:** `cajeta-docs/history/StructsViewsStatus.md` § "S7.5 limitations called out".
-
----
-
-### S8.4 — Direct chaining on a struct-returning method segfaults
-
-**Status under unified-class:** **likely retires**. Chained method calls on class instances under pointer-return semantics are receiver pointers all the way through; the S6.7 repackaging that broke chaining was struct-specific. Confirm during rollout.
-
-**Lives in:** `cajeta-docs/history/StructsViewsStatus.md` § "S8.4 limitations called out".
-
----
-
-### S5b — `.length()` on T[] returned from a view trips an unrelated alloca path
-
-**Status under unified-class:** **unaffected** (view-specific). Still needs a focused look at the array-length codegen path.
-
-**Lives in:** `cajeta-docs/history/StructsViewsStatus.md` § "S5b limitations called out".
-
----
-
-### S5b — Variable-size nested views not detected as variable-size
-
-**Status under unified-class:** **unaffected** (view-specific). `CajetaAggregate::isVariableSize` needs recursive checking; construction-time validation needs to walk into nested var-size views.
-
-**Lives in:** `cajeta-docs/history/StructsViewsStatus.md` § "S5b limitations called out".
-
----
-
-## Realistic next-session scoping (updated 2026-05-17 after Phase 7 collapse)
-
-Phase 7 is done (`4dfbfd1`). Remaining work in priority order:
-
-1. **P6.5 — function-type-as-method-parameter grammar gap — 1 session.** ANTLR lookahead can't disambiguate `(int32) -> void fn` in a `formalParameter` rule. The same shape parses fine in `localVariableType` and `methodReturnType`, so the grammar machinery exists. Once fixed, unlocks Optional combinators (P6.3) AND Stream combinators (P6.5). Without it, Stream.forEach / map / filter / etc. can't be expressed in cajeta.
-
-2. **P6.6 chained-form completion — 0.5 sessions.** Assign-form intrinsic landed in `f6308c4`. Chained `xs.stream().count()` needs the inner-MCE's resolvedType set before its generateCode runs (so the outer call can resolve its receiver type). Attempted via `MethodCallExpression::resolveTypes` override, but that triggers early `ArrayStream<T>` instantiation in a way that breaks downstream method linkage — the user module emits calls that reference methods only present in the stdlib module without the cross-module merge picking them up. Right fix is probably to thread the user module into instantiate() (vs the template's own module) OR to make the instantiation's IR emission happen in the caller module instead of the template's. Both are bounded but require careful work in TemplateInstantiator.
-
-3. **P6.7+ — Collections + Collector pattern — 4-6 sessions.** ArrayList, HashSet, HashMap (with entries/keys/values streams), Collector<T,R> base + cajeta.lang.Collectors with the dozen built-in collectors. Each collection is its own piece with its own backing-store choice + iteration shape.
-
-4. **P5 — live-borrow tracker — 1 session.** Extends path-borrow machinery (already exists) to track live read-borrows for iterator invalidation. "Comparable to one of the S6-S11 sessions" per Q10.
-
-5. **P3c — switch/loops/try-catch DA merging — 0.5 sessions each, deferred until a real consumer needs them.** Each construct has its own merge rule (switch needs exhaustiveness; try-catch NYA in catch; loops never DA-after unless DA-before). Implementation pattern is clear from P3a/P3b.
-
-6. **Generic-static-factory call syntax** — `Optional<int32>.Some(42)` doesn't parse. Grammar accepts `Optional.Some(42)` but loses type binding. Java's `Optional.<int32>of(42)` shape OR implicit inference is the proper fix. Half-session.
-
-7. **Optional.get() throw on empty** — needs stdlib-side throw machinery integration. Bounded, but throw integration on a stdlib class is its own thing.
-
-8. **Phase 7 cleanup — 0.5 sessions, not urgent.** Strip the 15 lingering `dynamic_pointer_cast<CajetaStruct>` expressions (all return null today, all branches are dead) and delete CajetaStruct.h. Purely cosmetic — doesn't affect behavior.
-
-9. **Restore lost test coverage from Phase 7 — incremental, as Phase 6 work proceeds.** The 9 deleted struct test files contained ~105 tests, many of which exercised happy-path behavior that still works under the unified model (struct-with-fields, struct-with-methods, struct-implementing-interface, etc.). As Phase 6 collections / combinators land, fold the still-relevant scenarios into the new test files using the unified class syntax.
 
 ## Done
 
-(empty)
+(See "Current state" above for the running list; older entries below.)
