@@ -74,12 +74,14 @@ Priority is rough effort × user-visible correctness impact.
 
 With MultiClassing + Lombok-mirror + nested classes + view-as-class-field + @Encoding all closed, recommended next picks:
 
-1. **Features.md S-1101 — `cajeta.codec.json` spec.** ~1 session for the spec doc itself. Unblocks `@ToString(format=TO_STRING_JSON)` and view `@Encoding(JsonEncoder)` once impl ships. Has clear scope (Cajeta has no other self-describing codec yet).
-2. **Implementing-class instantiation of templated-interface vtables.** ~1-2 sessions of compiler work. Would let `@Encoding` tighten to verify `encoder implements Encoder<T>`, plus unblock other templated-interface patterns. Currently @Encoding stays duck-typed.
-3. **Priority 2 § 8 — Fluent stream chains.** Blocked on template-method-body emission + nested-template-heap-construction. ~1-2 sessions of compiler work. The `this`-passing piece IS fixed now, so this is closer than before — but template cascade is still unresolved.
-4. **Priority 6 § 5 — Restore lost test coverage from Phase 7.** Incremental, low-risk; pick up between bigger pieces.
-5. **Priority 4 / 5 — Debug-mode + release-mode features.** Most haven't been touched; quality-of-life features (`--diag-hints`, `--bounds=trap`, `--null-checks` codegen).
-6. **Small polish items.** `@Builder.Default` for per-field defaults; `@Getter(level="private")` visibility tightening. ~0.5 session each.
+1. ✅ **Features.md S-1101 — `cajeta.codec.json` spec — SHIPPED 2026-05-18.** Spec landed at `cajeta-docs/stdlib/codec/Json.md`. Three-tier design (`Json.parse<T>` / `Json.toBytes` codegen / pull tokenizer / value tree), per-field annotation surface (`@JsonProperty`, `@JsonIgnore`, `@JsonRequired`, `@JsonAlias`, `@JsonInclude`, class-level `@JsonNamingStrategy` / `@JsonStrict`), lazy number parse with raw-byte storage, zero-copy string slices, performance-first goals (≥ 500 MB/s scalar tokenizer target; v2 SIMD direction noted), RFC 8259 strict-by-default with optional `relaxed=true` for trailing commas + `//`/`/* */` comments. Error model wired to `RecoverableException` per ErrorModel.md. JSON does NOT use `@Encoding` (that stays for binary formats only); the rationale section in Json.md spells out the divide. Next: S-1102 implementation.
+2. **Features.md S-1102 — `cajeta.codec.json` implementation.** Build out the three tiers in dependency order: (a) `JsonReader` + `JsonWriter` (Tier 2 pull APIs) as the load-bearing layer; (b) `JsonValue` tree (Tier 3) on top; (c) `Json.parse<T>` / `Json.toBytes` method-template synthesizer that walks T's fields, honors per-field `@JsonProperty` / `@JsonIgnore` / `@JsonRequired` / `@JsonAlias` / `@JsonInclude` and class-level `@JsonNamingStrategy` / `@JsonStrict`, and emits direct `JsonReader` / `JsonWriter` calls without a `JsonValue` tree. Unblocks `@ToString(format=TO_STRING_JSON)` synthesizer (currently throws `CAJETA_ERROR_TOSTRING_JSON_NOT_IMPLEMENTED`).
+3. **Implementing-class instantiation of templated-interface vtables.** ~1-2 sessions of compiler work. Would let `@Encoding` tighten to verify `encoder implements Encoder<T>`, plus unblock other templated-interface patterns. Currently @Encoding stays duck-typed.
+4. **Priority 2 § 8 — Fluent stream chains.** ✅ SHIPPED 2026-05-18 (see Priority 2 § 8 below).
+5. **Priority 2 § 12 — Implicit destructor chaining (C++ semantics).** Design locked 2026-05-18 in MemoryModel.md; implementation pending in `CajetaClass::getOrCreateDropFunction`.
+6. **Priority 6 § 5 — Restore lost test coverage from Phase 7.** Incremental, low-risk; pick up between bigger pieces.
+7. **Priority 4 / 5 — Debug-mode + release-mode features.** Most haven't been touched; quality-of-life features (`--diag-hints`, `--bounds=trap`, `--null-checks` codegen).
+8. **Small polish items.** `@Builder.Default` for per-field defaults; `@Getter(level="private")` visibility tightening. ~0.5 session each.
 
 ### Priority 1 — compiler infrastructure
 

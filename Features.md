@@ -170,8 +170,8 @@ All `cajeta.io.*` is **designed, unimplemented**. See `cajeta-docs/stdlib/Io.md`
 
 | ID | Name | Description | Status | Doc / tests |
 |----|------|-------------|--------|-------------|
-| S-1101 | `cajeta.codec.json` spec | JSON value model, parser/writer surface, streaming/pull API design, error model, conformance with RFC 8259. Single source of truth for what "JSON support" means in Cajeta — `@ToString(JSON)`, view `@Encoding(JsonEncoder)`, and ad-hoc serialization all consume it. | designed | `cajeta-docs/stdlib/codec/Json.md` (to be created) |
-| S-1102 | `cajeta.codec.json` implementation | Parser + writer + value tree types per S-1101. Unblocks `@ToString(JSON)` synthesizer (Priority 3 § 1 follow-up) and view `@Encoding(JsonEncoder)`. | designed | depends on S-1101 |
+| S-1101 | `cajeta.codec.json` spec | JSON value model, three-tier API (`Json.parse<T>` / `Json.toBytes` codegen / pull tokenizer / value tree), per-field annotation surface (`@JsonProperty`, `@JsonIgnore`, `@JsonRequired`, `@JsonAlias`, `@JsonInclude`, class-level `@JsonNamingStrategy` / `@JsonStrict`), lazy number parse, zero-copy string slices, RFC 8259 conformance, error model, performance targets (≥ 500 MB/s scalar tokenizer; v2 SIMD direction noted). Single source of truth for what "JSON support" means in Cajeta — `@ToString(format=TO_STRING_JSON)` and ad-hoc serialization both consume it. JSON does NOT use `@Encoding` (that stays for binary formats only — MessagePack, Protobuf, Avro). | shipped 2026-05-18 | `cajeta-docs/stdlib/codec/Json.md` |
+| S-1102 | `cajeta.codec.json` implementation | Three-tier impl per S-1101, built in dependency order: pull `JsonReader` / `JsonWriter` (Tier 2) → `JsonValue` tree (Tier 3) → method-template synthesizer for `Json.parse<T>` / `Json.toBytes` driving Tier 1 codegen (consumes per-field `@JsonProperty` / `@JsonIgnore` / `@JsonRequired` / `@JsonAlias` / `@JsonInclude` and class-level `@JsonNamingStrategy` / `@JsonStrict`). Unblocks `@ToString(format=TO_STRING_JSON)` synthesizer. | designed | depends on S-1101 |
 
 ## Aspect model — `cajeta.aspect`
 

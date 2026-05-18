@@ -318,10 +318,11 @@ backed by external formats (JSON, MessagePack, Protocol Buffers,
 Avro, Cap'n Proto).
 
 `@Encoding` lets the user route a view's serialization +
-deserialization through a user-defined codec class:
+deserialization through a user-defined codec class. For
+**binary** formats (MessagePack, Protobuf, Avro, Cap'n Proto):
 
 ```cajeta
-@Encoding(JsonEncoder.class)
+@Encoding(MsgPackEncoder.class)
 public class UserMessage {
     int32 id;
     String name;
@@ -329,10 +330,15 @@ public class UserMessage {
 }
 ```
 
+For **JSON**, do NOT use `@Encoding` — call `Json.parse<T>(bytes)` /
+`Json.toBytes(value)` directly with per-field `@JsonProperty` /
+`@JsonIgnore` annotations to control the mapping. See
+`cajeta-docs/stdlib/codec/Json.md` § Tier 1 for the rationale.
+
 When the view is materialized from a byte buffer, the compiler
-emits a call to `JsonEncoder.decode(bytes)` returning a
+emits a call to `MsgPackEncoder.decode(bytes)` returning a
 `UserMessage`. When the view is serialized, the compiler emits
-a call to `JsonEncoder.encode(view)` returning `byte[]`. The
+a call to `MsgPackEncoder.encode(view)` returning `byte[]`. The
 view's field layout in memory is the normal class layout; the
 *wire* layout is whatever the encoder produces.
 
@@ -353,31 +359,41 @@ incremental encoding can land separately without disturbing the
 `Encoder<T>` contract.
 
 Implementations live wherever the user puts them — `cajeta.wire`
-ships baseline implementations (`JsonEncoder`, `MsgPackEncoder`,
-`ProtobufEncoder`) once their respective parsers/writers are in
-place; users can roll their own (`MyCustomEncoder<T> implements
-Encoder<T>`) for proprietary formats.
+ships baseline implementations (`MsgPackEncoder`, `ProtobufEncoder`,
+`AvroEncoder`) once their respective parsers/writers are in place;
+users can roll their own (`MyCustomEncoder<T> implements Encoder<T>`)
+for proprietary formats.
+
+**JSON does NOT use `@Encoding`.** `@Encoding` is the right shape for
+binary formats whose wire bytes are opaque without a class-level
+binding. JSON's format is fixed, and what varies between classes is
+the field-name mapping plus include / exclude / required behavior —
+that's per-field annotation territory (`@JsonProperty`, `@JsonIgnore`,
+`@JsonRequired`, etc.) consumed by the `Json.parse<T>` /
+`Json.toBytes` codec-direct entry points. See
+`cajeta-docs/stdlib/codec/Json.md` § Tier 1 for the full design and
+the rationale.
 
 ### `@Encoding(EncoderClass)` semantics
 
 ```cajeta
-@Encoding(JsonEncoder.class)
+@Encoding(MsgPackEncoder.class)
 public class UserMessage { ... }
 ```
 
-- The class reference (`JsonEncoder.class`) must resolve to a
+- The class reference (`MsgPackEncoder.class`) must resolve to a
   type that implements `Encoder<UserMessage>` (Self-typed). The
   compiler verifies this at type-resolution time; mismatched
   type parameter is a static error with a clear message ("`@Encoding`
-  on `UserMessage`: `JsonEncoder` implements `Encoder<JsonValue>`,
+  on `UserMessage`: `MsgPackEncoder` implements `Encoder<MsgPackValue>`,
   not `Encoder<UserMessage>`. Either parameterize as
-  `JsonEncoder<UserMessage>` or supply an encoder whose type
+  `MsgPackEncoder<UserMessage>` or supply an encoder whose type
   parameter matches.").
 - The compiler synthesizes a view constructor `UserMessage(byte[]
-  bytes)` whose body calls `JsonEncoder.decode(bytes)` and copies
+  bytes)` whose body calls `MsgPackEncoder.decode(bytes)` and copies
   the returned object's fields into `this`.
 - For serialization, the compiler synthesizes `byte[]
-  toBytes()` whose body calls `JsonEncoder.encode(this)`.
+  toBytes()` whose body calls `MsgPackEncoder.encode(this)`.
 - The encoder instance is stateless (the `Encoder<T>` interface
   has no state contract); the compiler emits static-method
   calls. If a future stateful encoder is needed (e.g., schema-
@@ -400,17 +416,17 @@ view's fields are laid out per the normal class layout (vtable
 ptr + fields). The encoder operates on `T` values; the bytes are
 materialized only at the encode/decode boundary.
 
-### Example: JSON-backed view
+### Example: MessagePack-backed view
 
 ```cajeta
 package cajeta.wire;
-public class JsonEncoder<T> implements Encoder<T> {
+public class MsgPackEncoder<T> implements Encoder<T> {
     public byte[] encode(T value) { ... }
     public T decode(byte[] bytes) { ... }
 }
 
 package com.example;
-@Encoding(JsonEncoder<UserMessage>.class)
+@Encoding(MsgPackEncoder<UserMessage>.class)
 public class UserMessage {
     int32 id;
     String name;
@@ -419,18 +435,35 @@ public class UserMessage {
 
 public class Service {
     public UserMessage parse(byte[] body) {
-        return heap UserMessage(body);   // calls JsonEncoder.decode
+        return heap UserMessage(body);   // calls MsgPackEncoder.decode
     }
     public byte[] serialize(UserMessage m) {
-        return m.toBytes();   // calls JsonEncoder.encode
+        return m.toBytes();   // calls MsgPackEncoder.encode
     }
 }
 ```
 
+For JSON, the same `Service` shape is:
+
+```cajeta
+public class Service {
+    public UserMessage parse(byte[] body) {
+        return Json.parse<UserMessage>(body);
+    }
+    public byte[] serialize(UserMessage m) {
+        return Json.toBytes(m);
+    }
+}
+```
+
+— no class-level annotation on `UserMessage`, no encoder class
+mentioned, field-level mapping handled by `@JsonProperty` etc. where
+needed.
+
 ### Open questions for `@Encoding`
 
-- **Class-literal syntax for templated encoders.** `JsonEncoder<UserMessage>.class`
-  vs `JsonEncoder.class` with the parameter inferred. Lean: require
+- **Class-literal syntax for templated encoders.** `MsgPackEncoder<UserMessage>.class`
+  vs `MsgPackEncoder.class` with the parameter inferred. Lean: require
   the explicit parameter so the type-resolution check is
   unambiguous (no inference needed).
 - **What about views that are nested inside other views?** Outer
@@ -487,7 +520,7 @@ contributors don't reach for them expecting them to work.
 | Annotation              | Intended target | Intended effect                                                                                  | Spec                |
 |-------------------------|-----------------|--------------------------------------------------------------------------------------------------|---------------------|
 | `@Immutable`            | class           | Verifies all fields are `final` and field types are themselves immutable.                        | (no doc yet)        |
-| `@JsonSerializable`     | class           | Hint to a future JSON-codec generator. Likely subsumed by `@Encoding(JsonEncoder.class)`.        | (no doc yet)        |
+| `@JsonStrict`           | class           | Reject unknown keys during `Json.parse<T>`. Default policy silently skips them. Per-field `@JsonProperty` / `@JsonIgnore` / `@JsonRequired` / `@JsonAlias` / `@JsonInclude` / `@JsonNamingStrategy` are also part of the JSON annotation surface. | `cajeta-docs/stdlib/codec/Json.md` § Tier 1 |
 | `@NoVTable`             | class           | Suppress vtable header for classes that don't need virtual dispatch. Smaller instances.          | (no doc yet)        |
 | `@Reflectable`          | class           | Opts in to full RTTI metadata (field list, annotations) for runtime reflection.                  | `CajetaReflect.md`  |
 | `@Retained`             | annotation type | Marks an annotation as runtime-readable (Java's `@Retention(RUNTIME)` equivalent).               | `CajetaReflect.md`  |
@@ -570,7 +603,7 @@ for `@Native`. Per `AspectModel.md` § A1, extending the parameter-
 value capture to all annotations is the next infrastructure
 piece — required for `@Order(2)`, `@Component(name = "primary")`,
 `@Inject(name = "primary")`, the Lombok-mirror annotations'
-configuration, and `@Encoding(JsonEncoder.class)`'s class-
+configuration, and `@Encoding(MsgPackEncoder.class)`'s class-
 literal argument.
 
 ### Annotation resolution order
