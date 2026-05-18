@@ -423,6 +423,34 @@ namespace cajeta {
             return buildGeneric(parent, name, parameterList, labeled);
         }
 
+        // Map-storage key for `methods` / `staticMethods` / labeled+
+        // unlabeled method maps. Equal to `toCanonical(labeled)` for
+        // ordinary methods AND for method-templates themselves.
+        //
+        // For a method-template *instantiation* (both
+        // methodTypeParameters and methodTypeArguments non-empty), the
+        // key has the concrete type-args appended as
+        // `<argCanonical,argCanonical,...>`. Two instantiations of
+        // `static <T> Collector<T, ArrayList<T>> toList()` with T=int32
+        // and T=String thereby get distinct keys even though their
+        // value-param signatures (and so their `toCanonical()`) are
+        // identical — which is what lets addMethod's duplicate-static
+        // check accept both. See cajeta-docs/stdlib/MethodLevelTemplate.md
+        // § two-layer naming.
+        //
+        // resolveMethod looks up ordinary methods by their plain
+        // canonical, so non-instantiations stay reachable. Instantiations
+        // are produced and returned directly by tryInstantiateMethodTemplate
+        // — they're never resolved via the map keys, so the suffix on
+        // instantiation keys is invisible to lookup paths.
+        const string getMapKey(bool labeled = false) const;
+
+        // LLVM symbol name. Mirrors getMapKey(true) so instantiations get
+        // distinct LLVM functions (no module-level symbol collision).
+        // Ordinary methods get `toCanonical(true)` exactly as before;
+        // only method-template instantiations carry the type-arg suffix.
+        const string getLlvmSymbolName() const;
+
         void generatePrototype();
 
         void setBlock(BlockPtr block);

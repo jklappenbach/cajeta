@@ -661,10 +661,27 @@ Known limitations:
   (templates carry placeholder T-vars and pre-existing instantiations
   may have the wrong T-args for this call site) — see
   `MethodCallExpression`'s lambda-as-arg propagator.
-- **Templated method whose T-vars don't appear in value params** (e.g.
-  `static <T> int32 sizeOf()`). Multiple instantiations would share
-  the same `toCanonical` and collide in `addMethod`'s duplicate-static
-  check. Mangling the name to disambiguate breaks the lambda
-  expectedType propagator (it looks up by bare name and would only
-  find the template's placeholder formals). Tracked by
-  `MethodTemplateExplicitArgsTests.DISABLED_staticExplicitWhenInferenceWouldFail`.
+- ~~**Templated method whose T-vars don't appear in value params**~~
+  **Resolved 2026-05-18.** Two-layer naming (`Method::getMapKey`
+  + `Method::getLlvmSymbolName`) appends the method-arg suffix
+  `<canonical,canonical,...>` to the `methods` / `staticMethods` /
+  labeled+unlabeled map keys AND to the LLVM function symbol for
+  template *instantiations* (both `methodTypeParameters` and
+  `methodTypeArguments` non-empty). Ordinary methods and the
+  template-definition itself still key on plain `toCanonical`, so
+  `resolveMethod`'s normal lookup paths are unchanged. Instantiations
+  are produced via `tryInstantiateMethodTemplate` (which walks
+  `methodList`, never the canonical maps), so the suffix on
+  instantiation keys is invisible to lookup. The lambda-expectedType
+  propagator was already skipping method-template targets, so
+  mangling the LLVM symbol doesn't reintroduce the propagator
+  confusion the original design feared. Pinned by
+  `MethodTemplateExplicitArgsTests.staticExplicitWhenInferenceWouldFail`
+  (T-only-in-return now compiles + runs end-to-end).
+
+  Earlier limitation text retained for historical reference:
+  > Multiple instantiations would share the same `toCanonical` and
+  > collide in `addMethod`'s duplicate-static check. Mangling the
+  > name to disambiguate breaks the lambda expectedType propagator
+  > (it looks up by bare name and would only find the template's
+  > placeholder formals).

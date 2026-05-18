@@ -63,39 +63,39 @@ TEST(CollectorTests, handRolledSummer) {
 
 // Collectors.toList<int32>() — built-in factory returning a
 // Collector that appends every element into a fresh ArrayList<T>.
-//
-// Disabled: `static <T> Collector<T, ArrayList<T>> toList()` has
-// zero value params, so its method-template instantiations all share
-// `Collectors::toList()` as their canonical and addMethod's
-// duplicate-static check rejects the second instantiation. Same
-// limitation as `MethodTemplateExplicitArgsTests.DISABLED_static
-// ExplicitWhenInferenceWouldFail` and documented in
-// `cajeta-docs/stdlib/MethodLevelTemplate.md` § Status. Hand-rolled
-// `heap Collector<T, R>(seed, accumulator)` is the workaround until
-// two-layer naming (bare name for map lookup + mangled LLVM symbol)
-// lands.
+// Two-layer naming (see staticExplicitWhenInferenceWouldFail in
+// MethodTemplateExplicitArgsTests) unblocked addMethod-side, but
+// the body of `toList` synthesizes a block-body lambda
+// `(ArrayList<T> acc, T x) -> { acc.add(x); return acc; }` whose
+// return type comes out as `void` under the current lambda body-
+// inference path. JIT verify rejects with "Found return instr
+// that returns non-void in Function of void return type" on the
+// synthesized `__cajeta_lambda_0`. That's a separate bug in
+// lambda-block-body return-type inference (the typed-param +
+// explicit-return shape) — not in two-layer naming itself.
 TEST(CollectorTests, DISABLED_collectorsToListSize) {
     auto src = std::string(PRELUDE) +
         "public final class D {\n"
         "    public static int32 run() {\n"
         "        int32[] xs = { 1, 2, 3, 4, 5 };\n"
         "        ArrayStream<int32> s = heap ArrayStream<int32>(xs, 5);\n"
-        "        ArrayList<int32> out = s.collect(Collectors.toList());\n"
+        "        Collector<int32, ArrayList<int32>> c = Collectors.toList<int32>();\n"
+        "        ArrayList<int32> out = s.collect(c);\n"
         "        return out.size();\n"
         "    }\n"
         "}\n";
     EXPECT_EQ(runI32(src), 5);
 }
 
-// Collectors.toList preserves stream order — disabled for the
-// same toCanonical-collision limitation as collectorsToListSize.
+// Same lambda-block-body inference bug as collectorsToListSize.
 TEST(CollectorTests, DISABLED_collectorsToListPreservesOrder) {
     auto src = std::string(PRELUDE) +
         "public final class D {\n"
         "    public static int32 run() {\n"
         "        int32[] xs = { 7, 9, 11 };\n"
         "        ArrayStream<int32> s = heap ArrayStream<int32>(xs, 3);\n"
-        "        ArrayList<int32> out = s.collect(Collectors.toList());\n"
+        "        Collector<int32, ArrayList<int32>> c = Collectors.toList<int32>();\n"
+        "        ArrayList<int32> out = s.collect(c);\n"
         "        return out.get(0) + out.get(1) * 10 + out.get(2) * 100;\n"
         "    }\n"
         "}\n";

@@ -496,7 +496,11 @@ namespace cajeta {
             llvmFunctionType = llvm::FunctionType::get(llvmRet, false);
         }
 
-        string canonical = Method::buildCanonical(parent, name, parameterList, true);
+        // Two-layer naming: instantiations of a same-canonical template
+        // get distinct LLVM symbols via getLlvmSymbolName() (= canonical
+        // + method-arg suffix). Ordinary methods get plain canonical.
+        // See cajeta-docs/stdlib/MethodLevelTemplate.md § two-layer naming.
+        string canonical = getLlvmSymbolName();
         // Generate-prototype runs multiple times on the same method
         // (CajetaClass::generatePrototype iterates, visitClassBody
         // re-iterates, lazy getLlvmFunctionType fallback) — without
@@ -564,9 +568,7 @@ namespace cajeta {
         if (!llvmOriginalFunction) {
             for (auto& m : matchingAdvice) {
                 if (m.kind == AdviceKind::Around) {
-                    std::string originalName =
-                        Method::buildCanonical(parent, name, parameterList, true)
-                        + "__original";
+                    std::string originalName = getLlvmSymbolName() + "__original";
                     llvmOriginalFunction = llvm::Function::Create(
                         llvmFunctionType, llvm::Function::ExternalLinkage,
                         originalName, module->getLlvmModule());
@@ -935,8 +937,7 @@ namespace cajeta {
         llvm::FunctionType* adapterFnTy = llvm::FunctionType::get(
             llvmFunctionType->getReturnType(), adapterParamTys, false);
 
-        std::string baseName =
-            Method::buildCanonical(parent, name, parameterList, true);
+        std::string baseName = getLlvmSymbolName();
 
         // Build adapter[N-1] first (innermost — calls original).
         std::vector<llvm::Function*> adapters(N, nullptr);
@@ -1094,6 +1095,46 @@ namespace cajeta {
         return scope->getField(name);
     }
 
+
+    // Two-layer naming helpers (cajeta-docs/stdlib/MethodLevelTemplate.md
+    // § Status / Known limitations). For instantiations of a method-
+    // template, append the concrete method-level type args so the map
+    // key and LLVM symbol disambiguate two instantiations that would
+    // otherwise share a single `toCanonical` — the case where the T-
+    // vars don't appear in value params (e.g. `static <T> int32 sizeOf()`
+    // or `static <T> Collector<T, ArrayList<T>> toList()`).
+    //
+    // Suffix shape: `<canonical,canonical,...>` over methodTypeArguments.
+    // Empty for the template itself and for ordinary non-templated
+    // methods, so non-instantiation keys/symbols are unchanged.
+    static string buildMethodTypeArgSuffix(
+            const vector<CajetaTypePtr>& methodTypeArguments) {
+        if (methodTypeArguments.empty()) {
+            return "";
+        }
+        string s = "<";
+        for (size_t i = 0; i < methodTypeArguments.size(); ++i) {
+            if (i > 0) s += ",";
+            s += methodTypeArguments[i]->getQName()->toCanonical();
+        }
+        s += ">";
+        return s;
+    }
+
+    const string Method::getMapKey(bool labeled) const {
+        // const_cast: toCanonical and parameterList walk are read-only.
+        // const-correctness across the Method API would be a separate
+        // refactor.
+        string base = const_cast<Method*>(this)->toCanonical(labeled);
+        if (methodTypeParameters.empty() || methodTypeArguments.empty()) {
+            return base;
+        }
+        return base + buildMethodTypeArgSuffix(methodTypeArguments);
+    }
+
+    const string Method::getLlvmSymbolName() const {
+        return getMapKey(true);
+    }
 
     string Method::buildCanonical(CajetaClassPtr parent, const string& name, vector<FormalParameterPtr> parameters, bool labeled) {
         string canonical;

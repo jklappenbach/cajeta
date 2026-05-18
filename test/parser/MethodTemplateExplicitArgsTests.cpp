@@ -73,22 +73,14 @@ TEST(MethodTemplateExplicitArgsTests, staticExplicitTwoTypeArgs) {
 }
 
 // When inference would fail (no value args constrain T), explicit
-// args are the only way to reach a binding.
-//
-// Disabled: this hits the documented limitation that templates whose
-// T-vars don't appear in the value-param signature can't disambiguate
-// their toCanonical between instantiations. The first inst would
-// register fine, but addMethod's duplicate-static check rejects any
-// second-T instantiation since both share `Util::sizeOf()` as their
-// canonical. Mangling the name to disambiguate breaks the lambda-
-// expectedType propagator (which looks up methods by bare name and
-// would then find only the template's placeholder formals, leaving
-// lambdas with R-placeholder return types and JIT-verify failures
-// downstream). Resolving this cleanly needs either (1) the propagator
-// rewritten to substitute T-vars at lookup time from sibling args, or
-// (2) two-layer naming (bare name for map lookup + mangled LLVM symbol
-// + separate uniqueness tracking for the instantiation registry).
-TEST(MethodTemplateExplicitArgsTests, DISABLED_staticExplicitWhenInferenceWouldFail) {
+// args are the only way to reach a binding. Unblocked by two-layer
+// naming: Method::getMapKey / getLlvmSymbolName append the method-arg
+// suffix for instantiations, so the addMethod map keys and LLVM symbol
+// for `Util::sizeOf()<int32>` are distinct from a hypothetical
+// `Util::sizeOf()<int64>` even though both share the value-param
+// signature `()`. The lambda-expectedType propagator stays correct
+// because it already skips method-template instantiations.
+TEST(MethodTemplateExplicitArgsTests, staticExplicitWhenInferenceWouldFail) {
     auto src =
         "package test;\n"
         "public class Util {\n"

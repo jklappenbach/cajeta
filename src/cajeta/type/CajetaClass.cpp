@@ -96,7 +96,12 @@ namespace cajeta {
 
     void mapMethod(MethodPtr method, map<string, map<string, MethodPtr>>& map, bool labeled) {
         string generic = method->toGeneric(labeled);
-        string canonical = method->toCanonical(labeled);
+        // Two-layer naming: instantiations include the method-arg
+        // suffix so two instantiations of a same-canonical template
+        // (T-vars not in value params) coexist in the inner map.
+        // resolveMethod looks up plain canonical for ordinary methods,
+        // which is what getMapKey returns for non-instantiations.
+        string canonical = method->getMapKey(labeled);
 
         auto itrGeneric = map.find(generic);
         if (itrGeneric != map.end()) {
@@ -116,11 +121,16 @@ namespace cajeta {
     }
 
     void CajetaClass::addMethod(MethodPtr method) {
-        methods[method->toCanonical()] = method;
+        // Two-layer naming: instantiations of a same-canonical template
+        // (T-vars not in value params) get distinct keys via the
+        // method-arg suffix in getMapKey(). Ordinary methods key on
+        // their plain canonical, so reachable via resolveMethod's normal
+        // lookup paths. See MethodLevelTemplate.md § two-layer naming.
+        methods[method->getMapKey()] = method;
 
         if (method->isConstructor()) {
             map<string, MethodPtr> canonical = unlabeledConstructorMap[method->toGeneric(false)];
-            if (canonical.find(method->toCanonical(false)) != canonical.end()) {
+            if (canonical.find(method->getMapKey(false)) != canonical.end()) {
                 throw "Constructor already exists";
             }
             mapMethod(method, labeledConstructorMap, true);
@@ -128,13 +138,13 @@ namespace cajeta {
         } else {
             if (method->isStatic()) {
                 map<string, MethodPtr> canonical = unlabeledMethodMap[method->toGeneric(false)];
-                if (canonical.find(method->toCanonical(false)) != canonical.end()) {
+                if (canonical.find(method->getMapKey(false)) != canonical.end()) {
                     throw "A static method with this signature already exists.  Static methods can not be overridden.";
                 }
-                staticMethods[method->toCanonical()] = method;
+                staticMethods[method->getMapKey()] = method;
             }
             methodList.push_back(method);
-            methods[method->toCanonical()] = method;
+            methods[method->getMapKey()] = method;
             mapMethod(method, labeledMethodMap, true);
             mapMethod(method, unlabeledMethodMap, false);
         }
@@ -2264,7 +2274,10 @@ namespace cajeta {
     // duplicate-static check otherwise rejects.
     static void bringMethodTemplateInstantiationToLife(
             CajetaClass* host, MethodPtr inst) {
-        if (host->getMethods().find(inst->toCanonical()) != host->getMethods().end()) {
+        // Probe with the two-layer key so distinct instantiations of a
+        // same-canonical template (T-vars not in value params) each
+        // get their own registration. See Method::getMapKey.
+        if (host->getMethods().find(inst->getMapKey()) != host->getMethods().end()) {
             return;  // already registered + emitted on a prior call
         }
         host->addMethod(inst);

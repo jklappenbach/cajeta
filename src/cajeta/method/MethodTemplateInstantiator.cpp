@@ -246,17 +246,15 @@ namespace cajeta {
         // canonical-name building uses the right class name. The visitor
         // set it to the wrapper class.
         inst->setParentForInstantiation(parent);
-        // Keep the bare method name. The concrete value-param types
-        // usually make the instantiation's toCanonical/toGeneric
-        // distinct from the template's, so map keys + LLVM symbols stay
-        // unique. The exception is a templated method whose T-vars
-        // appear ONLY outside the value-param signature (e.g.
-        // `static <T> int32 sizeOf()`) — there, multiple instantiations
-        // would all share `Util::sizeOf()` and collide in addMethod's
-        // duplicate-static check. That case is documented as a known
-        // limitation; mangling the name to disambiguate breaks lambda-
-        // expectedType propagation (the propagator looks up by bare
-        // name and would only find the template's placeholder formals).
+        // Keep the bare method name. Two-layer naming (Method::getMapKey
+        // + Method::getLlvmSymbolName) appends the method-arg suffix to
+        // the addMethod map keys and the LLVM symbol for instantiations,
+        // so two instantiations of a template whose T-vars don't appear
+        // in value params (e.g. `static <T> int32 sizeOf()`) coexist
+        // without colliding in addMethod's duplicate-static check or in
+        // LLVM module symbol space. The lambda-expectedType propagator
+        // still works because it skips method-template instantiations
+        // entirely (looks up the template, not its specializations).
 
         methodInstantiationCache[suffix] = inst;
         return inst;
