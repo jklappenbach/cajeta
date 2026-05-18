@@ -236,7 +236,19 @@ public class HashMap<K, V> {
             }
             idx = (idx + 1) & (this.cap - 1);
         }
-        return 0;
+        // Miss-path default. Cajeta lacks a generic "zero of V"
+        // literal that works for both primitive V (where it should
+        // be 0) and class V (where it should be null) — `return 0;`
+        // breaks class-V (`ret i64 0` vs `ptr`); `return null;` breaks
+        // primitive-V (`ret ptr null` vs `i32`). The V[1] trick gets
+        // both: a fresh single-element V array is zero-initialized
+        // (null for class V, 0 for primitive V) and element 0 has
+        // the right LLVM type already. The array drops at scope exit
+        // via the drop chain — no escape because we only read the
+        // element. Callers that need to disambiguate "absent" from
+        // "present-and-null/zero" should use containsKey() first.
+        V[] missDefault = new V[1];
+        return missDefault[0];
     }
 
     /**

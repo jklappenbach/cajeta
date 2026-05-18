@@ -413,3 +413,35 @@ TEST(HashMapTests, bracketReplaceUpdatesValue) {
     auto fn = jit->lookup<int32_t (*)()>("run");
     EXPECT_EQ(fn(), 99);
 }
+
+// Class-typed V: HashMap<Tag, Box>. The miss path of get() used to
+// return literal `0` which lowers to `i64 0`, mismatching the
+// function's `ptr` return type when V is a class — JIT verifier
+// rejected the module at compile time. After the fix (return null
+// in the miss path), class-typed V compiles and works end-to-end.
+TEST(HashMapTests, classTypedValueWorks) {
+    auto src =
+        "package test;\n"
+        "import cajeta.collection.HashMap;\n"
+        "public class Tag {\n"
+        "    public int32 id;\n"
+        "    public Tag(int32 i) { this.id = i; }\n"
+        "}\n"
+        "public class Box {\n"
+        "    public int32 payload;\n"
+        "    public Box(int32 p) { this.payload = p; }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        HashMap<Tag, Box> m = new HashMap<Tag, Box>(16);\n"
+        "        Tag t = new Tag(7);\n"
+        "        Box b = new Box(99);\n"
+        "        m.put(t, b);\n"
+        "        Box got = m.get(t);\n"
+        "        return got.payload;\n"  // 99
+        "    }\n"
+        "}\n";
+    auto jit = CajetaJit::compile(src, "test.D");
+    auto fn = jit->lookup<int32_t (*)()>("run");
+    EXPECT_EQ(fn(), 99);
+}
