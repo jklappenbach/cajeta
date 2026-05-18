@@ -22,10 +22,12 @@ using cajeta_test::CajetaJit;
 static const char* MIN_ENCODER =
     "public class MyEncoder { public MyEncoder() { return; } }\n";
 
-// @Encoding alone — should hit the Phase-B-not-implemented deferral.
-TEST(EncodingPhaseATests, encodingAloneIsDeferred) {
+// Phase B's encoder-missing error — when @Encoding names a class
+// without static encode/decode of the right shape, the synthesizer
+// rejects with a clear message.
+TEST(EncodingPhaseATests, encoderMissingDecodeRejected) {
     std::string src = std::string("package test;\n")
-        + MIN_ENCODER
+        + MIN_ENCODER  // no encode/decode methods
         + "@Encoding(MyEncoder.class)\n"
           "public class UserMessage {\n"
           "    public int32 id;\n"
@@ -36,14 +38,14 @@ TEST(EncodingPhaseATests, encodingAloneIsDeferred) {
           "}\n";
     try {
         CajetaJit::compile(src, "test.D");
-        FAIL() << "expected CAJETA_ERROR_ENCODING_NOT_IMPLEMENTED";
+        FAIL() << "expected CAJETA_ERROR_ENCODING_DECODE_MISSING";
     } catch (cajeta::Exception& e) {
-        EXPECT_EQ(e.getErrorId(), "CAJETA_ERROR_ENCODING_NOT_IMPLEMENTED");
+        EXPECT_EQ(e.getErrorId(), "CAJETA_ERROR_ENCODING_DECODE_MISSING");
     }
 }
 
 // @Encoding + @BigEndian on the same class — mutual exclusion fires
-// first (before Phase B deferral).
+// first.
 TEST(EncodingPhaseATests, encodingPlusBigEndianRejected) {
     std::string src = std::string("package test;\n")
         + MIN_ENCODER

@@ -17,6 +17,7 @@
 #include "../method/SynthesizedConstructorMethod.h"
 #include "../method/SynthesizedWithMethod.h"
 #include "../method/SynthesizedBuilderMethods.h"
+#include "../method/SynthesizedEncodingMethods.h"
 #include "CajetaArray.h"
 #include "../field/HeapField.h"
 #include "../error/Exception.h"
@@ -747,6 +748,14 @@ namespace cajeta {
         synthesizeSetters();
         synthesizeToString();
         synthesizeWith();
+        // @Encoding adds instance methods (`T(byte[])` ctor + `byte[]
+        // toBytes()`) that need to land in the vtable. Run BEFORE the
+        // method-prototype loop so the new methods get prototyped here
+        // and BEFORE writeVirtualTable (called later) sees their slot.
+        // The synthesizer's generateCode (which looks up the encoder's
+        // encode/decode by class-ref) runs in a later codegen pass —
+        // by then all classes are prototyped.
+        synthesizeEncoding();
 
         for (auto methodEntry: methods) {
             methodEntry.second->generatePrototype();
@@ -773,13 +782,6 @@ namespace cajeta {
 
         CajetaModule::getStructureToModule()[canonical] = module;
         prototypeBuilt = true;
-
-        // @Encoding mutual-exclusion check + Phase-B-not-implemented
-        // guard. Runs after vtable build but before @Builder (which
-        // also runs last) since both are doctrinal "end-of-class"
-        // synthesizers and order between them doesn't matter for now
-        // — neither references the other's output.
-        synthesizeEncoding();
 
         // @Builder runs LAST — after this class's prototype + vtable
         // are fully built. The Builder synthesizer creates a fresh
@@ -1208,26 +1210,78 @@ namespace cajeta {
             }
         }
 
-        // Phase A reserves the surface and enforces the mutual-
-        // exclusion rule. The actual synthesis of the
-        // `T(byte[])` ctor and `byte[] toBytes()` method is Phase B
-        // (deferred — needs static-method dispatch to a user-named
-        // encoder class, field-copy/memcpy of the decoded body into
-        // `this`, and a real test encoder to exercise round-trip).
-        // Until Phase B lands, requesting @Encoding fails with a
-        // clear deferral message so users aren't surprised by silent
-        // missing behavior.
+        // Phase B: synthesize the byte[]-taking ctor + toBytes() that
+        // delegate to the user-supplied encoder class's static
+        // encode/decode methods.
         std::string encoderName = encAnn->getClassRef("value");
         if (encoderName.empty()) encoderName = encAnn->getString("value");
-        throw Exception(
-            "@Encoding on `" + qName->toCanonical()
-            + "` (encoder: `" + (encoderName.empty() ? "<unspecified>" : encoderName)
-            + "`) is recognized but not yet implemented — the "
-            "synthesizer for the byte[]-taking ctor and toBytes() "
-            "method is Phase B work (Features.md / ToDo Priority 2 § 10). "
-            "Hand-write the equivalent ctor + toBytes() for now, or "
-            "remove the @Encoding annotation until Phase B ships.",
-            "CAJETA_ERROR_ENCODING_NOT_IMPLEMENTED");
+        if (encoderName.empty()) {
+            throw Exception(
+                "@Encoding on `" + qName->toCanonical()
+                + "` is missing the encoder class arg: write "
+                "`@Encoding(MyEncoder.class)`",
+                "CAJETA_ERROR_ENCODING_NO_ARG");
+        }
+
+        // Look up the encoder class. Accept short name or canonical
+        // — mirror the @Override(from=...) resolution pattern.
+        CajetaClassPtr encoder;
+        for (auto& [canon, t] : CajetaType::getCanonicalMap()) {
+            if (auto cls = std::dynamic_pointer_cast<CajetaClass>(t)) {
+                auto qn = cls->getQName();
+                if (qn && (qn->getTypeName() == encoderName
+                        || qn->toCanonical() == encoderName)) {
+                    encoder = cls;
+                    break;
+                }
+            }
+        }
+        if (!encoder) {
+            throw Exception(
+                "@Encoding on `" + qName->toCanonical()
+                + "`: encoder class `" + encoderName
+                + "` not found",
+                "CAJETA_ERROR_ENCODING_ENCODER_NOT_FOUND");
+        }
+
+        // Ensure encoder's prototype is built so its encode/decode
+        // method LLVM functions exist by the time our synth's
+        // generateCode runs. Idempotent (prototypeBuilt guard).
+        encoder->generatePrototype();
+
+        // Skip when the user already declared the equivalents (same
+        // arity match used by other synthesizers).
+        bool ctorExists = ctorWithArityExists(1);
+        bool toBytesExists = false;
+        for (auto& m : methodList) {
+            if (!m || m->isConstructor()) continue;
+            if (m->getName() != "toBytes") continue;
+            auto params = m->getParameterList();
+            size_t userArgs = params.size();
+            if (!params.empty() && params.front()
+                    && params.front()->getName() == "this") {
+                userArgs--;
+            }
+            if (userArgs == 0) { toBytesExists = true; break; }
+        }
+
+        if (!ctorExists) {
+            auto ctor = std::make_shared<SynthesizedEncodingCtor>(
+                module,
+                std::static_pointer_cast<CajetaClass>(shared_from_this()),
+                encoder);
+            ctor->initParameter();
+            addMethod(ctor);
+            // generatePrototype is called by the outer for-loop in
+            // CajetaClass::generatePrototype (we run BEFORE that loop).
+        }
+        if (!toBytesExists) {
+            auto tb = std::make_shared<SynthesizedEncodingToBytes>(
+                module,
+                std::static_pointer_cast<CajetaClass>(shared_from_this()),
+                encoder);
+            addMethod(tb);
+        }
     }
 
     void CajetaClass::synthesizeBuilder() {
