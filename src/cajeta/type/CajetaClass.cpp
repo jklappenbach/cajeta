@@ -217,6 +217,12 @@ namespace cajeta {
                     if (p->isStatic()) continue;
                     slot++;
                 }
+                // MultiClassing Phase 3 v4: each class's slice in the
+                // flattened layout ends with one ptr per transitive
+                // non-self ancestor (vbase pointers). Advance `slot`
+                // past them so subsequent sub-objects' slot indices
+                // are correct.
+                slot += (int) cls->getVbaseAncestors().size();
             };
         walk(std::static_pointer_cast<CajetaClass>(shared_from_this()),
             /*ownVtable=*/true);
@@ -581,6 +587,48 @@ namespace cajeta {
         // standalone IR assumes inline A — removing it without ABI rework
         // would break `this[C].sharedField` and inherited methods on
         // non-first parents that mutate the ancestor via `this.x`).
+        vbaseAncestors.clear();
+        vbaseSlotMap.clear();
+        auto selfRaw = static_cast<const CajetaClass*>(this);
+
+        // Helper: transitive non-self ancestors in DFS order, deduped.
+        // Each class's standalone layout reserves one vbase ptr slot
+        // per such ancestor at the end of its own contribution; when a
+        // class is embedded as a sub-object, the same slots are
+        // physically present in the descendant's layout (so the parent's
+        // standalone IR's GEPs land correctly).
+        //
+        // Object is excluded: every user class auto-extends Object (see
+        // CajetaLlvmVisitor.h `extends Object` injection), Object has no
+        // instance fields, and no method ever GEPs through `this` for an
+        // Object-declared field. Including it would add one ptr per class
+        // for no benefit and balloon struct sizes / break tests that
+        // assume specific layouts.
+        auto isObject = [](const CajetaClass* c) {
+            if (!c) return false;
+            auto qn = c->getQName();
+            return qn && qn->getTypeName() == "Object"
+                && qn->getPackageName() == "cajeta.lang";
+        };
+        auto collectAncestors = [&](CajetaClassPtr cls) {
+            std::vector<CajetaClassPtr> result;
+            std::set<const CajetaClass*> seen;
+            std::function<void(CajetaClassPtr)> walk;
+            walk = [&](CajetaClassPtr c) {
+                if (!c) return;
+                for (auto& parent : c->superClasses) {
+                    if (!parent) continue;
+                    if (isObject(parent.get())) continue;
+                    if (seen.insert(parent.get()).second) {
+                        result.push_back(parent);
+                    }
+                    walk(parent);
+                }
+            };
+            walk(cls);
+            return result;
+        };
+
         std::function<void(CajetaClassPtr, bool, int)> embedSubObject;
         embedSubObject = [&](CajetaClassPtr cls, bool ownVtable, int enclosingStart) {
             int subObjectStart;
@@ -606,9 +654,26 @@ namespace cajeta {
                 if (p->isStatic()) continue;
                 llvmMembers.push_back(fieldLayoutType(p));
             }
+            // MultiClassing Phase 3 v4 vbase pointers — one per cls's
+            // transitive non-self ancestor. Placed after cls's own
+            // properties so existing field GEP indices stay stable in
+            // cls's standalone layout AND in the descendant's
+            // flattened layout. Only the outermost (self) class
+            // records vbaseSlotMap entries — embedded sub-objects'
+            // vbases use their OWN class's map (populated when that
+            // class's standalone generatePrototype runs / ran).
+            auto ancestors = collectAncestors(cls);
+            for (auto& anc : ancestors) {
+                if (cls.get() == selfRaw) {
+                    vbaseSlotMap[anc.get()] = (int) llvmMembers.size();
+                    vbaseAncestors.push_back(anc);
+                }
+                llvmMembers.push_back(vptrTy);
+            }
         };
         embedSubObject(static_pointer_cast<CajetaClass>(shared_from_this()),
             /*ownVtable=*/true, /*enclosingStart=*/0);
+
         ((llvm::StructType*) llvmType)->setBody(llvm::ArrayRef<llvm::Type*>(llvmMembers), false);
 
         ensureDefaultConstructor();

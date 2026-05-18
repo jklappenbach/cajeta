@@ -415,3 +415,75 @@ TEST(MultiClassingPhase3Tests,
         "}\n";
     EXPECT_EQ(runI32(src), 99);
 }
+
+// Full v4 (a): C's method touches BOTH own and inherited fields. The
+// narrow trick disqualifies (single `this` adjustment can't satisfy
+// both); the vbase ABI handles it because inherited-field access
+// loads through vbase while own-field access stays as direct GEP.
+TEST(MultiClassingPhase3Tests,
+        ownMethodOnNonFirstParentTouchesBothOwnAndInheritedFields) {
+    auto src =
+        "package test;\n"
+        "public class A {\n"
+        "  public int32 x;\n"
+        "  public A() { return; }\n"
+        "}\n"
+        "public class B extends A { public B() { return; } }\n"
+        "public class C extends A {\n"
+        "  public int32 cOwn;\n"
+        "  public C() { return; }\n"
+        "  public void cWritesBoth(int32 v) {\n"
+        "    this.x = v;\n"      // inherited from A
+        "    this.cOwn = v;\n"   // C's own
+        "  }\n"
+        "}\n"
+        "public class Diamond extends B, C {\n"
+        "  public Diamond() { return; }\n"
+        "  public int32 callCThenReadShared() {\n"
+        "    super[C].cWritesBoth(77);\n"
+        "    return this.x;\n"
+        "  }\n"
+        "}\n"
+        "public final class D {\n"
+        "  public static int32 run() {\n"
+        "    Diamond d = new Diamond();\n"
+        "    return d.callCThenReadShared();\n"
+        "  }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 77);
+}
+
+// Full v4 (b): C's method calls another method on `this`. The narrow
+// trick disqualifies (the callee's vtable load would see the wrong
+// vtable). The vbase ABI handles it because the callee's IR is itself
+// vbase-aware — `this`-pointer adjustment is irrelevant for shared-
+// ancestor access.
+TEST(MultiClassingPhase3Tests,
+        ownMethodOnNonFirstParentCallsThisHelper) {
+    auto src =
+        "package test;\n"
+        "public class A {\n"
+        "  public int32 x;\n"
+        "  public A() { return; }\n"
+        "}\n"
+        "public class B extends A { public B() { return; } }\n"
+        "public class C extends A {\n"
+        "  public C() { return; }\n"
+        "  public void cHelperWrite(int32 v) { this.x = v; }\n"
+        "  public void cCallsHelper(int32 v) { this.cHelperWrite(v); }\n"
+        "}\n"
+        "public class Diamond extends B, C {\n"
+        "  public Diamond() { return; }\n"
+        "  public int32 callCThenReadShared() {\n"
+        "    super[C].cCallsHelper(55);\n"
+        "    return this.x;\n"
+        "  }\n"
+        "}\n"
+        "public final class D {\n"
+        "  public static int32 run() {\n"
+        "    Diamond d = new Diamond();\n"
+        "    return d.callCThenReadShared();\n"
+        "  }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 55);
+}

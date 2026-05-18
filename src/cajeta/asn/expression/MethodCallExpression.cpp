@@ -11,9 +11,6 @@
 #include "cajeta/method/Method.h"
 #include "cajeta/error/Exception.h"
 #include "cajeta/util/MemoryManager.h"
-#include "cajeta/asn/Statement.h"
-#include "cajeta/asn/LocalVariableDeclaration.h"
-#include "cajeta/asn/VariableDeclarator.h"
 #include "Expression.h"
 #include "DotExpression.h"
 #include "Identifier.h"
@@ -1687,144 +1684,6 @@ namespace cajeta {
         }
         bool isSuperCall = (superLhs != nullptr);
 
-        // MultiClassing Phase 3 v4 narrow trick — "non-first parent's
-        // own method touching shared-ancestor fields". Walks the resolved
-        // method's body to detect: only `this.<inherited-field>` accesses,
-        // all from a single ancestor, no own-field access, no method calls
-        // on `this`. When that pattern holds, the method is safe to call
-        // with `this` pre-adjusted to the ancestor's canonical position
-        // — C's IR's GEPs land on canonical storage instead of C's
-        // dormant inline copy. Same delta formula as v3, but the ancestor
-        // comes from body analysis rather than the resolved method's
-        // declaring class.
-        //
-        // Why narrow: the trick works only when the method body never
-        // dereferences `this` as a C-shaped struct. Any own-field access
-        // (offset includes inherited-block size) or any `this.foo()` call
-        // (vtable lookup on a non-C-vtable, or direct call expecting
-        // C-pointer) would land on wrong storage. Full v4 (general case)
-        // needs vbase ABI per the doctrine; this helper handles the
-        // common stdlib shape (forwarder methods that just mutate a
-        // shared ancestor's field).
-        auto inferSoleInheritedAncestorTouched =
-            [](MethodPtr m) -> CajetaClassPtr {
-                if (!m || !m->getBlock() || !m->getParent()) return nullptr;
-                CajetaClassPtr foundAncestor;
-                bool disqualified = false;
-                std::function<void(const AbstractSyntaxNodePtr&)> walk;
-                walk = [&](const AbstractSyntaxNodePtr& node) {
-                    if (!node || disqualified) return;
-                    // Nested lambda — its `this` is the lambda's closure,
-                    // not the method's. Don't analyze.
-                    if (std::dynamic_pointer_cast<LambdaExpression>(node)) {
-                        return;
-                    }
-                    // `this.<field>` access. LHS = ThisExpression, identifier
-                    // resolves to a property somewhere in the receiver class's
-                    // ancestor chain.
-                    if (auto dot = std::dynamic_pointer_cast<DotExpression>(node)) {
-                        if (!dot->getChildren().empty()) {
-                            auto lhs = dot->getChildren()[0];
-                            if (std::dynamic_pointer_cast<ThisExpression>(lhs)) {
-                                // Find the property's declaring class.
-                                CajetaClassPtr declaring;
-                                std::function<void(CajetaClassPtr)> findDecl;
-                                findDecl = [&](CajetaClassPtr cls) {
-                                    if (!cls || declaring) return;
-                                    for (auto& p : cls->getPropertyList()) {
-                                        if (p->isStatic()) continue;
-                                        if (p->getName() == dot->getIdentifier()) {
-                                            declaring = cls;
-                                            return;
-                                        }
-                                    }
-                                    for (auto& sup : cls->getSuperClasses()) {
-                                        findDecl(sup);
-                                        if (declaring) return;
-                                    }
-                                };
-                                findDecl(m->getParent());
-                                if (declaring) {
-                                    if (declaring.get() == m->getParent().get()) {
-                                        // Own field — trick is unsafe.
-                                        disqualified = true;
-                                        return;
-                                    }
-                                    if (!foundAncestor) {
-                                        foundAncestor = declaring;
-                                    } else if (foundAncestor.get() != declaring.get()) {
-                                        // Two distinct inherited ancestors —
-                                        // single-`this` adjustment can't satisfy.
-                                        disqualified = true;
-                                        return;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    // Any method call on `this` (or bare implicit-this call)
-                    // — disqualifies. The called method may indirect through
-                    // vtable assuming `this` is C-shaped.
-                    if (auto mc = std::dynamic_pointer_cast<MethodCallExpression>(node)) {
-                        if (mc->getChildren().empty()) {
-                            disqualified = true;
-                            return;
-                        }
-                        auto recv = mc->getChildren()[0];
-                        if (std::dynamic_pointer_cast<ThisExpression>(recv)) {
-                            disqualified = true;
-                            return;
-                        }
-                    }
-                    // Statement / expression wrappers don't expose their
-                    // payload via getChildren() (private fields). Mirror
-                    // collectFreeIdentifiers's explicit-getter recursion
-                    // for the shapes that appear in method bodies.
-                    if (auto es = std::dynamic_pointer_cast<ExpressionStatement>(node)) {
-                        walk(es->getExpression());
-                        return;
-                    }
-                    if (auto ret = std::dynamic_pointer_cast<ReturnStatement>(node)) {
-                        walk(ret->getExpression());
-                        return;
-                    }
-                    if (auto ifs = std::dynamic_pointer_cast<IfStatement>(node)) {
-                        walk(ifs->getCondition());
-                        walk(ifs->getThenBranch());
-                        walk(ifs->getElseBranch());
-                        return;
-                    }
-                    if (auto lvd = std::dynamic_pointer_cast<LocalVariableDeclaration>(node)) {
-                        for (auto& vd : lvd->getVariableDeclarators()) {
-                            if (vd && vd->getInitializer()) {
-                                walk(vd->getInitializer());
-                                if (disqualified) return;
-                            }
-                        }
-                        return;
-                    }
-                    if (auto mce = std::dynamic_pointer_cast<MethodCallExpression>(node)) {
-                        // Method-call args live in `parameters`, not `children`.
-                        for (auto& c : mce->getChildren()) {
-                            walk(c);
-                            if (disqualified) return;
-                        }
-                        for (auto& p : mce->getParameters()) {
-                            walk(p.expression);
-                            if (disqualified) return;
-                        }
-                        return;
-                    }
-                    for (auto& c : node->getChildren()) {
-                        walk(c);
-                        if (disqualified) return;
-                    }
-                };
-                walk(m->getBlock());
-                if (disqualified || !foundAncestor) return nullptr;
-                return foundAncestor;
-            };
-
         // MultiClassing Phase 3 v3 (cajeta-docs/stdlib/MultiClassing.md
         // § P-4): inherited-method re-adjustment for diamond. When the
         // user writes `super[C].method()` and `method` is INHERITED from
@@ -1892,37 +1751,11 @@ namespace cajeta {
                             llvm::ConstantInt::get(i64Ty, delta),
                             "diamond_super_canonical");
                     }
-                } else if (resolved && declaringClass
-                        && declaringClass.get() == bracketed.get()) {
-                    // v3 didn't fire (method is declared on the bracketed
-                    // class). Try v4 narrow: if the method body touches
-                    // only inherited fields from a single ancestor and
-                    // makes no `this`-method calls, pre-adjust `this` to
-                    // that ancestor's canonical position. C's IR's GEPs
-                    // for `this.<field>` will then land on canonical
-                    // storage instead of the dormant inline copy.
-                    auto sharedAncestor =
-                        inferSoleInheritedAncestorTouched(resolved);
-                    if (sharedAncestor) {
-                        uint64_t canonical = enclosing->getSubObjectByteOffset(
-                            sharedAncestor.get());
-                        uint64_t viaBrkt = enclosing->getSubObjectByteOffset(
-                                bracketed.get())
-                            + bracketed->getSubObjectByteOffset(
-                                sharedAncestor.get());
-                        if (canonical != viaBrkt) {
-                            auto& ctx = *module->getLlvmContext();
-                            llvm::Type* i8Ty = llvm::Type::getInt8Ty(ctx);
-                            llvm::Type* i64Ty = llvm::Type::getInt64Ty(ctx);
-                            int64_t delta =
-                                (int64_t) canonical - (int64_t) viaBrkt;
-                            thisValue = builder->CreateInBoundsGEP(i8Ty,
-                                thisValue,
-                                llvm::ConstantInt::get(i64Ty, delta),
-                                "diamond_super_v4_canonical");
-                        }
-                    }
                 }
+                // Phase 3 v4 full vbase ABI now handles "method declared
+                // on bracketed class that touches inherited fields" via
+                // vbase indirection in DotExpression. No `this`
+                // adjustment needed at the call site.
             }
         }
 

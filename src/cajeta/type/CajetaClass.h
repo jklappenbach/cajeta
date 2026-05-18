@@ -186,6 +186,25 @@ namespace cajeta {
         // shift after a template instantiation refresh).
         std::map<std::string, llvm::GlobalVariable*> secondaryVTables;
 
+        // MultiClassing Phase 3 v4 vbase ABI (cajeta-docs/stdlib/
+        // MultiClassing.md § Phase 3): for every transitive non-self
+        // ancestor of this class, the layout reserves a `ptr` slot at
+        // the END of own-fields (after all sub-objects + own properties).
+        // The pointer is initialized in the ctor to point at this
+        // ancestor's inline sub-object position; in a diamond descendant,
+        // the descendant's auto-ctor body overwrites non-first parents'
+        // vbase slots to point at the FIRST (canonical) position so all
+        // paths to a shared ancestor agree on storage.
+        //
+        // DotExpression loads through this pointer when accessing an
+        // inherited field: `field_ptr = (load vbase_to_X) + offsetInX`.
+        // Own-field access stays a direct GEP.
+        //
+        // Keyed by raw CajetaClass*; order preserved by vbaseAncestors
+        // (for stable iteration in ctor init + slot assignment).
+        std::vector<CajetaClassPtr> vbaseAncestors;
+        std::map<const CajetaClass*, int> vbaseSlotMap;
+
         MethodPtr getClosestMethod(string methodName, vector<ParameterEntry> parameters, map<string, MethodPtr> canonical);
         MethodPtr getClosestConstructor(string methodName, vector<ParameterEntry> parameters, map<string, MethodPtr> canonical);
 
@@ -325,6 +344,19 @@ namespace cajeta {
         //   3. Append its own non-static fields.
         // This mirrors the layout exactly so a field's slot index lines
         // up with where setBody put it.
+        // MultiClassing Phase 3 v4 vbase accessors.
+        const std::vector<CajetaClassPtr>& getVbaseAncestors() const {
+            return vbaseAncestors;
+        }
+        // Returns -1 when the class isn't in the vbase map (e.g. self,
+        // unrelated class, or a class whose prototype hasn't been built).
+        int getVbaseSlotIndex(const CajetaClass* ancestor) const {
+            if (!ancestor) return -1;
+            auto it = vbaseSlotMap.find(ancestor);
+            if (it == vbaseSlotMap.end()) return -1;
+            return it->second;
+        }
+
         virtual int getFieldLlvmIndex(const StructurePropertyPtr& prop) const {
             // Static properties have no slot in the instance struct —
             // they live in dedicated globals. Return -1 so a caller
@@ -348,6 +380,13 @@ namespace cajeta {
                         if (p->isStatic()) continue;
                         if (p.get() == prop.get()) { result = slot; return; }
                         slot++;
+                    }
+                    // MultiClassing Phase 3 v4: skip cls's vbase pointer
+                    // slots (appended after own properties in the layout)
+                    // so subsequent sub-objects' indices align with the
+                    // embedSubObject walker.
+                    if (result < 0) {
+                        slot += (int) cls->vbaseAncestors.size();
                     }
                 };
             walk(this, /*ownVtable=*/true);

@@ -672,6 +672,38 @@ namespace cajeta {
         // state uninitialized — required for `Optional<T> extends
         // Stream<T>, AbstractHashable<T>` (the AbstractHashable side
         // wouldn't initialize otherwise).
+        // MultiClassing Phase 3 v4 vbase init. Before any inherited-field
+        // access (which goes through vbase) and before super-ctor calls
+        // (parent's ctor will set ITS own vbases), populate self's vbase
+        // pointers to point at the inline ancestor sub-objects within
+        // self. In a single-inheritance / no-diamond case these stay as
+        // the canonical pointers forever. In a diamond descendant, the
+        // descendant ctor (further down, after super-ctor calls)
+        // overwrites non-first parents' vbase slots to canonical.
+        if (constructor && parent && bodyFn->arg_size() > 0
+                && !parent->getVbaseAncestors().empty()) {
+            llvm::Value* receiver = bodyFn->getArg(0);
+            auto& vctx = *module->getLlvmContext();
+            llvm::Type* vi8Ty = llvm::Type::getInt8Ty(vctx);
+            llvm::Type* vi64Ty = llvm::Type::getInt64Ty(vctx);
+            llvm::Type* parentLlvmType = parent->getLlvmType();
+            for (auto& anc : parent->getVbaseAncestors()) {
+                if (!anc) continue;
+                int slotIdx = parent->getVbaseSlotIndex(anc.get());
+                if (slotIdx < 0) continue;
+                llvm::Value* slotPtr = builder->CreateStructGEP(
+                    parentLlvmType, receiver, (unsigned) slotIdx,
+                    "vbase_init_slot");
+                uint64_t off = parent->getSubObjectByteOffset(anc.get());
+                llvm::Value* ancPtr = (off == 0)
+                    ? receiver
+                    : builder->CreateInBoundsGEP(vi8Ty, receiver,
+                        llvm::ConstantInt::get(vi64Ty, off),
+                        "vbase_init_target");
+                builder->CreateStore(ancPtr, slotPtr);
+            }
+        }
+
         if (constructor && parent && bodyFn->arg_size() > 0) {
             // MultiClassing R-2: pre-walk the ctor body's AST to detect
             // any explicit `super(args)` call. The warning condition
@@ -781,6 +813,59 @@ namespace cajeta {
                         /*isConstructor=*/true,
                         supThis,
                         /*callerModule=*/module);
+                }
+            }
+        }
+
+        // MultiClassing Phase 3 v4 vbase descendant fixup. After all
+        // parent ctors have run (each having set ITS own vbase pointers
+        // to point at inline copies within its sub-object), walk each
+        // non-first parent and overwrite their vbase slots to point at
+        // self's CANONICAL (first-encountered) sub-object positions.
+        // This is what makes a diamond ancestor "shared" — every path's
+        // vbase load reaches the same storage.
+        //
+        // For the first parent we don't touch anything: its vbase
+        // initializations already point at canonical positions because
+        // self's canonical for any first-parent-chain ancestor IS the
+        // position the first parent already set.
+        if (constructor && parent && bodyFn->arg_size() > 0
+                && parent->getSuperClasses().size() > 1) {
+            llvm::Value* receiver = bodyFn->getArg(0);
+            auto& fctx = *module->getLlvmContext();
+            llvm::Type* fi8Ty = llvm::Type::getInt8Ty(fctx);
+            llvm::Type* fi64Ty = llvm::Type::getInt64Ty(fctx);
+            int fpIdx = 0;
+            for (auto& sup : parent->getSuperClasses()) {
+                bool isNonFirst = (fpIdx > 0);
+                fpIdx++;
+                if (!isNonFirst) continue;
+                if (!sup) continue;
+                if (sup->getVbaseAncestors().empty()) continue;
+                // Compute non-first parent's start in self.
+                uint64_t parentOff = parent->getSubObjectByteOffset(sup.get());
+                llvm::Value* supThis = (parentOff == 0)
+                    ? receiver
+                    : builder->CreateInBoundsGEP(fi8Ty, receiver,
+                        llvm::ConstantInt::get(fi64Ty, parentOff),
+                        "vbase_fixup_supbase");
+                llvm::Type* parentLlvm = sup->getLlvmType();
+                for (auto& anc : sup->getVbaseAncestors()) {
+                    if (!anc) continue;
+                    int slotIdx = sup->getVbaseSlotIndex(anc.get());
+                    if (slotIdx < 0) continue;
+                    // self's canonical position for anc (first-encountered
+                    // sub-object slot via self's subObjectSlotMap).
+                    uint64_t canonOff = parent->getSubObjectByteOffset(anc.get());
+                    llvm::Value* canonPtr = (canonOff == 0)
+                        ? receiver
+                        : builder->CreateInBoundsGEP(fi8Ty, receiver,
+                            llvm::ConstantInt::get(fi64Ty, canonOff),
+                            "vbase_fixup_canon");
+                    llvm::Value* slotPtr = builder->CreateStructGEP(
+                        parentLlvm, supThis, (unsigned) slotIdx,
+                        "vbase_fixup_slot");
+                    builder->CreateStore(canonPtr, slotPtr);
                 }
             }
         }
