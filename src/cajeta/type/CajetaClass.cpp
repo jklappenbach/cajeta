@@ -1571,6 +1571,151 @@ namespace cajeta {
         };
         walk(static_pointer_cast<CajetaClass>(shared_from_this()));
 
+        // MultiClassing Phase 1 (P-1, cajeta-docs/stdlib/MultiClassing.md):
+        // detect collisions between sibling parents BEFORE the alias walk
+        // hides them. The pre-existing walk above is last-write-wins by
+        // declaration order (B silently shadows A when both are siblings
+        // of this class); without this check, `c.kind()` would dispatch
+        // to B with no diagnostic. Two distinct ambiguity flavors and a
+        // separate return-type-collision flavor are all raised here.
+        //
+        // The check walks the full ancestor closure and gathers, per
+        // suffix, the set of distinct declaring classes that contribute
+        // a concrete method body. A class with method `step()` declared
+        // on two siblings (neither is ancestor of the other) and no
+        // override on the current class is structurally ambiguous.
+        {
+            // suffix → list of (declaringClass, methodPtr) across all
+            // ancestors AND self. Self-entries shadow ancestor entries
+            // and resolve the ambiguity.
+            std::map<std::string,
+                std::vector<std::pair<CajetaClassPtr, MethodPtr>>> bySuffixAll;
+            std::function<void(CajetaClassPtr)> gather = [&](CajetaClassPtr c) {
+                for (auto& sup : c->getSuperClasses()) {
+                    if (sup) gather(sup);
+                }
+                for (auto& m : c->getMethodList()) {
+                    if (!m) continue;
+                    if (m->isConstructor()) continue;
+                    if (m->getModifiers().find(STATIC) != m->getModifiers().end()) continue;
+                    std::string suffix = suffixOf(m->toCanonical(/*labeled=*/false));
+                    bySuffixAll[suffix].push_back({c, m});
+                }
+            };
+            auto self = static_pointer_cast<CajetaClass>(shared_from_this());
+            gather(self);
+
+            // "is `anc` an ancestor of `desc`?" — walks desc's super
+            // chain looking for anc. Self-equal counts as ancestor so
+            // a self-declared method always wins over inherited ones.
+            std::function<bool(CajetaClassPtr, CajetaClassPtr)> isAncestor =
+                [&](CajetaClassPtr anc, CajetaClassPtr desc) -> bool {
+                    if (!anc || !desc) return false;
+                    if (anc.get() == desc.get()) return true;
+                    for (auto& sup : desc->getSuperClasses()) {
+                        if (isAncestor(anc, sup)) return true;
+                    }
+                    return false;
+                };
+
+            // Return-type canonical for comparison. Null returns
+            // (void) get a distinct sentinel so void-vs-int conflicts
+            // are detected.
+            auto retCanon = [](const MethodPtr& m) -> std::string {
+                auto rt = m->getReturnType();
+                if (!rt) return std::string("<void>");
+                return rt->toCanonical();
+            };
+            // Two return types are compatible if either canonical
+            // matches OR both are CajetaClass instances and one is
+            // the ancestor of the other (covariant override). The
+            // narrower type can flow into the wider via implicit
+            // upcast at the call site.
+            auto returnsCompatible = [&](const MethodPtr& a,
+                                         const MethodPtr& b) -> bool {
+                if (retCanon(a) == retCanon(b)) return true;
+                auto ra = std::dynamic_pointer_cast<CajetaClass>(a->getReturnType());
+                auto rb = std::dynamic_pointer_cast<CajetaClass>(b->getReturnType());
+                if (!ra || !rb) return false;
+                return isAncestor(ra, rb) || isAncestor(rb, ra);
+            };
+
+            for (auto& [suffix, decls] : bySuffixAll) {
+                if (decls.size() < 2) continue;
+
+                // Return-type collision check — applies regardless of
+                // override, because the vtable slot's signature has to
+                // be one thing and conflicting return types make any
+                // call structurally broken. Covariant overrides
+                // (subclass narrows the return type) are allowed.
+                for (size_t i = 1; i < decls.size(); ++i) {
+                    if (!returnsCompatible(decls.front().second, decls[i].second)) {
+                        std::string msg = "class '" + qName->toCanonical()
+                            + "': method '" + suffix
+                            + "' is declared with conflicting return types — '"
+                            + decls.front().first->getQName()->toCanonical()
+                            + "' returns '" + retCanon(decls.front().second)
+                            + "' but '" + decls[i].first->getQName()->toCanonical()
+                            + "' returns '" + retCanon(decls[i].second)
+                            + "'. Cajeta allows covariant overrides (subclass "
+                            + "narrows the return type) but unrelated types "
+                            + "cannot share a vtable slot";
+                        throw Exception(msg,
+                            "CAJETA_ERROR_RETURN_TYPE_COLLISION");
+                    }
+                }
+
+                // Method ambiguity check — fires only when there's no
+                // self override and the contributing classes include
+                // two siblings (no inheritance relationship between
+                // them). Abstract-only declarations on a side are
+                // treated as obligations rather than impls, so they
+                // don't create ambiguity by themselves.
+                bool selfDeclares = false;
+                std::vector<std::pair<CajetaClassPtr, MethodPtr>> concrete;
+                for (auto& [cls, m] : decls) {
+                    if (cls.get() == self.get() && !m->isAbstract()) {
+                        selfDeclares = true;
+                    }
+                    if (!m->isAbstract()) {
+                        concrete.push_back({cls, m});
+                    }
+                }
+                if (selfDeclares) continue;
+                if (concrete.size() < 2) continue;
+
+                // Find any pair (a, b) where neither is ancestor of
+                // the other — that's a sibling collision.
+                CajetaClassPtr siblingA, siblingB;
+                for (size_t i = 0; i < concrete.size() && !siblingA; ++i) {
+                    for (size_t j = i + 1; j < concrete.size(); ++j) {
+                        if (concrete[i].first.get() == concrete[j].first.get()) continue;
+                        bool aIsAncOfB = isAncestor(concrete[i].first, concrete[j].first);
+                        bool bIsAncOfA = isAncestor(concrete[j].first, concrete[i].first);
+                        if (!aIsAncOfB && !bIsAncOfA) {
+                            siblingA = concrete[i].first;
+                            siblingB = concrete[j].first;
+                            break;
+                        }
+                    }
+                }
+                if (siblingA && siblingB) {
+                    std::string msg = "class '" + qName->toCanonical()
+                        + "': call to '" + suffix + "' is ambiguous; both '"
+                        + siblingA->getQName()->toCanonical() + "::" + suffix
+                        + "' and '"
+                        + siblingB->getQName()->toCanonical() + "::" + suffix
+                        + "' reach this class through different parents. "
+                        + "Resolve by either (1) overriding '" + suffix
+                        + "' in '" + qName->toCanonical()
+                        + "' or (2) qualifying the call via 'super[Base]."
+                        + suffix + "' (MultiClassing Phase 2)";
+                    throw Exception(msg,
+                        "CAJETA_ERROR_AMBIGUOUS_METHOD_DISPATCH");
+                }
+            }
+        }
+
         // Also re-key the resulting entries so a dispatch using the
         // BASE class's canonical-hash also finds the override. Build a
         // parallel map keyed by suffix; for each entry, walk all its

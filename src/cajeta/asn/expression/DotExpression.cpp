@@ -256,21 +256,82 @@ namespace cajeta {
         // returned by getFieldLlvmIndex are valid for any descendant's
         // LLVM struct because subclass structs prepend parent fields at
         // the parent's indices.
+        //
+        // MultiClassing Phase 1 (P-1): walk the FULL parent set
+        // (not first-match-wins), gather every class that declares a
+        // property by this name, and reject when the gathered set
+        // contains two sibling classes (no inheritance relationship)
+        // and the receiver class itself doesn't shadow the name.
+        // `getProperties()` is per-declaring-class — inherited fields
+        // are NOT in the subclass's map — so a self-shadow shows up
+        // as `klass->getProperties().find(identifier) != end()`.
         StructurePropertyPtr lookedUpProperty;
-        std::function<bool(const CajetaClassPtr&)> findProp =
-            [&](const CajetaClassPtr& cls) -> bool {
+        std::vector<std::pair<CajetaClassPtr, StructurePropertyPtr>> allMatches;
+        std::function<void(const CajetaClassPtr&)> gatherProps =
+            [&](const CajetaClassPtr& cls) {
                 auto pit = cls->getProperties().find(identifier);
                 if (pit != cls->getProperties().end()) {
-                    lookedUpProperty = pit->second;
-                    return true;
+                    allMatches.push_back({cls, pit->second});
                 }
                 for (auto& parent : cls->getSuperClasses()) {
-                    if (findProp(parent)) return true;
+                    gatherProps(parent);
                 }
-                return false;
             };
-        if (!findProp(klass)) {
+        gatherProps(klass);
+        if (allMatches.empty()) {
             return nullptr;
+        }
+        // Self-shadow resolves ambiguity. Take the receiver class's
+        // own property if it declared one.
+        auto selfPit = klass->getProperties().find(identifier);
+        bool selfShadows = (selfPit != klass->getProperties().end());
+        if (!selfShadows && allMatches.size() > 1) {
+            // Check for sibling collision: two declaring classes
+            // where neither is ancestor of the other.
+            std::function<bool(CajetaClassPtr, CajetaClassPtr)> isAncestor =
+                [&](CajetaClassPtr anc, CajetaClassPtr desc) -> bool {
+                    if (!anc || !desc) return false;
+                    if (anc.get() == desc.get()) return true;
+                    for (auto& sup : desc->getSuperClasses()) {
+                        if (isAncestor(anc, sup)) return true;
+                    }
+                    return false;
+                };
+            for (size_t i = 0; i < allMatches.size(); ++i) {
+                for (size_t j = i + 1; j < allMatches.size(); ++j) {
+                    if (allMatches[i].first.get() == allMatches[j].first.get()) continue;
+                    bool aIsAncOfB = isAncestor(allMatches[i].first, allMatches[j].first);
+                    bool bIsAncOfA = isAncestor(allMatches[j].first, allMatches[i].first);
+                    if (!aIsAncOfB && !bIsAncOfA) {
+                        std::string msg = "field access '" + identifier
+                            + "' on class '"
+                            + klass->getQName()->toCanonical()
+                            + "' is ambiguous; both '"
+                            + allMatches[i].first->getQName()->toCanonical()
+                            + "." + identifier + "' and '"
+                            + allMatches[j].first->getQName()->toCanonical()
+                            + "." + identifier
+                            + "' reach this class through different parents. "
+                            + "Resolve by either (1) declaring '"
+                            + identifier + "' on '"
+                            + klass->getQName()->toCanonical()
+                            + "' to shadow both or (2) qualifying the access "
+                            + "via 'this[Base]." + identifier
+                            + "' (MultiClassing Phase 2)";
+                        throw cajeta::Exception(msg,
+                            "CAJETA_ERROR_AMBIGUOUS_FIELD_ACCESS");
+                    }
+                }
+            }
+        }
+        // Pick the property — self-shadow wins; otherwise the first
+        // gathered match (DFS / declaration order) is the one to use.
+        // Common-ancestor case (multiple matches but all collapse to
+        // one declaring class) reaches here cleanly.
+        if (selfShadows) {
+            lookedUpProperty = selfPit->second;
+        } else {
+            lookedUpProperty = allMatches.front().second;
         }
         // Synthesize an iterator-like pair so the existing `it->second`
         // code below continues to work unchanged. The found property is
