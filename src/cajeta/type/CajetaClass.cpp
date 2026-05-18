@@ -1565,6 +1565,84 @@ namespace cajeta {
             auto pos = canon.rfind("::");
             return (pos == string::npos) ? canon : canon.substr(pos + 2);
         };
+
+        // MultiClassing R-3 (cajeta-docs/stdlib/MultiClassing.md): when
+        // a method on THIS class carries @Override(from=X), verify X is
+        // an ancestor of this class AND X declares a same-suffix
+        // method. Both the identifier form (`from=B`) and class-literal
+        // form (`from=B.class`) are accepted — the visitor classifies
+        // them as String and ClassRef respectively, so the lookup
+        // checks both kinds.
+        //
+        // The check fires here (before the main walk + alias walk) so
+        // it doesn't get tangled with override resolution. It's a
+        // documentation+verification annotation; absence of @Override
+        // or absence of `from=` is fine and skips the check.
+        for (auto& m : methodList) {
+            if (!m) continue;
+            auto overrideAnn = m->findAnnotation("Override");
+            if (!overrideAnn) continue;
+            std::string fromName = overrideAnn->getClassRef("from");
+            if (fromName.empty()) fromName = overrideAnn->getString("from");
+            if (fromName.empty()) continue;
+            // Resolve `fromName` against the canonical map (short or
+            // canonical name both accepted), then walk this class's
+            // ancestor chain to verify it's actually an ancestor.
+            CajetaClassPtr fromClass;
+            for (auto& [canon, t] : CajetaType::getCanonicalMap()) {
+                if (auto cls = std::dynamic_pointer_cast<CajetaClass>(t)) {
+                    auto qn = cls->getQName();
+                    if (qn && (qn->getTypeName() == fromName
+                            || qn->toCanonical() == fromName)) {
+                        fromClass = cls;
+                        break;
+                    }
+                }
+            }
+            bool isAncestor = false;
+            if (fromClass) {
+                std::function<bool(CajetaClassPtr)> walkAncestors =
+                    [&](CajetaClassPtr c) -> bool {
+                        if (!c) return false;
+                        for (auto& sup : c->getSuperClasses()) {
+                            if (sup.get() == fromClass.get()) return true;
+                            if (walkAncestors(sup)) return true;
+                        }
+                        return false;
+                    };
+                isAncestor = walkAncestors(
+                    static_pointer_cast<CajetaClass>(shared_from_this()));
+            }
+            if (!fromClass || !isAncestor) {
+                std::string msg = "@Override(from=" + fromName + ") on '"
+                    + m->toCanonical(/*labeled=*/false) + "' in class '"
+                    + qName->toCanonical() + "': '" + fromName
+                    + "' is not an ancestor of '" + qName->toCanonical()
+                    + "'";
+                throw Exception(msg, "CAJETA_ERROR_OVERRIDE_FROM_MISMATCH");
+            }
+            // Check that fromClass declares a method whose suffix matches
+            // ours (same name + same parameter types).
+            std::string ourSuffix = suffixOf(m->toCanonical(/*labeled=*/false));
+            bool sameSuffixFound = false;
+            for (auto& fm : fromClass->getMethodList()) {
+                if (!fm) continue;
+                if (fm->isConstructor()) continue;
+                if (fm->getModifiers().find(STATIC) != fm->getModifiers().end()) continue;
+                if (suffixOf(fm->toCanonical(/*labeled=*/false)) == ourSuffix) {
+                    sameSuffixFound = true;
+                    break;
+                }
+            }
+            if (!sameSuffixFound) {
+                std::string msg = "@Override(from=" + fromName + ") on '"
+                    + m->toCanonical(/*labeled=*/false) + "' in class '"
+                    + qName->toCanonical() + "': '"
+                    + fromClass->getQName()->toCanonical()
+                    + "' does not declare a method with matching name + parameters";
+                throw Exception(msg, "CAJETA_ERROR_OVERRIDE_FROM_MISMATCH");
+            }
+        }
         std::function<void(CajetaClassPtr)> walk = [&](CajetaClassPtr c) {
             for (auto& sup : c->getSuperClasses()) walk(sup);
             for (auto& m : c->getMethodList()) {
