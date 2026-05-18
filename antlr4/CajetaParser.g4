@@ -156,14 +156,26 @@ classBodyDeclaration
     | modifier* memberDeclaration
     ;
 
-// Note: there are no method-, operator-, or constructor-level template
-// declarations. Every method in Cajeta is virtual (like Java), and
-// template-on-virtual would have no way to populate the vtable — the
-// receiver's vtable would need a slot per (method, arg-type-list) and
-// the call site can't know which to install without runtime type-arg
-// metadata, which contradicts the monomorphization-per-instantiation
-// design. C++ explicitly forbids template virtual methods for the same
-// reason. Class templates remain supported (templates aren't methods).
+// Method-level templates: instance + static methods may introduce
+// their own typeParameters via `<R>` immediately before the return
+// type (see methodDeclaration). Such methods are inherently NON-
+// virtual — the templating itself excludes them from the vtable
+// (the vtable would need one slot per (method, type-arg-list) and
+// the set of arg lists isn't knowable at vtable-build time, which
+// contradicts the monomorphization-per-instantiation design; C++
+// forbids the construct for the same reason).
+//
+// Calls to method-templated methods resolve statically on the
+// receiver's static type and emit direct calls to the monomorphized
+// symbol. Subclass declarations with the same name as a method-
+// templated parent method shadow rather than override (warning
+// emitted; same model Java applies to `static` shadowing). See
+// cajeta-docs/stdlib/MethodLevelTemplate.md for the dispatch model
+// and constraints.
+//
+// Constructor and operator declarations remain non-templated at the
+// method level (the construct/operator entry shapes don't compose
+// with per-call monomorphization).
 memberDeclaration
     : methodDeclaration
     | operatorOverloadDeclaration
@@ -228,9 +240,16 @@ operatorOverloadDeclaration
    This simplifies grammar and we can consider void to be a type, which
    renders the [] matching as a llvmContext-sensitive issue or a semantic check
    for invalid return type after parsing.
+
+   Optional `typeParameters` prefix introduces method-level type
+   parameters (cajeta-docs/stdlib/MethodLevelTemplate.md). When
+   present, the method is non-virtual and monomorphized per call
+   site over (receiver-class args x method-level args). The same
+   typeParameters nonterminal used for classDeclaration is reused
+   here.
  */
 methodDeclaration
-    : typeTypeOrVoid identifier formalParameters ('[' ']')*
+    : typeParameters? typeTypeOrVoid identifier formalParameters ('[' ']')*
       (THROWS qualifiedNameList)?
       methodBody
     ;

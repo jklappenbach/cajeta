@@ -92,11 +92,7 @@ TEST(UnsupportedExpressionTests, innerCreatorThrowsNotImplemented) {
     expectNotImplemented(src, "inner-class");
 }
 
-TEST(UnsupportedExpressionTests, explicitTemplateInvocationThrowsNotImplemented) {
-    // `obj.<T>foo()` triggers the DOT branch's explicit-template-invocation
-    // sub-case. The grammar still accepts the syntax; codegen rejects it.
-    auto src = makeSource("int32",
-        "int32 obj = 0;\n"
-        "return obj.<int32>method();");
-    expectNotImplemented(src, "explicit template invocation");
-}
+// `obj.<T>method()` — explicit method-level type arguments. Now
+// implemented as Phase 3 of cajeta-docs/stdlib/MethodLevelTemplate.md;
+// see MethodTemplateExplicitArgsTests for coverage. The
+// previously-stub UnsupportedExpression branch has been removed.

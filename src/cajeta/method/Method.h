@@ -14,6 +14,7 @@
 #include "../type/Scope.h"
 #include "../type/CajetaType.h"
 #include "../field/Field.h"
+#include "../type/Templates.h"
 #include "queue"
 #include "map"
 
@@ -113,6 +114,26 @@ namespace cajeta {
         // lint pass walks them.
         vector<QualifiedNamePtr> throwsList;
         int virtualTableIndex;
+
+        // Method-level templates (cajeta-docs/stdlib/MethodLevelTemplate.md).
+        // `methodTypeParameters` non-empty AND `methodTypeArguments` empty =
+        // a method-template declaration (no LLVM function emitted; body source
+        // captured for re-parse at call sites that instantiate it). Both non-
+        // empty = a concrete instantiation produced by per-call monomorphization.
+        // Both empty = an ordinary non-templated method.
+        //
+        // `methodSource` captures the raw text of just the methodDeclaration
+        // rule (from `final <R>` through the closing brace) so the body can
+        // be re-parsed with substitutions pushed. Per-call cache keys the
+        // resulting Method on the parent class.
+        vector<TypeParameter> methodTypeParameters;
+        vector<CajetaTypePtr> methodTypeArguments;
+        string methodSource;
+        // Per-method instantiation cache. Keyed by `<argCanonical,...>` over
+        // methodTypeArguments. Only populated on the template Method (the
+        // one with empty methodTypeArguments); instantiations themselves
+        // don't recurse.
+        map<string, MethodPtr> methodInstantiationCache;
 
         // Stack of drop frames. Each Block::generateCode pushes a frame
         // at entry, registers any owned locals declared inside into the
@@ -275,6 +296,49 @@ namespace cajeta {
 
         bool isVarargs() const { return varargsFlag; }
         void setVarargs(bool v) { varargsFlag = v; }
+
+        // Method-level template predicates and accessors. `isMethodTemplate()`
+        // means the declaration introduces method-level type parameters and
+        // hasn't been instantiated yet — no LLVM function is emitted and the
+        // method is excluded from vtable build. `isMethodTemplateInstantiation()`
+        // means this is a concrete monomorphization produced by an
+        // instantiation site.
+        bool isMethodTemplate() const {
+            return !methodTypeParameters.empty() && methodTypeArguments.empty();
+        }
+        bool isMethodTemplateInstantiation() const {
+            return !methodTypeParameters.empty() && !methodTypeArguments.empty();
+        }
+        const vector<TypeParameter>& getMethodTypeParameters() const {
+            return methodTypeParameters;
+        }
+        void setMethodTypeParameters(vector<TypeParameter> params) {
+            methodTypeParameters = std::move(params);
+        }
+        const vector<CajetaTypePtr>& getMethodTypeArguments() const {
+            return methodTypeArguments;
+        }
+        void setMethodTypeArguments(vector<CajetaTypePtr> args) {
+            methodTypeArguments = std::move(args);
+        }
+        const string& getMethodSource() const { return methodSource; }
+        void setMethodSource(string src) { methodSource = std::move(src); }
+
+        // Per-call instantiation. Re-parses the captured method source with
+        // a substitution map built from (methodTypeParameters[i].name -> args[i])
+        // pushed on the module, materializes a concrete MethodPtr, emits its
+        // LLVM function with a mangled name, and caches by arg-list canonical.
+        // Returns the cached instance on repeat calls.
+        //
+        // Only valid on a template method (asserts isMethodTemplate()).
+        // Implemented in MethodTemplateInstantiator.cpp.
+        MethodPtr instantiateMethodTemplate(vector<CajetaTypePtr> args);
+
+        // Used by MethodTemplateInstantiator to reparent an instantiation
+        // from the throwaway wrapper class (used to host the re-parse) to
+        // the original template's parent. Call sites otherwise shouldn't
+        // change a method's parent after construction.
+        void setParentForInstantiation(CajetaClassPtr p) { parent = p; }
 
         vector<FormalParameterPtr> getParameterList() { return parameterList; }
 

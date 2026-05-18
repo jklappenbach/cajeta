@@ -871,6 +871,51 @@ namespace cajeta {
             for (auto& modifierContext: ctx->modifier()) {
                 memberDeclaration->onModifier(any_cast<Modifier>(visitModifier(modifierContext)));
             }
+
+            // Method-level template post-check (cajeta-docs/stdlib/
+            // MethodLevelTemplate.md): a declaration that introduces
+            // method-level type parameters MUST be declared `final` or
+            // `static`. The rule surfaces the non-virtuality at the
+            // declaration site (the templating itself excludes the
+            // method from the vtable, but readers benefit from the
+            // explicit marker; same convention Java/C++ use). Also
+            // capture the enclosing classBodyDeclaration's source text
+            // here so per-call monomorphization can re-parse the
+            // method with substitutions pushed without needing to
+            // retain ANTLR contexts.
+            if (auto methodDecl = std::dynamic_pointer_cast<MethodDeclaration>(memberDeclaration)) {
+                if (auto m = methodDecl->getMethod()) {
+                    if (m->isMethodTemplate()) {
+                        auto& mods = m->getModifiers();
+                        bool isFinal = mods.find(FINAL) != mods.end();
+                        bool isStatic = mods.find(STATIC) != mods.end();
+                        if (!isFinal && !isStatic) {
+                            char buf[400];
+                            snprintf(buf, sizeof(buf),
+                                "method '%s' introduces method-level type "
+                                "parameter(s) but is not declared 'final' or "
+                                "'static'. Method-level templates are non-"
+                                "virtual (they occupy no vtable slot) and must "
+                                "be marked explicitly to surface that property "
+                                "at the declaration site. See cajeta-docs/"
+                                "stdlib/MethodLevelTemplate.md. Fix: add "
+                                "'final' modifier (or 'static' if no receiver "
+                                "is needed).",
+                                m->getName().c_str());
+                            throw Exception(buf,
+                                "CAJETA_ERROR_METHOD_TEMPLATE_NOT_FINAL");
+                        }
+                        auto* startTok = ctx->getStart();
+                        auto* stopTok = ctx->getStop();
+                        if (startTok && stopTok && startTok->getInputStream()) {
+                            antlr4::misc::Interval interval(
+                                startTok->getStartIndex(), stopTok->getStopIndex());
+                            m->setMethodSource(
+                                startTok->getInputStream()->getText(interval));
+                        }
+                    }
+                }
+            }
             return memberDeclaration;
         }
 
@@ -967,6 +1012,72 @@ namespace cajeta {
 
         virtual std::any visitMethodDeclaration(CajetaParser::MethodDeclarationContext* ctx) override {
             string name = ctx->identifier()->getText();
+
+            // Method-level templates (cajeta-docs/stdlib/MethodLevelTemplate.md):
+            // capture <R, ...> if present, push a placeholder substitution so
+            // formals + return type referencing R resolve cleanly during this
+            // pass, then capture the body source for per-call re-parse instead
+            // of walking it (the body's locals reference the placeholder T-vars
+            // and can't codegen without real arg types). The placeholder is a
+            // lightweight CajetaClass whose canonical IS the type-parameter
+            // name — same approach the class-template path uses while the
+            // template snippet is being walked at instantiation time.
+            vector<TypeParameter> methodTypeParameters;
+            bool isMethodTemplate = false;
+            if (auto* tps = ctx->typeParameters()) {
+                isMethodTemplate = true;
+                for (auto* tp : tps->typeParameter()) {
+                    TypeParameter param(tp->identifier()->getText());
+                    if (auto* bound = tp->typeBound()) {
+                        for (auto* tt : bound->typeType()) {
+                            if (auto* coi = tt->classOrInterfaceType()) {
+                                param.bounds.push_back(QualifiedName::fromContext(coi));
+                            }
+                        }
+                    }
+                    methodTypeParameters.push_back(std::move(param));
+                }
+            }
+            // Push placeholder substitution: each method-level T-var gets a
+            // fresh CajetaClass placeholder named after the parameter. Real
+            // instantiations replace this with concrete arg types.
+            //
+            // Discriminator: if the FIRST type-param name already resolves
+            // via the current substitution stack, we're inside a re-parse
+            // for monomorphization (MethodTemplateInstantiator pushed the
+            // real types before walking). Don't shadow those bindings with
+            // placeholders, and DO walk the body — that's the whole point
+            // of the re-parse.
+            bool isInstantiationReparse = false;
+            if (isMethodTemplate && !methodTypeParameters.empty()) {
+                if (pModule->lookupTypeParameter(
+                        methodTypeParameters[0].name)) {
+                    isInstantiationReparse = true;
+                }
+            }
+            if (isMethodTemplate && !isInstantiationReparse) {
+                // Start from any class-level substitution already in scope
+                // (when this method lives inside a templated class being
+                // instantiated, the class's T-vars are bound by the outer
+                // push). Add the method-level placeholders ON TOP, then
+                // push as a single frame — lookupTypeParameter only checks
+                // the top frame, so we have to carry the inherited bindings
+                // forward or class-level T-vars would fail to resolve in
+                // the method's formals/return.
+                std::map<std::string, CajetaTypePtr> ph;
+                if (auto inherited = pModule->getCurrentTypeSubstitution()) {
+                    ph = *inherited;
+                }
+                for (auto& tp : methodTypeParameters) {
+                    auto qn = QualifiedName::getOrInsert(tp.name, "");
+                    auto holder = std::make_shared<CajetaClass>(pModule, qn,
+                        std::list<QualifiedNamePtr>{});
+                    holder->setPlaceholder(true);
+                    ph[tp.name] = holder;
+                }
+                pModule->pushTypeSubstitution(std::move(ph));
+            }
+
             vector<FormalParameterPtr> formalParameters;
             bool varargs = false;
             if (auto* fpList = ctx->formalParameters()->formalParameterList()) {
@@ -987,9 +1098,19 @@ namespace cajeta {
             // body methods). For the `;` form, visitMethodBody returns an
             // empty std::any and any_cast<BlockPtr> would throw bad_any_cast.
             // Guard so abstract methods land as Method with a null block.
+            //
+            // Method-template body parse is DEFERRED on the initial walk
+            // (the body references method-level T-vars that can't codegen
+            // without real arg types). On the re-parse path triggered by
+            // MethodTemplateInstantiator, real arg types are bound — walk
+            // the body normally.
             BlockPtr block;
-            if (ctx->methodBody() && ctx->methodBody()->block()) {
+            bool walkBody = !isMethodTemplate || isInstantiationReparse;
+            if (walkBody && ctx->methodBody() && ctx->methodBody()->block()) {
                 block = any_cast<BlockPtr>(visitMethodBody(ctx->methodBody()));
+            }
+            if (isMethodTemplate && !isInstantiationReparse) {
+                pModule->popTypeSubstitution();
             }
             MethodPtr method = Method::create(
                 this->pModule,
@@ -998,6 +1119,11 @@ namespace cajeta {
                 formalParameters,
                 block,
                 pModule->getStructureStack().front());
+            if (isMethodTemplate) {
+                method->setMethodTypeParameters(std::move(methodTypeParameters));
+                // Source-text capture happens in visitClassBodyDeclaration
+                // where the enclosing modifiers (final/static) are in scope.
+            }
             method->setVarargs(varargs);
             // No body (methodBody was `;`) = abstract method. Method::generate*
             // already skips function emission when abstractFlag is set;
@@ -1005,7 +1131,14 @@ namespace cajeta {
             // override-vs-introduce semantics. Without this flag the method
             // would land as an empty-body method (codegen-default zero
             // return) and silently mask missing overrides.
-            if (!block) {
+            //
+            // Method-template declarations also land with `block` null
+            // (body parse is deferred to instantiation). They are NOT
+            // abstract — the body source is captured and each call site
+            // produces a fully-defined monomorphized instantiation. Guard
+            // the setAbstract call so templates don't trip the abstract-
+            // method-implementation check in CajetaClass.
+            if (!block && !isMethodTemplate) {
                 method->setAbstract(true);
             }
             // `#T foo()` — return transfers ownership. The grammar puts the `#`

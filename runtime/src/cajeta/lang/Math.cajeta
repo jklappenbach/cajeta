@@ -1,0 +1,43 @@
+package cajeta.lang;
+
+/**
+ * Generic numeric utilities. `max`, `min`, and `clamp` are
+ * method-level-templated static methods (cajeta-docs/stdlib/
+ * MethodLevelTemplate.md): each is monomorphized per T at the call
+ * site, so `Math.max(3, 7)` produces a `max<int32>` and
+ * `Math.max(1.5, 2.5)` produces a `max<float64>`, both with zero
+ * dispatch cost.
+ *
+ * v1 limitation: the bound on T (Comparable) isn't enforced yet —
+ * the body uses the `>` and `<` operators, which work for built-in
+ * primitives but won't link cleanly for user classes until operator-
+ * overloading flows through method-level template specializations.
+ * For primitives this works today.
+ */
+public class Math {
+    /**
+     * Returns the larger of `a` and `b`. Per-T monomorphization;
+     * non-virtual by virtue of being `static` and method-templated.
+     */
+    public static <T> T max(T a, T b) {
+        if (a > b) { return a; }
+        return b;
+    }
+
+    /**
+     * Returns the smaller of `a` and `b`.
+     */
+    public static <T> T min(T a, T b) {
+        if (a < b) { return a; }
+        return b;
+    }
+
+    /**
+     * Returns `x` clamped to `[lo, hi]`. Implemented via min + max
+     * (themselves method-level-templated) so the single declaration
+     * specializes for every T the caller uses.
+     */
+    public static <T> T clamp(T x, T lo, T hi) {
+        return Math.max(lo, Math.min(hi, x));
+    }
+}

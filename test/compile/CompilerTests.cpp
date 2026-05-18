@@ -31,7 +31,7 @@ TEST(CompilerTests, canThrowOnInvalidInput) {
 // CajetaModule::strutureToModule via CajetaModule::create(),
 // counted whether the class is template or concrete. Bump when
 // stdlib grows.
-static constexpr size_t STDLIB_STRUCTURE_COUNT = 24;
+static constexpr size_t STDLIB_STRUCTURE_COUNT = 25;
 
 TEST(CompilerTests, canParseOnValidShortPackage) {
     string inputPath = CAJETA_TEST_ROOT + string("/compile/code/src/cajeta/Test.cajeta");

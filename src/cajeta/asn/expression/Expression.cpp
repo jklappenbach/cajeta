@@ -65,7 +65,12 @@ namespace cajeta {
             if (ctx->SUPER() || ctx->superSuffix()) {
                 result = make_shared<UnsupportedExpression>("super call", token);
             } else if (ctx->explicitTemplateInvocation()) {
-                result = make_shared<UnsupportedExpression>("explicit template invocation", token);
+                // `expr.<TypeArgs>method(args)` — explicit method-level
+                // type arguments. The receiver expression is the lhs
+                // captured by the children loop below; the MCE here
+                // carries the explicit args + method-call shape.
+                result = make_shared<MethodCallExpression>(
+                    ctx->explicitTemplateInvocation(), token);
             } else if (ctx->innerCreator()) {
                 result = make_shared<UnsupportedExpression>(
                     "inner-class instantiation (obj.new Inner())", token);

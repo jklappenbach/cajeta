@@ -135,12 +135,27 @@ public class Stream<T> {
     /**
      * Left-fold with an explicit seed. `acc = fn(acc, element)` for
      * each element in order; returns the final accumulator. The seed
-     * and result share the element type T at v1 (Java's `reduce(T,
-     * BinaryOperator<T>)`); the generic `fold<R>(R seed, (R, T) -> R
-     * fn)` form lands once method-level type parameters parse.
+     * and result share the element type T (Java's `reduce(T,
+     * BinaryOperator<T>)` shape). One-liner wrapper over `fold<T>`.
      */
     public T reduce(T seed, (T, T) -> T fn) {
-        T acc = seed;
+        return this.fold(seed, fn);
+    }
+
+    /**
+     * Cross-type left-fold. `acc = fn(acc, element)` for each element
+     * in order; returns the final R accumulator. R is method-level so
+     * the seed type can differ from the element type — sum an
+     * `int32` stream into an `int64`, count `Counter` instances into
+     * an `int32`, build a `String` from a stream of any T, etc.
+     *
+     * Non-virtual by construction (method-level templates can't sit in
+     * a vtable — see cajeta-docs/stdlib/MethodLevelTemplate.md). The
+     * inherited `next()` is what subclasses customize; this combinator
+     * stays the same body across every Stream<T> subclass.
+     */
+    public final <R> R fold(R seed, (R, T) -> R fn) {
+        R acc = seed;
         Optional<T> o = this.next();
         while (o.isPresent()) {
             acc = fn(acc, o.get());

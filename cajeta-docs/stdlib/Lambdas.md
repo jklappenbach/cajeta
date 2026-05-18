@@ -11,7 +11,7 @@
 
 ## Non-goals (v1)
 
-- Per-lambda type parameters (`<U> (U) -> U`). Same virtual-vtable reasoning as method-level templates — see `cajeta-docs/stdlib/MemoryModel.md` and the grammar note above `memberDeclaration` in `antlr4/CajetaParser.g4`. Class-level `<T>` referenced inside a lambda body is fine; T is bound by the enclosing class.
+- Per-lambda type parameters (`<U> (U) -> U`). Lambdas with their own type-parameter list aren't supported; the lambda would need its own vtable concern in addition to the captures it already carries. (Method-level templates on `final` / `static` methods *do* work — see `cajeta-docs/stdlib/MethodLevelTemplate.md`. The vtable concern for those is sidestepped by the templating itself excluding the method from the vtable, and the mandatory `final` / `static` modifier makes the non-virtuality explicit at the declaration site.) Class-level `<T>` referenced inside a lambda body is fine; T is bound by the enclosing class.
 - Target-type inference for ambiguous method references. The LHS function type or method-parameter type must disambiguate; if it can't, the user writes an explicit lambda.
 - "By-reference" capture of primitives. Primitives capture by value. If you need shared mutable primitive state across closures, wrap it in a heap value.
 - Variadic lambdas (`(T...) -> R`). Out of scope for v1; revisit if there's demand.
@@ -344,7 +344,7 @@ class List<T> {
 }
 ```
 
-(Wait — `map<U>` would be a method-level template, which doesn't exist in Cajeta. In practice `map` lives on `List<T>` and takes a target list as input, or `List` is enriched with `mapTo<U extends ...>` via the class template's parameters. Treat the example as illustrative of the *call site*, not the declaration; the real `List` API will pick a workable shape.)
+(`map<U>` is a method-level template — supported via `final <U> List<U> map((T) -> U fn)` per `cajeta-docs/stdlib/MethodLevelTemplate.md`. Each (T, U) pair gets its own monomorphization; the templating itself excludes the method from the vtable, and the mandatory `final` modifier makes that explicit at the declaration site. Call sites can rely on inference or spell `xs.<int64>map(...)` explicitly.)
 
 Use sites:
 

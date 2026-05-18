@@ -4,6 +4,7 @@
 
 #include "LiteralExpression.h"
 #include "../../compile/CajetaModule.h"
+#include <algorithm>
 #include <cmath>
 #include <cstdlib>
 
@@ -183,9 +184,20 @@ namespace cajeta {
         }
     }
 
+    // True if the integer literal carries an `L` / `l` long-suffix.
+    // The lexer permits `[lL]?` on every integer-literal form (decimal,
+    // hex, oct, binary); presence of the suffix pins the value to int64.
+    static bool hasLongSuffix(const string& s) {
+        if (s.empty()) return false;
+        char last = s.back();
+        return last == 'l' || last == 'L';
+    }
+
     void IntegerLiteralExpression::resolveTypes(CajetaModulePtr module) {
-        // Default integer literals to int32; widening happens in BinaryOpExpression as needed.
-        resolvedType = CajetaType::of("int32");
+        // Long-suffix (`8L`) → int64; otherwise default to int32 and let
+        // widening at boundaries (assignment, BinaryOpExpression, method-
+        // arg coercion) promote when the context demands a wider type.
+        resolvedType = CajetaType::of(hasLongSuffix(value) ? "int64" : "int32");
     }
 
     // Pick float32 if the literal carries an f/F suffix; float64 otherwise (matches the
@@ -226,20 +238,40 @@ namespace cajeta {
 
     llvm::Value* IntegerLiteralExpression::generateCode(CajetaModulePtr module) {
         uint8_t radix;
+        size_t prefixLen = 0;
         switch (integerLiteralType) {
-            case INTEGER_LITERAL_TYPE_BINARY: radix = 2;  break;
-            case INTEGER_LITERAL_TYPE_OCT:    radix = 8;  break;
-            case INTEGER_LITERAL_TYPE_HEX:    radix = 16; break;
-            default:                          radix = 10; break;
+            case INTEGER_LITERAL_TYPE_BINARY: radix = 2;  prefixLen = 2; break;  // "0b" / "0B"
+            case INTEGER_LITERAL_TYPE_OCT:    radix = 8;  prefixLen = 0; break;  // leading 0 is OK for APInt base-8
+            case INTEGER_LITERAL_TYPE_HEX:    radix = 16; prefixLen = 2; break;  // "0x" / "0X"
+            default:                          radix = 10; prefixLen = 0; break;
         }
 
-        // Default integer literals to 64-bit storage so any value parses correctly; the
-        // ReturnStatement / BinaryOpExpression boundary code (and CajetaType::normalize
-        // when we get to it) coerces to the surrounding context's expected width.
-        // resolveTypes pins the Cajeta type to int32 for the purpose of type inference,
-        // which downstream coercion uses.
+        // Strip the radix prefix (APInt expects pure digits in the given base),
+        // any digit-grouping underscores the lexer accepts (e.g. `1_000_000`),
+        // and the optional trailing `L`/`l` long-suffix. Without the strip,
+        // APInt(64, "8L", 10) misreads non-digit chars and `value` lands as
+        // garbage — surfaced by the int64-literal path during method-template
+        // testing.
+        string numericText = value;
+        if (prefixLen && numericText.size() >= prefixLen) {
+            numericText.erase(0, prefixLen);
+        }
+        if (!numericText.empty()) {
+            char last = numericText.back();
+            if (last == 'l' || last == 'L') numericText.pop_back();
+        }
+        // Erase underscores in place.
+        numericText.erase(
+            std::remove(numericText.begin(), numericText.end(), '_'),
+            numericText.end());
+
+        // Default storage is 64-bit so any value parses correctly; the
+        // ReturnStatement / BinaryOpExpression boundary code (and
+        // CajetaType::normalize when we get to it) coerces to the surrounding
+        // context's expected width. resolveTypes pins the Cajeta type to
+        // int32 (or int64 for L-suffixed literals) for type inference.
         llvm::Type* valueType = llvm::IntegerType::getInt64Ty(*module->getLlvmContext());
-        llvm::APInt apint(64, value, radix);
+        llvm::APInt apint(64, numericText, radix);
         return llvm::ConstantInt::get(valueType, apint);
     }
 } // code

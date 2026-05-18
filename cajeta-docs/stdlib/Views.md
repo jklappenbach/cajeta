@@ -321,7 +321,7 @@ view RpcHeader {
 ### Restrictions
 
 - **No virtual methods.** Views have no vtable.
-- **No method-level generics.** Methods can use the view's own generic type parameters (if any), not introduce new ones.
+- **No method-level templates on view methods.** Methods can use the view's own template type parameters (if any), not introduce new ones. (Class-level method-level templates work on `class` declarations per `cajeta-docs/stdlib/MethodLevelTemplate.md`, but views are layout-pinned to a buffer and have no vtable / no per-instance specialization mechanism — adding method-level templates on views would conflate the wire format with the dispatch model.)
 - **Methods cannot return borrows into `this`.** A view is already a borrow of its buffer; nested borrow tracking ("this borrow is rooted in the borrow that is `this`") is the kind of complexity deferred to a later spec. If a method needs to expose a sub-region, return the underlying bytes (`byte[]`) or a separately-constructed view value, both of which the caller can use within the view's lifetime via the standard borrow rules.
 
 ### What methods *can* do

@@ -48,6 +48,61 @@ TEST(LiteralExpressionTests, integerLiteralLarge) {
     EXPECT_EQ(fn(), 1234567890LL);
 }
 
+// L-suffix pins the literal's Cajeta type to int64. Without the
+// suffix-aware strip, APInt(64, "8L", 10) misreads the non-digit `L`
+// and produces garbage (surfaced as `8L` → 79 during method-template
+// testing).
+TEST(LiteralExpressionTests, integerLiteralLongSuffix) {
+    auto jit = CajetaJit::compile(makeSource("int64", "return 8L;"), "test.L");
+    auto fn = jit->lookup<int64_t (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    EXPECT_EQ(fn(), 8LL);
+}
+
+TEST(LiteralExpressionTests, integerLiteralLongSuffixBig) {
+    // Value larger than int32 range exercises the L-suffix branch end-to-end.
+    auto jit = CajetaJit::compile(
+        makeSource("int64", "return 5000000000L;"), "test.L");
+    auto fn = jit->lookup<int64_t (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    EXPECT_EQ(fn(), 5000000000LL);
+}
+
+TEST(LiteralExpressionTests, integerLiteralLowercaseLSuffix) {
+    auto jit = CajetaJit::compile(makeSource("int64", "return 42l;"), "test.L");
+    auto fn = jit->lookup<int64_t (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    EXPECT_EQ(fn(), 42LL);
+}
+
+// Digit-separator underscores (`1_000_000`) are stripped before APInt
+// parses; the lexer accepts them per Java's syntax.
+TEST(LiteralExpressionTests, integerLiteralUnderscoreSeparator) {
+    auto jit = CajetaJit::compile(
+        makeSource("int32", "return 1_000_000;"), "test.L");
+    auto fn = jit->lookup<int32_t (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    EXPECT_EQ(fn(), 1000000);
+}
+
+// Hex literal with L suffix.
+TEST(LiteralExpressionTests, integerLiteralHexLongSuffix) {
+    auto jit = CajetaJit::compile(
+        makeSource("int64", "return 0xFFL;"), "test.L");
+    auto fn = jit->lookup<int64_t (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    EXPECT_EQ(fn(), 0xFFLL);
+}
+
+// Binary literal.
+TEST(LiteralExpressionTests, integerLiteralBinary) {
+    auto jit = CajetaJit::compile(
+        makeSource("int32", "return 0b1010;"), "test.L");
+    auto fn = jit->lookup<int32_t (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    EXPECT_EQ(fn(), 10);
+}
+
 TEST(LiteralExpressionTests, floatLiteralFloat32) {
     auto jit = CajetaJit::compile(makeSource("float32", "return 1.5f;"), "test.L");
     auto fn = jit->lookup<float (*)()>("run");

@@ -3,6 +3,7 @@
 //
 
 #include "CajetaClass.h"
+#include "CajetaFunctionType.h"
 #include "CajetaView.h"
 #include "StructureMetadata.h"
 #include "../field/Field.h"
@@ -1649,6 +1650,7 @@ namespace cajeta {
                 if (m->isConstructor()) continue;
                 if (m->getModifiers().find(STATIC) != m->getModifiers().end()) continue;
                 if (m->isAbstract()) continue;   // interface markers don't sit here
+                if (m->isMethodTemplate()) continue;  // templated methods are non-virtual (no vtable slot)
                 string canon = m->toCanonical(/*labeled=*/false);
                 string suffix = suffixOf(canon);
                 // Find + replace any existing entry with the same suffix
@@ -1693,6 +1695,7 @@ namespace cajeta {
                     if (!m) continue;
                     if (m->isConstructor()) continue;
                     if (m->getModifiers().find(STATIC) != m->getModifiers().end()) continue;
+                    if (m->isMethodTemplate()) continue;
                     std::string suffix = suffixOf(m->toCanonical(/*labeled=*/false));
                     bySuffixAll[suffix].push_back({c, m});
                 }
@@ -1841,6 +1844,7 @@ namespace cajeta {
                     for (auto& m : sup->getMethodList()) {
                         if (m->isConstructor()) continue;
                         if (m->getModifiers().find(STATIC) != m->getModifiers().end()) continue;
+                        if (m->isMethodTemplate()) continue;
                         string supCanon = m->toCanonical(/*labeled=*/false);
                         auto it = bySuffix.find(suffixOf(supCanon));
                         if (it != bySuffix.end()) {
@@ -2080,7 +2084,209 @@ namespace cajeta {
         return best;
     }
 
-    MethodPtr CajetaClass::resolveMethod(string& methodName, vector<ParameterEntry>& parameters, bool isConstructor, bool floatingParams) {
+    // Unify one (formal, arg) pair against the bindings map. Recurses
+    // into function types (`(R, T) -> R` formals must walk their param
+    // + return types). Returns false on contradiction (same T-var bound
+    // to two distinct concrete types), true otherwise. Bindings is
+    // updated in place when a new T-var name is matched.
+    //
+    // Non-placeholder formals are *presumed compatible* — the post-
+    // instantiation type-check catches anything wrong. The unifier's
+    // only job is to discover T-var bindings.
+    //
+    // void-arg leniency: a lambda body without scope context resolves
+    // its return type to void when the actual return-expression type
+    // can't be inferred (LambdaExpression::resolveTypes falls back to
+    // void when body->resolvedType is null). When unifying a T-var
+    // formal against a void arg, prefer the existing binding (or skip
+    // if unbound) rather than rejecting — the actual lambda body will
+    // produce the right type at codegen time and the bound R drives
+    // the monomorphization.
+    static bool unifyMethodTemplateFormal(
+        CajetaTypePtr formal, CajetaTypePtr arg,
+        const std::set<std::string>& tparamNames,
+        std::map<std::string, CajetaTypePtr>& bindings) {
+        if (!formal || !arg) return false;
+
+        // Placeholder T-var match — bind (or check consistency).
+        if (auto fc = std::dynamic_pointer_cast<CajetaClass>(formal)) {
+            if (fc->isPlaceholder()
+                    && tparamNames.count(fc->getQName()->getTypeName())) {
+                const std::string& name = fc->getQName()->getTypeName();
+                auto existing = bindings.find(name);
+                bool argIsVoid = (arg->toCanonical() == "cajeta.void"
+                    || arg->toCanonical() == "void");
+                if (existing == bindings.end()) {
+                    // First binding: skip if the arg-side is the void
+                    // fallback (no real info). Wait for a more
+                    // informative arg (e.g. the seed in fold<R>).
+                    if (argIsVoid) return true;
+                    bindings[name] = arg;
+                    return true;
+                }
+                // Already bound. First binding wins — defer to it. Lambda
+                // return-type inference (done in LambdaExpression::
+                // resolveTypes without the lambda's parameter scope
+                // active) produces a wrong/narrower type often enough
+                // that re-checking the second binding causes false
+                // rejections, e.g. `fold(0, (int32 acc, Counter c) ->
+                // acc + c.v)` reports the lambda return as Counter
+                // (because BinaryOp resolves to the RHS type when the
+                // LHS scope-bound type is unknown), conflicting with
+                // R=int32 set by the seed. The actual lambda body
+                // produces the right type at codegen time and the bound
+                // R drives monomorphization correctly. Hard conflicts
+                // surface at codegen / verify rather than here.
+                return true;
+            }
+            // Non-placeholder concrete class formal — presumed compatible.
+            return true;
+        }
+
+        // Function-typed formal — recurse into params + return so T-vars
+        // appearing inside `(R, T) -> R` get bound from the lambda arg's
+        // signature. The lambda's resolved type must also be a function
+        // type (its parameter types come from the explicit annotations
+        // in the lambda expression).
+        if (auto ffn = std::dynamic_pointer_cast<CajetaFunctionType>(formal)) {
+            auto afn = std::dynamic_pointer_cast<CajetaFunctionType>(arg);
+            if (!afn) return true;  // arg isn't a fn — fall through, type-check catches it
+            const auto& fps = ffn->getParameterTypes();
+            const auto& aps = afn->getParameterTypes();
+            if (fps.size() != aps.size()) return true;  // arity mismatch — same fallthrough
+            for (size_t i = 0; i < fps.size(); ++i) {
+                if (!unifyMethodTemplateFormal(
+                        fps[i], aps[i], tparamNames, bindings)) {
+                    return false;
+                }
+            }
+            return unifyMethodTemplateFormal(
+                ffn->getReturnType(), afn->getReturnType(),
+                tparamNames, bindings);
+        }
+
+        // Other type shapes (primitive, array, struct, view, interface):
+        // not currently walked for T-var placeholders. Presumed compatible.
+        return true;
+    }
+
+    // Try to match a method-template candidate by name + arg arity, unify
+    // method-level T-vars against the supplied arg types, and return a
+    // freshly instantiated concrete Method. Returns nullptr if no template
+    // candidate exists, the arity differs, or unification fails. Walks the
+    // class's own methodList only — parent walks happen at the caller.
+    //
+    // Implemented here rather than as a method-template free function so
+    // CajetaClass owns the per-class instantiation cache via the Method's
+    // own cache.
+    static MethodPtr tryInstantiateMethodTemplate(
+        CajetaClass* cls, const std::string& methodName,
+        const std::vector<ParameterEntry>& parameters,
+        const std::vector<CajetaTypePtr>& explicitArgs = {}) {
+        for (auto& m : cls->getMethodList()) {
+            if (!m) continue;
+            if (m->getName() != methodName) continue;
+            if (!m->isMethodTemplate()) continue;
+            auto formals = m->getParameterList();
+            if (formals.size() != parameters.size()) continue;
+
+            const auto& tparams = m->getMethodTypeParameters();
+
+            // Explicit-type-args path: `expr.<T1, T2>method(...)`. The
+            // arity must match the declared method-level type parameters;
+            // we hand them straight to instantiateMethodTemplate, bypassing
+            // unification entirely. This is what lets call sites where
+            // inference can't reach a binding (no value args, or
+            // ambiguous lambda return) still resolve.
+            if (!explicitArgs.empty()) {
+                if (explicitArgs.size() != tparams.size()) continue;
+                return m->instantiateMethodTemplate(explicitArgs);
+            }
+
+            std::set<std::string> tparamNames;
+            for (auto& tp : tparams) tparamNames.insert(tp.name);
+
+            std::map<std::string, CajetaTypePtr> bindings;
+            bool ok = true;
+            for (size_t i = 0; i < formals.size(); ++i) {
+                if (!unifyMethodTemplateFormal(
+                        formals[i]->getType(), parameters[i].type,
+                        tparamNames, bindings)) {
+                    ok = false;
+                    break;
+                }
+            }
+            if (!ok) continue;
+            // All declared T-vars must be bound (no leftover unbound R).
+            std::vector<CajetaTypePtr> args;
+            for (auto& tp : tparams) {
+                auto it = bindings.find(tp.name);
+                if (it == bindings.end()) { args.clear(); break; }
+                args.push_back(it->second);
+            }
+            if (args.empty()) continue;
+            return m->instantiateMethodTemplate(args);
+        }
+        return nullptr;
+    }
+
+    // Shared helper: register a fresh method-template instantiation on
+    // its host class, generate its prototype + body, and restore the
+    // module's builder / currentMethod state around the body codegen
+    // (which mutates those globals). Without the save/restore, the
+    // outer method body that triggered the instantiation would emit
+    // into the wrong insert point afterward.
+    //
+    // Idempotent on re-entry: instantiateMethodTemplate caches per-arg,
+    // so a second call site requesting the same instantiation gets the
+    // same MethodPtr back. Skip addMethod (and the codegen calls below)
+    // when the instantiation is already registered — addMethod's
+    // duplicate-static check otherwise rejects.
+    static void bringMethodTemplateInstantiationToLife(
+            CajetaClass* host, MethodPtr inst) {
+        if (host->getMethods().find(inst->toCanonical()) != host->getMethods().end()) {
+            return;  // already registered + emitted on a prior call
+        }
+        host->addMethod(inst);
+        auto hostMod = inst->getModule();
+        llvm::IRBuilder<>* savedBuilder = hostMod ? hostMod->getBuilder() : nullptr;
+        MethodPtr savedCurrent = hostMod ? hostMod->getCurrentMethod() : nullptr;
+        llvm::BasicBlock* savedInsertBB = savedBuilder
+            ? savedBuilder->GetInsertBlock() : nullptr;
+        inst->generatePrototype();
+        inst->generateCode();
+        if (hostMod) {
+            hostMod->setBuilder(savedBuilder);
+            hostMod->setCurrentMethod(savedCurrent);
+        }
+        if (savedBuilder && savedInsertBB) {
+            savedBuilder->SetInsertPoint(savedInsertBB);
+        }
+    }
+
+    MethodPtr CajetaClass::resolveMethod(string& methodName, vector<ParameterEntry>& parameters,
+            bool isConstructor, bool floatingParams,
+            const vector<CajetaTypePtr>& explicitMethodTypeArgs) {
+        // Explicit-type-args fast path: when the call site spells the
+        // method-level type args (`expr.<T>method(args)`), skip exact-
+        // signature lookup (which can't match — the explicit form is
+        // exclusively a template-instantiation request) and go straight
+        // to the templated-method scan with the explicit args.
+        if (!isConstructor && !explicitMethodTypeArgs.empty()) {
+            if (MethodPtr inst = tryInstantiateMethodTemplate(
+                    this, methodName, parameters, explicitMethodTypeArgs)) {
+                bringMethodTemplateInstantiationToLife(this, inst);
+                return inst;
+            }
+            for (auto& parent : superClasses) {
+                if (MethodPtr inst = tryInstantiateMethodTemplate(
+                        parent.get(), methodName, parameters, explicitMethodTypeArgs)) {
+                    bringMethodTemplateInstantiationToLife(parent.get(), inst);
+                    return inst;
+                }
+            }
+            return nullptr;
+        }
         // Each class indexes its declared methods under keys built with its
         // own class name (Method::buildGeneric/buildCanonical embed the
         // parent class). Inherited methods are NOT re-keyed into derived
@@ -2125,11 +2331,36 @@ namespace cajeta {
                 if (m) return m;
             }
         }
+
+        // Method-template fallback (cajeta-docs/stdlib/MethodLevelTemplate.md):
+        // if no exact / subtype match was found, look for a method-templated
+        // candidate with the same name and arity whose T-vars unify with the
+        // supplied arg types. On a hit, instantiate the template into a
+        // concrete Method (cached per arg list on the template), register
+        // the instantiation in this class's method maps so subsequent calls
+        // hit it directly, generate its prototype + body so the call site
+        // can emit a direct call to a fully-defined function, and return.
+        if (!isConstructor) {
+            if (MethodPtr inst = tryInstantiateMethodTemplate(
+                    this, methodName, parameters)) {
+                bringMethodTemplateInstantiationToLife(this, inst);
+                return inst;
+            }
+            // Walk the parent chain looking for templated candidates too.
+            for (auto& parent : superClasses) {
+                if (MethodPtr inst = tryInstantiateMethodTemplate(
+                        parent.get(), methodName, parameters)) {
+                    bringMethodTemplateInstantiationToLife(parent.get(), inst);
+                    return inst;
+                }
+            }
+        }
         return nullptr;
     }
 
     llvm::Value* CajetaClass::invokeMethod(string& methodName, vector<ParameterEntry> parameters, bool isConstructor, llvm::Value* thisValue,
-                                            CajetaModulePtr callerModule, bool forceDirectCall) {
+                                            CajetaModulePtr callerModule, bool forceDirectCall,
+                                            const vector<CajetaTypePtr>& explicitMethodTypeArgs) {
         bool floatingParams = true;
         for (auto &param : parameters) {
             if (param.label.empty()) {
@@ -2141,7 +2372,7 @@ namespace cajeta {
             sort(parameters.begin(), parameters.end(), [](const ParameterEntry& a, const ParameterEntry& b) -> bool { return a.label < b.label; });
         }
 
-        MethodPtr method = resolveMethod(methodName, parameters, isConstructor, floatingParams);
+        MethodPtr method = resolveMethod(methodName, parameters, isConstructor, floatingParams, explicitMethodTypeArgs);
         if (!method) {
             return nullptr;
         }
@@ -2239,7 +2470,13 @@ namespace cajeta {
         // CajetaStruct; under the unified model `struct` is just
         // `class` and gets the normal vtable-dispatch treatment.)
         bool isView = dynamic_cast<CajetaView*>(this) != nullptr;
-        bool useVtable = thisValue && !isStatic && !isConstructor && !isView && !forceDirectCall;
+        // Method-level templated methods are non-virtual (templating
+        // excludes them from the vtable per cajeta-docs/stdlib/
+        // MethodLevelTemplate.md). Always direct-dispatch — the
+        // concrete instantiation's LLVM function is the static target.
+        bool isMethodTemplateInst = method->isMethodTemplateInstantiation();
+        bool useVtable = thisValue && !isStatic && !isConstructor && !isView
+            && !forceDirectCall && !isMethodTemplateInst;
         bool isInterfaceRecv = this->isInterface();
         if (useVtable && isInterfaceRecv) {
             // (Historical S11.2 "same-concrete-type return through dyn

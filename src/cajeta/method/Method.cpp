@@ -326,6 +326,12 @@ namespace cajeta {
     }
 
     void Method::generatePrototype() {
+        // Method-level template declarations don't get an LLVM prototype.
+        // Their formals/return types include placeholder T-vars and the
+        // actual function signature isn't known until a concrete
+        // instantiation pins each T to a real type. See
+        // cajeta-docs/stdlib/MethodLevelTemplate.md.
+        if (isMethodTemplate()) return;
         // S8.4 — refresh returnType and parameter types from canonicalMap.
         //
         // At parse time, a method declared inside `struct Foo` whose
@@ -517,6 +523,12 @@ namespace cajeta {
         // Abstract methods carry no body — dispatch goes to a concrete
         // implementation via the vtable.
         if (abstractFlag) return;
+        // Method-level template declarations don't get an LLVM function.
+        // Per-call sites monomorphize via instantiateMethodTemplate, which
+        // produces a concrete Method (methodTypeArguments non-empty) that
+        // generateCode emits normally. See cajeta-docs/stdlib/
+        // MethodLevelTemplate.md.
+        if (isMethodTemplate()) return;
         if (llvmBasicBlock != nullptr) {
             return;
         }

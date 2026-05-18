@@ -34,8 +34,8 @@ Status legend:
 | L-19 | `super.method()` calls | Direct upcall to parent's implementation | shipped | `test/parser/MultipleInheritanceGapTests.cpp` (superMethodCallReachesParent + explicitSuperCtorWithArgs). `cajeta-docs/stdlib/UnifiedClasses.md` § super |
 | L-20 | Lambda capture by reference | `let captures = ...` semantics | shipped (partial) | `cajeta-docs/stdlib/Lambdas.md`; full closure semantics in Lambda tests |
 | L-21 | Chained call form (`a.b().c()`) | `xs.stream().filter(p).map(f).count()` | partial | works for simple chains; P6.6 covers the remaining cases |
-| L-22 | Method-level type parameters (`<T> void f(T x)`) | Per-method `<T>` declaration | designed | blocks `Stream.fold<R>`, `Optional<int32>.Some(42)` |
-| L-23 | Templated-static-factory call syntax | `Optional<int32>.Some(42)` | designed | needs L-22 |
+| L-22 | Method-level type parameters (`final <T> ...`) | Per-method `<T>` declaration | shipped | `cajeta-docs/stdlib/MethodLevelTemplate.md`; static + instance method templates, inference + explicit-type-arg call syntax (`xs.<int64>map(...)`) all working |
+| L-23 | Templated-static-factory call syntax | `Optional.<int32>Some(42)` | shipped (DOT form) | `Optional.<int32>Some(42)` and `xs.<R>method(args)` parse and dispatch via L-22's explicit-type-arg path. `Optional<int32>.Some(42)` (type-name-with-args as receiver) needs additional grammar work |
 | L-24 | `@Encoding(EncoderClass)` for views | Encoder interface for wire-format serialization | designed | `cajeta-docs/stdlib/Annotations.md` § `@Encoding`; needs `Encoder<T>` |
 
 ## Stdlib — `cajeta.lang`
@@ -59,7 +59,7 @@ Status legend:
 | S-202 | Stream terminals: `count` / `forEach` | No-lambda + first lambda terminal | shipped | `test/parser/StreamTests.cpp` (9) |
 | S-203 | Stream terminals: `anyMatch` / `allMatch` / `noneMatch` / `findFirst` / `reduce` | Lambda-taking terminals | shipped | `test/parser/StreamTerminalTests.cpp` (13) |
 | S-204 | Stream terminal: `collect(Collector<T, R>)` | Needs S-501 Collector | designed | `cajeta-docs/stdlib/Streams.md` |
-| S-205 | Stream terminal: `fold<R>(R seed, (R, T) -> R fn)` | Cross-type fold | designed | Needs L-22 method-level templates |
+| S-205 | Stream terminal: `fold<R>(R seed, (R, T) -> R fn)` | Cross-type fold | shipped | Wired in `Stream<T>.fold<R>`; `reduce` rewritten as one-liner over `fold<T>`. Pinned by `test/parser/StreamFoldTests.cpp` |
 | S-206 | `ArrayStream<T>` + `T[].stream()` intrinsic | Array-backed stream | shipped | `test/parser/StreamTests.cpp` (9) |
 | S-207 | `TakeStream<T>` | `take(n)` wrapper | shipped | `test/parser/StreamIntermediateTests.cpp` (5 of 19) |
 | S-208 | `SkipStream<T>` | `skip(n)` wrapper | shipped | `test/parser/StreamIntermediateTests.cpp` (4 of 19) |

@@ -578,12 +578,23 @@ namespace cajeta {
 
         llvm::Value* invokeMethod(string& methodName, vector<ParameterEntry> parameters, bool isConstructor, llvm::Value* thisInstance = nullptr,
                                    CajetaModulePtr callerModule = nullptr,
-                                   bool forceDirectCall = false);
+                                   bool forceDirectCall = false,
+                                   const vector<CajetaTypePtr>& explicitMethodTypeArgs = {});
 
         // Look up a method on this class or any of its ancestors. Each class
         // indexes methods under keys that embed its own class name, so the
         // recursion re-keys at each level. Returns nullptr if not found.
-        MethodPtr resolveMethod(string& methodName, vector<ParameterEntry>& parameters, bool isConstructor, bool floatingParams);
+        //
+        // `explicitMethodTypeArgs` (default empty) carries the type-args
+        // from `expr.<TypeArgs>method(args)` call sites. When non-empty,
+        // the method-template fallback path uses the supplied args
+        // directly (skipping unification) — both more efficient and
+        // necessary when inference can't reach a binding from the
+        // value args alone (e.g. `Optional.<int32>None()` has no value
+        // args to infer T from).
+        MethodPtr resolveMethod(string& methodName, vector<ParameterEntry>& parameters,
+            bool isConstructor, bool floatingParams,
+            const vector<CajetaTypePtr>& explicitMethodTypeArgs = {});
 
         virtual void generatePrototype();
 

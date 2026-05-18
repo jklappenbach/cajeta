@@ -19,6 +19,52 @@
 
 namespace cajeta {
 
+    // Explicit-template-invocation constructor: `expr.<TypeArgs>method(args)`.
+    // Lifts the method name + parameter list out of the
+    // explicitTemplateInvocationSuffix's `identifier arguments` shape, and
+    // resolves the typeArguments in the leading `nonWildcardTypeArguments`
+    // to CajetaType pointers for later use in resolveMethod (skips the
+    // unifier — explicit args ARE the binding). See cajeta-docs/stdlib/
+    // MethodLevelTemplate.md § Explicit type-arg call-site syntax.
+    MethodCallExpression::MethodCallExpression(
+        CajetaParser::ExplicitTemplateInvocationContext* ctx,
+        antlr4::Token* token) : Expression(token) {
+        auto* suffix = ctx->explicitTemplateInvocationSuffix();
+        if (suffix->SUPER()) {
+            // `expr.<T>super(...)` form — not supported in v1.
+            superCtorCall = true;
+            methodCallName = "super";
+        } else if (suffix->identifier()) {
+            methodCallName = suffix->identifier()->getText();
+        }
+        if (auto* args = suffix->arguments()) {
+            if (auto* paramList = args->parameterList()) {
+                for (auto& ctxParameterEntry : paramList->parameterEntry()) {
+                    MethodCallParameter entry;
+                    entry.expression = Expression::fromContext(
+                        ctxParameterEntry->expression());
+                    if (ctxParameterEntry->parameterLabel()) {
+                        entry.label = ctxParameterEntry->parameterLabel()->getText();
+                    }
+                    parameters.push_back(entry);
+                }
+            }
+        }
+        // Resolve explicit type arguments. nonWildcardTypeArguments is a
+        // `<typeList>` where typeList is `typeType (',' typeType)*`. Each
+        // typeType resolves through CajetaType::fromContext using the
+        // active module's substitution stack (so a `<T>` referenced from
+        // inside a templated class body still resolves to the bound T).
+        auto* nwta = ctx->nonWildcardTypeArguments();
+        if (nwta && nwta->typeList()) {
+            auto activeMod = CajetaModule::getActiveModule();
+            for (auto* tt : nwta->typeList()->typeType()) {
+                auto t = CajetaType::fromContext(tt, activeMod);
+                if (t) explicitMethodTypeArgs.push_back(t);
+            }
+        }
+    }
+
     // Codegen dispatches three shapes:
     //   1. `arr.count()` on a CajetaArray receiver — structural accessor, loads the i64
     //      size field from the array header. Matches `Collection<T>.count()` so generic
@@ -1676,7 +1722,8 @@ namespace cajeta {
 
         llvm::Value* callResult = targetClass->invokeMethod(methodCallName, entries,
             /*isConstructor=*/false, thisValue, /*callerModule=*/module,
-            /*forceDirectCall=*/isSuperCall);
+            /*forceDirectCall=*/isSuperCall,
+            /*explicitMethodTypeArgs=*/explicitMethodTypeArgs);
 
         // Pin resolvedType to the called method's return type so a caller
         // using this MCE as a ctor / method argument can recover the

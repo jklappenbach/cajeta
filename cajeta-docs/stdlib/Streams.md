@@ -243,6 +243,9 @@ Tracked in root `Features.md`:
 - `collect(Collector<T,R>)` terminal — needs `Collector<T,R>` from
   collections (P2.1).
 - `fold<R>(R seed, (R, T) -> R fn)` method-level-templated terminal —
-  needs method-level type parameters (P2.3).
+  method-level type parameters are now supported on `final` instance
+  methods (see `cajeta-docs/stdlib/MethodLevelTemplate.md`). The
+  stdlib uptake (rewriting `Stream<T>.reduce` as a wrapper around
+  `fold<R>`, and adding `fold<R>` itself) is the next follow-up.
 - More intermediate combinators not yet implemented:
   `takeWhile`/`dropWhile`/`distinct`/`enumerate`/`zip`/`chain`/`sorted`/`windowed`.

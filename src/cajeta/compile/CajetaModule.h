@@ -308,6 +308,13 @@ namespace cajeta {
             auto it = top.find(name);
             return it == top.end() ? nullptr : it->second;
         }
+        // Returns a pointer to the top frame (or nullptr if the stack is
+        // empty) so callers building a new frame can inherit bindings.
+        // Read-only by intent — modify through pushTypeSubstitution.
+        const std::map<std::string, CajetaTypePtr>* getCurrentTypeSubstitution() const {
+            if (typeSubstitutionStack.empty()) return nullptr;
+            return &typeSubstitutionStack.back();
+        }
 
         map<string, CajetaClassPtr>& getStructures() {
             return structures;

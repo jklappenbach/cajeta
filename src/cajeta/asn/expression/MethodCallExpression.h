@@ -22,6 +22,11 @@ namespace cajeta {
         // of doing identifier-based dispatch (and ctx->identifier() is null in
         // this case so the usual `getText()` call would null-deref).
         bool superCtorCall = false;
+        // Explicit method-level template type arguments from the
+        // `expr.<TypeArgs>method(args)` call-site syntax. Empty for
+        // ordinary calls (inferred via unification at resolveMethod
+        // time). See cajeta-docs/stdlib/MethodLevelTemplate.md.
+        vector<CajetaTypePtr> explicitMethodTypeArgs;
     public:
         MethodCallExpression(CajetaParser::MethodCallContext* ctx, antlr4::Token* token) : Expression(token) {
             if (ctx->SUPER()) {
@@ -47,6 +52,15 @@ namespace cajeta {
             }
         }
 
+        // Explicit-template-invocation form: `expr.<TypeArgs>identifier(args)`.
+        // Lifts the receiver-less methodCall shape out of an
+        // explicitTemplateInvocation context so MethodCallExpression can
+        // carry the explicit method-level type args and skip inference at
+        // resolveMethod time.
+        MethodCallExpression(
+            CajetaParser::ExplicitTemplateInvocationContext* ctx,
+            antlr4::Token* token);
+
         // Method-call args aren't in `children` (children[0] is the receiver,
         // if any). The free-variable walk in LambdaExpression uses this to
         // recurse into the args when scanning a lambda body for captures.
@@ -54,6 +68,9 @@ namespace cajeta {
 
         const string& getMethodCallName() const { return methodCallName; }
         bool isSuperCtorCall() const { return superCtorCall; }
+        const vector<CajetaTypePtr>& getExplicitMethodTypeArgs() const {
+            return explicitMethodTypeArgs;
+        }
 
         /**
          * First, get the full name of the object.
