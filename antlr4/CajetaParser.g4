@@ -718,6 +718,14 @@ lambdaBody
 
 primary
     : '(' expression ')'
+    // MultiClassing Phase 2 (cajeta-docs/stdlib/MultiClassing.md § P-2):
+    // bracketed parent-view selectors. Listed BEFORE the bare THIS / SUPER
+    // alternatives so ANTLR's adaptive prediction takes the longer match
+    // when the next token is `[`. `this[Base].field` reaches the slot
+    // belonging to ancestor `Base`; `super[Base].method()` direct-calls
+    // `Base`'s body bypassing the vtable.
+    | THIS '[' typeType ']'
+    | SUPER '[' typeType ']'
     | THIS
     | SUPER
     | literal

@@ -783,13 +783,30 @@ namespace cajeta {
             // ctx->expression() is null for the THIS form and the old
             // ThisExpression(ctx->expression()) overload would null-deref
             // on getStart(). The token-taking overload sidesteps that.
-            result = make_shared<ThisExpression>(ctx->getStart());
+            auto thisExpr = make_shared<ThisExpression>(ctx->getStart());
+            if (ctx->typeType()) {
+                // MultiClassing Phase 2: `this[Base]` — record the
+                // bracketed ancestor name. resolveTypes validates it's
+                // a real ancestor and pins resolvedType so DotExpression
+                // routes through the chosen sub-object.
+                thisExpr->setChosenAncestorName(ctx->typeType()->getText());
+            }
+            result = thisExpr;
         } else if (ctx->SUPER()) {
             // `super` as a primary expression (e.g. `super.foo()`). The
             // call dispatch lives in MethodCallExpression — when its
             // receiver is a SuperExpression, the call bypasses vtable
             // lookup and direct-calls the parent's method.
-            result = make_shared<SuperExpression>(ctx->getStart());
+            auto superExpr = make_shared<SuperExpression>(ctx->getStart());
+            if (ctx->typeType()) {
+                // MultiClassing Phase 2: `super[Base]` — record the
+                // bracketed ancestor name. Same validation + adjustment
+                // as `this[Base]`; method calls additionally force-direct
+                // (MethodCallExpression keys off the SuperExpression
+                // receiver type unchanged from the unbracketed form).
+                superExpr->setChosenAncestorName(ctx->typeType()->getText());
+            }
+            result = superExpr;
         }
         return result;
     }
@@ -2357,29 +2374,98 @@ namespace cajeta {
         return isMatch ? llvm::ConstantInt::getTrue(i1) : llvm::ConstantInt::getFalse(i1);
     }
 
+    // Resolve a bracketed ancestor name (`this[Base]` / `super[Base]`)
+    // against the current class's transitive ancestor closure. Returns
+    // the resolved class pointer, or throws CAJETA_ERROR_NOT_AN_ANCESTOR
+    // if the name doesn't match any reachable ancestor of `here`.
+    // Comparison uses both canonical and short type names because the
+    // bracket contents may be written either way at the call site.
+    static CajetaClassPtr resolveBracketedAncestor(
+            const std::string& name, CajetaClassPtr here) {
+        if (!here) return nullptr;
+        std::function<CajetaClassPtr(CajetaClassPtr)> walk =
+            [&](CajetaClassPtr c) -> CajetaClassPtr {
+                if (!c) return nullptr;
+                auto qn = c->getQName();
+                if (qn) {
+                    if (qn->toCanonical() == name) return c;
+                    if (qn->getTypeName() == name) return c;
+                }
+                for (auto& sup : c->getSuperClasses()) {
+                    if (auto match = walk(sup)) return match;
+                }
+                return nullptr;
+            };
+        // Self is not its own ancestor for bracket purposes — `this[Self]`
+        // is a no-op that's also a code smell; only allow real ancestors.
+        for (auto& sup : here->getSuperClasses()) {
+            if (auto match = walk(sup)) return match;
+        }
+        throw Exception(
+            "'" + name + "' is not an ancestor of '"
+            + here->getQName()->toCanonical()
+            + "'; the bracketed parent-view selector (this[" + name
+            + "] / super[" + name + "]) requires a real ancestor",
+            "CAJETA_ERROR_NOT_AN_ANCESTOR");
+    }
+
     void ThisExpression::resolveTypes(CajetaModulePtr module) {
         // `this` resolves to the current class type on the structure stack.
-        if (!module->getStructureStack().empty()) {
+        // `this[Base]` resolves to the chosen ancestor instead — DotExpression
+        // / MethodCallExpression then treat the receiver as Base-typed.
+        if (module->getStructureStack().empty()) return;
+        auto here = std::dynamic_pointer_cast<CajetaClass>(
+            module->getStructureStack().back());
+        if (!here) {
             resolvedType = module->getStructureStack().back();
+            return;
         }
+        if (chosenAncestorName.empty()) {
+            resolvedType = here;
+            return;
+        }
+        resolvedType = resolveBracketedAncestor(chosenAncestorName, here);
     }
 
     llvm::Value* ThisExpression::generateCode(CajetaModulePtr module) {
         // Method::generateCode registers a ParameterField named "this" in the active scope
         // for non-static methods. We return its alloca (l-value style); consumers can
         // loadIfLValue if they need the pointer itself.
+        //
+        // Plain `this` returns the raw alloca (l-value). `this[Base]` must
+        // return a Base-typed pointer adjusted to the sub-object — loaded
+        // from the alloca and shifted by getSubObjectByteOffset(Base).
+        // Returning the adjusted r-value (not an alloca) is fine because
+        // DotExpression's class-receiver path detects the load-through and
+        // GEPs from there.
         FieldPtr thisField = module->getScopeStack().peek()->getField("this");
-        return thisField ? static_cast<llvm::Value*>(thisField->getOrCreateAllocation()) : nullptr;
+        if (!thisField) return nullptr;
+        auto alloca = thisField->getOrCreateAllocation();
+        if (chosenAncestorName.empty()) {
+            return static_cast<llvm::Value*>(alloca);
+        }
+        // Load the current `this` pointer, then adjust to the chosen
+        // ancestor sub-object. The adjustment is a no-op for the first-
+        // parent chain (offset = 0) and for self.
+        if (module->getStructureStack().empty()) return alloca;
+        auto here = std::dynamic_pointer_cast<CajetaClass>(
+            module->getStructureStack().back());
+        if (!here) return alloca;
+        auto ancestor = std::dynamic_pointer_cast<CajetaClass>(resolvedType);
+        if (!ancestor) return alloca;
+        auto* builder = module->getBuilder();
+        llvm::Value* loaded = builder->CreateLoad(
+            alloca->getAllocatedType(), alloca);
+        return CajetaClass::adjustForUpcast(module, loaded, here, ancestor);
     }
 
     void SuperExpression::resolveTypes(CajetaModulePtr module) {
-        // `super` is statically typed as the current class's first declared
-        // parent. The instance pointer is the same `this` pointer (Cajeta
-        // single-object-per-class layout); only the dispatch target differs
-        // (parent's method, direct-called by MethodCallExpression). For
-        // multi-inheritance, picking the first parent matches Java's
-        // single-parent rule; explicit per-parent selection (`super[B]`)
-        // is not yet a language feature.
+        // Plain `super` resolves to the current class's first declared
+        // parent (matches Java's single-parent rule). `super[Base]`
+        // resolves to the named ancestor, validated against the current
+        // class's transitive parent set. In both forms the instance
+        // pointer is `this` (possibly adjusted at codegen for non-first
+        // parents); only the dispatch target differs.
         if (module->getStructureStack().empty()) {
             throw Exception(
                 "`super` used outside of a class context",
@@ -2399,13 +2485,22 @@ namespace cajeta {
                 + "' which has no declared superclass",
                 "CAJETA_ERROR_SUPER_NO_PARENT");
         }
-        resolvedType = supers.front();
+        if (chosenAncestorName.empty()) {
+            resolvedType = supers.front();
+            return;
+        }
+        resolvedType = resolveBracketedAncestor(chosenAncestorName, here);
     }
 
     llvm::Value* SuperExpression::generateCode(CajetaModulePtr module) {
-        // Same value as `this` — there's no separate "super pointer"; the
-        // distinction is purely in resolvedType (parent's class) and the
-        // direct-call routing in MethodCallExpression.
+        // Plain `super` returns the raw `this` alloca (Phase 1 single-
+        // parent case; pointer adjustment happens later in invokeMethod
+        // when the declaring class differs from the receiver class).
+        //
+        // `super[Base]` returns a pointer adjusted to Base's sub-object
+        // — same machinery as `this[Base]`. The downstream MCE detects
+        // a SuperExpression receiver and force-direct-calls, so the
+        // adjusted pointer flows straight into Base's method.
         auto scope = module->getScopeStack().peek();
         FieldPtr thisField = scope ? scope->getField("this") : nullptr;
         if (!thisField) {
@@ -2413,7 +2508,20 @@ namespace cajeta {
                 "`super` used in a static context with no `this`",
                 "CAJETA_ERROR_SUPER_IN_STATIC");
         }
-        return static_cast<llvm::Value*>(thisField->getOrCreateAllocation());
+        auto alloca = thisField->getOrCreateAllocation();
+        if (chosenAncestorName.empty()) {
+            return static_cast<llvm::Value*>(alloca);
+        }
+        if (module->getStructureStack().empty()) return alloca;
+        auto here = std::dynamic_pointer_cast<CajetaClass>(
+            module->getStructureStack().back());
+        if (!here) return alloca;
+        auto ancestor = std::dynamic_pointer_cast<CajetaClass>(resolvedType);
+        if (!ancestor) return alloca;
+        auto* builder = module->getBuilder();
+        llvm::Value* loaded = builder->CreateLoad(
+            alloca->getAllocatedType(), alloca);
+        return CajetaClass::adjustForUpcast(module, loaded, here, ancestor);
     }
 
     // Sync-lowering MVP for the three concurrency expressions. They all wrap a

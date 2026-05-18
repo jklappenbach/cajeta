@@ -143,6 +143,19 @@ namespace cajeta {
         void resolveTypes(CajetaModulePtr module) override;
 
         llvm::Value* generateCode(CajetaModulePtr module) override;
+
+        // MultiClassing Phase 2 (P-2): `this[Base].field` — primary
+        // expression that resolves to a `this` pointer ADJUSTED to the
+        // selected ancestor's sub-object. resolvedType becomes the
+        // chosen ancestor (not the current class), so DotExpression's
+        // field lookup uses `Base`'s propertyList directly (skipping the
+        // sibling-collision walk that fires for unqualified `this.field`).
+        // Set via the visitor when `THIS '[' typeType ']'` parses; empty
+        // string means plain `this` (no adjustment).
+        const std::string& getChosenAncestorName() const { return chosenAncestorName; }
+        void setChosenAncestorName(std::string name) { chosenAncestorName = std::move(name); }
+    private:
+        std::string chosenAncestorName;
     };
 
     // `super` as a primary expression. Value is the same pointer as
@@ -150,15 +163,25 @@ namespace cajeta {
     // object); the distinction is in resolvedType — it's the current
     // class's first declared parent — so a `super.foo()` call lands
     // on the PARENT's method via direct dispatch (bypassing the
-    // instance's vtable, which would loop back to the override). For
-    // multi-inheritance, `super` resolves to the first declared parent;
-    // `super[Base].foo()` for explicit selection is a separate
-    // language feature (not yet designed).
+    // instance's vtable, which would loop back to the override).
+    //
+    // MultiClassing Phase 2 adds the bracketed variant `super[Base]`
+    // which selects an explicit ancestor (any one — first parent,
+    // sibling parent, or further ancestor). Plain `super` resolves to
+    // the first declared parent for back-compat. The chosen-ancestor
+    // value flows through resolveTypes (set as resolvedType) and
+    // generateCode (`this` is adjusted to the ancestor sub-object via
+    // CajetaClass::adjustForUpcast before the call site reads it).
     class SuperExpression : public PrimaryExpression {
     public:
         SuperExpression(antlr4::Token* token) : PrimaryExpression(token) { }
         void resolveTypes(CajetaModulePtr module) override;
         llvm::Value* generateCode(CajetaModulePtr module) override;
+
+        const std::string& getChosenAncestorName() const { return chosenAncestorName; }
+        void setChosenAncestorName(std::string name) { chosenAncestorName = std::move(name); }
+    private:
+        std::string chosenAncestorName;
     };
 
     enum ReservedIdentifiers {
