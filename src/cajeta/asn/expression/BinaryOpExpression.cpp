@@ -699,6 +699,31 @@ namespace cajeta {
                 if (needsFieldBswap) {
                     rhsVal = DotExpression::maybeBswap(module, rhsVal, dotRecv);
                 }
+                // L-03 polymorphism / MI upcast at assignment site. When
+                // the LHS slot's static type is an ancestor of the RHS
+                // expression's class type AND the ancestor's sub-object
+                // sits at a non-zero offset inside the descendant's
+                // layout (non-first-parent path), shift the stored
+                // pointer to that sub-object's start so subsequent
+                // virtual dispatch through the LHS-typed binding lands
+                // on the right secondary vtable + correct field offsets.
+                // Mirrors the LocalVariableDeclaration upcast (Phase 1
+                // poly-MI) — same helper, applied at the write site.
+                if (lhsAst && rhsAst) {
+                    if (!lhsAst->getResolvedType()) lhsAst->resolveTypes(module);
+                    if (!rhsAst->getResolvedType()) rhsAst->resolveTypes(module);
+                    auto dstClass = dynamic_pointer_cast<CajetaClass>(
+                        lhsAst->getResolvedType());
+                    auto srcClass = dynamic_pointer_cast<CajetaClass>(
+                        rhsAst->getResolvedType());
+                    if (dstClass && srcClass
+                            && dstClass.get() != srcClass.get()
+                            && !dstClass->isInterface()
+                            && !srcClass->isInterface()) {
+                        rhsVal = CajetaClass::adjustForUpcast(
+                            module, rhsVal, srcClass, dstClass);
+                    }
+                }
                 builder->CreateStore(rhsVal, lhs);
                 // P3 — definite-assignment: if the LHS is a bare identifier,
                 // mark it assigned. Subsequent reads no longer trip the

@@ -1459,6 +1459,33 @@ namespace cajeta {
                 }
             }
         }
+        // L-03 polymorphism / MI upcast at return site. When the method's
+        // declared return type is an ancestor of the returned expression's
+        // class type AND the ancestor's sub-object sits at non-zero offset
+        // (non-first-parent path), shift the returned pointer to that
+        // sub-object's start so the caller's binding to the declared
+        // return type lands on the right secondary vtable + field
+        // offsets. Mirrors the LocalVariableDeclaration upcast (Phase 1
+        // poly-MI) and the BinaryOpExpression assignment upcast — same
+        // helper, applied at the return-site write.
+        if (expression && val) {
+            if (!expression->getResolvedType()) expression->resolveTypes(module);
+            auto srcClass = dynamic_pointer_cast<CajetaClass>(
+                expression->getResolvedType());
+            CajetaTypePtr dstType;
+            if (auto m = module->getCurrentMethod()) {
+                dstType = m->getReturnType();
+            }
+            auto dstClass = dynamic_pointer_cast<CajetaClass>(dstType);
+            if (srcClass && dstClass
+                    && srcClass.get() != dstClass.get()
+                    && !srcClass->isInterface()
+                    && !dstClass->isInterface()) {
+                val = CajetaClass::adjustForUpcast(
+                    module, val, srcClass, dstClass);
+            }
+        }
+
         // Coerce to the enclosing function's return type. IntegerLiteralExpression picks
         // the smallest-fitting width and Cajeta otherwise lacks an upfront-promotion pass,
         // so cast/extend at the boundary so the return inst matches the function type.

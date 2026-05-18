@@ -2092,8 +2092,33 @@ namespace cajeta {
         auto* coerceBuilder = emitMod->getBuilder();
         llvm::FunctionType* mft = method->getLlvmFunctionType();
         int thisOffset = (thisValue && !isStatic) ? 1 : 0;
+        // L-03 polymorphism / MI upcast at parameter-passing site.
+        // Mirrors the same shift LocalVariableDeclaration, assignment,
+        // and return apply when binding a descendant pointer to an
+        // ancestor-typed slot. The formal parameter's CajetaType comes
+        // from method->getParameterList(); the implicit `this` slot
+        // sits at index 0 for non-static methods, so user args start
+        // at index `thisOffset` in the formal list.
+        auto formalParams = method->getParameterList();
         for (int i = 0; i < (int) parameters.size(); i++) {
             llvm::Value* v = parameters[i].value;
+            // Upcast adjust BEFORE the integer/FP coerce so we shift
+            // the pointer before any other transformation.
+            int formalIdx = i + thisOffset;
+            if (formalIdx >= 0 && formalIdx < (int) formalParams.size()
+                    && v && parameters[i].type) {
+                auto srcClass = std::dynamic_pointer_cast<CajetaClass>(
+                    parameters[i].type);
+                auto dstClass = std::dynamic_pointer_cast<CajetaClass>(
+                    formalParams[formalIdx]->getType());
+                if (srcClass && dstClass
+                        && srcClass.get() != dstClass.get()
+                        && !srcClass->isInterface()
+                        && !dstClass->isInterface()) {
+                    v = CajetaClass::adjustForUpcast(
+                        emitMod, v, srcClass, dstClass);
+                }
+            }
             if (mft && (int) mft->getNumParams() > i + thisOffset) {
                 llvm::Type* expected = mft->getParamType(i + thisOffset);
                 if (v && v->getType() != expected) {
