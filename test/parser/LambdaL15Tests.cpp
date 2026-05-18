@@ -84,3 +84,32 @@ TEST(LambdaL15Tests, differentInferredTypes) {
         "}\n";
     EXPECT_EQ(runI32(src), 18);
 }
+
+// Bare-identifier lambda passed as a constructor argument whose
+// formal parameter is a function type. The expectedType for the
+// lambda's parameter inference must come from the resolved ctor's
+// formal — NewExpression has to propagate it the same way
+// MethodCallExpression does for method calls. Today (without the
+// propagator) this trips CAJETA_ERROR_TYPE_INFERENCE because the
+// lambda's bare `acc` / `x` have no signal.
+//
+// Minimal repro of the ergonomic issue that surfaced during the
+// Collectors.toList unblock — once the propagator fires, the stdlib
+// body can drop the typed-param spelling too.
+TEST(LambdaL15Tests, bareParamsInferFromCtorArgFormal) {
+    auto src =
+        "package test;\n"
+        "public class Holder {\n"
+        "    public (int32, int32) -> int32 fn;\n"
+        "    public Holder(int32 seed, (int32, int32) -> int32 fn) {\n"
+        "        this.fn = fn;\n"
+        "    }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Holder h = heap Holder(0, (acc, x) -> acc + x);\n"
+        "        return h.fn(10, 5);\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 15);
+}

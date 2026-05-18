@@ -7,6 +7,8 @@
 #include "cajeta/type/CajetaClass.h"
 #include "cajeta/type/CajetaArray.h"
 #include "cajeta/util/MemoryManager.h"
+#include "cajeta/asn/expression/Expression.h"
+#include "cajeta/method/Method.h"
 
 #include <functional>
 
@@ -124,6 +126,65 @@ namespace cajeta {
             // static dispatch.
             if (!stackAlloc && klass->hasVtablePointerAtSlotZero()) {
                 klass->patchVirtualTableDropFn();
+            }
+        }
+
+        // Lambda-as-ctor-arg expectedType propagation. Mirror the
+        // MethodCallExpression pattern so a bare-identifier lambda
+        // passed to `heap T(...)` / `stack T(...)` / `new T(...)`
+        // borrows its param + return types from the matching ctor's
+        // formal. Without this, `heap Holder(seed, (acc, x) -> ...)`
+        // fails type inference (no LHS signal, no propagator),
+        // forcing every caller to spell typed params explicitly.
+        //
+        // Match the ctor by arity. Constructors are non-static, so the
+        // formal param list includes `this` as element 0 — subtract 1.
+        // Template-instantiation skip from MCE doesn't fire here (ctors
+        // aren't method-templated under the current grammar — the doc
+        // explicitly excludes constructors from method-level templates,
+        // see cajeta-docs/stdlib/MethodLevelTemplate.md § Constructors
+        // and operators excluded).
+        if (auto klass = dynamic_pointer_cast<CajetaClass>(targetType)) {
+            bool anyLambda = false;
+            for (auto& param : parameters) {
+                if (std::dynamic_pointer_cast<LambdaExpression>(param.expression)
+                        && !param.expression->getResolvedType()) {
+                    anyLambda = true;
+                    break;
+                }
+            }
+            if (anyLambda) {
+                std::string ctorName = targetType->getQName()->getTypeName();
+                if (klass->getTemplateOrigin()) {
+                    ctorName = klass->getTemplateOrigin()->getQName()->getTypeName();
+                }
+                MethodPtr candidate;
+                int matches = 0;
+                for (auto& mEntry : klass->getMethods()) {
+                    auto& m = mEntry.second;
+                    if (!m->isConstructor()) continue;
+                    if (m->getName() != ctorName) continue;
+                    int declared = (int) m->getParameterList().size() - 1;
+                    if (declared != (int) parameters.size()) continue;
+                    candidate = m;
+                    ++matches;
+                }
+                if (candidate && matches == 1) {
+                    auto paramList = candidate->getParameterList();
+                    // paramList[0] is `this`; user-visible args start at 1.
+                    for (size_t i = 0; i < parameters.size(); ++i) {
+                        size_t formalIdx = i + 1;
+                        if (formalIdx >= paramList.size()) break;
+                        if (auto lambda = std::dynamic_pointer_cast<LambdaExpression>(
+                                parameters[i].expression)) {
+                            if (!lambda->getResolvedType()
+                                    && paramList[formalIdx]->getType()) {
+                                lambda->setExpectedType(
+                                    paramList[formalIdx]->getType());
+                            }
+                        }
+                    }
+                }
             }
         }
 

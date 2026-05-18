@@ -344,7 +344,7 @@ class List<T> {
 }
 ```
 
-(`map<U>` is a method-level template — supported via `final <U> List<U> map((T) -> U fn)` per `cajeta-docs/stdlib/MethodLevelTemplate.md`. Each (T, U) pair gets its own monomorphization; the templating itself excludes the method from the vtable, and the mandatory `final` modifier makes that explicit at the declaration site. Call sites can rely on inference or spell `xs.<int64>map(...)` explicitly.)
+(`map<U>` is a method-level template — supported via `final <U> List<U> map((T) -> U fn)` per `cajeta-docs/stdlib/MethodLevelTemplate.md`. Each (T, U) pair gets its own monomorphization; the templating itself excludes the method from the vtable, and the mandatory `final` modifier makes that explicit at the declaration site. Call sites can rely on inference or spell `xs.map<int64>(...)` explicitly — Form C, type args after the identifier.)
 
 Use sites:
 
