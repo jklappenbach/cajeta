@@ -177,4 +177,29 @@ public class Stream<T> {
     public final <R> R collect(Collector<T, R> c) {
         return this.fold(c.seed, c.accumulator);
     }
+
+    // ----- Intermediate combinators — deferred --------------------------
+    //
+    // Fluent forms `xs.stream().filter(p).map(f).count()` need
+    // `Stream<T>.filter((T) -> boolean pred) { return heap
+    // FilterStream<T>(this, pred); }` and similar for take/skip/peek/
+    // map/flatMap. The body works for non-template classes but inside
+    // template Stream<T>'s body, the compiler emits a template-level
+    // FilterStream<T>::FilterStream call where `this` is loaded as
+    // the inline Stream<T> struct instead of passed as a `ptr` per
+    // the class-pass-by-pointer convention — JIT verifier rejects
+    // with "Call parameter type does not match function signature!".
+    //
+    // The fix requires: (1) suppress template-body emission so
+    // Stream<T>'s methods only emit per-instantiation, AND
+    // (2) cascade T substitution through nested template
+    // heap-construction so FilterStream<T> instantiates as
+    // FilterStream<int32> when the enclosing Stream<int32>'s filter
+    // is called. Both are deep compiler changes — tracked under
+    // Priority 2 § 8 in ToDo.md.
+    //
+    // Until then, users construct combinators directly:
+    //     heap FilterStream<int32>(xs.stream(), (x) -> x > 3).count()
+    // Less ergonomic than `xs.stream().filter(...).count()` but
+    // functional today.
 }
