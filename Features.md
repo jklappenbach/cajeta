@@ -36,7 +36,11 @@ Status legend:
 | L-21 | Chained call form (`a.b().c()`) | `xs.stream().filter(p).map(f).count()` | partial | works for simple chains; P6.6 covers the remaining cases |
 | L-22 | Method-level type parameters (`final <T> ...`) | Per-method `<T>` declaration | shipped | `cajeta-docs/stdlib/MethodLevelTemplate.md`; static + instance method templates, inference + explicit-type-arg call syntax (`xs.map<int64>(...)` — Form C, type args after the identifier) all working |
 | L-23 | Templated-static-factory call syntax | `Optional.Some<int32>(42)` | shipped (Form C) | `Optional.Some<int32>(42)` and `xs.method<R>(args)` parse and dispatch via L-22's explicit-type-arg path. `Optional<int32>.Some(42)` (type-name-with-args as receiver — Form B) intentionally not pursued: Form C subsumes its use cases |
-| L-24 | `@Encoding(EncoderClass)` for views | Encoder interface for wire-format serialization | designed | `cajeta-docs/stdlib/Annotations.md` § `@Encoding`; needs `Encoder<T>` |
+| L-24 | `@Encoding(EncoderClass)` for views | Encoder interface for wire-format serialization | shipped | `cajeta-docs/stdlib/Annotations.md` § `@Encoding`; `test/parser/EncodingPhase{A,B}Tests.cpp` (10). Synthesizes `T(byte[])` ctor delegating to `EncoderClass.decode(bytes)` (memcpy + shell-free) and `#byte[] toBytes()` delegating to `EncoderClass.encode(this)`. Mutual exclusion with `@BigEndian`/`@LittleEndian`/`@HostEndian`/`@Align` enforced. Encoder dispatch is duck-typed (static `encode`/`decode` by name on the encoder class) — `cajeta.wire.Encoder<T>` interface shipped alongside for documentation; impl-side verification of `Encoder<T>` conformance waits on templated-interface vtable instantiation. |
+| L-25 | Static nested classes | `public class Outer { public static class Inner { ... } }` accessed as `Outer.Inner` | shipped | `test/parser/NestedClassTests.cpp` (5). Wired via `NestedClassDeclaration` wrapper + `Method::create` switched from `structureStack.front()` to `.back()` for the enclosing parent. v1 supports static-nested only (no implicit outer-this). |
+| L-26 | Templated interface declarations | `interface Encoder<T>` parses + lives in stdlib | shipped (parse) | `test/parser/TemplatedInterfaceTests.cpp` (2). `visitInterfaceDeclaration` now processes typeParameters + skips body-walk for templates (mirrors class-template path). Implementing-class instantiation of templated-interface vtables remains future work. |
+| L-27 | Return-ownership enforcement | `return heap/new/stack X` requires `#T` return type | shipped | `CAJETA_ERROR_FRESH_RETURN_NEEDS_TRANSFER` in `ReturnStatement::generateCode`. Lambda returns are exempted (no `#R` syntax in `(T) -> R`). Stdlib swept (14 sites updated: `ArrayList.stream`, `HashMap.{keys,values,entries}`, every Stream subclass's `next()`, etc.); test files updated (7). |
+| L-28 | `this`-passing convention | `loadIfLValue`'s class-ref catch-all loads as `ptr` not inline struct | shipped | `test/parser/ThisAsArgTests.cpp` (3). Fixes a latent class of `return heap Wrapper(this)` patterns that previously SIGSEGV'd at JIT verify. |
 
 ## Stdlib — `cajeta.lang`
 
@@ -183,6 +187,29 @@ All `cajeta.io.*` is **designed, unimplemented**. See `cajeta-docs/stdlib/Io.md`
 See `cajeta-docs/stdlib/Annotations.md` for the full catalog. The annotation-
 arg machinery is shipped (L-13); individual handlers are tracked
 under the language and stdlib sections above.
+
+### Lombok-mirror — `cajeta.synth`
+
+All shipped 2026-05-18 as a single track. Synthesizer classes live
+under `src/cajeta/method/Synthesized*Method.{h,cpp}`. User-declared
+methods of the same name+arity always win — synthesizers skip.
+
+| ID | Annotation | Effect | Status | Tests |
+|----|------------|--------|--------|-------|
+| A-201 | `@Getter` | Per-field accessor `T name()` (size()-style, not getName) | shipped | `test/parser/GetterSetterTests.cpp` (6 of 10) |
+| A-202 | `@Setter` | Per-field mutator `void name(T v)`; skips final fields | shipped | `test/parser/GetterSetterTests.cpp` (4 of 10) |
+| A-203 | `@ToString` | `String toString()` returning `Class(f1=v1,f2=v2,...)`; `@Exclude` on fields | shipped (PROPERTIES format) | `test/parser/ToStringTests.cpp` (12). `TO_STRING_JSON` deferred to S-1102 |
+| A-204 | `@NoArgsConstructor` | Zero-arg ctor, fields zero-init'd | shipped | `test/parser/ConstructorAnnotationTests.cpp` |
+| A-205 | `@AllArgsConstructor` | Ctor takes every non-static field | shipped | `test/parser/ConstructorAnnotationTests.cpp` |
+| A-206 | `@RequiredArgsConstructor` | Ctor takes only `final` (and future `@NonNull`) fields | shipped | `test/parser/ConstructorAnnotationTests.cpp` (8 across the three) |
+| A-207 | `@Data` | Bundle: @Getter + @Setter + @ToString + @AutoHash + @RequiredArgsConstructor | shipped | `test/parser/DataValueAnnotationTests.cpp` |
+| A-208 | `@Value` | Bundle: @Getter + @ToString + @AutoHash + @AllArgsConstructor (immutable; no setters) | shipped | `test/parser/DataValueAnnotationTests.cpp` (6 across both) |
+| A-209 | `@NonNull` | Parameter null-check at method entry; `@RequiredArgsConstructor` includes the field | shipped | `test/parser/NonNullTests.cpp` (7). Return-type @NonNull deferred |
+| A-210 | `@With` | Per-field copy-with mutator `withX(T v)` — alloc + memcpy + overwrite slot + return | shipped | `test/parser/WithAnnotationTests.cpp` (6) |
+| A-211 | `@Builder` | Synthesizes nested `Outer.Builder` class + chained setters + `build()` + static `builder()` on Outer. Implicitly enables @AllArgsConstructor | shipped | `test/parser/BuilderAnnotationTests.cpp` (6). Uses real nested-class infra (L-25). `@Builder.Default` deferred |
+| A-212 | `@Encoding(EncoderClass)` | See L-24 | shipped | `test/parser/EncodingPhase{A,B}Tests.cpp` (10) |
+| A-XXX | `@EqualsAndHashCode` | n/a | **rejected** | Cajeta has no `equals()` on Object (uses `operator==`); `@AutoHash` covers hashing |
+| A-XXX | `@Cleanup` | n/a | **rejected** | Cajeta destructors + auto-field-drop cover the use case |
 
 ## Tracking conventions
 
