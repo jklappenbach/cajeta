@@ -14,6 +14,7 @@
 #include "../method/SynthesizedGetterMethod.h"
 #include "../method/SynthesizedSetterMethod.h"
 #include "../method/SynthesizedToStringMethod.h"
+#include "../method/SynthesizedConstructorMethod.h"
 #include "CajetaArray.h"
 #include "../field/HeapField.h"
 #include "../error/Exception.h"
@@ -729,6 +730,15 @@ namespace cajeta {
 
         ((llvm::StructType*) llvmType)->setBody(llvm::ArrayRef<llvm::Type*>(llvmMembers), false);
 
+        // Lombok ctor annotations run BEFORE ensureDefaultConstructor —
+        // if @NoArgsConstructor (etc.) adds a ctor, the populated map
+        // tells ensureDefaultConstructor to skip its auto-default add.
+        // Otherwise an unannotated ctor-less class still gets the auto-
+        // default. (Lombok's semantic: @AllArgsConstructor alone gives
+        // only the all-args ctor, not also an implicit no-arg.)
+        synthesizeNoArgsConstructor();
+        synthesizeAllArgsConstructor();
+        synthesizeRequiredArgsConstructor();
         ensureDefaultConstructor();
         synthesizeAutoHash();
         synthesizeGetters();
@@ -865,7 +875,11 @@ namespace cajeta {
         // The synthesizer throws on unsupported field kinds with a
         // diagnostic naming the class, field, and remediation. See
         // SynthesizedHashMethod::generateCode for the rules.
-        if (!findAnnotation("AutoHash")) return;
+        // @Data and @Value bundles also imply @AutoHash. Direct
+        // @AutoHash works on its own as before.
+        if (!findAnnotation("AutoHash")
+                && !findAnnotation("Data")
+                && !findAnnotation("Value")) return;
 
         for (auto& m : methodList) {
             if (m->getName() == "hash" && m->getParameters().size() == 0) {
@@ -883,7 +897,11 @@ namespace cajeta {
         // with the same name and zero params win — synthesizer skips.
         // Naming: getter for field `name` is `name()`, size()-style
         // (see cajeta-docs/stdlib/Annotations.md § Accessors).
-        bool classLevel = findAnnotation("Getter") != nullptr;
+        //
+        // @Data and @Value bundles also enable class-level @Getter.
+        bool classLevel = findAnnotation("Getter") != nullptr
+                       || findAnnotation("Data")   != nullptr
+                       || findAnnotation("Value")  != nullptr;
 
         for (auto& prop : propertyList) {
             if (!prop || prop->isStatic()) continue;
@@ -913,7 +931,14 @@ namespace cajeta {
         // at field level (only that field). Skipped for `final` fields
         // (Lombok parity — final fields aren't reassignable). User-
         // declared same-name single-arg method wins.
-        bool classLevel = findAnnotation("Setter") != nullptr;
+        //
+        // @Data bundle enables class-level @Setter. @Value bundle does
+        // NOT — @Value is the immutable variant, no setters by design.
+        // If both @Value and explicit @Setter are present, @Value wins
+        // (immutability contract is the stronger guarantee).
+        if (findAnnotation("Value")) return;
+        bool classLevel = findAnnotation("Setter") != nullptr
+                       || findAnnotation("Data")   != nullptr;
 
         for (auto& prop : propertyList) {
             if (!prop || prop->isStatic()) continue;
@@ -960,12 +985,18 @@ namespace cajeta {
         // doesn't make sense. Synthesize a single `String toString()`
         // walking non-static, non-excluded fields in declaration order.
         // User-declared toString() (with `this` or no params) wins.
+        //
+        // @Data and @Value bundles also enable @ToString (with default
+        // PROPERTIES format). A direct @ToString annotation can pass
+        // format=TO_STRING_JSON etc.; via bundle, only the default form
+        // fires.
         auto ann = findAnnotation("ToString");
-        if (!ann) return;
+        bool bundleEnabled = findAnnotation("Data") || findAnnotation("Value");
+        if (!ann && !bundleEnabled) return;
 
         // Reject deferred format options early so the user gets a
         // clear error rather than a silent fall-through to default.
-        std::string format = ann->getString("format");
+        std::string format = ann ? ann->getString("format") : std::string();
         if (!format.empty() && format != "TO_STRING_PROPERTIES") {
             if (format == "TO_STRING_JSON") {
                 throw Exception(
@@ -1001,6 +1032,82 @@ namespace cajeta {
         addMethod(std::make_shared<SynthesizedToStringMethod>(
             module,
             std::static_pointer_cast<CajetaClass>(shared_from_this())));
+    }
+
+    // Returns true if the unlabeled constructor map already holds a
+    // ctor with the given user-visible-arg count (excluding `this`).
+    // Used by the three ctor synthesizers to skip when the user already
+    // declared a ctor with the same shape. Ctors don't go into
+    // methodList — they only land in the constructor maps.
+    bool CajetaClass::ctorWithArityExists(size_t userArgs) const {
+        for (auto& bucket : unlabeledConstructorMap) {
+            for (auto& entry : bucket.second) {
+                MethodPtr m = entry.second;
+                if (!m) continue;
+                auto params = m->getParameterList();
+                size_t got = params.size();
+                if (!params.empty() && params.front()
+                        && params.front()->getName() == "this") {
+                    got--;
+                }
+                if (got == userArgs) return true;
+            }
+        }
+        return false;
+    }
+
+    void CajetaClass::synthesizeNoArgsConstructor() {
+        if (!findAnnotation("NoArgsConstructor")) return;
+        if (ctorWithArityExists(0)) return;
+        std::vector<StructurePropertyPtr> fields;  // empty — zero-init all
+        auto ctor = std::make_shared<SynthesizedConstructorMethod>(
+            module,
+            std::static_pointer_cast<CajetaClass>(shared_from_this()),
+            std::move(fields));
+        ctor->initParameters();
+        addMethod(ctor);
+    }
+
+    void CajetaClass::synthesizeAllArgsConstructor() {
+        // @Value bundle also enables @AllArgsConstructor.
+        if (!findAnnotation("AllArgsConstructor")
+                && !findAnnotation("Value")) return;
+        std::vector<StructurePropertyPtr> fields;
+        for (auto& prop : propertyList) {
+            if (!prop || prop->isStatic()) continue;
+            fields.push_back(prop);
+        }
+        if (ctorWithArityExists(fields.size())) return;
+        auto ctor = std::make_shared<SynthesizedConstructorMethod>(
+            module,
+            std::static_pointer_cast<CajetaClass>(shared_from_this()),
+            std::move(fields));
+        ctor->initParameters();
+        addMethod(ctor);
+    }
+
+    void CajetaClass::synthesizeRequiredArgsConstructor() {
+        // @Data bundle also enables @RequiredArgsConstructor.
+        if (!findAnnotation("RequiredArgsConstructor")
+                && !findAnnotation("Data")) return;
+        // v1 selects `final` fields only. @NonNull (once implemented)
+        // will widen the predicate per Lombok's contract.
+        std::vector<StructurePropertyPtr> fields;
+        for (auto& prop : propertyList) {
+            if (!prop || prop->isStatic()) continue;
+            bool isFinal = prop->getModifiers().find(FINAL)
+                != prop->getModifiers().end();
+            bool isNonNull = prop->findAnnotation("NonNull") != nullptr;
+            if (!isFinal && !isNonNull) continue;
+            fields.push_back(prop);
+        }
+        if (ctorWithArityExists(fields.size())) return;
+        auto ctor = std::make_shared<SynthesizedConstructorMethod>(
+            module,
+            std::static_pointer_cast<CajetaClass>(shared_from_this()),
+            std::move(fields));
+        ctor->initParameters();
+        addMethod(ctor);
     }
 
     void CajetaClass::ensureDefaultConstructor() {

@@ -683,6 +683,22 @@ namespace cajeta {
         // SynthesizedToStringMethod for codegen.
         void synthesizeToString();
 
+        // @NoArgsConstructor / @AllArgsConstructor /
+        // @RequiredArgsConstructor — synthesize the matching ctor when
+        // not already declared. Skipped silently if a same-shape ctor
+        // already exists (user wins). See SynthesizedConstructorMethod
+        // for codegen — body is field zero-init then per-arg store; no
+        // implicit super-ctor chain in v1 (classes with non-trivial
+        // parent ctors hand-write).
+        void synthesizeNoArgsConstructor();
+        void synthesizeAllArgsConstructor();
+        void synthesizeRequiredArgsConstructor();
+
+        // Helper for the three ctor synthesizers: does the constructor
+        // map already hold a ctor with `userArgs` user-visible params
+        // (excluding `this`)?
+        bool ctorWithArityExists(size_t userArgs) const;
+
         void createInheritanceMethodMap(CajetaClassPtr structure = shared_ptr<CajetaClass>(nullptr));
 
 
