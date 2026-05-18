@@ -11,6 +11,8 @@
 #include "../error/VariableAssignmentException.h"
 #include "../error/Exception.h"
 #include "../asn/DefaultBlock.h"
+#include "../asn/Statement.h"
+#include "../asn/expression/MethodCallExpression.h"
 #include "../type/FormalParameter.h"
 #include "../field/ParameterField.h"
 #include "../util/Printer.h"
@@ -657,11 +659,89 @@ namespace cajeta {
         // Stream<T>, AbstractHashable<T>` (the AbstractHashable side
         // wouldn't initialize otherwise).
         if (constructor && parent && bodyFn->arg_size() > 0) {
+            // MultiClassing R-2: pre-walk the ctor body's AST to detect
+            // any explicit `super(args)` call. The warning condition
+            // requires the user to have explicitly picked one parent's
+            // ctor — that's the signal they were thinking about ctor
+            // selection and might've missed a sibling. Walk recursively
+            // so super calls nested in if/for/etc. blocks are detected.
+            bool userHasExplicitSuperCtor = false;
+            if (block) {
+                // ExpressionStatement and ReturnStatement store their
+                // wrapped expression in a member field (not in children)
+                // so the default child walk misses it — special-case
+                // both to forward into the expression. Other wrapper
+                // shapes (if/for/while/block) keep their inner
+                // statements in `children` so the recursive walk
+                // reaches them naturally.
+                std::function<bool(AbstractSyntaxNodePtr)> findSuperCtor =
+                    [&](AbstractSyntaxNodePtr node) -> bool {
+                        if (!node) return false;
+                        if (auto mce = std::dynamic_pointer_cast<
+                                cajeta::MethodCallExpression>(node)) {
+                            if (mce->isSuperCtorCall()) return true;
+                        }
+                        if (auto es = std::dynamic_pointer_cast<
+                                cajeta::ExpressionStatement>(node)) {
+                            if (findSuperCtor(es->getExpression())) return true;
+                        }
+                        for (auto& child : node->getChildren()) {
+                            if (findSuperCtor(child)) return true;
+                        }
+                        return false;
+                    };
+                userHasExplicitSuperCtor = findSuperCtor(block);
+            }
             llvm::Value* receiver = bodyFn->getArg(0);
+            int parentIdx = 0;
             for (auto& sup : parent->getSuperClasses()) {
+                bool isNonFirstParent = (parentIdx > 0);
+                parentIdx++;
                 if (!sup) continue;
                 std::vector<ParameterEntry> noArgs;
                 std::string supCtorName = sup->getQName()->getTypeName();
+                // MultiClassing R-2: if user wrote explicit super(args)
+                // AND this is a sibling (non-first) parent AND the
+                // sibling has BOTH a no-arg ctor and an args ctor,
+                // warn that the no-arg was picked implicitly — the
+                // user may have wanted to call the sibling's args
+                // ctor too. Narrow on purpose (only fires when all
+                // three conditions hold) so the build log doesn't
+                // flood on intentional skips.
+                if (userHasExplicitSuperCtor && isNonFirstParent) {
+                    bool supHasNoArg = false;
+                    bool supHasArgs = false;
+                    // Walk `methods` (map by canonical) rather than
+                    // `methodList` — ctors are kept in the map, not
+                    // the list, so iterating methodList would skip
+                    // them entirely and the warning would never fire.
+                    for (auto& [name, m] : sup->getMethods()) {
+                        if (!m || !m->isConstructor()) continue;
+                        if (m->getModifiers().find(STATIC)
+                                != m->getModifiers().end()) continue;
+                        // parameterList includes implicit `this` for
+                        // non-static ctors — minus 1 for user-visible
+                        // arg count.
+                        int userArgs = (int) m->getParameterList().size() - 1;
+                        if (userArgs <= 0) supHasNoArg = true;
+                        else supHasArgs = true;
+                    }
+                    if (supHasNoArg && supHasArgs) {
+                        std::cerr << "warning: [implicit-ctor-skip] in "
+                            << parent->getQName()->toCanonical()
+                            << "(): explicit super(...) targets only the "
+                            << "first parent's ctor; sibling parent '"
+                            << sup->getQName()->toCanonical()
+                            << "' also has an args constructor — its "
+                            << "no-arg constructor was picked implicitly. "
+                            << "Consider super["
+                            << sup->getQName()->getTypeName()
+                            << "](...) once that grammar lands, or "
+                            << "restructure to pick explicitly via "
+                            << "composition."
+                            << std::endl;
+                    }
+                }
                 if (sup->resolveMethod(supCtorName, noArgs,
                         /*isConstructor=*/true, /*floatingParams=*/false)) {
                     // Per-parent sub-object adjustment (Gap 8). The receiver
