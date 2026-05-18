@@ -1746,12 +1746,23 @@ namespace cajeta {
             // Walk superclasses and add entries under any base-canonical
             // that has a matching suffix. Multiple superclasses with the
             // same-suffix method all alias to the most-derived impl.
+            //
+            // MultiClassing P-5 fix: abstract methods are NOT skipped
+            // here. When A declares `abstract step()` and a sibling B
+            // declares concrete `step()`, the doc rule says B's impl
+            // satisfies A's obligation in `C extends A, B`. The
+            // abstract-obligation check below already accepts this
+            // class. But dispatch can still happen against A.step's
+            // canonical (e.g., when method resolution walks A's chain
+            // first), so A.step's canonical must also alias to B's
+            // concrete impl. Pre-fix the abstract-skip kept the
+            // canonical out of the vtable and `c.step()` aborted at
+            // dispatch with no entry for the looked-up hash.
             std::function<void(CajetaClassPtr)> aliasWalk = [&](CajetaClassPtr c) {
                 for (auto& sup : c->getSuperClasses()) {
                     for (auto& m : sup->getMethodList()) {
                         if (m->isConstructor()) continue;
                         if (m->getModifiers().find(STATIC) != m->getModifiers().end()) continue;
-                        if (m->isAbstract()) continue;
                         string supCanon = m->toCanonical(/*labeled=*/false);
                         auto it = bySuffix.find(suffixOf(supCanon));
                         if (it != bySuffix.end()) {

@@ -130,16 +130,13 @@ TEST(MultiClassingPhase1Tests, disjointMethodsAcrossParentsCompile) {
 
 // P-5 doc rule: an abstract method in one parent and a concrete
 // method with the same suffix in another parent is NOT a conflict —
-// the concrete one satisfies the obligation.
-//
-// DISABLED for now: construction works and `buildVirtualTable`'s
-// abstract enforcement correctly accepts the class, but a dispatched
-// call (`c.step()`) hangs/aborts. The alias walk skips abstract
-// methods, so A::step()'s canonical never gets re-keyed to B's
-// concrete impl in the vtable — dispatch via the abstract canonical
-// finds nothing. Pre-existing gap; tracked separately as the "P-5
-// dispatch" follow-up in ToDo.md.
-TEST(MultiClassingPhase1Tests, DISABLED_abstractInOneParentConcreteInOtherSatisfies) {
+// the concrete one satisfies the obligation. The abstract-obligation
+// check in `buildVirtualTable` already accepts the class shape;
+// dispatch through the abstract canonical now also lands on the
+// concrete impl after the alias walk includes abstract-declared
+// canonicals (their suffix is matched against bySuffix and aliased
+// to the most-derived concrete impl).
+TEST(MultiClassingPhase1Tests, abstractInOneParentConcreteInOtherSatisfies) {
     auto src =
         "package test;\n"
         "public abstract class A {\n"
