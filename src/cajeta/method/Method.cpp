@@ -177,6 +177,87 @@ namespace cajeta {
         }
     }
 
+    // @NonNull parameter check emission. For every @NonNull-annotated
+    // parameter that has a pointer-storage type (class ref, array,
+    // String, interface fat-pointer-treated-as-ptr — anything where
+    // null is representable), emit an entry-point null-check that
+    // throws CAJETA_ERROR_NULL_PARAM_ARG (integer code 2) on miss.
+    //
+    // Pattern mirrors what `throw 2` would lower to via
+    // ThrowStatement::generateCode: __cajeta_throw(IntToPtr(2)). The
+    // catch site recovers the int code via (int32) e per the Optional
+    // unwrap pattern (Q11). Future structured exception types will swap
+    // the code for a real NullPointerException instance.
+    //
+    // Skipped for:
+    //   - non-reference parameter types (int / float / boolean cannot
+    //     be null)
+    //   - the implicit `this` parameter at position 0 (always a valid
+    //     this-pointer at method entry; null `this` is a dispatch-side
+    //     bug, not an arg-passing bug)
+    void Method::emitNonNullParamChecks(CajetaModulePtr module) {
+        if (parameterList.empty()) return;
+
+        llvm::IRBuilder<>* b = module->getBuilder();
+        llvm::Function* throwFn = module->getRuntimeFunction("__cajeta_throw");
+        if (!b || !throwFn) return;
+
+        llvm::LLVMContext& ctx = *module->getLlvmContext();
+        llvm::Type* i64Ty = llvm::Type::getInt64Ty(ctx);
+        llvm::PointerType* ptrTy = llvm::PointerType::get(ctx, 0);
+
+        for (size_t i = 0; i < parameterList.size(); ++i) {
+            auto& p = parameterList[i];
+            if (!p) continue;
+            if (p->getName() == "this") continue;
+            // FormalParameter::fromContext uses the legacy annotations
+            // set path (Annotatable::addAnnotation), NOT the args-aware
+            // addAnnotationInstance, so findAnnotation (which walks
+            // annotationInstances) misses parameter annotations. Walk
+            // the legacy list directly. Future cleanup: extend
+            // findAnnotation to also check annotationList, or migrate
+            // parameter parsing to addAnnotationInstance.
+            bool nn = false;
+            for (auto& qn : p->getAnnotations()) {
+                if (qn && qn->getTypeName() == "NonNull") { nn = true; break; }
+            }
+            if (!nn) continue;
+
+            // Use the LLVM arg's actual type for the pointer check —
+            // safer than going through CajetaType::getLlvmType() which
+            // can return placeholder shapes for forward-declared / not-
+            // yet-built types and trip "Invalid size request" / opaque-
+            // pointer surprises. Only pointer-typed args can be null.
+            if (i >= llvmFunction->arg_size()) continue;
+            llvm::Value* argVal = llvmFunction->getArg((unsigned) i);
+            if (!argVal->getType()->isPointerTy()) continue;
+
+            llvm::Value* isNull = b->CreateICmpEQ(
+                argVal,
+                llvm::ConstantPointerNull::get(ptrTy),
+                std::string("nn.isnull.") + p->getName());
+
+            llvm::Function* curFn = b->GetInsertBlock()->getParent();
+            llvm::BasicBlock* throwBB = llvm::BasicBlock::Create(ctx,
+                std::string("nn.throw.") + p->getName(), curFn);
+            llvm::BasicBlock* okBB = llvm::BasicBlock::Create(ctx,
+                std::string("nn.ok.") + p->getName(), curFn);
+            b->CreateCondBr(isNull, throwBB, okBB);
+
+            b->SetInsertPoint(throwBB);
+            // Encode CAJETA_ERROR_NULL_PARAM_ARG = 2 as an IntToPtr.
+            // Matches ThrowStatement::generateCode's integer-throw
+            // shape (Statement.cpp:1582-1585).
+            llvm::Value* code = llvm::ConstantInt::get(i64Ty,
+                llvm::APInt(64, 2, false));
+            llvm::Value* ptrCode = b->CreateIntToPtr(code, ptrTy);
+            b->CreateCall(throwFn, {ptrCode});
+            b->CreateUnreachable();
+
+            b->SetInsertPoint(okBB);
+        }
+    }
+
     void Method::emitAfterAdvice(CajetaModulePtr module) {
         for (auto& m : matchingAdvice) {
             if (m.kind != AdviceKind::After) continue;
@@ -628,6 +709,13 @@ namespace cajeta {
                 "__cajeta_scope_enter")) {
             builder->CreateCall(enterFn, {});
         }
+
+        // @NonNull parameter checks. Fire BEFORE the try frame so a
+        // null-arg violation is a precondition failure that escapes
+        // any in-method @AfterThrowing handling (matches the spec
+        // intent — the method body doesn't get to "handle" a contract
+        // violation on its own arguments).
+        emitNonNullParamChecks(module);
 
         // A6: when @AfterThrowing matches (and this method isn't
         // @Around-wrapped — the wrapper sets up its own try/catch

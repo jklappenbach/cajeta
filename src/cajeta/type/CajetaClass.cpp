@@ -15,6 +15,7 @@
 #include "../method/SynthesizedSetterMethod.h"
 #include "../method/SynthesizedToStringMethod.h"
 #include "../method/SynthesizedConstructorMethod.h"
+#include "../method/SynthesizedWithMethod.h"
 #include "CajetaArray.h"
 #include "../field/HeapField.h"
 #include "../error/Exception.h"
@@ -744,6 +745,7 @@ namespace cajeta {
         synthesizeGetters();
         synthesizeSetters();
         synthesizeToString();
+        synthesizeWith();
 
         for (auto methodEntry: methods) {
             methodEntry.second->generatePrototype();
@@ -1108,6 +1110,53 @@ namespace cajeta {
             std::move(fields));
         ctor->initParameters();
         addMethod(ctor);
+    }
+
+    void CajetaClass::synthesizeWith() {
+        // @With at class level (every non-static field gets a with) OR
+        // at field level (only that field). User-declared method with
+        // the same name+arity wins.
+        bool classLevel = findAnnotation("With") != nullptr;
+
+        auto buildName = [](const std::string& fieldName) {
+            if (fieldName.empty()) return std::string("with");
+            std::string out = "with";
+            out += (char) std::toupper((unsigned char) fieldName[0]);
+            if (fieldName.size() > 1) out.append(fieldName.substr(1));
+            return out;
+        };
+
+        for (auto& prop : propertyList) {
+            if (!prop || prop->isStatic()) continue;
+            bool fieldLevel = prop->findAnnotation("With") != nullptr;
+            if (!classLevel && !fieldLevel) continue;
+
+            std::string methodName = buildName(prop->getName());
+
+            // User-declared same-name single-arg method? Skip.
+            bool exists = false;
+            for (auto& m : methodList) {
+                if (!m || m->isConstructor()) continue;
+                if (m->getName() != methodName) continue;
+                auto params = m->getParameterList();
+                size_t got = params.size();
+                if (!params.empty() && params.front()
+                        && params.front()->getName() == "this") {
+                    got--;
+                }
+                if (got != 1) continue;
+                exists = true;
+                break;
+            }
+            if (exists) continue;
+
+            auto with = std::make_shared<SynthesizedWithMethod>(
+                module,
+                std::static_pointer_cast<CajetaClass>(shared_from_this()),
+                prop);
+            with->initParameter();
+            addMethod(with);
+        }
     }
 
     void CajetaClass::ensureDefaultConstructor() {

@@ -139,7 +139,15 @@ namespace cajeta {
         Annotatable() { }
 
         Annotatable(set<QualifiedNamePtr>& src) {
+            // Mirror both containers: callers expect annotations and
+            // annotationList to be aligned (RTTI's
+            // createParameterType walks the list to build the LLVM
+            // type while createParameterConstant walks the set to
+            // build the initializer — a size mismatch trips the LLVM
+            // verifier with "Invalid size request on a scalable
+            // vector"). FormalParameter::fromContext takes this path.
             annotations.insert(src.begin(), src.end());
+            for (auto& q : src) annotationList.push_back(q);
         }
 
         void addAnnotation(QualifiedNamePtr qName) {

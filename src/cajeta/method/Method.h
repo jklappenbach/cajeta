@@ -230,6 +230,14 @@ namespace cajeta {
         // silently skipped — A12's diagnostics pass surfaces them.
         void emitBeforeAdvice(CajetaModulePtr module);
         void emitAfterAdvice(CajetaModulePtr module);
+
+        // @NonNull (cajeta-docs/stdlib/Annotations.md § Null safety).
+        // Emit entry-point null-checks for every @NonNull-annotated
+        // pointer parameter. Skipped for the implicit `this` and for
+        // non-reference parameters. Called from generateCode after
+        // scope setup, before any user-body emission. Lowers to
+        // `if (arg == null) throw 2;` (CAJETA_ERROR_NULL_PARAM_ARG).
+        void emitNonNullParamChecks(CajetaModulePtr module);
         // A6: @AfterReturning fires only on the normal-return path
         // (same hook points as @After). @AfterThrowing fires only
         // from inside the catch arm of the try/catch wrapping (see

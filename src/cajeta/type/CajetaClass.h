@@ -694,6 +694,14 @@ namespace cajeta {
         void synthesizeAllArgsConstructor();
         void synthesizeRequiredArgsConstructor();
 
+        // @With on class (synthesizes per-field withX(T v) methods) or
+        // on individual fields (only that field). Each method allocates
+        // a fresh instance, memcpys the source body (preserves vtable +
+        // every field), overwrites the named slot, and returns the new
+        // ptr. Naming: with for field `x` is `withX(T v)` (Lombok form
+        // — Cajeta's size()-style would collide with @Setter).
+        void synthesizeWith();
+
         // Helper for the three ctor synthesizers: does the constructor
         // map already hold a ctor with `userArgs` user-visible params
         // (excluding `this`)?
