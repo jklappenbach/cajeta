@@ -235,6 +235,32 @@ namespace cajeta {
                     if (rc->isInterface()) {
                         return v;
                     }
+                    // Plain class ref: per the class-pass-by-pointer
+                    // rule (Method.cpp:537 + ParameterField+
+                    // LocalVariableDeclaration's slot-shape choice),
+                    // a class-typed slot holds a `ptr`. Loading the
+                    // slot should use `ptr`, not the inline struct
+                    // shape that resolved->getLlvmType() returns —
+                    // otherwise we'd read the struct's first word out
+                    // through the heap pointer and hand that back as
+                    // if it were the instance reference. The catch-
+                    // all branch below loads with `loadTy = struct`,
+                    // which trips downstream call sites that expect
+                    // a `ptr` arg (`Call parameter type does not
+                    // match function signature!`). Carve out the
+                    // class-ref case explicitly so the catch-all
+                    // doesn't mis-fire.
+                    llvm::Type* ptrTy = llvm::PointerType::get(
+                        *module->getLlvmContext(), 0);
+                    if (v->getType() == ptrTy) {
+                        // ThisExpression's alloca holds a ptr; loading
+                        // gives back the ptr. Same for any class-typed
+                        // local or field slot.
+                        return builder->CreateLoad(ptrTy, v);
+                    }
+                    // If v isn't even a ptr, fall through — something
+                    // weirder is going on; let the catch-all handle it
+                    // (or fail loudly via the verifier).
                 }
                 if (llvm::Type* loadTy = resolved->getLlvmType()) {
                     if (loadTy != v->getType()) {

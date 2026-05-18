@@ -178,28 +178,24 @@ public class Stream<T> {
         return this.fold(c.seed, c.accumulator);
     }
 
-    // ----- Intermediate combinators — deferred --------------------------
+    // ----- Intermediate combinators — partially deferred ----------------
     //
-    // Fluent forms `xs.stream().filter(p).map(f).count()` need
-    // `Stream<T>.filter((T) -> boolean pred) { return heap
-    // FilterStream<T>(this, pred); }` and similar for take/skip/peek/
-    // map/flatMap. The body works for non-template classes but inside
-    // template Stream<T>'s body, the compiler emits a template-level
-    // FilterStream<T>::FilterStream call where `this` is loaded as
-    // the inline Stream<T> struct instead of passed as a `ptr` per
-    // the class-pass-by-pointer convention — JIT verifier rejects
-    // with "Call parameter type does not match function signature!".
+    // The `this`-passing bug (loadIfLValue's catch-all loading class
+    // refs as inline structs) was fixed alongside this work. However
+    // adding fluent forms like
     //
-    // The fix requires: (1) suppress template-body emission so
-    // Stream<T>'s methods only emit per-instantiation, AND
-    // (2) cascade T substitution through nested template
-    // heap-construction so FilterStream<T> instantiates as
-    // FilterStream<int32> when the enclosing Stream<int32>'s filter
-    // is called. Both are deep compiler changes — tracked under
-    // Priority 2 § 8 in ToDo.md.
+    //   public Stream<T> filter((T) -> boolean pred) {
+    //       return heap FilterStream<T>(this, pred);
+    //   }
     //
-    // Until then, users construct combinators directly:
+    // to template Stream<T> still trips a separate template-cascade
+    // issue: the body's heap-call resolves to FilterStream<T> (template
+    // form, T unresolved) AND the body gets emitted for the template
+    // shape, polluting the JIT module with mismatched-type IR. Per-
+    // instantiation emission with T-substitution through nested
+    // template heap-construction is the missing piece.
+    //
+    // Until that lands, users construct combinators directly:
     //     heap FilterStream<int32>(xs.stream(), (x) -> x > 3).count()
-    // Less ergonomic than `xs.stream().filter(...).count()` but
-    // functional today.
+    // See Priority 2 § 8 in ToDo.md for the diagnosis.
 }
