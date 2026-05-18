@@ -2139,6 +2139,26 @@ namespace cajeta {
                 // surface at codegen / verify rather than here.
                 return true;
             }
+            // Class-template instantiation formal — recurse into the
+            // type arguments so T-vars embedded inside `Collector<T, R>`,
+            // `Stream<T>`, etc. bind from the corresponding positions in
+            // the arg's instantiation. Both sides must be instantiations
+            // of the same template; if not, presume compatibility and
+            // let codegen surface mismatches.
+            if (!fc->getTypeArguments().empty()) {
+                auto ac = std::dynamic_pointer_cast<CajetaClass>(arg);
+                if (!ac || ac->getTypeArguments().empty()) return true;
+                const auto& fArgs = fc->getTypeArguments();
+                const auto& aArgs = ac->getTypeArguments();
+                if (fArgs.size() != aArgs.size()) return true;
+                for (size_t i = 0; i < fArgs.size(); ++i) {
+                    if (!unifyMethodTemplateFormal(
+                            fArgs[i], aArgs[i], tparamNames, bindings)) {
+                        return false;
+                    }
+                }
+                return true;
+            }
             // Non-placeholder concrete class formal — presumed compatible.
             return true;
         }

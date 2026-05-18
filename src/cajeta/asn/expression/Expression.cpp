@@ -1336,7 +1336,39 @@ namespace cajeta {
         // generateCode time when the parameter scope is pushed.
         if (!module) module = CajetaModule::getActiveModule();
         if (!module) return;
+
+        // Push a temporary scope holding the lambda's declared
+        // parameters so the body's resolveTypes can resolve bare
+        // identifiers (`acc`, `c`) to their declared types. Without
+        // this, expressions like `acc + c.v` resolve `acc` to null
+        // and `c` to null, and the BinaryOpExpression's fallback
+        // path picks the wrong return type — surfaced by templated-
+        // method calls that infer R from the lambda's return type
+        // (Stream<T>.fold<R> with class-typed T, or Collector ctors
+        // with function-typed second arg). Skip when paramTypes
+        // aren't yet pinned (bare-identifier lambdas waiting for
+        // target-type inference at generateCode time).
+        bool pushedScope = false;
+        if (body && paramTypes.size() == paramNames.size()
+                && !paramNames.empty()) {
+            auto paramScope = std::make_shared<Scope>(
+                std::string("__lambda_resolve"), module);
+            for (size_t i = 0; i < paramNames.size(); ++i) {
+                // StackField is a concrete leaf with the simple
+                // (module, name, type) ctor. Allocation never runs
+                // (this scope is dropped after resolveTypes), so the
+                // codegen-only branches of StackField stay unused.
+                auto fld = std::make_shared<StackField>(
+                    module, paramNames[i], paramTypes[i]);
+                paramScope->putField(fld);
+            }
+            module->getScopeStack().add(paramScope);
+            pushedScope = true;
+        }
         if (body) body->resolveTypes(module);
+        if (pushedScope) {
+            module->getScopeStack().pop();
+        }
 
         // Determine the lambda's CajetaFunctionType. Preferred order:
         //   1. expectedType (a CajetaFunctionType from the surrounding

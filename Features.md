@@ -60,6 +60,7 @@ Status legend:
 | S-203 | Stream terminals: `anyMatch` / `allMatch` / `noneMatch` / `findFirst` / `reduce` | Lambda-taking terminals | shipped | `test/parser/StreamTerminalTests.cpp` (13) |
 | S-204 | Stream terminal: `collect(Collector<T, R>)` | Needs S-501 Collector | designed | `cajeta-docs/stdlib/Streams.md` |
 | S-205 | Stream terminal: `fold<R>(R seed, (R, T) -> R fn)` | Cross-type fold | shipped | Wired in `Stream<T>.fold<R>`; `reduce` rewritten as one-liner over `fold<T>`. Pinned by `test/parser/StreamFoldTests.cpp` |
+| S-206 | Stream terminal: `collect<R>(Collector<T, R>)` | Reduce via packaged collector | shipped (hand-rolled) | `Collector<T, R>` data class + `Stream<T>.collect<R>` shipped. `Collectors.toList<T>()` parses but hits the zero-value-param T-canonical collision (same as L-22's known limitation). Pinned by `test/parser/CollectorTests.cpp` |
 | S-206 | `ArrayStream<T>` + `T[].stream()` intrinsic | Array-backed stream | shipped | `test/parser/StreamTests.cpp` (9) |
 | S-207 | `TakeStream<T>` | `take(n)` wrapper | shipped | `test/parser/StreamIntermediateTests.cpp` (5 of 19) |
 | S-208 | `SkipStream<T>` | `skip(n)` wrapper | shipped | `test/parser/StreamIntermediateTests.cpp` (4 of 19) |

@@ -650,16 +650,14 @@ Known limitations:
   `TypeName.<TypeArgs>method(args)` dot-prefix form). Needs additional
   grammar work to allow a parameterized type name as a primary
   expression.
-- **Lambda body with class-typed parameters** (e.g. `(int32 acc, Counter c)
-  -> acc + c.v` passed to `Stream<Counter>.fold<int32>`). The
-  lambda's `resolveTypes` runs without the lambda's parameter scope
-  active, so `acc + c.v` resolves to `Counter` (BinaryOp's RHS-type
-  fallback) instead of `int32`, and the lambda emits with the wrong
-  return type. The unifier's first-binding-wins rule keeps R bound
-  correctly (R=int32 from the seed), so the fold body is right —
-  but the lambda function's signature doesn't match, and JIT verify
-  rejects. Tracked by
-  `StreamFoldTests.DISABLED_foldClassTToPrimitiveR`.
+- ~~Lambda body with class-typed parameters~~ **Resolved 2026-05-18.**
+  `LambdaExpression::resolveTypes` now pushes a temporary scope with
+  the lambda's declared parameters before walking the body, so bare-
+  identifier references (`acc`, `c`) resolve correctly. Also requires
+  skipping the expectedType propagator on method-templated targets
+  (templates carry placeholder T-vars and pre-existing instantiations
+  may have the wrong T-args for this call site) — see
+  `MethodCallExpression`'s lambda-as-arg propagator.
 - **Templated method whose T-vars don't appear in value params** (e.g.
   `static <T> int32 sizeOf()`). Multiple instantiations would share
   the same `toCanonical` and collide in `addMethod`'s duplicate-static

@@ -1,0 +1,28 @@
+package cajeta.collection;
+
+/**
+ * Bundle of (seed, accumulator) for `Stream<T>.collect<R>`. A
+ * Collector<T, R> reduces a stream of T into a single R: start with
+ * `seed`, then for each element apply `accumulator(acc, element)`.
+ *
+ * The class-level template parameters keep T (element type) and R
+ * (result type) independent so the same Stream can feed any
+ * compatible Collector. See cajeta.collection.Collectors for the
+ * standard built-in collectors, and cajeta-docs/stdlib/Streams.md §
+ * collect for the design.
+ *
+ * Implementation note: the accumulator field is a function-typed
+ * field (`(R, T) -> R`), invoked directly from
+ * `Stream<T>.collect<R>` via `this.fold<R>(c.seed, c.accumulator)`.
+ * Both halves are method-level-templated and monomorphize per (T, R)
+ * tuple — see cajeta-docs/stdlib/MethodLevelTemplate.md.
+ */
+public class Collector<T, R> {
+    public R seed;
+    public (R, T) -> R accumulator;
+
+    public Collector(R seed, (R, T) -> R accumulator) {
+        this.seed = seed;
+        this.accumulator = accumulator;
+    }
+}

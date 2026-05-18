@@ -76,23 +76,13 @@ TEST(StreamFoldTests, reduceStillWorks) {
     EXPECT_EQ(runI32(src), 30);
 }
 
-// fold over class T with primitive R. The lambda body `acc + c.v`
-// is well-typed at codegen time (acc:int32, c.v:int32 → int32), but
-// LambdaExpression::resolveTypes runs without the lambda's parameter
-// scope and the BinaryOpExpression for `acc + c.v` falls back to the
-// RHS's type when LHS doesn't resolve. With `c` (Counter) unresolved,
-// `c.v` resolves to Counter rather than int32, and the lambda's
-// signature lands as `(int32, Counter) -> Counter`. The body produces
-// i32 at codegen, mismatching the declared `ret ptr` signature, and
-// JIT verify rejects.
-//
-// This is a pre-existing lambda-body-resolution issue surfaced by
-// the fold<R> path — same shape would break for any lambda whose
-// body references a class-typed parameter without scope. Fixing it
-// requires either deferring lambda resolveTypes until after the
-// outer call's T-vars are bound, OR re-resolving the lambda body
-// with the parameter scope active. Tracked separately.
-TEST(StreamFoldTests, DISABLED_foldClassTToPrimitiveR) {
+// fold over class T with primitive R. Lambda body references a
+// class-typed parameter (`c.v` where c: Counter); without the
+// lambda's parameter scope active during resolveTypes the body
+// resolved to Counter not int32, mis-typing the lambda return and
+// failing JIT verify. Resolved by pushing the lambda's parameter
+// scope before body->resolveTypes (see LambdaExpression::resolveTypes).
+TEST(StreamFoldTests, foldClassTToPrimitiveR) {
     auto src = std::string(PRELUDE) +
         "public class Counter {\n"
         "    public int32 v;\n"

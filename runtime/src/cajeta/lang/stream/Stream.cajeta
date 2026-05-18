@@ -1,5 +1,7 @@
 package cajeta.lang.stream;
 
+import cajeta.collection.Collector;
+
 /**
  * The pull-protocol base for everything iteration-related in the
  * stdlib (stdlib/Streams.md § Stream). Implementers override `next()`
@@ -162,5 +164,17 @@ public class Stream<T> {
             o = this.next();
         }
         return acc;
+    }
+
+    /**
+     * Reduce a stream via a Collector — packages the (seed,
+     * accumulator) pair so the same Stream can feed any compatible
+     * Collector. See `cajeta.collection.Collector` and
+     * `cajeta.collection.Collectors` for the standard built-in
+     * collectors (`toList`, etc.). The R type is method-level so the
+     * result type is independent of T.
+     */
+    public final <R> R collect(Collector<T, R> c) {
+        return this.fold(c.seed, c.accumulator);
     }
 }

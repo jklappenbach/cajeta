@@ -1382,6 +1382,26 @@ namespace cajeta {
                     }
                 };
             findCandidate(targetClass);
+            // Skip the propagator when the candidate is method-
+            // templated (either the unbound template or a concrete
+            // instantiation from some other call site). For templates,
+            // the formal types carry placeholder T-vars that would
+            // propagate as the lambda's expectedType return (a
+            // placeholder whose getLlvmType is `ptr`, producing a
+            // `ptr (...)` lambda signature). For instantiations, the
+            // concrete T-args fit *that* call site but not necessarily
+            // ours — `Stream<Counter>.reduce` (which delegates to
+            // fold<Counter>) creates an instantiation the propagator
+            // would mistakenly pin to our `fold<int32>` call's lambda.
+            // The lambda's body-inference path (with the parameter
+            // scope pushed in LambdaExpression::resolveTypes) is more
+            // reliable here; unification at the call site binds R
+            // from the lambda's actual return type.
+            if (candidate
+                    && (candidate->isMethodTemplate()
+                        || candidate->isMethodTemplateInstantiation())) {
+                candidate = nullptr;
+            }
             if (candidate && matches == 1) {
                 auto paramList = candidate->getParameterList();
                 bool isStaticM = candidate->getModifiers().find(STATIC)
@@ -1414,6 +1434,19 @@ namespace cajeta {
             llvm::Value* value = param.expression->generateCode(module);
             if (auto* a = llvm::dyn_cast<llvm::AllocaInst>(value)) {
                 value = builder->CreateLoad(a->getAllocatedType(), a);
+            }
+            // Field reads (DotExpression) on a primitive or function-
+            // typed field return an l-value GEP slot. Load through so
+            // the call's arg is the field's content. Restricted to
+            // DotExpression specifically — loadIfLValue's broader path
+            // would mis-load class-typed local Identifiers (whose
+            // alloca's allocatedType is the body struct, not the
+            // canonical ptr). Without this, `this.fold(c.seed,
+            // c.accumulator)` inside `Stream<T>.collect<R>` passes
+            // the field-GEPs to fold, mismatching fold's
+            // seed:int32 / fn:fn-typed signature at JIT verify.
+            if (dynamic_pointer_cast<DotExpression>(param.expression)) {
+                value = loadIfLValue(module, value, param.expression);
             }
             CajetaTypePtr et = param.expression->getResolvedType();
             if (!et) et = CajetaType::of(value);
