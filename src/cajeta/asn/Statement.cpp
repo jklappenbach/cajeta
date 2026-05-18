@@ -1437,7 +1437,31 @@ namespace cajeta {
                                 return false;
                             };
                         if (findProp(klass) && found) {
-                            if (llvm::Type* lt = found->getType()->getLlvmType()) {
+                            // Class-pass-by-pointer rule (mirrors
+                            // BinaryOpExpression's slotTy decision for
+                            // assignment-LHS dotted fields): a class-
+                            // typed or array-typed field is stored as
+                            // `ptr` in the layout, not the inline
+                            // struct body. Loading with the inline
+                            // type reads too many bytes and the
+                            // result mismatches the declared return.
+                            // Views (zero-copy overlays) and
+                            // interfaces (24-byte fat pointers) keep
+                            // inline storage, so they fall through to
+                            // getLlvmType().
+                            auto foundCls = dynamic_pointer_cast<CajetaClass>(found->getType());
+                            bool foundIsView = dynamic_pointer_cast<CajetaView>(found->getType()) != nullptr;
+                            bool foundIsArray = dynamic_pointer_cast<CajetaArray>(found->getType()) != nullptr;
+                            bool foundIsInterface = foundCls && foundCls->isInterface();
+                            llvm::Type* lt;
+                            if (foundIsArray
+                                    || (foundCls && !foundIsView && !foundIsInterface)) {
+                                lt = llvm::PointerType::get(
+                                    *module->getLlvmContext(), 0);
+                            } else {
+                                lt = found->getType()->getLlvmType();
+                            }
+                            if (lt) {
                                 val = builder->CreateLoad(lt, val);
                                 val = DotExpression::maybeBswap(module, val, recv);
                             }

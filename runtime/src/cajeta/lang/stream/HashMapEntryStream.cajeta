@@ -1,0 +1,42 @@
+package cajeta.lang.stream;
+
+/**
+ * Walks a HashMap's slot arrays and yields each OCCUPIED entry as a
+ * `Pair<K, V>`. Snapshot semantics match HashMapKeyStream — same
+ * caveat about mutation-during-iteration applies. See
+ * HashMapKeyStream for the iteration model + skip rules.
+ *
+ * Pairs are heap-allocated per yield (one fresh Pair per OCCUPIED
+ * slot). For very-large maps where the pair object pressure matters,
+ * stream the keys and values separately and zip on the consumer side
+ * — the cost is paid once per terminal pull rather than per element.
+ */
+public class HashMapEntryStream<K, V> extends Stream<Pair<K, V>> {
+    K[] keys;
+    V[] vals;
+    int8[] state;
+    int64 cap;
+    int64 idx;
+
+    public HashMapEntryStream(K[] keys, V[] vals, int8[] state, int64 cap) {
+        this.keys = keys;
+        this.vals = vals;
+        this.state = state;
+        this.cap = cap;
+        this.idx = 0;
+    }
+
+    public Optional<Pair<K, V>> next() {
+        while (this.idx < this.cap) {
+            if (this.state[this.idx] == 1) {
+                K k = this.keys[this.idx];
+                V v = this.vals[this.idx];
+                this.idx = this.idx + 1;
+                Pair<K, V> p = heap Pair<K, V>(k, v);
+                return heap Optional<Pair<K, V>>(true, p);
+            }
+            this.idx = this.idx + 1;
+        }
+        return heap Optional<Pair<K, V>>(false, null);
+    }
+}

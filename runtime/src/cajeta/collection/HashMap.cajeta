@@ -17,12 +17,15 @@ package cajeta.collection;
  *   semantics you must also override `==` so equal keys compare
  *   equal — the contract HashMap relies on.
  *
- * ## v1 constraint: K must be a class type
+ * ## K may be class OR primitive
  *
- * Primitives don't carry `hash()` or override `==`, so this v1
- * accepts only class-typed K. `HashMap<int32, V>` doesn't compile;
- * box your int32 keys (or wait for the planned primitive-hash
- * intrinsics + boxing helpers).
+ * Class-typed K uses the class's `hash()` method (identity by
+ * default; `@AutoHash` synthesizes value-based). Primitive-typed K
+ * (int8/16/32/64/uint8/16/32/64/float/double/boolean/char) lowers
+ * `.hash()` to one of the `__cajeta_hash_X` runtime helpers via a
+ * compiler intrinsic — see `MethodCallExpression`'s primitive-
+ * receiver `.hash()` branch. Both `HashMap<Tag, int32>` and
+ * `HashMap<int32, V>` (and mixes) work without boxing.
  *
  * ## Storage, probing, and tombstones
  *
@@ -330,5 +333,41 @@ public class HashMap<K, V> {
      */
     public void operator[]= (K key, V value) {
         this.put(key, value);
+    }
+
+    // ----- Stream views over the map's live entries -------------------
+
+    /**
+     * Yields a Stream over this map's keys in slot-walk order (which
+     * is hash-distribution order — semantically unordered as far as
+     * users should rely on). Snapshot at the moment of call: subsequent
+     * resize / put / remove leaves behavior undefined on the returned
+     * stream (same rule as Java's non-snapshot iterators).
+     *
+     * @returns a HashMapKeyStream<K, V> exposed as Stream<K>.
+     */
+    public Stream<K> keys() {
+        return heap HashMapKeyStream<K, V>(this.keys, this.state, this.cap);
+    }
+
+    /**
+     * Yields a Stream over this map's values, slot-walk order. Same
+     * snapshot caveat as `keys()`.
+     *
+     * @returns a HashMapValueStream<K, V> exposed as Stream<V>.
+     */
+    public Stream<V> values() {
+        return heap HashMapValueStream<K, V>(this.vals, this.state, this.cap);
+    }
+
+    /**
+     * Yields a Stream of (key, value) pairs, one fresh Pair per live
+     * slot, slot-walk order. Same snapshot caveat as `keys()`.
+     *
+     * @returns a HashMapEntryStream<K, V> exposed as Stream<Pair<K, V>>.
+     */
+    public Stream<Pair<K, V>> entries() {
+        return heap HashMapEntryStream<K, V>(
+            this.keys, this.vals, this.state, this.cap);
     }
 }

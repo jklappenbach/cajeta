@@ -1,0 +1,33 @@
+package cajeta.collection;
+
+/**
+ * Node in a doubly-linked list (`LinkedList<T>`). Holds the value
+ * plus prev/next pointers. v1 keeps this as a separate top-level
+ * class (Cajeta doesn't have nested classes yet); future versions
+ * may make it package-private or merge it into LinkedList's
+ * file once nesting lands.
+ *
+ * The list owns the nodes — `LinkedList.add` heap-allocates a node
+ * and links it in; `remove` unlinks and lets the dropped node fall
+ * off the drop chain (the value itself isn't owned by the node, so
+ * removing a node doesn't drop the value).
+ *
+ * ## v1 surface
+ *
+ * Fields are public to keep the LinkedList code straightforward —
+ * no node-side getters/setters yet (Cajeta's access modifiers are
+ * loose enough today that this matches how the rest of the stdlib
+ * exposes internal state). Future visibility refinement is a
+ * stdlib-wide pass.
+ */
+public class LinkedListNode<T> {
+    public T value;
+    public LinkedListNode<T> prev;
+    public LinkedListNode<T> next;
+
+    public LinkedListNode(T value) {
+        this.value = value;
+        this.prev = null;
+        this.next = null;
+    }
+}

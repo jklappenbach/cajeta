@@ -1,0 +1,148 @@
+package cajeta.collection;
+
+/**
+ * Doubly-linked list of T. Unlike `HashMap` (which needs T's
+ * `hash()` and therefore restricts to class T in v1), `LinkedList`
+ * only needs `==` for `remove` / `contains` — both primitive T
+ * (using the built-in `==`) and class T (identity comparison) work.
+ *
+ * ## v1 surface
+ *
+ * `add(T)` appends to the tail. `addFirst(T)` prepends. `get(int64)`
+ * walks from the closer end. `remove(T)` finds the first
+ * `==`-matching node and unlinks it. `count()` returns the live
+ * node count. `contains(T)` is a boolean find.
+ *
+ * Stream views and Optional-returning methods (e.g. `first()`
+ * returning `Optional<T>`) are deferred — they'd need the
+ * Optional<class T> field-layout bug fixed first.
+ *
+ * ## Storage
+ *
+ * Heap-allocates one `LinkedListNode<T>` per `add`. The list owns
+ * the nodes; removed nodes fall off the drop chain at scope exit.
+ * Values are NOT owned by the nodes — `remove(T)` returns whether
+ * a node was unlinked, but doesn't drop the value.
+ */
+public class LinkedList<T> {
+
+    private LinkedListNode<T> head;
+    private LinkedListNode<T> tail;
+    private int64 sizeCount;
+
+    public LinkedList() {
+        this.head = null;
+        this.tail = null;
+        this.sizeCount = 0;
+    }
+
+    /**
+     * Append `value` to the tail of the list. O(1).
+     */
+    public void add(T value) {
+        LinkedListNode<T> node = heap LinkedListNode<T>(value);
+        if (this.tail == null) {
+            this.head = node;
+            this.tail = node;
+        } else {
+            node.prev = this.tail;
+            this.tail.next = node;
+            this.tail = node;
+        }
+        this.sizeCount = this.sizeCount + 1;
+    }
+
+    /**
+     * Prepend `value` to the head of the list. O(1).
+     */
+    public void addFirst(T value) {
+        LinkedListNode<T> node = heap LinkedListNode<T>(value);
+        if (this.head == null) {
+            this.head = node;
+            this.tail = node;
+        } else {
+            node.next = this.head;
+            this.head.prev = node;
+            this.head = node;
+        }
+        this.sizeCount = this.sizeCount + 1;
+    }
+
+    /**
+     * Return the value at index `idx` (0-based). Walks from the
+     * closer end. v1 returns the type's zero value if `idx` is out
+     * of range (matching HashMap.get's miss-path convention); a
+     * bounds-checking variant lands once exception-throwing stdlib
+     * intrinsics are wired.
+     */
+    public T get(int64 idx) {
+        if (idx < 0 || idx >= this.sizeCount) {
+            T[] missDefault = new T[1];
+            return missDefault[0];
+        }
+        // Walk from the closer end to halve the worst-case cost.
+        if (idx < this.sizeCount / 2) {
+            LinkedListNode<T> cur = this.head;
+            int64 i = 0;
+            while (i < idx) {
+                cur = cur.next;
+                i = i + 1;
+            }
+            return cur.value;
+        }
+        LinkedListNode<T> cur = this.tail;
+        int64 i = this.sizeCount - 1;
+        while (i > idx) {
+            cur = cur.prev;
+            i = i - 1;
+        }
+        return cur.value;
+    }
+
+    /**
+     * Remove the first `==`-matching value. Returns true iff a node
+     * was unlinked. O(n) in the worst case (linear scan from head).
+     */
+    public boolean remove(T value) {
+        LinkedListNode<T> cur = this.head;
+        while (cur != null) {
+            if (cur.value == value) {
+                if (cur.prev != null) {
+                    cur.prev.next = cur.next;
+                } else {
+                    this.head = cur.next;
+                }
+                if (cur.next != null) {
+                    cur.next.prev = cur.prev;
+                } else {
+                    this.tail = cur.prev;
+                }
+                this.sizeCount = this.sizeCount - 1;
+                return true;
+            }
+            cur = cur.next;
+        }
+        return false;
+    }
+
+    /**
+     * Test whether `value` is present in the list. O(n).
+     */
+    public boolean contains(T value) {
+        LinkedListNode<T> cur = this.head;
+        while (cur != null) {
+            if (cur.value == value) {
+                return true;
+            }
+            cur = cur.next;
+        }
+        return false;
+    }
+
+    /**
+     * @returns the number of values currently in the list.
+     */
+    public int64 count() {
+        return this.sizeCount;
+    }
+}

@@ -1,0 +1,41 @@
+package cajeta.lang.stream;
+
+/**
+ * Walks a HashMap's slot arrays and yields each OCCUPIED key.
+ * Snapshot semantics: the constructor captures references to the
+ * keys + state arrays at the moment of call. If the source HashMap
+ * resizes (which swaps in fresh arrays) or mutates entries after
+ * this stream is constructed, behavior is undefined — same
+ * concurrent-modification rule as Java's non-snapshot iterators.
+ *
+ * The slot walk skips EMPTY (state==0) and TOMBSTONE (state==2)
+ * positions; only OCCUPIED (state==1) yields. Pull complexity is
+ * O(cap) total across the full iteration (linear scan), not
+ * O(cap * size); the iterator state is a single int64 position
+ * cursor advanced through each next() call.
+ */
+public class HashMapKeyStream<K, V> extends Stream<K> {
+    K[] keys;
+    int8[] state;
+    int64 cap;
+    int64 idx;
+
+    public HashMapKeyStream(K[] keys, int8[] state, int64 cap) {
+        this.keys = keys;
+        this.state = state;
+        this.cap = cap;
+        this.idx = 0;
+    }
+
+    public Optional<K> next() {
+        while (this.idx < this.cap) {
+            if (this.state[this.idx] == 1) {
+                K k = this.keys[this.idx];
+                this.idx = this.idx + 1;
+                return heap Optional<K>(true, k);
+            }
+            this.idx = this.idx + 1;
+        }
+        return heap Optional<K>(false, null);
+    }
+}
