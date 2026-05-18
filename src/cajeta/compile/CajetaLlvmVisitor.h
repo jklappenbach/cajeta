@@ -826,6 +826,47 @@ namespace cajeta {
         }
 
         virtual std::any visitClassBodyDeclaration(CajetaParser::ClassBodyDeclarationContext* ctx) override {
+            // Nested class declaration: the grammar lists `classDeclaration`
+            // as a memberDeclaration alternative. visitClassDeclaration
+            // returns a CajetaClassPtr (already registered in canonicalMap
+            // via the recursive call), which can't cast to MemberDeclarationPtr.
+            // Wrap it in a no-op NestedClassDeclaration so the outer's
+            // body iteration stays well-typed. The nested class itself is
+            // an independent type whose qName carries the dotted outer-
+            // path (visitClassDeclaration builds `packageAdj` from the
+            // structureStack — see line 81).
+            //
+            // v1 supports static-nested only (no implicit outer-this);
+            // grammar already allows STATIC on classDeclaration so users
+            // get the Java-style "public static class Inner { ... }" form.
+            if (auto memberDecl = ctx->memberDeclaration()) {
+                if (memberDecl->classDeclaration()) {
+                    std::any innerAny = visitClassDeclaration(memberDecl->classDeclaration());
+                    CajetaClassPtr inner;
+                    try {
+                        inner = std::any_cast<CajetaClassPtr>(innerAny);
+                    } catch (...) {
+                        // If visitClassDeclaration's return shape ever
+                        // changes, fall through to a null wrapper.
+                    }
+                    return std::static_pointer_cast<MemberDeclaration>(
+                        std::make_shared<NestedClassDeclaration>(
+                            inner, ctx->getStart()));
+                }
+                // Same routing for nested interfaces / enums / annotation
+                // types — currently unsupported but keep them from
+                // crashing the any_cast.
+                if (memberDecl->interfaceDeclaration()
+                        || memberDecl->enumDeclaration()
+                        || memberDecl->annotationTypeDeclaration()) {
+                    // Visit so the type-system catches what it can; wrap
+                    // the result in the same no-op shape.
+                    visitChildren(memberDecl);
+                    return std::static_pointer_cast<MemberDeclaration>(
+                        std::make_shared<NestedClassDeclaration>(
+                            nullptr, ctx->getStart()));
+                }
+            }
             MemberDeclarationPtr memberDeclaration = any_cast<MemberDeclarationPtr>(visitMemberDeclaration(
                 ctx->memberDeclaration()));
             // Annotation capture for class-body members. Walks each
@@ -1005,7 +1046,12 @@ namespace cajeta {
             }
             MethodPtr method = Method::create(
                 pModule, methodName, returnType, formals, block,
-                pModule->getStructureStack().front());
+                // .back() = innermost class on the stack. For top-
+                // level classes that's identical to .front(); for
+                // nested classes (a methodDeclaration inside a
+                // nested classBody) .back() is the immediately
+                // enclosing class, which is the correct parent.
+                pModule->getStructureStack().back());
             return static_pointer_cast<MemberDeclaration>(
                 make_shared<MethodDeclaration>(method, ctx->getStart()));
         }
@@ -1118,7 +1164,11 @@ namespace cajeta {
                 returnType,
                 formalParameters,
                 block,
-                pModule->getStructureStack().front());
+                // .back() (innermost class) — correct parent for
+                // methods inside nested classes. For top-level
+                // classes the stack has one entry and .back() ==
+                // .front().
+                pModule->getStructureStack().back());
             if (isMethodTemplate) {
                 method->setMethodTypeParameters(std::move(methodTypeParameters));
                 // Source-text capture happens in visitClassBodyDeclaration

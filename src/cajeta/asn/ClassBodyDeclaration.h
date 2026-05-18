@@ -76,6 +76,32 @@ namespace cajeta {
         }
     };
 
+    // Nested-class wrapper. When the parser encounters
+    // `class Outer { public static class Inner { ... } }`, the inner
+    // class registers itself into canonicalMap via the recursive
+    // visitClassDeclaration call. The outer's class-body iteration
+    // would otherwise try to cast the inner's return into a
+    // MemberDeclarationPtr and fail; this no-op wrapper keeps the
+    // outer's body walk well-typed without contributing fields or
+    // methods to the outer (nested classes are independent types).
+    //
+    // Currently only static-nested classes are supported (no implicit
+    // outer-this reference). Holding the CajetaClassPtr keeps a
+    // strong reference even if the canonicalMap shape changes.
+    class NestedClassDeclaration : public MemberDeclaration {
+    private:
+        CajetaClassPtr nestedClass;
+    public:
+        NestedClassDeclaration(CajetaClassPtr cls, antlr4::Token* token)
+            : MemberDeclaration(token), nestedClass(cls) { }
+
+        CajetaClassPtr getNestedClass() const { return nestedClass; }
+
+        void onModifier(Modifier) override { }
+        void updateParent(CajetaClassPtr) override { /* no-op */ }
+        llvm::Value* generateCode(CajetaModulePtr) override { return nullptr; }
+    };
+
     class MethodDeclaration : public MemberDeclaration {
     private:
         MethodPtr method;
