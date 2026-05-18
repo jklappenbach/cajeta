@@ -63,17 +63,13 @@ TEST(CollectorTests, handRolledSummer) {
 
 // Collectors.toList<int32>() — built-in factory returning a
 // Collector that appends every element into a fresh ArrayList<T>.
-// Two-layer naming (see staticExplicitWhenInferenceWouldFail in
-// MethodTemplateExplicitArgsTests) unblocked addMethod-side, but
-// the body of `toList` synthesizes a block-body lambda
-// `(ArrayList<T> acc, T x) -> { acc.add(x); return acc; }` whose
-// return type comes out as `void` under the current lambda body-
-// inference path. JIT verify rejects with "Found return instr
-// that returns non-void in Function of void return type" on the
-// synthesized `__cajeta_lambda_0`. That's a separate bug in
-// lambda-block-body return-type inference (the typed-param +
-// explicit-return shape) — not in two-layer naming itself.
-TEST(CollectorTests, DISABLED_collectorsToListSize) {
+// Two-layer naming cleared the addMethod-side collision; block-body
+// lambda return-type inference (LambdaExpression::resolveTypes now
+// walks the body for the first ReturnStatement when no expectedType
+// is in play — see LambdaL2Tests.blockBodyReturnTypeInferredFrom-
+// BodyUnderCtorArg) cleared the JIT-verify rejection on the
+// synthesized lambda inside `toList`'s body.
+TEST(CollectorTests, collectorsToListSize) {
     auto src = std::string(PRELUDE) +
         "public final class D {\n"
         "    public static int32 run() {\n"
@@ -87,8 +83,8 @@ TEST(CollectorTests, DISABLED_collectorsToListSize) {
     EXPECT_EQ(runI32(src), 5);
 }
 
-// Same lambda-block-body inference bug as collectorsToListSize.
-TEST(CollectorTests, DISABLED_collectorsToListPreservesOrder) {
+// Same unblock as collectorsToListSize. Preserves stream order.
+TEST(CollectorTests, collectorsToListPreservesOrder) {
     auto src = std::string(PRELUDE) +
         "public final class D {\n"
         "    public static int32 run() {\n"

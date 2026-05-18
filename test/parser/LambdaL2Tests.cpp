@@ -197,6 +197,38 @@ TEST(LambdaL2Tests, blockBodyExplicitReturn) {
     EXPECT_EQ(runI32(src), 42);
 }
 
+// Typed-param block-body lambda passed as a constructor argument, with
+// NO expectedType signal from the surrounding context. (NewExpression
+// doesn't propagate the ctor formal's function type into its args;
+// LocalVariableDeclaration's expectedType-propagation only fires when
+// the lambda is the direct RHS of an `(...)->T f = lambda` assignment.)
+// The lambda's return type therefore has to come from the body itself —
+// the explicit `return acc + x;`.
+//
+// This is the minimal repro of the Collectors.toList<T>() failure: the
+// stdlib body builds a `new Collector<T, ArrayList<T>>(seed, (...) -> {
+// ...; return acc; })` and the lambda's `acc` return ought to fix R
+// = ArrayList<T>, not void.
+TEST(LambdaL2Tests, blockBodyReturnTypeInferredFromBodyUnderCtorArg) {
+    auto src =
+        "package test;\n"
+        "public class Holder {\n"
+        "    public (int32, int32) -> int32 fn;\n"
+        "    public Holder(int32 seed, (int32, int32) -> int32 fn) {\n"
+        "        this.fn = fn;\n"
+        "    }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Holder h = heap Holder(\n"
+        "            0,\n"
+        "            (int32 acc, int32 x) -> { return acc + x; });\n"
+        "        return h.fn(10, 5);\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 15);
+}
+
 // L2-4 + captures: block body that reads a captured primitive and a
 // captured heap value into locals, combines them, returns the local.
 TEST(LambdaL2Tests, blockBodyWithCapturesAndLocals) {

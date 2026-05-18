@@ -1319,6 +1319,40 @@ namespace cajeta {
         }
     }
 
+    // Walk a lambda's block body for ReturnStatement nodes (skipping
+    // nested lambdas — their returns belong to a different function)
+    // and yield the first explicit return's resolved expression type.
+    // A bare `return;` (no expression) yields `void`. If no return is
+    // found, returns nullptr — the lambda is "falls through to end" and
+    // the caller treats that as void.
+    //
+    // Only the FIRST return's type is consulted. Multi-arm lambdas that
+    // return different types from different branches are already a
+    // type error (the user would need to annotate the lambda's return
+    // type explicitly via the LHS function type); this helper exists to
+    // recover the common case where there's a single explicit return
+    // and no contextual expectedType.
+    static CajetaTypePtr inferLambdaReturnFromBody(
+            const AbstractSyntaxNodePtr& node) {
+        if (!node) return nullptr;
+        // Don't descend into nested lambdas — their returns are routed
+        // to a separate synthesized function, not this lambda.
+        if (std::dynamic_pointer_cast<LambdaExpression>(node)) {
+            return nullptr;
+        }
+        if (auto ret = std::dynamic_pointer_cast<ReturnStatement>(node)) {
+            auto expr = ret->getExpression();
+            if (!expr) return CajetaType::of("void");
+            return expr->getResolvedType();
+        }
+        for (auto& c : node->getChildren()) {
+            if (auto t = inferLambdaReturnFromBody(c)) {
+                return t;
+            }
+        }
+        return nullptr;
+    }
+
     void LambdaExpression::resolveTypes(CajetaModulePtr module) {
         // L1: bodies can't reference outer-scope locals (captures are L2),
         // so the lambda's body resolution doesn't need access to the
@@ -1365,21 +1399,29 @@ namespace cajeta {
         //   1. expectedType (a CajetaFunctionType from the surrounding
         //      context, e.g. the LHS of a function-typed variable
         //      declaration that called setExpectedType before resolveTypes).
-        //   2. The body's resolvedType, when populated (not all
-        //      Expression subclasses pin their resolvedType — works for
-        //      identifiers and literals, less for arithmetic expressions).
-        //   3. Fallback: void. A nonsensical lambda surfaces at codegen.
+        //   2. Expression body: the body's resolvedType (works for
+        //      identifiers, literals, method calls — arithmetic
+        //      expressions sometimes leave it null).
+        //   3. Block body: walk the body for explicit return statements
+        //      and take the first one's resolved expression type. This
+        //      covers the common case where a typed-param block-body
+        //      lambda is passed as a constructor / method argument
+        //      without the call-site propagating an expectedType (e.g.
+        //      `new Holder(seed, (T acc, U x) -> { ...; return acc; })`).
+        //   4. Fallback: void. A nonsensical lambda surfaces at codegen.
         CajetaTypePtr ret;
         if (auto expectedFn = std::dynamic_pointer_cast<CajetaFunctionType>(expectedType)) {
             ret = expectedFn->getReturnType();
         }
         if (!ret) {
-            // Only Expression bodies expose a resolvedType — block bodies
-            // require an explicit LHS expectedType (or void) since their
-            // shape doesn't map to a single expression's resolved type.
             if (auto bexpr = std::dynamic_pointer_cast<Expression>(body)) {
                 ret = bexpr->getResolvedType();
             }
+        }
+        if (!ret) {
+            // Block body — walk for the first explicit return statement.
+            // Returns void if the body has no `return` at all.
+            ret = inferLambdaReturnFromBody(body);
         }
         if (!ret) ret = CajetaType::of("void");
         std::string canon = CajetaFunctionType::buildCanonical(paramTypes, ret);
