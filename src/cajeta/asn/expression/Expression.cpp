@@ -2444,6 +2444,13 @@ namespace cajeta {
         if (chosenAncestorName.empty()) {
             return static_cast<llvm::Value*>(alloca);
         }
+        // Self-resolve when the pre-pass didn't (e.g., for expressions
+        // inside LocalVariableDeclaration initializers — those aren't
+        // visited by the pre-pass, so the first generateCode call
+        // observes resolvedType == null). Without this, we'd fall
+        // through to "return alloca" and the adjustment would be
+        // silently skipped — `this[C]` would behave like plain `this`.
+        if (!resolvedType) resolveTypes(module);
         // Load the current `this` pointer, then adjust to the chosen
         // ancestor sub-object. The adjustment is a no-op for the first-
         // parent chain (offset = 0) and for self.
@@ -2512,6 +2519,10 @@ namespace cajeta {
         if (chosenAncestorName.empty()) {
             return static_cast<llvm::Value*>(alloca);
         }
+        // Same self-resolve guard as ThisExpression — initializer
+        // sites bypass the pre-pass, so the bracketed form's
+        // resolvedType may still be null on the first generateCode.
+        if (!resolvedType) resolveTypes(module);
         if (module->getStructureStack().empty()) return alloca;
         auto here = std::dynamic_pointer_cast<CajetaClass>(
             module->getStructureStack().back());

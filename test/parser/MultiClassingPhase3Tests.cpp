@@ -215,18 +215,22 @@ TEST(MultiClassingPhase3Tests, diamondFieldSurvivesMultipleAccesses) {
     EXPECT_EQ(runI32(src), 200);
 }
 
-// --- Phase 3 v2 limitations (DISABLED_) -----------------------------------
+// --- Phase 3 v2 — cross-path bracketed access via diamond -----------------
 //
 // `this[C].x` where x is a shared-ancestor field: C is the NON-first
-// parent of Diamond. With v1 dedup, C's sub-object in Diamond has no
-// inline A — GEPing through C's standalone struct type lands on the
-// wrong memory. Fixing properly requires vbase machinery (every
-// multi-parent class gains a vbase pointer per inherited parent so
-// shared-ancestor access can indirect through a runtime-loaded
-// pointer). Strip DISABLED_ when Phase 3 v2 ships.
+// parent of Diamond. v1 returned the wrong memory because GEPing
+// through C's standalone struct type lands on C's dormant inline-A
+// (storage exists but is never written by any code).
+//
+// v2 fix: in DotExpression, when the property's declaring class is
+// reachable via multiple offsets from the enclosing class (canonical
+// offset != via-LHS-path offset), shift `base` back toward the
+// canonical position and GEP through declaringClass's struct type
+// at the property's declaringClass-standalone slot. Result: both
+// `this[B].x` and `this[C].x` reach the canonical shared A.x.
 
 TEST(MultiClassingPhase3Tests,
-        DISABLED_thisBracketNonFirstParentReadsSharedAncestorField) {
+        thisBracketNonFirstParentReadsSharedAncestorField) {
     auto src =
         "package test;\n"
         "public class A { public int32 x; public A() { return; } }\n"
@@ -235,7 +239,7 @@ TEST(MultiClassingPhase3Tests,
         "public class Diamond extends B, C {\n"
         "  public Diamond() { this.x = 55; }\n"
         "  public int32 readViaC() {\n"
-        "    return this[C].x;\n"  // v1: WRONG memory; v2: 55
+        "    return this[C].x;\n"  // canonical A.x = 55
         "  }\n"
         "}\n"
         "public final class D {\n"
@@ -245,4 +249,130 @@ TEST(MultiClassingPhase3Tests,
         "  }\n"
         "}\n";
     EXPECT_EQ(runI32(src), 55);
+}
+
+// Symmetric write path — `this[C].x = N` must also reach the
+// canonical A.x storage so a subsequent `this.x` read returns N.
+
+TEST(MultiClassingPhase3Tests,
+        thisBracketNonFirstParentWritesSharedAncestorField) {
+    auto src =
+        "package test;\n"
+        "public class A { public int32 x; public A() { return; } }\n"
+        "public class B extends A { public B() { return; } }\n"
+        "public class C extends A { public C() { return; } }\n"
+        "public class Diamond extends B, C {\n"
+        "  public Diamond() { return; }\n"
+        "  public int32 writeViaCReadViaThis() {\n"
+        "    this[C].x = 73;\n"
+        "    return this.x;\n"  // 73 if both reach canonical storage
+        "  }\n"
+        "}\n"
+        "public final class D {\n"
+        "  public static int32 run() {\n"
+        "    Diamond d = new Diamond();\n"
+        "    return d.writeViaCReadViaThis();\n"
+        "  }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 73);
+}
+
+// And the round trip through both bracketed forms — `this[B].x` and
+// `this[C].x` should read the SAME storage after either writes.
+// Pre-v2: `this[B].x` and `this[C].x` returned independent values.
+
+TEST(MultiClassingPhase3Tests,
+        thisBracketBothPathsSeeSameSharedAncestorStorage) {
+    auto src =
+        "package test;\n"
+        "public class A { public int32 x; public A() { return; } }\n"
+        "public class B extends A { public B() { return; } }\n"
+        "public class C extends A { public C() { return; } }\n"
+        "public class Diamond extends B, C {\n"
+        "  public Diamond() { return; }\n"
+        "  public int32 crossPathRoundTrip() {\n"
+        "    this[B].x = 11;\n"  // write via first parent's view
+        "    int32 viaC = this[C].x;\n"  // read via second parent's view
+        "    this[C].x = viaC + 6;\n"  // 11 + 6 = 17
+        "    return this[B].x;\n"  // 17 if both forms reach same storage
+        "  }\n"
+        "}\n"
+        "public final class D {\n"
+        "  public static int32 run() {\n"
+        "    Diamond d = new Diamond();\n"
+        "    return d.crossPathRoundTrip();\n"
+        "  }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 17);
+}
+
+// Sanity: the v2 routing must NOT fire for non-diamond first-parent
+// access. `this[B].x` in a non-diamond class graph should still work
+// via the normal (un-rerouted) path. (B is C's first parent here, so
+// no diamond exists.)
+
+TEST(MultiClassingPhase3Tests, thisBracketFirstParentNoDiamondStillWorks) {
+    auto src =
+        "package test;\n"
+        "public class A { public int32 x; public A() { return; } }\n"
+        "public class B extends A { public B() { return; } }\n"
+        "public class C extends B {\n"  // single-inheritance chain: C -> B -> A
+        "  public C() { this[A].x = 42; }\n"
+        "  public int32 read() { return this[B].x; }\n"  // x is from A, reachable through B (single path)
+        "}\n"
+        "public final class D {\n"
+        "  public static int32 run() {\n"
+        "    C c = new C();\n"
+        "    return c.read();\n"  // 42
+        "  }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 42);
+}
+
+// --- Phase 3 v3 limitations (DISABLED_) -----------------------------------
+//
+// Inherited methods on non-first parents touching a shared ancestor
+// via internal `this.x`. C's `setX` is compiled standalone with the
+// assumption that A is inline at C's slot 1. When invoked via
+// `super[C].setX(...)` from a Diamond context, the IR GEPs into
+// C's dormant inline-A inside Diamond — NOT the canonical A.
+//
+// Reading back via `this.x` from Diamond's own method sees the
+// canonical A (still uninitialized) and returns 0 even though the
+// dormant slot got written.
+//
+// Fixing this requires either:
+//   (1) vbase ABI: every multi-parent class indirects inherited-field
+//       access through a runtime-loaded vbase pointer (so C's
+//       standalone IR can be patched once and works in both
+//       standalone and derived contexts).
+//   (2) Per-descendant recompilation: emit Diamond-specific copies of
+//       C's methods that know Diamond's layout.
+// Both are larger structural changes. Tracked as the v3 follow-up.
+
+TEST(MultiClassingPhase3Tests,
+        DISABLED_inheritedMethodOnNonFirstParentReachesSharedA) {
+    auto src =
+        "package test;\n"
+        "public class A {\n"
+        "  public int32 x;\n"
+        "  public A() { return; }\n"
+        "  public void setX(int32 v) { this.x = v; }\n"
+        "}\n"
+        "public class B extends A { public B() { return; } }\n"
+        "public class C extends A { public C() { return; } }\n"
+        "public class Diamond extends B, C {\n"
+        "  public Diamond() { return; }\n"
+        "  public int32 setViaCReadViaThis() {\n"
+        "    super[C].setX(88);\n"  // C's IR writes to dormant inline-A
+        "    return this.x;\n"  // v2: 0 (dormant); v3: 88 (canonical)
+        "  }\n"
+        "}\n"
+        "public final class D {\n"
+        "  public static int32 run() {\n"
+        "    Diamond d = new Diamond();\n"
+        "    return d.setViaCReadViaThis();\n"
+        "  }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 88);
 }

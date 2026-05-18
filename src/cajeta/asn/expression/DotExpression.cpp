@@ -328,10 +328,13 @@ namespace cajeta {
         // gathered match (DFS / declaration order) is the one to use.
         // Common-ancestor case (multiple matches but all collapse to
         // one declaring class) reaches here cleanly.
+        CajetaClassPtr pickedDeclaringClass;
         if (selfShadows) {
             lookedUpProperty = selfPit->second;
+            pickedDeclaringClass = klass;
         } else {
             lookedUpProperty = allMatches.front().second;
+            pickedDeclaringClass = allMatches.front().first;
         }
         // Synthesize an iterator-like pair so the existing `it->second`
         // code below continues to work unchanged. The found property is
@@ -365,6 +368,14 @@ namespace cajeta {
             //   - It must NOT be a CajetaStruct, since struct
             //     fields are stored INLINE and the GEP already
             //     gives the field's address directly.
+            //   - It must NOT be a ThisExpression or SuperExpression
+            //     LHS (Phase 2 / Phase 3 v2): those primaries return a
+            //     ready-to-use instance pointer (potentially adjusted
+            //     by `adjustForUpcast` for the bracketed `this[Base]` /
+            //     `super[Base]` form). The pointer they hand back is
+            //     the receiver itself, not a slot-holding-pointer. A
+            //     spurious load-through here reads garbage at the
+            //     adjusted offset and downstream GEPs build on it.
             //
             // CajetaArray fields also store via pointer indirection
             // but DotExpression on an array receiver isn't a
@@ -373,7 +384,10 @@ namespace cajeta {
             // a new gap here.
             auto lhsClass = dynamic_pointer_cast<CajetaClass>(lhs->getResolvedType());
             bool lhsIsStruct = dynamic_pointer_cast<CajetaView>(lhs->getResolvedType()) != nullptr;
-            if (lhsClass && !lhsIsStruct) {
+            bool lhsIsThisOrSuper =
+                dynamic_pointer_cast<ThisExpression>(lhs) != nullptr
+                || dynamic_pointer_cast<SuperExpression>(lhs) != nullptr;
+            if (lhsClass && !lhsIsStruct && !lhsIsThisOrSuper) {
                 auto ptrTy = llvm::PointerType::get(*module->getLlvmContext(), 0);
                 base = module->getBuilder()->CreateLoad(ptrTy, base);
             }
@@ -383,6 +397,79 @@ namespace cajeta {
         // element type. The pre-pass resolveTypes can't always determine this
         // (locals aren't in scope until their declarations run at codegen).
         resolvedType = property->getType();
+
+        // MultiClassing Phase 3 v2 (cajeta-docs/stdlib/MultiClassing.md
+        // § P-4): cross-path bracketed access via a diamond ancestor.
+        // When `this[NonFirstParent].sharedAncestorField` is used in
+        // class D's own code, the LHS adjustment routed `base` to the
+        // non-first parent's sub-object — but that sub-object's inline
+        // copy of the shared ancestor is dormant (Phase 3 v1 keeps the
+        // canonical at the first-parent path). GEPing through the
+        // non-first parent's standalone struct type would land on the
+        // dormant storage.
+        //
+        // Detect this by comparing two offsets in the "diamond anchor"
+        // class — the class whose layout actually contains the diamond
+        // (the runtime/static type of the instance, not the surrounding
+        // method's class). The anchor is:
+        //   - The structure-stack's class for `this[Base]` / `super[Base]`
+        //     LHS forms — `this` IS the enclosing instance.
+        //   - `klass` (the LHS's resolved class) for any other LHS form
+        //     — e.g., `c.field` reads against c's static type, regardless
+        //     of which method/class is calling.
+        // Using the surrounding method's class for non-this LHS would
+        // mis-fire when D's static method references `c.b` on a C
+        // instance: D doesn't know B's layout, so D.getSubObjectByteOffset(B)
+        // returns 0 while the via-C-path offset is non-zero, falsely
+        // triggering a routing.
+        //
+        // For a non-diamond access (single-inheritance, first-parent
+        // chain, or self-shadow), the two computed offsets are equal
+        // and no routing fires. When they differ, shift `base` by
+        // (canonical - via_lhs) to recover the canonical position and
+        // redirect the GEP to use declaringClass's standalone struct
+        // type at the property's slot in declaringClass.
+        //
+        // Out of scope for v2 (v3): inherited methods on non-first
+        // parents that touch the shared ancestor via internal `this.x`.
+        // Those methods are compiled standalone with the inline-A
+        // assumption and need either vbase ABI or per-descendant
+        // recompilation to be fixed.
+        if (pickedDeclaringClass && klass
+                && pickedDeclaringClass.get() != klass.get()) {
+            CajetaClassPtr anchor;
+            bool lhsIsThisOrSuper =
+                dynamic_pointer_cast<ThisExpression>(lhs) != nullptr
+                || dynamic_pointer_cast<SuperExpression>(lhs) != nullptr;
+            if (lhsIsThisOrSuper && !module->getStructureStack().empty()) {
+                anchor = std::dynamic_pointer_cast<CajetaClass>(
+                    module->getStructureStack().back());
+            } else {
+                anchor = klass;
+            }
+            if (anchor) {
+                uint64_t canonical = anchor->getSubObjectByteOffset(
+                    pickedDeclaringClass.get());
+                uint64_t viaLhs = anchor->getSubObjectByteOffset(klass.get())
+                    + klass->getSubObjectByteOffset(pickedDeclaringClass.get());
+                if (canonical != viaLhs) {
+                    auto* builder = module->getBuilder();
+                    auto& ctx = *module->getLlvmContext();
+                    llvm::Type* i8Ty = llvm::Type::getInt8Ty(ctx);
+                    llvm::Type* i64Ty = llvm::Type::getInt64Ty(ctx);
+                    int64_t delta = (int64_t) canonical - (int64_t) viaLhs;
+                    base = builder->CreateInBoundsGEP(i8Ty, base,
+                        llvm::ConstantInt::get(i64Ty, delta),
+                        "diamond_canonical_base");
+                    // Redirect downstream GEP to declaringClass's
+                    // standalone struct type — the property's slot
+                    // in that type is the canonical position relative
+                    // to the shifted base.
+                    klass = pickedDeclaringClass;
+                }
+            }
+        }
+
         // Field index depends on the receiver type. CajetaClass instances
         // reserve LLVM slot 0 for the vtable pointer, so user fields land at
         // index getOrder()+1. CajetaStruct (POD) uses getOrder() directly.
