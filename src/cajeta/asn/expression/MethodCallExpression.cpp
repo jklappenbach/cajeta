@@ -1300,17 +1300,42 @@ namespace cajeta {
         if (anyLambda && targetClass) {
             MethodPtr candidate;
             int matches = 0;
-            for (auto& mEntry : targetClass->getMethods()) {
-                auto& m = mEntry.second;
-                if (m->getName() != methodCallName) continue;
-                bool isStaticM = m->getModifiers().find(STATIC)
-                    != m->getModifiers().end();
-                int declared = (int) m->getParameterList().size()
-                    - (isStaticM ? 0 : 1);
-                if (declared != (int) parameters.size()) continue;
-                candidate = m;
-                ++matches;
-            }
+            // Walk targetClass AND its parent chain — inherited methods
+            // (e.g. Stream<T>'s `forEach` called on ArrayStream<T>) live
+            // on the parent and getMethods() returns only the receiver's
+            // own declarations. Without walking, the lambda's
+            // expectedType doesn't get pinned, the lambda's body type
+            // (e.g. an int32 assignment expression) becomes the return
+            // type, and the resulting (T) -> int32 doesn't match the
+            // parent's (T) -> void signature — the call gets silently
+            // dropped at resolveMethod time. First-match wins per
+            // override semantics (subclass overrides take precedence
+            // over inherited).
+            std::function<void(CajetaClassPtr)> findCandidate =
+                [&](CajetaClassPtr cls) {
+                    if (!cls) return;
+                    for (auto& mEntry : cls->getMethods()) {
+                        auto& m = mEntry.second;
+                        if (m->getName() != methodCallName) continue;
+                        bool isStaticM = m->getModifiers().find(STATIC)
+                            != m->getModifiers().end();
+                        int declared = (int) m->getParameterList().size()
+                            - (isStaticM ? 0 : 1);
+                        if (declared != (int) parameters.size()) continue;
+                        candidate = m;
+                        ++matches;
+                    }
+                    // Only recurse into parents when we haven't found a
+                    // matching method here — subclass methods shadow
+                    // inherited ones with the same signature shape.
+                    if (matches == 0) {
+                        for (auto& sup : cls->getSuperClasses()) {
+                            findCandidate(sup);
+                            if (matches > 0) break;
+                        }
+                    }
+                };
+            findCandidate(targetClass);
             if (candidate && matches == 1) {
                 auto paramList = candidate->getParameterList();
                 bool isStaticM = candidate->getModifiers().find(STATIC)

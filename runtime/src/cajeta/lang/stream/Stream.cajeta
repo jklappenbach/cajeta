@@ -112,13 +112,20 @@ public class Stream<T> {
     /**
      * Returns the first remaining element matching `pred` wrapped in
      * a present Optional, or an empty Optional if none match.
+     *
+     * Pre-fix the body declared `T v = o.get();` and reused `v`
+     * inside the loop; that registered a drop entry for `v` which,
+     * for class-typed T, freed the element even though ownership
+     * stays with the stream source. Calling `o.get()` twice (once
+     * for the predicate, once for the construction) sidesteps the
+     * borrow-via-local issue — neither result gets a drop entry
+     * since both are immediate temporaries.
      */
     public Optional<T> findFirst((T) -> boolean pred) {
         Optional<T> o = this.next();
         while (o.isPresent()) {
-            T v = o.get();
-            if (pred(v)) {
-                return heap Optional<T>(true, v);
+            if (pred(o.get())) {
+                return heap Optional<T>(true, o.get());
             }
             o = this.next();
         }
