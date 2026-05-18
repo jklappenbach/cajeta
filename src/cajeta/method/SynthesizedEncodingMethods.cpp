@@ -156,6 +156,21 @@ namespace cajeta {
             llvm::ConstantInt::get(llvm::Type::getInt1Ty(ctx), 0)
         });
 
+        // Free the decoded temp's shell — its field POINTERS were
+        // copied verbatim into `this`'s slots by the memcpy above, so
+        // ownership of the fields transferred to `this`. The shell
+        // itself (vtable slot + the inline portions of any value
+        // fields) is leaked memory if not freed. __cajeta_free claims
+        // tmp from the live-set + raw-frees the shell without
+        // walking fields, so the now-aliased field allocations stay
+        // alive under `this`'s ownership and get dropped exactly once
+        // when `this` does.
+        llvm::FunctionType* freeFnTy = llvm::FunctionType::get(
+            llvm::Type::getVoidTy(ctx), {ptrTy}, false);
+        llvm::FunctionCallee freeFn = lmod->getOrInsertFunction(
+            "__cajeta_free", freeFnTy);
+        b.CreateCall(freeFn, {tmp});
+
         b.CreateRetVoid();
     }
 

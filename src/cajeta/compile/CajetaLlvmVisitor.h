@@ -521,15 +521,54 @@ namespace cajeta {
                 pModule, qName, qExtended, qImplemented);
             interface->setIsInterface(true);
 
+            // Templated interfaces (`interface Foo<T> { ... }`): mirror
+            // the class-template handling at line 169. Capture the
+            // type parameters so isTemplate() is true. The body walk
+            // below then sees a template interface and skips body-
+            // method emission, exactly like visitClassDeclaration's
+            // `if (!structure->isTemplate())` guard at line 300 —
+            // template bodies reference unresolved T placeholders that
+            // can't lower until instantiation.
+            //
+            // For interfaces, instantiation lands when an implementing
+            // class names `implements Foo<int32>`. Until that surface
+            // matures, a templated interface lives as a placeholder
+            // in canonicalMap; @Encoding's duck-typed dispatch path
+            // sidesteps the issue by not requiring an instantiated
+            // interface vtable.
+            if (auto* tps = ctx->typeParameters()) {
+                vector<TypeParameter> params;
+                for (auto* tp : tps->typeParameter()) {
+                    TypeParameter param(tp->identifier()->getText());
+                    if (auto* bound = tp->typeBound()) {
+                        for (auto* tt : bound->typeType()) {
+                            if (auto* coi = tt->classOrInterfaceType()) {
+                                param.bounds.push_back(
+                                    QualifiedName::fromContext(coi));
+                            }
+                        }
+                    }
+                    params.push_back(std::move(param));
+                }
+                interface->setTypeParameters(std::move(params));
+            }
+
             pModule->getStructureStack().push_back(interface);
 
             // Build abstract Methods for each interfaceMethodDeclaration.
             // We sidestep visitClassBody/visitMethodDeclaration because those
             // expect a real method body; interface methods have either `;`
             // or a default block (the latter is deferred).
+            //
+            // Skip body emission for templated interfaces — same reason
+            // class templates skip body walks (line 300): the body
+            // references unresolved T placeholders. Implementing
+            // classes will instantiate via their `implements Foo<X>`
+            // clause once that path is fleshed out (currently
+            // duck-typed via @Encoding).
             auto classBody = make_shared<ClassBodyDeclaration>(ctx->getStart());
             auto* body = ctx->interfaceBody();
-            if (body) {
+            if (body && !interface->isTemplate()) {
                 for (auto* bd : body->interfaceBodyDeclaration()) {
                     auto* md = bd->interfaceMemberDeclaration();
                     if (!md) continue;

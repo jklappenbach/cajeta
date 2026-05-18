@@ -1,0 +1,6 @@
+package cajeta.wire;
+
+public interface Encoder<T> {
+    #int8[] encode(T value);
+    #T decode(int8[] bytes);
+}
