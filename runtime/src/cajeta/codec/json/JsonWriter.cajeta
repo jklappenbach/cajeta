@@ -1,0 +1,219 @@
+package cajeta.codec.json;
+
+public final class JsonWriter {
+    int8[] buf;
+    int32 cap;
+    int32 size;
+
+    int8[] depthStack;
+    int8[] sibling;       // boolean-flagged via 0/1 — boolean[] tripped
+                          // the ICmp type check during stdlib codegen
+    int32 depth;
+    boolean afterKey;
+
+    public JsonWriter() {
+        this.cap = 64;
+        this.buf = new int8[64];
+        this.size = 0;
+        this.depthStack = new int8[1024];
+        this.sibling = new int8[1024];
+        this.depth = 0;
+        this.afterKey = false;
+    }
+
+    public int32 size() {
+        return this.size;
+    }
+
+    public JsonWriter beginObject() {
+        this.maybeSeparator();
+        this.append((int32) 123);
+        this.pushFrame((int32) 1);
+        return this;
+    }
+
+    public JsonWriter endObject() {
+        this.append((int32) 125);
+        this.popFrame();
+        this.markSibling();
+        return this;
+    }
+
+    public JsonWriter beginArray() {
+        this.maybeSeparator();
+        this.append((int32) 91);
+        this.pushFrame((int32) 0);
+        return this;
+    }
+
+    public JsonWriter endArray() {
+        this.append((int32) 93);
+        this.popFrame();
+        this.markSibling();
+        return this;
+    }
+
+    public JsonWriter writeNull() {
+        this.maybeSeparator();
+        this.append((int32) 110);
+        this.append((int32) 117);
+        this.append((int32) 108);
+        this.append((int32) 108);
+        this.markSibling();
+        return this;
+    }
+
+    public JsonWriter writeBoolean(boolean v) {
+        this.maybeSeparator();
+        if (v) {
+            this.append((int32) 116);
+            this.append((int32) 114);
+            this.append((int32) 117);
+            this.append((int32) 101);
+        } else {
+            this.append((int32) 102);
+            this.append((int32) 97);
+            this.append((int32) 108);
+            this.append((int32) 115);
+            this.append((int32) 101);
+        }
+        this.markSibling();
+        return this;
+    }
+
+    public JsonWriter writeNumber(int64 v) {
+        this.maybeSeparator();
+        if (v == (int64) 0) {
+            this.append((int32) 48);
+            this.markSibling();
+            return this;
+        }
+        boolean negative = false;
+        if (v < (int64) 0) {
+            negative = true;
+            v = - v;
+        }
+        int8[] tmp = new int8[20];
+        int32 nd = 0;
+        while (v > (int64) 0) {
+            int64 d = v % (int64) 10;
+            tmp[nd] = (int8) (d + (int64) 48);
+            v = v / (int64) 10;
+            nd = nd + 1;
+        }
+        if (negative) {
+            this.append((int32) 45);
+        }
+        while (nd > 0) {
+            nd = nd - 1;
+            this.append((int32) tmp[nd]);
+        }
+        this.markSibling();
+        return this;
+    }
+
+    // String + byte-count pair. Length is explicit because
+    // int8[].length isn't yet exposed as a property in this stdlib.
+    public JsonWriter writeString(int8[] s, int32 n) {
+        this.maybeSeparator();
+        this.writeStringRaw(s, n);
+        this.markSibling();
+        return this;
+    }
+
+    // Emit `"key":` (escapes `"` and `\` inside the key). Suppresses
+    // the leading separator on the value that immediately follows.
+    public JsonWriter key(int8[] name, int32 n) {
+        this.maybeSeparator();
+        this.writeStringRaw(name, n);
+        this.append((int32) 58);
+        this.markSibling();
+        this.afterKey = true;
+        return this;
+    }
+
+    final void writeStringRaw(int8[] s, int32 n) {
+        this.append((int32) 34);
+        int32 i = 0;
+        while (i < n) {
+            int8 c = s[i];
+            if (c == (int8) 34) {
+                this.append((int32) 92);
+                this.append((int32) 34);
+            } else if (c == (int8) 92) {
+                this.append((int32) 92);
+                this.append((int32) 92);
+            } else {
+                this.append((int32) c);
+            }
+            i = i + 1;
+        }
+        this.append((int32) 34);
+    }
+
+    public #int8[] toBytes() {
+        int32 n = this.size;
+        int8[] out = new int8[n];
+        int32 i = 0;
+        while (i < n) {
+            out[i] = this.buf[i];
+            i = i + 1;
+        }
+        this.size = 0;
+        this.depth = 0;
+        this.afterKey = false;
+        return out;
+    }
+
+    void maybeSeparator() {
+        if (this.afterKey) {
+            this.afterKey = false;
+            return;
+        }
+        if (this.depth > 0 && this.sibling[this.depth - 1] != (int8) 0) {
+            this.append((int32) 44);
+        }
+    }
+
+    void markSibling() {
+        if (this.depth > 0) {
+            this.sibling[this.depth - 1] = (int8) 1;
+        }
+    }
+
+    final void pushFrame(int32 kind) {
+        this.depthStack[this.depth] = (int8) kind;
+        this.sibling[this.depth] = (int8) 0;
+        this.depth = this.depth + 1;
+    }
+
+    void popFrame() {
+        this.depth = this.depth - 1;
+        this.afterKey = false;
+    }
+
+    // Param is int32 rather than int8 because int8 method params
+    // currently trip the vtable signature check during stdlib codegen
+    // (the vtable entry's function type doesn't pick up the i8
+    // narrowing; emits as ptr). The narrowing happens inside the
+    // method via the (int8) cast on store.
+    final void append(int32 b) {
+        if (this.size >= this.cap) {
+            this.grow();
+        }
+        this.buf[this.size] = (int8) b;
+        this.size = this.size + 1;
+    }
+
+    void grow() {
+        int32 newCap = this.cap * 2;
+        int8[] dst = new int8[newCap];
+        int32 i = 0;
+        while (i < this.size) {
+            dst[i] = this.buf[i];
+            i = i + 1;
+        }
+        this.buf = dst;
+        this.cap = newCap;
+    }
+}
