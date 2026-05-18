@@ -702,6 +702,21 @@ namespace cajeta {
         // — Cajeta's size()-style would collide with @Setter).
         void synthesizeWith();
 
+        // @Builder on class. Synthesizes a nested `Outer.Builder` class
+        // (relies on the nested-class infrastructure landed alongside),
+        // plus a `static Outer.Builder builder()` factory on Outer.
+        // The Builder mirrors Outer's fields as private slots, adds a
+        // chained setter per field (`Outer.Builder fieldName(T v)`
+        // returning `this`), and provides `Outer build()` which
+        // allocates Outer and calls its all-args ctor with the
+        // accumulated field values.
+        //
+        // Implicit dependency: @Builder also triggers @AllArgsConstructor
+        // synthesis on the outer (the build() body needs that ctor to
+        // exist). synthesizeAllArgsConstructor checks for @Builder
+        // alongside @AllArgsConstructor / @Value as triggers.
+        void synthesizeBuilder();
+
         // Helper for the three ctor synthesizers: does the constructor
         // map already hold a ctor with `userArgs` user-visible params
         // (excluding `this`)?

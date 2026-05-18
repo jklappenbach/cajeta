@@ -16,6 +16,7 @@
 #include "../method/SynthesizedToStringMethod.h"
 #include "../method/SynthesizedConstructorMethod.h"
 #include "../method/SynthesizedWithMethod.h"
+#include "../method/SynthesizedBuilderMethods.h"
 #include "CajetaArray.h"
 #include "../field/HeapField.h"
 #include "../error/Exception.h"
@@ -750,6 +751,11 @@ namespace cajeta {
         for (auto methodEntry: methods) {
             methodEntry.second->generatePrototype();
         }
+        // Builder runs AFTER method prototypes so the all-args ctor's
+        // llvm::Function* is already built — the synthesized build()
+        // method calls it by pointer. Builder's own generatePrototype
+        // (called inside synthesizeBuilder) handles its method LLVM
+        // function creation.
 
         // Vtable build runs AFTER every method has its LLVM Function — the
         // constant needs `getLlvmFunction()` to return non-null for each slot.
@@ -767,6 +773,15 @@ namespace cajeta {
 
         CajetaModule::getStructureToModule()[canonical] = module;
         prototypeBuilt = true;
+
+        // @Builder runs LAST — after this class's prototype + vtable
+        // are fully built. The Builder synthesizer creates a fresh
+        // nested CajetaClass and walks IT through generatePrototype,
+        // which would recurse into our own un-built state if invoked
+        // earlier. Builder also adds a `builder()` static method to
+        // this class; that method's LLVM function gets created via a
+        // direct generatePrototype call inside synthesizeBuilder.
+        synthesizeBuilder();
     }
 
     void CajetaClass::synthesizeInterfaceVTables() {
@@ -1071,9 +1086,13 @@ namespace cajeta {
     }
 
     void CajetaClass::synthesizeAllArgsConstructor() {
-        // @Value bundle also enables @AllArgsConstructor.
+        // @Value bundle and @Builder both implicitly enable
+        // @AllArgsConstructor. (For @Builder, build()'s body calls
+        // the outer's all-args ctor; for @Value, an all-args ctor is
+        // the canonical way to initialize an immutable value.)
         if (!findAnnotation("AllArgsConstructor")
-                && !findAnnotation("Value")) return;
+                && !findAnnotation("Value")
+                && !findAnnotation("Builder")) return;
         std::vector<StructurePropertyPtr> fields;
         for (auto& prop : propertyList) {
             if (!prop || prop->isStatic()) continue;
@@ -1157,6 +1176,103 @@ namespace cajeta {
             with->initParameter();
             addMethod(with);
         }
+    }
+
+    void CajetaClass::synthesizeBuilder() {
+        if (!findAnnotation("Builder")) return;
+
+        // Step 1: gather outer's non-static fields (in declaration order).
+        std::vector<StructurePropertyPtr> outerFields;
+        for (auto& prop : propertyList) {
+            if (!prop || prop->isStatic()) continue;
+            outerFields.push_back(prop);
+        }
+
+        // Step 2: create the Builder CajetaClass. QualifiedName uses
+        // the outer's canonical as the package — same dotted shape that
+        // visitClassDeclaration synthesizes for source-declared nested
+        // classes (line 81-83 of CajetaLlvmVisitor.h).
+        auto builderQName = QualifiedName::getOrInsert(
+            "Builder", qName->toCanonical());
+        std::list<QualifiedNamePtr> builderExtends{
+            QualifiedName::getOrInsert("Object", "cajeta.lang")
+        };
+        std::list<QualifiedNamePtr> builderImplements;
+        auto builder = std::make_shared<CajetaClass>(
+            module, builderQName, builderExtends, builderImplements);
+
+        // Step 3: register in canonicalMap under both the full canonical
+        // and the short typeName (matches what generatePrototype does
+        // for ordinary classes via canonicalMap[...] = ...).
+        CajetaType::getCanonicalMap()[builderQName->toCanonical()] =
+            std::static_pointer_cast<CajetaType>(builder);
+        // Don't shadow the short name — there may be unrelated
+        // `Builder` classes in other packages; the dotted canonical is
+        // the disambiguator.
+
+        // Step 4: mirror outer's non-static fields as Builder fields.
+        // Builder fields are private (Lombok parity); the chained setter
+        // is the public interface.
+        int order = 0;
+        for (auto& prop : outerFields) {
+            auto mirror = std::make_shared<StructureProperty>(
+                prop->getName(), prop->getType(), order++);
+            mirror->addModifier(PRIVATE);
+            builder->addProperty(mirror);
+        }
+
+        // Step 5: add the no-arg ctor (zero-init all fields). Mirrors
+        // what @NoArgsConstructor would have produced — but we add it
+        // directly rather than going through the annotation gating.
+        {
+            auto ctor = std::make_shared<SynthesizedConstructorMethod>(
+                module, builder, std::vector<StructurePropertyPtr>{});
+            ctor->initParameters();
+            builder->addMethod(ctor);
+        }
+
+        // Step 6: add the chained setters (one per mirrored field).
+        for (auto& mirror : builder->getPropertyList()) {
+            if (!mirror) continue;
+            auto setter = std::make_shared<SynthesizedBuilderSetterMethod>(
+                module, builder, mirror);
+            setter->initParameter();
+            builder->addMethod(setter);
+        }
+
+        // Step 7: add build(). Note this references outer's all-args
+        // ctor by LLVM Function* — that ctor was prototyped during our
+        // own method-prototype loop (before this synthesizeBuilder
+        // call), so its llvmFunction is non-null.
+        {
+            auto buildMethod = std::make_shared<SynthesizedBuildMethod>(
+                module, builder,
+                std::static_pointer_cast<CajetaClass>(shared_from_this()));
+            builder->addMethod(buildMethod);
+        }
+
+        // Step 8: generate Builder's prototype. This builds Builder's
+        // LLVM struct type, prototypes its methods, and emits its
+        // vtable + RTTI. The recursive call inside generatePrototype
+        // hits the prototypeBuilt guard for THIS class (we set
+        // prototypeBuilt = true above before calling synthesizeBuilder).
+        builder->generatePrototype();
+
+        // Step 9: add `static Outer.Builder builder()` to outer.
+        auto factory = std::make_shared<SynthesizedBuilderFactoryMethod>(
+            module,
+            std::static_pointer_cast<CajetaClass>(shared_from_this()),
+            builder);
+        addMethod(factory);
+        // We're past our own method-prototype loop; manually prototype
+        // the factory so its LLVM function lands in the module.
+        factory->generatePrototype();
+        // Add to module's structure roster so codegen picks it up.
+        // Also add the Builder class so it shows up in the codegen
+        // worklist alongside outer.
+        module->getStructures()[builderQName->toCanonical()] = builder;
+        CajetaModule::getStructureToModule()
+            [builderQName->toCanonical()] = module;
     }
 
     void CajetaClass::ensureDefaultConstructor() {

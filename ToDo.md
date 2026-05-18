@@ -8,7 +8,7 @@ Convention: each entry is a brief description, why it matters, where it bites to
 
 ## Current state (2026-05-18, end-of-session)
 
-Tree at 999/999 (excluding 1 pre-existing teardown-SIGSEGV shard, down from 3) — **ZERO disabled tests**. **MultiClassing track FULLY CLOSED 2026-05-18 — Phase 3 v4 shipped via full vbase ABI rollout.** Every class with at least one non-Object ancestor now reserves one `ptr` slot per transitive ancestor at the end of its layout slice; ctors initialize the slots to inline ancestor positions; diamond descendants overwrite non-first parents' vbase slots to canonical positions. `DotExpression` loads through the vbase pointer for inherited-field access instead of GEPing directly into the inline ancestor block. The earlier v2 cross-path adjustment + v4 narrow MCE trick are removed (subsumed by universal vbase indirection). Also this session: method-template Form C is the sole call syntax (`Type.method<T>(args)`; Java-style Form A removed from grammar); two-layer naming for method-template instantiations unblocked zero-value-param factories like `Collectors.toList<int32>()`; lambda block-body return-type inference fixed a JIT-verify failure on toList; NewExpression's lambda-arg expectedType propagator landed (mirrors MCE pattern) and stdlib uptake slimmed `Collectors.toList` to bare-param lambdas. **Priority 2 § 6 (views as K/V in HashMap) resolved via doctrine enforcement** — `CajetaClass::generatePrototype` now rejects view-typed class fields (direct, array-of-view, or via template instantiation) with `CAJETA_ERROR_VIEW_AS_CLASS_FIELD`, replacing JIT-verify crashes with a clear compile error.
+Tree at 1070+ (full Lombok track shipped this session plus static-nested classes; numbers below). **ZERO disabled tests.** **MultiClassing track FULLY CLOSED 2026-05-18 — Phase 3 v4 shipped via full vbase ABI rollout.** **Lombok-mirror track FULLY CLOSED 2026-05-18** — @Getter/@Setter (10) + @ToString (12) + @NoArgs/@AllArgs/@RequiredArgs ctors (8) + @Data/@Value (6) + @NonNull (7) + @With (6) + @Builder (6) = 55 tests, plus static nested classes (5) shipped as the @Builder prerequisite. Every class with at least one non-Object ancestor now reserves one `ptr` slot per transitive ancestor at the end of its layout slice; ctors initialize the slots to inline ancestor positions; diamond descendants overwrite non-first parents' vbase slots to canonical positions. `DotExpression` loads through the vbase pointer for inherited-field access instead of GEPing directly into the inline ancestor block. The earlier v2 cross-path adjustment + v4 narrow MCE trick are removed (subsumed by universal vbase indirection). Also this session: method-template Form C is the sole call syntax (`Type.method<T>(args)`; Java-style Form A removed from grammar); two-layer naming for method-template instantiations unblocked zero-value-param factories like `Collectors.toList<int32>()`; lambda block-body return-type inference fixed a JIT-verify failure on toList; NewExpression's lambda-arg expectedType propagator landed (mirrors MCE pattern) and stdlib uptake slimmed `Collectors.toList` to bare-param lambdas. **Priority 2 § 6 (views as K/V in HashMap) resolved via doctrine enforcement** — `CajetaClass::generatePrototype` now rejects view-typed class fields (direct, array-of-view, or via template instantiation) with `CAJETA_ERROR_VIEW_AS_CLASS_FIELD`, replacing JIT-verify crashes with a clear compile error.
 
 Recently landed (Phase 7 + P6.5/P6.7 + memory-model gap pass + Priority 1 push + mode/debug-features push + P1.1 template-field codegen + P1.1 follow-ups + inline-MCE-as-ctor-arg + intermediate Stream combinators):
 - `struct` is a transitional alias for `class`; CajetaAggregate retired.
@@ -61,14 +61,15 @@ Stack vs heap class instantiation is fully working: `heap T(args)`, `stack T(arg
 
 Priority is rough effort × user-visible correctness impact.
 
-### Top priorities for next session (2026-05-18)
+### Top priorities for next session (2026-05-18, post-Lombok)
 
-With the MultiClassing track fully closed (Phase 3 v4 shipped via vbase ABI) and Priority 2 § 6 resolved via doctrine enforcement (`CAJETA_ERROR_VIEW_AS_CLASS_FIELD`), the recommended next picks are:
+With the MultiClassing track + Lombok-mirror track + nested classes (static-nested) all closed, and Priority 2 § 6 resolved via doctrine enforcement, the recommended next picks are:
 
-1. **Priority 3 § 1 — `@Getter` / `@Setter` annotation synthesizers.** ~1 session. Lombok-mirror adoption order says start here; small enough to fit a single session; unblocks the broader Lombok track (`@ToString`, `@NoArgsConstructor`, `@Data`, `@Builder`).
+1. **Priority 2 § 8 — Longer fluent stream chains.** Add instance-method wrappers (`Stream<T>::filter(Predicate<T>) -> Stream<T>`, `.map(...)`, `.take(...)`, etc.) to the base class so users can write `xs.stream().filter(p).map(f).count()` without hand-constructing `heap FilterStream<T>(source, pred)` per step. ~1 session.
 2. **Priority 2 § 10 — `@Encoding(EncoderClass)` for views.** ~1.5 sessions. Annotation-arg machinery is already in place; this consumes it via `findAnnotation("Encoding")->getClassRef("value")`. Unblocks user-defined wire codecs (varint, base-128, COBS) for view types.
-3. **Priority 2 § 8 — Longer fluent stream chains.** Add instance-method wrappers (`Stream<T>::filter(Predicate<T>) -> Stream<T>`, `.map(...)`, etc.) to the base class so users can write `xs.stream().filter(p).map(f).count()` without hand-constructing `heap FilterStream<T>(source, pred)` per step. ~1 session.
+3. **Features.md S-1101 / S-1102 — `cajeta.codec.json` spec + implementation.** ~2-3 sessions for the spec; implementation depends on it. Unblocks `@ToString(format=TO_STRING_JSON)` and view `@Encoding(JsonEncoder)`.
 4. **Priority 6 § 5 — Restore lost test coverage from Phase 7.** Incremental, low-risk; can be picked up in slack time between bigger pieces.
+5. **Priority 4 / 5 — Debug-mode + release-mode features.** Most haven't been touched yet; quality-of-life features (`--diag-hints`, `--bounds=trap`, `--null-checks` codegen, etc.).
 
 ### Priority 1 — compiler infrastructure
 
@@ -140,19 +141,23 @@ All Priority 1 items shipped. Historical MultiClassing item log retained below f
        - **Cross-class override thunks.** `CajetaClass::synthesizeOffsetThunk(parent, impl, parentOffsetInThis)` emits a tiny private function: receives `this` as the parent-sub-pointer, GEPs `this - parentOffsetInThis` to recover the most-derived pointer, then tail-calls the override. The thunk's signature matches the override exactly so the dispatch site doesn't need to know it's a thunk. Tests: `dispatchThroughNonFirstParentTypedBinding`, `overrideThroughNonFirstParentTypedBinding`, `dispatchThroughFirstParentTypedBindingUnchanged`. `getNonFirstSubObjects` walks the layout deterministically (not the `subObjectSlotMap`, which collapses diamond ancestors) so each non-first-vptr slot is enumerated exactly once.
    - Unblocked stdlib rows (now including the multi-parent-with-instance-fields case after Gap 8): **S-107** `Optional<T>` multi-inherits `Stream<T>`, **S-302** `ArrayList<T>` IS-A `Stream<T>`, **S-305** `HashMap<K,V>` IS-A `Stream<Pair<K,V>>`. **S-313** for-loop desugar through `.next()` is a separate language item — not strictly L-03, but reads as the same feature surface for users.
 
-### Priority 3 — Lombok-mirror annotations (all `[mode-agnostic]`)
+### Priority 3 — Lombok-mirror annotations (all `[mode-agnostic]`) — TRACK CLOSED 2026-05-18
 
-In Lombok's recommended adoption order:
+All shipped:
 
-1. **`@Getter` / `@Setter` — ~1 session.** Field-walk synthesizers. Visibility via `(level="private")`. Doc: `cajeta-docs/stdlib/Annotations.md` § Accessors.
-2. **`@ToString` — ~0.5 session.** v1 ships `format=TO_STRING_PROPERTIES` only (`ClassName(field1=val,field2=val,...)`); `@ToString.Exclude` on a field omits it. **`TO_STRING_JSON` deferred** to `cajeta.codec.json` (S-1101 / S-1102). Doc: `Annotations.md` § @ToString on class.
-3. **`@EqualsAndHashCode` — Rejected.  We already have @AutoHash planned, perhaps could rename to @Hash.  There's no equals on Object in Cajeta.  We have operator ==() overrides
-4. **`@NoArgsConstructor` / `@AllArgsConstructor` / `@RequiredArgsConstructor` — ~1 session.** Constructor synthesizers. Doc: `Annotations.md` § Constructors.
-5. **`@Data` / `@Value` — ~0.5 session.** Bundle annotations expanding into the above. Doc: `Annotations.md` § Bundles.
-6. **`@NonNull` — ~1 session.** `[both]` — synthesis is mode-agnostic, but the emitted null-check composes with `--null-checks` (P5 below). Doc: `Annotations.md` § Null safety.
-7. **`@Builder` — ~2 sessions.** Largest piece; synthesizes a Builder inner class + chained setters + `.build()` with `@NonNull` validation. `@Builder.Default` on a field. Doc: `Annotations.md` § Builders.
-8. **`@With` — ~1 session.** Per-field copy-with mutators (`withX(value)` returns a new instance with `x` replaced). Doc: `Annotations.md` § Immutability friend.
-9. **`@Cleanup("method"="close")` — Rejected, we have destructors.  
+1. ✅ **`@Getter` / `@Setter`** — shipped. Field-walk synthesizers (`SynthesizedGetter/SetterMethod`). Class-level applies to every qualifying field; field-level applies to one. Setter skips final fields. Pinned by `test/parser/GetterSetterTests.cpp` (10).
+2. ✅ **`@ToString`** — shipped with `format=TO_STRING_PROPERTIES` (default). **`TO_STRING_JSON` deferred** to `cajeta.codec.json` (Features.md S-1101 / S-1102) — requesting it throws `CAJETA_ERROR_TOSTRING_JSON_NOT_IMPLEMENTED`. `@ToString.Exclude` on individual fields omits them. Pinned by `test/parser/ToStringTests.cpp` (12).
+3. ❌ **`@EqualsAndHashCode`** — Rejected. We have `@AutoHash` for hashing; there's no `equals()` on Object (equality goes through `operator==` overloads).
+4. ✅ **`@NoArgsConstructor` / `@AllArgsConstructor` / `@RequiredArgsConstructor`** — shipped via single `SynthesizedConstructorMethod` with per-annotation field selection. Pinned by `test/parser/ConstructorAnnotationTests.cpp` (8).
+5. ✅ **`@Data` / `@Value`** — shipped as bundle expansions. `@Data` = G+S+TS+AH+RAC; `@Value` = G+TS+AH+AAC (no setters — immutability). Implemented by ORing in the bundle annotations at each per-annotation synthesizer's gate. Pinned by `test/parser/DataValueAnnotationTests.cpp` (6).
+6. ✅ **`@NonNull`** — shipped on parameters. `Method::emitNonNullParamChecks` walks params at body entry, emits `if (arg == null) throw 2` (`CAJETA_ERROR_NULL_PARAM_ARG`). `@RequiredArgsConstructor` already includes `@NonNull` fields alongside `final`. Return-type @NonNull deferred. Pinned by `test/parser/NonNullTests.cpp` (7). Also surfaced + fixed a pre-existing `Annotatable(set&)` ctor bug where parameter annotations weren't being mirrored to `annotationList`, breaking RTTI emission.
+7. ✅ **`@Builder`** — shipped. Synthesizes a real nested `Outer.Builder` class (uses the static-nested-class infrastructure that landed alongside) with mirror private fields, chained setters returning `this`, and `build()` that allocates Outer and calls its all-args ctor. Adds `static Outer.Builder builder()` to Outer. `@Builder` implicitly triggers `@AllArgsConstructor` on Outer. **`@Builder.Default` for per-field defaults deferred** (relies on field-initializer parsing; v2). Pinned by `test/parser/BuilderAnnotationTests.cpp` (6).
+8. ✅ **`@With`** — shipped. `SynthesizedWithMethod` per-field `withX(T v)` mutators (Lombok-style camelCase naming to avoid setter collision). Body: `__cajeta_alloc` + memcpy + slot overwrite + return new ptr. Pinned by `test/parser/WithAnnotationTests.cpp` (6).
+9. ❌ **`@Cleanup("method"="close")`** — Rejected. Cajeta has destructors + the auto-field-drop machinery; the `@Cleanup` Java-side use case doesn't translate.
+
+**Lombok test total: 55 new tests across 7 files (10 + 12 + 8 + 6 + 7 + 6 + 6). All green.**
+
+**Side benefit: static nested classes** landed as the @Builder prerequisite. The grammar already accepted them; missing pieces were the visitor cast (now wrapped in `NestedClassDeclaration`) and the structureStack `.front()` vs `.back()` choice in two Method::create sites. Pinned by `test/parser/NestedClassTests.cpp` (5).
 
 ### Priority 4 — debug-mode features (CompilerModes.md phasing order)
 
