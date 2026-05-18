@@ -372,3 +372,46 @@ TEST(MultiClassingPhase3Tests,
         "}\n";
     EXPECT_EQ(runI32(src), 88);
 }
+
+// --- v4: non-first parent's OWN method touching shared-ancestor field ----
+//
+// Tighter shape than v3: the touching method (`cWritesSharedX`) is
+// declared ON C, not inherited from A. So declaringClass == bracketed
+// class == C, and v3's "differs → re-adjust" check doesn't fire. C's
+// IR was compiled standalone with the assumption that `this` is a
+// C-pointer and inline-A sits at offset 8 (after vtable). When called
+// from Diamond, `this` arrives as Diamond + offsetOfCInDiamond, and
+// C's IR's GEP for `this.x` lands on the dormant inline-A — not the
+// canonical (B-chain) A.
+//
+// Out of scope for v1/v2/v3. Two viable structural fixes captured in
+// ToDo.md (vbase ABI vs per-descendant recompilation); this test pins
+// the gap so whichever lands can flip it green.
+TEST(MultiClassingPhase3Tests,
+        ownMethodOnNonFirstParentReachesSharedA) {
+    auto src =
+        "package test;\n"
+        "public class A {\n"
+        "  public int32 x;\n"
+        "  public A() { return; }\n"
+        "}\n"
+        "public class B extends A { public B() { return; } }\n"
+        "public class C extends A {\n"
+        "  public C() { return; }\n"
+        "  public void cWritesSharedX(int32 v) { this.x = v; }\n"
+        "}\n"
+        "public class Diamond extends B, C {\n"
+        "  public Diamond() { return; }\n"
+        "  public int32 callCThenReadShared() {\n"
+        "    super[C].cWritesSharedX(99);\n"  // C-own method, GEPs into C-inline-A
+        "    return this.x;\n"  // v3 returns 0 (dormant); v4 expects 99
+        "  }\n"
+        "}\n"
+        "public final class D {\n"
+        "  public static int32 run() {\n"
+        "    Diamond d = new Diamond();\n"
+        "    return d.callCThenReadShared();\n"
+        "  }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 99);
+}

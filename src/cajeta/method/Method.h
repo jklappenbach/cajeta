@@ -455,6 +455,11 @@ namespace cajeta {
 
         void setBlock(BlockPtr block);
 
+        // Exposed for ad-hoc body walks (e.g. MultiClassing Phase 3 v4's
+        // narrow MCE pre-check for "method touches only inherited fields").
+        // Read-only; codegen still drives via generateCode.
+        BlockPtr getBlock() const { return block; }
+
         void createScope();
 
         void createLocalVariable(CajetaModulePtr module, FieldPtr field);
