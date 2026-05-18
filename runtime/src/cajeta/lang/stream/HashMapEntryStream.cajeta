@@ -26,7 +26,7 @@ public class HashMapEntryStream<K, V> extends Stream<Pair<K, V>> {
         this.idx = 0;
     }
 
-    public Optional<Pair<K, V>> next() {
+    public #Optional<Pair<K, V>> next() {
         while (this.idx < this.cap) {
             if (this.state[this.idx] == 1) {
                 K k = this.keys[this.idx];

@@ -27,7 +27,7 @@ public class HashMapKeyStream<K, V> extends Stream<K> {
         this.idx = 0;
     }
 
-    public Optional<K> next() {
+    public #Optional<K> next() {
         while (this.idx < this.cap) {
             if (this.state[this.idx] == 1) {
                 K k = this.keys[this.idx];

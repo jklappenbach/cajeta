@@ -11,7 +11,7 @@ public class ArrayStream<T> extends Stream<T> {
         this.limit = limit;
     }
 
-    public Optional<T> next() {
+    public #Optional<T> next() {
         if (this.idx >= this.limit) {
             return heap Optional<T>(false, null);
         }

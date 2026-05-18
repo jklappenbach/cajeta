@@ -131,7 +131,7 @@ TEST(BlockScopedDropTests, twoBackToBackCriticalSections) {
         "    private pointer handle;\n"
         "    public Lock() { this.handle = Cajeta.lockNew(); }\n"
         "    public ~Lock() { Cajeta.lockDestroy(this.handle); }\n"
-        "    public LockGuard acquire() {\n"
+        "    public #LockGuard acquire() {\n"
         "        Cajeta.lockAcquire(this.handle);\n"
         "        return new LockGuard(this.handle);\n"
         "    }\n"

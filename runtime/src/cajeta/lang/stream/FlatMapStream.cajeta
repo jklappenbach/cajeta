@@ -28,7 +28,7 @@ public class FlatMapStream<T, R> extends Stream<R> {
         this.primed = false;
     }
 
-    public Optional<R> next() {
+    public #Optional<R> next() {
         while (true) {
             if (this.primed) {
                 Optional<R> r = this.current.next();

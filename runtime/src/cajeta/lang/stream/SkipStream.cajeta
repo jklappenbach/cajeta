@@ -20,7 +20,7 @@ public class SkipStream<T> extends Stream<T> {
         this.remaining = n;
     }
 
-    public Optional<T> next() {
+    public #Optional<T> next() {
         while (this.remaining > 0) {
             Optional<T> dropped = this.source.next();
             if (dropped.isEmpty()) {

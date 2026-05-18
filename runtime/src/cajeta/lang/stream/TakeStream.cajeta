@@ -21,7 +21,7 @@ public class TakeStream<T> extends Stream<T> {
         this.remaining = n;
     }
 
-    public Optional<T> next() {
+    public #Optional<T> next() {
         if (this.remaining <= 0) {
             return heap Optional<T>(false, null);
         }

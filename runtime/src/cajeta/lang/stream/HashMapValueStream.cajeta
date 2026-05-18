@@ -19,7 +19,7 @@ public class HashMapValueStream<K, V> extends Stream<V> {
         this.idx = 0;
     }
 
-    public Optional<V> next() {
+    public #Optional<V> next() {
         while (this.idx < this.cap) {
             if (this.state[this.idx] == 1) {
                 V v = this.vals[this.idx];

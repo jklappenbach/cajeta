@@ -18,7 +18,7 @@ public class PeekStream<T> extends Stream<T> {
         this.fn = fn;
     }
 
-    public Optional<T> next() {
+    public #Optional<T> next() {
         Optional<T> o = this.source.next();
         if (o.isPresent()) {
             this.fn(o.get());

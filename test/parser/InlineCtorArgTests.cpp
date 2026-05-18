@@ -69,7 +69,7 @@ TEST(InlineCtorArgTests, userMethodResultAsCtorArg) {
         "import cajeta.lang.stream.ArrayStream;\n"
         "import cajeta.lang.stream.TakeStream;\n"
         "public final class Mk {\n"
-        "    public static ArrayStream<int32> make(int32[] xs) {\n"
+        "    public static #ArrayStream<int32> make(int32[] xs) {\n"
         "        return heap ArrayStream<int32>(xs, 5);\n"
         "    }\n"
         "}\n"

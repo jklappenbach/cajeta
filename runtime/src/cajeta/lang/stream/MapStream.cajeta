@@ -18,7 +18,7 @@ public class MapStream<T, R> extends Stream<R> {
         this.fn = fn;
     }
 
-    public Optional<R> next() {
+    public #Optional<R> next() {
         Optional<T> o = this.source.next();
         if (o.isEmpty()) {
             return heap Optional<R>(false, null);

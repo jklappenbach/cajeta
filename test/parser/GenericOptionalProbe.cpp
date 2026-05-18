@@ -49,7 +49,7 @@ TEST(GenericOptionalProbe, methodReturnsOptionalOfTypeParam) {
         "public class Wrapper<T> {\n"
         "    T value;\n"
         "    public Wrapper(T v) { this.value = v; }\n"
-        "    public Optional<T> getOpt() {\n"
+        "    public #Optional<T> getOpt() {\n"
         "        return heap Optional<T>(true, this.value);\n"
         "    }\n"
         "}\n"

@@ -63,7 +63,7 @@ public class ArrayList<T> {
      * `stack ArrayStream<T>` aggregate-init on a generic
      * instantiation is verified.
      */
-    public ArrayStream<T> stream() {
+    public #ArrayStream<T> stream() {
         return heap ArrayStream<T>(this.data, this.size);
     }
 }

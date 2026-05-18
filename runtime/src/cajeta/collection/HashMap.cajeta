@@ -354,7 +354,7 @@ public class HashMap<K, V> {
      *
      * @returns a HashMapKeyStream<K, V> exposed as Stream<K>.
      */
-    public Stream<K> keys() {
+    public #Stream<K> keys() {
         return heap HashMapKeyStream<K, V>(this.keys, this.state, this.cap);
     }
 
@@ -364,7 +364,7 @@ public class HashMap<K, V> {
      *
      * @returns a HashMapValueStream<K, V> exposed as Stream<V>.
      */
-    public Stream<V> values() {
+    public #Stream<V> values() {
         return heap HashMapValueStream<K, V>(this.vals, this.state, this.cap);
     }
 
@@ -374,7 +374,7 @@ public class HashMap<K, V> {
      *
      * @returns a HashMapEntryStream<K, V> exposed as Stream<Pair<K, V>>.
      */
-    public Stream<Pair<K, V>> entries() {
+    public #Stream<Pair<K, V>> entries() {
         return heap HashMapEntryStream<K, V>(
             this.keys, this.vals, this.state, this.cap);
     }

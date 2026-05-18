@@ -6,6 +6,8 @@
 #include "expression/Expression.h"
 #include "expression/Identifier.h"
 #include "expression/DotExpression.h"
+#include "expression/NewExpression.h"
+#include "expression/AggregateInitializerExpression.h"
 #include "../compile/CajetaModule.h"
 #include "../field/HeapField.h"
 #include "../field/StackField.h"
@@ -1165,6 +1167,50 @@ namespace cajeta {
             if (auto m = module->getCurrentMethod()) m->emitOwnerDrops(module);
             return builder->CreateRetVoid();
         }
+        // Memory-model § Function signatures: returning a fresh
+        // allocation (`return heap X(...)`, `return new X(...)`,
+        // `return heap X { ... }`) requires the enclosing method's
+        // return type to be marked `#` for ownership transfer. A
+        // non-`#` return is a borrow tied to the caller's lifetime
+        // for this expression — but a heap allocation has no caller-
+        // owned source to borrow from, so the allocation would either
+        // leak (caller doesn't drop) or get freed by the function's
+        // scope-exit drop chain and hand back a dangling pointer.
+        //
+        // Same story for `stack X(...)` returns: the stack memory
+        // dies on function return, so any return at all is a use-
+        // after-free hazard. Both shapes get the same diagnostic
+        // since the fix is the same: mark the return type with `#`
+        // for `heap` (the right form), and switch to `heap` for
+        // anything you wanted to escape the function.
+        if (auto m = module->getCurrentMethod()) {
+            // Skip lambdas — the (T) -> R type syntax doesn't carry a
+            // `#` for the return; treating lambda returns as borrow-by-
+            // default would block any lambda that constructs and
+            // returns a fresh value. When the lambda type syntax gains
+            // `#R` support, this carve-out can drop.
+            bool isLambda = m->getName().rfind("__cajeta_lambda_", 0) == 0;
+            if (!isLambda && !m->isReturnsOwnership()) {
+                auto newExpr = dynamic_pointer_cast<NewExpression>(expression);
+                auto aggExpr = dynamic_pointer_cast<AggregateInitializerExpression>(expression);
+                if (newExpr || aggExpr) {
+                    std::string canonical = m->toCanonical(false);
+                    throw Exception(
+                        "method `" + canonical + "` returns a freshly "
+                        "allocated value but its return type isn't marked "
+                        "`#` for ownership transfer. Without `#`, the "
+                        "caller treats the return as a borrow tied to "
+                        "no source — the allocation either leaks or gets "
+                        "freed by this function's scope-exit drop chain "
+                        "and hands back a dangling pointer. Fix: change "
+                        "the return type to `#T` so ownership transfers "
+                        "to the caller. See cajeta-docs/stdlib/"
+                        "MemoryModel.md § Function signatures.",
+                        "CAJETA_ERROR_FRESH_RETURN_NEEDS_TRANSFER");
+                }
+            }
+        }
+
         // L3-2 escape check: a function-typed local that holds a closure
         // with borrow captures is bounded by its declaring scope — its
         // captured borrows refer to outer locals that would be dead by

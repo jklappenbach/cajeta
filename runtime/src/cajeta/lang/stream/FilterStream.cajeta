@@ -19,7 +19,7 @@ public class FilterStream<T> extends Stream<T> {
         this.pred = pred;
     }
 
-    public Optional<T> next() {
+    public #Optional<T> next() {
         Optional<T> o = this.source.next();
         while (o.isPresent()) {
             T v = o.get();

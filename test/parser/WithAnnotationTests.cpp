@@ -125,7 +125,7 @@ TEST(WithAnnotationTests, userWithMethodWins) {
         "@With public class P {\n"
         "    public int32 x;\n"
         "    public P(int32 v) { this.x = v; }\n"
-        "    public P withX(int32 v) { return heap P(v + 1000); }\n"
+        "    public #P withX(int32 v) { return heap P(v + 1000); }\n"
         "}\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
