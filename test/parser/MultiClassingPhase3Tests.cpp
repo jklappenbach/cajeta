@@ -329,29 +329,25 @@ TEST(MultiClassingPhase3Tests, thisBracketFirstParentNoDiamondStillWorks) {
     EXPECT_EQ(runI32(src), 42);
 }
 
-// --- Phase 3 v3 limitations (DISABLED_) -----------------------------------
+// --- Phase 3 v3 — inherited-method re-adjustment via diamond --------------
 //
-// Inherited methods on non-first parents touching a shared ancestor
-// via internal `this.x`. C's `setX` is compiled standalone with the
-// assumption that A is inline at C's slot 1. When invoked via
-// `super[C].setX(...)` from a Diamond context, the IR GEPs into
-// C's dormant inline-A inside Diamond — NOT the canonical A.
+// `super[C].setX(88)` where `setX` is INHERITED from a shared ancestor
+// A: the method's actual declaring class is A, not C. SuperExpression
+// adjusted `this` to C's sub-object (dormant inline-A in Diamond),
+// and pre-v3 the dispatch called setX with that adjusted pointer —
+// setX wrote A.x via C's standalone slot, hitting dormant memory.
 //
-// Reading back via `this.x` from Diamond's own method sees the
-// canonical A (still uninitialized) and returns 0 even though the
-// dormant slot got written.
-//
-// Fixing this requires either:
-//   (1) vbase ABI: every multi-parent class indirects inherited-field
-//       access through a runtime-loaded vbase pointer (so C's
-//       standalone IR can be patched once and works in both
-//       standalone and derived contexts).
-//   (2) Per-descendant recompilation: emit Diamond-specific copies of
-//       C's methods that know Diamond's layout.
-// Both are larger structural changes. Tracked as the v3 follow-up.
+// v3 fix: in MCE's super-dispatch path, when the resolved method's
+// declaring class differs from the bracketed class AND a diamond
+// exists, re-adjust `thisValue` from the bracketed position to the
+// declaring class's canonical position. For super[C].setX in Diamond:
+// declaring class = A, canonical A in Diamond = 0, via-C-path = 16,
+// delta = -16, `this` lands back on Diamond's canonical A. The
+// inherited setX function (unchanged, expects A-pointer) reads/writes
+// the right storage.
 
 TEST(MultiClassingPhase3Tests,
-        DISABLED_inheritedMethodOnNonFirstParentReachesSharedA) {
+        inheritedMethodOnNonFirstParentReachesSharedA) {
     auto src =
         "package test;\n"
         "public class A {\n"

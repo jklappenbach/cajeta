@@ -1572,8 +1572,82 @@ namespace cajeta {
         // child is the trigger; SuperExpression::resolveTypes set the
         // receiverType to the first declared parent, so targetClass
         // above is already the right class for resolution.
-        bool isSuperCall = !children.empty()
-            && std::dynamic_pointer_cast<SuperExpression>(children[0]) != nullptr;
+        std::shared_ptr<SuperExpression> superLhs;
+        if (!children.empty()) {
+            superLhs = std::dynamic_pointer_cast<SuperExpression>(children[0]);
+        }
+        bool isSuperCall = (superLhs != nullptr);
+
+        // MultiClassing Phase 3 v3 (cajeta-docs/stdlib/MultiClassing.md
+        // § P-4): inherited-method re-adjustment for diamond. When the
+        // user writes `super[C].method()` and `method` is INHERITED from
+        // an ancestor A (not declared on C itself), the dispatch lands
+        // on A's standalone function — which expects `this` to be an
+        // A-pointer. SuperExpression already adjusted `this` to C's
+        // sub-object; if C's standalone layout has A inline at the same
+        // relative offset (single inheritance, no diamond), that
+        // adjustment naturally lines up. In a diamond, though, A's
+        // canonical position in the enclosing class is NOT reachable by
+        // GEPing through C's standalone struct type — C's inline-A is
+        // dormant.
+        //
+        // The fix: when isSuperCall, the bracketed class differs from
+        // the method's declaring class, and a diamond is detected, shift
+        // `thisValue` from the bracketed position to the declaring
+        // class's canonical position in the enclosing class. Same
+        // detection formula as DotExpression's Phase 3 v2 routing:
+        //   canonical = enclosing.getSubObjectByteOffset(declaringClass)
+        //   via_brkt  = enclosing.getSubObjectByteOffset(bracketed)
+        //             + bracketed.getSubObjectByteOffset(declaringClass)
+        // when they differ, delta = canonical - via_brkt is applied to
+        // `thisValue`.
+        //
+        // Out of scope for v3 (would need vbase ABI or per-descendant
+        // recompilation): when the non-first parent C has its OWN
+        // method (declared on C, not inherited) that internally touches
+        // a shared ancestor's fields via `this.x`. In that case the
+        // declaring class equals the bracketed class, so no re-adjust
+        // fires; C's IR runs with C-adjusted `this` and GEPs land on
+        // C's dormant inline-A. Tracked as the v4 follow-up.
+        if (isSuperCall && superLhs && !superLhs->getChosenAncestorName().empty()
+                && thisValue && !module->getStructureStack().empty()) {
+            auto bracketed = std::dynamic_pointer_cast<CajetaClass>(
+                superLhs->getResolvedType());
+            auto enclosing = std::dynamic_pointer_cast<CajetaClass>(
+                module->getStructureStack().back());
+            if (bracketed && enclosing && targetClass) {
+                bool callFloating = true;
+                for (auto& e : entries) {
+                    if (e.label.empty()) { callFloating = false; break; }
+                }
+                MethodPtr resolved = targetClass->resolveMethod(
+                    methodCallName, entries,
+                    /*isConstructor=*/false, callFloating);
+                CajetaClassPtr declaringClass;
+                if (resolved) {
+                    declaringClass = resolved->getParent();
+                }
+                if (declaringClass && declaringClass.get() != bracketed.get()) {
+                    uint64_t canonical = enclosing->getSubObjectByteOffset(
+                        declaringClass.get());
+                    uint64_t viaBrkt = enclosing->getSubObjectByteOffset(
+                            bracketed.get())
+                        + bracketed->getSubObjectByteOffset(
+                            declaringClass.get());
+                    if (canonical != viaBrkt) {
+                        auto& ctx = *module->getLlvmContext();
+                        llvm::Type* i8Ty = llvm::Type::getInt8Ty(ctx);
+                        llvm::Type* i64Ty = llvm::Type::getInt64Ty(ctx);
+                        int64_t delta =
+                            (int64_t) canonical - (int64_t) viaBrkt;
+                        thisValue = builder->CreateInBoundsGEP(i8Ty,
+                            thisValue,
+                            llvm::ConstantInt::get(i64Ty, delta),
+                            "diamond_super_canonical");
+                    }
+                }
+            }
+        }
 
         llvm::Value* callResult = targetClass->invokeMethod(methodCallName, entries,
             /*isConstructor=*/false, thisValue, /*callerModule=*/module,
