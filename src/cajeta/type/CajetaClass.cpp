@@ -558,6 +558,18 @@ namespace cajeta {
 
         // 'enclosingStart' = slot where the surrounding sub-object's vtable
         // sits. Used to record `subObjectSlotMap[firstParent]` (which shares).
+        //
+        // MultiClassing Phase 3 v1 (cajeta-docs/stdlib/MultiClassing.md § P-4):
+        // when an ancestor is reachable through multiple paths (true diamond),
+        // record the CANONICAL (first-encountered) offset in subObjectSlotMap.
+        // Without this guard, the second walk would overwrite with a later
+        // offset and `getSubObjectByteOffset(A)` would return the wrong
+        // position — `this[A].x` and `this.x` would land on different
+        // storage. Layout still emits A's content twice per the v1 scope
+        // (full dedup deferred to v2 because non-first parents'
+        // standalone IR assumes inline A — removing it without ABI rework
+        // would break `this[C].sharedField` and inherited methods on
+        // non-first parents that mutate the ancestor via `this.x`).
         std::function<void(CajetaClassPtr, bool, int)> embedSubObject;
         embedSubObject = [&](CajetaClassPtr cls, bool ownVtable, int enclosingStart) {
             int subObjectStart;
@@ -567,7 +579,12 @@ namespace cajeta {
             } else {
                 subObjectStart = enclosingStart;
             }
-            subObjectSlotMap[cls.get()] = subObjectStart;
+            // Phase 3 v1: only record on FIRST encounter. Diamond
+            // ancestors keep their canonical offset; subsequent
+            // emissions add storage but don't move the map entry.
+            if (subObjectSlotMap.find(cls.get()) == subObjectSlotMap.end()) {
+                subObjectSlotMap[cls.get()] = subObjectStart;
+            }
 
             int idx = 0;
             for (auto& parent : cls->superClasses) {
