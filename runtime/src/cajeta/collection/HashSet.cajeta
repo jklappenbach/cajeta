@@ -1,0 +1,93 @@
+package cajeta.collection;
+
+import cajeta.collection.HashMap;
+
+/**
+ * Hash-based set of unique class-typed values.
+ *
+ * Thin wrapper around `HashMap<T, T>` — each member is stored as
+ * both the map's key and value. `add` writes; `contains` reads via
+ * `containsKey`; `remove` deletes; `count` reports the live entry
+ * count. Inherits HashMap's open-addressing storage, linear probing,
+ * power-of-2 capacity, 0.75 load factor auto-grow, and tombstone
+ * handling — `HashSet` doesn't add or change any of that.
+ *
+ * ## v1 constraint: T must be a class type
+ *
+ * Same as the underlying HashMap: primitives don't carry `hash()`
+ * or override `==`, so `HashSet<int32>` doesn't compile. Box your
+ * primitive members (or wait for the planned primitive-hash
+ * intrinsics + boxing helpers).
+ *
+ * ## Equality semantics
+ *
+ * Inherits HashMap's default: `T.hash()` for the bucket index and
+ * `==` for equality within a bucket. Class-typed `==` is pointer
+ * identity by default, so two distinct `Tag(7)` instances count as
+ * different members unless the `Tag` class overrides `hash()` and
+ * `operator==()` for value semantics.
+ *
+ * @see cajeta.collection.HashMap
+ */
+public class HashSet<T> {
+
+    /**
+     * Backing storage. The value-side is a 1-byte presence sentinel
+     * rather than the member itself — set semantics only care about
+     * key presence, and using a primitive value side sidesteps the
+     * HashMap<K, V> with class-typed V latent bug (HashMap.get's
+     * `return 0` miss path mismatches a class-pointer return type).
+     */
+    private HashMap<T, int8> map;
+
+    /**
+     * Construct a HashSet with the given initial bucket capacity.
+     *
+     * @param initialCapacity number of buckets to allocate; **must
+     *        be a power of 2** (passed through to HashMap, which
+     *        mask-indexes on the value).
+     */
+    public HashSet(int64 initialCapacity) {
+        this.map = new HashMap<T, int8>(initialCapacity);
+    }
+
+    /**
+     * Insert `value` into the set. If `value` is already a member
+     * (`==`-equal to an existing entry), the call replaces the
+     * presence sentinel (still 1) — semantically a no-op.
+     *
+     * @param value the member to add.
+     */
+    public void add(T value) {
+        this.map.put(value, 1);
+    }
+
+    /**
+     * Test whether `value` is currently a member of the set.
+     *
+     * @param value the value to test.
+     * @returns true iff `value` was previously `add`ed and not
+     *          subsequently `remove`d.
+     */
+    public boolean contains(T value) {
+        return this.map.containsKey(value);
+    }
+
+    /**
+     * Remove `value` from the set.
+     *
+     * @param value the member to remove.
+     * @returns true iff `value` was present and removed; false if
+     *          it wasn't a member.
+     */
+    public boolean remove(T value) {
+        return this.map.remove(value);
+    }
+
+    /**
+     * @returns the number of unique members currently in the set.
+     */
+    public int64 count() {
+        return this.map.count();
+    }
+}

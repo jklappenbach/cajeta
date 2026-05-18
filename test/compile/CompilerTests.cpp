@@ -24,11 +24,11 @@ TEST(CompilerTests, canThrowOnInvalidInput) {
 // FilterStream, MapStream, PeekStream, FlatMapStream} +
 // cajeta.error.{Throwable, Exception, RecoverableException,
 // UnrecoverableException} + cajeta.hash.Hash +
-// cajeta.collection.HashMap + cajeta.collection.ArrayList. Each source
-// file under runtime/src/cajeta/ adds one entry to
+// cajeta.collection.{HashMap, HashSet, ArrayList}. Each source file
+// under runtime/src/cajeta/ adds one entry to
 // CajetaModule::strutureToModule via CajetaModule::create(), counted
 // whether the class is template or concrete. Bump when stdlib grows.
-static constexpr size_t STDLIB_STRUCTURE_COUNT = 18;
+static constexpr size_t STDLIB_STRUCTURE_COUNT = 19;
 
 TEST(CompilerTests, canParseOnValidShortPackage) {
     string inputPath = CAJETA_TEST_ROOT + string("/compile/code/src/cajeta/Test.cajeta");
