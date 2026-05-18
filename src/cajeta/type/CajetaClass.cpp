@@ -774,6 +774,13 @@ namespace cajeta {
         CajetaModule::getStructureToModule()[canonical] = module;
         prototypeBuilt = true;
 
+        // @Encoding mutual-exclusion check + Phase-B-not-implemented
+        // guard. Runs after vtable build but before @Builder (which
+        // also runs last) since both are doctrinal "end-of-class"
+        // synthesizers and order between them doesn't matter for now
+        // — neither references the other's output.
+        synthesizeEncoding();
+
         // @Builder runs LAST — after this class's prototype + vtable
         // are fully built. The Builder synthesizer creates a fresh
         // nested CajetaClass and walks IT through generatePrototype,
@@ -1176,6 +1183,51 @@ namespace cajeta {
             with->initParameter();
             addMethod(with);
         }
+    }
+
+    void CajetaClass::synthesizeEncoding() {
+        auto encAnn = findAnnotation("Encoding");
+        if (!encAnn) return;
+
+        // Mutual-exclusion check: @Encoding owns the wire format, so
+        // it can't coexist with packed-layout annotations
+        // (@BigEndian / @LittleEndian / @HostEndian / @Align).
+        // See cajeta-docs/stdlib/Annotations.md § @Encoding for views
+        // — § Composition with existing annotations.
+        const char* conflictingAnns[] = {
+            "BigEndian", "LittleEndian", "HostEndian", "Align"
+        };
+        for (const char* name : conflictingAnns) {
+            if (findAnnotation(name)) {
+                throw Exception(
+                    "@Encoding on `" + qName->toCanonical()
+                    + "` cannot coexist with @" + std::string(name)
+                    + " — @Encoding controls the wire layout entirely; "
+                    "remove the endianness/alignment annotations.",
+                    "CAJETA_ERROR_ENCODING_CONFLICT");
+            }
+        }
+
+        // Phase A reserves the surface and enforces the mutual-
+        // exclusion rule. The actual synthesis of the
+        // `T(byte[])` ctor and `byte[] toBytes()` method is Phase B
+        // (deferred — needs static-method dispatch to a user-named
+        // encoder class, field-copy/memcpy of the decoded body into
+        // `this`, and a real test encoder to exercise round-trip).
+        // Until Phase B lands, requesting @Encoding fails with a
+        // clear deferral message so users aren't surprised by silent
+        // missing behavior.
+        std::string encoderName = encAnn->getClassRef("value");
+        if (encoderName.empty()) encoderName = encAnn->getString("value");
+        throw Exception(
+            "@Encoding on `" + qName->toCanonical()
+            + "` (encoder: `" + (encoderName.empty() ? "<unspecified>" : encoderName)
+            + "`) is recognized but not yet implemented — the "
+            "synthesizer for the byte[]-taking ctor and toBytes() "
+            "method is Phase B work (Features.md / ToDo Priority 2 § 10). "
+            "Hand-write the equivalent ctor + toBytes() for now, or "
+            "remove the @Encoding annotation until Phase B ships.",
+            "CAJETA_ERROR_ENCODING_NOT_IMPLEMENTED");
     }
 
     void CajetaClass::synthesizeBuilder() {

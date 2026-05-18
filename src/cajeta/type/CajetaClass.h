@@ -702,6 +702,18 @@ namespace cajeta {
         // — Cajeta's size()-style would collide with @Setter).
         void synthesizeWith();
 
+        // @Encoding on class — routes serialization through a user-
+        // supplied codec class (`@Encoding(MyEncoder.class)`).
+        // Synthesizes a `T(byte[] bytes)` ctor calling
+        // `MyEncoder.decode(bytes)` and a `byte[] toBytes()` calling
+        // `MyEncoder.encode(this)`. Mutually exclusive with
+        // @BigEndian / @LittleEndian / @HostEndian / @Align — the
+        // encoder owns the wire format. Phase A in v1 reserves the
+        // surface + enforces mutual exclusion + emits "not yet
+        // implemented" until Phase B lands the actual synthesis.
+        // See cajeta-docs/stdlib/Annotations.md § @Encoding for views.
+        void synthesizeEncoding();
+
         // @Builder on class. Synthesizes a nested `Outer.Builder` class
         // (relies on the nested-class infrastructure landed alongside),
         // plus a `static Outer.Builder builder()` factory on Outer.
