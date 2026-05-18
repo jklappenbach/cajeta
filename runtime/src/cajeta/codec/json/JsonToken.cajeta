@@ -1,0 +1,21 @@
+package cajeta.codec.json;
+
+// Pull-tokenizer token kinds. Returned from JsonReader.next().
+// See cajeta-docs/stdlib/codec/Json.md § Tier 2 for the protocol
+// (separator handling, container nesting, end-of-input semantics).
+//
+// BOOLEAN is one token; call currentBoolean() to learn true vs false
+// — avoids a token-set blowup for what is structurally a single
+// value position.
+public enum JsonToken {
+    START_OBJECT,    // {
+    END_OBJECT,      // }
+    START_ARRAY,     // [
+    END_ARRAY,       // ]
+    KEY,             // object key (preceded the colon)
+    STRING,          // quoted string value
+    NUMBER,          // numeric literal
+    BOOLEAN,         // true / false (currentBoolean() disambiguates)
+    NULL,            // null literal
+    END              // input exhausted, no more tokens
+}

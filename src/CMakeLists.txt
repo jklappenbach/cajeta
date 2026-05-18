@@ -191,7 +191,8 @@ set(CAJETA_STDLIB_DIRS
         ${CAJETA_STDLIB_ROOT}/cajeta/error
         ${CAJETA_STDLIB_ROOT}/cajeta/hash
         ${CAJETA_STDLIB_ROOT}/cajeta/collection
-        ${CAJETA_STDLIB_ROOT}/cajeta/wire)
+        ${CAJETA_STDLIB_ROOT}/cajeta/wire
+        ${CAJETA_STDLIB_ROOT}/cajeta/codec/json)
 set(CAJETA_STDLIB_FILES "")
 foreach(dir ${CAJETA_STDLIB_DIRS})
     file(GLOB dir_files CONFIGURE_DEPENDS ${dir}/*.cajeta)

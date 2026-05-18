@@ -1,0 +1,331 @@
+package cajeta.codec.json;
+
+/**
+ * Pull tokenizer for RFC 8259 JSON. Walks an int8[] input buffer
+ * once forward, emitting one JsonToken-ordinal per next() call.
+ * String and number tokens are recorded as byte-offset spans into
+ * the input buffer (tokenStart, tokenEnd) without materialization
+ * — the caller pays the parse/decode cost only when it asks for a
+ * concrete value (Phase 2).
+ *
+ * See cajeta-docs/stdlib/codec/Json.md § Tier 2.
+ *
+ * v1 (Phase 1) scope:
+ *  - Structural tokenization for objects, arrays, separators.
+ *  - Primitive literal tokens (true / false / null) with span.
+ *  - Number tokenization (span only — value parsing Phase 2).
+ *  - String tokenization (span only — content decoding Phase 2).
+ *  - Strict RFC 8259 (no relaxed comments / trailing commas yet).
+ *
+ * Length is passed explicitly because arrays don't yet expose a
+ * `.length` property in this stdlib (Java/Cajeta arrays know their
+ * size; the accessor just hasn't landed). Callers writing a one-
+ * shot parse pass `(buf, buf.length)` once the property lands.
+ *
+ * Token ordinals (matching the JsonToken enum):
+ *   0 START_OBJECT  1 END_OBJECT  2 START_ARRAY  3 END_ARRAY
+ *   4 KEY           5 STRING      6 NUMBER       7 BOOLEAN
+ *   8 NULL          9 END
+ */
+public class JsonReader {
+    int8[] input;
+    int64 length;
+    int64 pos;
+    int64 tokenStart;
+    int64 tokenEnd;
+    int32 current;
+    boolean currentBool;
+
+    // Depth + per-frame state for the container nesting walk.
+    // depthStack[i] = 0 for array, 1 for object.
+    // frameState[i] = 0 (freshly opened), 1 (post-value), 2 (post-separator).
+    int8[] depthStack;
+    int8[] frameState;
+    int32 depth;
+    int32 maxDepth;
+
+    // After a KEY token + ':' consumption, the next next() call
+    // produces the value; that one value is not separator-gated.
+    boolean afterKey;
+
+    public JsonReader(int8[] input, int64 length) {
+        this.input = input;
+        this.length = length;
+        this.pos = 0;
+        this.tokenStart = 0;
+        this.tokenEnd = 0;
+        this.current = 9;          // END (matches JsonToken.END ordinal)
+        this.currentBool = false;
+        this.maxDepth = 1024;
+        this.depthStack = new int8[1024];
+        this.frameState = new int8[1024];
+        this.depth = 0;
+        this.afterKey = false;
+    }
+
+    public int32 current() {
+        return this.current;
+    }
+
+    public int64 position() {
+        return this.pos;
+    }
+
+    public int64 tokenStart() {
+        return this.tokenStart;
+    }
+
+    public int64 tokenEnd() {
+        return this.tokenEnd;
+    }
+
+    public boolean currentBoolean() {
+        return this.currentBool;
+    }
+
+    public int32 next() {
+        this.skipWs();
+
+        if (this.pos >= this.length) {
+            if (this.depth != 0) {
+                throw heap JsonParseException(
+                    "unexpected end of input inside container",
+                    this.pos);
+            }
+            this.current = 9;       // END
+            return 9;
+        }
+
+        // In a container and NOT in the value-position right after a
+        // key: handle separator / close before reading the next item.
+        if (this.depth > 0) {
+            if (!this.afterKey) {
+                int8 frame = this.depthStack[this.depth - 1];
+                int8 state = this.frameState[this.depth - 1];
+                int8 c = this.input[this.pos];
+
+                // Close brackets short-circuit (valid in both
+                // freshly-opened and post-value states).
+                if (frame == (int8) 0 && c == (int8) 93) {
+                    return this.consumeClose(3);    // END_ARRAY
+                }
+                if (frame == (int8) 1 && c == (int8) 125) {
+                    return this.consumeClose(1);    // END_OBJECT
+                }
+
+                // Post-value: must see a separator before the next item.
+                if (state == (int8) 1) {
+                    if (c != (int8) 44) {
+                        throw heap JsonParseException(
+                            "expected ',' or container close",
+                            this.pos);
+                    }
+                    this.pos = this.pos + 1;
+                    this.frameState[this.depth - 1] = (int8) 2;
+                    this.skipWs();
+                    if (this.pos >= this.length) {
+                        throw heap JsonParseException(
+                            "unexpected end of input after separator",
+                            this.pos);
+                    }
+                }
+            }
+
+            // Object frame outside the key-value gap: read a key.
+            if (!this.afterKey
+                    && this.depthStack[this.depth - 1] == (int8) 1) {
+                return this.scanKey();
+            }
+        }
+
+        this.afterKey = false;
+        int8 c2 = this.input[this.pos];
+
+        if (c2 == (int8) 123) {              // '{'
+            return this.openContainer((int8) 1, 0);   // START_OBJECT
+        }
+        if (c2 == (int8) 91) {               // '['
+            return this.openContainer((int8) 0, 2);   // START_ARRAY
+        }
+        if (c2 == (int8) 34) {               // '"'
+            this.scanStringSpan();
+            this.markValueProduced();
+            this.current = 5;                // STRING
+            return 5;
+        }
+        if (c2 == (int8) 45
+                || (c2 >= (int8) 48 && c2 <= (int8) 57)) {
+            this.scanNumberSpan();
+            this.markValueProduced();
+            this.current = 6;                // NUMBER
+            return 6;
+        }
+        if (c2 == (int8) 116) {              // 't'
+            this.expectLiteral4((int8) 116, (int8) 114,
+                                (int8) 117, (int8) 101);
+            this.currentBool = true;
+            this.markValueProduced();
+            this.current = 7;                // BOOLEAN
+            return 7;
+        }
+        if (c2 == (int8) 102) {              // 'f'
+            this.expectLiteral5((int8) 102, (int8) 97,
+                                (int8) 108, (int8) 115,
+                                (int8) 101);
+            this.currentBool = false;
+            this.markValueProduced();
+            this.current = 7;                // BOOLEAN
+            return 7;
+        }
+        if (c2 == (int8) 110) {              // 'n'
+            this.expectLiteral4((int8) 110, (int8) 117,
+                                (int8) 108, (int8) 108);
+            this.markValueProduced();
+            this.current = 8;                // NULL
+            return 8;
+        }
+
+        throw heap JsonParseException("unexpected character", this.pos);
+    }
+
+    int32 openContainer(int8 kind, int32 token) {
+        if (this.depth >= this.maxDepth) {
+            throw heap JsonParseException(
+                "nesting depth limit exceeded",
+                this.pos);
+        }
+        this.depthStack[this.depth] = kind;
+        this.frameState[this.depth] = (int8) 0;
+        this.depth = this.depth + 1;
+        this.tokenStart = this.pos;
+        this.pos = this.pos + 1;
+        this.tokenEnd = this.pos;
+        this.current = token;
+        return token;
+    }
+
+    int32 consumeClose(int32 token) {
+        this.pos = this.pos + 1;
+        this.depth = this.depth - 1;
+        this.markValueProduced();
+        this.tokenStart = this.pos - 1;
+        this.tokenEnd = this.pos;
+        this.current = token;
+        return token;
+    }
+
+    void skipWs() {
+        while (this.pos < this.length) {
+            int8 c = this.input[this.pos];
+            if (c == (int8) 32
+                    || c == (int8) 9
+                    || c == (int8) 10
+                    || c == (int8) 13) {
+                this.pos = this.pos + 1;
+            } else {
+                return;
+            }
+        }
+    }
+
+    int32 scanKey() {
+        if (this.input[this.pos] != (int8) 34) {
+            throw heap JsonParseException(
+                "expected '\"' to begin object key",
+                this.pos);
+        }
+        this.scanStringSpan();
+        this.skipWs();
+        if (this.pos >= this.length || this.input[this.pos] != (int8) 58) {
+            throw heap JsonParseException(
+                "expected ':' after object key",
+                this.pos);
+        }
+        this.pos = this.pos + 1;
+        this.afterKey = true;
+        this.current = 4;        // KEY
+        return 4;
+    }
+
+    void scanStringSpan() {
+        this.pos = this.pos + 1;     // past opening '"'
+        this.tokenStart = this.pos;
+        while (this.pos < this.length) {
+            int8 c = this.input[this.pos];
+            if (c == (int8) 34) {
+                this.tokenEnd = this.pos;
+                this.pos = this.pos + 1;
+                return;
+            }
+            if (c == (int8) 92) {
+                this.pos = this.pos + 2;
+                if (this.pos > this.length) {
+                    throw heap JsonParseException(
+                        "unterminated escape sequence",
+                        this.pos);
+                }
+            } else {
+                this.pos = this.pos + 1;
+            }
+        }
+        throw heap JsonParseException(
+            "unterminated string",
+            this.pos);
+    }
+
+    void scanNumberSpan() {
+        this.tokenStart = this.pos;
+        this.pos = this.pos + 1;
+        while (this.pos < this.length) {
+            int8 c = this.input[this.pos];
+            boolean isDigit = c >= (int8) 48 && c <= (int8) 57;
+            boolean isDot = c == (int8) 46;
+            boolean isExp = c == (int8) 101 || c == (int8) 69;
+            boolean isSign = c == (int8) 43 || c == (int8) 45;
+            if (isDigit || isDot || isExp || isSign) {
+                this.pos = this.pos + 1;
+            } else {
+                this.tokenEnd = this.pos;
+                return;
+            }
+        }
+        this.tokenEnd = this.pos;
+    }
+
+    void expectLiteral4(int8 b0, int8 b1, int8 b2, int8 b3) {
+        if (this.pos + 4 > this.length) {
+            throw heap JsonParseException("truncated literal", this.pos);
+        }
+        if (this.input[this.pos] != b0
+                || this.input[this.pos + 1] != b1
+                || this.input[this.pos + 2] != b2
+                || this.input[this.pos + 3] != b3) {
+            throw heap JsonParseException("invalid literal", this.pos);
+        }
+        this.tokenStart = this.pos;
+        this.pos = this.pos + 4;
+        this.tokenEnd = this.pos;
+    }
+
+    void expectLiteral5(int8 b0, int8 b1, int8 b2, int8 b3, int8 b4) {
+        if (this.pos + 5 > this.length) {
+            throw heap JsonParseException("truncated literal", this.pos);
+        }
+        if (this.input[this.pos] != b0
+                || this.input[this.pos + 1] != b1
+                || this.input[this.pos + 2] != b2
+                || this.input[this.pos + 3] != b3
+                || this.input[this.pos + 4] != b4) {
+            throw heap JsonParseException("invalid literal", this.pos);
+        }
+        this.tokenStart = this.pos;
+        this.pos = this.pos + 5;
+        this.tokenEnd = this.pos;
+    }
+
+    void markValueProduced() {
+        if (this.depth > 0) {
+            this.frameState[this.depth - 1] = (int8) 1;
+        }
+    }
+}
