@@ -92,7 +92,8 @@ TEST(UnsupportedExpressionTests, innerCreatorThrowsNotImplemented) {
     expectNotImplemented(src, "inner-class");
 }
 
-// `obj.<T>method()` — explicit method-level type arguments. Now
-// implemented as Phase 3 of cajeta-docs/stdlib/MethodLevelTemplate.md;
-// see MethodTemplateExplicitArgsTests for coverage. The
-// previously-stub UnsupportedExpression branch has been removed.
+// `obj.method<T>(...)` — explicit method-level type arguments
+// (Form C). Now implemented as Phase 3 of cajeta-docs/stdlib/
+// MethodLevelTemplate.md; see MethodTemplateExplicitArgsTests for
+// coverage. The previously-stub UnsupportedExpression branch has
+// been removed.

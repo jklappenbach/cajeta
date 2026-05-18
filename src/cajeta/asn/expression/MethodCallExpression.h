@@ -23,43 +23,12 @@ namespace cajeta {
         // this case so the usual `getText()` call would null-deref).
         bool superCtorCall = false;
         // Explicit method-level template type arguments from the
-        // `expr.<TypeArgs>method(args)` call-site syntax. Empty for
-        // ordinary calls (inferred via unification at resolveMethod
-        // time). See cajeta-docs/stdlib/MethodLevelTemplate.md.
+        // `identifier<TypeArgs>(args)` call-site syntax (Form C). Empty
+        // for ordinary calls (type args inferred via unification at
+        // resolveMethod time). See cajeta-docs/stdlib/MethodLevelTemplate.md.
         vector<CajetaTypePtr> explicitMethodTypeArgs;
     public:
-        MethodCallExpression(CajetaParser::MethodCallContext* ctx, antlr4::Token* token) : Expression(token) {
-            if (ctx->SUPER()) {
-                superCtorCall = true;
-                methodCallName = "super";
-            } else if (ctx->identifier()) {
-                methodCallName = ctx->identifier()->getText();
-            } else {
-                // THIS '(' ... ')' form — explicit this(args) ctor delegation;
-                // not implemented today. Mark with a placeholder name so
-                // codegen can recognize-and-reject (rather than null-deref).
-                methodCallName = "this";
-            }
-            if (ctx->parameterList()) {
-                for (auto& ctxParameterEntry: ctx->parameterList()->parameterEntry()) {
-                    MethodCallParameter entry;
-                    entry.expression = Expression::fromContext(ctxParameterEntry->expression());
-                    if (ctxParameterEntry->parameterLabel()) {
-                        entry.label = ctxParameterEntry->parameterLabel()->getText();
-                    }
-                    parameters.push_back(entry);
-                }
-            }
-        }
-
-        // Explicit-template-invocation form: `expr.<TypeArgs>identifier(args)`.
-        // Lifts the receiver-less methodCall shape out of an
-        // explicitTemplateInvocation context so MethodCallExpression can
-        // carry the explicit method-level type args and skip inference at
-        // resolveMethod time.
-        MethodCallExpression(
-            CajetaParser::ExplicitTemplateInvocationContext* ctx,
-            antlr4::Token* token);
+        MethodCallExpression(CajetaParser::MethodCallContext* ctx, antlr4::Token* token);
 
         // Method-call args aren't in `children` (children[0] is the receiver,
         // if any). The free-variable walk in LambdaExpression uses this to

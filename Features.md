@@ -34,8 +34,8 @@ Status legend:
 | L-19 | `super.method()` calls | Direct upcall to parent's implementation | shipped | `test/parser/MultipleInheritanceGapTests.cpp` (superMethodCallReachesParent + explicitSuperCtorWithArgs). `cajeta-docs/stdlib/UnifiedClasses.md` § super |
 | L-20 | Lambda capture by reference | `let captures = ...` semantics | shipped (partial) | `cajeta-docs/stdlib/Lambdas.md`; full closure semantics in Lambda tests |
 | L-21 | Chained call form (`a.b().c()`) | `xs.stream().filter(p).map(f).count()` | partial | works for simple chains; P6.6 covers the remaining cases |
-| L-22 | Method-level type parameters (`final <T> ...`) | Per-method `<T>` declaration | shipped | `cajeta-docs/stdlib/MethodLevelTemplate.md`; static + instance method templates, inference + explicit-type-arg call syntax (`xs.<int64>map(...)`) all working |
-| L-23 | Templated-static-factory call syntax | `Optional.<int32>Some(42)` | shipped (DOT form) | `Optional.<int32>Some(42)` and `xs.<R>method(args)` parse and dispatch via L-22's explicit-type-arg path. `Optional<int32>.Some(42)` (type-name-with-args as receiver) needs additional grammar work |
+| L-22 | Method-level type parameters (`final <T> ...`) | Per-method `<T>` declaration | shipped | `cajeta-docs/stdlib/MethodLevelTemplate.md`; static + instance method templates, inference + explicit-type-arg call syntax (`xs.map<int64>(...)` — Form C, type args after the identifier) all working |
+| L-23 | Templated-static-factory call syntax | `Optional.Some<int32>(42)` | shipped (Form C) | `Optional.Some<int32>(42)` and `xs.method<R>(args)` parse and dispatch via L-22's explicit-type-arg path. `Optional<int32>.Some(42)` (type-name-with-args as receiver — Form B) intentionally not pursued: Form C subsumes its use cases |
 | L-24 | `@Encoding(EncoderClass)` for views | Encoder interface for wire-format serialization | designed | `cajeta-docs/stdlib/Annotations.md` § `@Encoding`; needs `Encoder<T>` |
 
 ## Stdlib — `cajeta.lang`

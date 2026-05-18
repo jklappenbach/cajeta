@@ -19,46 +19,48 @@
 
 namespace cajeta {
 
-    // Explicit-template-invocation constructor: `expr.<TypeArgs>method(args)`.
-    // Lifts the method name + parameter list out of the
-    // explicitTemplateInvocationSuffix's `identifier arguments` shape, and
-    // resolves the typeArguments in the leading `nonWildcardTypeArguments`
-    // to CajetaType pointers for later use in resolveMethod (skips the
-    // unifier — explicit args ARE the binding). See cajeta-docs/stdlib/
-    // MethodLevelTemplate.md § Explicit type-arg call-site syntax.
+    // methodCall: `identifier ('<' typeList '>')? '(' parameterList? ')'`
+    //           | `THIS '(' parameterList? ')'`
+    //           | `SUPER '(' parameterList? ')'`
+    //
+    // The optional `<typeList>` between name and '(' is Form C explicit
+    // call-site type args for method-templated callees (see
+    // cajeta-docs/stdlib/MethodLevelTemplate.md). Inference is the
+    // common case; explicit args are required only when inference
+    // can't bind every type parameter (e.g. T appears only in the
+    // return type).
     MethodCallExpression::MethodCallExpression(
-        CajetaParser::ExplicitTemplateInvocationContext* ctx,
+        CajetaParser::MethodCallContext* ctx,
         antlr4::Token* token) : Expression(token) {
-        auto* suffix = ctx->explicitTemplateInvocationSuffix();
-        if (suffix->SUPER()) {
-            // `expr.<T>super(...)` form — not supported in v1.
+        if (ctx->SUPER()) {
             superCtorCall = true;
             methodCallName = "super";
-        } else if (suffix->identifier()) {
-            methodCallName = suffix->identifier()->getText();
+        } else if (ctx->identifier()) {
+            methodCallName = ctx->identifier()->getText();
+        } else {
+            // THIS '(' ... ')' form — explicit this(args) ctor delegation;
+            // not implemented today. Mark with a placeholder name so codegen
+            // can recognize-and-reject (rather than null-deref).
+            methodCallName = "this";
         }
-        if (auto* args = suffix->arguments()) {
-            if (auto* paramList = args->parameterList()) {
-                for (auto& ctxParameterEntry : paramList->parameterEntry()) {
-                    MethodCallParameter entry;
-                    entry.expression = Expression::fromContext(
-                        ctxParameterEntry->expression());
-                    if (ctxParameterEntry->parameterLabel()) {
-                        entry.label = ctxParameterEntry->parameterLabel()->getText();
-                    }
-                    parameters.push_back(entry);
+        if (auto* paramList = ctx->parameterList()) {
+            for (auto& ctxParameterEntry : paramList->parameterEntry()) {
+                MethodCallParameter entry;
+                entry.expression = Expression::fromContext(
+                    ctxParameterEntry->expression());
+                if (ctxParameterEntry->parameterLabel()) {
+                    entry.label = ctxParameterEntry->parameterLabel()->getText();
                 }
+                parameters.push_back(entry);
             }
         }
-        // Resolve explicit type arguments. nonWildcardTypeArguments is a
-        // `<typeList>` where typeList is `typeType (',' typeType)*`. Each
-        // typeType resolves through CajetaType::fromContext using the
-        // active module's substitution stack (so a `<T>` referenced from
-        // inside a templated class body still resolves to the bound T).
-        auto* nwta = ctx->nonWildcardTypeArguments();
-        if (nwta && nwta->typeList()) {
+        // Form C call-site type args. Each typeType resolves through
+        // CajetaType::fromContext under the active module's substitution
+        // stack so a `<T>` referenced from inside a templated class body
+        // still resolves to the bound T.
+        if (auto* tl = ctx->typeList()) {
             auto activeMod = CajetaModule::getActiveModule();
-            for (auto* tt : nwta->typeList()->typeType()) {
+            for (auto* tt : tl->typeType()) {
                 auto t = CajetaType::fromContext(tt, activeMod);
                 if (t) explicitMethodTypeArgs.push_back(t);
             }

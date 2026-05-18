@@ -64,13 +64,6 @@ namespace cajeta {
             // because `obj.foo()` matches both DOT and methodCall — DOT must win.
             if (ctx->SUPER() || ctx->superSuffix()) {
                 result = make_shared<UnsupportedExpression>("super call", token);
-            } else if (ctx->explicitTemplateInvocation()) {
-                // `expr.<TypeArgs>method(args)` — explicit method-level
-                // type arguments. The receiver expression is the lhs
-                // captured by the children loop below; the MCE here
-                // carries the explicit args + method-call shape.
-                result = make_shared<MethodCallExpression>(
-                    ctx->explicitTemplateInvocation(), token);
             } else if (ctx->innerCreator()) {
                 result = make_shared<UnsupportedExpression>(
                     "inner-class instantiation (obj.new Inner())", token);
@@ -764,8 +757,6 @@ namespace cajeta {
 //    TypeTypeOrVoidContext *typeTypeOrVoid();
 //    antlr4::tree::TerminalNode *DOT();
 //    antlr4::tree::TerminalNode *CLASS();
-//    NonWildcardTypeArgumentsContext *nonWildcardTypeArguments();
-//    ExplicitTemplateInvocationSuffixContext *explicitTemplateInvocationSuffix();
 //    ArgumentsContext *arguments();
     ExpressionPtr PrimaryExpression::fromContext(CajetaParser::PrimaryContext* ctx) {
         ExpressionPtr result = nullptr;

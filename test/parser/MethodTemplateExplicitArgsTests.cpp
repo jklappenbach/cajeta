@@ -1,7 +1,8 @@
-// Phase 3 of MethodLevelTemplate.md: `expr.<TypeArgs>method(args)`
-// call-site syntax. Lets callers pin method-level T-vars explicitly
-// when inference can't reach a binding (e.g. no value args, lambda
-// return-type ambiguity) or simply for readability.
+// Phase 3 of MethodLevelTemplate.md: `expr.method<TypeArgs>(args)`
+// call-site syntax (Form C — type args AFTER the identifier, mirrors
+// `Type<args>` at the type-use site). Lets callers pin method-level
+// T-vars explicitly when inference can't reach a binding (e.g. no
+// value args, lambda return-type ambiguity) or simply for readability.
 
 #include "gtest/gtest.h"
 #include "../jit/JitTestHelper.h"
@@ -37,7 +38,7 @@ TEST(MethodTemplateExplicitArgsTests, staticExplicitInt32) {
     auto src = std::string(PRELUDE_MATH) +
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        return Math.<int32>max(3, 7);\n"
+        "        return Math.max<int32>(3, 7);\n"
         "    }\n"
         "}\n";
     EXPECT_EQ(runI32(src), 7);
@@ -49,7 +50,7 @@ TEST(MethodTemplateExplicitArgsTests, staticExplicitInt64) {
     auto src = std::string(PRELUDE_MATH) +
         "public final class D {\n"
         "    public static int64 run() {\n"
-        "        return Math.<int64>max(100L, 200L);\n"
+        "        return Math.max<int64>(100L, 200L);\n"
         "    }\n"
         "}\n";
     EXPECT_EQ(runI64(src), 200LL);
@@ -65,7 +66,7 @@ TEST(MethodTemplateExplicitArgsTests, staticExplicitTwoTypeArgs) {
         "}\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        return Util.<int64, int32>pickV(100L, 42);\n"
+        "        return Util.pickV<int64, int32>(100L, 42);\n"
         "    }\n"
         "}\n";
     EXPECT_EQ(runI32(src), 42);
@@ -95,7 +96,7 @@ TEST(MethodTemplateExplicitArgsTests, DISABLED_staticExplicitWhenInferenceWouldF
         "}\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        return Util.<int32>sizeOf();\n"
+        "        return Util.sizeOf<int32>();\n"
         "    }\n"
         "}\n";
     EXPECT_EQ(runI32(src), 42);
@@ -108,7 +109,7 @@ TEST(MethodTemplateExplicitArgsTests, explicitAndInferredCoexist) {
         "public final class D {\n"
         "    public static int32 run() {\n"
         "        int32 a = Math.max(3, 7);\n"
-        "        int32 b = Math.<int32>max(10, 20);\n"
+        "        int32 b = Math.max<int32>(10, 20);\n"
         "        return a + b;\n"
         "    }\n"
         "}\n";
@@ -127,7 +128,7 @@ TEST(MethodTemplateExplicitArgsTests, instanceExplicitTypeArg) {
         "public final class D {\n"
         "    public static int32 run() {\n"
         "        Box b = new Box(0);\n"
-        "        return b.<int32>passthrough(99);\n"
+        "        return b.passthrough<int32>(99);\n"
         "    }\n"
         "}\n";
     EXPECT_EQ(runI32(src), 99);

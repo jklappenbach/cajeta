@@ -643,8 +643,18 @@ parameterList
     : parameterEntry (',' parameterEntry)*
     ;
 
+// Method-level template call-site form: `identifier<TypeArgs>(args)`.
+// The optional `<typeList>` between the name and `(` carries explicit
+// type arguments for method-templated callees. Inference (no type
+// args) is the common case; explicit args are only required when
+// inference can't bind every type parameter (e.g. T appears only in
+// the return type). See cajeta-docs/stdlib/MethodLevelTemplate.md.
+//
+// This is the only call-site form: there is no Java-style
+// `Type.<TypeArgs>name(args)` alternative — that form was removed in
+// favor of one syntax that mirrors `Type<args>` at the type-use site.
 methodCall
-    : identifier '(' parameterList? ')'
+    : identifier ('<' typeList '>')? '(' parameterList? ')'
     | THIS '(' parameterList? ')'
     | SUPER '(' parameterList? ')'
     ;
@@ -658,7 +668,6 @@ expression
        | THIS
        | NEW nonWildcardTypeArguments? innerCreator
        | SUPER superSuffix
-       | explicitTemplateInvocation
       )
     | expression '[' expression ']'
     | methodCall
@@ -751,7 +760,6 @@ primary
     | aggregateInitializer
     | identifier
     | typeTypeOrVoid '.' CLASS
-    | nonWildcardTypeArguments (explicitTemplateInvocationSuffix | THIS arguments)
     ;
 
 // S6.2 — struct aggregate initializer (Structs.md). Syntax mirrors Rust:
@@ -816,10 +824,6 @@ classCreatorRest
     : arguments classBody?
     ;
 
-explicitTemplateInvocation
-    : nonWildcardTypeArguments explicitTemplateInvocationSuffix
-    ;
-
 typeArgumentsOrDiamond
     : '<' '>'
     | typeArguments
@@ -882,14 +886,13 @@ typeArguments
     : '<' typeArgument (',' typeArgument)* '>'
     ;
 
+// `super.foo(args)` or Form C templated `super.foo<T>(args)`. The
+// type-args go AFTER the identifier (mirrors methodCall). Super
+// calls land in UnsupportedExpression in this release, so the
+// shape is grammar-only consistency.
 superSuffix
     : arguments
-    | '.' typeArguments? identifier arguments?
-    ;
-
-explicitTemplateInvocationSuffix
-    : SUPER superSuffix
-    | identifier arguments
+    | '.' identifier ('<' typeList '>')? arguments?
     ;
 
 arguments

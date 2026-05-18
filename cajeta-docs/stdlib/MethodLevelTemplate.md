@@ -228,7 +228,7 @@ Optional<int32> o = Optional<int32>.Some(42);
 // class-level args are written normally; method-level args follow the
 // method name (and may be omitted if inferable).
 Pair<String, int32> p = Pair.pair("a", 1);                    // both inferred
-Pair<String, int32> p = Pair.<String, int32>pair("a", 1);     // both explicit
+Pair<String, int32> p = Pair.pair<String, int32>("a", 1);     // both explicit
 ```
 
 ## What this solves
@@ -344,10 +344,10 @@ public class Collectors {
 Call-site examples:
 
 ```cajeta
-ArrayList<int32> doubled = src.collect(Collectors.<int32>toList());
+ArrayList<int32> doubled = src.collect(Collectors.toList<int32>());
 
 HashMap<String, ArrayList<Counter>> byName =
-    counterStream.collect(Collectors.<Counter, String>groupingBy(
+    counterStream.collect(Collectors.groupingBy<Counter, String>(
         (Counter c) -> c.name
     ));
 ```
@@ -386,7 +386,7 @@ Call-site examples:
 Optional<int32> o1 = Optional.Some(42);
 
 // Explicit method-level type arg (rarely needed).
-Optional<int32> o2 = Optional.<int32>Some(42);
+Optional<int32> o2 = Optional.Some<int32>(42);
 
 // None has no value to infer from, so the class arg is named at the
 // type position; method-level <U> binds to int32 by unification with
@@ -508,7 +508,7 @@ explicitly:
 ```cajeta
 // Inference fails — no argument constrains R.
 Stream.empty();                          // ERROR
-Stream.<int32>empty();                   // OK
+Stream.empty<int32>();                   // OK
 Optional<int32> o = Stream.empty();      // OK (target type fixes R)
 ```
 
@@ -595,8 +595,10 @@ explicit type args. Inference may be partial in this phase.
 
 ### Phase 3 — Static factory call syntax + stdlib uptake
 
-- Allow `TypeName<args>.staticMethod(values)` and
-  `TypeName.<args>method(values)` at the call site.
+- Allow `TypeName.method<args>(values)` at the call site (Form C —
+  type args after the identifier, mirroring `Type<args>` at the
+  type-use site). This is the only call-site syntax; Java's
+  `TypeName.<args>method(...)` dot-prefix form is rejected.
 - Update `Optional.Some` / `Optional.None` / similar stdlib factories.
 - Rewrite `Stream<T>.reduce` as a wrapper around `fold<T>`.
 - Add `Math.max` / `Math.min` / `Math.clamp` static utilities.
@@ -634,9 +636,9 @@ Shipped, 2026-05-18. All three phases landed:
 - Phase 2 (per-call monomorphization, inferred type args via
   function-type unifier, mid-codegen save/restore around
   instantiation): pinned by `test/parser/MethodTemplateCallTests.cpp`.
-- Phase 3 (dot-prefix explicit-type-arg call syntax
-  `receiver.<TypeArgs>method(args)` — covers both
-  `Util.<int32>identity(42)` and `b.<R>passthrough(99)`): pinned by
+- Phase 3 (post-identifier explicit-type-arg call syntax — Form C —
+  `receiver.method<TypeArgs>(args)`: covers both
+  `Util.identity<int32>(42)` and `b.passthrough<R>(99)`): pinned by
   `test/parser/MethodTemplateExplicitArgsTests.cpp`. Also wired
   `Stream<T>.fold<R>` (pinned by `test/parser/StreamFoldTests.cpp`)
   with `reduce` as a one-line wrapper, and added `Math.max` /
@@ -647,9 +649,10 @@ Known limitations:
 
 - **`TypeName<TypeArgs>.method(args)` form** (type-name-with-args as
   receiver expression — distinct from the working
-  `TypeName.<TypeArgs>method(args)` dot-prefix form). Needs additional
-  grammar work to allow a parameterized type name as a primary
-  expression.
+  `TypeName.method<TypeArgs>(args)` post-identifier form). Needs
+  additional grammar work to allow a parameterized type name as a
+  primary expression. (Form B in the call-syntax taxonomy. Not
+  planned; Form C subsumes its use cases.)
 - ~~Lambda body with class-typed parameters~~ **Resolved 2026-05-18.**
   `LambdaExpression::resolveTypes` now pushes a temporary scope with
   the lambda's declared parameters before walking the body, so bare-

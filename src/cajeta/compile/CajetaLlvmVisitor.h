@@ -1678,11 +1678,6 @@ namespace cajeta {
             return visitChildren(ctx);
         }
 
-        virtual std::any
-        visitExplicitTemplateInvocation(CajetaParser::ExplicitTemplateInvocationContext* ctx) override {
-            return visitChildren(ctx);
-        }
-
         virtual std::any visitTypeArgumentsOrDiamond(CajetaParser::TypeArgumentsOrDiamondContext* ctx) override {
             return visitChildren(ctx);
         }
@@ -1714,11 +1709,6 @@ namespace cajeta {
         }
 
         virtual std::any visitSuperSuffix(CajetaParser::SuperSuffixContext* ctx) override {
-            return visitChildren(ctx);
-        }
-
-        virtual std::any
-        visitExplicitTemplateInvocationSuffix(CajetaParser::ExplicitTemplateInvocationSuffixContext* ctx) override {
             return visitChildren(ctx);
         }
 

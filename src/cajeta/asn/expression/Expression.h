@@ -23,7 +23,6 @@ expression
        | THIS
        | NEW nonWildcardTypeArguments? innerCreator
        | SUPER superSuffix
-       | explicitTemplateInvocation
       )
     | expression '[' expression ']'
     | methodCall
@@ -118,7 +117,6 @@ namespace cajeta {
         | literal
         | identifier
         | typeTypeOrVoid '.' CLASS
-        | nonWildcardTypeArguments (explicitTemplateInvocationSuffix | THIS arguments)
         ;
      */
     class PrimaryExpression : public Expression {
