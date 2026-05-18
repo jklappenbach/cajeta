@@ -11,6 +11,8 @@
 #include "../asn/ClassBodyDeclaration.h"
 #include "../method/DefaultConstructorMethod.h"
 #include "../method/SynthesizedHashMethod.h"
+#include "../method/SynthesizedGetterMethod.h"
+#include "../method/SynthesizedSetterMethod.h"
 #include "CajetaArray.h"
 #include "../field/HeapField.h"
 #include "../error/Exception.h"
@@ -671,6 +673,56 @@ namespace cajeta {
                 llvmMembers.push_back(vptrTy);
             }
         };
+        // View-as-class-field rejection (Views.md § Errors caught statically).
+        // Views are buffer overlays with borrowed lifetime; embedding one in
+        // a class field — directly or via an array element — creates an
+        // unresolvable lifetime hazard (the class can outlive the buffer)
+        // AND breaks the compiler's calling convention (function signatures
+        // pick `ptr` for class-typed fields/returns, but the actual storage
+        // for a view field is the inline struct body — every templated method
+        // that touches a view T trips the LLVM verifier with
+        // "Function return type does not match operand type of return inst!"
+        // or "Call parameter type does not match function signature!").
+        //
+        // Fires for:
+        //   - direct view fields: `class C { view V v; }`
+        //   - array-of-view fields: `class C { view V[] vs; }`
+        //   - template instantiations: HashMap<int32, view> instantiates
+        //     `V[] vals` as `view[]`, caught by the array-of-view branch.
+        //
+        // Skips views themselves (a nested view inside a view is legitimate
+        // — see Views.md § Nested views).
+        if (!dynamic_pointer_cast<CajetaView>(shared_from_this())) {
+            for (auto& p : propertyList) {
+                if (!p || p->isStatic()) continue;
+                CajetaTypePtr t = p->getType();
+                if (!t) continue;
+                CajetaTypePtr violatingView;
+                if (dynamic_pointer_cast<CajetaView>(t)) {
+                    violatingView = t;
+                } else if (auto arr = dynamic_pointer_cast<CajetaArray>(t)) {
+                    if (dynamic_pointer_cast<CajetaView>(arr->getElementType())) {
+                        violatingView = arr->getElementType();
+                    }
+                }
+                if (violatingView) {
+                    std::string viewName = violatingView->getQName()
+                        ? violatingView->getQName()->toCanonical()
+                        : "<unnamed-view>";
+                    throw Exception(
+                        "view type '" + viewName + "' cannot be used as a "
+                        "class field (class '" + canonical + "', field '"
+                        + p->getName() + "'). Views are buffer overlays with "
+                        "borrowed lifetime — see cajeta-docs/stdlib/Views.md "
+                        "(Errors caught statically). Workaround: store the "
+                        "underlying byte[] in the class and construct the "
+                        "view per access; or pass the view by value across "
+                        "method boundaries without storing it.",
+                        "CAJETA_ERROR_VIEW_AS_CLASS_FIELD");
+                }
+            }
+        }
+
         embedSubObject(static_pointer_cast<CajetaClass>(shared_from_this()),
             /*ownVtable=*/true, /*enclosingStart=*/0);
 
@@ -678,6 +730,8 @@ namespace cajeta {
 
         ensureDefaultConstructor();
         synthesizeAutoHash();
+        synthesizeGetters();
+        synthesizeSetters();
 
         for (auto methodEntry: methods) {
             methodEntry.second->generatePrototype();
@@ -819,6 +873,84 @@ namespace cajeta {
         addMethod(std::make_shared<SynthesizedHashMethod>(
             module,
             std::static_pointer_cast<CajetaClass>(shared_from_this())));
+    }
+
+    void CajetaClass::synthesizeGetters() {
+        // @Getter at class level (every non-static field gets a getter)
+        // OR at field level (only that field). User-declared methods
+        // with the same name and zero params win — synthesizer skips.
+        // Naming: getter for field `name` is `name()`, size()-style
+        // (see cajeta-docs/stdlib/Annotations.md § Accessors).
+        bool classLevel = findAnnotation("Getter") != nullptr;
+
+        for (auto& prop : propertyList) {
+            if (!prop || prop->isStatic()) continue;
+            bool fieldLevel = prop->findAnnotation("Getter") != nullptr;
+            if (!classLevel && !fieldLevel) continue;
+
+            // User declared a same-name zero-arg method? Skip.
+            bool exists = false;
+            for (auto& m : methodList) {
+                if (!m || m->isConstructor()) continue;
+                if (m->getName() != prop->getName()) continue;
+                if (m->getParameters().size() != 0) continue;
+                exists = true;
+                break;
+            }
+            if (exists) continue;
+
+            addMethod(std::make_shared<SynthesizedGetterMethod>(
+                module,
+                std::static_pointer_cast<CajetaClass>(shared_from_this()),
+                prop));
+        }
+    }
+
+    void CajetaClass::synthesizeSetters() {
+        // @Setter at class level (every non-static, non-final field) OR
+        // at field level (only that field). Skipped for `final` fields
+        // (Lombok parity — final fields aren't reassignable). User-
+        // declared same-name single-arg method wins.
+        bool classLevel = findAnnotation("Setter") != nullptr;
+
+        for (auto& prop : propertyList) {
+            if (!prop || prop->isStatic()) continue;
+            if (prop->getModifiers().find(FINAL) != prop->getModifiers().end()) continue;
+            bool fieldLevel = prop->findAnnotation("Setter") != nullptr;
+            if (!classLevel && !fieldLevel) continue;
+
+            // User-declared same-name single-arg method? Skip.
+            bool exists = false;
+            for (auto& m : methodList) {
+                if (!m || m->isConstructor()) continue;
+                if (m->getName() != prop->getName()) continue;
+                // Match by arity — same name + 1 user-visible param.
+                // (parameterList includes `this`, so a 1-arg user method
+                // would have 2 entries. If generatePrototype hasn't run
+                // yet, parameterList has just the 1 user param.)
+                auto params = m->getParameterList();
+                size_t userArgs = params.size();
+                if (!params.empty() && params.front()
+                        && params.front()->getName() == "this") {
+                    userArgs--;
+                }
+                if (userArgs != 1) continue;
+                exists = true;
+                break;
+            }
+            if (exists) continue;
+
+            auto setter = std::make_shared<SynthesizedSetterMethod>(
+                module,
+                std::static_pointer_cast<CajetaClass>(shared_from_this()),
+                prop);
+            // Wire the value parameter's parent now that the shared_ptr
+            // exists (FormalParameter.parent is what
+            // StructureMetadata::createParameterType reads via parent->
+            // toCanonical(); a null parent there segfaults RTTI build).
+            setter->initParameter();
+            addMethod(setter);
+        }
     }
 
     void CajetaClass::ensureDefaultConstructor() {

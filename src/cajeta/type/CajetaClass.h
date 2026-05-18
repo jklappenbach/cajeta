@@ -659,6 +659,22 @@ namespace cajeta {
         // when an unsupported field type is encountered.
         void synthesizeAutoHash();
 
+        // Lombok-mirror synthesizers (cajeta-docs/stdlib/Annotations.md
+        // § Section 2). Each is gated on a class-level or field-level
+        // annotation and runs once during generatePrototype after
+        // ensureDefaultConstructor + synthesizeAutoHash. User-declared
+        // methods with the same name+arity win — the synthesizer skips.
+
+        // @Getter on class (all fields) or on individual fields.
+        // Synthesizes `public <fieldType> <fieldName>()` per qualifying
+        // field. See SynthesizedGetterMethod for codegen.
+        void synthesizeGetters();
+
+        // @Setter on class (all non-final fields) or on individual
+        // fields. Synthesizes `public void <fieldName>(T v)`. Skipped
+        // for `final` fields. See SynthesizedSetterMethod for codegen.
+        void synthesizeSetters();
+
         void createInheritanceMethodMap(CajetaClassPtr structure = shared_ptr<CajetaClass>(nullptr));
 
 

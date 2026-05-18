@@ -27,6 +27,14 @@ package cajeta.collection;
  * receiver `.hash()` branch. Both `HashMap<Tag, int32>` and
  * `HashMap<int32, V>` (and mixes) work without boxing.
  *
+ * **Views are NOT allowed as K or V.** Views are buffer overlays
+ * with borrowed lifetime — see `cajeta-docs/stdlib/Views.md`. A
+ * `HashMap<MyView, X>` or `HashMap<X, MyView>` instantiation
+ * triggers `CAJETA_ERROR_VIEW_AS_CLASS_FIELD` at compile time
+ * (the `K[] keys` or `V[] vals` field becomes an array-of-view,
+ * which can't safely outlive the views' buffers). Workaround:
+ * store the underlying `byte[]` and construct the view per access.
+ *
  * ## Storage, probing, and tombstones
  *
  * Open addressing with linear probing — no entry chain, no

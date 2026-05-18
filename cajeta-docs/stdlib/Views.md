@@ -458,6 +458,14 @@ Network protocols are typically big-endian. Use `@BigEndian` on the wire view. M
 
 ## Errors caught statically
 
+### Why views cannot be class fields
+
+A view is a borrow (or owner) of its buffer. A class field can be stored anywhere — heap, container, sent across method boundaries via the field's enclosing instance — and may outlive the buffer the view was constructed over. The borrow check would have to track every field's buffer-of-origin and prove the field can never be observed after its buffer drops; the analysis is intractable in the general case.
+
+Template instantiations are caught by the same rule. `HashMap<int32, MyView>` instantiates `V[] vals` as `MyView[]` — an array-of-view class field, rejected at instantiation time. `Optional<MyView>` has a `T value` field, also rejected. Users who want a map keyed or valued by view-shape data store the underlying `byte[]` in the class and reconstruct the view per access; the per-construction cost is one bounds check + one length-prefix sweep, both of which fall out of register pressure on the read path.
+
+Nested views (`view A { view B inner; }`) are NOT rejected — the inner lays out inline within the outer's buffer per the doctrine in § Nested views.
+
 | Error | Caught by |
 |---|---|
 | View outliving its buffer (borrow form) | Memory model scope check (`CAJETA_ERROR_VIEW_ESCAPE`) |
@@ -470,7 +478,8 @@ Network protocols are typically big-endian. Use `@BigEndian` on the wire view. M
 | Method returning a borrow into `this` (view-internal nested borrow) | Method codegen — v1 limitation |
 | Method declared as virtual | Declaration parse — views have no vtable |
 | Method declared with its own type parameters | Declaration parse — v1 limitation |
-| View used as a class field, or interface implementation | Type-system check — views are not assignable to those slots |
+| View used as a class field — directly, via array element, or via a template-T instantiation (`HashMap<view, X>`, `ArrayList<view>`, `Optional<view>`, etc.) | `CajetaClass::generatePrototype` field-type check (`CAJETA_ERROR_VIEW_AS_CLASS_FIELD`) |
+| View used as an interface implementation | Type-system check — views are not assignable to interface slots |
 
 ## Errors caught at construction (runtime)
 
