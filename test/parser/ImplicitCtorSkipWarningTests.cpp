@@ -13,7 +13,7 @@
 // AND an args ctor. The user wrote explicit `super(args)` for the
 // first parent and may not have realized the sibling's args ctor
 // got skipped. Warn so they can pick the sibling's args ctor too
-// (via `super[Sibling](args)` once that grammar lands, or via
+// (via `super<Sibling>(args)` once that grammar lands, or via
 // composition / restructured ctors today).
 //
 // The warning is narrow on purpose — emitting on every implicit

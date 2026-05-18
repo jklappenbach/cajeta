@@ -14,7 +14,7 @@
 // Each negative test pairs with a positive companion that exercises
 // the same code paths after the user follows the remediation
 // described in the error message (override in the child, or — once
-// MultiClassing Phase 2 lands — `c[A].member` / `super[A].method()`).
+// MultiClassing Phase 2 lands — `c[A].member` / `super<A>.method()`).
 //
 
 #include "gtest/gtest.h"
@@ -74,7 +74,7 @@ TEST(MultiClassingPhase1Tests, ambiguousMethodDispatchRejected) {
 
 // Positive companion: C provides its own override → the ambiguity
 // dissolves and the override is the canonical impl. (Once Phase 2
-// lands, the override body can call `super[A].kind() + super[B].kind()`
+// lands, the override body can call `super<A>.kind() + super<B>.kind()`
 // to combine; for Phase 1 just returning a literal exercises the
 // resolution path.)
 

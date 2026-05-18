@@ -318,7 +318,7 @@ Pinned by `test/parser/MultipleInheritanceGapTests.cpp` (14 tests, all green):
   reached via synthesized offset thunks that restore the most-derived
   pointer before tail-calling the override.
 - **Super-call.** `super.method()` resolves to the **first declared
-  parent**'s method. `super[Base].method()` (Gap 9, deferred) would let
+  parent**'s method. `super<Base>.method()` (Gap 9, deferred) would let
   the user pick a non-first parent.
 - **Ctor.** Implicit super-ctor invocation runs for **every** parent in
   declared order (Gap 1). Explicit `super(args)` reaches the first
@@ -340,7 +340,7 @@ The four scenarios that are **not yet handled**:
    total`. `getFieldLlvmIndex` returns whichever slot the DFS walker
    reaches first. **Same bug** — silent ambiguity.
 3. **Parent-selection syntax** (Gap 9). No way to say "call B's
-   version of `kind`, not A's." `super[B].kind()` is the planned
+   version of `kind`, not A's." `super<B>.kind()` is the planned
    syntax.
 4. **Diamond — shared vs replicated.** When `D extends B, C` and both
    B and C extend a non-`Object` A, A's sub-object appears twice in
@@ -372,7 +372,7 @@ error[CAJETA_ERROR_AMBIGUOUS_METHOD_DISPATCH]:
   match. Resolve by either:
     1. overriding `kind` in `C` (the override becomes C's single
        canonical impl; previous ancestors are reachable via
-       `super[A].kind()` / `super[B].kind()`).
+       `super<A>.kind()` / `super<B>.kind()`).
     2. qualifying the call: `c[A].kind()` to view as A, `c[B].kind()`
        to view as B.
 ```
@@ -386,7 +386,7 @@ C++'s leaves to the user. Compare to Python (silent surprise) and Eiffel
 ergonomic cost when there's no collision and a clear single-message cost
 when there is.
 
-### P-2. `super[Base].method()` and `this[Base].field` for explicit selection
+### P-2. `super<Base>.method()` and `this<Base>.field` for explicit selection
 
 The bracketed type qualifier extends what `super.method()` and `this.field`
 already mean today, narrowing the scope to one specific ancestor's view:
@@ -397,7 +397,7 @@ class B { public int32 kind() { return 2; } }
 
 class C extends A, B {
     public int32 kind() {                          // override picks one
-        return super[A].kind() + super[B].kind();  // 1 + 2 = 3
+        return super<A>.kind() + super<B>.kind();  // 1 + 2 = 3
     }
 }
 
@@ -405,18 +405,18 @@ class A { public int32 total; }
 class B { public int32 total; }
 class C extends A, B {
     public C() {
-        this[A].total = 10;   // writes A's slot
-        this[B].total = 20;   // writes B's slot
+        this<A>.total = 10;   // writes A's slot
+        this<B>.total = 20;   // writes B's slot
     }
     public int32 sum() {
-        return this[A].total + this[B].total;
+        return this<A>.total + this<B>.total;
     }
 }
 ```
 
-Inside a method body of `C`, `this[A]` is an l-value of static type `A*` whose
+Inside a method body of `C`, `this<A>` is an l-value of static type `A*` whose
 runtime address is `(char*) this + offsetof_A_in_C` — exactly the upcast that
-the polymorphism work already performs for assignment sites. The `super[A]`
+the polymorphism work already performs for assignment sites. The `super<A>`
 form is the same mechanism applied to the dispatch site (already half-built —
 see `CajetaClass::adjustForUpcast` and `getSubObjectByteOffset`).
 
@@ -424,14 +424,19 @@ The `[Base]` qualifier rejects non-ancestor types at compile time:
 
 ```
 error[CAJETA_ERROR_NOT_AN_ANCESTOR]:
-  `this[Date].field`: `Date` is not a base of `C`.
+  `this<Date>.field`: `Date` is not a base of `C`.
 ```
 
-**Why brackets and not `A.super.m()` (Java) or `super<A>.m()` (Kotlin)?**
-Brackets keep parsing unambiguous in Cajeta's grammar — `A.foo` is already an
-identifier-DOT-identifier (static field / static method on A), and `super<A>`
-collides with template-instantiation syntax. `super[A]` and `this[A]` are
-both unused today and read naturally as "this/super viewed as A."
+**Why angle brackets and not `A.super.m()` (Java) or `super[A].m()` (Scala)?**
+`A.foo` is already an identifier-DOT-identifier (static field / static method
+on A), so the Java form would compete with that path. The angle form parallels
+template-instantiation syntax (`Foo<T>`, `method<T>(args)`) — the parser
+commits to the parent-view alternative only when it can match `<typeType>`
+followed by the trailing `.member`, so plain `<` comparisons against THIS /
+SUPER (which wouldn't typecheck as numerics anyway) continue to fall through
+to the bare alternatives. Earlier drafts used square brackets (`super[A]` /
+`this[A]`); the angle form reads more naturally at the call site and pays
+the small grammar cost in exchange.
 
 ### P-3. Class-level override redirect
 
@@ -440,7 +445,7 @@ B's version always." The override path of P-1 handles this:
 
 ```cajeta
 class C extends A, B {
-    public int32 kind() { return super[B].kind(); }
+    public int32 kind() { return super<B>.kind(); }
 }
 ```
 
@@ -449,22 +454,22 @@ even shorter, a sugar form:
 
 ```cajeta
 class C extends A, B {
-    public int32 kind() = super[B].kind();   // expression-bodied override
+    public int32 kind() = super<B>.kind();   // expression-bodied override
 }
 ```
 
 This is just the existing Java 25 expression-bodied method syntax — no new
-parser work. The compiler emits an override whose body is `return super[B].kind();`.
+parser work. The compiler emits an override whose body is `return super<B>.kind();`.
 The same shape generalizes to "pick A's field as my `total`":
 
 ```cajeta
 class C extends A, B {
-    public int32 get_total() = this[A].total;
+    public int32 get_total() = this<A>.total;
 }
 ```
 
 Field-level renaming (Eiffel's clause) isn't needed — exposing
-`this[A].total` directly is enough to make `c.A_total` unnecessary.
+`this<A>.total` directly is enough to make `c.A_total` unnecessary.
 
 ### P-4. Diamond — shared by default
 
@@ -568,8 +573,8 @@ Current behavior (Gap 1): an implicit `super()` call runs for every parent
 in declared order before the subclass ctor body executes. An explicit
 `super(args)` invokes the first parent's matching ctor only.
 
-The proposed extension parallels P-2: `super[Parent](args)` invokes the
-named parent's ctor. When any explicit `super[Parent](...)` is present,
+The proposed extension parallels P-2: `super<Parent>(args)` invokes the
+named parent's ctor. When any explicit `super<Parent>(...)` is present,
 the implicit pass skips that parent (a parent gets at most one ctor call
 per construction).
 
@@ -578,14 +583,14 @@ class A { public A(int32 x) { ... } }
 class B { public B(String s) { ... } }
 class C extends A, B {
     public C() {
-        super[A](42);
-        super[B]("hi");
+        super<A>(42);
+        super<B>("hi");
         // no implicit super() pass — both parents are explicitly initialized
     }
 }
 ```
 
-If A has only an args-ctor and `C` omits `super[A](...)`, the compiler
+If A has only an args-ctor and `C` omits `super<A>(...)`, the compiler
 reports the missing parent ctor (matching the existing
 `CAJETA_ERROR_MISSING_PARENT_CTOR` shape).
 
@@ -629,7 +634,7 @@ Remediation:
 ```cajeta
 class Cache extends ArrayList<int32>, Histogram {
     // Make ArrayList's count() the canonical Cache.count().
-    public int32 count() = super[ArrayList].count();
+    public int32 count() = super<ArrayList>.count();
 }
 int32 n = c.count();              // ArrayList's count
 int32 b = c[Histogram].count();   // Histogram's view, still callable
@@ -670,12 +675,12 @@ class Auditor { public String name; }
 class Audited extends Logger, Auditor {
     // Avoid the unqualified `name` collision by exposing both as
     // distinct properties on the subclass.
-    public String loggerName()  = this[Logger].name;
-    public String auditorName() = this[Auditor].name;
+    public String loggerName()  = this<Logger>.name;
+    public String auditorName() = this<Auditor>.name;
 }
 ```
 
-No new "rename" syntax — the expression-bodied accessor + the `this[Base]`
+No new "rename" syntax — the expression-bodied accessor + the `this<Base>`
 selector together cover what Eiffel's `rename` clause does, in Cajeta's
 existing grammar.
 
@@ -704,7 +709,7 @@ allow qualified access through P-2.
 walks; the error-message tooling already exists (see Gap 4 / Gap 7
 enforcement landings).
 
-### Phase 2 — `super[Base].m()` and `this[Base].field` (P-2)
+### Phase 2 — `super<Base>.m()` and `this<Base>.field` (P-2)
 
 Grammar change: extend the primary-expression rule to accept
 `super '[' typeName ']'` and `this '[' typeName ']'` as receivers.
@@ -713,9 +718,9 @@ Gap 5 added it for the unbracketed form). Add a `ThisAtBaseExpression`
 or reuse `SuperExpression` with a flag.
 
 Code-gen: both forms reduce to the existing `adjustForUpcast` +
-`forceDirectCall` machinery. `super[B].kind()` calls `B`'s method
+`forceDirectCall` machinery. `super<B>.kind()` calls `B`'s method
 function (no virtual dispatch), with `this` adjusted by `offsetof_B_in_self`.
-`this[B].field` returns a GEP into the B sub-object at the property's
+`this<B>.field` returns a GEP into the B sub-object at the property's
 slot inside B's standalone layout.
 
 **Estimated effort.** ~1 session. Grammar + 2 AST nodes + reuse of
@@ -752,7 +757,7 @@ need a "this ancestor is shared with another path" check. Phase 1 and
 
 ### R-1. Parent-view selection — bracket only
 
-`c[A].foo()` and `super[A].foo()` are the only forms. Grammatically
+`c[A].foo()` and `super<A>.foo()` are the only forms. Grammatically
 unique (brackets are unused in this position today). One way to write
 it; no parser-disambiguation work to support a dotted alias against
 static-member access.
@@ -765,7 +770,7 @@ brackets are already unambiguous.
 
 Emit a warning **only** when:
 
-1. an explicit `super[A](args)` ctor call appears in this body, AND
+1. an explicit `super<A>(args)` ctor call appears in this body, AND
 2. another parent has both a no-arg AND an args-ctor, AND
 3. the no-arg got picked implicitly.
 
@@ -784,7 +789,7 @@ skips).
 `@Override(from=B)` is accepted on any override; compiler verifies the
 named parent actually declares a matching method (same suffix). Omitting
 is fine — the override body already carries the intent in
-`= super[B].kind()` form. Adds zero ergonomic cost when omitted, adds a
+`= super<B>.kind()` form. Adds zero ergonomic cost when omitted, adds a
 verified-by-compiler reader cue when present.
 
 Considered but rejected: no annotation at all (loses the optional
@@ -805,7 +810,7 @@ The mental model the child author works with:
 - **Polymorphism picks one method to execute** — the most-derived
   override, found via the hash-keyed vtable (`__cajeta_vtable_lookup`).
 - **The body author chains explicitly** via `super.method()` or
-  `super[Base].method()` when they want parent behavior. Omitting the
+  `super<Base>.method()` when they want parent behavior. Omitting the
   `super` call is how a child *replaces* parent behavior rather than
   extending it.
 - **Aspects bind to body execution** — `@Before` / `@After` / `@Around`
@@ -906,7 +911,7 @@ to think about later.
   surface.
 - `cajeta-docs/Features.md` L-03 — current implementation status of the
   multi-inheritance feature row.
-- `ToDo.md` Priority 2 § 5 — running gap list (Gap 9 = `super[Base].method()`,
+- `ToDo.md` Priority 2 § 5 — running gap list (Gap 9 = `super<Base>.method()`,
   diamond / virtual base = Phase 3 above).
 - `test/parser/MultipleInheritanceGapTests.cpp` — 14 tests pinning the
   current behavior; the doc's "open" items here are the natural extensions.

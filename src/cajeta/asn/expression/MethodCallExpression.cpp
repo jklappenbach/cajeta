@@ -1726,7 +1726,7 @@ namespace cajeta {
 
         // MultiClassing Phase 3 v3 (cajeta-docs/stdlib/MultiClassing.md
         // § P-4): inherited-method re-adjustment for diamond. When the
-        // user writes `super[C].method()` and `method` is INHERITED from
+        // user writes `super<C>.method()` and `method` is INHERITED from
         // an ancestor A (not declared on C itself), the dispatch lands
         // on A's standalone function — which expects `this` to be an
         // A-pointer. SuperExpression already adjusted `this` to C's

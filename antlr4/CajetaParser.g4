@@ -747,13 +747,18 @@ lambdaBody
 primary
     : '(' expression ')'
     // MultiClassing Phase 2 (cajeta-docs/stdlib/MultiClassing.md § P-2):
-    // bracketed parent-view selectors. Listed BEFORE the bare THIS / SUPER
-    // alternatives so ANTLR's adaptive prediction takes the longer match
-    // when the next token is `[`. `this[Base].field` reaches the slot
-    // belonging to ancestor `Base`; `super[Base].method()` direct-calls
-    // `Base`'s body bypassing the vtable.
-    | THIS '[' typeType ']'
-    | SUPER '[' typeType ']'
+    // parent-view selectors on THIS / SUPER use angle brackets,
+    // reusing template-instantiation syntax: `this<Base>.field`
+    // reaches the slot belonging to ancestor `Base`;
+    // `super<Base>.method()` direct-calls `Base`'s body bypassing the
+    // vtable. ANTLR commits to the selector alt only when it can
+    // match `<typeType>` followed by the trailing `.member`, so plain
+    // `<` comparisons against THIS / SUPER (which neither typecheck
+    // as numeric values anyway) continue to fall through to the bare
+    // alternatives. Listed BEFORE the bare THIS / SUPER alternatives
+    // so ANTLR takes the longer match when the next token is `<`.
+    | THIS '<' typeType '>'
+    | SUPER '<' typeType '>'
     | THIS
     | SUPER
     | literal

@@ -96,7 +96,7 @@ TEST(OverrideFromTests, fromMatchingAncestorAcrossMultipleInheritance) {
         "}\n"
         "public class C extends A, B {\n"
         "  public C() { return; }\n"
-        "  @Override(from=B) public int32 stride() { return super[B].stride() * 10; }\n"
+        "  @Override(from=B) public int32 stride() { return super<B>.stride() * 10; }\n"
         "}\n"
         "public final class D {\n"
         "  public static int32 run() {\n"

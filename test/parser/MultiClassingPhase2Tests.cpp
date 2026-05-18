@@ -1,12 +1,12 @@
 //
-// MultiClassing Phase 2 — `super[Base].method()` + `this[Base].field`.
+// MultiClassing Phase 2 — `super<Base>.method()` + `this<Base>.field`.
 //
 // Design: cajeta-docs/stdlib/MultiClassing.md § P-2 + § Phase 2.
 //
 // The bracket-form parent-view selector lets a child whose parents
 // declare colliding names resolve the ambiguity by qualifying the
-// access. `super[A].kind()` direct-calls A's body (bypassing vtable).
-// `this[A].x` reads/writes the A sub-object's slot.
+// access. `super<A>.kind()` direct-calls A's body (bypassing vtable).
+// `this<A>.x` reads/writes the A sub-object's slot.
 //
 // These tests pair with `MultiClassingPhase1Tests.cpp` — the
 // negative cases there throw without these escape hatches; the
@@ -33,10 +33,10 @@ int32_t runI32(const std::string& src) {
 
 } // namespace
 
-// --- super[Base].method() — direct call to selected parent's body ----------
+// --- super<Base>.method() — direct call to selected parent's body ----------
 //
 // A and B both declare `kind()`. C overrides and combines their
-// values via super[A].kind() + super[B].kind(). The override
+// values via super<A>.kind() + super<B>.kind(). The override
 // resolves the Phase 1 ambiguity (Phase 1 has the negative pair).
 
 TEST(MultiClassingPhase2Tests, superBaseCombinesSiblingParentImpls) {
@@ -52,7 +52,7 @@ TEST(MultiClassingPhase2Tests, superBaseCombinesSiblingParentImpls) {
         "}\n"
         "public class C extends A, B {\n"
         "  public C() { return; }\n"
-        "  public int32 kind() { return super[A].kind() + super[B].kind(); }\n"
+        "  public int32 kind() { return super<A>.kind() + super<B>.kind(); }\n"
         "}\n"
         "public final class D {\n"
         "  public static int32 run() {\n"
@@ -63,7 +63,7 @@ TEST(MultiClassingPhase2Tests, superBaseCombinesSiblingParentImpls) {
     EXPECT_EQ(runI32(src), 3);
 }
 
-// super[B] in single inheritance is equivalent to super (only one
+// super<B> in single inheritance is equivalent to super (only one
 // parent). Sanity check that the bracket form is permitted when
 // there's no ambiguity to disambiguate.
 
@@ -76,7 +76,7 @@ TEST(MultiClassingPhase2Tests, superBaseInSingleInheritanceMatchesPlainSuper) {
         "}\n"
         "public class Dog extends Animal {\n"
         "  public Dog() { return; }\n"
-        "  public int32 speak() { return super[Animal].speak() + 32; }\n"
+        "  public int32 speak() { return super<Animal>.speak() + 32; }\n"
         "}\n"
         "public final class D {\n"
         "  public static int32 run() {\n"
@@ -87,7 +87,7 @@ TEST(MultiClassingPhase2Tests, superBaseInSingleInheritanceMatchesPlainSuper) {
     EXPECT_EQ(runI32(src), 42);
 }
 
-// super[B] direct-call means: this+offset(B), then call B's body
+// super<B> direct-call means: this+offset(B), then call B's body
 // WITHOUT vtable lookup. If we accidentally went through the
 // vtable, the override on the most-derived class would loop the
 // call back to itself. (Pre-existing super.foo() test catches this
@@ -108,7 +108,7 @@ TEST(MultiClassingPhase2Tests, superBaseBypassesVtableNoInfiniteLoop) {
         "}\n"
         "public class C extends A, B {\n"
         "  public C() { return; }\n"
-        "  public int32 step() { return super[A].step() * 2; }\n"  // would infinite-loop if vtable dispatched
+        "  public int32 step() { return super<A>.step() * 2; }\n"  // would infinite-loop if vtable dispatched
         "}\n"
         "public final class D {\n"
         "  public static int32 run() {\n"
@@ -119,9 +119,9 @@ TEST(MultiClassingPhase2Tests, superBaseBypassesVtableNoInfiniteLoop) {
     EXPECT_EQ(runI32(src), 10);
 }
 
-// --- this[Base].field — read/write the selected parent's slot --------------
+// --- this<Base>.field — read/write the selected parent's slot --------------
 //
-// A and B both declare `total`. C uses this[A].total / this[B].total
+// A and B both declare `total`. C uses this<A>.total / this<B>.total
 // to reach each independent slot. Phase 1's ambiguity error is
 // resolved by qualifying the access.
 
@@ -132,10 +132,10 @@ TEST(MultiClassingPhase2Tests, thisBaseReadsAndWritesIndependentParentSlots) {
         "public class B { public int32 total; public B() { return; } }\n"
         "public class C extends A, B {\n"
         "  public C() {\n"
-        "    this[A].total = 10;\n"
-        "    this[B].total = 20;\n"
+        "    this<A>.total = 10;\n"
+        "    this<B>.total = 20;\n"
         "  }\n"
-        "  public int32 sum() { return this[A].total + this[B].total; }\n"
+        "  public int32 sum() { return this<A>.total + this<B>.total; }\n"
         "}\n"
         "public final class D {\n"
         "  public static int32 run() {\n"
@@ -146,7 +146,7 @@ TEST(MultiClassingPhase2Tests, thisBaseReadsAndWritesIndependentParentSlots) {
     EXPECT_EQ(runI32(src), 30);
 }
 
-// Sanity: this[B] in single inheritance is equivalent to this for B
+// Sanity: this<B> in single inheritance is equivalent to this for B
 // fields. No ambiguity, but the syntax should still parse and
 // resolve correctly so users have one consistent form.
 
@@ -159,9 +159,9 @@ TEST(MultiClassingPhase2Tests, thisBaseInSingleInheritanceWorks) {
         "}\n"
         "public class Bumped extends Counter {\n"
         "  public Bumped() {\n"
-        "    this[Counter].n = 7;\n"
+        "    this<Counter>.n = 7;\n"
         "  }\n"
-        "  public int32 read() { return this[Counter].n; }\n"
+        "  public int32 read() { return this<Counter>.n; }\n"
         "}\n"
         "public final class D {\n"
         "  public static int32 run() {\n"
@@ -174,7 +174,7 @@ TEST(MultiClassingPhase2Tests, thisBaseInSingleInheritanceWorks) {
 
 // --- Error cases ---------------------------------------------------------
 //
-// `super[X]` / `this[X]` where X is not an ancestor of the current
+// `super<X>` / `this<X>` where X is not an ancestor of the current
 // class must reject at resolution time with CAJETA_ERROR_NOT_AN_ANCESTOR.
 // This catches typos and mis-spelled class names before they cause
 // silent miscompiles via the upcast machinery.
@@ -186,7 +186,7 @@ TEST(MultiClassingPhase2Tests, superBaseOnNonAncestorRejected) {
         "public class Unrelated { public Unrelated() { return; } }\n"
         "public class C extends A {\n"
         "  public C() { return; }\n"
-        "  public int32 oops() { return super[Unrelated].fn(); }\n"  // Unrelated is not a parent of C
+        "  public int32 oops() { return super<Unrelated>.fn(); }\n"  // Unrelated is not a parent of C
         "}\n"
         "public final class D {\n"
         "  public static int32 run() {\n"
@@ -209,7 +209,7 @@ TEST(MultiClassingPhase2Tests, thisBaseOnNonAncestorRejected) {
         "public class Unrelated { public int32 x; public Unrelated() { return; } }\n"
         "public class C extends A {\n"
         "  public C() {\n"
-        "    this[Unrelated].x = 5;\n"  // Unrelated is not a parent of C
+        "    this<Unrelated>.x = 5;\n"  // Unrelated is not a parent of C
         "  }\n"
         "}\n"
         "public final class D {\n"

@@ -868,9 +868,9 @@ namespace cajeta {
                             << sup->getQName()->toCanonical()
                             << "' also has an args constructor — its "
                             << "no-arg constructor was picked implicitly. "
-                            << "Consider super["
+                            << "Consider super<"
                             << sup->getQName()->getTypeName()
-                            << "](...) once that grammar lands, or "
+                            << ">(...) once that grammar lands, or "
                             << "restructure to pick explicitly via "
                             << "composition."
                             << std::endl;

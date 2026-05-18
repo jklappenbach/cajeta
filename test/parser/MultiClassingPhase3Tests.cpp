@@ -14,14 +14,14 @@
 //     emission), so `adjustForUpcast(this, D, A)` lands on the
 //     shared A regardless of which path the upcast traversed.
 //   - `getFieldLlvmIndex(A.x)` returns the canonical slot.
-//   - D's own code via `this.x` / `this[A].x` reads + writes the
+//   - D's own code via `this.x` / `this<A>.x` reads + writes the
 //     single shared A consistently.
 //   - First-parent inherited methods that touch A internally via
 //     `this.x` work because the first parent's standalone-inline-A
 //     position IS the canonical position.
 //
 // What v1 DOES NOT ship (Phase 3 v2 — requires full vbase ABI):
-//   - `this[NonFirstParent].sharedAncestorField` access: the non-
+//   - `this<NonFirstParent>.sharedAncestorField` access: the non-
 //     first parent's sub-object in D no longer contains the shared
 //     ancestor's inline content (deduped away), so GEPing through
 //     that parent's standalone struct type would land on wrong
@@ -103,8 +103,8 @@ TEST(MultiClassingPhase3Tests, dCodeWritesAndReadsSharedAncestorViaThis) {
     EXPECT_EQ(runI32(srcOk), 42);
 }
 
-// `this[A].x` from D's own method must hit the same shared storage
-// as `this.x`. Pre-fix, `this[A]` adjusted to subObjectSlotMap[A]
+// `this<A>.x` from D's own method must hit the same shared storage
+// as `this.x`. Pre-fix, `this<A>` adjusted to subObjectSlotMap[A]
 // = the LAST-recorded position (C's chain inline A), which differed
 // from `this.x`'s canonical (first-emitted) A.x slot. After fix,
 // both forms reach the single canonical storage.
@@ -118,7 +118,7 @@ TEST(MultiClassingPhase3Tests, dCodeWritesViaThisBracketAReadsViaThis) {
         "public class Diamond extends B, C {\n"
         "  public Diamond() { return; }\n"
         "  public int32 viaBracketThenViaPlain() {\n"
-        "    this[A].x = 17;\n"
+        "    this<A>.x = 17;\n"
         "    return this.x;\n"  // 17 if both forms reach same storage
         "  }\n"
         "}\n"
@@ -151,7 +151,7 @@ TEST(MultiClassingPhase3Tests, firstParentInheritedMethodReachesSharedA) {
         "public class Diamond extends B, C {\n"
         "  public Diamond() { return; }\n"
         "  public int32 useInheritedSetter() {\n"
-        "    super[B].setX(99);\n"  // calls A's setX via B's first-parent chain
+        "    super<B>.setX(99);\n"  // calls A's setX via B's first-parent chain
         "    return this.x;\n"  // 99 — same storage
         "  }\n"
         "}\n"
@@ -217,7 +217,7 @@ TEST(MultiClassingPhase3Tests, diamondFieldSurvivesMultipleAccesses) {
 
 // --- Phase 3 v2 — cross-path bracketed access via diamond -----------------
 //
-// `this[C].x` where x is a shared-ancestor field: C is the NON-first
+// `this<C>.x` where x is a shared-ancestor field: C is the NON-first
 // parent of Diamond. v1 returned the wrong memory because GEPing
 // through C's standalone struct type lands on C's dormant inline-A
 // (storage exists but is never written by any code).
@@ -227,7 +227,7 @@ TEST(MultiClassingPhase3Tests, diamondFieldSurvivesMultipleAccesses) {
 // offset != via-LHS-path offset), shift `base` back toward the
 // canonical position and GEP through declaringClass's struct type
 // at the property's declaringClass-standalone slot. Result: both
-// `this[B].x` and `this[C].x` reach the canonical shared A.x.
+// `this<B>.x` and `this<C>.x` reach the canonical shared A.x.
 
 TEST(MultiClassingPhase3Tests,
         thisBracketNonFirstParentReadsSharedAncestorField) {
@@ -239,7 +239,7 @@ TEST(MultiClassingPhase3Tests,
         "public class Diamond extends B, C {\n"
         "  public Diamond() { this.x = 55; }\n"
         "  public int32 readViaC() {\n"
-        "    return this[C].x;\n"  // canonical A.x = 55
+        "    return this<C>.x;\n"  // canonical A.x = 55
         "  }\n"
         "}\n"
         "public final class D {\n"
@@ -251,7 +251,7 @@ TEST(MultiClassingPhase3Tests,
     EXPECT_EQ(runI32(src), 55);
 }
 
-// Symmetric write path — `this[C].x = N` must also reach the
+// Symmetric write path — `this<C>.x = N` must also reach the
 // canonical A.x storage so a subsequent `this.x` read returns N.
 
 TEST(MultiClassingPhase3Tests,
@@ -264,7 +264,7 @@ TEST(MultiClassingPhase3Tests,
         "public class Diamond extends B, C {\n"
         "  public Diamond() { return; }\n"
         "  public int32 writeViaCReadViaThis() {\n"
-        "    this[C].x = 73;\n"
+        "    this<C>.x = 73;\n"
         "    return this.x;\n"  // 73 if both reach canonical storage
         "  }\n"
         "}\n"
@@ -277,9 +277,9 @@ TEST(MultiClassingPhase3Tests,
     EXPECT_EQ(runI32(src), 73);
 }
 
-// And the round trip through both bracketed forms — `this[B].x` and
-// `this[C].x` should read the SAME storage after either writes.
-// Pre-v2: `this[B].x` and `this[C].x` returned independent values.
+// And the round trip through both bracketed forms — `this<B>.x` and
+// `this<C>.x` should read the SAME storage after either writes.
+// Pre-v2: `this<B>.x` and `this<C>.x` returned independent values.
 
 TEST(MultiClassingPhase3Tests,
         thisBracketBothPathsSeeSameSharedAncestorStorage) {
@@ -291,10 +291,10 @@ TEST(MultiClassingPhase3Tests,
         "public class Diamond extends B, C {\n"
         "  public Diamond() { return; }\n"
         "  public int32 crossPathRoundTrip() {\n"
-        "    this[B].x = 11;\n"  // write via first parent's view
-        "    int32 viaC = this[C].x;\n"  // read via second parent's view
-        "    this[C].x = viaC + 6;\n"  // 11 + 6 = 17
-        "    return this[B].x;\n"  // 17 if both forms reach same storage
+        "    this<B>.x = 11;\n"  // write via first parent's view
+        "    int32 viaC = this<C>.x;\n"  // read via second parent's view
+        "    this<C>.x = viaC + 6;\n"  // 11 + 6 = 17
+        "    return this<B>.x;\n"  // 17 if both forms reach same storage
         "  }\n"
         "}\n"
         "public final class D {\n"
@@ -307,7 +307,7 @@ TEST(MultiClassingPhase3Tests,
 }
 
 // Sanity: the v2 routing must NOT fire for non-diamond first-parent
-// access. `this[B].x` in a non-diamond class graph should still work
+// access. `this<B>.x` in a non-diamond class graph should still work
 // via the normal (un-rerouted) path. (B is C's first parent here, so
 // no diamond exists.)
 
@@ -317,8 +317,8 @@ TEST(MultiClassingPhase3Tests, thisBracketFirstParentNoDiamondStillWorks) {
         "public class A { public int32 x; public A() { return; } }\n"
         "public class B extends A { public B() { return; } }\n"
         "public class C extends B {\n"  // single-inheritance chain: C -> B -> A
-        "  public C() { this[A].x = 42; }\n"
-        "  public int32 read() { return this[B].x; }\n"  // x is from A, reachable through B (single path)
+        "  public C() { this<A>.x = 42; }\n"
+        "  public int32 read() { return this<B>.x; }\n"  // x is from A, reachable through B (single path)
         "}\n"
         "public final class D {\n"
         "  public static int32 run() {\n"
@@ -331,7 +331,7 @@ TEST(MultiClassingPhase3Tests, thisBracketFirstParentNoDiamondStillWorks) {
 
 // --- Phase 3 v3 — inherited-method re-adjustment via diamond --------------
 //
-// `super[C].setX(88)` where `setX` is INHERITED from a shared ancestor
+// `super<C>.setX(88)` where `setX` is INHERITED from a shared ancestor
 // A: the method's actual declaring class is A, not C. SuperExpression
 // adjusted `this` to C's sub-object (dormant inline-A in Diamond),
 // and pre-v3 the dispatch called setX with that adjusted pointer —
@@ -340,7 +340,7 @@ TEST(MultiClassingPhase3Tests, thisBracketFirstParentNoDiamondStillWorks) {
 // v3 fix: in MCE's super-dispatch path, when the resolved method's
 // declaring class differs from the bracketed class AND a diamond
 // exists, re-adjust `thisValue` from the bracketed position to the
-// declaring class's canonical position. For super[C].setX in Diamond:
+// declaring class's canonical position. For super<C>.setX in Diamond:
 // declaring class = A, canonical A in Diamond = 0, via-C-path = 16,
 // delta = -16, `this` lands back on Diamond's canonical A. The
 // inherited setX function (unchanged, expects A-pointer) reads/writes
@@ -360,7 +360,7 @@ TEST(MultiClassingPhase3Tests,
         "public class Diamond extends B, C {\n"
         "  public Diamond() { return; }\n"
         "  public int32 setViaCReadViaThis() {\n"
-        "    super[C].setX(88);\n"  // C's IR writes to dormant inline-A
+        "    super<C>.setX(88);\n"  // C's IR writes to dormant inline-A
         "    return this.x;\n"  // v2: 0 (dormant); v3: 88 (canonical)
         "  }\n"
         "}\n"
@@ -403,7 +403,7 @@ TEST(MultiClassingPhase3Tests,
         "public class Diamond extends B, C {\n"
         "  public Diamond() { return; }\n"
         "  public int32 callCThenReadShared() {\n"
-        "    super[C].cWritesSharedX(99);\n"  // C-own method, GEPs into C-inline-A
+        "    super<C>.cWritesSharedX(99);\n"  // C-own method, GEPs into C-inline-A
         "    return this.x;\n"  // v3 returns 0 (dormant); v4 expects 99
         "  }\n"
         "}\n"
@@ -440,7 +440,7 @@ TEST(MultiClassingPhase3Tests,
         "public class Diamond extends B, C {\n"
         "  public Diamond() { return; }\n"
         "  public int32 callCThenReadShared() {\n"
-        "    super[C].cWritesBoth(77);\n"
+        "    super<C>.cWritesBoth(77);\n"
         "    return this.x;\n"
         "  }\n"
         "}\n"
@@ -475,7 +475,7 @@ TEST(MultiClassingPhase3Tests,
         "public class Diamond extends B, C {\n"
         "  public Diamond() { return; }\n"
         "  public int32 callCThenReadShared() {\n"
-        "    super[C].cCallsHelper(55);\n"
+        "    super<C>.cCallsHelper(55);\n"
         "    return this.x;\n"
         "  }\n"
         "}\n"

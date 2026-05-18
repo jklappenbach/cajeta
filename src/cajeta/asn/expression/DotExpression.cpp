@@ -316,7 +316,7 @@ namespace cajeta {
                             + identifier + "' on '"
                             + klass->getQName()->toCanonical()
                             + "' to shadow both or (2) qualifying the access "
-                            + "via 'this[Base]." + identifier
+                            + "via 'this<Base>." + identifier
                             + "' (MultiClassing Phase 2)";
                         throw cajeta::Exception(msg,
                             "CAJETA_ERROR_AMBIGUOUS_FIELD_ACCESS");
@@ -371,8 +371,8 @@ namespace cajeta {
             //   - It must NOT be a ThisExpression or SuperExpression
             //     LHS (Phase 2 / Phase 3 v2): those primaries return a
             //     ready-to-use instance pointer (potentially adjusted
-            //     by `adjustForUpcast` for the bracketed `this[Base]` /
-            //     `super[Base]` form). The pointer they hand back is
+            //     by `adjustForUpcast` for the bracketed `this<Base>` /
+            //     `super<Base>` form). The pointer they hand back is
             //     the receiver itself, not a slot-holding-pointer. A
             //     spurious load-through here reads garbage at the
             //     adjusted offset and downstream GEPs build on it.

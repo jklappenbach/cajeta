@@ -781,7 +781,7 @@ namespace cajeta {
             // on getStart(). The token-taking overload sidesteps that.
             auto thisExpr = make_shared<ThisExpression>(ctx->getStart());
             if (ctx->typeType()) {
-                // MultiClassing Phase 2: `this[Base]` — record the
+                // MultiClassing Phase 2: `this<Base>` — record the
                 // bracketed ancestor name. resolveTypes validates it's
                 // a real ancestor and pins resolvedType so DotExpression
                 // routes through the chosen sub-object.
@@ -795,9 +795,9 @@ namespace cajeta {
             // lookup and direct-calls the parent's method.
             auto superExpr = make_shared<SuperExpression>(ctx->getStart());
             if (ctx->typeType()) {
-                // MultiClassing Phase 2: `super[Base]` — record the
+                // MultiClassing Phase 2: `super<Base>` — record the
                 // bracketed ancestor name. Same validation + adjustment
-                // as `this[Base]`; method calls additionally force-direct
+                // as `this<Base>`; method calls additionally force-direct
                 // (MethodCallExpression keys off the SuperExpression
                 // receiver type unchanged from the unbracketed form).
                 superExpr->setChosenAncestorName(ctx->typeType()->getText());
@@ -2444,7 +2444,7 @@ namespace cajeta {
         return isMatch ? llvm::ConstantInt::getTrue(i1) : llvm::ConstantInt::getFalse(i1);
     }
 
-    // Resolve a bracketed ancestor name (`this[Base]` / `super[Base]`)
+    // Resolve a bracketed ancestor name (`this<Base>` / `super<Base>`)
     // against the current class's transitive ancestor closure. Returns
     // the resolved class pointer, or throws CAJETA_ERROR_NOT_AN_ANCESTOR
     // if the name doesn't match any reachable ancestor of `here`.
@@ -2466,7 +2466,7 @@ namespace cajeta {
                 }
                 return nullptr;
             };
-        // Self is not its own ancestor for bracket purposes — `this[Self]`
+        // Self is not its own ancestor for bracket purposes — `this<Self>`
         // is a no-op that's also a code smell; only allow real ancestors.
         for (auto& sup : here->getSuperClasses()) {
             if (auto match = walk(sup)) return match;
@@ -2474,14 +2474,14 @@ namespace cajeta {
         throw Exception(
             "'" + name + "' is not an ancestor of '"
             + here->getQName()->toCanonical()
-            + "'; the bracketed parent-view selector (this[" + name
-            + "] / super[" + name + "]) requires a real ancestor",
+            + "'; the parent-view selector (this<" + name
+            + "> / super<" + name + ">) requires a real ancestor",
             "CAJETA_ERROR_NOT_AN_ANCESTOR");
     }
 
     void ThisExpression::resolveTypes(CajetaModulePtr module) {
         // `this` resolves to the current class type on the structure stack.
-        // `this[Base]` resolves to the chosen ancestor instead — DotExpression
+        // `this<Base>` resolves to the chosen ancestor instead — DotExpression
         // / MethodCallExpression then treat the receiver as Base-typed.
         if (module->getStructureStack().empty()) return;
         auto here = std::dynamic_pointer_cast<CajetaClass>(
@@ -2502,7 +2502,7 @@ namespace cajeta {
         // for non-static methods. We return its alloca (l-value style); consumers can
         // loadIfLValue if they need the pointer itself.
         //
-        // Plain `this` returns the raw alloca (l-value). `this[Base]` must
+        // Plain `this` returns the raw alloca (l-value). `this<Base>` must
         // return a Base-typed pointer adjusted to the sub-object — loaded
         // from the alloca and shifted by getSubObjectByteOffset(Base).
         // Returning the adjusted r-value (not an alloca) is fine because
@@ -2519,7 +2519,7 @@ namespace cajeta {
         // visited by the pre-pass, so the first generateCode call
         // observes resolvedType == null). Without this, we'd fall
         // through to "return alloca" and the adjustment would be
-        // silently skipped — `this[C]` would behave like plain `this`.
+        // silently skipped — `this<C>` would behave like plain `this`.
         if (!resolvedType) resolveTypes(module);
         // Load the current `this` pointer, then adjust to the chosen
         // ancestor sub-object. The adjustment is a no-op for the first-
@@ -2538,7 +2538,7 @@ namespace cajeta {
 
     void SuperExpression::resolveTypes(CajetaModulePtr module) {
         // Plain `super` resolves to the current class's first declared
-        // parent (matches Java's single-parent rule). `super[Base]`
+        // parent (matches Java's single-parent rule). `super<Base>`
         // resolves to the named ancestor, validated against the current
         // class's transitive parent set. In both forms the instance
         // pointer is `this` (possibly adjusted at codegen for non-first
@@ -2574,8 +2574,8 @@ namespace cajeta {
         // parent case; pointer adjustment happens later in invokeMethod
         // when the declaring class differs from the receiver class).
         //
-        // `super[Base]` returns a pointer adjusted to Base's sub-object
-        // — same machinery as `this[Base]`. The downstream MCE detects
+        // `super<Base>` returns a pointer adjusted to Base's sub-object
+        // — same machinery as `this<Base>`. The downstream MCE detects
         // a SuperExpression receiver and force-direct-calls, so the
         // adjusted pointer flows straight into Base's method.
         auto scope = module->getScopeStack().peek();

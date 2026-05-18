@@ -588,11 +588,11 @@ namespace cajeta {
         // record the CANONICAL (first-encountered) offset in subObjectSlotMap.
         // Without this guard, the second walk would overwrite with a later
         // offset and `getSubObjectByteOffset(A)` would return the wrong
-        // position — `this[A].x` and `this.x` would land on different
+        // position — `this<A>.x` and `this.x` would land on different
         // storage. Layout still emits A's content twice per the v1 scope
         // (full dedup deferred to v2 because non-first parents'
         // standalone IR assumes inline A — removing it without ABI rework
-        // would break `this[C].sharedField` and inherited methods on
+        // would break `this<C>.sharedField` and inherited methods on
         // non-first parents that mutate the ancestor via `this.x`).
         vbaseAncestors.clear();
         vbaseSlotMap.clear();
@@ -2441,7 +2441,7 @@ namespace cajeta {
                         + "' reach this class through different parents. "
                         + "Resolve by either (1) overriding '" + suffix
                         + "' in '" + qName->toCanonical()
-                        + "' or (2) qualifying the call via 'super[Base]."
+                        + "' or (2) qualifying the call via 'super<Base>."
                         + suffix + "' (MultiClassing Phase 2)";
                     throw Exception(msg,
                         "CAJETA_ERROR_AMBIGUOUS_METHOD_DISPATCH");

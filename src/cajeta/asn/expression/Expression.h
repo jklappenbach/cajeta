@@ -142,7 +142,7 @@ namespace cajeta {
 
         llvm::Value* generateCode(CajetaModulePtr module) override;
 
-        // MultiClassing Phase 2 (P-2): `this[Base].field` — primary
+        // MultiClassing Phase 2 (P-2): `this<Base>.field` — primary
         // expression that resolves to a `this` pointer ADJUSTED to the
         // selected ancestor's sub-object. resolvedType becomes the
         // chosen ancestor (not the current class), so DotExpression's
@@ -163,7 +163,7 @@ namespace cajeta {
     // on the PARENT's method via direct dispatch (bypassing the
     // instance's vtable, which would loop back to the override).
     //
-    // MultiClassing Phase 2 adds the bracketed variant `super[Base]`
+    // MultiClassing Phase 2 adds the bracketed variant `super<Base>`
     // which selects an explicit ancestor (any one — first parent,
     // sibling parent, or further ancestor). Plain `super` resolves to
     // the first declared parent for back-compat. The chosen-ancestor
