@@ -162,6 +162,13 @@ All `cajeta.io.*` is **designed, unimplemented**. See `cajeta-docs/stdlib/Io.md`
 | S-903 | `try-with-resources` | Auto-close on scope exit | partial | `test/parser/TryWithResourcesTests.cpp` |
 | S-904 | Stack-trace capture on throw | DWARF-symbolicated trace in exception payload | designed | P4.5 debug-mode feature; `cajeta-docs/CompilerModes.md` |
 
+## Stdlib — `cajeta.codec`
+
+| ID | Name | Description | Status | Doc / tests |
+|----|------|-------------|--------|-------------|
+| S-1101 | `cajeta.codec.json` spec | JSON value model, parser/writer surface, streaming/pull API design, error model, conformance with RFC 8259. Single source of truth for what "JSON support" means in Cajeta — `@ToString(JSON)`, view `@Encoding(JsonEncoder)`, and ad-hoc serialization all consume it. | designed | `cajeta-docs/stdlib/codec/Json.md` (to be created) |
+| S-1102 | `cajeta.codec.json` implementation | Parser + writer + value tree types per S-1101. Unblocks `@ToString(JSON)` synthesizer (Priority 3 § 1 follow-up) and view `@Encoding(JsonEncoder)`. | designed | depends on S-1101 |
+
 ## Aspect model — `cajeta.aspect`
 
 | ID | Name | Description | Status | Doc / tests |

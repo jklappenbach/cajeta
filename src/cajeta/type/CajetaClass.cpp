@@ -13,6 +13,7 @@
 #include "../method/SynthesizedHashMethod.h"
 #include "../method/SynthesizedGetterMethod.h"
 #include "../method/SynthesizedSetterMethod.h"
+#include "../method/SynthesizedToStringMethod.h"
 #include "CajetaArray.h"
 #include "../field/HeapField.h"
 #include "../error/Exception.h"
@@ -732,6 +733,7 @@ namespace cajeta {
         synthesizeAutoHash();
         synthesizeGetters();
         synthesizeSetters();
+        synthesizeToString();
 
         for (auto methodEntry: methods) {
             methodEntry.second->generatePrototype();
@@ -951,6 +953,54 @@ namespace cajeta {
             setter->initParameter();
             addMethod(setter);
         }
+    }
+
+    void CajetaClass::synthesizeToString() {
+        // @ToString class-level annotation only; field-level @ToString
+        // doesn't make sense. Synthesize a single `String toString()`
+        // walking non-static, non-excluded fields in declaration order.
+        // User-declared toString() (with `this` or no params) wins.
+        auto ann = findAnnotation("ToString");
+        if (!ann) return;
+
+        // Reject deferred format options early so the user gets a
+        // clear error rather than a silent fall-through to default.
+        std::string format = ann->getString("format");
+        if (!format.empty() && format != "TO_STRING_PROPERTIES") {
+            if (format == "TO_STRING_JSON") {
+                throw Exception(
+                    "@ToString(format=TO_STRING_JSON) on `"
+                    + qName->toCanonical() + "` is deferred to the "
+                    "`cajeta.codec.json` library (Features.md S-1102). "
+                    "Use the default TO_STRING_PROPERTIES format until "
+                    "that lands, or declare toString() manually.",
+                    "CAJETA_ERROR_TOSTRING_JSON_NOT_IMPLEMENTED");
+            }
+            throw Exception(
+                "@ToString(format=" + format + ") on `"
+                + qName->toCanonical()
+                + "` is not a recognized format; supported in v1: "
+                "TO_STRING_PROPERTIES",
+                "CAJETA_ERROR_TOSTRING_BAD_FORMAT");
+        }
+
+        for (auto& m : methodList) {
+            if (!m || m->isConstructor()) continue;
+            if (m->getName() != "toString") continue;
+            auto params = m->getParameterList();
+            size_t userArgs = params.size();
+            if (!params.empty() && params.front()
+                    && params.front()->getName() == "this") {
+                userArgs--;
+            }
+            if (userArgs != 0) continue;
+            // User-declared toString() — skip synthesis.
+            return;
+        }
+
+        addMethod(std::make_shared<SynthesizedToStringMethod>(
+            module,
+            std::static_pointer_cast<CajetaClass>(shared_from_this())));
     }
 
     void CajetaClass::ensureDefaultConstructor() {

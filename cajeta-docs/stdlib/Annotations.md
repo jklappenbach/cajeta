@@ -162,12 +162,11 @@ holder via the live-set claim.
 
 #### `@ToString` on class
 
-Accepts an enum with several options:
-- TO_STRING_JSON
-- TO_STRING_COMPACT
+Accepts `format` (enum, default `TO_STRING_PROPERTIES`):
+- `TO_STRING_PROPERTIES` — `ClassName(field1=val,field2=val, ...)`
+- `TO_STRING_JSON` — JSON object literal; **deferred to S-1102** (the `cajeta.codec.json` library). When that library ships, the synthesizer delegates to its writer; until then, requesting `TO_STRING_JSON` is a compile error pointing at the deferral.
 
-Synthesizes `String toString()` returning either a JSON element representing the class, or the compact form: 
-`ClassName(field1=val,field2=val, ...)`. `@ToString.Exclude` on a field omits it. By default, walks fields in declaration order.
+Synthesizes `String toString()`. `@ToString.Exclude` on a field omits it. By default, walks fields in declaration order. Class-typed fields recurse via `field.toString()`; null class fields render as `"null"`. Primitives render via their natural string form (int → decimal, float → `%g`, boolean → `true`/`false`).
 
 ### Constructors
 

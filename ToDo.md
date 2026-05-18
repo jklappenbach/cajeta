@@ -145,7 +145,7 @@ All Priority 1 items shipped. Historical MultiClassing item log retained below f
 In Lombok's recommended adoption order:
 
 1. **`@Getter` / `@Setter` — ~1 session.** Field-walk synthesizers. Visibility via `(level="private")`. Doc: `cajeta-docs/stdlib/Annotations.md` § Accessors.
-2. **`@ToString` — ~0.5 session.** `(exclude={"...","..."})` variants. Doc: `Annotations.md` § Equality + hashing + toString.
+2. **`@ToString` — ~0.5 session.** v1 ships `format=TO_STRING_PROPERTIES` only (`ClassName(field1=val,field2=val,...)`); `@ToString.Exclude` on a field omits it. **`TO_STRING_JSON` deferred** to `cajeta.codec.json` (S-1101 / S-1102). Doc: `Annotations.md` § @ToString on class.
 3. **`@EqualsAndHashCode` — Rejected.  We already have @AutoHash planned, perhaps could rename to @Hash.  There's no equals on Object in Cajeta.  We have operator ==() overrides
 4. **`@NoArgsConstructor` / `@AllArgsConstructor` / `@RequiredArgsConstructor` — ~1 session.** Constructor synthesizers. Doc: `Annotations.md` § Constructors.
 5. **`@Data` / `@Value` — ~0.5 session.** Bundle annotations expanding into the above. Doc: `Annotations.md` § Bundles.

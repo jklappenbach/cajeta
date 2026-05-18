@@ -675,6 +675,14 @@ namespace cajeta {
         // for `final` fields. See SynthesizedSetterMethod for codegen.
         void synthesizeSetters();
 
+        // @ToString on class. Synthesizes `public String toString()`
+        // returning `ClassName(field1=v1,field2=v2,...)`. Fields with
+        // @ToString.Exclude are omitted. v1 only supports
+        // format=TO_STRING_PROPERTIES (the default); JSON form is
+        // deferred to cajeta.codec.json (S-1101/S-1102). See
+        // SynthesizedToStringMethod for codegen.
+        void synthesizeToString();
+
         void createInheritanceMethodMap(CajetaClassPtr structure = shared_ptr<CajetaClass>(nullptr));
 
 
