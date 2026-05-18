@@ -81,6 +81,32 @@ namespace cajeta {
             return static_pointer_cast<CajetaClass>(shared_from_this());
         }
 
+        // Placeholder-arg short-circuit. When ANY supplied type arg is
+        // a placeholder (a fresh CajetaClass marked
+        // placeholderFlag=true — set by the method-template visitor
+        // when pushing T-vars onto the substitution stack), the
+        // caller is walking inside a still-unresolved template
+        // declaration. Examples:
+        //   public final <R> #Stream<R> map((T) -> R fn) { ... }
+        // The return type `Stream<R>` is parsed at declaration time
+        // with R bound to a placeholder. Attempting full instantiation
+        // here would build a real `Stream<placeholder-R>` class —
+        // polluting the structure cache and cascading down nested
+        // references. Return the template itself as a stand-in; the
+        // real instantiation happens later when the method is
+        // actually instantiated with a concrete R (e.g.
+        // MethodTemplateInstantiator binds R=int64, re-walks the
+        // body with concrete-args substitution, and the typed
+        // `Stream<int64>` reference instantiates normally).
+        for (auto& arg : args) {
+            if (auto cls = dynamic_pointer_cast<CajetaClass>(arg)) {
+                if (cls->isPlaceholder()) {
+                    return static_pointer_cast<CajetaClass>(
+                        shared_from_this());
+                }
+            }
+        }
+
         if (args.size() != typeParameters.size()) {
             throw Exception(
                 "template " + qName->toCanonical() + " expects "

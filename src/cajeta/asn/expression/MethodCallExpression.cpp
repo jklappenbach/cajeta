@@ -1365,6 +1365,22 @@ namespace cajeta {
                     for (auto& mEntry : cls->getMethods()) {
                         auto& m = mEntry.second;
                         if (m->getName() != methodCallName) continue;
+                        // Method-templates carry only `this` in
+                        // parameterList until instantiation; defer the
+                        // arity check to after we instantiate (below).
+                        // When explicit type-args are present and the
+                        // template's type-param count matches, accept
+                        // the template as a candidate and let the
+                        // instantiation step verify arity.
+                        bool isMethodTpl = m->isMethodTemplate();
+                        if (isMethodTpl && !explicitMethodTypeArgs.empty()
+                                && explicitMethodTypeArgs.size()
+                                    == m->getMethodTypeParameters().size()) {
+                            candidate = m;
+                            ++matches;
+                            continue;
+                        }
+                        if (isMethodTpl) continue;
                         bool isStaticM = m->getModifiers().find(STATIC)
                             != m->getModifiers().end();
                         int declared = (int) m->getParameterList().size()
@@ -1399,7 +1415,26 @@ namespace cajeta {
             // scope pushed in LambdaExpression::resolveTypes) is more
             // reliable here; unification at the call site binds R
             // from the lambda's actual return type.
-            if (candidate
+            // For method-templates, only skip when the call site is
+            // relying on inference (no explicit type args). When the
+            // user wrote `.map<int32>(...)` the explicit args bind the
+            // method's T-vars concretely; instantiate the template
+            // right here and let propagation use the bound formal
+            // types. Without this, fluent forms like
+            // `xs.stream().map<int32>((x) -> x * 10)` failed lambda
+            // type inference because the bare-param `x` has no other
+            // context to bind from.
+            if (candidate && candidate->isMethodTemplate()
+                    && !explicitMethodTypeArgs.empty()
+                    && explicitMethodTypeArgs.size()
+                        == candidate->getMethodTypeParameters().size()) {
+                try {
+                    candidate = candidate->instantiateMethodTemplate(
+                        explicitMethodTypeArgs);
+                } catch (...) {
+                    candidate = nullptr;
+                }
+            } else if (candidate
                     && (candidate->isMethodTemplate()
                         || candidate->isMethodTemplateInstantiation())) {
                 candidate = nullptr;
@@ -1408,7 +1443,12 @@ namespace cajeta {
                 auto paramList = candidate->getParameterList();
                 bool isStaticM = candidate->getModifiers().find(STATIC)
                     != candidate->getModifiers().end();
-                int paramOffset = isStaticM ? 0 : 1;
+                // Method-template instantiations don't have `this`
+                // inserted until LLVM signature build. Detect raw-formals
+                // state by checking whether the first param is "this".
+                bool hasThis = !paramList.empty()
+                    && paramList.front()->getName() == "this";
+                int paramOffset = (isStaticM || !hasThis) ? 0 : 1;
                 size_t i = 0;
                 for (auto& p : paramList) {
                     if ((int) i < paramOffset) { ++i; continue; }

@@ -178,24 +178,35 @@ public class Stream<T> {
         return this.fold(c.seed, c.accumulator);
     }
 
-    // ----- Intermediate combinators — partially deferred ----------------
-    //
-    // The `this`-passing bug (loadIfLValue's catch-all loading class
-    // refs as inline structs) was fixed alongside this work. However
-    // adding fluent forms like
-    //
-    //   public Stream<T> filter((T) -> boolean pred) {
-    //       return heap FilterStream<T>(this, pred);
-    //   }
-    //
-    // to template Stream<T> still trips a separate template-cascade
-    // issue: the body's heap-call resolves to FilterStream<T> (template
-    // form, T unresolved) AND the body gets emitted for the template
-    // shape, polluting the JIT module with mismatched-type IR. Per-
-    // instantiation emission with T-substitution through nested
-    // template heap-construction is the missing piece.
-    //
-    // Until that lands, users construct combinators directly:
-    //     heap FilterStream<int32>(xs.stream(), (x) -> x > 3).count()
-    // See Priority 2 § 8 in ToDo.md for the diagnosis.
+    public #Stream<T> filter((T) -> boolean pred) {
+        return heap FilterStream<T>(this, pred);
+    }
+
+    public #Stream<T> take(int32 n) {
+        return heap TakeStream<T>(this, n);
+    }
+
+    public #Stream<T> skip(int32 n) {
+        return heap SkipStream<T>(this, n);
+    }
+
+    public #Stream<T> peek((T) -> void fn) {
+        return heap PeekStream<T>(this, fn);
+    }
+
+    /**
+     * Applies `fn: (T) -> R` to each element, yielding Stream<R>.
+     */
+    public final <R> #Stream<R> map((T) -> R fn) {
+        return heap MapStream<T, R>(this, fn);
+    }
+
+    /**
+     * Applies `fn: (T) -> Stream<R>` to each element, then flattens
+     * by draining each returned inner stream before pulling the next
+     * outer element. Yields Stream<R>.
+     */
+    public final <R> #Stream<R> flatMap((T) -> Stream<R> fn) {
+        return heap FlatMapStream<T, R>(this, fn);
+    }
 }
