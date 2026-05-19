@@ -56,21 +56,19 @@ int64_t observeDropCount(const std::string& body) {
 
 } // namespace
 
-// Binary `+` on String operands is in a broken state post Phase 2b-β:
-// string literals now materialize as class String instances, so the
-// receivers BinaryOpExpression sees are class instance pointers, but
-// the underlying `__cajeta_str_concat` runtime symbol still expects
-// `char*`. Flipping concat to produce a class String (and reading
-// receivers via the class's bytes field) is a follow-up — Phase
-// 2b-γ. In the meantime, `cajeta.lang.String` follows the universal
-// never-drop rule (cajeta-docs/stdlib/lang/String.md § Memory model);
-// concat results would be no-op-dropped even after the path-flip.
-// Test disabled until the concat surface is reworked in terms of
-// class methods OR retired entirely.
-TEST(OwnedStringDropTests, DISABLED_concatResultDropsAtScopeExit) {
+// Post Phase 2b-γ: `+` on class String operands extracts each
+// receiver's `.bytes.data`, calls `__cajeta_str_concat` for the
+// byte work, and re-wraps the malloc'd char* into a fresh class
+// String shell. Both the byte-buffer and the shell are heap-
+// allocated, but `cajeta.lang.String` follows the universal
+// never-drop rule — String drops are skipped entirely in
+// LocalVariableDeclaration. The live-allocation set still owns
+// the buffer + shell at scope exit; revisit only if buffer
+// reclamation becomes a measured hotspot.
+TEST(OwnedStringDropTests, concatResultDoesNotDrop_neverDropRule) {
     EXPECT_EQ(observeDropCount(
         "String result = \"hello\" + \" world\";"
-    ), 1);
+    ), 0);
 }
 
 // substring is a routed method intrinsic that mallocs a fresh

@@ -9,12 +9,14 @@
 #include "../../type/CajetaClass.h"
 #include "../../type/CajetaView.h"
 #include "../../type/CajetaArray.h"
+#include "../../util/MemoryManager.h"
 #include "Expression.h"
 #include "DotExpression.h"
 #include "MethodCallExpression.h"
 #include "Identifier.h"
 #include "AggregateInitializerExpression.h"
 #include "NewExpression.h"
+#include "LiteralExpression.h"
 
 namespace cajeta {
 
@@ -198,6 +200,41 @@ namespace cajeta {
         // out for the same reason.
         if (dynamic_pointer_cast<MethodCallExpression>(ast)) {
             return v;
+        }
+        // Phase 2b-β — string-literal value IS the global's address (a
+        // class String instance materialized in static storage). Same
+        // carve-out shape as NewExpression / MethodCallExpression: the
+        // pointer IS the language-level value, not a slot to load
+        // through. The class-ref catch-all below would otherwise load
+        // through `@.str.inst` and hand back the vtable word as if it
+        // were the instance pointer, which corrupts every downstream
+        // use of the literal as a class String.
+        if (auto tle = dynamic_pointer_cast<TextLiteralExpression>(ast)) {
+            if (auto rt = tle->getResolvedType()) {
+                if (dynamic_pointer_cast<CajetaClass>(rt)) {
+                    return v;
+                }
+            }
+        }
+        // Phase 2b-γ — String concat result. BinaryOp `+` on String operands
+        // returns a freshly allocated class String pointer (BINARY_OP_ADD
+        // wraps `__cajeta_str_concat`'s char* output back into a class
+        // String shell). The pointer IS the language-level value, same
+        // shape as NewExpression and MethodCallExpression returns. Without
+        // this pre-empt the class-ref catch-all below would load through
+        // the malloc'd struct address and hand back the vtable word (the
+        // first 8 bytes of the struct) instead of the instance reference.
+        if (auto bop = dynamic_pointer_cast<BinaryOpExpression>(ast)) {
+            if (bop->getBinaryOp() == BINARY_OP_ADD) {
+                if (auto rt = bop->getResolvedType()) {
+                    auto cls = dynamic_pointer_cast<CajetaClass>(rt);
+                    if (cls && cls->getQName()
+                            && cls->getQName()->getTypeName() == "String"
+                            && cls->getQName()->getPackageName() == "cajeta.lang") {
+                        return v;
+                    }
+                }
+            }
         }
         // IdentifierExpression that resolved to a class property via the
         // implicit-this fallback also returns a GEP — same load story.
@@ -772,7 +809,17 @@ namespace cajeta {
                 llvm::Value* r = loadR(rhs);
                 // String concatenation: if either operand evaluates to a pointer
                 // and neither side is an array, lower to __cajeta_str_concat,
-                // auto-stringifying primitive operands first.
+                // auto-stringifying primitive operands first. After Phase 2b-γ,
+                // class String operands are unwrapped to their underlying C-string
+                // (bytes.data, which the literal codegen guarantees is
+                // null-terminated) for the concat call, and the malloc'd char*
+                // result is re-wrapped in a fresh class String instance — so the
+                // expression's value type matches the LHS slot type at the
+                // assignment site without a hidden coercion. The wrap allocates
+                // both a CajetaArray byte buffer (copy of the concat result) and
+                // the class String header, then frees the intermediate char*;
+                // class String follows the never-drop rule so neither shows up
+                // in the drop chain.
                 bool lIsArr = lhsAst && dynamic_pointer_cast<CajetaArray>(lhsAst->getResolvedType());
                 bool rIsArr = rhsAst && dynamic_pointer_cast<CajetaArray>(rhsAst->getResolvedType());
                 bool lIsPtr = l->getType()->isPointerTy() && !lIsArr;
@@ -782,8 +829,50 @@ namespace cajeta {
                     llvm::Type* ptrTy = llvm::PointerType::get(llvmCtx, 0);
                     llvm::Type* i64Ty = llvm::Type::getInt64Ty(llvmCtx);
                     llvm::Type* i32Ty = llvm::Type::getInt32Ty(llvmCtx);
+                    llvm::Type* i8Ty = llvm::Type::getInt8Ty(llvmCtx);
                     llvm::Type* f64Ty = llvm::Type::getDoubleTy(llvmCtx);
-                    auto stringify = [&](llvm::Value* v) -> llvm::Value* {
+
+                    // Class String setup — used both for unwrap (read-side) and
+                    // wrap (result-side). When the class isn't loaded yet
+                    // (bootstrap window during runtime parse), fall back to the
+                    // legacy raw-pointer path: stringify produces char* and the
+                    // concat returns char* as before. User code post-bootstrap
+                    // always sees the class form.
+                    CajetaTypePtr stringTy = CajetaType::of("String");
+                    auto stringKlass = std::dynamic_pointer_cast<CajetaClass>(stringTy);
+                    llvm::StructType* stringStructTy = nullptr;
+                    if (stringKlass && stringKlass->getLlvmType()
+                            && llvm::isa<llvm::StructType>(stringKlass->getLlvmType())) {
+                        stringStructTy = llvm::cast<llvm::StructType>(
+                            stringKlass->getLlvmType());
+                    }
+                    auto isClassStringType = [&](CajetaTypePtr t) -> bool {
+                        auto cls = std::dynamic_pointer_cast<CajetaClass>(t);
+                        return cls && cls->getQName()
+                            && cls->getQName()->getTypeName() == "String"
+                            && cls->getQName()->getPackageName() == "cajeta.lang";
+                    };
+                    // Unwrap class String → char* via the bytes field's data
+                    // region. The bytes field at struct slot 1 points at a
+                    // CajetaArray-shaped header { i64 count, [N x i8] data };
+                    // skip 8 bytes past the count to land on the data pointer.
+                    // Literal codegen guarantees null termination so any
+                    // strlen-based concat helper sees the right end.
+                    auto extractCStr = [&](llvm::Value* sptr) -> llvm::Value* {
+                        if (!stringStructTy) return sptr;
+                        llvm::Value* bytesSlot = builder->CreateStructGEP(
+                            stringStructTy, sptr, 1, "concat.bytes_slot");
+                        llvm::Value* bytesPtr = builder->CreateLoad(
+                            ptrTy, bytesSlot, "concat.bytes_ptr");
+                        return builder->CreateInBoundsGEP(i8Ty, bytesPtr,
+                            llvm::ConstantInt::get(i64Ty, 8),
+                            "concat.cstr");
+                    };
+
+                    auto stringify = [&](llvm::Value* v, CajetaTypePtr vt) -> llvm::Value* {
+                        if (isClassStringType(vt)) {
+                            return extractCStr(v);
+                        }
                         llvm::Type* t = v->getType();
                         if (t->isPointerTy()) return v;
                         if (t->isIntegerTy(1)) {
@@ -803,10 +892,99 @@ namespace cajeta {
                         }
                         return llvm::ConstantPointerNull::get(llvm::cast<llvm::PointerType>(ptrTy));
                     };
-                    llvm::Value* ls = stringify(l);
-                    llvm::Value* rs = stringify(r);
+
+                    CajetaTypePtr lhsRT = lhsAst ? lhsAst->getResolvedType() : nullptr;
+                    CajetaTypePtr rhsRT = rhsAst ? rhsAst->getResolvedType() : nullptr;
+                    llvm::Value* ls = stringify(l, lhsRT);
+                    llvm::Value* rs = stringify(r, rhsRT);
                     llvm::Function* concat = module->getRuntimeFunction("__cajeta_str_concat");
-                    result = builder->CreateCall(concat, {ls, rs});
+                    llvm::Value* concatResult = builder->CreateCall(concat, {ls, rs});
+
+                    if (!stringStructTy || !stringKlass) {
+                        // Bootstrap fallback (class String not loaded yet).
+                        result = concatResult;
+                        break;
+                    }
+
+                    // Wrap concatResult (malloc'd char*) into a fresh class
+                    // String. Layout matches generatePrototype's embed order:
+                    //   { ptr vtable, ptr bytes, i32 byteLength, i32 mode, i32 cachedCpLength }
+                    llvm::Function* strlenFn = module->getRuntimeFunction("__cajeta_str_len");
+                    llvm::Value* lenI64 = builder->CreateCall(
+                        strlenFn, {concatResult}, "concat.len");
+                    llvm::Value* lenI32 = builder->CreateIntCast(
+                        lenI64, i32Ty, /*isSigned=*/true, "concat.len32");
+
+                    // CajetaArray header sized 8 + len + 1 (count word + bytes
+                    // + null terminator for forward compatibility with any
+                    // strlen-reader that hits the buffer through `.bytes.data`).
+                    // Direct call to __cajeta_alloc (the runtime live-set-aware
+                    // allocator) because MemoryManager::createMallocInstruction
+                    // requires a Constant size; here the size is computed at
+                    // runtime from the concat result's strlen.
+                    llvm::Value* arrSize = builder->CreateAdd(lenI64,
+                        llvm::ConstantInt::get(i64Ty, 9), "concat.arr_size");
+                    llvm::FunctionType* allocTy = llvm::FunctionType::get(
+                        ptrTy, {i64Ty}, false);
+                    llvm::FunctionCallee allocFn =
+                        module->getLlvmModule()->getOrInsertFunction(
+                            "__cajeta_alloc", allocTy);
+                    llvm::Value* arrPtr = builder->CreateCall(
+                        allocFn, {arrSize}, "concat.arr_alloc");
+                    builder->CreateMemSet(arrPtr,
+                        llvm::ConstantInt::get(i8Ty, 0),
+                        arrSize, llvm::MaybeAlign(8));
+                    builder->CreateStore(lenI64, arrPtr);
+                    llvm::Value* dataPtr = builder->CreateInBoundsGEP(
+                        i8Ty, arrPtr,
+                        llvm::ConstantInt::get(i64Ty, 8),
+                        "concat.arr_data");
+                    builder->CreateMemCpy(dataPtr, llvm::MaybeAlign(1),
+                        concatResult, llvm::MaybeAlign(1), lenI64);
+
+                    const llvm::DataLayout& dl =
+                        module->getLlvmModule()->getDataLayout();
+                    llvm::Constant* sSize = llvm::ConstantInt::get(
+                        i64Ty, dl.getTypeAllocSize(stringStructTy));
+                    llvm::Value* sPtr = MemoryManager::createMallocInstruction(
+                        module, sSize, builder->GetInsertBlock());
+
+                    llvm::Constant* vtableRef = llvm::ConstantPointerNull::get(
+                        llvm::cast<llvm::PointerType>(ptrTy));
+                    if (auto* vt = stringKlass->getVirtualTableGlobal()) {
+                        vtableRef = CajetaModule::ensureGlobalInModule(
+                            module->getLlvmModule(), vt);
+                    }
+                    builder->CreateStore(vtableRef,
+                        builder->CreateStructGEP(stringStructTy, sPtr, 0,
+                            "concat.s_vtable"));
+                    builder->CreateStore(arrPtr,
+                        builder->CreateStructGEP(stringStructTy, sPtr, 1,
+                            "concat.s_bytes"));
+                    builder->CreateStore(lenI32,
+                        builder->CreateStructGEP(stringStructTy, sPtr, 2,
+                            "concat.s_byteLength"));
+                    builder->CreateStore(llvm::ConstantInt::get(i32Ty, 0),
+                        builder->CreateStructGEP(stringStructTy, sPtr, 3,
+                            "concat.s_mode"));
+                    builder->CreateStore(llvm::ConstantInt::get(i32Ty, -1),
+                        builder->CreateStructGEP(stringStructTy, sPtr, 4,
+                            "concat.s_cachedCpLength"));
+
+                    // Free the malloc'd intermediate char* — we copied its
+                    // bytes into the CajetaArray header above. The class
+                    // String now owns the byte buffer.
+                    if (llvm::Function* freeFn =
+                            module->getRuntimeFunction("__cajeta_free")) {
+                        builder->CreateCall(freeFn, {concatResult});
+                    }
+
+                    // Pin resolvedType so a caller using this concat as a
+                    // ctor / method argument can recover the class type
+                    // instead of the generic `pointer` fallback (mirrors
+                    // NewExpression and MethodCallExpression).
+                    resolvedType = stringTy;
+                    result = sPtr;
                     break;
                 }
                 auto [pl, pr] = coerceArithPair(module, l, r);
