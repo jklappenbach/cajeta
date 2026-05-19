@@ -31,5 +31,21 @@ namespace cajeta {
             stack.pop_back();
             return scope;
         }
+
+        // Save & clear — for cross-method codegen barriers (recursive
+        // method-template instantiation mid-codegen of a caller, where
+        // the inner method's resolve-types must NOT fall through the
+        // parent chain to the caller's locals). Returns the entire
+        // stack contents; restore() puts them back. Between save and
+        // restore the stack is empty, so subsequent `add()` calls
+        // create root-scoped frames with no parent.
+        list<ScopePtr> save() {
+            list<ScopePtr> out;
+            out.swap(stack);
+            return out;
+        }
+        void restore(list<ScopePtr> saved) {
+            stack.swap(saved);
+        }
     };
 }

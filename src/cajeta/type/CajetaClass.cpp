@@ -2911,9 +2911,23 @@ namespace cajeta {
         MethodPtr savedCurrent = hostMod ? hostMod->getCurrentMethod() : nullptr;
         llvm::BasicBlock* savedInsertBB = savedBuilder
             ? savedBuilder->GetInsertBlock() : nullptr;
+        // Scope-stack barrier — the inner method's resolveTypes pass
+        // must NOT find the caller's locals via the parent chain.
+        // Without this save/clear, e.g. a nested-class JSON synth call
+        // sees the outer method's `out` (different type) when looking
+        // up its own `out` before its LocalVariableDeclaration runs
+        // at codegen — and pins a wrong resolvedType on its
+        // IdentifierExpression AST nodes. See JsonSynthesizer.cpp's
+        // nested-class field arm and the parseObjectFromReaderT body
+        // for the originally-affected shape.
+        list<ScopePtr> savedScopes;
+        if (hostMod) {
+            savedScopes = hostMod->getScopeStack().save();
+        }
         inst->generatePrototype();
         inst->generateCode();
         if (hostMod) {
+            hostMod->getScopeStack().restore(savedScopes);
             hostMod->setBuilder(savedBuilder);
             hostMod->setCurrentMethod(savedCurrent);
         }
