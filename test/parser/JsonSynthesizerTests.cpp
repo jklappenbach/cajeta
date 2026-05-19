@@ -171,6 +171,42 @@ TEST(JsonSynthesizerTests, parseBooleanFalseField) {
     EXPECT_EQ(runI32(src), 0);
 }
 
+// Parse `{"name":"hi"}` into a class with one String field. The
+// synthesizer materializes a view-mode String from the JSON token's
+// inner bytes (no quotes), via the (int8[], int32) String ctor.
+TEST(JsonSynthesizerTests, parseStringField) {
+    auto src =
+        "package test;\n"
+        "import cajeta.codec.json.Json;\n"
+        "import cajeta.lang.String;\n"
+        "public class Person {\n"
+        "    public String name;\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        // {"name":"hi"} → 13 bytes
+        "        int8[] buf = new int8[13];\n"
+        "        buf[0]  = (int8) 0x7B;\n"   // '{'
+        "        buf[1]  = (int8) 0x22;\n"   // '"'
+        "        buf[2]  = (int8) 0x6E;\n"   // 'n'
+        "        buf[3]  = (int8) 0x61;\n"   // 'a'
+        "        buf[4]  = (int8) 0x6D;\n"   // 'm'
+        "        buf[5]  = (int8) 0x65;\n"   // 'e'
+        "        buf[6]  = (int8) 0x22;\n"   // '"'
+        "        buf[7]  = (int8) 0x3A;\n"   // ':'
+        "        buf[8]  = (int8) 0x22;\n"   // '"'
+        "        buf[9]  = (int8) 0x68;\n"   // 'h'
+        "        buf[10] = (int8) 0x69;\n"   // 'i'
+        "        buf[11] = (int8) 0x22;\n"   // '"'
+        "        buf[12] = (int8) 0x7D;\n"   // '}'
+        "        Person p = Json.parseT<Person>(buf, (int64) 13);\n"
+        // p.name should be a 2-codepoint String ("hi")
+        "        return (int32) p.name.count();\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 2);
+}
+
 // Mixed: parse `{"id":7,"n":99,"flag":true}` into a class with all 3
 // supported field types. Pins multi-field key dispatch.
 TEST(JsonSynthesizerTests, parseMixedInt32Int64Boolean) {

@@ -49,7 +49,22 @@ namespace cajeta {
             // disambiguates true vs false.
             return "out." + fieldName + " = r.currentBoolean();\n";
         }
-        // Future: float64, String, nested classes, arrays.
+        if (tcanon == "cajeta.lang.String") {
+            // currentBytes() returns the inner string bytes (quotes
+            // stripped by scanStringSpan). Wrap them in a String via
+            // the (int8[], int32 byteLength) view-mode constructor;
+            // the bytes are an owned #int8[] returned by the reader,
+            // so the String holds the buffer for its own lifetime.
+            // The .count() field accessor on the buffer returns int64;
+            // the ctor wants int32 byteLength so narrow.
+            return "{\n"
+                   "            int8[] vbytes = r.currentBytes();\n"
+                   "            out." + fieldName +
+                       " = heap cajeta.lang.String("
+                       "vbytes, (int32) vbytes.count());\n"
+                   "        }\n";
+        }
+        // Future: float64, nested classes, arrays.
         return "";
     }
 
