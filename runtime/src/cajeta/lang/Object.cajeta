@@ -119,4 +119,37 @@ public class Object {
      */
     @Native("__cajeta_object_clone")
     public Object clone() { }
+
+    /**
+     * Equality operator — true iff `this` and `other` hash equal.
+     *
+     * Default implementation: `this.hash() == other.hash()`. Because
+     * `hash()` is virtual, the semantics shift by overriding hash()
+     * alone:
+     *
+     *   - Object (default identity hash): pointer-derived hash via
+     *     splitmix64 — distinct pointers hash to distinct values
+     *     (splitmix64 is bijective on the pointer ⊕ seed input), so
+     *     `a == b` IS pointer identity in practice.
+     *   - String (content hash): UTF-8-derived hash via SipHash-1-3
+     *     (planned) — `a == b` IS value equality. String does NOT
+     *     override operator==; it only overrides hash(), and the
+     *     virtual dispatch through this method body carries the
+     *     semantic shift.
+     *
+     * Hash-collision caveat: for value-based hashes, two distinct
+     * values could hash equal at probability ~2^-64. For
+     * collision-sensitive semantics (cryptographic equality, exact
+     * legal-text comparison), use an explicit byte-by-byte comparison
+     * method rather than `==`.
+     *
+     * Returns int32 (1 = true, 0 = false) matching the operator==
+     * dispatch convention (see OperatorOverloadTests).
+     */
+    public int32 operator== (Object other) {
+        if (this.hash() == other.hash()) {
+            return 1;
+        }
+        return 0;
+    }
 }
