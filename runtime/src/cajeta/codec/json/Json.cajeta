@@ -58,4 +58,14 @@ public final class Json {
         throw heap JsonParseException(
             "Json.parseT<T>: synthesizer not engaged", (int64) 0);
     }
+
+    /**
+     * Tier 1 emit — symmetric counterpart of parseT. The synthesizer
+     * walks T's fields and emits per-field JsonWriter calls. Returns
+     * the emitted JSON bytes as an int8[] (owned by the caller).
+     */
+    public static <T> int8[] toBytesT(T value) {
+        throw heap JsonParseException(
+            "Json.toBytesT<T>: synthesizer not engaged", (int64) 0);
+    }
 }

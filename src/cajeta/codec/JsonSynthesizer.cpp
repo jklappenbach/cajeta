@@ -134,6 +134,60 @@ namespace cajeta {
         return os.str();
     }
 
+    // Emit a key-bytes-and-call sequence for one field. Returns empty
+    // if the field type isn't yet supported by the writer arm.
+    std::string writeFieldEmit(const StructurePropertyPtr& prop) {
+        const std::string& fieldName = prop->getName();
+        CajetaTypePtr ty = prop->getType();
+        if (!ty || !ty->getQName()) return "";
+        const std::string& tcanon = ty->getQName()->toCanonical();
+        std::ostringstream value;
+        if (tcanon == "int32") {
+            value << "w.writeNumber((int64) value." << fieldName << ");\n";
+        } else if (tcanon == "int64") {
+            value << "w.writeNumber(value." << fieldName << ");\n";
+        } else if (tcanon == "boolean") {
+            value << "w.writeBoolean(value." << fieldName << ");\n";
+        } else if (tcanon == "cajeta.lang.String") {
+            // Read String's bytes and byteLength fields directly; the
+            // writer copies bytes through with quote/escape handling.
+            value << "w.writeString(value." << fieldName
+                  << ".bytes, value." << fieldName << ".byteLength);\n";
+        } else {
+            return "";
+        }
+        std::ostringstream os;
+        os << "        {\n";
+        os << "            int8[] k = new int8[" << fieldName.size() << "];\n";
+        for (size_t i = 0; i < fieldName.size(); ++i) {
+            unsigned char b = (unsigned char) fieldName[i];
+            os << "            k[" << i << "] = (int8) 0x"
+               << std::hex << (int) b << std::dec << ";\n";
+        }
+        os << "            w.key(k, " << fieldName.size() << ");\n";
+        os << "            " << value.str();
+        os << "        }\n";
+        return os.str();
+    }
+
+    std::string synthesizeToBytesBody(const CajetaClassPtr& T,
+                                       const std::string& methodName) {
+        const std::string& Tcanon = T->getQName()->toCanonical();
+        std::ostringstream os;
+        os << "public static int8[] " << methodName
+           << "(" << Tcanon << " value) {\n";
+        os << "    JsonWriter w = heap JsonWriter();\n";
+        os << "    w.beginObject();\n";
+        for (auto& prop : T->getPropertyList()) {
+            std::string emit = writeFieldEmit(prop);
+            if (!emit.empty()) os << emit;
+        }
+        os << "    w.endObject();\n";
+        os << "    return w.toBytes();\n";
+        os << "}\n";
+        return os.str();
+    }
+
     } // namespace
 
     bool synthesizeJsonMethodSource(
@@ -160,8 +214,17 @@ namespace cajeta {
             }
             return true;
         }
-        // toBytes lands in commit 2; until then we leave methodSource
-        // unchanged and the captured throw-body fires.
+        if (methodName == "toBytes" || methodName == "toBytesT") {
+            out = synthesizeToBytesBody(T, methodName);
+            if (const char* dump = std::getenv("CAJETA_DUMP_IR")) {
+                if (dump[0] == '1') {
+                    std::cerr << "[JsonSynthesizer] " << methodName << "<"
+                              << T->getQName()->toCanonical() << ">:\n"
+                              << out << "\n";
+                }
+            }
+            return true;
+        }
         return false;
     }
 

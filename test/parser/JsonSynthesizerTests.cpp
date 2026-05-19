@@ -207,6 +207,55 @@ TEST(JsonSynthesizerTests, parseStringField) {
     EXPECT_EQ(runI32(src), 2);
 }
 
+// Round-trip int32 via Json.toBytesT<Box> → Json.parseT<Box>.
+TEST(JsonSynthesizerTests, roundTripInt32) {
+    auto src =
+        "package test;\n"
+        "import cajeta.codec.json.Json;\n"
+        "public class Box {\n"
+        "    public int32 id;\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Box a = heap Box();\n"
+        "        a.id = 42;\n"
+        "        int8[] bytes = Json.toBytesT<Box>(a);\n"
+        "        int64 n = (int64) bytes.count();\n"
+        "        Box b = Json.parseT<Box>(bytes, n);\n"
+        "        return b.id;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 42);
+}
+
+// Round-trip int32 + int64 + boolean together.
+TEST(JsonSynthesizerTests, roundTripMixedPrimitives) {
+    auto src =
+        "package test;\n"
+        "import cajeta.codec.json.Json;\n"
+        "public class Mix {\n"
+        "    public int32 id;\n"
+        "    public int64 n;\n"
+        "    public boolean flag;\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int64 run() {\n"
+        "        Mix a = heap Mix();\n"
+        "        a.id = 7;\n"
+        "        a.n = (int64) 99999999999;\n"
+        "        a.flag = true;\n"
+        "        int8[] bytes = Json.toBytesT<Mix>(a);\n"
+        "        int64 len = (int64) bytes.count();\n"
+        "        Mix b = Json.parseT<Mix>(bytes, len);\n"
+        "        int64 r = b.n;\n"
+        "        if (b.flag) r = r + 1;\n"
+        "        return r + (int64) (b.id * 1000000);\n"
+        "    }\n"
+        "}\n";
+    // 99999999999 + 1 + 7*1000000 = 100007000000
+    EXPECT_EQ(runI64(src), (int64_t) 100007000000LL);
+}
+
 // Mixed: parse `{"id":7,"n":99,"flag":true}` into a class with all 3
 // supported field types. Pins multi-field key dispatch.
 TEST(JsonSynthesizerTests, parseMixedInt32Int64Boolean) {
