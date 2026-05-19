@@ -1,0 +1,93 @@
+package cajeta.codec.json;
+
+// Minimal key/value store backing JsonValue.OBJECT. Parallel arrays
+// of int8[] keys + JsonValue values; v1 uses linear scan for get().
+// Insertion order is preserved. The keyLens array stores per-key
+// byte counts (since int8[].length isn't exposed as a property yet).
+public class JsonObject {
+    int8[][] keys;
+    int32[] keyLens;
+    JsonValue[] values;
+    int32 cap;
+    int32 size;
+
+    public JsonObject() {
+        this.cap = 8;
+        this.keys = new int8[8][];
+        this.keyLens = new int32[8];
+        this.values = new JsonValue[8];
+        this.size = 0;
+    }
+
+    public int32 size() {
+        return this.size;
+    }
+
+    public int8[] keyAt(int32 i) {
+        return this.keys[i];
+    }
+
+    public int32 keyLenAt(int32 i) {
+        return this.keyLens[i];
+    }
+
+    public JsonValue valueAt(int32 i) {
+        return this.values[i];
+    }
+
+    // Linear-scan get by key bytes. Returns null if absent. v1 keeps
+    // it dumb (no hashing) because the convenience tier doesn't run
+    // in the hot path — Tier 1 codegen handles the perf-sensitive
+    // paths field-by-field.
+    public JsonValue get(int8[] key, int32 keyLen) {
+        int32 i = 0;
+        while (i < this.size) {
+            if (this.keyLens[i] == keyLen) {
+                int8[] k = this.keys[i];
+                boolean eq = true;
+                int32 j = 0;
+                while (j < keyLen) {
+                    if (k[j] != key[j]) {
+                        eq = false;
+                        j = keyLen;       // break
+                    } else {
+                        j = j + 1;
+                    }
+                }
+                if (eq) {
+                    return this.values[i];
+                }
+            }
+            i = i + 1;
+        }
+        return null;
+    }
+
+    public void put(#int8[] key, int32 keyLen, #JsonValue v) {
+        if (this.size >= this.cap) {
+            this.grow();
+        }
+        this.keys[this.size] = key;
+        this.keyLens[this.size] = keyLen;
+        this.values[this.size] = v;
+        this.size = this.size + 1;
+    }
+
+    void grow() {
+        int32 newCap = this.cap * 2;
+        int8[][] dstK = new int8[newCap][];
+        int32[] dstL = new int32[newCap];
+        JsonValue[] dstV = new JsonValue[newCap];
+        int32 i = 0;
+        while (i < this.size) {
+            dstK[i] = this.keys[i];
+            dstL[i] = this.keyLens[i];
+            dstV[i] = this.values[i];
+            i = i + 1;
+        }
+        this.keys = dstK;
+        this.keyLens = dstL;
+        this.values = dstV;
+        this.cap = newCap;
+    }
+}

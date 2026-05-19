@@ -1,0 +1,44 @@
+package cajeta.codec.json;
+
+// Minimal JsonValue container backing JsonValue.ARRAY. Geometric-
+// growth JsonValue[] with size/get/add. v1 surface; Stream<JsonValue>
+// inheritance lands when JsonValue settles further.
+public class JsonArray {
+    JsonValue[] data;
+    int32 cap;
+    int32 size;
+
+    public JsonArray() {
+        this.cap = 8;
+        this.data = new JsonValue[8];
+        this.size = 0;
+    }
+
+    public int32 size() {
+        return this.size;
+    }
+
+    public JsonValue get(int32 i) {
+        return this.data[i];
+    }
+
+    public void add(#JsonValue v) {
+        if (this.size >= this.cap) {
+            this.grow();
+        }
+        this.data[this.size] = v;
+        this.size = this.size + 1;
+    }
+
+    void grow() {
+        int32 newCap = this.cap * 2;
+        JsonValue[] dst = new JsonValue[newCap];
+        int32 i = 0;
+        while (i < this.size) {
+            dst[i] = this.data[i];
+            i = i + 1;
+        }
+        this.data = dst;
+        this.cap = newCap;
+    }
+}

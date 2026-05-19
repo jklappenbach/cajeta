@@ -391,4 +391,82 @@ public class JsonReader {
     public int32 currentNumberAsInt32() {
         return (int32) this.currentNumberAsInt64();
     }
+
+    // --- Phase 3: JsonValue tree materialization --------------------
+
+    // Drive next() once and build a #JsonValue for whatever value
+    // appears at the current cursor position. Recursively expands
+    // arrays and objects into JsonArray / JsonObject. Returns the
+    // value with ownership transferred; the caller's drop chain
+    // reclaims the tree.
+    public #JsonValue readValue() {
+        int32 t = this.next();
+        return this.readValueAfter(t);
+    }
+
+    // Same shape, but the caller has already pulled the leading
+    // token (e.g. inside an object loop where the parent dispatched
+    // on KEY → call next() for the value → call this). Lets the
+    // builder reuse the per-element token without double-advancing.
+    public #JsonValue readValueAfter(int32 t) {
+        JsonValue v = heap JsonValue();
+        if (t == 0) {                                  // START_OBJECT
+            JsonObject o = heap JsonObject();
+            this.readObjectBody(o);
+            v.setObject(#o);
+        } else if (t == 2) {                           // START_ARRAY
+            JsonArray a = heap JsonArray();
+            this.readArrayBody(a);
+            v.setArray(#a);
+        } else if (t == 5) {                           // STRING
+            int8[] bytes = this.currentBytes();
+            int32 len = (int32) (this.tokenEnd - this.tokenStart);
+            v.setStringOwned(#bytes, len);
+        } else if (t == 6) {                           // NUMBER
+            v.setNumber(this.currentNumberAsInt64());
+        } else if (t == 7) {                           // BOOLEAN
+            v.setBoolean(this.currentBool);
+        } else if (t == 8) {                           // NULL
+            v.setNull();
+        } else {
+            throw heap JsonParseException(
+                "unexpected token while building value",
+                this.pos);
+        }
+        return v;
+    }
+
+    // Walk object key/value pairs until END_OBJECT. Each KEY is
+    // followed by exactly one value (which may be a sub-object /
+    // sub-array). On entry, the reader has already produced
+    // START_OBJECT; on exit, END_OBJECT has been consumed.
+    void readObjectBody(JsonObject o) {
+        while (true) {
+            int32 t = this.next();
+            if (t == 1) {                              // END_OBJECT
+                return;
+            }
+            if (t != 4) {                              // KEY
+                throw heap JsonParseException(
+                    "expected key in object body",
+                    this.pos);
+            }
+            int8[] keyBytes = this.currentBytes();
+            int32 keyLen = (int32) (this.tokenEnd - this.tokenStart);
+            int32 vt = this.next();
+            JsonValue child = this.readValueAfter(vt);
+            o.put(#keyBytes, keyLen, #child);
+        }
+    }
+
+    void readArrayBody(JsonArray a) {
+        while (true) {
+            int32 t = this.next();
+            if (t == 3) {                              // END_ARRAY
+                return;
+            }
+            JsonValue child = this.readValueAfter(t);
+            a.add(#child);
+        }
+    }
 }

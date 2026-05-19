@@ -151,6 +151,52 @@ public final class JsonWriter {
         this.append((int32) 34);
     }
 
+    // Recursively emit a JsonValue tree. Routes by kind into the
+    // existing scalar emitters; for objects + arrays walks members
+    // and recurses. The writer's separator state takes care of
+    // commas between siblings — the caller doesn't need to thread
+    // anything.
+    public JsonWriter writeValue(JsonValue v) {
+        int32 k = v.kind();
+        if (k == 0) {                                  // NULL
+            return this.writeNull();
+        }
+        if (k == 1) {                                  // BOOLEAN
+            return this.writeBoolean(v.asBoolean());
+        }
+        if (k == 2) {                                  // NUMBER
+            return this.writeNumber(v.asInt64());
+        }
+        if (k == 3) {                                  // STRING
+            return this.writeString(v.asBytes(), v.asBytesLength());
+        }
+        if (k == 4) {                                  // ARRAY
+            JsonArray a = v.asArray();
+            this.beginArray();
+            int32 i = 0;
+            while (i < a.size()) {
+                this.writeValue(a.get(i));
+                i = i + 1;
+            }
+            this.endArray();
+            return this;
+        }
+        if (k == 5) {                                  // OBJECT
+            JsonObject o = v.asObject();
+            this.beginObject();
+            int32 i = 0;
+            while (i < o.size()) {
+                this.key(o.keyAt(i), o.keyLenAt(i));
+                this.writeValue(o.valueAt(i));
+                i = i + 1;
+            }
+            this.endObject();
+            return this;
+        }
+        // Unknown kind — treat as null to be forgiving.
+        return this.writeNull();
+    }
+
     public #int8[] toBytes() {
         int32 n = this.size;
         int8[] out = new int8[n];

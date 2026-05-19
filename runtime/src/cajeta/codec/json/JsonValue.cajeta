@@ -1,0 +1,128 @@
+package cajeta.codec.json;
+
+/**
+ * Tagged-union JSON value (Tier 3 convenience layer). Each value
+ * carries a kind discriminator (int32) plus all six possible
+ * payload fields; the field matching `kind` holds the meaningful
+ * value, the rest are zero/null.
+ *
+ * Kinds:
+ *   0  NULL
+ *   1  BOOLEAN  → boolVal
+ *   2  NUMBER   → numVal (int64; v1 has no float support yet)
+ *   3  STRING   → strBytes / strLen
+ *   4  ARRAY    → arrVal (JsonArray reference)
+ *   5  OBJECT   → objVal (JsonObject reference)
+ *
+ * Wasteful per-instance footprint (~48 bytes regardless of kind)
+ * — that's the cost of the convenience tier. The fast paths
+ * (Tier 1 + 2) bypass JsonValue entirely and pay zero overhead.
+ */
+public class JsonValue {
+    int32 kind;
+    boolean boolVal;
+    int64 numVal;
+    int8[] strBytes;
+    int32 strLen;
+    JsonArray arrVal;
+    JsonObject objVal;
+
+    public JsonValue() {
+        this.kind = 0;
+        this.boolVal = false;
+        this.numVal = 0;
+        this.strBytes = null;
+        this.strLen = 0;
+        this.arrVal = null;
+        this.objVal = null;
+    }
+
+    public int32 kind() {
+        return this.kind;
+    }
+
+    public boolean isNull() {
+        return this.kind == 0;
+    }
+
+    public boolean asBoolean() {
+        return this.boolVal;
+    }
+
+    public int64 asInt64() {
+        return this.numVal;
+    }
+
+    public int32 asInt32() {
+        return (int32) this.numVal;
+    }
+
+    // String bytes — borrowed view, caller must not free. v1 keeps
+    // escapes verbatim because the reader's currentBytes() does too.
+    public int8[] asBytes() {
+        return this.strBytes;
+    }
+
+    public int32 asBytesLength() {
+        return this.strLen;
+    }
+
+    public JsonArray asArray() {
+        return this.arrVal;
+    }
+
+    public JsonObject asObject() {
+        return this.objVal;
+    }
+
+    // Builders. Mutate `this` and return for chaining — keeps the
+    // tagged-union layout consistent (callers shouldn't construct
+    // a JsonValue with the wrong kind set on its payload).
+
+    public JsonValue setNull() {
+        this.kind = 0;
+        return this;
+    }
+
+    public JsonValue setBoolean(boolean v) {
+        this.kind = 1;
+        this.boolVal = v;
+        return this;
+    }
+
+    public JsonValue setNumber(int64 v) {
+        this.kind = 2;
+        this.numVal = v;
+        return this;
+    }
+
+    public JsonValue setString(int8[] bytes, int32 len) {
+        this.kind = 3;
+        this.strBytes = bytes;
+        this.strLen = len;
+        return this;
+    }
+
+    // # — ownership transfer. The caller's local stops being live;
+    // this JsonValue becomes the owner of the array. Without the
+    // transfer, the caller's local would drop the array at scope
+    // exit and leave this.arrVal dangling.
+    public JsonValue setArray(#JsonArray a) {
+        this.kind = 4;
+        this.arrVal = a;
+        return this;
+    }
+
+    public JsonValue setObject(#JsonObject o) {
+        this.kind = 5;
+        this.objVal = o;
+        return this;
+    }
+
+    public JsonValue setStringOwned(#int8[] bytes, int32 len) {
+        this.kind = 3;
+        this.strBytes = bytes;
+        this.strLen = len;
+        return this;
+    }
+}
