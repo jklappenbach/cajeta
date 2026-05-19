@@ -78,6 +78,7 @@ These aren't implemented yet — listed to seed the catalog as new lint checks l
 - **`narrow-conversion-no-cast`** — Implicit narrowing (e.g. assigning int64 to int32) without a cast. Most languages catch this; whether Cajeta forces a cast or warns is TBD.
 - **`string-concat-in-loop`** — Performance hint: `result = result + str` in a loop allocates repeatedly. Should use a builder or join.
 - **`aspect-pointcut-no-match`** — `@Before(Audited.class)` in an aspect class doesn't match any method in the compilation unit. Usually indicates a renamed annotation or unreachable aspect.
+- **`equals-hash-pair`** — A class declares one of `operator==` / `hash()` but inherits the other from `Object`. Inherited identity-`hash()` paired with custom value-`operator==` (or the reverse) silently breaks HashMap / HashSet: equal values produce different bucket indices and stored entries become un-findable. The class either overrides both or neither. **Suppress when:** intentionally implementing value-equality on a class that will never be a HashMap key (rare; usually a code smell suggesting the class wants a different name). **Don't suppress when:** the class is a likely map / set key (entity types, value types, identifiers). Demoted from compile-error to lint 2026-05-18 — see `stdlib/lang/Object.md` § Open questions for the design pass.
 
 ## Implementation notes
 

@@ -57,20 +57,27 @@ If two values compare equal under `operator==`, they MUST also hash
 equally under `hash()`. HashMap / HashSet rely on this invariant —
 violating it means an inserted key becomes un-findable.
 
-**The compiler enforces the override pair.** A class that declares
-`operator==` must also declare `hash()`, and vice versa. The
-override pair is structurally protected by requiring both halves to
-be authored together; pinned by `test/parser/AutoHashTests.cpp`.
+**The lint pass surfaces unpaired overrides.** A class that
+declares one of `operator==` / `hash()` but inherits the other from
+`Object` triggers the `equals-hash-pair` lint warning (see
+[LintRules.md](../../LintRules.md) § `equals-hash-pair`). Build
+proceeds; the warning makes the likely bug visible at compile time
+without blocking iteration. Suppress via
+`@SuppressLint("equals-hash-pair")` for the rare case where the
+class isn't a map / set key.
 
 A class that defines neither inherits the identity defaults from
 `Object` — both halves are consistent because identity-equal implies
 identity-hash.
 
 A class that defines `operator==` for value equality but inherits
-identity `hash()` from `Object` would silently break HashMap. The
-override-pair check raises a compile error at class declaration
-time, *not* at the misbehaving HashMap operation later, so the bug
-can't reach production.
+identity `hash()` from `Object` is the common Java foot-gun: equal
+values produce different bucket indices and stored entries become
+un-findable. The lint warning surfaces this at compile time rather
+than at the misbehaving HashMap operation later. (Earlier drafts
+specified this as a compile error; demoted to lint 2026-05-18 — the
+runtime safety net + visible diagnostic is enough; users shouldn't
+be blocked from compiling while iterating.)
 
 ---
 
@@ -109,21 +116,45 @@ public class Point {
     int32 x;
     int32 y;
 }
+
+@Hash                                            // bare — default algorithm
+public class Session {
+    String userId;
+    String token;
+    @Hash.Exclude Instant lastSeenAt;            // skip transient field
+}
 ```
 
-Class-level `@Hash(AlgorithmClass.class)` synthesizes a `hash()`
-override on the annotated class. The synthesized body walks the
-class's fields, hashes each via the chosen algorithm's primitive
-fast-paths, and combines them via `Hash.combine`. The
-`@AutoHash`-only synthesis form documented earlier is subsumed by
-`@Hash` (the algorithm is the explicit parameter now); `@AutoHash`
-deprecates in favor of `@Hash(DefaultHasher.class)` or whichever
-algorithm the user picks.
+Two forms:
 
-Field-level `@Hash.Exclude` skips a field from the synthesized walk
-— matches Java's `@EqualsAndHashCode.Exclude`. Useful for cached
-timestamps, transient connection handles, anything that's part of
-the runtime state but not the value identity.
+- **`@Hash(AlgorithmClass.class)`** — explicit algorithm pick.
+  `@Hash(Murmur3.class)`, `@Hash(SipHash.class)`, `@Hash(FNV1a.class)`.
+- **`@Hash` (bare)** — synthesize structural hashing with the
+  *default* algorithm.
+
+Both forms synthesize a `hash()` override on the annotated class.
+The synthesized body walks the class's fields in declaration order,
+hashes each via the chosen algorithm's primitive fast-paths, and
+combines them via `Hash.combine`.
+
+The earlier `@AutoHash` annotation is retired (2026-05-18) — the
+single `@Hash` annotation covers both the explicit and shorthand
+cases.
+
+**Field-level `@Hash.Exclude`** skips a field from the synthesized
+walk — matches Java's `@EqualsAndHashCode.Exclude`. Useful for
+cached timestamps, transient connection handles, anything that's
+part of the runtime state but not the value identity.
+
+**Default algorithm** for bare `@Hash` is **SipHash-1-3**
+(2026-05-18 lock). Rationale: HashDoS exposure of a fast-but-
+attackable default surfaces as a security bug the first time user-
+controlled input lands as a HashMap key — a guaranteed eventuality
+(HTTP headers, JSON field names, query params). The fix-after-the-
+fact path is painful; 2× throughput on the non-critical hashing
+path is a cheap price for safe-by-default. Users explicitly opt into
+Murmur3 (or FNV1a) when they own all the keys and need the cycles
+back.
 
 ### `String.hash()` — the polynomial default
 
@@ -205,57 +236,56 @@ Tracked in Features.md.
 
 ---
 
+## Locked in the 2026-05-18 hashing pass
+
+- **`Hasher` interface** — one-shot only, three methods:
+  ```cajeta
+  public interface Hasher {
+      int64 hash(byte[] bytes, int32 len);     // primary entry
+      int64 hashInt32(int32 v);                 // primitive fast paths
+      int64 hashInt64(int64 v);
+  }
+  ```
+  No streaming `update()` / `finish()` — object APIs hand over data
+  all at once.
+
+- **Algorithm classes** — static-method utilities (not instantiable).
+  `SipHash.hashBytes(buf, len, Hash.processSeed())` rather than
+  `new SipHash(key).hash(...)`. The per-process key is threaded
+  from the runtime via `Hash.processSeed()`.
+
+- **`Hash.processSeed()`** — sourced from the OS cryptographic-
+  entropy syscall (`getrandom` / `getentropy` / `BCryptGenRandom`)
+  at process startup. On entropy failure: log + abort with
+  `CAJETA_ERROR_ENTROPY_UNAVAILABLE`. No clock+pid weak fallback —
+  silent degradation would defeat HashDoS protection.
+
+- **`@Hash` annotation** — single annotation, two forms (bare for
+  default algorithm, parameterized for explicit). `@AutoHash`
+  retired. Field-level `@Hash.Exclude` skips transient fields.
+  Default algorithm: **SipHash-1-3** (safe-by-default for the
+  attacker-controlled-input case).
+
+- **equal/hash override pair check** — lint warning, not compile
+  error. Rule ID `equals-hash-pair` in
+  [LintRules.md](../../LintRules.md). User can suppress per-class.
+
 ## Open questions
 
-These follow from the hashing design pass on 2026-05-18 and need
-follow-up before the `@Hash` synthesizer ships:
+Still pending follow-up:
 
-1. **`Hasher` interface shape.** Proposed v1:
-   ```cajeta
-   public interface Hasher {
-       int64 hash(byte[] bytes, int32 len);    // primary entry
-       int64 hashInt32(int32 v);                // primitive fast paths
-       int64 hashInt64(int64 v);
-   }
-   ```
-   Open: do we need a streaming `update(...) / finish()` shape for
-   inputs that don't fit in a single buffer? Java's `MessageDigest`
-   has it; rarely used in practice for non-crypto hashes. Lean:
-   defer to v2.
+1. **`String.hash()` HashDoS mitigation.** Pure polynomial leaves
+   String HashMaps attackable. Lean: mix `Hash.processSeed()` into
+   the polynomial result by default (cheap, kills offline-precompute
+   class of attacks); explicit `@Hash(SipHash.class)` on the
+   containing class for full protection.
 
-2. **Security-level enforcement.** How do we mark types / fields /
-   collections as "must use a DoS-resistant hash"? Some options:
+2. **Security-level enforcement mechanism.** How do we mark types
+   / fields / collections as "must use a DoS-resistant hash"?
    - `@Hash.Secure(min=Strength.HIGH)` on HashMap declarations
    - capability annotation: `@requires("attacker-resistant-hash")`
-     that fails to compile if the chosen algorithm doesn't satisfy
    - runtime check at HashMap construction in `--release` mode
-   No clear winner. Punted to a dedicated session.
-
-3. **Algorithm-class instantiability.** Are `Murmur3` / `SipHash` /
-   `FNV1a` static-method-only utilities, or do they hold per-instance
-   keys (SipHash needs a key)? Lean: `Hasher` is a stateless
-   *interface* implemented by classes whose static methods do the
-   actual hashing; the per-process SipHash key lives in the runtime
-   and is threaded through `Hash.processSeed()`. So `@Hash(SipHash
-   .class)` synthesizes calls to `SipHash.hashBytes(buf, len,
-   Hash.processSeed())` rather than constructing a `SipHash`
-   instance.
-
-4. **`String.hash()` HashDoS exposure.** Polynomial-default leaves
-   String HashMaps attackable. Mitigations:
-   - Same per-process seed mix as `Object.hash()` (cheap, covers
-     the offline-precompute attack class)
-   - Caller opts into SipHash via `HashMap<String, V>(SipHash
-     .class)` — explicit at the call site
-   Lean: mix the per-process seed into the polynomial result by
-   default; SipHash via explicit @Hash on the value class or
-   HashMap constructor for the strict cases.
-
-5. **`@Hash` vs `@AutoHash`.** Replace `@AutoHash` with
-   `@Hash(DefaultHasher.class)`, or keep `@AutoHash` as the
-   no-algorithm-arg shorthand? Lean: keep `@AutoHash` as the
-   shorthand; both forms synthesize the same body shape, the
-   annotation just picks the algorithm.
+   Deferred to a dedicated session.
 
 ---
 

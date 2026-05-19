@@ -90,25 +90,35 @@ public final class Hash {
     /**
      * The process-wide random seed.
      *
-     * Initialized from OS entropy (`/dev/urandom` on Linux, with a
-     * `clock + pid` fallback) at process start via a constructor
-     * function in the runtime. Stable for the process lifetime;
-     * differs across process restarts.
+     * Initialized from the OS cryptographic-entropy syscall at
+     * process start via a constructor function in the runtime:
+     * `getrandom(2)` on Linux (kernel 3.17+; safe inside chroots /
+     * containers because no file descriptor is required),
+     * `getentropy(3)` on macOS / BSD, `BCryptGenRandom` on Windows.
+     * Stable for the process lifetime; differs across restarts.
+     *
+     * **No fallback on entropy failure.** If the syscall fails (very
+     * rare; usually means the system is mid-boot or extremely
+     * degraded), the runtime logs and aborts with
+     * `CAJETA_ERROR_ENTROPY_UNAVAILABLE`. Silent degradation to
+     * weak entropy would defeat the entire HashDoS-protection story
+     * — the user would think they're protected when they aren't.
+     * The earlier doc text mentioning a `clock + pid` fallback was a
+     * design error, removed 2026-05-18.
      *
      * The seed is **mixed into every hash this namespace produces** —
-     * `identity`, `combine`, the primitive specializations, the XXH3
-     * byte path. That kills hash-flooding attacks: an attacker can't
-     * precompute keys whose hashes collide for *your* process because
-     * they don't know your seed.
+     * `identity`, `combine`, the primitive specializations, the
+     * SipHash byte path. That kills hash-flooding attacks: an
+     * attacker can't precompute keys whose hashes collide for
+     * *your* process because they don't know your seed.
      *
      * Exposed here for direct callers that need to align with the
      * compiler-synthesized `Object.hash()` — e.g. external hash-table
      * snapshot replay where the seed must be threaded through and
      * pinned to reproduce an in-process state on a separate machine.
      *
-     * @returns the process-wide seed; **never zero** (the initializer
-     *          guarantees a non-zero value, falling through to the
-     *          `clock + pid` mix if entropy reads return all zeros).
+     * @returns the process-wide seed; never zero (the OS entropy
+     *          syscall is itself contractually non-zero).
      * @complexity O(1).
      */
     @Native("__cajeta_hash_seed")
