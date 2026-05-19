@@ -31,6 +31,11 @@ int64_t runI64(const std::string& src) {
     auto fn = jit->lookup<int64_t (*)()>("run");
     return fn();
 }
+double runF64(const std::string& src) {
+    auto jit = CajetaJit::compile(src, "test.D");
+    auto fn = jit->lookup<double (*)()>("run");
+    return fn();
+}
 } // namespace
 
 // Parse `{"id":42}` into a Box class with one int32 field, return its id.
@@ -205,6 +210,56 @@ TEST(JsonSynthesizerTests, parseStringField) {
         "    }\n"
         "}\n";
     EXPECT_EQ(runI32(src), 2);
+}
+
+// Parse `{"x":3.14}` into a float64 field.
+TEST(JsonSynthesizerTests, parseFloat64Field) {
+    auto src =
+        "package test;\n"
+        "import cajeta.codec.json.Json;\n"
+        "public class Box {\n"
+        "    public float64 x;\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static float64 run() {\n"
+        // {"x":3.14} = 10 bytes
+        "        int8[] buf = new int8[10];\n"
+        "        buf[0] = (int8) 0x7B;\n"   // '{'
+        "        buf[1] = (int8) 0x22;\n"   // '"'
+        "        buf[2] = (int8) 0x78;\n"   // 'x'
+        "        buf[3] = (int8) 0x22;\n"   // '"'
+        "        buf[4] = (int8) 0x3A;\n"   // ':'
+        "        buf[5] = (int8) 0x33;\n"   // '3'
+        "        buf[6] = (int8) 0x2E;\n"   // '.'
+        "        buf[7] = (int8) 0x31;\n"   // '1'
+        "        buf[8] = (int8) 0x34;\n"   // '4'
+        "        buf[9] = (int8) 0x7D;\n"   // '}'
+        "        Box b = Json.parseT<Box>(buf, (int64) 10);\n"
+        "        return b.x;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_NEAR(runF64(src), 3.14, 1e-6);
+}
+
+// Round-trip float64 — write, re-parse, compare.
+TEST(JsonSynthesizerTests, roundTripFloat64) {
+    auto src =
+        "package test;\n"
+        "import cajeta.codec.json.Json;\n"
+        "public class Box {\n"
+        "    public float64 x;\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static float64 run() {\n"
+        "        Box a = heap Box();\n"
+        "        a.x = 2.5;\n"
+        "        int8[] bytes = Json.toBytesT<Box>(a);\n"
+        "        int64 n = (int64) bytes.count();\n"
+        "        Box b = Json.parseT<Box>(bytes, n);\n"
+        "        return b.x;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_NEAR(runF64(src), 2.5, 1e-9);
 }
 
 // Round-trip int32 via Json.toBytesT<Box> → Json.parseT<Box>.

@@ -112,6 +112,63 @@ public final class JsonWriter {
         return this;
     }
 
+    // Float64 emitter. Always emits a decimal point so the value
+    // round-trips as float64 (not int) through any JSON parser. v1
+    // is a naive fixed-precision serializer: integer part via the
+    // int64 digit loop above (inlined to avoid double maybeSeparator),
+    // followed by '.' and up to 6 fractional digits. Doesn't yet emit
+    // scientific notation for very large / very small magnitudes; that
+    // lands when a real strtod-class formatter is wired through.
+    public JsonWriter writeNumber(float64 v) {
+        this.maybeSeparator();
+        if (v == 0.0) {
+            this.append((int32) 48);          // '0'
+            this.append((int32) 46);          // '.'
+            this.append((int32) 48);          // '0'
+            this.markSibling();
+            return this;
+        }
+        if (v < 0.0) {
+            this.append((int32) 45);          // '-'
+            v = - v;
+        }
+        // Integer part — copy of the int64 digit-accumulate loop so we
+        // don't trigger maybeSeparator/markSibling twice.
+        int64 intPart = (int64) v;
+        float64 frac = v - (float64) intPart;
+        if (intPart == (int64) 0) {
+            this.append((int32) 48);
+        } else {
+            int8[] tmp = new int8[20];
+            int32 nd = 0;
+            while (intPart > (int64) 0) {
+                int64 d = intPart % (int64) 10;
+                tmp[nd] = (int8) (d + (int64) 48);
+                intPart = intPart / (int64) 10;
+                nd = nd + 1;
+            }
+            while (nd > 0) {
+                nd = nd - 1;
+                this.append((int32) tmp[nd]);
+            }
+        }
+        this.append((int32) 46);              // '.'
+        if (frac == 0.0) {
+            this.append((int32) 48);
+        } else {
+            int32 digits = 6;
+            while (digits > 0 && frac > 0.0) {
+                frac = frac * 10.0;
+                int32 d = (int32) frac;
+                frac = frac - (float64) d;
+                this.append((int32) (48 + d));
+                digits = digits - 1;
+            }
+        }
+        this.markSibling();
+        return this;
+    }
+
     // String + byte-count pair. Length is explicit because
     // int8[].length isn't yet exposed as a property in this stdlib.
     public JsonWriter writeString(int8[] s, int32 n) {

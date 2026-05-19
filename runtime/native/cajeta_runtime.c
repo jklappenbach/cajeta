@@ -2091,6 +2091,33 @@ double __cajeta_parse_f64(const char* s) {
     return strtod(s, NULL);
 }
 
+// Span variant — parse a length-bounded buffer (not null-terminated)
+// as float64. JsonReader uses tokenStart/tokenEnd offsets into the
+// input buffer; this lets the float-token path call into the system
+// strtod without copying the span first when it fits in a small
+// stack buffer. Buffers >= 63 bytes are truncated (an absurdly long
+// JSON number is malformed anyway; we surface 0.0).
+double __cajeta_strtod_span(const char* s, int64_t len) {
+    if (!s || len <= 0) return 0.0;
+    char tmp[64];
+    if (len >= (int64_t) sizeof(tmp)) len = (int64_t) sizeof(tmp) - 1;
+    for (int64_t i = 0; i < len; i++) tmp[i] = s[i];
+    tmp[len] = '\0';
+    return strtod(tmp, NULL);
+}
+
+// Format a float64 into a caller-supplied byte buffer using printf %g
+// semantics (shortest round-trip-safe form). Returns the number of
+// bytes written (excluding the implicit null terminator), or -1 if
+// the buffer was too small. JsonWriter uses this to materialize
+// float64 tokens into its growing output buffer.
+int32_t __cajeta_format_f64(double v, char* out, int64_t outLen) {
+    if (!out || outLen <= 1) return -1;
+    int n = snprintf(out, (size_t) outLen, "%.17g", v);
+    if (n < 0 || n >= (int) outLen) return -1;
+    return (int32_t) n;
+}
+
 int32_t __cajeta_parse_bool(const char* s) {
     if (!s) return 0;
     // Case-insensitive match for "true"; everything else is false (Java semantics).

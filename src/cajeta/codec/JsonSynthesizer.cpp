@@ -49,6 +49,9 @@ namespace cajeta {
             // disambiguates true vs false.
             return "out." + fieldName + " = r.currentBoolean();\n";
         }
+        if (tcanon == "float64") {
+            return "out." + fieldName + " = r.currentNumberAsFloat64();\n";
+        }
         if (tcanon == "cajeta.lang.String") {
             // currentBytes() returns the inner string bytes (quotes
             // stripped by scanStringSpan). Wrap them in a String via
@@ -148,6 +151,8 @@ namespace cajeta {
             value << "w.writeNumber(value." << fieldName << ");\n";
         } else if (tcanon == "boolean") {
             value << "w.writeBoolean(value." << fieldName << ");\n";
+        } else if (tcanon == "float64") {
+            value << "w.writeNumber(value." << fieldName << ");\n";
         } else if (tcanon == "cajeta.lang.String") {
             // Read String's bytes and byteLength fields directly; the
             // writer copies bytes through with quote/escape handling.

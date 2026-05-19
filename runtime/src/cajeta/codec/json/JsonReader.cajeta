@@ -392,6 +392,88 @@ public class JsonReader {
         return (int32) this.currentNumberAsInt64();
     }
 
+    // Parse the current NUMBER token's span as float64. Supports
+    // optional leading '-', integer part, optional '.' + fractional
+    // digits, and optional exponent (e/E with optional +/-). No
+    // strtod-class accuracy guarantees — naive digit accumulation
+    // with float64 arithmetic. For the typical JSON numbers users
+    // produce (32-bit doubles, small magnitudes), this round-trips
+    // cleanly with the writer's printf-%.17g formatting.
+    public float64 currentNumberAsFloat64() {
+        int64 i = this.tokenStart;
+        int64 end = this.tokenEnd;
+        if (i >= end) {
+            throw heap JsonParseException(
+                "empty number token", this.tokenStart);
+        }
+        boolean negative = false;
+        if (this.input[i] == (int8) 45) {       // '-'
+            negative = true;
+            i = i + 1;
+            if (i >= end) {
+                throw heap JsonParseException(
+                    "bare '-' is not a number", this.tokenStart);
+            }
+        }
+        float64 intPart = 0.0;
+        while (i < end) {
+            int8 c = this.input[i];
+            if (c < (int8) 48 || c > (int8) 57) break;
+            intPart = intPart * 10.0
+                + (float64) (((int32) c) - 48);
+            i = i + 1;
+        }
+        float64 frac = 0.0;
+        float64 scale = 1.0;
+        if (i < end && this.input[i] == (int8) 46) {   // '.'
+            i = i + 1;
+            while (i < end) {
+                int8 c = this.input[i];
+                if (c < (int8) 48 || c > (int8) 57) break;
+                scale = scale * 10.0;
+                frac = frac
+                    + ((float64) (((int32) c) - 48)) / scale;
+                i = i + 1;
+            }
+        }
+        float64 r = intPart + frac;
+        // Optional exponent.
+        if (i < end
+                && (this.input[i] == (int8) 101
+                    || this.input[i] == (int8) 69)) {  // 'e' / 'E'
+            i = i + 1;
+            boolean expNeg = false;
+            if (i < end && this.input[i] == (int8) 45) {       // '-'
+                expNeg = true;
+                i = i + 1;
+            } else if (i < end && this.input[i] == (int8) 43) { // '+'
+                i = i + 1;
+            }
+            int32 exp = 0;
+            while (i < end) {
+                int8 c = this.input[i];
+                if (c < (int8) 48 || c > (int8) 57) break;
+                exp = exp * 10 + (((int32) c) - 48);
+                i = i + 1;
+            }
+            float64 pow10 = 1.0;
+            int32 ej = 0;
+            while (ej < exp) {
+                pow10 = pow10 * 10.0;
+                ej = ej + 1;
+            }
+            if (expNeg) {
+                r = r / pow10;
+            } else {
+                r = r * pow10;
+            }
+        }
+        if (negative) {
+            return - r;
+        }
+        return r;
+    }
+
     // --- Phase 3: JsonValue tree materialization --------------------
 
     // Drive next() once and build a #JsonValue for whatever value
