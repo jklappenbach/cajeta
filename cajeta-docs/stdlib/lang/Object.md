@@ -156,16 +156,23 @@ path is a cheap price for safe-by-default. Users explicitly opt into
 Murmur3 (or FNV1a) when they own all the keys and need the cycles
 back.
 
-### `String.hash()` — the polynomial default
+### `String.hash()` — polynomial mixed with the process seed
 
 `String` overrides `hash()` with the Java-style polynomial mix
 (`h = 31*h + c` over the UTF-8 bytes; cheap, well-distributed for
-non-adversarial use). This is the historical Java choice and is
-HashDoS-attackable — that's accepted as a v1 trade-off; the
-security-level enforcement story (forcing SipHash for HashMaps keyed
-on attacker-controlled input — web sessions, HTTP headers, query
-params) is a separate discussion (see *Open question: security
-level enforcement* below).
+non-adversarial use), folded with `Hash.processSeed()` at the end.
+The seed mix kills the offline-precompute attack class (attacker
+generates a million colliding strings on their machine, sends them
+as input to yours) because the attacker doesn't know your
+process's seed.
+
+The seed mix doesn't defend against an online adversary who can
+issue thousands of probes and observe latency — those need the full
+SipHash treatment via `@Hash(SipHash.class)` on the containing
+value class, or via the HashMap constructor. The
+security-level-enforcement story (how do we *require* SipHash for
+attacker-facing collections) is the remaining open piece, deferred
+to its own session.
 
 ---
 
@@ -272,15 +279,9 @@ Tracked in Features.md.
 
 ## Open questions
 
-Still pending follow-up:
+Only one genuinely open follow-up:
 
-1. **`String.hash()` HashDoS mitigation.** Pure polynomial leaves
-   String HashMaps attackable. Lean: mix `Hash.processSeed()` into
-   the polynomial result by default (cheap, kills offline-precompute
-   class of attacks); explicit `@Hash(SipHash.class)` on the
-   containing class for full protection.
-
-2. **Security-level enforcement mechanism.** How do we mark types
+1. **Security-level enforcement mechanism.** How do we mark types
    / fields / collections as "must use a DoS-resistant hash"?
    - `@Hash.Secure(min=Strength.HIGH)` on HashMap declarations
    - capability annotation: `@requires("attacker-resistant-hash")`
