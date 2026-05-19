@@ -1005,7 +1005,24 @@ namespace cajeta {
             // Fire scope-end drops before the synthetic return so the chain is
             // unwound the same way an explicit `return` would do it.
             emitOwnerDrops(module);
-            llvm::Type* retLlvmTy = returnType ? returnType->getLlvmType() : nullptr;
+            // Use the LLVM function's actual return type, not the
+            // CajetaType's LLVM type. They diverge for class returns:
+            // CajetaClass::getLlvmType() yields the struct layout, but
+            // the function signature (built by buildLlvmFunctionType /
+            // similar) uses `ptr` for class-pass-by-pointer ABI. Before
+            // 2026-05-19, the synthetic-return path used the CajetaType
+            // and emitted a struct-typed PoisonValue for class returns,
+            // producing `ret <struct> poison` against a `ptr ()`
+            // function signature — JIT-time verify rejection with
+            // "Function return type does not match operand type of
+            // return inst!". Source: `while (true) { ... return X; }`
+            // patterns where the visitor doesn't prove the loop never
+            // exits, so this fallback fires for genuinely unreachable
+            // code. Class return broke; primitive return worked because
+            // the int/float/ptr arms above produced correctly-typed
+            // zero/null values.
+            llvm::Function* hostFn = builder->GetInsertBlock()->getParent();
+            llvm::Type* retLlvmTy = hostFn ? hostFn->getReturnType() : nullptr;
             if (!retLlvmTy || retLlvmTy->isVoidTy()) {
                 builder->CreateRetVoid();
             } else if (retLlvmTy->isFloatingPointTy()) {
