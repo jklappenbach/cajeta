@@ -1,0 +1,37 @@
+package cajeta.codec.json;
+
+/**
+ * Top-level JSON entry points (Tier 3 sugar).
+ *
+ * `Json.parse(bytes, length)` returns a full JsonValue tree — the
+ * value-tree convenience layer. Use this for ad-hoc inspection /
+ * mutation / re-serialization where performance is not the
+ * concern.
+ *
+ * `Json.toBytes(value)` runs the symmetric operation: takes a
+ * JsonValue tree and emits its serialized byte form.
+ *
+ * The Tier-1 (`Json.parse<T>(bytes)` / `Json.toBytes(value:T)`)
+ * codegen path that bypasses the JsonValue tree entirely is a
+ * separate compiler-side synthesizer (Phase 4 — pending, see
+ * cajeta-docs/stdlib/codec/Json.md § Tier 1). Until that lands,
+ * users wanting per-class direct-binding write the parse/emit
+ * code by hand against JsonReader / JsonWriter.
+ *
+ * Tier 2 (the pull-tokenizer API) remains the load-bearing path
+ * for performance-sensitive callers — drop to JsonReader.next() /
+ * JsonWriter.beginObject() directly when this matters.
+ */
+public final class Json {
+
+    public static #JsonValue parse(int8[] bytes, int64 length) {
+        JsonReader r = heap JsonReader(bytes, length);
+        return r.readValue();
+    }
+
+    public static #int8[] toBytes(JsonValue value) {
+        JsonWriter w = heap JsonWriter();
+        w.writeValue(value);
+        return w.toBytes();
+    }
+}
