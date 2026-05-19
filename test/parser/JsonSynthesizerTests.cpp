@@ -64,7 +64,7 @@ TEST(JsonSynthesizerTests, parseSingleInt32Field) {
         "        buf[7] = (int8) 0x32;\n"   // '2'
         "        buf[8] = (int8) 0x7D;\n"   // '}'
         "        buf[9] = (int8) 0x00;\n"   // (unused; length=9 passed)
-        "        Box b = Json.parseT<Box>(buf, (int64) 9);\n"
+        "        Box b = Json.parse<Box>(buf, (int64) 9);\n"
         "        return b.id;\n"
         "    }\n"
         "}\n";
@@ -102,7 +102,7 @@ TEST(JsonSynthesizerTests, parseInt64Field) {
         "        buf[16] = (int8) 0x32;\n"  // '2'
         "        buf[17] = (int8) 0x33;\n"  // '3'
         "        buf[18] = (int8) 0x7D;\n"  // '}'
-        "        Box b = Json.parseT<Box>(buf, (int64) 19);\n"
+        "        Box b = Json.parse<Box>(buf, (int64) 19);\n"
         "        return b.n;\n"
         "    }\n"
         "}\n";
@@ -134,7 +134,7 @@ TEST(JsonSynthesizerTests, parseBooleanTrueField) {
         "        buf[10] = (int8) 0x75;\n"  // 'u'
         "        buf[11] = (int8) 0x65;\n"  // 'e'
         "        buf[12] = (int8) 0x7D;\n"  // '}'
-        "        Box b = Json.parseT<Box>(buf, (int64) 13);\n"
+        "        Box b = Json.parse<Box>(buf, (int64) 13);\n"
         "        if (b.flag) return 1;\n"
         "        return 0;\n"
         "    }\n"
@@ -168,7 +168,7 @@ TEST(JsonSynthesizerTests, parseBooleanFalseField) {
         "        buf[11] = (int8) 0x73;\n"  // 's'
         "        buf[12] = (int8) 0x65;\n"  // 'e'
         "        buf[13] = (int8) 0x7D;\n"
-        "        Box b = Json.parseT<Box>(buf, (int64) 14);\n"
+        "        Box b = Json.parse<Box>(buf, (int64) 14);\n"
         "        if (b.flag) return 1;\n"
         "        return 0;\n"
         "    }\n"
@@ -204,7 +204,7 @@ TEST(JsonSynthesizerTests, parseStringField) {
         "        buf[10] = (int8) 0x69;\n"   // 'i'
         "        buf[11] = (int8) 0x22;\n"   // '"'
         "        buf[12] = (int8) 0x7D;\n"   // '}'
-        "        Person p = Json.parseT<Person>(buf, (int64) 13);\n"
+        "        Person p = Json.parse<Person>(buf, (int64) 13);\n"
         // p.name should be a 2-codepoint String ("hi")
         "        return (int32) p.name.count();\n"
         "    }\n"
@@ -243,14 +243,14 @@ TEST(JsonSynthesizerTests, parseNestedClass) {
         "        buf[14] = (int8) 0x37;\n"  // '7'
         "        buf[15] = (int8) 0x7D;\n"  // '}'
         "        buf[16] = (int8) 0x7D;\n"  // '}'
-        "        Outer o = Json.parseT<Outer>(buf, (int64) 17);\n"
+        "        Outer o = Json.parse<Outer>(buf, (int64) 17);\n"
         "        return o.point.x;\n"
         "    }\n"
         "}\n";
     EXPECT_EQ(runI32(src), 7);
 }
 
-// Round-trip nested class through toBytesT + parseT.
+// Round-trip nested class through toBytes<T> + parse<T>.
 TEST(JsonSynthesizerTests, roundTripNestedClass) {
     auto src =
         "package test;\n"
@@ -263,9 +263,9 @@ TEST(JsonSynthesizerTests, roundTripNestedClass) {
         "        Inner ip = heap Inner();\n"
         "        ip.x = 99;\n"
         "        a.point = ip;\n"
-        "        int8[] bytes = Json.toBytesT<Outer>(a);\n"
+        "        int8[] bytes = Json.toBytes<Outer>(a);\n"
         "        int64 n = (int64) bytes.count();\n"
-        "        Outer b = Json.parseT<Outer>(bytes, n);\n"
+        "        Outer b = Json.parse<Outer>(bytes, n);\n"
         "        return b.point.x;\n"
         "    }\n"
         "}\n";
@@ -294,7 +294,7 @@ TEST(JsonSynthesizerTests, parseFloat64Field) {
         "        buf[7] = (int8) 0x31;\n"   // '1'
         "        buf[8] = (int8) 0x34;\n"   // '4'
         "        buf[9] = (int8) 0x7D;\n"   // '}'
-        "        Box b = Json.parseT<Box>(buf, (int64) 10);\n"
+        "        Box b = Json.parse<Box>(buf, (int64) 10);\n"
         "        return b.x;\n"
         "    }\n"
         "}\n";
@@ -313,16 +313,16 @@ TEST(JsonSynthesizerTests, roundTripFloat64) {
         "    public static float64 run() {\n"
         "        Box a = heap Box();\n"
         "        a.x = 2.5;\n"
-        "        int8[] bytes = Json.toBytesT<Box>(a);\n"
+        "        int8[] bytes = Json.toBytes<Box>(a);\n"
         "        int64 n = (int64) bytes.count();\n"
-        "        Box b = Json.parseT<Box>(bytes, n);\n"
+        "        Box b = Json.parse<Box>(bytes, n);\n"
         "        return b.x;\n"
         "    }\n"
         "}\n";
     EXPECT_NEAR(runF64(src), 2.5, 1e-9);
 }
 
-// Round-trip int32 via Json.toBytesT<Box> → Json.parseT<Box>.
+// Round-trip int32 via Json.toBytes<Box> → Json.parse<Box>.
 TEST(JsonSynthesizerTests, roundTripInt32) {
     auto src =
         "package test;\n"
@@ -334,9 +334,9 @@ TEST(JsonSynthesizerTests, roundTripInt32) {
         "    public static int32 run() {\n"
         "        Box a = heap Box();\n"
         "        a.id = 42;\n"
-        "        int8[] bytes = Json.toBytesT<Box>(a);\n"
+        "        int8[] bytes = Json.toBytes<Box>(a);\n"
         "        int64 n = (int64) bytes.count();\n"
-        "        Box b = Json.parseT<Box>(bytes, n);\n"
+        "        Box b = Json.parse<Box>(bytes, n);\n"
         "        return b.id;\n"
         "    }\n"
         "}\n";
@@ -359,9 +359,9 @@ TEST(JsonSynthesizerTests, roundTripMixedPrimitives) {
         "        a.id = 7;\n"
         "        a.n = (int64) 99999999999;\n"
         "        a.flag = true;\n"
-        "        int8[] bytes = Json.toBytesT<Mix>(a);\n"
+        "        int8[] bytes = Json.toBytes<Mix>(a);\n"
         "        int64 len = (int64) bytes.count();\n"
-        "        Mix b = Json.parseT<Mix>(bytes, len);\n"
+        "        Mix b = Json.parse<Mix>(bytes, len);\n"
         "        int64 r = b.n;\n"
         "        if (b.flag) r = r + 1;\n"
         "        return r + (int64) (b.id * 1000000);\n"
@@ -418,7 +418,7 @@ TEST(JsonSynthesizerTests, parseMixedInt32Int64Boolean) {
         "        int32 i = 0;\n"
         "        while (i < 26) { buf2[i] = buf[i]; i = i + 1; }\n"
         "        buf2[26] = (int8) 0x7D;\n"  // '}'
-        "        Mix m = Json.parseT<Mix>(buf2, (int64) 27);\n"
+        "        Mix m = Json.parse<Mix>(buf2, (int64) 27);\n"
         "        int64 r = (int64) m.id * 1000 + m.n;\n"  // 7*1000 + 99 = 7099
         "        if (m.flag) r = r + 1000000;\n"
         "        return r;\n"

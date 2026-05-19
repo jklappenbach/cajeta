@@ -35,7 +35,7 @@ namespace cajeta {
     // result to out.<field>. The caller is responsible only for the
     // key-matching guard. For primitive value types this is
     // `t = r.next(); out.<field> = <reader-call>;`; for nested-class
-    // types it's a single recursive `Json.parseObjectFromReaderT<NestedT>(r)`
+    // types it's a single recursive `Json.parseObjectFromReader<NestedT>(r)`
     // call — the recursive parser will consume the START_OBJECT itself.
     //
     // Returns empty string if the type is unsupported (caller emits a
@@ -73,7 +73,7 @@ namespace cajeta {
                        "vbytes_" + fieldName +
                        ", (int32) vbytes_" + fieldName + ".count());\n";
         }
-        // Nested class field — recurse via Json.parseObjectFromReaderT<NestedT>.
+        // Nested class field — recurse via Json.parseObjectFromReader<NestedT>.
         // The recursive call consumes the value's START_OBJECT and
         // END_OBJECT itself; the outer loop should NOT call r.next()
         // before it. Use the short name `Json` because the wrapper
@@ -82,15 +82,15 @@ namespace cajeta {
         // chain since `cajeta`/`codec`/`json` aren't classes.
         if (auto nestedClass = std::dynamic_pointer_cast<CajetaClass>(ty)) {
             return "out." + fieldName +
-                   " = Json.parseObjectFromReaderT<" +
+                   " = Json.parseObjectFromReader<" +
                    tcanon + ">(r);\n";
         }
         return "";
     }
 
-    // Build the inner field-dispatch loop body. Used by both `parseT`
+    // Build the inner field-dispatch loop body. Used by both `parse`
     // (wrapped in a JsonReader-create preamble) and
-    // `parseObjectFromReaderT` (called from inside another parse).
+    // `parseObjectFromReader` (called from inside another parse).
     // Expects locals `T out` and `JsonReader r` to be in scope before
     // entry, and consumes from START_OBJECT through END_OBJECT.
     std::string emitObjectLoopBody(const CajetaClassPtr& T,
@@ -188,9 +188,9 @@ namespace cajeta {
             value << "w.writeString(value." << fieldName
                   << ".bytes, value." << fieldName << ".byteLength);\n";
         } else if (std::dynamic_pointer_cast<CajetaClass>(ty)) {
-            // Nested class field — recurse via toBytesObjectIntoT.
+            // Nested class field — recurse via toBytesObjectInto.
             // Short name `Json` for same-package reasons as the read side.
-            value << "Json.toBytesObjectIntoT<"
+            value << "Json.toBytesObjectInto<"
                   << tcanon << ">(w, value." << fieldName << ");\n";
         } else {
             return "";
@@ -210,8 +210,8 @@ namespace cajeta {
     }
 
     // Emit the inner `w.beginObject() ... per-field ... w.endObject()`
-    // sequence. Used by both `toBytesT` (which wraps it with a fresh
-    // JsonWriter create + toBytes finalize) and `toBytesObjectIntoT`
+    // sequence. Used by both `toBytes` (which wraps it with a fresh
+    // JsonWriter create + toBytes finalize) and `toBytesObjectInto`
     // (which receives the writer as a parameter and shares it with
     // the parent emit).
     std::string emitObjectWriteBody(const CajetaClassPtr& T) {
@@ -238,7 +238,7 @@ namespace cajeta {
         return os.str();
     }
 
-    // toBytesObjectIntoT variant — caller supplies the JsonWriter.
+    // toBytesObjectInto variant — caller supplies the JsonWriter.
     // No fresh writer creation, no toBytes finalize; just emit the
     // begin/end-object pair around the field writes.
     std::string synthesizeToBytesObjectIntoBody(const CajetaClassPtr& T,
@@ -276,22 +276,28 @@ namespace cajeta {
                 }
             }
         };
-        if (methodName == "parse" || methodName == "parseT") {
+        // Only the templated variants (T-parameterized) should hit the
+        // synthesizer — the non-templated parse(int8[], int64) /
+        // toBytes(JsonValue) Tier-3 paths have real bodies. The
+        // method-template instantiator only calls in here when an
+        // instantiation is actually being performed, so by construction
+        // methodName here names a templated method declared on Json.
+        if (methodName == "parse") {
             out = synthesizeParseBody(T, methodName);
             dumpIfRequested(out);
             return true;
         }
-        if (methodName == "parseObjectFromReaderT") {
+        if (methodName == "parseObjectFromReader") {
             out = synthesizeParseFromReaderBody(T, methodName);
             dumpIfRequested(out);
             return true;
         }
-        if (methodName == "toBytes" || methodName == "toBytesT") {
+        if (methodName == "toBytes") {
             out = synthesizeToBytesBody(T, methodName);
             dumpIfRequested(out);
             return true;
         }
-        if (methodName == "toBytesObjectIntoT") {
+        if (methodName == "toBytesObjectInto") {
             out = synthesizeToBytesObjectIntoBody(T, methodName);
             dumpIfRequested(out);
             return true;

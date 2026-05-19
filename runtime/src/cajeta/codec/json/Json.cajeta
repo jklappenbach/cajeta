@@ -50,13 +50,14 @@ public final class Json {
      *
      * See cajeta-docs/stdlib/codec/Json.md § Tier 1.
      */
-    // Tier-1 templated parse. Named `parseT` temporarily to avoid
-    // overload-resolution collision with the Tier-3 `parse` above
-    // while the resolver gains template-vs-overload disambiguation.
-    // Final rename to `parse` lands once that resolver work is done.
-    public static <T> T parseT(int8[] bytes, int64 length) {
+    // Tier-1 templated parse. Coexists with the Tier-3 `parse(int8[],
+    // int64)` above — the resolver distinguishes by the call site's
+    // explicit-type-args presence: `Json.parse(buf, n)` routes to
+    // Tier-3 (returns JsonValue); `Json.parse<T>(buf, n)` routes here
+    // (returns T via synthesizer).
+    public static <T> T parse(int8[] bytes, int64 length) {
         throw heap JsonParseException(
-            "Json.parseT<T>: synthesizer not engaged", (int64) 0);
+            "Json.parse<T>: synthesizer not engaged", (int64) 0);
     }
 
     /**
@@ -69,19 +70,19 @@ public final class Json {
      * cross-class instantiation calls (the wrapper class context
      * doesn't otherwise have access to private helpers).
      */
-    public static <T> T parseObjectFromReaderT(JsonReader r) {
+    public static <T> T parseObjectFromReader(JsonReader r) {
         throw heap JsonParseException(
-            "Json.parseObjectFromReaderT<T>: synthesizer not engaged", (int64) 0);
+            "Json.parseObjectFromReader<T>: synthesizer not engaged", (int64) 0);
     }
 
     /**
-     * Tier 1 emit — symmetric counterpart of parseT. The synthesizer
-     * walks T's fields and emits per-field JsonWriter calls. Returns
-     * the emitted JSON bytes as an int8[] (owned by the caller).
+     * Tier 1 emit — symmetric counterpart of parse<T>. Coexists with
+     * Tier-3 `toBytes(JsonValue)` via the same template-vs-overload
+     * disambiguation as parse.
      */
-    public static <T> int8[] toBytesT(T value) {
+    public static <T> int8[] toBytes(T value) {
         throw heap JsonParseException(
-            "Json.toBytesT<T>: synthesizer not engaged", (int64) 0);
+            "Json.toBytes<T>: synthesizer not engaged", (int64) 0);
     }
 
     /**
@@ -90,8 +91,8 @@ public final class Json {
      * into nested class fields, sharing the parent's JsonWriter so
      * the nested bytes interleave correctly with the outer ones.
      */
-    public static <T> void toBytesObjectIntoT(JsonWriter w, T value) {
+    public static <T> void toBytesObjectInto(JsonWriter w, T value) {
         throw heap JsonParseException(
-            "Json.toBytesObjectIntoT<T>: synthesizer not engaged", (int64) 0);
+            "Json.toBytesObjectInto<T>: synthesizer not engaged", (int64) 0);
     }
 }
