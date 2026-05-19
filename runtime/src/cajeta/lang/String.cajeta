@@ -82,6 +82,44 @@ public class String {
     }
 
     /**
+     * Content-based hash overriding Object's identity hash.
+     *
+     * Two distinct String instances with identical UTF-8 bytes hash
+     * equally, which gives `==` (inherited from Object via virtual
+     * dispatch through hash()) automatic value-equality semantics on
+     * String. String does NOT override operator== — the semantic shift
+     * is carried entirely by this hash() override.
+     *
+     * v1 algorithm is FNV-1a (Fowler–Noll–Vo, 1a variant): start with
+     * the 64-bit offset basis 0xCBF29CE484222325, then for each byte
+     * `b` of the payload `h = (h XOR b) * FNV_PRIME` where the FNV
+     * prime is 0x100000001B3 = 1099511628211. Deterministic,
+     * content-sensitive, no per-process seed mixing yet — DoS-resistant
+     * seeded hashing (XXH3-64 + processSeed, matching the rest of
+     * cajeta.hash) is a follow-up that needs the int8[]→uint8_t*
+     * @Native bridge to materialize. The runtime symbol
+     * (__cajeta_hash_bytes) already exists.
+     *
+     * The empty-bytes case hashes to the offset basis itself, since
+     * the for-each loop runs zero times. This is what callers get from
+     * `heap String()` (no-arg ctor) and from `heap String(b, 0)`.
+     */
+    public int64 hash() {
+        int64 h = (int64) 0xCBF29CE484222325;
+        if (this.bytes == null) {
+            return h;
+        }
+        int32 i = 0;
+        while (i < this.byteLength) {
+            int64 b = (int64) (((int32) this.bytes[i]) & 0xff);
+            h = h ^ b;
+            h = h * (int64) 0x100000001B3;
+            i = i + 1;
+        }
+        return h;
+    }
+
+    /**
      * Number of Unicode characters (codepoints) in this String.
      *
      * Walks the UTF-8 payload counting codepoints — O(N) on first call,
