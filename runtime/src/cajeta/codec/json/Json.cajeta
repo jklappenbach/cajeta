@@ -34,4 +34,28 @@ public final class Json {
         w.writeValue(value);
         return w.toBytes();
     }
+
+    /**
+     * Tier 1 codegen entry point — parses JSON bytes into a `T`-typed
+     * value by synthesizing per-T parse code at the call site. The
+     * captured body here is a failsafe: if the compiler-side
+     * synthesizer (Phase 4b in MethodTemplateInstantiator) doesn't
+     * engage, callers see this throw rather than silently get back
+     * default-zeroed objects.
+     *
+     * v1 supports a class T with primitive fields and (eventually)
+     * nested classes / arrays / annotation-driven naming. The synthesis
+     * walks T's declared field list and emits a key-dispatch loop
+     * against JsonReader.
+     *
+     * See cajeta-docs/stdlib/codec/Json.md § Tier 1.
+     */
+    // Tier-1 templated parse. Named `parseT` temporarily to avoid
+    // overload-resolution collision with the Tier-3 `parse` above
+    // while the resolver gains template-vs-overload disambiguation.
+    // Final rename to `parse` lands once that resolver work is done.
+    public static <T> T parseT(int8[] bytes, int64 length) {
+        throw heap JsonParseException(
+            "Json.parseT<T>: synthesizer not engaged", (int64) 0);
+    }
 }

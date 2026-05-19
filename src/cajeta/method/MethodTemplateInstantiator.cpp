@@ -20,6 +20,7 @@
 #include "../type/CajetaClass.h"
 #include "../type/QualifiedName.h"
 #include "../asn/ClassBodyDeclaration.h"
+#include "../codec/JsonSynthesizer.h"
 #include "../compile/CajetaModule.h"
 #include "../compile/CajetaLlvmVisitor.h"
 #include "../error/Exception.h"
@@ -27,6 +28,9 @@
 #include "CajetaLexer.h"
 
 #include "antlr4-runtime/antlr4-runtime.h"
+
+#include <cstdlib>
+#include <iostream>
 
 namespace cajeta {
 
@@ -134,6 +138,26 @@ namespace cajeta {
                 "CAJETA_ERROR_METHOD_TEMPLATE_INVALID");
         }
 
+        // Tier-1 JSON synthesizer hook (Phase 4b). For
+        // Json.parse<T> / Json.toBytes<T> we replace the captured
+        // throw-body source with a per-T synthesized body before
+        // re-parsing. The captured throw-body stays as the failsafe
+        // for unrecognized entry points.
+        std::string effectiveSource = methodSource;
+        {
+            std::string synthesized;
+            if (synthesizeJsonMethodSource(parent, name, args, synthesized)) {
+                effectiveSource = std::move(synthesized);
+                if (const char* dump = std::getenv("CAJETA_DUMP_IR")) {
+                    if (dump[0] == '1') {
+                        std::cerr << "[JsonSynthesizer] for " << name
+                                  << "<" << args[0]->getQName()->toCanonical()
+                                  << ">:\n" << effectiveSource << "\n";
+                    }
+                }
+            }
+        }
+
         // Synthesize a wrapper class around the method source. The wrapper
         // class is throwaway — we extract the concrete Method out of it and
         // reparent to the original template's parent. Using a unique name
@@ -144,7 +168,7 @@ namespace cajeta {
             + std::to_string(methodInstantiationCache.size());
         std::string input = synthesizeMethodPreamble(module)
             + "public class " + wrapperClassName + " {\n"
-            + methodSource + "\n"
+            + effectiveSource + "\n"
             + "}\n";
 
         antlr4::ANTLRInputStream inputStream(input);
