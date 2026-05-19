@@ -60,6 +60,28 @@ public class String {
     }
 
     /**
+     * View-mode constructor — borrows the caller's byte buffer without
+     * claiming ownership. The drop chain will NOT reclaim `bytes` when
+     * this String is dropped; the underlying buffer's lifetime is the
+     * caller's responsibility.
+     *
+     * This is the path string literals will eventually go through
+     * (Phase 2b-β.3): literal codegen will materialize an instance
+     * pointing at a static byte buffer in the process's data segment,
+     * with mode = 1 so the drop chain doesn't try to free static
+     * storage.
+     *
+     * `cachedCpLength` is initialized to -1 (not yet computed); the
+     * first `count()` call walks `bytes` and caches the result.
+     */
+    public String(int8[] bytes, int32 byteLength) {
+        this.bytes = bytes;
+        this.byteLength = byteLength;
+        this.mode = 1;
+        this.cachedCpLength = -1;
+    }
+
+    /**
      * Number of Unicode characters (codepoints) in this String.
      *
      * Walks the UTF-8 payload counting codepoints — O(N) on first call,
