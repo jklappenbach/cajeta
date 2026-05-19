@@ -62,7 +62,7 @@ TEST(MethodTemplateExplicitArgsTests, staticExplicitTwoTypeArgs) {
     auto src =
         "package test;\n"
         "public class Util {\n"
-        "    public static <K, V> V pickV(K k, V v) { return v; }\n"
+        "    public static V pickV<K, V>(K k, V v) { return v; }\n"
         "}\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
@@ -84,7 +84,7 @@ TEST(MethodTemplateExplicitArgsTests, staticExplicitWhenInferenceWouldFail) {
     auto src =
         "package test;\n"
         "public class Util {\n"
-        "    public static <T> int32 sizeOf() { return 42; }\n"
+        "    public static int32 sizeOf<T>() { return 42; }\n"
         "}\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
@@ -115,7 +115,7 @@ TEST(MethodTemplateExplicitArgsTests, instanceExplicitTypeArg) {
         "public class Box {\n"
         "    public int32 base;\n"
         "    public Box(int32 b) { this.base = b; }\n"
-        "    public final <R> R passthrough(R value) { return value; }\n"
+        "    public final R passthrough<R>(R value) { return value; }\n"
         "}\n"
         "public final class D {\n"
         "    public static int32 run() {\n"

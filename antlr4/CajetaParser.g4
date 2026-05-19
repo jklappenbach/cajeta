@@ -241,15 +241,17 @@ operatorOverloadDeclaration
    renders the [] matching as a llvmContext-sensitive issue or a semantic check
    for invalid return type after parsing.
 
-   Optional `typeParameters` prefix introduces method-level type
-   parameters (cajeta-docs/stdlib/MethodLevelTemplate.md). When
-   present, the method is non-virtual and monomorphized per call
+   Optional `typeParameters` after the identifier introduces
+   method-level type parameters (cajeta-docs/stdlib/MethodLevelTemplate.md).
+   When present, the method is non-virtual and monomorphized per call
    site over (receiver-class args x method-level args). The same
    typeParameters nonterminal used for classDeclaration is reused
-   here.
+   here. Position is post-identifier rather than pre-return-type
+   (Java-style) — mirrors call-site syntax `expr.method<T>(args)` and
+   matches C++ template-on-method convention.
  */
 methodDeclaration
-    : typeParameters? typeTypeOrVoid identifier formalParameters ('[' ']')*
+    : typeTypeOrVoid identifier typeParameters? formalParameters ('[' ']')*
       (THROWS qualifiedNameList)?
       methodBody
     ;
@@ -340,7 +342,7 @@ interfaceMethodModifier
 // level generics on interface methods (or on concrete struct/class
 // methods either, but those don't go through this rule).
 interfaceCommonBodyDeclaration
-    : annotation* typeParameters? typeTypeOrVoid identifier formalParameters ('[' ']')* (THROWS qualifiedNameList)? methodBody
+    : annotation* typeTypeOrVoid identifier typeParameters? formalParameters ('[' ']')* (THROWS qualifiedNameList)? methodBody
     ;
 
 variableDeclarators

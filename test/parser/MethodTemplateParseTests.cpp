@@ -32,7 +32,7 @@ TEST(MethodTemplateParseTests, finalInstanceMethodWithTypeParamParses) {
     auto src =
         "package test;\n"
         "public class Foo {\n"
-        "    public final <R> R passthrough(R value) { return value; }\n"
+        "    public final R passthrough<R>(R value) { return value; }\n"
         "}\n"
         "public final class D {\n"
         "    public static int32 run() { return 0; }\n"
@@ -46,7 +46,7 @@ TEST(MethodTemplateParseTests, staticMethodWithTypeParamParses) {
     auto src =
         "package test;\n"
         "public class Holder {\n"
-        "    public static <U> int32 sizeOf(U value) { return 0; }\n"
+        "    public static int32 sizeOf<U>(U value) { return 0; }\n"
         "}\n"
         "public final class D {\n"
         "    public static int32 run() { return 0; }\n"
@@ -59,7 +59,7 @@ TEST(MethodTemplateParseTests, multipleMethodLevelTypeParams) {
     auto src =
         "package test;\n"
         "public class Util {\n"
-        "    public static <K, V> int32 zero(K k, V v) { return 0; }\n"
+        "    public static int32 zero<K, V>(K k, V v) { return 0; }\n"
         "}\n"
         "public final class D {\n"
         "    public static int32 run() { return 0; }\n"
@@ -73,7 +73,7 @@ TEST(MethodTemplateParseTests, boundedMethodLevelTypeParam) {
         "package test;\n"
         "public class Animal { public int32 size() { return 0; } }\n"
         "public class Util {\n"
-        "    public static <T extends Animal> int32 sizeOf(T a) { return a.size(); }\n"
+        "    public static int32 sizeOf<T extends Animal>(T a) { return a.size(); }\n"
         "}\n"
         "public final class D {\n"
         "    public static int32 run() { return 0; }\n"
@@ -88,7 +88,7 @@ TEST(MethodTemplateParseTests, rejectsInstanceWithoutFinalOrStatic) {
     auto src =
         "package test;\n"
         "public class Foo {\n"
-        "    public <R> R passthrough(R value) { return value; }\n"
+        "    public R passthrough<R>(R value) { return value; }\n"
         "}\n"
         "public final class D {\n"
         "    public static int32 run() { return 0; }\n"
@@ -104,7 +104,7 @@ TEST(MethodTemplateParseTests, mixedTemplatedAndNonTemplatedMethods) {
         "package test;\n"
         "public class Foo {\n"
         "    public int32 plain() { return 42; }\n"
-        "    public final <R> R passthrough(R value) { return value; }\n"
+        "    public final R passthrough<R>(R value) { return value; }\n"
         "}\n"
         "public final class D {\n"
         "    public static int32 run() {\n"

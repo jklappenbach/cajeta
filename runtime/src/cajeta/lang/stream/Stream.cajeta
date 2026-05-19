@@ -156,7 +156,7 @@ public class Stream<T> {
      * inherited `next()` is what subclasses customize; this combinator
      * stays the same body across every Stream<T> subclass.
      */
-    public final <R> R fold(R seed, (R, T) -> R fn) {
+    public final R fold<R>(R seed, (R, T) -> R fn) {
         R acc = seed;
         Optional<T> o = this.next();
         while (o.isPresent()) {
@@ -174,7 +174,7 @@ public class Stream<T> {
      * collectors (`toList`, etc.). The R type is method-level so the
      * result type is independent of T.
      */
-    public final <R> R collect(Collector<T, R> c) {
+    public final R collect<R>(Collector<T, R> c) {
         return this.fold(c.seed, c.accumulator);
     }
 
@@ -197,7 +197,7 @@ public class Stream<T> {
     /**
      * Applies `fn: (T) -> R` to each element, yielding Stream<R>.
      */
-    public final <R> #Stream<R> map((T) -> R fn) {
+    public final #Stream<R> map<R>((T) -> R fn) {
         return heap MapStream<T, R>(this, fn);
     }
 
@@ -206,7 +206,7 @@ public class Stream<T> {
      * by draining each returned inner stream before pulling the next
      * outer element. Yields Stream<R>.
      */
-    public final <R> #Stream<R> flatMap((T) -> Stream<R> fn) {
+    public final #Stream<R> flatMap<R>((T) -> Stream<R> fn) {
         return heap FlatMapStream<T, R>(this, fn);
     }
 }

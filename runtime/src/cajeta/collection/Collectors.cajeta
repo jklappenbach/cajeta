@@ -20,7 +20,7 @@ public class Collectors {
      * heap-allocated and ownership flows out to the caller via the
      * collect call's return slot.
      */
-    public static <T> #Collector<T, ArrayList<T>> toList() {
+    public static #Collector<T, ArrayList<T>> toList<T>() {
         return new Collector<T, ArrayList<T>>(
             new ArrayList<T>(),
             (acc, x) -> { acc.add(x); return acc; });

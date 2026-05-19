@@ -19,7 +19,7 @@ public class Math {
      * Returns the larger of `a` and `b`. Per-T monomorphization;
      * non-virtual by virtue of being `static` and method-templated.
      */
-    public static <T> T max(T a, T b) {
+    public static T max<T>(T a, T b) {
         if (a > b) { return a; }
         return b;
     }
@@ -27,7 +27,7 @@ public class Math {
     /**
      * Returns the smaller of `a` and `b`.
      */
-    public static <T> T min(T a, T b) {
+    public static T min<T>(T a, T b) {
         if (a < b) { return a; }
         return b;
     }
@@ -37,7 +37,7 @@ public class Math {
      * (themselves method-level-templated) so the single declaration
      * specializes for every T the caller uses.
      */
-    public static <T> T clamp(T x, T lo, T hi) {
+    public static T clamp<T>(T x, T lo, T hi) {
         return Math.max(lo, Math.min(hi, x));
     }
 }

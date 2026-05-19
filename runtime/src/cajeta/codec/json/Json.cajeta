@@ -55,7 +55,7 @@ public final class Json {
     // explicit-type-args presence: `Json.parse(buf, n)` routes to
     // Tier-3 (returns JsonValue); `Json.parse<T>(buf, n)` routes here
     // (returns T via synthesizer).
-    public static <T> T parse(int8[] bytes, int64 length) {
+    public static T parse<T>(int8[] bytes, int64 length) {
         throw heap JsonParseException(
             "Json.parse<T>: synthesizer not engaged", (int64) 0);
     }
@@ -70,7 +70,7 @@ public final class Json {
      * cross-class instantiation calls (the wrapper class context
      * doesn't otherwise have access to private helpers).
      */
-    public static <T> T parseObjectFromReader(JsonReader r) {
+    public static T parseObjectFromReader<T>(JsonReader r) {
         throw heap JsonParseException(
             "Json.parseObjectFromReader<T>: synthesizer not engaged", (int64) 0);
     }
@@ -80,7 +80,7 @@ public final class Json {
      * Tier-3 `toBytes(JsonValue)` via the same template-vs-overload
      * disambiguation as parse.
      */
-    public static <T> int8[] toBytes(T value) {
+    public static int8[] toBytes<T>(T value) {
         throw heap JsonParseException(
             "Json.toBytes<T>: synthesizer not engaged", (int64) 0);
     }
@@ -91,7 +91,7 @@ public final class Json {
      * into nested class fields, sharing the parent's JsonWriter so
      * the nested bytes interleave correctly with the outer ones.
      */
-    public static <T> void toBytesObjectInto(JsonWriter w, T value) {
+    public static void toBytesObjectInto<T>(JsonWriter w, T value) {
         throw heap JsonParseException(
             "Json.toBytesObjectInto<T>: synthesizer not engaged", (int64) 0);
     }

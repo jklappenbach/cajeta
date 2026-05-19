@@ -3,7 +3,7 @@
 // whether the call site provides explicit type args.
 //
 //   public static int32 foo(int32 x)       → non-templated; called as `foo(1)`
-//   public static <T> int32 foo(T x)       → templated;     called as `foo<int32>(1)`
+//   public static int32 foo<T>(T x)       → templated;     called as `foo<int32>(1)`
 //
 // Before the Method::getMapKey fix in this commit, registering both
 // on the same class triggered addMethod's duplicate-static throw
@@ -30,7 +30,7 @@ TEST(MethodTemplateOverloadTests, bareCallPicksNonTemplated) {
         "package test;\n"
         "public class Util {\n"
         "    public static int32 foo(int32 x) { return 1; }\n"
-        "    public static <T> int32 foo(T value) { return 2; }\n"
+        "    public static int32 foo<T>(T value) { return 2; }\n"
         "}\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
@@ -46,7 +46,7 @@ TEST(MethodTemplateOverloadTests, explicitTypeArgPicksTemplated) {
         "package test;\n"
         "public class Util {\n"
         "    public static int32 foo(int32 x) { return 1; }\n"
-        "    public static <T> int32 foo(T value) { return 2; }\n"
+        "    public static int32 foo<T>(T value) { return 2; }\n"
         "}\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
@@ -61,7 +61,7 @@ TEST(MethodTemplateOverloadTests, templatedAloneStillResolves) {
     auto src =
         "package test;\n"
         "public class Util {\n"
-        "    public static <T> int32 foo(T value) { return 9; }\n"
+        "    public static int32 foo<T>(T value) { return 9; }\n"
         "}\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
