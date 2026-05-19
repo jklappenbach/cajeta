@@ -31,14 +31,38 @@ namespace cajeta {
     }
 
     // Decode the inner content of a CHAR_LITERAL lexeme (the bit between the single
-    // quotes, with escapes still raw). Returns the code-unit value; values outside
-    // 0..255 are truncated by the caller's i8 cast.
+    // quotes, with escapes still raw). Returns the **Unicode codepoint** as an int —
+    // up to 0x10FFFF. Source bytes are UTF-8; multibyte sequences decode to their
+    // codepoint. The compiler emits the result as an i32 constant (char = i32 since
+    // the 2026-05-18 redefinition); see CajetaType.cpp.
     static int decodeCharLiteral(const string& inner) {
         if (inner.empty()) return 0;
         if (inner[0] != '\\') {
-            // Plain byte. Higher bytes (UTF-8 multibyte) just take the first byte —
-            // Cajeta `char` is int8 today, so multibyte source chars don't fit.
-            return (unsigned char) inner[0];
+            // Plain character. Single ASCII byte is the common case;
+            // multibyte UTF-8 sequences (`'é'` = 0xC3 0xA9, `'😀'` =
+            // 0xF0 0x9F 0x98 0x80) decode to the Unicode codepoint.
+            unsigned char b0 = (unsigned char) inner[0];
+            if (b0 < 0x80) {
+                return b0;                       // ASCII fast path
+            }
+            // UTF-8 decode. Determine sequence length from the leading
+            // byte. Malformed sequences fall back to returning the
+            // first byte (caller sees a low-value codepoint rather
+            // than a parse error — char-literal parse errors are out
+            // of scope for v1).
+            int seqLen = 0;
+            int cp = 0;
+            if ((b0 & 0xE0) == 0xC0) { seqLen = 2; cp = b0 & 0x1F; }
+            else if ((b0 & 0xF0) == 0xE0) { seqLen = 3; cp = b0 & 0x0F; }
+            else if ((b0 & 0xF8) == 0xF0) { seqLen = 4; cp = b0 & 0x07; }
+            else return b0;
+            if (inner.size() < (size_t) seqLen) return b0;
+            for (int i = 1; i < seqLen; i++) {
+                unsigned char b = (unsigned char) inner[i];
+                if ((b & 0xC0) != 0x80) return b0;
+                cp = (cp << 6) | (b & 0x3F);
+            }
+            return cp;
         }
         if (inner.size() < 2) return 0;
         char c = inner[1];
@@ -171,13 +195,18 @@ namespace cajeta {
                 return module->getBuilder()->CreateGlobalStringPtr(
                     decodeStringLiteral(stripQuotes(value)), "str");
             case LITERAL_TYPE_CHAR: {
-                // Strip the single-quote pair, then decode any escape into a byte value.
+                // Strip the single-quote pair, then decode the literal
+                // into a Unicode codepoint (UTF-8 source bytes decoded
+                // to a codepoint; \uXXXX escapes decoded as written).
+                // Emitted as an i32 constant because Cajeta's `char`
+                // is the codepoint type (since the 2026-05-18
+                // redefinition). See CajetaType.cpp ~line 90.
                 string inner = value;
                 if (inner.size() >= 2 && inner.front() == '\'' && inner.back() == '\'') {
                     inner = inner.substr(1, inner.size() - 2);
                 }
                 int v = decodeCharLiteral(inner);
-                return llvm::ConstantInt::get(llvm::Type::getInt8Ty(ctx), v, /*isSigned=*/true);
+                return llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), v, /*isSigned=*/true);
             }
             default:
                 return nullptr;

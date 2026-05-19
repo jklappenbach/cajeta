@@ -80,14 +80,21 @@ namespace cajeta {
     void CajetaType::init(llvm::LLVMContext& ctx) {
         NATIVE_TYPE_ENTRY("void", llvm::Type::getVoidTy(ctx), VOID_TYPE_ID);
         NATIVE_TYPE_ENTRY("boolean", llvm::Type::getInt1Ty(ctx), BOOLEAN_TYPE_ID);
-        // `char` and `uchar` are the historical 8-bit names; `int8` / `uint8`
-        // are the width-uniform names matching the rest of the int* family
-        // (and what the README documents). All four share the same LLVM
-        // type — pass shareLlvmType=false on the aliases so the reverse
-        // i8 -> name lookup keeps `char`/`uchar` canonical (avoids
-        // gratuitous rename in error messages).
+        // `char` is the **Unicode codepoint** type (32-bit signed),
+        // not the C-style 8-bit byte. Cajeta's `char` matches Go's
+        // `rune` semantically — a single Unicode code point — and the
+        // character literal `'c'` evaluates to int32 99, `'é'` to 233,
+        // `'😀'` to 0x1F600. The 8-bit byte type has perfectly good
+        // names (`int8` / `uint8`); `char` doesn't need to alias them.
+        // See cajeta-docs/stdlib/lang/String.md § `char` is a 32-bit
+        // Unicode codepoint. Redefined 2026-05-18 (was i8).
+        //
+        // `uchar` is kept as a deprecated alias for `uint8` so legacy
+        // code referencing the 8-bit name keeps compiling; new code
+        // should use `uint8` directly. shareLlvmType=false keeps the
+        // reverse i8 -> name lookup landing on `uint8`.
         NATIVE_TYPE_ENTRY("uchar", llvm::Type::getInt8Ty(ctx), UINT8_TYPE_ID);
-        NATIVE_TYPE_ENTRY("char", llvm::Type::getInt8Ty(ctx), INT8_TYPE_ID);
+        NATIVE_TYPE_ENTRY("char", llvm::Type::getInt32Ty(ctx), INT32_TYPE_ID);
         CajetaType::create(QualifiedName::getOrInsert("uint8", CAJETA_NATIVE_PACKAGE),
             llvm::Type::getInt8Ty(ctx), UINT8_TYPE_ID, /*shareLlvmType=*/false);
         CajetaType::create(QualifiedName::getOrInsert("int8", CAJETA_NATIVE_PACKAGE),
