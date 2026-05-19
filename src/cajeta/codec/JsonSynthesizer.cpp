@@ -44,7 +44,12 @@ namespace cajeta {
         if (tcanon == "int64") {
             return "out." + fieldName + " = r.currentNumberAsInt64();\n";
         }
-        // Future: boolean, float64, String, nested classes, arrays.
+        if (tcanon == "boolean") {
+            // JsonReader emits BOOLEAN as one token kind; currentBoolean()
+            // disambiguates true vs false.
+            return "out." + fieldName + " = r.currentBoolean();\n";
+        }
+        // Future: float64, String, nested classes, arrays.
         return "";
     }
 
