@@ -1,0 +1,53 @@
+package cajeta.lang;
+
+import cajeta.error.RecoverableException;
+
+/**
+ * Thrown by encoding conversions (String.fromBytes / String.getBytes /
+ * any other text-bytes-bridge) when EncodingErrorPolicy.FAIL meets a
+ * codepoint or byte sequence the conversion can't represent.
+ *
+ * Carries enough to fix the bug without sifting through the source:
+ *
+ *  - offset           : the source position where the bad data starts.
+ *                       For getBytes (text → bytes): codepoint index in
+ *                       the source String. For fromBytes (bytes → text):
+ *                       byte index in the input buffer.
+ *  - codepoint        : the offending Unicode codepoint, 0 if the failure
+ *                       is byte-side (malformed source bytes have no
+ *                       codepoint to report — see reason).
+ *  - sourceEncoding   : what we were decoding FROM. Always UTF_8 for
+ *                       text → bytes (the internal storage), or the
+ *                       caller-passed encoding for bytes → text.
+ *  - targetEncoding   : what we were encoding TO. The caller-passed
+ *                       encoding for text → bytes; always UTF_8 for
+ *                       bytes → text.
+ *  - reason           : short human-readable message; e.g.
+ *                       "codepoint U+1F600 not representable in ASCII".
+ *
+ * Python's UnicodeEncodeError is the model — pinpoint the bad data,
+ * say what went wrong, leave the fix to the caller.
+ *
+ * The String message field is inherited from Throwable; reason is the
+ * machine-friendly variant (for diagnostic surfaces that want to lay
+ * out the failure as structured data rather than free text).
+ */
+public class EncodingException extends RecoverableException {
+    public int64 offset;
+    public int32 codepoint;
+    public int32 sourceEncoding;       // Encoding ordinal
+    public int32 targetEncoding;       // Encoding ordinal
+    public String reason;
+
+    public EncodingException(String message, int64 offset, int32 codepoint,
+                             int32 sourceEncoding, int32 targetEncoding,
+                             String reason) {
+        this.message = message;
+        this.cause = 0;
+        this.offset = offset;
+        this.codepoint = codepoint;
+        this.sourceEncoding = sourceEncoding;
+        this.targetEncoding = targetEncoding;
+        this.reason = reason;
+    }
+}

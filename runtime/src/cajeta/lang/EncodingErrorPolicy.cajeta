@@ -1,0 +1,30 @@
+package cajeta.lang;
+
+/**
+ * Policy for what to do when an encoding conversion can't represent
+ * a codepoint in the target encoding (or vice versa — bytes don't
+ * decode into the source encoding cleanly).
+ *
+ *  - FAIL   : throw EncodingException carrying enough detail to
+ *             pinpoint the bad codepoint / byte position. Default.
+ *  - REPAIR : substitute with the encoding's standard replacement
+ *             marker (U+FFFD for UTF targets, '?' for ASCII /
+ *             Latin-1 / Windows-1252, codec-specified for CJK).
+ *
+ * No IGNORE policy. Silent data loss is strictly worse than
+ * substitution because the user has zero hint anything happened —
+ * substitution at least produces detectable output. If the rare
+ * "I genuinely want characters dropped" case shows up, decode-
+ * iterate + filter codepoints manually before re-encoding.
+ *
+ * Cajeta stdlib parsing-policy enums follow this { FAIL, REPAIR }
+ * shape across all parsing APIs (encoding, JSON, number parsing,
+ * etc.). The semantics of REPAIR differ per domain — substitute
+ * for encoding, lenient-syntax for JSON, saturate for numeric — but
+ * the *shape* is uniform. See cajeta-docs/stdlib/lang/String.md §
+ * Parsing convention.
+ */
+public enum EncodingErrorPolicy {
+    FAIL,
+    REPAIR
+}
