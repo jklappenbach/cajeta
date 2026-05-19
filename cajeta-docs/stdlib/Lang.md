@@ -7,64 +7,11 @@ return them.
 
 ## `Object` — universal root
 
-Every class implicitly extends `Object` via the auto-extend pass in
-`CajetaLlvmVisitor::visitClassDeclaration`. The base contract:
-
-```cajeta
-public class Object {
-    public boolean operator==(Object obj);    // identity by default
-    public int64 hash();                       // identity-seeded by default
-    public String toString(Encoding e = UTF_8);
-    public Object clone();                     // shallow field-by-field copy
-}
-```
-
-**Defaults are identity-based, not structural.** Two distinct
-instances with the same field values compare unequal and hash
-differently by default. Structural value-equality is opt-in via
-`@AutoHash` (see Hashing.md) or by overriding `operator==` /
-`hash()` manually.
-
-**Override pair enforcement.** If a class declares `operator==`,
-it must also declare `hash()` (and vice versa). The contract — equal
-values hash equally — is structurally protected by requiring both
-halves to be authored together. `toString` has no pair requirement.
-
-### Examples
-
-```cajeta
-// Identity defaults — two distinct objects compare unequal.
-Foo a = heap Foo();
-Foo b = heap Foo();
-boolean same = (a == b);   // false (identity)
-
-// Override pair: both must be declared together.
-public class Money {
-    public int64 cents;
-    public String currency;
-
-    public boolean operator==(Object obj) {
-        if (!(obj instanceof Money)) { return false; }
-        Money other = (Money) obj;
-        return this.cents == other.cents
-            && this.currency.equals(other.currency);
-    }
-
-    public int64 hash() {
-        int64 h = this.cents.hash();
-        h = Hash.combine(h, this.currency.hash());
-        return h;
-    }
-}
-```
-
-### Status
-
-Implemented: implicit extension, identity `hash()`, identity
-`operator==`, the override pair check. `clone()` / `toString` defaults
-tracked in Features.md.
-
-Pinned by `test/parser/AutoHashTests.cpp` (override-pair semantics).
+See **[`lang/Object.md`](./lang/Object.md)** for the full spec
+(implicit-extends invariant, the four methods, override-pair
+enforcement, `@Hash` algorithm-class registry, equal-implies-same-
+hash contract, pending design questions on `Hasher` interface +
+security-level enforcement).
 
 ## `String` — immutable, encoding-aware
 
