@@ -143,13 +143,11 @@ public class Object {
      * legal-text comparison), use an explicit byte-by-byte comparison
      * method rather than `==`.
      *
-     * Returns int32 (1 = true, 0 = false) matching the operator==
-     * dispatch convention (see OperatorOverloadTests).
+     * Returns boolean. The companion `!=` is auto-derived from this
+     * method (no explicit operator!= declaration needed) — the
+     * compiler synthesizes `a != b` as the negation of `a == b`.
      */
-    public int32 operator== (Object other) {
-        if (this.hash() == other.hash()) {
-            return 1;
-        }
-        return 0;
+    public boolean operator== (Object other) {
+        return this.hash() == other.hash();
     }
 }

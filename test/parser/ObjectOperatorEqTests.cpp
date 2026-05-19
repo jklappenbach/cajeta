@@ -75,3 +75,33 @@ TEST(ObjectOperatorEqTests, aliasEqEqIsTrue) {
         "}\n";
     EXPECT_EQ(runI32(src), 1);
 }
+
+// `!=` is the negation of `==`. Distinct instances are NOT equal,
+// so `!=` returns 1 (true).
+TEST(ObjectOperatorEqTests, distinctInstancesNeIsTrue) {
+    auto src =
+        "package test;\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        D a = heap D();\n"
+        "        D b = heap D();\n"
+        "        if (a != b) return 1;\n"
+        "        return 0;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 1);
+}
+
+// Same instance under `!=` returns false. Pins the != / == duality.
+TEST(ObjectOperatorEqTests, sameInstanceNeIsFalse) {
+    auto src =
+        "package test;\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        D d = heap D();\n"
+        "        if (d != d) return 1;\n"
+        "        return 0;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 0);
+}
