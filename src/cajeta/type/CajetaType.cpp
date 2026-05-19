@@ -127,12 +127,15 @@ namespace cajeta {
         NATIVE_TYPE_ENTRY("float64", llvm::Type::getDoubleTy(ctx), FLOAT64_TYPE_ID);
         NATIVE_TYPE_ENTRY("float128", llvm::Type::getFP128Ty(ctx), FLOAT128_TYPE_ID);
         NATIVE_TYPE_ENTRY("pointer", llvm::PointerType::get(ctx, 0), POINTER_TYPE_ID);
-        // `String` is an alias for the opaque-pointer type today — string literals
-        // are global-string-ptr (i8*) and there's no String class yet. Registered
-        // with shareLlvmType=false so the reverse lookup keeps "pointer" canonical.
-        CajetaType::create(
-            QualifiedName::getOrInsert("String", CAJETA_NATIVE_PACKAGE),
-            llvm::PointerType::get(ctx, 0), POINTER_TYPE_ID, /*shareLlvmType=*/false);
+        // Phase 2b-β: the legacy primitive-alias `String` (an i8*
+        // C-string) is RETIRED. The `cajeta.lang.String` class registers
+        // itself in canonicalMap under both the canonical and short name
+        // when the runtime parses — every reference to `String` now
+        // resolves to the class. Any compiler code that needs a raw
+        // C-string spell `pointer` (or, more rigorously, the new
+        // encoding-prefixed byte-array literal — task #164, L-29 in
+        // Features.md — once shipped). See
+        // cajeta-docs/stdlib/lang/String.md § Memory model.
     }
 
     llvm::ConstantInt* CajetaType::getTypeAllocSize(CajetaModulePtr module) {

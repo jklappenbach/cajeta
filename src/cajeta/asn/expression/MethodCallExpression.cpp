@@ -1110,27 +1110,28 @@ namespace cajeta {
             }
         }
 
-        // String built-in methods. String is a pointer alias, so the receiver value
-        // is already the C-string ptr after the l-value coercion above. We detect a
-        // String receiver via two paths: (a) static resolvedType says "String"; or
-        // (b) the value is a plain `ptr` and the AST node isn't an array — covers
-        // chained calls like `s.trim().isEmpty()` where the inner call doesn't yet
-        // populate resolvedType.
+        // String built-in methods. After Phase 2b-β the canonical
+        // `cajeta.lang.String` is a class and string literals
+        // materialize as class instances — so this intrinsic table
+        // applies ONLY when the receiver is a raw pointer that ISN'T a
+        // CajetaClass (the legacy i8* bootstrap path: runtime
+        // bring-up before class String is loaded, or any call site
+        // whose receiver isn't typed as String at all but is a bare
+        // pointer-typed expression). Class-typed receivers route
+        // through normal method dispatch and hit String's Cajeta-level
+        // methods (isEmpty, equals, charAt, indexOf, startsWith,
+        // endsWith, contains, substring, toLowerCase, toUpperCase,
+        // trim, replace, size — all defined on the class).
         bool receiverIsString = false;
-        if (receiver && receiverType && receiverType->getQName()
-                && receiverType->getQName()->getTypeName() == "String") {
-            receiverIsString = true;
-        } else if (receiver && receiver->getType()->isPointerTy()
+        if (receiver && receiver->getType()->isPointerTy()
                 && !dynamic_pointer_cast<CajetaClass>(receiverType)) {
-            // Fallback for chained calls where the inner call hasn't
-            // populated its resolvedType (e.g. `s.trim().isEmpty()`).
-            // Only fires when receiverType ISN'T a known CajetaClass —
-            // otherwise `someClass.size()` on a user class would
-            // hijack into __cajeta_str_len instead of dispatching to
-            // the class's own size() method. CajetaArray (which
-            // inherits CajetaClass) also blocks this path; the array's
-            // size() routes through the dedicated structural-accessor
-            // branch below.
+            // Bare-pointer receiver, not a known class. Excludes
+            // CajetaArray (which inherits CajetaClass — array's size()
+            // routes through the dedicated structural-accessor branch
+            // below) and class String (whose methods now live on the
+            // class). This covers the chained-pointer case where the
+            // inner call hasn't populated resolvedType yet AND legacy
+            // i8* C-string flows from runtime symbols.
             auto childExpr = children.empty() ? nullptr
                 : dynamic_pointer_cast<Expression>(children[0]);
             bool childIsArr = childExpr

@@ -764,8 +764,17 @@ namespace cajeta {
             // Follow-on work: defer drop registration until first
             // assignment (or shift the drop entry to load the slot at
             // fire time instead of push time).
+            // cajeta.lang.String is process-lifetime — view-mode
+            // literals live in static storage, owned-mode allocations
+            // (concat results, substring copies, etc.) are intentionally
+            // never reclaimed per the never-drop spec
+            // (cajeta-docs/stdlib/lang/String.md § Memory model). Skip
+            // the drop wiring entirely; vtable.drop_fn stays NULL.
+            bool isCajetaString = klass && klass->getQName()
+                && klass->getQName()->getTypeName() == "String"
+                && klass->getQName()->getPackageName() == "cajeta.lang";
             if (klass && !isArray && !isStructType && !klass->isInterface()
-                    && !initIsBorrow && initializer) {
+                    && !initIsBorrow && initializer && !isCajetaString) {
                 // P7.1/P7.2 — stack-allocated class locals (init via
                 // `stack ClassName(...)` or `stack ClassName { ... }`)
                 // get the stack-drop variant: walks owned class-ref

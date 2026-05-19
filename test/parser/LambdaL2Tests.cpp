@@ -124,7 +124,7 @@ TEST(LambdaL2Tests, capturesStringByBorrow) {
         "public final class D {\n"
         "    public static int32 run() {\n"
         "        String s = \"hello\";\n"
-        "        (int32) -> int32 fn = n -> n + (int32) s.length();\n"
+        "        (int32) -> int32 fn = n -> n + (int32) s.count();\n"
         "        return fn(2);\n"  // 2 + 5 = 7
         "    }\n"
         "}\n";

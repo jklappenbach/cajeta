@@ -17,11 +17,54 @@
 using cajeta_test::CajetaJit;
 
 namespace {
+    // After Phase 2b-β, `String` returns are pointers to a
+    // `cajeta.lang.String` struct: { vtable, bytes_ptr,
+    // byteLength, mode, cachedCpLength }. Bytes_ptr points to a
+    // CajetaArray-shaped struct `{ i64 count, [N x i8] data }`. Pull
+    // the byte payload out and copy it into a std::string sized by
+    // byteLength (no null-terminator dependence). For the bootstrap
+    // window where the synthesizer returns a raw malloc'd C-string
+    // — same flow but the runtime fields land at different offsets
+    // — the heuristic is to detect a printable ASCII byte at offset 0
+    // and fall back to strlen.
+    struct CajetaStringLayout {
+        const void* vtable;
+        const void* bytes;
+        int32_t byteLength;
+        int32_t mode;
+        int32_t cachedCpLength;
+    };
+
     std::string runToString(const std::string& src) {
-        auto jit = CajetaJit::compile(src, "test.D");
-        auto fn = jit->lookup<const char* (*)()>("run");
-        const char* r = fn();
-        return r ? std::string(r) : std::string("<null>");
+        try {
+            auto jit = CajetaJit::compile(src, "test.D");
+            auto fn = jit->lookup<const CajetaStringLayout* (*)()>("run");
+            const CajetaStringLayout* s = fn();
+            if (!s) return std::string("<null>");
+            // Class String shape: vtable looks like a valid pointer
+            // (high bits set or low bits zero from page alignment),
+            // byteLength matches the expected ASCII shape. The
+            // synthesized-toString fallback (legacy malloc'd
+            // C-string) lands at a different memory layout — bytes
+            // at offset 0 are ASCII printable. Distinguish via the
+            // byte value at offset 0.
+            const uint8_t* first = (const uint8_t*) s;
+            if (first[0] >= 0x20 && first[0] <= 0x7E
+                    && first[1] >= 0x20 && first[1] <= 0x7E) {
+                // Legacy malloc'd char* path — read as C-string.
+                return std::string((const char*) s);
+            }
+            // Class String — read bytes field.
+            if (!s->bytes || s->byteLength <= 0) return std::string("");
+            // bytes points to { i64 count, [N x i8] data }. Skip past
+            // the 8-byte count header to get the data.
+            const char* data = (const char*) s->bytes + sizeof(int64_t);
+            return std::string(data, (size_t) s->byteLength);
+        } catch (cajeta::Exception& e) {
+            std::cerr << "[CAUGHT cajeta::Exception]: " << e.getMessage()
+                << " errorId=" << e.getErrorId() << std::endl;
+            throw;
+        }
     }
 }
 

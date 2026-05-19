@@ -196,18 +196,320 @@ public class String {
         return (int64) this.byteLength;
     }
 
-    // isEmpty() / equals(String) and other String-method names that
-    // appear in MethodCallExpression's intrinsic table get shadowed
-    // on class-typed receivers — the intrinsic interprets the
-    // receiver pointer as i8* (vtable byte at offset 0 is non-zero,
-    // so `isEmpty` returns wrong). Adding class methods with those
-    // names has no effect until the intrinsic gate distinguishes
-    // class-typed String receivers — blocked on Phase 2b-β's
-    // literal-codegen flip. See cajeta-docs/stdlib/lang/String.md §
-    // Storage model. Methods below (byteAt, codepointAt, count,
-    // hash, size) DON'T collide with the intrinsic table (or
-    // intentionally REPLACE it, as `size` does), so class-dispatch
-    // finds them.
+    /**
+     * True when this String carries zero bytes — equivalent to
+     * `byteLength == 0`. The empty literal `""` and the no-arg ctor
+     * both produce empty strings.
+     */
+    public boolean isEmpty() {
+        return this.byteLength == 0;
+    }
+
+    /**
+     * Byte-for-byte equality. Two Strings are equal iff they have the
+     * same byteLength and identical UTF-8 payloads. Distinct from
+     * Object.operator==, which falls through to hash() comparison;
+     * for collision-sensitive callers, equals() is the explicit
+     * byte-walk.
+     *
+     * Phase 2b-β note: this overload's signature is `(String)`, not
+     * `(Object)`, so it does NOT override Object.operator==. It IS
+     * the canonical content-equality entry point — call it directly
+     * when you want byte-for-byte semantics; the operator== path
+     * still works via hash() and is enough for hash-keyed
+     * collections.
+     */
+    public boolean equals(String other) {
+        if (other == null) {
+            return false;
+        }
+        if (this.byteLength != other.byteLength) {
+            return false;
+        }
+        int32 i = 0;
+        while (i < this.byteLength) {
+            if (this.bytes[i] != other.bytes[i]) {
+                return false;
+            }
+            i = i + 1;
+        }
+        return true;
+    }
+
+    /**
+     * Returns the byte at the given byte index, or 0 if the index is
+     * out of range. v1 charAt is byte-indexed and returns int8
+     * (ASCII-equivalent code unit), matching the legacy intrinsic-
+     * dispatch behavior — codepoint-indexed access goes through
+     * `codepointAt`. The Java-style `char` (codepoint) variant lands
+     * if the design expands later; for now the two cover distinct
+     * use cases (raw byte vs Unicode scalar).
+     */
+    public int8 charAt(int32 idx) {
+        if (idx < 0 || idx >= this.byteLength) {
+            return (int8) 0;
+        }
+        return this.bytes[idx];
+    }
+
+    /**
+     * First byte-index at which `needle`'s payload appears as a
+     * contiguous run in this String, or -1 if not found. Returns 0
+     * for an empty needle (matches the standard "every string
+     * contains the empty string at position 0" convention).
+     *
+     * O(N×M) naive byte-walk — sufficient for v1; KMP / Boyer-Moore
+     * is a follow-up once the search/replace path becomes a hotspot.
+     */
+    public int64 indexOf(String needle) {
+        if (needle == null) {
+            return (int64) -1;
+        }
+        int32 nlen = needle.byteLength;
+        if (nlen == 0) {
+            return (int64) 0;
+        }
+        if (nlen > this.byteLength) {
+            return (int64) -1;
+        }
+        int32 limit = this.byteLength - nlen;
+        int32 i = 0;
+        while (i <= limit) {
+            int32 j = 0;
+            boolean match = true;
+            while (j < nlen && match) {
+                if (this.bytes[i + j] != needle.bytes[j]) {
+                    match = false;
+                }
+                j = j + 1;
+            }
+            if (match) {
+                return (int64) i;
+            }
+            i = i + 1;
+        }
+        return (int64) -1;
+    }
+
+    /**
+     * True iff `prefix`'s bytes appear at the start of this String's
+     * payload. Empty prefix is always a prefix; null is treated as
+     * the absence of a prefix (returns false).
+     */
+    public boolean startsWith(String prefix) {
+        if (prefix == null) {
+            return false;
+        }
+        if (prefix.byteLength > this.byteLength) {
+            return false;
+        }
+        int32 i = 0;
+        while (i < prefix.byteLength) {
+            if (this.bytes[i] != prefix.bytes[i]) {
+                return false;
+            }
+            i = i + 1;
+        }
+        return true;
+    }
+
+    /**
+     * True iff `suffix`'s bytes appear at the end of this String's
+     * payload. Mirrors startsWith on the trailing side.
+     */
+    public boolean endsWith(String suffix) {
+        if (suffix == null) {
+            return false;
+        }
+        if (suffix.byteLength > this.byteLength) {
+            return false;
+        }
+        int32 off = this.byteLength - suffix.byteLength;
+        int32 i = 0;
+        while (i < suffix.byteLength) {
+            if (this.bytes[off + i] != suffix.bytes[i]) {
+                return false;
+            }
+            i = i + 1;
+        }
+        return true;
+    }
+
+    /**
+     * True iff `needle`'s bytes appear anywhere in this String's
+     * payload. Delegates to indexOf and tests for non-negative
+     * result.
+     */
+    public boolean contains(String needle) {
+        return this.indexOf(needle) >= (int64) 0;
+    }
+
+    /**
+     * Returns a half-open byte-indexed slice `[begin, end)` of this
+     * String. Indices are clamped to [0, byteLength]; if end < begin
+     * after clamping the result is empty. Substring allocates a
+     * fresh byte buffer and copies — view-mode slicing is a planned
+     * follow-up that needs pointer arithmetic on `int8[]` (today the
+     * language has no surface syntax for `&this.bytes[begin]`).
+     */
+    public #String substring(int32 begin, int32 end) {
+        if (begin < 0) {
+            begin = 0;
+        }
+        if (end > this.byteLength) {
+            end = this.byteLength;
+        }
+        if (end < begin) {
+            end = begin;
+        }
+        int32 len = end - begin;
+        int8[] out = new int8[len];
+        int32 i = 0;
+        while (i < len) {
+            out[i] = this.bytes[begin + i];
+            i = i + 1;
+        }
+        return new String(out, len);
+    }
+
+    /**
+     * Returns a new String with all ASCII lowercase letters mapped
+     * to uppercase. Non-ASCII bytes pass through unchanged — full
+     * Unicode case folding (locale-aware, multi-byte) is a planned
+     * follow-up tied to the cajeta.text.Locale rollout.
+     */
+    public #String toUpperCase() {
+        int32 n = this.byteLength;
+        int8[] out = new int8[n];
+        int32 i = 0;
+        while (i < n) {
+            int32 b = ((int32) this.bytes[i]) & 0xff;
+            if (b >= 0x61 && b <= 0x7A) {
+                out[i] = (int8) (b - 32);
+            } else {
+                out[i] = this.bytes[i];
+            }
+            i = i + 1;
+        }
+        return new String(out, n);
+    }
+
+    /**
+     * Returns a new String with all ASCII uppercase letters mapped
+     * to lowercase. Non-ASCII bytes pass through unchanged. Same
+     * deferred Unicode-folding caveat as toUpperCase.
+     */
+    public #String toLowerCase() {
+        int32 n = this.byteLength;
+        int8[] out = new int8[n];
+        int32 i = 0;
+        while (i < n) {
+            int32 b = ((int32) this.bytes[i]) & 0xff;
+            if (b >= 0x41 && b <= 0x5A) {
+                out[i] = (int8) (b + 32);
+            } else {
+                out[i] = this.bytes[i];
+            }
+            i = i + 1;
+        }
+        return new String(out, n);
+    }
+
+    /**
+     * Strips leading and trailing ASCII whitespace (byte values 0
+     * through 0x20 inclusive) and returns the resulting view. v1
+     * matches Java's `String.trim()` semantics — full Unicode
+     * whitespace (codepoints in Z*, plus 0085/2028/2029, etc.) is
+     * the planned `strip()` companion once Locale lands.
+     */
+    public #String trim() {
+        int32 start = 0;
+        int32 end = this.byteLength;
+        while (start < end && (((int32) this.bytes[start]) & 0xff) <= 0x20) {
+            start = start + 1;
+        }
+        while (end > start && (((int32) this.bytes[end - 1]) & 0xff) <= 0x20) {
+            end = end - 1;
+        }
+        int32 len = end - start;
+        int8[] out = new int8[len];
+        int32 i = 0;
+        while (i < len) {
+            out[i] = this.bytes[start + i];
+            i = i + 1;
+        }
+        return new String(out, len);
+    }
+
+    /**
+     * Returns a new String with every non-overlapping occurrence of
+     * `from`'s bytes replaced by `to`'s bytes. Two-pass naive
+     * implementation: first pass counts occurrences and sizes the
+     * output buffer; second pass walks bytes copying through.
+     * Empty or null `from` returns this String unchanged.
+     */
+    public #String replace(String from, String repl) {
+        if (from == null || repl == null) {
+            return this;
+        }
+        int32 flen = from.byteLength;
+        if (flen == 0) {
+            return this;
+        }
+        int32 tlen = repl.byteLength;
+        int32 occurrences = 0;
+        int32 i = 0;
+        int32 limit = this.byteLength - flen;
+        while (i <= limit) {
+            int32 j = 0;
+            boolean match = true;
+            while (j < flen && match) {
+                if (this.bytes[i + j] != from.bytes[j]) {
+                    match = false;
+                }
+                j = j + 1;
+            }
+            if (match) {
+                occurrences = occurrences + 1;
+                i = i + flen;
+            } else {
+                i = i + 1;
+            }
+        }
+        int32 outLen = this.byteLength + occurrences * (tlen - flen);
+        int8[] out = new int8[outLen];
+        int32 src = 0;
+        int32 dst = 0;
+        while (src <= limit) {
+            int32 j = 0;
+            boolean match = true;
+            while (j < flen && match) {
+                if (this.bytes[src + j] != from.bytes[j]) {
+                    match = false;
+                }
+                j = j + 1;
+            }
+            if (match) {
+                int32 k = 0;
+                while (k < tlen) {
+                    out[dst] = repl.bytes[k];
+                    dst = dst + 1;
+                    k = k + 1;
+                }
+                src = src + flen;
+            } else {
+                out[dst] = this.bytes[src];
+                dst = dst + 1;
+                src = src + 1;
+            }
+        }
+        while (src < this.byteLength) {
+            out[dst] = this.bytes[src];
+            dst = dst + 1;
+            src = src + 1;
+        }
+        return new String(out, outLen);
+    }
 
     /**
      * Raw byte at the given byte index. Byte-indexed (not codepoint-

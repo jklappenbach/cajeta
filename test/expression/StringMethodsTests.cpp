@@ -29,6 +29,12 @@ int32_t runJit(const std::string& body) {
 
 } // namespace
 
+TEST(StringMethodsTests, declOnlyDoesNotCrash) {
+    EXPECT_EQ(runJit(
+        "String s = \"hello\";\n"
+        "return 42;"), 42);
+}
+
 TEST(StringMethodsTests, sizeOfHello) {
     EXPECT_EQ(runJit(
         "String s = \"hello\";\n"
@@ -43,10 +49,14 @@ TEST(StringMethodsTests, sizeOfEmpty) {
         "return 0;"), 1);
 }
 
-TEST(StringMethodsTests, lengthAliasesSize) {
+TEST(StringMethodsTests, countOfTenAsciiChars) {
+    // `count()` is the universal element-count API across String and
+    // Collections (2026-05-18 naming convention); for ASCII this
+    // coincides with `size()` (byte length), for multibyte UTF-8 the
+    // two diverge. Test pins ASCII parity.
     EXPECT_EQ(runJit(
         "String s = \"abcdefghij\";\n"
-        "if (s.length() == 10) return 1;\n"
+        "if (s.count() == 10) return 1;\n"
         "return 0;"), 1);
 }
 

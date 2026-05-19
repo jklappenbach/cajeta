@@ -4,6 +4,7 @@
 
 #include "LiteralExpression.h"
 #include "../../compile/CajetaModule.h"
+#include "../../type/CajetaClass.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
@@ -191,9 +192,82 @@ namespace cajeta {
             case LITERAL_TYPE_NULL:
                 return llvm::ConstantPointerNull::get(llvm::PointerType::get(ctx, 0));
             case LITERAL_TYPE_STRING:
-            case LITERAL_TYPE_TEXT_BLOCK:
-                return module->getBuilder()->CreateGlobalStringPtr(
-                    decodeStringLiteral(stripQuotes(value)), "str");
+            case LITERAL_TYPE_TEXT_BLOCK: {
+                // Phase 2b-β: a string literal materializes as a static
+                // view-mode `cajeta.lang.String` instance, not a bare i8*
+                // C-string. The byte payload is a private constant
+                // `{ i64 count, [N+1 x i8] data }` (CajetaArray-shaped,
+                // null-terminated for any legacy strlen reader); the
+                // instance is a private mutable global whose layout
+                // matches the class's struct (vtable, bytes, byteLength,
+                // mode=1 view, cachedCpLength=-1 uncomputed). Mutable
+                // because `count()` writes back its cached codepoint
+                // count on first call. Each literal has its own static
+                // pair; identical literals don't dedupe in v1 (LLVM may
+                // still merge them via mergefunc/constmerge passes).
+                //
+                // Bootstrap fallback: until class String is registered,
+                // emit the legacy i8* form. This lets the runtime
+                // (including String.cajeta itself) compile cleanly; user
+                // code always sees the class String materialization.
+                std::string decoded = decodeStringLiteral(stripQuotes(value));
+                CajetaTypePtr stringTy = CajetaType::of("String");
+                auto klass = std::dynamic_pointer_cast<CajetaClass>(stringTy);
+                if (!klass || !klass->getLlvmType()
+                        || !llvm::isa<llvm::StructType>(klass->getLlvmType())) {
+                    return module->getBuilder()->CreateGlobalStringPtr(decoded, "str");
+                }
+                auto* structTy = llvm::cast<llvm::StructType>(klass->getLlvmType());
+                auto* mod = module->getLlvmModule();
+                auto* i8Ty = llvm::Type::getInt8Ty(ctx);
+                auto* i32Ty = llvm::Type::getInt32Ty(ctx);
+                auto* i64Ty = llvm::Type::getInt64Ty(ctx);
+                auto* ptrTy = llvm::PointerType::get(ctx, 0);
+                int64_t len = (int64_t) decoded.size();
+
+                // 1. CajetaArray header for the bytes payload.
+                auto* dataArrTy = llvm::ArrayType::get(i8Ty, (uint64_t) len + 1);
+                auto* dataInit = llvm::ConstantDataArray::getString(
+                    ctx, decoded, /*addNull=*/true);
+                auto* arrStructTy = llvm::StructType::get(ctx,
+                    llvm::ArrayRef<llvm::Type*>{i64Ty, dataArrTy});
+                auto* arrInit = llvm::ConstantStruct::get(arrStructTy,
+                    llvm::ArrayRef<llvm::Constant*>{
+                        llvm::ConstantInt::get(i64Ty, llvm::APInt(64, (uint64_t) len, false)),
+                        dataInit,
+                    });
+                auto* bytesGv = new llvm::GlobalVariable(
+                    *mod, arrStructTy, /*isConst=*/true,
+                    llvm::GlobalValue::PrivateLinkage, arrInit, ".str.bytes");
+
+                // 2. Vtable global; cross-module fixup via ensureGlobalInModule.
+                llvm::Constant* vtableRef =
+                    llvm::ConstantPointerNull::get(ptrTy);
+                if (auto* vt = klass->getVirtualTableGlobal()) {
+                    vtableRef = CajetaModule::ensureGlobalInModule(mod, vt);
+                }
+
+                // 3. String instance constant. Field order matches
+                //    CajetaClass::generatePrototype's embedSubObject walk:
+                //    self vtable, then inherited fields (Object has none),
+                //    then this class's properties (bytes, byteLength,
+                //    mode, cachedCpLength).
+                auto* instInit = llvm::ConstantStruct::get(structTy,
+                    llvm::ArrayRef<llvm::Constant*>{
+                        vtableRef,
+                        bytesGv,
+                        llvm::ConstantInt::get(i32Ty,
+                            llvm::APInt(32, (uint64_t) len, true)),
+                        llvm::ConstantInt::get(i32Ty,
+                            llvm::APInt(32, 1, true)),
+                        llvm::ConstantInt::get(i32Ty,
+                            llvm::APInt(32, (uint64_t) -1, true)),
+                    });
+                auto* instGv = new llvm::GlobalVariable(
+                    *mod, structTy, /*isConst=*/false,
+                    llvm::GlobalValue::PrivateLinkage, instInit, ".str.inst");
+                return instGv;
+            }
             case LITERAL_TYPE_CHAR: {
                 // Strip the single-quote pair, then decode the literal
                 // into a Unicode codepoint (UTF-8 source bytes decoded
