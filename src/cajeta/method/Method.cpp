@@ -1316,10 +1316,36 @@ namespace cajeta {
         // const-correctness across the Method API would be a separate
         // refactor.
         string base = const_cast<Method*>(this)->toCanonical(labeled);
-        if (methodTypeParameters.empty() || methodTypeArguments.empty()) {
+        if (methodTypeParameters.empty()) {
+            // Ordinary (non-templated) method — plain canonical.
             return base;
         }
-        return base + buildMethodTypeArgSuffix(methodTypeArguments);
+        if (!methodTypeArguments.empty()) {
+            // Concrete instantiation — append the resolved type-args
+            // so distinct instantiations of the same template have
+            // distinct keys. See § two-layer naming below.
+            return base + buildMethodTypeArgSuffix(methodTypeArguments);
+        }
+        // Method-template declaration (template params declared, no
+        // concrete args bound yet). Suffix with the T-var NAMES so
+        // the declaration's key is distinct from a same-value-param
+        // non-templated overload. Without this, addMethod's
+        // duplicate-static check rejected the second registration
+        // when both `static T parse(int8[], int64)` and `<T> static T
+        // parse(int8[], int64)` were declared in the same class —
+        // forcing the workaround of giving the templated variant a
+        // different name (e.g. `parseT`). The names-not-types choice
+        // keeps the suffix stable across re-parses of the same
+        // declaration; the resolver doesn't compare these strings to
+        // user-supplied type args, so the choice is purely cosmetic
+        // for the key-distinctness purpose.
+        string s = base + "<";
+        for (size_t i = 0; i < methodTypeParameters.size(); ++i) {
+            if (i > 0) s += ",";
+            s += methodTypeParameters[i].name;
+        }
+        s += ">";
+        return s;
     }
 
     const string Method::getLlvmSymbolName() const {
