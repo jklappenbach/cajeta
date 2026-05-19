@@ -19,11 +19,11 @@ TEST(CompilerTests, canThrowOnInvalidInput) {
 }
 
 // Every Cajeta compilation implicitly loads the stdlib prelude. Current
-// content: cajeta.lang.{Object, Pair, Optional} +
+// content: cajeta.lang.{Object, Pair, Optional, String} +
 // cajeta.lang.stream.{Stream, ArrayStream, TakeStream, SkipStream,
 // FilterStream, MapStream, PeekStream, FlatMapStream} +
 // cajeta.error.{Throwable, Exception, RecoverableException,
-// UnrecoverableException} + cajeta.hash.Hash +
+// UnrecoverableException, EncodingException} + cajeta.hash.Hash +
 // cajeta.collection.{HashMap, HashSet, ArrayList, LinkedList,
 // LinkedListNode} + cajeta.lang.stream.{HashMapKeyStream,
 // HashMapValueStream, HashMapEntryStream}. Each source file under
@@ -37,7 +37,7 @@ TEST(CompilerTests, canThrowOnInvalidInput) {
 // when stdlib's structure count actually changes; prior values
 // drifted ahead of reality during the multi-class push, so re-anchor
 // by running the test and reading the actual size if it diverges.
-static constexpr size_t STDLIB_STRUCTURE_COUNT = 36;
+static constexpr size_t STDLIB_STRUCTURE_COUNT = 37;
 
 TEST(CompilerTests, canParseOnValidShortPackage) {
     string inputPath = CAJETA_TEST_ROOT + string("/compile/code/src/cajeta/Test.cajeta");

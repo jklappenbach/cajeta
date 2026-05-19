@@ -1,0 +1,61 @@
+package cajeta.lang;
+
+/**
+ * Immutable UTF-8 text, the single string type for Cajeta.
+ *
+ * See `cajeta-docs/stdlib/lang/String.md` for the full design — this
+ * file is the load-bearing data definition; method implementations land
+ * in subsequent phases (Phase 2c+).
+ *
+ * ## Phase 2b-α scope
+ *
+ * What's here today:
+ *   - The four-field storage layout (see below)
+ *   - A no-arg constructor that leaves bytes null and the discriminator
+ *     fields at safe defaults (mode = 0 owned, cachedCpLength = -1 not
+ *     computed). This is the JIT-test surface that pins the layout.
+ *
+ * What's NOT yet wired:
+ *   - String literals still emit `i8*` via the legacy primitive alias
+ *     (see CajetaType.cpp:130 — the alias coexists with this class for
+ *     now and is removed in Phase 2b-β when literal codegen materializes
+ *     view-mode `String` instances pointing at static storage).
+ *   - No methods (`size`, `getBytes`, `fromBytes`, comparison, ...) —
+ *     each lands in its own phase, paired with JIT tests.
+ *
+ * ## Storage model
+ *
+ *   - `bytes`           : UTF-8 payload. Owner of the bytes when
+ *                         `mode == 0`; borrowed view into static or
+ *                         externally-owned storage when `mode == 1`.
+ *   - `byteLength`      : number of valid bytes in `bytes`. Distinct
+ *                         from any underlying array length so view
+ *                         mode (which slices into shared storage) can
+ *                         carry a length independent of the host
+ *                         buffer.
+ *   - `mode`            : 0 = owned, 1 = view. The drop chain checks
+ *                         this to decide whether to reclaim `bytes`.
+ *   - `cachedCpLength`  : lazy codepoint count. `-1` = not yet
+ *                         computed; first call to a codepoint-counting
+ *                         method walks the bytes once and caches the
+ *                         result. Cheap (4 bytes) and removes the
+ *                         O(N) cost from repeated `length` calls on
+ *                         the same String.
+ *
+ * Field visibility is `public` for Phase 2b-α so the JIT tests can
+ * pin layout directly. Once methods land, visibility narrows and the
+ * pinning shifts to behaviour-level assertions.
+ */
+public class String {
+    public int8[] bytes;
+    public int32  byteLength;
+    public int32  mode;
+    public int32  cachedCpLength;
+
+    public String() {
+        this.bytes = null;
+        this.byteLength = 0;
+        this.mode = 0;
+        this.cachedCpLength = -1;
+    }
+}
