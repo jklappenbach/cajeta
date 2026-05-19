@@ -1819,9 +1819,17 @@ double __cajeta_random(void) {
     return (double) rand() / ((double) RAND_MAX + 1.0);
 }
 
-// substring(begin, end) — like Java's String.substring, half-open. Out-of-range
-// indices clamp to the valid window; the result is always a freshly malloc'd
-// null-terminated copy (so callers can pass it back to concat etc.).
+// substring(begin, end) for the LEGACY primitive-alias String path
+// (i8* null-terminated C-strings). Half-open like Java's; out-of-range
+// indices clamp; result is a freshly malloc'd null-terminated copy.
+//
+// Note: cajeta.lang.String (the class form) substring is view-based
+// per the never-drop rule (see cajeta-docs/stdlib/lang/String.md §
+// "Substring + slicing"). This C-string variant still copies because
+// the null-terminated ABI can't express a slice (a subspan of a longer
+// string would continue to the original terminator). The class
+// substring will be implemented in pure Cajeta as a view-mode String
+// pointing into the parent's bytes — no malloc, no free.
 char* __cajeta_str_substring(const char* s, int64_t begin, int64_t end) {
     if (!s) {
         char* out = (char*) malloc(1);

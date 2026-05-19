@@ -640,6 +640,14 @@ namespace cajeta {
             //      pointer-typed result (lowered via
             //      __cajeta_str_concat in BinaryOpExpression::ADD).
             //
+            // This drop registration applies only to the LEGACY
+            // primitive-alias String path (i8* C-strings, with malloc'd
+            // buffers that need free). cajeta.lang.String (the class
+            // form) follows the never-drop rule per
+            // cajeta-docs/stdlib/lang/String.md § Memory model — its
+            // method implementations don't register drops at all, and
+            // its substring is a view, not an allocation.
+            //
             // The two categories are mutually exclusive: only one of
             // borrow / owned applies to a given initializer.
             if (field && initializer && type

@@ -22,16 +22,25 @@ phase becomes a separate impl task.
 - **Immutable.** Once constructed, a String's bytes never change.
   `StringBuilder` (see below) is the companion for incremental
   construction.
-- **Tagged owned/view mode.** A String carries an internal mode bit:
-  - **Owned** — heap-allocated bytes, reclaimed by the drop chain
-    on scope exit.
-  - **View** — pointer into static storage (string literals) or
-    into bytes owned by another holder (rare; only as a future
-    optimization for known-safe cases). Drop chain skips view-mode
-    Strings.
+- **Strings are never dropped.** Cajeta-allocated String instances
+  (and their UTF-8 payloads) persist for the process's lifetime once
+  created. The drop chain does NOT register String allocations; no
+  per-string reclamation runs at scope exit. This makes view-mode
+  Strings (substring slices, literal views, JSON token spans)
+  unconditionally safe — the parent's bytes are guaranteed live for
+  as long as any code can reach the view.
+- **Tagged owned/view mode.** A String carries an internal mode bit
+  that records the bytes' origin, not its drop-eligibility:
+  - **Owned** (`mode = 0`) — bytes were heap-allocated for this
+    String. The String holds the canonical reference to them.
+  - **View** (`mode = 1`) — bytes are borrowed from somewhere else:
+    static storage (string literals), another String's payload
+    (substring slices), or a buffer the codec layer owns (JSON
+    token spans). Neither mode triggers a drop.
 - **One type, not two.** Owned and view share the same `String`
-  surface; the mode is implementation-detail unless you're doing
-  `#`-transfer (see [Memory model](#memory-model) below).
+  surface; the mode is implementation-detail. `#`-transfer of a
+  String moves the reference but doesn't change the
+  never-drop policy.
 
 ```cajeta
 class String {
@@ -257,17 +266,40 @@ scanners that need to walk the raw UTF-8 representation.
 ## Substring + slicing
 
 ```cajeta
-public #String substring(int32 startCp, int32 endCp);
+public String substring(int32 startCp, int32 endCp);
 ```
 
-**Always copies.** Returns a new owned String holding its own bytes.
-No borrowing/view variant — Java 6's shared-char[] substring caused
-1 MB files to stay alive because somebody kept a 10-char substring;
-copying is the safe default. Cajeta's `#` ownership operator could
-make borrow-style work, but we explicitly chose the simple model.
+**Returns a view (slice), not a copy.** The returned String is a
+view-mode instance (`mode = 1`) whose `bytes` field points into the
+parent's UTF-8 payload. No bytes are copied; the substring is O(1)
+after the codepoint→byte-offset walk (or O(byteLength) when the
+parent isn't ASCII-fast-path-able).
+
+Safety: **Strings are never dropped** in Cajeta. Once a String is
+allocated, its bytes persist for the process's lifetime — the drop
+chain doesn't register String allocations, and no per-string
+reclamation runs at scope exit. That makes view-mode substrings
+unconditionally safe: the parent's bytes are guaranteed live for as
+long as any program code can reach the substring.
+
+The trade-off vs Java 6's shared-char[] substring (which was
+abandoned in Java 7+): Java's char[] sharing leaked the *entire*
+backing array — a 10-char substring kept a 1 MB source file alive
+in the heap because the bytes were owned by the substring's char[]
+backing reference. Cajeta sidesteps this by making the policy
+explicit and global: Strings never die anyway, so view sharing
+doesn't change the heap-residency story. Workloads that produce
+hundreds of MB of unique String content during a long-running
+process should either materialize through byte[] for transient
+work or be redesigned to bound their String creation.
 
 Codepoint-indexed, not byte-indexed. If you need byte-range slicing,
 drop to the raw `byte[]` layer.
+
+Return type is plain `String` (no `#` ownership transfer marker)
+because no ownership crosses — the caller receives a view, not a
+moved heap allocation. Multiple call sites can hold substrings of
+the same parent concurrently without sharing-related contention.
 
 ---
 
@@ -490,18 +522,36 @@ Grapheme-aware reverse needs Unicode tables; see v2 plan below.
 
 ## Memory model
 
-- **Owned String** — `#String`. Heap-allocated bytes; drop chain
-  reclaims on scope exit. Same shape as any other class — `#`
-  transfer hands ownership across function / field boundaries.
-- **View String** — bytes point into static storage (string literals)
-  or borrowed external memory. Drop chain skips view-mode Strings;
-  the bytes are owned elsewhere (or never freed in the static case).
+- **Strings are never dropped.** This is the global lifetime rule:
+  Cajeta-allocated String instances and their UTF-8 payloads persist
+  for the process's lifetime. The drop chain does NOT register
+  String allocations, and scope exit doesn't reclaim Strings.
+- **Owned String** (`mode = 0`) — bytes were heap-allocated for this
+  String. The String holds the canonical reference but isn't itself
+  drop-eligible — bytes outlive every visible scope.
+- **View String** (`mode = 1`) — bytes point into static storage
+  (string literals), into another String's payload (substring
+  slices), or into a buffer the codec layer owns (JSON token spans).
+  View-mode Strings are also never dropped (consistent with the
+  global rule); the buffer's parent owns the lifetime.
+- **`#`-transfer of a String** moves the reference between holders
+  but doesn't change reclamation behavior. The never-drop policy
+  applies regardless of how many holders the same String has.
 - **`#` on view-mode is a no-op.** `#"literal"` doesn't transfer
   anything (there's nothing to transfer). The compiler emits the
   lint warning **`transfer-on-view-string`** (see
   [LintRules.md](../../LintRules.md)) so the meaningless `#` is
   visible. Suppress via `@SuppressLint("transfer-on-view-string")`
   for the rare deliberate case.
+- **Memory-cost trade-off.** Long-running processes that produce
+  unbounded distinct String content will grow without bound under
+  the never-drop policy. Workloads with that shape (high-churn
+  text-rewriting pipelines, log accumulators) should hold transient
+  text as `byte[]` and only materialize to `String` at egress, or
+  be redesigned to bound their String creation. This is the same
+  trade Strings make in Java's intern pool / .NET's interned
+  string table; Cajeta extends it to ALL Strings, not just
+  literals, to simplify substring / view semantics.
 - **Empty-String singleton.** A single shared `""` view-mode String
   sits in static storage; `String.empty()` returns it. No allocation
   per empty literal.
@@ -544,7 +594,7 @@ strictly necessary for the most common text operations.
 ```cajeta
 public Stream<String> graphemes();           // each yielded String is one cluster
 public int32 graphemeCount();                // O(N) walk
-public #String graphemeSlice(int32 startG, int32 endG);  // substring by graphemes
+public String graphemeSlice(int32 startG, int32 endG);  // substring by graphemes (view, no copy)
 ```
 
 **Planned v2 additions to `StringBuilder`:**
