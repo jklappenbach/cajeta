@@ -60,6 +60,21 @@ public final class Json {
     }
 
     /**
+     * Tier 1 helper — read a T from an EXISTING JsonReader position.
+     * The synthesizer expects the reader to be positioned such that
+     * the next `r.next()` call returns START_OBJECT for T's body.
+     *
+     * Used internally to recurse into nested class fields without
+     * creating a new JsonReader. Public so the synthesizer can emit
+     * cross-class instantiation calls (the wrapper class context
+     * doesn't otherwise have access to private helpers).
+     */
+    public static <T> T parseObjectFromReaderT(JsonReader r) {
+        throw heap JsonParseException(
+            "Json.parseObjectFromReaderT<T>: synthesizer not engaged", (int64) 0);
+    }
+
+    /**
      * Tier 1 emit — symmetric counterpart of parseT. The synthesizer
      * walks T's fields and emits per-field JsonWriter calls. Returns
      * the emitted JSON bytes as an int8[] (owned by the caller).
@@ -67,5 +82,16 @@ public final class Json {
     public static <T> int8[] toBytesT(T value) {
         throw heap JsonParseException(
             "Json.toBytesT<T>: synthesizer not engaged", (int64) 0);
+    }
+
+    /**
+     * Tier 1 helper — emit T into an EXISTING JsonWriter. Writes
+     * beginObject / fields / endObject. Used internally to recurse
+     * into nested class fields, sharing the parent's JsonWriter so
+     * the nested bytes interleave correctly with the outer ones.
+     */
+    public static <T> void toBytesObjectIntoT(JsonWriter w, T value) {
+        throw heap JsonParseException(
+            "Json.toBytesObjectIntoT<T>: synthesizer not engaged", (int64) 0);
     }
 }

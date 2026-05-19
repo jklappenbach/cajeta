@@ -212,6 +212,66 @@ TEST(JsonSynthesizerTests, parseStringField) {
     EXPECT_EQ(runI32(src), 2);
 }
 
+// Parse `{"point":{"x":7}}` into Outer { Inner point; } with
+// Inner { int32 x; }. Pins synthesizer's recursive nested-class
+// dispatch — Json.parseObjectFromReaderT<Inner> is called from the
+// parent's field arm with the shared JsonReader.
+TEST(JsonSynthesizerTests, parseNestedClass) {
+    auto src =
+        "package test;\n"
+        "import cajeta.codec.json.Json;\n"
+        "public class Inner { public int32 x; }\n"
+        "public class Outer { public Inner point; }\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        // {"point":{"x":7}} → 17 bytes
+        "        int8[] buf = new int8[17];\n"
+        "        buf[0]  = (int8) 0x7B;\n"  // '{'
+        "        buf[1]  = (int8) 0x22;\n"  // '"'
+        "        buf[2]  = (int8) 0x70;\n"  // 'p'
+        "        buf[3]  = (int8) 0x6F;\n"  // 'o'
+        "        buf[4]  = (int8) 0x69;\n"  // 'i'
+        "        buf[5]  = (int8) 0x6E;\n"  // 'n'
+        "        buf[6]  = (int8) 0x74;\n"  // 't'
+        "        buf[7]  = (int8) 0x22;\n"  // '"'
+        "        buf[8]  = (int8) 0x3A;\n"  // ':'
+        "        buf[9]  = (int8) 0x7B;\n"  // '{'
+        "        buf[10] = (int8) 0x22;\n"  // '"'
+        "        buf[11] = (int8) 0x78;\n"  // 'x'
+        "        buf[12] = (int8) 0x22;\n"  // '"'
+        "        buf[13] = (int8) 0x3A;\n"  // ':'
+        "        buf[14] = (int8) 0x37;\n"  // '7'
+        "        buf[15] = (int8) 0x7D;\n"  // '}'
+        "        buf[16] = (int8) 0x7D;\n"  // '}'
+        "        Outer o = Json.parseT<Outer>(buf, (int64) 17);\n"
+        "        return o.point.x;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 7);
+}
+
+// Round-trip nested class through toBytesT + parseT.
+TEST(JsonSynthesizerTests, roundTripNestedClass) {
+    auto src =
+        "package test;\n"
+        "import cajeta.codec.json.Json;\n"
+        "public class Inner { public int32 x; }\n"
+        "public class Outer { public Inner point; }\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Outer a = heap Outer();\n"
+        "        Inner ip = heap Inner();\n"
+        "        ip.x = 99;\n"
+        "        a.point = ip;\n"
+        "        int8[] bytes = Json.toBytesT<Outer>(a);\n"
+        "        int64 n = (int64) bytes.count();\n"
+        "        Outer b = Json.parseT<Outer>(bytes, n);\n"
+        "        return b.point.x;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 99);
+}
+
 // Parse `{"x":3.14}` into a float64 field.
 TEST(JsonSynthesizerTests, parseFloat64Field) {
     auto src =

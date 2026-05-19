@@ -30,45 +30,102 @@ namespace cajeta {
         return os.str();
     }
 
-    // Emit `out.<field> = <reader-call>;` for one supported field type.
-    // Returns empty string if the type is unsupported (caller should
-    // emit a skip-value arm instead).
+    // Emit the FULL post-key body for one supported field type — that
+    // is, the statements that consume the value tokens AND assign the
+    // result to out.<field>. The caller is responsible only for the
+    // key-matching guard. For primitive value types this is
+    // `t = r.next(); out.<field> = <reader-call>;`; for nested-class
+    // types it's a single recursive `Json.parseObjectFromReaderT<NestedT>(r)`
+    // call — the recursive parser will consume the START_OBJECT itself.
+    //
+    // Returns empty string if the type is unsupported (caller emits a
+    // skip-value arm instead).
     std::string readFieldAssignment(const StructurePropertyPtr& prop) {
         const std::string& fieldName = prop->getName();
         CajetaTypePtr ty = prop->getType();
         if (!ty || !ty->getQName()) return "";
         const std::string& tcanon = ty->getQName()->toCanonical();
         if (tcanon == "int32") {
-            return "out." + fieldName + " = r.currentNumberAsInt32();\n";
+            return "t = r.next();\n            out." + fieldName +
+                   " = r.currentNumberAsInt32();\n";
         }
         if (tcanon == "int64") {
-            return "out." + fieldName + " = r.currentNumberAsInt64();\n";
+            return "t = r.next();\n            out." + fieldName +
+                   " = r.currentNumberAsInt64();\n";
         }
         if (tcanon == "boolean") {
-            // JsonReader emits BOOLEAN as one token kind; currentBoolean()
-            // disambiguates true vs false.
-            return "out." + fieldName + " = r.currentBoolean();\n";
+            return "t = r.next();\n            out." + fieldName +
+                   " = r.currentBoolean();\n";
         }
         if (tcanon == "float64") {
-            return "out." + fieldName + " = r.currentNumberAsFloat64();\n";
+            return "t = r.next();\n            out." + fieldName +
+                   " = r.currentNumberAsFloat64();\n";
         }
         if (tcanon == "cajeta.lang.String") {
             // currentBytes() returns the inner string bytes (quotes
-            // stripped by scanStringSpan). Wrap them in a String via
-            // the (int8[], int32 byteLength) view-mode constructor;
-            // the bytes are an owned #int8[] returned by the reader,
-            // so the String holds the buffer for its own lifetime.
-            // The .count() field accessor on the buffer returns int64;
-            // the ctor wants int32 byteLength so narrow.
-            return "{\n"
-                   "            int8[] vbytes = r.currentBytes();\n"
+            // stripped). Wrap them in a String view-mode instance via
+            // the (int8[], int32 byteLength) constructor.
+            return "t = r.next();\n"
+                   "            int8[] vbytes_" + fieldName +
+                       " = r.currentBytes();\n"
                    "            out." + fieldName +
                        " = heap cajeta.lang.String("
-                       "vbytes, (int32) vbytes.count());\n"
-                   "        }\n";
+                       "vbytes_" + fieldName +
+                       ", (int32) vbytes_" + fieldName + ".count());\n";
         }
-        // Future: float64, nested classes, arrays.
+        // Nested class field — recurse via Json.parseObjectFromReaderT<NestedT>.
+        // The recursive call consumes the value's START_OBJECT and
+        // END_OBJECT itself; the outer loop should NOT call r.next()
+        // before it. Use the short name `Json` because the wrapper
+        // class lives in cajeta.codec.json — multi-segment FQN
+        // (`cajeta.codec.json.Json`) doesn't resolve through the dot
+        // chain since `cajeta`/`codec`/`json` aren't classes.
+        if (auto nestedClass = std::dynamic_pointer_cast<CajetaClass>(ty)) {
+            return "out." + fieldName +
+                   " = Json.parseObjectFromReaderT<" +
+                   tcanon + ">(r);\n";
+        }
         return "";
+    }
+
+    // Build the inner field-dispatch loop body. Used by both `parseT`
+    // (wrapped in a JsonReader-create preamble) and
+    // `parseObjectFromReaderT` (called from inside another parse).
+    // Expects locals `T out` and `JsonReader r` to be in scope before
+    // entry, and consumes from START_OBJECT through END_OBJECT.
+    std::string emitObjectLoopBody(const CajetaClassPtr& T,
+                                    const std::string& indent) {
+        std::ostringstream os;
+        os << indent << "int32 t = r.next();\n";
+        os << indent << "if (t != JsonToken.START_OBJECT) {\n";
+        os << indent << "    throw heap JsonParseException(\n";
+        os << indent << "        \"Tier-1 parse: expected '{'\", r.position());\n";
+        os << indent << "}\n";
+        os << indent << "while (true) {\n";
+        os << indent << "    t = r.next();\n";
+        os << indent << "    if (t == JsonToken.END_OBJECT) { return out; }\n";
+        os << indent << "    if (t != JsonToken.KEY) {\n";
+        os << indent << "        throw heap JsonParseException(\n";
+        os << indent << "            \"Tier-1 parse: expected key\", r.position());\n";
+        os << indent << "    }\n";
+        os << indent << "    int8[] kb = r.currentBytes();\n";
+        os << indent << "    int32 klen = (int32) kb.count();\n";
+        bool first = true;
+        for (auto& prop : T->getPropertyList()) {
+            std::string assign = readFieldAssignment(prop);
+            if (assign.empty()) continue;
+            os << indent << "    " << (first ? "if" : "else if")
+               << " (" << keyBytesGuard(prop->getName()) << ") {\n";
+            os << indent << "        " << assign;
+            os << indent << "    }\n";
+            first = false;
+        }
+        // Unknown-key arm — consume the value's first token. v1 doesn't
+        // recurse into unknown objects/arrays; that lands when a real
+        // JsonReader.skipValue() is wired through.
+        os << indent << "    else { t = r.next(); }\n";
+        os << indent << "}\n";
+        return os.str();
     }
 
     // Build the synthesized `parse` method body for T. The method
@@ -80,59 +137,31 @@ namespace cajeta {
     // synthesized declaration to carry method type parameters).
     std::string synthesizeParseBody(const CajetaClassPtr& T,
                                      const std::string& methodName) {
-        // Use the short type name (e.g. `Box`) in the body — the wrapper
-        // class is parsed in Json's module context (cajeta.codec.json),
-        // which doesn't see user-package classes by default. The caller
-        // (MethodTemplateInstantiator) wraps our snippet in that module's
-        // preamble (synthesizeMethodPreamble pulls in module->getImports())
-        // but the user's class T isn't in those imports. We sidestep this
-        // by emitting an explicit `import` prefix as the first line of
-        // the synthesized snippet — the instantiator concatenates it
-        // INSIDE the wrapper class (between the brace and the method),
-        // which doesn't parse as an import — so we need a different
-        // approach.
-        //
-        // Workaround: fully-qualify in the signature (e.g. `test.Box`)
-        // — the parser accepts dotted type names in declaration positions.
-        // For the body, use a local-typed-as-pointer trick or just emit
-        // the dotted name everywhere.
+        // Fully-qualify type names in the body — the wrapper class
+        // lives in Json's module (cajeta.codec.json), so short names
+        // for user-package types wouldn't resolve.
         const std::string& Tcanon = T->getQName()->toCanonical();
         std::ostringstream os;
         os << "public static " << Tcanon
            << " " << methodName << "(int8[] bytes, int64 length) {\n";
         os << "    " << Tcanon << " out = heap " << Tcanon << "();\n";
         os << "    JsonReader r = heap JsonReader(bytes, length);\n";
-        os << "    int32 t = r.next();\n";
-        os << "    if (t != JsonToken.START_OBJECT) {\n";
-        os << "        throw heap JsonParseException(\n";
-        os << "            \"Tier-1 parse: expected '{'\", r.position());\n";
-        os << "    }\n";
-        os << "    while (true) {\n";
-        os << "        t = r.next();\n";
-        os << "        if (t == JsonToken.END_OBJECT) { return out; }\n";
-        os << "        if (t != JsonToken.KEY) {\n";
-        os << "            throw heap JsonParseException(\n";
-        os << "                \"Tier-1 parse: expected key\", r.position());\n";
-        os << "        }\n";
-        os << "        int8[] kb = r.currentBytes();\n";
-        os << "        int32 klen = (int32) kb.count();\n";
-        bool first = true;
-        for (auto& prop : T->getPropertyList()) {
-            std::string assign = readFieldAssignment(prop);
-            if (assign.empty()) continue;
-            os << "        " << (first ? "if" : "else if")
-               << " (" << keyBytesGuard(prop->getName()) << ") {\n";
-            os << "            t = r.next();\n";
-            os << "            " << assign;
-            os << "        }\n";
-            first = false;
-        }
-        if (!first) {
-            os << "        else { t = r.next(); }\n";
-        } else {
-            os << "        t = r.next();\n";
-        }
-        os << "    }\n";
+        os << emitObjectLoopBody(T, "    ");
+        os << "}\n";
+        return os.str();
+    }
+
+    // Variant of synthesizeParseBody for the from-existing-reader
+    // entry point. Same field-dispatch loop body; signature takes a
+    // JsonReader instead of bytes/length.
+    std::string synthesizeParseFromReaderBody(const CajetaClassPtr& T,
+                                                const std::string& methodName) {
+        const std::string& Tcanon = T->getQName()->toCanonical();
+        std::ostringstream os;
+        os << "public static " << Tcanon
+           << " " << methodName << "(JsonReader r) {\n";
+        os << "    " << Tcanon << " out = heap " << Tcanon << "();\n";
+        os << emitObjectLoopBody(T, "    ");
         os << "}\n";
         return os.str();
     }
@@ -158,6 +187,11 @@ namespace cajeta {
             // writer copies bytes through with quote/escape handling.
             value << "w.writeString(value." << fieldName
                   << ".bytes, value." << fieldName << ".byteLength);\n";
+        } else if (std::dynamic_pointer_cast<CajetaClass>(ty)) {
+            // Nested class field — recurse via toBytesObjectIntoT.
+            // Short name `Json` for same-package reasons as the read side.
+            value << "Json.toBytesObjectIntoT<"
+                  << tcanon << ">(w, value." << fieldName << ");\n";
         } else {
             return "";
         }
@@ -175,6 +209,22 @@ namespace cajeta {
         return os.str();
     }
 
+    // Emit the inner `w.beginObject() ... per-field ... w.endObject()`
+    // sequence. Used by both `toBytesT` (which wraps it with a fresh
+    // JsonWriter create + toBytes finalize) and `toBytesObjectIntoT`
+    // (which receives the writer as a parameter and shares it with
+    // the parent emit).
+    std::string emitObjectWriteBody(const CajetaClassPtr& T) {
+        std::ostringstream os;
+        os << "    w.beginObject();\n";
+        for (auto& prop : T->getPropertyList()) {
+            std::string emit = writeFieldEmit(prop);
+            if (!emit.empty()) os << emit;
+        }
+        os << "    w.endObject();\n";
+        return os.str();
+    }
+
     std::string synthesizeToBytesBody(const CajetaClassPtr& T,
                                        const std::string& methodName) {
         const std::string& Tcanon = T->getQName()->toCanonical();
@@ -182,13 +232,22 @@ namespace cajeta {
         os << "public static int8[] " << methodName
            << "(" << Tcanon << " value) {\n";
         os << "    JsonWriter w = heap JsonWriter();\n";
-        os << "    w.beginObject();\n";
-        for (auto& prop : T->getPropertyList()) {
-            std::string emit = writeFieldEmit(prop);
-            if (!emit.empty()) os << emit;
-        }
-        os << "    w.endObject();\n";
+        os << emitObjectWriteBody(T);
         os << "    return w.toBytes();\n";
+        os << "}\n";
+        return os.str();
+    }
+
+    // toBytesObjectIntoT variant — caller supplies the JsonWriter.
+    // No fresh writer creation, no toBytes finalize; just emit the
+    // begin/end-object pair around the field writes.
+    std::string synthesizeToBytesObjectIntoBody(const CajetaClassPtr& T,
+                                                  const std::string& methodName) {
+        const std::string& Tcanon = T->getQName()->toCanonical();
+        std::ostringstream os;
+        os << "public static void " << methodName
+           << "(JsonWriter w, " << Tcanon << " value) {\n";
+        os << emitObjectWriteBody(T);
         os << "}\n";
         return os.str();
     }
@@ -208,26 +267,33 @@ namespace cajeta {
         // T must be a class type (primitives forbidden by the spec).
         auto T = std::dynamic_pointer_cast<CajetaClass>(args[0]);
         if (!T) return false;
-        if (methodName == "parse" || methodName == "parseT") {
-            out = synthesizeParseBody(T, methodName);
+        auto dumpIfRequested = [&](const std::string& body) {
             if (const char* dump = std::getenv("CAJETA_DUMP_IR")) {
                 if (dump[0] == '1') {
                     std::cerr << "[JsonSynthesizer] " << methodName << "<"
                               << T->getQName()->toCanonical() << ">:\n"
-                              << out << "\n";
+                              << body << "\n";
                 }
             }
+        };
+        if (methodName == "parse" || methodName == "parseT") {
+            out = synthesizeParseBody(T, methodName);
+            dumpIfRequested(out);
+            return true;
+        }
+        if (methodName == "parseObjectFromReaderT") {
+            out = synthesizeParseFromReaderBody(T, methodName);
+            dumpIfRequested(out);
             return true;
         }
         if (methodName == "toBytes" || methodName == "toBytesT") {
             out = synthesizeToBytesBody(T, methodName);
-            if (const char* dump = std::getenv("CAJETA_DUMP_IR")) {
-                if (dump[0] == '1') {
-                    std::cerr << "[JsonSynthesizer] " << methodName << "<"
-                              << T->getQName()->toCanonical() << ">:\n"
-                              << out << "\n";
-                }
-            }
+            dumpIfRequested(out);
+            return true;
+        }
+        if (methodName == "toBytesObjectIntoT") {
+            out = synthesizeToBytesObjectIntoBody(T, methodName);
+            dumpIfRequested(out);
             return true;
         }
         return false;
