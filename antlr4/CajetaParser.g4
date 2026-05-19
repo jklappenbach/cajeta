@@ -663,8 +663,23 @@ expression
     : primary
     | expression bop='.'
       (
-         identifier
-       | methodCall
+         // methodCall MUST come before bare identifier — for inputs
+         // like `expr.name<TypeArg>(arg)`, both alternatives can
+         // produce a complete overall parse (identifier consumes just
+         // `name` and lets the outer expression rule absorb
+         // `<TypeArg>(arg)` as chained `<`/`>` comparison; methodCall
+         // consumes the whole call form). ANTLR's tie-break picks the
+         // first listed alternative, so listing identifier first
+         // ambiguates `<ClassName>(singleArg)` shapes into bogus
+         // comparison-chain ASTs and segfaults during codegen with a
+         // null operand. (Two-arg / zero-arg / primitive-type-arg
+         // forms work because the comma / empty parens / primitive
+         // keyword block the comparison alternative on independent
+         // grounds.) Trying methodCall first cleanly fails to match
+         // when no `(` follows and falls through to identifier — so
+         // the swap doesn't affect plain field-access syntax.
+         methodCall
+       | identifier
        | THIS
        | NEW nonWildcardTypeArguments? innerCreator
        | SUPER superSuffix
