@@ -684,6 +684,89 @@ TEST(JsonSynthesizerTests, jsonIgnoreNotRead) {
     EXPECT_EQ(runI32(src), 0);
 }
 
+// Asymmetric @JsonIgnore(onWrite=true) — read still happens, write
+// omits. Field-set-from-input-then-never-echoed audit pattern.
+TEST(JsonSynthesizerTests, jsonIgnoreOnWriteReadStillRuns) {
+    auto src =
+        "package test;\n"
+        "import cajeta.codec.json.Json;\n"
+        "public class AuditEvent {\n"
+        "    public int32 id;\n"
+        "    @JsonIgnore(onWrite = true)\n"
+        "    public int32 internalTag;\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        // Read: internalTag should still pick up 99.
+        "        String s = \"{\\\"id\\\":7,\\\"internalTag\\\":99}\";\n"
+        "        AuditEvent e = Json.parse<AuditEvent>(s);\n"
+        "        if (e.internalTag != 99) return 0;\n"
+        "        if (e.id != 7) return 0;\n"
+        // Write: internalTag omitted.
+        "        int8[] bytes = Json.toBytes<AuditEvent>(e);\n"
+        // {"id":7} = 8 bytes.
+        "        return (int32) bytes.count();\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 8);
+}
+
+// Asymmetric @JsonIgnore(onRead=true) — parser skips the key,
+// writer still emits. The "computed/derived field" pattern: it
+// exists on the object, is written out, but never accepted from
+// external input.
+TEST(JsonSynthesizerTests, jsonIgnoreOnReadWriteStillRuns) {
+    auto src =
+        "package test;\n"
+        "import cajeta.codec.json.Json;\n"
+        "public class Computed {\n"
+        "    public int32 id;\n"
+        "    @JsonIgnore(onRead = true)\n"
+        "    public int32 derived;\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        // Read: derived stays at default 0 (input value ignored).
+        "        String s = \"{\\\"id\\\":3,\\\"derived\\\":777}\";\n"
+        "        Computed c = Json.parse<Computed>(s);\n"
+        "        if (c.derived != 0) return 0;\n"
+        "        if (c.id != 3) return 0;\n"
+        // Write: derived emits — but it's 0 right now.
+        "        c.derived = 42;\n"
+        "        int8[] bytes = Json.toBytes<Computed>(c);\n"
+        // {"id":3,"derived":42} = 21 bytes.
+        "        return (int32) bytes.count();\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 21);
+}
+
+// Bare @JsonIgnore (no args) still skips both — back-compat with
+// the simple form. Asymmetric semantics only kick in when args
+// are supplied.
+TEST(JsonSynthesizerTests, jsonIgnoreBareStillSkipsBoth) {
+    auto src =
+        "package test;\n"
+        "import cajeta.codec.json.Json;\n"
+        "public class Both {\n"
+        "    public int32 id;\n"
+        "    @JsonIgnore\n"
+        "    public int32 hidden;\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        String s = \"{\\\"id\\\":1,\\\"hidden\\\":555}\";\n"
+        "        Both b = Json.parse<Both>(s);\n"
+        "        if (b.hidden != 0) return -1;\n"  // read-skipped → 0
+        "        b.hidden = 999;\n"
+        "        int8[] bytes = Json.toBytes<Both>(b);\n"
+        // {"id":1} = 8 bytes; hidden write-skipped too.
+        "        return (int32) bytes.count();\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 8);
+}
+
 // Mixed: one normal field, one renamed, one ignored. Pins that the
 // annotation pass doesn't disturb un-annotated fields.
 TEST(JsonSynthesizerTests, mixedAnnotatedFields) {

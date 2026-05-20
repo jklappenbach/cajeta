@@ -14,13 +14,41 @@ namespace cajeta {
 
     namespace {
 
-    // True if this field is excluded from JSON serialization +
-    // deserialization via `@JsonIgnore`. The synthesizer skips ignored
-    // fields entirely on both read and write — no key-arm emitted on
-    // read (the field falls into the catch-all skip-value arm
-    // naturally), no key-value pair emitted on write.
+    // True if this field is excluded from JSON deserialization
+    // (READ side). See `cajeta-docs/stdlib/codec/Json.md` § Field-
+    // level annotations for the asymmetric @JsonIgnore semantics:
+    //
+    //   @JsonIgnore                              — both directions skipped (bare).
+    //   @JsonIgnore(onRead=true)                 — read-skip only.
+    //   @JsonIgnore(onWrite=true)                — write-skip only.
+    //   @JsonIgnore(onRead=true, onWrite=true)   — both (same as bare).
+    //
+    // The bare-annotation default is "skip both" — most users mean
+    // "completely ignore this field." When ANY arg is supplied,
+    // unspecified directions default to false (don't skip), so the
+    // user only has to call out the direction they care about.
+    bool isJsonIgnoredOnRead(const StructurePropertyPtr& prop) {
+        if (!prop) return false;
+        auto ann = prop->findAnnotation("JsonIgnore");
+        if (!ann) return false;
+        if (ann->getArgs().empty()) return true;   // bare = both directions.
+        return ann->getBool("onRead", false);
+    }
+
+    bool isJsonIgnoredOnWrite(const StructurePropertyPtr& prop) {
+        if (!prop) return false;
+        auto ann = prop->findAnnotation("JsonIgnore");
+        if (!ann) return false;
+        if (ann->getArgs().empty()) return true;   // bare = both directions.
+        return ann->getBool("onWrite", false);
+    }
+
+    // Back-compat helper for call sites that don't yet need the
+    // per-direction split (`isJsonRequired` overrides). True only
+    // when BOTH directions are skipped — a partially-ignored field
+    // with @JsonRequired still has a meaningful read direction.
     bool isJsonIgnored(const StructurePropertyPtr& prop) {
-        return prop && prop->findAnnotation("JsonIgnore") != nullptr;
+        return isJsonIgnoredOnRead(prop) && isJsonIgnoredOnWrite(prop);
     }
 
     // True if `@JsonRequired` is set on the field — the parse body
@@ -32,7 +60,7 @@ namespace cajeta {
     // user who annotates both ends up with the @JsonIgnore behavior.
     bool isJsonRequired(const StructurePropertyPtr& prop) {
         return prop
-            && !isJsonIgnored(prop)
+            && !isJsonIgnoredOnRead(prop)
             && prop->findAnnotation("JsonRequired") != nullptr;
     }
 
@@ -486,10 +514,12 @@ namespace cajeta {
         os << indent << "    int32 klen = (int32) kb.count();\n";
         bool first = true;
         for (auto& prop : T->getPropertyList()) {
-            // @JsonIgnore: drop the per-field arm entirely so JSON
-            // input with this key falls through to the unknown-key
-            // skip arm (the field stays at its default).
-            if (isJsonIgnored(prop)) continue;
+            // @JsonIgnore on the read side: drop the per-field arm
+            // entirely so JSON input with this key falls through to
+            // the unknown-key skip arm (the field stays at its
+            // default). Asymmetric @JsonIgnore(onWrite=true) leaves
+            // the read side untouched and only skips emission below.
+            if (isJsonIgnoredOnRead(prop)) continue;
             std::string assign = readFieldAssignment(prop);
             if (assign.empty()) continue;
             // @JsonAlias adds alternate read-side keys. OR every
@@ -658,8 +688,10 @@ namespace cajeta {
     // if the field type isn't yet supported by the writer arm.
     std::string writeFieldEmit(const StructurePropertyPtr& prop,
                                 const std::string& classStrategy) {
-        // @JsonIgnore: don't emit a key/value pair for this field.
-        if (isJsonIgnored(prop)) return "";
+        // @JsonIgnore on the write side: don't emit a key/value
+        // pair for this field. Asymmetric @JsonIgnore(onRead=true)
+        // leaves the write side untouched.
+        if (isJsonIgnoredOnWrite(prop)) return "";
         const std::string& fieldName = prop->getName();
         CajetaTypePtr ty = prop->getType();
         if (!ty || !ty->getQName()) return "";
