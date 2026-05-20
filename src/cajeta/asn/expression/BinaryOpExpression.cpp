@@ -153,6 +153,15 @@ namespace cajeta {
                         return loaded;
                     }
                 }
+                // DotExpression returned something other than a slot —
+                // e.g. `__cajeta_str_view_to_owned`'s call result for
+                // a view-materialized String field, or the raw data
+                // pointer for a `T[]` view field. That value IS the
+                // language-level result; the GEP/GlobalVariable gate
+                // above intentionally skips the load. Bail out before
+                // the class-ref catch-all below tries to load through
+                // it and hands back the vtable word.
+                return v;
             }
         }
         // SpawnExpression returns the malloc'd Task<T>* directly — the

@@ -498,7 +498,18 @@ namespace cajeta {
             if (fieldQn && fieldQn->getTypeName() == "String") {
                 llvm::Function* fn = module->getRuntimeFunction("__cajeta_str_view_to_owned");
                 if (!fn) return nullptr;
-                return builder->CreateCall(fn, {dataPtr, length64});
+                // The runtime helper returns a malloc'd null-terminated
+                // char* — the bytes copied out of the wire buffer. Post
+                // Phase 2b-β String is a CLASS, so we need to materialize
+                // a class String instance around those bytes (vtable +
+                // CajetaArray header + mode=0 owned + cachedCpLength=-1)
+                // so subsequent `.equals` / `.size` / etc. dispatch
+                // correctly. Without this the caller would treat the
+                // raw char* as a class String pointer, vtable-dispatch
+                // would load the first 8 bytes of the payload as the
+                // vtable, and crash on bogus function-pointer addresses.
+                llvm::Value* cstr = builder->CreateCall(fn, {dataPtr, length64});
+                return wrapCStringIntoClassString(module, cstr, identifier.c_str());
             }
             if (auto arrType = dynamic_pointer_cast<CajetaArray>(property->getType())) {
                 llvm::Function* fn = module->getRuntimeFunction("__cajeta_array_view_to_owned");

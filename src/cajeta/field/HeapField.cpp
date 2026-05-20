@@ -13,7 +13,20 @@ namespace cajeta {
         if (!alloca) {
             alloca = module->getBuilder()->CreateAlloca(type->getLlvmType()->getPointerTo());
             if (initializer) {
-                module->getBuilder()->CreateStore(initializer->generateCode(module), alloca);
+                // An initializer whose generateCode returns null is a
+                // legitimate "no usable r-value" — e.g. a `s.foo` on a
+                // class whose layout has no `foo` field (path-borrow
+                // tests intentionally exercise that shape). Fall back
+                // to storing an explicit null pointer of the slot's
+                // type rather than feeding a null Value* into
+                // CreateStore, which would crash inside IRBuilder.
+                llvm::Value* initVal = initializer->generateCode(module);
+                if (!initVal) {
+                    initVal = llvm::ConstantPointerNull::get(
+                        llvm::cast<llvm::PointerType>(
+                            type->getLlvmType()->getPointerTo()));
+                }
+                module->getBuilder()->CreateStore(initVal, alloca);
             }
         }
         return alloca;

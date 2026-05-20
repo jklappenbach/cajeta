@@ -84,6 +84,19 @@ namespace cajeta {
     llvm::Value* loadIfLValue(CajetaModulePtr module, llvm::Value* v,
                               ExpressionPtr ast = nullptr);
 
+    // Wrap a C-string `cstr` (an `i8*` pointing at malloc'd bytes that
+    // ARE null-terminated) into a heap-allocated class String instance.
+    // The String is mode-0 (owned) — its `bytes` field points at a
+    // fresh CajetaArray header that holds a copy of the bytes. When
+    // `freeAfterWrap` is true the intermediate cstr is freed at the
+    // call site (use false for static literals / .rodata pointers).
+    //
+    // Shared between MethodCallExpression (toString/valueOf intrinsics)
+    // and DotExpression (view-field String materialization).
+    llvm::Value* wrapCStringIntoClassString(CajetaModulePtr module,
+        llvm::Value* cstr, const char* namePrefix,
+        bool freeAfterWrap = true);
+
     // Expression is a sibling of Statement under AbstractSyntaxNode. When an expression
     // appears in statement position (e.g. `foo();`), wrap it in ExpressionStatement
     // rather than relying on inheritance — see Statement::fromContext.

@@ -34,11 +34,11 @@ namespace cajeta {
     // and returns the class String pointer. Returns the raw cstr
     // unchanged when the class String type hasn't been loaded yet
     // (runtime bring-up bootstrap window).
-    static llvm::Value* wrapCStringIntoClassString(
+    llvm::Value* wrapCStringIntoClassString(
             CajetaModulePtr module,
             llvm::Value* cstr,
             const char* namePrefix,
-            bool freeAfterWrap = true) {
+            bool freeAfterWrap) {
         auto& llvmCtx = *module->getLlvmContext();
         auto* builder = module->getBuilder();
         llvm::Type* ptrTy = llvm::PointerType::get(llvmCtx, 0);
@@ -1993,10 +1993,85 @@ namespace cajeta {
             }
         }
 
+        // Null-receiver short-circuit for class String null-safe methods.
+        // Pre-Phase 2b-β these calls lowered to legacy runtime helpers
+        // (__cajeta_str_len / __cajeta_str_isEmpty / __cajeta_str_equals)
+        // which null-checked at the C level and returned safe defaults.
+        // Class-method dispatch (vtable load through `this`) crashes on
+        // a null receiver. The NullHandlingTests carry the load-bearing
+        // pre-class behaviour; preserve it here by branching on the
+        // receiver and selecting the safe default when null. Java NPE
+        // semantics are deferred until the throws machinery covers
+        // implicit null dereference (TODO in NullHandlingTests.cpp).
+        bool nullSafeStringMethod = false;
+        llvm::Type* nullSafeReturnTy = nullptr;
+        llvm::Constant* nullSafeDefault = nullptr;
+        if (thisValue && thisValue->getType()->isPointerTy() && targetClass
+                && targetClass->getQName()
+                && targetClass->getQName()->getTypeName() == "String"
+                && targetClass->getQName()->getPackageName() == "cajeta.lang") {
+            auto& ctx = *module->getLlvmContext();
+            llvm::Type* i64Ty = llvm::Type::getInt64Ty(ctx);
+            llvm::Type* i1Ty = llvm::Type::getInt1Ty(ctx);
+            if (methodCallName == "size" || methodCallName == "length"
+                    || methodCallName == "count") {
+                nullSafeStringMethod = true;
+                nullSafeReturnTy = i64Ty;
+                nullSafeDefault = llvm::ConstantInt::get(i64Ty, 0);
+            } else if (methodCallName == "isEmpty") {
+                nullSafeStringMethod = true;
+                nullSafeReturnTy = i1Ty;
+                nullSafeDefault = llvm::ConstantInt::get(i1Ty, 1);
+            } else if (methodCallName == "equals") {
+                nullSafeStringMethod = true;
+                nullSafeReturnTy = i1Ty;
+                nullSafeDefault = llvm::ConstantInt::get(i1Ty, 0);
+            }
+        }
+
+        llvm::BasicBlock* nullSafeNullBB = nullptr;
+        llvm::BasicBlock* nullSafeCallBB = nullptr;
+        llvm::BasicBlock* nullSafeJoinBB = nullptr;
+        if (nullSafeStringMethod) {
+            auto& ctx = *module->getLlvmContext();
+            llvm::Function* parentFn = builder->GetInsertBlock()->getParent();
+            nullSafeNullBB = llvm::BasicBlock::Create(ctx, "str.nullsafe.null", parentFn);
+            nullSafeCallBB = llvm::BasicBlock::Create(ctx, "str.nullsafe.call", parentFn);
+            nullSafeJoinBB = llvm::BasicBlock::Create(ctx, "str.nullsafe.join", parentFn);
+            llvm::Value* isNull = builder->CreateICmpEQ(thisValue,
+                llvm::ConstantPointerNull::get(
+                    llvm::cast<llvm::PointerType>(thisValue->getType())),
+                "str.null");
+            builder->CreateCondBr(isNull, nullSafeNullBB, nullSafeCallBB);
+            builder->SetInsertPoint(nullSafeCallBB);
+        }
+
         llvm::Value* callResult = targetClass->invokeMethod(methodCallName, entries,
             /*isConstructor=*/false, thisValue, /*callerModule=*/module,
             /*forceDirectCall=*/isSuperCall,
             /*explicitMethodTypeArgs=*/explicitMethodTypeArgs);
+
+        if (nullSafeStringMethod && callResult) {
+            // Normalize call result type to match the default's IR type
+            // (i1 vs i8 boolean ABI mismatch surfaces here).
+            llvm::Value* normalizedCall = callResult;
+            if (callResult->getType() != nullSafeReturnTy
+                    && callResult->getType()->isIntegerTy()
+                    && nullSafeReturnTy->isIntegerTy()) {
+                normalizedCall = builder->CreateIntCast(callResult,
+                    nullSafeReturnTy, /*isSigned=*/false, "str.nullsafe.cast");
+            }
+            llvm::BasicBlock* callTerm = builder->GetInsertBlock();
+            builder->CreateBr(nullSafeJoinBB);
+            builder->SetInsertPoint(nullSafeNullBB);
+            builder->CreateBr(nullSafeJoinBB);
+            builder->SetInsertPoint(nullSafeJoinBB);
+            llvm::PHINode* phi = builder->CreatePHI(nullSafeReturnTy, 2,
+                "str.nullsafe.result");
+            phi->addIncoming(normalizedCall, callTerm);
+            phi->addIncoming(nullSafeDefault, nullSafeNullBB);
+            callResult = phi;
+        }
 
         // Pin resolvedType to the called method's return type so a caller
         // using this MCE as a ctor / method argument can recover the
