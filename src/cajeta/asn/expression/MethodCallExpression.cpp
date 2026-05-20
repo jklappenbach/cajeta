@@ -19,6 +19,116 @@
 
 namespace cajeta {
 
+    // Wrap a malloc'd null-terminated C-string into a fresh
+    // `cajeta.lang.String` instance the user code can dispatch
+    // class methods against. The legacy runtime helpers
+    // (`__cajeta_i64_to_str`, `__cajeta_f64_to_str`,
+    // `__cajeta_bool_to_str`, `__cajeta_str_fromChar`,
+    // `__cajeta_str_concat`, …) all return `char*` and were the
+    // entire String surface before the class String landed; after
+    // Phase 2b-β user code expects class instances at the same call
+    // sites. This helper bridges: takes the malloc'd cstr, copies
+    // its bytes into a CajetaArray header so `s.bytes[i]` works
+    // through the int8[] field shape, allocates a class String
+    // header with the right vtable, frees the intermediate cstr,
+    // and returns the class String pointer. Returns the raw cstr
+    // unchanged when the class String type hasn't been loaded yet
+    // (runtime bring-up bootstrap window).
+    static llvm::Value* wrapCStringIntoClassString(
+            CajetaModulePtr module,
+            llvm::Value* cstr,
+            const char* namePrefix,
+            bool freeAfterWrap = true) {
+        auto& llvmCtx = *module->getLlvmContext();
+        auto* builder = module->getBuilder();
+        llvm::Type* ptrTy = llvm::PointerType::get(llvmCtx, 0);
+        llvm::Type* i64Ty = llvm::Type::getInt64Ty(llvmCtx);
+        llvm::Type* i32Ty = llvm::Type::getInt32Ty(llvmCtx);
+        llvm::Type* i8Ty = llvm::Type::getInt8Ty(llvmCtx);
+
+        CajetaTypePtr stringTy = CajetaType::of("String");
+        auto stringKlass = std::dynamic_pointer_cast<CajetaClass>(stringTy);
+        if (!stringKlass || !stringKlass->getLlvmType()
+                || !llvm::isa<llvm::StructType>(stringKlass->getLlvmType())) {
+            return cstr;  // bootstrap fallback
+        }
+        auto* stringStructTy =
+            llvm::cast<llvm::StructType>(stringKlass->getLlvmType());
+
+        std::string pfx = namePrefix ? namePrefix : "str";
+        llvm::Function* strlenFn = module->getRuntimeFunction("__cajeta_str_len");
+        llvm::Value* lenI64 = builder->CreateCall(
+            strlenFn, {cstr}, pfx + ".len");
+        llvm::Value* lenI32 = builder->CreateIntCast(
+            lenI64, i32Ty, /*isSigned=*/true, pfx + ".len32");
+
+        // CajetaArray header sized 8 + len + 1 (count word + bytes +
+        // null terminator).
+        llvm::Value* arrSize = builder->CreateAdd(lenI64,
+            llvm::ConstantInt::get(i64Ty, 9), pfx + ".arr_size");
+        llvm::FunctionType* allocTy = llvm::FunctionType::get(
+            ptrTy, {i64Ty}, false);
+        llvm::FunctionCallee allocFn =
+            module->getLlvmModule()->getOrInsertFunction(
+                "__cajeta_alloc", allocTy);
+        llvm::Value* arrPtr = builder->CreateCall(
+            allocFn, {arrSize}, pfx + ".arr_alloc");
+        builder->CreateMemSet(arrPtr,
+            llvm::ConstantInt::get(i8Ty, 0),
+            arrSize, llvm::MaybeAlign(8));
+        builder->CreateStore(lenI64, arrPtr);
+        llvm::Value* dataPtr = builder->CreateInBoundsGEP(
+            i8Ty, arrPtr,
+            llvm::ConstantInt::get(i64Ty, 8),
+            pfx + ".arr_data");
+        builder->CreateMemCpy(dataPtr, llvm::MaybeAlign(1),
+            cstr, llvm::MaybeAlign(1), lenI64);
+
+        const llvm::DataLayout& dl =
+            module->getLlvmModule()->getDataLayout();
+        llvm::Constant* sSize = llvm::ConstantInt::get(
+            i64Ty, dl.getTypeAllocSize(stringStructTy));
+        llvm::Value* sPtr = MemoryManager::createMallocInstruction(
+            module, sSize, builder->GetInsertBlock());
+
+        llvm::Constant* vtableRef = llvm::ConstantPointerNull::get(
+            llvm::cast<llvm::PointerType>(ptrTy));
+        if (auto* vt = stringKlass->getVirtualTableGlobal()) {
+            vtableRef = CajetaModule::ensureGlobalInModule(
+                module->getLlvmModule(), vt);
+        }
+        builder->CreateStore(vtableRef,
+            builder->CreateStructGEP(stringStructTy, sPtr, 0,
+                pfx + ".s_vtable"));
+        builder->CreateStore(arrPtr,
+            builder->CreateStructGEP(stringStructTy, sPtr, 1,
+                pfx + ".s_bytes"));
+        builder->CreateStore(lenI32,
+            builder->CreateStructGEP(stringStructTy, sPtr, 2,
+                pfx + ".s_byteLength"));
+        builder->CreateStore(llvm::ConstantInt::get(i32Ty, 0),
+            builder->CreateStructGEP(stringStructTy, sPtr, 3,
+                pfx + ".s_mode"));
+        builder->CreateStore(llvm::ConstantInt::get(i32Ty, -1),
+            builder->CreateStructGEP(stringStructTy, sPtr, 4,
+                pfx + ".s_cachedCpLength"));
+
+        // Free the intermediate cstr — we copied its bytes into the
+        // CajetaArray header, so the class String owns its own
+        // buffer. Caller passes `freeAfterWrap=false` when the cstr
+        // is a `.rodata` static (e.g. `__cajeta_bool_to_str` returns
+        // a const char* to a string literal — calling free() on it
+        // would crash). The malloc'd-cstr helpers (i64_to_str,
+        // f64_to_str, str_concat, …) all want the free.
+        if (freeAfterWrap) {
+            if (llvm::Function* freeFn =
+                    module->getRuntimeFunction("__cajeta_free")) {
+                builder->CreateCall(freeFn, {cstr});
+            }
+        }
+        return sPtr;
+    }
+
     // methodCall: `identifier ('<' typeList '>')? '(' parameterList? ')'`
     //           | `THIS '(' parameterList? ')'`
     //           | `SUPER '(' parameterList? ')'`
@@ -104,9 +214,47 @@ namespace cajeta {
     // variable, or some other pointer-typed value.
     static llvm::Value* loadStringArg(CajetaModulePtr module, const AbstractSyntaxNodePtr& argNode) {
         auto* builder = module->getBuilder();
+        auto& llvmCtx = *module->getLlvmContext();
         llvm::Value* v = argNode->generateCode(module);
         if (auto* a = llvm::dyn_cast_or_null<llvm::AllocaInst>(v)) {
             v = builder->CreateLoad(a->getAllocatedType(), a);
+        }
+        // Post Phase 2b-β: a "String" arg is now a class
+        // `cajeta.lang.String` instance pointer, not a raw `char*`.
+        // The legacy runtime helpers (__cajeta_parse_i64,
+        // __cajeta_parse_f64, __cajeta_parse_bool, __cajeta_log,
+        // __cajeta_println, …) still take `const char*`, so unwrap
+        // class String args here: GEP into `.bytes` slot (struct
+        // index 1, the int8[] field), load the CajetaArray header
+        // pointer, then GEP past its 8-byte count to land on the
+        // first data byte. The literal codegen guarantees null
+        // termination so any strlen-reader sees the right end.
+        auto argExpr = std::dynamic_pointer_cast<Expression>(argNode);
+        CajetaTypePtr argTy = argExpr ? argExpr->getResolvedType() : nullptr;
+        if (!argTy && argExpr) {
+            argExpr->resolveTypes(module);
+            argTy = argExpr->getResolvedType();
+        }
+        if (argTy) {
+            auto cls = std::dynamic_pointer_cast<CajetaClass>(argTy);
+            if (cls && cls->getQName()
+                    && cls->getQName()->getTypeName() == "String"
+                    && cls->getQName()->getPackageName() == "cajeta.lang"
+                    && cls->getLlvmType()
+                    && llvm::isa<llvm::StructType>(cls->getLlvmType())) {
+                auto* structTy =
+                    llvm::cast<llvm::StructType>(cls->getLlvmType());
+                llvm::Type* ptrTy = llvm::PointerType::get(llvmCtx, 0);
+                llvm::Type* i8Ty = llvm::Type::getInt8Ty(llvmCtx);
+                llvm::Type* i64Ty = llvm::Type::getInt64Ty(llvmCtx);
+                llvm::Value* bytesSlot = builder->CreateStructGEP(
+                    structTy, v, 1, "strArg.bytes_slot");
+                llvm::Value* bytesPtr = builder->CreateLoad(
+                    ptrTy, bytesSlot, "strArg.bytes_ptr");
+                v = builder->CreateInBoundsGEP(i8Ty, bytesPtr,
+                    llvm::ConstantInt::get(i64Ty, 8),
+                    "strArg.cstr");
+            }
         }
         return v;
     }
@@ -805,52 +953,94 @@ namespace cajeta {
                 }
                 // Integer.toString(int) / Long.toString(long) / Double.toString(double) /
                 // Boolean.toString(bool) — same lowering as String.valueOf(...).
+                // Post Phase 2b-β, the result wraps into a class
+                // `cajeta.lang.String` instance so the caller can dispatch
+                // class methods (`.equals`, `.count`, …) against it. The
+                // raw `char*` from the legacy runtime helpers ends up as
+                // the byte content; `wrapCStringIntoClassString` copies
+                // those bytes into the class String's CajetaArray and
+                // frees the intermediate (or skips the free for static
+                // literals like `__cajeta_bool_to_str`'s "true"/"false").
                 if ((ns == "Integer" || ns == "Long" || ns == "Double" || ns == "Boolean")
                         && methodCallName == "toString" && parameters.size() == 1) {
                     llvm::Value* v = loadValue(0);
                     llvm::Type* t = v->getType();
+                    // Pin resolvedType on the way out so a parent call site
+                    // (e.g. `Integer.parseInt(Integer.toString(x))`) sees
+                    // the class String type and routes through
+                    // `loadStringArg`'s class-String unwrap.
+                    resolvedType = CajetaType::of("String");
                     if (ns == "Boolean" || t->isIntegerTy(1)) {
                         if (t->isIntegerTy(1)) v = builder->CreateZExt(v, i32Ty);
                         else if (t != i32Ty && t->isIntegerTy()) v = builder->CreateIntCast(v, i32Ty, true);
                         llvm::Function* fn = module->getRuntimeFunction("__cajeta_bool_to_str");
-                        // bool_to_str returns const char*; cast away const for the IR side.
-                        return builder->CreateCall(fn, {v});
+                        llvm::Value* cstr = builder->CreateCall(fn, {v});
+                        return wrapCStringIntoClassString(module, cstr,
+                            "boolStr", /*freeAfterWrap=*/false);
                     }
                     if (t->isFloatingPointTy() || ns == "Double") {
                         if (t != f64Ty) v = t->isIntegerTy()
                             ? builder->CreateSIToFP(v, f64Ty)
                             : builder->CreateFPCast(v, f64Ty);
                         llvm::Function* fn = module->getRuntimeFunction("__cajeta_f64_to_str");
-                        return builder->CreateCall(fn, {v});
+                        llvm::Value* cstr = builder->CreateCall(fn, {v});
+                        return wrapCStringIntoClassString(module, cstr, "f64Str");
                     }
                     // Integer/Long path.
                     if (t->isIntegerTy() && t != i64Ty) v = builder->CreateIntCast(v, i64Ty, true);
                     llvm::Function* fn = module->getRuntimeFunction("__cajeta_i64_to_str");
-                    return builder->CreateCall(fn, {v});
+                    llvm::Value* cstr = builder->CreateCall(fn, {v});
+                    return wrapCStringIntoClassString(module, cstr, "i64Str");
                 }
                 if (ns == "String" && methodCallName == "valueOf" && parameters.size() == 1) {
                     llvm::Value* v = loadValue(0);
                     llvm::Type* t = v->getType();
-                    if (t->isPointerTy()) return v;  // already a String
+                    resolvedType = CajetaType::of("String");
+                    if (t->isPointerTy()) return v;  // already a String / ptr
                     if (t->isIntegerTy(1)) {
                         v = builder->CreateZExt(v, i32Ty);
                         llvm::Function* fn = module->getRuntimeFunction("__cajeta_bool_to_str");
-                        return builder->CreateCall(fn, {v});
+                        llvm::Value* cstr = builder->CreateCall(fn, {v});
+                        return wrapCStringIntoClassString(module, cstr,
+                            "valueOfBool", /*freeAfterWrap=*/false);
+                    }
+                    // Cajeta `char` is an i32 codepoint (since the
+                    // 2026-05-18 redefinition). For ASCII codepoints
+                    // (0..127) the UTF-8 encoding is the same single
+                    // byte, so we can lower through the i8 path
+                    // `__cajeta_str_fromChar`. Wider codepoints would
+                    // need a multibyte encoder; not in v1.
+                    auto argTy = parameters[0].expression
+                        ? std::dynamic_pointer_cast<Expression>(parameters[0].expression)
+                          : nullptr;
+                    auto argResolved = argTy ? argTy->getResolvedType() : nullptr;
+                    bool isCharArg = argResolved && argResolved->getQName()
+                        && argResolved->getQName()->getTypeName() == "char";
+                    if (isCharArg && t->isIntegerTy() && t != llvm::Type::getInt8Ty(llvmCtx)) {
+                        // Narrow codepoint to i8 (ASCII-only v1).
+                        v = builder->CreateIntCast(v,
+                            llvm::Type::getInt8Ty(llvmCtx), /*isSigned=*/true);
+                        llvm::Function* fn = module->getRuntimeFunction("__cajeta_str_fromChar");
+                        llvm::Value* cstr = builder->CreateCall(fn, {v});
+                        return wrapCStringIntoClassString(module, cstr, "valueOfChar");
                     }
                     if (t->isIntegerTy(8)) {
                         // Treat i8 as char for String.valueOf — single-byte string.
                         llvm::Function* fn = module->getRuntimeFunction("__cajeta_str_fromChar");
-                        return builder->CreateCall(fn, {v});
+                        llvm::Value* cstr = builder->CreateCall(fn, {v});
+                        return wrapCStringIntoClassString(module, cstr, "valueOfChar");
                     }
                     if (t->isIntegerTy()) {
                         if (t != i64Ty) v = builder->CreateIntCast(v, i64Ty, true);
                         llvm::Function* fn = module->getRuntimeFunction("__cajeta_i64_to_str");
-                        return builder->CreateCall(fn, {v});
+                        llvm::Value* cstr = builder->CreateCall(fn, {v});
+                        return wrapCStringIntoClassString(module, cstr, "valueOfInt");
                     }
                     if (t->isFloatingPointTy()) {
                         if (t != f64Ty) v = builder->CreateFPCast(v, f64Ty);
                         llvm::Function* fn = module->getRuntimeFunction("__cajeta_f64_to_str");
-                        return builder->CreateCall(fn, {v});
+                        llvm::Value* cstr = builder->CreateCall(fn, {v});
+                        return wrapCStringIntoClassString(module, cstr, "valueOfF64");
                     }
                 }
             }
