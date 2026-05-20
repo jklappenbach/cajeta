@@ -1,0 +1,58 @@
+package cajeta.hash;
+
+import cajeta.lang.Object;
+import cajeta.lang.String;
+
+/**
+ * Uniform streaming-hash contract.
+ *
+ * Every algorithm class (`XXHash3`, `RapidHash`, `SipHash`, `MD5`,
+ * `DefaultHasher`) implements this interface so callers can write a
+ * single hash-loop body that swaps algorithms by changing the
+ * constructor. Per-type entry points are explicit width-named
+ * (`writeInt16` vs `writeInt32`) rather than overloaded — primitives
+ * widen silently in many languages, which silently changes the hash;
+ * the explicit shape pins the byte sequence the algorithm sees.
+ *
+ * ## Usage
+ *
+ * ```cajeta
+ * Hasher h = new XXHash3();
+ * h.writeInt32(point.x);
+ * h.writeInt32(point.y);
+ * h.writeString(point.label);
+ * int64 digest = h.finish();
+ * ```
+ *
+ * `finish()` is terminal: behavior after the first `finish()` call is
+ * algorithm-defined and the contract here only promises a digest from
+ * the bytes written so far.
+ *
+ * ## v1 limitation: void write returns
+ *
+ * Spec previously sketched fluent chaining (`return this;`). v1 ships
+ * with `void` returns to dodge interface-covariance edge cases; chain
+ * with separate statements. Fluent chaining can be revisited once
+ * class-to-interface upcast on return is exercised more broadly.
+ *
+ * @see cajeta.hash.Hash
+ * @see [stdlib/Hashing.md](../../../../../cajeta-docs/stdlib/Hashing.md)
+ */
+public interface Hasher {
+    public void writeBoolean(boolean v);
+    public void writeInt8(int8 v);
+    public void writeInt16(int16 v);
+    public void writeInt32(int32 v);
+    public void writeInt64(int64 v);
+    public void writeUInt8(uint8 v);
+    public void writeUInt16(uint16 v);
+    public void writeUInt32(uint32 v);
+    public void writeUInt64(uint64 v);
+    public void writeFloat32(float32 v);
+    public void writeFloat64(float64 v);
+    public void writeBytes(int8[] data);
+    public void writeBytesRange(int8[] data, int64 offset, int64 length);
+    public void writeString(String s);
+    public void writeObject(Object obj);
+    public int64 finish();
+}

@@ -2224,7 +2224,10 @@ namespace cajeta {
 
     void CajetaClass::resolveImplementedInterfaces() {
         // Mirrors resolveSuperClasses but for `implements I1, I2`. Each name
-        // is looked up in the module's structures map; entries flagged
+        // is looked up first in the module's structures map, then in the
+        // global canonical type registry so cross-module interfaces (e.g. a
+        // user class implementing a stdlib interface like
+        // cajeta.hash.Hasher) resolve correctly. Entries flagged
         // isInterface() are pushed into implementedInterfaces. Non-interface
         // names in the implements list are silently skipped today (a future
         // version should raise CAJETA_ERROR_NOT_AN_INTERFACE).
@@ -2240,6 +2243,36 @@ namespace cajeta {
                     if (entry.second->getQName()->getTypeName() == qn->getTypeName()) {
                         found = entry.second;
                         break;
+                    }
+                }
+            }
+            if (!found) {
+                // Cross-module fallback: the interface may live in stdlib
+                // or in a sibling user module. CajetaType::getCanonicalMap
+                // is the global type registry that every parsed
+                // CajetaClass / CajetaInterface registers itself in
+                // (CajetaClass::generatePrototype line ~485 + the
+                // CajetaLlvmVisitor onInterfaceDeclaration hook), so a
+                // by-canonical lookup there finds it regardless of which
+                // module declared it.
+                auto& canonMap = CajetaType::getCanonicalMap();
+                auto cit = canonMap.find(qn->toCanonical());
+                if (cit != canonMap.end()) {
+                    found = std::dynamic_pointer_cast<CajetaClass>(cit->second);
+                }
+                if (!found) {
+                    // Short-name fallback: user wrote `implements Hasher`
+                    // and the import resolution left qn with just
+                    // "Hasher". Walk the global map looking for a
+                    // matching typeName (the package-stripped tail).
+                    for (auto& [canon, t] : canonMap) {
+                        auto cls = std::dynamic_pointer_cast<CajetaClass>(t);
+                        if (!cls) continue;
+                        auto cqn = cls->getQName();
+                        if (cqn && cqn->getTypeName() == qn->getTypeName()) {
+                            found = cls;
+                            break;
+                        }
                     }
                 }
             }
