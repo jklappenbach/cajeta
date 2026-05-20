@@ -633,6 +633,117 @@ namespace cajeta {
                     llvm::Value* count = builder->CreateLoad(i64Ty, sizePtr);
                     llvm::Value* dataPtr = builder->CreateStructGEP(hdrTy, argsHdr,
                         CajetaArray::DATA_FIELD_INDEX);
+
+                    // Post Phase 2b-β: each element of `String[]` is a
+                    // class String pointer (not a `char*`). The runtime
+                    // helper `__cajeta_log` reads argv[i] as `const
+                    // char*` and would feed the class String struct's
+                    // raw bytes through strlen, printing the vtable
+                    // word + payload prefix as ASCII (garbage). Build
+                    // a parallel char** array on the stack, unwrap each
+                    // class String to its data pointer, and pass that
+                    // to __cajeta_log instead.
+                    //
+                    // Array slot stride note: `String[]` allocates
+                    // sizeof(class String) ≈ 32 bytes per slot today
+                    // (per CajetaArray::getElementLlvmType returning
+                    // the body struct type), but writers store an
+                    // 8-byte literal pointer into each slot's first
+                    // word. Use the array's struct-shaped GEP (matching
+                    // what `args[i] = "..."` codegen emits) rather
+                    // than a pointer-stride GEP into the raw data
+                    // region — that way reads land at the same slot
+                    // boundaries the writes used.
+                    CajetaTypePtr elemTy = arrType->getElementType();
+                    auto elemClass = std::dynamic_pointer_cast<CajetaClass>(elemTy);
+                    bool elemsAreClassString = elemClass
+                        && elemClass->getQName()
+                        && elemClass->getQName()->getTypeName() == "String"
+                        && elemClass->getQName()->getPackageName() == "cajeta.lang";
+                    if (elemsAreClassString) {
+                        llvm::Type* ptrTy = llvm::PointerType::get(llvmCtx, 0);
+                        llvm::Type* i8Ty = llvm::Type::getInt8Ty(llvmCtx);
+                        llvm::Type* stringStructTy = elemClass->getLlvmType();
+                        if (!stringStructTy
+                                || !llvm::isa<llvm::StructType>(stringStructTy)) {
+                            return builder->CreateCall(fn, {streamArg, fmt, count, dataPtr});
+                        }
+                        llvm::Function* parentFn = builder->GetInsertBlock()->getParent();
+                        llvm::Value* cstrArr = builder->CreateAlloca(
+                            ptrTy, count, "printf.cstrs");
+                        llvm::BasicBlock* condBB = llvm::BasicBlock::Create(
+                            llvmCtx, "printf.loop.cond", parentFn);
+                        llvm::BasicBlock* bodyBB = llvm::BasicBlock::Create(
+                            llvmCtx, "printf.loop.body", parentFn);
+                        llvm::BasicBlock* doneBB = llvm::BasicBlock::Create(
+                            llvmCtx, "printf.loop.done", parentFn);
+                        llvm::AllocaInst* iSlot = builder->CreateAlloca(
+                            i64Ty, nullptr, "printf.i");
+                        builder->CreateStore(
+                            llvm::ConstantInt::get(i64Ty, 0), iSlot);
+                        builder->CreateBr(condBB);
+                        builder->SetInsertPoint(condBB);
+                        llvm::Value* i = builder->CreateLoad(i64Ty, iSlot, "printf.i.cur");
+                        llvm::Value* cmp = builder->CreateICmpULT(i, count, "printf.i.lt");
+                        builder->CreateCondBr(cmp, bodyBB, doneBB);
+                        builder->SetInsertPoint(bodyBB);
+                        // strPtrSlot = &argsHdr->data[i] via the array
+                        // struct's own GEP — gets the per-slot stride
+                        // right regardless of the element body size.
+                        llvm::Value* strPtrSlot = builder->CreateGEP(
+                            hdrTy, argsHdr,
+                            { llvm::ConstantInt::get(i64Ty, 0),
+                              llvm::ConstantInt::get(
+                                  llvm::Type::getInt32Ty(llvmCtx),
+                                  CajetaArray::DATA_FIELD_INDEX),
+                              i },
+                            "printf.strSlot");
+                        // Reader: each slot's FIRST word holds the
+                        // class-String pointer (writers store a `ptr`
+                        // into the slot via the same GEP). Load that
+                        // word as ptr.
+                        llvm::Value* strPtr = builder->CreateLoad(
+                            ptrTy, strPtrSlot, "printf.strPtr");
+                        llvm::Value* isNull = builder->CreateICmpEQ(strPtr,
+                            llvm::ConstantPointerNull::get(
+                                llvm::cast<llvm::PointerType>(ptrTy)),
+                            "printf.isNull");
+                        llvm::BasicBlock* extractBB = llvm::BasicBlock::Create(
+                            llvmCtx, "printf.extract", parentFn);
+                        llvm::BasicBlock* storeNullBB = llvm::BasicBlock::Create(
+                            llvmCtx, "printf.storeNull", parentFn);
+                        llvm::BasicBlock* afterBB = llvm::BasicBlock::Create(
+                            llvmCtx, "printf.after", parentFn);
+                        builder->CreateCondBr(isNull, storeNullBB, extractBB);
+                        builder->SetInsertPoint(extractBB);
+                        llvm::Value* bytesSlot = builder->CreateStructGEP(
+                            stringStructTy, strPtr, 1, "printf.bytesSlot");
+                        llvm::Value* bytesPtr = builder->CreateLoad(
+                            ptrTy, bytesSlot, "printf.bytesPtr");
+                        llvm::Value* cstr = builder->CreateInBoundsGEP(
+                            i8Ty, bytesPtr,
+                            llvm::ConstantInt::get(i64Ty, 8),
+                            "printf.cstr");
+                        builder->CreateBr(afterBB);
+                        builder->SetInsertPoint(storeNullBB);
+                        builder->CreateBr(afterBB);
+                        builder->SetInsertPoint(afterBB);
+                        llvm::PHINode* finalCstr = builder->CreatePHI(ptrTy, 2, "printf.cstr.final");
+                        finalCstr->addIncoming(cstr, extractBB);
+                        finalCstr->addIncoming(
+                            llvm::ConstantPointerNull::get(
+                                llvm::cast<llvm::PointerType>(ptrTy)),
+                            storeNullBB);
+                        llvm::Value* destSlot = builder->CreateInBoundsGEP(
+                            ptrTy, cstrArr, i, "printf.destSlot");
+                        builder->CreateStore(finalCstr, destSlot);
+                        llvm::Value* iNext = builder->CreateAdd(i,
+                            llvm::ConstantInt::get(i64Ty, 1), "printf.i.next");
+                        builder->CreateStore(iNext, iSlot);
+                        builder->CreateBr(condBB);
+                        builder->SetInsertPoint(doneBB);
+                        return builder->CreateCall(fn, {streamArg, fmt, count, cstrArr});
+                    }
                     return builder->CreateCall(fn, {streamArg, fmt, count, dataPtr});
                 }
                 // Unknown method or arity on a System stream; fall through to the

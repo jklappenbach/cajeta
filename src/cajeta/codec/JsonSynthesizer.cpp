@@ -514,9 +514,17 @@ namespace cajeta {
         // Fully-qualify type names in the body — the wrapper class
         // lives in Json's module (cajeta.codec.json), so short names
         // for user-package types wouldn't resolve.
+        //
+        // The return type is `#T` (ownership-returning): the parsed
+        // value `out` is freshly heap-allocated and handed to the
+        // caller. Without the `#`, the multi-param borrow-return
+        // check in Method::generatePrototype rejects the signature
+        // — `public static T(int8[], int64)` looks like "return a
+        // borrow from one of two parameters", which is exactly the
+        // shape MemoryModel.md § Function signatures forbids.
         const std::string& Tcanon = T->getQName()->toCanonical();
         std::ostringstream os;
-        os << "public static " << Tcanon
+        os << "public static #" << Tcanon
            << " " << methodName << "(int8[] bytes, int64 length) {\n";
         os << "    " << Tcanon << " out = heap " << Tcanon << "();\n";
         os << "    JsonReader r = heap JsonReader(bytes, length);\n";
@@ -532,7 +540,7 @@ namespace cajeta {
                                                 const std::string& methodName) {
         const std::string& Tcanon = T->getQName()->toCanonical();
         std::ostringstream os;
-        os << "public static " << Tcanon
+        os << "public static #" << Tcanon
            << " " << methodName << "(JsonReader r) {\n";
         os << "    " << Tcanon << " out = heap " << Tcanon << "();\n";
         os << emitObjectLoopBody(T, "    ");

@@ -3,6 +3,7 @@
 //
 
 #include "CajetaArray.h"
+#include "CajetaView.h"
 #include "../compile/CajetaModule.h"
 
 namespace cajeta {

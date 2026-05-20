@@ -906,6 +906,16 @@ namespace cajeta {
                         return llvm::ConstantPointerNull::get(llvm::cast<llvm::PointerType>(ptrTy));
                     };
 
+                    // Ensure both sides have resolved types before
+                    // dispatching to stringify. The operator-method
+                    // path above (~line 564) only runs when an opSym
+                    // / opMethod hits — for a primitive-plus-String
+                    // shape (no user-defined operator+), neither side
+                    // gets resolveTypes called proactively, and the
+                    // class-String unwrap below misses (`isClassStringType`
+                    // sees a null resolvedType).
+                    if (lhsAst && !lhsAst->getResolvedType()) lhsAst->resolveTypes(module);
+                    if (rhsAst && !rhsAst->getResolvedType()) rhsAst->resolveTypes(module);
                     CajetaTypePtr lhsRT = lhsAst ? lhsAst->getResolvedType() : nullptr;
                     CajetaTypePtr rhsRT = rhsAst ? rhsAst->getResolvedType() : nullptr;
                     llvm::Value* ls = stringify(l, lhsRT);
