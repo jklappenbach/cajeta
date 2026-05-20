@@ -2387,6 +2387,135 @@ void __cajeta_file_close(int32_t fd) {
     close(fd);
 }
 
+// Phase C — stat-touching helpers. POSIX-only.
+//
+// Each helper takes (bytes, length) — the Path's raw int8[] bytes
+// and the byte count — since the cajeta-side `int8[]` storage
+// doesn't carry a null terminator. The helpers copy into a stack
+// buffer with `\0` appended and call the syscall. Returns int32
+// (1/0 for predicates, -1 for hard errors that the cajeta-side
+// will throw IoException for once the hierarchy is wired).
+
+// Bound on stack-allocated path buffers. Linux PATH_MAX is 4096;
+// callers with longer paths bail with the error sentinel.
+#define __CAJETA_PATH_MAX 4096
+
+// Copy `bytes[0..length)` into `dst` and append '\0'. Returns 0 on
+// success, -1 if length >= dst_size (overflow guard).
+static int __cajeta_copy_path_with_nul(
+        char* dst, size_t dst_size,
+        const char* bytes, int64_t length) {
+    if (length < 0) length = 0;
+    if ((size_t) length >= dst_size) return -1;
+    if (length > 0 && bytes) memcpy(dst, bytes, (size_t) length);
+    dst[length] = '\0';
+    return 0;
+}
+
+int32_t __cajeta_path_exists(const char* bytes, int64_t length) {
+    char path[__CAJETA_PATH_MAX];
+    if (__cajeta_copy_path_with_nul(path, sizeof(path), bytes, length) != 0) return 0;
+    struct stat st;
+    return stat(path, &st) == 0 ? 1 : 0;
+}
+
+int32_t __cajeta_path_is_file(const char* bytes, int64_t length) {
+    char path[__CAJETA_PATH_MAX];
+    if (__cajeta_copy_path_with_nul(path, sizeof(path), bytes, length) != 0) return 0;
+    struct stat st;
+    if (stat(path, &st) != 0) return 0;
+    return S_ISREG(st.st_mode) ? 1 : 0;
+}
+
+int32_t __cajeta_path_is_dir(const char* bytes, int64_t length) {
+    char path[__CAJETA_PATH_MAX];
+    if (__cajeta_copy_path_with_nul(path, sizeof(path), bytes, length) != 0) return 0;
+    struct stat st;
+    if (stat(path, &st) != 0) return 0;
+    return S_ISDIR(st.st_mode) ? 1 : 0;
+}
+
+int32_t __cajeta_path_is_symlink(const char* bytes, int64_t length) {
+    char path[__CAJETA_PATH_MAX];
+    if (__cajeta_copy_path_with_nul(path, sizeof(path), bytes, length) != 0) return 0;
+    struct stat st;
+    // lstat — symlink detection wants the link itself, not the target.
+    if (lstat(path, &st) != 0) return 0;
+    return S_ISLNK(st.st_mode) ? 1 : 0;
+}
+
+// Fill the caller-supplied FileInfo struct from a stat() call. The
+// layout MUST match runtime/src/cajeta/io/file/FileInfo.cajeta:
+//   { i64 size; i64 createdNanos; i64 modifiedNanos; i64 accessedNanos;
+//     i1 isFile; i1 isDir; i1 isSymlink; i32 permissions; }
+// Returns 0 on success, -1 if stat fails.
+//
+// Note: FileInfo's `bool` fields are i1 in the LLVM lowering and Cajeta
+// stores them with a single byte. The vtable + the boolean fields'
+// padding mean the bool stores are byte-wise aligned. We write each
+// field via byte offsets computed at C compile time to avoid having to
+// chase the exact LLVM struct layout from here. The compile-time
+// offset arithmetic is wrapped in a struct mirror so the offsets line
+// up with Cajeta's struct layout for FileInfo (8 + 8 + 8 + 8 + 1 + 1 +
+// 1 + padding(1) + 4 = 40 bytes, with a leading 8-byte vtable slot
+// = 48 total).
+typedef struct {
+    void*    vtable;
+    int64_t  size;
+    int64_t  createdNanos;
+    int64_t  modifiedNanos;
+    int64_t  accessedNanos;
+    int8_t   isFile;
+    int8_t   isDir;
+    int8_t   isSymlink;
+    int8_t   _pad;
+    int32_t  permissions;
+} __cajeta_FileInfoLayout;
+
+int32_t __cajeta_path_stat(const char* path, void* fileInfo) {
+    if (!path || !fileInfo) return -1;
+    struct stat st;
+    if (stat(path, &st) != 0) return -1;
+    __cajeta_FileInfoLayout* fi = (__cajeta_FileInfoLayout*) fileInfo;
+    fi->size = (int64_t) st.st_size;
+    // POSIX-only ns granularity via st_*tim. On older systems fall back
+    // to st_*time × 1e9.
+#ifdef __linux__
+    fi->createdNanos =
+        (int64_t) st.st_ctim.tv_sec * 1000000000LL + (int64_t) st.st_ctim.tv_nsec;
+    fi->modifiedNanos =
+        (int64_t) st.st_mtim.tv_sec * 1000000000LL + (int64_t) st.st_mtim.tv_nsec;
+    fi->accessedNanos =
+        (int64_t) st.st_atim.tv_sec * 1000000000LL + (int64_t) st.st_atim.tv_nsec;
+#else
+    fi->createdNanos = (int64_t) st.st_ctime * 1000000000LL;
+    fi->modifiedNanos = (int64_t) st.st_mtime * 1000000000LL;
+    fi->accessedNanos = (int64_t) st.st_atime * 1000000000LL;
+#endif
+    fi->isFile = S_ISREG(st.st_mode) ? 1 : 0;
+    fi->isDir = S_ISDIR(st.st_mode) ? 1 : 0;
+    fi->isSymlink = S_ISLNK(st.st_mode) ? 1 : 0;
+    fi->permissions = (int32_t) (st.st_mode & 07777);
+    return 0;
+}
+
+// realpath() wrapper. Returns a CajetaArray header containing the
+// canonical absolute bytes, or NULL on failure.
+void* __cajeta_path_canonical(const char* path) {
+    if (!path) return NULL;
+    char* canon = realpath(path, NULL);
+    if (!canon) return NULL;
+    size_t n = strlen(canon);
+    void* hdr = __cajeta_new_array_header(8, 1, (uint64_t) n);
+    if (!hdr) {
+        free(canon);
+        return NULL;
+    }
+    memcpy(((char*) hdr) + 8, canon, n);
+    free(canon);
+    return hdr;
+}
+
 // ---------------------------------------------------------------------------
 // At-exit registry — used by @PreDestroy synthesis (AspectModel.md § A11).
 //

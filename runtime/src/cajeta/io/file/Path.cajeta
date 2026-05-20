@@ -216,6 +216,30 @@ public class Path {
      * `/` operator gains a body once the grammar accepts
      * `public #Path operator/ ...`.
      */
+    /**
+     * Phase C stat predicates. Implementations are intrinsic-
+     * lowered at the call site (see MethodCallExpression's
+     * Path-receiver dispatch); the stub bodies below exist for
+     * type resolution only and are never entered. Each method
+     * unwraps `this.bytes` to a null-terminated C string and
+     * calls the corresponding `__cajeta_path_*` runtime helper.
+     */
+    public boolean exists() {
+        return false;
+    }
+
+    public boolean isFile() {
+        return false;
+    }
+
+    public boolean isDir() {
+        return false;
+    }
+
+    public boolean isSymlink() {
+        return false;
+    }
+
     public #Path resolve(String segment) {
         int32 pLen = (int32) this.bytes.count();
         int32 sLen = segment.byteLength;

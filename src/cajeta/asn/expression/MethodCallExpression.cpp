@@ -2313,6 +2313,67 @@ namespace cajeta {
             }
         }
 
+        // ----- Path instance-method stat intrinsics (Phase C) -----
+        // The cajeta-side bodies are stubs; here we lower
+        // exists / isFile / isDir / isSymlink to direct
+        // `__cajeta_path_*` runtime helper calls. The runtime
+        // helpers take (bytes, length) — the Path's int8[] data
+        // ptr (GEP'd past the 8-byte CajetaArray count word) and
+        // the byte length.
+        if (thisValue && targetClass && targetClass->getQName()
+                && targetClass->getQName()->toCanonical() == "cajeta.io.file.Path") {
+            auto* pathStructTy = llvm::cast<llvm::StructType>(
+                targetClass->getLlvmType());
+            llvm::Type* ptrTy = llvm::PointerType::get(llvmCtx, 0);
+            llvm::Type* i32Ty = llvm::Type::getInt32Ty(llvmCtx);
+            llvm::Type* i64Ty = llvm::Type::getInt64Ty(llvmCtx);
+            llvm::Type* i8Ty  = llvm::Type::getInt8Ty(llvmCtx);
+            // Path layout: { vtable@0, bytes@1 }. The bytes field
+            // holds a ptr to the CajetaArray header.
+            auto loadBytesAndLen = [&]() -> std::pair<llvm::Value*, llvm::Value*> {
+                llvm::Value* bytesSlot = builder->CreateStructGEP(
+                    pathStructTy, thisValue, 1, "path.bytes_slot");
+                llvm::Value* arrPtr = builder->CreateLoad(
+                    ptrTy, bytesSlot, "path.arr");
+                // Length is the first i64 of the header.
+                llvm::Value* len = builder->CreateLoad(
+                    i64Ty, arrPtr, "path.len");
+                // Data starts at offset 8.
+                llvm::Value* data = builder->CreateInBoundsGEP(
+                    i8Ty, arrPtr,
+                    llvm::ConstantInt::get(i64Ty, 8),
+                    "path.data");
+                return {data, len};
+            };
+
+            const char* statSymbol = nullptr;
+            if (methodCallName == "exists" && parameters.empty()) {
+                statSymbol = "__cajeta_path_exists";
+            } else if (methodCallName == "isFile" && parameters.empty()) {
+                statSymbol = "__cajeta_path_is_file";
+            } else if (methodCallName == "isDir" && parameters.empty()) {
+                statSymbol = "__cajeta_path_is_dir";
+            } else if (methodCallName == "isSymlink" && parameters.empty()) {
+                statSymbol = "__cajeta_path_is_symlink";
+            }
+            if (statSymbol) {
+                llvm::Function* fn = module->getRuntimeFunction(statSymbol);
+                if (fn) {
+                    auto bd = loadBytesAndLen();
+                    llvm::Value* result = builder->CreateCall(fn,
+                        {bd.first, bd.second}, "path.stat");
+                    // The helper returns int32 (1/0); the cajeta
+                    // method signature is `boolean` (i1). Truncate
+                    // / icmp to widen to the right shape.
+                    llvm::Value* asI1 = builder->CreateICmpNE(result,
+                        llvm::ConstantInt::get(i32Ty, 0),
+                        "path.stat.bool");
+                    resolvedType = CajetaType::of("boolean");
+                    return asI1;
+                }
+            }
+        }
+
         // ----- FileReader / FileWriter instance-method intrinsic (Phase A) -----
         // The cajeta-side bodies are stubs; here we lower the calls to
         // direct runtime helpers via the receiver's `fd` field. Matches

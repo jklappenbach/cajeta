@@ -148,3 +148,42 @@ TEST(PathTests, resolveOntoRelativePath) {
         "return s.equals(\"src/main.cajeta\") ? 1 : 0;")), 1);
 }
 
+// --- Phase C: stat-touching predicates ----------------------------------
+
+TEST(PathTests, existsTrueForRealFile) {
+    // Use a stable path that exists on every POSIX system.
+    EXPECT_EQ(runI32(makeSource(
+        "Path p = Path.of(\"/etc/passwd\");\n"
+        "return p.exists() ? 1 : 0;")), 1);
+}
+
+TEST(PathTests, existsFalseForMissingFile) {
+    EXPECT_EQ(runI32(makeSource(
+        "Path p = Path.of(\"/this/path/does/not/exist/__cajeta__\");\n"
+        "return p.exists() ? 1 : 0;")), 0);
+}
+
+TEST(PathTests, isFileTrueForRegular) {
+    EXPECT_EQ(runI32(makeSource(
+        "Path p = Path.of(\"/etc/passwd\");\n"
+        "return p.isFile() ? 1 : 0;")), 1);
+}
+
+TEST(PathTests, isDirTrueForDirectory) {
+    EXPECT_EQ(runI32(makeSource(
+        "Path p = Path.of(\"/etc\");\n"
+        "return p.isDir() ? 1 : 0;")), 1);
+}
+
+TEST(PathTests, isFileFalseForDirectory) {
+    EXPECT_EQ(runI32(makeSource(
+        "Path p = Path.of(\"/etc\");\n"
+        "return p.isFile() ? 1 : 0;")), 0);
+}
+
+TEST(PathTests, isDirFalseForRegularFile) {
+    EXPECT_EQ(runI32(makeSource(
+        "Path p = Path.of(\"/etc/passwd\");\n"
+        "return p.isDir() ? 1 : 0;")), 0);
+}
+
