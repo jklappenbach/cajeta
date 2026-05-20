@@ -37,35 +37,57 @@ namespace cajeta {
     }
 
     // Apply a class-level naming strategy to a field's declared name
-    // to derive the wire key. v1 supports two strategies:
+    // to derive the wire key. All five strategies from
+    // `cajeta-docs/stdlib/codec/Json.md` § Class-level naming:
     //
-    //   - `"SNAKE_CASE"` — camelCase → snake_case (e.g. `firstName`
-    //                       → `first_name`)
-    //   - `"KEBAB_CASE"` — camelCase → kebab-case (e.g. `firstName`
-    //                       → `first-name`)
+    //   - `"SNAKE_CASE"`  — `firstName` → `first_name`
+    //   - `"KEBAB_CASE"`  — `firstName` → `first-name`
+    //   - `"PASCAL_CASE"` — `firstName` → `FirstName`
+    //   - `"CAMEL_CASE"`  — `firstName` → `firstName` (identity for
+    //                       cajeta's camelCase field convention).
+    //                       The strategy exists so user code can be
+    //                       explicit about its policy and reviewers
+    //                       can spot the wire-key contract at a
+    //                       glance.
+    //   - `"IDENTITY"`    — explicit no-op.
     //
-    // Any other value (or empty) leaves the name unchanged. Strategy
-    // matching is exact (case-sensitive) on the annotation string.
+    // Empty string (no @JsonNamingStrategy annotation) is also no-op.
+    // Matching is exact case-sensitive on the annotation string.
     std::string applyNamingStrategy(const std::string& strategy,
                                      const std::string& declaredName) {
-        if (strategy != "SNAKE_CASE" && strategy != "KEBAB_CASE") {
+        // No-op strategies (and the no-annotation case).
+        if (strategy.empty() || strategy == "IDENTITY" || strategy == "CAMEL_CASE") {
             return declaredName;
         }
-        char sep = (strategy == "SNAKE_CASE") ? '_' : '-';
-        std::string out;
-        out.reserve(declaredName.size() + 4);
-        for (size_t i = 0; i < declaredName.size(); ++i) {
-            char c = declaredName[i];
-            if (i > 0 && c >= 'A' && c <= 'Z') {
-                out.push_back(sep);
-                out.push_back((char) (c - 'A' + 'a'));
-            } else if (c >= 'A' && c <= 'Z') {
-                out.push_back((char) (c - 'A' + 'a'));
-            } else {
-                out.push_back(c);
+        if (strategy == "PASCAL_CASE") {
+            if (declaredName.empty()) return declaredName;
+            std::string out = declaredName;
+            if (out[0] >= 'a' && out[0] <= 'z') {
+                out[0] = (char) (out[0] - 'a' + 'A');
             }
+            return out;
         }
-        return out;
+        if (strategy == "SNAKE_CASE" || strategy == "KEBAB_CASE") {
+            char sep = (strategy == "SNAKE_CASE") ? '_' : '-';
+            std::string out;
+            out.reserve(declaredName.size() + 4);
+            for (size_t i = 0; i < declaredName.size(); ++i) {
+                char c = declaredName[i];
+                if (i > 0 && c >= 'A' && c <= 'Z') {
+                    out.push_back(sep);
+                    out.push_back((char) (c - 'A' + 'a'));
+                } else if (c >= 'A' && c <= 'Z') {
+                    out.push_back((char) (c - 'A' + 'a'));
+                } else {
+                    out.push_back(c);
+                }
+            }
+            return out;
+        }
+        // Unrecognized strategy name — leave as-is. Future strategies
+        // (UPPER_SNAKE_CASE, LOWER_CASE) drop in here as additional
+        // branches.
+        return declaredName;
     }
 
     // Effective wire key for the field. Precedence:
@@ -105,16 +127,28 @@ namespace cajeta {
         return T && T->findAnnotation("JsonStrict") != nullptr;
     }
 
-    // @JsonInclude policy on a field. v1 supports two values:
+    // @JsonInclude policy on a field. All four spec values
+    // (cajeta-docs/stdlib/codec/Json.md § Field-level annotations):
+    //
     //   - "ALWAYS" (default) — emit key+value unconditionally
     //   - "NON_NULL"         — emit only when the field reference
     //                          is not null. Only meaningful on
     //                          reference-typed fields (class, array,
-    //                          String); a no-op on primitives since
-    //                          they're never null.
-    // Returns the string verbatim from the annotation; caller maps
-    // it to a behavior switch. Empty string when the annotation is
-    // absent.
+    //                          String); a no-op on primitives.
+    //   - "NEVER"            — never emit. Read-only field (can be
+    //                          parsed, never echoed back). Pair with
+    //                          @JsonIgnore for full read+write skip
+    //                          if that's the intent.
+    //   - "NON_DEFAULT"      — emit only when the field's value
+    //                          differs from its type's default:
+    //                          0 for int*, 0.0 for float*, false
+    //                          for boolean, null for class refs,
+    //                          null for arrays, null for String
+    //                          (String is a class ref post Phase
+    //                          2b-β).
+    //
+    // Returns the string verbatim from the annotation. Empty string
+    // when the annotation is absent.
     std::string jsonIncludePolicy(const StructurePropertyPtr& prop) {
         if (!prop) return std::string();
         if (auto ann = prop->findAnnotation("JsonInclude")) {
@@ -662,21 +696,51 @@ namespace cajeta {
                 return "";
             }
         }
+        // @JsonInclude("NEVER") — never write. Read-only field;
+        // parsing keeps the value but the writer always omits it.
+        // Returning early here means the writer body emits NO key
+        // and NO value for this field.
+        std::string includePolicy = jsonIncludePolicy(prop);
+        if (includePolicy == "NEVER") {
+            return "";
+        }
         // Use the @JsonProperty-renamed key when present, then the
         // class-level @JsonNamingStrategy transform, else the declared
         // name verbatim. Cajeta-level field access (`value.<fieldName>`)
         // still uses the declared name — only the wire-bytes change.
         std::string wireKey = effectiveJsonKey(prop, classStrategy);
         std::ostringstream os;
-        // @JsonInclude("NON_NULL") on a reference-typed field — wrap
-        // the key+value emission in a null guard. Primitives can't be
-        // null, so the gate is a no-op there. NON_NULL is the only
-        // policy v1 routes through; ALWAYS / absent annotation = no
-        // guard.
-        bool nullGuard = jsonIncludePolicy(prop) == "NON_NULL"
-            && fieldIsReferenceTyped(prop);
-        if (nullGuard) {
-            os << "        if (value." << fieldName << " != null) {\n";
+        // @JsonInclude conditional emission. Wraps the key+value
+        // block in a per-policy guard.
+        //
+        //   - NON_NULL    — `value.f != null` (reference-typed only).
+        //   - NON_DEFAULT — `value.f != <type default>`. For class
+        //                   refs / arrays / Strings the default is
+        //                   null, so NON_DEFAULT collapses to
+        //                   NON_NULL on those. For primitives the
+        //                   default is 0 / 0.0 / false.
+        //   - ALWAYS / "" — no guard.
+        std::string guardExpr;
+        auto fieldTyName = prop->getType() && prop->getType()->getQName()
+            ? prop->getType()->getQName()->toCanonical()
+            : "";
+        if (includePolicy == "NON_NULL" && fieldIsReferenceTyped(prop)) {
+            guardExpr = "value." + fieldName + " != null";
+        } else if (includePolicy == "NON_DEFAULT") {
+            if (fieldIsReferenceTyped(prop)
+                    || fieldTyName == "cajeta.lang.String") {
+                guardExpr = "value." + fieldName + " != null";
+            } else if (fieldTyName == "boolean") {
+                guardExpr = "value." + fieldName + " != false";
+            } else if (fieldTyName == "float32" || fieldTyName == "float64") {
+                guardExpr = "value." + fieldName + " != 0.0";
+            } else {
+                // Integer-family primitives (int8/16/32/64 and unsigned).
+                guardExpr = "value." + fieldName + " != 0";
+            }
+        }
+        if (!guardExpr.empty()) {
+            os << "        if (" << guardExpr << ") {\n";
         } else {
             os << "        {\n";
         }

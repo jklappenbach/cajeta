@@ -1099,6 +1099,98 @@ TEST(JsonSynthesizerTests, jsonIncludeNonNullArray) {
     EXPECT_EQ(runI32(src), 2);
 }
 
+// @JsonInclude("NEVER") — always omit on write. The field's value
+// is preserved in memory; the writer just never echoes it.
+TEST(JsonSynthesizerTests, jsonIncludeNeverOmitsFromWrite) {
+    auto src =
+        "package test;\n"
+        "import cajeta.codec.json.Json;\n"
+        "public class Audit {\n"
+        "    public int32 id;\n"
+        "    @JsonInclude(\"NEVER\")\n"
+        "    public int32 internalHash;\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Audit a = heap Audit();\n"
+        "        a.id = 1;\n"
+        "        a.internalHash = 42;\n"
+        "        int8[] bytes = Json.toBytes<Audit>(a);\n"
+        // {"id":1} → 8 bytes; internalHash never written.
+        "        return (int32) bytes.count();\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 8);
+}
+
+// @JsonInclude("NON_DEFAULT") on primitives — omit when zero.
+TEST(JsonSynthesizerTests, jsonIncludeNonDefaultOmitsZeroInt) {
+    auto src =
+        "package test;\n"
+        "import cajeta.codec.json.Json;\n"
+        "public class Counters {\n"
+        "    public int32 keep;\n"
+        "    @JsonInclude(\"NON_DEFAULT\")\n"
+        "    public int32 maybe;\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Counters c = heap Counters();\n"
+        "        c.keep = 1;\n"
+        "        c.maybe = 0;\n"  // default → omitted
+        "        int8[] bytes = Json.toBytes<Counters>(c);\n"
+        // {"keep":1} → 10 bytes; maybe omitted because == 0.
+        "        return (int32) bytes.count();\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 10);
+}
+
+// @JsonInclude("NON_DEFAULT") on primitives — emit when non-default.
+TEST(JsonSynthesizerTests, jsonIncludeNonDefaultKeepsNonZeroInt) {
+    auto src =
+        "package test;\n"
+        "import cajeta.codec.json.Json;\n"
+        "public class Counters {\n"
+        "    public int32 keep;\n"
+        "    @JsonInclude(\"NON_DEFAULT\")\n"
+        "    public int32 maybe;\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Counters c = heap Counters();\n"
+        "        c.keep = 1;\n"
+        "        c.maybe = 7;\n"
+        "        int8[] bytes = Json.toBytes<Counters>(c);\n"
+        // {"keep":1,"maybe":7} → 20 bytes.
+        "        return (int32) bytes.count();\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 20);
+}
+
+// @JsonInclude("NON_DEFAULT") on a class-ref / array / String —
+// behavior collapses to NON_NULL since the type default is null.
+TEST(JsonSynthesizerTests, jsonIncludeNonDefaultOnReferenceCollapsesToNonNull) {
+    auto src =
+        "package test;\n"
+        "import cajeta.codec.json.Json;\n"
+        "public class Bag {\n"
+        "    @JsonInclude(\"NON_DEFAULT\")\n"
+        "    public int32[] ids;\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Bag a = heap Bag();\n"
+        "        a.ids = null;\n"
+        "        int8[] bytes = Json.toBytes<Bag>(a);\n"
+        // Empty object {} → 2 bytes.
+        "        return (int32) bytes.count();\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 2);
+}
+
 // ---- Phase 4b commit 12: class-level @JsonNamingStrategy + @JsonStrict ----
 
 // Class-level @JsonNamingStrategy("SNAKE_CASE") renames every field
@@ -1124,6 +1216,110 @@ TEST(JsonSynthesizerTests, jsonNamingStrategySnakeCase) {
         "    }\n"
         "}\n";
     EXPECT_EQ(runI32(src), 30);
+}
+
+// KEBAB_CASE writes wire keys with `-` separators.
+TEST(JsonSynthesizerTests, jsonNamingStrategyKebabCase) {
+    auto src =
+        "package test;\n"
+        "import cajeta.codec.json.Json;\n"
+        "@JsonNamingStrategy(\"KEBAB_CASE\")\n"
+        "public class User {\n"
+        "    public int32 firstName;\n"
+        "    public int32 lastName;\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        User a = heap User();\n"
+        "        a.firstName = 1;\n"
+        "        a.lastName = 2;\n"
+        "        int8[] bytes = Json.toBytes<User>(a);\n"
+        // {"first-name":1,"last-name":2} → 30 bytes
+        "        return (int32) bytes.count();\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 30);
+}
+
+// PASCAL_CASE capitalizes the first letter. `firstName` → `FirstName`.
+TEST(JsonSynthesizerTests, jsonNamingStrategyPascalCase) {
+    auto src =
+        "package test;\n"
+        "import cajeta.codec.json.Json;\n"
+        "@JsonNamingStrategy(\"PASCAL_CASE\")\n"
+        "public class User {\n"
+        "    public int32 firstName;\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        User a = heap User();\n"
+        "        a.firstName = 7;\n"
+        "        int8[] bytes = Json.toBytes<User>(a);\n"
+        // {"FirstName":7} → 15 bytes
+        "        return (int32) bytes.count();\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 15);
+}
+
+// PASCAL_CASE on the read side accepts the capitalized wire key.
+TEST(JsonSynthesizerTests, jsonNamingStrategyPascalCaseRead) {
+    auto src =
+        "package test;\n"
+        "import cajeta.codec.json.Json;\n"
+        "@JsonNamingStrategy(\"PASCAL_CASE\")\n"
+        "public class User {\n"
+        "    public int32 firstName;\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        String s = \"{\\\"FirstName\\\":42}\";\n"
+        "        User u = Json.parse<User>(s);\n"
+        "        return u.firstName;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 42);
+}
+
+// CAMEL_CASE is identity for cajeta's camelCase field convention —
+// declaring it makes the contract explicit at the class level.
+TEST(JsonSynthesizerTests, jsonNamingStrategyCamelCaseIsIdentity) {
+    auto src =
+        "package test;\n"
+        "import cajeta.codec.json.Json;\n"
+        "@JsonNamingStrategy(\"CAMEL_CASE\")\n"
+        "public class User {\n"
+        "    public int32 firstName;\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        String s = \"{\\\"firstName\\\":5}\";\n"
+        "        User u = Json.parse<User>(s);\n"
+        "        return u.firstName;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 5);
+}
+
+// IDENTITY strategy — explicit no-op. Same as omitting the
+// annotation entirely; pinned here so a user reviewing class-level
+// policy can write the no-transform case explicitly.
+TEST(JsonSynthesizerTests, jsonNamingStrategyIdentity) {
+    auto src =
+        "package test;\n"
+        "import cajeta.codec.json.Json;\n"
+        "@JsonNamingStrategy(\"IDENTITY\")\n"
+        "public class User {\n"
+        "    public int32 firstName;\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        String s = \"{\\\"firstName\\\":9}\";\n"
+        "        User u = Json.parse<User>(s);\n"
+        "        return u.firstName;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 9);
 }
 
 // SNAKE_CASE renames work on the READ side too. Confirms the
