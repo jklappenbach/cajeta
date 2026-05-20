@@ -3206,9 +3206,33 @@ namespace cajeta {
         // parent is a foreign module. ensureFunctionVisible returns
         // method->getLlvmFunction() unchanged when caller and target
         // are co-resident.
-        llvm::Value* callee = CajetaModule::ensureFunctionVisible(
-            builder, method->getLlvmFunction(),
-            method->getLlvmFunctionType());
+        //
+        // Stale-pointer guard: in multi-classing scenarios a Method
+        // object inherited from a parent's vtable can survive a
+        // generatePrototype miss in the current compile — its
+        // cached llvmFunction then points at a Function* whose
+        // Module was destroyed. Reading `original->getParent()` in
+        // ensureFunctionVisible would dereference freed memory and
+        // SIGSEGV (intermittent, since ASLR randomizes whether the
+        // page is still mapped). Side-step by looking up the
+        // method's canonical name in the current module FIRST. If
+        // present (generatePrototype already ran in this compile),
+        // we have a guaranteed-fresh Function*. Else, declare it
+        // in the current module via getOrInsertFunction so we
+        // never have to dereference the possibly-stale pointer.
+        llvm::Module* currentLm = emitMod->getLlvmModule();
+        const std::string canonical = method->getLlvmSymbolName();
+        llvm::Function* targetFn = currentLm->getFunction(canonical);
+        if (!targetFn) {
+            llvm::FunctionCallee fc = currentLm->getOrInsertFunction(
+                canonical, method->getLlvmFunctionType());
+            targetFn = llvm::dyn_cast<llvm::Function>(fc.getCallee());
+        }
+        llvm::Value* callee = targetFn
+            ? static_cast<llvm::Value*>(targetFn)
+            : CajetaModule::ensureFunctionVisible(
+                builder, method->getLlvmFunction(),
+                method->getLlvmFunctionType());
         // Views have no vtable header (they are typed overlays onto
         // byte buffers; the byte buffer is the value). Methods on
         // views are statically dispatched — the receiver's concrete
