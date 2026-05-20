@@ -66,6 +66,29 @@ public class FileReader {
     }
 
     /**
+     * Read up to `maxBytes` bytes and return them as a String.
+     * The String materializes a freshly allocated bytes buffer
+     * (mode-0 owned) so closing the reader doesn't invalidate
+     * the returned text. EOF mid-read returns whatever was read
+     * before EOF (possibly empty if EOF was hit immediately).
+     *
+     * No charset decode happens at this layer — the bytes are
+     * taken as UTF-8 (Cajeta String's wire format). If the file
+     * isn't UTF-8 the resulting String's `count()` may not match
+     * the caller's expectation; transcoding via `Encoding` is the
+     * caller's responsibility.
+     *
+     * Intrinsic-lowered: allocates a fresh int8[maxBytes],
+     * calls `__cajeta_file_read(this.fd, &buf[0], maxBytes)`,
+     * shrinks the array's count word to the actual byte count
+     * returned, and wraps the result in a class String shell.
+     */
+    public #String readString(int32 maxBytes) {
+        int8[] empty = new int8[0];
+        return heap String(#empty, 0);
+    }
+
+    /**
      * Close the underlying fd. Idempotent; the destructor also
      * calls this for callers that don't explicitly close.
      *

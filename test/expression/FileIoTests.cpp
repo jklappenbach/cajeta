@@ -289,6 +289,79 @@ TEST(FileIoTests, randomAccessWriteAtCurrentPosition) {
     EXPECT_EQ(content.substr(0, 3), "Hi!");
 }
 
+// --- String integration on FileReader / FileWriter ---------------------
+
+TEST(FileIoTests, fileReaderReadStringRoundTrip) {
+    std::string path = uniquePath("reader_str.txt");
+    writeRaw(path, "Hello, world!");
+    std::string src = "package test;\n"
+                      "import cajeta.io.file.File;\n"
+                      "import cajeta.io.file.FileReader;\n"
+                      "public final class F {\n"
+                      "    public static int32 run() {\n"
+                      "        FileReader r = File.openRead(\"" + path + "\");\n"
+                      "        String s = r.readString(32);\n"
+                      "        return s.equals(\"Hello, world!\") ? 1 : 0;\n"
+                      "    }\n"
+                      "}\n";
+    EXPECT_EQ(runI32(src), 1);
+}
+
+TEST(FileIoTests, fileReaderReadStringSizeMatchesFile) {
+    std::string path = uniquePath("reader_str_size.txt");
+    writeRaw(path, "abcdef");
+    std::string src = "package test;\n"
+                      "import cajeta.io.file.File;\n"
+                      "import cajeta.io.file.FileReader;\n"
+                      "public final class F {\n"
+                      "    public static int32 run() {\n"
+                      "        FileReader r = File.openRead(\"" + path + "\");\n"
+                      "        String s = r.readString(64);\n"
+                      "        return (int32) s.count();\n"
+                      "    }\n"
+                      "}\n";
+    EXPECT_EQ(runI32(src), 6);
+}
+
+TEST(FileIoTests, fileWriterWriteStringRoundTrip) {
+    std::string path = uniquePath("writer_str.txt");
+    std::string src = "package test;\n"
+                      "import cajeta.io.file.File;\n"
+                      "import cajeta.io.file.FileWriter;\n"
+                      "import cajeta.io.file.OpenMode;\n"
+                      "public final class F {\n"
+                      "    public static int32 run() {\n"
+                      "        FileWriter w = File.openWrite(\"" + path + "\", OpenMode.WRITE);\n"
+                      "        String greeting = \"Hello from Cajeta!\";\n"
+                      "        w.writeString(greeting);\n"
+                      "        w.close();\n"
+                      "        return 0;\n"
+                      "    }\n"
+                      "}\n";
+    runI32(src);
+    EXPECT_EQ(readRaw(path), "Hello from Cajeta!");
+}
+
+TEST(FileIoTests, fileWriterWriteStringThenReadStringRoundTrip) {
+    std::string path = uniquePath("rw_str_roundtrip.txt");
+    std::string src = "package test;\n"
+                      "import cajeta.io.file.File;\n"
+                      "import cajeta.io.file.FileReader;\n"
+                      "import cajeta.io.file.FileWriter;\n"
+                      "import cajeta.io.file.OpenMode;\n"
+                      "public final class F {\n"
+                      "    public static int32 run() {\n"
+                      "        FileWriter w = File.openWrite(\"" + path + "\", OpenMode.WRITE);\n"
+                      "        w.writeString(\"round trip\");\n"
+                      "        w.close();\n"
+                      "        FileReader r = File.openRead(\"" + path + "\");\n"
+                      "        String back = r.readString(64);\n"
+                      "        return back.equals(\"round trip\") ? 1 : 0;\n"
+                      "    }\n"
+                      "}\n";
+    EXPECT_EQ(runI32(src), 1);
+}
+
 TEST(FileIoTests, fileWriterWritesBytesRoundTripsViaReadAllBytes) {
     std::string path = uniquePath("writer_basic.txt");
     std::string src = "package test;\n"

@@ -2570,6 +2570,103 @@ namespace cajeta {
                         return nRead;
                     }
                 }
+                // FileReader.readString(maxBytes) → String. Allocates
+                // a fresh int8[maxBytes], reads into it, shrinks the
+                // count word to the actual byte count, wraps in a
+                // class String shell (mode=0 owned), and returns it.
+                if (isReader && methodCallName == "readString"
+                        && parameters.size() == 1) {
+                    llvm::Function* readFn = module->getRuntimeFunction(
+                        "__cajeta_file_read");
+                    if (readFn) {
+                        llvm::Value* fd = loadFd();
+                        llvm::Value* maxV = parameters[0].expression->generateCode(module);
+                        if (auto* a = llvm::dyn_cast_or_null<llvm::AllocaInst>(maxV)) {
+                            maxV = builder->CreateLoad(a->getAllocatedType(), a);
+                        }
+                        if (maxV && maxV->getType() != i32Ty
+                                && maxV->getType()->isIntegerTy()) {
+                            maxV = builder->CreateIntCast(maxV, i32Ty, true);
+                        }
+                        llvm::Value* maxI64 = builder->CreateIntCast(
+                            maxV, i64Ty, true);
+                        // Allocate int8[maxBytes] via runtime helper.
+                        llvm::Function* allocFn = module->getRuntimeFunction(
+                            "__cajeta_new_array_header");
+                        llvm::Value* arr = builder->CreateCall(allocFn,
+                            { llvm::ConstantInt::get(i64Ty, 8),
+                              llvm::ConstantInt::get(i64Ty, 1),
+                              maxI64 },
+                            "fr.str.arr");
+                        llvm::Value* dataPtr = builder->CreateInBoundsGEP(
+                            i8Ty, arr,
+                            llvm::ConstantInt::get(i64Ty, 8),
+                            "fr.str.data");
+                        llvm::Value* nRead = builder->CreateCall(readFn,
+                            {fd, dataPtr, maxV}, "fr.str.n");
+                        // Shrink the count word to nRead (sign-extend to i64).
+                        llvm::Value* nReadI64 = builder->CreateIntCast(
+                            nRead, i64Ty, true);
+                        builder->CreateStore(nReadI64, arr);
+                        // Update this.pos += nRead.
+                        llvm::Value* posSlot = builder->CreateStructGEP(
+                            structTy, thisValue, 2, "fr.str.pos_slot");
+                        llvm::Value* curPos = builder->CreateLoad(
+                            i64Ty, posSlot, "fr.str.pos_cur");
+                        llvm::Value* newPos = builder->CreateAdd(
+                            curPos, nReadI64, "fr.str.pos_new");
+                        builder->CreateStore(newPos, posSlot);
+                        // Wrap into a class String shell.
+                        CajetaTypePtr stringTy = CajetaType::of("String");
+                        auto stringKlass = std::dynamic_pointer_cast<CajetaClass>(stringTy);
+                        if (stringKlass && stringKlass->getLlvmType()
+                                && llvm::isa<llvm::StructType>(stringKlass->getLlvmType())) {
+                            auto* sStructTy = llvm::cast<llvm::StructType>(
+                                stringKlass->getLlvmType());
+                            const llvm::DataLayout& dl =
+                                module->getLlvmModule()->getDataLayout();
+                            llvm::Constant* sSize = llvm::ConstantInt::get(
+                                i64Ty, dl.getTypeAllocSize(sStructTy));
+                            llvm::Value* sInst = MemoryManager::createMallocInstruction(
+                                module, sSize, builder->GetInsertBlock());
+                            builder->CreateMemSet(sInst,
+                                llvm::ConstantInt::get(i8Ty, 0),
+                                sSize, llvm::MaybeAlign(8));
+                            llvm::Constant* vtableRef =
+                                llvm::ConstantPointerNull::get(
+                                    llvm::cast<llvm::PointerType>(ptrTy));
+                            if (auto* vt = stringKlass->getVirtualTableGlobal()) {
+                                vtableRef = CajetaModule::ensureGlobalInModule(
+                                    module->getLlvmModule(), vt);
+                            }
+                            builder->CreateStore(vtableRef,
+                                builder->CreateStructGEP(sStructTy, sInst, 0,
+                                    "fr.str.s_vtable"));
+                            builder->CreateStore(arr,
+                                builder->CreateStructGEP(sStructTy, sInst, 1,
+                                    "fr.str.s_bytes"));
+                            // byteLength as i32.
+                            llvm::Value* lenI32 = builder->CreateIntCast(
+                                nRead, i32Ty, true);
+                            builder->CreateStore(lenI32,
+                                builder->CreateStructGEP(sStructTy, sInst, 2,
+                                    "fr.str.s_byteLength"));
+                            // mode = 0 (owned).
+                            builder->CreateStore(
+                                llvm::ConstantInt::get(i32Ty, 0),
+                                builder->CreateStructGEP(sStructTy, sInst, 3,
+                                    "fr.str.s_mode"));
+                            // cachedCpLength = -1 (not computed).
+                            builder->CreateStore(
+                                llvm::ConstantInt::get(i32Ty, -1),
+                                builder->CreateStructGEP(sStructTy, sInst, 4,
+                                    "fr.str.s_cachedCp"));
+                            resolvedType = stringKlass;
+                            return sInst;
+                        }
+                        return arr;
+                    }
+                }
                 if (isReader && methodCallName == "position"
                         && parameters.empty()) {
                     llvm::Value* posSlot = builder->CreateStructGEP(
@@ -2639,6 +2736,55 @@ namespace cajeta {
                         builder->CreateStore(newPos, posSlot);
                         resolvedType = CajetaType::of("void");
                         return nullptr;
+                    }
+                }
+                // FileWriter.writeString(String s) — unwrap the
+                // class String to its underlying bytes + byteLength
+                // and call __cajeta_file_write.
+                if (isWriter && methodCallName == "writeString"
+                        && parameters.size() == 1) {
+                    llvm::Function* fn = module->getRuntimeFunction(
+                        "__cajeta_file_write");
+                    if (fn) {
+                        llvm::Value* fd = loadFd();
+                        llvm::Value* sPtr = parameters[0].expression->generateCode(module);
+                        if (auto* a = llvm::dyn_cast_or_null<llvm::AllocaInst>(sPtr)) {
+                            sPtr = builder->CreateLoad(a->getAllocatedType(), a);
+                        }
+                        // The class String layout: { vtable@0, bytes@1,
+                        // byteLength@2, mode@3, cachedCp@4 }.
+                        CajetaTypePtr stringTy = CajetaType::of("String");
+                        auto stringKlass = std::dynamic_pointer_cast<CajetaClass>(stringTy);
+                        if (stringKlass && stringKlass->getLlvmType()
+                                && llvm::isa<llvm::StructType>(stringKlass->getLlvmType())) {
+                            auto* sStructTy = llvm::cast<llvm::StructType>(
+                                stringKlass->getLlvmType());
+                            llvm::Value* bytesSlot = builder->CreateStructGEP(
+                                sStructTy, sPtr, 1, "fw.str.bytes_slot");
+                            llvm::Value* arr = builder->CreateLoad(
+                                ptrTy, bytesSlot, "fw.str.arr");
+                            llvm::Value* dataPtr = builder->CreateInBoundsGEP(
+                                i8Ty, arr,
+                                llvm::ConstantInt::get(i64Ty, 8),
+                                "fw.str.data");
+                            llvm::Value* byteLenSlot = builder->CreateStructGEP(
+                                sStructTy, sPtr, 2, "fw.str.byteLength_slot");
+                            llvm::Value* len = builder->CreateLoad(
+                                i32Ty, byteLenSlot, "fw.str.len");
+                            builder->CreateCall(fn, {fd, dataPtr, len});
+                            // Update this.pos += len.
+                            llvm::Value* posSlot = builder->CreateStructGEP(
+                                structTy, thisValue, 2, "fw.str.pos_slot");
+                            llvm::Value* curPos = builder->CreateLoad(
+                                i64Ty, posSlot, "fw.str.pos_cur");
+                            llvm::Value* len64 = builder->CreateIntCast(
+                                len, i64Ty, true);
+                            llvm::Value* newPos = builder->CreateAdd(
+                                curPos, len64, "fw.str.pos_new");
+                            builder->CreateStore(newPos, posSlot);
+                            resolvedType = CajetaType::of("void");
+                            return nullptr;
+                        }
                     }
                 }
                 if (isWriter && methodCallName == "flush"

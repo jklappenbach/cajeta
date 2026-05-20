@@ -51,6 +51,19 @@ public class FileWriter {
     }
 
     /**
+     * Write a String's UTF-8 bytes to the file. The String's
+     * `bytes` field is the source of truth (mode-0 owned or
+     * mode-1 view — doesn't matter; we just read the bytes).
+     *
+     * Intrinsic-lowered to
+     * `__cajeta_file_write(this.fd, &s.bytes[8], s.byteLength)`.
+     * `this.pos` advances by `s.byteLength`.
+     */
+    public void writeString(String s) {
+        return;
+    }
+
+    /**
      * Drain the user-space buffer into the OS via `write()`. Does
      * NOT `fsync` — durability flushing is `File.sync()` (Phase
      * E, the random-access surface).
