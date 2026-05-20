@@ -58,6 +58,44 @@ namespace cajeta {
     // arm. Ignored fields can't be required (would never be seen) —
     // we silently treat @JsonIgnore as overriding @JsonRequired so a
     // user who annotates both ends up with the @JsonIgnore behavior.
+    // True if the field's static type is `cajeta.lang.Optional<T>`.
+    // The synthesizer routes Optional fields through a dedicated
+    // arm that distinguishes "key absent" (field stays at default
+    // null) from "key present, value null" (Optional.empty()) from
+    // "key present, value present" (Optional.of(v)). Inner T must
+    // be a supported primitive (int32 / int64 / boolean / float64)
+    // or `cajeta.lang.String` in v1; nested-class Optional<T>
+    // lands when the inner-type dispatch shares more code with the
+    // non-Optional arm.
+    bool isOptionalField(const StructurePropertyPtr& prop) {
+        if (!prop) return false;
+        auto ty = prop->getType();
+        if (!ty) return false;
+        auto cls = std::dynamic_pointer_cast<CajetaClass>(ty);
+        if (!cls || !cls->getQName()) return false;
+        // The type-name carries the template-args suffix for
+        // instantiated classes (e.g. "Optional<int32>"). Match on
+        // the bare-name prefix so both the template form
+        // ("Optional") and the instantiation form ("Optional<…>")
+        // hit. Package is always "cajeta.lang" for the stdlib type.
+        const std::string& name = cls->getQName()->getTypeName();
+        bool nameMatch = (name == "Optional")
+            || name.compare(0, 9, "Optional<") == 0;
+        return nameMatch
+            && cls->getQName()->getPackageName() == "cajeta.lang";
+    }
+
+    // Inner type of an `Optional<T>` field, or null when the field
+    // isn't an Optional or the type-args aren't populated yet.
+    CajetaTypePtr optionalInnerType(const StructurePropertyPtr& prop) {
+        if (!isOptionalField(prop)) return nullptr;
+        auto cls = std::dynamic_pointer_cast<CajetaClass>(prop->getType());
+        if (!cls) return nullptr;
+        auto& args = cls->getTypeArguments();
+        if (args.empty()) return nullptr;
+        return args[0];
+    }
+
     // True if `@JsonRaw` is set — the field's wire bytes pass
     // through both directions unchanged. Read side captures via
     // `r.currentRawBytes()`; write side emits via `w.writeRaw`.
@@ -423,6 +461,65 @@ namespace cajeta {
             return "t = r.next();\n            out." + fieldName +
                    " = r.currentRawBytes();\n";
         }
+        // Optional<T> field. Distinguishes "key absent" (handled
+        // by the per-field arm NOT firing — field stays at null,
+        // the default for class refs) from "key present, value
+        // null" (Optional(false, default)) from "key present,
+        // value V" (Optional(true, V)). Inner T must be a
+        // primitive or cajeta.lang.String in v1.
+        if (isOptionalField(prop)) {
+            auto inner = optionalInnerType(prop);
+            if (!inner || !inner->getQName()) return "";
+            const std::string& innerCanon = inner->getQName()->toCanonical();
+            std::string readInner;     // reads `inner` into local `v`
+            std::string defaultInner;  // safe default for the empty-Optional value slot
+            if (innerCanon == "int32") {
+                readInner = "int32 v = r.currentNumberAsInt32();";
+                defaultInner = "(int32) 0";
+            } else if (innerCanon == "int64") {
+                readInner = "int64 v = r.currentNumberAsInt64();";
+                defaultInner = "(int64) 0";
+            } else if (innerCanon == "boolean") {
+                readInner = "boolean v = r.currentBoolean();";
+                defaultInner = "false";
+            } else if (innerCanon == "float64") {
+                readInner = "float64 v = r.currentNumberAsFloat64();";
+                defaultInner = "(float64) 0.0";
+            } else if (innerCanon == "cajeta.lang.String") {
+                readInner =
+                    "int8[] vb = r.currentBytes();\n"
+                    "                cajeta.lang.String v = heap cajeta.lang.String("
+                    "vb, (int32) vb.count());";
+                // Default for empty Optional<String> is `null` —
+                // String is a class ref, null is the type-default,
+                // and that avoids the spurious zero-length-String
+                // allocation that would otherwise be a wasted view.
+                defaultInner = "null";
+            } else {
+                // Unsupported inner type — leave the field at default.
+                return "";
+            }
+            // For class-ref inner types (String) we move ownership
+            // of the local `v` into the Optional via `#v` so the
+            // local's scope-exit drop doesn't reclaim the wrapped
+            // String out from under the field. Primitive inner
+            // types don't need the `#` — they're value-copied.
+            bool innerIsRef = (innerCanon == "cajeta.lang.String");
+            std::string presentArg = innerIsRef ? "#v" : "v";
+            std::ostringstream os;
+            os << "t = r.next();\n"
+               << "            if (t == JsonToken.NULL) {\n"
+               << "                out." << fieldName
+               << " = heap cajeta.lang.Optional<" << innerCanon
+               << ">(false, " << defaultInner << ");\n"
+               << "            } else {\n"
+               << "                " << readInner << "\n"
+               << "                out." << fieldName
+               << " = heap cajeta.lang.Optional<" << innerCanon
+               << ">(true, " << presentArg << ");\n"
+               << "            }\n";
+            return os.str();
+        }
         // Array-typed fields take a different path — they're CajetaArray
         // which inherits from CajetaClass, so the catch-all class branch
         // below would treat them as nested objects. Check first.
@@ -724,6 +821,37 @@ namespace cajeta {
             value << "w.writeRaw(value." << fieldName
                   << ", (int32) value." << fieldName << ".count());\n";
         } else
+        // Optional<T> field write side. The outer guard (added
+        // below as guardExpr) handles the field-is-null case (key
+        // omitted entirely); inside the guard we still need to
+        // distinguish present-with-value from present-but-empty
+        // (writeNull) and emit the inner type accordingly.
+        if (isOptionalField(prop)) {
+            auto inner = optionalInnerType(prop);
+            if (!inner || !inner->getQName()) return "";
+            const std::string& innerCanon = inner->getQName()->toCanonical();
+            std::string innerWrite;
+            if (innerCanon == "int32") {
+                innerWrite = "w.writeNumber((int64) value." + fieldName + ".get());";
+            } else if (innerCanon == "int64") {
+                innerWrite = "w.writeNumber(value." + fieldName + ".get());";
+            } else if (innerCanon == "boolean") {
+                innerWrite = "w.writeBoolean(value." + fieldName + ".get());";
+            } else if (innerCanon == "float64") {
+                innerWrite = "w.writeNumber(value." + fieldName + ".get());";
+            } else if (innerCanon == "cajeta.lang.String") {
+                innerWrite =
+                    "cajeta.lang.String os = value." + fieldName + ".get();\n"
+                    "            w.writeString(os.bytes, os.byteLength);";
+            } else {
+                return "";
+            }
+            value << "if (value." << fieldName << ".isEmpty()) {\n"
+                  << "                w.writeNull();\n"
+                  << "            } else {\n"
+                  << "                " << innerWrite << "\n"
+                  << "            }\n";
+        } else
         if (auto arr = std::dynamic_pointer_cast<CajetaArray>(ty)) {
             std::string arrEmit = writeArrayValue(fieldName, arr->getElementType());
             if (arrEmit.empty()) return "";
@@ -780,7 +908,15 @@ namespace cajeta {
         auto fieldTyName = prop->getType() && prop->getType()->getQName()
             ? prop->getType()->getQName()->toCanonical()
             : "";
-        if (includePolicy == "NON_NULL" && fieldIsReferenceTyped(prop)) {
+        // Optional<T> fields auto-guard on `value.field != null`:
+        // a null Optional ref means the field is "absent" — key
+        // omitted. Inside the guard the inner emit branches on
+        // isEmpty() to choose writeNull vs the inner value.
+        // Explicit @JsonInclude("ALWAYS") opts out and would
+        // NPE at runtime if the field is null — user beware.
+        if (isOptionalField(prop) && includePolicy != "ALWAYS") {
+            guardExpr = "value." + fieldName + " != null";
+        } else if (includePolicy == "NON_NULL" && fieldIsReferenceTyped(prop)) {
             guardExpr = "value." + fieldName + " != null";
         } else if (includePolicy == "NON_DEFAULT") {
             if (fieldIsReferenceTyped(prop)

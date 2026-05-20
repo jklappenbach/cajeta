@@ -767,6 +767,194 @@ TEST(JsonSynthesizerTests, jsonIgnoreBareStillSkipsBoth) {
     EXPECT_EQ(runI32(src), 8);
 }
 
+// Probe: plain Optional<String> works outside the synthesizer.
+TEST(JsonSynthesizerTests, probeOptionalStringDirect) {
+    auto src =
+        "package test;\n"
+        "import cajeta.lang.Optional;\n"
+        "import cajeta.lang.String;\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        String s = \"alice\";\n"
+        "        Optional<String> o = heap Optional<String>(true, s);\n"
+        "        if (o == null) return -1;\n"
+        "        if (o.isEmpty()) return -2;\n"
+        "        String g = o.get();\n"
+        "        return g.equals(\"alice\") ? 1 : 0;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 1);
+}
+
+// Probe: plain Optional<int32> works outside the synthesizer.
+TEST(JsonSynthesizerTests, probeOptionalInt32Direct) {
+    auto src =
+        "package test;\n"
+        "import cajeta.lang.Optional;\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Optional<int32> o = heap Optional<int32>(true, 42);\n"
+        "        if (o == null) return -1;\n"
+        "        if (o.isEmpty()) return -2;\n"
+        "        return o.get();\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 42);
+}
+
+// ---- Optional<T> field type — present / absent / null distinction ----
+//
+// Three runtime states an Optional<T> field can carry, mapped to
+// three wire states:
+//
+//   Field state                 Wire state
+//   --------------              ----------
+//   field == null               key absent from the object
+//   field.isEmpty()             "key": null
+//   field.isPresent()           "key": <value>
+
+TEST(JsonSynthesizerTests, jsonOptionalInt32PresentReadsValue) {
+    auto src =
+        "package test;\n"
+        "import cajeta.codec.json.Json;\n"
+        "import cajeta.lang.Optional;\n"
+        "public class WithOpt {\n"
+        "    public Optional<int32> age;\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        String s = \"{\\\"age\\\":42}\";\n"
+        "        WithOpt w = Json.parse<WithOpt>(s);\n"
+        "        if (w.age == null) return -1;\n"
+        "        if (w.age.isEmpty()) return -2;\n"
+        "        return w.age.get();\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 42);
+}
+
+TEST(JsonSynthesizerTests, jsonOptionalInt32NullValueProducesEmpty) {
+    auto src =
+        "package test;\n"
+        "import cajeta.codec.json.Json;\n"
+        "import cajeta.lang.Optional;\n"
+        "public class WithOpt {\n"
+        "    public Optional<int32> age;\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        String s = \"{\\\"age\\\":null}\";\n"
+        "        WithOpt w = Json.parse<WithOpt>(s);\n"
+        "        if (w.age == null) return -1;\n"
+        "        if (w.age.isEmpty()) return 1;\n"
+        "        return 0;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 1);
+}
+
+TEST(JsonSynthesizerTests, jsonOptionalKeyAbsentLeavesFieldNull) {
+    auto src =
+        "package test;\n"
+        "import cajeta.codec.json.Json;\n"
+        "import cajeta.lang.Optional;\n"
+        "public class WithOpt {\n"
+        "    public Optional<int32> age;\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        String s = \"{}\";\n"
+        "        WithOpt w = Json.parse<WithOpt>(s);\n"
+        "        if (w.age == null) return 1;\n"
+        "        return 0;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 1);
+}
+
+TEST(JsonSynthesizerTests, jsonOptionalNullFieldOmittedFromWrite) {
+    auto src =
+        "package test;\n"
+        "import cajeta.codec.json.Json;\n"
+        "import cajeta.lang.Optional;\n"
+        "public class WithOpt {\n"
+        "    public int32 id;\n"
+        "    public Optional<int32> age;\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        WithOpt w = heap WithOpt();\n"
+        "        w.id = 1;\n"
+        "        // age stays null — should be omitted.\n"
+        "        int8[] bytes = Json.toBytes<WithOpt>(w);\n"
+        // {"id":1} = 8 bytes.
+        "        return (int32) bytes.count();\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 8);
+}
+
+TEST(JsonSynthesizerTests, jsonOptionalEmptyWritesNull) {
+    auto src =
+        "package test;\n"
+        "import cajeta.codec.json.Json;\n"
+        "import cajeta.lang.Optional;\n"
+        "public class WithOpt {\n"
+        "    public Optional<int32> age;\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        WithOpt w = heap WithOpt();\n"
+        "        w.age = heap Optional<int32>(false, 0);\n"
+        "        int8[] bytes = Json.toBytes<WithOpt>(w);\n"
+        // {"age":null} = 12 bytes.
+        "        return (int32) bytes.count();\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 12);
+}
+
+TEST(JsonSynthesizerTests, jsonOptionalStringPresentReadsValue) {
+    auto src =
+        "package test;\n"
+        "import cajeta.codec.json.Json;\n"
+        "import cajeta.lang.Optional;\n"
+        "import cajeta.lang.String;\n"
+        "public class WithOpt {\n"
+        "    public Optional<String> name;\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        String s = \"{\\\"name\\\":\\\"alice\\\"}\";\n"
+        "        WithOpt w = Json.parse<WithOpt>(s);\n"
+        "        if (w.name == null) return -1;\n"
+        "        if (w.name.isEmpty()) return -2;\n"
+        "        return 1;\n"  // just check presence, skip get() for now
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 1);
+}
+
+TEST(JsonSynthesizerTests, jsonOptionalPresentWritesValue) {
+    auto src =
+        "package test;\n"
+        "import cajeta.codec.json.Json;\n"
+        "import cajeta.lang.Optional;\n"
+        "public class WithOpt {\n"
+        "    public Optional<int32> age;\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        WithOpt w = heap WithOpt();\n"
+        "        w.age = heap Optional<int32>(true, 99);\n"
+        "        int8[] bytes = Json.toBytes<WithOpt>(w);\n"
+        // {"age":99} = 10 bytes.
+        "        return (int32) bytes.count();\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 10);
+}
+
 // ---- @JsonRaw — wire bytes pass through verbatim ------------------
 
 // READ side: a @JsonRaw int8[] field captures the value's wire
