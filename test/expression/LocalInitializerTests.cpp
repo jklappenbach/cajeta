@@ -93,13 +93,17 @@ TEST(LocalInitializerTests, widenedCopyAcrossWidths) {
 // String is a pointer-typed local; initializing one String from another
 // should copy the pointer, not the alloca's address.
 TEST(LocalInitializerTests, copyFromAnotherLocalString) {
+    // `t.count()` is the canonical codepoint count post-2026-05-18
+    // naming shift. `t.length()` is intentionally absent on the class
+    // (see runtime/src/cajeta/lang/String.cajeta § 191 — "ambiguous in
+    // practice"); `count()` is the migrated equivalent.
     auto src =
         "package test;\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
         "        String s = \"hello\";\n"
         "        String t = s;\n"
-        "        return (int32) t.length();\n"
+        "        return (int32) t.count();\n"
         "    }\n"
         "}\n";
     EXPECT_EQ(runI32(src), 5);

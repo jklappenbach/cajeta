@@ -2051,11 +2051,26 @@ namespace cajeta {
             /*forceDirectCall=*/isSuperCall,
             /*explicitMethodTypeArgs=*/explicitMethodTypeArgs);
 
-        if (nullSafeStringMethod && callResult) {
-            // Normalize call result type to match the default's IR type
-            // (i1 vs i8 boolean ABI mismatch surfaces here).
+        if (nullSafeStringMethod) {
+            // Close all three null-safety blocks unconditionally so the
+            // function ends up with terminators on every basic block.
+            // invokeMethod may return null when the method isn't
+            // defined on the class (e.g. legacy `length()` calls
+            // post-Phase 2b-β; class String has `size`/`count` but not
+            // `length` — `length` is documented absent in String.cajeta
+            // § 191). When that happens, the null-safe codegen above
+            // already emitted the cond-br into call/null BBs; if we
+            // leave them open, JIT verification fails with
+            // "Basic Block ... does not have terminator".
+            //
+            // Fall back to the safe default for the null path AND for
+            // the (now-unreachable) call path, so the join's phi is
+            // well-formed and the surrounding code receives a value.
+            // The caller (LocalVariableDeclaration / Statement::return
+            // / etc.) still gets a coherent value rather than the
+            // mid-emission null that triggered the verifier.
             llvm::Value* normalizedCall = callResult;
-            if (callResult->getType() != nullSafeReturnTy
+            if (callResult && callResult->getType() != nullSafeReturnTy
                     && callResult->getType()->isIntegerTy()
                     && nullSafeReturnTy->isIntegerTy()) {
                 normalizedCall = builder->CreateIntCast(callResult,
@@ -2068,7 +2083,8 @@ namespace cajeta {
             builder->SetInsertPoint(nullSafeJoinBB);
             llvm::PHINode* phi = builder->CreatePHI(nullSafeReturnTy, 2,
                 "str.nullsafe.result");
-            phi->addIncoming(normalizedCall, callTerm);
+            phi->addIncoming(
+                normalizedCall ? normalizedCall : nullSafeDefault, callTerm);
             phi->addIncoming(nullSafeDefault, nullSafeNullBB);
             callResult = phi;
         }
