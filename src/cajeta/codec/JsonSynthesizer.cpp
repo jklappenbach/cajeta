@@ -270,31 +270,41 @@ namespace cajeta {
         os << "            boolean done_" << fieldName << " = false;\n";
         os << "            while (!done_" << fieldName << ") {\n";
         if (elementIsClass) {
-            // Peek-by-token: read the next token; if END_ARRAY, done;
-            // otherwise it must be START_OBJECT — but
-            // parseObjectFromReader expects the reader positioned
-            // BEFORE START_OBJECT and consumes it itself, so we have
-            // to inline a token check + nested loop here rather than
-            // re-using parseObjectFromReader directly. The cheap
-            // route: a sibling synthesized helper that takes a
-            // JsonReader already pointing AT the START_OBJECT works
-            // too — that's what parseObjectFromReader is meant to be,
-            // and matches the design in synthesizeParseFromReaderBody
-            // (it reads START_OBJECT then KEY-dispatches). So this
-            // branch can just call parseObjectFromReader<E>(r) AFTER
-            // checking for END_ARRAY by peeking — but the reader
-            // doesn't expose a peek. The pull-only contract means we
-            // do consume the token; if it's START_OBJECT, we can't
-            // un-consume. The fix is to push a synthesized
-            // parseObjectFromAlreadyStartedReader<E> helper, but
-            // that's a larger restructuring. For v1 we accept the
-            // limitation: nested-class arrays are deferred until a
-            // peek surface lands on JsonReader. Emit a throw so the
-            // user sees a clear deferral message rather than silent
-            // misbehavior.
-            os << "                throw heap JsonParseException(\n";
-            os << "                    \"Tier-1 parse: nested-class arrays not "
-                  "implemented in v1 (needs JsonReader peek)\", r.position());\n";
+            // Nested-class arrays: peek the next token via
+            // `r.peek()` (added Phase 4b commit 10). If it's
+            // END_ARRAY, consume and exit the loop; otherwise the
+            // peeked token IS the start of an element object, and
+            // we hand the reader (with the cached peek still in
+            // place) to `Json.parseObjectFromReader<E>(r)`. That
+            // helper's first `r.next()` returns the cached
+            // START_OBJECT and the inner parse proceeds normally.
+            //
+            // The recursive-parse result MUST go through an explicit
+            // temp local before the `tmp.add(...)` call —
+            // `tmp.add(Json.parse...)` inline as a single chained
+            // expression has a codegen miss where the call to add()
+            // is silently dropped (the arg expression evaluates but
+            // the outer method dispatch never fires). Until that's
+            // root-caused, route through the temp pattern.
+            os << "                int32 pt_" << fieldName
+               << " = r.peek();\n";
+            os << "                if (pt_" << fieldName
+               << " == JsonToken.END_ARRAY) {\n";
+            os << "                    r.next();\n"
+               << "                    done_" << fieldName << " = true;\n";
+            os << "                } else {\n";
+            // Transfer the parsed element via `#` so the temp local's
+            // drop entry deactivates on the add — without it, the
+            // intermediate's drop fires at this method's scope exit
+            // BEFORE the caller can read `out.items[i]`, freeing the
+            // Inner that `out.items[i]` references.
+            os << "                    " << etcanon << " elem_"
+               << fieldName
+               << " = Json.parseObjectFromReader<" << etcanon
+               << ">(r);\n";
+            os << "                    tmp_" << fieldName
+               << ".add(#elem_" << fieldName << ");\n";
+            os << "                }\n";
         } else {
             os << "                t = r.next();\n";
             os << "                if (t == JsonToken.END_ARRAY) {\n";

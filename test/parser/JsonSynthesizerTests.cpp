@@ -791,6 +791,87 @@ TEST(JsonSynthesizerTests, parseMixedInt32Int64Boolean) {
     EXPECT_EQ(runI64(src), (int64_t) 1007099);
 }
 
+// ---- Phase 4b commit 10: nested-class arrays via JsonReader.peek() ----
+
+// Smoke test: single-element nested-class array first, before
+// stepping up to multi-element.
+TEST(JsonSynthesizerTests, parseNestedClassArraySingle) {
+    auto src =
+        "package test;\n"
+        "import cajeta.codec.json.Json;\n"
+        "public class Inner { public int32 x; }\n"
+        "public class Wrap { public Inner[] items; }\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        String s = \"{\\\"items\\\":[{\\\"x\\\":3}]}\";\n"
+        "        Wrap w = Json.parse<Wrap>(s);\n"
+        "        return w.items[0].x;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 3);
+}
+
+// Parse `{"items":[{"x":1},{"x":2}]}` into Wrap { Inner[] items; }
+// with Inner { int32 x; }. Pins peek + dispatch — the array
+// reader peeks each element's START_OBJECT and hands the reader
+// (still pointing at START_OBJECT) to parseObjectFromReader<T>.
+TEST(JsonSynthesizerTests, parseNestedClassArray) {
+    auto src =
+        "package test;\n"
+        "import cajeta.codec.json.Json;\n"
+        "public class Inner { public int32 x; }\n"
+        "public class Wrap { public Inner[] items; }\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        String s = \"{\\\"items\\\":[{\\\"x\\\":3},{\\\"x\\\":5}]}\";\n"
+        "        Wrap w = Json.parse<Wrap>(s);\n"
+        "        return w.items[0].x * 100 + w.items[1].x;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 305);
+}
+
+// Empty nested-class array — `{"items":[]}` → 0 elements.
+TEST(JsonSynthesizerTests, parseEmptyNestedClassArray) {
+    auto src =
+        "package test;\n"
+        "import cajeta.codec.json.Json;\n"
+        "public class Inner { public int32 x; }\n"
+        "public class Wrap { public Inner[] items; }\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        String s = \"{\\\"items\\\":[]}\";\n"
+        "        Wrap w = Json.parse<Wrap>(s);\n"
+        "        return (int32) w.items.count();\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 0);
+}
+
+// Round-trip nested-class array — write + parse symmetric.
+TEST(JsonSynthesizerTests, roundTripNestedClassArray) {
+    auto src =
+        "package test;\n"
+        "import cajeta.codec.json.Json;\n"
+        "public class Inner { public int32 x; }\n"
+        "public class Wrap { public Inner[] items; }\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Wrap a = heap Wrap();\n"
+        "        a.items = new Inner[2];\n"
+        "        a.items[0] = heap Inner();\n"
+        "        a.items[0].x = 7;\n"
+        "        a.items[1] = heap Inner();\n"
+        "        a.items[1].x = 9;\n"
+        "        int8[] bytes = Json.toBytes<Wrap>(a);\n"
+        "        int64 n = (int64) bytes.count();\n"
+        "        Wrap b = Json.parse<Wrap>(bytes, n);\n"
+        "        return b.items[0].x * 10 + b.items[1].x;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 79);
+}
+
 // ---- Phase 4b commit 9: @JsonRequired ----
 
 // Required field present in input — parses normally, no throw.

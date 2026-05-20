@@ -47,7 +47,7 @@ package cajeta.codec.json;
  * | `cajeta.lang.String`    | STRING → view-mode String     | bytes + length → STRING        |
  * | nested class            | recurses into `parseObjectFromReader<T>` | recurses into `toBytesObjectInto<T>` |
  * | `T[]` (primitive elem)  | `[...]` → fresh `T[]`         | iterate → `[...]`              |
- * | `T[]` (class elem)      | **deferred** (needs peek)     | iterate → `[...]`              |
+ * | `T[]` (class elem)      | peek-dispatch + recursive parse | iterate + recursive emit     |
  *
  * ### Per-field annotations
  *

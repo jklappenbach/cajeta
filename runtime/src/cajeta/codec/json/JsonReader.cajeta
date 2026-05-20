@@ -48,6 +48,18 @@ public class JsonReader {
     // produces the value; that one value is not separator-gated.
     boolean afterKey;
 
+    // One-token lookahead state. `peek()` advances by one token and
+    // caches it; the very next `next()` call returns the cached token
+    // instead of advancing again. Callers can `peek()` multiple times
+    // in a row — every call after the first is idempotent until
+    // `next()` consumes the cached value. The Tier-1 synthesizer
+    // uses this to dispatch a nested-class array's elements: peek
+    // either END_ARRAY (consume and exit loop) or START_OBJECT
+    // (leave cached so the recursive `parseObjectFromReader<T>` sees
+    // it as the first token of the inner parse).
+    int32 peekedToken;
+    boolean hasPeeked;
+
     public JsonReader(int8[] input, int64 length) {
         this.input = input;
         this.length = length;
@@ -61,6 +73,31 @@ public class JsonReader {
         this.frameState = new int8[1024];
         this.depth = 0;
         this.afterKey = false;
+        this.peekedToken = 9;      // END placeholder
+        this.hasPeeked = false;
+    }
+
+    /**
+     * Lookahead by one token without consuming it. Subsequent
+     * `peek()` calls return the same cached token. The very next
+     * `next()` call returns the cached token (advancing past it);
+     * all later `next()` calls advance from the buffer normally.
+     *
+     * Use case: dispatch on token kind at a position the recursive
+     * parser also expects to start at — e.g. nested-class array
+     * iteration where the loop peeks each element's leading token,
+     * exits on `END_ARRAY`, and otherwise hands off to a recursive
+     * `parseObjectFromReader<T>` that will itself read the
+     * `START_OBJECT`.
+     */
+    public int32 peek() {
+        if (this.hasPeeked) {
+            return this.peekedToken;
+        }
+        int32 t = this.next();
+        this.peekedToken = t;
+        this.hasPeeked = true;
+        return t;
     }
 
     public int32 current() {
@@ -84,6 +121,13 @@ public class JsonReader {
     }
 
     public int32 next() {
+        // Consume a cached peek if there is one — peek() already
+        // advanced the buffer position past the underlying token.
+        if (this.hasPeeked) {
+            this.hasPeeked = false;
+            this.current = this.peekedToken;
+            return this.peekedToken;
+        }
         this.skipWs();
 
         if (this.pos >= this.length) {
