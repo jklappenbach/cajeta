@@ -887,20 +887,23 @@ namespace cajeta {
                         && llvm::isa<llvm::GetElementPtrInst>(receiver)
                         && receiverType
                         && dynamic_pointer_cast<CajetaClass>(receiverType)
-                        && !dynamic_pointer_cast<CajetaView>(receiverType)
-                        && !dynamic_pointer_cast<CajetaArray>(receiverType)) {
+                        && !dynamic_pointer_cast<CajetaView>(receiverType)) {
                     // Chained field access `a.b.method()` where `b` is a
-                    // class-ref field. DotExpression returned the field's
-                    // slot pointer (a GEP); the slot stores a `ptr` to the
-                    // referent instance (per CajetaClass::fieldLayoutType
-                    // rule that lays class-ref fields as `ptr`). Load
-                    // through to materialize the instance pointer used as
-                    // the dispatch receiver. Without this the vtable load
-                    // at instance[0] would read the SLOT's first word
-                    // (which is the instance ptr itself, not the vtable),
-                    // and __cajeta_vtable_lookup would walk garbage. View
-                    // and interface fields stay inline, so the slot IS
-                    // the language-level value — skip the load there.
+                    // class-ref OR array field. DotExpression returned the
+                    // field's slot pointer (a GEP); the slot stores a `ptr`
+                    // to the referent instance / array header (per
+                    // CajetaClass::fieldLayoutType rule that lays class-ref
+                    // and array fields as `ptr`). Load through to
+                    // materialize the instance/header pointer used as the
+                    // dispatch receiver. Without this the vtable load at
+                    // instance[0] would read the SLOT's first word (which
+                    // is the instance ptr itself, not the vtable), and
+                    // __cajeta_vtable_lookup would walk garbage; for arrays
+                    // the same shape — `.count()` / `.stream()` would read
+                    // the slot's first 8 bytes (the header pointer) as if
+                    // it were the count word. View and interface fields
+                    // stay inline, so the slot IS the language-level value
+                    // — skip the load there.
                     auto rc = dynamic_pointer_cast<CajetaClass>(receiverType);
                     if (!rc->isInterface()) {
                         receiver = builder->CreateLoad(

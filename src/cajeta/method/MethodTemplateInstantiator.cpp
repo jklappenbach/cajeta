@@ -142,11 +142,22 @@ namespace cajeta {
         // Json.parse<T> / Json.toBytes<T> we replace the captured
         // throw-body source with a per-T synthesized body before
         // re-parsing. The captured throw-body stays as the failsafe
-        // for unrecognized entry points.
+        // for unrecognized entry points; overloads of the same name
+        // whose param signatures don't match a recognized entry
+        // point also keep their captured source (e.g. the
+        // `parse<T>(String)` convenience that delegates to
+        // `parse<T>(int8[], int64)`).
         std::string effectiveSource = methodSource;
         {
+            std::vector<CajetaTypePtr> paramTypes;
+            for (auto& fp : parameterList) {
+                if (!fp) continue;
+                if (fp->getName() == "this") continue;
+                paramTypes.push_back(fp->getType());
+            }
             std::string synthesized;
-            if (synthesizeJsonMethodSource(parent, name, args, synthesized)) {
+            if (synthesizeJsonMethodSource(parent, name, args, paramTypes,
+                    synthesized)) {
                 effectiveSource = std::move(synthesized);
                 if (const char* dump = std::getenv("CAJETA_DUMP_IR")) {
                     if (dump[0] == '1') {

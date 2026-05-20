@@ -26,24 +26,27 @@ namespace cajeta {
     using CajetaTypePtr  = std::shared_ptr<CajetaType>;
 
     // Returns true and writes the synthesized method body into `out` if
-    // (parent, methodName) names a Tier-1 synthesizer entry point AND
-    // `args` provides enough info to walk T. Otherwise returns false and
-    // leaves `out` untouched — caller proceeds with the normal template
-    // re-parse path.
+    // (parent, methodName, paramTypes) names a Tier-1 synthesizer entry
+    // point AND `args` provides enough info to walk T. Otherwise returns
+    // false and leaves `out` untouched — caller proceeds with the normal
+    // template re-parse path (the captured method source becomes the
+    // body, useful for overloads that wrap a synthesized variant).
     //
     // Recognized entry points (parent must be cajeta.codec.json.Json):
-    //   - parse    : args[0] = T (a class type); synthesizes
-    //                `public static <__T> T parse(int8[] bytes, int64 length) { ... }`
-    //   - toBytes  : args[0] = T;                 synthesizes
-    //                `public static <__T> #int8[] toBytes(T value) { ... }`
+    //   - parse(int8[], int64) : full byte-buffer parse
+    //   - parseObjectFromReader(JsonReader) : recursive nested helper
+    //   - toBytes(T)                        : full T → byte writer
+    //   - toBytesObjectInto(JsonWriter, T)  : recursive nested helper
     //
-    // The synthesized methodSource is wrapped by the caller in a
-    // throwaway wrapper class (see MethodTemplateInstantiator) before
-    // re-parse.
+    // `paramTypes` excludes the implicit `this` and is matched
+    // canonically so overloads (e.g. `parse<T>(String)` which delegates
+    // to `parse<T>(int8[], int64)`) don't unintentionally trip the
+    // synthesizer and overwrite their hand-written delegation bodies.
     bool synthesizeJsonMethodSource(
         const CajetaClassPtr& parent,
         const std::string& methodName,
         const std::vector<CajetaTypePtr>& args,
+        const std::vector<CajetaTypePtr>& paramTypes,
         std::string& out);
 
 } // namespace cajeta

@@ -29,6 +29,16 @@ public final class Json {
         return r.readValue();
     }
 
+    /**
+     * Tier-3 String overload. Delegates to the byte-buffer entry
+     * point against the String's UTF-8 payload directly — no copy,
+     * no re-encoding, since `cajeta.lang.String` already stores
+     * the bytes the parser wants.
+     */
+    public static #JsonValue parse(cajeta.lang.String s) {
+        return Json.parse(s.bytes, (int64) s.byteLength);
+    }
+
     public static #int8[] toBytes(JsonValue value) {
         JsonWriter w = heap JsonWriter();
         w.writeValue(value);
@@ -58,6 +68,18 @@ public final class Json {
     public static T parse<T>(int8[] bytes, int64 length) {
         throw heap JsonParseException(
             "Json.parse<T>: synthesizer not engaged", (int64) 0);
+    }
+
+    /**
+     * Tier-1 String overload — convenience entry point that takes a
+     * `cajeta.lang.String` and forwards to the byte-buffer Tier-1
+     * variant. The synthesizer matches by name AND param-type
+     * signature; this overload's `(String)` shape does NOT match
+     * `(int8[], int64)`, so the body below is preserved verbatim and
+     * the user gets `Json.parse<T>(jsonString)` as a clean API.
+     */
+    public static T parse<T>(cajeta.lang.String s) {
+        return Json.parse<T>(s.bytes, (int64) s.byteLength);
     }
 
     /**
