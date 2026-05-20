@@ -713,6 +713,48 @@ TEST(JsonSynthesizerTests, mixedAnnotatedFields) {
     EXPECT_EQ(runI32(src), 120);  // 100 + 20 + 0
 }
 
+// ---- Phase 4b commit 11: String-typed user-API overloads ----
+
+// `JsonObject.get(String)` — convenience overload that delegates to
+// the byte-buffer form against the String's `.bytes` + `.byteLength`.
+TEST(JsonSynthesizerTests, jsonObjectGetByString) {
+    auto src =
+        "package test;\n"
+        "import cajeta.codec.json.Json;\n"
+        "import cajeta.codec.json.JsonValue;\n"
+        "import cajeta.codec.json.JsonObject;\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        String s = \"{\\\"id\\\":42}\";\n"
+        "        JsonValue v = Json.parse(s);\n"
+        "        JsonObject o = v.asObject();\n"
+        "        JsonValue idValue = o.get(\"id\");\n"
+        "        return idValue.asInt32();\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 42);
+}
+
+// `JsonReader.currentString()` materializes a String view of the
+// current token's bytes.
+TEST(JsonSynthesizerTests, jsonReaderCurrentString) {
+    auto src =
+        "package test;\n"
+        "import cajeta.codec.json.JsonReader;\n"
+        "import cajeta.codec.json.JsonToken;\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        String s = \"\\\"hi\\\"\";\n"
+        "        JsonReader r = heap JsonReader(s.bytes, (int64) s.byteLength);\n"
+        "        int32 t = r.next();\n"
+        "        if (t != JsonToken.STRING) return 0;\n"
+        "        String got = r.currentString();\n"
+        "        return (int32) got.count();\n"  // 2 codepoints
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 2);
+}
+
 // `Json.parse<T>(String)` convenience overload. Hands the String's
 // `bytes` + `byteLength` to the byte-buffer variant in one step —
 // the synthesizer must NOT overwrite this overload's delegation

@@ -1,5 +1,7 @@
 package cajeta.codec.json;
 
+import cajeta.lang.String;
+
 // Minimal key/value store backing JsonValue.OBJECT. Parallel arrays
 // of int8[] keys + JsonValue values; v1 uses linear scan for get().
 // Insertion order is preserved. The keyLens array stores per-key
@@ -33,6 +35,14 @@ public class JsonObject {
 
     public JsonValue valueAt(int32 i) {
         return this.values[i];
+    }
+
+    // String-typed get — convenience overload over `get(bytes, len)`.
+    // Preferred for hand-written user code; the byte-buffer form
+    // below is for the hot-path tokenizer that already has the
+    // bytes + length in hand.
+    public JsonValue get(String key) {
+        return this.get(key.bytes, key.byteLength);
     }
 
     // Linear-scan get by key bytes. Returns null if absent. v1 keeps

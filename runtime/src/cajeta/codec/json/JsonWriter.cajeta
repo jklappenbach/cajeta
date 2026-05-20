@@ -1,5 +1,7 @@
 package cajeta.codec.json;
 
+import cajeta.lang.String;
+
 public final class JsonWriter {
     int8[] buf;
     int32 cap;
@@ -169,13 +171,22 @@ public final class JsonWriter {
         return this;
     }
 
-    // String + byte-count pair. Length is explicit because
-    // int8[].length isn't yet exposed as a property in this stdlib.
+    // Byte-buffer + explicit length form. The String-typed overload
+    // below is the user-friendly path; this one stays for the
+    // synthesizer's hot-path emit code which already has the bytes
+    // and byteLength in hand.
     public JsonWriter writeString(int8[] s, int32 n) {
         this.maybeSeparator();
         this.writeStringRaw(s, n);
         this.markSibling();
         return this;
+    }
+
+    // String-typed overload — delegates to the byte-buffer form
+    // against the String's `.bytes` + `.byteLength` directly.
+    // Preferred for hand-written user code.
+    public JsonWriter writeString(String s) {
+        return this.writeString(s.bytes, s.byteLength);
     }
 
     // Emit `"key":` (escapes `"` and `\` inside the key). Suppresses
@@ -187,6 +198,11 @@ public final class JsonWriter {
         this.markSibling();
         this.afterKey = true;
         return this;
+    }
+
+    // String-typed key overload. Same shape as writeString(String).
+    public JsonWriter key(String name) {
+        return this.key(name.bytes, name.byteLength);
     }
 
     final void writeStringRaw(int8[] s, int32 n) {

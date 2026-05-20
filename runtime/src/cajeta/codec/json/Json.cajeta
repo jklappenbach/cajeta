@@ -1,5 +1,7 @@
 package cajeta.codec.json;
 
+import cajeta.lang.String;
+
 /**
  * # `cajeta.codec.json.Json` — top-level JSON entry points
  *
@@ -44,7 +46,7 @@ package cajeta.codec.json;
  * | `int32`, `int64`        | NUMBER → int                  | int → NUMBER                   |
  * | `float64`               | NUMBER → float                | float → NUMBER                 |
  * | `boolean`               | `true`/`false` → bool         | bool → `true`/`false`          |
- * | `cajeta.lang.String`    | STRING → view-mode String     | bytes + length → STRING        |
+ * | `String`    | STRING → view-mode String     | bytes + length → STRING        |
  * | nested class            | recurses into `parseObjectFromReader<T>` | recurses into `toBytesObjectInto<T>` |
  * | `T[]` (primitive elem)  | `[...]` → fresh `T[]`         | iterate → `[...]`              |
  * | `T[]` (class elem)      | peek-dispatch + recursive parse | iterate + recursive emit     |
@@ -126,10 +128,10 @@ public final class Json {
     /**
      * Tier-3 String overload. Delegates to the byte-buffer entry
      * point against the String's UTF-8 payload directly — no copy,
-     * no re-encoding, since `cajeta.lang.String` already stores
+     * no re-encoding, since `String` already stores
      * the bytes the parser wants.
      */
-    public static #JsonValue parse(cajeta.lang.String s) {
+    public static #JsonValue parse(String s) {
         return Json.parse(s.bytes, (int64) s.byteLength);
     }
 
@@ -166,13 +168,13 @@ public final class Json {
 
     /**
      * Tier-1 String overload — convenience entry point that takes a
-     * `cajeta.lang.String` and forwards to the byte-buffer Tier-1
+     * `String` and forwards to the byte-buffer Tier-1
      * variant. The synthesizer matches by name AND param-type
      * signature; this overload's `(String)` shape does NOT match
      * `(int8[], int64)`, so the body below is preserved verbatim and
      * the user gets `Json.parse<T>(jsonString)` as a clean API.
      */
-    public static T parse<T>(cajeta.lang.String s) {
+    public static T parse<T>(String s) {
         return Json.parse<T>(s.bytes, (int64) s.byteLength);
     }
 

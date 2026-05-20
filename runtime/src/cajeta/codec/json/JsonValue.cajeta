@@ -1,5 +1,7 @@
 package cajeta.codec.json;
 
+import cajeta.lang.String;
+
 /**
  * Tagged-union JSON value (Tier 3 convenience layer). Each value
  * carries a kind discriminator (int32) plus all six possible
@@ -67,6 +69,21 @@ public class JsonValue {
         return this.strLen;
     }
 
+    /**
+     * Materialize this STRING value as a `cajeta.lang.String`
+     * view-mode instance over the borrowed byte slice. Preferred
+     * over the raw `asBytes()` / `asBytesLength()` pair when the
+     * caller wants String ergonomics (equality, hashing,
+     * concatenation). Returns null for non-STRING kinds — caller
+     * gates on `kind()` first if that matters.
+     */
+    public #String asString() {
+        if (this.kind != 3) {
+            return null;
+        }
+        return heap String(this.strBytes, this.strLen);
+    }
+
     public JsonArray asArray() {
         return this.arrVal;
     }
@@ -101,6 +118,17 @@ public class JsonValue {
         this.strBytes = bytes;
         this.strLen = len;
         return this;
+    }
+
+    /**
+     * String-typed `setString` overload. The String's bytes are
+     * stored as a BORROW — the String's lifetime must outlive this
+     * JsonValue. For ownership transfer use `setStringFromString(#s)`
+     * (the String moves into this JsonValue and the caller's local
+     * deactivates).
+     */
+    public JsonValue setString(String s) {
+        return this.setString(s.bytes, s.byteLength);
     }
 
     // # — ownership transfer. The caller's local stops being live;

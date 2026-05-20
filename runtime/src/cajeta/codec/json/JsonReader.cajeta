@@ -1,5 +1,7 @@
 package cajeta.codec.json;
 
+import cajeta.lang.String;
+
 /**
  * Pull tokenizer for RFC 8259 JSON. Walks an int8[] input buffer
  * once forward, emitting one JsonToken-ordinal per next() call.
@@ -389,6 +391,22 @@ public class JsonReader {
             i = i + 1;
         }
         return out;
+    }
+
+    /**
+     * Materialize the current token's bytes as a `cajeta.lang.String`
+     * view. The String's `bytes` field points at a fresh int8[] copy
+     * of the token (same copy `currentBytes()` makes); the
+     * `byteLength` reflects the token's span.
+     *
+     * Use this when the caller wants a String for ergonomics —
+     * comparison, passing to other APIs, building a key map. The
+     * hot-path tokenizer code keeps using `currentBytes()` directly
+     * to avoid the wrapper allocation.
+     */
+    public #String currentString() {
+        int8[] bytes = this.currentBytes();
+        return heap String(bytes, (int32) bytes.count());
     }
 
     // Parse the current NUMBER token's integer span as int64. v1 only
