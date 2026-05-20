@@ -1,0 +1,216 @@
+package cajeta.hash;
+
+import cajeta.lang.String;
+
+/**
+ * MD5 (RFC 1321) — 128-bit non-cryptographic checksum / identifier.
+ *
+ * **Not security.** MD5 is cryptographically broken — collision
+ * attacks have been practical for ~15 years. Do **not** use for
+ * signatures, MACs, password hashing, or anything where an attacker
+ * benefits from forging a match. The cases MD5 still fits:
+ *
+ * - HTTP `ETag` (cache invalidation; an attacker forging matches
+ *   only fools their own cache)
+ * - S3 `Content-MD5` (the protocol fixes the algorithm)
+ * - Asset fingerprinting (bundler hashes; attacker with write
+ *   access doesn't need to forge anything)
+ * - Cache-key derivation from internal inputs
+ * - Database row fingerprinting (delta detection between snapshots)
+ *
+ * For real cryptography use `cajeta.crypto.SHA256` /
+ * `cajeta.crypto.BLAKE3` (peer library, not in v1).
+ *
+ * ## Surface
+ *
+ * One-shot statics:
+ * ```cajeta
+ * int8[] digest = MD5.hash(bytes, bytes.count());
+ * String etag = MD5.hashHex(bytes, bytes.count());
+ * ```
+ *
+ * Streaming `Hasher`:
+ * ```cajeta
+ * MD5 m = new MD5();
+ * m.writeInt32(record.id);
+ * m.writeString(record.title);
+ * m.update(record.payload, record.payload.count());
+ * int64 fingerprint = m.finish();   // first 8 digest bytes as int64
+ * ```
+ *
+ * `finish()` projects the 128-bit digest to 64 bits (first 8 bytes,
+ * little-endian) to fit the `Hasher` contract. Callers wanting the
+ * full 16-byte digest call `digest()` *before* `finish()` — once
+ * `finish()` is called the state is consumed.
+ *
+ * ## v1 native-bridge workarounds
+ *
+ * - `boolean` parameter doesn't yet coerce at the @Native ABI
+ *   boundary, so `writeBoolean` materializes int8 via ternary.
+ * - `int8[]` return from @Native doesn't register with the per-
+ *   thread live-set, so one-shot and digest helpers pre-allocate
+ *   the output on the cajeta side and the C helper fills it.
+ *
+ * @see cajeta.hash.Hasher
+ * @see [stdlib/Hashing.md § MD5](../../../../../cajeta-docs/stdlib/Hashing.md)
+ */
+public final class MD5 implements Hasher {
+
+    /**
+     * Opaque pointer to the native `struct cajeta_md5_state`.
+     */
+    public pointer state;
+
+    public MD5() {
+        this.state = MD5.allocState();
+    }
+
+    ~MD5() {
+        MD5.freeState(this.state);
+    }
+
+    // --- @Native bridges --------------------------------------------
+
+    @Native("__cajeta_md5_alloc")
+    private static pointer allocState() { }
+
+    @Native("__cajeta_md5_free")
+    private static void freeState(pointer s) { }
+
+    @Native("__cajeta_md5_reset")
+    private static void resetState(pointer s) { }
+
+    @Native("__cajeta_md5_update")
+    private static void updateNative(pointer s, int8[] data, int64 len) { }
+
+    @Native("__cajeta_md5_finalize_into")
+    private static void finalizeInto(pointer s, int8[] out) { }
+
+    @Native("__cajeta_md5_finish_int64")
+    private static int64 finishInt64(pointer s) { }
+
+    @Native("__cajeta_md5_oneshot_into")
+    private static void oneshotInto(int8[] data, int64 len, int8[] out) { }
+
+    @Native("__cajeta_md5_oneshot_hex_into")
+    private static void oneshotHexInto(int8[] data, int64 len, int8[] out) { }
+
+    @Native("__cajeta_md5_write_i8")
+    private static void writeI8Native(pointer s, int8 v) { }
+
+    @Native("__cajeta_md5_write_i16")
+    private static void writeI16Native(pointer s, int16 v) { }
+
+    @Native("__cajeta_md5_write_i32")
+    private static void writeI32Native(pointer s, int32 v) { }
+
+    @Native("__cajeta_md5_write_i64")
+    private static void writeI64Native(pointer s, int64 v) { }
+
+    @Native("__cajeta_md5_write_f32")
+    private static void writeF32Native(pointer s, float32 v) { }
+
+    @Native("__cajeta_md5_write_f64")
+    private static void writeF64Native(pointer s, float64 v) { }
+
+    // --- One-shot statics -------------------------------------------
+
+    /**
+     * One-shot 16-byte digest of `data[0..len)`. Allocates a fresh
+     * `int8[16]` and transfers ownership to the caller.
+     */
+    public static #int8[] hash(int8[] data, int64 len) {
+        int8[] out = new int8[16];
+        MD5.oneshotInto(data, len, out);
+        return #out;
+    }
+
+    /**
+     * One-shot lowercase 32-char hex digest of `data[0..len)`.
+     * Common shape for ETag / Content-MD5 / asset fingerprints.
+     */
+    public static #String hashHex(int8[] data, int64 len) {
+        int8[] hex = new int8[32];
+        MD5.oneshotHexInto(data, len, hex);
+        return heap String(#hex, 32);
+    }
+
+    /**
+     * One-shot 16-byte digest of a String's UTF-8 bytes.
+     */
+    public static #int8[] hashString(String s) {
+        return MD5.hash(s.bytes, (int64) s.byteLength);
+    }
+
+    /**
+     * One-shot lowercase hex digest of a String's UTF-8 bytes.
+     */
+    public static #String hashStringHex(String s) {
+        return MD5.hashHex(s.bytes, (int64) s.byteLength);
+    }
+
+    // --- Streaming surface ------------------------------------------
+
+    /**
+     * Append `data[0..len)` to the streaming digest.
+     */
+    public void update(int8[] data, int64 len) {
+        MD5.updateNative(this.state, data, len);
+    }
+
+    /**
+     * Finalize and return the 16-byte digest. Consumes the state —
+     * subsequent updates produce undefined results until `reset()`.
+     */
+    public #int8[] digest() {
+        int8[] out = new int8[16];
+        MD5.finalizeInto(this.state, out);
+        return #out;
+    }
+
+    /**
+     * Re-initialize the working state. Lets a single MD5 instance
+     * hash multiple independent inputs without reallocating.
+     */
+    public void reset() {
+        MD5.resetState(this.state);
+    }
+
+    // --- Hasher streaming primitives --------------------------------
+
+    public void writeBoolean(boolean v) {
+        MD5.writeI8Native(this.state, (int8)(v ? 1 : 0));
+    }
+    public void writeInt8(int8 v)       { MD5.writeI8Native(this.state, v); }
+    public void writeInt16(int16 v)     { MD5.writeI16Native(this.state, v); }
+    public void writeInt32(int32 v)     { MD5.writeI32Native(this.state, v); }
+    public void writeInt64(int64 v)     { MD5.writeI64Native(this.state, v); }
+    public void writeUInt8(uint8 v)     { MD5.writeI8Native(this.state, (int8) v); }
+    public void writeUInt16(uint16 v)   { MD5.writeI16Native(this.state, (int16) v); }
+    public void writeUInt32(uint32 v)   { MD5.writeI32Native(this.state, (int32) v); }
+    public void writeUInt64(uint64 v)   { MD5.writeI64Native(this.state, (int64) v); }
+    public void writeFloat32(float32 v) { MD5.writeF32Native(this.state, v); }
+    public void writeFloat64(float64 v) { MD5.writeF64Native(this.state, v); }
+
+    public void writeBytes(int8[] data) {
+        MD5.updateNative(this.state, data, data.count());
+    }
+
+    public void writeBytesRange(int8[] data, int64 offset, int64 length) {
+        // v1: `offset` ignored — the C helper reads from data[8..].
+        // Slicing primitive is a v2 follow-up.
+        MD5.updateNative(this.state, data, length);
+    }
+
+    public void writeString(String s) {
+        MD5.updateNative(this.state, s.bytes, (int64) s.byteLength);
+    }
+
+    public void writeObject(Object obj) {
+        MD5.writeI64Native(this.state, obj.hash());
+    }
+
+    public int64 finish() {
+        return MD5.finishInt64(this.state);
+    }
+}

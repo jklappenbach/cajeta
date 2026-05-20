@@ -1,0 +1,22 @@
+package cajeta.hash;
+import cajeta.lang.String;
+public final class DefaultHasher implements Hasher {
+    public int32 dummy;
+    public DefaultHasher() { this.dummy = 0; }
+    public void writeBoolean(boolean v) { }
+    public void writeInt8(int8 v) { }
+    public void writeInt16(int16 v) { }
+    public void writeInt32(int32 v) { }
+    public void writeInt64(int64 v) { }
+    public void writeUInt8(uint8 v) { }
+    public void writeUInt16(uint16 v) { }
+    public void writeUInt32(uint32 v) { }
+    public void writeUInt64(uint64 v) { }
+    public void writeFloat32(float32 v) { }
+    public void writeFloat64(float64 v) { }
+    public void writeBytes(int8[] data) { }
+    public void writeBytesRange(int8[] data, int64 offset, int64 length) { }
+    public void writeString(String s) { }
+    public void writeObject(Object obj) { }
+    public int64 finish() { return 0L; }
+}
