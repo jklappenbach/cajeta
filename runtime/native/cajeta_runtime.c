@@ -2020,6 +2020,516 @@ int64_t __cajeta_hash_bytes_seeded(const uint8_t* data, int64_t len, int64_t see
         data, (size_t) len, (uint64_t) seed);
 }
 
+// --- cajeta.hash.MD5 --------------------------------------------------------
+// RFC 1321 MD5. Cryptographically broken — surfaced here for HTTP ETag,
+// S3 Content-MD5, asset fingerprinting, cache-key derivation, database
+// row fingerprinting. The full digest is 16 bytes; the streaming
+// Hasher.finish() projection returns the first 8 bytes as little-endian
+// int64 (matching how SipHash / XXH3 fold to int64). Callers that need
+// the full 16-byte digest call MD5.hash(...) or MD5.hashHex(...).
+
+struct cajeta_md5_state {
+    uint32_t s[4];          // A, B, C, D
+    uint64_t bits;          // total bytes hashed * 8
+    uint8_t  buf[64];       // partial-block buffer
+    int32_t  buf_len;
+};
+
+static const uint32_t MD5_K[64] = {
+    0xd76aa478, 0xe8c7b756, 0x242070db, 0xc1bdceee,
+    0xf57c0faf, 0x4787c62a, 0xa8304613, 0xfd469501,
+    0x698098d8, 0x8b44f7af, 0xffff5bb1, 0x895cd7be,
+    0x6b901122, 0xfd987193, 0xa679438e, 0x49b40821,
+    0xf61e2562, 0xc040b340, 0x265e5a51, 0xe9b6c7aa,
+    0xd62f105d, 0x02441453, 0xd8a1e681, 0xe7d3fbc8,
+    0x21e1cde6, 0xc33707d6, 0xf4d50d87, 0x455a14ed,
+    0xa9e3e905, 0xfcefa3f8, 0x676f02d9, 0x8d2a4c8a,
+    0xfffa3942, 0x8771f681, 0x6d9d6122, 0xfde5380c,
+    0xa4beea44, 0x4bdecfa9, 0xf6bb4b60, 0xbebfbc70,
+    0x289b7ec6, 0xeaa127fa, 0xd4ef3085, 0x04881d05,
+    0xd9d4d039, 0xe6db99e5, 0x1fa27cf8, 0xc4ac5665,
+    0xf4292244, 0x432aff97, 0xab9423a7, 0xfc93a039,
+    0x655b59c3, 0x8f0ccc92, 0xffeff47d, 0x85845dd1,
+    0x6fa87e4f, 0xfe2ce6e0, 0xa3014314, 0x4e0811a1,
+    0xf7537e82, 0xbd3af235, 0x2ad7d2bb, 0xeb86d391
+};
+
+static const uint32_t MD5_S[64] = {
+    7, 12, 17, 22,  7, 12, 17, 22,  7, 12, 17, 22,  7, 12, 17, 22,
+    5,  9, 14, 20,  5,  9, 14, 20,  5,  9, 14, 20,  5,  9, 14, 20,
+    4, 11, 16, 23,  4, 11, 16, 23,  4, 11, 16, 23,  4, 11, 16, 23,
+    6, 10, 15, 21,  6, 10, 15, 21,  6, 10, 15, 21,  6, 10, 15, 21
+};
+
+static inline uint32_t md5_rotl(uint32_t x, uint32_t n) {
+    return (x << n) | (x >> (32u - n));
+}
+
+static void md5_transform(uint32_t state[4], const uint8_t block[64]) {
+    uint32_t M[16];
+    for (int i = 0; i < 16; i++) {
+        M[i] = ((uint32_t) block[i*4 + 0])
+             | ((uint32_t) block[i*4 + 1] << 8)
+             | ((uint32_t) block[i*4 + 2] << 16)
+             | ((uint32_t) block[i*4 + 3] << 24);
+    }
+    uint32_t a = state[0], b = state[1], c = state[2], d = state[3];
+    for (int i = 0; i < 64; i++) {
+        uint32_t f, g;
+        if (i < 16) {
+            f = (b & c) | ((~b) & d);
+            g = (uint32_t) i;
+        } else if (i < 32) {
+            f = (d & b) | ((~d) & c);
+            g = (uint32_t)((5 * i + 1) % 16);
+        } else if (i < 48) {
+            f = b ^ c ^ d;
+            g = (uint32_t)((3 * i + 5) % 16);
+        } else {
+            f = c ^ (b | (~d));
+            g = (uint32_t)((7 * i) % 16);
+        }
+        uint32_t temp = d;
+        d = c;
+        c = b;
+        b = b + md5_rotl(a + f + MD5_K[i] + M[g], MD5_S[i]);
+        a = temp;
+    }
+    state[0] += a;
+    state[1] += b;
+    state[2] += c;
+    state[3] += d;
+}
+
+static void md5_init(struct cajeta_md5_state* s) {
+    s->s[0] = 0x67452301;
+    s->s[1] = 0xefcdab89;
+    s->s[2] = 0x98badcfe;
+    s->s[3] = 0x10325476;
+    s->bits = 0;
+    s->buf_len = 0;
+}
+
+static void md5_update(struct cajeta_md5_state* s,
+                       const uint8_t* data, size_t len) {
+    s->bits += (uint64_t) len * 8u;
+    while (len > 0) {
+        size_t to_copy = (size_t) (64 - s->buf_len);
+        if (to_copy > len) to_copy = len;
+        memcpy(s->buf + s->buf_len, data, to_copy);
+        s->buf_len += (int32_t) to_copy;
+        data += to_copy;
+        len  -= to_copy;
+        if (s->buf_len == 64) {
+            md5_transform(s->s, s->buf);
+            s->buf_len = 0;
+        }
+    }
+}
+
+static void md5_finalize(struct cajeta_md5_state* s, uint8_t out[16]) {
+    // Append 0x80, pad with zeros to 56 mod 64, append 8-byte
+    // little-endian bit count, transform.
+    s->buf[s->buf_len++] = 0x80;
+    if (s->buf_len > 56) {
+        memset(s->buf + s->buf_len, 0, (size_t)(64 - s->buf_len));
+        md5_transform(s->s, s->buf);
+        s->buf_len = 0;
+    }
+    memset(s->buf + s->buf_len, 0, (size_t)(56 - s->buf_len));
+    for (int i = 0; i < 8; i++) {
+        s->buf[56 + i] = (uint8_t)(s->bits >> (i * 8));
+    }
+    md5_transform(s->s, s->buf);
+    for (int i = 0; i < 4; i++) {
+        out[i*4 + 0] = (uint8_t)(s->s[i] >> 0);
+        out[i*4 + 1] = (uint8_t)(s->s[i] >> 8);
+        out[i*4 + 2] = (uint8_t)(s->s[i] >> 16);
+        out[i*4 + 3] = (uint8_t)(s->s[i] >> 24);
+    }
+}
+
+// --- MD5 C ABI bridges -----------------------------------------------------
+// Streaming state — opaque to cajeta. Allocator + finalizer match the
+// destructor / ctor pattern the cajeta MD5 class uses.
+
+void* __cajeta_md5_alloc(void) {
+    struct cajeta_md5_state* s = (struct cajeta_md5_state*) malloc(sizeof *s);
+    if (!s) return NULL;
+    md5_init(s);
+    return s;
+}
+
+void __cajeta_md5_free(void* state) {
+    if (state) free(state);
+}
+
+void __cajeta_md5_reset(void* state) {
+    if (state) md5_init((struct cajeta_md5_state*) state);
+}
+
+// `data_hdr` is a cajeta int8[] header — { i64 count, [N x i8] data }.
+// Caller passes the explicit `len` since data.count() isn't always
+// known at the call site; the runtime reads bytes from offset 8.
+void __cajeta_md5_update(void* state, const void* data_hdr, int64_t len) {
+    if (!state || !data_hdr || len <= 0) return;
+    const uint8_t* data = ((const uint8_t*) data_hdr) + 8;
+    md5_update((struct cajeta_md5_state*) state, data, (size_t) len);
+}
+
+// out_hdr is a cajeta int8[16] header. Writes 16 bytes starting at
+// offset 8. Caller is responsible for sizing the array correctly.
+void __cajeta_md5_finalize_into(void* state, void* out_hdr) {
+    if (!state || !out_hdr) return;
+    uint8_t* out = ((uint8_t*) out_hdr) + 8;
+    md5_finalize((struct cajeta_md5_state*) state, out);
+}
+
+// Width-named primitive folders. Each writes the value's
+// little-endian byte representation. Hasher's contract pins width
+// (`writeInt16(1)` and `writeInt32(1)` produce different digests),
+// so doing this on the C side avoids per-call temporary array
+// allocation on the cajeta side.
+void __cajeta_md5_write_i8 (void* state, int8_t  v) {
+    if (state) md5_update((struct cajeta_md5_state*) state, (const uint8_t*) &v, 1);
+}
+void __cajeta_md5_write_i16(void* state, int16_t v) {
+    if (!state) return;
+    uint8_t b[2] = { (uint8_t)(v), (uint8_t)(v >> 8) };
+    md5_update((struct cajeta_md5_state*) state, b, 2);
+}
+void __cajeta_md5_write_i32(void* state, int32_t v) {
+    if (!state) return;
+    uint8_t b[4];
+    for (int i = 0; i < 4; i++) b[i] = (uint8_t)(v >> (i * 8));
+    md5_update((struct cajeta_md5_state*) state, b, 4);
+}
+void __cajeta_md5_write_i64(void* state, int64_t v) {
+    if (!state) return;
+    uint8_t b[8];
+    for (int i = 0; i < 8; i++) b[i] = (uint8_t)(v >> (i * 8));
+    md5_update((struct cajeta_md5_state*) state, b, 8);
+}
+void __cajeta_md5_write_f32(void* state, float v) {
+    if (!state) return;
+    uint32_t bits;
+    memcpy(&bits, &v, sizeof bits);
+    __cajeta_md5_write_i32(state, (int32_t) bits);
+}
+void __cajeta_md5_write_f64(void* state, double v) {
+    if (!state) return;
+    uint64_t bits;
+    memcpy(&bits, &v, sizeof bits);
+    __cajeta_md5_write_i64(state, (int64_t) bits);
+}
+void __cajeta_md5_write_bool(void* state, int8_t v) {
+    __cajeta_md5_write_i8(state, v ? 1 : 0);
+}
+
+// finish() Hasher projection: return the first 8 bytes of the digest
+// as a little-endian int64. Reads s[0] and s[1] in their post-finalize
+// state. NB: this mutates the state (calls md5_finalize), so a second
+// finish() returns garbage for the same state — Hasher.finish() is
+// terminal by contract.
+int64_t __cajeta_md5_finish_int64(void* state) {
+    if (!state) return 0;
+    uint8_t digest[16];
+    md5_finalize((struct cajeta_md5_state*) state, digest);
+    uint64_t v = 0;
+    for (int i = 0; i < 8; i++) {
+        v |= ((uint64_t) digest[i]) << (i * 8);
+    }
+    return (int64_t) v;
+}
+
+// One-shot variants. Caller pre-allocates the output array on the
+// cajeta side (since @Native return of int8[] isn't ABI-bridged in
+// v1 — the live-set registration that `new int8[N]` performs doesn't
+// flow through a returned-from-C array header). These helpers fill
+// the caller's buffer at `out_hdr + 8`.
+void __cajeta_md5_oneshot_into(const void* data_hdr, int64_t len, void* out_hdr) {
+    if (!out_hdr) return;
+    struct cajeta_md5_state s;
+    md5_init(&s);
+    if (data_hdr && len > 0) {
+        md5_update(&s, ((const uint8_t*) data_hdr) + 8, (size_t) len);
+    }
+    md5_finalize(&s, ((uint8_t*) out_hdr) + 8);
+}
+
+// Lowercase hex digest into a caller-supplied int8[32] buffer. The
+// cajeta MD5.hashHex wrapper allocates `new int8[32]`, calls this,
+// then wraps the array in a String.
+void __cajeta_md5_oneshot_hex_into(const void* data_hdr, int64_t len, void* out_hdr) {
+    if (!out_hdr) return;
+    struct cajeta_md5_state s;
+    md5_init(&s);
+    if (data_hdr && len > 0) {
+        md5_update(&s, ((const uint8_t*) data_hdr) + 8, (size_t) len);
+    }
+    uint8_t digest[16];
+    md5_finalize(&s, digest);
+    static const char HEX[16] = "0123456789abcdef";
+    uint8_t* out = ((uint8_t*) out_hdr) + 8;
+    for (int i = 0; i < 16; i++) {
+        out[i*2 + 0] = (uint8_t) HEX[(digest[i] >> 4) & 0xF];
+        out[i*2 + 1] = (uint8_t) HEX[digest[i] & 0xF];
+    }
+}
+
+// --- cajeta.hash.SipHash (SipHash-2-4) -------------------------------------
+// SipHash-2-4 over arbitrary bytes with a 128-bit key. Designed for
+// hash-flooding resistance — exactly the right algorithm when keys
+// come from untrusted input (HTTP request bodies, shared cache
+// lookups). v1 ships streaming + one-shot; the in-process default
+// hasher uses XXH3 instead because SipHash is much slower per byte
+// (~2-3 GB/s vs XXH3's ~30 GB/s) — speed beats DoS resistance for
+// the in-process internal-keys case.
+//
+// Reference: Aumasson + Bernstein "SipHash: a fast short-input PRF"
+// 2012.
+
+struct cajeta_siphash_state {
+    uint64_t v0, v1, v2, v3;     // working state
+    uint8_t  buf[8];             // partial-word buffer
+    int32_t  buf_len;
+    uint64_t total_bytes;
+};
+
+static inline uint64_t sip_rotl(uint64_t x, int n) {
+    return (x << n) | (x >> (64 - n));
+}
+
+static inline void sip_round(uint64_t* v0, uint64_t* v1,
+                             uint64_t* v2, uint64_t* v3) {
+    *v0 += *v1; *v1 = sip_rotl(*v1, 13); *v1 ^= *v0; *v0 = sip_rotl(*v0, 32);
+    *v2 += *v3; *v3 = sip_rotl(*v3, 16); *v3 ^= *v2;
+    *v0 += *v3; *v3 = sip_rotl(*v3, 21); *v3 ^= *v0;
+    *v2 += *v1; *v1 = sip_rotl(*v1, 17); *v1 ^= *v2; *v2 = sip_rotl(*v2, 32);
+}
+
+static inline uint64_t sip_load_le64(const uint8_t* p) {
+    return ((uint64_t) p[0])
+         | ((uint64_t) p[1] << 8)
+         | ((uint64_t) p[2] << 16)
+         | ((uint64_t) p[3] << 24)
+         | ((uint64_t) p[4] << 32)
+         | ((uint64_t) p[5] << 40)
+         | ((uint64_t) p[6] << 48)
+         | ((uint64_t) p[7] << 56);
+}
+
+static void siphash_init(struct cajeta_siphash_state* s,
+                         uint64_t k0, uint64_t k1) {
+    s->v0 = k0 ^ 0x736f6d6570736575ULL;
+    s->v1 = k1 ^ 0x646f72616e646f6dULL;
+    s->v2 = k0 ^ 0x6c7967656e657261ULL;
+    s->v3 = k1 ^ 0x7465646279746573ULL;
+    s->buf_len = 0;
+    s->total_bytes = 0;
+}
+
+static void siphash_absorb_block(struct cajeta_siphash_state* s,
+                                 const uint8_t* block) {
+    uint64_t m = sip_load_le64(block);
+    s->v3 ^= m;
+    sip_round(&s->v0, &s->v1, &s->v2, &s->v3);
+    sip_round(&s->v0, &s->v1, &s->v2, &s->v3);
+    s->v0 ^= m;
+}
+
+static void siphash_update(struct cajeta_siphash_state* s,
+                           const uint8_t* data, size_t len) {
+    s->total_bytes += len;
+    while (s->buf_len > 0 && len > 0) {
+        size_t to_copy = (size_t)(8 - s->buf_len);
+        if (to_copy > len) to_copy = len;
+        memcpy(s->buf + s->buf_len, data, to_copy);
+        s->buf_len += (int32_t) to_copy;
+        data += to_copy; len -= to_copy;
+        if (s->buf_len == 8) {
+            siphash_absorb_block(s, s->buf);
+            s->buf_len = 0;
+        }
+    }
+    while (len >= 8) {
+        siphash_absorb_block(s, data);
+        data += 8; len -= 8;
+    }
+    if (len > 0) {
+        memcpy(s->buf, data, len);
+        s->buf_len = (int32_t) len;
+    }
+}
+
+static uint64_t siphash_finalize(struct cajeta_siphash_state* s) {
+    // Final block: remaining bytes + length-modulo-256 in top byte.
+    uint8_t last[8] = {0};
+    memcpy(last, s->buf, (size_t) s->buf_len);
+    last[7] = (uint8_t)(s->total_bytes & 0xFF);
+    uint64_t m = sip_load_le64(last);
+    s->v3 ^= m;
+    sip_round(&s->v0, &s->v1, &s->v2, &s->v3);
+    sip_round(&s->v0, &s->v1, &s->v2, &s->v3);
+    s->v0 ^= m;
+    // Finalization rounds (4 for SipHash-2-4).
+    s->v2 ^= 0xFF;
+    for (int i = 0; i < 4; i++) {
+        sip_round(&s->v0, &s->v1, &s->v2, &s->v3);
+    }
+    return s->v0 ^ s->v1 ^ s->v2 ^ s->v3;
+}
+
+// --- SipHash C ABI bridges -------------------------------------------------
+
+void* __cajeta_siphash_alloc(int64_t k0, int64_t k1) {
+    struct cajeta_siphash_state* s = (struct cajeta_siphash_state*) malloc(sizeof *s);
+    if (!s) return NULL;
+    siphash_init(s, (uint64_t) k0, (uint64_t) k1);
+    return s;
+}
+
+void __cajeta_siphash_free(void* state) {
+    if (state) free(state);
+}
+
+void __cajeta_siphash_reset(void* state, int64_t k0, int64_t k1) {
+    if (state) siphash_init((struct cajeta_siphash_state*) state,
+                            (uint64_t) k0, (uint64_t) k1);
+}
+
+void __cajeta_siphash_update(void* state, const void* data_hdr, int64_t len) {
+    if (!state || !data_hdr || len <= 0) return;
+    siphash_update((struct cajeta_siphash_state*) state,
+                   ((const uint8_t*) data_hdr) + 8, (size_t) len);
+}
+
+// finish() Hasher projection — also the natural digest. SipHash is
+// inherently 64-bit so finish() returns the full result.
+int64_t __cajeta_siphash_finish(void* state) {
+    if (!state) return 0;
+    return (int64_t) siphash_finalize((struct cajeta_siphash_state*) state);
+}
+
+int64_t __cajeta_siphash_oneshot(const void* data_hdr, int64_t len,
+                                 int64_t k0, int64_t k1) {
+    struct cajeta_siphash_state s;
+    siphash_init(&s, (uint64_t) k0, (uint64_t) k1);
+    if (data_hdr && len > 0) {
+        siphash_update(&s, ((const uint8_t*) data_hdr) + 8, (size_t) len);
+    }
+    return (int64_t) siphash_finalize(&s);
+}
+
+// Width-named SipHash folders — same shape as MD5's.
+void __cajeta_siphash_write_i8(void* state, int8_t v) {
+    if (state) siphash_update((struct cajeta_siphash_state*) state,
+                              (const uint8_t*) &v, 1);
+}
+void __cajeta_siphash_write_i16(void* state, int16_t v) {
+    if (!state) return;
+    uint8_t b[2] = { (uint8_t) v, (uint8_t)(v >> 8) };
+    siphash_update((struct cajeta_siphash_state*) state, b, 2);
+}
+void __cajeta_siphash_write_i32(void* state, int32_t v) {
+    if (!state) return;
+    uint8_t b[4];
+    for (int i = 0; i < 4; i++) b[i] = (uint8_t)(v >> (i * 8));
+    siphash_update((struct cajeta_siphash_state*) state, b, 4);
+}
+void __cajeta_siphash_write_i64(void* state, int64_t v) {
+    if (!state) return;
+    uint8_t b[8];
+    for (int i = 0; i < 8; i++) b[i] = (uint8_t)(v >> (i * 8));
+    siphash_update((struct cajeta_siphash_state*) state, b, 8);
+}
+void __cajeta_siphash_write_f32(void* state, float v) {
+    if (!state) return;
+    uint32_t bits;
+    memcpy(&bits, &v, sizeof bits);
+    __cajeta_siphash_write_i32(state, (int32_t) bits);
+}
+void __cajeta_siphash_write_f64(void* state, double v) {
+    if (!state) return;
+    uint64_t bits;
+    memcpy(&bits, &v, sizeof bits);
+    __cajeta_siphash_write_i64(state, (int64_t) bits);
+}
+
+// --- cajeta.hash.XXHash3 (XXH3-64) ----------------------------------------
+// XXH3-64 from upstream xxhash (already included at the top of this
+// file for __cajeta_hash_bytes). We expose alloc/update/digest
+// here so the cajeta XXHash3 class has a stable opaque-pointer
+// streaming surface; the algorithm is the same one Default Hasher /
+// String.hash / @AutoHash all use under the hood.
+
+void* __cajeta_xxh3_alloc(int64_t seed) {
+    XXH3_state_t* s = XXH3_createState();
+    if (!s) return NULL;
+    XXH3_64bits_reset_withSeed(s, (XXH64_hash_t) seed);
+    return s;
+}
+
+void __cajeta_xxh3_free(void* state) {
+    if (state) XXH3_freeState((XXH3_state_t*) state);
+}
+
+void __cajeta_xxh3_reset(void* state, int64_t seed) {
+    if (state) XXH3_64bits_reset_withSeed(
+        (XXH3_state_t*) state, (XXH64_hash_t) seed);
+}
+
+void __cajeta_xxh3_update(void* state, const void* data_hdr, int64_t len) {
+    if (!state || !data_hdr || len <= 0) return;
+    XXH3_64bits_update((XXH3_state_t*) state,
+                       ((const uint8_t*) data_hdr) + 8, (size_t) len);
+}
+
+int64_t __cajeta_xxh3_finish(void* state) {
+    if (!state) return 0;
+    return (int64_t) XXH3_64bits_digest((const XXH3_state_t*) state);
+}
+
+int64_t __cajeta_xxh3_oneshot(const void* data_hdr, int64_t len, int64_t seed) {
+    if (!data_hdr || len <= 0) return 0;
+    return (int64_t) XXH3_64bits_withSeed(
+        ((const uint8_t*) data_hdr) + 8, (size_t) len, (uint64_t) seed);
+}
+
+// Width-named folders. Same approach as MD5 / SipHash.
+void __cajeta_xxh3_write_i8(void* state, int8_t v) {
+    if (state) XXH3_64bits_update((XXH3_state_t*) state, &v, 1);
+}
+void __cajeta_xxh3_write_i16(void* state, int16_t v) {
+    if (!state) return;
+    uint8_t b[2] = { (uint8_t) v, (uint8_t)(v >> 8) };
+    XXH3_64bits_update((XXH3_state_t*) state, b, 2);
+}
+void __cajeta_xxh3_write_i32(void* state, int32_t v) {
+    if (!state) return;
+    uint8_t b[4];
+    for (int i = 0; i < 4; i++) b[i] = (uint8_t)(v >> (i * 8));
+    XXH3_64bits_update((XXH3_state_t*) state, b, 4);
+}
+void __cajeta_xxh3_write_i64(void* state, int64_t v) {
+    if (!state) return;
+    uint8_t b[8];
+    for (int i = 0; i < 8; i++) b[i] = (uint8_t)(v >> (i * 8));
+    XXH3_64bits_update((XXH3_state_t*) state, b, 8);
+}
+void __cajeta_xxh3_write_f32(void* state, float v) {
+    if (!state) return;
+    uint32_t bits;
+    memcpy(&bits, &v, sizeof bits);
+    __cajeta_xxh3_write_i32(state, (int32_t) bits);
+}
+void __cajeta_xxh3_write_f64(void* state, double v) {
+    if (!state) return;
+    uint64_t bits;
+    memcpy(&bits, &v, sizeof bits);
+    __cajeta_xxh3_write_i64(state, (int64_t) bits);
+}
+
 // --- cajeta.lang.Object root methods ----------------------------------------
 // Default bodies for the universal-root methods. These are stubs the
 // compiler-side structural synthesizer will override per concrete class

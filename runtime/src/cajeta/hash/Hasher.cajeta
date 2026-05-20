@@ -1,6 +1,5 @@
 package cajeta.hash;
 
-import cajeta.lang.Object;
 import cajeta.lang.String;
 
 /**

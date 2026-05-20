@@ -1891,14 +1891,31 @@ namespace cajeta {
             targetClass = module->getStructureStack().back();
         }
 
-        // Resolve `this`. For cross-object calls the receiver IS the `this`. For bare
-        // calls we look it up from the active method's scope.
+        // Resolve `this`. For cross-object calls the receiver IS the `this`. For
+        // bare calls we look it up from the active method's scope.
+        //
+        // Guard: only consider scope-resident `this` when the enclosing
+        // method is non-static. Scopes can carry stale `this` entries from
+        // earlier-generated methods on the stack (parent-chain walk in
+        // Scope::getField finds them); without the static-method guard,
+        // a static method calling another method on the same class would
+        // pick up a foreign method's `this` alloca whose Function is
+        // a different LLVM Function — producing a self-referencing load
+        // that fails JIT verify with "Instruction does not dominate all
+        // uses".
         llvm::Value* thisValue = receiver;
         if (!thisValue) {
-            FieldPtr thisField = module->getScopeStack().peek()->getField("this");
-            if (thisField) {
-                llvm::AllocaInst* thisAlloca = thisField->getOrCreateAllocation();
-                thisValue = builder->CreateLoad(thisAlloca->getAllocatedType(), thisAlloca);
+            MethodPtr enclosing = module->getCurrentMethod();
+            bool inStatic = enclosing
+                && enclosing->getModifiers().find(STATIC) != enclosing->getModifiers().end();
+            if (!inStatic) {
+                FieldPtr thisField = module->getScopeStack().peek()->getField("this");
+                if (thisField) {
+                    llvm::AllocaInst* thisAlloca = thisField->getOrCreateAllocation();
+                    if (thisAlloca) {
+                        thisValue = builder->CreateLoad(thisAlloca->getAllocatedType(), thisAlloca);
+                    }
+                }
             }
         }
 
