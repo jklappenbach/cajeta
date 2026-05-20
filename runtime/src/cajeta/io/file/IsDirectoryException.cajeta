@@ -1,0 +1,14 @@
+package cajeta.io.file;
+
+import cajeta.lang.String;
+
+/**
+ * Path is a directory where a regular file was expected (e.g.
+ * `File.open` on a directory). POSIX `EISDIR`. See
+ * `cajeta-docs/stdlib/io/file/Errors.md`.
+ */
+public class IsDirectoryException extends IoException {
+    public IsDirectoryException(String message) {
+        super(message);
+    }
+}

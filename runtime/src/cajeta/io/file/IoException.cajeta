@@ -1,0 +1,20 @@
+package cajeta.io.file;
+
+import cajeta.error.RecoverableException;
+import cajeta.lang.String;
+
+/**
+ * Base of the cajeta.io.file exception hierarchy. See
+ * `cajeta-docs/stdlib/io/file/Errors.md` for the full chart
+ * (errno → exception) and the throws-clause discipline.
+ *
+ * Recoverable, not Unrecoverable: callers either catch the
+ * specific subtype or declare it in their throws clause.
+ *
+ * Subclass exceptions live in their own files alongside this one.
+ */
+public class IoException extends RecoverableException {
+    public IoException(String message) {
+        super(message);
+    }
+}

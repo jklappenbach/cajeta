@@ -1,0 +1,16 @@
+package cajeta.io.file;
+
+import cajeta.lang.String;
+
+/**
+ * Read hit EOF before the requested byte count was satisfied —
+ * used by Tier-2 "all-or-error" helpers that want a hard error
+ * rather than a short return. The lower-level
+ * `FileReader.read(buf, max)` reports EOF as a zero return,
+ * NOT this exception. See `cajeta-docs/stdlib/io/file/Errors.md`.
+ */
+public class EndOfFileException extends IoException {
+    public EndOfFileException(String message) {
+        super(message);
+    }
+}

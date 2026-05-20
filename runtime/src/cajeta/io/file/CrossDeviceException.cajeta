@@ -1,0 +1,16 @@
+package cajeta.io.file;
+
+import cajeta.lang.String;
+
+/**
+ * `moveTo` across filesystems on POSIX — `rename()` returns
+ * `EXDEV`. Callers can either fall back to copy+delete via the
+ * forthcoming `moveToOrCopy(target)`, or upfront-stage the file
+ * on the destination's filesystem. See
+ * `cajeta-docs/stdlib/io/file/Errors.md`.
+ */
+public class CrossDeviceException extends IoException {
+    public CrossDeviceException(String message) {
+        super(message);
+    }
+}

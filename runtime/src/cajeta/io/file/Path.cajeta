@@ -1,0 +1,32 @@
+package cajeta.io.file;
+
+import cajeta.lang.String;
+
+/**
+ * Immutable filesystem path. See
+ * `cajeta-docs/stdlib/io/file/Path.md`.
+ *
+ * Phase B placeholder. The full surface (construction / joining /
+ * decomposition / normalization / single-stat predicates / info()
+ * batched-stat) lands in Phase B. The wire layer is `int8[] bytes`
+ * — the exact bytes a syscall sees.
+ *
+ * `Path.of(String)` UTF-8-encodes on Linux/mac, UTF-16-encodes on
+ * Windows. The full implementation lives in this class once the
+ * Phase B work lands.
+ */
+public class Path {
+    /**
+     * Raw OS-path bytes. Linux: UTF-8 octets. Windows (deferred):
+     * UTF-16 little-endian.
+     */
+    public int8[] bytes;
+
+    /**
+     * Construct from already-encoded OS bytes. Stub Phase A — the
+     * full factory machinery lands with Phase B.
+     */
+    public Path(int8[] bytes) {
+        this.bytes = bytes;
+    }
+}

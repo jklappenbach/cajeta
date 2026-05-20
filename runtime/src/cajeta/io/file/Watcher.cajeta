@@ -1,0 +1,30 @@
+package cajeta.io.file;
+
+/**
+ * Filesystem-change notifier. See
+ * `cajeta-docs/stdlib/io/file/Watcher.md`.
+ *
+ * Phase deferred — placeholder so file structure mirrors the
+ * spec. The full Watcher needs:
+ *   - inotify (Linux) / FSEvents (mac) / ReadDirectoryChangesW
+ *     (Windows) backing in cajeta_runtime.c
+ *   - fiber-park integration with the async runtime
+ *   - Stream<FileEvent> wiring
+ *
+ * None of which is in v1.
+ */
+public class Watcher {
+    /**
+     * Backing handle — inotify fd on Linux, eventStream pointer
+     * cast to int64 on mac/Windows.
+     */
+    public int64 handle;
+
+    public Watcher() {
+        this.handle = 0;
+    }
+
+    public void close() {
+        return;
+    }
+}

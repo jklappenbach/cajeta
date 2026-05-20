@@ -1,0 +1,15 @@
+package cajeta.io.file;
+
+import cajeta.lang.String;
+
+/**
+ * Open with `OpenMode.CREATE_NEW` against an existing path, or
+ * `copyTo` / `moveTo` to a destination that already exists
+ * without overwrite intent. POSIX `EEXIST`. See
+ * `cajeta-docs/stdlib/io/file/Errors.md`.
+ */
+public class AlreadyExistsException extends IoException {
+    public AlreadyExistsException(String message) {
+        super(message);
+    }
+}

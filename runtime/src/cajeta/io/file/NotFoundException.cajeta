@@ -1,0 +1,13 @@
+package cajeta.io.file;
+
+import cajeta.lang.String;
+
+/**
+ * The named path does not exist. POSIX `ENOENT`. See
+ * `cajeta-docs/stdlib/io/file/Errors.md`.
+ */
+public class NotFoundException extends IoException {
+    public NotFoundException(String message) {
+        super(message);
+    }
+}

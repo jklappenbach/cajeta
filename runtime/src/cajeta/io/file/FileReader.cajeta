@@ -1,0 +1,78 @@
+package cajeta.io.file;
+
+import cajeta.lang.String;
+
+/**
+ * Streaming byte reader. See
+ * `cajeta-docs/stdlib/io/file/FileReader.md`.
+ *
+ * Returned by `File.openRead(p)`. The caller drives the byte loop:
+ * call `read(buf, max)` repeatedly until it returns 0 (EOF). A
+ * short return (less than `max` but non-zero) is NOT EOF — keep
+ * reading.
+ *
+ * Internal 8 KiB buffer hides OS-level short reads. The `fd` field
+ * holds the OS file descriptor; closing zero-or-positive means
+ * the underlying fd is live.
+ *
+ * The destructor closes the fd if `close()` wasn't called.
+ */
+public class FileReader {
+    /**
+     * OS file descriptor, or `-1` once closed. Layout-pinned at
+     * field index 0 so the intrinsic codegen can address it
+     * statically across implementations (vtable + fd is the
+     * minimum struct shape).
+     */
+    public int32 fd;
+
+    /**
+     * Bytes consumed from the file since open. Updated after each
+     * successful `read`.
+     */
+    public int64 pos;
+
+    /**
+     * Internal-only ctor wired by `File.openRead(p)`. User code
+     * goes through the factory rather than constructing directly
+     * — the factory binds the fd from the open() syscall.
+     */
+    public FileReader(int32 fd) {
+        this.fd = fd;
+        this.pos = 0;
+    }
+
+    /**
+     * Read up to `max` bytes into `buf[0..max)`. Returns the
+     * count actually filled. Zero means EOF; the file stays open
+     * and subsequent reads return zero. Negative would signal an
+     * IO error and should never surface here — the body throws on
+     * error rather than returning a sentinel.
+     *
+     * Phase A: body is intrinsic-lowered to
+     * `__cajeta_file_read(this.fd, buf, max)` at the call site.
+     * The stub below exists for the parser; codegen never enters
+     * it.
+     */
+    public int32 read(int8[] buf, int32 max) {
+        return 0;
+    }
+
+    /**
+     * Bytes consumed since open. Streaming model only — no seek.
+     */
+    public int64 position() {
+        return this.pos;
+    }
+
+    /**
+     * Close the underlying fd. Idempotent; the destructor also
+     * calls this for callers that don't explicitly close.
+     *
+     * Phase A: intrinsic-lowered to
+     * `__cajeta_file_close(this.fd)` and `this.fd = -1`.
+     */
+    public void close() {
+        return;
+    }
+}

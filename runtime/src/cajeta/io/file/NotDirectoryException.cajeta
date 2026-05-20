@@ -1,0 +1,15 @@
+package cajeta.io.file;
+
+import cajeta.lang.String;
+
+/**
+ * Path is a non-directory where a directory was expected (e.g.
+ * `Path.children()` on a regular file, or `mkdirs()` blocked by
+ * a file-shaped intermediate). POSIX `ENOTDIR`. See
+ * `cajeta-docs/stdlib/io/file/Errors.md`.
+ */
+public class NotDirectoryException extends IoException {
+    public NotDirectoryException(String message) {
+        super(message);
+    }
+}

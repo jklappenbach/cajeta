@@ -1,0 +1,25 @@
+package cajeta.io.file;
+
+/**
+ * A single filesystem change observation. Emitted by
+ * `Watcher.events()`. See
+ * `cajeta-docs/stdlib/io/file/Watcher.md`.
+ *
+ * Phase deferred — placeholder so file structure mirrors the
+ * spec. `renameTarget` is null when `kind != RENAME`. The
+ * `timestamp` is `int64` Unix nanoseconds until the `Instant`
+ * class lands; signatures flip then.
+ */
+public class FileEvent {
+    public Path path;
+    public int32 kind;            // WatchKind ordinal
+    public int64 timestampNanos;
+    public Path renameTarget;
+
+    public FileEvent(Path path, int32 kind, int64 timestampNanos, Path renameTarget) {
+        this.path = path;
+        this.kind = kind;
+        this.timestampNanos = timestampNanos;
+        this.renameTarget = renameTarget;
+    }
+}

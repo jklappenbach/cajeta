@@ -1,0 +1,17 @@
+package cajeta.io.file;
+
+/**
+ * Filesystem change kind for `Watcher.events()`. See
+ * `cajeta-docs/stdlib/io/file/Watcher.md`. Ordinals stable;
+ * runtime helpers (`__cajeta_inotify_*`, `__cajeta_fsevents_*`,
+ * `__cajeta_readdir_changes_w_*`) emit these directly.
+ *
+ * Phase deferred — placeholder so file structure mirrors the
+ * spec; the Watcher backing is not built yet.
+ */
+public enum WatchKind {
+    CREATE,
+    MODIFY,
+    DELETE,
+    RENAME
+}

@@ -1,0 +1,25 @@
+package cajeta.io.file;
+
+/**
+ * File-open intent enum. See `cajeta-docs/stdlib/io/file/OpenMode.md`.
+ *
+ * Ordinal values are stable — runtime helpers
+ * (`__cajeta_file_open(path, mode)`) interpret them directly as
+ * the C-side switch:
+ *
+ *   0 READ        — O_RDONLY
+ *   1 WRITE       — O_WRONLY | O_CREAT | O_TRUNC
+ *   2 APPEND      — O_WRONLY | O_CREAT | O_APPEND
+ *   3 READ_WRITE  — O_RDWR   | O_CREAT
+ *   4 CREATE_NEW  — O_WRONLY | O_CREAT | O_EXCL
+ *
+ * Don't reorder without updating cajeta_runtime.c's openmode→flags
+ * map.
+ */
+public enum OpenMode {
+    READ,
+    WRITE,
+    APPEND,
+    READ_WRITE,
+    CREATE_NEW
+}

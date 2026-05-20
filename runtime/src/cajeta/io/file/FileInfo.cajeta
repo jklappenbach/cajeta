@@ -1,0 +1,36 @@
+package cajeta.io.file;
+
+/**
+ * Batched stat result. See
+ * `cajeta-docs/stdlib/io/file/FileInfo.md`.
+ *
+ * Phase C placeholder. Returned by `Path.info()`.
+ *
+ * `Instant`-typed timestamps (`created`, `modified`, `accessed`)
+ * are commented out until the `cajeta.lang.Instant` class lands
+ * (see cajeta-docs/stdlib/Time.md). For now we expose
+ * `createdNanos` / `modifiedNanos` / `accessedNanos` as `int64`
+ * Unix nanoseconds — flippable to `Instant` accessors without
+ * breaking callers.
+ */
+public class FileInfo {
+    public int64 size;
+    public int64 createdNanos;
+    public int64 modifiedNanos;
+    public int64 accessedNanos;
+    public boolean isFile;
+    public boolean isDir;
+    public boolean isSymlink;
+    public int32 permissions;
+
+    public FileInfo() {
+        this.size = 0;
+        this.createdNanos = 0;
+        this.modifiedNanos = 0;
+        this.accessedNanos = 0;
+        this.isFile = false;
+        this.isDir = false;
+        this.isSymlink = false;
+        this.permissions = 0;
+    }
+}

@@ -1,0 +1,13 @@
+package cajeta.io.file;
+
+import cajeta.lang.String;
+
+/**
+ * Operation denied by filesystem permissions. POSIX `EACCES`. See
+ * `cajeta-docs/stdlib/io/file/Errors.md`.
+ */
+public class PermissionException extends IoException {
+    public PermissionException(String message) {
+        super(message);
+    }
+}

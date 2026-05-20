@@ -1,0 +1,13 @@
+package cajeta.io.file;
+
+import cajeta.lang.String;
+
+/**
+ * Filesystem has no space for the write. POSIX `ENOSPC`. See
+ * `cajeta-docs/stdlib/io/file/Errors.md`.
+ */
+public class DiskFullException extends IoException {
+    public DiskFullException(String message) {
+        super(message);
+    }
+}

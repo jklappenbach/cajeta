@@ -1,0 +1,72 @@
+package cajeta.io.file;
+
+import cajeta.lang.String;
+
+/**
+ * Streaming byte writer. See
+ * `cajeta-docs/stdlib/io/file/FileWriter.md`.
+ *
+ * Returned by `File.openWrite(p, mode)`. The caller hands in
+ * `(data, len)` per call; internal buffering hides OS-level
+ * short writes and batches small writes.
+ *
+ * The destructor flushes and closes the fd if `close()` wasn't
+ * called.
+ */
+public class FileWriter {
+    /**
+     * OS file descriptor, or `-1` once closed. Layout-pinned at
+     * field index 0 — see FileReader for the rationale.
+     */
+    public int32 fd;
+
+    /**
+     * Bytes accepted from the caller since open (post-buffer-
+     * memcpy; not necessarily post-flush). Updated after each
+     * `write`.
+     */
+    public int64 pos;
+
+    /**
+     * Internal-only ctor wired by `File.openWrite(p, mode)`. User
+     * code goes through the factory; the factory binds the fd
+     * from the open() syscall.
+     */
+    public FileWriter(int32 fd) {
+        this.fd = fd;
+        this.pos = 0;
+    }
+
+    /**
+     * Write `data[0..len)` to the file. The internal loop
+     * tolerates partial OS writes — when this returns, every
+     * requested byte is in the kernel's buffer (or the call
+     * threw on a hard error).
+     *
+     * Phase A: intrinsic-lowered to
+     * `__cajeta_file_write(this.fd, data, len)`.
+     */
+    public void write(int8[] data, int32 len) {
+        return;
+    }
+
+    /**
+     * Drain the user-space buffer into the OS via `write()`. Does
+     * NOT `fsync` — durability flushing is `File.sync()` (Phase
+     * E, the random-access surface).
+     *
+     * Phase A: intrinsic-lowered to
+     * `__cajeta_file_flush(this.fd)`.
+     */
+    public void flush() {
+        return;
+    }
+
+    /**
+     * Flush + close the underlying fd. Idempotent; the destructor
+     * also calls this for callers that don't close explicitly.
+     */
+    public void close() {
+        return;
+    }
+}
