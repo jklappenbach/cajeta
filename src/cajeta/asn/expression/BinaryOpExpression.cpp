@@ -572,17 +572,21 @@ namespace cajeta {
                     goto fallthrough_to_builtin;
                 }
                 // l-value coercion: identifier expressions evaluate to the
-                // alloca holding the heap pointer, but invokeMethod expects
-                // the actual instance pointer (so the called function
-                // receives `this` as a Counter*, not a Counter**).
-                llvm::Value* recvVal = lhs;
-                if (auto* a = llvm::dyn_cast<llvm::AllocaInst>(recvVal)) {
-                    recvVal = builder->CreateLoad(a->getAllocatedType(), a);
-                }
-                llvm::Value* rhsVal = rhs;
-                if (auto* a = llvm::dyn_cast<llvm::AllocaInst>(rhsVal)) {
-                    rhsVal = builder->CreateLoad(a->getAllocatedType(), a);
-                }
+                // alloca holding the heap pointer; array-index / dot-field
+                // expressions evaluate to a GEP whose slot holds the heap
+                // pointer. invokeMethod expects the actual instance pointer
+                // (so the called function receives `this` as a Counter*,
+                // not a Counter**), so route both shapes through
+                // loadIfLValue. Without the GEP load-through, `arr[i] ==
+                // other` and `obj.field == other` passed the SLOT POINTER
+                // as `this` to the operator== method, and the vtable lookup
+                // walked instance bytes treated as a vtable — infinite
+                // probe loop inside `__cajeta_vtable_lookup` because the
+                // version/count header bytes resolved to garbage values.
+                // Symptom: HashMap<class K, V>'s put/get/containsKey hung
+                // forever the first time `keys[idx] == key` fired.
+                llvm::Value* recvVal = loadIfLValue(module, lhs, lhsAst);
+                llvm::Value* rhsVal = loadIfLValue(module, rhs, rhsAst);
                 vector<ParameterEntry> entries;
                 entries.push_back(ParameterEntry(rhsType, "", rhsVal));
                 if (auto m = lhsClass->resolveMethod(opName, entries,
