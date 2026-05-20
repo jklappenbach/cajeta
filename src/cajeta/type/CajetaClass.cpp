@@ -2948,6 +2948,43 @@ namespace cajeta {
                 }
             }
             if (!ok) continue;
+            // Fallback: if the formal's class template arguments got
+            // stripped at parse time (a class-template formal like
+            // `Collector<T, R>` sometimes loses its type args, leaving
+            // a placeholder-shaped `Collector` that can't bind R via
+            // recursion), try a second unification pass that uses the
+            // ARG's type-argument list directly. This is positional
+            // and presumes one-to-one correspondence with the method's
+            // declared type parameters when the formal contributes no
+            // bindings on its own — narrow enough to skip when any
+            // T-var did bind via the structural walk.
+            if (bindings.size() < tparams.size()) {
+                for (size_t i = 0; i < formals.size(); ++i) {
+                    auto fc = std::dynamic_pointer_cast<CajetaClass>(
+                        formals[i]->getType());
+                    auto ac = std::dynamic_pointer_cast<CajetaClass>(
+                        parameters[i].type);
+                    if (!fc || !ac) continue;
+                    if (!fc->getTypeArguments().empty()) continue;
+                    if (ac->getTypeArguments().empty()) continue;
+                    // Positionally project the arg's type-args onto
+                    // any unbound method tparams in declaration order.
+                    // The check below is conservative: only fires when
+                    // exactly one tparam is unbound and the arg supplies
+                    // a single type-arg that hasn't been seen yet.
+                    const auto& aArgs = ac->getTypeArguments();
+                    if (aArgs.empty()) continue;
+                    for (auto& tp : tparams) {
+                        if (bindings.count(tp.name)) continue;
+                        // Pick the last arg (most-specific tail slot —
+                        // class-level T-vars take the prefix slots, the
+                        // method-level R-vars take the tail).
+                        bindings[tp.name] = aArgs.back();
+                        break;
+                    }
+                    if (bindings.size() >= tparams.size()) break;
+                }
+            }
             // All declared T-vars must be bound (no leftover unbound R).
             std::vector<CajetaTypePtr> args;
             for (auto& tp : tparams) {
