@@ -86,10 +86,12 @@ TEST(VirtualDropDispatchTests, concreteTypedLocalStillCallsDestructor) {
 }
 
 // Base also has a user destructor; subclass overrides. Through a
-// base-typed local, the override (subclass's) is what runs. Same
-// idea as the first test but the base is no longer a no-op — proves
-// dispatch goes to subclass even when base would have been a valid
-// non-null function pointer.
+// base-typed local, virtual dispatch enters ~Derived first
+// (proving the static base type doesn't shadow the dynamic type's
+// drop_fn), and from task #151 the chain then implicitly runs
+// ~Base afterward. So the count picks up arrays from both
+// destructors. Pinning two properties at once: virtual dispatch
+// AND the chain.
 TEST(VirtualDropDispatchTests, derivedDestructorWinsOverBase) {
     auto src =
         "package test;\n"
@@ -116,7 +118,9 @@ TEST(VirtualDropDispatchTests, derivedDestructorWinsOverBase) {
         "}\n";
     auto jit = CajetaJit::compile(src, "test.D");
     jit->lookup<int32_t (*)()>("run")();
-    // Derived runs (not Base):  1 (entry) + 2 (two array drops in
-    // ~Derived) = 3. If Base ran instead the count would be 2.
-    EXPECT_EQ(jit->lookup<int64_t (*)()>("read")(), 3);
+    // 1 (entry) + 2 (two array drops in ~Derived)
+    //         + 1 (one array drop in ~Base via the chain)
+    //         = 4. Pre-chain (task #151) this was 3 — only ~Derived
+    // ran. The +1 is the chain firing ~Base after ~Derived returns.
+    EXPECT_EQ(jit->lookup<int64_t (*)()>("read")(), 4);
 }

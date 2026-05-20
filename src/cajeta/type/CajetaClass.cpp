@@ -1774,6 +1774,38 @@ namespace cajeta {
                 userDrop->getLlvmFunction(), {instance});
         }
 
+        // Implicit destructor chaining — same shape as the heap drop
+        // wrapper. See getOrCreateDropFunction below for the design
+        // rationale; we walk the first-parent chain and call each
+        // ancestor's user `drop()` method directly. Stack-local drops
+        // never call `__cajeta_free`, so the double-free hazard the
+        // heap wrapper avoids by NOT routing through the parent's
+        // wrapper doesn't apply here in the same form — but calling
+        // the wrapper would still trigger the parent's field auto-walk
+        // a second time on the flattened layout. Same fix.
+        CajetaClassPtr ancestor = superClasses.empty()
+            ? CajetaClassPtr() : superClasses.front();
+        while (ancestor) {
+            MethodPtr parentUserDrop;
+            for (auto& entry : ancestor->methods) {
+                MethodPtr m = entry.second;
+                if (!m || m->isConstructor()) continue;
+                if (m->getName() != "drop") continue;
+                if (m->getParameterList().size() == 1) {
+                    parentUserDrop = m;
+                    break;
+                }
+            }
+            if (parentUserDrop && parentUserDrop->getLlvmFunction()) {
+                llvm::Function* fn = CajetaModule::ensureFunctionInModule(
+                    lmod, parentUserDrop->getLlvmFunction());
+                b.CreateCall(parentUserDrop->getLlvmFunctionType(),
+                    fn, {instance});
+            }
+            ancestor = ancestor->getSuperClasses().empty()
+                ? CajetaClassPtr() : ancestor->getSuperClasses().front();
+        }
+
         // Walk owned class-ref fields in REVERSE declaration order. For
         // each plain class-ref (not aggregate, not array, not interface),
         // GEP the slot, load the pointer, call the referent class's
@@ -1887,6 +1919,50 @@ namespace cajeta {
         if (userDrop && userDrop->getLlvmFunction()) {
             b.CreateCall(userDrop->getLlvmFunctionType(),
                 userDrop->getLlvmFunction(), {instance});
+        }
+
+        // Implicit destructor chaining (task #151, C++ semantics). After
+        // this class's user `~Class() { ... }` body runs, walk the
+        // first-parent inheritance line and call each ancestor's user
+        // `drop()` method (most-derived first, then up toward the root).
+        // We invoke the parent's user body directly — NOT the parent's
+        // drop wrapper — for two reasons: (a) the parent wrapper would
+        // re-walk the parent's `propertyList` which is a subset of this
+        // class's flattened layout already covered by the field auto-drop
+        // pass below, and (b) the parent's wrapper would call
+        // `__cajeta_free(instance)` a second time on the same address,
+        // crashing on the double free. Calling just the user body
+        // matches the C++ rule: child cleanup → parent cleanup → field
+        // teardown → memory reclamation, with field teardown handled
+        // once at the most-derived level.
+        //
+        // Single-inheritance walk only in v1: the first parent occupies
+        // offset 0 in the child layout (primary sub-object), so `this`
+        // doesn't need adjustment. Multi-inheritance siblings are an
+        // explicit follow-up — a user wanting cleanup on a non-first
+        // parent can write `super[NonFirst].drop()` from their own
+        // body in the interim.
+        CajetaClassPtr ancestor = superClasses.empty()
+            ? CajetaClassPtr() : superClasses.front();
+        while (ancestor) {
+            MethodPtr parentUserDrop;
+            for (auto& entry : ancestor->methods) {
+                MethodPtr m = entry.second;
+                if (!m || m->isConstructor()) continue;
+                if (m->getName() != "drop") continue;
+                if (m->getParameterList().size() == 1) {
+                    parentUserDrop = m;
+                    break;
+                }
+            }
+            if (parentUserDrop && parentUserDrop->getLlvmFunction()) {
+                llvm::Function* fn = CajetaModule::ensureFunctionInModule(
+                    lmod, parentUserDrop->getLlvmFunction());
+                b.CreateCall(parentUserDrop->getLlvmFunctionType(),
+                    fn, {instance});
+            }
+            ancestor = ancestor->getSuperClasses().empty()
+                ? CajetaClassPtr() : ancestor->getSuperClasses().front();
         }
 
         // Auto field drops (MemoryModel.md § Known gaps — automatic
