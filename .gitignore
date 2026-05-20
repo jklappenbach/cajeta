@@ -30,3 +30,4 @@ test/cmake_install.cmake
 test/cajeta_test
 test/cajeta_test*_include.cmake
 test/cajeta_test*_tests.cmake
+.claude/
