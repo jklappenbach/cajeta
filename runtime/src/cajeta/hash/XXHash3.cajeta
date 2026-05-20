@@ -1,22 +1,172 @@
 package cajeta.hash;
+
 import cajeta.lang.String;
+
+/**
+ * XXH3-64 — fast general-purpose 64-bit non-cryptographic hash.
+ *
+ * The default-backing algorithm for compiler-synthesized
+ * `Object.hash()`, `String.hash()`, and `@AutoHash`. Multi-GB/s
+ * throughput on modern CPUs; small-input path (the typical
+ * field-hashing case) is a handful of cycles.
+ *
+ * Pick over `RapidHash` when ecosystem interop matters (LZ4 / zstd /
+ * RocksDB / ClickHouse all use XXH3). Pick over `SipHash` when the
+ * input is non-attacker-controlled — XXH3 is ~10× faster.
+ *
+ * ## Surface
+ *
+ * One-shot statics:
+ * ```cajeta
+ * int64 h = XXHash3.hash(bytes, bytes.count());           // process-seeded
+ * int64 h2 = XXHash3.hashSeeded(bytes, bytes.count(), seed);
+ * int64 hs = XXHash3.hashString(text);
+ * ```
+ *
+ * Streaming `Hasher`:
+ * ```cajeta
+ * XXHash3 h = new XXHash3();                              // process-seeded
+ * h.writeInt32(record.id);
+ * h.writeString(record.title);
+ * int64 digest = h.finish();
+ * ```
+ *
+ * @see cajeta.hash.Hasher
+ * @see cajeta.hash.DefaultHasher
+ * @see [stdlib/Hashing.md § XXHash3](../../../../../cajeta-docs/stdlib/Hashing.md)
+ */
 public final class XXHash3 implements Hasher {
-    public int32 dummy;
-    public XXHash3() { this.dummy = 0; }
-    public void writeBoolean(boolean v) { }
-    public void writeInt8(int8 v) { }
-    public void writeInt16(int16 v) { }
-    public void writeInt32(int32 v) { }
-    public void writeInt64(int64 v) { }
-    public void writeUInt8(uint8 v) { }
-    public void writeUInt16(uint16 v) { }
-    public void writeUInt32(uint32 v) { }
-    public void writeUInt64(uint64 v) { }
-    public void writeFloat32(float32 v) { }
-    public void writeFloat64(float64 v) { }
-    public void writeBytes(int8[] data) { }
-    public void writeBytesRange(int8[] data, int64 offset, int64 length) { }
-    public void writeString(String s) { }
-    public void writeObject(Object obj) { }
-    public int64 finish() { return 0L; }
+
+    /**
+     * Opaque pointer to the native `XXH3_state_t`.
+     */
+    public pointer state;
+
+    /**
+     * The seed the state was initialized with. Kept so `reset()`
+     * can re-derive an equivalent fresh state.
+     */
+    public int64 seed;
+
+    /**
+     * Construct with the per-process random seed.
+     */
+    public XXHash3() {
+        this.seed = Hash.processSeed();
+        this.state = XXHash3.allocState(this.seed);
+    }
+
+    /**
+     * Construct with an explicit seed.
+     */
+    public XXHash3(int64 seedArg) {
+        this.seed = seedArg;
+        this.state = XXHash3.allocState(seedArg);
+    }
+
+    ~XXHash3() {
+        XXHash3.freeState(this.state);
+    }
+
+    // --- @Native bridges --------------------------------------------
+
+    @Native("__cajeta_xxh3_alloc")
+    private static pointer allocState(int64 s) { }
+
+    @Native("__cajeta_xxh3_free")
+    private static void freeState(pointer s) { }
+
+    @Native("__cajeta_xxh3_reset")
+    private static void resetNative(pointer s, int64 seedArg) { }
+
+    @Native("__cajeta_xxh3_update")
+    private static void updateNative(pointer s, int8[] data, int64 len) { }
+
+    @Native("__cajeta_xxh3_finish")
+    private static int64 finishNative(pointer s) { }
+
+    @Native("__cajeta_xxh3_oneshot")
+    private static int64 oneshot(int8[] data, int64 len, int64 seedArg) { }
+
+    @Native("__cajeta_xxh3_write_i8")
+    private static void writeI8Native(pointer s, int8 v) { }
+
+    @Native("__cajeta_xxh3_write_i16")
+    private static void writeI16Native(pointer s, int16 v) { }
+
+    @Native("__cajeta_xxh3_write_i32")
+    private static void writeI32Native(pointer s, int32 v) { }
+
+    @Native("__cajeta_xxh3_write_i64")
+    private static void writeI64Native(pointer s, int64 v) { }
+
+    @Native("__cajeta_xxh3_write_f32")
+    private static void writeF32Native(pointer s, float32 v) { }
+
+    @Native("__cajeta_xxh3_write_f64")
+    private static void writeF64Native(pointer s, float64 v) { }
+
+    // --- One-shot statics -------------------------------------------
+
+    public static int64 hash(int8[] data, int64 len) {
+        return XXHash3.oneshot(data, len, Hash.processSeed());
+    }
+
+    public static int64 hashSeeded(int8[] data, int64 len, int64 seedArg) {
+        return XXHash3.oneshot(data, len, seedArg);
+    }
+
+    public static int64 hashString(String s) {
+        return XXHash3.oneshot(s.bytes, (int64) s.byteLength, Hash.processSeed());
+    }
+
+    public static int64 hashStringSeeded(String s, int64 seedArg) {
+        return XXHash3.oneshot(s.bytes, (int64) s.byteLength, seedArg);
+    }
+
+    // --- Streaming surface ------------------------------------------
+
+    public void update(int8[] data, int64 len) {
+        XXHash3.updateNative(this.state, data, len);
+    }
+
+    public void reset() {
+        XXHash3.resetNative(this.state, this.seed);
+    }
+
+    // --- Hasher streaming primitives --------------------------------
+
+    public void writeBoolean(boolean v) {
+        XXHash3.writeI8Native(this.state, (int8)(v ? 1 : 0));
+    }
+    public void writeInt8(int8 v)       { XXHash3.writeI8Native(this.state, v); }
+    public void writeInt16(int16 v)     { XXHash3.writeI16Native(this.state, v); }
+    public void writeInt32(int32 v)     { XXHash3.writeI32Native(this.state, v); }
+    public void writeInt64(int64 v)     { XXHash3.writeI64Native(this.state, v); }
+    public void writeUInt8(uint8 v)     { XXHash3.writeI8Native(this.state, (int8) v); }
+    public void writeUInt16(uint16 v)   { XXHash3.writeI16Native(this.state, (int16) v); }
+    public void writeUInt32(uint32 v)   { XXHash3.writeI32Native(this.state, (int32) v); }
+    public void writeUInt64(uint64 v)   { XXHash3.writeI64Native(this.state, (int64) v); }
+    public void writeFloat32(float32 v) { XXHash3.writeF32Native(this.state, v); }
+    public void writeFloat64(float64 v) { XXHash3.writeF64Native(this.state, v); }
+
+    public void writeBytes(int8[] data) {
+        XXHash3.updateNative(this.state, data, data.count());
+    }
+
+    public void writeBytesRange(int8[] data, int64 offset, int64 length) {
+        XXHash3.updateNative(this.state, data, length);
+    }
+
+    public void writeString(String s) {
+        XXHash3.updateNative(this.state, s.bytes, (int64) s.byteLength);
+    }
+
+    public void writeObject(Object obj) {
+        XXHash3.writeI64Native(this.state, obj.hash());
+    }
+
+    public int64 finish() {
+        return XXHash3.finishNative(this.state);
+    }
 }

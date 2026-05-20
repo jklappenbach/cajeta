@@ -1,22 +1,170 @@
 package cajeta.hash;
+
 import cajeta.lang.String;
+
+/**
+ * SipHash-2-4 — 64-bit DoS-resistant keyed hash.
+ *
+ * Use when the input is **attacker-controlled** and a HashMap or
+ * cache lookup depends on it: HTTP request body keys, JWT claim
+ * names, shared-cache lookups keyed on user-supplied strings.
+ * SipHash's 128-bit key prevents an attacker from precomputing
+ * colliding inputs against your in-process hash table because they
+ * don't know the key.
+ *
+ * For internal keys (compiler-generated, known-shape buffers,
+ * non-attacker inputs) use `XXHash3` instead — ~10× faster per byte.
+ * For ETag / fingerprint use `MD5`. Default `Object.hash()` uses a
+ * process-seeded XXH3-64 (which is itself DoS-resistant by virtue
+ * of the secret per-process seed).
+ *
+ * ## Surface
+ *
+ * One-shot (the common case):
+ * ```cajeta
+ * int64 hash = SipHash.hashKeyed(bytes, bytes.count(), k0, k1);
+ * ```
+ *
+ * Streaming `Hasher`:
+ * ```cajeta
+ * SipHash h = new SipHash(k0, k1);
+ * h.writeString(user.name);
+ * h.writeInt32(user.id);
+ * int64 digest = h.finish();
+ * ```
+ *
+ * @see cajeta.hash.Hasher
+ * @see [stdlib/Hashing.md § SipHash](../../../../../cajeta-docs/stdlib/Hashing.md)
+ */
 public final class SipHash implements Hasher {
-    public int32 dummy;
-    public SipHash() { this.dummy = 0; }
-    public void writeBoolean(boolean v) { }
-    public void writeInt8(int8 v) { }
-    public void writeInt16(int16 v) { }
-    public void writeInt32(int32 v) { }
-    public void writeInt64(int64 v) { }
-    public void writeUInt8(uint8 v) { }
-    public void writeUInt16(uint16 v) { }
-    public void writeUInt32(uint32 v) { }
-    public void writeUInt64(uint64 v) { }
-    public void writeFloat32(float32 v) { }
-    public void writeFloat64(float64 v) { }
-    public void writeBytes(int8[] data) { }
-    public void writeBytesRange(int8[] data, int64 offset, int64 length) { }
-    public void writeString(String s) { }
-    public void writeObject(Object obj) { }
-    public int64 finish() { return 0L; }
+
+    /**
+     * Opaque pointer to the native `struct cajeta_siphash_state`.
+     */
+    public pointer state;
+
+    /**
+     * Working-key low half — needed for `reset()` since
+     * SipHash-2-4 state can't be re-derived without the key.
+     */
+    public int64 k0;
+
+    /**
+     * Working-key high half.
+     */
+    public int64 k1;
+
+    /**
+     * Construct a SipHash with the given 128-bit key as two int64
+     * halves.
+     */
+    public SipHash(int64 keyLow, int64 keyHigh) {
+        this.k0 = keyLow;
+        this.k1 = keyHigh;
+        this.state = SipHash.allocState(keyLow, keyHigh);
+    }
+
+    ~SipHash() {
+        SipHash.freeState(this.state);
+    }
+
+    // --- @Native bridges --------------------------------------------
+    //
+    // `allocState` returns `#pointer` (move-qualified) — required
+    // because the multi-param-static-borrow-return rule otherwise
+    // rejects a static method returning a reference-typed value
+    // with more than one parameter. The underlying C function still
+    // returns a raw `void*`; the move qualifier is cajeta-side
+    // ownership bookkeeping only.
+    @Native("__cajeta_siphash_alloc")
+    private static #pointer allocState(int64 a, int64 b) { }
+
+    @Native("__cajeta_siphash_free")
+    private static void freeState(pointer s) { }
+
+    @Native("__cajeta_siphash_reset")
+    private static void resetNative(pointer s, int64 a, int64 b) { }
+
+    @Native("__cajeta_siphash_update")
+    private static void updateNative(pointer s, int8[] data, int64 len) { }
+
+    @Native("__cajeta_siphash_finish")
+    private static int64 finishNative(pointer s) { }
+
+    @Native("__cajeta_siphash_oneshot")
+    private static int64 oneshot(int8[] data, int64 len, int64 a, int64 b) { }
+
+    @Native("__cajeta_siphash_write_i8")
+    private static void writeI8Native(pointer s, int8 v) { }
+
+    @Native("__cajeta_siphash_write_i16")
+    private static void writeI16Native(pointer s, int16 v) { }
+
+    @Native("__cajeta_siphash_write_i32")
+    private static void writeI32Native(pointer s, int32 v) { }
+
+    @Native("__cajeta_siphash_write_i64")
+    private static void writeI64Native(pointer s, int64 v) { }
+
+    @Native("__cajeta_siphash_write_f32")
+    private static void writeF32Native(pointer s, float32 v) { }
+
+    @Native("__cajeta_siphash_write_f64")
+    private static void writeF64Native(pointer s, float64 v) { }
+
+    // --- One-shot statics -------------------------------------------
+
+    public static int64 hashKeyed(int8[] data, int64 len, int64 keyLow, int64 keyHigh) {
+        return SipHash.oneshot(data, len, keyLow, keyHigh);
+    }
+
+    public static int64 hashStringKeyed(String s, int64 keyLow, int64 keyHigh) {
+        return SipHash.oneshot(s.bytes, (int64) s.byteLength, keyLow, keyHigh);
+    }
+
+    // --- Streaming surface ------------------------------------------
+
+    public void update(int8[] data, int64 len) {
+        SipHash.updateNative(this.state, data, len);
+    }
+
+    public void reset() {
+        SipHash.resetNative(this.state, this.k0, this.k1);
+    }
+
+    // --- Hasher streaming primitives --------------------------------
+
+    public void writeBoolean(boolean v) {
+        SipHash.writeI8Native(this.state, (int8)(v ? 1 : 0));
+    }
+    public void writeInt8(int8 v)       { SipHash.writeI8Native(this.state, v); }
+    public void writeInt16(int16 v)     { SipHash.writeI16Native(this.state, v); }
+    public void writeInt32(int32 v)     { SipHash.writeI32Native(this.state, v); }
+    public void writeInt64(int64 v)     { SipHash.writeI64Native(this.state, v); }
+    public void writeUInt8(uint8 v)     { SipHash.writeI8Native(this.state, (int8) v); }
+    public void writeUInt16(uint16 v)   { SipHash.writeI16Native(this.state, (int16) v); }
+    public void writeUInt32(uint32 v)   { SipHash.writeI32Native(this.state, (int32) v); }
+    public void writeUInt64(uint64 v)   { SipHash.writeI64Native(this.state, (int64) v); }
+    public void writeFloat32(float32 v) { SipHash.writeF32Native(this.state, v); }
+    public void writeFloat64(float64 v) { SipHash.writeF64Native(this.state, v); }
+
+    public void writeBytes(int8[] data) {
+        SipHash.updateNative(this.state, data, data.count());
+    }
+
+    public void writeBytesRange(int8[] data, int64 offset, int64 length) {
+        SipHash.updateNative(this.state, data, length);
+    }
+
+    public void writeString(String s) {
+        SipHash.updateNative(this.state, s.bytes, (int64) s.byteLength);
+    }
+
+    public void writeObject(Object obj) {
+        SipHash.writeI64Native(this.state, obj.hash());
+    }
+
+    public int64 finish() {
+        return SipHash.finishNative(this.state);
+    }
 }

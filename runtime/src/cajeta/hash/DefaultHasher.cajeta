@@ -1,22 +1,75 @@
 package cajeta.hash;
+
 import cajeta.lang.String;
+
+/**
+ * The hasher the compiler-synthesized `Object.hash()` uses under the
+ * hood: process-seeded XXH3-64. `@AutoHash` field-folding routes
+ * through this same shape, and `String.hash()` does too.
+ *
+ * Exposed as a class for two reasons:
+ *
+ * 1. **Composition.** A user wanting to combine the structural hash
+ *    of an object with extra context (a request ID, a deployment
+ *    epoch, a tenant) can construct a DefaultHasher, write the
+ *    extras alongside the object, and `finish()` — getting a digest
+ *    in the same family as the compiler-synthesized one.
+ * 2. **Snapshot replay.** Callers that need to reproduce a digest
+ *    computed in another process get the seed from
+ *    `Hash.processSeed()`, ship it alongside the data, and
+ *    reconstruct a DefaultHasher with an explicit seed on the other
+ *    side.
+ *
+ * Internally this is just `XXHash3` constructed with the process
+ * seed. Provided as a distinct class for design clarity (the
+ * compiler couples to `DefaultHasher`, not to `XXHash3` directly,
+ * so the underlying algorithm can swap if a faster one ships).
+ *
+ * @see cajeta.hash.XXHash3
+ * @see cajeta.hash.Hasher
+ * @see [stdlib/Hashing.md § DefaultHasher](../../../../../cajeta-docs/stdlib/Hashing.md)
+ */
 public final class DefaultHasher implements Hasher {
-    public int32 dummy;
-    public DefaultHasher() { this.dummy = 0; }
-    public void writeBoolean(boolean v) { }
-    public void writeInt8(int8 v) { }
-    public void writeInt16(int16 v) { }
-    public void writeInt32(int32 v) { }
-    public void writeInt64(int64 v) { }
-    public void writeUInt8(uint8 v) { }
-    public void writeUInt16(uint16 v) { }
-    public void writeUInt32(uint32 v) { }
-    public void writeUInt64(uint64 v) { }
-    public void writeFloat32(float32 v) { }
-    public void writeFloat64(float64 v) { }
-    public void writeBytes(int8[] data) { }
-    public void writeBytesRange(int8[] data, int64 offset, int64 length) { }
-    public void writeString(String s) { }
-    public void writeObject(Object obj) { }
-    public int64 finish() { return 0L; }
+
+    /**
+     * Backing XXHash3 instance. v1 keeps the indirection explicit
+     * so adopters reading the source see exactly what runs.
+     */
+    public XXHash3 backing;
+
+    /**
+     * Construct with the per-process seed (the compiler-default
+     * shape).
+     */
+    public DefaultHasher() {
+        this.backing = new XXHash3();
+    }
+
+    /**
+     * Construct with an explicit seed (snapshot-replay shape).
+     */
+    public DefaultHasher(int64 seedArg) {
+        this.backing = new XXHash3(seedArg);
+    }
+
+    // --- Hasher delegation ------------------------------------------
+
+    public void writeBoolean(boolean v)  { this.backing.writeBoolean(v); }
+    public void writeInt8(int8 v)        { this.backing.writeInt8(v); }
+    public void writeInt16(int16 v)      { this.backing.writeInt16(v); }
+    public void writeInt32(int32 v)      { this.backing.writeInt32(v); }
+    public void writeInt64(int64 v)      { this.backing.writeInt64(v); }
+    public void writeUInt8(uint8 v)      { this.backing.writeUInt8(v); }
+    public void writeUInt16(uint16 v)    { this.backing.writeUInt16(v); }
+    public void writeUInt32(uint32 v)    { this.backing.writeUInt32(v); }
+    public void writeUInt64(uint64 v)    { this.backing.writeUInt64(v); }
+    public void writeFloat32(float32 v)  { this.backing.writeFloat32(v); }
+    public void writeFloat64(float64 v)  { this.backing.writeFloat64(v); }
+    public void writeBytes(int8[] data)  { this.backing.writeBytes(data); }
+    public void writeBytesRange(int8[] data, int64 offset, int64 length) {
+        this.backing.writeBytesRange(data, offset, length);
+    }
+    public void writeString(String s)    { this.backing.writeString(s); }
+    public void writeObject(Object obj)  { this.backing.writeObject(obj); }
+    public int64 finish()                { return this.backing.finish(); }
 }

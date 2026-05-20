@@ -12,6 +12,7 @@
 
 #include "cajeta/compile/Compiler.h"
 #include "cajeta/compile/CajetaModule.h"
+#include "cajeta/error/Exception.h"
 #include "cajeta/method/Method.h"
 
 #include "llvm/Bitcode/BitcodeReader.h"
@@ -147,7 +148,16 @@ std::unique_ptr<CajetaJit> CajetaJit::compile(
         auto m = compiler->createModule(sourcePath.string(),
                                         sourceRoot.string(),
                                         archiveRoot.string());
-        compiler->compile(m);
+        // CajetaException carries the diagnostic; the gtest "Unknown C++
+        // exception" wrapper otherwise eats the message. Rethrow after
+        // surfacing so the test harness still sees the failure.
+        try {
+            compiler->compile(m);
+        } catch (cajeta::Exception& e) {
+            std::cerr << "[CajetaException] " << e.getErrorId()
+                << ": " << e.getMessage() << "\n";
+            throw;
+        }
         if (!primary) primary = m;
     }
     (void) fqEntryClass;
