@@ -6,27 +6,242 @@ import cajeta.lang.String;
  * Immutable filesystem path. See
  * `cajeta-docs/stdlib/io/file/Path.md`.
  *
- * Phase B placeholder. The full surface (construction / joining /
- * decomposition / normalization / single-stat predicates / info()
- * batched-stat) lands in Phase B. The wire layer is `int8[] bytes`
- * — the exact bytes a syscall sees.
+ * Phase B: pure-path manipulation only (no syscalls). Stat-touching
+ * methods (`exists` / `isFile` / `isDir` / `isSymlink` / `info` /
+ * `canonical`) land with Phase C.
  *
- * `Path.of(String)` UTF-8-encodes on Linux/mac, UTF-16-encodes on
- * Windows. The full implementation lives in this class once the
- * Phase B work lands.
+ * Storage is `int8[]` — the exact bytes a syscall sees. Linux
+ * convention: UTF-8 octets, '/' as separator. Windows
+ * normalization is a follow-up.
  */
 public class Path {
     /**
-     * Raw OS-path bytes. Linux: UTF-8 octets. Windows (deferred):
-     * UTF-16 little-endian.
+     * Raw OS-path bytes. Owned by this Path; the destructor frees
+     * them via the auto-field-drop chain.
      */
     public int8[] bytes;
 
     /**
-     * Construct from already-encoded OS bytes. Stub Phase A — the
-     * full factory machinery lands with Phase B.
+     * Construct from already-encoded OS bytes. The caller is
+     * expected to own the bytes (this Path takes them); most user
+     * code goes through `Path.of(String)`.
      */
     public Path(int8[] bytes) {
         this.bytes = bytes;
+    }
+
+    /**
+     * Construct from a String. UTF-8-decoded on Linux/mac (the
+     * String's bytes ARE the path bytes). Copies the String's
+     * bytes into a fresh int8[] owned by this Path so the source
+     * String can drop independently.
+     */
+    public static #Path of(String s) {
+        int32 n = s.byteLength;
+        int8[] copy = new int8[n];
+        int8[] src = s.bytes;
+        int32 i = 0;
+        while (i < n) {
+            copy[i] = src[i];
+            i = i + 1;
+        }
+        // `#copy` transfers ownership of the freshly allocated
+        // bytes into the new Path so the local's scope-exit
+        // drop doesn't free them out from under the returned
+        // Path. Without the move, `copy` is freed when of()
+        // returns and the caller sees a dangling bytes ptr.
+        return heap Path(#copy);
+    }
+
+    /**
+     * True if the path starts with '/' (Linux absolute marker).
+     */
+    public boolean isAbsolute() {
+        if (this.bytes == null) {
+            return false;
+        }
+        if (this.bytes.count() == 0) {
+            return false;
+        }
+        return this.bytes[0] == (int8) 47;  // '/' = 0x2F = 47
+    }
+
+    /**
+     * Negation of `isAbsolute()`. An empty path is relative.
+     */
+    public boolean isRelative() {
+        return !this.isAbsolute();
+    }
+
+    /**
+     * Last segment (including extension). For "/foo/bar/baz.txt"
+     * → "baz.txt"; for "README" → "README"; for "/" → "" (root
+     * is special-cased to its own bytes elsewhere).
+     */
+    public #String name() {
+        int64 n = this.bytes.count();
+        int32 lastSep = -1;
+        int32 i = 0;
+        while (i < (int32) n) {
+            if (this.bytes[i] == (int8) 47) {
+                lastSep = i;
+            }
+            i = i + 1;
+        }
+        int32 startIdx = lastSep + 1;
+        int32 len = (int32) n - startIdx;
+        if (len < 0) {
+            len = 0;
+        }
+        int8[] out = new int8[len];
+        int32 j = 0;
+        while (j < len) {
+            out[j] = this.bytes[startIdx + j];
+            j = j + 1;
+        }
+        return heap String(#out, len);
+    }
+
+    /**
+     * Last segment without its trailing extension. "data.json"
+     * → "data"; "passwd" → "passwd"; "archive.tar.gz" → "archive.tar"
+     * (single-dot strip, matches Python's `Path.stem` /
+     * `extension` pairing).
+     */
+    public #String stem() {
+        String fullName = this.name();
+        int32 nameLen = fullName.byteLength;
+        int8[] src = fullName.bytes;
+        int32 lastDot = -1;
+        int32 i = 0;
+        while (i < nameLen) {
+            if (src[i] == (int8) 46) {  // '.' = 0x2E = 46
+                lastDot = i;
+            }
+            i = i + 1;
+        }
+        int32 outLen = lastDot >= 0 ? lastDot : nameLen;
+        int8[] out = new int8[outLen];
+        int32 j = 0;
+        while (j < outLen) {
+            out[j] = src[j];
+            j = j + 1;
+        }
+        return heap String(#out, outLen);
+    }
+
+    /**
+     * Last extension (after the rightmost dot, exclusive). For
+     * "archive.tar.gz" → "gz"; for "README" → ""; for "data.json"
+     * → "json". A leading-dot dotfile with no further extension
+     * ("/etc/.bashrc") returns "" — the first character isn't
+     * counted as an extension separator.
+     */
+    public #String extension() {
+        String fullName = this.name();
+        int32 nameLen = fullName.byteLength;
+        int8[] src = fullName.bytes;
+        int32 lastDot = -1;
+        int32 i = 0;
+        while (i < nameLen) {
+            if (src[i] == (int8) 46 && i > 0) {
+                lastDot = i;
+            }
+            i = i + 1;
+        }
+        if (lastDot < 0) {
+            int8[] empty = new int8[0];
+            return heap String(#empty, 0);
+        }
+        int32 outLen = nameLen - lastDot - 1;
+        int8[] out = new int8[outLen];
+        int32 j = 0;
+        while (j < outLen) {
+            out[j] = src[lastDot + 1 + j];
+            j = j + 1;
+        }
+        return heap String(#out, outLen);
+    }
+
+    /**
+     * Parent path: everything before the last separator. For
+     * "/foo/bar/baz.txt" → "/foo/bar"; for "/foo" → "/" (root
+     * preserved); for "/" → "/"; for "bare" → "" (no parent).
+     */
+    public #Path parent() {
+        int32 n = (int32) this.bytes.count();
+        int32 lastSep = -1;
+        int32 i = 0;
+        while (i < n) {
+            if (this.bytes[i] == (int8) 47) {
+                lastSep = i;
+            }
+            i = i + 1;
+        }
+        if (lastSep < 0) {
+            // No separator → parent is empty.
+            int8[] empty = new int8[0];
+            return heap Path(#empty);
+        }
+        // Root "/": parent is "/". Catches the "/" case (lastSep
+        // = 0, n = 1) and the "/foo" case (lastSep = 0, parent
+        // bytes = "/").
+        if (lastSep == 0) {
+            int8[] root = new int8[1];
+            root[0] = (int8) 47;
+            return heap Path(#root);
+        }
+        int8[] out = new int8[lastSep];
+        int32 j = 0;
+        while (j < lastSep) {
+            out[j] = this.bytes[j];
+            j = j + 1;
+        }
+        return heap Path(#out);
+    }
+
+    /**
+     * Join: append `segment` with a '/' separator. The segment is
+     * NOT split on embedded slashes — it's taken as a single
+     * logical step (matches Python pathlib). If this Path's last
+     * byte is already '/', no extra separator is inserted; an
+     * empty path joined to a segment yields the segment.
+     *
+     * The spec exposes this as `operator/` for ergonomic chaining
+     * (`Path.of("src") / "lang" / "Type.cajeta"`). The grammar's
+     * `operatorOverloadDeclaration` rule (CajetaParser.g4 §
+     * around line 206) doesn't yet accept a `#`-prefixed return
+     * type on operator methods, so the operator surface is
+     * exposed as the named method `resolve()` for Phase B. The
+     * `/` operator gains a body once the grammar accepts
+     * `public #Path operator/ ...`.
+     */
+    public #Path resolve(String segment) {
+        int32 pLen = (int32) this.bytes.count();
+        int32 sLen = segment.byteLength;
+        boolean needsSep = pLen > 0
+            && this.bytes[pLen - 1] != (int8) 47
+            && sLen > 0;
+        int32 outLen = pLen + (needsSep ? 1 : 0) + sLen;
+        int8[] out = new int8[outLen];
+        int32 j = 0;
+        int32 k = 0;
+        while (k < pLen) {
+            out[j] = this.bytes[k];
+            j = j + 1;
+            k = k + 1;
+        }
+        if (needsSep) {
+            out[j] = (int8) 47;
+            j = j + 1;
+        }
+        int8[] segBytes = segment.bytes;
+        k = 0;
+        while (k < sLen) {
+            out[j] = segBytes[k];
+            j = j + 1;
+            k = k + 1;
+        }
+        return heap Path(#out);
     }
 }
