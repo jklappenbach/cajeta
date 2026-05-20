@@ -205,6 +205,31 @@ public final class JsonWriter {
         return this.key(name.bytes, name.byteLength);
     }
 
+    /**
+     * Emit `bytes[0..n)` verbatim — no quoting, no escaping, no
+     * sibling marking adjustment beyond the standard separator
+     * dance. The bytes MUST already be a syntactically valid JSON
+     * value (quoted string, number, boolean, null, array, or
+     * object). Used by the @JsonRaw synthesizer arm — the
+     * captured bytes from `JsonReader.currentRawBytes()` are
+     * passed through unchanged so the wire-form round-trip is
+     * byte-stable.
+     *
+     * Callers are responsible for the bytes being valid JSON;
+     * `writeRaw` doesn't validate (the parser will reject on
+     * read-back if not).
+     */
+    public JsonWriter writeRaw(int8[] bytes, int32 n) {
+        this.maybeSeparator();
+        int32 i = 0;
+        while (i < n) {
+            this.append((int32) bytes[i]);
+            i = i + 1;
+        }
+        this.markSibling();
+        return this;
+    }
+
     final void writeStringRaw(int8[] s, int32 n) {
         this.append((int32) 34);
         int32 i = 0;

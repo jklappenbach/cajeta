@@ -58,6 +58,15 @@ namespace cajeta {
     // arm. Ignored fields can't be required (would never be seen) —
     // we silently treat @JsonIgnore as overriding @JsonRequired so a
     // user who annotates both ends up with the @JsonIgnore behavior.
+    // True if `@JsonRaw` is set — the field's wire bytes pass
+    // through both directions unchanged. Read side captures via
+    // `r.currentRawBytes()`; write side emits via `w.writeRaw`.
+    // The field's static type must be `int8[]` in v1 — the bytes
+    // are the wire form including any quotes / delimiters.
+    bool isJsonRaw(const StructurePropertyPtr& prop) {
+        return prop && prop->findAnnotation("JsonRaw") != nullptr;
+    }
+
     bool isJsonRequired(const StructurePropertyPtr& prop) {
         return prop
             && !isJsonIgnoredOnRead(prop)
@@ -406,6 +415,14 @@ namespace cajeta {
         const std::string& fieldName = prop->getName();
         CajetaTypePtr ty = prop->getType();
         if (!ty || !ty->getQName()) return "";
+        // @JsonRaw passes the wire bytes through unchanged. Field
+        // must be int8[]; the captured bytes include any quotes /
+        // structural delimiters so a round-trip through
+        // JsonWriter.writeRaw is byte-stable on primitives.
+        if (isJsonRaw(prop)) {
+            return "t = r.next();\n            out." + fieldName +
+                   " = r.currentRawBytes();\n";
+        }
         // Array-typed fields take a different path — they're CajetaArray
         // which inherits from CajetaClass, so the catch-all class branch
         // below would treat them as nested objects. Check first.
@@ -700,6 +717,13 @@ namespace cajeta {
         // and the catch-all class branch would treat them as nested
         // objects.
         std::ostringstream value;
+        // @JsonRaw: pass the field's int8[] bytes verbatim. Same
+        // wire-form round-trip as the read side captured via
+        // currentRawBytes() — primitives only in v1.
+        if (isJsonRaw(prop)) {
+            value << "w.writeRaw(value." << fieldName
+                  << ", (int32) value." << fieldName << ".count());\n";
+        } else
         if (auto arr = std::dynamic_pointer_cast<CajetaArray>(ty)) {
             std::string arrEmit = writeArrayValue(fieldName, arr->getElementType());
             if (arrEmit.empty()) return "";

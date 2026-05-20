@@ -767,6 +767,75 @@ TEST(JsonSynthesizerTests, jsonIgnoreBareStillSkipsBoth) {
     EXPECT_EQ(runI32(src), 8);
 }
 
+// ---- @JsonRaw — wire bytes pass through verbatim ------------------
+
+// READ side: a @JsonRaw int8[] field captures the value's wire
+// bytes including surrounding quotes for strings. The captured
+// span should reconstruct as valid JSON.
+TEST(JsonSynthesizerTests, jsonRawCapturesStringWireForm) {
+    auto src =
+        "package test;\n"
+        "import cajeta.codec.json.Json;\n"
+        "public class WithRaw {\n"
+        "    @JsonRaw\n"
+        "    public int8[] payload;\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        // "payload":"hi" → captured bytes include the quotes, so 4 bytes.
+        "        String s = \"{\\\"payload\\\":\\\"hi\\\"}\";\n"
+        "        WithRaw w = Json.parse<WithRaw>(s);\n"
+        "        return (int32) w.payload.count();\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 4);
+}
+
+// READ side: a number literal is NOT delimited, so the captured
+// span is just the digit text.
+TEST(JsonSynthesizerTests, jsonRawCapturesNumberWireForm) {
+    auto src =
+        "package test;\n"
+        "import cajeta.codec.json.Json;\n"
+        "public class WithRaw {\n"
+        "    @JsonRaw\n"
+        "    public int8[] amount;\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        // "amount":42 → captured bytes are "42" → 2 bytes.
+        "        String s = \"{\\\"amount\\\":42}\";\n"
+        "        WithRaw w = Json.parse<WithRaw>(s);\n"
+        "        return (int32) w.amount.count();\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 2);
+}
+
+// WRITE side: the bytes are emitted verbatim. Round-trip is
+// byte-stable on primitives. Read in `"foo"` (4 bytes incl.
+// quotes), write back out → wire output has the same quoted
+// "foo".
+TEST(JsonSynthesizerTests, jsonRawRoundTripsStringPrimitive) {
+    auto src =
+        "package test;\n"
+        "import cajeta.codec.json.Json;\n"
+        "public class WithRaw {\n"
+        "    @JsonRaw\n"
+        "    public int8[] payload;\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        String s = \"{\\\"payload\\\":\\\"hi\\\"}\";\n"
+        "        WithRaw w = Json.parse<WithRaw>(s);\n"
+        "        int8[] out = Json.toBytes<WithRaw>(w);\n"
+        // Round-trip: 16-byte output {"payload":"hi"} matches input.
+        "        return (int32) out.count();\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 16);
+}
+
 // Mixed: one normal field, one renamed, one ignored. Pins that the
 // annotation pass doesn't disturb un-annotated fields.
 TEST(JsonSynthesizerTests, mixedAnnotatedFields) {

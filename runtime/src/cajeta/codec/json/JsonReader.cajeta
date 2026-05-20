@@ -394,6 +394,49 @@ public class JsonReader {
     }
 
     /**
+     * Copy the current token's bytes INCLUDING the wire-form
+     * delimiters. For STRING / KEY tokens that means the
+     * surrounding `"` quotes; for NUMBER / BOOLEAN / NULL it's
+     * identical to `currentBytes()` since those tokens have no
+     * outer delimiters. Used by the @JsonRaw synthesizer arm —
+     * the captured bytes must round-trip through
+     * `JsonWriter.writeRaw` and re-parse as the same JSON value.
+     *
+     * Object / array values aren't span-captureable from a single
+     * token (their tokens are the structural braces; the
+     * interior is a series of nested tokens). v1 @JsonRaw covers
+     * primitive token values only; nested-span capture is a
+     * follow-up that requires walking the inner-token tree.
+     *
+     * Detection of "is this a STRING/KEY token" uses the raw
+     * input byte immediately preceding the token start: if it's
+     * `"` (0x22), we include both quotes; otherwise the span is
+     * unchanged.
+     */
+    public #int8[] currentRawBytes() {
+        int64 start = this.tokenStart;
+        int64 end = this.tokenEnd;
+        // Probe for an enclosing pair of quotes.
+        boolean quoted = false;
+        if (start > 0 && end < this.length) {
+            if (this.input[start - 1] == (int8) 34
+                    && this.input[end] == (int8) 34) {
+                quoted = true;
+            }
+        }
+        int64 effStart = quoted ? (start - 1) : start;
+        int64 effEnd = quoted ? (end + 1) : end;
+        int32 len = (int32) (effEnd - effStart);
+        int8[] out = new int8[len];
+        int32 i = 0;
+        while (i < len) {
+            out[i] = this.input[effStart + (int64) i];
+            i = i + 1;
+        }
+        return out;
+    }
+
+    /**
      * Materialize the current token's bytes as a `cajeta.lang.String`
      * view. The String's `bytes` field points at a fresh int8[] copy
      * of the token (same copy `currentBytes()` makes); the
