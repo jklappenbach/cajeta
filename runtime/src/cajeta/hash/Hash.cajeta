@@ -61,7 +61,7 @@ public final class Hash {
      * @complexity O(1).
      */
     @Native("__cajeta_hash_identity")
-    public static int64 identity(Object obj) { }
+    public static int64 identity(Object obj);
 
     /**
      * Combines two 64-bit hash values into one with good distribution.
@@ -85,7 +85,7 @@ public final class Hash {
      * @complexity O(1).
      */
     @Native("__cajeta_hash_combine")
-    public static int64 combine(int64 a, int64 b) { }
+    public static int64 combine(int64 a, int64 b);
 
     /**
      * The process-wide random seed.
@@ -122,5 +122,5 @@ public final class Hash {
      * @complexity O(1).
      */
     @Native("__cajeta_hash_seed")
-    public static int64 processSeed() { }
+    public static int64 processSeed();
 }

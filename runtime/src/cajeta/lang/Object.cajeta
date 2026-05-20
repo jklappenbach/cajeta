@@ -74,7 +74,7 @@ public class Object {
      * @complexity O(1).
      */
     @Native("__cajeta_object_hash")
-    public int64 hash() { }
+    public int64 hash();
 
     /**
      * Returns a `String` representation of this object suitable for
@@ -95,7 +95,7 @@ public class Object {
      *          lands.
      */
     @Native("__cajeta_object_to_string")
-    public String toString() { }
+    public String toString();
 
     /**
      * Returns a shallow copy of this object.
@@ -118,7 +118,7 @@ public class Object {
      *          synthesizer lands.
      */
     @Native("__cajeta_object_clone")
-    public Object clone() { }
+    public Object clone();
 
     /**
      * Equality operator — true iff `this` and `other` hash equal.

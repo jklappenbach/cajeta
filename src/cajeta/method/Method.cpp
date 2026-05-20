@@ -459,6 +459,17 @@ namespace cajeta {
         bool thisAlreadyInserted = !parameterList.empty()
             && parameterList.front()->getName() == "this";
 
+        // @Native methods can be declared with `;` body (no explicit
+        // `{ }`), which leaves abstractFlag true. They still need a
+        // full LLVM Function — the @Native forwarding body emission
+        // expects one. Demote the abstract flag here so the rest of
+        // generatePrototype builds the function normally and
+        // generateCode emits the forwarder.
+        bool isNative = findAnnotation("Native") != nullptr;
+        if (abstractFlag && isNative) {
+            abstractFlag = false;
+        }
+
         // Abstract method (declared on an interface, no body): build the
         // signature so callers can compute its canonical / vtable hash, but
         // don't emit an LLVM function — the concrete class's matching

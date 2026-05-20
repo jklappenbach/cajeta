@@ -77,40 +77,40 @@ public final class SipHash implements Hasher {
     // returns a raw `void*`; the move qualifier is cajeta-side
     // ownership bookkeeping only.
     @Native("__cajeta_siphash_alloc")
-    private static #pointer allocState(int64 a, int64 b) { }
+    private static #pointer allocState(int64 a, int64 b);
 
     @Native("__cajeta_siphash_free")
-    private static void freeState(pointer s) { }
+    private static void freeState(pointer s);
 
     @Native("__cajeta_siphash_reset")
-    private static void resetNative(pointer s, int64 a, int64 b) { }
+    private static void resetNative(pointer s, int64 a, int64 b);
 
     @Native("__cajeta_siphash_update")
-    private static void updateNative(pointer s, int8[] data, int64 len) { }
+    private static void updateNative(pointer s, int8[] data, int64 len);
 
     @Native("__cajeta_siphash_finish")
-    private static int64 finishNative(pointer s) { }
+    private static int64 finishNative(pointer s);
 
     @Native("__cajeta_siphash_oneshot")
-    private static int64 oneshot(int8[] data, int64 len, int64 a, int64 b) { }
+    private static int64 oneshot(int8[] data, int64 len, int64 a, int64 b);
 
     @Native("__cajeta_siphash_write_i8")
-    private static void writeI8Native(pointer s, int8 v) { }
+    private static void writeI8Native(pointer s, int8 v);
 
     @Native("__cajeta_siphash_write_i16")
-    private static void writeI16Native(pointer s, int16 v) { }
+    private static void writeI16Native(pointer s, int16 v);
 
     @Native("__cajeta_siphash_write_i32")
-    private static void writeI32Native(pointer s, int32 v) { }
+    private static void writeI32Native(pointer s, int32 v);
 
     @Native("__cajeta_siphash_write_i64")
-    private static void writeI64Native(pointer s, int64 v) { }
+    private static void writeI64Native(pointer s, int64 v);
 
     @Native("__cajeta_siphash_write_f32")
-    private static void writeF32Native(pointer s, float32 v) { }
+    private static void writeF32Native(pointer s, float32 v);
 
     @Native("__cajeta_siphash_write_f64")
-    private static void writeF64Native(pointer s, float64 v) { }
+    private static void writeF64Native(pointer s, float64 v);
 
     // --- One-shot statics -------------------------------------------
 
