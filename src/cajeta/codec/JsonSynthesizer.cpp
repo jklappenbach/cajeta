@@ -744,13 +744,29 @@ namespace cajeta {
         } else {
             os << "        {\n";
         }
-        os << "            int8[] k = new int8[" << wireKey.size() << "];\n";
+        // String-literal key emission. Pre Phase 2b-β the synthesizer
+        // emitted N lines of `int8[] k = new int8[N]; k[0] = (int8)
+        // 0x..; ...; w.key(k, N);` because String was an opaque
+        // pointer alias. Now String is a class with a literal
+        // codegen path that materializes a view-mode String over
+        // .rodata bytes — one IR call, no per-byte assignment, and
+        // the linker dedupes identical keys across all call sites.
+        // JsonWriter.key(String) is the matching overload.
+        //
+        // Escapes the wire key for cajeta source: double-quote and
+        // backslash become `\"` / `\\`. Wire keys typically come
+        // from field names + a naming strategy transform, so they
+        // rarely contain either, but be defensive — a future
+        // @JsonProperty("with\"quote") would otherwise emit invalid
+        // cajeta source.
+        std::string escaped;
+        escaped.reserve(wireKey.size() + 2);
         for (size_t i = 0; i < wireKey.size(); ++i) {
-            unsigned char b = (unsigned char) wireKey[i];
-            os << "            k[" << i << "] = (int8) 0x"
-               << std::hex << (int) b << std::dec << ";\n";
+            char c = wireKey[i];
+            if (c == '"' || c == '\\') escaped.push_back('\\');
+            escaped.push_back(c);
         }
-        os << "            w.key(k, " << wireKey.size() << ");\n";
+        os << "            w.key(\"" << escaped << "\");\n";
         os << "            " << value.str();
         os << "        }\n";
         return os.str();
