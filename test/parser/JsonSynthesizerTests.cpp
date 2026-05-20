@@ -569,6 +569,150 @@ TEST(JsonSynthesizerTests, roundTripMixedWithArray) {
     EXPECT_EQ(runI32(src), 1978);  // 1000 + 900 + 70 + 8
 }
 
+// ---- Phase 4b commit 8: @JsonProperty + @JsonIgnore annotations ----
+
+// `@JsonProperty("custom_name")` renames the field's wire key on both
+// write and read sides. The field's source-declared name stays
+// available for Cajeta-level access; only the JSON key changes.
+TEST(JsonSynthesizerTests, jsonPropertyRenameOnWrite) {
+    auto src =
+        "package test;\n"
+        "import cajeta.codec.json.Json;\n"
+        "public class Box {\n"
+        "    @JsonProperty(\"user_id\")\n"
+        "    public int32 id;\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Box a = heap Box();\n"
+        "        a.id = 7;\n"
+        "        int8[] bytes = Json.toBytes<Box>(a);\n"
+        // Expect: {"user_id":7} → 13 bytes (1 + 9 quoted-key + 1 + 1 + 1)
+        "        return (int32) bytes.count();\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 13);
+}
+
+// Read side — JSON has the renamed key, struct's declared name is
+// different. Synthesizer must look for the annotation-provided
+// key, not the declared name.
+TEST(JsonSynthesizerTests, jsonPropertyRenameOnRead) {
+    auto src =
+        "package test;\n"
+        "import cajeta.codec.json.Json;\n"
+        "public class Box {\n"
+        "    @JsonProperty(\"user_id\")\n"
+        "    public int32 id;\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        // {"user_id":42} → 15 bytes
+        "        String s = \"{\\\"user_id\\\":42}\";\n"
+        "        Box b = Json.parse<Box>(s);\n"
+        "        return b.id;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 42);
+}
+
+// Round-trip with rename. Pins both directions agree.
+TEST(JsonSynthesizerTests, jsonPropertyRoundTrip) {
+    auto src =
+        "package test;\n"
+        "import cajeta.codec.json.Json;\n"
+        "public class Box {\n"
+        "    @JsonProperty(\"user_id\")\n"
+        "    public int32 id;\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Box a = heap Box();\n"
+        "        a.id = 13;\n"
+        "        int8[] bytes = Json.toBytes<Box>(a);\n"
+        "        int64 n = (int64) bytes.count();\n"
+        "        Box b = Json.parse<Box>(bytes, n);\n"
+        "        return b.id;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 13);
+}
+
+// `@JsonIgnore` on a field skips it entirely — neither written nor
+// consumed on read. Wire output for a one-field class with the
+// field annotated is `{}` (2 bytes). Reading `{"secret":99}` into
+// the same class doesn't populate the field (stays at default 0).
+TEST(JsonSynthesizerTests, jsonIgnoreNotWritten) {
+    auto src =
+        "package test;\n"
+        "import cajeta.codec.json.Json;\n"
+        "public class Box {\n"
+        "    @JsonIgnore\n"
+        "    public int32 secret;\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Box a = heap Box();\n"
+        "        a.secret = 999;\n"
+        "        int8[] bytes = Json.toBytes<Box>(a);\n"
+        // Expect: {} → 2 bytes
+        "        return (int32) bytes.count();\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 2);
+}
+
+// `@JsonIgnore` on read — JSON key "secret" appears in input but
+// must NOT populate the field. Field stays at its default value.
+// The unknown-key arm should still consume the value cleanly.
+TEST(JsonSynthesizerTests, jsonIgnoreNotRead) {
+    auto src =
+        "package test;\n"
+        "import cajeta.codec.json.Json;\n"
+        "public class Box {\n"
+        "    @JsonIgnore\n"
+        "    public int32 secret;\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        // {"secret":42} — 14 bytes
+        "        String s = \"{\\\"secret\\\":42}\";\n"
+        "        Box b = Json.parse<Box>(s);\n"
+        "        return b.secret;\n"   // default-zero, not 42
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 0);
+}
+
+// Mixed: one normal field, one renamed, one ignored. Pins that the
+// annotation pass doesn't disturb un-annotated fields.
+TEST(JsonSynthesizerTests, mixedAnnotatedFields) {
+    auto src =
+        "package test;\n"
+        "import cajeta.codec.json.Json;\n"
+        "public class Mix {\n"
+        "    public int32 id;\n"
+        "    @JsonProperty(\"display_name\")\n"
+        "    public int32 displayName;\n"
+        "    @JsonIgnore\n"
+        "    public int32 secret;\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Mix a = heap Mix();\n"
+        "        a.id = 1;\n"
+        "        a.displayName = 2;\n"
+        "        a.secret = 999;\n"
+        "        int8[] bytes = Json.toBytes<Mix>(a);\n"
+        "        int64 n = (int64) bytes.count();\n"
+        "        Mix b = Json.parse<Mix>(bytes, n);\n"
+        // b.id and b.displayName round-trip; b.secret stays 0
+        "        return b.id * 100 + b.displayName * 10 + b.secret;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 120);  // 100 + 20 + 0
+}
+
 // `Json.parse<T>(String)` convenience overload. Hands the String's
 // `bytes` + `byteLength` to the byte-buffer variant in one step —
 // the synthesizer must NOT overwrite this overload's delegation

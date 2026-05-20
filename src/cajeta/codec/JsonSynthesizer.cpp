@@ -14,6 +14,31 @@ namespace cajeta {
 
     namespace {
 
+    // True if this field is excluded from JSON serialization +
+    // deserialization via `@JsonIgnore`. The synthesizer skips ignored
+    // fields entirely on both read and write — no key-arm emitted on
+    // read (the field falls into the catch-all skip-value arm
+    // naturally), no key-value pair emitted on write.
+    bool isJsonIgnored(const StructurePropertyPtr& prop) {
+        return prop && prop->findAnnotation("JsonIgnore") != nullptr;
+    }
+
+    // Effective wire key for the field. `@JsonProperty("custom_name")`
+    // overrides the declared name; otherwise the declared name is the
+    // key as before. An empty `@JsonProperty()` annotation (no value)
+    // falls back to the declared name too. Annotations declared on
+    // multiple fields with the same effective key are user error —
+    // v1 doesn't reject (the JSON would be ambiguous on read), but a
+    // future commit can add the lint.
+    std::string effectiveJsonKey(const StructurePropertyPtr& prop) {
+        if (!prop) return std::string();
+        if (auto ann = prop->findAnnotation("JsonProperty")) {
+            std::string renamed = ann->getString("value");
+            if (!renamed.empty()) return renamed;
+        }
+        return prop->getName();
+    }
+
     // Emit a literal byte-comparison guard for a key name. Returns the
     // body source for the if-condition (without surrounding `if (...)`),
     // assuming `int8[] kb` and `int32 klen` are in scope and hold the
@@ -268,18 +293,29 @@ namespace cajeta {
         os << indent << "    int32 klen = (int32) kb.count();\n";
         bool first = true;
         for (auto& prop : T->getPropertyList()) {
+            // @JsonIgnore: drop the per-field arm entirely so JSON
+            // input with this key falls through to the unknown-key
+            // skip arm (the field stays at its default).
+            if (isJsonIgnored(prop)) continue;
             std::string assign = readFieldAssignment(prop);
             if (assign.empty()) continue;
             os << indent << "    " << (first ? "if" : "else if")
-               << " (" << keyBytesGuard(prop->getName()) << ") {\n";
+               << " (" << keyBytesGuard(effectiveJsonKey(prop)) << ") {\n";
             os << indent << "        " << assign;
             os << indent << "    }\n";
             first = false;
         }
         // Unknown-key arm — consume the value's first token. v1 doesn't
         // recurse into unknown objects/arrays; that lands when a real
-        // JsonReader.skipValue() is wired through.
-        os << indent << "    else { t = r.next(); }\n";
+        // JsonReader.skipValue() is wired through. When no per-field
+        // arms emitted (e.g. every field carries @JsonIgnore, or T has
+        // no parseable fields at all), use bare `{ ... }` instead of
+        // `else { ... }` — a dangling `else` is a parse error.
+        if (first) {
+            os << indent << "    { t = r.next(); }\n";
+        } else {
+            os << indent << "    else { t = r.next(); }\n";
+        }
         os << indent << "}\n";
         return os.str();
     }
@@ -397,6 +433,8 @@ namespace cajeta {
     // Emit a key-bytes-and-call sequence for one field. Returns empty
     // if the field type isn't yet supported by the writer arm.
     std::string writeFieldEmit(const StructurePropertyPtr& prop) {
+        // @JsonIgnore: don't emit a key/value pair for this field.
+        if (isJsonIgnored(prop)) return "";
         const std::string& fieldName = prop->getName();
         CajetaTypePtr ty = prop->getType();
         if (!ty || !ty->getQName()) return "";
@@ -433,15 +471,19 @@ namespace cajeta {
                 return "";
             }
         }
+        // Use the @JsonProperty-renamed key when present; otherwise the
+        // declared field name. Cajeta-level field access (`value.<fieldName>`)
+        // still uses the declared name — only the wire-bytes change.
+        std::string wireKey = effectiveJsonKey(prop);
         std::ostringstream os;
         os << "        {\n";
-        os << "            int8[] k = new int8[" << fieldName.size() << "];\n";
-        for (size_t i = 0; i < fieldName.size(); ++i) {
-            unsigned char b = (unsigned char) fieldName[i];
+        os << "            int8[] k = new int8[" << wireKey.size() << "];\n";
+        for (size_t i = 0; i < wireKey.size(); ++i) {
+            unsigned char b = (unsigned char) wireKey[i];
             os << "            k[" << i << "] = (int8) 0x"
                << std::hex << (int) b << std::dec << ";\n";
         }
-        os << "            w.key(k, " << fieldName.size() << ");\n";
+        os << "            w.key(k, " << wireKey.size() << ");\n";
         os << "            " << value.str();
         os << "        }\n";
         return os.str();
