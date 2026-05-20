@@ -3,34 +3,53 @@ package cajeta.io.file;
 import cajeta.lang.String;
 
 /**
- * Static one-shot reads / writes + streaming-open factories.
+ * Two patterns under one class name (see
+ * `cajeta-docs/stdlib/io/file/File.md`):
  *
- * See `cajeta-docs/stdlib/io/file/File.md` for the full surface.
- * Random-access instance methods (open / seek / lock / sync /
- * truncate) are Phase E and not present in this class until then.
+ *   - **Static one-shots** — `readAllBytes` / `writeAllBytes`,
+ *     and the `openRead` / `openWrite` factories that return
+ *     streaming `FileReader` / `FileWriter`.
+ *   - **Instance random-access handle** — Phase E. Returned by
+ *     `File.open(path, mode)`; supports seek, lock, truncate,
+ *     sync, and positional read/write.
  *
- * Path overloads land with the Path class (Phase B). The String-
- * overloaded statics below are the Phase-A surface that Json file
- * I/O uses end-to-end:
- *
- *   int8[] bytes = File.readAllBytes("data.json");
- *   File.writeAllBytes("out.json", bytes, bytes.count());
- *
- * All static bodies are intrinsic-lowered at the call site —
- * MethodCallExpression detects `File.<name>` and emits the
- * corresponding runtime helper call directly. The stub bodies
- * below exist to satisfy the parser; codegen never enters them.
+ * All bodies are intrinsic-lowered at the call site
+ * (MethodCallExpression's File-receiver dispatch); the stubs
+ * below exist for the parser only.
  */
 public class File {
     /**
+     * OS file descriptor, or `-1` once closed. Only meaningful
+     * for File INSTANCES (the static methods don't touch this).
+     * Pinned at field index 1 (after vtable) so the intrinsic
+     * codegen can address it identically to FileReader /
+     * FileWriter.
+     */
+    public int32 fd;
+
+    /**
+     * Cached position so `position()` reads avoid an `lseek`
+     * syscall. Updated by every successful read/write/seek.
+     * Field index 2.
+     */
+    public int64 pos;
+
+    /**
+     * Internal-only ctor wired by `File.open(...)`. User code
+     * goes through the static factory; the factory binds the
+     * fd from the open() syscall.
+     */
+    public File(int32 fd) {
+        this.fd = fd;
+        this.pos = 0;
+    }
+
+    // ----- Static one-shots (Phase A) -----
+
+    /**
      * Read the entire file at `path` into a freshly allocated
-     * int8[]. The returned array has `count() == fileBytes`. EOF
-     * mid-read throws IoException (a half-read tree is never
-     * surfaced).
-     *
-     * `#` return: caller takes ownership of the array.
-     *
-     * Intrinsic-lowered to `__cajeta_file_read_all(path)`.
+     * int8[]. Intrinsic-lowered to
+     * `__cajeta_file_read_all(path)`.
      */
     public static #int8[] readAllBytes(String path) {
         int8[] empty = new int8[0];
@@ -38,13 +57,8 @@ public class File {
     }
 
     /**
-     * Write the first `len` bytes of `data` to `path`. Atomic-
-     * rename semantics: writes to `<path>.tmp.<pid>.<rand>`,
-     * fsyncs, renames over `path`. Concurrent readers see either
-     * the pre-write or post-write state, never a half-written
-     * file.
-     *
-     * Intrinsic-lowered to
+     * Write `data[0..len)` to `path` with atomic-rename
+     * semantics. Intrinsic-lowered to
      * `__cajeta_file_write_all(path, data, len)`.
      */
     public static void writeAllBytes(String path, int8[] data, int32 len) {
@@ -52,15 +66,7 @@ public class File {
     }
 
     /**
-     * Open `path` for reading; return a streaming FileReader. The
-     * caller drives the byte loop via `reader.read(buf, max)`.
-     *
-     * `#` return: caller owns the FileReader (drop closes the
-     * underlying fd).
-     *
-     * Intrinsic-lowered to a malloc-and-init sequence that calls
-     * `__cajeta_file_open(path, OpenMode.READ)`, materializes a
-     * FileReader instance around the resulting fd, and returns it.
+     * Open `path` for reading; return a streaming FileReader.
      */
     public static #FileReader openRead(String path) {
         return heap FileReader(-1);
@@ -69,15 +75,150 @@ public class File {
     /**
      * Open `path` for writing in `mode`; return a streaming
      * FileWriter.
-     *
-     * `#` return: caller owns the FileWriter (drop flushes +
-     * closes).
-     *
-     * Intrinsic-lowered to a malloc-and-init sequence that calls
-     * `__cajeta_file_open(path, mode)`, materializes a FileWriter
-     * around the fd, and returns it.
      */
     public static #FileWriter openWrite(String path, OpenMode mode) {
         return heap FileWriter(-1);
+    }
+
+    // Static factories for random-access (Phase E)
+
+    public static #File open(String path, OpenMode mode) {
+        return heap File(-1);
+    }
+
+    public static #File openExclusive(String path) {
+        return heap File(-1);
+    }
+
+    // ----- Instance methods (Phase E random-access) -----
+
+    /**
+     * Read up to `length` bytes from the current file position
+     * into `dst[offset .. offset+length)`. Returns the actual
+     * count filled. Zero == EOF; negative would indicate a
+     * hard error (today the helper returns -1, which the
+     * caller-side `int64` ABI propagates upward; the eventual
+     * IoException-throwing wrapper lands with the hierarchy).
+     *
+     * Intrinsic-lowered to
+     * `__cajeta_file_read(this.fd, &dst[8+offset], length)`,
+     * with `this.pos` advanced by the returned count.
+     */
+    public int64 read(int8[] dst, int64 offset, int64 length) {
+        return 0;
+    }
+
+    /**
+     * Write `data[offset .. offset+length)` at the current file
+     * position. Returns the count actually written (always
+     * equal to `length` on success; -1 on hard error).
+     *
+     * Intrinsic-lowered to
+     * `__cajeta_file_write(this.fd, &data[8+offset], length)`,
+     * with `this.pos` advanced by `length`.
+     */
+    public int64 write(int8[] data, int64 offset, int64 length) {
+        return 0;
+    }
+
+    /**
+     * Current file position in bytes. Reads `this.pos` directly;
+     * no syscall.
+     */
+    public int64 position() {
+        return this.pos;
+    }
+
+    /**
+     * Move to absolute byte offset `absolute`. Throws (when the
+     * exception hierarchy lands) on negative offsets or past-
+     * end positions on filesystems that don't support sparse
+     * extension. Updates `this.pos` to the resulting position.
+     *
+     * Intrinsic-lowered to
+     * `__cajeta_file_seek(this.fd, absolute, 0)`.
+     */
+    public void seek(int64 absolute) {
+        return;
+    }
+
+    /**
+     * Seek `offset` bytes back from end-of-file (negative
+     * `offset` walks toward the beginning; `0` lands at EOF).
+     * Intrinsic-lowered to
+     * `__cajeta_file_seek(this.fd, offset, 2)`.
+     */
+    public void seekFromEnd(int64 offset) {
+        return;
+    }
+
+    /**
+     * Current file length in bytes. Always one `fstat()`.
+     */
+    public int64 size() {
+        return 0;
+    }
+
+    /**
+     * Resize the file to `size` bytes. Extends with zero-bytes
+     * (sparse on filesystems that support it); truncates if the
+     * file is larger. `this.pos` is NOT moved.
+     *
+     * Intrinsic-lowered to `__cajeta_file_truncate(this.fd, size)`.
+     */
+    public void truncate(int64 size) {
+        return;
+    }
+
+    /**
+     * No-op flush — there's no user-space buffer in v1. Defined
+     * for InputStream / OutputStream conformance.
+     */
+    public void flush() {
+        return;
+    }
+
+    /**
+     * `fsync(2)` — durably flush every pending byte to disk
+     * before returning. Crash-recovery primitive; the streaming
+     * `FileWriter.flush()` does NOT call this.
+     *
+     * Intrinsic-lowered to `__cajeta_file_sync(this.fd)`.
+     */
+    public void sync() {
+        return;
+    }
+
+    /**
+     * Blocking exclusive lock on this fd (POSIX `flock` LOCK_EX).
+     * Held until `unlock()` or `close()`. Intra-process
+     * advisory; OS-level mandatory locks aren't surfaced here.
+     */
+    public void lock() {
+        return;
+    }
+
+    /**
+     * Non-blocking exclusive lock attempt. Returns true on
+     * success, false if another process holds the lock.
+     */
+    public boolean tryLock() {
+        return false;
+    }
+
+    /**
+     * Release a held lock. No-op if no lock is held.
+     */
+    public void unlock() {
+        return;
+    }
+
+    /**
+     * Close the underlying fd. Idempotent; the destructor also
+     * calls this. Sets `this.fd = -1` so subsequent calls are
+     * no-ops.
+     */
+    public void close() {
+        return;
     }
 }

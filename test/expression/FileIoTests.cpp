@@ -190,6 +190,105 @@ TEST(FileIoTests, fileReaderReturnsZeroAtEof) {
 
 // --- Streaming writer: openWrite → write → close ------------------------
 
+// --- Phase E: random-access File ---------------------------------------
+
+TEST(FileIoTests, randomAccessOpenReadAndPosition) {
+    std::string path = uniquePath("rax_read.txt");
+    writeRaw(path, "Hello, world!");
+    std::string src = "package test;\n"
+                      "import cajeta.io.file.File;\n"
+                      "import cajeta.io.file.OpenMode;\n"
+                      "public final class F {\n"
+                      "    public static int32 run() {\n"
+                      "        File f = File.open(\"" + path + "\", OpenMode.READ);\n"
+                      "        int8[] buf = new int8[5];\n"
+                      "        f.read(buf, 0, 5);\n"
+                      "        return (int32) f.position();\n"
+                      "    }\n"
+                      "}\n";
+    EXPECT_EQ(runI32(src), 5);
+}
+
+TEST(FileIoTests, randomAccessSeekChangesPosition) {
+    std::string path = uniquePath("rax_seek.txt");
+    writeRaw(path, "Hello, world!");
+    std::string src = "package test;\n"
+                      "import cajeta.io.file.File;\n"
+                      "import cajeta.io.file.OpenMode;\n"
+                      "public final class F {\n"
+                      "    public static int32 run() {\n"
+                      "        File f = File.open(\"" + path + "\", OpenMode.READ);\n"
+                      "        f.seek(7);\n"
+                      "        return (int32) f.position();\n"
+                      "    }\n"
+                      "}\n";
+    EXPECT_EQ(runI32(src), 7);
+}
+
+TEST(FileIoTests, randomAccessSizeReturnsFileLength) {
+    std::string path = uniquePath("rax_size.txt");
+    writeRaw(path, "abcdefgh");  // 8 bytes
+    std::string src = "package test;\n"
+                      "import cajeta.io.file.File;\n"
+                      "import cajeta.io.file.OpenMode;\n"
+                      "public final class F {\n"
+                      "    public static int32 run() {\n"
+                      "        File f = File.open(\"" + path + "\", OpenMode.READ);\n"
+                      "        return (int32) f.size();\n"
+                      "    }\n"
+                      "}\n";
+    EXPECT_EQ(runI32(src), 8);
+}
+
+TEST(FileIoTests, randomAccessSeekFromEndPositionsAtEof) {
+    std::string path = uniquePath("rax_seekend.txt");
+    writeRaw(path, "abcdefgh");
+    std::string src = "package test;\n"
+                      "import cajeta.io.file.File;\n"
+                      "import cajeta.io.file.OpenMode;\n"
+                      "public final class F {\n"
+                      "    public static int32 run() {\n"
+                      "        File f = File.open(\"" + path + "\", OpenMode.READ);\n"
+                      "        f.seekFromEnd(0);\n"
+                      "        return (int32) f.position();\n"
+                      "    }\n"
+                      "}\n";
+    EXPECT_EQ(runI32(src), 8);
+}
+
+TEST(FileIoTests, randomAccessWriteAtCurrentPosition) {
+    std::string path = uniquePath("rax_write.txt");
+    // Pre-populate with placeholder bytes that the write will overwrite.
+    writeRaw(path, "xxxxx");
+    std::string src = "package test;\n"
+                      "import cajeta.io.file.File;\n"
+                      "import cajeta.io.file.OpenMode;\n"
+                      "public final class F {\n"
+                      "    public static int32 run() {\n"
+                      "        File f = File.open(\"" + path + "\", OpenMode.READ_WRITE);\n"
+                      "        int8[] data = { (int8) 72, (int8) 105, (int8) 33 };\n"  // "Hi!"
+                      "        f.write(data, 0, 3);\n"
+                      "        f.close();\n"
+                      "        return (int32) Path.of(\"" + path + "\").exists();\n"
+                      "    }\n"
+                      "}\n";
+    // Just verify the write happens. Detailed byte verification via readRaw:
+    runI32("package test;\n"
+           "import cajeta.io.file.File;\n"
+           "import cajeta.io.file.OpenMode;\n"
+           "public final class F {\n"
+           "    public static int32 run() {\n"
+           "        File f = File.open(\"" + path + "\", OpenMode.READ_WRITE);\n"
+           "        int8[] data = { (int8) 72, (int8) 105, (int8) 33 };\n"
+           "        f.write(data, 0, 3);\n"
+           "        f.close();\n"
+           "        return 0;\n"
+           "    }\n"
+           "}\n");
+    std::string content = readRaw(path);
+    EXPECT_EQ(content.substr(0, 3), "Hi!");
+}
+
 TEST(FileIoTests, fileWriterWritesBytesRoundTripsViaReadAllBytes) {
     std::string path = uniquePath("writer_basic.txt");
     std::string src = "package test;\n"

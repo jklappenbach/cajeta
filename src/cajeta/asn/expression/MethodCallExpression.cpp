@@ -897,6 +897,70 @@ namespace cajeta {
                             }
                         }
                     }
+                    // Phase E: File.open(path, mode) — random-access
+                    // handle. Same malloc+init shape as openRead/
+                    // openWrite, but the resulting instance type is
+                    // `cajeta.io.file.File` (which has its own
+                    // vtable + fd/pos fields).
+                    if ((methodCallName == "open" && parameters.size() == 2)
+                            || (methodCallName == "openExclusive"
+                                && parameters.size() == 1)) {
+                        llvm::Function* openFn = module->getRuntimeFunction(
+                            "__cajeta_file_open");
+                        if (openFn) {
+                            llvm::Value* path = loadPathArg(0);
+                            llvm::Value* mode;
+                            if (methodCallName == "openExclusive") {
+                                // OpenMode.CREATE_NEW ordinal = 4.
+                                mode = llvm::ConstantInt::get(i32Ty, 4);
+                            } else {
+                                mode = parameters[1].expression->generateCode(module);
+                                if (auto* a = llvm::dyn_cast_or_null<llvm::AllocaInst>(mode)) {
+                                    mode = builder->CreateLoad(a->getAllocatedType(), a);
+                                }
+                                if (mode && mode->getType() != i32Ty
+                                        && mode->getType()->isIntegerTy()) {
+                                    mode = builder->CreateIntCast(mode, i32Ty, true);
+                                }
+                            }
+                            llvm::Value* fd = builder->CreateCall(openFn,
+                                {path, mode}, "file.fd");
+                            // fileClass IS the receiver — `File` class.
+                            if (fileClass && fileClass->getLlvmType()
+                                    && llvm::isa<llvm::StructType>(fileClass->getLlvmType())) {
+                                auto* structTy = llvm::cast<llvm::StructType>(
+                                    fileClass->getLlvmType());
+                                const llvm::DataLayout& dl =
+                                    module->getLlvmModule()->getDataLayout();
+                                llvm::Constant* size = llvm::ConstantInt::get(
+                                    i64Ty, dl.getTypeAllocSize(structTy));
+                                llvm::Value* inst = MemoryManager::createMallocInstruction(
+                                    module, size, builder->GetInsertBlock());
+                                builder->CreateMemSet(inst,
+                                    llvm::ConstantInt::get(i8Ty, 0),
+                                    size, llvm::MaybeAlign(8));
+                                llvm::Constant* vtableRef =
+                                    llvm::ConstantPointerNull::get(
+                                        llvm::cast<llvm::PointerType>(ptrTy));
+                                if (auto* vt = fileClass->getVirtualTableGlobal()) {
+                                    vtableRef = CajetaModule::ensureGlobalInModule(
+                                        module->getLlvmModule(), vt);
+                                }
+                                builder->CreateStore(vtableRef,
+                                    builder->CreateStructGEP(structTy, inst, 0,
+                                        "file.vtable_slot"));
+                                builder->CreateStore(fd,
+                                    builder->CreateStructGEP(structTy, inst, 1,
+                                        "file.fd_slot"));
+                                builder->CreateStore(
+                                    llvm::ConstantInt::get(i64Ty, 0),
+                                    builder->CreateStructGEP(structTy, inst, 2,
+                                        "file.pos_slot"));
+                                resolvedType = fileClass;
+                                return inst;
+                            }
+                        }
+                    }
                     if (methodCallName == "openWrite" && parameters.size() == 2) {
                         llvm::Function* openFn = module->getRuntimeFunction(
                             "__cajeta_file_open");
@@ -2440,16 +2504,20 @@ namespace cajeta {
             }
         }
 
-        // ----- FileReader / FileWriter instance-method intrinsic (Phase A) -----
-        // The cajeta-side bodies are stubs; here we lower the calls to
-        // direct runtime helpers via the receiver's `fd` field. Matches
-        // the spec in cajeta-docs/stdlib/io/file/FileReader.md and
-        // .../FileWriter.md.
+        // ----- FileReader / FileWriter / File instance-method intrinsic -----
+        // Phase A: FileReader / FileWriter (streaming).
+        // Phase E: File (random-access — seek / lock / truncate / sync).
+        //
+        // The cajeta-side bodies are stubs; we lower calls to direct
+        // runtime helpers via the receiver's `fd` field. Matches the
+        // spec in cajeta-docs/stdlib/io/file/{FileReader,FileWriter,
+        // File}.md.
         if (thisValue && targetClass && targetClass->getQName()) {
             const std::string canonical = targetClass->getQName()->toCanonical();
             bool isReader = canonical == "cajeta.io.file.FileReader";
             bool isWriter = canonical == "cajeta.io.file.FileWriter";
-            if (isReader || isWriter) {
+            bool isFile   = canonical == "cajeta.io.file.File";
+            if (isReader || isWriter || isFile) {
                 auto* structTy =
                     llvm::cast<llvm::StructType>(targetClass->getLlvmType());
                 llvm::Type* ptrTy = llvm::PointerType::get(llvmCtx, 0);
@@ -2511,7 +2579,7 @@ namespace cajeta {
                     resolvedType = CajetaType::of("int64");
                     return pos;
                 }
-                if ((isReader || isWriter) && methodCallName == "close"
+                if ((isReader || isWriter || isFile) && methodCallName == "close"
                         && parameters.empty()) {
                     // Optionally flush the writer first.
                     if (isWriter) {
@@ -2582,6 +2650,206 @@ namespace cajeta {
                         builder->CreateCall(fn, {fd});
                         resolvedType = CajetaType::of("void");
                         return nullptr;
+                    }
+                }
+
+                // ----- File random-access instance methods (Phase E) -----
+                if (isFile) {
+                    // read(dst, offset, length) / write(data, offset, length)
+                    if ((methodCallName == "read" || methodCallName == "write")
+                            && parameters.size() == 3) {
+                        const char* rtSym = methodCallName == "read"
+                            ? "__cajeta_file_read"
+                            : "__cajeta_file_write";
+                        llvm::Function* fn = module->getRuntimeFunction(rtSym);
+                        if (fn) {
+                            llvm::Value* fd = loadFd();
+                            llvm::Value* arr = parameters[0].expression->generateCode(module);
+                            if (auto* a = llvm::dyn_cast_or_null<llvm::AllocaInst>(arr)) {
+                                arr = builder->CreateLoad(a->getAllocatedType(), a);
+                            }
+                            llvm::Value* offV = parameters[1].expression->generateCode(module);
+                            if (auto* a = llvm::dyn_cast_or_null<llvm::AllocaInst>(offV)) {
+                                offV = builder->CreateLoad(a->getAllocatedType(), a);
+                            }
+                            if (offV && offV->getType() != i64Ty
+                                    && offV->getType()->isIntegerTy()) {
+                                offV = builder->CreateIntCast(offV, i64Ty, true);
+                            }
+                            llvm::Value* lenV = parameters[2].expression->generateCode(module);
+                            if (auto* a = llvm::dyn_cast_or_null<llvm::AllocaInst>(lenV)) {
+                                lenV = builder->CreateLoad(a->getAllocatedType(), a);
+                            }
+                            if (lenV && lenV->getType() != i64Ty
+                                    && lenV->getType()->isIntegerTy()) {
+                                lenV = builder->CreateIntCast(lenV, i64Ty, true);
+                            }
+                            // dataPtr = &arr[8 + offset] (count word + offset bytes).
+                            llvm::Value* dataStart = builder->CreateInBoundsGEP(
+                                i8Ty, arr,
+                                llvm::ConstantInt::get(i64Ty, 8),
+                                "file.data_start");
+                            llvm::Value* dataPtr = builder->CreateInBoundsGEP(
+                                i8Ty, dataStart, offV, "file.data_off");
+                            // Runtime helpers take int32 length — cast.
+                            llvm::Value* len32 = builder->CreateIntCast(
+                                lenV, i32Ty, true, "file.len32");
+                            llvm::Value* result = builder->CreateCall(fn,
+                                {fd, dataPtr, len32}, "file.rw");
+                            // Update this.pos += (read ? returned : len).
+                            llvm::Value* delta = methodCallName == "read"
+                                ? builder->CreateIntCast(result, i64Ty, true)
+                                : lenV;
+                            llvm::Value* posSlot = builder->CreateStructGEP(
+                                structTy, thisValue, 2, "file.pos_slot");
+                            llvm::Value* curPos = builder->CreateLoad(
+                                i64Ty, posSlot, "file.pos_cur");
+                            llvm::Value* newPos = builder->CreateAdd(
+                                curPos, delta, "file.pos_new");
+                            builder->CreateStore(newPos, posSlot);
+                            // Method return is int64.
+                            llvm::Value* result64 = builder->CreateIntCast(
+                                result, i64Ty, true);
+                            resolvedType = CajetaType::of("int64");
+                            return result64;
+                        }
+                    }
+                    if (methodCallName == "position" && parameters.empty()) {
+                        llvm::Value* posSlot = builder->CreateStructGEP(
+                            structTy, thisValue, 2, "file.pos_slot");
+                        resolvedType = CajetaType::of("int64");
+                        return builder->CreateLoad(i64Ty, posSlot, "file.pos");
+                    }
+                    if (methodCallName == "seek" && parameters.size() == 1) {
+                        llvm::Function* fn = module->getRuntimeFunction(
+                            "__cajeta_file_seek");
+                        if (fn) {
+                            llvm::Value* fd = loadFd();
+                            llvm::Value* absV = parameters[0].expression->generateCode(module);
+                            if (auto* a = llvm::dyn_cast_or_null<llvm::AllocaInst>(absV)) {
+                                absV = builder->CreateLoad(a->getAllocatedType(), a);
+                            }
+                            if (absV && absV->getType() != i64Ty
+                                    && absV->getType()->isIntegerTy()) {
+                                absV = builder->CreateIntCast(absV, i64Ty, true);
+                            }
+                            // whence = 0 (SEEK_SET).
+                            llvm::Value* newPos = builder->CreateCall(fn,
+                                {fd, absV, llvm::ConstantInt::get(i32Ty, 0)},
+                                "file.seek");
+                            llvm::Value* posSlot = builder->CreateStructGEP(
+                                structTy, thisValue, 2, "file.pos_slot");
+                            builder->CreateStore(newPos, posSlot);
+                            resolvedType = CajetaType::of("void");
+                            return nullptr;
+                        }
+                    }
+                    if (methodCallName == "seekFromEnd" && parameters.size() == 1) {
+                        llvm::Function* fn = module->getRuntimeFunction(
+                            "__cajeta_file_seek");
+                        if (fn) {
+                            llvm::Value* fd = loadFd();
+                            llvm::Value* offV = parameters[0].expression->generateCode(module);
+                            if (auto* a = llvm::dyn_cast_or_null<llvm::AllocaInst>(offV)) {
+                                offV = builder->CreateLoad(a->getAllocatedType(), a);
+                            }
+                            if (offV && offV->getType() != i64Ty
+                                    && offV->getType()->isIntegerTy()) {
+                                offV = builder->CreateIntCast(offV, i64Ty, true);
+                            }
+                            // whence = 2 (SEEK_END).
+                            llvm::Value* newPos = builder->CreateCall(fn,
+                                {fd, offV, llvm::ConstantInt::get(i32Ty, 2)},
+                                "file.seek_end");
+                            llvm::Value* posSlot = builder->CreateStructGEP(
+                                structTy, thisValue, 2, "file.pos_slot");
+                            builder->CreateStore(newPos, posSlot);
+                            resolvedType = CajetaType::of("void");
+                            return nullptr;
+                        }
+                    }
+                    if (methodCallName == "size" && parameters.empty()) {
+                        llvm::Function* fn = module->getRuntimeFunction(
+                            "__cajeta_file_size_of");
+                        if (fn) {
+                            llvm::Value* fd = loadFd();
+                            resolvedType = CajetaType::of("int64");
+                            return builder->CreateCall(fn, {fd}, "file.size");
+                        }
+                    }
+                    if (methodCallName == "truncate" && parameters.size() == 1) {
+                        llvm::Function* fn = module->getRuntimeFunction(
+                            "__cajeta_file_truncate");
+                        if (fn) {
+                            llvm::Value* fd = loadFd();
+                            llvm::Value* szV = parameters[0].expression->generateCode(module);
+                            if (auto* a = llvm::dyn_cast_or_null<llvm::AllocaInst>(szV)) {
+                                szV = builder->CreateLoad(a->getAllocatedType(), a);
+                            }
+                            if (szV && szV->getType() != i64Ty
+                                    && szV->getType()->isIntegerTy()) {
+                                szV = builder->CreateIntCast(szV, i64Ty, true);
+                            }
+                            builder->CreateCall(fn, {fd, szV});
+                            resolvedType = CajetaType::of("void");
+                            return nullptr;
+                        }
+                    }
+                    if (methodCallName == "sync" && parameters.empty()) {
+                        llvm::Function* fn = module->getRuntimeFunction(
+                            "__cajeta_file_sync");
+                        if (fn) {
+                            llvm::Value* fd = loadFd();
+                            builder->CreateCall(fn, {fd});
+                            resolvedType = CajetaType::of("void");
+                            return nullptr;
+                        }
+                    }
+                    if (methodCallName == "flush" && parameters.empty()) {
+                        // No-op for random-access File — but emit
+                        // call to the flush helper for consistency.
+                        llvm::Function* fn = module->getRuntimeFunction(
+                            "__cajeta_file_flush");
+                        if (fn) {
+                            llvm::Value* fd = loadFd();
+                            builder->CreateCall(fn, {fd});
+                            resolvedType = CajetaType::of("void");
+                            return nullptr;
+                        }
+                    }
+                    if (methodCallName == "lock" && parameters.empty()) {
+                        llvm::Function* fn = module->getRuntimeFunction(
+                            "__cajeta_file_lock");
+                        if (fn) {
+                            llvm::Value* fd = loadFd();
+                            builder->CreateCall(fn, {fd});
+                            resolvedType = CajetaType::of("void");
+                            return nullptr;
+                        }
+                    }
+                    if (methodCallName == "tryLock" && parameters.empty()) {
+                        llvm::Function* fn = module->getRuntimeFunction(
+                            "__cajeta_file_try_lock");
+                        if (fn) {
+                            llvm::Value* fd = loadFd();
+                            llvm::Value* result = builder->CreateCall(fn,
+                                {fd}, "file.trylock");
+                            llvm::Value* asI1 = builder->CreateICmpNE(result,
+                                llvm::ConstantInt::get(i32Ty, 0),
+                                "file.trylock.bool");
+                            resolvedType = CajetaType::of("boolean");
+                            return asI1;
+                        }
+                    }
+                    if (methodCallName == "unlock" && parameters.empty()) {
+                        llvm::Function* fn = module->getRuntimeFunction(
+                            "__cajeta_file_unlock");
+                        if (fn) {
+                            llvm::Value* fd = loadFd();
+                            builder->CreateCall(fn, {fd});
+                            resolvedType = CajetaType::of("void");
+                            return nullptr;
+                        }
                     }
                 }
             }

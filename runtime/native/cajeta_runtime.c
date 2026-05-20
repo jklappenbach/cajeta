@@ -2371,6 +2371,59 @@ int32_t __cajeta_file_write(int32_t fd, const void* data, int32_t len) {
     return 0;
 }
 
+// Phase E — random-access File helpers.
+//
+// Seek / position / size / truncate / lock — these are all the
+// fd-shaped operations the random-access `cajeta.io.file.File`
+// class needs. The streaming-only `__cajeta_file_*` helpers
+// above (read/write/close/flush) ARE re-used by the random-
+// access File; only the seek/lock/truncate primitives are new
+// here.
+
+// `whence`: 0 SEEK_SET, 1 SEEK_CUR, 2 SEEK_END. Returns the new
+// absolute position, or -1 on failure.
+int64_t __cajeta_file_seek(int32_t fd, int64_t offset, int32_t whence) {
+    if (fd < 0) return -1;
+    int w = SEEK_SET;
+    if (whence == 1) w = SEEK_CUR;
+    else if (whence == 2) w = SEEK_END;
+    off_t r = lseek(fd, (off_t) offset, w);
+    return (int64_t) r;
+}
+
+int64_t __cajeta_file_size_of(int32_t fd) {
+    if (fd < 0) return -1;
+    struct stat st;
+    if (fstat(fd, &st) != 0) return -1;
+    return (int64_t) st.st_size;
+}
+
+int32_t __cajeta_file_truncate(int32_t fd, int64_t size) {
+    if (fd < 0 || size < 0) return -1;
+    return ftruncate(fd, (off_t) size) == 0 ? 0 : -1;
+}
+
+int32_t __cajeta_file_sync(int32_t fd) {
+    if (fd < 0) return -1;
+    return fsync(fd) == 0 ? 0 : -1;
+}
+
+#include <sys/file.h>
+int32_t __cajeta_file_lock(int32_t fd) {
+    if (fd < 0) return -1;
+    return flock(fd, LOCK_EX) == 0 ? 0 : -1;
+}
+
+int32_t __cajeta_file_try_lock(int32_t fd) {
+    if (fd < 0) return 0;
+    return flock(fd, LOCK_EX | LOCK_NB) == 0 ? 1 : 0;
+}
+
+int32_t __cajeta_file_unlock(int32_t fd) {
+    if (fd < 0) return -1;
+    return flock(fd, LOCK_UN) == 0 ? 0 : -1;
+}
+
 // Streaming flush. No user-space buffering today (FileWriter writes
 // straight through), so this is a no-op stub. When the 8 KiB
 // internal buffer lands (Phase A.2), this drains it via writev().

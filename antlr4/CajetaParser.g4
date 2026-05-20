@@ -532,6 +532,26 @@ localVariableDeclaration
 identifier
     : IDENTIFIER
     | VAR
+    // Module-system soft keywords (cajeta-docs/stdlib/Modules.md
+    // — pending). These tokens are reserved by the lexer for the
+    // future module declaration syntax but the parser never uses
+    // them in any rule today. Until the module surface lands,
+    // they're freely usable as ordinary identifiers (e.g.
+    // `File.open(...)`, `String s = "open"`). When module
+    // declarations gain grammar rules, they'll consume these
+    // tokens in their specific positions; the identifier rule
+    // keeps accepting them so user method names like `open` /
+    // `requires` / `provides` continue to parse.
+    | MODULE
+    | OPEN
+    | REQUIRES
+    | EXPORTS
+    | OPENS
+    | TO
+    | USES
+    | PROVIDES
+    | WITH
+    | TRANSITIVE
     ;
 
 localTypeDeclaration
