@@ -491,9 +491,33 @@ namespace cajeta {
         //
         // Instance methods (non-static) are exempt — their borrow-return inherits
         // from `this` by elision, regardless of how many other parameters they take.
-        if (staticMethod && !returnsOwnership && returnType
-                && returnType->getLlvmType()
-                && returnType->getLlvmType()->isPointerTy()
+        // "Returns a reference" classifier — the original implementation
+        // tested `getLlvmType()->isPointerTy()`, which worked when
+        // `String` was a `char*` typedef and class refs were already
+        // ptr-typed. Post Phase 2b-β class String's LLVM type is the
+        // body struct (NOT a pointer), so `isPointerTy()` returns
+        // false and the check stopped firing for the canonical
+        // example (`public static String pick(String a, String b)`).
+        // Detect by the high-level CajetaType shape instead: a class
+        // ref (excluding views — they're inline aggregates passed by
+        // value), an array, or an interface — all the reference-
+        // semantics types. Primitives and value-typed structs fall
+        // through harmlessly.
+        bool returnIsReferenceTyped = false;
+        if (returnType) {
+            if (auto rc = std::dynamic_pointer_cast<CajetaClass>(returnType)) {
+                if (!std::dynamic_pointer_cast<CajetaView>(returnType)) {
+                    returnIsReferenceTyped = true;
+                }
+            } else if (returnType->getLlvmType()
+                    && returnType->getLlvmType()->isPointerTy()) {
+                // Legacy `pointer`-typed return (the bare-pointer
+                // bootstrap shape).
+                returnIsReferenceTyped = true;
+            }
+        }
+        if (staticMethod && !returnsOwnership
+                && returnIsReferenceTyped
                 && parameterList.size() > 1) {
             char buf[256];
             snprintf(buf, sizeof(buf),

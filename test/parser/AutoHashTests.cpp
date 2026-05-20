@@ -180,9 +180,15 @@ TEST(AutoHashTests, arrayFieldRejectedWithAttribution) {
     EXPECT_ANY_THROW(CajetaJit::compile(src, "test.D"));
 }
 
-// String field (which is `pointer` in cajeta today) is also
-// rejected — the byte-hash path isn't synthesized in v1.
-TEST(AutoHashTests, stringFieldRejectedWithAttribution) {
+// String field on an @AutoHash class is accepted post Phase 2b-β:
+// `cajeta.lang.String` is a CLASS with its own `hash()` method
+// (XXH3-style content hash; runtime/src/cajeta/lang/String.cajeta
+// § 107), so the synthesizer's CLASS_INLINE path delegates to
+// String.hash() rather than rejecting the field. The original
+// version of this test (which expected rejection) was written when
+// String was a `char*` typedef without a hash method — that
+// rationale no longer applies.
+TEST(AutoHashTests, stringFieldDelegatesToStringHash) {
     auto src =
         "package test;\n"
         "@AutoHash\n"
@@ -193,5 +199,5 @@ TEST(AutoHashTests, stringFieldRejectedWithAttribution) {
         "public final class D {\n"
         "    public static int32 run() { return 0; }\n"
         "}\n";
-    EXPECT_ANY_THROW(CajetaJit::compile(src, "test.D"));
+    EXPECT_NO_THROW(CajetaJit::compile(src, "test.D"));
 }
