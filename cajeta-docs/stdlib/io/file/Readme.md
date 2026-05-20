@@ -33,7 +33,9 @@ are stable, bodies land per phase.
    `Path` is the value type that names a filesystem location.
 2. **Destructor-based close.** Cajeta's destructor chain (locked
    2026-05-18 in `MemoryModel.md`) fires at scope exit
-   deterministically. No try-with-resources, no `with`, no
+   deterministically. No try-with-resources (removed from the
+   grammar 2026-05-20 as strictly redundant — see § "Resource
+   cleanup is the destructor's job" below), no `with`, no
    `defer`. Callers can still `close()` explicitly for early
    release.
 3. **Bytes-first.** The streaming surface talks `int8[]`. Text
@@ -118,3 +120,55 @@ up — the byte representation is the lingua franca.
 - **Phase E** — random-access `File` (seek / lock).
 - **Deferred** — `Watcher`, `*Async` forms, capability gating
   enforcement.
+
+## Resource cleanup is the destructor's job
+
+`try (FileReader r = …) { … }` (try-with-resources) was removed
+from the grammar on 2026-05-20. Cajeta's destructor chain fires
+the resource class's `~ClassName()` at the closing `}` of the
+declaring block deterministically, in LIFO order across multiple
+locals, including on exception unwind. The Java-style
+try-with-resources syntax was strictly redundant — it existed in
+Java only because Java has GC and no destructors, so
+`close()` needed a separate guarantee-mechanism. Cajeta
+already has the better mechanism, so the syntax is gone.
+
+The replacement pattern is "just declare the resource":
+
+```cajeta
+{
+    FileReader r = File.openRead(in);
+    FileWriter w = File.openWrite(out, OpenMode.WRITE);
+    int32 n = r.read(buf, 4096);
+    while (n > 0) {
+        w.write(buf, n);
+        n = r.read(buf, 4096);
+    }
+    // w.~FileWriter() fires here (flush + close), then
+    // r.~FileReader() (close). LIFO order, guaranteed.
+}
+```
+
+`r.close()` is still callable for early release — the destructor
+sees `this.fd == -1` after the explicit close and skips the
+syscall (idempotent close is the Phase-A contract for `FileReader`
+/ `FileWriter` / `File`). Exception unwind, return, throw — every
+exit path walks the drop chain back to the block's entry
+watermark.
+
+If you want narrower-than-method scope without an outer `{ }`
+wrapper, just open a fresh `{ … }` block — same effect:
+
+```cajeta
+public static void process() {
+    setup();
+    {
+        FileReader r = File.openRead(in);
+        consume(r);
+    }  // r drops here, BEFORE the rest of process().
+    rest();
+}
+```
+
+For the rationale + Java-comparison details, see
+`cajeta-docs/MemoryModel.md` § Destructors.

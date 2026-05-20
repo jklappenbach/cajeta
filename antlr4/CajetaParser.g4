@@ -566,8 +566,13 @@ statement
     | FOR '(' forControl ')' statement
     | WHILE parExpression statement
     | DO statement WHILE parExpression ';'
+    // No try-with-resources rule. Destructors fire deterministically
+    // at the closing `}` of the resource's declaring block, so
+    // `try (R r = …) { … }` is strictly redundant with
+    // `{ R r = …; … }`. See cajeta-docs/MemoryModel.md § Destructors
+    // and cajeta-docs/stdlib/io/file/Readme.md § Design tenets for
+    // the rationale.
     | TRY block (catchClause+ finallyBlock? | finallyBlock)
-    | TRY resourceSpecification block catchClause* finallyBlock?
     | SWITCH parExpression '{' switchBlockStatementGroup* switchLabel* '}'
     | RETURN expression? ';'
     | THROW expression ';'
@@ -591,19 +596,6 @@ catchType
 
 finallyBlock
     : FINALLY block
-    ;
-
-resourceSpecification
-    : '(' resources ';'? ')'
-    ;
-
-resources
-    : resource (';' resource)*
-    ;
-
-resource
-    : variableModifier* ( classOrInterfaceType variableDeclaratorId | VAR identifier ) '=' expression
-    | identifier
     ;
 
 /** Matches cases then statements, both of which are mandatory.

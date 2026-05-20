@@ -140,6 +140,42 @@ Limitations (v1 / known gaps):
 - **Implicit destructor chaining — design locked, implementation pending.** Decision (2026-05-18): C++ semantics. The compiler-emitted destructor runs in this order: (1) the user-written `~Derived()` body, (2) owned fields in reverse declaration order (already handled by auto-field-drop), (3) direct parent destructors in reverse declaration order. Chaining is **automatic and non-suppressible** — there is no syntax to opt out. Discipline: each destructor cleans up only its own fields; if `~Derived()` needs to act before the parent's cleanup (e.g., flush a buffer before the parent closes the connection), it does that work in its own body, since the parent chain runs after the body. Diamond / multi-inheritance walks the layout (which the vbase ABI already dedupes shared ancestors of), so each ancestor destructor runs exactly once. `super<Base>.~Base()` may be written explicitly for documentation, but it does not change codegen — the implicit chain still fires at the end. Until codegen lands, the auto-field-drop machinery still reclaims field storage, so the leak window is limited to user-written resource releases in parent destructor bodies that the derived class doesn't redo by hand.
 - **Block-scoped firing.** ✅ Done. Drop entries fire at the closing `}` of the declaring lexical block, not method exit. RAII patterns like back-to-back `LockGuard`s in inline blocks now work. Pinned by `test/parser/BlockScopedDropTests.cpp`.
 
+### No try-with-resources
+
+Cajeta does **not** have Java's `try (R r = …) { … }` syntax. It was briefly in the grammar and was removed 2026-05-20 as strictly redundant: destructors already guarantee deterministic cleanup at the closing `}` of the declaring block, including LIFO order across multiple locals and on exception unwind. The Java construct exists because Java has GC and no destructors — `AutoCloseable.close()` needs an external guarantee-mechanism that the drop chain already provides here.
+
+The replacement pattern is "just declare the resource":
+
+```cajeta
+{
+    FileReader r = File.openRead(in);
+    FileWriter w = File.openWrite(out, OpenMode.WRITE);
+    int32 n = r.read(buf, 4096);
+    while (n > 0) {
+        w.write(buf, n);
+        n = r.read(buf, 4096);
+    }
+    // w.~FileWriter() fires here (flush + close), then
+    // r.~FileReader() (close). LIFO order, guaranteed on every
+    // exit path (return, throw, fall-through, break).
+}
+```
+
+`r.close()` is still callable for early release — destructors are idempotent (the standard Phase-A `FileReader` / `FileWriter` / `File` contract: `this.fd = -1` after the first close, subsequent calls no-op). Catch blocks still work without modification:
+
+```cajeta
+try {
+    FileReader r = File.openRead(p);
+    process(r);
+    // r drops here on the normal path.
+} catch (IoException e) {
+    // r already dropped — the throw walked the chain back
+    // to the try-frame's watermark, firing every owned local
+    // along the way.
+    log(e);
+}
+```
+
 ---
 
 ## Containers (stdlib convention)

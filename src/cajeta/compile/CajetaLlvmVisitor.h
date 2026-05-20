@@ -1625,17 +1625,9 @@ namespace cajeta {
             return visitChildren(ctx);
         }
 
-        virtual std::any visitResourceSpecification(CajetaParser::ResourceSpecificationContext* ctx) override {
-            return visitChildren(ctx);
-        }
-
-        virtual std::any visitResources(CajetaParser::ResourcesContext* ctx) override {
-            return visitChildren(ctx);
-        }
-
-        virtual std::any visitResource(CajetaParser::ResourceContext* ctx) override {
-            return visitChildren(ctx);
-        }
+        // Try-with-resources grammar rules removed 2026-05-20 —
+        // destructors fire deterministically at scope exit, see
+        // cajeta-docs/stdlib/MemoryModel.md § "No try-with-resources".
 
         virtual std::any
         visitSwitchBlockStatementGroup(CajetaParser::SwitchBlockStatementGroupContext* ctx) override {

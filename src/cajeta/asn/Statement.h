@@ -29,7 +29,6 @@ namespace cajeta {
 //    | WHILE parExpression statement
 //    | DO statement WHILE parExpression ';'
 //    | TRY block (catchClause+ finallyBlock? | finallyBlock)
-//    | TRY resourceSpecification block catchClause* finallyBlock?
 //    | SWITCH parExpression '{' switchBlockStatementGroup* switchLabel* '}'
 //    | SYNCHRONIZED parExpression block
 //    | RETURN expression? ';'
@@ -259,20 +258,11 @@ namespace cajeta {
         llvm::Value* generateCode(CajetaModulePtr module) override;
     };
 
-    /**
-     * TRY resourceSpecification block catchClause* finallyBlock?
-     */
-    class ResourceTryStatement : public Statement {
-    private:
-        list<FieldPtr> resources;
-        BlockPtr block;
-        list<CatchClause> catchClauses;
-        BlockPtr finally;
-    public:
-        ResourceTryStatement(antlr4::Token* token) : Statement(token) { }
-
-        llvm::Value* generateCode(CajetaModulePtr module) override;
-    };
+    // ResourceTryStatement was removed 2026-05-20 together with the
+    // grammar's `TRY resourceSpecification …` alternative —
+    // destructors fire deterministically at scope exit and made
+    // try-with-resources redundant. See cajeta-docs/MemoryModel.md
+    // § Destructors.
 
     // One labeled group within a switch — e.g. `case 1: case 2: stmts...`.
     // `caseValues` are the constant expressions for the case labels; an empty list
