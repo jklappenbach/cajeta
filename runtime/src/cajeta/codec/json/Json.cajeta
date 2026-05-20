@@ -1,26 +1,120 @@
 package cajeta.codec.json;
 
 /**
- * Top-level JSON entry points (Tier 3 sugar).
+ * # `cajeta.codec.json.Json` — top-level JSON entry points
  *
- * `Json.parse(bytes, length)` returns a full JsonValue tree — the
- * value-tree convenience layer. Use this for ad-hoc inspection /
- * mutation / re-serialization where performance is not the
- * concern.
+ * Three tiers, choose by ergonomics-vs-speed tradeoff:
  *
- * `Json.toBytes(value)` runs the symmetric operation: takes a
- * JsonValue tree and emits its serialized byte form.
+ * | Tier | Entry point                    | Returns / takes    | When to use                              |
+ * |------|--------------------------------|--------------------|------------------------------------------|
+ * | 3    | `Json.parse(bytes, len)`       | `JsonValue` tree   | Ad-hoc inspection, schema-less, mutation |
+ * | 3    | `Json.toBytes(value)`          | `JsonValue` → bytes| Symmetric write-back of a value tree     |
+ * | 1    | `Json.parse<T>(bytes, len)`    | `T` direct-binding | Known shape, want zero JsonValue alloc   |
+ * | 1    | `Json.toBytes<T>(value: T)`    | `T` → bytes        | Symmetric                                |
+ * | 2    | `JsonReader.next()` / `JsonWriter` | tokens          | Hot path; full control over allocation   |
  *
- * The Tier-1 (`Json.parse<T>(bytes)` / `Json.toBytes(value:T)`)
- * codegen path that bypasses the JsonValue tree entirely is a
- * separate compiler-side synthesizer (Phase 4 — pending, see
- * cajeta-docs/stdlib/codec/Json.md § Tier 1). Until that lands,
- * users wanting per-class direct-binding write the parse/emit
- * code by hand against JsonReader / JsonWriter.
+ * Tier 1 is the **synthesizer**: the compiler walks T's declared
+ * fields at the call site and emits a per-field key-dispatch
+ * parse loop / sequential write chain. No JsonValue tree, no
+ * runtime reflection.
  *
- * Tier 2 (the pull-tokenizer API) remains the load-bearing path
- * for performance-sensitive callers — drop to JsonReader.next() /
- * JsonWriter.beginObject() directly when this matters.
+ * ## Tier 1 quick examples
+ *
+ * Define a class and round-trip it:
+ *
+ * ```cajeta
+ * public class User {
+ *     public int32 id;
+ *     public String name;
+ * }
+ *
+ * User u = heap User();
+ * u.id = 7;
+ * u.name = "alice";
+ * int8[] bytes = Json.toBytes<User>(u);        // {"id":7,"name":"alice"}
+ * User v = Json.parse<User>(bytes, (int64) bytes.count());
+ * // Or directly from a String:
+ * User w = Json.parse<User>("{\"id\":7,\"name\":\"alice\"}");
+ * ```
+ *
+ * ### Supported field types (Tier 1, v1)
+ *
+ * | Field type              | Read                          | Write                          |
+ * |-------------------------|-------------------------------|--------------------------------|
+ * | `int32`, `int64`        | NUMBER → int                  | int → NUMBER                   |
+ * | `float64`               | NUMBER → float                | float → NUMBER                 |
+ * | `boolean`               | `true`/`false` → bool         | bool → `true`/`false`          |
+ * | `cajeta.lang.String`    | STRING → view-mode String     | bytes + length → STRING        |
+ * | nested class            | recurses into `parseObjectFromReader<T>` | recurses into `toBytesObjectInto<T>` |
+ * | `T[]` (primitive elem)  | `[...]` → fresh `T[]`         | iterate → `[...]`              |
+ * | `T[]` (class elem)      | **deferred** (needs peek)     | iterate → `[...]`              |
+ *
+ * ### Per-field annotations
+ *
+ * | Annotation                            | Effect                                                       |
+ * |---------------------------------------|--------------------------------------------------------------|
+ * | `@JsonProperty("wire_name")`          | Rename the wire key on both read and write                   |
+ * | `@JsonIgnore`                         | Skip the field on both read and write                        |
+ * | `@JsonRequired`                       | Throw `JsonParseException` on parse if the key is missing    |
+ * | `@JsonAlias({"alt1", "alt2"})`        | Also accept these keys on read; write still uses primary key |
+ * | `@JsonInclude("NON_NULL")`            | Omit the field on write when the reference is null           |
+ *
+ * Annotations compose. `@JsonProperty` + `@JsonRequired` checks the
+ * renamed key; `@JsonProperty` overrides `@JsonNamingStrategy`;
+ * `@JsonIgnore` wins over `@JsonRequired` (the field never appears,
+ * so requiring it would never succeed).
+ *
+ * ### Class-level annotations
+ *
+ * | Annotation                                 | Effect                                                          |
+ * |--------------------------------------------|-----------------------------------------------------------------|
+ * | `@JsonNamingStrategy("SNAKE_CASE")`        | `firstName` → `first_name` for every un-renamed field           |
+ * | `@JsonNamingStrategy("KEBAB_CASE")`        | `firstName` → `first-name` for every un-renamed field           |
+ * | `@JsonStrict`                              | Throw on unknown keys at read time (default: silently consume)  |
+ *
+ * ### Worked example
+ *
+ * ```cajeta
+ * @JsonNamingStrategy("SNAKE_CASE")
+ * @JsonStrict
+ * public class User {
+ *     @JsonRequired
+ *     public int32 id;
+ *
+ *     @JsonAlias({"username"})
+ *     public String userName;          // wire key: "user_name" (or "username" on read)
+ *
+ *     @JsonProperty("display")          // overrides naming strategy
+ *     public String displayName;
+ *
+ *     @JsonInclude("NON_NULL")
+ *     public String email;              // omitted from output when null
+ *
+ *     @JsonIgnore
+ *     public int32 sessionToken;        // never written, never read
+ * }
+ * ```
+ *
+ * ## Tier 3 — value tree
+ *
+ * Use when the shape isn't known at compile time, or for one-off
+ * mutation:
+ *
+ * ```cajeta
+ * JsonValue v = Json.parse("{\"id\":1,\"name\":\"alice\"}");
+ * int64 id = v.get("id").asInt64();         // 1
+ * String name = v.get("name").asString();   // "alice"
+ * ```
+ *
+ * ## Tier 2 — raw pull tokenizer
+ *
+ * When allocation matters: `JsonReader.next()` returns token codes
+ * (`START_OBJECT` / `KEY` / `NUMBER` / etc.); accessor methods
+ * (`currentNumberAsInt64()` / `currentBytes()` / ...) materialize
+ * the just-read token. Symmetric writer surface is `JsonWriter`
+ * (`beginObject()` / `key(bytes, len)` / `writeNumber(...)`).
+ *
+ * See `cajeta-docs/stdlib/codec/Json.md` for the full design notes.
  */
 public final class Json {
 

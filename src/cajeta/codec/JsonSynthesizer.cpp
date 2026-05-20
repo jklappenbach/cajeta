@@ -23,20 +23,135 @@ namespace cajeta {
         return prop && prop->findAnnotation("JsonIgnore") != nullptr;
     }
 
-    // Effective wire key for the field. `@JsonProperty("custom_name")`
-    // overrides the declared name; otherwise the declared name is the
-    // key as before. An empty `@JsonProperty()` annotation (no value)
-    // falls back to the declared name too. Annotations declared on
-    // multiple fields with the same effective key are user error —
-    // v1 doesn't reject (the JSON would be ambiguous on read), but a
-    // future commit can add the lint.
-    std::string effectiveJsonKey(const StructurePropertyPtr& prop) {
+    // True if `@JsonRequired` is set on the field — the parse body
+    // throws `JsonParseException` after END_OBJECT if no key arm fired
+    // for this field. Tracks via a per-field boolean local
+    // (`req_seen_<fieldName>`) flipped to true inside the matching
+    // arm. Ignored fields can't be required (would never be seen) —
+    // we silently treat @JsonIgnore as overriding @JsonRequired so a
+    // user who annotates both ends up with the @JsonIgnore behavior.
+    bool isJsonRequired(const StructurePropertyPtr& prop) {
+        return prop
+            && !isJsonIgnored(prop)
+            && prop->findAnnotation("JsonRequired") != nullptr;
+    }
+
+    // Apply a class-level naming strategy to a field's declared name
+    // to derive the wire key. v1 supports two strategies:
+    //
+    //   - `"SNAKE_CASE"` — camelCase → snake_case (e.g. `firstName`
+    //                       → `first_name`)
+    //   - `"KEBAB_CASE"` — camelCase → kebab-case (e.g. `firstName`
+    //                       → `first-name`)
+    //
+    // Any other value (or empty) leaves the name unchanged. Strategy
+    // matching is exact (case-sensitive) on the annotation string.
+    std::string applyNamingStrategy(const std::string& strategy,
+                                     const std::string& declaredName) {
+        if (strategy != "SNAKE_CASE" && strategy != "KEBAB_CASE") {
+            return declaredName;
+        }
+        char sep = (strategy == "SNAKE_CASE") ? '_' : '-';
+        std::string out;
+        out.reserve(declaredName.size() + 4);
+        for (size_t i = 0; i < declaredName.size(); ++i) {
+            char c = declaredName[i];
+            if (i > 0 && c >= 'A' && c <= 'Z') {
+                out.push_back(sep);
+                out.push_back((char) (c - 'A' + 'a'));
+            } else if (c >= 'A' && c <= 'Z') {
+                out.push_back((char) (c - 'A' + 'a'));
+            } else {
+                out.push_back(c);
+            }
+        }
+        return out;
+    }
+
+    // Effective wire key for the field. Precedence:
+    //   1. `@JsonProperty("custom_name")` on the field — wins
+    //      unconditionally (per-field overrides class-level).
+    //   2. Class-level `@JsonNamingStrategy("SNAKE_CASE" | "KEBAB_CASE")`
+    //      transform applied to the declared name.
+    //   3. The declared name verbatim.
+    //
+    // Empty `@JsonProperty()` (no value arg) falls through to the
+    // strategy layer rather than overwriting with empty.
+    std::string effectiveJsonKey(const StructurePropertyPtr& prop,
+                                  const std::string& classStrategy) {
         if (!prop) return std::string();
         if (auto ann = prop->findAnnotation("JsonProperty")) {
             std::string renamed = ann->getString("value");
             if (!renamed.empty()) return renamed;
         }
-        return prop->getName();
+        return applyNamingStrategy(classStrategy, prop->getName());
+    }
+
+    // Class-level naming strategy from `@JsonNamingStrategy("...")`.
+    // Returns empty when absent. Field-level @JsonProperty always
+    // wins over this.
+    std::string classNamingStrategy(const CajetaClassPtr& T) {
+        if (!T) return std::string();
+        if (auto ann = T->findAnnotation("JsonNamingStrategy")) {
+            return ann->getString("value");
+        }
+        return std::string();
+    }
+
+    // True when class-level `@JsonStrict` is set — read-side rejects
+    // unknown keys with a JsonParseException instead of silently
+    // consuming the value (the default v1 behavior).
+    bool classIsStrict(const CajetaClassPtr& T) {
+        return T && T->findAnnotation("JsonStrict") != nullptr;
+    }
+
+    // @JsonInclude policy on a field. v1 supports two values:
+    //   - "ALWAYS" (default) — emit key+value unconditionally
+    //   - "NON_NULL"         — emit only when the field reference
+    //                          is not null. Only meaningful on
+    //                          reference-typed fields (class, array,
+    //                          String); a no-op on primitives since
+    //                          they're never null.
+    // Returns the string verbatim from the annotation; caller maps
+    // it to a behavior switch. Empty string when the annotation is
+    // absent.
+    std::string jsonIncludePolicy(const StructurePropertyPtr& prop) {
+        if (!prop) return std::string();
+        if (auto ann = prop->findAnnotation("JsonInclude")) {
+            return ann->getString("value");
+        }
+        return std::string();
+    }
+
+    // True if the field's static type is reference-shaped (its slot
+    // can hold null). Used by the @JsonInclude(NON_NULL) gate.
+    // Primitives are never null and so the gate is a no-op there.
+    bool fieldIsReferenceTyped(const StructurePropertyPtr& prop) {
+        if (!prop) return false;
+        auto ty = prop->getType();
+        if (!ty || !ty->getQName()) return false;
+        if (std::dynamic_pointer_cast<CajetaArray>(ty)) return true;
+        if (std::dynamic_pointer_cast<CajetaClass>(ty)) return true;
+        return false;
+    }
+
+    // Aliases declared on the field via `@JsonAlias({"a", "b", ...})`.
+    // Returned in the order the user listed them. Empty if no
+    // annotation. The aliases extend the read-side key match — write
+    // still uses the primary (declared name or @JsonProperty) key.
+    std::vector<std::string> jsonAliases(const StructurePropertyPtr& prop) {
+        std::vector<std::string> out;
+        if (!prop) return out;
+        if (auto ann = prop->findAnnotation("JsonAlias")) {
+            const auto& list = ann->getStringList("value");
+            for (auto& s : list) out.push_back(s);
+            if (out.empty()) {
+                // Single-value form: `@JsonAlias("userId")`.
+                std::string single = ann->getString("value");
+                if (!single.empty()) out.push_back(single);
+            }
+        }
+        return out;
     }
 
     // Emit a literal byte-comparison guard for a key name. Returns the
@@ -276,15 +391,49 @@ namespace cajeta {
     // entry, and consumes from START_OBJECT through END_OBJECT.
     std::string emitObjectLoopBody(const CajetaClassPtr& T,
                                     const std::string& indent) {
+        std::string strategy = classNamingStrategy(T);
+        bool strict = classIsStrict(T);
         std::ostringstream os;
         os << indent << "int32 t = r.next();\n";
         os << indent << "if (t != JsonToken.START_OBJECT) {\n";
         os << indent << "    throw heap JsonParseException(\n";
         os << indent << "        \"Tier-1 parse: expected '{'\", r.position());\n";
         os << indent << "}\n";
+        // Pre-loop: declare a `boolean req_seen_<field>` per
+        // @JsonRequired field, initialized to false. Each matching key
+        // arm flips its flag true; after END_OBJECT we walk the flags
+        // and throw on any still-false.
+        std::vector<std::string> requiredKeys;
+        for (auto& prop : T->getPropertyList()) {
+            if (isJsonRequired(prop)) {
+                std::string key = effectiveJsonKey(prop, strategy);
+                requiredKeys.push_back(key);
+                os << indent << "boolean req_seen_" << prop->getName()
+                   << " = false;\n";
+            }
+        }
         os << indent << "while (true) {\n";
         os << indent << "    t = r.next();\n";
-        os << indent << "    if (t == JsonToken.END_OBJECT) { return out; }\n";
+        // END_OBJECT branch — verify required fields THEN return.
+        if (requiredKeys.empty()) {
+            os << indent << "    if (t == JsonToken.END_OBJECT) { return out; }\n";
+        } else {
+            os << indent << "    if (t == JsonToken.END_OBJECT) {\n";
+            for (auto& prop : T->getPropertyList()) {
+                if (!isJsonRequired(prop)) continue;
+                std::string key = effectiveJsonKey(prop, strategy);
+                os << indent << "        if (!req_seen_" << prop->getName()
+                   << ") {\n";
+                os << indent
+                   << "            throw heap JsonParseException(\n";
+                os << indent
+                   << "                \"Tier-1 parse: required field '"
+                   << key << "' missing\", r.position());\n";
+                os << indent << "        }\n";
+            }
+            os << indent << "        return out;\n";
+            os << indent << "    }\n";
+        }
         os << indent << "    if (t != JsonToken.KEY) {\n";
         os << indent << "        throw heap JsonParseException(\n";
         os << indent << "            \"Tier-1 parse: expected key\", r.position());\n";
@@ -299,22 +448,45 @@ namespace cajeta {
             if (isJsonIgnored(prop)) continue;
             std::string assign = readFieldAssignment(prop);
             if (assign.empty()) continue;
+            // @JsonAlias adds alternate read-side keys. OR every
+            // accepted key together in the arm guard. The primary
+            // (effectiveJsonKey) comes first; aliases append after.
+            std::string primary = effectiveJsonKey(prop, strategy);
+            std::ostringstream guard;
+            guard << "(" << keyBytesGuard(primary) << ")";
+            for (auto& alias : jsonAliases(prop)) {
+                guard << " || (" << keyBytesGuard(alias) << ")";
+            }
             os << indent << "    " << (first ? "if" : "else if")
-               << " (" << keyBytesGuard(effectiveJsonKey(prop)) << ") {\n";
+               << " (" << guard.str() << ") {\n";
             os << indent << "        " << assign;
+            if (isJsonRequired(prop)) {
+                os << indent << "        req_seen_" << prop->getName()
+                   << " = true;\n";
+            }
             os << indent << "    }\n";
             first = false;
         }
-        // Unknown-key arm — consume the value's first token. v1 doesn't
-        // recurse into unknown objects/arrays; that lands when a real
-        // JsonReader.skipValue() is wired through. When no per-field
-        // arms emitted (e.g. every field carries @JsonIgnore, or T has
-        // no parseable fields at all), use bare `{ ... }` instead of
-        // `else { ... }` — a dangling `else` is a parse error.
-        if (first) {
-            os << indent << "    { t = r.next(); }\n";
+        // Unknown-key handling.
+        //   - Default (v1): silently consume the value's first token.
+        //     Real recursive skipValue() lands when `JsonReader.peek()`
+        //     surfaces (deferred to a separate commit).
+        //   - `@JsonStrict` class-level: throw JsonParseException
+        //     naming the unknown key.
+        std::string unknownArmBody;
+        if (strict) {
+            std::ostringstream sb;
+            sb << "throw heap JsonParseException("
+               << "\"Tier-1 parse: unknown key (class is @JsonStrict)\", "
+               << "r.position());";
+            unknownArmBody = sb.str();
         } else {
-            os << indent << "    else { t = r.next(); }\n";
+            unknownArmBody = "t = r.next();";
+        }
+        if (first) {
+            os << indent << "    { " << unknownArmBody << " }\n";
+        } else {
+            os << indent << "    else { " << unknownArmBody << " }\n";
         }
         os << indent << "}\n";
         return os.str();
@@ -432,7 +604,8 @@ namespace cajeta {
 
     // Emit a key-bytes-and-call sequence for one field. Returns empty
     // if the field type isn't yet supported by the writer arm.
-    std::string writeFieldEmit(const StructurePropertyPtr& prop) {
+    std::string writeFieldEmit(const StructurePropertyPtr& prop,
+                                const std::string& classStrategy) {
         // @JsonIgnore: don't emit a key/value pair for this field.
         if (isJsonIgnored(prop)) return "";
         const std::string& fieldName = prop->getName();
@@ -471,12 +644,24 @@ namespace cajeta {
                 return "";
             }
         }
-        // Use the @JsonProperty-renamed key when present; otherwise the
-        // declared field name. Cajeta-level field access (`value.<fieldName>`)
+        // Use the @JsonProperty-renamed key when present, then the
+        // class-level @JsonNamingStrategy transform, else the declared
+        // name verbatim. Cajeta-level field access (`value.<fieldName>`)
         // still uses the declared name — only the wire-bytes change.
-        std::string wireKey = effectiveJsonKey(prop);
+        std::string wireKey = effectiveJsonKey(prop, classStrategy);
         std::ostringstream os;
-        os << "        {\n";
+        // @JsonInclude("NON_NULL") on a reference-typed field — wrap
+        // the key+value emission in a null guard. Primitives can't be
+        // null, so the gate is a no-op there. NON_NULL is the only
+        // policy v1 routes through; ALWAYS / absent annotation = no
+        // guard.
+        bool nullGuard = jsonIncludePolicy(prop) == "NON_NULL"
+            && fieldIsReferenceTyped(prop);
+        if (nullGuard) {
+            os << "        if (value." << fieldName << " != null) {\n";
+        } else {
+            os << "        {\n";
+        }
         os << "            int8[] k = new int8[" << wireKey.size() << "];\n";
         for (size_t i = 0; i < wireKey.size(); ++i) {
             unsigned char b = (unsigned char) wireKey[i];
@@ -495,10 +680,11 @@ namespace cajeta {
     // (which receives the writer as a parameter and shares it with
     // the parent emit).
     std::string emitObjectWriteBody(const CajetaClassPtr& T) {
+        std::string strategy = classNamingStrategy(T);
         std::ostringstream os;
         os << "    w.beginObject();\n";
         for (auto& prop : T->getPropertyList()) {
-            std::string emit = writeFieldEmit(prop);
+            std::string emit = writeFieldEmit(prop, strategy);
             if (!emit.empty()) os << emit;
         }
         os << "    w.endObject();\n";

@@ -790,3 +790,324 @@ TEST(JsonSynthesizerTests, parseMixedInt32Int64Boolean) {
     // 7099 + 1000000 (flag) = 1007099
     EXPECT_EQ(runI64(src), (int64_t) 1007099);
 }
+
+// ---- Phase 4b commit 9: @JsonRequired ----
+
+// Required field present in input — parses normally, no throw.
+TEST(JsonSynthesizerTests, jsonRequiredFieldPresent) {
+    auto src =
+        "package test;\n"
+        "import cajeta.codec.json.Json;\n"
+        "public class Box {\n"
+        "    @JsonRequired\n"
+        "    public int32 id;\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        String s = \"{\\\"id\\\":7}\";\n"
+        "        Box b = Json.parse<Box>(s);\n"
+        "        return b.id;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 7);
+}
+
+// Required field MISSING — parse throws JsonParseException naming
+// the field. The test catches via the JIT's exception machinery
+// (Cajeta.lastThrownErrorId()-style tagging) and verifies the
+// error id matches the synthesizer's CAJETA_ERROR_JSON_REQUIRED.
+TEST(JsonSynthesizerTests, jsonRequiredFieldMissing) {
+    auto src =
+        "package test;\n"
+        "import cajeta.codec.json.Json;\n"
+        "public class Box {\n"
+        "    @JsonRequired\n"
+        "    public int32 id;\n"
+        "    public int32 other;\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        // JSON contains `other` but not `id`. Parse should throw.
+        "        String s = \"{\\\"other\\\":99}\";\n"
+        "        try {\n"
+        "            Box b = Json.parse<Box>(s);\n"
+        "            return 0;\n"   // no throw — fail
+        "        } catch (cajeta.codec.json.JsonParseException e) {\n"
+        "            return 1;\n"   // expected throw
+        "        }\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 1);
+}
+
+// Two required fields, one present, one missing — still throws.
+TEST(JsonSynthesizerTests, jsonRequiredOnePresentOneMissing) {
+    auto src =
+        "package test;\n"
+        "import cajeta.codec.json.Json;\n"
+        "public class Pair {\n"
+        "    @JsonRequired\n"
+        "    public int32 left;\n"
+        "    @JsonRequired\n"
+        "    public int32 right;\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        String s = \"{\\\"left\\\":1}\";\n"
+        "        try {\n"
+        "            Pair p = Json.parse<Pair>(s);\n"
+        "            return 0;\n"
+        "        } catch (cajeta.codec.json.JsonParseException e) {\n"
+        "            return 1;\n"
+        "        }\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 1);
+}
+
+// ---- Phase 4b commit 10: @JsonAlias({...}) ----
+
+// Field accepts the alias key on read. Write-side still uses the
+// primary key (declared name or @JsonProperty rename).
+TEST(JsonSynthesizerTests, jsonAliasReadsAlternateKey) {
+    auto src =
+        "package test;\n"
+        "import cajeta.codec.json.Json;\n"
+        "public class Box {\n"
+        "    @JsonAlias({\"userId\", \"user-id\"})\n"
+        "    public int32 id;\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        // Wire key is the second alias — userId. id (declared name)
+        // and user-id both also work, but pick the un-declared alias
+        // to prove it's not just falling back on the declared name.
+        "        String s = \"{\\\"userId\\\":42}\";\n"
+        "        Box b = Json.parse<Box>(s);\n"
+        "        return b.id;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 42);
+}
+
+// Primary (declared) key still works alongside aliases.
+TEST(JsonSynthesizerTests, jsonAliasPrimaryStillWorks) {
+    auto src =
+        "package test;\n"
+        "import cajeta.codec.json.Json;\n"
+        "public class Box {\n"
+        "    @JsonAlias({\"userId\"})\n"
+        "    public int32 id;\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        String s = \"{\\\"id\\\":7}\";\n"
+        "        Box b = Json.parse<Box>(s);\n"
+        "        return b.id;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 7);
+}
+
+// ---- Phase 4b commit 11: @JsonInclude(NON_NULL) ----
+
+// Reference-typed field with @JsonInclude(NON_NULL) — when the
+// reference IS null, the key/value pair is omitted from output.
+// Result: `{}` for a class with one null-valued NON_NULL field.
+TEST(JsonSynthesizerTests, jsonIncludeNonNullOmitsNullReference) {
+    auto src =
+        "package test;\n"
+        "import cajeta.codec.json.Json;\n"
+        "import cajeta.lang.String;\n"
+        "public class Box {\n"
+        "    @JsonInclude(\"NON_NULL\")\n"
+        "    public String name;\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Box a = heap Box();\n"
+        "        a.name = null;\n"
+        "        int8[] bytes = Json.toBytes<Box>(a);\n"
+        "        return (int32) bytes.count();\n"  // 2: just `{}`
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 2);
+}
+
+// Same field, non-null reference — emitted normally.
+TEST(JsonSynthesizerTests, jsonIncludeNonNullKeepsValue) {
+    auto src =
+        "package test;\n"
+        "import cajeta.codec.json.Json;\n"
+        "import cajeta.lang.String;\n"
+        "public class Box {\n"
+        "    @JsonInclude(\"NON_NULL\")\n"
+        "    public String name;\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Box a = heap Box();\n"
+        "        a.name = \"hi\";\n"
+        "        int8[] bytes = Json.toBytes<Box>(a);\n"
+        // {"name":"hi"} → 13 bytes
+        "        return (int32) bytes.count();\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 13);
+}
+
+// NON_NULL on an array field with null reference — omitted.
+TEST(JsonSynthesizerTests, jsonIncludeNonNullArray) {
+    auto src =
+        "package test;\n"
+        "import cajeta.codec.json.Json;\n"
+        "public class Bag {\n"
+        "    @JsonInclude(\"NON_NULL\")\n"
+        "    public int32[] ids;\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Bag a = heap Bag();\n"
+        "        a.ids = null;\n"
+        "        int8[] bytes = Json.toBytes<Bag>(a);\n"
+        "        return (int32) bytes.count();\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 2);
+}
+
+// ---- Phase 4b commit 12: class-level @JsonNamingStrategy + @JsonStrict ----
+
+// Class-level @JsonNamingStrategy("SNAKE_CASE") renames every field
+// for the wire by converting camelCase → snake_case. Per-field
+// @JsonProperty still wins when present.
+TEST(JsonSynthesizerTests, jsonNamingStrategySnakeCase) {
+    auto src =
+        "package test;\n"
+        "import cajeta.codec.json.Json;\n"
+        "@JsonNamingStrategy(\"SNAKE_CASE\")\n"
+        "public class User {\n"
+        "    public int32 firstName;\n"
+        "    public int32 lastName;\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        User a = heap User();\n"
+        "        a.firstName = 1;\n"
+        "        a.lastName = 2;\n"
+        "        int8[] bytes = Json.toBytes<User>(a);\n"
+        // {"first_name":1,"last_name":2} → 30 bytes
+        "        return (int32) bytes.count();\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 30);
+}
+
+// SNAKE_CASE renames work on the READ side too. Confirms the
+// renamed wire key matches.
+TEST(JsonSynthesizerTests, jsonNamingStrategySnakeCaseRead) {
+    auto src =
+        "package test;\n"
+        "import cajeta.codec.json.Json;\n"
+        "@JsonNamingStrategy(\"SNAKE_CASE\")\n"
+        "public class User {\n"
+        "    public int32 firstName;\n"
+        "    public int32 lastName;\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        String s = \"{\\\"first_name\\\":3,\\\"last_name\\\":4}\";\n"
+        "        User u = Json.parse<User>(s);\n"
+        "        return u.firstName * 10 + u.lastName;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 34);
+}
+
+// Per-field @JsonProperty overrides the class-level naming strategy.
+TEST(JsonSynthesizerTests, jsonPropertyOverridesNamingStrategy) {
+    auto src =
+        "package test;\n"
+        "import cajeta.codec.json.Json;\n"
+        "@JsonNamingStrategy(\"SNAKE_CASE\")\n"
+        "public class User {\n"
+        "    public int32 firstName;\n"
+        "    @JsonProperty(\"surname\")\n"
+        "    public int32 lastName;\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        User a = heap User();\n"
+        "        a.firstName = 0;\n"
+        "        a.lastName = 0;\n"
+        "        int8[] bytes = Json.toBytes<User>(a);\n"
+        // {"first_name":0,"surname":0} → 28 bytes
+        "        return (int32) bytes.count();\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 28);
+}
+
+// Class-level @JsonStrict rejects unknown keys on read instead of
+// silently skipping them. Bare class behaves as before (skips).
+TEST(JsonSynthesizerTests, jsonStrictRejectsUnknownKeys) {
+    auto src =
+        "package test;\n"
+        "import cajeta.codec.json.Json;\n"
+        "@JsonStrict\n"
+        "public class Box {\n"
+        "    public int32 id;\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        String s = \"{\\\"id\\\":1,\\\"unknown\\\":2}\";\n"
+        "        try {\n"
+        "            Box b = Json.parse<Box>(s);\n"
+        "            return 0;\n"
+        "        } catch (cajeta.codec.json.JsonParseException e) {\n"
+        "            return 1;\n"
+        "        }\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 1);
+}
+
+// Without @JsonStrict, unknown keys are silently consumed (v1
+// behavior — skipValue arm). Confirms strict really is opt-in.
+TEST(JsonSynthesizerTests, withoutJsonStrictUnknownKeysSkipped) {
+    auto src =
+        "package test;\n"
+        "import cajeta.codec.json.Json;\n"
+        "public class Box {\n"
+        "    public int32 id;\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        String s = \"{\\\"id\\\":7,\\\"unknown\\\":9}\";\n"
+        "        Box b = Json.parse<Box>(s);\n"
+        "        return b.id;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 7);
+}
+
+// Required + renamed key — annotations compose. Required tracks
+// the WIRE key (set by @JsonProperty), not the declared name.
+TEST(JsonSynthesizerTests, jsonRequiredWithRename) {
+    auto src =
+        "package test;\n"
+        "import cajeta.codec.json.Json;\n"
+        "public class Box {\n"
+        "    @JsonRequired\n"
+        "    @JsonProperty(\"user_id\")\n"
+        "    public int32 id;\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        String s = \"{\\\"user_id\\\":42}\";\n"
+        "        Box b = Json.parse<Box>(s);\n"
+        "        return b.id;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 42);
+}
