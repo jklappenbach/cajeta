@@ -189,6 +189,7 @@ set(CAJETA_STDLIB_DIRS
         ${CAJETA_STDLIB_ROOT}/cajeta/lang
         ${CAJETA_STDLIB_ROOT}/cajeta/lang/stream
         ${CAJETA_STDLIB_ROOT}/cajeta/error
+        ${CAJETA_STDLIB_ROOT}/cajeta/io/file
         ${CAJETA_STDLIB_ROOT}/cajeta/hash
         ${CAJETA_STDLIB_ROOT}/cajeta/collection
         ${CAJETA_STDLIB_ROOT}/cajeta/wire

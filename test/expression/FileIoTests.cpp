@@ -78,6 +78,21 @@ std::string makeSource(const std::string& body) {
 
 } // namespace
 
+// --- Repro probe (NO File involved) — verify the int8[].count() if-return
+//     shape works in isolation. Should pass with a no-op File package.
+TEST(FileIoTests, reproIntArrayCountIfReturn) {
+    std::string src = "package test;\n"
+                      "public final class F {\n"
+                      "    public static int32 run() {\n"
+                      "        int8[] bytes = new int8[5];\n"
+                      "        if (bytes.count() == 5) return 1;\n"
+                      "        return 0;\n"
+                      "    }\n"
+                      "}\n";
+    EXPECT_EQ(runI32(src), 1);
+}
+
+
 // --- One-shot read --------------------------------------------------------
 
 // File.readAllBytes returns the file's contents as an int8[] sized to the
@@ -116,5 +131,81 @@ TEST(FileIoTests, writeAllBytesRoundTripsViaReadAllBytes) {
         "if (back.count() == 5) return 1;\n"
         "return 0;");
     EXPECT_EQ(runI32(src), 1);
+    EXPECT_EQ(readRaw(path), "Hello");
+}
+
+// --- Streaming reader: openRead → read loop → close ---------------------
+
+TEST(FileIoTests, fileReaderReadsBytesInChunks) {
+    std::string path = uniquePath("reader_chunks.txt");
+    writeRaw(path, "abcdef");
+    std::string src = "package test;\n"
+                      "import cajeta.io.file.File;\n"
+                      "import cajeta.io.file.FileReader;\n"
+                      "public final class F {\n"
+                      "    public static int32 run() {\n"
+                      "        FileReader r = File.openRead(\"" + path + "\");\n"
+                      "        int8[] buf = new int8[16];\n"
+                      "        int32 n = r.read(buf, 16);\n"
+                      "        return n;\n"
+                      "    }\n"
+                      "}\n";
+    EXPECT_EQ(runI32(src), 6);
+}
+
+TEST(FileIoTests, fileReaderPositionTracksBytesRead) {
+    std::string path = uniquePath("reader_position.txt");
+    writeRaw(path, "Hello, world!");
+    std::string src = "package test;\n"
+                      "import cajeta.io.file.File;\n"
+                      "import cajeta.io.file.FileReader;\n"
+                      "public final class F {\n"
+                      "    public static int32 run() {\n"
+                      "        FileReader r = File.openRead(\"" + path + "\");\n"
+                      "        int8[] buf = new int8[5];\n"
+                      "        r.read(buf, 5);\n"
+                      "        return (int32) r.position();\n"
+                      "    }\n"
+                      "}\n";
+    EXPECT_EQ(runI32(src), 5);
+}
+
+TEST(FileIoTests, fileReaderReturnsZeroAtEof) {
+    std::string path = uniquePath("reader_eof.txt");
+    writeRaw(path, "hi");
+    std::string src = "package test;\n"
+                      "import cajeta.io.file.File;\n"
+                      "import cajeta.io.file.FileReader;\n"
+                      "public final class F {\n"
+                      "    public static int32 run() {\n"
+                      "        FileReader r = File.openRead(\"" + path + "\");\n"
+                      "        int8[] buf = new int8[8];\n"
+                      "        r.read(buf, 8);\n"
+                      "        int32 n2 = r.read(buf, 8);\n"
+                      "        return n2;\n"
+                      "    }\n"
+                      "}\n";
+    EXPECT_EQ(runI32(src), 0);
+}
+
+// --- Streaming writer: openWrite → write → close ------------------------
+
+TEST(FileIoTests, fileWriterWritesBytesRoundTripsViaReadAllBytes) {
+    std::string path = uniquePath("writer_basic.txt");
+    std::string src = "package test;\n"
+                      "import cajeta.io.file.File;\n"
+                      "import cajeta.io.file.FileWriter;\n"
+                      "import cajeta.io.file.OpenMode;\n"
+                      "public final class F {\n"
+                      "    public static int32 run() {\n"
+                      "        FileWriter w = File.openWrite(\"" + path + "\", OpenMode.WRITE);\n"
+                      "        int8[] data = { (int8) 72, (int8) 101, (int8) 108, "
+                      "(int8) 108, (int8) 111 };\n"  // "Hello"
+                      "        w.write(data, 5);\n"
+                      "        w.close();\n"
+                      "        return 0;\n"
+                      "    }\n"
+                      "}\n";
+    EXPECT_EQ(runI32(src), 0);
     EXPECT_EQ(readRaw(path), "Hello");
 }

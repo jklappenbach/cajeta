@@ -2176,6 +2176,218 @@ void __cajeta_log(int32_t stream, const char* fmt, int64_t argc, const char* con
 }
 
 // ---------------------------------------------------------------------------
+// cajeta.io.file — Phase A runtime helpers.
+//
+// One-shot reads / writes plus the streaming open / read / write / close /
+// flush set. POSIX-only today; Windows variants land alongside the
+// `_w_*` symbol pairs once the Watcher work motivates them.
+//
+// The one-shot helpers materialize a CajetaArray header (int64 count
+// prefix + raw bytes) so the result drops into the existing array-drop
+// chain without special casing. `__cajeta_live_set_add` registers the
+// allocation as the unique live owner so the auto-drop helper
+// (`__cajeta_free_array`) reclaims it once the caller's scope exits.
+//
+// Streaming helpers operate on raw `int32` POSIX fds. EOF is reported to
+// the caller via a 0 return from `__cajeta_file_read` (matching the
+// `read(2)` convention); a negative return signals a hard error that the
+// caller-side codegen will eventually translate to an IoException throw
+// (the throw machinery is a Phase C follow-up — Phase A just propagates
+// the error as a negative count, which the cajeta-side wrapper will
+// promote to a thrown exception once the hierarchy lands).
+// ---------------------------------------------------------------------------
+#include <errno.h>
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
+
+// File-open mode enum — must mirror runtime/src/cajeta/io/file/OpenMode.cajeta
+// ordinal order. Caller passes the ordinal as int32.
+//   0 READ       — O_RDONLY
+//   1 WRITE      — O_WRONLY | O_CREAT | O_TRUNC
+//   2 APPEND     — O_WRONLY | O_CREAT | O_APPEND
+//   3 READ_WRITE — O_RDWR   | O_CREAT
+//   4 CREATE_NEW — O_WRONLY | O_CREAT | O_EXCL
+static int __cajeta_file_mode_to_flags(int32_t mode) {
+    switch (mode) {
+        case 0: return O_RDONLY;
+        case 1: return O_WRONLY | O_CREAT | O_TRUNC;
+        case 2: return O_WRONLY | O_CREAT | O_APPEND;
+        case 3: return O_RDWR | O_CREAT;
+        case 4: return O_WRONLY | O_CREAT | O_EXCL;
+        default: return O_RDONLY;
+    }
+}
+
+// `path` is a null-terminated C string (the cajeta-side unwrap step
+// strips class String → bytes ptr → +8 past the count word, so what
+// arrives here is a real C string with no header prefix).
+//
+// Returns a CajetaArray header pointer (`{ int64 count, int8[count]
+// data }`) whose data region is the entire file contents. The header
+// joins the live-set so the caller's scope-exit drop frees it.
+//
+// On open/stat/read failure, returns NULL — the cajeta-side wrapper
+// throws IoException once the hierarchy lands; today, NULL surfaces
+// up the chain.
+void* __cajeta_file_read_all(const char* path) {
+    if (!path) return NULL;
+    int fd = open(path, O_RDONLY);
+    if (fd < 0) return NULL;
+
+    struct stat st;
+    if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode)) {
+        close(fd);
+        return NULL;
+    }
+    int64_t size = (int64_t) st.st_size;
+    if (size < 0) size = 0;
+
+    // Header layout matches __cajeta_new_array_header: 8-byte count +
+    // raw bytes. Element size is 1 (int8).
+    void* hdr = __cajeta_new_array_header(8, 1, (uint64_t) size);
+    if (!hdr) {
+        close(fd);
+        return NULL;
+    }
+    char* data = ((char*) hdr) + 8;
+    int64_t got = 0;
+    while (got < size) {
+        ssize_t n = read(fd, data + got, (size_t) (size - got));
+        if (n < 0) {
+            if (errno == EINTR) continue;
+            // Mid-read failure: leave the partial header in the live
+            // set; the caller's scope drop reclaims it. Surface NULL.
+            close(fd);
+            __cajeta_free_array(hdr);
+            return NULL;
+        }
+        if (n == 0) break;  // EOF earlier than stat reported; truncate.
+        got += (int64_t) n;
+    }
+    close(fd);
+    // If we read less than expected (race against another writer
+    // truncating mid-call), shrink the count word so callers' `count()`
+    // matches what's actually populated.
+    if (got != size) {
+        *((int64_t*) hdr) = got;
+    }
+    return hdr;
+}
+
+// `data` points at the raw bytes (the cajeta-side passes
+// arrayPtr + 8 — past the count word). `len` is the number of bytes
+// to write. Atomic-rename semantics: write to `<path>.tmp.<pid>`,
+// fsync, then rename over `path`. On any failure the tmp file is
+// removed; the destination is either pre-write or fully post-write.
+//
+// Returns 0 on success, -1 on failure.
+int32_t __cajeta_file_write_all(const char* path, const void* data, int32_t len) {
+    if (!path || len < 0) return -1;
+    if (!data && len > 0) return -1;
+
+    // Build the tmp path. Bounded buffer; reject paths whose tmp form
+    // would overflow (rare, ~32-char headroom).
+    char tmp[4096];
+    size_t pathLen = strlen(path);
+    if (pathLen + 32 >= sizeof(tmp)) return -1;
+    snprintf(tmp, sizeof(tmp), "%s.tmp.%d", path, (int) getpid());
+
+    int fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (fd < 0) return -1;
+    int32_t remaining = len;
+    const char* p = (const char*) data;
+    while (remaining > 0) {
+        ssize_t n = write(fd, p, (size_t) remaining);
+        if (n < 0) {
+            if (errno == EINTR) continue;
+            close(fd);
+            unlink(tmp);
+            return -1;
+        }
+        p += n;
+        remaining -= (int32_t) n;
+    }
+    // Best-effort fsync; some filesystems treat it as a no-op.
+    fsync(fd);
+    close(fd);
+    if (rename(tmp, path) != 0) {
+        unlink(tmp);
+        return -1;
+    }
+    return 0;
+}
+
+// Streaming open. Returns the POSIX fd as int32 on success, -1 on
+// failure. Cajeta-side wraps the fd into a FileReader / FileWriter
+// instance.
+int32_t __cajeta_file_open(const char* path, int32_t mode) {
+    if (!path) return -1;
+    int flags = __cajeta_file_mode_to_flags(mode);
+    int fd;
+    // O_CREAT'd opens need a mode arg (perm bits). Modes without
+    // O_CREAT ignore the third arg per the glibc prototype but pass
+    // 0644 anyway — silently ignored.
+    fd = open(path, flags, 0644);
+    return fd;  // -1 on failure (errno set; caller can translate).
+}
+
+// Streaming read. Fills up to `max` bytes into `buf`. Returns the
+// count actually filled. Zero == EOF. Negative == hard error.
+//
+// `buf` is the cajeta-side int8[]'s data region — caller passes
+// `&data[0]`, which is `arrayPtr + 8` past the count word.
+int32_t __cajeta_file_read(int32_t fd, void* buf, int32_t max) {
+    if (fd < 0 || !buf || max <= 0) return 0;
+    int32_t got = 0;
+    while (got < max) {
+        ssize_t n = read(fd, ((char*) buf) + got, (size_t) (max - got));
+        if (n < 0) {
+            if (errno == EINTR) continue;
+            return -1;
+        }
+        if (n == 0) break;  // EOF.
+        got += (int32_t) n;
+    }
+    return got;
+}
+
+// Streaming write. Loops past partial writes; returns 0 on success,
+// -1 on hard error.
+int32_t __cajeta_file_write(int32_t fd, const void* data, int32_t len) {
+    if (fd < 0 || len < 0) return -1;
+    if (!data && len > 0) return -1;
+    const char* p = (const char*) data;
+    int32_t remaining = len;
+    while (remaining > 0) {
+        ssize_t n = write(fd, p, (size_t) remaining);
+        if (n < 0) {
+            if (errno == EINTR) continue;
+            return -1;
+        }
+        p += n;
+        remaining -= (int32_t) n;
+    }
+    return 0;
+}
+
+// Streaming flush. No user-space buffering today (FileWriter writes
+// straight through), so this is a no-op stub. When the 8 KiB
+// internal buffer lands (Phase A.2), this drains it via writev().
+int32_t __cajeta_file_flush(int32_t fd) {
+    (void) fd;
+    return 0;
+}
+
+// Close the fd. Idempotent at the cajeta-call level: the cajeta-side
+// `close()` is idempotent because it sets `this.fd = -1` after the
+// first call. Passing -1 here is a no-op.
+void __cajeta_file_close(int32_t fd) {
+    if (fd < 0) return;
+    close(fd);
+}
+
+// ---------------------------------------------------------------------------
 // At-exit registry — used by @PreDestroy synthesis (AspectModel.md § A11).
 //
 // The DI singleton @PreDestroy hook needs to fire at "process exit"

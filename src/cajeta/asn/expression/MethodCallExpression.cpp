@@ -752,6 +752,215 @@ namespace cajeta {
             }
         }
 
+        // ----- File.<static>(...) intrinsic (cajeta.io.file Phase A) -----
+        //
+        // The cajeta-side `File` class in runtime/src/cajeta/io/file/File.cajeta
+        // declares the static method shapes for type resolution; the bodies
+        // are stubs. At each call site, MCE detects the
+        // `File.<readAllBytes/writeAllBytes/openRead/openWrite>` shape and
+        // emits the runtime helper call directly. Stubs never run.
+        //
+        // The detection looks for IdentifierExpression "File" as the
+        // receiver AND verifies that "File" resolves to the
+        // `cajeta.io.file.File` class (so a user-defined `class File` in
+        // some other package doesn't accidentally hit this intrinsic).
+        if (!children.empty()) {
+            auto fileId = dynamic_pointer_cast<IdentifierExpression>(children[0]);
+            if (fileId && fileId->getTextValue() == "File") {
+                auto& cmap = CajetaType::getCanonicalMap();
+                auto it = cmap.find("File");
+                if (it == cmap.end()) {
+                    it = cmap.find("cajeta.io.file.File");
+                }
+                CajetaClassPtr fileClass;
+                if (it != cmap.end()) {
+                    fileClass = std::dynamic_pointer_cast<CajetaClass>(it->second);
+                }
+                bool isOurFile = fileClass && fileClass->getQName()
+                    && fileClass->getQName()->toCanonical()
+                        == "cajeta.io.file.File";
+                if (isOurFile) {
+                    llvm::Type* ptrTy = llvm::PointerType::get(llvmCtx, 0);
+                    llvm::Type* i32Ty = llvm::Type::getInt32Ty(llvmCtx);
+                    llvm::Type* i64Ty = llvm::Type::getInt64Ty(llvmCtx);
+                    llvm::Type* i8Ty  = llvm::Type::getInt8Ty(llvmCtx);
+
+                    // Common helper: load a class-String arg and unwrap to
+                    // the underlying char* (skip past the CajetaArray
+                    // count word). Used by every File static that takes a
+                    // path. `loadStringArg` already handles this.
+                    auto loadPathArg = [&](size_t idx) -> llvm::Value* {
+                        return loadStringArg(module, parameters[idx].expression);
+                    };
+
+                    // Common helper: load an int8[] arg, GEP past its 8-byte
+                    // count header to the raw data pointer.
+                    auto loadArrayDataPtr = [&](size_t idx) -> llvm::Value* {
+                        llvm::Value* arr = parameters[idx].expression->generateCode(module);
+                        if (auto* a = llvm::dyn_cast_or_null<llvm::AllocaInst>(arr)) {
+                            arr = builder->CreateLoad(a->getAllocatedType(), a);
+                        }
+                        return builder->CreateInBoundsGEP(i8Ty, arr,
+                            llvm::ConstantInt::get(i64Ty, 8),
+                            "file.data");
+                    };
+
+                    if (methodCallName == "readAllBytes" && parameters.size() == 1) {
+                        llvm::Function* fn = module->getRuntimeFunction(
+                            "__cajeta_file_read_all");
+                        if (fn) {
+                            llvm::Value* path = loadPathArg(0);
+                            llvm::Value* arr = builder->CreateCall(fn, {path});
+                            // Pin resolvedType so caller binding sees the
+                            // correct CajetaArray (`int8[]`) shape — needed
+                            // for the auto-drop registration on the LHS
+                            // slot.
+                            auto& cmap2 = CajetaType::getCanonicalMap();
+                            auto it2 = cmap2.find("int8[]");
+                            if (it2 != cmap2.end()) {
+                                resolvedType = it2->second;
+                            }
+                            return arr;
+                        }
+                    }
+                    if (methodCallName == "writeAllBytes" && parameters.size() == 3) {
+                        llvm::Function* fn = module->getRuntimeFunction(
+                            "__cajeta_file_write_all");
+                        if (fn) {
+                            llvm::Value* path = loadPathArg(0);
+                            llvm::Value* data = loadArrayDataPtr(1);
+                            llvm::Value* len  = parameters[2].expression->generateCode(module);
+                            if (auto* a = llvm::dyn_cast_or_null<llvm::AllocaInst>(len)) {
+                                len = builder->CreateLoad(a->getAllocatedType(), a);
+                            }
+                            if (len && len->getType() != i32Ty
+                                    && len->getType()->isIntegerTy()) {
+                                len = builder->CreateIntCast(len, i32Ty, true);
+                            }
+                            return builder->CreateCall(fn, {path, data, len});
+                        }
+                    }
+                    if (methodCallName == "openRead" && parameters.size() == 1) {
+                        // Open the fd, then allocate + initialize a
+                        // FileReader struct around it.
+                        llvm::Function* openFn = module->getRuntimeFunction(
+                            "__cajeta_file_open");
+                        if (openFn) {
+                            llvm::Value* path = loadPathArg(0);
+                            // mode = 0 (OpenMode.READ ordinal).
+                            llvm::Value* fd = builder->CreateCall(openFn,
+                                {path, llvm::ConstantInt::get(i32Ty, 0)},
+                                "file.fd");
+                            CajetaClassPtr readerCls;
+                            auto& cmap3 = CajetaType::getCanonicalMap();
+                            auto rit = cmap3.find("FileReader");
+                            if (rit == cmap3.end()) {
+                                rit = cmap3.find("cajeta.io.file.FileReader");
+                            }
+                            if (rit != cmap3.end()) {
+                                readerCls = std::dynamic_pointer_cast<CajetaClass>(rit->second);
+                            }
+                            if (readerCls && readerCls->getLlvmType()
+                                    && llvm::isa<llvm::StructType>(readerCls->getLlvmType())) {
+                                auto* structTy = llvm::cast<llvm::StructType>(
+                                    readerCls->getLlvmType());
+                                const llvm::DataLayout& dl =
+                                    module->getLlvmModule()->getDataLayout();
+                                llvm::Constant* size = llvm::ConstantInt::get(
+                                    i64Ty, dl.getTypeAllocSize(structTy));
+                                llvm::Value* inst = MemoryManager::createMallocInstruction(
+                                    module, size, builder->GetInsertBlock());
+                                builder->CreateMemSet(inst,
+                                    llvm::ConstantInt::get(i8Ty, 0),
+                                    size, llvm::MaybeAlign(8));
+                                // Vtable slot at field 0.
+                                llvm::Constant* vtableRef =
+                                    llvm::ConstantPointerNull::get(
+                                        llvm::cast<llvm::PointerType>(ptrTy));
+                                if (auto* vt = readerCls->getVirtualTableGlobal()) {
+                                    vtableRef = CajetaModule::ensureGlobalInModule(
+                                        module->getLlvmModule(), vt);
+                                }
+                                builder->CreateStore(vtableRef,
+                                    builder->CreateStructGEP(structTy, inst, 0,
+                                        "reader.vtable_slot"));
+                                // fd at field 1, pos at field 2.
+                                builder->CreateStore(fd,
+                                    builder->CreateStructGEP(structTy, inst, 1,
+                                        "reader.fd_slot"));
+                                builder->CreateStore(
+                                    llvm::ConstantInt::get(i64Ty, 0),
+                                    builder->CreateStructGEP(structTy, inst, 2,
+                                        "reader.pos_slot"));
+                                resolvedType = readerCls;
+                                return inst;
+                            }
+                        }
+                    }
+                    if (methodCallName == "openWrite" && parameters.size() == 2) {
+                        llvm::Function* openFn = module->getRuntimeFunction(
+                            "__cajeta_file_open");
+                        if (openFn) {
+                            llvm::Value* path = loadPathArg(0);
+                            // mode is the OpenMode enum ordinal (i32).
+                            llvm::Value* mode = parameters[1].expression->generateCode(module);
+                            if (auto* a = llvm::dyn_cast_or_null<llvm::AllocaInst>(mode)) {
+                                mode = builder->CreateLoad(a->getAllocatedType(), a);
+                            }
+                            if (mode && mode->getType() != i32Ty
+                                    && mode->getType()->isIntegerTy()) {
+                                mode = builder->CreateIntCast(mode, i32Ty, true);
+                            }
+                            llvm::Value* fd = builder->CreateCall(openFn,
+                                {path, mode}, "file.fd");
+                            CajetaClassPtr writerCls;
+                            auto& cmap4 = CajetaType::getCanonicalMap();
+                            auto wit = cmap4.find("FileWriter");
+                            if (wit == cmap4.end()) {
+                                wit = cmap4.find("cajeta.io.file.FileWriter");
+                            }
+                            if (wit != cmap4.end()) {
+                                writerCls = std::dynamic_pointer_cast<CajetaClass>(wit->second);
+                            }
+                            if (writerCls && writerCls->getLlvmType()
+                                    && llvm::isa<llvm::StructType>(writerCls->getLlvmType())) {
+                                auto* structTy = llvm::cast<llvm::StructType>(
+                                    writerCls->getLlvmType());
+                                const llvm::DataLayout& dl =
+                                    module->getLlvmModule()->getDataLayout();
+                                llvm::Constant* size = llvm::ConstantInt::get(
+                                    i64Ty, dl.getTypeAllocSize(structTy));
+                                llvm::Value* inst = MemoryManager::createMallocInstruction(
+                                    module, size, builder->GetInsertBlock());
+                                builder->CreateMemSet(inst,
+                                    llvm::ConstantInt::get(i8Ty, 0),
+                                    size, llvm::MaybeAlign(8));
+                                llvm::Constant* vtableRef =
+                                    llvm::ConstantPointerNull::get(
+                                        llvm::cast<llvm::PointerType>(ptrTy));
+                                if (auto* vt = writerCls->getVirtualTableGlobal()) {
+                                    vtableRef = CajetaModule::ensureGlobalInModule(
+                                        module->getLlvmModule(), vt);
+                                }
+                                builder->CreateStore(vtableRef,
+                                    builder->CreateStructGEP(structTy, inst, 0,
+                                        "writer.vtable_slot"));
+                                builder->CreateStore(fd,
+                                    builder->CreateStructGEP(structTy, inst, 1,
+                                        "writer.fd_slot"));
+                                builder->CreateStore(
+                                    llvm::ConstantInt::get(i64Ty, 0),
+                                    builder->CreateStructGEP(structTy, inst, 2,
+                                        "writer.pos_slot"));
+                                resolvedType = writerCls;
+                                return inst;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         // ----- Math.<fn>(...) intrinsic -----
         // Math acts as a static-only namespace today (no instance, no class file). We
         // recognize the literal identifier `Math` as receiver and lower each call to a
@@ -2101,6 +2310,153 @@ namespace cajeta {
                 // on bracketed class that touches inherited fields" via
                 // vbase indirection in DotExpression. No `this`
                 // adjustment needed at the call site.
+            }
+        }
+
+        // ----- FileReader / FileWriter instance-method intrinsic (Phase A) -----
+        // The cajeta-side bodies are stubs; here we lower the calls to
+        // direct runtime helpers via the receiver's `fd` field. Matches
+        // the spec in cajeta-docs/stdlib/io/file/FileReader.md and
+        // .../FileWriter.md.
+        if (thisValue && targetClass && targetClass->getQName()) {
+            const std::string canonical = targetClass->getQName()->toCanonical();
+            bool isReader = canonical == "cajeta.io.file.FileReader";
+            bool isWriter = canonical == "cajeta.io.file.FileWriter";
+            if (isReader || isWriter) {
+                auto* structTy =
+                    llvm::cast<llvm::StructType>(targetClass->getLlvmType());
+                llvm::Type* ptrTy = llvm::PointerType::get(llvmCtx, 0);
+                llvm::Type* i32Ty = llvm::Type::getInt32Ty(llvmCtx);
+                llvm::Type* i64Ty = llvm::Type::getInt64Ty(llvmCtx);
+                llvm::Type* i8Ty  = llvm::Type::getInt8Ty(llvmCtx);
+                // Field offsets: vtable(0), fd(1), pos(2). Pinned by
+                // FileReader.cajeta / FileWriter.cajeta field order.
+                auto loadFd = [&]() -> llvm::Value* {
+                    llvm::Value* fdSlot = builder->CreateStructGEP(
+                        structTy, thisValue, 1, "fr.fd_slot");
+                    return builder->CreateLoad(i32Ty, fdSlot, "fr.fd");
+                };
+
+                if (isReader && methodCallName == "read"
+                        && parameters.size() == 2) {
+                    llvm::Function* fn = module->getRuntimeFunction(
+                        "__cajeta_file_read");
+                    if (fn) {
+                        llvm::Value* fd = loadFd();
+                        llvm::Value* arr = parameters[0].expression->generateCode(module);
+                        if (auto* a = llvm::dyn_cast_or_null<llvm::AllocaInst>(arr)) {
+                            arr = builder->CreateLoad(a->getAllocatedType(), a);
+                        }
+                        llvm::Value* dataPtr = builder->CreateInBoundsGEP(
+                            i8Ty, arr,
+                            llvm::ConstantInt::get(i64Ty, 8),
+                            "fr.buf");
+                        llvm::Value* maxV = parameters[1].expression->generateCode(module);
+                        if (auto* a = llvm::dyn_cast_or_null<llvm::AllocaInst>(maxV)) {
+                            maxV = builder->CreateLoad(a->getAllocatedType(), a);
+                        }
+                        if (maxV && maxV->getType() != i32Ty
+                                && maxV->getType()->isIntegerTy()) {
+                            maxV = builder->CreateIntCast(maxV, i32Ty, true);
+                        }
+                        llvm::Value* nRead = builder->CreateCall(fn,
+                            {fd, dataPtr, maxV}, "fr.n");
+                        // Update this.pos += (int64) nRead.
+                        llvm::Value* posSlot = builder->CreateStructGEP(
+                            structTy, thisValue, 2, "fr.pos_slot");
+                        llvm::Value* curPos = builder->CreateLoad(
+                            i64Ty, posSlot, "fr.pos_cur");
+                        llvm::Value* nRead64 = builder->CreateIntCast(
+                            nRead, i64Ty, /*isSigned=*/true);
+                        llvm::Value* newPos = builder->CreateAdd(
+                            curPos, nRead64, "fr.pos_new");
+                        builder->CreateStore(newPos, posSlot);
+                        resolvedType = CajetaType::of("int32");
+                        return nRead;
+                    }
+                }
+                if (isReader && methodCallName == "position"
+                        && parameters.empty()) {
+                    llvm::Value* posSlot = builder->CreateStructGEP(
+                        structTy, thisValue, 2, "fr.pos_slot");
+                    llvm::Value* pos = builder->CreateLoad(
+                        i64Ty, posSlot, "fr.pos");
+                    resolvedType = CajetaType::of("int64");
+                    return pos;
+                }
+                if ((isReader || isWriter) && methodCallName == "close"
+                        && parameters.empty()) {
+                    // Optionally flush the writer first.
+                    if (isWriter) {
+                        if (llvm::Function* flushFn = module->getRuntimeFunction(
+                                "__cajeta_file_flush")) {
+                            llvm::Value* fd = loadFd();
+                            builder->CreateCall(flushFn, {fd});
+                        }
+                    }
+                    llvm::Function* fn = module->getRuntimeFunction(
+                        "__cajeta_file_close");
+                    if (fn) {
+                        llvm::Value* fd = loadFd();
+                        builder->CreateCall(fn, {fd});
+                        // Set this.fd = -1 (idempotency: future close()
+                        // is a no-op when the runtime helper sees fd < 0).
+                        llvm::Value* fdSlot = builder->CreateStructGEP(
+                            structTy, thisValue, 1, "fr.fd_slot");
+                        builder->CreateStore(
+                            llvm::ConstantInt::get(i32Ty, -1), fdSlot);
+                        resolvedType = CajetaType::of("void");
+                        return nullptr;
+                    }
+                }
+                if (isWriter && methodCallName == "write"
+                        && parameters.size() == 2) {
+                    llvm::Function* fn = module->getRuntimeFunction(
+                        "__cajeta_file_write");
+                    if (fn) {
+                        llvm::Value* fd = loadFd();
+                        llvm::Value* arr = parameters[0].expression->generateCode(module);
+                        if (auto* a = llvm::dyn_cast_or_null<llvm::AllocaInst>(arr)) {
+                            arr = builder->CreateLoad(a->getAllocatedType(), a);
+                        }
+                        llvm::Value* dataPtr = builder->CreateInBoundsGEP(
+                            i8Ty, arr,
+                            llvm::ConstantInt::get(i64Ty, 8),
+                            "fw.data");
+                        llvm::Value* lenV = parameters[1].expression->generateCode(module);
+                        if (auto* a = llvm::dyn_cast_or_null<llvm::AllocaInst>(lenV)) {
+                            lenV = builder->CreateLoad(a->getAllocatedType(), a);
+                        }
+                        if (lenV && lenV->getType() != i32Ty
+                                && lenV->getType()->isIntegerTy()) {
+                            lenV = builder->CreateIntCast(lenV, i32Ty, true);
+                        }
+                        builder->CreateCall(fn, {fd, dataPtr, lenV});
+                        // Update this.pos += (int64) len.
+                        llvm::Value* posSlot = builder->CreateStructGEP(
+                            structTy, thisValue, 2, "fw.pos_slot");
+                        llvm::Value* curPos = builder->CreateLoad(
+                            i64Ty, posSlot, "fw.pos_cur");
+                        llvm::Value* len64 = builder->CreateIntCast(
+                            lenV, i64Ty, /*isSigned=*/true);
+                        llvm::Value* newPos = builder->CreateAdd(
+                            curPos, len64, "fw.pos_new");
+                        builder->CreateStore(newPos, posSlot);
+                        resolvedType = CajetaType::of("void");
+                        return nullptr;
+                    }
+                }
+                if (isWriter && methodCallName == "flush"
+                        && parameters.empty()) {
+                    llvm::Function* fn = module->getRuntimeFunction(
+                        "__cajeta_file_flush");
+                    if (fn) {
+                        llvm::Value* fd = loadFd();
+                        builder->CreateCall(fn, {fd});
+                        resolvedType = CajetaType::of("void");
+                        return nullptr;
+                    }
+                }
             }
         }
 
