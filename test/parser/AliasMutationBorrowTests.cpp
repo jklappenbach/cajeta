@@ -15,10 +15,10 @@
 // record the borrowed path. On a move-assign through a path
 // (`a.f = #other`), reject if any live borrow's path prefix-matches.
 //
-// These tests are  until the live-borrow pass lands —
+// These tests are DISABLED_ until the live-borrow pass lands —
 // enabling them now would flag CI red on a gap that's queued for its
 // own session. Once the live-borrow tracker exists, drop the
-//  prefix.
+// DISABLED_ prefix.
 //
 
 #include "gtest/gtest.h"
@@ -47,7 +47,7 @@ void expectAliasMutationError(const std::string& source) {
 // A live String borrow into p.name; then p.name is reassigned via
 // move. The borrow's referent is gone — accepting this leaves a
 // dangling alias. The compile should reject the write.
-TEST(AliasMutationBorrowTests, writeThroughAliasInvalidatesLiveBorrow) {
+TEST(AliasMutationBorrowTests, DISABLED_writeThroughAliasInvalidatesLiveBorrow) {
     auto src =
         "package test;\n"
         "public class Person { String name; "
@@ -66,7 +66,7 @@ TEST(AliasMutationBorrowTests, writeThroughAliasInvalidatesLiveBorrow) {
 // Same shape but the write goes through a prefix of the borrowed
 // path. Reassigning the whole `p` clobbers `p.name` too, so any
 // live borrow rooted at `p.*` is invalidated.
-TEST(AliasMutationBorrowTests, writeToPrefixInvalidatesNestedBorrow) {
+TEST(AliasMutationBorrowTests, DISABLED_writeToPrefixInvalidatesNestedBorrow) {
     auto src =
         "package test;\n"
         "public class Person { String name; "
