@@ -240,6 +240,49 @@ public class Path {
         return false;
     }
 
+    /**
+     * Phase D mutation: create this path and every missing
+     * intermediate component as directories (`mkdir -p`).
+     * Idempotent — succeeds silently if the path already exists
+     * as a directory. Returns this Path (for chaining); throws
+     * (once the IoException hierarchy is wired) if any component
+     * exists as a non-directory or if creation fails.
+     *
+     * Intrinsic-lowered to `__cajeta_path_mkdirs(bytes, len)`.
+     */
+    public Path mkdirs() {
+        return this;
+    }
+
+    /**
+     * Phase D mutation: remove this filesystem entry. For
+     * regular files / empty directories this is a single
+     * `unlink` / `rmdir`. Non-empty directories trip an error
+     * sentinel today; the recursive variant (`deleteRecursive`)
+     * arrives with the Stream<Path>-using walk primitives.
+     *
+     * Intrinsic-lowered to `__cajeta_path_delete(bytes, len)`.
+     */
+    public void delete() {
+        return;
+    }
+
+    /**
+     * Resolved absolute path with symlinks walked. POSIX
+     * `realpath(3)`. Returns a freshly heap-allocated Path
+     * (caller owns); the call throws (eventually — see
+     * Errors.md) if the path doesn't exist or any component
+     * isn't traversable. Today a hard error surfaces as a Path
+     * wrapping a zero-length bytes array; the throwing variant
+     * lands once the IoException hierarchy is end-to-end wired.
+     *
+     * Intrinsic-lowered to `__cajeta_path_canonical(bytes, len)`.
+     */
+    public #Path canonical() {
+        int8[] empty = new int8[0];
+        return heap Path(#empty);
+    }
+
     public #Path resolve(String segment) {
         int32 pLen = (int32) this.bytes.count();
         int32 sLen = segment.byteLength;

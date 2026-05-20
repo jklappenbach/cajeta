@@ -2499,11 +2499,67 @@ int32_t __cajeta_path_stat(const char* path, void* fileInfo) {
     return 0;
 }
 
+// Phase D — directory + mutation helpers.
+
+// Recursive mkdir. Mirrors `mkdir -p path` semantics: creates every
+// missing intermediate component. Idempotent if the path already
+// exists as a directory; fails (returns -1) if any intermediate
+// component exists as a non-directory.
+int32_t __cajeta_path_mkdirs(const char* bytes, int64_t length) {
+    char path[__CAJETA_PATH_MAX];
+    if (__cajeta_copy_path_with_nul(path, sizeof(path), bytes, length) != 0) return -1;
+    if (path[0] == '\0') return -1;
+
+    // Walk forward, inserting '\0' at each '/' boundary to mkdir
+    // the intermediate prefix, then restoring the '/' before
+    // continuing.
+    for (char* p = path + 1; *p != '\0'; ++p) {
+        if (*p == '/') {
+            *p = '\0';
+            struct stat st;
+            if (stat(path, &st) != 0) {
+                if (mkdir(path, 0777) != 0 && errno != EEXIST) {
+                    *p = '/';
+                    return -1;
+                }
+            } else if (!S_ISDIR(st.st_mode)) {
+                *p = '/';
+                return -1;
+            }
+            *p = '/';
+        }
+    }
+    // Final component.
+    struct stat st;
+    if (stat(path, &st) == 0) {
+        return S_ISDIR(st.st_mode) ? 0 : -1;
+    }
+    if (mkdir(path, 0777) != 0 && errno != EEXIST) return -1;
+    return 0;
+}
+
+// Single-file / empty-dir unlink. Returns 0 on success, -1 on
+// failure (errno set; caller-side throw lands once IoException is
+// wired). For non-empty directories, callers use
+// `__cajeta_path_delete_recursive` (Phase D follow-up).
+int32_t __cajeta_path_delete(const char* bytes, int64_t length) {
+    char path[__CAJETA_PATH_MAX];
+    if (__cajeta_copy_path_with_nul(path, sizeof(path), bytes, length) != 0) return -1;
+    struct stat st;
+    if (lstat(path, &st) != 0) return -1;
+    if (S_ISDIR(st.st_mode)) {
+        return rmdir(path) == 0 ? 0 : -1;
+    }
+    return unlink(path) == 0 ? 0 : -1;
+}
+
 // realpath() wrapper. Returns a CajetaArray header containing the
-// canonical absolute bytes, or NULL on failure.
-void* __cajeta_path_canonical(const char* path) {
-    if (!path) return NULL;
-    char* canon = realpath(path, NULL);
+// canonical absolute bytes, or NULL on failure. Path comes in as
+// (bytes, length) — copy + null-terminate locally.
+void* __cajeta_path_canonical(const char* bytes, int64_t length) {
+    char in[__CAJETA_PATH_MAX];
+    if (__cajeta_copy_path_with_nul(in, sizeof(in), bytes, length) != 0) return NULL;
+    char* canon = realpath(in, NULL);
     if (!canon) return NULL;
     size_t n = strlen(canon);
     void* hdr = __cajeta_new_array_header(8, 1, (uint64_t) n);

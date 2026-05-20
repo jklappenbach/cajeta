@@ -2372,6 +2372,72 @@ namespace cajeta {
                     return asI1;
                 }
             }
+
+            // Phase D mutators: mkdirs / delete. The runtime
+            // helpers return int32 (0/-1). Today we ignore the
+            // failure return; once the IoException hierarchy is
+            // wired end-to-end, codegen branches to a throw on
+            // the -1 path.
+            if (methodCallName == "mkdirs" && parameters.empty()) {
+                llvm::Function* fn = module->getRuntimeFunction(
+                    "__cajeta_path_mkdirs");
+                if (fn) {
+                    auto bd = loadBytesAndLen();
+                    builder->CreateCall(fn, {bd.first, bd.second});
+                    resolvedType = targetClass;
+                    return thisValue;  // chaining: returns the Path.
+                }
+            }
+            if (methodCallName == "delete" && parameters.empty()) {
+                llvm::Function* fn = module->getRuntimeFunction(
+                    "__cajeta_path_delete");
+                if (fn) {
+                    auto bd = loadBytesAndLen();
+                    builder->CreateCall(fn, {bd.first, bd.second});
+                    resolvedType = CajetaType::of("void");
+                    return nullptr;
+                }
+            }
+
+            // canonical() — returns a fresh Path wrapping the
+            // realpath result. The runtime hands back a
+            // CajetaArray header for the bytes; we wrap that in a
+            // fresh Path struct here (vtable + bytes ptr).
+            if (methodCallName == "canonical" && parameters.empty()) {
+                llvm::Function* fn = module->getRuntimeFunction(
+                    "__cajeta_path_canonical");
+                if (fn) {
+                    auto bd = loadBytesAndLen();
+                    llvm::Value* canonBytes = builder->CreateCall(fn,
+                        {bd.first, bd.second}, "path.canon_arr");
+                    // Allocate a new Path struct, set vtable + bytes,
+                    // return it.
+                    const llvm::DataLayout& dl =
+                        module->getLlvmModule()->getDataLayout();
+                    llvm::Constant* size = llvm::ConstantInt::get(
+                        i64Ty, dl.getTypeAllocSize(pathStructTy));
+                    llvm::Value* inst = MemoryManager::createMallocInstruction(
+                        module, size, builder->GetInsertBlock());
+                    builder->CreateMemSet(inst,
+                        llvm::ConstantInt::get(i8Ty, 0),
+                        size, llvm::MaybeAlign(8));
+                    llvm::Constant* vtableRef =
+                        llvm::ConstantPointerNull::get(
+                            llvm::cast<llvm::PointerType>(ptrTy));
+                    if (auto* vt = targetClass->getVirtualTableGlobal()) {
+                        vtableRef = CajetaModule::ensureGlobalInModule(
+                            module->getLlvmModule(), vt);
+                    }
+                    builder->CreateStore(vtableRef,
+                        builder->CreateStructGEP(pathStructTy, inst, 0,
+                            "path.canon.vtable_slot"));
+                    builder->CreateStore(canonBytes,
+                        builder->CreateStructGEP(pathStructTy, inst, 1,
+                            "path.canon.bytes_slot"));
+                    resolvedType = targetClass;
+                    return inst;
+                }
+            }
         }
 
         // ----- FileReader / FileWriter instance-method intrinsic (Phase A) -----

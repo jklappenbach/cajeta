@@ -12,7 +12,19 @@
 #include "../jit/JitTestHelper.h"
 
 #include <cstdint>
+#include <cstdio>
+#include <fcntl.h>
 #include <string>
+#include <unistd.h>
+
+namespace {
+inline void writeRaw(const std::string& path, const std::string& content) {
+    int fd = ::open(path.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (fd < 0) return;
+    if (!content.empty()) ::write(fd, content.data(), content.size());
+    ::close(fd);
+}
+} // namespace
 
 using cajeta_test::CajetaJit;
 
@@ -185,5 +197,49 @@ TEST(PathTests, isDirFalseForRegularFile) {
     EXPECT_EQ(runI32(makeSource(
         "Path p = Path.of(\"/etc/passwd\");\n"
         "return p.isDir() ? 1 : 0;")), 0);
+}
+
+// --- canonical ---------------------------------------------------------
+
+// --- Phase D: mkdirs / delete ------------------------------------------
+
+TEST(PathTests, mkdirsCreatesNestedDirectory) {
+    // Use /tmp + pid + test-name for isolation across parallel runs.
+    std::string base = "/tmp/cajeta_path_test_" + std::to_string(::getpid()) + "_mkdirs";
+    std::string nested = base + "/a/b/c";
+    EXPECT_EQ(runI32(makeSource(
+        "Path p = Path.of(\"" + nested + "\");\n"
+        "p.mkdirs();\n"
+        "return p.isDir() ? 1 : 0;")), 1);
+    // Clean up via cajeta:
+    runI32(makeSource(
+        "Path.of(\"" + nested + "\").delete();\n"
+        "Path.of(\"" + base + "/a/b\").delete();\n"
+        "Path.of(\"" + base + "/a\").delete();\n"
+        "Path.of(\"" + base + "\").delete();\n"
+        "return 0;"));
+}
+
+TEST(PathTests, deleteRemovesEmptyFile) {
+    std::string path = "/tmp/cajeta_path_test_" + std::to_string(::getpid()) + "_delete.txt";
+    // Set up a target file.
+    writeRaw(path, "");
+    EXPECT_EQ(runI32(makeSource(
+        "Path p = Path.of(\"" + path + "\");\n"
+        "if (!p.exists()) return -1;\n"
+        "p.delete();\n"
+        "return p.exists() ? 0 : 1;")), 1);
+}
+
+TEST(PathTests, canonicalResolvesSymlinkFreePathToItself) {
+    // /etc/passwd is canonical on most distros; if a vendor's image
+    // symlinks /etc to something else, this test won't apply — adjust
+    // the path under the inevitable Linux container variability rather
+    // than rely on a host-specific guarantee.
+    EXPECT_EQ(runI32(makeSource(
+        "Path p = Path.of(\"/etc/passwd\");\n"
+        "Path c = p.canonical();\n"
+        "String s = heap String(c.bytes, (int32) c.bytes.count());\n"
+        "return s.equals(\"/etc/passwd\") ? 1 : 0;")), 1);
 }
 
