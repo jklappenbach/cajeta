@@ -71,19 +71,26 @@ TEST(OwnedStringDropTests, concatResultDoesNotDrop_neverDropRule) {
     ), 0);
 }
 
-// substring is a routed method intrinsic that mallocs a fresh
-// buffer (see __cajeta_str_substring in cajeta_runtime.c).
+// substring (and toUpperCase / trim / replace below) now route through
+// the class-String stdlib body: an `int8[] out = new int8[len]` then
+// `return heap String(#out, len)`. The `#out` transfer hands the
+// freshly-allocated buffer to the returned String, which the never-drop
+// rule keeps alive for the rest of the process. The local `out`'s drop
+// entry is marked inactive at the transfer site, so the substring
+// method's scope exit doesn't fire a drop either. Count stays 0 — same
+// reasoning as concatResultDoesNotDrop_neverDropRule above. Reclaiming
+// these buffers is a follow-up tied to the String never-drop revisit
+// (cajeta-docs/stdlib/lang/String.md § Memory model).
 TEST(OwnedStringDropTests, substringResultDropsAtScopeExit) {
     EXPECT_EQ(observeDropCount(
         "String result = \"hello world\".substring(0, 5);"
-    ), 1);
+    ), 0);
 }
 
-// toUpperCase mallocs a fresh buffer.
 TEST(OwnedStringDropTests, toUpperCaseResultDropsAtScopeExit) {
     EXPECT_EQ(observeDropCount(
         "String result = \"hello\".toUpperCase();"
-    ), 1);
+    ), 0);
 }
 
 // String literal alias is NOT owned — borrowing a literal must not

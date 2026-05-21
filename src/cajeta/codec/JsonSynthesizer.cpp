@@ -324,12 +324,16 @@ namespace cajeta {
         }
         if (elementCanon == "cajeta.lang.String") {
             // Reader leaves currentBytes pointed at the STRING
-            // payload (quotes stripped). Wrap in a view-mode
-            // cajeta.lang.String.
+            // payload (quotes stripped). Wrap in a String instance,
+            // transferring the buffer via `#sb_` so the local's drop
+            // entry deactivates before scope exit — otherwise the
+            // freshly-constructed String dangles.
             return "int8[] sb_" + fieldName + " = r.currentBytes();\n"
+                   "                    int32 sl_" + fieldName +
+                   " = (int32) sb_" + fieldName + ".count();\n"
                    "                    " + list + ".add(heap cajeta.lang.String("
-                   "sb_" + fieldName +
-                   ", (int32) sb_" + fieldName + ".count()));\n";
+                   "#sb_" + fieldName +
+                   ", sl_" + fieldName + "));\n";
         }
         if (elementIsClass) {
             // For nested-class elements we need the caller to NOT
@@ -486,10 +490,15 @@ namespace cajeta {
                 readInner = "float64 v = r.currentNumberAsFloat64();";
                 defaultInner = "(float64) 0.0";
             } else if (innerCanon == "cajeta.lang.String") {
+                // Same `#vb` transfer reasoning as the field-level
+                // branch — the String ctor takes ownership of the
+                // buffer; without `#`, the local's drop fires at
+                // scope exit and the String dangles.
                 readInner =
                     "int8[] vb = r.currentBytes();\n"
+                    "                int32 vl = (int32) vb.count();\n"
                     "                cajeta.lang.String v = heap cajeta.lang.String("
-                    "vb, (int32) vb.count());";
+                    "#vb, vl);";
                 // Default for empty Optional<String> is `null` —
                 // String is a class ref, null is the type-default,
                 // and that avoids the spurious zero-length-String
@@ -545,15 +554,21 @@ namespace cajeta {
         }
         if (tcanon == "cajeta.lang.String") {
             // currentBytes() returns the inner string bytes (quotes
-            // stripped). Wrap them in a String view-mode instance via
-            // the (int8[], int32 byteLength) constructor.
+            // stripped) as an owned #int8[]. Wrap them in a String
+            // instance via the (int8[], int32 byteLength) constructor,
+            // transferring the buffer via `#` so the local's drop
+            // entry deactivates — otherwise scope exit frees the
+            // buffer the freshly-constructed String now points at,
+            // and any subsequent read of the field dangles.
             return "t = r.next();\n"
                    "            int8[] vbytes_" + fieldName +
                        " = r.currentBytes();\n"
+                   "            int32 vlen_" + fieldName +
+                       " = (int32) vbytes_" + fieldName + ".count();\n"
                    "            out." + fieldName +
                        " = heap cajeta.lang.String("
-                       "vbytes_" + fieldName +
-                       ", (int32) vbytes_" + fieldName + ".count());\n";
+                       "#vbytes_" + fieldName +
+                       ", vlen_" + fieldName + ");\n";
         }
         // Nested class field — recurse via Json.parseObjectFromReader<NestedT>.
         // The recursive call consumes the value's START_OBJECT and

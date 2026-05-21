@@ -79,7 +79,27 @@ writeSourceToTemp(const std::string& source, const std::string& fqClassName) {
 } // namespace
 
 CajetaJit::CajetaJit() = default;
-CajetaJit::~CajetaJit() = default;
+
+CajetaJit::~CajetaJit() {
+    // Each JIT module's runtime statics include the carrier-thread flag and
+    // pthread handle. A fresh module starts a fresh carrier on its FIRST
+    // spawn — so test 1's carrier lives in test 1's data, and unloading the
+    // module at the end of the test leaves an orphaned pthread blocked on a
+    // condvar whose backing memory the JIT can recycle. The next test
+    // spawns, its own carrier signals (or wakes the same VA), and the
+    // orphan races back into now-defunct JIT code. Calling shutdown via the
+    // module's own symbol (looked up here, while the module is still live)
+    // joins the carrier cleanly before the LLJIT destructor frees the IR.
+    if (jit) {
+        auto sym = jit->lookup("__cajeta_task_shutdown");
+        if (sym) {
+            auto fn = reinterpret_cast<void(*)()>(sym->getValue());
+            if (fn) fn();
+        } else {
+            llvm::consumeError(sym.takeError());
+        }
+    }
+}
 
 std::unique_ptr<CajetaJit> CajetaJit::compile(const std::string& source,
                                               const std::string& fqClassName) {

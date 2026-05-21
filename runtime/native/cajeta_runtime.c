@@ -5,6 +5,7 @@
 // inlines and specializes them across user code.
 
 #include <setjmp.h>
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -392,6 +393,10 @@ static struct cajeta_fiber* __cajeta_ready_tail = NULL;
 static struct cajeta_fiber* __cajeta_parked_head = NULL;
 static int __cajeta_task_workers_started = 0;
 static pthread_t __cajeta_task_worker;
+// Set by __cajeta_task_shutdown to signal the carrier loop to exit.
+// The carrier's pthread_cond_wait predicate checks this alongside
+// the ready-queue head so a shutdown request reliably unblocks it.
+static int __cajeta_task_shutdown_requested = 0;
 
 // Per-OS-thread state. Only the carrier thread will ever have a non-null
 // __cajeta_current_fiber — the main thread sees it null and falls through
@@ -468,8 +473,12 @@ static void* __cajeta_carrier_loop(void* arg) {
     (void) arg;
     for (;;) {
         pthread_mutex_lock(&__cajeta_task_mutex);
-        while (!__cajeta_ready_head) {
+        while (!__cajeta_ready_head && !__cajeta_task_shutdown_requested) {
             pthread_cond_wait(&__cajeta_task_queue_cond, &__cajeta_task_mutex);
+        }
+        if (__cajeta_task_shutdown_requested && !__cajeta_ready_head) {
+            pthread_mutex_unlock(&__cajeta_task_mutex);
+            return NULL;
         }
         struct cajeta_fiber* f = __cajeta_ready_head;
         __cajeta_ready_head = f->next;
@@ -503,6 +512,33 @@ static void* __cajeta_carrier_loop(void* arg) {
         // Parked fibers stay on __cajeta_parked_head awaiting a wake.
     }
     return NULL;
+}
+
+// Signal the carrier thread to exit and join it. Used by JIT-mode test
+// teardown so test 1's carrier doesn't survive into test 2 (each
+// __cajeta_task_run lazy-starts a fresh carrier bound to its module's
+// statics; without shutdown, test 1's carrier is left waiting on a
+// condvar whose backing memory the JIT will recycle or unmap, and the
+// next process-wide signal — typically test 2's cond_broadcast on the
+// remapped condvar address — wakes that orphaned carrier into JIT code
+// that no longer exists). Safe to call when no carrier was started:
+// the flag check makes it a no-op.
+void __cajeta_task_shutdown(void) {
+    pthread_mutex_lock(&__cajeta_task_mutex);
+    if (!__cajeta_task_workers_started) {
+        pthread_mutex_unlock(&__cajeta_task_mutex);
+        return;
+    }
+    __cajeta_task_shutdown_requested = 1;
+    pthread_cond_broadcast(&__cajeta_task_queue_cond);
+    pthread_mutex_unlock(&__cajeta_task_mutex);
+    pthread_join(__cajeta_task_worker, NULL);
+    // Reset state so a subsequent __cajeta_task_run (e.g. the next test's
+    // first spawn) starts a fresh carrier with a clean queue.
+    pthread_mutex_lock(&__cajeta_task_mutex);
+    __cajeta_task_shutdown_requested = 0;
+    __cajeta_task_workers_started = 0;
+    pthread_mutex_unlock(&__cajeta_task_mutex);
 }
 
 // Enqueue a trampoline-arg pair as a fresh fiber. The actual stack +
@@ -1151,6 +1187,30 @@ static void __cajeta_sigabrt_handler(int signo, siginfo_t* info, void* uctx) {
 }
 
 void __cajeta_install_sigabrt_handler(void) {
+    // Skip if SIGABRT already has a non-default handler. Each JIT-loaded
+    // copy of the runtime would otherwise re-install on its own
+    // `__attribute__((constructor))`, chaining the prior handler in as
+    // "previous". When the prior JIT module later unmaps, its handler
+    // function lives in freed memory — a subsequent SIGABRT jumps into
+    // that unmapped region and the process dies with SIGSEGV instead of
+    // SIGABRT (breaks death tests, obscures real bugs).
+    //
+    // Each JIT module has its own copy of `__cajeta_sigabrt_handler`, so
+    // a pointer-equality check against this module's copy wouldn't catch
+    // a prior install from another module. The conservative rule is:
+    // if anything other than SIG_DFL/SIG_IGN is installed, leave it
+    // alone — the host's static copy already wired the handler at
+    // process load (constructor runs before main), and that's the
+    // version backed by lifetime-stable code.
+    struct sigaction cur;
+    if (sigaction(SIGABRT, NULL, &cur) == 0) {
+        bool already =
+            (cur.sa_flags & SA_SIGINFO)
+                ? (cur.sa_sigaction != NULL)
+                : (cur.sa_handler != SIG_DFL && cur.sa_handler != SIG_IGN
+                   && cur.sa_handler != NULL);
+        if (already) return;
+    }
     struct sigaction sa;
     sa.sa_sigaction = __cajeta_sigabrt_handler;
     sa.sa_flags = SA_SIGINFO;
