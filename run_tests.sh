@@ -111,11 +111,18 @@ fi
 # $exit_file and reports the offending shard cleanly.
 set +m
 
-# Determine shard count.
+# Determine shard count. Default to nproc but cap at 32: LLJIT memory
+# pressure under high parallelism (each shard is its own process with
+# its own LLJIT instances per test) starts causing random SIGSEGVs in
+# 1-4 shards once concurrent process count exceeds ~32 on this
+# machine. 32-way is reliable; >32 surfaces what looks like address-
+# space / mmap contention in LLJIT's runtime cleanup. Override via
+# PARALLEL=N if you've investigated and have a reason.
 if [[ "${PARALLEL:-}" =~ ^[0-9]+$ ]] && [ "${PARALLEL}" -gt 1 ]; then
     shards="${PARALLEL}"
 else
     shards=$(nproc 2>/dev/null || echo 4)
+    if [ "$shards" -gt 32 ]; then shards=32; fi
 fi
 
 # Enumerate tests. gtest emits one line per suite ending in `.`, then indented

@@ -491,6 +491,27 @@ namespace cajeta {
         // owned by the stack frame, not the heap allocator.
         llvm::Function* getOrCreateStackDropFunction();
 
+        // Implicit destructor chaining helpers (MemoryModel.md § 140,
+        // C++ semantics).
+        //
+        // `emitDropBodyInline` emits (1) a call to this class's user
+        // `~Class() { ... }` if defined, then (2) auto-drops for each
+        // OWN owned field (propertyList) in reverse declaration order.
+        // No parent chain, no __cajeta_free. Used by both the heap and
+        // stack drop wrappers — they call this for the most-derived
+        // class, then walk transitive ancestors via
+        // `collectDestructorChain` and call this for each ancestor.
+        //
+        // `collectDestructorChain` returns the deduped list of
+        // ancestors in destruction order — reverse DFS over direct
+        // parents in reverse declaration order, skipping interfaces
+        // and skipping any ancestor already visited (diamond dedup).
+        // Each ancestor in the returned list runs exactly once.
+        void emitDropBodyInline(llvm::IRBuilder<>& b,
+                                llvm::Value* instance,
+                                CajetaModulePtr module);
+        std::vector<CajetaClassPtr> collectDestructorChain();
+
         // Gap 1 (MemoryModel.md § Known gaps) — virtual dispatch on drop.
         // Patch the vtable global's drop_fn slot (index 3 in the vtable
         // layout) to point at this class's synthesized heap-drop wrapper.
