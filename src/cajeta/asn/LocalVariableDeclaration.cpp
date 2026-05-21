@@ -770,6 +770,12 @@ namespace cajeta {
             // never reclaimed per the never-drop spec
             // (cajeta-docs/stdlib/lang/String.md § Memory model). Skip
             // the drop wiring entirely; vtable.drop_fn stays NULL.
+            // (Reclaiming would require a boundary-transfer mechanism
+            // for cajeta heap that escapes to C++ via the JIT lookup
+            // — MD5/SipHash/XXHash3 test frameworks return `s.bytes` to
+            // the test and read from it after the cajeta function
+            // returns. Without that mechanism, enabling drops here
+            // turns those tests into use-after-frees.)
             bool isCajetaString = klass && klass->getQName()
                 && klass->getQName()->getTypeName() == "String"
                 && klass->getQName()->getPackageName() == "cajeta.lang";
