@@ -399,7 +399,7 @@ namespace cajeta {
             // is silently dropped (the arg expression evaluates but
             // the outer method dispatch never fires). Until that's
             // root-caused, route through the temp pattern.
-            os << "                int32 pt_" << fieldName
+            os << "                JsonToken pt_" << fieldName
                << " = r.peek();\n";
             os << "                if (pt_" << fieldName
                << " == JsonToken.END_ARRAY) {\n";
@@ -595,7 +595,7 @@ namespace cajeta {
         std::string strategy = classNamingStrategy(T);
         bool strict = classIsStrict(T);
         std::ostringstream os;
-        os << indent << "int32 t = r.next();\n";
+        os << indent << "JsonToken t = r.next();\n";
         os << indent << "if (t != JsonToken.START_OBJECT) {\n";
         os << indent << "    throw heap JsonParseException(\n";
         os << indent << "        \"Tier-1 parse: expected '{'\", r.position());\n";

@@ -8,8 +8,7 @@ public final class JsonWriter {
     int32 size;
 
     int8[] depthStack;
-    int8[] sibling;       // boolean-flagged via 0/1 — boolean[] tripped
-                          // the ICmp type check during stdlib codegen
+    boolean[] sibling;
     int32 depth;
     boolean afterKey;
 
@@ -18,7 +17,7 @@ public final class JsonWriter {
         this.buf = new int8[64];
         this.size = 0;
         this.depthStack = new int8[1024];
-        this.sibling = new int8[1024];
+        this.sibling = new boolean[1024];
         this.depth = 0;
         this.afterKey = false;
     }
@@ -314,20 +313,20 @@ public final class JsonWriter {
             this.afterKey = false;
             return;
         }
-        if (this.depth > 0 && this.sibling[this.depth - 1] != (int8) 0) {
+        if (this.depth > 0 && this.sibling[this.depth - 1]) {
             this.append((int32) 44);
         }
     }
 
     void markSibling() {
         if (this.depth > 0) {
-            this.sibling[this.depth - 1] = (int8) 1;
+            this.sibling[this.depth - 1] = true;
         }
     }
 
     final void pushFrame(int32 kind) {
         this.depthStack[this.depth] = (int8) kind;
-        this.sibling[this.depth] = (int8) 0;
+        this.sibling[this.depth] = false;
         this.depth = this.depth + 1;
     }
 
@@ -336,16 +335,11 @@ public final class JsonWriter {
         this.afterKey = false;
     }
 
-    // Param is int32 rather than int8 because int8 method params
-    // currently trip the vtable signature check during stdlib codegen
-    // (the vtable entry's function type doesn't pick up the i8
-    // narrowing; emits as ptr). The narrowing happens inside the
-    // method via the (int8) cast on store.
-    final void append(int32 b) {
+    final void append(int8 b) {
         if (this.size >= this.cap) {
             this.grow();
         }
-        this.buf[this.size] = (int8) b;
+        this.buf[this.size] = b;
         this.size = this.size + 1;
     }
 

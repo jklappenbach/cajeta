@@ -1,5 +1,6 @@
 package cajeta.codec.json;
 
+import cajeta.codec.json.JsonToken;
 import cajeta.lang.String;
 
 /**
@@ -35,7 +36,7 @@ public class JsonReader {
     int64 pos;
     int64 tokenStart;
     int64 tokenEnd;
-    int32 current;
+    JsonToken current;
     boolean currentBool;
 
     // Depth + per-frame state for the container nesting walk.
@@ -59,7 +60,7 @@ public class JsonReader {
     // either END_ARRAY (consume and exit loop) or START_OBJECT
     // (leave cached so the recursive `parseObjectFromReader<T>` sees
     // it as the first token of the inner parse).
-    int32 peekedToken;
+    JsonToken peekedToken;
     boolean hasPeeked;
 
     public JsonReader(int8[] input, int64 byteCount) {
@@ -68,14 +69,14 @@ public class JsonReader {
         this.pos = 0;
         this.tokenStart = 0;
         this.tokenEnd = 0;
-        this.current = 9;          // END (matches JsonToken.END ordinal)
+        this.current = JsonToken.END;
         this.currentBool = false;
         this.maxDepth = 1024;
         this.depthStack = new int8[1024];
         this.frameState = new int8[1024];
         this.depth = 0;
         this.afterKey = false;
-        this.peekedToken = 9;      // END placeholder
+        this.peekedToken = JsonToken.END;
         this.hasPeeked = false;
     }
 
@@ -92,17 +93,17 @@ public class JsonReader {
      * `parseObjectFromReader<T>` that will itself read the
      * `START_OBJECT`.
      */
-    public int32 peek() {
+    public JsonToken peek() {
         if (this.hasPeeked) {
             return this.peekedToken;
         }
-        int32 t = this.next();
+        JsonToken t = this.next();
         this.peekedToken = t;
         this.hasPeeked = true;
         return t;
     }
 
-    public int32 current() {
+    public JsonToken current() {
         return this.current;
     }
 
@@ -122,7 +123,7 @@ public class JsonReader {
         return this.currentBool;
     }
 
-    public int32 next() {
+    public JsonToken next() {
         // Consume a cached peek if there is one — peek() already
         // advanced the buffer position past the underlying token.
         if (this.hasPeeked) {
@@ -138,8 +139,8 @@ public class JsonReader {
                     "unexpected end of input inside container",
                     this.pos);
             }
-            this.current = 9;       // END
-            return 9;
+            this.current = JsonToken.END;
+            return JsonToken.END;
         }
 
         // In a container and NOT in the value-position right after a
@@ -153,10 +154,10 @@ public class JsonReader {
                 // Close brackets short-circuit (valid in both
                 // freshly-opened and post-value states).
                 if (frame == (int8) 0 && c == (int8) 93) {
-                    return this.consumeClose(3);    // END_ARRAY
+                    return this.consumeClose(JsonToken.END_ARRAY);
                 }
                 if (frame == (int8) 1 && c == (int8) 125) {
-                    return this.consumeClose(1);    // END_OBJECT
+                    return this.consumeClose(JsonToken.END_OBJECT);
                 }
 
                 // Post-value: must see a separator before the next item.
@@ -188,31 +189,31 @@ public class JsonReader {
         int8 c2 = this.input[this.pos];
 
         if (c2 == (int8) 123) {              // '{'
-            return this.openContainer((int8) 1, 0);   // START_OBJECT
+            return this.openContainer((int8) 1, JsonToken.START_OBJECT);
         }
         if (c2 == (int8) 91) {               // '['
-            return this.openContainer((int8) 0, 2);   // START_ARRAY
+            return this.openContainer((int8) 0, JsonToken.START_ARRAY);
         }
         if (c2 == (int8) 34) {               // '"'
             this.scanStringSpan();
             this.markValueProduced();
-            this.current = 5;                // STRING
-            return 5;
+            this.current = JsonToken.STRING;
+            return JsonToken.STRING;
         }
         if (c2 == (int8) 45
                 || (c2 >= (int8) 48 && c2 <= (int8) 57)) {
             this.scanNumberSpan();
             this.markValueProduced();
-            this.current = 6;                // NUMBER
-            return 6;
+            this.current = JsonToken.NUMBER;
+            return JsonToken.NUMBER;
         }
         if (c2 == (int8) 116) {              // 't'
             this.expectLiteral4((int8) 116, (int8) 114,
                                 (int8) 117, (int8) 101);
             this.currentBool = true;
             this.markValueProduced();
-            this.current = 7;                // BOOLEAN
-            return 7;
+            this.current = JsonToken.BOOLEAN;
+            return JsonToken.BOOLEAN;
         }
         if (c2 == (int8) 102) {              // 'f'
             this.expectLiteral5((int8) 102, (int8) 97,
@@ -220,21 +221,21 @@ public class JsonReader {
                                 (int8) 101);
             this.currentBool = false;
             this.markValueProduced();
-            this.current = 7;                // BOOLEAN
-            return 7;
+            this.current = JsonToken.BOOLEAN;
+            return JsonToken.BOOLEAN;
         }
         if (c2 == (int8) 110) {              // 'n'
             this.expectLiteral4((int8) 110, (int8) 117,
                                 (int8) 108, (int8) 108);
             this.markValueProduced();
-            this.current = 8;                // NULL
-            return 8;
+            this.current = JsonToken.NULL;
+            return JsonToken.NULL;
         }
 
         throw heap JsonParseException("unexpected character", this.pos);
     }
 
-    int32 openContainer(int8 kind, int32 token) {
+    JsonToken openContainer(int8 kind, JsonToken token) {
         if (this.depth >= this.maxDepth) {
             throw heap JsonParseException(
                 "nesting depth limit exceeded",
@@ -250,7 +251,7 @@ public class JsonReader {
         return token;
     }
 
-    int32 consumeClose(int32 token) {
+    JsonToken consumeClose(JsonToken token) {
         this.pos = this.pos + 1;
         this.depth = this.depth - 1;
         this.markValueProduced();
@@ -274,7 +275,7 @@ public class JsonReader {
         }
     }
 
-    int32 scanKey() {
+    JsonToken scanKey() {
         if (this.input[this.pos] != (int8) 34) {
             throw heap JsonParseException(
                 "expected '\"' to begin object key",
@@ -289,8 +290,8 @@ public class JsonReader {
         }
         this.pos = this.pos + 1;
         this.afterKey = true;
-        this.current = 4;        // KEY
-        return 4;
+        this.current = JsonToken.KEY;
+        return JsonToken.KEY;
     }
 
     void scanStringSpan() {
@@ -588,7 +589,7 @@ public class JsonReader {
     // value with ownership transferred; the caller's drop chain
     // reclaims the tree.
     public #JsonValue readValue() {
-        int32 t = this.next();
+        JsonToken t = this.next();
         return this.readValueAfter(t);
     }
 
@@ -596,25 +597,25 @@ public class JsonReader {
     // token (e.g. inside an object loop where the parent dispatched
     // on KEY → call next() for the value → call this). Lets the
     // builder reuse the per-element token without double-advancing.
-    public #JsonValue readValueAfter(int32 t) {
+    public #JsonValue readValueAfter(JsonToken t) {
         JsonValue v = heap JsonValue();
-        if (t == 0) {                                  // START_OBJECT
+        if (t == JsonToken.START_OBJECT) {
             JsonObject o = heap JsonObject();
             this.readObjectBody(o);
             v.setObject(#o);
-        } else if (t == 2) {                           // START_ARRAY
+        } else if (t == JsonToken.START_ARRAY) {
             JsonArray a = heap JsonArray();
             this.readArrayBody(a);
             v.setArray(#a);
-        } else if (t == 5) {                           // STRING
+        } else if (t == JsonToken.STRING) {
             int8[] bytes = this.currentBytes();
             int32 len = (int32) (this.tokenEnd - this.tokenStart);
             v.setStringOwned(#bytes, len);
-        } else if (t == 6) {                           // NUMBER
+        } else if (t == JsonToken.NUMBER) {
             v.setNumber(this.currentNumberAsInt64());
-        } else if (t == 7) {                           // BOOLEAN
+        } else if (t == JsonToken.BOOLEAN) {
             v.setBoolean(this.currentBool);
-        } else if (t == 8) {                           // NULL
+        } else if (t == JsonToken.NULL) {
             v.setNull();
         } else {
             throw heap JsonParseException(
@@ -630,18 +631,18 @@ public class JsonReader {
     // START_OBJECT; on exit, END_OBJECT has been consumed.
     void readObjectBody(JsonObject o) {
         while (true) {
-            int32 t = this.next();
-            if (t == 1) {                              // END_OBJECT
+            JsonToken t = this.next();
+            if (t == JsonToken.END_OBJECT) {
                 return;
             }
-            if (t != 4) {                              // KEY
+            if (t != JsonToken.KEY) {
                 throw heap JsonParseException(
                     "expected key in object body",
                     this.pos);
             }
             int8[] keyBytes = this.currentBytes();
             int32 keyLen = (int32) (this.tokenEnd - this.tokenStart);
-            int32 vt = this.next();
+            JsonToken vt = this.next();
             JsonValue child = this.readValueAfter(vt);
             o.put(#keyBytes, keyLen, #child);
         }
@@ -649,8 +650,8 @@ public class JsonReader {
 
     void readArrayBody(JsonArray a) {
         while (true) {
-            int32 t = this.next();
-            if (t == 3) {                              // END_ARRAY
+            JsonToken t = this.next();
+            if (t == JsonToken.END_ARRAY) {
                 return;
             }
             JsonValue child = this.readValueAfter(t);

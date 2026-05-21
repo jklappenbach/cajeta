@@ -94,9 +94,23 @@ namespace cajeta {
             return defaultResult();
         }
 
+        std::any visitEnumDeclaration(
+                CajetaParser::EnumDeclarationContext* ctx) override {
+            // markEnum=true so fromContext's placeholder synthesis
+            // builds an i32 enum CajetaType for cross-file field
+            // declarations referencing this name. Without the mark,
+            // the placeholder would be a class-shaped CajetaClass —
+            // wrong layout for enum-typed fields, and trips the
+            // "return value lowered to null" error at codegen.
+            registerAndRecurse(ctx->identifier()->getText(), ctx,
+                                /*markEnum=*/true);
+            return defaultResult();
+        }
+
     private:
         void registerAndRecurse(const std::string& shortName,
-                                 antlr4::tree::ParseTree* tree) {
+                                 antlr4::tree::ParseTree* tree,
+                                 bool markEnum = false) {
             // Compose canonical from package + enclosing class
             // stack + this short name. Mirrors CajetaLlvmVisitor's
             // visitClassDeclaration package-adjustment for nested
@@ -110,6 +124,7 @@ namespace cajeta {
             if (!canonical.empty()) canonical += ".";
             canonical += shortName;
             CajetaType::registerArchive(canonical, shortName);
+            if (markEnum) CajetaType::markArchiveEnum(canonical);
             enclosingStack.push_back(shortName);
             visitChildren(tree);
             enclosingStack.pop_back();

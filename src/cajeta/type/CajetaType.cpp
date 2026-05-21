@@ -4,6 +4,7 @@
 
 #include "CajetaType.h"
 #include "../field/Field.h"
+#include <set>
 #include "../compile/CajetaModule.h"
 #include "CajetaArray.h"
 #include "CajetaClass.h"
@@ -24,6 +25,14 @@ namespace cajeta {
     // Archive — see CajetaType.h. Cleared by resetGlobals so each
     // fresh Compiler starts with an empty set.
     static map<string, string> g_archive;
+    // Side set marking which archived canonical names are enum
+    // declarations (rather than classes / interfaces / structs /
+    // views). Read by fromContext's placeholder-synthesis path so
+    // a cross-file `JsonToken current;` field declaration resolves
+    // to the proper i32-backed enum CajetaType instead of a
+    // class-shaped placeholder. Populated by the prescan visitor's
+    // visitEnumDeclaration override.
+    static set<string> g_enumArchive;
 
 
     TypeKey::TypeKey(llvm::Type* type) {
@@ -54,9 +63,18 @@ namespace cajeta {
         llvmTypeIdMap.clear();
         enumConstants.clear();
         g_archive.clear();
+        g_enumArchive.clear();
     }
 
     map<string, string>& CajetaType::getArchive() { return g_archive; }
+
+    void CajetaType::markArchiveEnum(const string& canonical) {
+        g_enumArchive.insert(canonical);
+    }
+
+    bool CajetaType::isArchiveEnum(const string& canonical) {
+        return g_enumArchive.count(canonical) > 0;
+    }
 
     void CajetaType::registerArchive(const string& canonical,
                                       const string& shortName) {
@@ -347,24 +365,50 @@ namespace cajeta {
                             : canonical.substr(dot + 1);
                         QualifiedNamePtr phName =
                             QualifiedName::getOrInsert(shortName, pkg);
-                        auto placeholder = std::make_shared<CajetaClass>(
-                            module, phName,
-                            std::list<QualifiedNamePtr>{},
-                            std::list<QualifiedNamePtr>{});
-                        placeholder->setPlaceholder(true);
-                        // Don't pre-set llvmType — leave it null so
-                        // the real generatePrototype's
-                        // getOrCreateLlvmType call creates a named
-                        // StructType under the canonical (rather
-                        // than seeing a pre-set non-struct type and
-                        // discarding the name). CajetaClass::getLlvmType
-                        // overrides to return `ptr` while the
-                        // placeholder is unfilled, so earlier-parsed
-                        // classes composing layouts against the
-                        // placeholder still get a sized type back.
-                        canonicalMap[canonical] = placeholder;
-                        canonicalMap[shortName] = placeholder;
-                        type = placeholder;
+                        if (isArchiveEnum(canonical)) {
+                            // Enum: synthesize the i32-backed
+                            // primitive type directly. Mirrors the
+                            // visitEnumDeclaration registration shape
+                            // so a cross-file `JsonToken current;`
+                            // field declaration gets the correct
+                            // layout (i32 slot) instead of a class-
+                            // shaped placeholder. Enum constants
+                            // (JsonToken.END, etc.) are populated
+                            // when the enum's own visitEnumDeclaration
+                            // body walk runs; this just makes the
+                            // TYPE available before that point.
+                            llvm::LLVMContext* ctx2 = module
+                                ? module->getLlvmContext()
+                                : nullptr;
+                            if (ctx2) {
+                                llvm::Type* i32Ty = llvm::Type::getInt32Ty(*ctx2);
+                                type = CajetaType::create(phName, i32Ty,
+                                    INT_FLAG | SIGNED_FLAG | NUMBER_FLAG
+                                        | PRIMITIVE_FLAG | BIT_32_FLAG
+                                        | ENUM_FLAG,
+                                    /*shareLlvmType=*/false);
+                                canonicalMap[shortName] = type;
+                            }
+                        } else {
+                            auto placeholder = std::make_shared<CajetaClass>(
+                                module, phName,
+                                std::list<QualifiedNamePtr>{},
+                                std::list<QualifiedNamePtr>{});
+                            placeholder->setPlaceholder(true);
+                            // Don't pre-set llvmType — leave it null so
+                            // the real generatePrototype's
+                            // getOrCreateLlvmType call creates a named
+                            // StructType under the canonical (rather
+                            // than seeing a pre-set non-struct type and
+                            // discarding the name). CajetaClass::getLlvmType
+                            // overrides to return `ptr` while the
+                            // placeholder is unfilled, so earlier-parsed
+                            // classes composing layouts against the
+                            // placeholder still get a sized type back.
+                            canonicalMap[canonical] = placeholder;
+                            canonicalMap[shortName] = placeholder;
+                            type = placeholder;
+                        }
                     }
                 }
             }

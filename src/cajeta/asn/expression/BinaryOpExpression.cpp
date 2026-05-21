@@ -371,7 +371,7 @@ namespace cajeta {
      */
     llvm::Value* BinaryOpExpression::generateCode(CajetaModulePtr module) {
         auto* builder = module->getBuilder();
-        if (std::getenv("CAJETA_TRACE_BINOP")) {
+        if (std::getenv("CAJETA_TRACE_BINOP") || std::getenv("CAJETA_DEBUG_ICMP")) {
             llvm::errs() << "BinaryOpExpression::generateCode binaryOp=" << binaryOp
                          << " children.size=" << children.size() << "\n";
         }
@@ -379,7 +379,16 @@ namespace cajeta {
         // Short-circuit ops need to evaluate rhs only conditionally — handle before the
         // upfront-evaluate path the other ops use.
         if (binaryOp == BINARY_OP_LOGAND || binaryOp == BINARY_OP_LOGOR) {
-            llvm::Value* lhsVal = loadIfAlloca(module, children[0]->generateCode(module));
+            // loadIfLValue (rather than the bare loadIfAlloca) so an
+            // ArrayIndex / DotExpression operand load-throughs to its
+            // element value before the i1 coercion. Without this,
+            // `boolean[] a; ... if (a[0] && a[1])` evaluates the LHS
+            // to the GEP-ptr and the icmpNE-with-zero below tries to
+            // emit `icmp ne ptr, integer 0`, which trips LLVM's
+            // same-type-operands assertion.
+            auto lhsAst = dynamic_pointer_cast<Expression>(children[0]);
+            llvm::Value* lhsVal = loadIfLValue(
+                module, children[0]->generateCode(module), lhsAst);
             llvm::Type* i1Ty = llvm::Type::getInt1Ty(*module->getLlvmContext());
             // Coerce lhs to i1 if it isn't already (e.g. an i32 from a comparison-less subexpr).
             if (lhsVal->getType() != i1Ty) {
@@ -400,7 +409,10 @@ namespace cajeta {
                 builder->CreateCondBr(lhsVal, mergeBB, rhsBB);
             }
             builder->SetInsertPoint(rhsBB);
-            llvm::Value* rhsVal = loadIfAlloca(module, children[1]->generateCode(module));
+            // Same lvalue load-through as the LHS path — see comment above.
+            auto rhsAst = dynamic_pointer_cast<Expression>(children[1]);
+            llvm::Value* rhsVal = loadIfLValue(
+                module, children[1]->generateCode(module), rhsAst);
             if (rhsVal->getType() != i1Ty) {
                 llvm::Value* zero = llvm::ConstantInt::get(rhsVal->getType(), 0);
                 rhsVal = builder->CreateICmpNE(rhsVal, zero);

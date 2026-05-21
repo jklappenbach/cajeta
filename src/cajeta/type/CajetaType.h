@@ -252,6 +252,16 @@ class CajetaType : public Modifiable, public Annotatable,
         static void registerArchive(const string& canonical,
                                     const string& shortName);
 
+        // Mark a previously-registered archive entry as an enum
+        // declaration (not a class / interface / struct / view).
+        // Read by fromContext's placeholder-synthesis path so cross-
+        // file enum-typed field declarations resolve to an i32-
+        // backed enum CajetaType rather than a class placeholder.
+        // Called by the prescan visitor's visitEnumDeclaration after
+        // registerArchive(canonical, shortName).
+        static void markArchiveEnum(const string& canonical);
+        static bool isArchiveEnum(const string& canonical);
+
         static map<llvm::Type::TypeID, CajetaTypePtr>& getTypeIdMap();
 
         static void init(llvm::LLVMContext& ctxLlvm);
