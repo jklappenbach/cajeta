@@ -16,21 +16,24 @@ import cajeta.lang.stream.Stream;
  */
 public class ArrayList<T> {
     T[] data;
-    int32 size;
+    // Field name aligned with HashMap/HashSet/LinkedList — `count` as a
+    // bare field name conflicts with the public `count()` accessor at
+    // method resolution sites (templated-class dispatch ambiguity).
+    int32 sizeCount;
     int32 capacity;
 
     public ArrayList() {
         this.capacity = 16;
         this.data = new T[16];
-        this.size = 0;
+        this.sizeCount = 0;
     }
 
-    public int32 size() {
-        return this.size;
+    public int32 count() {
+        return this.sizeCount;
     }
 
     public boolean isEmpty() {
-        return this.size == 0;
+        return this.sizeCount == 0;
     }
 
     public T get(int32 i) {
@@ -42,28 +45,28 @@ public class ArrayList<T> {
     }
 
     public void add(T v) {
-        if (this.size >= this.capacity) {
+        if (this.sizeCount >= this.capacity) {
             int32 newCap = this.capacity * 2;
             T[] grown = new T[newCap];
             int32 i = 0;
-            while (i < this.size) {
+            while (i < this.sizeCount) {
                 grown[i] = this.data[i];
                 i = i + 1;
             }
             this.data = grown;
             this.capacity = newCap;
         }
-        this.data[this.size] = v;
-        this.size = this.size + 1;
+        this.data[this.sizeCount] = v;
+        this.sizeCount = this.sizeCount + 1;
     }
 
     /**
      * Heap-allocated stream walking the live elements
-     * (data[0..size-1]). Stack-allocated variant follows when
+     * (data[0..count-1]). Stack-allocated variant follows when
      * `stack ArrayStream<T>` aggregate-init on a generic
      * instantiation is verified.
      */
     public #ArrayStream<T> stream() {
-        return heap ArrayStream<T>(this.data, this.size);
+        return heap ArrayStream<T>(this.data, this.sizeCount);
     }
 }

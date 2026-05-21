@@ -77,7 +77,7 @@ TEST(CollectorTests, collectorsToListSize) {
         "        ArrayStream<int32> s = heap ArrayStream<int32>(xs, 5);\n"
         "        Collector<int32, ArrayList<int32>> c = Collectors.toList<int32>();\n"
         "        ArrayList<int32> out = s.collect(c);\n"
-        "        return out.size();\n"
+        "        return out.count();\n"
         "    }\n"
         "}\n";
     EXPECT_EQ(runI32(src), 5);

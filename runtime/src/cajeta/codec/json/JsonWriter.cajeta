@@ -272,7 +272,7 @@ public final class JsonWriter {
             JsonArray a = v.asArray();
             this.beginArray();
             int32 i = 0;
-            while (i < a.size()) {
+            while (i < a.count()) {
                 this.writeValue(a.get(i));
                 i = i + 1;
             }
@@ -283,7 +283,7 @@ public final class JsonWriter {
             JsonObject o = v.asObject();
             this.beginObject();
             int32 i = 0;
-            while (i < o.size()) {
+            while (i < o.count()) {
                 this.key(o.keyAt(i), o.keyLenAt(i));
                 this.writeValue(o.valueAt(i));
                 i = i + 1;

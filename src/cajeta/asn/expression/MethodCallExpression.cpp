@@ -1737,7 +1737,12 @@ namespace cajeta {
                 }
                 return v;
             };
-            if (methodCallName == "size" || methodCallName == "length") {
+            if (methodCallName == "size") {
+                // size() returns byte length of storage; count()
+                // returns codepoint count and routes through normal
+                // method resolution (cajeta.lang.String.count() walks
+                // the UTF-8). length() is intentionally not accepted
+                // — collection-style accessors use count() everywhere.
                 llvm::Function* fn = module->getRuntimeFunction("__cajeta_str_len");
                 if (fn) return builder->CreateCall(fn, {receiver});
             }
@@ -1793,17 +1798,19 @@ namespace cajeta {
             }
         }
 
-        // Structural accessor on arrays. `count()` is the only name —
-        // matches the Collection interface so generic code that operates
-        // on Collection<T> works on T[] without special-casing. Reads
-        // the header's first field (i64 count).
-        if (receiver && methodCallName == "count") {
-            if (auto arrayType = dynamic_pointer_cast<CajetaArray>(receiverType)) {
-                llvm::Value* sizePtr = builder->CreateStructGEP(
-                    arrayType->getLlvmType(), receiver, CajetaArray::SIZE_FIELD_INDEX);
-                return builder->CreateLoad(
-                    llvm::Type::getInt64Ty(*module->getLlvmContext()), sizePtr);
-            }
+        // Structural accessor on primitive arrays. `count()` is the
+        // sole name — matches the convention every collection in the
+        // language uses. Reads the array header's first field
+        // (i64 count). Class-typed receivers fall through to normal
+        // method resolution so `ArrayList<T>.count()` etc. dispatch
+        // through the regular vtable / static-method path.
+        if (receiver && methodCallName == "count"
+                && dynamic_pointer_cast<CajetaArray>(receiverType)) {
+            auto arrayType = dynamic_pointer_cast<CajetaArray>(receiverType);
+            llvm::Value* sizePtr = builder->CreateStructGEP(
+                arrayType->getLlvmType(), receiver, CajetaArray::SIZE_FIELD_INDEX);
+            return builder->CreateLoad(
+                llvm::Type::getInt64Ty(*module->getLlvmContext()), sizePtr);
         }
 
         // P6.6 — `arr.stream()` intrinsic. Lowers to
@@ -3038,8 +3045,11 @@ namespace cajeta {
             auto& ctx = *module->getLlvmContext();
             llvm::Type* i64Ty = llvm::Type::getInt64Ty(ctx);
             llvm::Type* i1Ty = llvm::Type::getInt1Ty(ctx);
-            if (methodCallName == "size" || methodCallName == "length"
-                    || methodCallName == "count") {
+            if (methodCallName == "size" || methodCallName == "count") {
+                // length() intentionally not in the null-safe set —
+                // it's not a valid String accessor (use count() or
+                // size()). Both size() and count() are int64 returns
+                // and default to 0 when the receiver is null.
                 nullSafeStringMethod = true;
                 nullSafeReturnTy = i64Ty;
                 nullSafeDefault = llvm::ConstantInt::get(i64Ty, 0);

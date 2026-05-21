@@ -49,7 +49,7 @@ TEST(JsonFactoryTests, parseArraySum) {
         "        JsonArray a = v.asArray();\n"
         "        int32 sum = 0;\n"
         "        int32 i = 0;\n"
-        "        while (i < a.size()) {\n"
+        "        while (i < a.count()) {\n"
         "            sum = sum + a.get(i).asInt32();\n"
         "            i = i + 1;\n"
         "        }\n"

@@ -24,7 +24,7 @@ TEST(ArrayListTests, emptyListSizeIsZero) {
         "public final class S {\n"
         "    public static int32 run() {\n"
         "        ArrayList<int32> list = heap ArrayList<int32>();\n"
-        "        return list.size();\n"
+        "        return list.count();\n"
         "    }\n"
         "}\n";
     EXPECT_EQ(runI32(src), 0);
@@ -54,7 +54,7 @@ TEST(ArrayListTests, addAndSizeIncrement) {
         "        list.add(10);\n"
         "        list.add(20);\n"
         "        list.add(30);\n"
-        "        return list.size();\n"
+        "        return list.count();\n"
         "    }\n"
         "}\n";
     EXPECT_EQ(runI32(src), 3);
@@ -128,7 +128,7 @@ TEST(ArrayListTests, growsBeyondInitialCapacity) {
         "            list.add(i);\n"
         "            i = i + 1;\n"
         "        }\n"
-        "        return list.size();\n"
+        "        return list.count();\n"
         "    }\n"
         "}\n";
     EXPECT_EQ(runI32(src), 20);

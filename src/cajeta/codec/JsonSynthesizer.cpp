@@ -438,7 +438,7 @@ namespace cajeta {
         // on the heap class, so the live-set claim runs first through
         // the class's auto-field-drop walk where it belongs.
         os << "            int32 sz_" << fieldName << " = tmp_"
-           << fieldName << ".size();\n";
+           << fieldName << ".count();\n";
         os << "            out." << fieldName << " = new " << etcanon
            << "[sz_" << fieldName << "];\n";
         os << "            int32 ii_" << fieldName << " = 0;\n";

@@ -19,10 +19,10 @@ import cajeta.lang.String;
  *  - String tokenization (span only — content decoding Phase 2).
  *  - Strict RFC 8259 (no relaxed comments / trailing commas yet).
  *
- * Length is passed explicitly because arrays don't yet expose a
- * `.length` property in this stdlib (Java/Cajeta arrays know their
- * size; the accessor just hasn't landed). Callers writing a one-
- * shot parse pass `(buf, buf.length)` once the property lands.
+ * Count is passed explicitly because primitive arrays don't yet
+ * expose `.count()` as a property accessor (Cajeta arrays know their
+ * count; the accessor just hasn't landed). Callers writing a one-
+ * shot parse pass `(buf, buf.count())` once the property lands.
  *
  * Token ordinals (matching the JsonToken enum):
  *   0 START_OBJECT  1 END_OBJECT  2 START_ARRAY  3 END_ARRAY
@@ -31,7 +31,7 @@ import cajeta.lang.String;
  */
 public class JsonReader {
     int8[] input;
-    int64 length;
+    int64 byteCount;
     int64 pos;
     int64 tokenStart;
     int64 tokenEnd;
@@ -62,9 +62,9 @@ public class JsonReader {
     int32 peekedToken;
     boolean hasPeeked;
 
-    public JsonReader(int8[] input, int64 length) {
+    public JsonReader(int8[] input, int64 byteCount) {
         this.input = input;
-        this.length = length;
+        this.byteCount = byteCount;
         this.pos = 0;
         this.tokenStart = 0;
         this.tokenEnd = 0;
@@ -132,7 +132,7 @@ public class JsonReader {
         }
         this.skipWs();
 
-        if (this.pos >= this.length) {
+        if (this.pos >= this.byteCount) {
             if (this.depth != 0) {
                 throw heap JsonParseException(
                     "unexpected end of input inside container",
@@ -169,7 +169,7 @@ public class JsonReader {
                     this.pos = this.pos + 1;
                     this.frameState[this.depth - 1] = (int8) 2;
                     this.skipWs();
-                    if (this.pos >= this.length) {
+                    if (this.pos >= this.byteCount) {
                         throw heap JsonParseException(
                             "unexpected end of input after separator",
                             this.pos);
@@ -261,7 +261,7 @@ public class JsonReader {
     }
 
     void skipWs() {
-        while (this.pos < this.length) {
+        while (this.pos < this.byteCount) {
             int8 c = this.input[this.pos];
             if (c == (int8) 32
                     || c == (int8) 9
@@ -282,7 +282,7 @@ public class JsonReader {
         }
         this.scanStringSpan();
         this.skipWs();
-        if (this.pos >= this.length || this.input[this.pos] != (int8) 58) {
+        if (this.pos >= this.byteCount || this.input[this.pos] != (int8) 58) {
             throw heap JsonParseException(
                 "expected ':' after object key",
                 this.pos);
@@ -296,7 +296,7 @@ public class JsonReader {
     void scanStringSpan() {
         this.pos = this.pos + 1;     // past opening '"'
         this.tokenStart = this.pos;
-        while (this.pos < this.length) {
+        while (this.pos < this.byteCount) {
             int8 c = this.input[this.pos];
             if (c == (int8) 34) {
                 this.tokenEnd = this.pos;
@@ -305,7 +305,7 @@ public class JsonReader {
             }
             if (c == (int8) 92) {
                 this.pos = this.pos + 2;
-                if (this.pos > this.length) {
+                if (this.pos > this.byteCount) {
                     throw heap JsonParseException(
                         "unterminated escape sequence",
                         this.pos);
@@ -322,7 +322,7 @@ public class JsonReader {
     void scanNumberSpan() {
         this.tokenStart = this.pos;
         this.pos = this.pos + 1;
-        while (this.pos < this.length) {
+        while (this.pos < this.byteCount) {
             int8 c = this.input[this.pos];
             boolean isDigit = c >= (int8) 48 && c <= (int8) 57;
             boolean isDot = c == (int8) 46;
@@ -339,7 +339,7 @@ public class JsonReader {
     }
 
     void expectLiteral4(int8 b0, int8 b1, int8 b2, int8 b3) {
-        if (this.pos + 4 > this.length) {
+        if (this.pos + 4 > this.byteCount) {
             throw heap JsonParseException("truncated literal", this.pos);
         }
         if (this.input[this.pos] != b0
@@ -354,7 +354,7 @@ public class JsonReader {
     }
 
     void expectLiteral5(int8 b0, int8 b1, int8 b2, int8 b3, int8 b4) {
-        if (this.pos + 5 > this.length) {
+        if (this.pos + 5 > this.byteCount) {
             throw heap JsonParseException("truncated literal", this.pos);
         }
         if (this.input[this.pos] != b0
@@ -418,7 +418,7 @@ public class JsonReader {
         int64 end = this.tokenEnd;
         // Probe for an enclosing pair of quotes.
         boolean quoted = false;
-        if (start > 0 && end < this.length) {
+        if (start > 0 && end < this.byteCount) {
             if (this.input[start - 1] == (int8) 34
                     && this.input[end] == (int8) 34) {
                 quoted = true;
