@@ -1241,10 +1241,20 @@ namespace cajeta {
             // live inline (no drop), and arrays remain owned by the
             // declaring scope regardless of whether the array header
             // is returned (that's a separate pre-existing limitation).
+            //
+            // Owning views (a view whose ctor took #-transferred bytes)
+            // DO have a drop entry — the owning ctor pushes one paired
+            // with __cajeta_view_drop_owned. When the function returns
+            // the view, ownership of the underlying buffer transfers
+            // to the caller and this scope must not free it. The
+            // generic `f->getDropEntry()` check covers both classes and
+            // owning views.
             if (f) {
                 auto klass = dynamic_pointer_cast<CajetaClass>(f->getType());
-                auto isStruct = dynamic_pointer_cast<CajetaView>(f->getType());
-                if (klass && !isStruct && !klass->isInterface()) {
+                auto view = dynamic_pointer_cast<CajetaView>(f->getType());
+                bool transferShape =
+                    (klass && !view && !klass->isInterface()) || (bool) view;
+                if (transferShape) {
                     if (llvm::Value* entry = f->getDropEntry()) {
                         if (llvm::Function* mark = module->getRuntimeFunction(
                                 "__cajeta_drop_mark_inactive")) {

@@ -449,7 +449,8 @@ public class JsonReader {
      */
     public #String currentString() {
         int8[] bytes = this.currentBytes();
-        return heap String(bytes, (int32) bytes.count());
+        int32 n = (int32) bytes.count();
+        return heap String(#bytes, n);
     }
 
     // Parse the current NUMBER token's integer span as int64. v1 only

@@ -223,6 +223,117 @@ All `[mode-agnostic]`.
 
 ---
 
+## Build / LLVM-version migration (2026-05-20 session)
+
+Context: development moved to an AMD Ryzen AI Max+ 395 (Zen 5 / Strix Halo). LLVM 18
+predates Zen 5 — `getHostCPUName()` returns `(unknown)`, znver* table tops out at
+znver4. LLVM 19.1+ has znver5 back-ported; LLVM 20+ has it native. Tried LLVM 21 first;
+it introduced its own wave of regressions (vtable/drop/chained-form/with-annotation
+codegen). Landed on **LLVM 20 as the new baseline**.
+
+### Shipped this session
+
+- ✅ **Build parameterized by `CAJETA_LLVM_VERSION` (default 20).**
+  - `setup.sh` derives `LLVM_DIR` + the apt package set (`clang-${LLVM_VER}`,
+    `llvm-${LLVM_VER}-dev`, `libllvm${LLVM_VER}`, `lld-${LLVM_VER}-dev`) from the
+    env var; probes each via apt-cache and silently skips ones the local archive
+    doesn't advertise (Ubuntu 26.04 dropped `lld-N-dev` for all N; `libllvm$N`
+    folded into `llvm-$N`).
+  - `src/CMakeLists.txt` uses `${LLVM_VERSION_MAJOR}` (set by `find_package(LLVM
+    CONFIG)`) for `clang-N` and the lld header paths, so discovery automatically
+    tracks whichever LLVM was found.
+  - `Compiler.cpp`'s "install lld-N-dev" error message uses `LLVM_VERSION_MAJOR`.
+- ✅ **LLVM 21 API-shift shims (preprocessor-guarded so we still build on 18/20):**
+  - `CajetaModule.cpp` — LLVM 21 narrowed `Module::setTargetTriple` to take
+    `llvm::Triple` instead of `StringRef`; `#if LLVM_VERSION_MAJOR >= 21` wraps
+    the string in `llvm::Triple(...)`.
+  - `JitTestHelper.cpp` — LLVM 21 removed `ThreadSafeContext::getContext()` in
+    favor of `withContextDo(...)`; `#if` branch covers both paths.
+- ✅ **Cross-platform xxhash install scripts** (`scripts/install-xxhash-{linux,
+  macos}.sh`, `scripts/install-xxhash-windows.ps1`) — `runtime/native/cajeta_runtime.c`
+  pulls `<xxhash.h>` via `XXH_INLINE_ALL` so headers-only is sufficient. Scripts
+  cover apt/dnf/yum/pacman/zypper/apk on Linux, Homebrew/MacPorts on macOS,
+  vcpkg/winget/choco on Windows, with a GitHub-release source-fallback in each.
+- ✅ **`run_tests.sh` hardening.**
+  - Bash signal-death diagnostics (`Segmentation fault (core dumped)` etc.) no
+    longer leak from `wait`-time job reaping. The fix is `{ ...; } 2>/dev/null &`
+    (group with stderr-redirect) rather than `( ... ) 2>/dev/null &` — bash
+    prints the diagnostic at the *parent*'s reap step, not the child's, so the
+    redirect has to apply to the parent shell.
+  - Crash classifier surfaces signal codes by name (SIGSEGV/SIGFPE/SIGABRT/etc.)
+    and now handles empty / unrecorded `exit_code` (subshell killed before it
+    could write the .exit file) without throwing `[: : integer expected`.
+
+### Outstanding cajeta-compiler bugs — ALL FIXED (2026-05-20 session)
+
+All four LLVM-version-independent bugs called out previously are fixed. Tree at
+1210/1340 passing, 0 explicit failures, 6 shard crashes that all pass individually
+(pure state-poisoning carry-over from the still-flaky parallel runner).
+
+1. ✅ **`StringMethodsTests.{replaceNoMatch, replaceSingleMatch, replaceMultipleMatches,
+   substringSliceMatches, toUpperCaseAscii, toLowerCaseAscii, trimBothSides}` — double-free of
+   the freshly-allocated `int8[] out` buffer.** Root cause was NOT a JIT-linker quirk or
+   alloca aliasing — `out` got freed by the function's own `__cajeta_drop_pop_run` BEFORE
+   the function returned, because `return new String(out, n)` stored `out` as the new
+   String's `bytes` field without marking the local's drop entry inactive. The new
+   String's bytes field then dangled, and the next read tripped a bounds-check on
+   freed (re-zeroed) memory. Fix: switched all five sites in `runtime/src/cajeta/lang/
+   String.cajeta` from `new String(out, …)` to `heap String(#out, …)` so the
+   `#`-transfer marker fires `__cajeta_drop_mark_inactive` on `out`'s drop entry, leaving
+   ownership entirely with the returned String. Other stdlib files (Path, MD5,
+   FileReader) already used this pattern; String.cajeta was the lone holdout.
+
+2. ✅ **`ErrorModelTests.{asyncFnThrowReraisedAtAwait, asyncFnSuccessAwaitsValueThroughBranches}` —
+   `__cajeta_throw` walked the drop chain (freeing the awaited task) BEFORE
+   `__cajeta_scope_exit_to` walked the scope_register list (which pointed INTO the
+   freed task struct).** The scope-register entry's `exception_addr` read garbage from
+   freed memory, treated non-NULL as a sibling throw, and re-raised the garbage
+   pointer. Fix: added `__cajeta_scope_deregister_task(void*, uint64_t)` runtime
+   helper that walks every active scope frame and NULLs out entries whose
+   `done_addr` falls inside the given task struct; `CajetaTask::generateDropFunction`
+   now calls it (with the task's allocation size from `DataLayout::getTypeAllocSize`)
+   immediately before `__cajeta_free(task)`. Subsequent `scope_exit_to` sees clean
+   NULL entries and bypasses them via the existing `if (done_addr)` guard.
+
+3. ✅ **`DetachTests.freshAllocatorCaptureDetachAccepted`** — fell out of #2's fix. The
+   detach path doesn't register a drop entry for the task (the detached fiber outlives
+   the spawn scope), but the same task-struct lifetime invariant applied. Once the
+   scope-deregister hook landed in the task drop function the symptom disappeared.
+
+4. ✅ **`WithAnnotationTests.fieldLevelWith` — JIT bitcode reparse rejected the module
+   with "Invalid number of elements in struct initializer".** Two interacting bugs:
+   (a) `SynthesizedWithMethod::generateCode` was non-idempotent — the Phase 2
+   codegen quiescence loop visits methods until the method set stops growing, and
+   the second visit appended a duplicate `entry` basic block to `withAge`'s function,
+   leaving the IR with two entry blocks (`entry` + `entry1`). Fix: early-return when
+   `llvmFunction` already has a body. (b) `StructureMetadata::createPropertyConstant`
+   walked `getAnnotations()` (a `set<QualifiedNamePtr>` that dedupes by pointer) for
+   the constant initializer, while `createPropertyType` walked `getAnnotationList()`
+   (a `list` that preserves duplicates) for the struct's slot layout. When `@With`
+   got recorded twice (once at the field, once at the class via synthesizer expansion)
+   the list had 2 entries but the set had 1, producing a struct type with 2 annotation
+   slots and an initializer with 1 element. Fix: both `createPropertyConstant` and
+   `createParameterConstant` now walk `getAnnotationList()` so the constant arity
+   matches the type's slot count.
+
+5. ✅ **`JsonSynthesizerTests.jsonReaderCurrentString`** — same `#`-transfer pattern as #1.
+   `JsonReader.currentString` did `return heap String(bytes, (int32) bytes.count())`
+   where `bytes` came from a `#int8[]`-returning helper. Fix: pre-compute the count,
+   then `return heap String(#bytes, n)`.
+
+6. ✅ **`ViewOwningTests.owningFormViewMayEscape` — owning views returned from a
+   function double-freed their underlying buffer.** `ReturnStatement::generateCode`
+   had a transfer-on-return rule for class-instance locals (drop-mark-inactive so the
+   function-scope exit doesn't reclaim what the caller now owns), but explicitly
+   EXCLUDED `CajetaView` types — under the assumption that "structs live inline (no
+   drop)". Owning views violate that assumption: their constructor pushes a drop entry
+   paired with `__cajeta_view_drop_owned` that frees the underlying buffer. Fix:
+   widened the transfer condition to also fire for `CajetaView` types whose field has
+   a drop entry — generic `f->getDropEntry()` check covers both classes and owning
+   views. All four ViewOwningTests now pass.
+
+---
+
 ## Done
 
 (See "Current state" above for the running list; older entries below.)

@@ -600,8 +600,9 @@ namespace cajeta {
             cerr << "cajeta: lld link failed (exit " << r.retCode << ")" << std::endl;
         }
 #else
-        cerr << "cajeta: --emit=exe requires lld libraries (install lld-18-dev and "
-             << "reconfigure with CMake)." << std::endl;
+        cerr << "cajeta: --emit=exe requires lld libraries (install lld-"
+             << LLVM_VERSION_MAJOR << "-dev and reconfigure with CMake)."
+             << std::endl;
         cerr << "Object files produced: ";
         for (auto& obj : objectFiles) cerr << obj << " ";
         cerr << "\nLink with: cc " ;

@@ -279,10 +279,22 @@ std::unique_ptr<CajetaJit> CajetaJit::compile(
     auto memBuffer = llvm::MemoryBuffer::getMemBufferCopy(
         llvm::StringRef(bitcodeBuf.data(), bitcodeBuf.size()), "cajeta_test");
     llvm::orc::ThreadSafeContext tsContext(std::move(tsCtx));
+    // LLVM 21 removed ThreadSafeContext::getContext() in favor of
+    // withContextDo(...), which runs the callable under the context's mutex.
+    // 18 / 20 still have getContext(). The parseBitcodeFile call needs the raw
+    // LLVMContext, so we preprocess-branch on LLVM_VERSION_MAJOR.
+#if LLVM_VERSION_MAJOR >= 21
+    auto parsed = tsContext.withContextDo(
+        [&](llvm::LLVMContext* ctx) {
+            return llvm::parseBitcodeFile(memBuffer->getMemBufferRef(), *ctx);
+        });
+#else
     auto parsed = llvm::parseBitcodeFile(memBuffer->getMemBufferRef(),
                                           *tsContext.getContext());
+#endif
     if (!parsed) {
-        throw std::runtime_error("JIT bitcode reparse failed");
+        std::string err = llvm::toString(parsed.takeError());
+        throw std::runtime_error("JIT bitcode reparse failed: " + err);
     }
     llvm::orc::ThreadSafeModule tsModule(std::move(*parsed), std::move(tsContext));
 

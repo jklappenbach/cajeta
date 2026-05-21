@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <functional>
 #include <utility>
+#include "llvm/TargetParser/Triple.h"
 #include "../error/Exception.h"
 
 #include "CajetaModule.h"
@@ -44,7 +45,14 @@ namespace cajeta {
         llvmModule = new llvm::Module(qName->toCanonical(), *llvmContext);
         llvmModule->setSourceFileName(qName->toCanonical());
         llvmModule->setDataLayout(targetMachine->createDataLayout());
+        // LLVM 21 narrowed Module::setTargetTriple to take llvm::Triple;
+        // 18 / 20 take a StringRef (string). The Triple ctor accepts the
+        // triple string in both, so we branch at preprocess time.
+#if LLVM_VERSION_MAJOR >= 21
+        llvmModule->setTargetTriple(llvm::Triple(targetTriple));
+#else
         llvmModule->setTargetTriple(targetTriple);
+#endif
     }
 
     CajetaModule::CajetaModule(llvm::LLVMContext* llvmContext,
@@ -73,7 +81,14 @@ namespace cajeta {
             llvmModule = new llvm::Module(qName->toCanonical(), *llvmContext);
             llvmModule->setSourceFileName(sourcePath);
             llvmModule->setDataLayout(targetMachine->createDataLayout());
-            llvmModule->setTargetTriple(targetTriple);
+            // LLVM 21 narrowed Module::setTargetTriple to take llvm::Triple;
+        // 18 / 20 take a StringRef (string). The Triple ctor accepts the
+        // triple string in both, so we branch at preprocess time.
+#if LLVM_VERSION_MAJOR >= 21
+        llvmModule->setTargetTriple(llvm::Triple(targetTriple));
+#else
+        llvmModule->setTargetTriple(targetTriple);
+#endif
         } else {
             cerr << "Error: Module srcPath must reference a code pModule, a file with the correct naming convention";
         }

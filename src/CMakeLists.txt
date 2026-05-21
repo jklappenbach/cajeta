@@ -92,14 +92,18 @@ llvm_map_components_to_libnames(LLVM_LIBS
         AllTargetsDescs
         AllTargetsInfos)
 
-# Optional: detect lld libraries (lld-18-dev on Ubuntu). When present we link the
-# ELF driver in-process to support --emit=exe. When absent the compiler still
-# builds; --emit=exe just prints an "install lld-18-dev" hint at runtime.
+# Optional: detect lld libraries (lld-${LLVM_VERSION_MAJOR}-dev on Ubuntu when
+# the distro ships one — note Ubuntu 26.04+ dropped lld-N-dev for all N). When
+# present we link the ELF driver in-process to support --emit=exe. When absent
+# the compiler still builds; --emit=exe just prints an "install lld-N-dev"
+# hint at runtime. LLVM_VERSION_MAJOR comes from find_package(LLVM CONFIG)
+# above, so the lld discovery automatically tracks whichever LLVM was found
+# (no separate hardcoded major version).
 find_path(CAJETA_LLD_INCLUDE_DIR
         NAMES lld/Common/Driver.h
         PATHS /usr/include /usr/local/include
-              /usr/lib/llvm-18/include
-              /usr/include/llvm-18)
+              /usr/lib/llvm-${LLVM_VERSION_MAJOR}/include
+              /usr/include/llvm-${LLVM_VERSION_MAJOR})
 find_library(CAJETA_LLD_COMMON_LIB NAMES lldCommon)
 find_library(CAJETA_LLD_ELF_LIB NAMES lldELF)
 if(CAJETA_LLD_INCLUDE_DIR AND CAJETA_LLD_COMMON_LIB AND CAJETA_LLD_ELF_LIB)
@@ -110,7 +114,7 @@ else()
     set(CAJETA_LLD_LIBS "")
     set(CAJETA_HAS_LLD OFF)
     message(STATUS "lld libraries NOT found; --emit=exe will print a hint. Install "
-            "lld-18-dev (Debian/Ubuntu) to enable in-process linking.")
+            "lld-${LLVM_VERSION_MAJOR}-dev (Debian/Ubuntu) to enable in-process linking.")
 endif()
 
 set(BINARY ${CMAKE_PROJECT_NAME})
@@ -127,8 +131,15 @@ set(GENERATED_SOURCES
 # via xxd -i. At codegen time, CajetaModule::linkRuntime() parses these bytes
 # into an llvm::Module and Linker::linkModules-merges them into the user output.
 # Distribution-portable: no per-target prebuilt .a required.
-find_program(CAJETA_CLANG NAMES clang-18 clang
-        PATHS /usr/lib/llvm-18/bin /usr/bin /usr/local/bin)
+# Prefer the versioned clang that matches whichever LLVM was found above,
+# falling back to plain `clang` on PATH. Keeping the versioned-first order
+# matters on systems with multiple LLVMs installed side-by-side (e.g. apt
+# llvm-21-dev coexisting with an older llvm-18 from the same archive) —
+# without it, plain `clang` may resolve to a different major version than
+# the LLVMConfig.cmake we're already linking against, and the bitcode it
+# emits won't match what the host LLVM expects.
+find_program(CAJETA_CLANG NAMES "clang-${LLVM_VERSION_MAJOR}" clang
+        PATHS /usr/lib/llvm-${LLVM_VERSION_MAJOR}/bin /usr/bin /usr/local/bin)
 find_program(CAJETA_XXD NAMES xxd PATHS /usr/bin /usr/local/bin)
 if(NOT CAJETA_CLANG)
     message(FATAL_ERROR "clang not found; needed to compile cajeta runtime to bitcode.")

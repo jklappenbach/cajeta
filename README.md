@@ -26,22 +26,33 @@ The compiler is configured via CMake and built with Ninja. Two scripts wrap the 
 
 ### Build prerequisites
 
-System packages (Ubuntu 24.04 names — adapt for other distros):
+`./setup.sh` installs system packages for you on Linux (apt) and macOS (Homebrew),
+then runs the CMake configure step. The dependency-install phase is idempotent —
+re-running just reconfigures. If you'd rather drive it manually, the Ubuntu apt
+list is:
 
 ```sh
 sudo apt install \
-    cmake ninja-build clang-18 llvm-18-dev libllvm18 \
+    cmake ninja-build clang-20 llvm-20-dev libllvm20 \
     libantlr4-runtime-dev openjdk-17-jre \
-    libgtest-dev libglog-dev libzstd-dev vim-common
+    libgtest-dev libgoogle-glog-dev libzstd-dev vim-common libxxhash-dev
 ```
 
 Notes:
-- `clang-18` is required at compiler-build time to compile `runtime/native/cajeta_runtime.c` to
+- `clang-20` is required at compiler-build time to compile `runtime/native/cajeta_runtime.c` to
   LLVM bitcode, which is then embedded into the Cajeta compiler binary.
 - `vim-common` provides `xxd`, used to convert the bitcode bytes into a C array.
 - `openjdk-17-jre` is needed to run the bundled ANTLR4 jar in `tools/antlr/`.
-- To target a different LLVM version, set `LLVM_DIR` before running setup, e.g.
-  `LLVM_DIR=/usr/lib/llvm-19/lib/cmake/llvm ./setup.sh`.
+- `libxxhash-dev` is the xxhash header for the cajeta.hash runtime (`scripts/install-xxhash-*.sh`
+  has cross-platform variants).
+- The project defaults to LLVM 20. Why not 21: a wave of cajeta-compiler-side
+  regressions surface under LLVM 21 in vtable / drop / chained-form / with-annotation
+  codegen, pending an audit of cajeta's use of the LLVM API surface that changed
+  between 20 → 21. Why not 18: LLVM 18 doesn't know about Zen 5 (`Host CPU: (unknown)`).
+  To target a different LLVM version, set `CAJETA_LLVM_VERSION` (or `LLVM_DIR`)
+  before running setup — both `setup.sh` and `src/CMakeLists.txt` discover the
+  versioned clang / lld / header paths from whatever LLVM was found:
+  `CAJETA_LLVM_VERSION=21 ./setup.sh` or `LLVM_DIR=/usr/lib/llvm-19/lib/cmake/llvm ./setup.sh`.
 
 ### Build outputs
 

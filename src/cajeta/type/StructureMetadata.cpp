@@ -66,10 +66,16 @@ namespace cajeta {
         args.push_back(llvm::ConstantArray::get(llvm::ArrayType::get(llvmInt8Type, property->getModifiers().size()),
             llvm::ArrayRef<llvm::Constant*>(modifiers)));
 
+        // Walk annotationList (matches createPropertyType above) so the
+        // initializer arity matches the struct's slot count. annotations
+        // is a set and dedupes by pointer — when an annotation is added
+        // twice (e.g. class-level + field-level @With from the synthesizer),
+        // the list keeps both but the set keeps one, and the constant came
+        // up short of the type.
         args.push_back(llvm::ConstantInt::get(llvmInt8Type,
-            llvm::APInt(8, property->getAnnotations().size(), false)));
+            llvm::APInt(8, property->getAnnotationList().size(), false)));
         vector<llvm::Constant*> annotations;
-        for (auto& annotation: property->getAnnotations()) {
+        for (auto& annotation: property->getAnnotationList()) {
             annotations.push_back(llvm::ConstantDataArray::getString(*module->getLlvmContext(),
                 annotation->toCanonical(),
                 true));
@@ -136,9 +142,9 @@ namespace cajeta {
             llvm::ArrayRef<llvm::Constant*>(modifiers)));
 
         args.push_back(llvm::ConstantInt::get(llvm::IntegerType::getInt8Ty(*module->getLlvmContext()),
-            llvm::APInt(8, parameter->getAnnotations().size(), false)));
+            llvm::APInt(8, parameter->getAnnotationList().size(), false)));
         vector<llvm::Constant*> annotations;
-        for (auto& annotation: parameter->getAnnotations()) {
+        for (auto& annotation: parameter->getAnnotationList()) {
             annotations.push_back(llvm::ConstantDataArray::getString(*module->getLlvmContext(),
                 annotation->toCanonical(),
                 true));

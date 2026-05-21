@@ -662,6 +662,29 @@ void __cajeta_scope_register(int32_t* done_addr, void** exception_addr,
     f->count++;
 }
 
+// Remove any scope_register entries whose done_addr falls inside the given
+// task struct. Called by the task drop function so a re-throw via await
+// (which unwinds the drop chain and frees the task before scope_exit_to
+// runs) doesn't leave scope_exit_to dereferencing freed memory. The
+// freed-task range used to be exception_addr (one slot inside the task) —
+// matching any field-of-task pointer is the same call.
+void __cajeta_scope_deregister_task(void* task_ptr, uint64_t task_size) {
+    if (!task_ptr) return;
+    char* lo = (char*) task_ptr;
+    char* hi = lo + task_size;
+    for (struct cajeta_scope_frame* f = *__cajeta_scope_top_ptr();
+            f; f = f->prev) {
+        for (int i = 0; i < f->count; i++) {
+            char* d = (char*) f->entries[i].done_addr;
+            if (d >= lo && d < hi) {
+                f->entries[i].done_addr = NULL;
+                f->entries[i].exception_addr = NULL;
+                f->entries[i].fiber_slot = NULL;
+            }
+        }
+    }
+}
+
 // Wait for every registered task's done flag, then walk again checking
 // exception slots. If any task threw, re-raise the first one found —
 // the doc's "first-throw wins" semantics for scope joins.
@@ -1422,6 +1445,11 @@ static pthread_mutex_t __cajeta_trace_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 static void __cajeta_trace_record(void* throwable) {
     if (!throwable) return;
+    // Skip trace capture inside a fiber. backtrace(3) walks the stack via
+    // frame pointers / DWARF; on a makecontext-allocated fiber stack the
+    // unwinder reaches the makecontext boundary and SIGSEGVs trying to walk
+    // past it. Re-enable when fiber-aware unwinding lands.
+    if (__cajeta_current_fiber) return;
     void* buf[CAJETA_TRACE_MAX_FRAMES];
     int n = backtrace(buf, CAJETA_TRACE_MAX_FRAMES);
     if (n <= 0) return;

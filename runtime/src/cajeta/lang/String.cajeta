@@ -369,7 +369,7 @@ public class String {
             out[i] = this.bytes[begin + i];
             i = i + 1;
         }
-        return new String(out, len);
+        return heap String(#out, len);
     }
 
     /**
@@ -391,7 +391,7 @@ public class String {
             }
             i = i + 1;
         }
-        return new String(out, n);
+        return heap String(#out, n);
     }
 
     /**
@@ -412,7 +412,7 @@ public class String {
             }
             i = i + 1;
         }
-        return new String(out, n);
+        return heap String(#out, n);
     }
 
     /**
@@ -438,7 +438,7 @@ public class String {
             out[i] = this.bytes[start + i];
             i = i + 1;
         }
-        return new String(out, len);
+        return heap String(#out, len);
     }
 
     /**
@@ -508,7 +508,7 @@ public class String {
             dst = dst + 1;
             src = src + 1;
         }
-        return new String(out, outLen);
+        return heap String(#out, outLen);
     }
 
     /**

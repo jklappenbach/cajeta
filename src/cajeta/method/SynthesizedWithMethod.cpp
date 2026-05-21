@@ -49,6 +49,11 @@ namespace cajeta {
     }
 
     void SynthesizedWithMethod::generateCode() {
+        // Idempotent — Phase 2 codegen passes loop until quiescent and may
+        // revisit this method. Without this guard, a second visit appends a
+        // duplicate `entry` block to the function and the JIT bitcode parse
+        // rejects "Found return instr followed by another block with no preds".
+        if (llvmFunction && !llvmFunction->empty()) return;
         // Signature post-prototype: (this, value) -> ptr (to new instance).
         // arg(0) is this; arg(1) is the field's new value.
         llvm::LLVMContext& ctx = *module->getLlvmContext();

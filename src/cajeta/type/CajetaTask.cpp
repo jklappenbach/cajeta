@@ -114,15 +114,26 @@ namespace cajeta {
         // path Method::generateCode runs __cajeta_scope_exit_to BEFORE
         // emitOwnerDrops, so by the time this fires the task is already
         // done and wait is a no-op atomic load. On the throw path, the
-        // unwind in __cajeta_throw fires drops directly (line 1078 of
-        // cajeta_runtime.c) — scope_exit_to doesn't run, so the wait
-        // here is what keeps the carrier from freeing a struct the
-        // worker still touches.
+        // unwind in __cajeta_throw fires drops directly — scope_exit_to
+        // doesn't run, so the wait here is what keeps the carrier from
+        // freeing a struct the worker still touches.
         llvm::Function* waitFn = module->getRuntimeFunction("__cajeta_task_wait");
         if (waitFn) {
             llvm::Value* doneAddr = b.CreateStructGEP(
                 llvmType, task, DONE_FIELD_INDEX, "task_done");
             b.CreateCall(waitFn, {doneAddr});
+        }
+        // Throw path: scope_exit_to runs AFTER drop chain unwind, so any
+        // scope_register entries pointing into this task become dangling
+        // when free() lands. Deregister first to keep scope_exit_to safe.
+        llvm::Function* deregFn = module->getRuntimeFunction(
+            "__cajeta_scope_deregister_task");
+        if (deregFn) {
+            const llvm::DataLayout& dl = lmod->getDataLayout();
+            uint64_t taskSize = dl.getTypeAllocSize(llvmType);
+            llvm::Type* i64Ty = llvm::Type::getInt64Ty(ctx);
+            b.CreateCall(deregFn, {task,
+                llvm::ConstantInt::get(i64Ty, taskSize)});
         }
         llvm::Function* freeFn = module->getRuntimeFunction("__cajeta_free");
         if (freeFn) {

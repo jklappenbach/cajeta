@@ -169,7 +169,16 @@ pids=()
 for ((s=0; s<shards; s++)); do
     out_file="$tmpdir/shard_${s}.out"
     exit_file="$tmpdir/shard_${s}.exit"
-    (
+    # Wrapping in `{ ...; } 2>/dev/null &` rather than `( ...; ) 2>/dev/null &`
+    # is load-bearing: when the backgrounded child dies by signal, bash prints
+    # the "Segmentation fault (core dumped)" diagnostic at the parent's
+    # reap-the-job step, NOT from inside the child. With a `()` subshell, the
+    # redirect lives only inside the subshell — the parent's stderr (where the
+    # diagnostic actually goes) is unchanged. With a `{}` group, the redirect
+    # is owned by the parent shell for the duration of the job, so the diag
+    # lands on /dev/null. The set +m a few lines above is necessary but not
+    # sufficient on bash 5.x; this redirect is the actual suppression.
+    {
         # Disable set -e here so a crashing/failing test binary still falls
         # through to record its exit code (set -e would terminate the
         # subshell mid-flight and the aggregator would see exit_file=?).
@@ -180,7 +189,7 @@ for ((s=0; s<shards; s++)); do
             > "$out_file" 2>&1
         rc=$?
         echo "$rc" > "$exit_file"
-    ) &
+    } 2>/dev/null &
     pids+=($!)
 done
 
@@ -228,15 +237,52 @@ for ((s=0; s<shards; s++)); do
         # alone. Re-run the shard's filter under --gtest_brief=0 to surface
         # the [ RUN ] sequence and find the last test that started before
         # the crash. Cheap because a crashed shard is rare and we only run
-        # its own bucket.
+        # its own bucket. Wrap in an inner subshell whose stderr -> /dev/null
+        # so bash's "Segmentation fault" diagnostic doesn't leak to ours.
         verbose_log="$tmpdir/shard_${s}.verbose"
-        CAJETA_SOURCE_ROOT="$SCRIPT_DIR" "$TEST_BIN" \
-            "--gtest_filter=${shard_filters[$s]}" \
-            --gtest_brief=0 \
-            > "$verbose_log" 2>&1 || true
+        # `{ ...; } 2>/dev/null` — same reasoning as the parallel loop above:
+        # the signal-death diagnostic is printed at the *current* shell's
+        # level, so the redirect must apply to the current shell (group), not
+        # to a child subshell.
+        { CAJETA_SOURCE_ROOT="$SCRIPT_DIR" "$TEST_BIN" \
+              "--gtest_filter=${shard_filters[$s]}" \
+              --gtest_brief=0 \
+              > "$verbose_log" 2>&1 ; } 2>/dev/null || true
         last_run=$(grep -oE '\[ RUN      \] [A-Za-z0-9_./]+' "$verbose_log" \
                     | tail -1 | sed 's/^\[ RUN      \] //')
-        crashed_shards+=("shard ${s} exited ${exit_code}; last test started: ${last_run:-<none>}")
+
+        # Classify the exit code. POSIX convention: 128+N means killed by
+        # signal N. Common ones we surface explicitly so the summary tells
+        # the reader what to look at without consulting `kill -l`.
+        #
+        # exit_code can be empty when the subshell died so hard it never
+        # wrote the .exit file (e.g. SIGKILL from an OOM / parent-shell
+        # tear-down race). Treat empty / non-numeric as "unknown" rather
+        # than letting `[ "" -ge 128 ]` blow up with "integer expected".
+        case "$exit_code" in
+            134) reason="SIGABRT (assertion / abort)" ;;
+            136) reason="SIGFPE (divide-by-zero / FP exception)" ;;
+            137) reason="SIGKILL (OOM or external kill)" ;;
+            139) reason="SIGSEGV (segfault)" ;;
+            1)   reason="exit 1 with no gtest summary (aborted before report)" ;;
+            ''|\?)
+                reason="exit code unrecorded (subshell killed before writing)"
+                ;;
+            *)
+                # Numeric but outside the explicit set above, or anything
+                # else. Guard the range test with a regex check so we never
+                # feed a non-integer to `-ge`.
+                if [[ "$exit_code" =~ ^[0-9]+$ ]] \
+                        && [ "$exit_code" -ge 128 ] \
+                        && [ "$exit_code" -le 192 ]; then
+                    reason="killed by signal $((exit_code - 128))"
+                else
+                    reason="exit ${exit_code}"
+                fi
+                ;;
+        esac
+
+        crashed_shards+=("shard ${s}: ${reason}; last test started: ${last_run:-<none>}")
     fi
 done
 
