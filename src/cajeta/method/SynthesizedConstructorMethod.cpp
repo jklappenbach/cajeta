@@ -84,7 +84,55 @@ namespace cajeta {
             b.CreateStore(zeroVal, fp);
         }
 
-        // Second: store each param into its target field, in declaration
+        // Second: evaluate any per-field initializer (`int32 x = 5;`)
+        // and store, overriding the zero-init from pass one. Runs
+        // BEFORE arg writes so that ctor params still override
+        // initializers when both apply — Java semantics: field
+        // initializers run as part of the implicit-construction
+        // sequence, then the ctor body (here, the synthesized arg
+        // writes) executes. `module->getBuilder()` is what the
+        // initializer's expression codegen consults, so swap the
+        // module's builder onto our local IRBuilder for the
+        // duration (mirrors SynthesizedBuilderFactoryMethod's
+        // @Builder.Default loop).
+        {
+            auto* prevBuilder = module->getBuilder();
+            module->setBuilder(&b);
+            for (auto& prop : parent->getPropertyList()) {
+                if (!prop || prop->isStatic()) continue;
+                auto init = prop->getInitializer();
+                if (!init) continue;
+                int idx = parent->getFieldLlvmIndex(prop);
+                if (idx < 0) continue;
+                llvm::Value* initVal = init->generateCode(module);
+                if (!initVal) continue;
+                llvm::Value* fp = b.CreateStructGEP(
+                    parent->getLlvmType(), thisPtr, (unsigned) idx,
+                    std::string("ctor.init.") + prop->getName());
+                // Coerce when the initializer's natural LLVM type
+                // doesn't match the field slot's width. Mirrors
+                // StackField.cpp's coercion logic and the @Builder.
+                // Default coercion arm in SynthesizedBuilderMethods.
+                CajetaTypePtr ft = prop->getType();
+                llvm::Type* slotTy = ft ? ft->getLlvmType() : nullptr;
+                if (slotTy && initVal->getType() != slotTy) {
+                    llvm::Type* srcTy = initVal->getType();
+                    if (slotTy->isIntegerTy() && srcTy->isIntegerTy()) {
+                        initVal = b.CreateIntCast(initVal, slotTy, /*isSigned=*/true);
+                    } else if (slotTy->isFloatingPointTy() && srcTy->isFloatingPointTy()) {
+                        initVal = b.CreateFPCast(initVal, slotTy);
+                    } else if (slotTy->isFloatingPointTy() && srcTy->isIntegerTy()) {
+                        initVal = b.CreateSIToFP(initVal, slotTy);
+                    } else if (slotTy->isIntegerTy() && srcTy->isFloatingPointTy()) {
+                        initVal = b.CreateFPToSI(initVal, slotTy);
+                    }
+                }
+                b.CreateStore(initVal, fp);
+            }
+            module->setBuilder(prevBuilder);
+        }
+
+        // Third: store each param into its target field, in declaration
         // order. Args at LLVM index i+1 correspond to fields[i].
         for (size_t i = 0; i < fields.size(); ++i) {
             auto& prop = fields[i];

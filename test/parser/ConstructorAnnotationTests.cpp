@@ -332,3 +332,82 @@ TEST(ConstructorAnnotationTests, staticNameAccessAppliesToFactory) {
     auto fn = jit->lookup<int32_t (*)()>("run");
     EXPECT_EQ(fn(), 42);
 }
+
+// Instance-field initializers fire in the synthesized no-args ctor.
+TEST(ConstructorAnnotationTests, instanceFieldInitNoArgsCtor) {
+    auto src =
+        "package test;\n"
+        "@NoArgsConstructor public class P {\n"
+        "    public int32 a = 42;\n"
+        "    public int32 b = 7;\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        P p = heap P();\n"
+        "        return p.a * 100 + p.b;\n"
+        "    }\n"
+        "}\n";
+    auto jit = CajetaJit::compile(src, "test.D");
+    auto fn = jit->lookup<int32_t (*)()>("run");
+    EXPECT_EQ(fn(), 4207);
+}
+
+// @AllArgsConstructor: ctor args override initializers.
+TEST(ConstructorAnnotationTests, instanceFieldInitAllArgsOverridden) {
+    auto src =
+        "package test;\n"
+        "@AllArgsConstructor public class P {\n"
+        "    public int32 a = 42;\n"
+        "    public int32 b = 7;\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        P p = heap P(1, 2);\n"
+        "        return p.a * 100 + p.b;\n"
+        "    }\n"
+        "}\n";
+    auto jit = CajetaJit::compile(src, "test.D");
+    auto fn = jit->lookup<int32_t (*)()>("run");
+    EXPECT_EQ(fn(), 102);
+}
+
+// @RequiredArgsConstructor: non-required fields with initializers
+// pick up their defaults; required fields get the ctor arg.
+TEST(ConstructorAnnotationTests, instanceFieldInitRequiredArgs) {
+    auto src =
+        "package test;\n"
+        "@RequiredArgsConstructor public class P {\n"
+        "    public final int32 id;\n"
+        "    public int32 extra = 99;\n"  // initializer, not required
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        P p = heap P(5);\n"
+        "        return p.id * 100 + p.extra;\n"
+        "    }\n"
+        "}\n";
+    auto jit = CajetaJit::compile(src, "test.D");
+    auto fn = jit->lookup<int32_t (*)()>("run");
+    EXPECT_EQ(fn(), 599);
+}
+
+// Float and boolean initializers.
+TEST(ConstructorAnnotationTests, instanceFieldInitMixedTypes) {
+    auto src =
+        "package test;\n"
+        "@NoArgsConstructor public class P {\n"
+        "    public boolean ready = true;\n"
+        "    public float64 ratio = 0.25;\n"
+        "    public int64 count = 1000;\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int64 run() {\n"
+        "        P p = heap P();\n"
+        "        if (!p.ready) { return -1; }\n"
+        "        return p.count + (int64) (p.ratio * 100.0);\n"
+        "    }\n"
+        "}\n";
+    auto jit = CajetaJit::compile(src, "test.D");
+    auto fn = jit->lookup<int64_t (*)()>("run");
+    EXPECT_EQ(fn(), 1025);
+}
