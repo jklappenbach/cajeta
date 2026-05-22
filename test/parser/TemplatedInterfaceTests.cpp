@@ -135,6 +135,31 @@ TEST(TemplatedInterfaceTests, encodingRejectsWrongImplementsTypeArg) {
     }
 }
 
+// Primitive type arg through a templated interface dispatch.
+// `implements Codec<int32>` and `Codec<int32> c = heap IntCodec()`
+// — the int32 type arg must thread through the implements-clause
+// visitor and the resolveImplementedInterfaces -> instantiate path.
+TEST(TemplatedInterfaceTests, dispatchThroughTemplatedInterfacePrimitiveArg) {
+    auto src =
+        "package test;\n"
+        "public interface Codec<T> {\n"
+        "    int32 encode(T v);\n"
+        "}\n"
+        "public class IntCodec implements Codec<int32> {\n"
+        "    public IntCodec() { }\n"
+        "    public int32 encode(int32 v) { return v + 1; }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Codec<int32> c = heap IntCodec();\n"
+        "        return c.encode(5);\n"
+        "    }\n"
+        "}\n";
+    auto jit = CajetaJit::compile(src, "test.D");
+    auto fn = jit->lookup<int32_t (*)()>("run");
+    EXPECT_EQ(fn(), 6);
+}
+
 // Diagnostic: assignment to a templated-interface local without
 // dispatching through it. If THIS crashes, the fat-pointer assembly
 // is the problem; if it passes, dispatch is.

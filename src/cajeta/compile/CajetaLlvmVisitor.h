@@ -136,16 +136,27 @@ namespace cajeta {
                         }
                         if (leafTargs) {
                             for (auto* targ : leafTargs->typeArgument()) {
-                                // Only the simple `typeType` form is
-                                // supported here; wildcards
-                                // (`? extends Foo`) and primitive-typed
-                                // args land in v2.
+                                // Wildcards (`? extends Foo`) still land
+                                // in v2; class-or-interface and primitive
+                                // typeType are handled below.
                                 if (!targ || !targ->typeType()) continue;
-                                auto* targCoi = targ->typeType()
-                                    ->classOrInterfaceType();
-                                if (!targCoi) continue;
-                                args.push_back(
-                                    QualifiedName::fromContext(targCoi));
+                                if (auto* targCoi = targ->typeType()
+                                        ->classOrInterfaceType()) {
+                                    args.push_back(
+                                        QualifiedName::fromContext(targCoi));
+                                } else if (auto* targPrim = targ->typeType()
+                                        ->primitiveType()) {
+                                    // Primitive-typed arg: build a
+                                    // QualifiedName with no package
+                                    // (primitives live in
+                                    // CAJETA_NATIVE_PACKAGE = "").
+                                    // resolveImplementedInterfaces's
+                                    // canonMap lookup finds the registered
+                                    // primitive by its short name.
+                                    args.push_back(
+                                        QualifiedName::getOrInsert(
+                                            targPrim->getText(), ""));
+                                }
                             }
                         }
                         qImplementedTypeArgs.push_back(std::move(args));
