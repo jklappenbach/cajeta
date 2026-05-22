@@ -10,6 +10,7 @@
 
 #include <gtest/gtest.h>
 #include "../jit/JitTestHelper.h"
+#include "../../src/cajeta/error/Exception.h"
 
 #include <cstdint>
 
@@ -171,4 +172,81 @@ TEST(ConstructorAnnotationTests, noAnnotationKeepsDefaultBehavior) {
     auto jit = CajetaJit::compile(src, "test.D");
     auto fn = jit->lookup<int32_t (*)()>("run");
     EXPECT_EQ(fn(), 7);
+}
+
+// @NoArgsConstructor(access="private") — modifier lands on the synth'd ctor
+// and compilation succeeds (visibility enforcement at construction sites
+// is a future ticket — see Annotations.md § Accessors).
+TEST(ConstructorAnnotationTests, noArgsConstructorAccessPrivate) {
+    auto src =
+        "package test;\n"
+        "@NoArgsConstructor(access=\"private\") public class P {\n"
+        "    public int32 n;\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        P p = heap P();\n"
+        "        return p.n;\n"
+        "    }\n"
+        "}\n";
+    auto jit = CajetaJit::compile(src, "test.D");
+    auto fn = jit->lookup<int32_t (*)()>("run");
+    EXPECT_EQ(fn(), 0);
+}
+
+// @AllArgsConstructor(access="protected") same story.
+TEST(ConstructorAnnotationTests, allArgsConstructorAccessProtected) {
+    auto src =
+        "package test;\n"
+        "@AllArgsConstructor(access=\"protected\") public class P {\n"
+        "    public int32 a;\n"
+        "    public int32 b;\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        P p = heap P(3, 4);\n"
+        "        return p.a + p.b;\n"
+        "    }\n"
+        "}\n";
+    auto jit = CajetaJit::compile(src, "test.D");
+    auto fn = jit->lookup<int32_t (*)()>("run");
+    EXPECT_EQ(fn(), 7);
+}
+
+// @RequiredArgsConstructor(access="public") explicit — works like default.
+TEST(ConstructorAnnotationTests, requiredArgsConstructorAccessPublicExplicit) {
+    auto src =
+        "package test;\n"
+        "@RequiredArgsConstructor(access=\"public\") public class P {\n"
+        "    public final int32 n;\n"
+        "    public int32 ignored;\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        P p = heap P(42);\n"
+        "        return p.n;\n"
+        "    }\n"
+        "}\n";
+    auto jit = CajetaJit::compile(src, "test.D");
+    auto fn = jit->lookup<int32_t (*)()>("run");
+    EXPECT_EQ(fn(), 42);
+}
+
+// Unknown access value rejected with the same error ID the @Getter/@Setter
+// path uses.
+TEST(ConstructorAnnotationTests, accessUnknownRejected) {
+    auto src =
+        "package test;\n"
+        "@NoArgsConstructor(access=\"bogus\") public class P {\n"
+        "    public int32 n;\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() { return 1; }\n"
+        "}\n";
+    try {
+        CajetaJit::compile(src, "test.D");
+        FAIL() << "expected CAJETA_ERROR_ACCESSOR_BAD_ACCESS";
+    } catch (cajeta::Exception& e) {
+        EXPECT_EQ(e.getErrorId(), "CAJETA_ERROR_ACCESSOR_BAD_ACCESS");
+    }
 }

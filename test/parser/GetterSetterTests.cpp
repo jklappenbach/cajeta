@@ -7,6 +7,7 @@
 
 #include <gtest/gtest.h>
 #include "../jit/JitTestHelper.h"
+#include "../../src/cajeta/error/Exception.h"
 
 #include <cstdint>
 
@@ -202,6 +203,130 @@ TEST(GetterSetterTests, getterAndSetterTogether) {
     auto jit = CajetaJit::compile(src, "test.D");
     auto fn = jit->lookup<int32_t (*)()>("run");
     EXPECT_EQ(fn(), 42);
+}
+
+// `@Getter(access="public")` — explicit public, identical behavior to default.
+TEST(GetterSetterTests, accessPublicExplicitWorksLikeDefault) {
+    auto src =
+        "package test;\n"
+        "@Getter(access=\"public\") public class Box {\n"
+        "    public int32 v;\n"
+        "    public Box(int32 x) { this.v = x; }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Box b = heap Box(11);\n"
+        "        return b.v();\n"
+        "    }\n"
+        "}\n";
+    auto jit = CajetaJit::compile(src, "test.D");
+    auto fn = jit->lookup<int32_t (*)()>("run");
+    EXPECT_EQ(fn(), 11);
+}
+
+// `@Getter(access="private")` callable from within the declaring class.
+TEST(GetterSetterTests, accessPrivateCallableFromOwnClass) {
+    auto src =
+        "package test;\n"
+        "@Getter(access=\"private\") public class Box {\n"
+        "    public int32 v;\n"
+        "    public Box(int32 x) { this.v = x; }\n"
+        "    public int32 doubled() { return this.v() * 2; }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Box b = heap Box(7);\n"
+        "        return b.doubled();\n"
+        "    }\n"
+        "}\n";
+    auto jit = CajetaJit::compile(src, "test.D");
+    auto fn = jit->lookup<int32_t (*)()>("run");
+    EXPECT_EQ(fn(), 14);
+}
+
+// `@Getter(access="protected")` records the modifier and compiles.
+// v1 doesn't enforce protected vs. public at call sites (the doc-level
+// promise is the same as for private — modifier lands on the synthesized
+// method, future enforcement work consumes it).
+TEST(GetterSetterTests, accessProtectedCompiles) {
+    auto src =
+        "package test;\n"
+        "@Getter(access=\"protected\") public class Box {\n"
+        "    public int32 v;\n"
+        "    public Box(int32 x) { this.v = x; }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Box b = heap Box(3);\n"
+        "        return b.v();\n"
+        "    }\n"
+        "}\n";
+    auto jit = CajetaJit::compile(src, "test.D");
+    auto fn = jit->lookup<int32_t (*)()>("run");
+    EXPECT_EQ(fn(), 3);
+}
+
+// Unknown `access` value is rejected with a clear error.
+TEST(GetterSetterTests, accessUnknownRejected) {
+    auto src =
+        "package test;\n"
+        "@Getter(access=\"bogus\") public class Box {\n"
+        "    public int32 v;\n"
+        "    public Box(int32 x) { this.v = x; }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() { return 1; }\n"
+        "}\n";
+    try {
+        CajetaJit::compile(src, "test.D");
+        FAIL() << "expected CAJETA_ERROR_ACCESSOR_BAD_ACCESS";
+    } catch (cajeta::Exception& e) {
+        EXPECT_EQ(e.getErrorId(), "CAJETA_ERROR_ACCESSOR_BAD_ACCESS");
+    }
+}
+
+// `@Setter(access="private")` same story as @Getter.
+TEST(GetterSetterTests, setterAccessPrivateCallableFromOwnClass) {
+    auto src =
+        "package test;\n"
+        "@Setter(access=\"private\") public class Box {\n"
+        "    public int32 v;\n"
+        "    public Box() { this.v = 0; }\n"
+        "    public int32 setAndRead(int32 x) {\n"
+        "        this.v(x);\n"
+        "        return this.v;\n"
+        "    }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Box b = heap Box();\n"
+        "        return b.setAndRead(9);\n"
+        "    }\n"
+        "}\n";
+    auto jit = CajetaJit::compile(src, "test.D");
+    auto fn = jit->lookup<int32_t (*)()>("run");
+    EXPECT_EQ(fn(), 9);
+}
+
+// Field-level `@Getter(access="private")` overrides the class-level default
+// (or, here, applies on a class that has no class-level @Getter).
+TEST(GetterSetterTests, fieldLevelAccessPrivate) {
+    auto src =
+        "package test;\n"
+        "public class Person {\n"
+        "    @Getter(access=\"private\") public int32 age;\n"
+        "    public Person(int32 a) { this.age = a; }\n"
+        "    public int32 readAge() { return this.age(); }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Person p = heap Person(33);\n"
+        "        return p.readAge();\n"
+        "    }\n"
+        "}\n";
+    auto jit = CajetaJit::compile(src, "test.D");
+    auto fn = jit->lookup<int32_t (*)()>("run");
+    EXPECT_EQ(fn(), 33);
 }
 
 // Sanity: class without @Getter doesn't accidentally synthesize.

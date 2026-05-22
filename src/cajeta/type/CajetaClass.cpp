@@ -917,6 +917,34 @@ namespace cajeta {
             std::static_pointer_cast<CajetaClass>(shared_from_this())));
     }
 
+    // Resolve `access="…"` (per cajeta-docs/stdlib/Annotations.md §
+    // Accessors) to the matching Modifier bit. Default is PUBLIC.
+    // Unknown values raise CAJETA_ERROR_ACCESSOR_BAD_ACCESS with the
+    // annotation site for the diagnostic context. v1 honors the
+    // four-way `public` / `private` / `protected` / `package`
+    // surface — the modifier lands on the synthesized method, and
+    // any future visibility-enforcement pass at call sites consumes
+    // it. (Today Cajeta does not enforce method visibility at call
+    // sites; Reflection.md already assumes it will.)
+    static Modifier resolveAccessModifier(
+            const AnnotationInstancePtr& ann,
+            const std::string& annotationName,
+            const std::string& classCanonical) {
+        if (!ann) return PUBLIC;
+        std::string v = ann->getString("access");
+        if (v.empty()) return PUBLIC;
+        if (v == "public")    return PUBLIC;
+        if (v == "private")   return PRIVATE;
+        if (v == "protected") return PROTECTED;
+        if (v == "package")   return PACKAGE;
+        throw Exception(
+            "@" + annotationName + "(access=\"" + v + "\") on `"
+            + classCanonical + "` is not a recognized access level; "
+            "supported: \"public\" (default), \"private\", "
+            "\"protected\", \"package\"",
+            "CAJETA_ERROR_ACCESSOR_BAD_ACCESS");
+    }
+
     void CajetaClass::synthesizeGetters() {
         // @Getter at class level (every non-static field gets a getter)
         // OR at field level (only that field). User-declared methods
@@ -925,13 +953,21 @@ namespace cajeta {
         // (see cajeta-docs/stdlib/Annotations.md § Accessors).
         //
         // @Data and @Value bundles also enable class-level @Getter.
-        bool classLevel = findAnnotation("Getter") != nullptr
+        auto classAnn = findAnnotation("Getter");
+        bool classLevel = classAnn != nullptr
                        || findAnnotation("Data")   != nullptr
                        || findAnnotation("Value")  != nullptr;
 
+        // Resolve class-level access default (defaults to PUBLIC; bundle
+        // forms don't expose `access` because @Data/@Value imply the
+        // accessor surface is part of the public contract).
+        Modifier classAccess = resolveAccessModifier(
+            classAnn, "Getter", qName->toCanonical());
+
         for (auto& prop : propertyList) {
             if (!prop || prop->isStatic()) continue;
-            bool fieldLevel = prop->findAnnotation("Getter") != nullptr;
+            auto fieldAnn = prop->findAnnotation("Getter");
+            bool fieldLevel = fieldAnn != nullptr;
             if (!classLevel && !fieldLevel) continue;
 
             // User declared a same-name zero-arg method? Skip.
@@ -945,10 +981,18 @@ namespace cajeta {
             }
             if (exists) continue;
 
-            addMethod(std::make_shared<SynthesizedGetterMethod>(
+            // Field-level @Getter(access=...) wins when present;
+            // otherwise inherit the class-level default.
+            Modifier access = fieldLevel
+                ? resolveAccessModifier(fieldAnn, "Getter", qName->toCanonical())
+                : classAccess;
+
+            auto getter = std::make_shared<SynthesizedGetterMethod>(
                 module,
                 std::static_pointer_cast<CajetaClass>(shared_from_this()),
-                prop));
+                prop);
+            getter->addModifier(access);
+            addMethod(getter);
         }
     }
 
@@ -963,13 +1007,17 @@ namespace cajeta {
         // If both @Value and explicit @Setter are present, @Value wins
         // (immutability contract is the stronger guarantee).
         if (findAnnotation("Value")) return;
-        bool classLevel = findAnnotation("Setter") != nullptr
+        auto classAnn = findAnnotation("Setter");
+        bool classLevel = classAnn != nullptr
                        || findAnnotation("Data")   != nullptr;
+        Modifier classAccess = resolveAccessModifier(
+            classAnn, "Setter", qName->toCanonical());
 
         for (auto& prop : propertyList) {
             if (!prop || prop->isStatic()) continue;
             if (prop->getModifiers().find(FINAL) != prop->getModifiers().end()) continue;
-            bool fieldLevel = prop->findAnnotation("Setter") != nullptr;
+            auto fieldAnn = prop->findAnnotation("Setter");
+            bool fieldLevel = fieldAnn != nullptr;
             if (!classLevel && !fieldLevel) continue;
 
             // User-declared same-name single-arg method? Skip.
@@ -993,10 +1041,15 @@ namespace cajeta {
             }
             if (exists) continue;
 
+            Modifier access = fieldLevel
+                ? resolveAccessModifier(fieldAnn, "Setter", qName->toCanonical())
+                : classAccess;
+
             auto setter = std::make_shared<SynthesizedSetterMethod>(
                 module,
                 std::static_pointer_cast<CajetaClass>(shared_from_this()),
                 prop);
+            setter->addModifier(access);
             // Wire the value parameter's parent now that the shared_ptr
             // exists (FormalParameter.parent is what
             // StructureMetadata::createParameterType reads via parent->
@@ -1078,13 +1131,17 @@ namespace cajeta {
     }
 
     void CajetaClass::synthesizeNoArgsConstructor() {
-        if (!findAnnotation("NoArgsConstructor")) return;
+        auto ann = findAnnotation("NoArgsConstructor");
+        if (!ann) return;
         if (ctorWithArityExists(0)) return;
+        Modifier access = resolveAccessModifier(
+            ann, "NoArgsConstructor", qName->toCanonical());
         std::vector<StructurePropertyPtr> fields;  // empty — zero-init all
         auto ctor = std::make_shared<SynthesizedConstructorMethod>(
             module,
             std::static_pointer_cast<CajetaClass>(shared_from_this()),
             std::move(fields));
+        ctor->addModifier(access);
         ctor->initParameters();
         addMethod(ctor);
     }
@@ -1094,9 +1151,12 @@ namespace cajeta {
         // @AllArgsConstructor. (For @Builder, build()'s body calls
         // the outer's all-args ctor; for @Value, an all-args ctor is
         // the canonical way to initialize an immutable value.)
-        if (!findAnnotation("AllArgsConstructor")
+        auto ann = findAnnotation("AllArgsConstructor");
+        if (!ann
                 && !findAnnotation("Value")
                 && !findAnnotation("Builder")) return;
+        Modifier access = resolveAccessModifier(
+            ann, "AllArgsConstructor", qName->toCanonical());
         std::vector<StructurePropertyPtr> fields;
         for (auto& prop : propertyList) {
             if (!prop || prop->isStatic()) continue;
@@ -1107,14 +1167,17 @@ namespace cajeta {
             module,
             std::static_pointer_cast<CajetaClass>(shared_from_this()),
             std::move(fields));
+        ctor->addModifier(access);
         ctor->initParameters();
         addMethod(ctor);
     }
 
     void CajetaClass::synthesizeRequiredArgsConstructor() {
         // @Data bundle also enables @RequiredArgsConstructor.
-        if (!findAnnotation("RequiredArgsConstructor")
-                && !findAnnotation("Data")) return;
+        auto ann = findAnnotation("RequiredArgsConstructor");
+        if (!ann && !findAnnotation("Data")) return;
+        Modifier access = resolveAccessModifier(
+            ann, "RequiredArgsConstructor", qName->toCanonical());
         // v1 selects `final` fields only. @NonNull (once implemented)
         // will widen the predicate per Lombok's contract.
         std::vector<StructurePropertyPtr> fields;
@@ -1131,6 +1194,7 @@ namespace cajeta {
             module,
             std::static_pointer_cast<CajetaClass>(shared_from_this()),
             std::move(fields));
+        ctor->addModifier(access);
         ctor->initParameters();
         addMethod(ctor);
     }
