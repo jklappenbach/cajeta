@@ -569,10 +569,11 @@ namespace cajeta {
         // Bounds check (when enabled by the compiler flag and the runtime helper is
         // linked): load the size field and branch to fail if `idx >= size` under
         // unsigned comparison (catches negatives). Disabled via `cajeta --bounds=off`.
-        llvm::Function* boundsFail = module->isBoundsCheckEnabled()
-            ? module->getRuntimeFunction("__cajeta_array_bounds_fail")
-            : nullptr;
-        if (boundsFail) {
+        // `--bounds=trap` swaps the abort-helper call for @llvm.trap so the failure
+        // surfaces as SIGILL with no message (matches release builds that don't
+        // want the helper-symbol footprint).
+        BoundsCheck boundsMode = module->getFlags().bounds;
+        if (boundsMode != BoundsCheck::Off) {
             llvm::Value* sizePtr = builder->CreateStructGEP(headerTy, arrayVal,
                 CajetaArray::SIZE_FIELD_INDEX);
             llvm::Value* size = builder->CreateLoad(i64Ty, sizePtr);
@@ -582,7 +583,17 @@ namespace cajeta {
             llvm::BasicBlock* okBB = llvm::BasicBlock::Create(ctx, "bounds_ok", parentFn);
             builder->CreateCondBr(outOfBounds, failBB, okBB);
             builder->SetInsertPoint(failBB);
-            builder->CreateCall(boundsFail, {idx, size});
+            if (boundsMode == BoundsCheck::Trap) {
+                llvm::Function* trapFn = llvm::Intrinsic::getDeclaration(
+                    module->getLlvmModule(), llvm::Intrinsic::trap);
+                builder->CreateCall(trapFn);
+            } else {
+                llvm::Function* boundsFail =
+                    module->getRuntimeFunction("__cajeta_array_bounds_fail");
+                if (boundsFail) {
+                    builder->CreateCall(boundsFail, {idx, size});
+                }
+            }
             builder->CreateUnreachable();
             builder->SetInsertPoint(okBB);
         }

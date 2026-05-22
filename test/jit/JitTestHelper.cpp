@@ -157,6 +157,12 @@ std::unique_ptr<CajetaJit> CajetaJit::compile(
         opts.overflowChecksEnabled
             ? cajeta::OverflowChecks::On
             : cajeta::OverflowChecks::Wrapping;
+    if (opts.boundsCheckMode.has_value()) {
+        compiler->getMutableFlags().bounds = *opts.boundsCheckMode;
+    }
+    if (opts.liveSetMode.has_value()) {
+        compiler->getMutableFlags().liveSet = *opts.liveSetMode;
+    }
     auto archiveRoot = std::filesystem::temp_directory_path()
                      / ("cajeta_archive_" + sourceRoot.filename().string());
     std::filesystem::create_directories(archiveRoot);

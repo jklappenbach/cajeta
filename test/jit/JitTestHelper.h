@@ -8,10 +8,13 @@
 
 #include <map>
 #include <memory>
+#include <optional>
 #include <string>
 
 #include "llvm/ExecutionEngine/Orc/LLJIT.h"
 #include "llvm/ExecutionEngine/Orc/ThreadSafeModule.h"
+
+#include "cajeta/compile/CompilerMode.h"
 
 namespace cajeta {
     class Compiler;
@@ -30,6 +33,14 @@ public:
         // accumulates in uint64, then reinterprets to int64). Tests
         // exercising wrapping with explicit signed types disable it.
         bool overflowChecksEnabled = true;
+        // Bounds-check mode (--bounds=on|off|trap). Overrides the
+        // boolean above when set; left empty defaults to on/off based
+        // on boundsCheckEnabled.
+        std::optional<cajeta::BoundsCheck> boundsCheckMode;
+        // Live-set tracking (--live-set=strict|bounded|off). Defaults
+        // to Strict (the Debug default); tests verifying the off path
+        // skip the runtime registration emit.
+        std::optional<cajeta::LiveSet> liveSetMode;
     };
 
     // Compile `source` (a Cajeta compilation unit) into a JIT instance. The class

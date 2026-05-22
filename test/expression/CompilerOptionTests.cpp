@@ -582,6 +582,48 @@ TEST(CompilerOptionTests, overflowChecksIncDecNormalWorks) {
     EXPECT_EQ(fn(), 6);
 }
 
+// --bounds=trap: out-of-bounds index traps via @llvm.trap instead of
+// calling the abort-helper. Observable as SIGILL rather than SIGABRT
+// with the "out of bounds" message.
+TEST(CompilerOptionTests, boundsCheckTrapVariantTraps) {
+    auto src =
+        "package test;\n"
+        "public final class O {\n"
+        "    public static int32 run() {\n"
+        "        int32[] arr = new int32[3];\n"
+        "        return arr[5];\n"
+        "    }\n"
+        "}\n";
+    CajetaJit::Options opts;
+    opts.boundsCheckMode = cajeta::BoundsCheck::Trap;
+    auto jit = CajetaJit::compile(src, "test.O", opts);
+    auto fn = jit->lookup<int32_t (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    EXPECT_EXIT(fn(), ::testing::KilledBySignal(SIGILL), "");
+}
+
+// --live-set=off: __cajeta_live_set_add is not called after malloc,
+// so the live-set runtime structure remains empty. Observable via
+// the runtime function existing but not being invoked.
+TEST(CompilerOptionTests, liveSetOffSkipsRegistration) {
+    auto src =
+        "package test;\n"
+        "public final class O {\n"
+        "    public int32 v;\n"
+        "    public O() { this.v = 7; }\n"
+        "    public static int32 run() {\n"
+        "        O o = heap O();\n"
+        "        return o.v;\n"
+        "    }\n"
+        "}\n";
+    CajetaJit::Options opts;
+    opts.liveSetMode = cajeta::LiveSet::Off;
+    auto jit = CajetaJit::compile(src, "test.O", opts);
+    auto fn = jit->lookup<int32_t (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    EXPECT_EQ(fn(), 7);
+}
+
 // --overflow-checks=off: signed overflow wraps silently.
 TEST(CompilerOptionTests, overflowChecksOffWrapsSilently) {
     auto src =
