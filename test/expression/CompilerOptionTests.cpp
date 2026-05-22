@@ -480,6 +480,108 @@ TEST(CompilerOptionTests, overflowChecksUnaryNegUnsignedDoesNotTrap) {
     EXPECT_EQ(fn(), -1);
 }
 
+// --overflow-checks=on: prefix ++ traps at INT_MAX.
+TEST(CompilerOptionTests, overflowChecksPrefixIncTraps) {
+    auto src =
+        "package test;\n"
+        "public final class O {\n"
+        "    public static int32 run() {\n"
+        "        int32 a = 2147483647;\n"
+        "        ++a;\n"
+        "        return a;\n"
+        "    }\n"
+        "}\n";
+    auto jit = CajetaJit::compile(src, "test.O");
+    auto fn = jit->lookup<int32_t (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    EXPECT_EXIT(fn(), ::testing::KilledBySignal(SIGILL), "");
+}
+
+// --overflow-checks=on: prefix -- traps at INT_MIN.
+TEST(CompilerOptionTests, overflowChecksPrefixDecTraps) {
+    auto src =
+        "package test;\n"
+        "public final class O {\n"
+        "    public static int32 run() {\n"
+        "        int32 a = -2147483648;\n"
+        "        --a;\n"
+        "        return a;\n"
+        "    }\n"
+        "}\n";
+    auto jit = CajetaJit::compile(src, "test.O");
+    auto fn = jit->lookup<int32_t (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    EXPECT_EXIT(fn(), ::testing::KilledBySignal(SIGILL), "");
+}
+
+// --overflow-checks=on: postfix ++ traps at INT_MAX.
+TEST(CompilerOptionTests, overflowChecksPostfixIncTraps) {
+    auto src =
+        "package test;\n"
+        "public final class O {\n"
+        "    public static int32 run() {\n"
+        "        int32 a = 2147483647;\n"
+        "        a++;\n"
+        "        return a;\n"
+        "    }\n"
+        "}\n";
+    auto jit = CajetaJit::compile(src, "test.O");
+    auto fn = jit->lookup<int32_t (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    EXPECT_EXIT(fn(), ::testing::KilledBySignal(SIGILL), "");
+}
+
+// --overflow-checks=on: postfix -- traps at INT_MIN.
+TEST(CompilerOptionTests, overflowChecksPostfixDecTraps) {
+    auto src =
+        "package test;\n"
+        "public final class O {\n"
+        "    public static int32 run() {\n"
+        "        int32 a = -2147483648;\n"
+        "        a--;\n"
+        "        return a;\n"
+        "    }\n"
+        "}\n";
+    auto jit = CajetaJit::compile(src, "test.O");
+    auto fn = jit->lookup<int32_t (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    EXPECT_EXIT(fn(), ::testing::KilledBySignal(SIGILL), "");
+}
+
+// --overflow-checks=on: ++ / -- on uint*, modular wrap, no trap.
+TEST(CompilerOptionTests, overflowChecksIncDecUnsignedDoesNotTrap) {
+    auto src =
+        "package test;\n"
+        "public final class O {\n"
+        "    public static int32 run() {\n"
+        "        uint32 a = (uint32) 4294967295;\n"  // UINT32_MAX
+        "        a++;\n"                              // wraps to 0
+        "        return (int32) a;\n"
+        "    }\n"
+        "}\n";
+    auto jit = CajetaJit::compile(src, "test.O");
+    auto fn = jit->lookup<int32_t (*)()>("run");
+    EXPECT_EQ(fn(), 0);
+}
+
+// --overflow-checks=on: normal ++/-- on int32 (no overflow) work.
+TEST(CompilerOptionTests, overflowChecksIncDecNormalWorks) {
+    auto src =
+        "package test;\n"
+        "public final class O {\n"
+        "    public static int32 run() {\n"
+        "        int32 a = 5;\n"
+        "        ++a;\n"
+        "        a++;\n"
+        "        --a;\n"
+        "        return a;\n"
+        "    }\n"
+        "}\n";
+    auto jit = CajetaJit::compile(src, "test.O");
+    auto fn = jit->lookup<int32_t (*)()>("run");
+    EXPECT_EQ(fn(), 6);
+}
+
 // --overflow-checks=off: signed overflow wraps silently.
 TEST(CompilerOptionTests, overflowChecksOffWrapsSilently) {
     auto src =

@@ -680,13 +680,30 @@ namespace cajeta {
                 llvm::Value* one = ty->isFloatingPointTy()
                     ? (llvm::Value*) llvm::ConstantFP::get(ty, 1.0)
                     : (llvm::Value*) llvm::ConstantInt::get(ty, 1);
+                // Same signed-overflow gate as unary -: trap on
+                // INT_MAX++ / INT_MIN--. Unsigned wraps modularly.
+                bool isSignedOperand = false;
+                if (!children.empty()) {
+                    if (auto ce = dynamic_pointer_cast<Expression>(children[0])) {
+                        auto t = ce->getResolvedType();
+                        if (!t) { ce->resolveTypes(module); t = ce->getResolvedType(); }
+                        if (t) isSignedOperand = (t->getTypeFlags() & SIGNED_FLAG) != 0;
+                    }
+                }
+                bool emitOfTrap = !ty->isFloatingPointTy() && ty->isIntegerTy()
+                    && isSignedOperand
+                    && module->getFlags().overflowChecks == OverflowChecks::On;
                 llvm::Value* newVal;
                 if (op == PREFIX_OP_INC) {
-                    newVal = ty->isFloatingPointTy() ? builder->CreateFAdd(val, one)
-                                                     : builder->CreateAdd(val, one);
+                    if (ty->isFloatingPointTy()) newVal = builder->CreateFAdd(val, one);
+                    else if (emitOfTrap) newVal = emitSignedOverflowOp(module, *builder,
+                        llvm::Intrinsic::sadd_with_overflow, val, one, "ofc.preinc");
+                    else newVal = builder->CreateAdd(val, one);
                 } else {
-                    newVal = ty->isFloatingPointTy() ? builder->CreateFSub(val, one)
-                                                     : builder->CreateSub(val, one);
+                    if (ty->isFloatingPointTy()) newVal = builder->CreateFSub(val, one);
+                    else if (emitOfTrap) newVal = emitSignedOverflowOp(module, *builder,
+                        llvm::Intrinsic::ssub_with_overflow, val, one, "ofc.predec");
+                    else newVal = builder->CreateSub(val, one);
                 }
                 builder->CreateStore(newVal, addr);
                 return newVal;
@@ -758,13 +775,29 @@ namespace cajeta {
         llvm::Value* one = ty->isFloatingPointTy()
             ? (llvm::Value*) llvm::ConstantFP::get(ty, 1.0)
             : (llvm::Value*) llvm::ConstantInt::get(ty, 1);
+        // Same signed-overflow gate as prefix INC/DEC.
+        bool isSignedOperand = false;
+        if (!children.empty()) {
+            if (auto ce = dynamic_pointer_cast<Expression>(children[0])) {
+                auto t = ce->getResolvedType();
+                if (!t) { ce->resolveTypes(module); t = ce->getResolvedType(); }
+                if (t) isSignedOperand = (t->getTypeFlags() & SIGNED_FLAG) != 0;
+            }
+        }
+        bool emitOfTrap = !ty->isFloatingPointTy() && ty->isIntegerTy()
+            && isSignedOperand
+            && module->getFlags().overflowChecks == OverflowChecks::On;
         llvm::Value* newVal;
         if (op == POSTFIX_OP_INC) {
-            newVal = ty->isFloatingPointTy() ? builder->CreateFAdd(val, one)
-                                             : builder->CreateAdd(val, one);
+            if (ty->isFloatingPointTy()) newVal = builder->CreateFAdd(val, one);
+            else if (emitOfTrap) newVal = emitSignedOverflowOp(module, *builder,
+                llvm::Intrinsic::sadd_with_overflow, val, one, "ofc.postinc");
+            else newVal = builder->CreateAdd(val, one);
         } else {
-            newVal = ty->isFloatingPointTy() ? builder->CreateFSub(val, one)
-                                             : builder->CreateSub(val, one);
+            if (ty->isFloatingPointTy()) newVal = builder->CreateFSub(val, one);
+            else if (emitOfTrap) newVal = emitSignedOverflowOp(module, *builder,
+                llvm::Intrinsic::ssub_with_overflow, val, one, "ofc.postdec");
+            else newVal = builder->CreateSub(val, one);
         }
         builder->CreateStore(newVal, addr);
         // Postfix yields the *original* value, not the updated one.
