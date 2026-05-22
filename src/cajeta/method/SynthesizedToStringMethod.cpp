@@ -189,10 +189,16 @@ namespace cajeta {
 
     SynthesizedToStringMethod::SynthesizedToStringMethod(
             CajetaModulePtr module, CajetaClassPtr parent,
-            ToStringFormat format)
+            ToStringFormat format,
+            std::vector<StructurePropertyPtr> selectedFields,
+            bool hasExplicitFieldSelection,
+            bool callSuper)
         : Method(module, std::string("toString"),
                  CajetaType::of("String"), parent),
-          format(format) {
+          format(format),
+          selectedFields(std::move(selectedFields)),
+          hasExplicitFieldSelection(hasExplicitFieldSelection),
+          callSuper(callSuper) {
         this->parent = parent;
     }
 
@@ -238,13 +244,67 @@ namespace cajeta {
 
         llvm::Value* acc = emitLiteralPtr(b, lmod, opener, "open");
 
-        // Walk fields in declaration order. Skip @ToString.Exclude'd
-        // fields and skip statics. Insert "," between adjacent fields.
+        // Field selection:
+        //   - hasExplicitFieldSelection: walk EXACTLY `selectedFields`
+        //     in order (the `of={...}` allowlist form, including the
+        //     `of={}` "render zero fields" case). @Exclude on
+        //     allowlisted fields is ignored — explicit inclusion wins.
+        //   - otherwise: walk declared non-static, non-@Exclude fields
+        //     in declaration order (default behavior).
         std::vector<StructurePropertyPtr> rendered;
-        for (auto& prop : parent->getPropertyList()) {
-            if (!prop || prop->isStatic()) continue;
-            if (prop->findAnnotation("Exclude") != nullptr) continue;
-            rendered.push_back(prop);
+        if (hasExplicitFieldSelection) {
+            rendered = selectedFields;
+        } else {
+            for (auto& prop : parent->getPropertyList()) {
+                if (!prop || prop->isStatic()) continue;
+                if (prop->findAnnotation("Exclude") != nullptr) continue;
+                rendered.push_back(prop);
+            }
+        }
+
+        // `callSuper`: emit `super=<super.toString()>` as the first
+        // rendered entry. Direct call to the immediate parent's
+        // toString function (NOT vtable lookup — vtable would land on
+        // OUR own toString and recurse). Parent's prototype landed
+        // before ours, so its LLVM function exists by now. Skips
+        // silently when there's no super class beyond Object (Object
+        // itself has no synthesized toString in v1).
+        bool superEmitted = false;
+        if (callSuper) {
+            CajetaClassPtr superClass;
+            for (auto& sup : parent->getSuperClasses()) {
+                if (!sup) continue;
+                auto qn = sup->getQName();
+                if (qn && qn->toCanonical() == "cajeta.lang.Object") continue;
+                superClass = sup;
+                break;
+            }
+            MethodPtr superToString;
+            if (superClass) superToString = findToStringMethod(superClass);
+            if (superToString && superToString->getLlvmFunction()) {
+                llvm::Function* sFn = CajetaModule::ensureFunctionInModule(
+                    lmod, superToString->getLlvmFunction());
+
+                // Label depends on format:
+                //   PROPERTIES: `super=`
+                //   JSON:       `"super":`
+                std::string superLabel = isJson
+                    ? std::string("\"super\":")
+                    : std::string("super=");
+                llvm::Value* lbl = emitLiteralPtr(b, lmod, superLabel, "supLbl");
+                acc = b.CreateCall(strConcat, {acc, lbl}, "ts.acc");
+
+                // Direct call: parent's toString(this) — returns the
+                // same char*-shape every other synthesizer arm produces,
+                // so it concats straight into `acc`. JSON nesting needs
+                // the parent to ALSO be @ToString(format=TO_STRING_JSON)
+                // for the result to remain valid JSON — same caveat as
+                // class-ref recursion.
+                llvm::Value* superStr = b.CreateCall(
+                    sFn, {thisPtr}, "ts.supcall");
+                acc = b.CreateCall(strConcat, {acc, superStr}, "ts.acc");
+                superEmitted = true;
+            }
         }
 
         for (size_t i = 0; i < rendered.size(); ++i) {
@@ -253,8 +313,10 @@ namespace cajeta {
             ToStringKind kind = classifyToStringFieldOrReject(
                 parent, prop->getName(), ftype);
 
-            // Separator before all but the first field.
-            if (i > 0) {
+            // Separator before all but the first emitted entry.
+            // `superEmitted` counts as a prior entry, so when callSuper
+            // produced output the very first field gets a leading comma.
+            if (i > 0 || superEmitted) {
                 llvm::Value* comma = emitLiteralPtr(b, lmod, ",", "sep");
                 acc = b.CreateCall(strConcat, {acc, comma}, "ts.acc");
             }

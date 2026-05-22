@@ -1102,10 +1102,47 @@ namespace cajeta {
             return;
         }
 
+        // `of={...}` allowlist: pin the rendered fields and their
+        // order. Unknown names are rejected here so the diagnostic
+        // points at the annotation site, not at a confusing missing-
+        // field error later. An EMPTY `of={}` means "render zero
+        // fields" — distinct from "no `of` supplied" (which means
+        // walk all non-static, non-@Exclude fields in declaration
+        // order). The findArg/getStringList split is what
+        // distinguishes the two: findArg("of") returns non-null
+        // only when the user wrote `of=...`.
+        std::vector<StructurePropertyPtr> selectedFields;
+        bool hasOfList = ann && ann->findArg("of") != nullptr;
+        if (hasOfList) {
+            const auto& ofNames = ann->getStringList("of");
+            for (auto& name : ofNames) {
+                StructurePropertyPtr match;
+                for (auto& prop : propertyList) {
+                    if (!prop || prop->isStatic()) continue;
+                    if (prop->getName() == name) { match = prop; break; }
+                }
+                if (!match) {
+                    throw Exception(
+                        "@ToString(of={...}) on `"
+                        + qName->toCanonical()
+                        + "` names unknown field `" + name + "`. "
+                        "Allowlisted field names must match a "
+                        "non-static field declared on the class.",
+                        "CAJETA_ERROR_TOSTRING_UNKNOWN_FIELD");
+                }
+                selectedFields.push_back(match);
+            }
+        }
+
+        bool callSuper = ann ? ann->getBool("callSuper", false) : false;
+
         addMethod(std::make_shared<SynthesizedToStringMethod>(
             module,
             std::static_pointer_cast<CajetaClass>(shared_from_this()),
-            resolvedFormat));
+            resolvedFormat,
+            std::move(selectedFields),
+            hasOfList,
+            callSuper));
     }
 
     // Returns true if the unlabeled constructor map already holds a
@@ -1413,7 +1450,28 @@ namespace cajeta {
     }
 
     void CajetaClass::synthesizeBuilder() {
-        if (!findAnnotation("Builder")) return;
+        auto ann = findAnnotation("Builder");
+        if (!ann) return;
+
+        // Naming customizations (Lombok parity):
+        //   - builderMethodName: static factory on outer, default "builder"
+        //   - buildMethodName:   build() on Builder,      default "build"
+        //   - setterPrefix:      chained setter prefix,    default "" (bare field name)
+        // setterPrefix capitalizes the field name's first letter when
+        // present, so `prefix="with"` + field `name` becomes `withName`.
+        std::string builderMethodName = ann->getString("builderMethodName");
+        if (builderMethodName.empty()) builderMethodName = "builder";
+        std::string buildMethodName = ann->getString("buildMethodName");
+        if (buildMethodName.empty()) buildMethodName = "build";
+        std::string setterPrefix = ann->getString("setterPrefix");
+
+        auto prefixedSetterName = [&](const std::string& fieldName) {
+            if (setterPrefix.empty() || fieldName.empty()) return fieldName;
+            std::string out = setterPrefix;
+            out += (char) std::toupper((unsigned char) fieldName[0]);
+            if (fieldName.size() > 1) out.append(fieldName.substr(1));
+            return out;
+        };
 
         // Step 1: gather outer's non-static fields (in declaration order).
         std::vector<StructurePropertyPtr> outerFields;
@@ -1469,7 +1527,8 @@ namespace cajeta {
         for (auto& mirror : builder->getPropertyList()) {
             if (!mirror) continue;
             auto setter = std::make_shared<SynthesizedBuilderSetterMethod>(
-                module, builder, mirror);
+                module, builder, mirror,
+                prefixedSetterName(mirror->getName()));
             setter->initParameter();
             builder->addMethod(setter);
         }
@@ -1481,7 +1540,8 @@ namespace cajeta {
         {
             auto buildMethod = std::make_shared<SynthesizedBuildMethod>(
                 module, builder,
-                std::static_pointer_cast<CajetaClass>(shared_from_this()));
+                std::static_pointer_cast<CajetaClass>(shared_from_this()),
+                buildMethodName);
             builder->addMethod(buildMethod);
         }
 
@@ -1492,11 +1552,13 @@ namespace cajeta {
         // prototypeBuilt = true above before calling synthesizeBuilder).
         builder->generatePrototype();
 
-        // Step 9: add `static Outer.Builder builder()` to outer.
+        // Step 9: add `static Outer.Builder builder()` to outer
+        // (renamed if `builderMethodName` was supplied).
         auto factory = std::make_shared<SynthesizedBuilderFactoryMethod>(
             module,
             std::static_pointer_cast<CajetaClass>(shared_from_this()),
-            builder);
+            builder,
+            builderMethodName);
         addMethod(factory);
         // We're past our own method-prototype loop; manually prototype
         // the factory so its LLVM function lands in the module.

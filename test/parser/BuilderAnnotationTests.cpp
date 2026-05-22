@@ -13,6 +13,7 @@
 
 #include <gtest/gtest.h>
 #include "../jit/JitTestHelper.h"
+#include "../../src/cajeta/error/Exception.h"
 
 #include <cstdint>
 
@@ -144,4 +145,91 @@ TEST(BuilderAnnotationTests, emptyClass) {
     auto jit = CajetaJit::compile(src, "test.D");
     auto fn = jit->lookup<int32_t (*)()>("run");
     EXPECT_EQ(fn(), 42);
+}
+
+// `@Builder(builderMethodName="newBuilder")` renames the static factory
+// on Outer. The Builder class shape is unchanged.
+TEST(BuilderAnnotationTests, builderMethodNameCustom) {
+    auto src =
+        "package test;\n"
+        "@Builder(builderMethodName=\"newBuilder\") public class Cfg {\n"
+        "    public int32 x;\n"
+        "    public int32 y;\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Cfg c = Cfg.newBuilder()\n"
+        "            .x(5)\n"
+        "            .y(7)\n"
+        "            .build();\n"
+        "        return c.x + c.y;\n"
+        "    }\n"
+        "}\n";
+    auto jit = CajetaJit::compile(src, "test.D");
+    auto fn = jit->lookup<int32_t (*)()>("run");
+    EXPECT_EQ(fn(), 12);
+}
+
+// `@Builder(buildMethodName="create")` renames build() on Builder.
+TEST(BuilderAnnotationTests, buildMethodNameCustom) {
+    auto src =
+        "package test;\n"
+        "@Builder(buildMethodName=\"create\") public class Cfg {\n"
+        "    public int32 x;\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Cfg c = Cfg.builder().x(9).create();\n"
+        "        return c.x;\n"
+        "    }\n"
+        "}\n";
+    auto jit = CajetaJit::compile(src, "test.D");
+    auto fn = jit->lookup<int32_t (*)()>("run");
+    EXPECT_EQ(fn(), 9);
+}
+
+// `@Builder(setterPrefix="with")` prepends the prefix and capitalizes the
+// field name on each chained setter (Lombok parity: setterPrefix="with"
+// turns `name(v)` into `withName(v)`).
+TEST(BuilderAnnotationTests, setterPrefixWith) {
+    auto src =
+        "package test;\n"
+        "@Builder(setterPrefix=\"with\") public class Cfg {\n"
+        "    public int32 x;\n"
+        "    public int32 y;\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Cfg c = Cfg.builder()\n"
+        "            .withX(3)\n"
+        "            .withY(8)\n"
+        "            .build();\n"
+        "        return c.x + c.y;\n"
+        "    }\n"
+        "}\n";
+    auto jit = CajetaJit::compile(src, "test.D");
+    auto fn = jit->lookup<int32_t (*)()>("run");
+    EXPECT_EQ(fn(), 11);
+}
+
+// All three customizations composed.
+TEST(BuilderAnnotationTests, allNamingCustomizationsComposed) {
+    auto src =
+        "package test;\n"
+        "@Builder("
+        "    builderMethodName=\"of\","
+        "    buildMethodName=\"make\","
+        "    setterPrefix=\"set\""
+        ") public class Cfg {\n"
+        "    public int32 v;\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Cfg c = Cfg.of().setV(99).make();\n"
+        "        return c.v;\n"
+        "    }\n"
+        "}\n";
+    auto jit = CajetaJit::compile(src, "test.D");
+    auto fn = jit->lookup<int32_t (*)()>("run");
+    EXPECT_EQ(fn(), 99);
 }

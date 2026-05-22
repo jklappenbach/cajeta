@@ -375,3 +375,109 @@ TEST(ToStringTests, noAnnotationCompilesNormally) {
     auto fn = jit->lookup<int32_t (*)()>("run");
     EXPECT_EQ(fn(), 5);
 }
+
+// `@ToString(of={"a","b"})` — allowlist of fields. Only listed fields
+// are rendered, in the listed order (independent of declaration order).
+TEST(ToStringTests, ofAllowlistOrdersByListedFields) {
+    auto src =
+        "package test;\n"
+        "@ToString(of={\"b\",\"a\"}) public class P {\n"
+        "    public int32 a;\n"
+        "    public int32 b;\n"
+        "    public int32 c;\n"
+        "    public P(int32 av, int32 bv, int32 cv) {\n"
+        "        this.a = av; this.b = bv; this.c = cv;\n"
+        "    }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static String run() {\n"
+        "        P p = heap P(1, 2, 3);\n"
+        "        return p.toString();\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runToString(src), "P(b=2,a=1)");
+}
+
+// `@ToString(of={...})` empty allowlist renders no fields.
+TEST(ToStringTests, ofEmptyAllowlistOmitsAllFields) {
+    auto src =
+        "package test;\n"
+        "@ToString(of={}) public class P {\n"
+        "    public int32 a;\n"
+        "    public P() { this.a = 7; }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static String run() {\n"
+        "        P p = heap P();\n"
+        "        return p.toString();\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runToString(src), "P()");
+}
+
+// `@ToString(callSuper=true)` includes `super=Parent(...)` as the first
+// rendered field, with the parent's toString output verbatim (parent
+// should also have @ToString or a hand-written toString for this to
+// produce a useful result).
+//
+// Note: this test uses a literal `super(N)` argument because passing a
+// ctor parameter via `super(param)` hits a pre-existing IR-emission
+// bug (signature mismatch — observed under SuperProbe, deferred).
+// The shape under test here is the toString synth's callSuper path,
+// which is orthogonal.
+TEST(ToStringTests, callSuperPrependsParentToString) {
+    auto src =
+        "package test;\n"
+        "@ToString public class Base {\n"
+        "    public int32 b;\n"
+        "    public Base() { this.b = 3; }\n"
+        "}\n"
+        "@ToString(callSuper=true) public class Child extends Base {\n"
+        "    public int32 c;\n"
+        "    public Child(int32 cv) { this.c = cv; }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static String run() {\n"
+        "        Child x = heap Child(7);\n"
+        "        return x.toString();\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runToString(src), "Child(super=Base(b=3),c=7)");
+}
+
+// JSON format honors `of` too.
+TEST(ToStringTests, jsonOfAllowlist) {
+    auto src =
+        "package test;\n"
+        "@ToString(format=\"TO_STRING_JSON\", of={\"a\"}) public class P {\n"
+        "    public int32 a;\n"
+        "    public int32 b;\n"
+        "    public P(int32 av, int32 bv) { this.a = av; this.b = bv; }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static String run() {\n"
+        "        P p = heap P(11, 22);\n"
+        "        return p.toString();\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runToString(src), "{\"a\":11}");
+}
+
+// `of` referencing an unknown field is rejected at synthesis time.
+TEST(ToStringTests, ofUnknownFieldRejected) {
+    auto src =
+        "package test;\n"
+        "@ToString(of={\"nope\"}) public class P {\n"
+        "    public int32 a;\n"
+        "    public P() { this.a = 0; }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() { return 1; }\n"
+        "}\n";
+    try {
+        CajetaJit::compile(src, "test.D");
+        FAIL() << "expected CAJETA_ERROR_TOSTRING_UNKNOWN_FIELD";
+    } catch (cajeta::Exception& e) {
+        EXPECT_EQ(e.getErrorId(), "CAJETA_ERROR_TOSTRING_UNKNOWN_FIELD");
+    }
+}

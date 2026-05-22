@@ -31,9 +31,13 @@ namespace cajeta {
 
     class SynthesizedBuilderSetterMethod : public Method {
     public:
+        // `methodName` is the chained setter's name on Builder. With
+        // @Builder(setterPrefix="with") on a field `name`, the caller
+        // passes `withName`; otherwise the bare field name.
         SynthesizedBuilderSetterMethod(CajetaModulePtr module,
                                         CajetaClassPtr builder,
-                                        StructurePropertyPtr field);
+                                        StructurePropertyPtr field,
+                                        const std::string& methodName);
 
         void initParameter();
         void generateCode() override;
@@ -44,9 +48,12 @@ namespace cajeta {
 
     class SynthesizedBuildMethod : public Method {
     public:
+        // `methodName` defaults to "build" (Lombok parity) but
+        // @Builder(buildMethodName="...") renames it.
         SynthesizedBuildMethod(CajetaModulePtr module,
                                 CajetaClassPtr builder,
-                                CajetaClassPtr outer);
+                                CajetaClassPtr outer,
+                                const std::string& methodName = "build");
 
         void generateCode() override;
 
@@ -56,9 +63,12 @@ namespace cajeta {
 
     class SynthesizedBuilderFactoryMethod : public Method {
     public:
+        // `methodName` defaults to "builder" but
+        // @Builder(builderMethodName="...") renames it.
         SynthesizedBuilderFactoryMethod(CajetaModulePtr module,
                                          CajetaClassPtr outer,
-                                         CajetaClassPtr builder);
+                                         CajetaClassPtr builder,
+                                         const std::string& methodName = "builder");
 
         void generateCode() override;
 

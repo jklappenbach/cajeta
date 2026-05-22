@@ -17,11 +17,12 @@ namespace cajeta {
 
     SynthesizedBuilderSetterMethod::SynthesizedBuilderSetterMethod(
             CajetaModulePtr module, CajetaClassPtr builder,
-            StructurePropertyPtr field)
+            StructurePropertyPtr field,
+            const std::string& methodName)
         // Return type is the Builder class itself (for `return this;`
         // chaining). Method's class-pass-by-pointer rule emits this as
         // a `ptr` return in the LLVM signature.
-        : Method(module, field->getName(),
+        : Method(module, methodName,
                  std::static_pointer_cast<CajetaType>(builder),
                  builder),
           field(field) {
@@ -66,8 +67,9 @@ namespace cajeta {
 
     SynthesizedBuildMethod::SynthesizedBuildMethod(
             CajetaModulePtr module, CajetaClassPtr builder,
-            CajetaClassPtr outer)
-        : Method(module, std::string("build"),
+            CajetaClassPtr outer,
+            const std::string& methodName)
+        : Method(module, methodName,
                  std::static_pointer_cast<CajetaType>(outer),
                  builder),
           outer(outer) {
@@ -217,8 +219,9 @@ namespace cajeta {
 
     SynthesizedBuilderFactoryMethod::SynthesizedBuilderFactoryMethod(
             CajetaModulePtr module, CajetaClassPtr outer,
-            CajetaClassPtr builder)
-        : Method(module, std::string("builder"),
+            CajetaClassPtr builder,
+            const std::string& methodName)
+        : Method(module, methodName,
                  std::static_pointer_cast<CajetaType>(builder),
                  outer),
           builder(builder) {

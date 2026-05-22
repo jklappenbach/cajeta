@@ -29,6 +29,8 @@
 #pragma once
 
 #include "Method.h"
+#include "../type/StructureProperty.h"
+#include <vector>
 
 namespace cajeta {
     class CajetaModule;
@@ -41,13 +43,28 @@ namespace cajeta {
 
     class SynthesizedToStringMethod : public Method {
     public:
+        // `selectedFields` + `hasExplicitFieldSelection`: when the flag
+        // is true, the synthesizer walks EXACTLY `selectedFields` in
+        // order (the `of={...}` allowlist form, including the
+        // degenerate `of={}` "render no fields" case). When false,
+        // the synthesizer walks the parent's declared non-static,
+        // non-@Exclude fields in declaration order (default).
+        //
+        // `callSuper`: when true, emit `super=<super.toString()>` as
+        // the first rendered entry. Mirrors Lombok's @ToString(callSuper=true).
         SynthesizedToStringMethod(CajetaModulePtr module,
                                    CajetaClassPtr parent,
-                                   ToStringFormat format = ToStringFormat::PROPERTIES);
+                                   ToStringFormat format = ToStringFormat::PROPERTIES,
+                                   std::vector<StructurePropertyPtr> selectedFields = {},
+                                   bool hasExplicitFieldSelection = false,
+                                   bool callSuper = false);
 
         void generateCode() override;
 
     private:
         ToStringFormat format;
+        std::vector<StructurePropertyPtr> selectedFields;
+        bool hasExplicitFieldSelection;
+        bool callSuper;
     };
 }
