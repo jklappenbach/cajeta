@@ -47,6 +47,30 @@ namespace cajeta {
         b.SetInsertPoint(okBB);
     }
 
+    // Emit a signed-overflow-checked binary op via the matching
+    // llvm.s{add,sub,mul}.with.overflow intrinsic. The intrinsic
+    // returns a {iN, i1}; we extract field 1 (the overflow bit),
+    // route through emitUbTrap, and return field 0 (the wrapping
+    // result). Operands must be the same integer type. Used by
+    // ADD/SUB/MUL when CompilerFlags::overflowChecks is On AND the
+    // operand type is signed (per OverflowChecks::On docs in
+    // CompilerModes.md). Wrapping / Off modes bypass this helper
+    // entirely and use the plain CreateAdd/Sub/Mul path.
+    static llvm::Value* emitSignedOverflowOp(CajetaModulePtr module,
+                                             llvm::IRBuilder<>& b,
+                                             llvm::Intrinsic::ID intrinId,
+                                             llvm::Value* l,
+                                             llvm::Value* r,
+                                             const std::string& label) {
+        auto* lmod = module->getLlvmModule();
+        llvm::Function* fn = llvm::Intrinsic::getDeclaration(
+            lmod, intrinId, {l->getType()});
+        llvm::Value* pair = b.CreateCall(fn, {l, r}, label + ".pair");
+        llvm::Value* ofBit = b.CreateExtractValue(pair, {1}, label + ".of");
+        emitUbTrap(module, b, ofBit, label);
+        return b.CreateExtractValue(pair, {0}, label + ".val");
+    }
+
     // fp4/fp6/fp8 have no native arithmetic on most targets; widen sub-fp16 operands
     // to fp16, perform the op there, then truncate back to the result type.
     static llvm::Value* emitFpBinOp(CajetaModulePtr module, llvm::Value* lhs, llvm::Value* rhs,
@@ -1049,24 +1073,73 @@ namespace cajeta {
                     result = sPtr;
                     break;
                 }
+                // Operand-side signed-ness from the AST's resolvedType
+                // (not getTypeFlagsOf, which keys on the LLVM type and
+                // can't distinguish int32 from uint32 — both lower to
+                // i32). Used by the +/-/* overflow-checked path below.
+                auto signedFromAst = [](ExpressionPtr a, ExpressionPtr b) -> bool {
+                    auto pick = [](ExpressionPtr e) -> long {
+                        if (!e) return 0;
+                        auto t = e->getResolvedType();
+                        return t ? (long) t->getTypeFlags() : 0;
+                    };
+                    return ((pick(a) | pick(b)) & SIGNED_FLAG) != 0;
+                };
                 auto [pl, pr] = coerceArithPair(module, l, r);
-                result = pl->getType()->isFloatingPointTy()
-                    ? emitFpBinOp(module, pl, pr, llvm::Instruction::FAdd)
-                    : builder->CreateAdd(pl, pr);
+                if (pl->getType()->isFloatingPointTy()) {
+                    result = emitFpBinOp(module, pl, pr, llvm::Instruction::FAdd);
+                } else if (module->getFlags().overflowChecks == OverflowChecks::On
+                        && pl->getType()->isIntegerTy()
+                        && signedFromAst(lhsAst, rhsAst)) {
+                    result = emitSignedOverflowOp(module, *builder,
+                        llvm::Intrinsic::sadd_with_overflow, pl, pr, "ofc.add");
+                } else {
+                    result = builder->CreateAdd(pl, pr);
+                }
                 break;
             }
             case BINARY_OP_SUB: {
                 auto [l, r] = coerceArithPair(module, loadL(lhs), loadR(rhs));
-                result = l->getType()->isFloatingPointTy()
-                    ? emitFpBinOp(module, l, r, llvm::Instruction::FSub)
-                    : builder->CreateSub(l, r);
+                auto signedFromAst = [](ExpressionPtr a, ExpressionPtr b) -> bool {
+                    auto pick = [](ExpressionPtr e) -> long {
+                        if (!e) return 0;
+                        auto t = e->getResolvedType();
+                        return t ? (long) t->getTypeFlags() : 0;
+                    };
+                    return ((pick(a) | pick(b)) & SIGNED_FLAG) != 0;
+                };
+                if (l->getType()->isFloatingPointTy()) {
+                    result = emitFpBinOp(module, l, r, llvm::Instruction::FSub);
+                } else if (module->getFlags().overflowChecks == OverflowChecks::On
+                        && l->getType()->isIntegerTy()
+                        && signedFromAst(lhsAst, rhsAst)) {
+                    result = emitSignedOverflowOp(module, *builder,
+                        llvm::Intrinsic::ssub_with_overflow, l, r, "ofc.sub");
+                } else {
+                    result = builder->CreateSub(l, r);
+                }
                 break;
             }
             case BINARY_OP_MUL: {
                 auto [l, r] = coerceArithPair(module, loadL(lhs), loadR(rhs));
-                result = l->getType()->isFloatingPointTy()
-                    ? emitFpBinOp(module, l, r, llvm::Instruction::FMul)
-                    : builder->CreateMul(l, r);
+                auto signedFromAst = [](ExpressionPtr a, ExpressionPtr b) -> bool {
+                    auto pick = [](ExpressionPtr e) -> long {
+                        if (!e) return 0;
+                        auto t = e->getResolvedType();
+                        return t ? (long) t->getTypeFlags() : 0;
+                    };
+                    return ((pick(a) | pick(b)) & SIGNED_FLAG) != 0;
+                };
+                if (l->getType()->isFloatingPointTy()) {
+                    result = emitFpBinOp(module, l, r, llvm::Instruction::FMul);
+                } else if (module->getFlags().overflowChecks == OverflowChecks::On
+                        && l->getType()->isIntegerTy()
+                        && signedFromAst(lhsAst, rhsAst)) {
+                    result = emitSignedOverflowOp(module, *builder,
+                        llvm::Intrinsic::smul_with_overflow, l, r, "ofc.mul");
+                } else {
+                    result = builder->CreateMul(l, r);
+                }
                 break;
             }
             case BINARY_OP_DIV: {

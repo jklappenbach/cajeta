@@ -215,6 +215,98 @@ TEST(CompilerOptionTests, ubTrapsValidDivisionWorks) {
     EXPECT_EQ(fn(), 7);
 }
 
+// --overflow-checks=on: signed add at int32 max + 1 traps.
+TEST(CompilerOptionTests, overflowChecksSignedAddTraps) {
+    auto src =
+        "package test;\n"
+        "public final class O {\n"
+        "    public static int32 run() {\n"
+        "        int32 a = 2147483647;\n"  // INT32_MAX
+        "        int32 b = 1;\n"
+        "        return a + b;\n"           // wraps without check, traps with
+        "    }\n"
+        "}\n";
+    CajetaJit::Options opts;
+    opts.overflowChecksEnabled = true;
+    auto jit = CajetaJit::compile(src, "test.O", opts);
+    auto fn = jit->lookup<int32_t (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    EXPECT_EXIT(fn(), ::testing::KilledBySignal(SIGILL), "");
+}
+
+// --overflow-checks=on: signed sub at int32 min - 1 traps.
+TEST(CompilerOptionTests, overflowChecksSignedSubTraps) {
+    auto src =
+        "package test;\n"
+        "public final class O {\n"
+        "    public static int32 run() {\n"
+        "        int32 a = -2147483648;\n"  // INT32_MIN
+        "        int32 b = 1;\n"
+        "        return a - b;\n"
+        "    }\n"
+        "}\n";
+    CajetaJit::Options opts;
+    opts.overflowChecksEnabled = true;
+    auto jit = CajetaJit::compile(src, "test.O", opts);
+    auto fn = jit->lookup<int32_t (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    EXPECT_EXIT(fn(), ::testing::KilledBySignal(SIGILL), "");
+}
+
+// --overflow-checks=on: signed mul int32 max * 2 traps.
+TEST(CompilerOptionTests, overflowChecksSignedMulTraps) {
+    auto src =
+        "package test;\n"
+        "public final class O {\n"
+        "    public static int32 run() {\n"
+        "        int32 a = 1073741824;\n"  // 2^30
+        "        int32 b = 4;\n"            // 2^30 * 4 == 2^32 overflows
+        "        return a * b;\n"
+        "    }\n"
+        "}\n";
+    CajetaJit::Options opts;
+    opts.overflowChecksEnabled = true;
+    auto jit = CajetaJit::compile(src, "test.O", opts);
+    auto fn = jit->lookup<int32_t (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    EXPECT_EXIT(fn(), ::testing::KilledBySignal(SIGILL), "");
+}
+
+// --overflow-checks=on: in-range arithmetic still produces correct results.
+TEST(CompilerOptionTests, overflowChecksValidArithmeticWorks) {
+    auto src =
+        "package test;\n"
+        "public final class O {\n"
+        "    public static int32 run() {\n"
+        "        int32 a = 100;\n"
+        "        int32 b = 5;\n"
+        "        return (a + b) * (a - b);\n"  // 105 * 95 == 9975
+        "    }\n"
+        "}\n";
+    CajetaJit::Options opts;
+    opts.overflowChecksEnabled = true;
+    auto jit = CajetaJit::compile(src, "test.O", opts);
+    auto fn = jit->lookup<int32_t (*)()>("run");
+    EXPECT_EQ(fn(), 9975);
+}
+
+// --overflow-checks=off (default): signed overflow wraps silently.
+TEST(CompilerOptionTests, overflowChecksOffWrapsSilently) {
+    auto src =
+        "package test;\n"
+        "public final class O {\n"
+        "    public static int32 run() {\n"
+        "        int32 a = 2147483647;\n"  // INT32_MAX
+        "        int32 b = 1;\n"
+        "        return a + b;\n"           // expected: -2147483648 (wrap)
+        "    }\n"
+        "}\n";
+    auto jit = CajetaJit::compile(src, "test.O");
+    auto fn = jit->lookup<int32_t (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    EXPECT_EQ(fn(), INT32_MIN);
+}
+
 // --ub-traps=on: in-range shift still works.
 TEST(CompilerOptionTests, ubTrapsValidShiftWorks) {
     auto src =

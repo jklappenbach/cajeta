@@ -24,6 +24,12 @@ class CajetaJit {
 public:
     struct Options {
         bool boundsCheckEnabled = true;
+        // Signed-overflow trap (--overflow-checks=on). Defaults off
+        // so the existing stdlib hash code — which intentionally
+        // wraps in pure-Cajeta arithmetic until wrapping-syntax
+        // lands — keeps working under JIT. Tests that exercise the
+        // trap explicitly opt in.
+        bool overflowChecksEnabled = false;
     };
 
     // Compile `source` (a Cajeta compilation unit) into a JIT instance. The class
