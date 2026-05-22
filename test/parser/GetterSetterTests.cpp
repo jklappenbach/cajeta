@@ -244,11 +244,54 @@ TEST(GetterSetterTests, accessPrivateCallableFromOwnClass) {
     EXPECT_EQ(fn(), 14);
 }
 
-// `@Getter(access="protected")` records the modifier and compiles.
-// v1 doesn't enforce protected vs. public at call sites (the doc-level
-// promise is the same as for private — modifier lands on the synthesized
-// method, future enforcement work consumes it).
-TEST(GetterSetterTests, accessProtectedCompiles) {
+// `@Getter(access="protected")` is callable from within the declaring
+// class (own-class access — protected always permits self).
+TEST(GetterSetterTests, accessProtectedCallableFromOwnClass) {
+    auto src =
+        "package test;\n"
+        "@Getter(access=\"protected\") public class Box {\n"
+        "    public int32 v;\n"
+        "    public Box(int32 x) { this.v = x; }\n"
+        "    public int32 readSelf() { return this.v(); }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Box b = heap Box(3);\n"
+        "        return b.readSelf();\n"
+        "    }\n"
+        "}\n";
+    auto jit = CajetaJit::compile(src, "test.D");
+    auto fn = jit->lookup<int32_t (*)()>("run");
+    EXPECT_EQ(fn(), 3);
+}
+
+// `@Getter(access="private")` is NOT callable cross-class — calling
+// `b.v()` from outside the declaring class is a compile-time error.
+TEST(GetterSetterTests, accessPrivateRejectedCrossClass) {
+    auto src =
+        "package test;\n"
+        "@Getter(access=\"private\") public class Box {\n"
+        "    public int32 v;\n"
+        "    public Box(int32 x) { this.v = x; }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Box b = heap Box(3);\n"
+        "        return b.v();\n"  // private accessor — not visible here.
+        "    }\n"
+        "}\n";
+    try {
+        CajetaJit::compile(src, "test.D");
+        FAIL() << "expected CAJETA_ERROR_METHOD_NOT_ACCESSIBLE";
+    } catch (cajeta::Exception& e) {
+        EXPECT_EQ(e.getErrorId(), "CAJETA_ERROR_METHOD_NOT_ACCESSIBLE");
+    }
+}
+
+// `@Getter(access="protected")` is callable from same-package classes
+// even when not a subclass — Java semantics: protected = same-package
+// OR descendant.
+TEST(GetterSetterTests, accessProtectedSamePackageAllowed) {
     auto src =
         "package test;\n"
         "@Getter(access=\"protected\") public class Box {\n"
@@ -258,12 +301,36 @@ TEST(GetterSetterTests, accessProtectedCompiles) {
         "public final class D {\n"
         "    public static int32 run() {\n"
         "        Box b = heap Box(3);\n"
-        "        return b.v();\n"
+        "        return b.v();\n"  // same package: OK
         "    }\n"
         "}\n";
     auto jit = CajetaJit::compile(src, "test.D");
     auto fn = jit->lookup<int32_t (*)()>("run");
     EXPECT_EQ(fn(), 3);
+}
+
+// `@Getter(access="protected")` IS callable from a subclass (Java
+// semantics: protected is visible to descendants).
+TEST(GetterSetterTests, accessProtectedAllowedFromSubclass) {
+    auto src =
+        "package test;\n"
+        "@Getter(access=\"protected\") public class Box {\n"
+        "    public int32 v;\n"
+        "    public Box(int32 x) { this.v = x; }\n"
+        "}\n"
+        "public class Heir extends Box {\n"
+        "    public Heir(int32 x) { this.v = x; }\n"
+        "    public int32 readInherited() { return this.v(); }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Heir h = heap Heir(5);\n"
+        "        return h.readInherited();\n"
+        "    }\n"
+        "}\n";
+    auto jit = CajetaJit::compile(src, "test.D");
+    auto fn = jit->lookup<int32_t (*)()>("run");
+    EXPECT_EQ(fn(), 5);
 }
 
 // Unknown `access` value is rejected with a clear error.

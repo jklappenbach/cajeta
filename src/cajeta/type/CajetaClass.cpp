@@ -3456,6 +3456,74 @@ namespace cajeta {
         if (!method) {
             return nullptr;
         }
+        // Visibility enforcement. Caller's class is the top of the
+        // module's structure stack (Method::generateCode pushes the
+        // enclosing class before emitting the body). The check is
+        // skipped when the caller frame is empty (e.g. compiler-
+        // synthesized free-function emission) — treating that as
+        // "trusted" rather than "external" matches the intent that
+        // synthesized code doesn't get blocked by user-facing
+        // access rules. Same-class via `this` is always allowed
+        // (callerCls == methodOwner). Cross-class private is
+        // forbidden. Protected is allowed for same-class, same-
+        // package, or descendant. Package is allowed for same
+        // package. Public is unrestricted. Constructors are
+        // exempt here — the ctor-staticName factory path and the
+        // synthesized factory invoke ctors directly, and a more
+        // nuanced ctor-access policy lives with the new() site.
+        if (!isConstructor) {
+            auto& sstack = callerModule
+                ? callerModule->getStructureStack()
+                : module->getStructureStack();
+            CajetaClassPtr callerCls = sstack.empty()
+                ? nullptr : sstack.back();
+            CajetaClassPtr methodOwner = method->getParent();
+            if (callerCls && methodOwner) {
+                auto& mods = method->getModifiers();
+                bool isPriv = mods.find(PRIVATE) != mods.end();
+                bool isProt = mods.find(PROTECTED) != mods.end();
+                bool isPkg  = mods.find(PACKAGE) != mods.end();
+                bool sameClass = callerCls.get() == methodOwner.get();
+                bool samePkg = false;
+                if (callerCls->getQName() && methodOwner->getQName()) {
+                    samePkg = callerCls->getQName()->getPackageName()
+                        == methodOwner->getQName()->getPackageName();
+                }
+                // Walk callerCls's superClasses chain to see whether
+                // methodOwner appears anywhere upstream.
+                std::function<bool(CajetaClass*)> isDescendant =
+                    [&](CajetaClass* c) -> bool {
+                        if (!c) return false;
+                        if (c == methodOwner.get()) return true;
+                        for (auto& sup : c->getSuperClasses()) {
+                            if (isDescendant(sup.get())) return true;
+                        }
+                        return false;
+                    };
+                bool isSubclass = !sameClass && isDescendant(callerCls.get());
+
+                bool allowed = true;
+                if (isPriv) {
+                    allowed = sameClass;
+                } else if (isProt) {
+                    allowed = sameClass || isSubclass || samePkg;
+                } else if (isPkg) {
+                    allowed = samePkg;
+                }
+                if (!allowed) {
+                    std::string accessName =
+                        isPriv ? "private" :
+                        isProt ? "protected" :
+                        isPkg  ? "package" : "";
+                    throw Exception(
+                        std::string("method `") + methodOwner->getQName()->toCanonical()
+                        + "." + methodName + "` is " + accessName
+                        + " and not accessible from `"
+                        + callerCls->getQName()->toCanonical() + "`",
+                        "CAJETA_ERROR_METHOD_NOT_ACCESSIBLE");
+                }
+            }
+        }
         // Method::generatePrototype injects `this` as the first parameter for non-static
         // methods; prepend the instance pointer here so the call's argument list matches.
         bool isStatic = method->getModifiers().find(STATIC) != method->getModifiers().end();
