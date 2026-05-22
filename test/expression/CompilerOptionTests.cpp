@@ -363,6 +363,74 @@ TEST(CompilerOptionTests, overflowChecksUnsignedFnvShape) {
     EXPECT_EQ(fn(), (int64_t) h);
 }
 
+// --overflow-checks=on: compound += traps on signed overflow.
+TEST(CompilerOptionTests, overflowChecksCompoundAddTraps) {
+    auto src =
+        "package test;\n"
+        "public final class O {\n"
+        "    public static int32 run() {\n"
+        "        int32 a = 2147483647;\n"
+        "        a += 1;\n"
+        "        return a;\n"
+        "    }\n"
+        "}\n";
+    auto jit = CajetaJit::compile(src, "test.O");
+    auto fn = jit->lookup<int32_t (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    EXPECT_EXIT(fn(), ::testing::KilledBySignal(SIGILL), "");
+}
+
+// --overflow-checks=on: compound -= traps.
+TEST(CompilerOptionTests, overflowChecksCompoundSubTraps) {
+    auto src =
+        "package test;\n"
+        "public final class O {\n"
+        "    public static int32 run() {\n"
+        "        int32 a = -2147483648;\n"
+        "        a -= 1;\n"
+        "        return a;\n"
+        "    }\n"
+        "}\n";
+    auto jit = CajetaJit::compile(src, "test.O");
+    auto fn = jit->lookup<int32_t (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    EXPECT_EXIT(fn(), ::testing::KilledBySignal(SIGILL), "");
+}
+
+// --overflow-checks=on: compound *= traps.
+TEST(CompilerOptionTests, overflowChecksCompoundMulTraps) {
+    auto src =
+        "package test;\n"
+        "public final class O {\n"
+        "    public static int32 run() {\n"
+        "        int32 a = 1073741824;\n"
+        "        a *= 4;\n"
+        "        return a;\n"
+        "    }\n"
+        "}\n";
+    auto jit = CajetaJit::compile(src, "test.O");
+    auto fn = jit->lookup<int32_t (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    EXPECT_EXIT(fn(), ::testing::KilledBySignal(SIGILL), "");
+}
+
+// --overflow-checks=on: compound assignment on uint32 wraps silently.
+TEST(CompilerOptionTests, overflowChecksCompoundUnsignedDoesNotTrap) {
+    auto src =
+        "package test;\n"
+        "public final class O {\n"
+        "    public static int32 run() {\n"
+        "        uint32 a = (uint32) 4294967295;\n"  // UINT32_MAX
+        "        a += (uint32) 1;\n"
+        "        return (int32) a;\n"                 // wraps to 0
+        "    }\n"
+        "}\n";
+    auto jit = CajetaJit::compile(src, "test.O");
+    auto fn = jit->lookup<int32_t (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    EXPECT_EQ(fn(), 0);
+}
+
 // --overflow-checks=off: signed overflow wraps silently.
 TEST(CompilerOptionTests, overflowChecksOffWrapsSilently) {
     auto src =
