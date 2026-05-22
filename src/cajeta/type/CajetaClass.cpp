@@ -480,6 +480,11 @@ namespace cajeta {
             canonicalMap[qName->getTypeName()] = static_pointer_cast<CajetaType>(shared_from_this());
             typeFlags = STRUCT_FLAG | USER_DEFINED_FLAG;
             module->getStructures()[canonical] = static_pointer_cast<CajetaClass>(shared_from_this());
+            // Resolve interface-extends-interface chains so an
+            // implementing class's vtable can walk transitively
+            // through getSuperClasses() and pick up parent-interface
+            // method obligations.
+            resolveSuperClasses();
             for (auto& m : methods) {
                 m.second->generatePrototype();
             }
@@ -812,7 +817,26 @@ namespace cajeta {
             return s;
         };
 
-        for (auto& iface : implementedInterfaces) {
+        // Walk implementedInterfaces transitively so a per-(impl, iface)
+        // vtable is synthesized for EACH ancestor interface in the
+        // implements chain — not just the directly-named ones. Without
+        // this, `class C implements Codec<int32>` where
+        // `interface Codec<T> extends Reader<T>` builds a vtable for
+        // Codec<int32> only; an upcast `Reader<int32> r = c` finds no
+        // vtable, stores null in the fat pointer, and dispatch through
+        // r crashes.
+        std::set<CajetaClass*> visited;
+        std::vector<CajetaClassPtr> allIfaces;
+        std::function<void(CajetaClassPtr)> collect = [&](CajetaClassPtr iface) {
+            if (!iface || !visited.insert(iface.get()).second) return;
+            allIfaces.push_back(iface);
+            for (auto& parent : iface->getSuperClasses()) {
+                if (parent && parent->isInterface()) collect(parent);
+            }
+        };
+        for (auto& direct : implementedInterfaces) collect(direct);
+
+        for (auto& iface : allIfaces) {
             std::string ifaceCanonical = iface->getQName()->toCanonical();
 
             // Walk interface methods in declaration order; for each one
@@ -2922,28 +2946,37 @@ namespace cajeta {
             }
             return nullptr;
         };
-        for (auto& iface : implementedInterfaces) {
+        // Walk implementedInterfaces transitively: each implemented
+        // interface contributes its OWN method obligations, AND its
+        // extends chain (parent interfaces) contributes theirs. Without
+        // the transitive walk, `class C implements Codec<int32>` where
+        // `interface Codec<T> extends Reader<T>` would not register a
+        // vtable entry for `Reader<int32>::read`, so dispatch through
+        // a Reader<int32>-typed reference would fail at runtime.
+        std::set<CajetaClass*> visitedIfaces;
+        std::function<void(CajetaClassPtr)> walkIface = [&](CajetaClassPtr iface) {
+            if (!iface) return;
+            if (!visitedIfaces.insert(iface.get()).second) return;
             for (auto& m : iface->getMethodList()) {
                 if (m->isConstructor()) continue;
                 if (m->getModifiers().find(STATIC) != m->getModifiers().end()) continue;
                 if (auto concrete = findConcreteFor(m)) {
-                    // Key by the interface method's canonical; value points
-                    // to the class's concrete implementation. The vtable
-                    // entry's function is concrete->getLlvmFunction().
                     uniqueByCanonical[m->toCanonical(/*labeled=*/false)] = concrete;
                     continue;
                 }
-                // Unsatisfied interface obligation. Before this enforcement,
-                // the vtable silently omitted the entry and the implementing
-                // class compiled successfully — dispatch through the
-                // interface produced null/garbage at runtime. Raise now so
-                // the failure is caught at the source declaration.
                 std::string msg = "class '" + qName->toCanonical()
                     + "' implements interface '" + iface->getQName()->toCanonical()
                     + "' but does not provide '" + m->toCanonical(/*labeled=*/false)
                     + "'";
                 throw Exception(msg, "CAJETA_ERROR_INTERFACE_NOT_IMPLEMENTED");
             }
+            // Recurse through interface-extends-interface chain.
+            for (auto& parent : iface->getSuperClasses()) {
+                if (parent && parent->isInterface()) walkIface(parent);
+            }
+        };
+        for (auto& iface : implementedInterfaces) {
+            walkIface(iface);
         }
 
         // Abstract-method enforcement: every abstract method declared on

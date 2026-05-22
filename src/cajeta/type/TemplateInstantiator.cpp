@@ -225,8 +225,27 @@ namespace cajeta {
             auto prevActive = CajetaModule::getActiveModule();
             CajetaModule::setActiveModule(module);
 
+            // Interface grammar: `(EXTENDS typeList)?` — interfaces
+            // don't have an `implements` clause, so we only walk the
+            // single optional typeList. Substitution is already active
+            // (pushed above), so `extends Reader<T>` instantiates to
+            // `Reader<int32>` when this template is being instantiated
+            // for T=int32.
             list<QualifiedNamePtr> ifExtended;
             list<QualifiedNamePtr> ifImplemented;
+            if (auto* tl = ifDecl->typeList()) {
+                for (auto* tt : tl->typeType()) {
+                    auto* coi = tt->classOrInterfaceType();
+                    if (!coi) continue;
+                    CajetaTypePtr resolvedSuper = CajetaType::fromContext(tt, module);
+                    auto superIface = dynamic_pointer_cast<CajetaClass>(resolvedSuper);
+                    if (superIface) {
+                        ifExtended.push_back(superIface->getQName());
+                    } else {
+                        ifExtended.push_back(QualifiedName::fromContext(coi));
+                    }
+                }
+            }
             auto ifInst = make_shared<CajetaClass>(
                 module, ifInstQName, ifExtended, ifImplemented);
             ifInst->setIsInterface(true);
@@ -333,34 +352,88 @@ namespace cajeta {
         auto prevActiveForSupers = CajetaModule::getActiveModule();
         CajetaModule::setActiveModule(module);
 
-        // Resolve the extends/implements clauses. For each typeType we call
-        // fromContext, which knows how to instantiate parameterized supers
-        // (`Container<T>` with T bound by the current substitution) and
-        // returns the concrete CajetaClassPtr. We then push the resolved
-        // class's qName so resolveSuperClasses' structures-map lookup finds
-        // the right instantiation (e.g. `test.Container<int32>`) rather
-        // than the bare template.
+        // Resolve the extends/implements clauses. The grammar produces
+        // typeLists in source order under `classDeclaration`. Match
+        // each to its preceding keyword (EXTENDS / IMPLEMENTS / PERMITS)
+        // by token index — same logic the top-level visitor uses. For
+        // each typeType we call fromContext, which knows how to
+        // instantiate parameterized supers/interfaces with the current
+        // substitution active.
         list<QualifiedNamePtr> instExtended;
         list<QualifiedNamePtr> instImplemented;
+        list<vector<QualifiedNamePtr>> instImplementedTypeArgs;
+        auto kwIdx = [](antlr4::tree::TerminalNode* n) -> ssize_t {
+            return n && n->getSymbol() ? (ssize_t) n->getSymbol()->getTokenIndex() : -1;
+        };
+        ssize_t extKw = kwIdx(classDecl->EXTENDS());
+        ssize_t implKw = kwIdx(classDecl->IMPLEMENTS());
+        ssize_t permKw = kwIdx(classDecl->PERMITS());
         for (auto* tl : classDecl->typeList()) {
+            ssize_t tlIdx = tl->getStart()
+                ? (ssize_t) tl->getStart()->getTokenIndex() : -1;
+            ssize_t best = -1;
+            int which = -1; // 0=extends, 1=implements, 2=permits
+            if (extKw >= 0 && extKw < tlIdx && extKw > best) { best = extKw; which = 0; }
+            if (implKw >= 0 && implKw < tlIdx && implKw > best) { best = implKw; which = 1; }
+            if (permKw >= 0 && permKw < tlIdx && permKw > best) { best = permKw; which = 2; }
+            if (which < 0 || which == 2) continue;
             for (auto* tt : tl->typeType()) {
-                if (auto* coi = tt->classOrInterfaceType()) {
+                auto* coi = tt->classOrInterfaceType();
+                if (!coi) continue;
+                if (which == 0) {
                     CajetaTypePtr resolvedSuper = CajetaType::fromContext(tt, module);
                     auto superClass = dynamic_pointer_cast<CajetaClass>(resolvedSuper);
                     if (superClass) {
                         instExtended.push_back(superClass->getQName());
                     } else {
-                        // Fallback: bare name. resolveSuperClasses also walks
-                        // by short name, which handles plain `extends Animal`
-                        // forward references.
                         instExtended.push_back(QualifiedName::fromContext(coi));
                     }
+                } else { // implements
+                    // Capture the qName of the (possibly instantiated)
+                    // interface plus its resolved type args. Mirrors
+                    // the top-level visitor's qImplementedTypeArgs path
+                    // so `Holder<T>` in the template captures the
+                    // substituted args (e.g. `{int32}` when Box<T> is
+                    // being instantiated to Box<int32>).
+                    instImplemented.push_back(QualifiedName::fromContext(coi));
+                    vector<QualifiedNamePtr> argsCaptured;
+                    auto targsList = coi->typeArguments();
+                    CajetaParser::TypeArgumentsContext* leafTargs = nullptr;
+                    for (auto* ta : targsList) {
+                        if (ta) leafTargs = ta;
+                    }
+                    if (leafTargs) {
+                        for (auto* targ : leafTargs->typeArgument()) {
+                            if (!targ || !targ->typeType()) continue;
+                            auto* targTt = targ->typeType();
+                            if (auto* targCoi = targTt->classOrInterfaceType()) {
+                                // Substitute the template type parameter
+                                // (e.g. T) with the concrete arg if it
+                                // matches; otherwise keep the identifier.
+                                string argName = targCoi->getText();
+                                auto sit = subst.find(argName);
+                                if (sit != subst.end() && sit->second
+                                        && sit->second->getQName()) {
+                                    argsCaptured.push_back(sit->second->getQName());
+                                } else {
+                                    argsCaptured.push_back(
+                                        QualifiedName::fromContext(targCoi));
+                                }
+                            } else if (auto* targPrim = targTt->primitiveType()) {
+                                argsCaptured.push_back(
+                                    QualifiedName::getOrInsert(
+                                        targPrim->getText(), ""));
+                            }
+                        }
+                    }
+                    instImplementedTypeArgs.push_back(std::move(argsCaptured));
                 }
             }
         }
         CajetaModule::setActiveModule(prevActiveForSupers);
 
         auto inst = make_shared<CajetaClass>(module, instQName, instExtended, instImplemented);
+        inst->setQImplementedTypeArgs(std::move(instImplementedTypeArgs));
         inst->setTypeParameters(typeParameters);   // retained for debugging / introspection
         inst->setTypeArguments(args);
         // Remember which template produced this instantiation. Used by
