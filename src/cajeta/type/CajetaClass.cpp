@@ -1020,24 +1020,18 @@ namespace cajeta {
         bool bundleEnabled = findAnnotation("Data") || findAnnotation("Value");
         if (!ann && !bundleEnabled) return;
 
-        // Reject deferred format options early so the user gets a
-        // clear error rather than a silent fall-through to default.
+        // Resolve the requested format. Empty / TO_STRING_PROPERTIES =>
+        // PROPERTIES. TO_STRING_JSON => JSON. Anything else is rejected.
         std::string format = ann ? ann->getString("format") : std::string();
-        if (!format.empty() && format != "TO_STRING_PROPERTIES") {
-            if (format == "TO_STRING_JSON") {
-                throw Exception(
-                    "@ToString(format=TO_STRING_JSON) on `"
-                    + qName->toCanonical() + "` is deferred to the "
-                    "`cajeta.codec.json` library (Features.md S-1102). "
-                    "Use the default TO_STRING_PROPERTIES format until "
-                    "that lands, or declare toString() manually.",
-                    "CAJETA_ERROR_TOSTRING_JSON_NOT_IMPLEMENTED");
-            }
+        ToStringFormat resolvedFormat = ToStringFormat::PROPERTIES;
+        if (format == "TO_STRING_JSON") {
+            resolvedFormat = ToStringFormat::JSON;
+        } else if (!format.empty() && format != "TO_STRING_PROPERTIES") {
             throw Exception(
                 "@ToString(format=" + format + ") on `"
                 + qName->toCanonical()
                 + "` is not a recognized format; supported in v1: "
-                "TO_STRING_PROPERTIES",
+                "TO_STRING_PROPERTIES, TO_STRING_JSON",
                 "CAJETA_ERROR_TOSTRING_BAD_FORMAT");
         }
 
@@ -1057,7 +1051,8 @@ namespace cajeta {
 
         addMethod(std::make_shared<SynthesizedToStringMethod>(
             module,
-            std::static_pointer_cast<CajetaClass>(shared_from_this())));
+            std::static_pointer_cast<CajetaClass>(shared_from_this()),
+            resolvedFormat));
     }
 
     // Returns true if the unlabeled constructor map already holds a

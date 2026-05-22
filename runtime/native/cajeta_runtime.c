@@ -2747,6 +2747,54 @@ char* __cajeta_str_concat(const char* a, const char* b) {
     return out;
 }
 
+// JSON-quote and escape `data[0..n)` into a freshly-malloc'd
+// null-terminated string of the form `"…escaped…"`. Escapes per
+// RFC 8259 §7: `"` → `\"`, `\` → `\\`, control chars (0x00..0x1F)
+// → `\uXXXX` (with short forms `\b \f \n \r \t` for the common
+// five). The data range is allowed to contain embedded NULs.
+// A null data pointer renders as the literal token `null` (no
+// quotes) so callers don't need a separate null-check arm.
+char* __cajeta_json_quote_buf(const char* data, int64_t n) {
+    if (!data) {
+        char* out = (char*) malloc(5);
+        if (!out) return NULL;
+        memcpy(out, "null", 5);
+        return out;
+    }
+    if (n < 0) n = 0;
+    // Worst case: every byte becomes `\uXXXX` (6 chars) + 2 outer quotes + NUL.
+    size_t cap = (size_t) n * 6 + 3;
+    char* out = (char*) malloc(cap);
+    if (!out) return NULL;
+    size_t o = 0;
+    out[o++] = '"';
+    for (int64_t i = 0; i < n; ++i) {
+        unsigned char c = (unsigned char) data[i];
+        switch (c) {
+            case '"':  out[o++] = '\\'; out[o++] = '"';  break;
+            case '\\': out[o++] = '\\'; out[o++] = '\\'; break;
+            case '\b': out[o++] = '\\'; out[o++] = 'b';  break;
+            case '\f': out[o++] = '\\'; out[o++] = 'f';  break;
+            case '\n': out[o++] = '\\'; out[o++] = 'n';  break;
+            case '\r': out[o++] = '\\'; out[o++] = 'r';  break;
+            case '\t': out[o++] = '\\'; out[o++] = 't';  break;
+            default:
+                if (c < 0x20) {
+                    static const char hex[] = "0123456789abcdef";
+                    out[o++] = '\\'; out[o++] = 'u';
+                    out[o++] = '0';  out[o++] = '0';
+                    out[o++] = hex[(c >> 4) & 0xF];
+                    out[o++] = hex[c & 0xF];
+                } else {
+                    out[o++] = (char) c;
+                }
+        }
+    }
+    out[o++] = '"';
+    out[o] = '\0';
+    return out;
+}
+
 // SLF4J-style format: each `{}` in `fmt` is replaced in order by argv[i]'s
 // null-terminated string. Extra args after all `{}`s are dropped. Missing
 // args (more `{}`s than argv entries) print "null".

@@ -1,6 +1,8 @@
 // Tests for the @ToString Lombok-mirror synthesizer
-// (cajeta-docs/stdlib/Annotations.md § @ToString). v1 ships the
-// PROPERTIES format only: `ClassName(field1=v1,field2=v2,...)`.
+// (cajeta-docs/stdlib/Annotations.md § @ToString). v1 ships two
+// formats: PROPERTIES (default) — `ClassName(field1=v1,field2=v2,...)`
+// — and JSON — `{"field1":v1,"field2":v2,...}` (String fields get
+// JSON-quoted + escaped via `__cajeta_json_quote_str`).
 //
 // Each test compiles a Cajeta source and calls a `static char* run()`
 // that invokes toString() on a heap instance and returns the result.
@@ -246,11 +248,99 @@ TEST(ToStringTests, negativeInt) {
     EXPECT_EQ(runToString(src), "Neg(n=-7)");
 }
 
-// TO_STRING_JSON format is deferred — should throw.
-TEST(ToStringTests, jsonFormatDeferred) {
+// TO_STRING_JSON renders single-field with int primitive.
+TEST(ToStringTests, jsonSingleIntField) {
     auto src =
         "package test;\n"
         "@ToString(format=\"TO_STRING_JSON\") public class P {\n"
+        "    public int32 n;\n"
+        "    public P(int32 v) { this.n = v; }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static String run() {\n"
+        "        P p = heap P(42);\n"
+        "        return p.toString();\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runToString(src), "{\"n\":42}");
+}
+
+// TO_STRING_JSON renders multiple fields with comma separators.
+TEST(ToStringTests, jsonMultipleFields) {
+    auto src =
+        "package test;\n"
+        "@ToString(format=\"TO_STRING_JSON\") public class Pt {\n"
+        "    public int32 x;\n"
+        "    public int32 y;\n"
+        "    public boolean live;\n"
+        "    public Pt(int32 a, int32 b, boolean l) {\n"
+        "        this.x = a; this.y = b; this.live = l;\n"
+        "    }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static String run() {\n"
+        "        Pt p = heap Pt(3, 7, true);\n"
+        "        return p.toString();\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runToString(src), "{\"x\":3,\"y\":7,\"live\":true}");
+}
+
+// TO_STRING_JSON quotes and escapes String fields.
+TEST(ToStringTests, jsonStringFieldQuoted) {
+    auto src =
+        "package test;\n"
+        "@ToString(format=\"TO_STRING_JSON\") public class S {\n"
+        "    public String name;\n"
+        "    public S(String s) { this.name = s; }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static String run() {\n"
+        "        S s = heap S(\"hello\");\n"
+        "        return s.toString();\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runToString(src), "{\"name\":\"hello\"}");
+}
+
+// TO_STRING_JSON escapes embedded `"` and `\` per RFC 8259.
+TEST(ToStringTests, jsonStringFieldEscapes) {
+    auto src =
+        "package test;\n"
+        "@ToString(format=\"TO_STRING_JSON\") public class S {\n"
+        "    public String name;\n"
+        "    public S(String s) { this.name = s; }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static String run() {\n"
+        "        S s = heap S(\"a\\\"b\\\\c\");\n"
+        "        return s.toString();\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runToString(src), "{\"name\":\"a\\\"b\\\\c\"}");
+}
+
+// TO_STRING_JSON on an empty class is the empty JSON object.
+TEST(ToStringTests, jsonEmptyClass) {
+    auto src =
+        "package test;\n"
+        "@ToString(format=\"TO_STRING_JSON\") public class E {\n"
+        "    public E() { return; }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static String run() {\n"
+        "        E e = heap E();\n"
+        "        return e.toString();\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runToString(src), "{}");
+}
+
+// Unknown format string still rejected (TO_STRING_BAD_FORMAT).
+TEST(ToStringTests, unknownFormatRejected) {
+    auto src =
+        "package test;\n"
+        "@ToString(format=\"TO_STRING_NONSENSE\") public class P {\n"
         "    public int32 n;\n"
         "    public P() { this.n = 0; }\n"
         "}\n"
@@ -259,9 +349,9 @@ TEST(ToStringTests, jsonFormatDeferred) {
         "}\n";
     try {
         CajetaJit::compile(src, "test.D");
-        FAIL() << "expected CAJETA_ERROR_TOSTRING_JSON_NOT_IMPLEMENTED";
+        FAIL() << "expected CAJETA_ERROR_TOSTRING_BAD_FORMAT";
     } catch (cajeta::Exception& e) {
-        EXPECT_EQ(e.getErrorId(), "CAJETA_ERROR_TOSTRING_JSON_NOT_IMPLEMENTED");
+        EXPECT_EQ(e.getErrorId(), "CAJETA_ERROR_TOSTRING_BAD_FORMAT");
     }
 }
 
