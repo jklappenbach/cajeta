@@ -249,6 +249,32 @@ TEST(MultipleInheritanceGapTests, explicitSuperCtorWithArgs) {
     EXPECT_EQ(runI32(src), 99);
 }
 
+// Regression: `super(param)` where `param` is one of the child ctor's
+// formal parameters. Before the loadIfLValue addition in
+// MethodCallExpression's super-ctor branch, the alloca address for
+// `param` was passed to the parent ctor — JIT verify tripped with
+// "Call parameter type does not match function signature!" because
+// the parent's signature wanted i32 (the loaded value), not ptr.
+TEST(MultipleInheritanceGapTests, explicitSuperCtorWithParameterArg) {
+    auto src =
+        "package test;\n"
+        "public class P {\n"
+        "  public int32 seeded;\n"
+        "  public P(int32 v) { this.seeded = v; }\n"
+        "}\n"
+        "public class C extends P {\n"
+        "  public int32 c;\n"
+        "  public C(int32 bv, int32 cv) { super(bv); this.c = cv; }\n"
+        "}\n"
+        "public final class D {\n"
+        "  public static int32 run() {\n"
+        "    C c = new C(3, 7);\n"
+        "    return c.seeded * 10 + c.c;\n"
+        "  }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 37);
+}
+
 // --- Gap 7: unsatisfied-interface enforcement ------------------------------
 //
 // CajetaClass.cpp:1247 — interface methods with no concrete impl on

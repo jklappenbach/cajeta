@@ -290,6 +290,21 @@ namespace cajeta {
             // Build the ParameterEntry list (same shape as the normal
             // dispatch path further down). Lift expressions to IR and
             // pin resolved types so resolveMethod's lookup keys match.
+            //
+            // Arg expressions that resolve to l-values (an
+            // IdentifierExpression referencing a ctor parameter, a
+            // local-variable alloca, a DotExpression's field GEP)
+            // produce a pointer value from generateCode — the
+            // ctor's signature wants the loaded scalar/pointer, not
+            // the slot address. loadIfLValue is the same coercion
+            // the regular invokeMethod path applies one frame down;
+            // historically the super-ctor branch built ParameterEntry
+            // before going through that coercion, so passing a ctor
+            // parameter to super() emitted (ptr-of-alloca, ...) and
+            // tripped the JIT verifier with "Call parameter type
+            // does not match function signature!". Apply the coercion
+            // here so super(bv) — where bv is a ctor formal — works
+            // alongside super(literal).
             std::vector<ParameterEntry> entries;
             for (auto& p : parameters) {
                 if (p.expression && !p.expression->getResolvedType()) {
@@ -297,6 +312,10 @@ namespace cajeta {
                 }
                 llvm::Value* v = p.expression ? p.expression->generateCode(module) : nullptr;
                 CajetaTypePtr t = p.expression ? p.expression->getResolvedType() : nullptr;
+                if (v && p.expression) {
+                    auto exprAst = std::dynamic_pointer_cast<Expression>(p.expression);
+                    v = loadIfLValue(module, v, exprAst);
+                }
                 entries.emplace_back(t, p.label, v);
             }
             // The receiver is `this` (the same instance). The parent
