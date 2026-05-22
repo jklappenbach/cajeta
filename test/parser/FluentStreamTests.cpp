@@ -119,6 +119,31 @@ TEST(FluentStreamTests, peekCountsSideEffect) {
     EXPECT_EQ(fn(), 5);
 }
 
+// flatMap fluent — verifies the method-level R generic on Stream<T>
+// instantiates the FlatMapStream<T, R> wrapper through the chained
+// receiver. {1,2,3} -> singleton inner streams -> flattened count = 3.
+TEST(FluentStreamTests, flatMapCount) {
+    auto src =
+        "package test;\n"
+        "import cajeta.lang.stream.ArrayStream;\n"
+        "import cajeta.lang.stream.Stream;\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        int32[] xs = {1, 2, 3};\n"
+        "        (int32) -> Stream<int32> mk = (int32 v) -> {\n"
+        "            int32[] one = new int32[1];\n"
+        "            one[0] = v * 10;\n"
+        "            ArrayStream<int32> inner = heap ArrayStream<int32>(one, 1);\n"
+        "            return inner;\n"
+        "        };\n"
+        "        return xs.stream().flatMap<int32>(mk).count();\n"
+        "    }\n"
+        "}\n";
+    auto jit = CajetaJit::compile(src, "test.D");
+    auto fn = jit->lookup<int32_t (*)()>("run");
+    EXPECT_EQ(fn(), 3);
+}
+
 // Long fluent chain: filter().map().take().reduce()
 TEST(FluentStreamTests, fourStageChain) {
     auto src =
