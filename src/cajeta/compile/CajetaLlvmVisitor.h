@@ -85,6 +85,12 @@ namespace cajeta {
             QualifiedNamePtr qName = QualifiedName::getOrInsert(name, pModule->getQName()->getPackageName() + packageAdj);
             list<QualifiedNamePtr> qExtended;
             list<QualifiedNamePtr> qImplemented;
+            // Type arguments per implements entry (parallel to qImplemented;
+            // empty inner vector for non-templated interface references).
+            // Captured here at parse time so consumers (e.g. @Encoding's
+            // verifier) can read `implements Encoder<T>` and recover T
+            // without re-parsing.
+            list<vector<QualifiedNamePtr>> qImplementedTypeArgs;
             // Grammar: `(EXTENDS typeList)? (IMPLEMENTS typeList)? (PERMITS typeList)?`
             // ANTLR exposes typeLists in source order; match each to its
             // keyword by start-token index. Sealed-class PERMITS is parsed
@@ -110,7 +116,40 @@ namespace cajeta {
                 else if (which == 1) bucket = &qImplemented;
                 if (!bucket) continue;
                 for (auto& tt : tl->typeType()) {
-                    bucket->push_back(QualifiedName::fromContext(tt->classOrInterfaceType()));
+                    auto* coi = tt->classOrInterfaceType();
+                    bucket->push_back(QualifiedName::fromContext(coi));
+                    // Pull type args off the leaf identifier; multi-level
+                    // qualified templates like `Outer<A>.Inner<B>` aren't
+                    // supported in v1 (would need per-level capture and
+                    // a way to associate them with each identifier in the
+                    // qName). For the common `Encoder<T>` shape, the leaf
+                    // is the only identifier and the args land here.
+                    if (which == 1) {
+                        vector<QualifiedNamePtr> args;
+                        // ANTLR's classOrInterfaceType exposes typeArguments
+                        // as a vector (one slot per identifier in the dotted
+                        // chain); the leaf's is the last non-null entry.
+                        auto targsList = coi->typeArguments();
+                        CajetaParser::TypeArgumentsContext* leafTargs = nullptr;
+                        for (auto* ta : targsList) {
+                            if (ta) leafTargs = ta;
+                        }
+                        if (leafTargs) {
+                            for (auto* targ : leafTargs->typeArgument()) {
+                                // Only the simple `typeType` form is
+                                // supported here; wildcards
+                                // (`? extends Foo`) and primitive-typed
+                                // args land in v2.
+                                if (!targ || !targ->typeType()) continue;
+                                auto* targCoi = targ->typeType()
+                                    ->classOrInterfaceType();
+                                if (!targCoi) continue;
+                                args.push_back(
+                                    QualifiedName::fromContext(targCoi));
+                            }
+                        }
+                        qImplementedTypeArgs.push_back(std::move(args));
+                    }
                 }
             }
             // Auto-extend Object: every class without an explicit
@@ -155,6 +194,7 @@ namespace cajeta {
             if (!structure) {
                 structure = make_shared<CajetaClass>(pModule, qName, qExtended, qImplemented);
             }
+            structure->setQImplementedTypeArgs(std::move(qImplementedTypeArgs));
 
             // Template parameters — capture name + optional `extends` bounds.
             // Bounds are resolved to QualifiedNamePtrs here so we don't need

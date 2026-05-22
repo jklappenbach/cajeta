@@ -1244,6 +1244,75 @@ namespace cajeta {
         // generateCode runs. Idempotent (prototypeBuilt guard).
         encoder->generatePrototype();
 
+        // S10.5 — verify Encoder<T> conformance, IF the encoder opted in.
+        // The check is *soft* on absence (the duck-typed dispatch path
+        // is the v1 baseline and shipping users may not have added the
+        // `implements` clause yet) but *hard* on mismatch: if the
+        // encoder declared `implements Encoder<U>` and U doesn't match
+        // the @Encoding parent, the @Encoding annotation is lying.
+        // Catching it here beats catching it at first call with a
+        // confusing decoded-bytes-don't-fit error.
+        //
+        // Resolution rule: a type-arg matches T when its short or
+        // canonical name equals T's short or canonical name. Matches
+        // the same liberal lookup that resolveImplementedInterfaces
+        // and findStaticUnaryMethod already use.
+        {
+            const auto& encQImpl = encoder->getQImplemented();
+            const auto& encQImplArgs = encoder->getQImplementedTypeArgs();
+            auto qit = encQImpl.begin();
+            auto ait = encQImplArgs.begin();
+            std::string parentShort = qName->getTypeName();
+            std::string parentCanon = qName->toCanonical();
+            for (; qit != encQImpl.end() && ait != encQImplArgs.end();
+                    ++qit, ++ait) {
+                auto& qn = *qit;
+                auto& args = *ait;
+                if (!qn) continue;
+                // Match `implements Encoder<...>` (short or canonical;
+                // the encoder author may not have imported
+                // cajeta.wire.Encoder explicitly).
+                bool isEncoderImpl =
+                    qn->getTypeName() == "Encoder"
+                    || qn->toCanonical() == "cajeta.wire.Encoder";
+                if (!isEncoderImpl) continue;
+                if (args.size() != 1 || !args.front()) {
+                    throw Exception(
+                        "@Encoding on `" + qName->toCanonical()
+                        + "`: encoder class `"
+                        + encoder->getQName()->toCanonical()
+                        + "` declares `implements Encoder` without a "
+                        "single type argument. Write `implements "
+                        "Encoder<"
+                        + parentShort + ">`.",
+                        "CAJETA_ERROR_ENCODING_ENCODER_BAD_ARITY");
+                }
+                auto& arg = args.front();
+                std::string argShort = arg->getTypeName();
+                std::string argCanon = arg->toCanonical();
+                bool matches = (argShort == parentShort)
+                            || (argCanon == parentCanon)
+                            || (argShort == parentCanon)
+                            || (argCanon == parentShort);
+                if (!matches) {
+                    throw Exception(
+                        "@Encoding on `" + qName->toCanonical()
+                        + "`: encoder class `"
+                        + encoder->getQName()->toCanonical()
+                        + "` declares `implements Encoder<" + argShort
+                        + ">` but is being attached as the encoder for `"
+                        + parentShort
+                        + "`. The type argument must match the annotated "
+                        "class — change either the `@Encoding` target "
+                        "or the encoder's `implements` clause.",
+                        "CAJETA_ERROR_ENCODING_ENCODER_T_MISMATCH");
+                }
+                // First matching Encoder<...> entry wins; no need to
+                // walk the rest of the implements list.
+                break;
+            }
+        }
+
         // Skip when the user already declared the equivalents (same
         // arity match used by other synthesizers).
         bool ctorExists = ctorWithArityExists(1);

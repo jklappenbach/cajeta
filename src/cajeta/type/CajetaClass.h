@@ -68,6 +68,20 @@ namespace cajeta {
         list<StructurePropertyPtr> propertyList;
         list<QualifiedNamePtr> qExtended;
         list<QualifiedNamePtr> qImplemented;
+        // Type arguments captured at parse time from `implements
+        // Foo<X, Y>` clauses, parallel to `qImplemented` (empty inner
+        // vector for non-templated interface references like
+        // `implements Comparable`). The args are stored as raw
+        // QualifiedNamePtrs from the parse tree — resolving them to
+        // canonical CajetaTypes at validation time avoids the
+        // dependency-cycle headache of resolving during the parse walk
+        // when the referenced types may not yet be in canonicalMap.
+        //
+        // Used by @Encoding to verify the encoder declared `implements
+        // Encoder<T>` for the correct T. The longer-term use is per-
+        // (impl, interface<T>) vtable instantiation; today only the
+        // verification path consumes this data.
+        list<vector<QualifiedNamePtr>> qImplementedTypeArgs;
 
         list<CajetaClassPtr> superClasses;
         list<CajetaInterfacePtr> interfaces;
@@ -276,6 +290,12 @@ namespace cajeta {
         list<CajetaClassPtr>& getImplementedInterfaces() { return implementedInterfaces; }
         const list<QualifiedNamePtr>& getQImplemented() const { return qImplemented; }
         void setQImplemented(list<QualifiedNamePtr> q) { qImplemented = std::move(q); }
+        const list<vector<QualifiedNamePtr>>& getQImplementedTypeArgs() const {
+            return qImplementedTypeArgs;
+        }
+        void setQImplementedTypeArgs(list<vector<QualifiedNamePtr>> a) {
+            qImplementedTypeArgs = std::move(a);
+        }
         void resolveImplementedInterfaces();
 
         ScopePtr getScope() { return scope; }

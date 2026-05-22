@@ -176,6 +176,27 @@ namespace cajeta {
             return cached->second;
         }
 
+        // Templated-interface short-circuit. The interface visitor
+        // (CajetaLlvmVisitor::visitInterfaceDeclaration) currently does
+        // NOT capture templateSource for templated interfaces — the
+        // body walk is skipped per the same rationale as templated
+        // classes, but unlike classes, the templateSource setter call
+        // also doesn't fire. Re-parsing an empty snippet to recover an
+        // interfaceDeclaration here would throw the unhelpful
+        // "template snippet does not contain a classDeclaration"
+        // (the instantiator targets a classDeclaration, not an
+        // interfaceDeclaration). Until full per-(impl, interface<T>)
+        // vtable instantiation lands, hand callers back the template
+        // itself — same shape the placeholder-arg short-circuit uses
+        // above. Conformance verification (`@Encoding` checking
+        // `implements Encoder<T>`) reads parse-time
+        // qImplementedTypeArgs and doesn't need a real instantiated
+        // interface, so this keeps the verification path live without
+        // pretending the interface vtable instantiation is wired.
+        if (interfaceFlag) {
+            return static_pointer_cast<CajetaClass>(shared_from_this());
+        }
+
         // Re-parse the captured snippet. ANTLR contexts are tied to their
         // parser's lifetime so we don't retain parse trees across compilation
         // phases — we re-parse on demand. The result of this expensive work
