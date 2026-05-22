@@ -105,18 +105,21 @@ public class String {
      * `heap String()` (no-arg ctor) and from `heap String(b, 0)`.
      */
     public int64 hash() {
-        int64 h = (int64) 0xCBF29CE484222325;
+        // FNV-1a accumulates in uint64 so the multiplication chain
+        // wraps cleanly under --overflow-checks=on (modular by design,
+        // per the FNV spec). Returned as int64 for the Hasher contract.
+        uint64 h = (uint64) 0xCBF29CE484222325;
         if (this.bytes == null) {
-            return h;
+            return (int64) h;
         }
         int32 i = 0;
         while (i < this.byteLength) {
-            int64 b = (int64) (((int32) this.bytes[i]) & 0xff);
+            uint64 b = (uint64) (((int32) this.bytes[i]) & 0xff);
             h = h ^ b;
-            h = h * (int64) 0x100000001B3;
+            h = h * (uint64) 0x100000001B3;
             i = i + 1;
         }
-        return h;
+        return (int64) h;
     }
 
     /**

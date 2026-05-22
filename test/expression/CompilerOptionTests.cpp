@@ -215,7 +215,7 @@ TEST(CompilerOptionTests, ubTrapsValidDivisionWorks) {
     EXPECT_EQ(fn(), 7);
 }
 
-// --overflow-checks=on: signed add at int32 max + 1 traps.
+// --overflow-checks=on (default): signed add at int32 max + 1 traps.
 TEST(CompilerOptionTests, overflowChecksSignedAddTraps) {
     auto src =
         "package test;\n"
@@ -226,9 +226,7 @@ TEST(CompilerOptionTests, overflowChecksSignedAddTraps) {
         "        return a + b;\n"           // wraps without check, traps with
         "    }\n"
         "}\n";
-    CajetaJit::Options opts;
-    opts.overflowChecksEnabled = true;
-    auto jit = CajetaJit::compile(src, "test.O", opts);
+    auto jit = CajetaJit::compile(src, "test.O");
     auto fn = jit->lookup<int32_t (*)()>("run");
     ASSERT_NE(fn, nullptr);
     EXPECT_EXIT(fn(), ::testing::KilledBySignal(SIGILL), "");
@@ -245,9 +243,7 @@ TEST(CompilerOptionTests, overflowChecksSignedSubTraps) {
         "        return a - b;\n"
         "    }\n"
         "}\n";
-    CajetaJit::Options opts;
-    opts.overflowChecksEnabled = true;
-    auto jit = CajetaJit::compile(src, "test.O", opts);
+    auto jit = CajetaJit::compile(src, "test.O");
     auto fn = jit->lookup<int32_t (*)()>("run");
     ASSERT_NE(fn, nullptr);
     EXPECT_EXIT(fn(), ::testing::KilledBySignal(SIGILL), "");
@@ -264,9 +260,7 @@ TEST(CompilerOptionTests, overflowChecksSignedMulTraps) {
         "        return a * b;\n"
         "    }\n"
         "}\n";
-    CajetaJit::Options opts;
-    opts.overflowChecksEnabled = true;
-    auto jit = CajetaJit::compile(src, "test.O", opts);
+    auto jit = CajetaJit::compile(src, "test.O");
     auto fn = jit->lookup<int32_t (*)()>("run");
     ASSERT_NE(fn, nullptr);
     EXPECT_EXIT(fn(), ::testing::KilledBySignal(SIGILL), "");
@@ -283,14 +277,93 @@ TEST(CompilerOptionTests, overflowChecksValidArithmeticWorks) {
         "        return (a + b) * (a - b);\n"  // 105 * 95 == 9975
         "    }\n"
         "}\n";
-    CajetaJit::Options opts;
-    opts.overflowChecksEnabled = true;
-    auto jit = CajetaJit::compile(src, "test.O", opts);
+    auto jit = CajetaJit::compile(src, "test.O");
     auto fn = jit->lookup<int32_t (*)()>("run");
     EXPECT_EQ(fn(), 9975);
 }
 
-// --overflow-checks=off (default): signed overflow wraps silently.
+// --overflow-checks=on: uint64 arithmetic that would signed-overflow
+// must NOT trap (the operand type is unsigned, so wrapping is the
+// defined behavior). This pins that the cast's resolvedType properly
+// propagates the unsigned signedness, so the overflow guard rule
+// (which only fires on SIGNED_FLAG) skips the check.
+TEST(CompilerOptionTests, overflowChecksUnsignedMulDoesNotTrap) {
+    auto src =
+        "package test;\n"
+        "public final class O {\n"
+        "    public static int64 run() {\n"
+        "        uint64 a = (uint64) 0xCBF29CE484222325;\n"
+        "        uint64 b = (uint64) 0x100000001B3;\n"
+        "        return (int64) (a * b);\n"  // would signed-overflow; OK as uint
+        "    }\n"
+        "}\n";
+    auto jit = CajetaJit::compile(src, "test.O");
+    auto fn = jit->lookup<int64_t (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    // 0xCBF29CE484222325 * 0x100000001B3 wraps to a specific uint64
+    // value; just verify it runs without trapping.
+    uint64_t a = 0xCBF29CE484222325ULL;
+    uint64_t b = 0x100000001B3ULL;
+    int64_t expected = (int64_t) (a * b);
+    EXPECT_EQ(fn(), expected);
+}
+
+// Mirror String.hash's structure: while loop with uint64 var,
+// XOR with uint64 literal, then multiply by uint64 literal.
+TEST(CompilerOptionTests, overflowChecksUnsignedFnvShapeLoop) {
+    auto src =
+        "package test;\n"
+        "public final class O {\n"
+        "    public static int64 run() {\n"
+        "        uint64 h = (uint64) 0xCBF29CE484222325;\n"
+        "        int32 i = 0;\n"
+        "        while (i < 3) {\n"
+        "            uint64 b = (uint64) i;\n"
+        "            h = h ^ b;\n"
+        "            h = h * (uint64) 0x100000001B3;\n"
+        "            i = i + 1;\n"
+        "        }\n"
+        "        return (int64) h;\n"
+        "    }\n"
+        "}\n";
+    auto jit = CajetaJit::compile(src, "test.O");
+    auto fn = jit->lookup<int64_t (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    uint64_t h = 0xCBF29CE484222325ULL;
+    for (int32_t i = 0; i < 3; ++i) {
+        h ^= (uint64_t) i;
+        h *= 0x100000001B3ULL;
+    }
+    EXPECT_EQ(fn(), (int64_t) h);
+}
+
+// Pin the FNV-1a-shape: uint64 var, XOR with uint64 literal, then
+// multiply by uint64 literal — all under overflowChecks=on. This is
+// the shape String.hash() and other hashers use. The XOR previously
+// poisoned the lvalue's resolvedType so the subsequent multiply was
+// treated as signed and trapped.
+TEST(CompilerOptionTests, overflowChecksUnsignedFnvShape) {
+    auto src =
+        "package test;\n"
+        "public final class O {\n"
+        "    public static int64 run() {\n"
+        "        uint64 h = (uint64) 0xCBF29CE484222325;\n"
+        "        uint64 b = (uint64) 99;\n"
+        "        h = h ^ b;\n"
+        "        h = h * (uint64) 0x100000001B3;\n"
+        "        return (int64) h;\n"
+        "    }\n"
+        "}\n";
+    auto jit = CajetaJit::compile(src, "test.O");
+    auto fn = jit->lookup<int64_t (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    uint64_t h = 0xCBF29CE484222325ULL;
+    h ^= 99ULL;
+    h *= 0x100000001B3ULL;
+    EXPECT_EQ(fn(), (int64_t) h);
+}
+
+// --overflow-checks=off: signed overflow wraps silently.
 TEST(CompilerOptionTests, overflowChecksOffWrapsSilently) {
     auto src =
         "package test;\n"
@@ -301,7 +374,9 @@ TEST(CompilerOptionTests, overflowChecksOffWrapsSilently) {
         "        return a + b;\n"           // expected: -2147483648 (wrap)
         "    }\n"
         "}\n";
-    auto jit = CajetaJit::compile(src, "test.O");
+    CajetaJit::Options opts;
+    opts.overflowChecksEnabled = false;
+    auto jit = CajetaJit::compile(src, "test.O", opts);
     auto fn = jit->lookup<int32_t (*)()>("run");
     ASSERT_NE(fn, nullptr);
     EXPECT_EQ(fn(), INT32_MIN);
