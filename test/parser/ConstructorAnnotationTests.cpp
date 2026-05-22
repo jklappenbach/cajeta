@@ -391,6 +391,73 @@ TEST(ConstructorAnnotationTests, instanceFieldInitRequiredArgs) {
     EXPECT_EQ(fn(), 599);
 }
 
+// A user-written ctor body picks up field initializers BEFORE the
+// body executes — Java semantics: field initializers run as part of
+// the implicit-construction sequence (after super()/this() resolves),
+// then the ctor body. Regression test for the gap where only
+// synthesized ctors picked up initializers.
+TEST(ConstructorAnnotationTests, instanceFieldInitUserCtorNoArgs) {
+    auto src =
+        "package test;\n"
+        "public class P {\n"
+        "    public int32 a = 42;\n"
+        "    public int32 b = 7;\n"
+        "    public P() { }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        P p = heap P();\n"
+        "        return p.a * 100 + p.b;\n"
+        "    }\n"
+        "}\n";
+    auto jit = CajetaJit::compile(src, "test.D");
+    auto fn = jit->lookup<int32_t (*)()>("run");
+    EXPECT_EQ(fn(), 4207);
+}
+
+// A user-written ctor that ALSO writes the field overrides the
+// initializer (Java semantics: initializer runs first, then body).
+TEST(ConstructorAnnotationTests, instanceFieldInitUserCtorOverwrites) {
+    auto src =
+        "package test;\n"
+        "public class P {\n"
+        "    public int32 a = 42;\n"
+        "    public int32 b = 7;\n"
+        "    public P(int32 newA) { this.a = newA; }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        P p = heap P(99);\n"
+        "        return p.a * 100 + p.b;\n"  // 99*100 + 7 (b untouched, initialized)
+        "    }\n"
+        "}\n";
+    auto jit = CajetaJit::compile(src, "test.D");
+    auto fn = jit->lookup<int32_t (*)()>("run");
+    EXPECT_EQ(fn(), 9907);
+}
+
+// User ctor with mixed-type initializers (float, bool).
+TEST(ConstructorAnnotationTests, instanceFieldInitUserCtorMixedTypes) {
+    auto src =
+        "package test;\n"
+        "public class P {\n"
+        "    public boolean ready = true;\n"
+        "    public float64 ratio = 0.5;\n"
+        "    public int64 count = 1000;\n"
+        "    public P() { }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int64 run() {\n"
+        "        P p = heap P();\n"
+        "        if (!p.ready) { return -1; }\n"
+        "        return p.count + (int64) (p.ratio * 100.0);\n"
+        "    }\n"
+        "}\n";
+    auto jit = CajetaJit::compile(src, "test.D");
+    auto fn = jit->lookup<int64_t (*)()>("run");
+    EXPECT_EQ(fn(), 1050);
+}
+
 // Float and boolean initializers.
 TEST(ConstructorAnnotationTests, instanceFieldInitMixedTypes) {
     auto src =

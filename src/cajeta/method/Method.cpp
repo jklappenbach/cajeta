@@ -993,6 +993,73 @@ namespace cajeta {
             }
         }
 
+        // Instance-field initializers in a USER-written ctor. Java
+        // semantics: super()/this() resolves → field initializers
+        // execute → ctor body runs. SynthesizedConstructorMethod
+        // handles its own initializer pass (it doesn't go through
+        // Method::generateCode); this branch is the user-ctor case.
+        //
+        // Skip the field-init pass when the user explicitly delegates
+        // via `this(args)` — the delegated-to ctor will run the
+        // initializers, so doing it here would double-init (and worse,
+        // pre-clobber whatever the delegated ctor set). Detect via the
+        // same recursive AST walk used for super-ctor probing above.
+        if (constructor && parent && bodyFn->arg_size() > 0 && block) {
+            bool delegatesViaThis = false;
+            std::function<bool(AbstractSyntaxNodePtr)> findThisCtor =
+                [&](AbstractSyntaxNodePtr node) -> bool {
+                    if (!node) return false;
+                    if (auto mce = std::dynamic_pointer_cast<
+                            cajeta::MethodCallExpression>(node)) {
+                        if (mce->getMethodCallName() == "this") return true;
+                    }
+                    if (auto es = std::dynamic_pointer_cast<
+                            cajeta::ExpressionStatement>(node)) {
+                        if (findThisCtor(es->getExpression())) return true;
+                    }
+                    for (auto& child : node->getChildren()) {
+                        if (findThisCtor(child)) return true;
+                    }
+                    return false;
+                };
+            delegatesViaThis = findThisCtor(block);
+
+            if (!delegatesViaThis) {
+                llvm::Value* thisPtr = bodyFn->getArg(0);
+                auto& ictx = *module->getLlvmContext();
+                for (auto& prop : parent->getPropertyList()) {
+                    if (!prop || prop->isStatic()) continue;
+                    auto init = prop->getInitializer();
+                    if (!init) continue;
+                    int idx = parent->getFieldLlvmIndex(prop);
+                    if (idx < 0) continue;
+                    llvm::Value* initVal = init->generateCode(module);
+                    if (!initVal) continue;
+                    llvm::Value* fp = builder->CreateStructGEP(
+                        parent->getLlvmType(), thisPtr, (unsigned) idx,
+                        std::string("user_ctor.init.") + prop->getName());
+                    // Width / FP coercion mirrors the synthesized-ctor
+                    // path (SynthesizedConstructorMethod.cpp:117-130).
+                    CajetaTypePtr ft = prop->getType();
+                    llvm::Type* slotTy = ft ? ft->getLlvmType() : nullptr;
+                    if (slotTy && initVal->getType() != slotTy) {
+                        llvm::Type* srcTy = initVal->getType();
+                        if (slotTy->isIntegerTy() && srcTy->isIntegerTy()) {
+                            initVal = builder->CreateIntCast(initVal, slotTy, /*isSigned=*/true);
+                        } else if (slotTy->isFloatingPointTy() && srcTy->isFloatingPointTy()) {
+                            initVal = builder->CreateFPCast(initVal, slotTy);
+                        } else if (slotTy->isFloatingPointTy() && srcTy->isIntegerTy()) {
+                            initVal = builder->CreateSIToFP(initVal, slotTy);
+                        } else if (slotTy->isIntegerTy() && srcTy->isFloatingPointTy()) {
+                            initVal = builder->CreateFPToSI(initVal, slotTy);
+                        }
+                    }
+                    builder->CreateStore(initVal, fp);
+                }
+                (void) ictx;
+            }
+        }
+
         // Type-resolver pre-pass: populates Expression::resolvedType so codegen can
         // distinguish e.g. fp8 from i8 when they share an LLVM type.
         if (block) {
