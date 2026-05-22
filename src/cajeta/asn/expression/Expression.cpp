@@ -636,8 +636,33 @@ namespace cajeta {
         switch (op) {
             case PREFIX_OP_POSITIVE:
                 return val;
-            case PREFIX_OP_NEGATIVE:
-                return ty->isFloatingPointTy() ? builder->CreateFNeg(val) : builder->CreateNeg(val);
+            case PREFIX_OP_NEGATIVE: {
+                if (ty->isFloatingPointTy()) return builder->CreateFNeg(val);
+                // Signed-overflow check: -INT_MIN can't fit in a signed
+                // int of the same width. Equivalent to ssub(0, x), so
+                // route through llvm.ssub.with.overflow when the
+                // operand's AST type is signed and overflowChecks=On.
+                bool isSigned = false;
+                if (!children.empty()) {
+                    if (auto ce = dynamic_pointer_cast<Expression>(children[0])) {
+                        auto t = ce->getResolvedType();
+                        if (!t) {
+                            ce->resolveTypes(module);
+                            t = ce->getResolvedType();
+                        }
+                        if (t) {
+                            isSigned = (t->getTypeFlags() & SIGNED_FLAG) != 0;
+                        }
+                    }
+                }
+                if (isSigned && ty->isIntegerTy()
+                        && module->getFlags().overflowChecks == OverflowChecks::On) {
+                    return emitSignedOverflowOp(module, *builder,
+                        llvm::Intrinsic::ssub_with_overflow,
+                        llvm::ConstantInt::get(ty, 0), val, "ofc.neg");
+                }
+                return builder->CreateNeg(val);
+            }
             case PREFIX_OP_BITNOT:
                 return builder->CreateNot(val);
             case PREFIX_OP_LOGNOT: {

@@ -431,6 +431,55 @@ TEST(CompilerOptionTests, overflowChecksCompoundUnsignedDoesNotTrap) {
     EXPECT_EQ(fn(), 0);
 }
 
+// --overflow-checks=on: unary -INT_MIN traps (the one int the
+// signed range can't negate).
+TEST(CompilerOptionTests, overflowChecksUnaryNegIntMinTraps) {
+    auto src =
+        "package test;\n"
+        "public final class O {\n"
+        "    public static int32 run() {\n"
+        "        int32 a = -2147483648;\n"  // INT32_MIN
+        "        return -a;\n"
+        "    }\n"
+        "}\n";
+    auto jit = CajetaJit::compile(src, "test.O");
+    auto fn = jit->lookup<int32_t (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    EXPECT_EXIT(fn(), ::testing::KilledBySignal(SIGILL), "");
+}
+
+// --overflow-checks=on: normal negation works.
+TEST(CompilerOptionTests, overflowChecksUnaryNegNormalWorks) {
+    auto src =
+        "package test;\n"
+        "public final class O {\n"
+        "    public static int32 run() {\n"
+        "        int32 a = 42;\n"
+        "        return -a;\n"
+        "    }\n"
+        "}\n";
+    auto jit = CajetaJit::compile(src, "test.O");
+    auto fn = jit->lookup<int32_t (*)()>("run");
+    EXPECT_EQ(fn(), -42);
+}
+
+// --overflow-checks=on: unsigned negation doesn't check (unsigned
+// arithmetic is modular by definition).
+TEST(CompilerOptionTests, overflowChecksUnaryNegUnsignedDoesNotTrap) {
+    auto src =
+        "package test;\n"
+        "public final class O {\n"
+        "    public static int32 run() {\n"
+        "        uint32 a = (uint32) 1;\n"
+        "        uint32 b = -a;\n"  // wraps to UINT32_MAX; OK as uint
+        "        return (int32) b;\n"
+        "    }\n"
+        "}\n";
+    auto jit = CajetaJit::compile(src, "test.O");
+    auto fn = jit->lookup<int32_t (*)()>("run");
+    EXPECT_EQ(fn(), -1);
+}
+
 // --overflow-checks=off: signed overflow wraps silently.
 TEST(CompilerOptionTests, overflowChecksOffWrapsSilently) {
     auto src =

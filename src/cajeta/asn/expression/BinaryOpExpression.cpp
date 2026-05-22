@@ -28,7 +28,7 @@ namespace cajeta {
     // CompilerFlags::ubTraps is on. Caller pre-computes the trap
     // predicate from operand values. Off-by-default in Release/Fast/
     // Minimal modes per CompilerModes.md; on by default in Debug.
-    static void emitUbTrap(CajetaModulePtr module,
+    void emitUbTrap(CajetaModulePtr module,
                            llvm::IRBuilder<>& b,
                            llvm::Value* condTrap,
                            const std::string& label) {
@@ -56,7 +56,7 @@ namespace cajeta {
     // operand type is signed (per OverflowChecks::On docs in
     // CompilerModes.md). Wrapping / Off modes bypass this helper
     // entirely and use the plain CreateAdd/Sub/Mul path.
-    static llvm::Value* emitSignedOverflowOp(CajetaModulePtr module,
+    llvm::Value* emitSignedOverflowOp(CajetaModulePtr module,
                                              llvm::IRBuilder<>& b,
                                              llvm::Intrinsic::ID intrinId,
                                              llvm::Value* l,
@@ -1245,9 +1245,9 @@ namespace cajeta {
                 llvm::Value* newVal = nullptr;
                 bool isFp = l->getType()->isFloatingPointTy();
                 bool isSigned = ((lhsTypeFlags | rhsTypeFlags) & SIGNED_FLAG) != 0;
-                // Signed-overflow check for arithmetic compound ops
-                // mirrors the standalone +/-/× path. Sign read from
-                // the AST's resolvedType so uint*-typed operands skip
+                // Signed-overflow check for the arithmetic compound ops
+                // mirrors the standalone +/-/× path. Sign is read from
+                // the AST's resolvedType so a uint*-typed lhs/rhs skips
                 // the check (modular wrap is well-defined for unsigned).
                 auto signedFromAst = [](ExpressionPtr a, ExpressionPtr b) -> bool {
                     auto pick = [](ExpressionPtr e) -> long {
@@ -1260,13 +1260,13 @@ namespace cajeta {
                 bool emitOfTrap = !isFp && l->getType()->isIntegerTy()
                     && module->getFlags().overflowChecks == OverflowChecks::On
                     && signedFromAst(lhsAst, rhsAst);
-                // For compound-arith, narrow operands to lhs slot's
-                // width BEFORE the op so the check fires at the
-                // destination type's edge. coerceArithPair widens
-                // both to the larger integer; that would miss e.g.
-                // `int32 a; a += 1;` — `1` is i64-literal, both get
-                // widened to i64, no i64 overflow at INT32_MAX + 1,
-                // then truncates back to i32 silently.
+                // For the compound-arith case, narrow operands to the
+                // lhs slot's width BEFORE the op so the overflow check
+                // fires at the destination type's edge. coerceArithPair
+                // widens both to the larger integer type, which would
+                // miss e.g. `int32 a; a += 1;` — `1` is i64-literal,
+                // both get widened to i64, no i64 overflow at INT32_MAX
+                // + 1, then the result truncates back to i32 silently.
                 if (emitOfTrap) {
                     llvm::Type* slotTy = nullptr;
                     if (auto* a = llvm::dyn_cast<llvm::AllocaInst>(lhs)) {

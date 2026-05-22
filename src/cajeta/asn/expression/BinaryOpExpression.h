@@ -6,7 +6,24 @@
 
 #include "Expression.h"
 
+#include <llvm/IR/IRBuilder.h>
+#include <llvm/IR/Intrinsics.h>
+
 namespace cajeta {
+
+    // Shared codegen helpers (defined in BinaryOpExpression.cpp). Used
+    // by anyone emitting a signed-overflow-trapping arithmetic op.
+    void emitUbTrap(CajetaModulePtr module,
+                    llvm::IRBuilder<>& b,
+                    llvm::Value* condTrap,
+                    const std::string& label);
+    llvm::Value* emitSignedOverflowOp(CajetaModulePtr module,
+                                       llvm::IRBuilder<>& b,
+                                       llvm::Intrinsic::ID intrinId,
+                                       llvm::Value* l,
+                                       llvm::Value* r,
+                                       const std::string& label);
+
 
     /**
      * <assoc=right> expression bop=('=' | '+=' | '-=' | '*=' | '/=' | '&=' | '|=' | '^=' | '>>=' | '>>>=' | '<<=' | '%=') expression
