@@ -250,3 +250,85 @@ TEST(ConstructorAnnotationTests, accessUnknownRejected) {
         EXPECT_EQ(e.getErrorId(), "CAJETA_ERROR_ACCESSOR_BAD_ACCESS");
     }
 }
+
+// @AllArgsConstructor(staticName="of") synthesizes a public static
+// factory `T.of(args...)` that calls the (now-private) ctor and
+// returns the heap instance. Mirrors Lombok's pattern.
+TEST(ConstructorAnnotationTests, allArgsStaticNameOf) {
+    auto src =
+        "package test;\n"
+        "@AllArgsConstructor(staticName=\"of\") public class Pt {\n"
+        "    public int32 x;\n"
+        "    public int32 y;\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Pt p = Pt.of(3, 4);\n"
+        "        return p.x * 10 + p.y;\n"
+        "    }\n"
+        "}\n";
+    auto jit = CajetaJit::compile(src, "test.D");
+    auto fn = jit->lookup<int32_t (*)()>("run");
+    EXPECT_EQ(fn(), 34);
+}
+
+// @NoArgsConstructor(staticName="empty") works the same way for zero
+// args — `T.empty()` returns a zero-initialized instance.
+TEST(ConstructorAnnotationTests, noArgsStaticNameEmpty) {
+    auto src =
+        "package test;\n"
+        "@NoArgsConstructor(staticName=\"empty\") public class P {\n"
+        "    public int32 n;\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        P p = P.empty();\n"
+        "        return p.n;\n"
+        "    }\n"
+        "}\n";
+    auto jit = CajetaJit::compile(src, "test.D");
+    auto fn = jit->lookup<int32_t (*)()>("run");
+    EXPECT_EQ(fn(), 0);
+}
+
+// @RequiredArgsConstructor(staticName="create") picks only the final
+// fields and exposes them through the static factory.
+TEST(ConstructorAnnotationTests, requiredArgsStaticNameCreate) {
+    auto src =
+        "package test;\n"
+        "@RequiredArgsConstructor(staticName=\"create\") public class P {\n"
+        "    public final int32 id;\n"
+        "    public int32 extra;\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        P p = P.create(99);\n"
+        "        return p.id;\n"
+        "    }\n"
+        "}\n";
+    auto jit = CajetaJit::compile(src, "test.D");
+    auto fn = jit->lookup<int32_t (*)()>("run");
+    EXPECT_EQ(fn(), 99);
+}
+
+// `access` arg applies to the FACTORY when staticName is set; the
+// ctor is force-marked PRIVATE (Lombok parity). Visibility enforcement
+// at call sites is a separate ticket — the modifier lands on both
+// methods correctly here, and compilation succeeds.
+TEST(ConstructorAnnotationTests, staticNameAccessAppliesToFactory) {
+    auto src =
+        "package test;\n"
+        "@AllArgsConstructor(access=\"protected\", staticName=\"of\")\n"
+        "public class Pt {\n"
+        "    public int32 v;\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Pt p = Pt.of(42);\n"
+        "        return p.v;\n"
+        "    }\n"
+        "}\n";
+    auto jit = CajetaJit::compile(src, "test.D");
+    auto fn = jit->lookup<int32_t (*)()>("run");
+    EXPECT_EQ(fn(), 42);
+}

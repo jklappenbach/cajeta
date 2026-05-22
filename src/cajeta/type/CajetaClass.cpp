@@ -15,6 +15,7 @@
 #include "../method/SynthesizedSetterMethod.h"
 #include "../method/SynthesizedToStringMethod.h"
 #include "../method/SynthesizedConstructorMethod.h"
+#include "../method/SynthesizedStaticFactoryMethod.h"
 #include "../method/SynthesizedWithMethod.h"
 #include "../method/SynthesizedBuilderMethods.h"
 #include "../method/SynthesizedEncodingMethods.h"
@@ -1167,20 +1168,54 @@ namespace cajeta {
         return false;
     }
 
+    // Shared ctor-synth dispatcher. Each of the three annotations
+    // (@NoArgs / @AllArgs / @RequiredArgs) computes its field list
+    // and calls this with the resolved access modifier + optional
+    // staticName. When staticName is set, Lombok parity applies:
+    //   - the ctor is forced PRIVATE (the user is opting into
+    //     factory-style construction);
+    //   - the `access` arg applies to the synthesized static factory
+    //     (the public surface) rather than the now-private ctor;
+    //   - a SynthesizedStaticFactoryMethod lands next to the ctor,
+    //     allocating + invoking the ctor + returning the instance.
+    void CajetaClass::emitCtorAndOptionalFactory(
+            const AnnotationInstancePtr& ann,
+            const std::string& annotationName,
+            std::vector<StructurePropertyPtr> fields,
+            Modifier access) {
+        std::string staticName = ann ? ann->getString("staticName") : "";
+        Modifier ctorAccess = staticName.empty() ? access : PRIVATE;
+        Modifier factoryAccess = staticName.empty() ? access : access;
+        (void) annotationName;  // reserved for future diagnostic use
+
+        auto self = std::static_pointer_cast<CajetaClass>(shared_from_this());
+        auto fieldsForFactory = fields;  // copy for the factory; the
+                                          // ctor takes ownership of the
+                                          // original via move below.
+        auto ctor = std::make_shared<SynthesizedConstructorMethod>(
+            module, self, std::move(fields));
+        ctor->addModifier(ctorAccess);
+        ctor->initParameters();
+        addMethod(ctor);
+
+        if (!staticName.empty()) {
+            auto factory = std::make_shared<SynthesizedStaticFactoryMethod>(
+                module, self, ctor, staticName,
+                std::move(fieldsForFactory));
+            factory->addModifier(factoryAccess);
+            factory->initParameters();
+            addMethod(factory);
+        }
+    }
+
     void CajetaClass::synthesizeNoArgsConstructor() {
         auto ann = findAnnotation("NoArgsConstructor");
         if (!ann) return;
         if (ctorWithArityExists(0)) return;
         Modifier access = resolveAccessModifier(
             ann, "NoArgsConstructor", qName->toCanonical());
-        std::vector<StructurePropertyPtr> fields;  // empty — zero-init all
-        auto ctor = std::make_shared<SynthesizedConstructorMethod>(
-            module,
-            std::static_pointer_cast<CajetaClass>(shared_from_this()),
-            std::move(fields));
-        ctor->addModifier(access);
-        ctor->initParameters();
-        addMethod(ctor);
+        emitCtorAndOptionalFactory(ann, "NoArgsConstructor",
+            std::vector<StructurePropertyPtr>{}, access);
     }
 
     void CajetaClass::synthesizeAllArgsConstructor() {
@@ -1200,13 +1235,8 @@ namespace cajeta {
             fields.push_back(prop);
         }
         if (ctorWithArityExists(fields.size())) return;
-        auto ctor = std::make_shared<SynthesizedConstructorMethod>(
-            module,
-            std::static_pointer_cast<CajetaClass>(shared_from_this()),
-            std::move(fields));
-        ctor->addModifier(access);
-        ctor->initParameters();
-        addMethod(ctor);
+        emitCtorAndOptionalFactory(ann, "AllArgsConstructor",
+            std::move(fields), access);
     }
 
     void CajetaClass::synthesizeRequiredArgsConstructor() {
@@ -1227,13 +1257,8 @@ namespace cajeta {
             fields.push_back(prop);
         }
         if (ctorWithArityExists(fields.size())) return;
-        auto ctor = std::make_shared<SynthesizedConstructorMethod>(
-            module,
-            std::static_pointer_cast<CajetaClass>(shared_from_this()),
-            std::move(fields));
-        ctor->addModifier(access);
-        ctor->initParameters();
-        addMethod(ctor);
+        emitCtorAndOptionalFactory(ann, "RequiredArgsConstructor",
+            std::move(fields), access);
     }
 
     void CajetaClass::synthesizeWith() {

@@ -735,6 +735,18 @@ namespace cajeta {
         void synthesizeAllArgsConstructor();
         void synthesizeRequiredArgsConstructor();
 
+        // Shared helper for the three ctor synthesizers. Adds the
+        // SynthesizedConstructorMethod, and — when the annotation
+        // carries `staticName="..."` — pairs it with a
+        // SynthesizedStaticFactoryMethod (the ctor is forced PRIVATE;
+        // the factory carries the `access` modifier). See
+        // CajetaClass.cpp for the Lombok-parity semantics.
+        void emitCtorAndOptionalFactory(
+            const AnnotationInstancePtr& ann,
+            const std::string& annotationName,
+            vector<StructurePropertyPtr> fields,
+            Modifier access);
+
         // @With on class (synthesizes per-field withX(T v) methods) or
         // on individual fields (only that field). Each method allocates
         // a fresh instance, memcpys the source body (preserves vtable +
