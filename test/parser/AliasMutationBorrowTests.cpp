@@ -45,9 +45,9 @@ void expectAliasMutationError(const std::string& source) {
 } // namespace
 
 // A live String borrow into p.name; then p.name is reassigned via
-// move. The borrow's referent is gone — accepting this leaves a
-// dangling alias. The compile should reject the write.
-TEST(AliasMutationBorrowTests, DISABLED_writeThroughAliasInvalidatesLiveBorrow) {
+// move. The borrow's referent is gone — accepting this would leave
+// a dangling alias. Rejected by the live-borrow tracker.
+TEST(AliasMutationBorrowTests, writeThroughAliasInvalidatesLiveBorrow) {
     auto src =
         "package test;\n"
         "public class Person { String name; "
@@ -66,7 +66,7 @@ TEST(AliasMutationBorrowTests, DISABLED_writeThroughAliasInvalidatesLiveBorrow) 
 // Same shape but the write goes through a prefix of the borrowed
 // path. Reassigning the whole `p` clobbers `p.name` too, so any
 // live borrow rooted at `p.*` is invalidated.
-TEST(AliasMutationBorrowTests, DISABLED_writeToPrefixInvalidatesNestedBorrow) {
+TEST(AliasMutationBorrowTests, writeToPrefixInvalidatesNestedBorrow) {
     auto src =
         "package test;\n"
         "public class Person { String name; "
@@ -80,6 +80,33 @@ TEST(AliasMutationBorrowTests, DISABLED_writeToPrefixInvalidatesNestedBorrow) {
         "    }\n"
         "}\n";
     expectAliasMutationError(src);
+}
+
+// Borrow through a nested field: `String alias = p.addr.city`
+// is rooted at p.addr.city; writing to `p.addr` (a prefix of
+// the borrowed path) should reject — that write replaces the
+// Address instance the alias still points into.
+TEST(AliasMutationBorrowTests, writeToBorrowedPathPrefixInvalidates) {
+    auto src =
+        "package test;\n"
+        "public class Address { String city; "
+        "  public Address(String c) { this.city = c; } }\n"
+        "public class Person { Address addr; "
+        "  public Person(Address a) { this.addr = a; } }\n"
+        "public final class A {\n"
+        "    public static int32 run() {\n"
+        "        Person p = heap Person(heap Address(\"NYC\"));\n"
+        "        String alias = p.addr.city;\n"        // borrows p.addr.city
+        "        p.addr = #heap Address(\"LA\");\n"   // prefix write
+        "        return 0;\n"
+        "    }\n"
+        "}\n";
+    try {
+        CajetaJit::compile(src, "test.A");
+        FAIL() << "expected alias-mutation error";
+    } catch (cajeta::Exception& e) {
+        EXPECT_EQ(e.getErrorId(), "CAJETA_ERROR_USE_AFTER_MOVE");
+    }
 }
 
 // Negative case (should compile): write to an UNRELATED path while a

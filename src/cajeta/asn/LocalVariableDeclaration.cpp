@@ -650,16 +650,37 @@ namespace cajeta {
             //
             // The two categories are mutually exclusive: only one of
             // borrow / owned applies to a given initializer.
-            if (field && initializer && type
-                    && type->getLlvmType()
-                    && type->getLlvmType()->isPointerTy()) {
+            // Borrow recording fires for any local that aliases its
+            // source rather than copying. Two conditions admit:
+            //   (a) llvmType is a pointer (legacy primitive-String /
+            //       array shapes — heap header is a malloc'd buffer).
+            //   (b) type is a CajetaClass (class instance — the local
+            //       holds a heap pointer in a struct-typed slot).
+            // Interfaces and views aren't borrow candidates (their
+            // own slots are fat-pointers / inline structs).
+            bool typeIsClass = std::dynamic_pointer_cast<CajetaClass>(type) != nullptr
+                && type
+                && !(type->getQName()
+                    && std::dynamic_pointer_cast<CajetaClass>(type)->isInterface());
+            bool ptrLike = type && type->getLlvmType()
+                && type->getLlvmType()->isPointerTy();
+            if (field && initializer && type && (ptrLike || typeIsClass)) {
                 if (auto varInit = dynamic_pointer_cast<VariableInitializer>(initializer)) {
                     auto& children = varInit->getChildren();
                     if (!children.empty()) {
                         auto child = children[0];
 
-                        // Owned-string detection.
+                        // Owned-string detection. Only applies to the
+                        // LEGACY primitive String shape (i8* malloc'd
+                        // buffer) — the class String follows the never-
+                        // drop rule (cajeta-docs/stdlib/lang/String.md
+                        // § Memory model) and registering a drop here
+                        // would double-free. Gate on ptrLike: class-
+                        // typed locals (typeIsClass branch) skip this
+                        // block entirely and fall through to borrow
+                        // recording only.
                         bool producesOwnedString = false;
+                        if (ptrLike && !typeIsClass) {
                         if (auto mc = dynamic_pointer_cast<MethodCallExpression>(child)) {
                             const std::string& name = mc->getMethodCallName();
                             if (name == "concat" || name == "substring"
@@ -697,6 +718,7 @@ namespace cajeta {
                                 }
                             }
                         }
+                        } // end: if (ptrLike && !typeIsClass)
 
                         if (producesOwnedString) {
                             emitDropEntryFor(module, field, "__cajeta_free", getSourceLine());
