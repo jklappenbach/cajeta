@@ -18,7 +18,34 @@
 #include "NewExpression.h"
 #include "LiteralExpression.h"
 
+#include <llvm/IR/Intrinsics.h>
+
 namespace cajeta {
+
+    // Emit `if (condTrap) { llvm.trap; unreachable; }` followed by an
+    // OK basic-block that the IRBuilder lands in. Used to guard
+    // would-be UB (divide-by-zero, oversized-shift) when
+    // CompilerFlags::ubTraps is on. Caller pre-computes the trap
+    // predicate from operand values. Off-by-default in Release/Fast/
+    // Minimal modes per CompilerModes.md; on by default in Debug.
+    static void emitUbTrap(CajetaModulePtr module,
+                           llvm::IRBuilder<>& b,
+                           llvm::Value* condTrap,
+                           const std::string& label) {
+        if (!condTrap) return;
+        auto& ctx = *module->getLlvmContext();
+        auto* lmod = module->getLlvmModule();
+        llvm::Function* curFn = b.GetInsertBlock()->getParent();
+        auto* trapBB = llvm::BasicBlock::Create(ctx, label + ".trap", curFn);
+        auto* okBB = llvm::BasicBlock::Create(ctx, label + ".ok", curFn);
+        b.CreateCondBr(condTrap, trapBB, okBB);
+        b.SetInsertPoint(trapBB);
+        llvm::Function* trapFn = llvm::Intrinsic::getDeclaration(
+            lmod, llvm::Intrinsic::trap);
+        b.CreateCall(trapFn);
+        b.CreateUnreachable();
+        b.SetInsertPoint(okBB);
+    }
 
     // fp4/fp6/fp8 have no native arithmetic on most targets; widen sub-fp16 operands
     // to fp16, perform the op there, then truncate back to the result type.
@@ -1046,10 +1073,17 @@ namespace cajeta {
                 auto [l, r] = coerceArithPair(module, loadL(lhs), loadR(rhs));
                 if (l->getType()->isFloatingPointTy()) {
                     result = emitFpBinOp(module, l, r, llvm::Instruction::FDiv);
-                } else if ((lhsTypeFlags | rhsTypeFlags) & SIGNED_FLAG) {
-                    result = builder->CreateSDiv(l, r);
                 } else {
-                    result = builder->CreateUDiv(l, r);
+                    if (module->getFlags().ubTraps) {
+                        llvm::Value* zero = llvm::Constant::getNullValue(r->getType());
+                        llvm::Value* isZero = builder->CreateICmpEQ(r, zero, "ubt.div.z");
+                        emitUbTrap(module, *builder, isZero, "div");
+                    }
+                    if ((lhsTypeFlags | rhsTypeFlags) & SIGNED_FLAG) {
+                        result = builder->CreateSDiv(l, r);
+                    } else {
+                        result = builder->CreateUDiv(l, r);
+                    }
                 }
                 break;
             }
@@ -1070,16 +1104,36 @@ namespace cajeta {
             }
             case BINARY_OP_SHIFTRIGHT: {
                 auto [l, r] = coerceArithPair(module, loadL(lhs), loadR(rhs));
+                if (module->getFlags().ubTraps) {
+                    unsigned width = l->getType()->getScalarSizeInBits();
+                    llvm::Value* widthC = llvm::ConstantInt::get(r->getType(), width);
+                    // Unsigned cmp catches both r >= width and (signed) r < 0
+                    // since negative i32 becomes a huge unsigned value.
+                    llvm::Value* bad = builder->CreateICmpUGE(r, widthC, "ubt.shr.over");
+                    emitUbTrap(module, *builder, bad, "shr");
+                }
                 result = builder->CreateAShr(l, r);
                 break;
             }
             case BINARY_OP_USHIFTRIGHT: {
                 auto [l, r] = coerceArithPair(module, loadL(lhs), loadR(rhs));
+                if (module->getFlags().ubTraps) {
+                    unsigned width = l->getType()->getScalarSizeInBits();
+                    llvm::Value* widthC = llvm::ConstantInt::get(r->getType(), width);
+                    llvm::Value* bad = builder->CreateICmpUGE(r, widthC, "ubt.ushr.over");
+                    emitUbTrap(module, *builder, bad, "ushr");
+                }
                 result = builder->CreateLShr(l, r);
                 break;
             }
             case BINARY_OP_SHIFTLEFT: {
                 auto [l, r] = coerceArithPair(module, loadL(lhs), loadR(rhs));
+                if (module->getFlags().ubTraps) {
+                    unsigned width = l->getType()->getScalarSizeInBits();
+                    llvm::Value* widthC = llvm::ConstantInt::get(r->getType(), width);
+                    llvm::Value* bad = builder->CreateICmpUGE(r, widthC, "ubt.shl.over");
+                    emitUbTrap(module, *builder, bad, "shl");
+                }
                 result = builder->CreateShl(l, r);
                 break;
             }
@@ -1087,10 +1141,17 @@ namespace cajeta {
                 auto [l, r] = coerceArithPair(module, loadL(lhs), loadR(rhs));
                 if (l->getType()->isFloatingPointTy()) {
                     result = builder->CreateFRem(l, r);
-                } else if ((lhsTypeFlags | rhsTypeFlags) & SIGNED_FLAG) {
-                    result = builder->CreateSRem(l, r);
                 } else {
-                    result = builder->CreateURem(l, r);
+                    if (module->getFlags().ubTraps) {
+                        llvm::Value* zero = llvm::Constant::getNullValue(r->getType());
+                        llvm::Value* isZero = builder->CreateICmpEQ(r, zero, "ubt.mod.z");
+                        emitUbTrap(module, *builder, isZero, "mod");
+                    }
+                    if ((lhsTypeFlags | rhsTypeFlags) & SIGNED_FLAG) {
+                        result = builder->CreateSRem(l, r);
+                    } else {
+                        result = builder->CreateURem(l, r);
+                    }
                 }
                 break;
             }

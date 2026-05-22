@@ -143,3 +143,90 @@ TEST(CompilerOptionTests, targetTripleSetterRebuildsMachine) {
     // Restore to avoid polluting subsequent tests' default-host expectations.
     compiler.setTargetTriple(originalTriple);
 }
+
+// --ub-traps=on (the default under --debug): divide-by-zero traps
+// via @llvm.trap (SIGILL on x86) before the SDiv would execute.
+TEST(CompilerOptionTests, ubTrapsDivideByZeroTraps) {
+    auto src =
+        "package test;\n"
+        "public final class O {\n"
+        "    public static int32 run() {\n"
+        "        int32 a = 10;\n"
+        "        int32 b = 0;\n"
+        "        return a / b;\n"
+        "    }\n"
+        "}\n";
+    auto jit = CajetaJit::compile(src, "test.O");
+    auto fn = jit->lookup<int32_t (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    EXPECT_EXIT(fn(), ::testing::KilledBySignal(SIGILL), "");
+}
+
+// --ub-traps=on: modulo-by-zero traps the same way (SRem on rhs=0
+// is the same UB shape as SDiv).
+TEST(CompilerOptionTests, ubTrapsModByZeroTraps) {
+    auto src =
+        "package test;\n"
+        "public final class O {\n"
+        "    public static int32 run() {\n"
+        "        int32 a = 10;\n"
+        "        int32 b = 0;\n"
+        "        return a % b;\n"
+        "    }\n"
+        "}\n";
+    auto jit = CajetaJit::compile(src, "test.O");
+    auto fn = jit->lookup<int32_t (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    EXPECT_EXIT(fn(), ::testing::KilledBySignal(SIGILL), "");
+}
+
+// --ub-traps=on: shift count >= operand bit-width traps. On int32,
+// any count >= 32 (or < 0) is UB per LLVM's IR semantics.
+TEST(CompilerOptionTests, ubTrapsOversizedShiftTraps) {
+    auto src =
+        "package test;\n"
+        "public final class O {\n"
+        "    public static int32 run() {\n"
+        "        int32 a = 1;\n"
+        "        int32 b = 64;\n"  // way past int32's 32-bit width
+        "        return a << b;\n"
+        "    }\n"
+        "}\n";
+    auto jit = CajetaJit::compile(src, "test.O");
+    auto fn = jit->lookup<int32_t (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    EXPECT_EXIT(fn(), ::testing::KilledBySignal(SIGILL), "");
+}
+
+// --ub-traps=on: in-range division still works. Sanity that the
+// guard branch doesn't fire on legitimate inputs.
+TEST(CompilerOptionTests, ubTrapsValidDivisionWorks) {
+    auto src =
+        "package test;\n"
+        "public final class O {\n"
+        "    public static int32 run() {\n"
+        "        int32 a = 21;\n"
+        "        int32 b = 3;\n"
+        "        return a / b;\n"
+        "    }\n"
+        "}\n";
+    auto jit = CajetaJit::compile(src, "test.O");
+    auto fn = jit->lookup<int32_t (*)()>("run");
+    EXPECT_EQ(fn(), 7);
+}
+
+// --ub-traps=on: in-range shift still works.
+TEST(CompilerOptionTests, ubTrapsValidShiftWorks) {
+    auto src =
+        "package test;\n"
+        "public final class O {\n"
+        "    public static int32 run() {\n"
+        "        int32 a = 1;\n"
+        "        int32 b = 4;\n"
+        "        return a << b;\n"
+        "    }\n"
+        "}\n";
+    auto jit = CajetaJit::compile(src, "test.O");
+    auto fn = jit->lookup<int32_t (*)()>("run");
+    EXPECT_EQ(fn(), 16);
+}
