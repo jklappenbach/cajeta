@@ -1552,13 +1552,64 @@ namespace cajeta {
         // prototypeBuilt = true above before calling synthesizeBuilder).
         builder->generatePrototype();
 
-        // Step 9: add `static Outer.Builder builder()` to outer
+        // Step 9: collect @Builder.Default field defaults. Match the
+        // annotation by qualified shape — `@Builder.Default` parses to
+        // {package="Builder", typeName="Default"}, and the alternate
+        // single-identifier `@BuilderDefault` form (parses to
+        // {package="", typeName="BuilderDefault"}) is accepted too so
+        // users importing Builder.Default with a flat name don't lose
+        // the semantic. A bare `@Default` is intentionally NOT a
+        // match — too generic to safely steal from other annotation
+        // surfaces.
+        auto isBuilderDefault = [](const AnnotationInstancePtr& a) {
+            if (!a) return false;
+            auto qn = a->getName();
+            if (!qn) return false;
+            const std::string& tn = qn->getTypeName();
+            const std::string& pn = qn->getPackageName();
+            if (tn == "Default" && pn == "Builder") return true;
+            if (tn == "BuilderDefault") return true;
+            return false;
+        };
+        std::vector<SynthesizedBuilderFactoryMethod::DefaultEntry> defaults;
+        {
+            // outerFields and builder->getPropertyList() are aligned
+            // 1:1 by construction (Step 4 mirrored them in order).
+            auto mirrorList = builder->getPropertyList();
+            auto outerIt = outerFields.begin();
+            auto mirrorIt = mirrorList.begin();
+            for (; outerIt != outerFields.end() && mirrorIt != mirrorList.end();
+                    ++outerIt, ++mirrorIt) {
+                auto& outerProp = *outerIt;
+                auto& mirror = *mirrorIt;
+                if (!outerProp || !mirror) continue;
+                bool hasDefault = false;
+                for (auto& ann : outerProp->getAnnotationInstances()) {
+                    if (isBuilderDefault(ann)) { hasDefault = true; break; }
+                }
+                if (!hasDefault) continue;
+                auto init = outerProp->getInitializer();
+                if (!init) {
+                    throw Exception(
+                        "@Builder.Default on field `"
+                        + outerProp->getName() + "` of `"
+                        + qName->toCanonical()
+                        + "` requires a field initializer "
+                        "(`@Builder.Default fieldName = expr`).",
+                        "CAJETA_ERROR_BUILDER_DEFAULT_NO_INIT");
+                }
+                defaults.push_back({mirror, init});
+            }
+        }
+
+        // Step 10: add `static Outer.Builder builder()` to outer
         // (renamed if `builderMethodName` was supplied).
         auto factory = std::make_shared<SynthesizedBuilderFactoryMethod>(
             module,
             std::static_pointer_cast<CajetaClass>(shared_from_this()),
             builder,
-            builderMethodName);
+            builderMethodName,
+            std::move(defaults));
         addMethod(factory);
         // We're past our own method-prototype loop; manually prototype
         // the factory so its LLVM function lands in the module.

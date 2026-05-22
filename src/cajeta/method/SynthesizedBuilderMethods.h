@@ -63,16 +63,33 @@ namespace cajeta {
 
     class SynthesizedBuilderFactoryMethod : public Method {
     public:
+        // Per-field default to apply at builder() time. The mirror
+        // field is the Builder's struct slot to write; the initializer
+        // is the outer's parsed `field = expr` AST node (only
+        // populated for fields annotated @Builder.Default).
+        struct DefaultEntry {
+            StructurePropertyPtr mirrorField;
+            AbstractSyntaxNodePtr initializer;
+        };
+
         // `methodName` defaults to "builder" but
         // @Builder(builderMethodName="...") renames it.
+        // `defaults` carries the @Builder.Default field initializers
+        // that the factory body evaluates and stores into the
+        // freshly-allocated Builder. The user-facing semantic:
+        // builder() returns a Builder whose @Builder.Default slots
+        // already hold their declared defaults; setter calls overwrite
+        // them; build() consumes whatever's in the slots.
         SynthesizedBuilderFactoryMethod(CajetaModulePtr module,
                                          CajetaClassPtr outer,
                                          CajetaClassPtr builder,
-                                         const std::string& methodName = "builder");
+                                         const std::string& methodName = "builder",
+                                         std::vector<DefaultEntry> defaults = {});
 
         void generateCode() override;
 
     private:
         CajetaClassPtr builder;
+        std::vector<DefaultEntry> defaults;
     };
 }

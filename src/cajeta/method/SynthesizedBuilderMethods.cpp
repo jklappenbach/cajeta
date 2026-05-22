@@ -220,21 +220,26 @@ namespace cajeta {
     SynthesizedBuilderFactoryMethod::SynthesizedBuilderFactoryMethod(
             CajetaModulePtr module, CajetaClassPtr outer,
             CajetaClassPtr builder,
-            const std::string& methodName)
+            const std::string& methodName,
+            std::vector<DefaultEntry> defaults)
         : Method(module, methodName,
                  std::static_pointer_cast<CajetaType>(builder),
                  outer),
-          builder(builder) {
+          builder(builder),
+          defaults(std::move(defaults)) {
         this->parent = outer;
         // Static: no implicit `this` insertion in Method::generatePrototype.
         this->addModifier(STATIC);
     }
 
     void SynthesizedBuilderFactoryMethod::generateCode() {
-        // Static: () -> ptr (Builder). Alloc Builder, init vtable, return.
+        // Static: () -> ptr (Builder). Alloc Builder, init vtable, apply
+        // @Builder.Default initializers (if any), return.
         // Builder's no-arg ctor zero-inits fields; the alloc itself
         // already zero-fills via __cajeta_alloc's calloc-style behavior,
-        // so we skip the ctor call (the zero state IS the ctor's output).
+        // so we skip the ctor call. @Builder.Default initializers run
+        // here so users that don't touch the setter for those fields
+        // still see the declared default at build() time.
         llvm::LLVMContext& ctx = *module->getLlvmContext();
         llvmBasicBlock = llvm::BasicBlock::Create(ctx, "entry", llvmFunction);
         llvm::IRBuilder<> b(llvmBasicBlock);
@@ -262,6 +267,51 @@ namespace cajeta {
             llvm::Constant* vtRef = CajetaModule::ensureGlobalInModule(
                 lmod, vt);
             b.CreateStore(vtRef, vtSlot);
+        }
+
+        // Apply @Builder.Default initializers. Each initializer's
+        // generateCode uses the module's active IRBuilder (the same
+        // route the existing local-variable + static-field paths take
+        // via `module->getBuilder()`), so we swap our local IRBuilder
+        // onto the module for the duration of each initializer and
+        // restore the previous one after — pattern mirrors Method.cpp's
+        // wrappers around user-body codegen.
+        if (!defaults.empty()) {
+            auto* prevBuilder = module->getBuilder();
+            module->setBuilder(&b);
+            for (auto& entry : defaults) {
+                if (!entry.mirrorField || !entry.initializer) continue;
+                int idx = builder->getFieldLlvmIndex(entry.mirrorField);
+                if (idx < 0) continue;
+                llvm::Value* initVal = entry.initializer->generateCode(module);
+                if (!initVal) continue;
+                llvm::Value* slot = b.CreateStructGEP(
+                    builderLlvm, newBuilder, (unsigned) idx,
+                    std::string("bfact.def.") + entry.mirrorField->getName());
+                // Coerce when the initializer's natural LLVM type
+                // doesn't match the field slot's width — int literals
+                // arrive as i64 by default but the slot might be i32;
+                // float literals arrive as f64 but the slot might be
+                // f32 (and vice versa for explicit casts). Mirrors
+                // StackField.cpp's coercion logic.
+                llvm::Type* slotTy = entry.mirrorField->getType()
+                    ? entry.mirrorField->getType()->getLlvmType()
+                    : nullptr;
+                if (slotTy && initVal->getType() != slotTy) {
+                    llvm::Type* srcTy = initVal->getType();
+                    if (slotTy->isIntegerTy() && srcTy->isIntegerTy()) {
+                        initVal = b.CreateIntCast(initVal, slotTy, /*isSigned=*/true);
+                    } else if (slotTy->isFloatingPointTy() && srcTy->isFloatingPointTy()) {
+                        initVal = b.CreateFPCast(initVal, slotTy);
+                    } else if (slotTy->isFloatingPointTy() && srcTy->isIntegerTy()) {
+                        initVal = b.CreateSIToFP(initVal, slotTy);
+                    } else if (slotTy->isIntegerTy() && srcTy->isFloatingPointTy()) {
+                        initVal = b.CreateFPToSI(initVal, slotTy);
+                    }
+                }
+                b.CreateStore(initVal, slot);
+            }
+            module->setBuilder(prevBuilder);
         }
 
         b.CreateRet(newBuilder);
