@@ -591,6 +591,25 @@ namespace cajeta {
                     params.push_back(std::move(param));
                 }
                 interface->setTypeParameters(std::move(params));
+
+                // Capture the full interfaceDeclaration source so
+                // CajetaClass::instantiate can re-parse and walk the
+                // body under an active type-parameter substitution.
+                // Without this, templated-interface instantiation has
+                // no source to revisit — analogous to the class-template
+                // capture in visitClassDeclaration.
+                antlr4::ParserRuleContext* enclosing = ctx;
+                if (auto* td = dynamic_cast<CajetaParser::TypeDeclarationContext*>(ctx->parent)) {
+                    enclosing = td;
+                }
+                auto* startTok = enclosing->getStart();
+                auto* stopTok = enclosing->getStop();
+                if (startTok && stopTok && startTok->getInputStream()) {
+                    antlr4::misc::Interval interval(
+                        startTok->getStartIndex(), stopTok->getStopIndex());
+                    interface->setTemplateSource(
+                        startTok->getInputStream()->getText(interval));
+                }
             }
 
             pModule->getStructureStack().push_back(interface);

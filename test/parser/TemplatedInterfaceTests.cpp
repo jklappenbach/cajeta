@@ -119,10 +119,101 @@ TEST(TemplatedInterfaceTests, encodingRejectsWrongImplementsTypeArg) {
         "}\n";
     try {
         CajetaJit::compile(src, "test.D");
-        FAIL() << "expected CAJETA_ERROR_ENCODING_ENCODER_T_MISMATCH";
+        FAIL() << "expected rejection of mismatched encoder";
     } catch (cajeta::Exception& e) {
-        EXPECT_EQ(e.getErrorId(), "CAJETA_ERROR_ENCODING_ENCODER_T_MISMATCH");
+        // Either error is a valid rejection. INTERFACE_NOT_IMPLEMENTED
+        // is what fires once Encoder<N>'s vtable is real and the
+        // signature check sees `encode(M v)` doesn't satisfy
+        // `encode(N v)`. ENCODER_T_MISMATCH was the pre-fix error
+        // from @Encoding's verification path, which used to be the
+        // only signal when templated-interface vtables were
+        // short-circuited.
+        const std::string& id = e.getErrorId();
+        EXPECT_TRUE(id == "CAJETA_ERROR_INTERFACE_NOT_IMPLEMENTED"
+                    || id == "CAJETA_ERROR_ENCODING_ENCODER_T_MISMATCH")
+            << "unexpected error id: " << id;
     }
+}
+
+// Diagnostic: assignment to a templated-interface local without
+// dispatching through it. If THIS crashes, the fat-pointer assembly
+// is the problem; if it passes, dispatch is.
+TEST(TemplatedInterfaceTests, templatedInterfaceLocalAssignmentOnly) {
+    auto src =
+        "package test;\n"
+        "public interface Codec<T> {\n"
+        "    int32 encode(T v);\n"
+        "}\n"
+        "public class IntCodec implements Codec<int32> {\n"
+        "    public IntCodec() { }\n"
+        "    public int32 encode(int32 v) { return v + 1; }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Codec<int32> c = heap IntCodec();\n"
+        "        return 0;\n"  // do NOT dispatch; just compile-and-assign.
+        "    }\n"
+        "}\n";
+    auto jit = CajetaJit::compile(src, "test.D");
+    auto fn = jit->lookup<int32_t (*)()>("run");
+    EXPECT_EQ(fn(), 0);
+}
+
+// Diagnostic: just compile + direct-call (no interface dispatch).
+// If this passes but dispatchThroughTemplatedInterface crashes, the
+// problem is at the interface-fat-pointer / dispatch step.
+TEST(TemplatedInterfaceTests, implementsTemplatedInterfaceDirectCall) {
+    auto src =
+        "package test;\n"
+        "public interface Codec<T> {\n"
+        "    int32 encode(T v);\n"
+        "}\n"
+        "public class IntCodec implements Codec<int32> {\n"
+        "    public IntCodec() { }\n"
+        "    public int32 encode(int32 v) { return v + 1; }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        IntCodec ic = heap IntCodec();\n"
+        "        return ic.encode(5);\n"
+        "    }\n"
+        "}\n";
+    auto jit = CajetaJit::compile(src, "test.D");
+    auto fn = jit->lookup<int32_t (*)()>("run");
+    EXPECT_EQ(fn(), 6);
+}
+
+// A class implements a user-defined templated interface and an
+// interface-typed reference dispatches into the impl. This exercises
+// the per-(impl, interface<T>) vtable path that was short-circuited
+// previously (the instantiator would return the template itself,
+// leaving an interface-typed reference with no real vtable to dispatch
+// through). T is a class type because the implements-clause visitor
+// captures only class-typed args today; primitive args land in v2.
+TEST(TemplatedInterfaceTests, dispatchThroughTemplatedInterface) {
+    auto src =
+        "package test;\n"
+        "public class Payload {\n"
+        "    public int32 value;\n"
+        "    public Payload(int32 v) { this.value = v; }\n"
+        "}\n"
+        "public interface Codec<T> {\n"
+        "    int32 encode(T v);\n"
+        "}\n"
+        "public class PayloadCodec implements Codec<Payload> {\n"
+        "    public PayloadCodec() { }\n"
+        "    public int32 encode(Payload v) { return v.value + 1; }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Codec<Payload> c = heap PayloadCodec();\n"
+        "        Payload p = heap Payload(5);\n"
+        "        return c.encode(p);\n"
+        "    }\n"
+        "}\n";
+    auto jit = CajetaJit::compile(src, "test.D");
+    auto fn = jit->lookup<int32_t (*)()>("run");
+    EXPECT_EQ(fn(), 6);
 }
 
 // `implements Encoder` without a type argument is a compile error —

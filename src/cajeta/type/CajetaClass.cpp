@@ -2495,6 +2495,12 @@ namespace cajeta {
         // version should raise CAJETA_ERROR_NOT_AN_INTERFACE).
         implementedInterfaces.clear();
         auto& structures = module->getStructures();
+        // qImplementedTypeArgs is parallel to qImplemented (one entry
+        // per implements clause). For `implements Codec<int32>`, the
+        // outer list has one entry `{int32}`. We walk both side-by-side
+        // so we can swap the bare-template lookup for an instantiated
+        // interface when type args are present.
+        auto qiArgsIter = qImplementedTypeArgs.begin();
         for (auto& qn : qImplemented) {
             CajetaClassPtr found;
             auto it = structures.find(qn->toCanonical());
@@ -2538,9 +2544,40 @@ namespace cajeta {
                     }
                 }
             }
+            // When `implements Codec<int32>` brings type arguments,
+            // the found CajetaClass at this point is still the bare
+            // template `Codec`. Instantiate it with the per-clause
+            // type args so the implementer's `implementedInterfaces`
+            // points at a real `Codec<int32>` whose method list reflects
+            // T → int32. Without this step the vtable walk below sees
+            // a method-less template and silently drops the entry.
+            if (found && found->isInterface() && found->isTemplate()
+                    && qiArgsIter != qImplementedTypeArgs.end()
+                    && !qiArgsIter->empty()) {
+                vector<CajetaTypePtr> resolvedArgs;
+                resolvedArgs.reserve(qiArgsIter->size());
+                auto& canonMap = CajetaType::getCanonicalMap();
+                for (auto& argQn : *qiArgsIter) {
+                    CajetaTypePtr argType;
+                    auto cit = canonMap.find(argQn->toCanonical());
+                    if (cit != canonMap.end()) {
+                        argType = cit->second;
+                    } else {
+                        auto nit = canonMap.find(argQn->getTypeName());
+                        if (nit != canonMap.end()) argType = nit->second;
+                    }
+                    if (!argType) break;
+                    resolvedArgs.push_back(argType);
+                }
+                if (resolvedArgs.size() == qiArgsIter->size()) {
+                    auto inst = found->instantiate(resolvedArgs);
+                    if (inst) found = inst;
+                }
+            }
             if (found && found->isInterface()) {
                 implementedInterfaces.push_back(found);
             }
+            if (qiArgsIter != qImplementedTypeArgs.end()) ++qiArgsIter;
         }
     }
 

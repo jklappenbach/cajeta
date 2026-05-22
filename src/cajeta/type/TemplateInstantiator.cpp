@@ -176,25 +176,110 @@ namespace cajeta {
             return cached->second;
         }
 
-        // Templated-interface short-circuit. The interface visitor
-        // (CajetaLlvmVisitor::visitInterfaceDeclaration) currently does
-        // NOT capture templateSource for templated interfaces — the
-        // body walk is skipped per the same rationale as templated
-        // classes, but unlike classes, the templateSource setter call
-        // also doesn't fire. Re-parsing an empty snippet to recover an
-        // interfaceDeclaration here would throw the unhelpful
-        // "template snippet does not contain a classDeclaration"
-        // (the instantiator targets a classDeclaration, not an
-        // interfaceDeclaration). Until full per-(impl, interface<T>)
-        // vtable instantiation lands, hand callers back the template
-        // itself — same shape the placeholder-arg short-circuit uses
-        // above. Conformance verification (`@Encoding` checking
-        // `implements Encoder<T>`) reads parse-time
-        // qImplementedTypeArgs and doesn't need a real instantiated
-        // interface, so this keeps the verification path live without
-        // pretending the interface vtable instantiation is wired.
+        // Templated-interface instantiation. We re-parse the captured
+        // interfaceDeclaration source under the type-parameter
+        // substitution and build a real instantiated interface — same
+        // shape as the class path below but targeting an
+        // interfaceDeclaration ctx and walking the interface-body
+        // method signatures inline (visitInterfaceDeclaration's body
+        // walk doesn't have a standalone visitor entry point, so we
+        // duplicate it here with substitution active).
         if (interfaceFlag) {
-            return static_pointer_cast<CajetaClass>(shared_from_this());
+            if (templateSource.empty()) {
+                // Pre-fix safety net for stdlib interfaces whose
+                // templateSource didn't get captured (e.g. interfaces
+                // declared before the visitor change). Hand back the
+                // template — preserves the pre-fix behavior for
+                // @Encoding's verification-only path. Once stdlib is
+                // re-parsed under the new visitor this branch is dead.
+                return static_pointer_cast<CajetaClass>(shared_from_this());
+            }
+
+            string ifInput = synthesizePreamble(module) + templateSource + "\n";
+            antlr4::ANTLRInputStream ifStream(ifInput);
+            CajetaLexer ifLexer(&ifStream);
+            antlr4::CommonTokenStream ifTokens(&ifLexer);
+            ifTokens.fill();
+            CajetaParser ifParser(&ifTokens);
+            auto* ifUnit = ifParser.compilationUnit();
+            CajetaParser::InterfaceDeclarationContext* ifDecl = nullptr;
+            for (auto* td : ifUnit->typeDeclaration()) {
+                if (auto* id = td->interfaceDeclaration()) {
+                    ifDecl = id;
+                    break;
+                }
+            }
+            if (!ifDecl) {
+                throw "template snippet does not contain an interfaceDeclaration";
+            }
+
+            string ifInstName = qName->getTypeName() + suffix;
+            QualifiedNamePtr ifInstQName = QualifiedName::getOrInsert(
+                ifInstName, qName->getPackageName());
+
+            map<string, CajetaTypePtr> ifSubst;
+            for (size_t i = 0; i < typeParameters.size(); ++i) {
+                ifSubst[typeParameters[i].name] = args[i];
+            }
+            module->pushTypeSubstitution(ifSubst);
+            auto prevActive = CajetaModule::getActiveModule();
+            CajetaModule::setActiveModule(module);
+
+            list<QualifiedNamePtr> ifExtended;
+            list<QualifiedNamePtr> ifImplemented;
+            auto ifInst = make_shared<CajetaClass>(
+                module, ifInstQName, ifExtended, ifImplemented);
+            ifInst->setIsInterface(true);
+            ifInst->setTypeParameters(typeParameters);
+            ifInst->setTypeArguments(args);
+            ifInst->setTemplateOrigin(
+                static_pointer_cast<CajetaClass>(shared_from_this()));
+
+            // Cache BEFORE walking — same self-reference rule as the
+            // class path.
+            structures[instCanonical] = ifInst;
+
+            // Inline interface-body walk: build abstract methods with
+            // formal-parameter / return types resolved through the
+            // active substitution stack so T → arg.
+            auto ifBody = make_shared<ClassBodyDeclaration>(ifDecl->getStart());
+            if (auto* body = ifDecl->interfaceBody()) {
+                for (auto* bd : body->interfaceBodyDeclaration()) {
+                    auto* md = bd->interfaceMemberDeclaration();
+                    if (!md) continue;
+                    auto* imd = md->interfaceMethodDeclaration();
+                    if (!imd) continue;
+                    auto* common = imd->interfaceCommonBodyDeclaration();
+                    if (!common) continue;
+                    string methodName = common->identifier()->getText();
+                    vector<FormalParameterPtr> formals;
+                    if (auto* fps = common->formalParameters()) {
+                        if (auto* list = fps->formalParameterList()) {
+                            for (auto* fp : list->formalParameter()) {
+                                if (auto p = FormalParameter::fromContext(fp, module)) {
+                                    formals.push_back(p);
+                                }
+                            }
+                        }
+                    }
+                    CajetaTypePtr returnType = CajetaType::fromContext(
+                        common->typeTypeOrVoid(), module);
+                    MethodPtr method = Method::create(
+                        module, methodName, returnType, formals,
+                        /*block=*/nullptr, ifInst);
+                    method->setAbstract(true);
+                    ifBody->getDeclarations().push_back(
+                        make_shared<MethodDeclaration>(method, common->getStart()));
+                }
+            }
+            ifInst->setClassBody(ifBody);
+            ifInst->generatePrototype();
+
+            CajetaModule::setActiveModule(prevActive);
+            module->popTypeSubstitution();
+
+            CajetaModule::getStructureToModule()[instCanonical] = module;
+            return ifInst;
         }
 
         // Re-parse the captured snippet. ANTLR contexts are tied to their

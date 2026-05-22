@@ -484,8 +484,25 @@ namespace cajeta {
                 parameterList.insert(parameterList.begin(), thisParam);
                 parameters[thisParam->getName()] = thisParam;
             }
+            // Apply the same class-by-pointer / array-by-pointer rule
+            // the non-abstract path uses below (line ~570). Without
+            // this, a templated-interface method like `int32 encode(T v)`
+            // where T → user-class lowers its T-arg to the inline
+            // struct type; the concrete implementer's signature has
+            // `ptr`, and the JIT verifier rejects the indirect call
+            // through the iface vtable ("Call parameter type does not
+            // match function signature").
             for (auto formalParameter: parameterList) {
-                llvmTypes.push_back(formalParameter->getType()->getLlvmType());
+                CajetaTypePtr pt = formalParameter->getType();
+                llvm::Type* ptLlvm = pt->getLlvmType();
+                bool isArr = dynamic_pointer_cast<CajetaArray>(pt) != nullptr;
+                bool isClassLike = dynamic_pointer_cast<CajetaClass>(pt) != nullptr;
+                bool isPrim = pt && (pt->getTypeFlags() & PRIMITIVE_FLAG);
+                bool passByPointer = isClassLike && (isArr || !isPrim);
+                if (passByPointer) {
+                    ptLlvm = llvm::PointerType::get(*module->getLlvmContext(), 0);
+                }
+                llvmTypes.push_back(ptLlvm);
             }
             llvmFunctionType = llvmTypes.empty()
                 ? llvm::FunctionType::get(returnType->getLlvmType(), false)
