@@ -182,6 +182,60 @@ TEST(JsonReaderNumberTests, parseNegativeInt) {
     EXPECT_EQ(runI32(src), -42);
 }
 
+// currentNumberAsInt64 throws JsonParseException on number > INT64_MAX
+// (regression: under --overflow-checks=on the digit-accumulation
+// multiplication previously trapped with SIGILL).
+TEST(JsonReaderNumberTests, parseTooLargeInt64ThrowsParseException) {
+    auto src = std::string(PRELUDE) +
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        // "9223372036854775808" — INT64_MAX + 1
+        "        int8[] buf = {\n"
+        "            (int8) 57, (int8) 50, (int8) 50, (int8) 51,\n"
+        "            (int8) 51, (int8) 55, (int8) 50, (int8) 48,\n"
+        "            (int8) 51, (int8) 54, (int8) 56, (int8) 53,\n"
+        "            (int8) 52, (int8) 55, (int8) 55, (int8) 53,\n"
+        "            (int8) 56, (int8) 48, (int8) 56\n"
+        "        };\n"
+        "        JsonReader r = heap JsonReader(buf, (int64) 19);\n"
+        "        r.next();\n"
+        "        try {\n"
+        "            r.currentNumberAsInt64();\n"
+        "            return 0;\n"  // didn't throw → fail
+        "        } catch (JsonParseException e) {\n"
+        "            return 1;\n"
+        "        }\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 1);
+}
+
+// currentNumberAsInt64 parses INT64_MIN cleanly (the one negative
+// whose absolute value exceeds INT64_MAX). Previously CreateNeg on
+// INT64_MAX+1-equivalent would trap.
+TEST(JsonReaderNumberTests, parseInt64Min) {
+    auto src = std::string(PRELUDE) +
+        "public final class D {\n"
+        "    public static int64 run() {\n"
+        // "-9223372036854775808" — INT64_MIN
+        "        int8[] buf = {\n"
+        "            (int8) 45,\n"  // '-'
+        "            (int8) 57, (int8) 50, (int8) 50, (int8) 51,\n"
+        "            (int8) 51, (int8) 55, (int8) 50, (int8) 48,\n"
+        "            (int8) 51, (int8) 54, (int8) 56, (int8) 53,\n"
+        "            (int8) 52, (int8) 55, (int8) 55, (int8) 53,\n"
+        "            (int8) 56, (int8) 48, (int8) 56\n"
+        "        };\n"
+        "        JsonReader r = heap JsonReader(buf, (int64) 20);\n"
+        "        r.next();\n"
+        "        return r.currentNumberAsInt64();\n"
+        "    }\n"
+        "}\n";
+    auto jit = cajeta_test::CajetaJit::compile(src, "test.D");
+    auto fn = jit->lookup<int64_t (*)()>("run");
+    EXPECT_EQ(fn(), INT64_MIN);
+}
+
 // currentBytes() returns a fresh int8[] copy of the current span.
 TEST(JsonReaderBytesTests, currentBytesCopiesKeySpan) {
     auto src = std::string(PRELUDE) +

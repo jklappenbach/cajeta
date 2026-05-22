@@ -474,7 +474,19 @@ public class JsonReader {
                     "bare '-' is not a number", this.tokenStart);
             }
         }
-        int64 acc = 0;
+        // Accumulate in uint64 so the digit-chain doesn't trip the
+        // signed-overflow trap under --overflow-checks=on. Pre-check
+        // each step against the appropriate positive-side limit
+        // (negative numbers can reach abs(INT64_MIN) = 0x8000_0000_0000_0000;
+        // positive numbers cap at INT64_MAX = 0x7FFF_FFFF_FFFF_FFFF).
+        // Overflow throws JsonParseException with a clear message.
+        uint64 acc = (uint64) 0;
+        uint64 limit = (uint64) 9223372036854775807;     // INT64_MAX
+        if (negative) {
+            limit = (uint64) 9223372036854775808;        // abs(INT64_MIN)
+        }
+        uint64 limitDiv10 = limit / (uint64) 10;
+        uint64 limitMod10 = limit - limitDiv10 * (uint64) 10;
         while (i < end) {
             int8 c = this.input[i];
             if (c < (int8) 48 || c > (int8) 57) {
@@ -482,14 +494,27 @@ public class JsonReader {
                     "non-integer number (v1 doesn't parse floats)",
                     i);
             }
-            int64 d = (int64) (c - (int8) 48);
-            acc = acc * (int64) 10 + d;
+            uint64 d = (uint64) (((int32) c) - 48);
+            if (acc > limitDiv10
+                    || (acc == limitDiv10 && d > limitMod10)) {
+                throw heap JsonParseException(
+                    "number out of int64 range", this.tokenStart);
+            }
+            acc = acc * (uint64) 10 + d;
             i = i + 1;
         }
         if (negative) {
-            return - acc;
+            // The only int64 whose negation overflows is INT64_MIN.
+            // Detect by comparing the positive accumulator against
+            // abs(INT64_MIN) and emit the literal int64 min in that
+            // case so we never feed -INT64_MAX-1 through CreateNeg
+            // (which would trap under overflowChecks=On).
+            if (acc == (uint64) 9223372036854775808) {
+                return (int64) -9223372036854775807 - (int64) 1;
+            }
+            return - (int64) acc;
         }
-        return acc;
+        return (int64) acc;
     }
 
     // Convenience: parse as int32 by delegating to int64 + downcast.
