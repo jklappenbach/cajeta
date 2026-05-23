@@ -864,6 +864,63 @@ namespace cajeta {
                     }
                 }
                 builder->CreateStore(rhsVal, lhs);
+                // Ownership transfer into a class-typed array slot.
+                // When `arr[i] = local` stores a heap-owned class
+                // pointer, the slot now owns the reference; the
+                // source local's drop must NOT fire at end-of-scope
+                // or end-of-iteration (which would free the instance
+                // whose pointer arr[i] still holds — leaving it
+                // dangling). Mirrors AggregateInitializer's
+                // ownership-into-field move and the lambda
+                // #-capture transfer paths.
+                if (lhsAst && dynamic_pointer_cast<ArrayIndexExpression>(lhsAst)
+                        && rhsAst) {
+                    if (!rhsAst->getResolvedType()) rhsAst->resolveTypes(module);
+                    CajetaTypePtr elemType = lhsAst->getResolvedType();
+                    auto elemClass = dynamic_pointer_cast<CajetaClass>(elemType);
+                    bool elemIsArr =
+                        dynamic_pointer_cast<CajetaArray>(elemType) != nullptr;
+                    bool elemIsIface = elemClass && elemClass->isInterface();
+                    bool elemIsPrim = elemType
+                        && (elemType->getTypeFlags() & PRIMITIVE_FLAG);
+                    bool elemStoresAsPointer = elemClass
+                        && (elemIsArr || !elemIsPrim) && !elemIsIface;
+                    if (elemStoresAsPointer) {
+                        if (auto idExpr =
+                                dynamic_pointer_cast<IdentifierExpression>(rhsAst)) {
+                            if (auto sc = module->getScopeStack().peek()) {
+                                FieldPtr srcField = sc->getField(
+                                    idExpr->getTextValue());
+                                if (srcField) {
+                                    if (llvm::Value* entry =
+                                            srcField->getDropEntry()) {
+                                        if (llvm::Function* mark =
+                                                module->getRuntimeFunction(
+                                                    "__cajeta_drop_mark_inactive")) {
+                                            builder->CreateCall(mark, {entry});
+                                        }
+                                    }
+                                    // Intentionally NOT calling
+                                    // sc->markMoved here. The source
+                                    // local often goes on to be
+                                    // reassigned in the next loop
+                                    // iteration (e.g. `piece = source
+                                    // .trySplit()` in reduceParallel)
+                                    // or is a parameter that gets
+                                    // read again in unrelated paths
+                                    // (HashMap.put's `this.keys[i] =
+                                    // key` followed by future probes
+                                    // against `key`'s field). The
+                                    // dropEntry deactivation is the
+                                    // necessary half; markMoved is
+                                    // too aggressive for the
+                                    // ownership-transfer-into-array
+                                    // shape.
+                                }
+                            }
+                        }
+                    }
+                }
                 // P3 — definite-assignment: if the LHS is a bare identifier,
                 // mark it assigned. Subsequent reads no longer trip the
                 // CAJETA_ERROR_VARIABLE_NOT_ASSIGNED check. Compound LHS

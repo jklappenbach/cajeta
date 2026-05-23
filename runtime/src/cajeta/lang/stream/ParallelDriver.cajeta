@@ -99,21 +99,17 @@ public class ParallelDriver {
             }
             return acc;
         }
-        // Note: store trySplit's return directly into the array slot,
-        // skipping a named local. Assigning `Stream<T> piece = ...;
-        // shares[si] = piece;` registers a per-iteration drop on
-        // `piece` that fires at end-of-iteration and frees the share
-        // — leaving the array slot dangling. The compiler doesn't
-        // yet detect ownership-transfer-into-array-element; until
-        // it does, the direct assignment is the safe shape.
         Stream<T>[] shares = new Stream<T>[nSplits - 1];
         int32 shareCount = 0;
-        while (shareCount < nSplits - 1) {
-            shares[shareCount] = source.trySplit();
-            if (shares[shareCount] == null) {
+        int32 si = 0;
+        while (si < nSplits - 1) {
+            Stream<T> piece = source.trySplit();
+            if (piece == null) {
                 break;
             }
+            shares[si] = piece;
             shareCount = shareCount + 1;
+            si = si + 1;
         }
         T[] partials = new T[shareCount + 1];
         int32 pi = 0;

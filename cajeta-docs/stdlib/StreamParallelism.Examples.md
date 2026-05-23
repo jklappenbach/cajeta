@@ -1081,14 +1081,20 @@ appeared to hang. Two root causes, both fixed:
      class-typed destinations store as `ptr` at runtime; a
      `ptr → class` cast is a no-op at the LLVM level.
 
-Driver authoring note: assigning a heap-owned local into a class-
-typed array slot does NOT transfer ownership today — the local's
-drop fires at end-of-iteration and the array element becomes a
-dangling pointer. Workaround in `reduceParallel<T>`: store the
-trySplit return directly into `shares[shareCount]`, skipping the
-named local. Tracked as a future compiler item: detect
-ownership-transfer-into-array-element and deactivate the source
-local's drop (parallel to the existing `#capture` mechanism).
+Ownership transfer into a class-typed array slot now lands.
+`BinaryOpExpression`'s ASSIGN path, when the LHS is an
+`ArrayIndexExpression` with a class-storing element type and the
+RHS is an `IdentifierExpression`, looks up the source local's
+field and deactivates its drop entry via
+`__cajeta_drop_mark_inactive` — same machinery as the lambda
+`#capture` transfer. The reduceParallel driver writes the
+natural pattern (`Stream<T> piece = source.trySplit(); shares[si]
+= piece;`) without leaking or dangling. `markMoved` is
+intentionally NOT called: the source name is often re-assigned in
+the next iteration (the trySplit loop's fresh `piece` each turn)
+or, for parameter sources, read again in unrelated paths
+(HashMap.put's `this.keys[i] = key` followed by future probes);
+the drop-deactivation half is necessary and sufficient.
 
 ## §8 Migration sweep (Collector R3)
 
