@@ -992,6 +992,57 @@ codegen polish; (2) is the central blocker for ANY async worker
 taking a class-typed arg, well beyond just the parallel driver;
 (4) blocks parallel HashMap streams specifically.
 
+## §7.7 P5 status and next-session punch list
+
+P5 (cancellation + scheduler tuning + frame naming) is mostly
+gated on §7.6 item #2 — without working class-typed args in
+spawned async functions, real worker fibers can't carry split
+shares, so there's nothing yet to cancel or name. The single
+piece of P5 that doesn't depend on spawn is documented here as
+the next-session entry point.
+
+Punch list (priority order):
+
+1. **§7.6 item #2 — `spawn` with class-instance args.** Highest
+   leverage by far. Unblocks P2 real fork/join + P5 cancellation
+   + parallel collect (Collector.combiner is in place but its
+   only useful call site is the orchestrator combine). Likely
+   sits in the spawn trampoline's capture-context builder
+   (asn/expression/SpawnExpression or wherever the closure-shape
+   alloca is laid out for spawn args).
+
+2. **§7.6 item #4 — `implements Splittable<K>` on a 2-type-param
+   class.** Hangs the test binary on first instantiation. Once
+   landed, HashMap.keys()/.values()/.entries() get Splittable
+   contract and parallel HashMap streams ship for free.
+
+3. **§7.6 item #1 — class-typed array-element-read l-value gap.**
+   Cosmetic until P2 fork/join lands (currently worked around
+   by binding to a named local). After fork/join lands the
+   workaround becomes more visible inside hot loops.
+
+4. **§7.6 item #3 — iface → class downcast.** Tied to (1):
+   together they let the driver write helpers typed on Stream<T>
+   instead of duplicating the walk body inline.
+
+5. **Cancellation semantics (P5 proper).** Once (1) lands:
+   first worker to hit a match in anyMatch / findFirst cancels
+   its siblings via the existing scope-cancellation mechanism;
+   frames named `<parallel worker N>` via the split index
+   threaded through spawn.
+
+6. **parallel-reduce-nonzero-seed lint** and
+   **nested-`.parallel()` warning**. Lint infrastructure is
+   present (isLintSuppressed) but emit sites need wiring; the
+   nonzero-seed analyzer needs lambda-body inspection (does the
+   body reference seed as an identity for its operator?). Both
+   fit in the same lint-emit session.
+
+7. **Wrapper-chain unwind** — task #54 in the local task list.
+   Decompose `.parallel().filter().map().reduce()` so each
+   worker re-wraps the chain around its split. Depends on (1)
+   for the worker side.
+
 ## §8 Migration sweep (Collector R3)
 
 Pre-implementation: existing `Collector<T, R>` ctor is 2-arg. The R3
