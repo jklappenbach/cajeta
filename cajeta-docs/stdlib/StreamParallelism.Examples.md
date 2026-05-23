@@ -972,9 +972,25 @@ place).
    the verifier rejects it. The cast needs to load the data slot
    out of the fat pointer and present it as the class instance.
 
+4. **Templated-class `implements` clause with partial type-param
+   passthrough hangs the compiler.** `class HashMapKeyStream<K, V>
+   extends Stream<K> implements Splittable<K>` parses fine but the
+   first instantiation (e.g. `HashMapKeyStream<Tag, int32>`) hangs
+   the test binary indefinitely — either infinite recursion in the
+   template instantiator or in the iface-vtable synthesizer when
+   the implemented interface's type arg list is a proper subset of
+   the class's type-arg list. ArrayStream<T> implements Splittable
+   <T> (1-to-1) works fine; HashMap*Stream<K, V> implements
+   Splittable<K> (2-to-1) is the broken shape. Until this lands,
+   HashMap.keys()/.values()/.entries() can't ship parallel
+   capability (per StreamParallelism.md P4) — the streams stay
+   non-Splittable and parallel-flagged terminals over them fall
+   back to sequential.
+
 The combine-loop workaround (1') stays in place; (1) and (3) are
 codegen polish; (2) is the central blocker for ANY async worker
-taking a class-typed arg, well beyond just the parallel driver.
+taking a class-typed arg, well beyond just the parallel driver;
+(4) blocks parallel HashMap streams specifically.
 
 ## §8 Migration sweep (Collector R3)
 

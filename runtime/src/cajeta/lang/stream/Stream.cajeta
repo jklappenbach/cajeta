@@ -1,6 +1,7 @@
 package cajeta.lang.stream;
 
 import cajeta.collection.Collector;
+import cajeta.error.Exception;
 
 /**
  * The pull-protocol base for everything iteration-related in the
@@ -212,11 +213,30 @@ public class Stream<T> {
         return heap FilterStream<T>(this, pred);
     }
 
+    /**
+     * Stateful intermediate: cap the stream at the first `n`
+     * elements. Rejects on a parallel-flagged stream — ordered
+     * "first N" can't be defined across split workers without
+     * imposing an ordering barrier that defeats parallelism (per
+     * StreamParallelism.md § Per-terminal rules). Call
+     * `.sequential()` before `.take(n)` if a parallel pipeline
+     * needs to bound its work.
+     */
     public #Stream<T> take(int32 n) {
+        if (this.isParallel) {
+            throw new Exception("take(n) cannot be applied to a parallel stream; call .sequential() first to clear the parallel flag");
+        }
         return heap TakeStream<T>(this, n);
     }
 
+    /**
+     * Stateful intermediate: drop the first `n` elements. Same
+     * parallel-incompatibility as take(n).
+     */
     public #Stream<T> skip(int32 n) {
+        if (this.isParallel) {
+            throw new Exception("skip(n) cannot be applied to a parallel stream; call .sequential() first to clear the parallel flag");
+        }
         return heap SkipStream<T>(this, n);
     }
 

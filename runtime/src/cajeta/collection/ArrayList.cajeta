@@ -61,6 +61,27 @@ public class ArrayList<T> {
     }
 
     /**
+     * Append every element of `other` onto this list (in iteration
+     * order). Used as the combiner for `Collectors.toList<T>()` under
+     * a parallel collect: each worker produces its own `ArrayList<T>`
+     * partial, and the orchestrator combines them by appending right
+     * onto left. Does NOT consume / move-out of `other` — the caller
+     * still owns its list.
+     */
+    public void appendAll(ArrayList<T> other) {
+        // Bind each element through a named local — array element
+        // reads currently lower to a slot l-value in some contexts
+        // (see ParallelDriver.combine workaround comment), so a
+        // direct `this.add(other.data[i])` mistypes the second arg.
+        int32 i = 0;
+        while (i < other.sizeCount) {
+            T v = other.data[i];
+            this.add(v);
+            i = i + 1;
+        }
+    }
+
+    /**
      * Heap-allocated stream walking the live elements
      * (data[0..count-1]). Stack-allocated variant follows when
      * `stack ArrayStream<T>` aggregate-init on a generic

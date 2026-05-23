@@ -1,9 +1,17 @@
 package cajeta.collection;
 
 /**
- * Bundle of (seed, accumulator) for `Stream<T>.collect<R>`. A
- * Collector<T, R> reduces a stream of T into a single R: start with
+ * Bundle of (seed, accumulator, combiner) for `Stream<T>.collect<R>`.
+ * A Collector<T, R> reduces a stream of T into a single R: start with
  * `seed`, then for each element apply `accumulator(acc, element)`.
+ *
+ * Under a parallel collect each worker fiber produces its own R
+ * partial via the accumulator; the orchestrator then merges partials
+ * pairwise via `combiner(left, right)` (per StreamParallelism.md §
+ * Per-terminal rules). The combiner is REQUIRED — even purely
+ * sequential collectors must supply one (a 1-element pipeline still
+ * funnels through the combiner identity) so callers can opt into
+ * `.parallel()` without per-collector re-engineering.
  *
  * The class-level template parameters keep T (element type) and R
  * (result type) independent so the same Stream can feed any
@@ -20,9 +28,11 @@ package cajeta.collection;
 public class Collector<T, R> {
     public R seed;
     public (R, T) -> R accumulator;
+    public (R, R) -> R combiner;
 
-    public Collector(R seed, (R, T) -> R accumulator) {
+    public Collector(R seed, (R, T) -> R accumulator, (R, R) -> R combiner) {
         this.seed = seed;
         this.accumulator = accumulator;
+        this.combiner = combiner;
     }
 }

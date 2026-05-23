@@ -268,6 +268,64 @@ TEST(ParallelStreamP1Tests, parallelNoneMatchTrueWhenNoMatch) {
     EXPECT_EQ(runI32Diag(src), 1);
 }
 
+// 1.7l — .take(n) on a parallel-flagged stream throws Exception at
+// runtime because ordered "first N" is incompatible with
+// split-and-spawn parallelism (StreamParallelism.md § Per-terminal
+// rules — `take` / `skip` are stateful intermediates and need
+// ordered traversal). Remediation: call .sequential() to flip the
+// flag back. The cajeta source uses try/catch to convert the
+// throw into a sentinel return so the harness sees a normal exit.
+TEST(ParallelStreamP1Tests, takeOnParallelStreamRejects) {
+    auto src =
+        "package test;\n"
+        "import cajeta.error.Exception;\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        int32[] xs = {1, 2, 3, 4, 5};\n"
+        "        try {\n"
+        "            return xs.stream().parallel().take(2).count();\n"
+        "        } catch (Exception e) {\n"
+        "            return -42;\n"
+        "        }\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), -42);
+}
+
+// 1.7m — .skip(n) on a parallel-flagged stream throws too. Same
+// reason as take.
+TEST(ParallelStreamP1Tests, skipOnParallelStreamRejects) {
+    auto src =
+        "package test;\n"
+        "import cajeta.error.Exception;\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        int32[] xs = {1, 2, 3, 4, 5};\n"
+        "        try {\n"
+        "            return xs.stream().parallel().skip(2).count();\n"
+        "        } catch (Exception e) {\n"
+        "            return -42;\n"
+        "        }\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), -42);
+}
+
+// 1.7n — .sequential() clears the parallel flag so take/skip
+// become legal again. The escape hatch documented in the rejection
+// messages.
+TEST(ParallelStreamP1Tests, sequentialBeforeTakeClearsFlag) {
+    auto src =
+        "package test;\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        int32[] xs = {1, 2, 3, 4, 5};\n"
+        "        return xs.stream().parallel().sequential().take(2).count();\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 2);
+}
+
 // 1.8 — parallel() through a wrapper (filter) propagates the flag.
 // Result equals sequential filter + count.
 TEST(ParallelStreamP1Tests, parallelThroughFilterStillCounts) {

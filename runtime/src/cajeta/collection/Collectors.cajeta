@@ -8,9 +8,13 @@ package cajeta.collection;
  * `int32` stream is a distinct symbol from `toList()` over a
  * `String` stream.
  *
- * See cajeta-docs/stdlib/MethodLevelTemplate.md for the dispatch
- * model and cajeta-docs/stdlib/Streams.md § collect for the user-
- * facing pipeline shape.
+ * Every collector ships a combiner alongside the (seed, accumulator)
+ * pair — required by Collector<T, R> so `.parallel().collect(...)`
+ * has a way to merge per-worker partials. For toList<T> the combiner
+ * appends right onto left via `ArrayList.appendAll`; identity is the
+ * empty list. See cajeta-docs/stdlib/MethodLevelTemplate.md for the
+ * dispatch model and cajeta-docs/stdlib/Streams.md § collect for the
+ * user-facing pipeline shape.
  */
 public class Collectors {
     /**
@@ -18,11 +22,15 @@ public class Collectors {
      * accumulator appends in stream order and returns the same list
      * reference each iteration (no copy per step). The list is
      * heap-allocated and ownership flows out to the caller via the
-     * collect call's return slot.
+     * collect call's return slot. Combiner appends right onto left
+     * — associative since list append preserves order within each
+     * partial (the orchestrator's combine sweep walks partials in
+     * worker-slot order, matching the split's prefix order).
      */
     public static #Collector<T, ArrayList<T>> toList<T>() {
         return new Collector<T, ArrayList<T>>(
             new ArrayList<T>(),
-            (acc, x) -> { acc.add(x); return acc; });
+            (acc, x) -> { acc.add(x); return acc; },
+            (left, right) -> { left.appendAll(right); return left; });
     }
 }
