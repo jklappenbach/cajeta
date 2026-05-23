@@ -926,18 +926,19 @@ spawn-related issues remain workaroundable.
    interface non-templated-static, and the original templated-static-
    templated-interface shape).
 
-   **Separate latent JIT-only issue:** user code that directly calls
-   ANY `ParallelDriver` static method (including pre-existing
-   `countParallel<T>`) trips `LLJIT initialize failed: Failed to
-   materialize symbols` referencing unrelated stdlib classes
-   (SipHash, JsonReader, etc.). This is not the dispatch bug — it
-   reproduces against `countParallel<T>` which predates the fix — and
-   the symbols are defined in the linked module, so it appears to be
-   a JIT initialization quirk specific to the test harness. AOT
-   compilation isn't affected. The
-   `DISABLED_parallelReduceParallelDriverDirectCall` / `DISABLED_…`
-   tests in `ParallelStreamP1Tests.cpp` document the failure shape
-   for a future triage session.
+   ~~**Separate latent JIT-only issue:**~~ **FIXED.** Per-(class,
+   iface) vtables were emitted with `InternalLinkage`, so
+   `Linker::linkModules` renamed the donor's definition during merge
+   and the consumer's extern decl (from `ensureGlobalInModule` at the
+   call site) stayed unresolved — manifested as a massive cascade of
+   "Failed to materialize symbols" at JIT init. Switched to
+   `ExternalLinkage` (iface vtable names are unique per pair, so no
+   duplicate-definition risk). The
+   `parallelReduceParallelDriverDirectCall` / `parallel…ParallelDriver…`
+   tests in `ParallelStreamP1Tests.cpp` now exercise direct calls
+   into all four driver entry points (`reduceParallel`,
+   `anyMatchParallel`, `allMatchParallel`, `noneMatchParallel`)
+   end-to-end.
 
 ## §8 Migration sweep (Collector R3)
 

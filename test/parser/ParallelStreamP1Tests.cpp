@@ -164,17 +164,7 @@ TEST(ParallelStreamP1Tests, parallelReduceOnTinySourceStillCorrect) {
 // `source.next()` (a Stream<T> class method called through a
 // Splittable<T> interface fat pointer) via the class-ancestor
 // fall-through into hash-vtable lookup.
-//
-// DISABLED: separate latent JIT-only issue — user code that calls
-// ANY ParallelDriver static method (including the existing
-// countParallel<T>) trips LLJIT initialize with "Failed to
-// materialize symbols" referencing unrelated stdlib classes. The
-// dispatch fix itself is correct (the synthetic
-// TemplatedInterfaceParamProbe tests demonstrate it end-to-end), but
-// the JIT setup hits a separate snag we'll triage after the dispatch
-// commit. Whole-program (non-JIT) compilation isn't affected; this
-// only impacts the JIT-driven test harness.
-TEST(ParallelStreamP1Tests, DISABLED_parallelReduceParallelDriverDirectCall) {
+TEST(ParallelStreamP1Tests, parallelReduceParallelDriverDirectCall) {
     auto src =
         "package test;\n"
         "public final class D {\n"
@@ -187,9 +177,10 @@ TEST(ParallelStreamP1Tests, DISABLED_parallelReduceParallelDriverDirectCall) {
     EXPECT_EQ(runI32Diag(src), 15);
 }
 
-// 1.7d — anyMatch via ParallelDriver direct call. Disabled for the
-// same reason as 1.7c — separate JIT-only materialization snag.
-TEST(ParallelStreamP1Tests, DISABLED_parallelAnyMatchParallelDriverDirectCall) {
+// 1.7d — anyMatch via ParallelDriver direct call. Returns true (3
+// satisfies `x > 2`). Same iface-formal dispatch path as
+// reduceParallel, with a predicate-shaped lambda.
+TEST(ParallelStreamP1Tests, parallelAnyMatchParallelDriverDirectCall) {
     auto src =
         "package test;\n"
         "import cajeta.lang.stream.ParallelDriver;\n"
@@ -207,7 +198,7 @@ TEST(ParallelStreamP1Tests, DISABLED_parallelAnyMatchParallelDriverDirectCall) {
 
 // 1.7e — anyMatch short-circuits with false on an all-negative
 // source. Empty-set boundary.
-TEST(ParallelStreamP1Tests, DISABLED_parallelAnyMatchFalseWhenNoneMatch) {
+TEST(ParallelStreamP1Tests, parallelAnyMatchFalseWhenNoneMatch) {
     auto src =
         "package test;\n"
         "import cajeta.lang.stream.ParallelDriver;\n"
@@ -225,7 +216,7 @@ TEST(ParallelStreamP1Tests, DISABLED_parallelAnyMatchFalseWhenNoneMatch) {
 
 // 1.7f — allMatch returns true only when every element satisfies the
 // predicate. The seq-prefix here is all positive.
-TEST(ParallelStreamP1Tests, DISABLED_parallelAllMatchTrueWhenAllSatisfy) {
+TEST(ParallelStreamP1Tests, parallelAllMatchTrueWhenAllSatisfy) {
     auto src =
         "package test;\n"
         "import cajeta.lang.stream.ParallelDriver;\n"
@@ -242,7 +233,7 @@ TEST(ParallelStreamP1Tests, DISABLED_parallelAllMatchTrueWhenAllSatisfy) {
 }
 
 // 1.7g — allMatch returns false on the first failing element.
-TEST(ParallelStreamP1Tests, DISABLED_parallelAllMatchFalseOnOneFailure) {
+TEST(ParallelStreamP1Tests, parallelAllMatchFalseOnOneFailure) {
     auto src =
         "package test;\n"
         "import cajeta.lang.stream.ParallelDriver;\n"
@@ -261,7 +252,7 @@ TEST(ParallelStreamP1Tests, DISABLED_parallelAllMatchFalseOnOneFailure) {
 // 1.7h — noneMatch returns true when no element satisfies the
 // predicate. (Equivalent to !anyMatch but tests the explicit driver
 // entry point.)
-TEST(ParallelStreamP1Tests, DISABLED_parallelNoneMatchTrueWhenNoMatch) {
+TEST(ParallelStreamP1Tests, parallelNoneMatchTrueWhenNoMatch) {
     auto src =
         "package test;\n"
         "import cajeta.lang.stream.ParallelDriver;\n"

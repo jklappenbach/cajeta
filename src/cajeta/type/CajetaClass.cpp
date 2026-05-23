@@ -935,9 +935,16 @@ namespace cajeta {
             }
 
             llvm::Constant* init = llvm::ConstantArray::get(arrTy, entries);
+            // ExternalLinkage so cross-module references (e.g. a user
+            // module's invokeMethod-built fat pointer that referenced
+            // this vtable via ensureGlobalInModule) resolve at link
+            // time to this definition. With InternalLinkage the donor's
+            // definition gets renamed during Linker::linkModules and
+            // the consumer's extern decl stays unsatisfied — manifests
+            // as "Failed to materialize symbols" at JIT init.
             auto* gv = new llvm::GlobalVariable(
                 *lmod, arrTy, /*isConstant=*/true,
-                llvm::GlobalValue::InternalLinkage, init, globalName);
+                llvm::GlobalValue::ExternalLinkage, init, globalName);
             interfaceVTables[ifaceCanonical] = gv;
         }
     }
