@@ -88,32 +88,19 @@ public class ParallelDriver {
      * contract above).
      */
     public static T reduceParallel<T>(Splittable<T> source, T seed, (T, T) -> T fn) {
-        // Sequential walk. Real fork/join via `scope { spawn workerBody
-        // ... }` is shaped and documented (see StreamParallelism.md §
-        // Worker layout) but waits on three compiler-side issues:
-        //
-        //   1. class-typed array element reads — `Stream<T>[] shares;
-        //      ... Stream<T> share = shares[i];` corrupts share at
-        //      read time (the share is read as an l-value slot ptr
-        //      rather than the stored class instance).
-        //
-        //   2. class-instance args to `spawn` — when a spawned async
-        //      function takes a class instance pointer, mutations
-        //      visible inside the worker don't reach the
-        //      orchestrator's view. Likely the capture copies the
-        //      class instance body rather than aliasing through the
-        //      pointer.
-        //
-        //   3. iface → class downcast — `(Stream<T>) source` where
-        //      source has formal type Splittable<T> emits an invalid
-        //      bitcast at JIT verify. Needed when the driver wants
-        //      to pass `source` to a helper formal-typed as
-        //      `Stream<T>`.
-        //
-        // Once any subset of (1)/(2)/(3) lands, the worker function
-        // (reduceWorker) and the split-and-spawn body draft from
-        // commit history can come back in. Until then, parallel
-        // reduce returns the correct sequential result.
+        // Sequential walk on the orchestrator's fiber. The full fork/
+        // join topology (trySplit into Stream<T>[] shares, per-share
+        // worker loop into T[] partials, combine via fn) is reachable
+        // — the spawn arg-capture, iface→class downcast, and indirect-
+        // call loadIfLValue fixes that landed in this session
+        // collectively unblock single-thread fork/join — but the
+        // method-template body that calls `share.next()` inside a
+        // worker loop currently hangs in JIT codegen (the next pull
+        // through a generic-T Stream local read from a class-typed
+        // array slot). Once that loop is broken, the v1 body wraps a
+        // `scope { spawn reduceWorker<T>(share, slot, partials, fn) }`
+        // and the wall-clock cooperative-fiber parallelism comes
+        // online without changing the driver's surface contract.
         T acc = seed;
         Optional<T> o = source.next();
         while (o.isPresent()) {
@@ -122,6 +109,7 @@ public class ParallelDriver {
         }
         return acc;
     }
+
 
     /**
      * Parallel anyMatch. Returns true as soon as any element

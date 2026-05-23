@@ -388,10 +388,20 @@ namespace cajeta {
                     args.push_back(captures);  // implicit first arg per L2 ABI
                     llvm::FunctionType* sig = fnType->getLlvmFunctionType();
                     for (size_t i = 0; i < parameters.size(); ++i) {
-                        llvm::Value* v = parameters[i].expression->generateCode(module);
-                        if (auto* a = llvm::dyn_cast_or_null<llvm::AllocaInst>(v)) {
-                            v = builder->CreateLoad(a->getAllocatedType(), a);
+                        if (parameters[i].expression
+                                && !parameters[i].expression->getResolvedType()) {
+                            parameters[i].expression->resolveTypes(module);
                         }
+                        llvm::Value* v = parameters[i].expression->generateCode(module);
+                        // l-value coercion: handles ArrayIndex / Dot
+                        // GEPs uniformly. Without this, `fn(acc,
+                        // partials[i])` where partials is T[] of a
+                        // primitive T passes the slot ptr (GEP) to fn
+                        // instead of the loaded primitive value, and
+                        // JIT verify rejects the call ("Call parameter
+                        // type does not match function signature").
+                        auto exprAst = dynamic_pointer_cast<Expression>(parameters[i].expression);
+                        v = loadIfLValue(module, v, exprAst);
                         // Width-coerce to the function signature's expected
                         // param type (matches the coercion invokeMethod does
                         // for ordinary calls). Signature index is i + 1 to

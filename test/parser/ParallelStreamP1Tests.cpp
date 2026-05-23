@@ -177,6 +177,31 @@ TEST(ParallelStreamP1Tests, parallelReduceParallelDriverDirectCall) {
     EXPECT_EQ(runI32Diag(src), 15);
 }
 
+// Large source: 100 elements crosses MIN_PER_SPLIT*2, so a real
+// fork/join driver would split-and-spawn. The driver currently
+// walks sequentially (the worker template body still trips a JIT
+// codegen loop on the share.next() call site), but the sum must
+// still be correct because the sequential-walk fallback covers
+// every parallel-reduce shape.
+TEST(ParallelStreamP1Tests, parallelReduceLargeSourceCorrectness) {
+    auto src =
+        "package test;\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        int32[] xs = new int32[100];\n"
+        "        int32 i = 0;\n"
+        "        while (i < 100) {\n"
+        "            xs[i] = i + 1;\n"
+        "            i = i + 1;\n"
+        "        }\n"
+        "        return ParallelDriver.reduceParallel<int32>(\n"
+        "            xs.stream(), 0, (a, b) -> a + b);\n"
+        "    }\n"
+        "}\n";
+    // sum(1..100) = 5050
+    EXPECT_EQ(runI32Diag(src), 5050);
+}
+
 // 1.7d — anyMatch via ParallelDriver direct call. Returns true (3
 // satisfies `x > 2`). Same iface-formal dispatch path as
 // reduceParallel, with a predicate-shaped lambda.

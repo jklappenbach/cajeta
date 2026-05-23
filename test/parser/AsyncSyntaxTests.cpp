@@ -442,6 +442,89 @@ TEST(AsyncSyntaxTests, spawnStreamArgWorkerAdvancesShared) {
     EXPECT_EQ(runI32(src), 6);
 }
 
+// Probe: full parallel-reduce shape — spawn workers each draining a
+// stream share into a partial slot, with a fn lambda for the
+// accumulator. This is the parallel-driver fork/join pattern.
+TEST(AsyncSyntaxTests, spawnForkJoinStreamReduceShape) {
+    auto src =
+        "package test;\n"
+        "import cajeta.collection.ArrayList;\n"
+        "import cajeta.lang.stream.Stream;\n"
+        "import cajeta.lang.stream.ArrayStream;\n"
+        "import cajeta.lang.stream.Splittable;\n"
+        "public final class D {\n"
+        "    public static async int32 work(Stream<int32> share, int32 slot, int32[] partials, (int32, int32) -> int32 fn) {\n"
+        "        int32 acc = 0;\n"
+        "        Optional<int32> o = share.next();\n"
+        "        while (o.isPresent()) {\n"
+        "            acc = fn(acc, o.get());\n"
+        "            o = share.next();\n"
+        "        }\n"
+        "        partials[slot] = acc;\n"
+        "        return 0;\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        ArrayList<int32> list = heap ArrayList<int32>();\n"
+        "        list.add(1);\n"
+        "        list.add(2);\n"
+        "        list.add(3);\n"
+        "        list.add(4);\n"
+        "        list.add(5);\n"
+        "        list.add(6);\n"
+        "        list.add(7);\n"
+        "        list.add(8);\n"
+        "        Splittable<int32> source = list.stream();\n"
+        "        Stream<int32> share = (Stream<int32>) source.trySplit();\n"
+        "        int32[] partials = new int32[2];\n"
+        "        (int32, int32) -> int32 fn = (a, b) -> a + b;\n"
+        "        scope {\n"
+        "            spawn work(share, 0, partials, fn);\n"
+        "        }\n"
+        "        int32 tail = 0;\n"
+        "        Optional<int32> o = source.next();\n"
+        "        while (o.isPresent()) {\n"
+        "            tail = fn(tail, o.get());\n"
+        "            o = source.next();\n"
+        "        }\n"
+        "        partials[1] = tail;\n"
+        "        return partials[0] + partials[1];\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 36);
+}
+
+// Probe: real fork/join shape — spawn N workers, each writing to a
+// separate slot of a shared int32 array, then the orchestrator
+// reduces partials. This is the structural inverse of the
+// parallel-reduce driver pattern.
+TEST(AsyncSyntaxTests, spawnForkJoinPartialsAggregation) {
+    auto src =
+        "package test;\n"
+        "public final class D {\n"
+        "    public static async int32 work(int32[] partials, int32 slot, int32 v) {\n"
+        "        partials[slot] = v * v;\n"
+        "        return 0;\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        int32[] partials = new int32[4];\n"
+        "        scope {\n"
+        "            spawn work(partials, 0, 1);\n"
+        "            spawn work(partials, 1, 2);\n"
+        "            spawn work(partials, 2, 3);\n"
+        "            spawn work(partials, 3, 4);\n"
+        "        }\n"
+        "        int32 sum = 0;\n"
+        "        int32 i = 0;\n"
+        "        while (i < 4) {\n"
+        "            sum = sum + partials[i];\n"
+        "            i = i + 1;\n"
+        "        }\n"
+        "        return sum;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 30);
+}
+
 // Probe: spawn with class-instance arg PLUS additional args (primitive,
 // array, lambda). Reproduces the parallel-driver spawn-worker call shape
 // where the worker took (share, slot, partials, seed, fn).
