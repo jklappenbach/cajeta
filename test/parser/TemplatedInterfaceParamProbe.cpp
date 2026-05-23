@@ -196,6 +196,104 @@ TEST(TemplatedInterfaceParamProbe, interfaceFormalNonTemplatedStatic) {
     }
 }
 
+// Closest reproduction of the documented gap: stdlib Stream<T>[]
+// shares stored, then named-local read, then method calls on the
+// share. If this works, the gap as documented is now closed.
+TEST(TemplatedInterfaceParamProbe, stdlibStreamArrayElementSharesDrain) {
+    auto src =
+        "package test;\n"
+        "import cajeta.collection.ArrayList;\n"
+        "import cajeta.lang.stream.Stream;\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        ArrayList<int32> list = heap ArrayList<int32>();\n"
+        "        list.add(1);\n"
+        "        list.add(2);\n"
+        "        list.add(3);\n"
+        "        Stream<int32>[] shares = new Stream<int32>[1];\n"
+        "        shares[0] = list.stream();\n"
+        "        Stream<int32> share = shares[0];\n"
+        "        int32 sum = 0;\n"
+        "        Optional<int32> o = share.next();\n"
+        "        while (o.isPresent()) {\n"
+        "            sum = sum + o.get();\n"
+        "            o = share.next();\n"
+        "        }\n"
+        "        return sum;\n"
+        "    }\n"
+        "}\n";
+    try {
+        EXPECT_EQ(runI32(src), 6);
+    } catch (cajeta::Exception& e) {
+        FAIL() << "cajeta::Exception " << e.getErrorId() << ": " << e.getMessage();
+    } catch (const std::exception& e) {
+        FAIL() << "std::exception: " << e.what();
+    }
+}
+
+// Templated class-typed array element. The historical gap shape:
+// `Stream<T>[] shares; Stream<T> share = shares[i];` was reading the
+// slot pointer rather than the stored class instance, corrupting
+// subsequent method calls on share.
+TEST(TemplatedInterfaceParamProbe, templatedClassArrayElementToNamedLocal) {
+    auto src =
+        "package test;\n"
+        "public class Box<T> {\n"
+        "    public int32 n;\n"
+        "    public Box(int32 nn) { this.n = nn; }\n"
+        "    public int32 get() { return this.n; }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Box<int32>[] arr = new Box<int32>[2];\n"
+        "        arr[0] = heap Box<int32>(7);\n"
+        "        arr[1] = heap Box<int32>(11);\n"
+        "        Box<int32> b0 = arr[0];\n"
+        "        Box<int32> b1 = arr[1];\n"
+        "        return b0.get() * 10 + b1.get();\n"
+        "    }\n"
+        "}\n";
+    try {
+        EXPECT_EQ(runI32(src), 81);
+    } catch (cajeta::Exception& e) {
+        FAIL() << "cajeta::Exception " << e.getErrorId() << ": " << e.getMessage();
+    } catch (const std::exception& e) {
+        FAIL() << "std::exception: " << e.what();
+    }
+}
+
+// Class-typed array element l-value gap. Reading `arr[i]` into a
+// named local should produce the stored class reference (the heap
+// pointer), not the slot address. Currently this only works through
+// loadIfLValue-aware sites; LocalVariableDeclaration's initializer
+// path for class-typed locals didn't load through.
+TEST(TemplatedInterfaceParamProbe, classArrayElementToNamedLocal) {
+    auto src =
+        "package test;\n"
+        "public class Counter {\n"
+        "    public int32 n;\n"
+        "    public Counter(int32 nn) { this.n = nn; }\n"
+        "    public int32 get() { return this.n; }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Counter[] arr = new Counter[2];\n"
+        "        arr[0] = heap Counter(13);\n"
+        "        arr[1] = heap Counter(29);\n"
+        "        Counter c0 = arr[0];\n"
+        "        Counter c1 = arr[1];\n"
+        "        return c0.get() + c1.get();\n"
+        "    }\n"
+        "}\n";
+    try {
+        EXPECT_EQ(runI32(src), 42);
+    } catch (cajeta::Exception& e) {
+        FAIL() << "cajeta::Exception " << e.getErrorId() << ": " << e.getMessage();
+    } catch (const std::exception& e) {
+        FAIL() << "std::exception: " << e.what();
+    }
+}
+
 // iface→class downcast. The parallel driver needs this when a
 // Splittable<T> source is passed to a helper formal-typed Stream<T>:
 // `(Stream<T>) source` must unwrap the fat-pointer body and yield the
