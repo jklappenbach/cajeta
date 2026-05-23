@@ -121,17 +121,16 @@ public class ParallelDriver {
             partials[pi] = seed;
             pi = pi + 1;
         }
-        int32 wi = 0;
-        while (wi < shareCount) {
-            Stream<T> share = shares[wi];
-            T workerAcc = partials[wi];
-            Optional<T> workerOpt = share.next();
-            while (workerOpt.isPresent()) {
-                workerAcc = fn(workerAcc, workerOpt.get());
-                workerOpt = share.next();
+        // Fork each worker as its own fiber inside a scope; the
+        // scope's closing `}` joins every spawned worker before
+        // control returns. The orchestrator then walks the tail
+        // share on its own fiber and combines partials.
+        scope {
+            int32 wi = 0;
+            while (wi < shareCount) {
+                spawn reduceWorker<T>(shares[wi], wi, partials, fn);
+                wi = wi + 1;
             }
-            partials[wi] = workerAcc;
-            wi = wi + 1;
         }
         T tail = seed;
         Optional<T> o = source.next();
@@ -147,6 +146,25 @@ public class ParallelDriver {
             ci = ci + 1;
         }
         return acc;
+    }
+
+    /**
+     * Per-worker drain. Pulls every element from `share`, folds it
+     * into the running accumulator via `fn`, and writes the result
+     * back into `partials[slot]`. Async — invoked via `spawn` from
+     * reduceParallel's fork loop. Returns 0 only because spawn
+     * targets need a return type; the meaningful output is the
+     * partials[slot] write.
+     */
+    public static async int32 reduceWorker<T>(Stream<T> share, int32 slot, T[] partials, (T, T) -> T fn) {
+        T acc = partials[slot];
+        Optional<T> o = share.next();
+        while (o.isPresent()) {
+            acc = fn(acc, o.get());
+            o = share.next();
+        }
+        partials[slot] = acc;
+        return 0;
     }
 
 

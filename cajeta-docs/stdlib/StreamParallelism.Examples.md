@@ -998,10 +998,12 @@ Update (2026-05-23): Items 1–4 of the original punch list landed,
 and the supposed "JIT codegen loop" blocker turned out to be a
 runtime segfault caused by two compiler bugs (abstract-iface-
 method return type + class-cast bitcast — see below). Both fixed.
-The sequential fork/join body in `reduceParallel<T>` now runs end-
-to-end with correct results (`parallelReduceLargeSourceCorrectness`
-returns 5050). Cooperative-fiber `spawn` wrap is the remaining work
-to land actual wall-clock parallelism.
+The fork/join body in `reduceParallel<T>` runs end-to-end with
+correct results; workers fan out via `scope { spawn reduceWorker
+<T>(...) }`, giving cooperative-fiber parallelism on today's
+single-carrier scheduler. The same driver yields wall-clock
+parallelism once a multi-carrier scheduler lands — no driver
+change required.
 
 Status of each original item:
 
@@ -1037,10 +1039,13 @@ Status of each original item:
    child's type when codegen reaches the cast before scope
    population.
 
-5. **Cancellation semantics (P5 proper).** Still gated — needs
-   the spawn worker body in reduceParallel to actually fork.
-   The infrastructure exists; the call site doesn't yet exist
-   to use it.
+5. **Cancellation semantics (P5 proper).** Workers now fork via
+   `scope { spawn reduceWorker<T>(...) }`; cancellation for
+   short-circuit terminals (anyMatch / allMatch / noneMatch /
+   findAny) is the remaining wire-up — first worker to hit a
+   match cancels its sibling scopes so they stop pulling. Needs
+   a cancel token on the scope plus a predicate-aware worker
+   shape (the current reduceWorker drains unconditionally).
 
 6. **parallel-reduce-nonzero-seed lint** and
    **nested-`.parallel()` warning**. Still un-landed. Lint
