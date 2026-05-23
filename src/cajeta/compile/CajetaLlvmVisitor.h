@@ -331,14 +331,19 @@ namespace cajeta {
             // resolve — e.g. `Vector operator+ (Vector other)` inside class
             // Vector. The actual generatePrototype below will overwrite
             // these placeholder entries with the same class (idempotent).
-            // Templates handle this in their own path via instantiate; skip
-            // for templates here.
-            if (!structure->isTemplate()) {
-                CajetaType::getCanonicalMap()[qName->toCanonical()] =
-                    static_pointer_cast<CajetaType>(structure);
-                CajetaType::getCanonicalMap()[qName->getTypeName()] =
-                    static_pointer_cast<CajetaType>(structure);
-            }
+            // Templates also register here: generatePrototype handles
+            // template registration too, but tryGeneratePrototype defers
+            // when a parent is still a placeholder (e.g. `SkipStream<T>
+            // extends Stream<T>` parsed before Stream's own declaration).
+            // Without this registration a later `heap SkipStream<T>(...)`
+            // reference would fromContext-create a fresh placeholder that
+            // nothing ever fills in — the original visitClassDeclaration
+            // already ran. Symmetric with visitInterfaceDeclaration, which
+            // calls generatePrototype unconditionally.
+            CajetaType::getCanonicalMap()[qName->toCanonical()] =
+                static_pointer_cast<CajetaType>(structure);
+            CajetaType::getCanonicalMap()[qName->getTypeName()] =
+                static_pointer_cast<CajetaType>(structure);
 
             // For templates, skip the body walk entirely. The body contains
             // unresolved type-parameter references (`T value`, `T method()`)
