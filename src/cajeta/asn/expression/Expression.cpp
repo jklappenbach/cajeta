@@ -737,6 +737,33 @@ namespace cajeta {
         auto childAst = dynamic_pointer_cast<Expression>(children[0]);
         llvm::Value* val = loadIfLValue(module, raw, childAst);
         if (!val) return nullptr;
+        // iface→class downcast. When the operand is a value of an
+        // interface type and the destination is a concrete (non-iface)
+        // class, the operand is a pointer to the 24-byte fat-pointer
+        // body { data, vtable, kind }. Strip the body by loading slot 0
+        // (the data pointer) — that's the heap class instance pointer
+        // we want. The destination's LLVM type is the body struct (per
+        // CajetaClass::getLlvmType), but storage for class references
+        // is `ptr` so returning the loaded data ptr matches what other
+        // class-typed value sites expect.
+        if (childAst) {
+            if (!childAst->getResolvedType()) {
+                childAst->resolveTypes(module);
+            }
+            CajetaTypePtr srcCajetaType = childAst->getResolvedType();
+            auto srcClass = dynamic_pointer_cast<CajetaClass>(srcCajetaType);
+            auto dstClass = dynamic_pointer_cast<CajetaClass>(destType);
+            bool srcIsIface = srcClass && srcClass->isInterface();
+            bool dstIsIface = dstClass && dstClass->isInterface();
+            if (srcIsIface && dstClass && !dstIsIface) {
+                llvm::Type* bodyTy = srcClass->getLlvmType();
+                llvm::Type* ptrTy = llvm::PointerType::get(
+                    *module->getLlvmContext(), 0);
+                llvm::Value* dataSlot = builder->CreateStructGEP(
+                    bodyTy, val, 0, "iface_data_slot");
+                return builder->CreateLoad(ptrTy, dataSlot, "iface_to_class");
+            }
+        }
         llvm::Type* srcTy = val->getType();
         llvm::Type* dstTy = destType->getLlvmType();
         if (srcTy == dstTy) return val;

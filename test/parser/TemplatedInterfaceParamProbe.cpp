@@ -196,6 +196,46 @@ TEST(TemplatedInterfaceParamProbe, interfaceFormalNonTemplatedStatic) {
     }
 }
 
+// iface→class downcast. The parallel driver needs this when a
+// Splittable<T> source is passed to a helper formal-typed Stream<T>:
+// `(Stream<T>) source` must unwrap the fat-pointer body and yield the
+// underlying class pointer. The cast currently emits an invalid LLVM
+// instruction sequence — bitcasting from a fat-pointer-body type to a
+// class pointer.
+TEST(TemplatedInterfaceParamProbe, ifaceToClassDowncastReachesConcrete) {
+    auto src =
+        "package test;\n"
+        "public class Base<T> {\n"
+        "    public int32 read() { return 0; }\n"
+        "}\n"
+        "public interface IFoo<T> extends Base<T> {\n"
+        "    public int32 marker();\n"
+        "}\n"
+        "public class FooImpl<T> extends Base<T> implements IFoo<T> {\n"
+        "    int32 v;\n"
+        "    public FooImpl(int32 vv) { this.v = vv; }\n"
+        "    public int32 read() { return this.v; }\n"
+        "    public int32 marker() { return 7; }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 walk(IFoo<int32> s) {\n"
+        "        Base<int32> b = (Base<int32>) s;\n"
+        "        return b.read() * 10 + s.marker();\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        FooImpl<int32> impl = heap FooImpl<int32>(4);\n"
+        "        return D.walk(impl);\n"
+        "    }\n"
+        "}\n";
+    try {
+        EXPECT_EQ(runI32(src), 47);
+    } catch (cajeta::Exception& e) {
+        FAIL() << "cajeta::Exception " << e.getErrorId() << ": " << e.getMessage();
+    } catch (const std::exception& e) {
+        FAIL() << "std::exception: " << e.what();
+    }
+}
+
 // HashMapKeyStream-shape: a 2-type-param class extends a 1-type-param
 // class AND implements a 1-type-param interface that itself extends
 // that same class. Tests the diamond instantiation around Splittable<K>
