@@ -21,6 +21,19 @@ int32_t runI32(const std::string& src) {
     return fn();
 }
 
+int32_t runI32Diag(const std::string& src) {
+    try {
+        return runI32(src);
+    } catch (cajeta::Exception& e) {
+        ADD_FAILURE() << "cajeta::Exception " << e.getErrorId()
+                      << ": " << e.getMessage();
+        return -1;
+    } catch (const std::exception& e) {
+        ADD_FAILURE() << "std::exception: " << e.what();
+        return -1;
+    }
+}
+
 } // namespace
 
 // 1.1 — parallel() is a no-op flag-flip on the existing Stream<T>
@@ -106,7 +119,7 @@ TEST(ParallelStreamP1Tests, parallelCalledTwiceIsNoOp) {
         "        return xs.stream().parallel().parallel().count();\n"
         "    }\n"
         "}\n";
-    EXPECT_EQ(runI32(src), 3);
+    EXPECT_EQ(runI32Diag(src), 3);
 }
 
 // 1.7 — parallel() through a wrapper (filter) propagates the flag.

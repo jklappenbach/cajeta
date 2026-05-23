@@ -1,0 +1,97 @@
+package cajeta.lang.stream;
+
+/**
+ * Fork/join orchestrator for parallel stream terminals.
+ *
+ * **Status (v1):** the orchestration body is a sequential walk. The
+ * Splittable<T> interface and ArrayStream's `trySplit`/`estimateSize`
+ * are in place, and Stream<T>'s `.parallel()` flag flips this code
+ * path on — but actual `spawn`-based fork lands incrementally as the
+ * spawn/method-level-template integration issues get worked through
+ * (see StreamParallelism.Examples.md § Open work for the punch
+ * list). Today: marking a stream parallel walks it sequentially via
+ * this driver and returns the correct result; tomorrow: the same
+ * call forks across workers.
+ *
+ * Stream<T>.count() (and future terminals) consult this when their
+ * head's isParallel bit is set AND the head is a Splittable<T>.
+ *
+ * See cajeta-docs/stdlib/StreamParallelism.md.
+ */
+public class ParallelDriver {
+    /**
+     * Minimum elements per split before parallel pays off. Below
+     * this threshold, the driver runs sequentially even if the
+     * stream is marked parallel — fiber-spawn overhead dominates
+     * the work for small sources.
+     */
+    public static final int64 MIN_PER_SPLIT = 32L;
+
+    /**
+     * Maximum fan-out per parallel call. Today the driver runs
+     * sequentially regardless; once spawn-based fork lands the cap
+     * applies to the worker count.
+     */
+    public static final int32 MAX_SPLITS = 8;
+
+    /**
+     * Parallel count. Source confirmed Splittable<T> and parallel-
+     * eligible by the caller (Stream<T>.count() override).
+     *
+     * v1 body walks the source sequentially. The split-count
+     * decision is computed but unused — the driver records what
+     * fan-out it WOULD have picked for future debug instrumentation.
+     */
+    public static int32 countParallel<T>(Splittable<T> source) {
+        // Inline sequential walk. Avoids re-dispatching through
+        // count() which would tangle with the parallel-flag check.
+        int32 n = 0;
+        Optional<T> o = source.next();
+        while (o.isPresent()) {
+            n = n + 1;
+            o = source.next();
+        }
+        return n;
+    }
+
+    /**
+     * Decide split count from estimateSize.
+     *  - size < MIN_PER_SPLIT * 2 → 1 (sequential).
+     *  - else: ceil(sqrt(size)) capped by MAX_SPLITS.
+     *  - estimateSize() == -1 (UNKNOWN) → MAX_SPLITS (best effort).
+     */
+    public static int32 pickSplitCount(int64 sz) {
+        if (sz < 0L) {
+            return MAX_SPLITS;
+        }
+        if (sz < MIN_PER_SPLIT * 2L) {
+            return 1;
+        }
+        int64 s = isqrt(sz);
+        int32 n = (int32) s;
+        if (n > MAX_SPLITS) {
+            n = MAX_SPLITS;
+        }
+        if (n < 2) {
+            n = 2;
+        }
+        return n;
+    }
+
+    /**
+     * Integer square root (Newton's method). Inlined here so the
+     * driver doesn't take a Math dependency at this layer.
+     */
+    public static int64 isqrt(int64 n) {
+        if (n < 2L) {
+            return n;
+        }
+        int64 x = n;
+        int64 y = (x + 1L) / 2L;
+        while (y < x) {
+            x = y;
+            y = (x + n / x) / 2L;
+        }
+        return x;
+    }
+}

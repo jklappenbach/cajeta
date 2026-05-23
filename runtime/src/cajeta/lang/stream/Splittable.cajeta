@@ -1,0 +1,48 @@
+package cajeta.lang.stream;
+
+/**
+ * Marker interface for sources that can be split into disjoint
+ * sub-streams cheaply. The parallel driver only forks on sources that
+ * implement Splittable; non-splittable parallel streams fall back to
+ * sequential transparently.
+ *
+ * See cajeta-docs/stdlib/StreamParallelism.md § Splittable.
+ *
+ * Implementers:
+ *  - ArrayStream<T> — halves the index range.
+ *  - ArrayList<T>.stream() — returns an ArrayStream over the backing
+ *    buffer.
+ *  - HashMap<K,V>.keys() / .values() / .entries() — halves the slot-
+ *    array index range. (Landing in P4.)
+ *
+ * Implementers must:
+ *  1. Make trySplit() / estimateSize() thread-safe up to the worker
+ *     transfer point — the orchestrator calls them on its own fiber
+ *     before any spawn fires, so single-threaded mutation is fine,
+ *     but reads after splitting must respect that this and the
+ *     returned share now own disjoint index ranges.
+ *  2. Honor the disjointness: a split's elements must not be visible
+ *     to the original stream. ArrayStream.trySplit advances `idx` to
+ *     the midpoint and gives the returned ArrayStream the upper half;
+ *     subsequent next() calls on the original return only the lower
+ *     half.
+ */
+public interface Splittable<T> extends Stream<T> {
+    /**
+     * Take half of the remaining elements into a fresh stream;
+     * this stream now covers the other half. Returns null when the
+     * source can't / shouldn't split further (one element left,
+     * no spatial locality, etc.). The returned stream transfers
+     * ownership — caller is the new owner.
+     */
+    public #Stream<T> trySplit();
+
+    /**
+     * Best-effort element count for split-sizing. Returns -1
+     * (UNKNOWN) when traversal-bound — the orchestrator falls back
+     * to a fixed split fan-out. Returning a too-large value is
+     * harmless (just over-splits); returning a too-small value
+     * under-parallelizes.
+     */
+    public int64 estimateSize();
+}

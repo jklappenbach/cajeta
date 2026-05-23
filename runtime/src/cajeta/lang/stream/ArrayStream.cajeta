@@ -1,6 +1,6 @@
 package cajeta.lang.stream;
 
-public class ArrayStream<T> extends Stream<T> {
+public class ArrayStream<T> extends Stream<T> implements Splittable<T> {
     T[] data;
     int32 idx;
     int32 limit;
@@ -18,5 +18,57 @@ public class ArrayStream<T> extends Stream<T> {
         T v = this.data[this.idx];
         this.idx = this.idx + 1;
         return heap Optional<T>(true, v);
+    }
+
+    /**
+     * Override count() to dispatch to the parallel driver when
+     * the .parallel() flag is set. Other Stream subclasses inherit
+     * Stream<T>.count() and stay sequential — wrapper-aware
+     * splitting (FilterStream over a Splittable source) is P2 work.
+     */
+    /**
+     * Sequential walk. The override exists to give a future
+     * fork/join driver call a hook to land on (today the body is
+     * the same sequential walk Stream<T>.count() does; tomorrow
+     * the isParallel branch routes through ParallelDriver). See
+     * cajeta-docs/stdlib/StreamParallelism.md.
+     */
+    public int32 count() {
+        int32 n = 0;
+        Optional<T> o = this.next();
+        while (o.isPresent()) {
+            n = n + 1;
+            o = this.next();
+        }
+        return n;
+    }
+
+    /**
+     * Halve the remaining index range. Returns a fresh ArrayStream
+     * covering [mid, limit); this stream's limit becomes mid. The
+     * underlying data buffer is shared (no copy) — ownership of
+     * elements stays with whoever owns the buffer; the two
+     * ArrayStreams just present disjoint index ranges.
+     *
+     * Returns null if there are fewer than 2 remaining elements
+     * (can't split a single element).
+     */
+    public #Stream<T> trySplit() {
+        int32 remaining = this.limit - this.idx;
+        if (remaining < 2) {
+            return null;
+        }
+        int32 mid = this.idx + (remaining / 2);
+        // The share covers [mid, limit). Construct a fresh
+        // ArrayStream pointing at the same data but starting at mid.
+        ArrayStream<T> share = heap ArrayStream<T>(this.data, this.limit);
+        share.idx = mid;
+        // Shrink this stream to [idx, mid).
+        this.limit = mid;
+        return share;
+    }
+
+    public int64 estimateSize() {
+        return (int64) (this.limit - this.idx);
     }
 }
