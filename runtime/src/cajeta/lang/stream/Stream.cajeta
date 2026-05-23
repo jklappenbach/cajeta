@@ -32,11 +32,41 @@ import cajeta.collection.Collector;
  */
 public class Stream<T> {
     /**
+     * Parallel-eligibility flag. Set by `.parallel()`; cleared by
+     * `.sequential()`. Terminals consult it to decide whether to
+     * fork. The bit propagates through wrapper combinators (filter,
+     * map, etc.) via their ctors (each wrapper copies its source's
+     * flag at construction). See cajeta-docs/stdlib/StreamParallelism.md.
+     */
+    boolean isParallel = false;
+
+    /**
      * Pull the next element. Implementers override; default returns
      * an empty Optional.
      */
     public #Optional<T> next() {
         return heap Optional<T>(false, null);
+    }
+
+    /**
+     * Mark this stream as parallel-eligible. Returns the same stream
+     * — no wrapper allocation. Terminals branch on the flag; if the
+     * source can't split or the size is below threshold, the
+     * terminal falls back to sequential transparently.
+     */
+    public Stream<T> parallel() {
+        this.isParallel = true;
+        return this;
+    }
+
+    /**
+     * Clear the parallel-eligibility flag. Used as the escape hatch
+     * for stateful intermediate ops (`take`/`skip`) which require
+     * ordered traversal. Returns this.
+     */
+    public Stream<T> sequential() {
+        this.isParallel = false;
+        return this;
     }
 
     /**

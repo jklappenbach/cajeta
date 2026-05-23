@@ -1,0 +1,895 @@
+# Stream Parallelism — Examples & Error Reference
+
+Companion to `StreamParallelism.md`. Pre-implementation walk-through of
+every user-visible shape — happy path, compile-time rejections, runtime
+exceptions, system-error edge cases. Each entry is what the test suite
+should pin and what the documentation should show. Review this BEFORE
+any code lands so the diagnostic surface is locked in.
+
+The error-message blocks below are aspirational — they're what the
+compiler / runtime SHOULD print. Anywhere the format is ambiguous,
+treat the example as the source of truth.
+
+---
+
+## §1 Happy path
+
+### 1.1 — Parallel count
+
+```cajeta
+int32[] xs = new int32[10_000];
+for (int32 i = 0; i < 10_000; i = i + 1) { xs[i] = i; }
+
+int32 n = xs.stream().parallel().count();
+// n == 10_000
+```
+
+What happens:
+- `ArrayStream<int32>` constructed over `xs`. `isParallel = true`.
+- Terminal `count()` checks the flag, dispatches to
+  `ParallelDriver.count(this)`.
+- Driver calls `estimateSize() = 10_000`, picks `splits =
+  ceil(sqrt(10_000)) = 100`, capped by core count (typical: 8–16).
+- N workers `spawn`'d; each pulls its split to exhaustion, returns
+  its local count via `#int32` transfer.
+- Orchestrator sums partials → `n`.
+
+### 1.2 — Parallel reduce (sum)
+
+```cajeta
+int64 total = xs.stream()
+                .parallel()
+                .reduce(0L, (a, b) -> (int64) (a + b));
+// total == sum of xs
+```
+
+Contract: the reduce op must be associative AND seed (`0L` here) must
+be its identity element. Programmer responsibility, same as Java's
+`Stream.reduce(BinaryOperator)`.
+
+### 1.3 — Parallel filter + map + reduce
+
+```cajeta
+int32 sumOfDoubledPositives = xs.stream()
+    .parallel()
+    .filter((x) -> x > 0)
+    .map<int32>((x) -> x * 2)
+    .reduce(0, (a, b) -> a + b);
+```
+
+Pipeline shape: `ArrayStream → FilterStream → MapStream → reduce`.
+Driver unwinds, splits `ArrayStream` only, re-wraps each split with
+fresh FilterStream + MapStream pointing at the worker's slice. Each
+worker runs its full pipeline locally, partials are int32, combine
+via `+`.
+
+### 1.4 — Short-circuiting `anyMatch`
+
+```cajeta
+boolean hasNeg = xs.stream()
+                   .parallel()
+                   .anyMatch((x) -> x < 0);
+```
+
+If any worker finds a match, it sets the scope's cancellation flag.
+Siblings observe at their next pull-loop checkpoint and bail. The
+scope joins; orchestrator returns `true`. If no worker finds a match,
+all run to exhaustion and orchestrator returns `false`.
+
+### 1.5 — Parallel fold<R> with combiner
+
+```cajeta
+int64 sum = xs.stream()
+    .parallel()
+    .fold<int64>(
+        0L,                                   // seed (each worker gets fresh)
+        (acc, x) -> acc + (int64) x,         // per-element accumulator
+        (left, right) -> left + right);      // partial combiner
+```
+
+The three-arg `fold<R>` is the parallel-friendly form. The 2-arg form
+(`fold<R>(seed, fn)`) is sequential-only; calling it on a parallel
+stream is rejected at compile time (see §2.2).
+
+### 1.6 — Parallel collect with combiner-bearing Collector
+
+```cajeta
+ArrayList<int32> doubled = xs.stream()
+    .parallel()
+    .filter((x) -> x > 0)
+    .map<int32>((x) -> x * 2)
+    .collect<ArrayList<int32>>(Collectors.toList<int32>());
+```
+
+`Collectors.toList<T>` ships with a combiner (`(a, b) -> a.appendAll(b)`).
+Each worker accumulates into its own ArrayList; orchestrator appends
+them in encounter order from the split fan-out. Result has all elements
+but order across splits is the source's natural order (since splits are
+disjoint index ranges).
+
+### 1.7 — Parallel forEach (side-effecting, order unspecified)
+
+```cajeta
+AtomicInt32 counter = heap AtomicInt32(0);
+xs.stream()
+  .parallel()
+  .forEach((x) -> { if (x > 0) counter.incrementAndGet(); });
+
+int32 positives = counter.get();
+```
+
+Order across workers is **not** specified. The lambda's side effects
+must therefore be commutative AND thread-safe — `AtomicInt32` here.
+Non-thread-safe captures (e.g. a plain `int32` accumulator) are
+rejected by §2.5.
+
+### 1.8 — `.parallel().sequential()` flips back
+
+```cajeta
+xs.stream()
+  .parallel()
+  .filter((x) -> x > 0)
+  .sequential()     // drop back to sequential for the stateful tail
+  .take(5)
+  .count();
+```
+
+`.sequential()` returns the same stream with `isParallel = false`.
+Used as the escape hatch for stateful intermediate ops (§2.1).
+
+### 1.9 — Idempotent `.parallel()`
+
+```cajeta
+xs.stream().parallel().parallel().count();   // same as one .parallel()
+```
+
+Setting the flag twice is a no-op. No allocation, no warning.
+
+### 1.10 — Parallel on HashMap stream view
+
+```cajeta
+HashMap<String, int32> scores = ...;
+int64 total = scores.values()
+                    .parallel()
+                    .map<int64>((v) -> (int64) v)
+                    .reduce(0L, (a, b) -> a + b);
+```
+
+`HashMap.values()` returns a `HashMapValueStream<K,V>` which implements
+`Splittable<V>` by halving the slot-array index range. Snapshot
+semantics (the stream captures slot-array refs at construction); a
+concurrent put / resize during the parallel traversal is undefined
+behavior — same contract as the sequential traversal.
+
+### 1.11 — Fallback to sequential on non-splittable source
+
+```cajeta
+Stream<int32> generator = heap CustomCounter(100);   // not Splittable
+int32 n = generator.parallel().count();
+// n == 100; runs sequentially — no error
+```
+
+The driver's `unwind` step finds the source isn't `Splittable<T>`,
+records a `[parallel-no-split]` diagnostic at debug-mode build time
+(off in release), and runs the pipeline on the orchestrator thread.
+No compile error — `parallel()` is a hint, not a demand.
+
+### 1.12 — Source too small to parallelize
+
+```cajeta
+int32[] tiny = {1, 2, 3};
+int32 n = tiny.stream().parallel().count();
+// n == 3; runs sequentially
+```
+
+`estimateSize() = 3` falls below the driver's split-count threshold
+(v1: 16 elements minimum per split, so anything under 32 stays
+sequential). No error.
+
+---
+
+## §2 Compile-time rejections
+
+Each rejection points at the offending source position, explains why,
+and offers a concrete remediation.
+
+### 2.1 — Stateful intermediate op after parallel()
+
+```cajeta
+xs.stream().parallel().take(5).count();
+```
+
+```
+error[parallel-stateful-op]: stream operation 'take' requires ordered
+       traversal, which the parallel driver doesn't preserve
+  --> example.cajeta:5:28
+   5 |     xs.stream().parallel().take(5).count();
+     |                            ^^^^^^^ rejected here
+
+  = note: 'take' and 'skip' depend on global encounter order across
+          splits. The parallel driver splits the source by index range
+          but workers run independently, so "take the first 5" has no
+          well-defined meaning when worker 2 might finish before worker 1.
+
+  = help: drop back to sequential before the stateful op:
+            xs.stream().parallel().filter(p).sequential().take(5).count()
+
+          or remove .parallel() if the stateful op dominates the cost.
+```
+
+Same shape for `skip(n)`.
+
+### 2.2 — `fold<R>` two-arg overload on parallel stream
+
+```cajeta
+xs.stream().parallel().fold<int64>(0L, (acc, x) -> acc + (int64) x);
+```
+
+```
+error[parallel-fold-no-combiner]: fold<R> on a parallel stream
+       requires a partial-combiner function
+  --> example.cajeta:5:28
+   5 |     xs.stream().parallel().fold<int64>(0L, (acc, x) -> acc + x);
+     |                            ^^^^^^^^^^^ rejected here
+
+  = note: each worker computes its own R partial. Without a combiner
+          the orchestrator can't merge them — the per-element
+          accumulator's type (R, T) -> R isn't a valid combine
+          shape (no way to reduce R + R).
+
+  = help: use the three-arg fold:
+            xs.stream().parallel().fold<int64>(
+                0L,
+                (acc, x) -> acc + (int64) x,
+                (a, b) -> a + b);            // combiner
+
+          or sequentialize:
+            xs.stream().parallel().filter(p).sequential().fold(...);
+```
+
+### 2.3 — `collect<R>` with a no-combiner Collector
+
+```cajeta
+public class MyCollector implements Collector<int32, MyAggregate> {
+    public MyAggregate seed() { return heap MyAggregate(); }
+    public MyAggregate accumulate(MyAggregate a, int32 x) { ... }
+    // no combine() — only sequential collect would work
+}
+
+xs.stream().parallel().collect<MyAggregate>(heap MyCollector());
+```
+
+```
+error[parallel-collector-no-combiner]: collector 'MyCollector' has no
+       combine method; parallel collect cannot merge worker partials
+  --> example.cajeta:14:32
+  14 |     xs.stream().parallel().collect<MyAggregate>(heap MyCollector());
+     |                            ^^^^^^^ rejected here
+
+  = note: collector at line 5 defines seed() + accumulate() but no
+          combine(MyAggregate, MyAggregate) -> MyAggregate.
+
+  = help: implement the combine method:
+            public MyAggregate combine(MyAggregate left, MyAggregate right) {
+                // merge right into left (or build fresh) and return.
+            }
+
+          or sequentialize:
+            xs.stream().filter(p).sequential().collect<MyAggregate>(...);
+```
+
+### 2.4 — `reduce` on parallel stream with non-identity seed (lint, not error)
+
+```cajeta
+int32 result = xs.stream().parallel().reduce(100, (a, b) -> a + b);
+// 100 added once per worker = N partials × 100, then summed
+// → result == sum(xs) + N*100, not sum(xs) + 100.
+```
+
+```
+warning[parallel-reduce-nonzero-seed]: seed '100' may not be the
+       identity element for the reduction operator
+  --> example.cajeta:5:43
+   5 |     int32 result = xs.stream().parallel().reduce(100, (a, b) -> a + b);
+     |                                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+  = note: the parallel driver applies the seed once per worker partial
+          and once more at the orchestrator combine — using a non-
+          identity seed produces a result that depends on the split
+          count, which is non-deterministic across machines / runs.
+
+  = help: pass 0 (the identity for '+') and add the bias outside the
+          stream:
+            int32 result = 100 + xs.stream().parallel().reduce(0, (a,b) -> a+b);
+
+          or sequentialize if the bias is load-bearing.
+
+  = suppress: @SuppressLint("parallel-reduce-nonzero-seed") on the
+              enclosing method if the math is verified intentional.
+```
+
+This is a **lint**, not a hard error — the compiler can't prove a seed
+is/isn't an identity (it can't see into user-defined ops). The lint
+fires for any non-zero, non-empty-string, non-empty-collection seed in
+common cases; `@SuppressLint` opts out per call site.
+
+### 2.5 — Capture-mutation in a parallel lambda (lint)
+
+```cajeta
+int32 total = 0;
+xs.stream().parallel().forEach((x) -> { total = total + x; });
+```
+
+```
+warning[parallel-shared-mutation]: lambda mutates captured local
+       'total' from multiple workers — data race
+  --> example.cajeta:6:46
+   6 |     xs.stream().parallel().forEach((x) -> { total = total + x; });
+     |                                              ^^^^^ mutated here
+
+  = note: the parallel driver runs the lambda on N fibers concurrently.
+          Plain reads/writes of a captured class-or-primitive local
+          aren't atomic; the final value depends on interleaving.
+
+  = help: aggregate via reduce, which gives each worker its own seed
+          copy and combines without sharing:
+            int32 total = xs.stream().parallel().reduce(0, (a, b) -> a + b);
+
+          or use an atomic when forEach is genuinely the right shape:
+            AtomicInt32 total = heap AtomicInt32(0);
+            xs.stream().parallel().forEach((x) -> total.addAndGet(x));
+            int32 result = total.get();
+
+  = suppress: @SuppressLint("parallel-shared-mutation") if the capture
+              is read-only despite the syntactic write (e.g. mutates an
+              already-atomic / already-locked structure via method).
+```
+
+Detection: the lint walks the lambda body looking for assignment LHS
+that resolves to a captured local (`IdentifierExpression` resolving
+outside the lambda's own scope). Captures of atomic types
+(`AtomicInt32`, `AtomicInt64`, `AtomicBool`, `AtomicRef<T>`) are
+exempt. Reads-only captures are fine.
+
+### 2.6 — `parallel()` on a stream of non-Send type
+
+```cajeta
+public class HandleNotSend {
+    private SystemHandle h;
+    // marked @NotSend — see Thread.md § Sendability
+}
+
+xs.stream().parallel().map<HandleNotSend>((x) -> heap HandleNotSend(x))
+                      .forEach((h) -> use(h));
+```
+
+```
+error[parallel-not-send]: type 'HandleNotSend' carries the @NotSend
+       marker; values cannot cross thread boundaries
+  --> example.cajeta:8:24
+   8 |     xs.stream().parallel().map<HandleNotSend>((x) -> ...)
+     |                            ^^^^^^^^^^^^^^^^^^^^ produces non-Send T
+
+  = note: the parallel driver transfers partials between workers and
+          the orchestrator via '#'. Types declared @NotSend reject
+          this transfer at compile time — see cajeta-docs/stdlib/
+          Thread.md § Sendability.
+
+  = help: build the HandleNotSend values on the orchestrator, after
+          the parallel terminal:
+            int32[] indices = xs.stream().parallel().filter(p)
+                                .toArray<int32>();
+            for (int32 i : indices) { use(heap HandleNotSend(i)); }
+```
+
+(@NotSend marker doesn't exist yet — added if a use case surfaces.
+Listed here so the diagnostic shape is committed if we add it.)
+
+### 2.7 — Nested `parallel()` calls (warn, not error)
+
+```cajeta
+xs.stream().parallel().flatMap<int32>((x) -> {
+    int32[] inner = ...;
+    return inner.stream().parallel();   // inner parallel
+}).count();
+```
+
+```
+warning[parallel-nested]: inner stream marked .parallel() inside a
+       parallel outer flatMap will run sequentially
+  --> example.cajeta:7:32
+   7 |         return inner.stream().parallel();
+     |                                ^^^^^^^^^^
+
+  = note: v1 doesn't propagate parallelism through flatMap inner
+          streams — the outer parallel already saturates the worker
+          pool; nested parallel would oversubscribe.
+
+  = help: drop the inner .parallel() (it's a no-op anyway), or move
+          parallelism to the inner pipeline if the outer is short:
+            int32 N = xs.stream().count();
+            if (N < 16) { /* drop outer .parallel() */ }
+```
+
+---
+
+## §3 Runtime exceptions
+
+### 3.1 — Worker throws; siblings cancel
+
+```cajeta
+xs.stream().parallel().forEach((x) -> {
+    if (x < 0) throw heap IllegalArgumentException("negative: " + x);
+    process(x);
+});
+```
+
+Behavior:
+1. Worker N hits negative, throws `IllegalArgumentException`.
+2. Exception captured into the worker's Task exception slot
+   (existing R5-D-lite machinery).
+3. Worker N's scope frame triggers cancellation on siblings.
+4. Sibling workers observe at their next pull-loop checkpoint
+   (driver injects an explicit `__cajeta_check_cancelled()` call
+   after each `next()` pull), bail their loops, return early.
+5. Scope joins. `scope_exit` finds the first exception, re-raises
+   it on the orchestrator. Other workers' (none in this scenario)
+   exceptions land in `cause.suppressed`.
+
+Stack trace (auto-printed on uncaught):
+
+```
+cajeta.error.IllegalArgumentException: negative: -3
+  at example.<lambda#1>(example.cajeta:6)
+  at cajeta.lang.stream.parallel.ParallelDriver.workerBody(ParallelDriver.cajeta:148)
+  at cajeta.lang.stream.parallel.<parallel worker 2>(ParallelDriver.cajeta:96)
+  at example.run(example.cajeta:5)
+```
+
+The `<parallel worker 2>` synthetic frame names the split index so
+users can correlate with input data layout.
+
+### 3.2 — Two workers throw simultaneously
+
+```cajeta
+xs.stream().parallel().forEach((x) -> {
+    if (x == 0) throw heap ArithmeticException("zero");
+    if (x < 0)  throw heap IllegalArgumentException("negative");
+    process(100 / x);
+});
+```
+
+If worker 1 throws ArithmeticException and worker 3 throws
+IllegalArgumentException before either observes the other's
+cancellation:
+
+- Both exceptions captured in their respective Task slots.
+- Scope joins. `scope_exit` raises the FIRST-completed worker's
+  exception as the primary. The other's exception is attached as
+  `primary.suppressed`.
+
+```
+cajeta.error.ArithmeticException: zero
+  at example.<lambda#1>(example.cajeta:5)
+  at cajeta.lang.stream.parallel.<parallel worker 1>(...)
+  at example.run(example.cajeta:4)
+  Suppressed:
+    cajeta.error.IllegalArgumentException: negative
+      at example.<lambda#1>(example.cajeta:6)
+      at cajeta.lang.stream.parallel.<parallel worker 3>(...)
+      at example.run(example.cajeta:4)
+```
+
+"First-completed" rather than "first-thrown" because we drain the
+scope's child list in registration order at exit time and pick the
+first non-null exception slot. Documented as such; users wanting
+exception priority semantics get `.sequential()`.
+
+### 3.3 — Combiner throws
+
+```cajeta
+int64 result = xs.stream().parallel().fold<int64>(
+    0L,
+    (acc, x) -> acc + (int64) x,
+    (a, b) -> { if (a > 1_000_000_000L) throw heap OverflowException("sum too big"); return a + b; });
+```
+
+If the combiner throws at the orchestrator combine step:
+- Partials remaining in the `partials[]` array drop normally via the
+  array's own drop chain entry.
+- Exception propagates out of the terminal call site.
+
+Worker results that have already been combined are owned by the
+running `acc`; if `acc` is a class type, its drop chain entry
+fires at unwind.
+
+### 3.4 — Worker can't be cancelled (CPU-bound)
+
+```cajeta
+xs.stream().parallel().forEach((x) -> {
+    // Tight CPU-bound loop with no await / no further next() pull
+    while (true) { computeStuff(x); }
+});
+```
+
+Cancellation is **cooperative** (Thread.md § Cancellation). A worker
+stuck in a CPU loop never observes the cancellation flag. The scope
+waits forever.
+
+**Diagnostic.** v1 documents this restriction. v2 may add a runtime
+timer that promotes long-running cancellation to a thread-interrupt
+signal; that requires platform-specific signal handling and is
+explicitly out of scope here.
+
+User-visible recommendation:
+
+```cajeta
+// Periodic yield in long compute loops makes them cancellable:
+xs.stream().parallel().forEach((x) -> {
+    for (int32 i = 0; i < 1000; i = i + 1) {
+        computeStuff(x);
+        if (i % 100 == 0) { yield(); }   // cancellation checkpoint
+    }
+});
+```
+
+### 3.5 — Out-of-memory at fiber-stack allocation
+
+```cajeta
+// Source is huge; driver picks 64 splits.
+hugeArray.stream().parallel().count();
+```
+
+If `__cajeta_task_run` can't allocate the per-fiber stack (~64 KB
+per worker × 64 = 4 MB) due to OS memory exhaustion:
+
+```
+cajeta.error.SystemResourceException: fiber stack allocation failed
+  (requested 65536 bytes; errno=ENOMEM)
+  parallel driver fell back to sequential after 4 workers spawned
+  at cajeta.lang.stream.parallel.ParallelDriver.drive(ParallelDriver.cajeta:N)
+  at example.run(example.cajeta:5)
+```
+
+Behavior: the driver catches the spawn failure, joins the workers
+that DID start, runs the remaining splits on the orchestrator
+sequentially, and returns the combined result. The exception is
+recorded as a warning (not raised) when the fallback succeeds — the
+terminal completes correctly. If the orchestrator-side fallback ALSO
+runs out of memory (e.g. allocating a partial buffer), THAT
+exception propagates as `SystemResourceException`.
+
+(Decision point: should the OOM be raised even when fallback
+succeeds? Current draft says no — the user got the right answer.
+A debug-mode log line records the degradation so it's visible at
+investigation time.)
+
+### 3.6 — `trySplit()` returns null too eagerly
+
+```cajeta
+// Custom Splittable that gives up after 1 split.
+public class LazySplitter<T> implements Splittable<T> { ... }
+```
+
+```cajeta
+int32 n = lazySplitter.stream().parallel().count();
+```
+
+Behavior: driver gets 1 split, runs both halves on 2 workers
+(orchestrator + 1 spawn). No error. v1's split decisions are
+heuristic; trySplit returning null is the source telling the driver
+"this is enough." If estimateSize was huge but the source actually
+splits coarsely, the result is correct but parallelism is reduced.
+
+### 3.7 — `estimateSize()` lies (returns 10 when actual is 10_000)
+
+Same shape as 3.6 — the driver picks `ceil(sqrt(10)) = 4` splits.
+trySplit then either gives the driver actual data or returns null.
+If trySplit honestly halves a 10_000-element source, the 4-way fan-
+out still parallelizes the workload; if trySplit returns null,
+parallelism collapses. Either way the result is correct.
+
+**v1 doesn't validate** `estimateSize` against actual walk count.
+Truthful estimates produce optimal parallelism; lies degrade it.
+
+### 3.8 — Source mutated during traversal
+
+```cajeta
+ArrayList<int32> list = ...;
+list.stream().parallel().forEach((x) -> {
+    list.add(x * 2);   // mutating the source!
+});
+```
+
+**Undefined behavior.** Same contract as sequential traversal. v1
+makes no attempt to detect this; the test suite includes a probe to
+verify the failure mode doesn't crash the runtime (assertion firing
+inside ArrayList vs silent corruption — we want the assertion).
+
+(A future v2 could add a generation-counter check at the splittable
+sources, raising `ConcurrentModificationException`. Listed for
+completeness; not in scope.)
+
+### 3.9 — Scheduler resource exhaustion
+
+```cajeta
+// 1024 nested parallel terminals (pathological)
+for (int32 i = 0; i < 1024; i = i + 1) {
+    xs.stream().parallel().count();
+}
+```
+
+The scheduler's fiber pool is bounded. If exhausted, `spawn` returns
+a failure:
+
+```
+cajeta.error.SystemResourceException: scheduler fiber pool exhausted
+  (cap=4096 fibers; in flight=4096)
+  at cajeta.lang.stream.parallel.ParallelDriver.drive(...)
+  at example.run(example.cajeta:5)
+
+  = hint: stack of in-flight scopes:
+            run() @ example.cajeta:5
+            <parallel worker N> @ ParallelDriver.cajeta:96 (× 1024)
+```
+
+The hint walks the per-fiber scope chain to show what's holding the
+pool capacity, so users can identify a runaway recursion vs a
+legitimate workload that needs `parallel(Executor)` with a larger
+pool (v2).
+
+### 3.10 — Lambda capturing borrowed state outliving scope (compile-time, but listed here for completeness with the runtime side)
+
+```cajeta
+async void caller() {
+    int32[] xs = new int32[1000];
+    detach xs.stream().parallel().forEach((x) -> process(x));
+    // ^ rejected: detach + parallel = no scope to anchor xs's borrow
+}
+```
+
+Compile error from the existing `detach` capture check:
+
+```
+error[detach-borrow-capture]: cannot detach a parallel stream
+       terminal — the borrow of 'xs' has no scope to anchor to
+  --> example.cajeta:5:12
+   5 |     detach xs.stream().parallel().forEach(...);
+     |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+  = note: parallel terminals open their own scope and join before
+          returning. 'detach' opts out of scope semantics, but the
+          parallel driver's workers borrow from 'xs'; without a scope
+          to anchor, 'xs' could drop before the workers finish.
+
+  = help: spawn a wrapper that owns the scope:
+            spawn { xs.stream().parallel().forEach(...); };
+          or transfer ownership:
+            int32[] owned = #xs;
+            detach owned.stream().parallel().forEach((x) -> ...);
+```
+
+---
+
+## §4 System / edge-case scenarios
+
+### 4.1 — Zero-element source
+
+```cajeta
+int32[] empty = new int32[0];
+int32 n = empty.stream().parallel().count();   // n == 0
+```
+
+Driver: `estimateSize() = 0`. Below split threshold. Runs sequentially.
+`next()` returns empty Optional on first call. Result `0`. No spawns,
+no scope (driver elides scope-open if split count == 1).
+
+### 4.2 — One-element source
+
+Same as 4.1 — runs sequentially. Threshold elides parallelism.
+
+### 4.3 — Many-element / pathological-distribution source
+
+```cajeta
+// 1M element source, but estimateSize() returns 16
+weirdGenerator.stream().parallel().count();
+```
+
+Driver picks 4 splits based on the estimate. Each split is actually
+~250K elements. Workers run; partial counts sum correctly. Slower
+than optimal (under-parallelism) but correct. No exception.
+
+### 4.4 — Worker exits via early-return (control flow, not exception)
+
+```cajeta
+int32 first = xs.stream().parallel().findFirst((x) -> x > 100).get();
+// Same shape: workers race; first hit cancels rest.
+```
+
+Workers that don't hit a match run to exhaustion on their split and
+return `empty Optional`. Worker that hits cancels via the same path
+as 3.1, but the cancellation trigger is "found result" rather than
+"exception." Orchestrator picks the first non-empty Optional from
+the partials. (See §2.4 in `StreamParallelism.md` for the
+order-loss caveat — under parallel, `findFirst` is really
+`findAny`.)
+
+### 4.5 — Combiner with non-commutative semantics
+
+```cajeta
+// String concatenation is associative but NOT commutative
+String joined = words.stream()
+    .parallel()
+    .fold<String>("",
+        (acc, w) -> acc + w,
+        (a, b) -> a + b);
+```
+
+Splits are disjoint contiguous index ranges, so worker N processes
+indices [start_N, end_N). Per-worker accumulators are in-order
+within the worker. The orchestrator's combine sweep walks partials
+in worker-index order (== source-index order). Result: same as
+sequential concatenation. **Documented**: combiner must be
+associative; commutativity is NOT required as long as the source is
+ordered (arrays, ArrayList). HashMap stream views aren't ordered;
+non-commutative combiners on them produce results that vary across
+runs.
+
+### 4.6 — Parallel inside async function
+
+```cajeta
+async int32 parallelInsideAsync() {
+    int32[] xs = await fetchData();
+    return xs.stream().parallel().reduce(0, (a, b) -> a + b);
+}
+```
+
+The async fn runs on a fiber. The parallel driver opens a nested
+scope and spawns workers on the same scheduler pool. The async fn
+fiber blocks (via `__cajeta_task_wait`) until the scope joins, then
+continues. No special handling — composes naturally with the
+existing async machinery.
+
+### 4.7 — Parallel + try/catch around the terminal
+
+```cajeta
+try {
+    int32 result = xs.stream().parallel().forEach((x) -> {
+        if (x < 0) throw heap IllegalStateException("neg");
+        process(x);
+    });
+} catch (IllegalStateException e) {
+    log("got " + e.getMessage());
+}
+```
+
+The catch sees the same exception the workers threw (re-raised at
+scope exit, see §3.1). Suppressed exceptions traverse with it.
+
+### 4.8 — Parallel terminal called from inside another parallel terminal's lambda
+
+```cajeta
+xs.stream().parallel().forEach((x) -> {
+    int32 inner = ys.stream().parallel().count();   // !!!
+    process(x, inner);
+});
+```
+
+The inner `parallel()` runs on the outer worker's fiber. The inner
+driver opens a nested scope on the same scheduler pool. If the
+scheduler is busy (outer workers saturate cores), inner workers
+queue and may stall the outer worker.
+
+v1 behavior: runs correctly but may oversubscribe. The
+`[parallel-nested]` warning (§2.7) catches the syntactic flatMap
+form; this dynamic form sneaks past. Documented as a footgun;
+users should hoist the inner stream to a sequential collect
+outside.
+
+### 4.9 — Cancellation during combine
+
+```cajeta
+// Terminal short-circuits via anyMatch; combine is racing with
+// worker cancellation.
+boolean found = xs.stream().parallel().anyMatch((x) -> x == TARGET);
+```
+
+The driver's combine for anyMatch is "OR partials." If worker A
+returns true and the orchestrator is already iterating partials
+when worker B's cancellation completes, the OR short-circuits on
+A's true — workers B/C/... partials are still safely accumulated
+into the `partials[]` array (no concurrent mutation) and dropped
+normally at scope exit. No exception, correct result.
+
+### 4.10 — Drop chain pressure under parallel
+
+A worker's pull loop on a class-typed T pushes drop entries on its
+own per-fiber chain (Thread.md R5 TLS promotion). With 16 workers ×
+10_000 elements each = 160_000 push/pop pairs total. The drop chain
+is a per-fiber linked list with O(1) push/pop — scales linearly. The
+process-global drop counter is `__atomic_*_n` SEQ_CST; under heavy
+contention it's the limiting factor (single cache line). Acceptable
+for v1; debug-mode toggle for the counter (`--drop-chain-validate=off`)
+already exists per CompilerModes.md if a tight benchmark needs it.
+
+---
+
+## §5 What's intentionally NOT covered (deferrals)
+
+- **`@SuppressLint("parallel-…")` precedence rules** — same as existing
+  lints (`@SuppressLint` on enclosing method/class/file).
+- **Custom executor / thread-pool surface** — `parallel(Executor e)`
+  overload; v1 always uses built-in pool. Listed as Q4 in main doc.
+- **Stream debugging — visibility into split sizes / worker timings.**
+  Useful for tuning. v2 adds `parallel(Diag d)` that captures split
+  counts, per-worker durations, combine overhead. Out of scope for
+  v1.
+- **GPU offload / SIMD** — separate track entirely; touches code-
+  generation, not the stream surface.
+- **Distributed parallel** (workers on remote machines) — not in scope.
+
+---
+
+## §6 Test plan summary
+
+Total test count estimate for the v1 implementation phases:
+
+| Phase | Tests | Coverage |
+| ----- | ----- | -------- |
+| P1 — Splittable + driver | 8 | count happy, count fallback, count empty, count 1-elem, count splittable, count non-splittable, ArrayStream.trySplit / estimateSize unit, driver-unwinds-wrappers shape pin |
+| P2 — Reduce-shape terminals | 12 | reduce + anyMatch/allMatch/noneMatch (× sum / empty / no-match), forEach with AtomicInt32 |
+| P3 — Cross-type combinators | 10 | fold<R>(3-arg) happy, fold<R>(2-arg) rejected, Collector combiner toList parallel, Collector no combiner rejected, mixed shapes |
+| P4 — Diagnostics + source coverage | 12 | each compile-time error from §2 (6 tests), HashMap parallel keys/values/entries (3), nested-parallel warning, non-Send marker (pending the marker itself), reduce-nonzero-seed lint |
+| P5 — Runtime exceptions + edge cases | 16 | every scenario in §3 (10 tests), every scenario in §4 except 4.3 (which is performance, not correctness; benchmarked separately) |
+
+Aggregate: ~58 tests. Each test file shipping incrementally with its
+phase; the design doc + this examples doc as the contract until the
+matching test lands.
+
+---
+
+## §7 Locked decisions (post-review 2026-05-22)
+
+- **R1.** `findFirst` under `.parallel()` silently shifts to findAny
+  semantics + emits the `[parallel-findfirst-unordered]` lint. The
+  fluent surface stays intact — users can refactor sequential→
+  parallel by adding one `.parallel()` call without renaming
+  terminals.
+
+- **R2.** OOM during spawn ALWAYS raises `SystemResourceException` —
+  even when the driver could fall back to sequential and complete
+  correctly. Rationale: a workload that's brittle to memory pressure
+  should surface that fact at the first sign of trouble, not at the
+  fourth nested terminal where the partial results compound. The
+  exception message includes the spawn failure count and remaining
+  split count so users can diagnose pool-size mismatches.
+
+- **R3.** `Collector<T, R>` makes `combiner` a REQUIRED field. Every
+  collector must define `(R, R) -> R combiner` at construction. The
+  Collector ctor signature shifts from 2-arg `(seed, accumulator)` to
+  3-arg `(seed, accumulator, combiner)`. Existing call sites
+  (Collectors.toList + 4 CollectorTests sites) are updated to
+  provide combiners — see §8 migration sweep below. The compile-time
+  rejection in §2.3 stays in the suite as a regression pin (it's now
+  raised at the Collector ctor itself, not at .parallel().collect()).
+
+- **R5.** Worker stack-trace frames named `<parallel worker N>` using
+  the split index (0-based). The driver threads the split index
+  through to the spawn trampoline; trampoline's existing exception-
+  capture machinery already prefixes the frame on throw.
+
+## §8 Migration sweep (Collector R3)
+
+Pre-implementation: existing `Collector<T, R>` ctor is 2-arg. The R3
+decision adds a required 3rd `combiner` parameter. Touched sites:
+
+| File | Change |
+| ---- | ------ |
+| `runtime/src/cajeta/collection/Collector.cajeta` | add `combiner` field + 3-arg ctor; remove 2-arg ctor |
+| `runtime/src/cajeta/collection/Collectors.cajeta` | `Collectors.toList<T>()` passes `(a, b) -> a.appendAll(b)` as combiner |
+| `runtime/src/cajeta/collection/ArrayList.cajeta` | add `appendAll(ArrayList<T> other): void` if not present |
+| `test/parser/CollectorTests.cpp` | 4 ctor calls get a combiner (sum: `(a, b) -> a + b`) |
+| `test/parser/LambdaL2Tests.cpp` | 1 call updated (line 209+ comment ref) |
+
+Migration goes in the P1 prep commit so subsequent parallel work
+sees the new shape from the start.

@@ -322,34 +322,25 @@ shape construction):
   undefined behavior. The HashMap stream views already specify
   snapshot semantics; that property carries over.
 
+## Locked decisions (2026-05-22)
+
+- **findFirst** silently becomes findAny under parallel; lint
+  `[parallel-findfirst-unordered]` warns about ordering loss. Fluent
+  surface stays intact.
+- **OOM at spawn** always raises `SystemResourceException` — no
+  silent fallback. Surfaces brittle workloads early.
+- **`Collector<T, R>` combiner is REQUIRED.** 3-arg ctor `(seed,
+  accumulator, combiner)`. Existing 2-arg call sites are swept in
+  the P1 prep commit (Collectors.toList + 4 CollectorTests sites).
+- **Worker stack-trace frames** named `<parallel worker N>` using
+  the split index.
+
 ## Open design questions
 
-(Tagged for follow-up before P1 starts.)
+(Out of scope for v1 — listed for future tracking.)
 
-- **Q1.** Should `.parallel()` be a single instance field on the
-  head stream, or a per-call argument to the terminal (`count(),
-  parallelCount()`)? Current draft picks the former (Java's choice)
-  for fluent ergonomics; downside is the bit travels through wrapper
-  combinators and one branch sits in every terminal even for the
-  sequential majority. The branch is predictable, so the cost is
-  negligible — but verify with a microbenchmark before P1 lands.
-
-- **Q2.** Should `findFirst` keep its name and silently become
-  `findAny` under parallel (Java's choice), or rename to `findAny`
-  when parallel and fail-at-compile when called on a parallel stream
-  by its original name? Current draft picks the silent shift + lint
-  warning. Rename would be more honest but disrupts the fluent
-  surface.
-
-- **Q3.** Should the orchestrator do tree-reduction of partials
-  (`O(log N)` levels of combine work, parallelizable) vs the current
-  draft's linear sweep (`O(N)`, sequential on the orchestrator)? For
-  the split counts v1 picks (4–32 typically), linear is fine. Defer
-  tree-reduce to v2 when measurements demand it.
-
-- **Q4.** Custom thread-pool / executor surface. v1 always uses the
-  built-in scheduler. The Q is whether parallel terminals should
-  take an optional executor argument from the start so the surface
-  is forward-compatible. Probably yes (`parallel(Executor e)` overload
-  with the no-arg default routing to the built-in), but the actual
-  Executor type design is out of scope here.
+- **Tree-reduce of partials** instead of orchestrator-linear sweep.
+  v1's linear sweep is fine for the split counts the driver picks
+  (4–32). Defer to v2 when measurements demand it.
+- **Custom executor surface.** `parallel(Executor e)` overload.
+  Out of scope for v1; the Executor type itself isn't designed yet.
