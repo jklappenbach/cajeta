@@ -16,12 +16,12 @@ hazards; deeper coverage moves to P2 if/when use cases surface.
 
 ## P2 — language surface
 
-1. **Stream parallelism — design + multi-session implementation.** Java-style
-   fork/join parallel terminals over the existing pull protocol are the
-   natural first step given Cajeta's ownership model (split once, merge
-   once; data flow stays linear). Reactor-style reactive (push + async +
-   backpressure + schedulers) would parallel rather than replace the pull
-   protocol — deferred until the sequential surface is fully solid.
+1. **Stream parallelism — design landed, implementation pending.** Design
+   doc at `cajeta-docs/stdlib/StreamParallelism.md` — Java-style fork/join
+   parallel terminals over the existing pull protocol, lowered onto the
+   existing structured-concurrency `scope { spawn ... }` machinery. Five
+   implementation phases sketched (P1 splittable + driver scaffolding →
+   P5 tuning + cancellation). Reactor-style push/async deferred.
 
 2. **Restore lost test coverage from Phase 7 — incremental.** The 9 deleted
    `CajetaStruct` test files contained ~105 tests; many exercised happy-path
