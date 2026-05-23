@@ -994,54 +994,74 @@ taking a class-typed arg, well beyond just the parallel driver;
 
 ## §7.7 P5 status and next-session punch list
 
-P5 (cancellation + scheduler tuning + frame naming) is mostly
-gated on §7.6 item #2 — without working class-typed args in
-spawned async functions, real worker fibers can't carry split
-shares, so there's nothing yet to cancel or name. The single
-piece of P5 that doesn't depend on spawn is documented here as
-the next-session entry point.
+Update (2026-05-23): Items 1–4 of the original punch list landed.
+The compiler-side infrastructure for real fork/join is now in
+place; the orchestration-shape body in `reduceParallel<T>` is one
+JIT codegen loop away from landing.
 
-Punch list (priority order):
+Status of each original item:
 
-1. **§7.6 item #2 — `spawn` with class-instance args.** Highest
-   leverage by far. Unblocks P2 real fork/join + P5 cancellation
-   + parallel collect (Collector.combiner is in place but its
-   only useful call site is the orchestrator combine). Likely
-   sits in the spawn trampoline's capture-context builder
-   (asn/expression/SpawnExpression or wherever the closure-shape
-   alloca is laid out for spawn args).
+1. **§7.6 item #2 — `spawn` with class-instance args.** FIXED in
+   commit `2cdd9e0`. SpawnExpression now uses loadIfLValue for
+   non-Identifier l-value args (ArrayIndex GEPs, Dot GEPs) and
+   captures the outer-insert-block AFTER arg evaluation (so an
+   arg's own basic-block emit doesn't strand the post-trampoline
+   restore on a terminated BB).
 
 2. **§7.6 item #4 — `implements Splittable<K>` on a 2-type-param
-   class.** Hangs the test binary on first instantiation. Once
-   landed, HashMap.keys()/.values()/.entries() get Splittable
-   contract and parallel HashMap streams ship for free.
+   class.** FIXED for the KeyStream / ValueStream cases in commit
+   `b6213d1`. The synthetic probe for the analogous shape passes
+   (TemplatedInterfaceParamProbe.twoTypeParamImplementsOneTypeParamIface).
+   HashMapEntryStream's `Splittable<Pair<K, V>>` still hangs
+   HashMap-itself construction — the diagnostic shape doesn't
+   reproduce, suggesting a cross-package parameterized-arg
+   interaction worth its own session.
 
 3. **§7.6 item #1 — class-typed array-element-read l-value gap.**
-   Cosmetic until P2 fork/join lands (currently worked around
-   by binding to a named local). After fork/join lands the
-   workaround becomes more visible inside hot loops.
+   The documented shape (`Stream<T>[] shares; share = shares[i];
+   share.next()`) now drains correctly without a named-local
+   workaround (commit `182d16f` locks the shape in via
+   TemplatedInterfaceParamProbe.stdlibStreamArrayElementSharesDrain).
+   Likely fixed as a side effect of the spawn loadIfLValue + cast
+   + earlier interface dispatch work cascade.
 
-4. **§7.6 item #3 — iface → class downcast.** Tied to (1):
-   together they let the driver write helpers typed on Stream<T>
-   instead of duplicating the walk body inline.
+4. **§7.6 item #3 — iface → class downcast.** FIXED in commit
+   `4cadf21`. CastExpression now detects iface→class downcasts
+   (source is a CajetaClass with isInterface(), dest is a non-
+   iface CajetaClass), GEPs into the fat-pointer's data slot, and
+   loads the underlying class pointer. Also late-resolves the
+   child's type when codegen reaches the cast before scope
+   population.
 
-5. **Cancellation semantics (P5 proper).** Once (1) lands:
-   first worker to hit a match in anyMatch / findFirst cancels
-   its siblings via the existing scope-cancellation mechanism;
-   frames named `<parallel worker N>` via the split index
-   threaded through spawn.
+5. **Cancellation semantics (P5 proper).** Still gated — needs
+   the spawn worker body in reduceParallel to actually fork.
+   The infrastructure exists; the call site doesn't yet exist
+   to use it.
 
 6. **parallel-reduce-nonzero-seed lint** and
-   **nested-`.parallel()` warning**. Lint infrastructure is
-   present (isLintSuppressed) but emit sites need wiring; the
-   nonzero-seed analyzer needs lambda-body inspection (does the
-   body reference seed as an identity for its operator?). Both
-   fit in the same lint-emit session.
+   **nested-`.parallel()` warning**. Still un-landed. Lint
+   infrastructure (isLintSuppressed) present; emit sites need
+   wiring; nonzero-seed analyzer needs lambda-body inspection.
 
-7. **Wrapper-chain unwind** — task #54 in the local task list.
-   Decompose `.parallel().filter().map().reduce()` so each
-   worker re-wraps the chain around its split. Depends on (1)
-   for the worker side.
+7. **Wrapper-chain unwind** — task #54. Still gated on real
+   fork/join landing.
+
+Remaining blocker for real fork/join: a JIT codegen loop hangs
+compilation of `share.next()` inside a worker loop in the
+templated reduceParallel<T> body. The bug surfaces when:
+  - The method is a method template (`<T>`)
+  - The worker loop binds `Stream<T> share = shares[i]`
+  - It calls `share.next()` AND elsewhere in the same body
+    `source.next()` is also called (both go through the iface
+    fat-pointer dispatch)
+
+The probe `AsyncSyntaxTests.spawnStreamArgWorkerAdvancesShared`
+passes (Stream<int32> share PARAM in a non-template async fn),
+which narrows the hang to "method-template body + class-typed
+array element + iface dispatch" combination. The contract /
+surface / partials / combine all work end-to-end through the
+sequential fallback; only the inner worker-loop emit on the
+fork/join branch trips the compiler.
 
 ## §8 Migration sweep (Collector R3)
 
