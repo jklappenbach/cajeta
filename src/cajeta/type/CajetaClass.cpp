@@ -3087,9 +3087,15 @@ namespace cajeta {
         auto declaredClass = dynamic_pointer_cast<CajetaClass>(declaredType);
         if (!argClass || !declaredClass) return -1;
         // BFS up the hierarchy from argClass; return the shallowest hop
-        // count to declaredClass. Templated stdlib classes can have
-        // diamond shapes once interfaces land, hence BFS rather than
-        // first-match DFS.
+        // count to declaredClass. Walks both the extends chain
+        // (getSuperClasses) AND the implements chain
+        // (getImplementedInterfaces) at each level. Without the
+        // implements walk, `class FooImpl implements IFoo` won't
+        // match an `IFoo` formal — passing a FooImpl to a function
+        // taking IFoo gets rejected by resolveMethod as a no-match.
+        // Templated stdlib classes can have diamond shapes (a class
+        // and an interface both extending Stream<T>), hence BFS
+        // rather than first-match DFS.
         const string declaredCanonical = declaredClass->getQName()->toCanonical();
         std::vector<std::pair<CajetaClassPtr, int>> frontier{ {argClass, 0} };
         size_t cursor = 0;
@@ -3101,6 +3107,13 @@ namespace cajeta {
                     return depth + 1;
                 }
                 frontier.push_back({parent, depth + 1});
+            }
+            for (auto& iface : cls->getImplementedInterfaces()) {
+                if (!iface || !iface->getQName()) continue;
+                if (iface->getQName()->toCanonical() == declaredCanonical) {
+                    return depth + 1;
+                }
+                frontier.push_back({iface, depth + 1});
             }
         }
         return -1;
@@ -3644,6 +3657,52 @@ namespace cajeta {
                         && !dstClass->isInterface()) {
                     v = CajetaClass::adjustForUpcast(
                         emitMod, v, srcClass, dstClass);
+                }
+                // Class → interface upcast at parameter-passing site.
+                // The formal is an interface fat-pointer body
+                // (`{ ptr data, ptr vtable, i64 kind }`); the actual arg
+                // is a class instance pointer. Build the body alloca
+                // here and pass its address as the arg. Mirrors the
+                // same fat-pointer construction LocalVariableDeclaration
+                // does when a class RHS initializes an interface
+                // local (see LocalVariableDeclaration.cpp § S9.5.4).
+                // Without this, resolveMethod admits the call (via the
+                // implementedInterfaces walk in subtypeDistance) but
+                // the callee dereferences a class ptr as if it were a
+                // 24-byte interface body, reading garbage as the
+                // vtable and crashing on dispatch.
+                if (srcClass && dstClass
+                        && !srcClass->isInterface()
+                        && dstClass->isInterface()) {
+                    auto& lctx = *emitMod->getLlvmContext();
+                    llvm::Type* bodyTy = dstClass->getLlvmType();
+                    llvm::Type* ptrTy = llvm::PointerType::get(lctx, 0);
+                    llvm::Type* i64Ty = llvm::Type::getInt64Ty(lctx);
+                    llvm::Value* bodyAlloca = coerceBuilder->CreateAlloca(bodyTy);
+                    llvm::Value* dataSlot = coerceBuilder->CreateStructGEP(
+                        bodyTy, bodyAlloca, 0, "iface_arg_data");
+                    llvm::Value* vtSlot = coerceBuilder->CreateStructGEP(
+                        bodyTy, bodyAlloca, 1, "iface_arg_vtable");
+                    llvm::Value* kindSlot = coerceBuilder->CreateStructGEP(
+                        bodyTy, bodyAlloca, 2, "iface_arg_kind");
+                    coerceBuilder->CreateStore(v, dataSlot);
+                    std::string ifaceCanonical =
+                        dstClass->getQName()->toCanonical();
+                    llvm::Constant* vtableRef = nullptr;
+                    if (auto gv = srcClass->getInterfaceVTable(ifaceCanonical)) {
+                        vtableRef = CajetaModule::ensureGlobalInModule(
+                            emitMod->getLlvmModule(), gv);
+                    }
+                    if (!vtableRef) {
+                        vtableRef = llvm::ConstantPointerNull::get(
+                            llvm::cast<llvm::PointerType>(ptrTy));
+                    }
+                    coerceBuilder->CreateStore(vtableRef, vtSlot);
+                    coerceBuilder->CreateStore(
+                        llvm::ConstantInt::get(i64Ty,
+                            (uint64_t) IFACE_KIND_BORROWED_CLASS),
+                        kindSlot);
+                    v = bodyAlloca;
                 }
             }
             if (mft && (int) mft->getNumParams() > i + thisOffset) {
