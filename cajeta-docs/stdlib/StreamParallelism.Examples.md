@@ -994,10 +994,14 @@ taking a class-typed arg, well beyond just the parallel driver;
 
 ## §7.7 P5 status and next-session punch list
 
-Update (2026-05-23): Items 1–4 of the original punch list landed.
-The compiler-side infrastructure for real fork/join is now in
-place; the orchestration-shape body in `reduceParallel<T>` is one
-JIT codegen loop away from landing.
+Update (2026-05-23): Items 1–4 of the original punch list landed,
+and the supposed "JIT codegen loop" blocker turned out to be a
+runtime segfault caused by two compiler bugs (abstract-iface-
+method return type + class-cast bitcast — see below). Both fixed.
+The sequential fork/join body in `reduceParallel<T>` now runs end-
+to-end with correct results (`parallelReduceLargeSourceCorrectness`
+returns 5050). Cooperative-fiber `spawn` wrap is the remaining work
+to land actual wall-clock parallelism.
 
 Status of each original item:
 
@@ -1046,22 +1050,40 @@ Status of each original item:
 7. **Wrapper-chain unwind** — task #54. Still gated on real
    fork/join landing.
 
-Remaining blocker for real fork/join: a JIT codegen loop hangs
-compilation of `share.next()` inside a worker loop in the
-templated reduceParallel<T> body. The bug surfaces when:
-  - The method is a method template (`<T>`)
-  - The worker loop binds `Stream<T> share = shares[i]`
-  - It calls `share.next()` AND elsewhere in the same body
-    `source.next()` is also called (both go through the iface
-    fat-pointer dispatch)
+Status update: the "JIT codegen loop" diagnosis was incorrect.
+The bug was a runtime SEGFAULT (not a compile hang) — gtest can't
+flush its [ FAILED ] line before the binary aborts, so the test
+appeared to hang. Two root causes, both fixed:
 
-The probe `AsyncSyntaxTests.spawnStreamArgWorkerAdvancesShared`
-passes (Stream<int32> share PARAM in a non-template async fn),
-which narrows the hang to "method-template body + class-typed
-array element + iface dispatch" combination. The contract /
-surface / partials / combine all work end-to-end through the
-sequential fallback; only the inner worker-loop emit on the
-fork/join branch trips the compiler.
+  1. **Abstract iface method's call-site return type was wrong.**
+     `Method::generatePrototype`'s abstract-method branch built
+     llvmFunctionType from `returnType->getLlvmType()` directly,
+     which for a class-typed return resolves to the class body
+     struct (e.g. `{ ptr, i1 }` for Stream<int32>) rather than
+     `ptr`. The concrete implementer's signature uses `ptr` (the
+     non-abstract path applies the return-by-pointer rule). The
+     mismatched call signature stored a 16-byte struct into an
+     8-byte alloca, overflowing the stack. Fixed by mirroring the
+     non-abstract path's return-by-pointer adjustment in the
+     abstract branch.
+
+  2. **Cast `(Stream<T>) source.trySplit()` emitted invalid
+     bitcast.** With (1) fixed, the trySplit return is correctly
+     typed `ptr`. The cast destination's `getLlvmType()` is the
+     class body struct, and `CastExpression::generateCode` fell
+     through to `CreateBitCast(ptr, struct)` — JIT-verify rejects
+     this in opaque-pointer LLVM. Fixed by recognising that
+     class-typed destinations store as `ptr` at runtime; a
+     `ptr → class` cast is a no-op at the LLVM level.
+
+Driver authoring note: assigning a heap-owned local into a class-
+typed array slot does NOT transfer ownership today — the local's
+drop fires at end-of-iteration and the array element becomes a
+dangling pointer. Workaround in `reduceParallel<T>`: store the
+trySplit return directly into `shares[shareCount]`, skipping the
+named local. Tracked as a future compiler item: detect
+ownership-transfer-into-array-element and deactivate the source
+local's drop (parallel to the existing `#capture` mechanism).
 
 ## §8 Migration sweep (Collector R3)
 

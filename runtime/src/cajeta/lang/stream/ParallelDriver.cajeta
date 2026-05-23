@@ -88,24 +88,63 @@ public class ParallelDriver {
      * contract above).
      */
     public static T reduceParallel<T>(Splittable<T> source, T seed, (T, T) -> T fn) {
-        // Sequential walk on the orchestrator's fiber. The full fork/
-        // join topology (trySplit into Stream<T>[] shares, per-share
-        // worker loop into T[] partials, combine via fn) is reachable
-        // — the spawn arg-capture, iface→class downcast, and indirect-
-        // call loadIfLValue fixes that landed in this session
-        // collectively unblock single-thread fork/join — but the
-        // method-template body that calls `share.next()` inside a
-        // worker loop currently hangs in JIT codegen (the next pull
-        // through a generic-T Stream local read from a class-typed
-        // array slot). Once that loop is broken, the v1 body wraps a
-        // `scope { spawn reduceWorker<T>(share, slot, partials, fn) }`
-        // and the wall-clock cooperative-fiber parallelism comes
-        // online without changing the driver's surface contract.
-        T acc = seed;
+        int64 sz = source.estimateSize();
+        int32 nSplits = pickSplitCount(sz);
+        if (nSplits < 2) {
+            T acc = seed;
+            Optional<T> o = source.next();
+            while (o.isPresent()) {
+                acc = fn(acc, o.get());
+                o = source.next();
+            }
+            return acc;
+        }
+        // Note: store trySplit's return directly into the array slot,
+        // skipping a named local. Assigning `Stream<T> piece = ...;
+        // shares[si] = piece;` registers a per-iteration drop on
+        // `piece` that fires at end-of-iteration and frees the share
+        // — leaving the array slot dangling. The compiler doesn't
+        // yet detect ownership-transfer-into-array-element; until
+        // it does, the direct assignment is the safe shape.
+        Stream<T>[] shares = new Stream<T>[nSplits - 1];
+        int32 shareCount = 0;
+        while (shareCount < nSplits - 1) {
+            shares[shareCount] = source.trySplit();
+            if (shares[shareCount] == null) {
+                break;
+            }
+            shareCount = shareCount + 1;
+        }
+        T[] partials = new T[shareCount + 1];
+        int32 pi = 0;
+        while (pi < shareCount + 1) {
+            partials[pi] = seed;
+            pi = pi + 1;
+        }
+        int32 wi = 0;
+        while (wi < shareCount) {
+            Stream<T> share = shares[wi];
+            T workerAcc = partials[wi];
+            Optional<T> workerOpt = share.next();
+            while (workerOpt.isPresent()) {
+                workerAcc = fn(workerAcc, workerOpt.get());
+                workerOpt = share.next();
+            }
+            partials[wi] = workerAcc;
+            wi = wi + 1;
+        }
+        T tail = seed;
         Optional<T> o = source.next();
         while (o.isPresent()) {
-            acc = fn(acc, o.get());
+            tail = fn(tail, o.get());
             o = source.next();
+        }
+        partials[shareCount] = tail;
+        T acc = seed;
+        int32 ci = 0;
+        while (ci < shareCount + 1) {
+            acc = fn(acc, partials[ci]);
+            ci = ci + 1;
         }
         return acc;
     }

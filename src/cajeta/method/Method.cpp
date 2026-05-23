@@ -504,9 +504,35 @@ namespace cajeta {
                 }
                 llvmTypes.push_back(ptLlvm);
             }
+            // Mirror the non-abstract path's return-by-pointer rule so
+            // the indirect call type through the iface vtable matches
+            // the implementer's signature. Without this, a method like
+            // `#Stream<T> trySplit()` on an interface lowers its return
+            // to the Stream<T> body struct, while the concrete
+            // implementer (ArrayStream<T>) emits `ret ptr`. The
+            // mismatched call signature stores the struct return into
+            // a ptr-sized alloca and overflows the stack.
+            llvm::Type* llvmRetAbs;
+            {
+                CajetaTypePtr rt = returnType;
+                bool isArrR = rt
+                    && dynamic_pointer_cast<CajetaArray>(rt) != nullptr;
+                auto rtClass = dynamic_pointer_cast<CajetaClass>(rt);
+                bool isClassLikeR = rtClass != nullptr;
+                bool isPrimR = rt && (rt->getTypeFlags() & PRIMITIVE_FLAG);
+                bool isInterfaceR = rtClass && rtClass->isInterface();
+                bool returnByPointer = isClassLikeR
+                    && (isArrR || !isPrimR) && !isInterfaceR;
+                if (returnByPointer) {
+                    llvmRetAbs = llvm::PointerType::get(
+                        *module->getLlvmContext(), 0);
+                } else {
+                    llvmRetAbs = rt ? rt->getLlvmType() : nullptr;
+                }
+            }
             llvmFunctionType = llvmTypes.empty()
-                ? llvm::FunctionType::get(returnType->getLlvmType(), false)
-                : llvm::FunctionType::get(returnType->getLlvmType(), llvmTypes, false);
+                ? llvm::FunctionType::get(llvmRetAbs, false)
+                : llvm::FunctionType::get(llvmRetAbs, llvmTypes, false);
             return;
         }
 

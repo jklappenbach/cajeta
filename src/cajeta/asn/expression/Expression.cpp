@@ -766,6 +766,26 @@ namespace cajeta {
         }
         llvm::Type* srcTy = val->getType();
         llvm::Type* dstTy = destType->getLlvmType();
+        // Class-typed destinations store as `ptr` at runtime even though
+        // getLlvmType() returns the class body struct. If the source is
+        // already a `ptr`, the cast is a no-op at the LLVM level — both
+        // sides are heap class pointers, just with different declared
+        // Cajeta types. Without this, the fallback bitcast tries to
+        // convert `ptr` to a struct type and JIT-verify rejects it.
+        if (srcTy->isPointerTy()) {
+            auto dstClass = dynamic_pointer_cast<CajetaClass>(destType);
+            bool dstIsArr =
+                dynamic_pointer_cast<CajetaArray>(destType) != nullptr;
+            bool dstIsIface = dstClass && dstClass->isInterface();
+            bool dstIsPrim =
+                destType && (destType->getTypeFlags() & PRIMITIVE_FLAG);
+            bool dstStoresAsPointer = dstClass
+                && (dstIsArr || !dstIsPrim)
+                && !dstIsIface;
+            if (dstStoresAsPointer) {
+                return val;
+            }
+        }
         if (srcTy == dstTy) return val;
 
         bool srcInt = srcTy->isIntegerTy();
