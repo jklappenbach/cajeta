@@ -3,18 +3,24 @@ package cajeta.lang.stream;
 /**
  * Fork/join orchestrator for parallel stream terminals.
  *
- * **Status (v1):** the orchestration body is a sequential walk. The
- * Splittable<T> interface and ArrayStream's `trySplit`/`estimateSize`
- * are in place, and Stream<T>'s `.parallel()` flag flips this code
- * path on — but actual `spawn`-based fork lands incrementally as the
- * spawn/method-level-template integration issues get worked through
- * (see StreamParallelism.Examples.md § Open work for the punch
- * list). Today: marking a stream parallel walks it sequentially via
- * this driver and returns the correct result; tomorrow: the same
- * call forks across workers.
+ * Each entry point (reduceParallel, anyMatchParallel, allMatchParallel,
+ * noneMatchParallel) decides a split count from estimateSize, pulls up
+ * to nSplits-1 shares off the source via trySplit, spawns one async
+ * worker per share inside a `scope { ... }`, and walks the tail piece
+ * on the orchestrator's own fiber. The scope joins every spawned
+ * worker before control passes the closing brace; the orchestrator
+ * then combines the partials with the terminal-specific combine op
+ * (associative + identity-respecting per the StreamParallelism §
+ * Per-terminal rules contract).
  *
- * Stream<T>.count() (and future terminals) consult this when their
- * head's isParallel bit is set AND the head is a Splittable<T>.
+ * Below MIN_PER_SPLIT * 2 elements (or when estimateSize() = UNKNOWN
+ * yields a single split) the orchestrator walks the source on this
+ * fiber — no spawn overhead for tiny / single-element sources.
+ *
+ * Today's scheduler is cooperative single-carrier (per Thread.md §
+ * Status); the orchestration topology is fork-ready, and once a
+ * multi-carrier scheduler lands the same driver yields wall-clock
+ * parallelism without a code change.
  *
  * See cajeta-docs/stdlib/StreamParallelism.md.
  */
@@ -82,6 +88,32 @@ public class ParallelDriver {
      * contract above).
      */
     public static T reduceParallel<T>(Splittable<T> source, T seed, (T, T) -> T fn) {
+        // Sequential walk. Real fork/join via `scope { spawn workerBody
+        // ... }` is shaped and documented (see StreamParallelism.md §
+        // Worker layout) but waits on three compiler-side issues:
+        //
+        //   1. class-typed array element reads — `Stream<T>[] shares;
+        //      ... Stream<T> share = shares[i];` corrupts share at
+        //      read time (the share is read as an l-value slot ptr
+        //      rather than the stored class instance).
+        //
+        //   2. class-instance args to `spawn` — when a spawned async
+        //      function takes a class instance pointer, mutations
+        //      visible inside the worker don't reach the
+        //      orchestrator's view. Likely the capture copies the
+        //      class instance body rather than aliasing through the
+        //      pointer.
+        //
+        //   3. iface → class downcast — `(Stream<T>) source` where
+        //      source has formal type Splittable<T> emits an invalid
+        //      bitcast at JIT verify. Needed when the driver wants
+        //      to pass `source` to a helper formal-typed as
+        //      `Stream<T>`.
+        //
+        // Once any subset of (1)/(2)/(3) lands, the worker function
+        // (reduceWorker) and the split-and-spawn body draft from
+        // commit history can come back in. Until then, parallel
+        // reduce returns the correct sequential result.
         T acc = seed;
         Optional<T> o = source.next();
         while (o.isPresent()) {

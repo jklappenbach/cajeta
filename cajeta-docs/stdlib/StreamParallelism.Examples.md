@@ -940,6 +940,42 @@ spawn-related issues remain workaroundable.
    `anyMatchParallel`, `allMatchParallel`, `noneMatchParallel`)
    end-to-end.
 
+## §7.6 Compiler-side issues blocking real fork/join
+
+Wiring `scope { spawn workerBody ... }` into the driver surfaces three
+more compiler-side issues. Each reproduces in isolation and is
+tractable as its own focused session; until they land the driver
+stays sequential (but the orchestration shape and contract are in
+place).
+
+1. **Class-typed array element reads.** `Stream<T>[] shares = ...;
+   shares[i] = source.trySplit(); ...; Stream<T> share = shares[i];`
+   yields a corrupted `share` — the read returns the slot's l-value
+   pointer rather than the stored class instance. Same pattern as
+   the primitive-arg combine-loop workaround (`T p = partials[i];
+   result = fn(result, p);`) which currently dodges the issue by
+   binding to a named local.
+
+2. **`spawn` with class-instance args breaks the orchestrator's
+   view.** When a spawned async function takes a class instance
+   pointer (e.g. `Stream<T> share`), mutations the worker performs
+   on the heap object don't propagate back. Likely the spawn
+   trampoline copies the class instance body into the capture
+   context rather than aliasing through the pointer. Diagnostic:
+   `share.next()` inside the worker iterates forever (idx field
+   never advances) because each call reads/writes a different
+   object than the orchestrator's.
+
+3. **iface → class downcast emits an invalid bitcast.** `(Stream<T>)
+   source` where source has formal type `Splittable<T>` lowers as a
+   raw LLVM bitcast from the fat-pointer body to a class pointer —
+   the verifier rejects it. The cast needs to load the data slot
+   out of the fat pointer and present it as the class instance.
+
+The combine-loop workaround (1') stays in place; (1) and (3) are
+codegen polish; (2) is the central blocker for ANY async worker
+taking a class-typed arg, well beyond just the parallel driver.
+
 ## §8 Migration sweep (Collector R3)
 
 Pre-implementation: existing `Collector<T, R>` ctor is 2-arg. The R3
