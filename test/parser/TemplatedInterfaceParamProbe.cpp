@@ -195,3 +195,107 @@ TEST(TemplatedInterfaceParamProbe, interfaceFormalNonTemplatedStatic) {
         FAIL() << "std::exception: " << e.what();
     }
 }
+
+// HashMapKeyStream-shape: a 2-type-param class extends a 1-type-param
+// class AND implements a 1-type-param interface that itself extends
+// that same class. Tests the diamond instantiation around Splittable<K>
+// extending Stream<K> while the impl also extends Stream<K>.
+TEST(TemplatedInterfaceParamProbe, twoTypeParamExtendsAndImplementsDiamond) {
+    auto src =
+        "package test;\n"
+        "public class Base<T> {\n"
+        "    public int32 read() { return 0; }\n"
+        "}\n"
+        "public interface IFoo<T> extends Base<T> {\n"
+        "    public int32 split();\n"
+        "}\n"
+        "public class FooImpl<K, V> extends Base<K> implements IFoo<K> {\n"
+        "    int32 v;\n"
+        "    public FooImpl(int32 vv) { this.v = vv; }\n"
+        "    public int32 read() { return this.v; }\n"
+        "    public int32 split() { return 99; }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        FooImpl<int32, int32> b = heap FooImpl<int32, int32>(77);\n"
+        "        return b.read() + b.split();\n"
+        "    }\n"
+        "}\n";
+    try {
+        EXPECT_EQ(runI32(src), 176);
+    } catch (cajeta::Exception& e) {
+        FAIL() << "cajeta::Exception " << e.getErrorId() << ": " << e.getMessage();
+    } catch (const std::exception& e) {
+        FAIL() << "std::exception: " << e.what();
+    }
+}
+
+// Probe: a 2-type-param class implements a 1-type-param interface
+// where the iface argument is ITSELF a 2-type-param parameterized
+// type built out of both class params (the HashMapEntryStream<K, V>
+// shape implementing Splittable<Pair<K, V>>). This was observed to
+// hang.
+TEST(TemplatedInterfaceParamProbe, twoTypeParamImplementsParameterizedIfaceArg) {
+    auto src =
+        "package test;\n"
+        "public class Pair<A, B> {\n"
+        "    public A a;\n"
+        "    public B b;\n"
+        "    public Pair(A aa, B bb) { this.a = aa; this.b = bb; }\n"
+        "}\n"
+        "public class Base<T> {\n"
+        "    public int32 read() { return 0; }\n"
+        "}\n"
+        "public interface IFoo<T> extends Base<T> {\n"
+        "    public int32 split();\n"
+        "}\n"
+        "public class FooImpl<K, V> extends Base<Pair<K, V>> implements IFoo<Pair<K, V>> {\n"
+        "    int32 v;\n"
+        "    public FooImpl(int32 vv) { this.v = vv; }\n"
+        "    public int32 read() { return this.v; }\n"
+        "    public int32 split() { return 100; }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        FooImpl<int32, int32> b = heap FooImpl<int32, int32>(88);\n"
+        "        return b.read() + b.split();\n"
+        "    }\n"
+        "}\n";
+    try {
+        EXPECT_EQ(runI32(src), 188);
+    } catch (cajeta::Exception& e) {
+        FAIL() << "cajeta::Exception " << e.getErrorId() << ": " << e.getMessage();
+    } catch (const std::exception& e) {
+        FAIL() << "std::exception: " << e.what();
+    }
+}
+
+// 2-type-param class implements a 1-type-param interface, passing
+// through only the FIRST type parameter. This is the shape that
+// HashMapKeyStream<K, V> needs in order to declare `implements
+// Splittable<K>`. Without it, parallel HashMap streams can't fork.
+TEST(TemplatedInterfaceParamProbe, twoTypeParamImplementsOneTypeParamIface) {
+    auto src =
+        "package test;\n"
+        "public interface IFoo<T> {\n"
+        "    public int32 read();\n"
+        "}\n"
+        "public class FooImpl<K, V> implements IFoo<K> {\n"
+        "    int32 v;\n"
+        "    public FooImpl(int32 vv) { this.v = vv; }\n"
+        "    public int32 read() { return this.v; }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        FooImpl<int32, int32> b = heap FooImpl<int32, int32>(55);\n"
+        "        return b.read();\n"
+        "    }\n"
+        "}\n";
+    try {
+        EXPECT_EQ(runI32(src), 55);
+    } catch (cajeta::Exception& e) {
+        FAIL() << "cajeta::Exception " << e.getErrorId() << ": " << e.getMessage();
+    } catch (const std::exception& e) {
+        FAIL() << "std::exception: " << e.what();
+    }
+}

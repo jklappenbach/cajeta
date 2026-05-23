@@ -6,7 +6,7 @@ package cajeta.lang.stream;
  * mutation-during-iteration applies. See HashMapKeyStream for the
  * iteration model + skip rules (EMPTY / TOMBSTONE / OCCUPIED).
  */
-public class HashMapValueStream<K, V> extends Stream<V> {
+public class HashMapValueStream<K, V> extends Stream<V> implements Splittable<V> {
     V[] vals;
     int8[] state;
     int64 cap;
@@ -29,5 +29,25 @@ public class HashMapValueStream<K, V> extends Stream<V> {
             this.idx = this.idx + 1;
         }
         return heap Optional<V>(false, null);
+    }
+
+    /**
+     * See HashMapKeyStream.trySplit — same disjoint-slot-range
+     * model, applied to the values array.
+     */
+    public #Stream<V> trySplit() {
+        int64 remaining = this.cap - this.idx;
+        if (remaining < 2L) {
+            return null;
+        }
+        int64 mid = this.idx + remaining / 2L;
+        HashMapValueStream<K, V> upper = heap HashMapValueStream<K, V>(this.vals, this.state, this.cap);
+        upper.idx = mid;
+        this.cap = mid;
+        return upper;
+    }
+
+    public int64 estimateSize() {
+        return this.cap - this.idx;
     }
 }

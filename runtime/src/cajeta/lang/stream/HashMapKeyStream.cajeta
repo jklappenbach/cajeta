@@ -14,7 +14,7 @@ package cajeta.lang.stream;
  * O(cap * size); the iterator state is a single int64 position
  * cursor advanced through each next() call.
  */
-public class HashMapKeyStream<K, V> extends Stream<K> {
+public class HashMapKeyStream<K, V> extends Stream<K> implements Splittable<K> {
     K[] keys;
     int8[] state;
     int64 cap;
@@ -37,5 +37,35 @@ public class HashMapKeyStream<K, V> extends Stream<K> {
             this.idx = this.idx + 1;
         }
         return heap Optional<K>(false, null);
+    }
+
+    /**
+     * Splits the remaining slot range in half. The returned stream
+     * walks the upper half (from midpoint to cap); this stream
+     * narrows its own cap to the midpoint so subsequent next() calls
+     * only see the lower half. Shares the same keys + state arrays —
+     * disjoint by index range, not by array identity.
+     */
+    public #Stream<K> trySplit() {
+        int64 remaining = this.cap - this.idx;
+        if (remaining < 2L) {
+            return null;
+        }
+        int64 mid = this.idx + remaining / 2L;
+        HashMapKeyStream<K, V> upper = heap HashMapKeyStream<K, V>(this.keys, this.state, this.cap);
+        upper.idx = mid;
+        this.cap = mid;
+        return upper;
+    }
+
+    /**
+     * Estimate is conservative — counts remaining slot positions, not
+     * occupied entries. Splitting overshoots somewhat (each share
+     * iterates its slot range, skipping EMPTY/TOMBSTONE) but the
+     * split-count math is robust to that since each share walks the
+     * skip rules identically.
+     */
+    public int64 estimateSize() {
+        return this.cap - this.idx;
     }
 }
