@@ -351,3 +351,178 @@ TEST(AsyncSyntaxTests, detachExecutesAndDiscards) {
         "}\n";
     EXPECT_EQ(runI32(src), 33);
 }
+
+// Probe: spawn with a class-instance arg that came from a class-typed
+// ARRAY read (the case (#1) in the parallel-driver fork attempt). If
+// the array-element read returns the slot pointer rather than the
+// stored class instance, the spawn worker sees a corrupted share and
+// mutations appear lost.
+TEST(AsyncSyntaxTests, spawnClassArrayElementArgPropagates) {
+    auto src =
+        "package test;\n"
+        "public class Counter {\n"
+        "    public int32 n;\n"
+        "    public Counter() { this.n = 0; }\n"
+        "    public void inc() { this.n = this.n + 1; }\n"
+        "    public int32 get() { return this.n; }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static async int32 bump(Counter c) {\n"
+        "        c.inc();\n"
+        "        return 0;\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        Counter[] arr = new Counter[2];\n"
+        "        arr[0] = heap Counter();\n"
+        "        int32 dummy = await spawn bump(arr[0]);\n"
+        "        return arr[0].get();\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 1);
+}
+
+// Probe: same shape, but with a named-local intermediate. This is the
+// workaround pattern the parallel driver fell back to. If this passes
+// while spawnClassArrayElementArgPropagates fails, it confirms the bug
+// is at the array-element-read site, not at the spawn arg-capture site.
+TEST(AsyncSyntaxTests, spawnClassArrayElementWithNamedLocalArg) {
+    auto src =
+        "package test;\n"
+        "public class Counter {\n"
+        "    public int32 n;\n"
+        "    public Counter() { this.n = 0; }\n"
+        "    public void inc() { this.n = this.n + 1; }\n"
+        "    public int32 get() { return this.n; }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static async int32 bump(Counter c) {\n"
+        "        c.inc();\n"
+        "        return 0;\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        Counter[] arr = new Counter[2];\n"
+        "        arr[0] = heap Counter();\n"
+        "        Counter c = arr[0];\n"
+        "        int32 dummy = await spawn bump(c);\n"
+        "        return arr[0].get();\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 1);
+}
+
+// Probe: spawn with a stdlib Stream<T> arg, where the worker calls
+// .next() in a loop. This is the SHAPE that hung in the parallel-driver
+// fork attempt. If next() pulls correctly inside the worker AND the
+// orchestrator sees the share exhausted afterwards, mutations are
+// propagating.
+TEST(AsyncSyntaxTests, spawnStreamArgWorkerAdvancesShared) {
+    auto src =
+        "package test;\n"
+        "import cajeta.collection.ArrayList;\n"
+        "import cajeta.lang.stream.Stream;\n"
+        "public final class D {\n"
+        "    public static async int32 drain(Stream<int32> s) {\n"
+        "        int32 sum = 0;\n"
+        "        Optional<int32> o = s.next();\n"
+        "        while (o.isPresent()) {\n"
+        "            sum = sum + o.get();\n"
+        "            o = s.next();\n"
+        "        }\n"
+        "        return sum;\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        ArrayList<int32> list = heap ArrayList<int32>();\n"
+        "        list.add(1);\n"
+        "        list.add(2);\n"
+        "        list.add(3);\n"
+        "        Stream<int32> s = list.stream();\n"
+        "        return await spawn drain(s);\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 6);
+}
+
+// Probe: spawn with class-instance arg PLUS additional args (primitive,
+// array, lambda). Reproduces the parallel-driver spawn-worker call shape
+// where the worker took (share, slot, partials, seed, fn).
+TEST(AsyncSyntaxTests, spawnClassInstanceArgPlusOtherArgs) {
+    auto src =
+        "package test;\n"
+        "public class Cursor {\n"
+        "    public int32 idx;\n"
+        "    public Cursor() { this.idx = 0; }\n"
+        "    public void step() { this.idx = this.idx + 1; }\n"
+        "    public int32 read() { return this.idx; }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static async int32 work(Cursor c, int32 times, int32[] sink, int32 slot) {\n"
+        "        int32 i = 0;\n"
+        "        while (i < times) {\n"
+        "            c.step();\n"
+        "            i = i + 1;\n"
+        "        }\n"
+        "        sink[slot] = c.read();\n"
+        "        return 0;\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        Cursor c = heap Cursor();\n"
+        "        int32[] sink = new int32[2];\n"
+        "        int32 dummy = await spawn work(c, 5, sink, 1);\n"
+        "        return c.read() * 10 + sink[1];\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 55);
+}
+
+// Probe: templated class-instance arg to spawn. Same shape as
+// spawnClassInstanceArgMutationVisible, but the captured class is
+// generic — the case that caused stream-parallel fork to hang.
+TEST(AsyncSyntaxTests, spawnTemplatedClassInstanceArgMutationVisible) {
+    auto src =
+        "package test;\n"
+        "public class Box<T> {\n"
+        "    public int32 hits;\n"
+        "    public Box() { this.hits = 0; }\n"
+        "    public void bump() { this.hits = this.hits + 1; }\n"
+        "    public int32 get() { return this.hits; }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static async int32 work(Box<int32> b) {\n"
+        "        b.bump();\n"
+        "        return 0;\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        Box<int32> b = heap Box<int32>();\n"
+        "        int32 dummy = await spawn work(b);\n"
+        "        return b.get();\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 1);
+}
+
+// Probe: spawn with a class-instance arg. The worker mutates a field of
+// the heap-allocated class instance; the orchestrator reads the field
+// back after the spawn joins. Both should see the same heap body, so
+// the read must observe the worker's mutation.
+TEST(AsyncSyntaxTests, spawnClassInstanceArgMutationVisible) {
+    auto src =
+        "package test;\n"
+        "public class Counter {\n"
+        "    public int32 n;\n"
+        "    public Counter() { this.n = 0; }\n"
+        "    public void inc() { this.n = this.n + 1; }\n"
+        "    public int32 get() { return this.n; }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static async int32 bump(Counter c) {\n"
+        "        c.inc();\n"
+        "        return 0;\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        Counter c = heap Counter();\n"
+        "        int32 dummy = await spawn bump(c);\n"
+        "        return c.get();\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 1);
+}

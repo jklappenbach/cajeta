@@ -2838,7 +2838,6 @@ namespace cajeta {
         auto* outerBuilder = module->getBuilder();
         auto& llvmCtx = *module->getLlvmContext();
         auto* lmod = module->getLlvmModule();
-        llvm::BasicBlock* outerInsertBlock = outerBuilder->GetInsertBlock();
         llvm::PointerType* ptrTy = llvm::PointerType::get(llvmCtx, 0);
 
         // Step 1: Evaluate every arg at the spawn site. Any side effects
@@ -2855,14 +2854,33 @@ namespace cajeta {
             }
             llvm::Value* v = param.expression->generateCode(module);
             if (!v) return nullptr;
-            if (auto* a = llvm::dyn_cast<llvm::AllocaInst>(v)) {
-                v = outerBuilder->CreateLoad(a->getAllocatedType(), a);
-            }
+            // l-value → r-value coercion. The narrow AllocaInst-only load
+            // covers the IdentifierExpression case, but argument expressions
+            // can also be ArrayIndexExpression (a GEP into the array's data
+            // region) or DotExpression (a GEP into a struct field). In both
+            // cases what's returned is a slot pointer and the call site
+            // wants the stored value. Without this, e.g. `spawn f(arr[0])`
+            // for a Counter[] would pass the SLOT ADDRESS to the worker
+            // (not the heap Counter pointer), and the worker's c.inc()
+            // would mutate the slot bytes rather than the Counter.
+            auto exprAst = dynamic_pointer_cast<Expression>(param.expression);
+            v = loadIfLValue(module, v, exprAst);
             CajetaTypePtr t = param.expression->getResolvedType();
             if (!t) t = CajetaType::of(v);
             capturedArgs.push_back(v);
             capturedArgTypes.push_back(t);
         }
+        // Capture the outer block AFTER arg evaluation. An arg expression
+        // may have emitted its own basic blocks (e.g. ArrayIndexExpression's
+        // bounds-check ok/fail split), leaving the builder positioned on a
+        // fresh BB. The spawn-site setup that runs after the trampoline
+        // body must continue from THAT block, not the BB that was current
+        // before arg eval (which is already terminated by the args' own
+        // control flow). Without this, the post-trampoline restore lands
+        // on the pre-args BB whose terminator we just emitted, and the
+        // ok-branch from the bounds check is left without a terminator —
+        // JIT verify fails with "Basic Block ... does not have terminator".
+        llvm::BasicBlock* outerInsertBlock = outerBuilder->GetInsertBlock();
 
         // Step 2: Build the context struct {ptr task, arg0, arg1, ...}.
         // Anonymous literal struct — LLVM unifies structurally identical
