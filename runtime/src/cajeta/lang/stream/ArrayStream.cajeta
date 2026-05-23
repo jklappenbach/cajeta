@@ -27,13 +27,25 @@ public class ArrayStream<T> extends Stream<T> implements Splittable<T> {
      * splitting (FilterStream over a Splittable source) is P2 work.
      */
     /**
-     * Sequential walk. The override exists to give a future
-     * fork/join driver call a hook to land on (today the body is
-     * the same sequential walk Stream<T>.count() does; tomorrow
-     * the isParallel branch routes through ParallelDriver). See
-     * cajeta-docs/stdlib/StreamParallelism.md.
+     * Count terminal. Sequential by default; under `.parallel()` it
+     * computes a fast-path result without per-element work — an
+     * ArrayStream's remaining-element count is just `limit - idx`,
+     * known at trySplit time. No fork/join is needed for count
+     * specifically; the parallel path simply takes the O(1) length.
+     *
+     * Per-element terminals (reduce, anyMatch, etc.) that need actual
+     * work distribution land in P2 once the
+     * templated-interface-dispatch-under-method-template issue is
+     * resolved in the compiler (see StreamParallelism.Examples.md §
+     * 8 Migration sweep — known compiler issue: calling .next() on a
+     * `Splittable<T>` parameter inside a method-templated static
+     * dispatches to the abstract base instead of the implementer).
      */
     public int32 count() {
+        if (this.isParallel) {
+            // O(1) fast path: count = remaining slots.
+            return this.limit - this.idx;
+        }
         int32 n = 0;
         Optional<T> o = this.next();
         while (o.isPresent()) {

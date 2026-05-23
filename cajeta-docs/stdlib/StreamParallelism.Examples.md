@@ -878,6 +878,73 @@ matching test lands.
   through to the spawn trampoline; trampoline's existing exception-
   capture machinery already prefixes the frame on throw.
 
+## §7.5 Known compiler issue blocking P1 fork-join
+
+While wiring the first real fork-join path (commit `cbb79f5`), three
+distinct compiler-side issues surfaced. Two have workarounds; the
+third is a hard blocker we need to fix before any per-element parallel
+terminal (reduce / anyMatch / collect) lands. All isolated via probes;
+all reproduce in pure user code.
+
+1. **`spawn ClassName.staticMethod()` rejected** with
+   `CAJETA_ERROR_ASYNC_R3A: spawn currently doesn't support
+   instance-method calls; use a bare class-method invocation`. The
+   parser treats `ClassName.` as a receiver. Workaround: call the
+   spawned worker by bare identifier from inside the same class
+   (`spawn worker(args)`).
+
+2. **`spawn worker<T>(args)` with explicit method-template args**
+   rejected with `spawn currently only supports a method-call
+   expression as its operand`. Inference-only form (`spawn
+   worker(args)`) parses correctly. Workaround: rely on inference.
+
+3. **Interface-typed parameter dispatch inside a method-templated
+   static returns empty (no override dispatch).** The blocker. The
+   shape:
+
+   ```cajeta
+   public class Helper {
+       public static int32 walk<T>(Splittable<T> s) {
+           Optional<T> o = s.next();           // ← returns empty
+           while (o.isPresent()) { …; o = s.next(); }
+           return n;
+       }
+   }
+   // caller: Helper.walk<int32>(myStream) returns 0, not 3
+   ```
+
+   When the parameter type is an **interface** template (`Splittable
+   <T>`), calls to abstract methods on the parameter inside the
+   method-template's body dispatch to the abstract base (returning
+   default-empty) instead of the implementer's override.
+
+   Variants probed:
+   - `walk<T>(Stream<T> s)` (CLASS template, not interface) — works.
+   - `walk<T>(MyStream<T> s)` (concrete implementer type) — works.
+   - `walk<T>(Splittable<T> s)` — fails.
+   - Direct walk in the caller (no helper) — works.
+   - Same shape without diamond inheritance — still fails.
+
+   This is the templated-interface vtable instantiation work from
+   the P1.1 session, but specifically when the templated-interface
+   parameter appears inside a method-template body. The vtable
+   instantiation itself succeeded in the earlier work; what's
+   missing is wiring the in-body call's vtable lookup to the
+   instantiated form when the parameter is a method-template
+   parameter rather than a class-template parameter.
+
+   **Workaround for v1:** ArrayStream<T>'s `count()` uses the O(1)
+   fast-path (`limit - idx`) — no driver call, no template-instantiated
+   method dispatch. The fast-path is independently correct (an array's
+   element count equals its slice length) so the result matches
+   sequential. Per-element terminals (reduce / anyMatch) can't use this
+   trick and need the compiler fix.
+
+   **Fix site:** probably in `MethodCallExpression` resolveTypes or
+   generateCode — specifically the dispatch for `interface-typed
+   method-template parameter`'s `.method()` call. Tracked here until
+   a session focuses on it.
+
 ## §8 Migration sweep (Collector R3)
 
 Pre-implementation: existing `Collector<T, R>` ctor is 2-arg. The R3
