@@ -878,13 +878,12 @@ matching test lands.
   through to the spawn trampoline; trampoline's existing exception-
   capture machinery already prefixes the frame on throw.
 
-## §7.5 Known compiler issue blocking P1 fork-join
+## §7.5 Compiler-side issues — status
 
 While wiring the first real fork-join path (commit `cbb79f5`), three
-distinct compiler-side issues surfaced. Two have workarounds; the
-third is a hard blocker we need to fix before any per-element parallel
-terminal (reduce / anyMatch / collect) lands. All isolated via probes;
-all reproduce in pure user code.
+distinct compiler-side issues surfaced. The hard blocker is now
+**fixed** (commit `818c19c` "Fix class→interface arg passing"); two
+spawn-related issues remain workaroundable.
 
 1. **`spawn ClassName.staticMethod()` rejected** with
    `CAJETA_ERROR_ASYNC_R3A: spawn currently doesn't support
@@ -898,52 +897,47 @@ all reproduce in pure user code.
    expression as its operand`. Inference-only form (`spawn
    worker(args)`) parses correctly. Workaround: rely on inference.
 
-3. **Interface-typed parameter dispatch inside a method-templated
-   static returns empty (no override dispatch).** The blocker. The
-   shape:
+3. ~~**Interface-typed parameter dispatch inside a method-templated
+   static returns empty (no override dispatch).**~~ **FIXED.** Three
+   interlocking compiler bugs were resolved:
 
-   ```cajeta
-   public class Helper {
-       public static int32 walk<T>(Splittable<T> s) {
-           Optional<T> o = s.next();           // ← returns empty
-           while (o.isPresent()) { …; o = s.next(); }
-           return n;
-       }
-   }
-   // caller: Helper.walk<int32>(myStream) returns 0, not 3
-   ```
+   - `subtypeDistance()` only walked the `extends` chain
+     (`getSuperClasses()`), so a class implementing an interface
+     never matched a formal of that interface type and `resolveMethod`
+     rejected the call. Extended the BFS to also walk
+     `getImplementedInterfaces()`.
 
-   When the parameter type is an **interface** template (`Splittable
-   <T>`), calls to abstract methods on the parameter inside the
-   method-template's body dispatch to the abstract base (returning
-   default-empty) instead of the implementer's override.
+   - `invokeMethod`'s coercion loop passed a raw class instance
+     pointer where the callee expected an interface fat-pointer body
+     (`{data, vtable, kind}`). Added a class→interface upcast that
+     builds the body alloca at the call site, mirroring
+     `LocalVariableDeclaration`'s § S9.5.4 construction.
 
-   Variants probed:
-   - `walk<T>(Stream<T> s)` (CLASS template, not interface) — works.
-   - `walk<T>(MyStream<T> s)` (concrete implementer type) — works.
-   - `walk<T>(Splittable<T> s)` — fails.
-   - Direct walk in the caller (no helper) — works.
-   - Same shape without diamond inheritance — still fails.
+   - When the formal interface inherits an abstract method from a
+     CLASS ancestor (e.g. `Splittable<T> extends Stream<T>` and
+     `Stream<T>.next()` is the resolved target), the interface
+     vtable doesn't hold class-method slots. Added a class-ancestor
+     fall-through that loads the class vtable from the fat pointer's
+     `data` slot and does the normal hash-based vtable lookup.
 
-   This is the templated-interface vtable instantiation work from
-   the P1.1 session, but specifically when the templated-interface
-   parameter appears inside a method-template body. The vtable
-   instantiation itself succeeded in the earlier work; what's
-   missing is wiring the in-body call's vtable lookup to the
-   instantiated form when the parameter is a method-template
-   parameter rather than a class-template parameter.
+   The synthetic `TemplatedInterfaceParamProbe.cpp` test suite pins
+   all five narrowed failure modes (concrete-class baseline,
+   abstract-base baseline, plain-interface non-templated, templated-
+   interface non-templated-static, and the original templated-static-
+   templated-interface shape).
 
-   **Workaround for v1:** ArrayStream<T>'s `count()` uses the O(1)
-   fast-path (`limit - idx`) — no driver call, no template-instantiated
-   method dispatch. The fast-path is independently correct (an array's
-   element count equals its slice length) so the result matches
-   sequential. Per-element terminals (reduce / anyMatch) can't use this
-   trick and need the compiler fix.
-
-   **Fix site:** probably in `MethodCallExpression` resolveTypes or
-   generateCode — specifically the dispatch for `interface-typed
-   method-template parameter`'s `.method()` call. Tracked here until
-   a session focuses on it.
+   **Separate latent JIT-only issue:** user code that directly calls
+   ANY `ParallelDriver` static method (including pre-existing
+   `countParallel<T>`) trips `LLJIT initialize failed: Failed to
+   materialize symbols` referencing unrelated stdlib classes
+   (SipHash, JsonReader, etc.). This is not the dispatch bug — it
+   reproduces against `countParallel<T>` which predates the fix — and
+   the symbols are defined in the linked module, so it appears to be
+   a JIT initialization quirk specific to the test harness. AOT
+   compilation isn't affected. The
+   `DISABLED_parallelReduceParallelDriverDirectCall` / `DISABLED_…`
+   tests in `ParallelStreamP1Tests.cpp` document the failure shape
+   for a future triage session.
 
 ## §8 Migration sweep (Collector R3)
 

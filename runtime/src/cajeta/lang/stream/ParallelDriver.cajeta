@@ -55,6 +55,94 @@ public class ParallelDriver {
     }
 
     /**
+     * Parallel reduce. Source confirmed Splittable<T> and parallel-
+     * eligible by the caller; today the caller is direct user code
+     * via `ParallelDriver.reduceParallel<T>(splittable, ...)`. A
+     * wrapper-aware Stream<T>.reduce dispatch — which checks
+     * isParallel and downcasts when the head is Splittable — lands
+     * in P2 alongside the wrapper-chain unwind work.
+     *
+     * Contract (per Java's reduce(T, BinaryOperator<T>) and
+     * StreamParallelism.md § Per-terminal rules):
+     *   - `fn` MUST be associative.
+     *   - `seed` MUST be `fn`'s identity (e.g. 0 for +, 1 for *,
+     *     empty for string concat).
+     * Violating these gives a numerically-correct but
+     * implementation-dependent result; that's the same contract
+     * Java's parallel reduce documents. The
+     * `parallel-reduce-nonzero-seed` lint at the call site (P4
+     * work) flags the most-common identity mistake.
+     *
+     * v1 body walks the source sequentially. Split-and-spawn lands
+     * in a follow-up with structured concurrency wiring (see
+     * StreamParallelism.md § Worker layout); when it lands, each
+     * worker calls this same `fn` to accumulate into its partial
+     * and the orchestrator combines partials with `fn` again (legal
+     * because `fn` is associative + identity-respecting per the
+     * contract above).
+     */
+    public static T reduceParallel<T>(Splittable<T> source, T seed, (T, T) -> T fn) {
+        T acc = seed;
+        Optional<T> o = source.next();
+        while (o.isPresent()) {
+            acc = fn(acc, o.get());
+            o = source.next();
+        }
+        return acc;
+    }
+
+    /**
+     * Parallel anyMatch. Returns true as soon as any element
+     * satisfies `predicate`. v1 walks sequentially and short-circuits
+     * on first match; when split-and-spawn lands, the first worker
+     * to hit a match cancels its sibling scopes so they stop
+     * pulling. The predicate must be side-effect-free (Java's same
+     * contract) so cancellation can't observe a half-committed state.
+     */
+    public static boolean anyMatchParallel<T>(Splittable<T> source, (T) -> boolean predicate) {
+        Optional<T> o = source.next();
+        while (o.isPresent()) {
+            if (predicate(o.get())) {
+                return true;
+            }
+            o = source.next();
+        }
+        return false;
+    }
+
+    /**
+     * Parallel allMatch. Returns true only if every element
+     * satisfies `predicate`. Vacuously true on an empty source.
+     * Short-circuits on the first non-match (worker-cancelling once
+     * split-and-spawn lands).
+     */
+    public static boolean allMatchParallel<T>(Splittable<T> source, (T) -> boolean predicate) {
+        Optional<T> o = source.next();
+        while (o.isPresent()) {
+            if (!predicate(o.get())) {
+                return false;
+            }
+            o = source.next();
+        }
+        return true;
+    }
+
+    /**
+     * Parallel noneMatch. Returns true only if no element satisfies
+     * `predicate`. Short-circuits on the first match.
+     */
+    public static boolean noneMatchParallel<T>(Splittable<T> source, (T) -> boolean predicate) {
+        Optional<T> o = source.next();
+        while (o.isPresent()) {
+            if (predicate(o.get())) {
+                return false;
+            }
+            o = source.next();
+        }
+        return true;
+    }
+
+    /**
      * Decide split count from estimateSize.
      *  - size < MIN_PER_SPLIT * 2 → 1 (sequential).
      *  - else: ceil(sqrt(size)) capped by MAX_SPLITS.

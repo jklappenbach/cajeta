@@ -799,6 +799,34 @@ namespace cajeta {
         synthesizeBuilder();
     }
 
+    std::vector<MethodPtr> CajetaClass::getFlattenedInterfaceMethods() {
+        // BFS: this interface, then its parents (transitively). Each
+        // method is emitted in the order it's first encountered;
+        // a name seen at a leaf is NOT emitted again when we reach a
+        // parent that declares the same method (the leaf override
+        // wins). Constructors and statics are filtered.
+        std::vector<MethodPtr> ordered;
+        std::set<std::string> seenNames;
+        std::set<CajetaClass*> visited;
+        std::vector<CajetaClassPtr> frontier{
+            std::static_pointer_cast<CajetaClass>(shared_from_this()) };
+        size_t cursor = 0;
+        while (cursor < frontier.size()) {
+            auto iface = frontier[cursor++];
+            if (!iface || !visited.insert(iface.get()).second) continue;
+            for (auto& m : iface->getMethodList()) {
+                if (!m || m->isConstructor()) continue;
+                if (m->getModifiers().find(STATIC) != m->getModifiers().end()) continue;
+                if (!seenNames.insert(m->getName()).second) continue;
+                ordered.push_back(m);
+            }
+            for (auto& parent : iface->getSuperClasses()) {
+                if (parent && parent->isInterface()) frontier.push_back(parent);
+            }
+        }
+        return ordered;
+    }
+
     void CajetaClass::synthesizeInterfaceVTables() {
         if (implementedInterfaces.empty()) return;
 
@@ -876,7 +904,12 @@ namespace cajeta {
             } else {
                 entries.push_back(llvm::ConstantPointerNull::get(ptrTy));
             }
-            for (auto& ifaceMethod : iface->getMethodList()) {
+            // Walk the interface's flattened method list (self + parent
+            // interfaces, in vtable order). Same list invokeMethod walks
+            // for methodIdx, so an inherited method like `Stream<T>.next()`
+            // on a `Splittable<T> extends Stream<T>` formal dispatches
+            // correctly.
+            for (auto& ifaceMethod : iface->getFlattenedInterfaceMethods()) {
                 if (!ifaceMethod || ifaceMethod->isConstructor()) continue;
                 if (ifaceMethod->getModifiers().find(STATIC)
                         != ifaceMethod->getModifiers().end()) continue;
@@ -3779,7 +3812,40 @@ namespace cajeta {
         bool useVtable = thisValue && !isStatic && !isConstructor && !isView
             && !forceDirectCall && !isMethodTemplateInst;
         bool isInterfaceRecv = this->isInterface();
-        if (useVtable && isInterfaceRecv) {
+        // Interface formal whose resolved method lives on a CLASS
+        // ancestor (e.g. `Splittable<T> extends Stream<T>` and we're
+        // calling `next()` — declared on Stream<T>, not Splittable<T>).
+        // The interface vtable doesn't hold class-method slots; instead,
+        // load the dataPtr (real class instance) from the fat pointer
+        // and do hash-based class-vtable dispatch through it.
+        bool methodOnClassAncestor = isInterfaceRecv && method->getParent()
+            && !method->getParent()->isInterface();
+        if (useVtable && isInterfaceRecv && methodOnClassAncestor) {
+            llvm::Type* ptrTy = llvm::PointerType::get(llvmCtx, 0);
+            llvm::Type* bodyTy = this->getLlvmType();
+            llvm::Value* dataSlot = builder->CreateStructGEP(
+                bodyTy, thisValue, 0, "iface_data_slot");
+            llvm::Value* dataPtr = builder->CreateLoad(
+                ptrTy, dataSlot, "iface_data");
+            // dataPtr is a class instance; word 0 is the class vtable.
+            llvm::Function* lookupFn = emitMod->getRuntimeFunction(
+                "__cajeta_vtable_lookup");
+            if (lookupFn) {
+                llvm::Type* i64Ty = llvm::Type::getInt64Ty(llvmCtx);
+                llvm::Value* vtable = builder->CreateLoad(
+                    ptrTy, dataPtr, "iface_data_vtable");
+                int64_t hash = signatureHash(
+                    method->toCanonical(/*labeled=*/false));
+                llvm::Value* fnPtr = builder->CreateCall(lookupFn,
+                    {vtable, llvm::ConstantInt::get(i64Ty,
+                        llvm::APInt(64, (uint64_t) hash, false))},
+                    "iface_class_method_fn");
+                callee = fnPtr;
+            }
+            if (!methodArgs.empty()) {
+                methodArgs[0] = dataPtr;
+            }
+        } else if (useVtable && isInterfaceRecv) {
             // (Historical S11.2 "same-concrete-type return through dyn
             // dispatch" rejection retired with CajetaStruct under the
             // unified-class model — the equivalent check for a class
@@ -3808,16 +3874,17 @@ namespace cajeta {
             llvm::Value* vtablePtr = builder->CreateLoad(
                 ptrTy, vtableSlot, "iface_vtable");
 
-            // Method's index in the interface's method list. Skips
-            // constructors and statics for parity with vtable emission
-            // (which also skips them per S9.2 and S9.5.2).
+            // Method's index in the interface's flattened method list
+            // (this iface's own methods first, then parent interfaces').
+            // synthesizeInterfaceVTables emits vtable entries in this same
+            // order, so the index here picks up an inherited method like
+            // `Stream<T>.next()` when the formal is `Splittable<T>` and
+            // `Splittable<T> extends Stream<T>`. Without the flattened
+            // walk the lookup would miss and dispatch would fall through
+            // to the abstract base.
             int methodIdx = -1;
             int idx = 0;
-            for (auto& im : this->getMethodList()) {
-                if (!im || im->isConstructor()) { continue; }
-                if (im->getModifiers().find(STATIC) != im->getModifiers().end()) {
-                    continue;
-                }
+            for (auto& im : this->getFlattenedInterfaceMethods()) {
                 if (im->getName() == method->getName()) {
                     methodIdx = idx;
                     break;

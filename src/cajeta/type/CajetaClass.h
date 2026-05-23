@@ -576,6 +576,18 @@ namespace cajeta {
         // distinguishes from the struct case).
         void synthesizeInterfaceVTables();
 
+        // Flat list of methods that an interface's per-(impl, iface)
+        // vtable lays out, in vtable order: this interface's own
+        // methods first, then each parent interface's methods (via
+        // BFS over the extends chain), with first-seen-by-name
+        // winning so an override declared at the leaf doesn't
+        // appear twice. Constructors and statics are filtered. Used
+        // by both synthesizeInterfaceVTables (writing the vtable
+        // entries) and invokeMethod (looking up the methodIdx for
+        // dispatch) — they MUST agree on order, hence the shared
+        // helper.
+        std::vector<MethodPtr> getFlattenedInterfaceMethods();
+
         // Lookup for the synthesized global by interface canonical name.
         // Returns nullptr if this class doesn't implement that interface.
         llvm::GlobalVariable* getInterfaceVTable(const std::string& interfaceCanonical) const {
