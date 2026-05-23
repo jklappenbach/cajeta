@@ -166,13 +166,52 @@ public class ParallelDriver {
 
     /**
      * Parallel anyMatch. Returns true as soon as any element
-     * satisfies `predicate`. v1 walks sequentially and short-circuits
-     * on first match; when split-and-spawn lands, the first worker
-     * to hit a match cancels its sibling scopes so they stop
-     * pulling. The predicate must be side-effect-free (Java's same
-     * contract) so cancellation can't observe a half-committed state.
+     * satisfies `predicate`. Fork shape mirrors reduceParallel:
+     * pull nSplits-1 shares, spawn one findHitWorker per share
+     * inside a scope, walk the tail on the orchestrator fiber. All
+     * workers share a single-element `hit` flag; the first hit
+     * (worker or tail) sets it, and every other worker bails at the
+     * top of its next loop iteration. The predicate must be side-
+     * effect-free (Java's same contract) so the cooperative cancel
+     * can't observe a half-committed state.
      */
     public static boolean anyMatchParallel<T>(Splittable<T> source, (T) -> boolean predicate) {
+        int64 sz = source.estimateSize();
+        int32 nSplits = pickSplitCount(sz);
+        if (nSplits < 2) {
+            Optional<T> o = source.next();
+            while (o.isPresent()) {
+                if (predicate(o.get())) {
+                    return true;
+                }
+                o = source.next();
+            }
+            return false;
+        }
+        Stream<T>[] shares = new Stream<T>[nSplits - 1];
+        int32 shareCount = 0;
+        int32 si = 0;
+        while (si < nSplits - 1) {
+            Stream<T> piece = source.trySplit();
+            if (piece == null) {
+                break;
+            }
+            shares[si] = piece;
+            shareCount = shareCount + 1;
+            si = si + 1;
+        }
+        boolean[] hit = new boolean[1];
+        hit[0] = false;
+        scope {
+            int32 wi = 0;
+            while (wi < shareCount) {
+                spawn findHitWorker<T>(shares[wi], predicate, hit);
+                wi = wi + 1;
+            }
+        }
+        if (hit[0]) {
+            return true;
+        }
         Optional<T> o = source.next();
         while (o.isPresent()) {
             if (predicate(o.get())) {
@@ -186,10 +225,46 @@ public class ParallelDriver {
     /**
      * Parallel allMatch. Returns true only if every element
      * satisfies `predicate`. Vacuously true on an empty source.
-     * Short-circuits on the first non-match (worker-cancelling once
-     * split-and-spawn lands).
+     * Uses findFailWorker, which signals on the first !predicate
+     * element; sibling workers see the flag and bail.
      */
     public static boolean allMatchParallel<T>(Splittable<T> source, (T) -> boolean predicate) {
+        int64 sz = source.estimateSize();
+        int32 nSplits = pickSplitCount(sz);
+        if (nSplits < 2) {
+            Optional<T> o = source.next();
+            while (o.isPresent()) {
+                if (!predicate(o.get())) {
+                    return false;
+                }
+                o = source.next();
+            }
+            return true;
+        }
+        Stream<T>[] shares = new Stream<T>[nSplits - 1];
+        int32 shareCount = 0;
+        int32 si = 0;
+        while (si < nSplits - 1) {
+            Stream<T> piece = source.trySplit();
+            if (piece == null) {
+                break;
+            }
+            shares[si] = piece;
+            shareCount = shareCount + 1;
+            si = si + 1;
+        }
+        boolean[] fail = new boolean[1];
+        fail[0] = false;
+        scope {
+            int32 wi = 0;
+            while (wi < shareCount) {
+                spawn findFailWorker<T>(shares[wi], predicate, fail);
+                wi = wi + 1;
+            }
+        }
+        if (fail[0]) {
+            return false;
+        }
         Optional<T> o = source.next();
         while (o.isPresent()) {
             if (!predicate(o.get())) {
@@ -202,9 +277,46 @@ public class ParallelDriver {
 
     /**
      * Parallel noneMatch. Returns true only if no element satisfies
-     * `predicate`. Short-circuits on the first match.
+     * `predicate`. Same shape as anyMatch — shares findHitWorker —
+     * but inverts the return: a hit means the result is false.
      */
     public static boolean noneMatchParallel<T>(Splittable<T> source, (T) -> boolean predicate) {
+        int64 sz = source.estimateSize();
+        int32 nSplits = pickSplitCount(sz);
+        if (nSplits < 2) {
+            Optional<T> o = source.next();
+            while (o.isPresent()) {
+                if (predicate(o.get())) {
+                    return false;
+                }
+                o = source.next();
+            }
+            return true;
+        }
+        Stream<T>[] shares = new Stream<T>[nSplits - 1];
+        int32 shareCount = 0;
+        int32 si = 0;
+        while (si < nSplits - 1) {
+            Stream<T> piece = source.trySplit();
+            if (piece == null) {
+                break;
+            }
+            shares[si] = piece;
+            shareCount = shareCount + 1;
+            si = si + 1;
+        }
+        boolean[] hit = new boolean[1];
+        hit[0] = false;
+        scope {
+            int32 wi = 0;
+            while (wi < shareCount) {
+                spawn findHitWorker<T>(shares[wi], predicate, hit);
+                wi = wi + 1;
+            }
+        }
+        if (hit[0]) {
+            return false;
+        }
         Optional<T> o = source.next();
         while (o.isPresent()) {
             if (predicate(o.get())) {
@@ -213,6 +325,48 @@ public class ParallelDriver {
             o = source.next();
         }
         return true;
+    }
+
+    /**
+     * Worker for anyMatch / noneMatch. Drains `share` until either
+     * the cooperative `hit` flag is set by a sibling, or this worker
+     * finds an element satisfying `predicate` (and sets `hit` for
+     * siblings). Returns 0 unconditionally — the meaningful output
+     * is the hit[0] write.
+     */
+    public static async int32 findHitWorker<T>(Stream<T> share, (T) -> boolean predicate, boolean[] hit) {
+        Optional<T> o = share.next();
+        while (o.isPresent()) {
+            if (hit[0]) {
+                return 0;
+            }
+            if (predicate(o.get())) {
+                hit[0] = true;
+                return 0;
+            }
+            o = share.next();
+        }
+        return 0;
+    }
+
+    /**
+     * Worker for allMatch. Drains `share` until either the
+     * cooperative `fail` flag is set by a sibling, or this worker
+     * finds an element failing `predicate` (and sets `fail`).
+     */
+    public static async int32 findFailWorker<T>(Stream<T> share, (T) -> boolean predicate, boolean[] fail) {
+        Optional<T> o = share.next();
+        while (o.isPresent()) {
+            if (fail[0]) {
+                return 0;
+            }
+            if (!predicate(o.get())) {
+                fail[0] = true;
+                return 0;
+            }
+            o = share.next();
+        }
+        return 0;
     }
 
     /**

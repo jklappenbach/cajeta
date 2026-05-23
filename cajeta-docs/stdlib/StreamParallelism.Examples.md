@@ -1039,13 +1039,19 @@ Status of each original item:
    child's type when codegen reaches the cast before scope
    population.
 
-5. **Cancellation semantics (P5 proper).** Workers now fork via
-   `scope { spawn reduceWorker<T>(...) }`; cancellation for
-   short-circuit terminals (anyMatch / allMatch / noneMatch /
-   findAny) is the remaining wire-up — first worker to hit a
-   match cancels its sibling scopes so they stop pulling. Needs
-   a cancel token on the scope plus a predicate-aware worker
-   shape (the current reduceWorker drains unconditionally).
+5. **Cancellation semantics (P5 proper).** LANDED for
+   anyMatch / allMatch / noneMatch. Each terminal now forks via
+   `scope { spawn findHitWorker / findFailWorker<T>(...) }`,
+   passing a shared single-element `boolean[]` as a cooperative
+   cancel flag. Workers poll the flag at the top of each loop
+   iteration and bail when a sibling triggers; the first worker
+   to hit/fail flips the flag. Under today's single-carrier
+   scheduler the win is that siblings short-circuit at scope
+   join (no further pulls); once a multi-carrier scheduler
+   lands, the same flag preempts in-flight worker progress.
+   `findAny` still pending — Stream<T> has `findFirst` (ordered)
+   today; a `findAny` entry point + ordered/unordered split for
+   `findFirst` are the remaining surface.
 
 6. **parallel-reduce-nonzero-seed lint** and
    **nested-`.parallel()` warning**. Still un-landed. Lint

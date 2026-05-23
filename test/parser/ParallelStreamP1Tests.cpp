@@ -293,6 +293,140 @@ TEST(ParallelStreamP1Tests, parallelNoneMatchTrueWhenNoMatch) {
     EXPECT_EQ(runI32Diag(src), 1);
 }
 
+// Large-source fork-path tests for the match terminals. 100 elements
+// crosses MIN_PER_SPLIT*2, so the driver picks up to MAX_SPLITS
+// workers via scope { spawn findHitWorker / findFailWorker }. These
+// verify correctness on the spawn path; the cancellation flag is
+// implicit (single-carrier scheduler runs workers sequentially today,
+// so cancel saves siblings' work once the first worker triggers).
+
+TEST(ParallelStreamP1Tests, parallelAnyMatchLargeSourceFindsMatch) {
+    auto src =
+        "package test;\n"
+        "import cajeta.lang.stream.ParallelDriver;\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        int32[] xs = new int32[100];\n"
+        "        int32 i = 0;\n"
+        "        while (i < 100) {\n"
+        "            xs[i] = i + 1;\n"
+        "            i = i + 1;\n"
+        "        }\n"
+        "        boolean b = ParallelDriver.anyMatchParallel<int32>(\n"
+        "            xs.stream(), (x) -> x == 73);\n"
+        "        if (b) { return 1; }\n"
+        "        return 0;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32Diag(src), 1);
+}
+
+TEST(ParallelStreamP1Tests, parallelAnyMatchLargeSourceNoMatch) {
+    auto src =
+        "package test;\n"
+        "import cajeta.lang.stream.ParallelDriver;\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        int32[] xs = new int32[100];\n"
+        "        int32 i = 0;\n"
+        "        while (i < 100) {\n"
+        "            xs[i] = i + 1;\n"
+        "            i = i + 1;\n"
+        "        }\n"
+        "        boolean b = ParallelDriver.anyMatchParallel<int32>(\n"
+        "            xs.stream(), (x) -> x > 9999);\n"
+        "        if (b) { return 1; }\n"
+        "        return 0;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32Diag(src), 0);
+}
+
+TEST(ParallelStreamP1Tests, parallelAllMatchLargeSourceAllSatisfy) {
+    auto src =
+        "package test;\n"
+        "import cajeta.lang.stream.ParallelDriver;\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        int32[] xs = new int32[100];\n"
+        "        int32 i = 0;\n"
+        "        while (i < 100) {\n"
+        "            xs[i] = i + 1;\n"
+        "            i = i + 1;\n"
+        "        }\n"
+        "        boolean b = ParallelDriver.allMatchParallel<int32>(\n"
+        "            xs.stream(), (x) -> x > 0);\n"
+        "        if (b) { return 1; }\n"
+        "        return 0;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32Diag(src), 1);
+}
+
+TEST(ParallelStreamP1Tests, parallelAllMatchLargeSourceOneFailure) {
+    auto src =
+        "package test;\n"
+        "import cajeta.lang.stream.ParallelDriver;\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        int32[] xs = new int32[100];\n"
+        "        int32 i = 0;\n"
+        "        while (i < 100) {\n"
+        "            xs[i] = i + 1;\n"
+        "            i = i + 1;\n"
+        "        }\n"
+        "        xs[57] = -1;\n"
+        "        boolean b = ParallelDriver.allMatchParallel<int32>(\n"
+        "            xs.stream(), (x) -> x > 0);\n"
+        "        if (b) { return 1; }\n"
+        "        return 0;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32Diag(src), 0);
+}
+
+TEST(ParallelStreamP1Tests, parallelNoneMatchLargeSourceNoMatch) {
+    auto src =
+        "package test;\n"
+        "import cajeta.lang.stream.ParallelDriver;\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        int32[] xs = new int32[100];\n"
+        "        int32 i = 0;\n"
+        "        while (i < 100) {\n"
+        "            xs[i] = i + 1;\n"
+        "            i = i + 1;\n"
+        "        }\n"
+        "        boolean b = ParallelDriver.noneMatchParallel<int32>(\n"
+        "            xs.stream(), (x) -> x > 9999);\n"
+        "        if (b) { return 1; }\n"
+        "        return 0;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32Diag(src), 1);
+}
+
+TEST(ParallelStreamP1Tests, parallelNoneMatchLargeSourceFindsMatch) {
+    auto src =
+        "package test;\n"
+        "import cajeta.lang.stream.ParallelDriver;\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        int32[] xs = new int32[100];\n"
+        "        int32 i = 0;\n"
+        "        while (i < 100) {\n"
+        "            xs[i] = i + 1;\n"
+        "            i = i + 1;\n"
+        "        }\n"
+        "        boolean b = ParallelDriver.noneMatchParallel<int32>(\n"
+        "            xs.stream(), (x) -> x == 42);\n"
+        "        if (b) { return 1; }\n"
+        "        return 0;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32Diag(src), 0);
+}
+
 // 1.7l — .take(n) on a parallel-flagged stream throws Exception at
 // runtime because ordered "first N" is incompatible with
 // split-and-spawn parallelism (StreamParallelism.md § Per-terminal
