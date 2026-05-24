@@ -926,6 +926,19 @@ public class ParallelDriver {
         // Optional after scope-join from result[0] when hit[0].
         // Race on the slot itself is benign — findAny only requires
         // SOME match.
+        //
+        // Task #40 bisection finding: the original pthread_cond_wait
+        // hang from `Optional<T>[1]` worker-write does NOT reproduce
+        // at HEAD — see test/parser/OptionalArrayWorkerWriteTests.cpp
+        // for standalone repros (class-typed-array worker writes
+        // including multi-worker contention complete cleanly). The
+        // workaround stays in place only because Cajeta's codegen
+        // can't currently allocate `new Optional<T>[1]` when T is a
+        // method-template parameter — the allocation hits the bare-
+        // template short-circuit and fails to lower the element-size
+        // resolution at stdlib parse, which manifests as a SIGSEGV
+        // at first JIT use. Removing the workaround needs that
+        // compile-time fix first, not a runtime fix.
         T[] result = new T[1];
         boolean[] hit = new boolean[1];
         hit[0] = false;
