@@ -121,46 +121,18 @@ namespace cajeta {
             }
         }
 
-        // Wildcard short-circuit (Step 1 — template wildcards). When any
-        // supplied arg is the wildcard sentinel, return an erased proxy:
-        // a fresh CajetaClass with templateOrigin set and typeArguments
-        // populated, but NO body re-parse and NO generatePrototype. The
-        // proxy is a type-identity stub used by assignability checks
-        // (CajetaClass::isAssignableToWildcard) and by the canonical
-        // name cache. Real codegen on wildcard-typed values arrives
-        // with Step 2 (drop-chain ABI). See cajeta-docs/TemplateWildcard.md.
-        {
-            bool anyWildcard = false;
-            for (auto& arg : args) {
-                if (arg && arg->isWildcard()) {
-                    anyWildcard = true;
-                    break;
-                }
-            }
-            if (anyWildcard) {
-                string suffix = buildArgSuffix(args);
-                string instCanonical = qName->toCanonical() + suffix;
-                auto& structures = module->getStructures();
-                auto cached = structures.find(instCanonical);
-                if (cached != structures.end()) {
-                    return cached->second;
-                }
-                QualifiedNamePtr instQName = QualifiedName::getOrInsert(
-                    qName->getTypeName() + suffix, qName->getPackageName());
-                list<QualifiedNamePtr> noExt;
-                list<QualifiedNamePtr> noImpl;
-                auto proxy = make_shared<CajetaClass>(
-                    module, instQName, noExt, noImpl);
-                proxy->setIsInterface(interfaceFlag);
-                proxy->setTypeParameters(typeParameters);
-                proxy->setTypeArguments(args);
-                proxy->setTemplateOrigin(
-                    static_pointer_cast<CajetaClass>(shared_from_this()));
-                structures[instCanonical] = proxy;
-                CajetaType::getCanonicalMap()[instCanonical] = proxy;
-                return proxy;
-            }
-        }
+        // Step 5a — template wildcards. The Step 1/2 "erased proxy"
+        // short-circuit was removed: wildcard args now flow through
+        // the normal instantiation path so methods, fields, vtable,
+        // and drop walk are all populated by re-parsing the body
+        // with T → wildcardSentinel substitution active. The
+        // wildcard sentinel is ptr-shaped (STRUCT_FLAG only — see
+        // CajetaType::init) so any `T value` field, `(T) -> R fn`
+        // parameter, or `Stream<T>` reference inside the body lowers
+        // as a pointer slot or a re-entrant Stream<?> instantiation.
+        // The cache below is keyed on canonical-with-args so
+        // `Box<?>` and `Box<int32>` get distinct entries — the same
+        // cache-bucket invariants Step 3 verified still hold.
 
         if (args.size() != typeParameters.size()) {
             throw Exception(
@@ -184,6 +156,12 @@ namespace cajeta {
         for (size_t i = 0; i < typeParameters.size(); ++i) {
             const auto& param = typeParameters[i];
             if (param.bounds.empty()) continue;
+            // Wildcard args satisfy any bound by construction —
+            // the unbounded `?` stands for some unknown T-that-fits;
+            // bounded forms (`? extends Bound`) are deferred to Step 6
+            // and won't reach here (the parser rejects them at
+            // CajetaType.cpp:454 under flag-on).
+            if (args[i] && args[i]->isWildcard()) continue;
             auto argClass = dynamic_pointer_cast<CajetaClass>(args[i]);
             for (auto& bound : param.bounds) {
                 // Resolve the bound: try the bound's full canonical first,

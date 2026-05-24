@@ -250,6 +250,30 @@ TEST(TemplateWildcardP1Tests, partialWildcardCacheBucketsDistinct) {
               wildRight->getQName()->toCanonical());
 }
 
+// Step 5a — full instantiation populates the wildcard proxy's method
+// table from the re-parsed body (T → wildcard substitution active).
+// This is the load-bearing capability that lets `cur.unwrap()` etc.
+// resolve in the parallel chain walker. Without it, method calls on
+// wildcard locals crash at JIT time.
+TEST(TemplateWildcardP1Tests, wildcardProxyHasMethodsFromTemplateBody) {
+    WildcardsOn flag;
+    Compiler compiler;
+    auto src = std::string(
+        "package test;\n"
+        "public class Box<T> {\n"
+        "    T value;\n"
+        "    public Box(T v) { this.value = v; }\n"
+        "    public int32 tag() { return 99; }\n"
+        "}\n");
+    auto module = compileSource(compiler, src, "test.Box");
+    auto box = module->getStructures()["test.Box"];
+    ASSERT_NE(box, nullptr);
+    auto proxy = box->instantiate({CajetaType::wildcardSentinel()});
+    ASSERT_NE(proxy, nullptr);
+    EXPECT_FALSE(proxy->getMethods().empty())
+        << "wildcard proxy should have methods populated from re-parsed body";
+}
+
 // Assignability also rejects a non-wildcard instantiation as the target
 // — `Box<?>` is the *only* legal wildcard-typed destination.
 TEST(TemplateWildcardP1Tests, nonWildcardTargetRejected) {

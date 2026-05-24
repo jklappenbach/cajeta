@@ -3122,6 +3122,38 @@ namespace cajeta {
             }
         }
 
+        // Template-origin alias (wildcards / cross-instantiation dispatch).
+        // For each entry whose method's parent is a template instantiation
+        // (templateOrigin non-null), publish an additional alias under a
+        // canonical computed with the templateOrigin as the parent — e.g.
+        // `test.Box<int32>::tag(this:pointer)` also aliases under
+        // `test.Box::tag(this:pointer)`. Wildcard call sites (Box<?>) hash
+        // on the same template-origin canonical, so a dispatch through a
+        // wildcard-typed local finds the alias entry in whichever concrete
+        // vtable the dynamic instance carries (Box<int32>, Box<int64>, …).
+        // Without this, the per-instantiation hashes diverge across the
+        // (wildcard caller, concrete dynamic instance) pair and the
+        // vtable lookup misses → SIGSEGV. See Step 5a in todo.md.
+        {
+            map<string, MethodPtr> templateAliases;
+            for (auto& [canon, m] : uniqueByCanonical) {
+                if (!m || m->isMethodTemplate()) continue;
+                auto mParent = m->getParent();
+                if (!mParent) continue;
+                auto origin = mParent->getTemplateOrigin();
+                if (!origin) continue;
+                string aliasCanon = Method::buildCanonical(
+                    origin, m->getName(),
+                    m->getParameterList(), /*labeled=*/false);
+                if (aliasCanon != canon) {
+                    templateAliases[aliasCanon] = m;
+                }
+            }
+            for (auto& [c, m] : templateAliases) {
+                uniqueByCanonical.emplace(c, m);  // doesn't overwrite
+            }
+        }
+
         // Sort by hash for binary search at dispatch time. Hash is stable
         // across runs (FNV-1a) so the compiler and runtime agree.
         vector<pair<int64_t, MethodPtr>> sorted;
@@ -3972,7 +4004,24 @@ namespace cajeta {
                 // are the vtable* (per CajetaClass::generatePrototype's
                 // layout decision).
                 llvm::Value* vtable = builder->CreateLoad(ptrTy, thisValue, "vtable");
-                int64_t hash = signatureHash(method->toCanonical(/*labeled=*/false));
+                // Wildcard receivers (Box<?>) hash on the template-origin-
+                // relative canonical so dispatch hits the alias entries
+                // buildVirtualTable publishes on every concrete
+                // instantiation's vtable. Without this, the per-
+                // instantiation hash on Box<?>::tag wouldn't match the
+                // per-instantiation hash on Box<int32>::tag in the
+                // dynamic instance's vtable. See Step 5a in todo.md.
+                int64_t hash;
+                if (this->isWildcardInstantiation() && this->getTemplateOrigin()) {
+                    string aliasCanon = Method::buildCanonical(
+                        this->getTemplateOrigin(),
+                        method->getName(),
+                        method->getParameterList(),
+                        /*labeled=*/false);
+                    hash = signatureHash(aliasCanon);
+                } else {
+                    hash = signatureHash(method->toCanonical(/*labeled=*/false));
+                }
                 llvm::Value* fnPtr = builder->CreateCall(lookupFn,
                     {vtable,
                      llvm::ConstantInt::get(i64Ty, llvm::APInt(64, (uint64_t) hash, false))},

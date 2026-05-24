@@ -94,6 +94,53 @@ TEST(TemplateWildcardP2Tests, wildcardDropDispatchesToUserDestructor) {
     EXPECT_EQ(jit->lookup<int64_t (*)()>("read")(), 2);
 }
 
+// Step 5a — method calls on wildcard locals dispatch via vtable to
+// the dynamic type's implementation. Box<?> has a method get() (a
+// fully-substituted Stream<?>-style method from Step 5a's full
+// instantiation path); calling it on a wildcard local holding a
+// Box<int32> returns the int32 the box was constructed with. This
+// is the load-bearing capability that unblocks the parallel
+// chain-walk in Step 5b.
+TEST(TemplateWildcardP2Tests, wildcardLocalSupportsMethodDispatch) {
+    WildcardsOn flag;
+    auto src = std::string(
+        "package test;\n"
+        "public class Box<T> {\n"
+        "    T value;\n"
+        "    public Box(T v) { this.value = v; }\n"
+        "    public int32 tag() { return 99; }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Box<?> bw = heap Box<int32>(42);\n"
+        "        return bw.tag();\n"
+        "    }\n"
+        "}\n");
+    EXPECT_EQ(runI32(src), 99);
+}
+
+// Baseline sanity check — same source minus the wildcard. Validates
+// that the same surface (Box<T>.tag()) works against a concrete
+// instantiation. If this passes and the wildcard version above
+// segfaults, the gap is specifically in wildcard method dispatch.
+TEST(TemplateWildcardP2Tests, concreteLocalMethodDispatchBaseline) {
+    WildcardsOn flag;
+    auto src = std::string(
+        "package test;\n"
+        "public class Box<T> {\n"
+        "    T value;\n"
+        "    public Box(T v) { this.value = v; }\n"
+        "    public int32 tag() { return 99; }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Box<int32> bw = heap Box<int32>(42);\n"
+        "        return bw.tag();\n"
+        "    }\n"
+        "}\n");
+    EXPECT_EQ(runI32(src), 99);
+}
+
 // Two wildcard locals fire two drops, LIFO. Verifies the drop-entry
 // per local registration loop walks wildcard-typed declarators just
 // like concrete-typed ones.
