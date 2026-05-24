@@ -733,3 +733,128 @@ TEST(ParallelStreamP1Tests, parallelAnyMatchRejectsStatefulInChain) {
         "}\n";
     EXPECT_EQ(runI32(src), -77);
 }
+
+// --- 3-arg fold(seed, fn, combiner) parallelization -----------------
+// The 3-arg overload pairs the per-share accumulator `fn: (R,T)->R`
+// with a `combiner: (R,R)->R` that merges worker partials. Both must
+// be associative + identity-respecting under `seed` per the Java
+// reduce contract (StreamParallelism.md § Per-terminal rules).
+//
+// Tests pin: (a) the new overload resolves & runs sequentially, (b)
+// dispatch through .parallel() on a direct-array head, (c) dispatch
+// through a filter chain, (d) stateful-reject in the chain.
+
+// Sequential 3-arg fold: cross-type int32 stream → int64 accumulator,
+// combiner unused on this path. Pins that the overload resolves at
+// parse time and the sequential body runs.
+TEST(ParallelStreamP1Tests, foldCombinerSeqI32ToI64) {
+    auto src =
+        "package test;\n"
+        "public final class D {\n"
+        "    public static int64 run() {\n"
+        "        int32[] xs = {1, 2, 3, 4, 5};\n"
+        "        // sum widened to int64: 1+2+3+4+5 == 15\n"
+        "        return xs.stream().fold(\n"
+        "            0L,\n"
+        "            (int64 a, int32 x) -> a + (int64) x,\n"
+        "            (int64 a, int64 b) -> a + b);\n"
+        "    }\n"
+        "}\n";
+    auto runI64 = [](const std::string& s) {
+        auto jit = CajetaJit::compile(s, "test.D");
+        return jit->lookup<int64_t (*)()>("run")();
+    };
+    EXPECT_EQ(runI64(src), 15LL);
+}
+
+// Parallel 3-arg fold on a direct-array head. 100 elements crosses
+// MIN_PER_SPLIT*2 so the driver picks up to MAX_SPLITS workers; the
+// combiner merges per-worker int64 partials.
+TEST(ParallelStreamP1Tests, foldCombinerParallelDirectArrayHead) {
+    auto src =
+        "package test;\n"
+        "public final class D {\n"
+        "    public static int64 run() {\n"
+        "        int32[] xs = new int32[100];\n"
+        "        for (int32 i = 0; i < 100; i = i + 1) { xs[i] = i + 1; }\n"
+        "        // sum(1..100) widened to int64 == 5050\n"
+        "        return xs.stream().parallel().fold(\n"
+        "            0L,\n"
+        "            (int64 a, int32 x) -> a + (int64) x,\n"
+        "            (int64 a, int64 b) -> a + b);\n"
+        "    }\n"
+        "}\n";
+    auto runI64 = [](const std::string& s) -> int64_t {
+        try {
+            auto jit = CajetaJit::compile(s, "test.D");
+            return jit->lookup<int64_t (*)()>("run")();
+        } catch (cajeta::Exception& e) {
+            ADD_FAILURE() << "cajeta::Exception " << e.getErrorId()
+                          << ": " << e.getMessage();
+            return -1;
+        }
+    };
+    EXPECT_EQ(runI64(src), 5050LL);
+}
+
+// Parallel 3-arg fold dispatched through a filter chain — the
+// headline payoff for combiner. depth=1 (FilterStream above the
+// ArrayStream root); driver pulls splits from the root and rebuilds
+// the FilterStream chain over each via head.cloneChainOver(piece).
+TEST(ParallelStreamP1Tests, foldCombinerParallelThroughFilter) {
+    auto src =
+        "package test;\n"
+        "public final class D {\n"
+        "    public static int64 run() {\n"
+        "        int32[] xs = new int32[100];\n"
+        "        for (int32 i = 0; i < 100; i = i + 1) { xs[i] = i + 1; }\n"
+        "        // even-only sum widened to int64: 2+4+...+100 == 2550\n"
+        "        return xs.stream()\n"
+        "                 .filter((x) -> x % 2 == 0)\n"
+        "                 .parallel()\n"
+        "                 .fold(\n"
+        "                     0L,\n"
+        "                     (int64 a, int32 x) -> a + (int64) x,\n"
+        "                     (int64 a, int64 b) -> a + b);\n"
+        "    }\n"
+        "}\n";
+    auto runI64 = [](const std::string& s) -> int64_t {
+        try {
+            auto jit = CajetaJit::compile(s, "test.D");
+            return jit->lookup<int64_t (*)()>("run")();
+        } catch (cajeta::Exception& e) {
+            ADD_FAILURE() << "cajeta::Exception " << e.getErrorId()
+                          << ": " << e.getMessage();
+            return -1;
+        }
+    };
+    EXPECT_EQ(runI64(src), 2550LL);
+}
+
+// Stateful intermediate above .parallel() — chain walk in
+// foldParallelChain hits TakeStream.isStatefulWrapper and throws
+// REJECT_STATEFUL. Mirrors the other terminals' stateful-reject test.
+TEST(ParallelStreamP1Tests, foldCombinerRejectsStatefulInChain) {
+    auto src =
+        "package test;\n"
+        "import cajeta.error.Exception;\n"
+        "public final class D {\n"
+        "    public static int64 run() {\n"
+        "        int32[] xs = new int32[100];\n"
+        "        for (int32 i = 0; i < 100; i = i + 1) { xs[i] = i; }\n"
+        "        try {\n"
+        "            return xs.stream().take(5).parallel().fold(\n"
+        "                0L,\n"
+        "                (int64 a, int32 x) -> a + (int64) x,\n"
+        "                (int64 a, int64 b) -> a + b);\n"
+        "        } catch (Exception e) {\n"
+        "            return -77L;\n"
+        "        }\n"
+        "    }\n"
+        "}\n";
+    auto runI64 = [](const std::string& s) {
+        auto jit = CajetaJit::compile(s, "test.D");
+        return jit->lookup<int64_t (*)()>("run")();
+    };
+    EXPECT_EQ(runI64(src), -77LL);
+}

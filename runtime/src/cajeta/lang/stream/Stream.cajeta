@@ -292,6 +292,40 @@ public class Stream<T> {
     }
 
     /**
+     * Cross-type left-fold with explicit `combiner` for the parallel
+     * path. Same per-element accumulation as the 2-arg `fold<R>`, but
+     * adds the `(R, R) -> R combiner` that the parallel driver uses
+     * to merge per-worker partials at join time (Java's
+     * `reduce(seed, accumulator, combiner)` shape).
+     *
+     * Under `.parallel()` dispatches to
+     * `ParallelDriver.foldParallelChain<T, R>` which walks the chain,
+     * rejects stateful intermediates, rebuilds each share via
+     * `head.cloneChainOver(piece)`, and forks workers via
+     * `scope { spawn foldWorker<T, R> }`. Falls back to sequential
+     * when the root isn't Splittable or the source is too small.
+     *
+     * Contract (per Java + StreamParallelism.md § Per-terminal rules):
+     *   - `combiner` MUST be associative.
+     *   - `seed` MUST be the identity for both `fn` and `combiner`:
+     *     `combiner(seed, fn(seed, t)) == fn(seed, t)` for every t.
+     * Violating these gives a numerically-correct but
+     * implementation-dependent answer.
+     */
+    public final R fold<R>(R seed, (R, T) -> R fn, (R, R) -> R combiner) {
+        if (this.isParallel) {
+            return ParallelDriver.foldParallelChain<T, R>(this, seed, fn, combiner);
+        }
+        R acc = seed;
+        Optional<T> o = this.next();
+        while (o.isPresent()) {
+            acc = fn(acc, o.get());
+            o = this.next();
+        }
+        return acc;
+    }
+
+    /**
      * Reduce a stream via a Collector — packages the (seed,
      * accumulator) pair so the same Stream can feed any compatible
      * Collector. See `cajeta.collection.Collector` and
