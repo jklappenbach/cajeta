@@ -3123,31 +3123,45 @@ namespace cajeta {
         }
 
         // Template-origin alias (wildcards / cross-instantiation dispatch).
-        // For each entry whose method's parent is a template instantiation
-        // (templateOrigin non-null), publish an additional alias under a
-        // canonical computed with the templateOrigin as the parent — e.g.
-        // `test.Box<int32>::tag(this:pointer)` also aliases under
-        // `test.Box::tag(this:pointer)`. Wildcard call sites (Box<?>) hash
-        // on the same template-origin canonical, so a dispatch through a
-        // wildcard-typed local finds the alias entry in whichever concrete
-        // vtable the dynamic instance carries (Box<int32>, Box<int64>, …).
-        // Without this, the per-instantiation hashes diverge across the
+        // For each entry whose method's parent OR any super of the
+        // parent is a template instantiation (templateOrigin non-null),
+        // publish an additional alias under a canonical computed with
+        // the templateOrigin as the parent. Example:
+        // `MapStream<int32,int32>::unwrap(pointer)` aliases under BOTH
+        // `MapStream::unwrap(pointer)` (own templateOrigin) AND
+        // `Stream::unwrap(pointer)` (Stream<int32>'s templateOrigin via
+        // the super chain). Wildcard call sites (Stream<?>) hash on the
+        // same template-origin canonical, so a dispatch through a
+        // wildcard-typed local finds the alias entry in whichever
+        // concrete vtable the dynamic instance carries. Without this
+        // the per-instantiation hashes diverge across the
         // (wildcard caller, concrete dynamic instance) pair and the
-        // vtable lookup misses → SIGSEGV. See Step 5a in todo.md.
+        // vtable lookup misses → SIGSEGV. See Step 5a/5b in todo.md.
         {
             map<string, MethodPtr> templateAliases;
+            auto addAliasFor = [&](CajetaClassPtr cls, MethodPtr m) {
+                if (!cls) return;
+                auto origin = cls->getTemplateOrigin();
+                if (!origin) return;
+                string aliasCanon = Method::buildCanonical(
+                    origin, m->getName(),
+                    m->getParameterList(), /*labeled=*/false);
+                templateAliases[aliasCanon] = m;
+            };
+            std::function<void(CajetaClassPtr, MethodPtr)> walkSupers =
+                [&](CajetaClassPtr c, MethodPtr m) {
+                    if (!c) return;
+                    for (auto& sup : c->getSuperClasses()) {
+                        addAliasFor(sup, m);
+                        walkSupers(sup, m);
+                    }
+                };
             for (auto& [canon, m] : uniqueByCanonical) {
                 if (!m || m->isMethodTemplate()) continue;
                 auto mParent = m->getParent();
                 if (!mParent) continue;
-                auto origin = mParent->getTemplateOrigin();
-                if (!origin) continue;
-                string aliasCanon = Method::buildCanonical(
-                    origin, m->getName(),
-                    m->getParameterList(), /*labeled=*/false);
-                if (aliasCanon != canon) {
-                    templateAliases[aliasCanon] = m;
-                }
+                addAliasFor(mParent, m);
+                walkSupers(mParent, m);
             }
             for (auto& [c, m] : templateAliases) {
                 uniqueByCanonical.emplace(c, m);  // doesn't overwrite

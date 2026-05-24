@@ -26,7 +26,7 @@ public class PeekStream<T> extends Stream<T> {
         return o;
     }
 
-    public Stream<T> unwrap() {
+    public Stream<?> unwrap() {
         return this.source;
     }
 
@@ -34,7 +34,7 @@ public class PeekStream<T> extends Stream<T> {
      * Recursive chain re-wrap: rebuild source-chain over newRoot,
      * then wrap the result in a fresh PeekStream<T>(_, fn).
      */
-    public #Stream<T> cloneChainOver(#Stream<T> newRoot) {
+    public #Stream<T> cloneChainOver(#Stream<?> newRoot) {
         return heap PeekStream<T>(this.source.cloneChainOver(newRoot), this.fn);
     }
 }

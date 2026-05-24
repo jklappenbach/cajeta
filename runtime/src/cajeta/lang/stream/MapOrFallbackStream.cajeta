@@ -41,4 +41,13 @@ public class MapOrFallbackStream<T, R> extends Stream<R> {
             return heap Optional<R>(true, this.fallback);
         }
     }
+
+    /** Type-changing wrapper unwind — see MapStream. (Step 5b.) */
+    public Stream<?> unwrap() {
+        return this.source;
+    }
+
+    public #Stream<R> cloneChainOver(#Stream<?> newRoot) {
+        return heap MapOrFallbackStream<T, R>(this.source.cloneChainOver(newRoot), this.fn, this.fallback);
+    }
 }

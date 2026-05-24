@@ -89,8 +89,14 @@ namespace cajeta {
         if (g_wildcardsTestOverride.has_value()) {
             return *g_wildcardsTestOverride;
         }
+        // Default ON as of Step 5b — stdlib stream wrappers use
+        // `Stream<?>` overrides for chain-walking and the stdlib parses
+        // on every compile, so wildcards must be accepted by default
+        // for the runtime to load. CAJETA_WILDCARDS=0 is the backout
+        // opt-out for emergencies.
         const char* v = std::getenv("CAJETA_WILDCARDS");
-        return v != nullptr && v[0] != '\0' && v[0] != '0';
+        if (v == nullptr) return true;
+        return v[0] != '\0' && v[0] != '0';
     }
 
     void CajetaType::setWildcardsEnabledForTest(bool enabled) {

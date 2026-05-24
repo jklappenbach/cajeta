@@ -66,24 +66,45 @@ performance footguns:
 Diagnostics live in the compiler so users see them inline, not only
 under `cajeta-lint`.
 
-## 5. Migrate parallel chain walk to use `<?>`
+## 5. Migrate parallel chain walk to use `<?>` — DONE (Steps 5a + 5b)
 
 The immediate payoff that motivated this work.
 
-- Retype chain-walk cursor variables in
-  `runtime/src/cajeta/lang/stream/ParallelDriver.cajeta` as
-  `Stream<?>`.
-- Add `unwrap()` and `cloneChainOver()` overrides on type-changing
-  wrappers:
-  - `runtime/src/cajeta/lang/stream/MapStream.cajeta`
-  - `runtime/src/cajeta/lang/stream/FlatMapStream.cajeta`
-  - `runtime/src/cajeta/lang/stream/MapOrSkipStream.cajeta`
-  - `runtime/src/cajeta/lang/stream/MapOrFallbackStream.cajeta`
-  - `runtime/src/cajeta/lang/stream/MapOrLogStream.cajeta`
-- Downcast at the worker boundary so the hot loop stays specialized.
-- ~50 LOC change once Steps 1-4 are in place.
-- Tests for `.map().parallel()`, `.parallel().map()`,
-  `.flatMap().parallel()`, `.filter().map().parallel()`, etc.
+**Step 5a (commit a1fc2d8):** removed the Step 1/2 erased-proxy
+short-circuit; wildcard args now flow through full template
+instantiation with T → wildcardSentinel substitution. Wildcard
+proxies get fully-populated methods, fields, vtables. Method calls
+on wildcard locals (`bw.tag()` on a Box<?>) work end-to-end via
+template-relative vtable hashing — `buildVirtualTable` publishes
+alias entries under the templateOrigin canonical alongside the
+per-instantiation entry; the invokeMethod wildcard-receiver branch
+hashes on the same template-relative canonical.
+
+**Step 5b (this commit):**
+- Flag default flipped ON; CAJETA_WILDCARDS=0 becomes the backout.
+- `Stream<T>` surface: `unwrap()` returns `Stream<?>`,
+  `cloneChainOver(Stream<?> newRoot)` takes wildcard,
+  `trySplitRoot()` returns `Stream<?>`.
+- Non-type-changing wrappers (Filter/Peek/Take/Skip) updated to
+  match the new signatures.
+- Type-changing wrappers (Map/FlatMap/MapOr{Skip,Fallback,Log})
+  ship new `unwrap()` + `cloneChainOver()` overrides; the chain
+  walker now steps past element-type changes.
+- Splittable roots (ArrayStream / HashMap{Key,Value,Entry}Stream)
+  retype `trySplitRoot()` to `Stream<?>`.
+- 8 chain-walk sites in ParallelDriver.cajeta retyped from
+  `Stream<T>` to `Stream<?>`.
+- Vtable alias walk in `buildVirtualTable` extended to walk super
+  templateOrigins (MapStream<int32,int32>::unwrap aliases under both
+  MapStream::unwrap and Stream::unwrap so dispatch from a
+  Stream<?>-typed cursor lands correctly).
+- Tests: `.map().parallel().reduce()`, `.parallel().map().reduce()`,
+  `.filter().map().parallel().reduce()`, `.map().parallel().count()`
+  all pass.
+
+Total change ~150 LOC including stdlib edits + new tests. Original
+50-LOC estimate didn't anticipate the Step 5a method-resolution work
+or the vtable-alias super-walk needed for Step 5b dispatch.
 
 ## 6. Bounded wildcards (`? extends T` / `? super T`)
 

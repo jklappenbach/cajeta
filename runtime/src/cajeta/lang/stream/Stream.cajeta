@@ -60,7 +60,7 @@ public class Stream<T> {
      * root, then forks per share via `cloneChainOver` (which
      * rebuilds the chain over the share).
      */
-    public Stream<T> unwrap() {
+    public Stream<?> unwrap() {
         return null;
     }
 
@@ -82,8 +82,14 @@ public class Stream<T> {
      * in a fresh copy of self. Drives the per-worker share-rebuild
      * in ParallelDriver.reduceParallelChain.
      */
-    public #Stream<T> cloneChainOver(#Stream<T> newRoot) {
-        return newRoot;
+    public #Stream<T> cloneChainOver(#Stream<?> newRoot) {
+        // Splittable-root default: hand back the share as-is. The cast
+        // is safe because cloneChainOver is only called by the
+        // chain-walker with a `piece` produced from THIS class's own
+        // trySplitRoot (a Splittable root of element type T) — so the
+        // runtime type of newRoot really is Stream<T>. (Step 5b —
+        // template wildcards; see ParallelDriver chain walk.)
+        return (Stream<T>) newRoot;
     }
 
     /**
@@ -103,7 +109,7 @@ public class Stream<T> {
         return -1L;
     }
 
-    public #Stream<T> trySplitRoot() {
+    public #Stream<?> trySplitRoot() {
         return null;
     }
 

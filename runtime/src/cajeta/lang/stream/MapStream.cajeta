@@ -26,4 +26,28 @@ public class MapStream<T, R> extends Stream<R> {
         R mapped = this.fn(o.get());
         return heap Optional<R>(true, mapped);
     }
+
+    /**
+     * Type-changing wrapper unwind. Exposes the inner `Stream<T>` as
+     * `Stream<?>` so the parallel chain walker can step past the
+     * element-type change. Without this override, MapStream would
+     * inherit `Stream<R>.unwrap()` (whose default returns null), the
+     * walker would terminate at the MapStream, and `.map().parallel()`
+     * would fall back to sequential. (Step 5b — template wildcards.)
+     */
+    public Stream<?> unwrap() {
+        return this.source;
+    }
+
+    /**
+     * Type-changing wrapper rebuild. Re-wraps a freshly-split inner
+     * share with this MapStream's `fn` so each worker sees the
+     * map-over-share chain. `newRoot` arrives as `Stream<?>` —
+     * `this.source.cloneChainOver` is `Stream<T>.cloneChainOver`
+     * (source's element type is T), whose return is `Stream<T>` and
+     * naturally matches the MapStream<T,R> ctor's first arg.
+     */
+    public #Stream<R> cloneChainOver(#Stream<?> newRoot) {
+        return heap MapStream<T, R>(this.source.cloneChainOver(newRoot), this.fn);
+    }
 }

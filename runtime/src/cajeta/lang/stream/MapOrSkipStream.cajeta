@@ -43,4 +43,13 @@ public class MapOrSkipStream<T, R> extends Stream<R> {
         // unreachable; while(true) above either returns or continues
         return heap Optional<R>(false, null);
     }
+
+    /** Type-changing wrapper unwind — see MapStream. (Step 5b.) */
+    public Stream<?> unwrap() {
+        return this.source;
+    }
+
+    public #Stream<R> cloneChainOver(#Stream<?> newRoot) {
+        return heap MapOrSkipStream<T, R>(this.source.cloneChainOver(newRoot), this.fn);
+    }
 }

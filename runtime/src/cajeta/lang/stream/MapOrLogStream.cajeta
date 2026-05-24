@@ -51,4 +51,13 @@ public class MapOrLogStream<T, R> extends Stream<R> {
         }
         return heap Optional<R>(false, null);
     }
+
+    /** Type-changing wrapper unwind — see MapStream. (Step 5b.) */
+    public Stream<?> unwrap() {
+        return this.source;
+    }
+
+    public #Stream<R> cloneChainOver(#Stream<?> newRoot) {
+        return heap MapOrLogStream<T, R>(this.source.cloneChainOver(newRoot), this.fn, this.logger);
+    }
 }

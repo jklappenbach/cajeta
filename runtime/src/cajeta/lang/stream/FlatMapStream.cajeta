@@ -46,4 +46,23 @@ public class FlatMapStream<T, R> extends Stream<R> {
         }
         return heap Optional<R>(false, null);
     }
+
+    /**
+     * Type-changing wrapper unwind — see MapStream.unwrap for the
+     * pattern. Exposes `Stream<T>` source as `Stream<?>`. The wrapper
+     * is NOT marked stateful here, but FlatMap fan-out makes the
+     * per-share rebuild non-trivial; the driver currently doesn't
+     * split a chain whose root is hidden behind a FlatMap (root
+     * walking stops at this FlatMap, splittableSize returns -1L,
+     * fallback is sequential). The override is still useful for
+     * `.flatMap().filter().parallel()`-style chains where this
+     * FlatMap is not the closest-to-root.
+     */
+    public Stream<?> unwrap() {
+        return this.source;
+    }
+
+    public #Stream<R> cloneChainOver(#Stream<?> newRoot) {
+        return heap FlatMapStream<T, R>(this.source.cloneChainOver(newRoot), this.fn);
+    }
 }

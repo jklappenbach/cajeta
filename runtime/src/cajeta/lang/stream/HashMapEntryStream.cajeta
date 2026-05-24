@@ -60,7 +60,7 @@ public class HashMapEntryStream<K, V> extends Stream<Pair<K, V>> implements Spli
         return this.estimateSize();
     }
 
-    public #Stream<Pair<K, V>> trySplitRoot() {
+    public #Stream<?> trySplitRoot() {
         return this.trySplit();
     }
 }

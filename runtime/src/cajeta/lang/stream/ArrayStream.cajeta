@@ -88,7 +88,10 @@ public class ArrayStream<T> extends Stream<T> implements Splittable<T> {
         return this.estimateSize();
     }
 
-    public #Stream<T> trySplitRoot() {
+    public #Stream<?> trySplitRoot() {
+        // Returns Stream<T>; assignable to Stream<?> at the upcast site.
+        // The parallel chain walker (Step 5b — template wildcards) typed
+        // the cursor `Stream<?>` to step past type-changing wrappers.
         return this.trySplit();
     }
 }

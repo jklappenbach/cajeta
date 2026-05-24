@@ -73,7 +73,7 @@ public class HashMapKeyStream<K, V> extends Stream<K> implements Splittable<K> {
         return this.estimateSize();
     }
 
-    public #Stream<K> trySplitRoot() {
+    public #Stream<?> trySplitRoot() {
         return this.trySplit();
     }
 }

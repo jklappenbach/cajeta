@@ -33,7 +33,7 @@ public class TakeStream<T> extends Stream<T> {
         return o;
     }
 
-    public Stream<T> unwrap() {
+    public Stream<?> unwrap() {
         return this.source;
     }
 
