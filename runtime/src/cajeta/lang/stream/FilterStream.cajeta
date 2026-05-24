@@ -30,4 +30,8 @@ public class FilterStream<T> extends Stream<T> {
         }
         return o;
     }
+
+    public Stream<T> unwrap() {
+        return this.source;
+    }
 }

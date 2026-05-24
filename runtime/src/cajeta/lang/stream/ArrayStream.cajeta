@@ -83,4 +83,12 @@ public class ArrayStream<T> extends Stream<T> implements Splittable<T> {
     public int64 estimateSize() {
         return (int64) (this.limit - this.idx);
     }
+
+    public int64 splittableSize() {
+        return this.estimateSize();
+    }
+
+    public #Stream<T> trySplitRoot() {
+        return this.trySplit();
+    }
 }

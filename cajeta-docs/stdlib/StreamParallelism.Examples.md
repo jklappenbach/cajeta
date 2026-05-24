@@ -1015,13 +1015,22 @@ Status of each original item:
    restore on a terminated BB).
 
 2. **§7.6 item #4 — `implements Splittable<K>` on a 2-type-param
-   class.** FIXED for the KeyStream / ValueStream cases in commit
-   `b6213d1`. The synthetic probe for the analogous shape passes
-   (TemplatedInterfaceParamProbe.twoTypeParamImplementsOneTypeParamIface).
-   HashMapEntryStream's `Splittable<Pair<K, V>>` still hangs
-   HashMap-itself construction — the diagnostic shape doesn't
-   reproduce, suggesting a cross-package parameterized-arg
-   interaction worth its own session.
+   class.** FIXED for KeyStream / ValueStream cases in commit
+   `b6213d1`; FIXED for HashMapEntryStream's `Splittable<Pair<K, V>>`
+   in this session. Root cause: `CajetaClass::instantiate`'s
+   placeholder-arg short-circuit (intended for `<R> #Stream<R> map`)
+   returned the bare template when ALL args were placeholders. With
+   `Pair<K_ph, V_ph>` that yielded bare `Pair`, then
+   `Splittable.instantiate([bare-Pair])` proceeded to a real
+   `Splittable<raw-Pair>` → `Stream<raw-Pair>` cascade whose
+   `::reduce` body's `return this.fold(...)` instantiated
+   `Stream<Pair>::fold<Pair>` with R = raw `Pair`, segfaulting at
+   `R acc = seed` (no LLVM type on raw template). Fix: extend the
+   short-circuit to also fire when the arg is itself a bare
+   (uninstantiated) template — the trail of a transitive short-
+   circuit one level deeper. HashMapEntryStream now implements
+   Splittable<Pair<K, V>> with trySplit / estimateSize and
+   HashMap.entries() ships parallel capability.
 
 3. **§7.6 item #1 — class-typed array-element-read l-value gap.**
    The documented shape (`Stream<T>[] shares; share = shares[i];
@@ -1058,8 +1067,88 @@ Status of each original item:
    infrastructure (isLintSuppressed) present; emit sites need
    wiring; nonzero-seed analyzer needs lambda-body inspection.
 
-7. **Wrapper-chain unwind** — task #54. Still gated on real
-   fork/join landing.
+7. **Wrapper-chain unwind** — task #54. **Partial landing.**
+   What shipped:
+
+     - **Unwind protocol on the base.** `Stream<T>.unwrap()` (null
+       on Splittable roots, source on wrappers),
+       `isStatefulWrapper()` (true on TakeStream/SkipStream),
+       `splittableSize()` / `trySplitRoot()` (overridden in
+       ArrayStream and the three HashMap*Streams to delegate to
+       their `Splittable.estimateSize` / `trySplit`).
+     - **`ParallelDriver.reduceParallelChain<T>(Stream<T>, T, fn)`**
+       — takes a generic `Stream<T>` head (not a typed
+       `Splittable<T>`), walks `unwrap()` to find the chain root +
+       depth, throws `CAJETA_ERROR_STREAM_PARALLEL_REJECT_STATEFUL`
+       on take/skip in the chain, forks via the existing
+       `scope { spawn reduceWorker<T> }` shape when `depth == 0`,
+       and falls back to sequential `head.next()` walk for
+       `depth > 0`, non-Splittable roots, and below-threshold
+       sources. Return type is `#T` because the multi-parameter
+       borrow-return rule blocks `T` for class-typed T.
+
+   What did NOT ship:
+
+     - **`Stream<T>.reduce` does not dispatch.** Flipping the
+       dispatch on (`if (isParallel) reduceParallelChain<T>(...)`)
+       drags `ParallelDriver.reduceWorker<T>` (async, returns
+       `Task<T>`) into every JIT module that compiles
+       `Stream<T>.reduce`. Every user module whose `async`
+       functions return `Task<int32>` for the same T then collides
+       with the stdlib's definition — the multiply-defined
+       `__cajeta_task_Task_int32__drop` symbol surfaces in
+       `AsyncSyntaxTests.spawnStreamArgWorkerAdvancesShared`. The
+       fix is a JIT module linker dedup pass (comdat ODR or
+       equivalent) on per-(T) async helper symbols. Until then,
+       parallel reduce is opt-in via the direct call
+       `ParallelDriver.reduceParallelChain<T>(xs.stream(), 0, fn)`.
+     - **Per-worker rewrap (`head.cloneChainOver(share)`).** Even
+       sequential-fallback for `depth > 0` works (covered by the
+       driver's `head.next()` path), but the intended fork for
+       wrapper-above-root is unimplemented because invoking
+       cloneOver/cloneChainOver inside the orchestrator's template
+       body (or any helper template called from it) trips an
+       apparent JIT hang. The bisection narrows it to the
+       combination of:
+
+         - `head.cloneChainOver(piece)` (or `head.cloneOver(piece)`)
+           call site
+         - inside `reduceParallelChain<T>` (a method-template static)
+         - referencing a virtual that returns `#Stream<T>` over a
+           class-typed param
+
+       The same call placed *before* the splits loop passes; the
+       same call *inside* the loop (even unconditionally, even with
+       the result discarded) hangs. Workarounds via spawn-target
+       worker / separate static helper / two-loop split-then-rewrap
+       all reproduce. Not a multi-param-borrow-return issue
+       (signature is fine under `#`), nor a vtable layout issue
+       (single-virtual sites work). Best guess: drop-chain
+       bookkeeping around the `#Stream<T>` transfer return
+       interacting with the post-splits-loop drop emission.
+     - **Stateful detection in `Stream.reduce`.** Same JIT hang
+       fires from an inline `isStatefulWrapper()` walk inside
+       `Stream<T>.reduce`. The reverse-order `xs.stream()
+       .parallel().take(n)` still throws at `TakeStream`'s
+       constructor as before; the forward-order `xs.stream()
+       .take(n).parallel().reduce(...)` falls through to sequential
+       `fold` silently. The reject-with-error for the forward
+       order lands once the dispatch in `Stream.reduce` lands.
+
+   Once the two JIT issues (Task<T> dedup + cloneChainOver-in-loop
+   hang) are resolved, the path forward is:
+
+     1. Flip `Stream.reduce` to dispatch unconditionally on
+        `isParallel`. Same flip for `anyMatch / allMatch /
+        noneMatch / forEach / fold`.
+     2. Add the per-share `head.cloneChainOver(piece)` call inside
+        `reduceParallelChain`'s splits loop and switch from
+        `depth == 0`-only fork to fork-for-any-depth.
+     3. Implement `cloneChainOver` on FilterStream / PeekStream as
+        `this.source.cloneChainOver(newRoot)` recursive rebuild
+        (Stream<T> base returns newRoot unchanged). Symmetric
+        overrides on TakeStream / SkipStream are unnecessary
+        because they're rejected at unwind.
 
 Status update: the "JIT codegen loop" diagnosis was incorrect.
 The bug was a runtime SEGFAULT (not a compile hang) — gtest can't

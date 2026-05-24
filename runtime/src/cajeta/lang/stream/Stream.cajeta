@@ -50,6 +50,56 @@ public class Stream<T> {
     }
 
     /**
+     * Wrapper-chain unwind protocol. Wrappers (FilterStream,
+     * PeekStream, TakeStream, SkipStream) override `unwrap()` to
+     * return their source. Splittable roots (ArrayStream,
+     * HashMap*Stream) leave it null — null signals "I am the chain
+     * root."
+     *
+     * The driver walks unwrap() to compute `depth` and locate the
+     * root, then decides whether to fork. v1 fork is restricted to
+     * `depth == 0` (head IS the root). `depth > 0` falls back to
+     * sequential pending the per-worker rewrap path — the intended
+     * `head.cloneChainOver(share)` virtual call trips a JIT codegen
+     * hang we haven't tracked down yet (see
+     * StreamParallelism.Examples.md § 7.7 follow-ups).
+     */
+    public Stream<T> unwrap() {
+        return null;
+    }
+
+    /**
+     * Stateful intermediate marker. `take(n)` and `skip(n)` depend on
+     * global encounter order, which doesn't survive splitting. The
+     * driver throws CAJETA_ERROR_STREAM_PARALLEL_REJECT_STATEFUL when
+     * it sees a stateful wrapper in the chain.
+     */
+    public boolean isStatefulWrapper() {
+        return false;
+    }
+
+    /**
+     * Splittable-shape bridge. Splittable implementers (ArrayStream,
+     * HashMap*Stream) override these two methods to delegate to
+     * their Splittable.trySplit / estimateSize; non-Splittable
+     * streams keep the defaults (-1L and null).
+     *
+     * Stand-in for `head instanceof Splittable<T>` until Cajeta RTTI
+     * grows that surface (see RttiSmokeTests.cpp). Returning a
+     * Splittable<T> directly hits the unfinished class→interface
+     * upcast-on-return path (Hasher.cajeta § "v1 limitation: void
+     * write returns"), so the driver-facing surface is two
+     * primitive-typed virtuals instead.
+     */
+    public int64 splittableSize() {
+        return -1L;
+    }
+
+    public #Stream<T> trySplitRoot() {
+        return null;
+    }
+
+    /**
      * Mark this stream as parallel-eligible. Returns the same stream
      * — no wrapper allocation. Terminals branch on the flag; if the
      * source can't split or the size is below threshold, the
@@ -170,6 +220,22 @@ public class Stream<T> {
      * each element in order; returns the final accumulator. The seed
      * and result share the element type T (Java's `reduce(T,
      * BinaryOperator<T>)` shape). One-liner wrapper over `fold<T>`.
+     *
+     * Sequential today regardless of `isParallel`. The intended
+     * `if (isParallel) ParallelDriver.reduceParallelChain<T>(...)`
+     * dispatch is wired in the driver and tested via direct calls,
+     * but flipping the dispatch on here drags
+     * `ParallelDriver.reduceWorker<T>` (async, returns `Task<T>`)
+     * into every JIT module that compiles `Stream<T>.reduce`. That
+     * collides with user modules whose own `async` functions return
+     * `Task<T>` for the same T — see the multiply-defined
+     * `__cajeta_task_Task_int32__drop` symbol in
+     * AsyncSyntaxTests.spawnStreamArgWorkerAdvancesShared. Users
+     * who want parallel reduce today call
+     * `ParallelDriver.reduceParallelChain<T>(xs.stream(), seed, fn)`
+     * directly. The dispatch lands here once the JIT module linker
+     * deduplicates per-(T) async helper symbols (comdat ODR or
+     * equivalent). See StreamParallelism.Examples.md § 7.7.
      */
     public T reduce(T seed, (T, T) -> T fn) {
         return this.fold(seed, fn);

@@ -104,6 +104,20 @@ namespace cajeta {
                     return static_pointer_cast<CajetaClass>(
                         shared_from_this());
                 }
+                // Also short-circuit when the arg is itself a bare
+                // (uninstantiated) template — the trail left by a
+                // transitive short-circuit one level deeper.
+                // `HashMapEntryStream<K,V> implements Splittable<Pair<K,V>>`
+                // (K,V placeholder) → `Pair.instantiate([K_ph, V_ph])`
+                // returns bare Pair via the check above → without this
+                // second guard, `Splittable.instantiate([bare-Pair])`
+                // proceeds to build a real `Splittable<raw-Pair>` →
+                // `Stream<raw-Pair>` cascade whose ::reduce / ::fold<R>
+                // codegen segfaults on R=raw-Pair (no LLVM type).
+                if (cls->isTemplate() && !cls->getTypeParameters().empty()) {
+                    return static_pointer_cast<CajetaClass>(
+                        shared_from_this());
+                }
             }
         }
 

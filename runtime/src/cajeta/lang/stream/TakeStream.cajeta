@@ -32,4 +32,12 @@ public class TakeStream<T> extends Stream<T> {
         this.remaining = this.remaining - 1;
         return o;
     }
+
+    public Stream<T> unwrap() {
+        return this.source;
+    }
+
+    public boolean isStatefulWrapper() {
+        return true;
+    }
 }

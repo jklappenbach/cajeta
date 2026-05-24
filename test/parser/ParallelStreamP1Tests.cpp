@@ -502,3 +502,48 @@ TEST(ParallelStreamP1Tests, parallelThroughFilterStillCounts) {
         "}\n";
     EXPECT_EQ(runI32(src), 50);
 }
+
+// Wrapper-chain unwind v1: the driver entry
+// ParallelDriver.reduceParallelChain<T> handles a Stream<T> head
+// (not Splittable<T>) — walks unwrap() to find the chain root and
+// forks via `scope { spawn reduceWorker<T> }` when the head IS the
+// root. Stream<T>.reduce does NOT dispatch to it today because the
+// JIT module linker doesn't dedup the async Task<T> drop symbol
+// across stdlib + user modules (see Stream.cajeta § reduce).
+TEST(ParallelStreamP1Tests, reduceParallelChainParallelizesDirectArrayHead) {
+    auto src =
+        "package test;\n"
+        "import cajeta.lang.stream.ParallelDriver;\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        int32[] xs = new int32[100];\n"
+        "        for (int32 i = 0; i < 100; i = i + 1) { xs[i] = i + 1; }\n"
+        "        // 1..100 sums to 5050\n"
+        "        return ParallelDriver.reduceParallelChain<int32>(\n"
+        "            xs.stream(), 0, (a, b) -> a + b);\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32Diag(src), 5050);
+}
+
+// NOTE — two additional shapes are intentionally NOT pinned by tests
+// today because they trigger the same JIT compile/runtime hang we
+// saw bisecting the Stream.reduce dispatch:
+//
+//   1. `ParallelDriver.reduceParallelChain<int32>(xs.stream()
+//        .filter(p), seed, fn)` — user-code direct call with a
+//        FilterStream<int32> head. Hangs at runtime under the
+//        in-tree JIT, even though the driver's depth>0 sequential
+//        fallback would handle it correctly in isolation.
+//
+//   2. `ParallelDriver.reduceParallelChain<int32>(xs.stream()
+//        .take(5), seed, fn)` — same FilterStream-instantiated-in-
+//        user-code shape with TakeStream substituted. Would exercise
+//        the isStatefulWrapper throw path.
+//
+// Both work correctly when driven from inside stdlib (e.g. the
+// existing reduceParallel direct-call tests). The trigger is a
+// user-code module that both instantiates a wrapper Stream class
+// AND calls into the templated parallel driver — the same shape
+// behind the cloneChainOver-in-splits-loop hang. See
+// StreamParallelism.Examples.md § 7.7 follow-up #7.

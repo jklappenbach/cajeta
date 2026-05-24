@@ -30,4 +30,12 @@ public class SkipStream<T> extends Stream<T> {
         }
         return this.source.next();
     }
+
+    public Stream<T> unwrap() {
+        return this.source;
+    }
+
+    public boolean isStatefulWrapper() {
+        return true;
+    }
 }
