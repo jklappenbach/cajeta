@@ -526,24 +526,83 @@ TEST(ParallelStreamP1Tests, reduceParallelChainParallelizesDirectArrayHead) {
     EXPECT_EQ(runI32Diag(src), 5050);
 }
 
-// NOTE — two additional shapes are intentionally NOT pinned by tests
-// today because they trigger the same JIT compile/runtime hang we
-// saw bisecting the Stream.reduce dispatch:
-//
-//   1. `ParallelDriver.reduceParallelChain<int32>(xs.stream()
-//        .filter(p), seed, fn)` — user-code direct call with a
-//        FilterStream<int32> head. Hangs at runtime under the
-//        in-tree JIT, even though the driver's depth>0 sequential
-//        fallback would handle it correctly in isolation.
-//
-//   2. `ParallelDriver.reduceParallelChain<int32>(xs.stream()
-//        .take(5), seed, fn)` — same FilterStream-instantiated-in-
-//        user-code shape with TakeStream substituted. Would exercise
-//        the isStatefulWrapper throw path.
-//
-// Both work correctly when driven from inside stdlib (e.g. the
-// existing reduceParallel direct-call tests). The trigger is a
-// user-code module that both instantiates a wrapper Stream class
-// AND calls into the templated parallel driver — the same shape
-// behind the cloneChainOver-in-splits-loop hang. See
-// StreamParallelism.Examples.md § 7.7 follow-up #7.
+// Stream.reduce dispatch: `xs.stream().parallel().reduce(...)` now
+// flows through Stream<T>.reduce → ParallelDriver.reduceParallelChain
+// when isParallel is set. The depth==0 path forks via the driver's
+// `scope { spawn reduceWorker<T> }` shape. Pins the fluent surface.
+TEST(ParallelStreamP1Tests, parallelReduceDispatchesViaStreamReduceArrayHead) {
+    auto src =
+        "package test;\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        int32[] xs = new int32[100];\n"
+        "        for (int32 i = 0; i < 100; i = i + 1) { xs[i] = i + 1; }\n"
+        "        return xs.stream().parallel().reduce(0, (a, b) -> a + b);\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32Diag(src), 5050);
+}
+
+// Fluent filter chain — the headline target. xs.stream().filter(p)
+// .parallel().reduce(...) goes through Stream.reduce → driver →
+// per-share head.cloneChainOver(piece) → workers fork.
+TEST(ParallelStreamP1Tests, parallelReduceDispatchesThroughFilter) {
+    auto src =
+        "package test;\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        int32[] xs = new int32[100];\n"
+        "        for (int32 i = 0; i < 100; i = i + 1) { xs[i] = i + 1; }\n"
+        "        // even-only sum: 2+4+...+100 = 2550\n"
+        "        return xs.stream()\n"
+        "                 .filter((x) -> x % 2 == 0)\n"
+        "                 .parallel()\n"
+        "                 .reduce(0, (a, b) -> a + b);\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32Diag(src), 2550);
+}
+
+// Filter-chain parallelism — the headline case. depth=1 (FilterStream
+// above ArrayStream root); driver pulls splits from the root and
+// rebuilds the FilterStream chain over each via
+// `head.cloneChainOver(piece)`. Each worker runs the same filter over
+// its slice.
+TEST(ParallelStreamP1Tests, reduceParallelChainFilterChainParallelizes) {
+    auto src =
+        "package test;\n"
+        "import cajeta.lang.stream.ParallelDriver;\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        int32[] xs = new int32[100];\n"
+        "        for (int32 i = 0; i < 100; i = i + 1) { xs[i] = i + 1; }\n"
+        "        // even-only sum: 2+4+...+100 = 2550\n"
+        "        return ParallelDriver.reduceParallelChain<int32>(\n"
+        "            xs.stream().filter((x) -> x % 2 == 0),\n"
+        "            0, (a, b) -> a + b);\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32Diag(src), 2550);
+}
+
+// Stateful intermediate above the driver — chain walk hits
+// TakeStream's isStatefulWrapper and throws REJECT_STATEFUL.
+TEST(ParallelStreamP1Tests, reduceParallelChainRejectsStatefulInChain) {
+    auto src =
+        "package test;\n"
+        "import cajeta.lang.stream.ParallelDriver;\n"
+        "import cajeta.error.Exception;\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        int32[] xs = new int32[100];\n"
+        "        for (int32 i = 0; i < 100; i = i + 1) { xs[i] = i; }\n"
+        "        try {\n"
+        "            return ParallelDriver.reduceParallelChain<int32>(\n"
+        "                xs.stream().take(5), 0, (a, b) -> a + b);\n"
+        "        } catch (Exception e) {\n"
+        "            return -77;\n"
+        "        }\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), -77);
+}

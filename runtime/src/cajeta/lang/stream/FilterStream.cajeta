@@ -34,4 +34,15 @@ public class FilterStream<T> extends Stream<T> {
     public Stream<T> unwrap() {
         return this.source;
     }
+
+    /**
+     * Recursive chain re-wrap: rebuild source-chain over newRoot,
+     * then wrap the result in a fresh FilterStream<T>(_, pred).
+     * Inlined to avoid an intermediate `Stream<T> innerWrapped`
+     * local — the local's drop would fire at this scope's exit and
+     * free the inner stream the just-constructed FilterStream needs.
+     */
+    public #Stream<T> cloneChainOver(#Stream<T> newRoot) {
+        return heap FilterStream<T>(this.source.cloneChainOver(newRoot), this.pred);
+    }
 }

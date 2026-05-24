@@ -1067,88 +1067,77 @@ Status of each original item:
    infrastructure (isLintSuppressed) present; emit sites need
    wiring; nonzero-seed analyzer needs lambda-body inspection.
 
-7. **Wrapper-chain unwind** — task #54. **Partial landing.**
+7. **Wrapper-chain unwind** — task #54. **SHIPPED.**
+   `xs.stream().filter(p).parallel().reduce(...)` now actually forks
+   workers through `Stream.reduce → ParallelDriver.reduceParallelChain`.
+   Each worker gets a freshly-rebuilt wrapper chain over its share
+   via `head.cloneChainOver(piece)` — every level of the chain (Filter,
+   Peek) recursively rebuilds itself bottom-up. The depth==0 case
+   (root IS head) passes the share through unchanged via the
+   `Stream<T>.cloneChainOver` base returning `newRoot`.
+
    What shipped:
 
      - **Unwind protocol on the base.** `Stream<T>.unwrap()` (null
        on Splittable roots, source on wrappers),
        `isStatefulWrapper()` (true on TakeStream/SkipStream),
        `splittableSize()` / `trySplitRoot()` (overridden in
-       ArrayStream and the three HashMap*Streams to delegate to
-       their `Splittable.estimateSize` / `trySplit`).
+       ArrayStream and the three HashMap*Streams).
+     - **Recursive `cloneChainOver(#Stream<T>)`** on Stream<T> base
+       (returns `newRoot` unchanged) and on FilterStream / PeekStream
+       (recurse into source then wrap result in fresh
+       `heap FilterStream<T>(_, pred)` / `heap PeekStream<T>(_, fn)`).
      - **`ParallelDriver.reduceParallelChain<T>(Stream<T>, T, fn)`**
-       — takes a generic `Stream<T>` head (not a typed
-       `Splittable<T>`), walks `unwrap()` to find the chain root +
-       depth, throws `CAJETA_ERROR_STREAM_PARALLEL_REJECT_STATEFUL`
-       on take/skip in the chain, forks via the existing
-       `scope { spawn reduceWorker<T> }` shape when `depth == 0`,
-       and falls back to sequential `head.next()` walk for
-       `depth > 0`, non-Splittable roots, and below-threshold
-       sources. Return type is `#T` because the multi-parameter
-       borrow-return rule blocks `T` for class-typed T.
+       — walks `unwrap()` to find the chain root + depth, throws
+       `CAJETA_ERROR_STREAM_PARALLEL_REJECT_STATEFUL` on take/skip
+       in the chain, pulls splits via `trySplitRoot()`, rewraps each
+       via `head.cloneChainOver(piece)`, forks via the existing
+       `scope { spawn reduceWorker<T> }` shape. Return type is `#T`
+       per the multi-parameter borrow-return rule.
+     - **`Stream<T>.reduce` dispatches** to `reduceParallelChain<T>`
+       when `isParallel` is set.
+     - **Three compiler fixes** that unblocked all of the above:
 
-   What did NOT ship:
+       1. **MethodCall: # parameter at call site auto-deactivates
+          caller's drop entry.** Before, calling a method whose
+          formal was `#T param` required the caller to write `#arg`
+          explicitly; otherwise the arg's drop entry stayed active
+          and the chain double-freed when the method also returned
+          # ownership. Now any IdentifierExpression arg whose
+          formal is `#T` is auto-deactivated at the call site.
+          See `MethodCallExpression.cpp` § # transfer at call site.
+       2. **LocalVariableDeclaration: borrow detection for
+          non-#-returning method calls.** Before,
+          `Stream<T> next = cur.unwrap();` was always treated as a
+          MOVE — a fresh drop entry got registered on `next`,
+          double-freeing the borrowed reference on scope exit. Now
+          the LVD resolves the called method and skips the drop
+          entry when the method returns non-`#`. Mirrors the
+          existing borrow detection for DotExpression and
+          ArrayIndexExpression. See `LocalVariableDeclaration.cpp`
+          § GAP-fix.
+       3. **CajetaTask drop function: LinkOnceODR linkage.** The
+          per-(T) `__cajeta_task_Task_T_drop` function was emitted
+          with `ExternalLinkage`, so a stdlib JIT module defining
+          it would collide with any user module whose own `async`
+          functions returned `Task<T>` for the same T. Switched to
+          `LinkOnceODRLinkage` + comdat so the linker merges
+          duplicate definitions. Unblocks `Stream.reduce` dispatch
+          which would otherwise pull `Task<T>` into the stdlib
+          module from every test's perspective.
 
-     - **`Stream<T>.reduce` does not dispatch.** Flipping the
-       dispatch on (`if (isParallel) reduceParallelChain<T>(...)`)
-       drags `ParallelDriver.reduceWorker<T>` (async, returns
-       `Task<T>`) into every JIT module that compiles
-       `Stream<T>.reduce`. Every user module whose `async`
-       functions return `Task<int32>` for the same T then collides
-       with the stdlib's definition — the multiply-defined
-       `__cajeta_task_Task_int32__drop` symbol surfaces in
-       `AsyncSyntaxTests.spawnStreamArgWorkerAdvancesShared`. The
-       fix is a JIT module linker dedup pass (comdat ODR or
-       equivalent) on per-(T) async helper symbols. Until then,
-       parallel reduce is opt-in via the direct call
-       `ParallelDriver.reduceParallelChain<T>(xs.stream(), 0, fn)`.
-     - **Per-worker rewrap (`head.cloneChainOver(share)`).** Even
-       sequential-fallback for `depth > 0` works (covered by the
-       driver's `head.next()` path), but the intended fork for
-       wrapper-above-root is unimplemented because invoking
-       cloneOver/cloneChainOver inside the orchestrator's template
-       body (or any helper template called from it) trips an
-       apparent JIT hang. The bisection narrows it to the
-       combination of:
+   What did NOT ship in this pass:
 
-         - `head.cloneChainOver(piece)` (or `head.cloneOver(piece)`)
-           call site
-         - inside `reduceParallelChain<T>` (a method-template static)
-         - referencing a virtual that returns `#Stream<T>` over a
-           class-typed param
-
-       The same call placed *before* the splits loop passes; the
-       same call *inside* the loop (even unconditionally, even with
-       the result discarded) hangs. Workarounds via spawn-target
-       worker / separate static helper / two-loop split-then-rewrap
-       all reproduce. Not a multi-param-borrow-return issue
-       (signature is fine under `#`), nor a vtable layout issue
-       (single-virtual sites work). Best guess: drop-chain
-       bookkeeping around the `#Stream<T>` transfer return
-       interacting with the post-splits-loop drop emission.
-     - **Stateful detection in `Stream.reduce`.** Same JIT hang
-       fires from an inline `isStatefulWrapper()` walk inside
-       `Stream<T>.reduce`. The reverse-order `xs.stream()
-       .parallel().take(n)` still throws at `TakeStream`'s
-       constructor as before; the forward-order `xs.stream()
-       .take(n).parallel().reduce(...)` falls through to sequential
-       `fold` silently. The reject-with-error for the forward
-       order lands once the dispatch in `Stream.reduce` lands.
-
-   Once the two JIT issues (Task<T> dedup + cloneChainOver-in-loop
-   hang) are resolved, the path forward is:
-
-     1. Flip `Stream.reduce` to dispatch unconditionally on
-        `isParallel`. Same flip for `anyMatch / allMatch /
-        noneMatch / forEach / fold`.
-     2. Add the per-share `head.cloneChainOver(piece)` call inside
-        `reduceParallelChain`'s splits loop and switch from
-        `depth == 0`-only fork to fork-for-any-depth.
-     3. Implement `cloneChainOver` on FilterStream / PeekStream as
-        `this.source.cloneChainOver(newRoot)` recursive rebuild
-        (Stream<T> base returns newRoot unchanged). Symmetric
-        overrides on TakeStream / SkipStream are unnecessary
-        because they're rejected at unwind.
+     - **Same dispatch flip on `anyMatch / allMatch / noneMatch /
+       forEach / fold`.** Same shape as `reduce`; just hasn't been
+       wired through `ParallelDriver` yet. Tactically small with
+       the compiler fixes in place.
+     - **Type-changing wrappers (MapStream<U,T>, FlatMapStream<U,T>).**
+       The unwind layer is still element-type-uniform. MapStream's
+       T→R boundary breaks the lambda/closure composition shape
+       used by the current cloneChainOver design. Lifting needs an
+       Object-erasure layer or `<?>` wildcards
+       (CajetaType.cpp:454 rejects wildcards today).
 
 Status update: the "JIT codegen loop" diagnosis was incorrect.
 The bug was a runtime SEGFAULT (not a compile hang) — gtest can't

@@ -57,12 +57,8 @@ public class Stream<T> {
      * root."
      *
      * The driver walks unwrap() to compute `depth` and locate the
-     * root, then decides whether to fork. v1 fork is restricted to
-     * `depth == 0` (head IS the root). `depth > 0` falls back to
-     * sequential pending the per-worker rewrap path — the intended
-     * `head.cloneChainOver(share)` virtual call trips a JIT codegen
-     * hang we haven't tracked down yet (see
-     * StreamParallelism.Examples.md § 7.7 follow-ups).
+     * root, then forks per share via `cloneChainOver` (which
+     * rebuilds the chain over the share).
      */
     public Stream<T> unwrap() {
         return null;
@@ -76,6 +72,18 @@ public class Stream<T> {
      */
     public boolean isStatefulWrapper() {
         return false;
+    }
+
+    /**
+     * Recursive chain re-wrap. Splittable roots return `newRoot`
+     * unchanged. Wrappers (FilterStream, PeekStream) override to
+     * recurse: rebuild the chain bottom-up by passing the new root
+     * down through this.source.cloneChainOver, then wrap the result
+     * in a fresh copy of self. Drives the per-worker share-rebuild
+     * in ParallelDriver.reduceParallelChain.
+     */
+    public #Stream<T> cloneChainOver(#Stream<T> newRoot) {
+        return newRoot;
     }
 
     /**
@@ -221,23 +229,20 @@ public class Stream<T> {
      * and result share the element type T (Java's `reduce(T,
      * BinaryOperator<T>)` shape). One-liner wrapper over `fold<T>`.
      *
-     * Sequential today regardless of `isParallel`. The intended
-     * `if (isParallel) ParallelDriver.reduceParallelChain<T>(...)`
-     * dispatch is wired in the driver and tested via direct calls,
-     * but flipping the dispatch on here drags
-     * `ParallelDriver.reduceWorker<T>` (async, returns `Task<T>`)
-     * into every JIT module that compiles `Stream<T>.reduce`. That
-     * collides with user modules whose own `async` functions return
-     * `Task<T>` for the same T — see the multiply-defined
-     * `__cajeta_task_Task_int32__drop` symbol in
-     * AsyncSyntaxTests.spawnStreamArgWorkerAdvancesShared. Users
-     * who want parallel reduce today call
-     * `ParallelDriver.reduceParallelChain<T>(xs.stream(), seed, fn)`
-     * directly. The dispatch lands here once the JIT module linker
-     * deduplicates per-(T) async helper symbols (comdat ODR or
-     * equivalent). See StreamParallelism.Examples.md § 7.7.
+     * Under `.parallel()` this dispatches to
+     * `ParallelDriver.reduceParallelChain` which walks the wrapper
+     * chain to find a Splittable root, rebuilds the chain over each
+     * split share via `head.cloneChainOver(piece)`, and forks
+     * workers via `scope { spawn reduceWorker<T> }`. Falls back to
+     * sequential `fold` when the root isn't Splittable or the
+     * source is too small. Per Java's contract, `fn` must be
+     * associative and `seed` its identity for the parallel path to
+     * give the same answer as the sequential one.
      */
     public T reduce(T seed, (T, T) -> T fn) {
+        if (this.isParallel) {
+            return ParallelDriver.reduceParallelChain<T>(this, seed, fn);
+        }
         return this.fold(seed, fn);
     }
 

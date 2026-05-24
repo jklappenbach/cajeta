@@ -373,38 +373,33 @@ public class ParallelDriver {
 
     /**
      * Wrapper-chain-aware parallel reduce. Entry point for
-     * `Stream<T>.reduce` when `isParallel` is set on the head of a
-     * pipeline. v1 scope:
+     * `Stream<T>.reduce` when `isParallel` is set on the head.
      *
      *   1. Walk `head.unwrap()` to find the chain root. Reject
      *      stateful intermediates (take/skip) with
      *      CAJETA_ERROR_STREAM_PARALLEL_REJECT_STATEFUL.
-     *   2. If the head IS the root (depth == 0, e.g.
-     *      `xs.stream().parallel().reduce(...)`) and the root is
-     *      Splittable + large enough, fork via
-     *      `scope { spawn reduceWorker<T> }` over each
-     *      `trySplitRoot()` share. Tail walks `head.next()` on the
-     *      orchestrator.
-     *   3. If `depth > 0` (a FilterStream / PeekStream wrapper sits
-     *      above the root, e.g. `xs.stream().filter(p).parallel()
-     *      .reduce(...)`), v1 currently falls back to sequential.
-     *      The intended per-worker rewrap via
-     *      `head.cloneChainOver(share)` virtuals trips a JIT codegen
-     *      hang we haven't tracked down yet — see follow-up note in
-     *      cajeta-docs/stdlib/StreamParallelism.Examples.md § 7.7.
-     *      Sequential fallback gives the correct answer, just no
-     *      fork/join speedup for wrapper chains.
+     *   2. Pick `nSplits` from `root.splittableSize()`. If the root
+     *      isn't Splittable or the size is below threshold, fall
+     *      back to sequential `head.next()` walk.
+     *   3. For each split share, rebuild the head's wrapper chain
+     *      over the share via `head.cloneChainOver(piece)` —
+     *      wrappers recurse to rebuild themselves bottom-up,
+     *      Splittable roots return the share unchanged. Fork via
+     *      `scope { spawn reduceWorker<T> }`.
+     *   4. Tail walks `head.next()` on the orchestrator (the root's
+     *      residual after all `trySplitRoot` calls).
+     *   5. Combine partials sequentially. v1 is O(N) over splits;
+     *      tree-reduce is a v2 tuning step.
      *
      * Type-changing wrappers (MapStream<U,T>, FlatMapStream<U,T>)
      * inherit Stream<T>.unwrap()=null, so the unwind stops at the
      * MapStream itself. splittableSize on the MapStream returns -1L
-     * (inherited Stream<T> default), triggering the same sequential
-     * fallback as a non-Splittable root. Lifting the type-changing
-     * case wants either Object-erasure or wildcards (CajetaType.cpp:
-     * 454 rejects `<?>` today).
+     * (inherited Stream<T> default), triggering the sequential
+     * fallback. Lifting the type-changing case wants either
+     * Object-erasure or wildcards (CajetaType.cpp:454 rejects
+     * `<?>` today).
      */
     public static #T reduceParallelChain<T>(Stream<T> head, T seed, (T, T) -> T fn) {
-        // Walk unwrap chain to count depth and reject stateful ops.
         int32 depth = 0;
         Stream<T> cur = head;
         while (cur != null) {
@@ -418,14 +413,12 @@ public class ParallelDriver {
             cur = next;
             depth = depth + 1;
         }
-        // Sequential fallback shared by three cases:
-        //   - depth > 0 (wrapper above the root; per-worker rewrap
-        //     awaits the cloneChainOver JIT fix)
+        // Sequential fallback shared by two cases:
         //   - root not Splittable (splittableSize returns -1L)
         //   - source too small for fork to pay off (nSplits < 2)
         int64 sz = cur.splittableSize();
         int32 nSplits = pickSplitCount(sz);
-        if (depth > 0 || sz < 0L || nSplits < 2) {
+        if (sz < 0L || nSplits < 2) {
             T accY = seed;
             Optional<T> oY = head.next();
             while (oY.isPresent()) {
@@ -434,7 +427,12 @@ public class ParallelDriver {
             }
             return accY;
         }
-        // depth == 0: head IS the Splittable root. Pull splits, fork.
+        // Pull splits, then rebuild head's wrapper chain over each
+        // via cloneChainOver. For depth==0 the base Stream<T>
+        // .cloneChainOver returns newRoot unchanged → piece becomes
+        // the share. For depth>0, each wrapper level wraps the
+        // recursive result so the worker sees the same chain over
+        // its slice.
         Stream<T>[] shares = new Stream<T>[nSplits - 1];
         int32 shareCount = 0;
         int32 si = 0;
@@ -443,7 +441,7 @@ public class ParallelDriver {
             if (piece == null) {
                 break;
             }
-            shares[si] = piece;
+            shares[si] = head.cloneChainOver(piece);
             shareCount = shareCount + 1;
             si = si + 1;
         }

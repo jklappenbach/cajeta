@@ -15,6 +15,7 @@
 #include "expression/DotExpression.h"
 #include "expression/Identifier.h"
 #include "expression/MethodCallExpression.h"
+#include "../method/Method.h"
 #include "expression/BinaryOpExpression.h"
 #include "expression/NewExpression.h"
 #include "expression/AggregateInitializerExpression.h"
@@ -528,20 +529,60 @@ namespace cajeta {
                     if (auto mc = dynamic_pointer_cast<MethodCallExpression>(children[0])) {
                         if (mc->getMethodCallName() == "__cajeta_inject") {
                             initIsBorrow = true;
+                        } else {
+                            // Resolve the called method at decl time so a
+                            // non-`#` (borrow) return doesn't register a
+                            // drop entry on the receiving local — that
+                            // would double-free a borrowed reference at
+                            // scope exit (e.g. `Stream<T> n =
+                            // cur.unwrap();` where unwrap returns a plain
+                            // Stream<T> field of cur — the field's owner
+                            // already tracks the drop).
+                            //
+                            // Walk mc's first child (the receiver, when
+                            // present) to find the target class. A bare
+                            // method call (no receiver) is on `this`;
+                            // get it from the current class on the
+                            // structure stack.
+                            auto mcKids = mc->getChildren();
+                            CajetaClassPtr targetCls;
+                            if (!mcKids.empty()) {
+                                auto recvExpr = dynamic_pointer_cast<Expression>(mcKids[0]);
+                                if (recvExpr) {
+                                    if (!recvExpr->getResolvedType()) {
+                                        recvExpr->resolveTypes(module);
+                                    }
+                                    targetCls = dynamic_pointer_cast<CajetaClass>(
+                                        recvExpr->getResolvedType());
+                                }
+                            } else if (!module->getStructureStack().empty()) {
+                                targetCls = dynamic_pointer_cast<CajetaClass>(
+                                    module->getStructureStack().back());
+                            }
+                            if (targetCls) {
+                                vector<ParameterEntry> mcEntries;
+                                bool floatingAll = true;
+                                for (auto& p : mc->getParameters()) {
+                                    if (!p.expression->getResolvedType()) {
+                                        p.expression->resolveTypes(module);
+                                    }
+                                    CajetaTypePtr pType =
+                                        p.expression->getResolvedType();
+                                    if (p.label.empty()) floatingAll = false;
+                                    mcEntries.push_back(
+                                        ParameterEntry(pType, p.label, nullptr));
+                                }
+                                string mcName = mc->getMethodCallName();
+                                MethodPtr resolved = targetCls->resolveMethod(
+                                    mcName, mcEntries,
+                                    /*isConstructor=*/false, floatingAll);
+                                if (resolved && !resolved->isReturnsOwnership()) {
+                                    // Non-# return — the local is a borrow
+                                    // of whatever the callee returned.
+                                    initIsBorrow = true;
+                                }
+                            }
                         }
-                        // GAP: MethodCallExpression initializers should
-                        // distinguish move (called method returns
-                        // ownership via `#T foo()`) from borrow (called
-                        // method returns a plain T). That requires the
-                        // called method to be resolved here, but
-                        // resolution happens during generateCode rather
-                        // than at LocalVariableDeclaration time. Until
-                        // a resolve-at-decl-time path exists, every
-                        // method-call init defaults to MOVE — a
-                        // false-positive double-free is louder than a
-                        // false-negative leak, so leaning that way is
-                        // safer. Add a resolve pre-pass and consult
-                        // method->isReturnsOwnership() when wired.
                     } else if (dynamic_pointer_cast<DotExpression>(children[0])
                             || dynamic_pointer_cast<ArrayIndexExpression>(children[0])) {
                         // The RHS is a field read or an array element
