@@ -53,7 +53,14 @@ public class ArrayList<T> {
                 grown[i] = this.data[i];
                 i = i + 1;
             }
-            this.data = grown;
+            // `#grown` transfers ownership of the fresh array storage
+            // into `this.data` — without the marker, the local's
+            // scope-exit drop would call __cajeta_free_array on the
+            // array we just installed in the field, leaving `this.data`
+            // pointing at freed storage. Subsequent `add`s would then
+            // write into reclaimed memory. Same pattern HashMap.rehash
+            // uses for `this.keys = #newKeys` et al.
+            this.data = #grown;
             this.capacity = newCap;
         }
         this.data[this.sizeCount] = v;
