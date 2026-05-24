@@ -1222,6 +1222,34 @@ deliberately-non-commutative predicate that observes intermediate
 state. Not pursued because the existing tests + the stateful
 reject pin enough of the contract.
 
+### Stream parallelism — collect needs supplier
+
+`Collector<T, R>` carries a single `seed` instance — for a mutable
+R like `ArrayList`, every parallel worker would alias that one
+instance and race on `add` / drop bookkeeping. Tried the obvious
+"route collect through the 3-arg fold" approach against
+`Collectors.toList<int32>` on 100 elements — JIT'd worker pulled
+the shared list, `acc.add(x)` raced across workers, malloc reported
+"mismatching next->prev_size" and aborted. The fix is to give
+`Collector<T, R>` a `supplier: () -> R` field (Java's
+`Collector.supplier()`) so each worker gets a fresh accumulator.
+Touches:
+
+  - `cajeta.collection.Collector` — add `supplier: () -> R` field,
+    4-arg ctor (or replace seed with supplier).
+  - `ParallelDriver.foldParallelChain` — call `supplier()` once
+    per worker partial-slot init instead of storing `seed`.
+  - `cajeta.collection.Collectors.toList<T>` — supply
+    `() -> new ArrayList<T>()` alongside the existing accumulator
+    and combiner.
+  - `Stream<T>.collect<R>` — pass `c.supplier` through to the
+    parallel driver; sequential path stays on the seed-or-first
+    call.
+
+For now, `.parallel().collect(...)` throws
+`CAJETA_ERROR_STREAM_PARALLEL_COLLECT_NO_SUPPLIER` and the
+escape-hatch is `.sequential().collect(...)`.
+
 ### Stream parallelism — heap-class-array writes from spawned workers
 
 Surfaced in § 7.11 (findFirst → findAny). Writing a freshly
@@ -1380,6 +1408,32 @@ First three are correctness-preserving across sequential and
 parallel paths (any match in {51..100} is valid); the stateful-
 reject test is what gates the parallel dispatch (same TDD weakness
 as the predicate terminals — see § 7.9 errata).
+
+## §7.12 2-arg fold + collect: parallel-reject
+
+Two runtime rejects mirroring the take/skip pattern:
+
+  - `Stream<T>.fold<R>(R seed, (R, T) -> R fn)` (2-arg) throws
+    `CAJETA_ERROR_STREAM_PARALLEL_FOLD_NO_COMBINER` on a parallel
+    head — no combiner means no way to merge partials. Users opt
+    into parallel reduction via the 3-arg `fold<R>(seed, fn,
+    combiner)` overload (§ 7.10) or escape via `.sequential()`.
+  - `Stream<T>.collect<R>(Collector<T, R>)` throws
+    `CAJETA_ERROR_STREAM_PARALLEL_COLLECT_NO_SUPPLIER` on a
+    parallel head — see § 7.9 errata "Stream parallelism — collect
+    needs supplier" for the architectural gap. Escape via
+    `.sequential()` before `.collect(...)`.
+
+Both rejects are runtime throws (`cajeta.error.Exception` with the
+documented error IDs), not compile-time lints — the parallel flag is
+a runtime property. The closest static lint would be syntactic
+("does the chain contain `.parallel()` literally?") which Cajeta's
+semantic phase doesn't surface yet; ergo runtime throw aligns with
+the existing take/skip pattern.
+
+Tests pin the throws + a `.sequential()` escape on collect:
+`twoArgFoldOnParallelStreamRejects`, `parallelCollectRejectsToday`,
+`sequentialBeforeCollectClearsParallelFlag`.
 
 ## §8 Migration sweep (Collector R3)
 
