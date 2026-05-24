@@ -307,6 +307,34 @@ class CajetaType : public Modifiable, public Annotatable,
 
         static unsigned long getTypeFlagsOf(llvm::Value* op);
 
+        // Template wildcards (`<?>`) — Step 1 foundation. Gated by the
+        // CAJETA_WILDCARDS env var (or a test override) so the existing
+        // throw at the wildcard-parse site stays the default while the
+        // foundation lands. Rationale, costs, and full staging plan
+        // live in cajeta-docs/TemplateWildcard.md and todo.md.
+        static bool wildcardsEnabled();
+
+        // Forces the wildcard flag on/off regardless of the env var.
+        // Test-only entry point — production callers should use the
+        // env var. Persists until cleared.
+        static void setWildcardsEnabledForTest(bool enabled);
+
+        // Clears any test override. Subsequent calls to
+        // wildcardsEnabled() fall back to the env-var check.
+        static void clearWildcardsTestOverride();
+
+        // Singleton type-identity stub for the unbounded wildcard `?`.
+        // Registered in canonicalMap under canonical "?" by init(ctx)
+        // so wildcardSentinel() is non-null in any Compiler-bootstrapped
+        // process. Carries an opaque-pointer llvmType purely for shape
+        // — codegen on a wildcard-typed value is NOT yet supported
+        // (Step 2 lands the drop-chain ABI). Step 1 wires the sentinel
+        // through parsing and the template-instantiation cache only.
+        static CajetaTypePtr wildcardSentinel();
+
+        // True iff this is the wildcard sentinel.
+        bool isWildcard() const;
+
         // Enum support. `registerEnumConstant` is called per constant when
         // the visitor sees `enum X { A, B, C }`. `lookupEnumConstant` returns
         // the int32 ordinal if `enumName.constName` is a registered enum

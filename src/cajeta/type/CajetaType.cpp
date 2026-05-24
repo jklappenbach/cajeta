@@ -4,6 +4,8 @@
 
 #include "CajetaType.h"
 #include "../field/Field.h"
+#include <cstdlib>
+#include <optional>
 #include <set>
 #include "../compile/CajetaModule.h"
 #include "CajetaArray.h"
@@ -33,6 +35,10 @@ namespace cajeta {
     // class-shaped placeholder. Populated by the prescan visitor's
     // visitEnumDeclaration override.
     static set<string> g_enumArchive;
+    // Wildcard feature-flag override (Step 1). Set by tests via
+    // CajetaType::setWildcardsEnabledForTest. Null means "fall back
+    // to the CAJETA_WILDCARDS env var" (the production path).
+    static std::optional<bool> g_wildcardsTestOverride;
 
 
     TypeKey::TypeKey(llvm::Type* type) {
@@ -64,6 +70,9 @@ namespace cajeta {
         enumConstants.clear();
         g_archive.clear();
         g_enumArchive.clear();
+        // Test override survives resetGlobals on purpose — a test
+        // turning the feature on expects the next Compiler instance
+        // to honor that.
     }
 
     map<string, string>& CajetaType::getArchive() { return g_archive; }
@@ -74,6 +83,32 @@ namespace cajeta {
 
     bool CajetaType::isArchiveEnum(const string& canonical) {
         return g_enumArchive.count(canonical) > 0;
+    }
+
+    bool CajetaType::wildcardsEnabled() {
+        if (g_wildcardsTestOverride.has_value()) {
+            return *g_wildcardsTestOverride;
+        }
+        const char* v = std::getenv("CAJETA_WILDCARDS");
+        return v != nullptr && v[0] != '\0' && v[0] != '0';
+    }
+
+    void CajetaType::setWildcardsEnabledForTest(bool enabled) {
+        g_wildcardsTestOverride = enabled;
+    }
+
+    void CajetaType::clearWildcardsTestOverride() {
+        g_wildcardsTestOverride.reset();
+    }
+
+    CajetaTypePtr CajetaType::wildcardSentinel() {
+        auto it = canonicalMap.find("?");
+        if (it == canonicalMap.end()) return nullptr;
+        return it->second;
+    }
+
+    bool CajetaType::isWildcard() const {
+        return qName && qName->toCanonical() == "?";
     }
 
     void CajetaType::registerArchive(const string& canonical,
@@ -145,6 +180,20 @@ namespace cajeta {
         NATIVE_TYPE_ENTRY("float64", llvm::Type::getDoubleTy(ctx), FLOAT64_TYPE_ID);
         NATIVE_TYPE_ENTRY("float128", llvm::Type::getFP128Ty(ctx), FLOAT128_TYPE_ID);
         NATIVE_TYPE_ENTRY("pointer", llvm::PointerType::get(ctx, 0), POINTER_TYPE_ID);
+        // Wildcard sentinel (`?`) — Step 1 of template wildcards. Always
+        // registered regardless of feature-flag state so other passes
+        // can rely on `wildcardSentinel()` being non-null; the flag
+        // gates only the parser path that *produces* it as an arg.
+        // STRUCT_FLAG (no PRIMITIVE_FLAG) so toGeneric() returns the
+        // canonical "?" rather than misclassifying it as a pointer
+        // primitive. shareLlvmType=false so its opaque-pointer backing
+        // doesn't overwrite the canonical `pointer` entry in typeMap /
+        // llvmTypeIdMap.
+        CajetaType::create(
+            QualifiedName::getOrInsert("?", CAJETA_NATIVE_PACKAGE),
+            llvm::PointerType::get(ctx, 0),
+            STRUCT_FLAG,
+            /*shareLlvmType=*/false);
         // Phase 2b-β: the legacy primitive-alias `String` (an i8*
         // C-string) is RETIRED. The `cajeta.lang.String` class registers
         // itself in canonicalMap under both the canonical and short name
@@ -451,6 +500,32 @@ namespace cajeta {
                         vector<CajetaTypePtr> args;
                         for (auto* targ : targs->typeArgument()) {
                             if (!targ->typeType()) {
+                                // Wildcard `?` lands here (no typeType,
+                                // no primitiveType — QUESTION terminal
+                                // is set). Bounded forms
+                                // (`? extends T` / `? super T`) parse
+                                // but Step 6 hasn't shipped, so reject.
+                                // See cajeta-docs/TemplateWildcard.md.
+                                if (targ->QUESTION() != nullptr) {
+                                    if (!CajetaType::wildcardsEnabled()) {
+                                        throw "wildcard type arguments not supported in v1";
+                                    }
+                                    if (targ->EXTENDS() != nullptr
+                                            || targ->SUPER() != nullptr) {
+                                        throw "bounded wildcards ('? extends' / '? super') deferred to Step 6";
+                                    }
+                                    auto wild = CajetaType::wildcardSentinel();
+                                    if (!wild) {
+                                        throw "wildcard sentinel not registered — CajetaType::init not run?";
+                                    }
+                                    args.push_back(wild);
+                                    continue;
+                                }
+                                // Bare `primitiveType` alternative in
+                                // the typeArgument rule. typeType already
+                                // subsumes primitives, so this branch is
+                                // effectively dead; keep the original
+                                // throw if it ever fires.
                                 throw "wildcard type arguments not supported in v1";
                             }
                             CajetaTypePtr argType = fromContext(targ->typeType(), module);

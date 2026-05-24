@@ -94,6 +94,23 @@ namespace cajeta {
         return false;
     }
 
+    bool CajetaClass::isWildcardInstantiation() const {
+        for (auto& a : typeArguments) {
+            if (a && a->isWildcard()) return true;
+        }
+        return false;
+    }
+
+    bool CajetaClass::isAssignableToWildcard(
+            CajetaClassPtr from, CajetaClassPtr wildcardInst) {
+        if (!from || !wildcardInst) return false;
+        if (!wildcardInst->isWildcardInstantiation()) return false;
+        auto fromOrigin = from->getTemplateOrigin();
+        auto destOrigin = wildcardInst->getTemplateOrigin();
+        if (!fromOrigin || !destOrigin) return false;
+        return fromOrigin.get() == destOrigin.get();
+    }
+
     int getMethodCount(map<string, map<string, MethodPtr>>& map) {
         int count = 0;
         for (auto& entry : map) {

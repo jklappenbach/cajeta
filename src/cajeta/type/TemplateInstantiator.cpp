@@ -121,6 +121,47 @@ namespace cajeta {
             }
         }
 
+        // Wildcard short-circuit (Step 1 — template wildcards). When any
+        // supplied arg is the wildcard sentinel, return an erased proxy:
+        // a fresh CajetaClass with templateOrigin set and typeArguments
+        // populated, but NO body re-parse and NO generatePrototype. The
+        // proxy is a type-identity stub used by assignability checks
+        // (CajetaClass::isAssignableToWildcard) and by the canonical
+        // name cache. Real codegen on wildcard-typed values arrives
+        // with Step 2 (drop-chain ABI). See cajeta-docs/TemplateWildcard.md.
+        {
+            bool anyWildcard = false;
+            for (auto& arg : args) {
+                if (arg && arg->isWildcard()) {
+                    anyWildcard = true;
+                    break;
+                }
+            }
+            if (anyWildcard) {
+                string suffix = buildArgSuffix(args);
+                string instCanonical = qName->toCanonical() + suffix;
+                auto& structures = module->getStructures();
+                auto cached = structures.find(instCanonical);
+                if (cached != structures.end()) {
+                    return cached->second;
+                }
+                QualifiedNamePtr instQName = QualifiedName::getOrInsert(
+                    qName->getTypeName() + suffix, qName->getPackageName());
+                list<QualifiedNamePtr> noExt;
+                list<QualifiedNamePtr> noImpl;
+                auto proxy = make_shared<CajetaClass>(
+                    module, instQName, noExt, noImpl);
+                proxy->setIsInterface(interfaceFlag);
+                proxy->setTypeParameters(typeParameters);
+                proxy->setTypeArguments(args);
+                proxy->setTemplateOrigin(
+                    static_pointer_cast<CajetaClass>(shared_from_this()));
+                structures[instCanonical] = proxy;
+                CajetaType::getCanonicalMap()[instCanonical] = proxy;
+                return proxy;
+            }
+        }
+
         if (args.size() != typeParameters.size()) {
             throw Exception(
                 "template " + qName->toCanonical() + " expects "

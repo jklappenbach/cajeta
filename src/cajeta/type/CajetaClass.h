@@ -641,6 +641,21 @@ namespace cajeta {
         bool isTemplate() const { return !typeParameters.empty() && typeArguments.empty(); }
         bool isInstantiation() const { return !typeArguments.empty(); }
 
+        // True iff at least one of this instantiation's type arguments
+        // is the wildcard sentinel. Distinguishes `Stream<?>` from
+        // `Stream<int32>`. Step 1 — template wildcards.
+        bool isWildcardInstantiation() const;
+
+        // True iff `from` (a concrete instantiation of some template)
+        // is assignable to `wildcardInst` (a wildcard instantiation of
+        // the same template). Identity check on `templateOrigin` —
+        // `ArrayStream<int32>` is NOT assignable to `Stream<?>` here
+        // because that would require walking the super-chain
+        // (deferred until the chain-walk wiring lands in Step 5).
+        // Variance (`? extends` / `? super`) lands with Step 6.
+        static bool isAssignableToWildcard(
+            CajetaClassPtr from, CajetaClassPtr wildcardInst);
+
         // Materialize a concrete class from this template under the given
         // arguments. Idempotent: a second call with the same args returns
         // the cached instantiation. No-op if this class is not a template
