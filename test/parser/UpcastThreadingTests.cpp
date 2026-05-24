@@ -93,7 +93,7 @@ TEST(UpcastThreadingTests, returnUpcastToNonFirstParentAdjustsPointer) {
         "}\n"
         "public class Maker {\n"
         "  public Maker() { return; }\n"
-        "  public B makeAsB() {\n"
+        "  public #B makeAsB() {\n"
         "    C c = new C();\n"
         "    return c;\n"  // return C as B — needs adjustment
         "  }\n"

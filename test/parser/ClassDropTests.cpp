@@ -156,7 +156,12 @@ TEST(ClassDropTests, twoInstancesDropWithoutCrash) {
 // Returning a class-typed local transfers ownership — the producing
 // method's drop entry is deactivated, the caller's local registers a
 // fresh entry. Net drop count from one round-trip = 1 (caller's drop
-// at its own scope exit).
+// at its own scope exit). The `#Counter` return-type marker is what
+// the new MemoryModel convention requires: without it, the caller
+// treats the result as a borrow (no drop registered on receipt) and
+// the returned allocation leaks. (Task #54 made the receive-side
+// honor the marker; before that, every class-typed return was
+// implicitly a transfer.)
 TEST(ClassDropTests, returnedInstanceOwnershipTransfers) {
     auto src =
         "package test;\n"
@@ -164,7 +169,7 @@ TEST(ClassDropTests, returnedInstanceOwnershipTransfers) {
         "    public int32 next() { return 42; }\n"
         "}\n"
         "public final class D {\n"
-        "    public static Counter mk() {\n"
+        "    public static #Counter mk() {\n"
         "        Counter c = new Counter();\n"
         "        return c;\n"
         "    }\n"

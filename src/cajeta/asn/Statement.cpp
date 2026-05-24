@@ -1146,6 +1146,46 @@ namespace cajeta {
                         "MemoryModel.md § Function signatures.",
                         "CAJETA_ERROR_FRESH_RETURN_NEEDS_TRANSFER");
                 }
+                // Same hazard, named-local shape: `Foo c = new Foo();
+                // return c;` (or `#Foo p` parameter `return p;`). The
+                // local owns the allocation — its registered drop entry
+                // would deactivate at the return per the class-instance
+                // transfer block below, while the receiver treats the
+                // value as a borrow (post task #54 semantics: receive-
+                // side only registers a drop if the callee's return is
+                // `#`). Net result: the allocation silently leaks. The
+                // `return new X()` shape above caught only the inline
+                // construction; this catches the symmetric leak when
+                // the freshly-owned value flows through a named local
+                // first. Same fix: mark the return type `#T`.
+                if (auto idExpr = dynamic_pointer_cast<IdentifierExpression>(expression)) {
+                    if (auto scope = module->getScopeStack().peek()) {
+                        FieldPtr f = scope->getField(idExpr->getTextValue());
+                        if (f && f->getDropEntry()) {
+                            auto klass = dynamic_pointer_cast<CajetaClass>(f->getType());
+                            auto view = dynamic_pointer_cast<CajetaView>(f->getType());
+                            bool transferShape =
+                                (klass && !klass->isInterface()) || (bool) view;
+                            if (transferShape) {
+                                std::string canonical = m->toCanonical(false);
+                                throw Exception(
+                                    "method `" + canonical + "` returns owned "
+                                    "local '" + idExpr->getTextValue() + "' "
+                                    "but its return type isn't marked `#` for "
+                                    "ownership transfer. The local owns its "
+                                    "value (its drop entry is active), so the "
+                                    "return deactivates this scope's drop, "
+                                    "while the caller — per the non-`#` "
+                                    "signature — won't register a fresh drop "
+                                    "entry on receipt: the allocation silently "
+                                    "leaks. Fix: change the return type to "
+                                    "`#T`. See cajeta-docs/stdlib/MemoryModel"
+                                    ".md § Function signatures.",
+                                    "CAJETA_ERROR_FRESH_RETURN_NEEDS_TRANSFER");
+                            }
+                        }
+                    }
+                }
             }
         }
 

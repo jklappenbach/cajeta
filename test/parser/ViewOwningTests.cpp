@@ -126,7 +126,7 @@ TEST(ViewOwningTests, owningFormViewMayEscape) {
         "    int32 a;\n"
         "}\n"
         "public final class S {\n"
-        "    public static H makeOwned() {\n"
+        "    public static #H makeOwned() {\n"
         "        int32[] bytes = new int32[1];\n"
         "        H h = H(#bytes);\n"
         "        h.a = 7;\n"
