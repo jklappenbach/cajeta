@@ -831,6 +831,92 @@ TEST(ParallelStreamP1Tests, foldCombinerParallelThroughFilter) {
     EXPECT_EQ(runI64(src), 2550LL);
 }
 
+// --- findFirst under .parallel() — semantics shift to findAny -------
+// Per StreamParallelism.md § R1 + § Per-terminal rules, findFirst on
+// a parallel stream returns AN arbitrary matching element (findAny),
+// not necessarily the first in encounter order. Order across workers
+// is unspecified; the test checks the returned element is IN the
+// expected match set, not that it's the lowest such.
+
+TEST(ParallelStreamP1Tests, parallelFindFirstReturnsAMatchingElement) {
+    auto src =
+        "package test;\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        int32[] xs = new int32[100];\n"
+        "        for (int32 i = 0; i < 100; i = i + 1) { xs[i] = i + 1; }\n"
+        "        // findFirst(x > 50) under parallel = findAny — any of\n"
+        "        // 51..100 is a valid answer.\n"
+        "        Optional<int32> o = xs.stream().parallel()\n"
+        "                              .findFirst((x) -> x > 50);\n"
+        "        if (!o.isPresent()) { return -1; }\n"
+        "        return o.get();\n"
+        "    }\n"
+        "}\n";
+    int32_t r = runI32Diag(src);
+    EXPECT_GT(r, 50);
+    EXPECT_LE(r, 100);
+}
+
+TEST(ParallelStreamP1Tests, parallelFindFirstEmptyOnNoMatch) {
+    auto src =
+        "package test;\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        int32[] xs = new int32[100];\n"
+        "        for (int32 i = 0; i < 100; i = i + 1) { xs[i] = i + 1; }\n"
+        "        Optional<int32> o = xs.stream().parallel()\n"
+        "                              .findFirst((x) -> x > 9999);\n"
+        "        if (o.isPresent()) { return o.get(); }\n"
+        "        return -1;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32Diag(src), -1);
+}
+
+TEST(ParallelStreamP1Tests, parallelFindFirstThroughFilter) {
+    auto src =
+        "package test;\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        int32[] xs = new int32[100];\n"
+        "        for (int32 i = 0; i < 100; i = i + 1) { xs[i] = i + 1; }\n"
+        "        // Evens 2..100; findAny(x > 50) — any even in 52..100.\n"
+        "        Optional<int32> o = xs.stream()\n"
+        "                              .filter((x) -> x % 2 == 0)\n"
+        "                              .parallel()\n"
+        "                              .findFirst((x) -> x > 50);\n"
+        "        if (!o.isPresent()) { return -1; }\n"
+        "        return o.get();\n"
+        "    }\n"
+        "}\n";
+    int32_t r = runI32Diag(src);
+    EXPECT_GT(r, 50);
+    EXPECT_LE(r, 100);
+    EXPECT_EQ(r % 2, 0);
+}
+
+TEST(ParallelStreamP1Tests, parallelFindFirstRejectsStatefulInChain) {
+    auto src =
+        "package test;\n"
+        "import cajeta.error.Exception;\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        int32[] xs = new int32[100];\n"
+        "        for (int32 i = 0; i < 100; i = i + 1) { xs[i] = i; }\n"
+        "        try {\n"
+        "            Optional<int32> o = xs.stream().take(5).parallel()\n"
+        "                                  .findFirst((x) -> x > 2);\n"
+        "            if (o.isPresent()) { return o.get(); }\n"
+        "            return 0;\n"
+        "        } catch (Exception e) {\n"
+        "            return -77;\n"
+        "        }\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), -77);
+}
+
 // Stateful intermediate above .parallel() — chain walk in
 // foldParallelChain hits TakeStream.isStatefulWrapper and throws
 // REJECT_STATEFUL. Mirrors the other terminals' stateful-reject test.

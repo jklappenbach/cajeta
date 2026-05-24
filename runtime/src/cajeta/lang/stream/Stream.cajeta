@@ -225,7 +225,13 @@ public class Stream<T> {
 
     /**
      * Returns the first remaining element matching `pred` wrapped in
-     * a present Optional, or an empty Optional if none match.
+     * a present Optional, or an empty Optional if none match. Under
+     * `.parallel()` semantics shift to findAny — per § R1 in
+     * StreamParallelism.md, encounter order isn't preserved across
+     * split workers, so "first" becomes "any". Dispatches to
+     * `ParallelDriver.findAnyParallelChain<T>` which walks the
+     * wrapper chain, rejects stateful intermediates, and forks via
+     * `scope { spawn findAnyWorker<T> }`.
      *
      * Pre-fix the body declared `T v = o.get();` and reused `v`
      * inside the loop; that registered a drop entry for `v` which,
@@ -236,6 +242,9 @@ public class Stream<T> {
      * since both are immediate temporaries.
      */
     public #Optional<T> findFirst((T) -> boolean pred) {
+        if (this.isParallel) {
+            return ParallelDriver.findAnyParallelChain<T>(this, pred);
+        }
         Optional<T> o = this.next();
         while (o.isPresent()) {
             if (pred(o.get())) {
