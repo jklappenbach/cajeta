@@ -117,7 +117,43 @@ namespace cajeta {
         auto fromOrigin = from->getTemplateOrigin();
         auto destOrigin = wildcardInst->getTemplateOrigin();
         if (!fromOrigin || !destOrigin) return false;
-        return fromOrigin.get() == destOrigin.get();
+        if (fromOrigin.get() != destOrigin.get()) return false;
+        // Step 6 — enforce per-arg-position bounds. For each wildcard
+        // arg position, check the bound; for each concrete arg position,
+        // require exact match.
+        auto& fromArgs = from->getTypeArguments();
+        auto& destArgs = wildcardInst->getTypeArguments();
+        if (fromArgs.size() != destArgs.size()) return false;
+        for (size_t i = 0; i < destArgs.size(); ++i) {
+            auto destArg = destArgs[i];
+            auto fromArg = fromArgs[i];
+            if (!destArg || !fromArg) return false;
+            if (!destArg->isWildcard()) {
+                // Concrete dest arg: require identical from arg.
+                if (fromArg.get() != destArg.get()) return false;
+                continue;
+            }
+            auto kind = destArg->wildcardKind();
+            if (kind == CajetaType::WildcardKind::Unbounded) continue;
+            auto bound = destArg->wildcardBound();
+            if (!bound) return false;
+            auto fromArgClass = dynamic_pointer_cast<CajetaClass>(fromArg);
+            auto boundClass = dynamic_pointer_cast<CajetaClass>(bound);
+            if (!fromArgClass || !boundClass) {
+                // Primitives never satisfy class/interface bounds —
+                // mirrors the bound-check policy in
+                // TemplateInstantiator::instantiate.
+                return false;
+            }
+            if (kind == CajetaType::WildcardKind::Extends) {
+                // fromArg <: bound
+                if (!fromArgClass->isParentOrKind(boundClass)) return false;
+            } else if (kind == CajetaType::WildcardKind::Super) {
+                // bound <: fromArg (fromArg is a supertype of bound)
+                if (!boundClass->isParentOrKind(fromArgClass)) return false;
+            }
+        }
+        return true;
     }
 
     int getMethodCount(map<string, map<string, MethodPtr>>& map) {

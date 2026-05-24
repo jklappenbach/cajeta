@@ -51,20 +51,21 @@ criteria. Audit + test coverage added; no implementation needed.
   short-circuit registers `Template<?>` under a suffix-bearing
   canonical. No key overlap.
 
-## 4. Lint pass — wildcard-in-hot-loop detector
+## 4. Lint pass — wildcard-in-hot-loop detector — DEFERRED (specced)
 
-Add a compiler diagnostic (not external linter) that flags the known
-performance footguns:
+Four rules added to `cajeta-docs/LintRules.md` under "Future rules":
+- `wildcard-materialize-in-loop`
+- `wildcard-crosses-hot-boundary`
+- `wildcard-field-in-small-class`
+- `discarded-wildcard-next`
 
-- `Stream<?>` materializing `T` inside a loop ("likely boxing").
-- Wildcard return crossing a hot-path boundary.
-- Wildcard field in a small frequently-allocated class
-  ("drop becomes virtual").
-- Discarded wildcard `next()` result
-  ("the box allocates even though the value is unused").
-
-Diagnostics live in the compiler so users see them inline, not only
-under `cajeta-lint`.
+Implementation lands as a separate effort following the v1 lint
+infrastructure pattern (the `uncaught-throws` rule already in the
+catalog) — compiler-internal, `@SuppressLint("rule-id")` suppression,
+warning-only. Not a prerequisite for Step 6 or for merging the
+template-wildcard branch back to main; user-facing wildcard
+semantics work without these diagnostics, and the rules describe
+performance footguns rather than correctness bugs.
 
 ## 5. Migrate parallel chain walk to use `<?>` — DONE (Steps 5a + 5b)
 
@@ -106,13 +107,32 @@ Total change ~150 LOC including stdlib edits + new tests. Original
 50-LOC estimate didn't anticipate the Step 5a method-resolution work
 or the vtable-alias super-walk needed for Step 5b dispatch.
 
-## 6. Bounded wildcards (`? extends T` / `? super T`)
+## 6. Bounded wildcards (`? extends T` / `? super T`) — DONE (minimum-viable)
 
-Separate later step — long-term dividend, not a blocker for Step 5.
+Parse + classify + assignability check shipped. Capture conversion
+(Java's `capture#N` synthetic types) deferred — no stdlib site needs
+it today and the read/write polarity it enables would be ergonomic
+sugar rather than load-bearing infrastructure.
 
-- Parse and type-check `? extends T` / `? super T`.
-- Capture conversion rules: `Stream<? extends Number>` produces
-  `Number` at read sites; `Collection<? super Cat>` accepts `Cat` at
-  write sites.
-- Update diagnostics renderer to handle capture identities cleanly.
-- Migrate stdlib producer/consumer signatures opportunistically.
+- Parser site (CajetaType.cpp:454) recognizes `?`, `? extends T`,
+  `? super T` distinctly. Bounded forms route through
+  `wildcardSentinelExtends(bound)` / `wildcardSentinelSuper(bound)`.
+- Per-(kind, bound) sentinels cached in canonicalMap under canonicals
+  `?`, `? extends <bound-canonical>`, `? super <bound-canonical>`.
+- Wildcard kind/bound queryable via `wildcardKind()` and
+  `wildcardBound()`. `isWildcard()` returns true for all forms.
+- `CajetaClass::isAssignableToWildcard` enforces per-arg-position
+  bounds: `Box<Dog>` ⊆ `Box<? extends Animal>`, `Box<Animal>` ⊆
+  `Box<? super Dog>`, etc.
+
+Test coverage in `test/parser/TemplateWildcardP6Tests.cpp` (6 tests):
+sentinel caching + classification, parser routing, assignability for
+extends/super in both directions including the negative cases.
+
+**Future work** (not a blocker for merging template-wildcard to main):
+- Capture conversion proper (`Stream<? extends Number>` produces
+  `Number` at read sites, etc.). Would extend method resolution to
+  carry capture identities through the dispatch.
+- Stdlib producer/consumer signature migration to use bounded
+  wildcards where they'd express PECS variance more clearly than
+  the current concrete instantiations.

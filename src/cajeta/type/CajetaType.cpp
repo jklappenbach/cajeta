@@ -39,6 +39,15 @@ namespace cajeta {
     // CajetaType::setWildcardsEnabledForTest. Null means "fall back
     // to the CAJETA_WILDCARDS env var" (the production path).
     static std::optional<bool> g_wildcardsTestOverride;
+    // Step 6 — bounded wildcards. Side table keyed by wildcard
+    // canonical name (`?`, `? extends X`, `? super X`). The unbounded
+    // entry is registered by init(ctx); bounded entries are created
+    // lazily on first parse-site hit. Cleared by resetGlobals.
+    struct WildcardInfoEntry {
+        CajetaType::WildcardKind kind;
+        CajetaTypePtr bound;
+    };
+    static map<string, WildcardInfoEntry> g_wildcardInfo;
 
 
     TypeKey::TypeKey(llvm::Type* type) {
@@ -70,6 +79,7 @@ namespace cajeta {
         enumConstants.clear();
         g_archive.clear();
         g_enumArchive.clear();
+        g_wildcardInfo.clear();
         // Test override survives resetGlobals on purpose — a test
         // turning the feature on expects the next Compiler instance
         // to honor that.
@@ -113,8 +123,59 @@ namespace cajeta {
         return it->second;
     }
 
+    // Bounded-wildcard sentinel factory. Lazily creates a per-(kind, bound)
+    // CajetaType keyed by canonical "? <kind-word> <bound-canonical>".
+    // Shares the unbounded sentinel's llvm type (opaque pointer); bound
+    // info goes into g_wildcardInfo for query by wildcardBound().
+    static CajetaTypePtr makeBoundedWildcardSentinel(
+            CajetaType::WildcardKind kind,
+            CajetaTypePtr bound,
+            const string& kindWord) {
+        if (!bound || !bound->getQName()) return nullptr;
+        string canonical = "? " + kindWord + " "
+            + bound->getQName()->toCanonical();
+        auto& cmap = CajetaType::getCanonicalMap();
+        auto it = cmap.find(canonical);
+        if (it != cmap.end()) return it->second;
+        auto unbounded = CajetaType::wildcardSentinel();
+        if (!unbounded) return nullptr;
+        CajetaTypePtr sentinel = CajetaType::create(
+            QualifiedName::getOrInsert(canonical, ""),
+            unbounded->getLlvmType(),
+            STRUCT_FLAG,
+            /*shareLlvmType=*/false);
+        g_wildcardInfo[canonical] = {kind, bound};
+        return sentinel;
+    }
+
+    CajetaTypePtr CajetaType::wildcardSentinelExtends(CajetaTypePtr bound) {
+        return makeBoundedWildcardSentinel(
+            WildcardKind::Extends, bound, "extends");
+    }
+
+    CajetaTypePtr CajetaType::wildcardSentinelSuper(CajetaTypePtr bound) {
+        return makeBoundedWildcardSentinel(
+            WildcardKind::Super, bound, "super");
+    }
+
     bool CajetaType::isWildcard() const {
-        return qName && qName->toCanonical() == "?";
+        if (!qName) return false;
+        auto it = g_wildcardInfo.find(qName->toCanonical());
+        return it != g_wildcardInfo.end()
+            && it->second.kind != WildcardKind::None;
+    }
+
+    CajetaType::WildcardKind CajetaType::wildcardKind() const {
+        if (!qName) return WildcardKind::None;
+        auto it = g_wildcardInfo.find(qName->toCanonical());
+        return it == g_wildcardInfo.end()
+            ? WildcardKind::None : it->second.kind;
+    }
+
+    CajetaTypePtr CajetaType::wildcardBound() const {
+        if (!qName) return nullptr;
+        auto it = g_wildcardInfo.find(qName->toCanonical());
+        return it == g_wildcardInfo.end() ? nullptr : it->second.bound;
     }
 
     void CajetaType::registerArchive(const string& canonical,
@@ -200,6 +261,7 @@ namespace cajeta {
             llvm::PointerType::get(ctx, 0),
             STRUCT_FLAG,
             /*shareLlvmType=*/false);
+        g_wildcardInfo["?"] = {CajetaType::WildcardKind::Unbounded, nullptr};
         // Phase 2b-β: the legacy primitive-alias `String` (an i8*
         // C-string) is RETIRED. The `cajeta.lang.String` class registers
         // itself in canonicalMap under both the canonical and short name
@@ -505,34 +567,48 @@ namespace cajeta {
                     if (templateClass && templateClass->isTemplate()) {
                         vector<CajetaTypePtr> args;
                         for (auto* targ : targs->typeArgument()) {
-                            if (!targ->typeType()) {
-                                // Wildcard `?` lands here (no typeType,
-                                // no primitiveType — QUESTION terminal
-                                // is set). Bounded forms
-                                // (`? extends T` / `? super T`) parse
-                                // but Step 6 hasn't shipped, so reject.
-                                // See cajeta-docs/TemplateWildcard.md.
-                                if (targ->QUESTION() != nullptr) {
-                                    if (!CajetaType::wildcardsEnabled()) {
-                                        throw "wildcard type arguments not supported in v1";
-                                    }
-                                    if (targ->EXTENDS() != nullptr
-                                            || targ->SUPER() != nullptr) {
-                                        throw "bounded wildcards ('? extends' / '? super') deferred to Step 6";
-                                    }
-                                    auto wild = CajetaType::wildcardSentinel();
-                                    if (!wild) {
-                                        throw "wildcard sentinel not registered — CajetaType::init not run?";
-                                    }
-                                    args.push_back(wild);
-                                    continue;
+                            // Wildcard branch — `?`, `? extends T`, or
+                            // `? super T`. Grammar
+                            // `'?' ((EXTENDS|SUPER) typeType)?` means
+                            // typeType() carries the BOUND for bounded
+                            // forms (not a regular type arg). Step 6
+                            // — see cajeta-docs/TemplateWildcard.md.
+                            if (targ->QUESTION() != nullptr) {
+                                if (!CajetaType::wildcardsEnabled()) {
+                                    throw "wildcard type arguments not supported in v1";
                                 }
-                                // Bare `primitiveType` alternative in
-                                // the typeArgument rule. typeType already
-                                // subsumes primitives, so this branch is
-                                // effectively dead; keep the original
-                                // throw if it ever fires.
-                                throw "wildcard type arguments not supported in v1";
+                                CajetaTypePtr bound = nullptr;
+                                if (targ->typeType() != nullptr) {
+                                    bound = fromContext(targ->typeType(), module);
+                                    if (!bound) {
+                                        throw "unresolved wildcard bound type";
+                                    }
+                                }
+                                CajetaTypePtr wild;
+                                if (targ->EXTENDS() != nullptr) {
+                                    if (!bound) {
+                                        throw "'? extends' must name a bound type";
+                                    }
+                                    wild = CajetaType::wildcardSentinelExtends(bound);
+                                } else if (targ->SUPER() != nullptr) {
+                                    if (!bound) {
+                                        throw "'? super' must name a bound type";
+                                    }
+                                    wild = CajetaType::wildcardSentinelSuper(bound);
+                                } else {
+                                    wild = CajetaType::wildcardSentinel();
+                                }
+                                if (!wild) {
+                                    throw "wildcard sentinel construction failed — CajetaType::init not run?";
+                                }
+                                args.push_back(wild);
+                                continue;
+                            }
+                            if (!targ->typeType()) {
+                                // Bare `primitiveType` alternative.
+                                // typeType already subsumes primitives,
+                                // so this branch is effectively dead.
+                                throw "unresolved template argument";
                             }
                             CajetaTypePtr argType = fromContext(targ->typeType(), module);
                             if (!argType) {

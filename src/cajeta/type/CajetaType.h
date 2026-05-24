@@ -332,8 +332,31 @@ class CajetaType : public Modifiable, public Annotatable,
         // through parsing and the template-instantiation cache only.
         static CajetaTypePtr wildcardSentinel();
 
-        // True iff this is the wildcard sentinel.
+        // Step 6 — bounded wildcards. Lazy per-(kind, bound) sentinels
+        // cached in canonicalMap under canonicals "? extends <bound>"
+        // and "? super <bound>". All wildcard sentinels share the
+        // unbounded form's llvm type (opaque pointer). The bound is
+        // recorded in a side table queried via wildcardBound().
+        static CajetaTypePtr wildcardSentinelExtends(CajetaTypePtr bound);
+        static CajetaTypePtr wildcardSentinelSuper(CajetaTypePtr bound);
+
+        // Wildcard kind classification.
+        enum class WildcardKind {
+            None,        // not a wildcard
+            Unbounded,   // `?`
+            Extends,     // `? extends Bound`
+            Super        // `? super Bound`
+        };
+
+        // True iff this is any wildcard sentinel (unbounded or bounded).
         bool isWildcard() const;
+
+        // Wildcard kind classifier. Returns None for non-wildcards.
+        WildcardKind wildcardKind() const;
+
+        // Bound type for `? extends Bound` / `? super Bound`. Returns
+        // null for unbounded wildcards and non-wildcards.
+        CajetaTypePtr wildcardBound() const;
 
         // Enum support. `registerEnumConstant` is called per constant when
         // the visitor sees `enum X { A, B, C }`. `lookupEnumConstant` returns
