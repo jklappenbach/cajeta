@@ -919,38 +919,31 @@ public class ParallelDriver {
             shareCount = shareCount + 1;
             si = si + 1;
         }
-        // Shared T-slot for the hit element + boolean hit flag.
-        // Mirrors the fold partials[] + scalar pattern. Storing the
-        // raw T (not an Optional<T>) sidesteps any class-typed-array
-        // write semantics question; the orchestrator constructs the
-        // Optional after scope-join from result[0] when hit[0].
-        // Race on the slot itself is benign — findAny only requires
-        // SOME match.
+        // Shared Optional<T>[1] slot — workers write the freshly-
+        // constructed Optional<T> directly. A non-null entry doubles
+        // as the cooperative cancel signal (other workers bail at
+        // the top of their next iteration). Race on the slot is
+        // benign — findAny only requires SOME match.
         //
-        // Task #40 bisection finding: the original pthread_cond_wait
-        // hang from `Optional<T>[1]` worker-write does NOT reproduce
-        // at HEAD — see test/parser/OptionalArrayWorkerWriteTests.cpp
-        // for standalone repros (class-typed-array worker writes
-        // including multi-worker contention complete cleanly). The
-        // workaround stays in place only because Cajeta's codegen
-        // can't currently allocate `new Optional<T>[1]` when T is a
-        // method-template parameter — the allocation hits the bare-
-        // template short-circuit and fails to lower the element-size
-        // resolution at stdlib parse, which manifests as a SIGSEGV
-        // at first JIT use. Removing the workaround needs that
-        // compile-time fix first, not a runtime fix.
-        T[] result = new T[1];
-        boolean[] hit = new boolean[1];
-        hit[0] = false;
+        // History: pre-Task-#46 this used a T[1] + boolean[1] pair
+        // with the orchestrator constructing the Optional after
+        // scope-join, working around a compile-time crash in
+        // `new Optional<T>[1]` when T is a method-template parameter
+        // (CajetaArray ctor's elementType->getLlvmType() returned
+        // null for a bare-template Optional and crashed
+        // llvm::ArrayType::get). Fixed by extending
+        // CajetaClass::getLlvmType to return ptr for bare templates
+        // — same fallback the placeholder and wildcard cases use.
+        Optional<T>[] result = new Optional<T>[1];
         scope {
             int32 wi = 0;
             while (wi < shareCount) {
-                spawn findAnyWorker<T>(shares[wi], predicate, result, hit);
+                spawn findAnyWorker<T>(shares[wi], predicate, result);
                 wi = wi + 1;
             }
         }
-        if (hit[0]) {
-            return heap Optional<T>(true, result[0]);
+        if (result[0] != null && result[0].isPresent()) {
+            return heap Optional<T>(true, result[0].get());
         }
         // Tail walks on the orchestrator after scope-join — workers
         // finished without a hit, but the root may have residual
@@ -967,21 +960,20 @@ public class ParallelDriver {
 
     /**
      * Worker for findAny. Drains `share`; on each iteration first
-     * checks the shared `hit[0]` cancel flag, then runs the
-     * predicate. First worker to find a match writes its element into
-     * `result[0]` (raw T) and flips `hit[0]`. The orchestrator
-     * builds the Optional wrapper after scope-join. Same shape as
-     * findHitWorker but stores the element value.
+     * checks the shared `result[0]` cancel flag (any non-null entry
+     * means another worker already found a match), then runs the
+     * predicate. First worker to find a match writes a freshly
+     * constructed Optional<T> into result[0]. Race on the slot
+     * itself is benign — findAny only requires SOME match.
      */
-    public static async int32 findAnyWorker<T>(Stream<T> share, (T) -> boolean predicate, T[] result, boolean[] hit) {
+    public static async int32 findAnyWorker<T>(Stream<T> share, (T) -> boolean predicate, Optional<T>[] result) {
         Optional<T> o = share.next();
         while (o.isPresent()) {
-            if (hit[0]) {
+            if (result[0] != null) {
                 return 0;
             }
             if (predicate(o.get())) {
-                result[0] = o.get();
-                hit[0] = true;
+                result[0] = heap Optional<T>(true, o.get());
                 return 0;
             }
             o = share.next();

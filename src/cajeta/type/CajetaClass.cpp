@@ -78,6 +78,21 @@ namespace cajeta {
         if (isWildcardInstantiation() && module) {
             return llvm::PointerType::get(*module->getLlvmContext(), 0);
         }
+        // Bare templates (typeParameters set, typeArguments empty)
+        // surface here only via the placeholder short-circuit in
+        // CajetaClass::instantiate — e.g. `Optional<T>` inside a
+        // method-template body where T is a method-template parameter
+        // returns the bare Optional template. The use sites that
+        // ask for an llvm type at parse time are array-element
+        // resolution (CajetaArray ctor calls
+        // elementType->getLlvmType()) and field/param layout. Class
+        // instances always flow by pointer, so returning ptr is
+        // correct for those layout questions; the concrete
+        // instantiation happens at the method-template's call-site
+        // re-parse where T is bound to a real type. (Task #46.)
+        if (isTemplate() && module) {
+            return llvm::PointerType::get(*module->getLlvmContext(), 0);
+        }
         return llvmType;
     }
 
