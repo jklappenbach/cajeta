@@ -221,18 +221,29 @@ for ((s=0; s<shards; s++)); do
     out_file="$tmpdir/shard_${s}.out"
     exit_code=$(cat "$tmpdir/shard_${s}.exit" 2>/dev/null || echo "?")
 
+    # Passed count: under --gtest_brief=1 gtest still prints the
+    # `[  PASSED  ] N tests.` summary line, so a single grep on that
+    # is enough.
     passed=$(grep -oE '\[  PASSED  \] [0-9]+ test' "$out_file" 2>/dev/null \
                 | grep -oE '[0-9]+' | head -1)
     passed=${passed:-0}
-    failed=$(grep -oE '\[  FAILED  \] [0-9]+ test' "$out_file" 2>/dev/null \
-                | grep -oE '[0-9]+' | head -1)
+    # Failed count: --gtest_brief=1 does NOT print the
+    # `[  FAILED  ] N test, listed below:` summary line — only the
+    # per-test `[  FAILED  ] Suite.test (Nms)` lines. Count those
+    # (they start with `[  FAILED  ]` followed by an identifier
+    # character, distinguishing them from the count-summary line
+    # which starts with a digit). This avoids misclassifying a
+    # real test failure as a shard crash downstream.
+    # `grep -c` always prints a count (including 0) but exits non-zero
+    # when no lines match; the `|| true` keeps that from short-circuiting
+    # the surrounding script and avoids emitting a duplicate "0".
+    failed=$(grep -cE '^\[  FAILED  \] [A-Za-z_]' "$out_file" 2>/dev/null || true)
     failed=${failed:-0}
 
     total_passed=$((total_passed + passed))
     total_failed=$((total_failed + failed))
 
     if [ "$failed" -gt 0 ]; then
-        # Per-test FAILED lines (skip the count-summary line).
         while IFS= read -r line; do
             failure_lines+=("$line")
         done < <(grep -E '^\[  FAILED  \] [A-Za-z_]' "$out_file")
