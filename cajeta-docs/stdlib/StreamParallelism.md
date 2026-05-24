@@ -6,6 +6,12 @@ pull protocol** — split the source once, run each split on its own fiber,
 combine partials once. The pull contract doesn't change; existing single-
 threaded streams keep working unchanged.
 
+**Companion documents:**
+  - `StreamParallelism.Examples.md` — example/error catalogue and
+    landed-feature errata.
+  - `StreamParallelism.ErrorHandling.md` — exception semantics
+    (default fail-fast + user-side tolerance patterns).
+
 > Reactor-style reactive (push + async + backpressure + per-element
 > scheduler hand-off) is explicitly out of scope here — that would
 > parallel the pull protocol rather than reuse it, and the demand-signal

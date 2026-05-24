@@ -206,6 +206,8 @@ Owned locals drop on the throw path the same as on the return path. The existing
 
 Cajeta does not yet have a stream API; this section pins the policy for when one lands so the door doesn't get left open to drift toward a decorator model.
 
+**Detailed spec.** See `StreamParallelism.ErrorHandling.md` for the parallel-stream walk-through (worker-throw → scope join → trigger re-raise → drop chain), the user-side tolerance patterns (lambda try/catch, user-authored Outcome<T>, mapOr* helpers, threshold abort), and the explicit non-goals re-stated in parallel context. The position below is the policy; the companion doc is the specification.
+
 The core position: **stream operations don't have their own error-handling sub-DSL.** Lambdas inside `.map(...)`, `.filter(...)`, `.flatMap(...)` can throw like any other code; the exception propagates through the pipeline; the caller wraps the **terminal operation** in `try/catch` if recovery is wanted.
 
 ```cajeta
