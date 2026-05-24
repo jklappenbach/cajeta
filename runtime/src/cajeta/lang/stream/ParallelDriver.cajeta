@@ -593,6 +593,82 @@ public class ParallelDriver {
     }
 
     /**
+     * Wrapper-chain-aware parallel collect. Same orchestration as
+     * `foldParallelChain` with one critical difference: each
+     * partial slot is initialized via `supplier()` rather than from
+     * a single shared seed. For mutable R (e.g. ArrayList) this is
+     * what keeps workers from aliasing one instance and racing on
+     * `add` / drop. Per-worker drain reuses `foldWorker<T, R>` —
+     * the worker side is identical; only the partials[] seeding
+     * differs.
+     */
+    public static #R collectParallelChain<T, R>(Stream<T> head, () -> R supplier, (R, T) -> R accumulator, (R, R) -> R combiner) {
+        int32 depth = 0;
+        Stream<T> cur = head;
+        while (cur != null) {
+            if (cur.isStatefulWrapper()) {
+                throw new Exception("CAJETA_ERROR_STREAM_PARALLEL_REJECT_STATEFUL: stateful intermediate op (take/skip) cannot be parallelized; call .sequential() before the stateful op");
+            }
+            Stream<T> next = cur.unwrap();
+            if (next == null) {
+                break;
+            }
+            cur = next;
+            depth = depth + 1;
+        }
+        int64 sz = cur.splittableSize();
+        int32 nSplits = pickSplitCount(sz);
+        if (sz < 0L || nSplits < 2) {
+            R accY = supplier();
+            Optional<T> oY = head.next();
+            while (oY.isPresent()) {
+                accY = accumulator(accY, oY.get());
+                oY = head.next();
+            }
+            return accY;
+        }
+        Stream<T>[] shares = new Stream<T>[nSplits - 1];
+        int32 shareCount = 0;
+        int32 si = 0;
+        while (si < nSplits - 1) {
+            Stream<T> piece = cur.trySplitRoot();
+            if (piece == null) {
+                break;
+            }
+            shares[si] = head.cloneChainOver(piece);
+            shareCount = shareCount + 1;
+            si = si + 1;
+        }
+        R[] partials = new R[shareCount + 1];
+        int32 pi = 0;
+        while (pi < shareCount + 1) {
+            partials[pi] = supplier();
+            pi = pi + 1;
+        }
+        scope {
+            int32 swi = 0;
+            while (swi < shareCount) {
+                spawn foldWorker<T, R>(shares[swi], swi, partials, accumulator);
+                swi = swi + 1;
+            }
+        }
+        R tail = partials[shareCount];
+        Optional<T> ot = head.next();
+        while (ot.isPresent()) {
+            tail = accumulator(tail, ot.get());
+            ot = head.next();
+        }
+        partials[shareCount] = tail;
+        R acc = partials[0];
+        int32 ci = 1;
+        while (ci < shareCount + 1) {
+            acc = combiner(acc, partials[ci]);
+            ci = ci + 1;
+        }
+        return acc;
+    }
+
+    /**
      * Wrapper-chain-aware parallel anyMatch. Same shape as
      * `reduceParallelChain`: walk unwrap, reject stateful, rebuild
      * each share via `head.cloneChainOver(piece)`, fork via

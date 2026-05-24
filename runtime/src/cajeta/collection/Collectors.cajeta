@@ -29,7 +29,7 @@ public class Collectors {
      */
     public static #Collector<T, ArrayList<T>> toList<T>() {
         return new Collector<T, ArrayList<T>>(
-            new ArrayList<T>(),
+            () -> new ArrayList<T>(),
             (acc, x) -> { acc.add(x); return acc; },
             (left, right) -> { left.appendAll(right); return left; });
     }

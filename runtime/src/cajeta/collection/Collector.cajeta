@@ -1,17 +1,19 @@
 package cajeta.collection;
 
 /**
- * Bundle of (seed, accumulator, combiner) for `Stream<T>.collect<R>`.
- * A Collector<T, R> reduces a stream of T into a single R: start with
- * `seed`, then for each element apply `accumulator(acc, element)`.
+ * Bundle of (supplier, accumulator, combiner) for `Stream<T>.collect<R>`.
+ * A Collector<T, R> reduces a stream of T into a single R: call
+ * `supplier()` for a fresh accumulator instance, then for each
+ * element apply `accumulator(acc, element)`.
  *
- * Under a parallel collect each worker fiber produces its own R
- * partial via the accumulator; the orchestrator then merges partials
- * pairwise via `combiner(left, right)` (per StreamParallelism.md §
- * Per-terminal rules). The combiner is REQUIRED — even purely
- * sequential collectors must supply one (a 1-element pipeline still
- * funnels through the combiner identity) so callers can opt into
- * `.parallel()` without per-collector re-engineering.
+ * Under a parallel collect each worker fiber calls `supplier()` for
+ * its own R partial — required for mutable R (e.g. ArrayList): a
+ * single shared seed instance would alias across workers and race
+ * on `add` / drop. The orchestrator then merges partials pairwise
+ * via `combiner(left, right)` (per StreamParallelism.md § Per-
+ * terminal rules). Both supplier and combiner are REQUIRED — even
+ * purely sequential collectors must supply both so callers can opt
+ * into `.parallel()` without per-collector re-engineering.
  *
  * The class-level template parameters keep T (element type) and R
  * (result type) independent so the same Stream can feed any
@@ -21,17 +23,18 @@ package cajeta.collection;
  *
  * Implementation note: the accumulator field is a function-typed
  * field (`(R, T) -> R`), invoked directly from
- * `Stream<T>.collect<R>` via `this.fold<R>(c.seed, c.accumulator)`.
- * Both halves are method-level-templated and monomorphize per (T, R)
- * tuple — see cajeta-docs/stdlib/MethodLevelTemplate.md.
+ * `Stream<T>.collect<R>` via `this.fold<R>(c.supplier(),
+ * c.accumulator)`. All three callables are method-level-templated
+ * and monomorphize per (T, R) tuple — see cajeta-docs/stdlib/
+ * MethodLevelTemplate.md.
  */
 public class Collector<T, R> {
-    public R seed;
+    public () -> R supplier;
     public (R, T) -> R accumulator;
     public (R, R) -> R combiner;
 
-    public Collector(R seed, (R, T) -> R accumulator, (R, R) -> R combiner) {
-        this.seed = seed;
+    public Collector(() -> R supplier, (R, T) -> R accumulator, (R, R) -> R combiner) {
+        this.supplier = supplier;
         this.accumulator = accumulator;
         this.combiner = combiner;
     }

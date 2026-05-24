@@ -338,30 +338,24 @@ public class Stream<T> {
     }
 
     /**
-     * Reduce a stream via a Collector — packages the (seed,
+     * Reduce a stream via a Collector — packages the (supplier,
      * accumulator, combiner) triple so the same Stream can feed any
      * compatible Collector. See `cajeta.collection.Collector` and
      * `cajeta.collection.Collectors` for the standard built-in
      * collectors (`toList`, etc.). The R type is method-level so the
      * result type is independent of T.
      *
-     * **Parallel-incompatible today.** `Collector<T, R>` carries a
-     * single `seed` instance — for mutable R (e.g. ArrayList) every
-     * worker would alias that one instance and race on `add` / drop,
-     * producing heap corruption. Parallel collect needs a
-     * `supplier: () -> R` field on Collector (Java's
-     * `Collector.supplier()`) so each worker gets a fresh
-     * accumulator. Tracked in StreamParallelism.Examples.md § 7.9
-     * errata "Stream parallelism — collect needs supplier".
-     * `.parallel().collect(...)` throws today; call `.sequential()`
-     * before `.collect(...)` to collect on a previously-parallel
-     * pipeline.
+     * Under `.parallel()` each worker calls `c.supplier()` for its
+     * own R partial (mutable R like ArrayList is safe — no aliasing
+     * across workers) and the orchestrator merges via `c.combiner`.
+     * Sequential collect calls `c.supplier()` once for the fold's
+     * initial accumulator.
      */
     public final R collect<R>(Collector<T, R> c) {
         if (this.isParallel) {
-            throw new Exception("CAJETA_ERROR_STREAM_PARALLEL_COLLECT_NO_SUPPLIER: collect on a parallel stream is unsafe today because Collector<T, R> aliases a single mutable `seed` across workers; call .sequential() before .collect(), or wait for the Collector supplier field (StreamParallelism.Examples.md § 7.9 errata)");
+            return ParallelDriver.collectParallelChain<T, R>(this, c.supplier, c.accumulator, c.combiner);
         }
-        return this.fold(c.seed, c.accumulator);
+        return this.fold(c.supplier(), c.accumulator);
     }
 
     public #Stream<T> filter((T) -> boolean pred) {

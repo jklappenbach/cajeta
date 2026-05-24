@@ -919,39 +919,89 @@ TEST(ParallelStreamP1Tests, twoArgFoldOnParallelStreamRejects) {
     EXPECT_EQ(runI32(src), -42);
 }
 
-// --- parallel collect rejects today ---------------------------------
-// Per § 7.9 errata "Stream parallelism — collect needs supplier":
-// Collector<T, R> aliases a single mutable `seed` across workers, so
-// `.parallel().collect(...)` would corrupt the heap on a mutable R
-// like ArrayList. The reject is the right behavior until Collector
-// grows a `supplier: () -> R` field (Java's Collector.supplier()).
-// `.sequential()` before `.collect()` is the escape hatch.
-TEST(ParallelStreamP1Tests, parallelCollectRejectsToday) {
+// --- parallel collect via Collector.supplier ------------------------
+// `Collector<T, R>` now carries `supplier: () -> R` (replacing the
+// pre-parallel `seed` field). `.parallel().collect(...)` routes
+// through `ParallelDriver.collectParallelChain<T, R>` which calls
+// `supplier()` per worker partial — fresh R instance per worker,
+// no aliasing on mutable accumulators like ArrayList. The driver
+// orchestrator combines partials via `c.combiner`.
+TEST(ParallelStreamP1Tests, parallelCollectViaSupplierAggregatesAll) {
     auto src =
         "package test;\n"
         "import cajeta.collection.Collector;\n"
         "import cajeta.collection.Collectors;\n"
         "import cajeta.collection.ArrayList;\n"
-        "import cajeta.error.Exception;\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
         "        int32[] xs = new int32[100];\n"
         "        for (int32 i = 0; i < 100; i = i + 1) { xs[i] = i + 1; }\n"
         "        Collector<int32, ArrayList<int32>> c = Collectors.toList<int32>();\n"
-        "        try {\n"
-        "            ArrayList<int32> out = xs.stream().parallel().collect(c);\n"
-        "            return out.count();\n"
-        "        } catch (Exception e) {\n"
-        "            return -42;\n"
-        "        }\n"
+        "        ArrayList<int32> out = xs.stream().parallel().collect(c);\n"
+        "        return out.count();\n"
         "    }\n"
         "}\n";
-    EXPECT_EQ(runI32(src), -42);
+    EXPECT_EQ(runI32Diag(src), 100);
 }
 
-// .sequential() before .collect() is the escape hatch from the
-// parallel-collect reject — flips the flag back so collect runs the
-// per-element walk safely.
+// Verify every element survived the parallel collect: sum-of-elements
+// catches losses that a count check can't (e.g. a worker's partial
+// silently dropped during the combiner walk).
+TEST(ParallelStreamP1Tests, parallelCollectViaSupplierPreservesElements) {
+    auto src =
+        "package test;\n"
+        "import cajeta.collection.Collector;\n"
+        "import cajeta.collection.Collectors;\n"
+        "import cajeta.collection.ArrayList;\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        int32[] xs = new int32[100];\n"
+        "        for (int32 j = 0; j < 100; j = j + 1) { xs[j] = j + 1; }\n"
+        "        Collector<int32, ArrayList<int32>> c = Collectors.toList<int32>();\n"
+        "        ArrayList<int32> out = xs.stream().parallel().collect(c);\n"
+        "        int32 total = 0;\n"
+        "        int32 i = 0;\n"
+        "        while (i < out.count()) {\n"
+        "            total = total + out.get(i);\n"
+        "            i = i + 1;\n"
+        "        }\n"
+        "        return total;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32Diag(src), 5050);
+}
+
+// Parallel collect through a filter chain — the wrapper-chain unwind
+// rebuilds the filter per worker (cloneChainOver) so each worker's
+// share also filters before accumulating. The supplier-fresh-per-
+// worker discipline still holds; the combiner just merges fewer.
+TEST(ParallelStreamP1Tests, parallelCollectViaSupplierThroughFilter) {
+    auto src =
+        "package test;\n"
+        "import cajeta.collection.Collector;\n"
+        "import cajeta.collection.Collectors;\n"
+        "import cajeta.collection.ArrayList;\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        int32[] xs = new int32[100];\n"
+        "        for (int32 i = 0; i < 100; i = i + 1) { xs[i] = i + 1; }\n"
+        "        Collector<int32, ArrayList<int32>> c = Collectors.toList<int32>();\n"
+        "        ArrayList<int32> out = xs.stream().filter((int32 x) -> x % 2 == 0).parallel().collect(c);\n"
+        "        int32 total = 0;\n"
+        "        int32 i = 0;\n"
+        "        while (i < out.count()) {\n"
+        "            total = total + out.get(i);\n"
+        "            i = i + 1;\n"
+        "        }\n"
+        "        return total;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32Diag(src), 2550);
+}
+
+// .sequential() before .collect() — even now that parallel collect
+// works, .sequential() should still flip the flag so collect takes
+// the per-element walk path instead of the driver dispatch.
 TEST(ParallelStreamP1Tests, sequentialBeforeCollectClearsParallelFlag) {
     auto src =
         "package test;\n"
