@@ -69,6 +69,15 @@ namespace cajeta {
         if (placeholderFlag && module) {
             return llvm::PointerType::get(*module->getLlvmContext(), 0);
         }
+        // Wildcard proxies (Step 2 — template wildcards) carry no
+        // body and never run generatePrototype, but field/local sites
+        // expect a pointer-shaped llvm::Type for layout. The dynamic
+        // instance pointed at is a concrete CajetaClass whose vtable
+        // was patched at construction (CreatorRest), so drops route
+        // correctly via __cajeta_class_virtual_drop.
+        if (isWildcardInstantiation() && module) {
+            return llvm::PointerType::get(*module->getLlvmContext(), 0);
+        }
         return llvmType;
     }
 
@@ -2339,6 +2348,27 @@ namespace cajeta {
     llvm::Function* CajetaClass::getOrCreateDropFunction() {
         if (llvmDropFunction) return llvmDropFunction;
         if (interfaceFlag) return nullptr;
+        // Wildcard proxies (Step 2 — template wildcards) don't own a
+        // synthesized per-class drop wrapper — the proxy has no body
+        // and no LLVM struct. The dynamic instance pointed at by a
+        // wildcard binding is a concrete CajetaClass whose drop
+        // wrapper is reachable via the patched vtable.drop_fn slot.
+        // Hand back the runtime virtual-drop dispatcher directly so
+        // every "drop this field/local" call site (LocalVariable-
+        // Declaration, getOrCreateStackDropFunction's class-ref
+        // field walk, emitDropBodyInline) lowers to the right
+        // routing without each site needing to special-case
+        // wildcards. Cache on llvmDropFunction so subsequent calls
+        // are constant-time and the same llvm::Function* is shared
+        // across the proxy's use sites.
+        if (isWildcardInstantiation()) {
+            llvm::Function* virtualDropFn = module->getRuntimeFunction(
+                "__cajeta_class_virtual_drop");
+            if (virtualDropFn) {
+                llvmDropFunction = virtualDropFn;
+            }
+            return llvmDropFunction;
+        }
         auto& ctx = *module->getLlvmContext();
         auto* lmod = module->getLlvmModule();
         llvm::PointerType* ptrTy = llvm::PointerType::get(ctx, 0);
