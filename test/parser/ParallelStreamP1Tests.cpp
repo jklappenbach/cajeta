@@ -606,3 +606,130 @@ TEST(ParallelStreamP1Tests, reduceParallelChainRejectsStatefulInChain) {
         "}\n";
     EXPECT_EQ(runI32(src), -77);
 }
+
+// --- Wrapper-aware predicate + forEach terminals --------------------
+// Same dispatch shape as reduce: Stream<T>.<terminal> consults
+// isParallel; the driver's *ParallelChain<T> entry walks unwrap,
+// rejects stateful, rebuilds each share via head.cloneChainOver, and
+// forks workers. Tests pin (a) the fluent dispatch through filter
+// chains and (b) stateful rejection in those chains.
+
+TEST(ParallelStreamP1Tests, parallelAnyMatchDispatchesThroughFilter) {
+    auto src =
+        "package test;\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        int32[] xs = new int32[100];\n"
+        "        for (int32 i = 0; i < 100; i = i + 1) { xs[i] = i + 1; }\n"
+        "        boolean hit = xs.stream()\n"
+        "                        .filter((x) -> x % 2 == 0)\n"
+        "                        .parallel()\n"
+        "                        .anyMatch((x) -> x == 50);\n"
+        "        return hit ? 1 : 0;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32Diag(src), 1);
+}
+
+TEST(ParallelStreamP1Tests, parallelAnyMatchFalseThroughFilter) {
+    auto src =
+        "package test;\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        int32[] xs = new int32[100];\n"
+        "        for (int32 i = 0; i < 100; i = i + 1) { xs[i] = i + 1; }\n"
+        "        // 200 isn't in the evens 2..100 range\n"
+        "        boolean hit = xs.stream()\n"
+        "                        .filter((x) -> x % 2 == 0)\n"
+        "                        .parallel()\n"
+        "                        .anyMatch((x) -> x == 200);\n"
+        "        return hit ? 1 : 0;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32Diag(src), 0);
+}
+
+TEST(ParallelStreamP1Tests, parallelAllMatchDispatchesThroughFilter) {
+    auto src =
+        "package test;\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        int32[] xs = new int32[100];\n"
+        "        for (int32 i = 0; i < 100; i = i + 1) { xs[i] = i + 1; }\n"
+        "        // every even is > 0\n"
+        "        boolean all = xs.stream()\n"
+        "                        .filter((x) -> x % 2 == 0)\n"
+        "                        .parallel()\n"
+        "                        .allMatch((x) -> x > 0);\n"
+        "        return all ? 1 : 0;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32Diag(src), 1);
+}
+
+TEST(ParallelStreamP1Tests, parallelNoneMatchDispatchesThroughFilter) {
+    auto src =
+        "package test;\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        int32[] xs = new int32[100];\n"
+        "        for (int32 i = 0; i < 100; i = i + 1) { xs[i] = i + 1; }\n"
+        "        // 7 is odd — filtered out — so noneMatch is true\n"
+        "        boolean none = xs.stream()\n"
+        "                         .filter((x) -> x % 2 == 0)\n"
+        "                         .parallel()\n"
+        "                         .noneMatch((x) -> x == 7);\n"
+        "        return none ? 1 : 0;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32Diag(src), 1);
+}
+
+TEST(ParallelStreamP1Tests, parallelForEachDispatchesThroughFilter) {
+    // forEach has no return value; test by accumulating into a
+    // class-typed counter the lambda mutates. Each worker drains its
+    // share and bumps the counter. Order across workers is
+    // unspecified (documented v1 contract).
+    auto src =
+        "package test;\n"
+        "public class Counter {\n"
+        "    public int32 v;\n"
+        "    public Counter(int32 i) { this.v = i; }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        int32[] xs = new int32[100];\n"
+        "        for (int32 i = 0; i < 100; i = i + 1) { xs[i] = i + 1; }\n"
+        "        Counter c = new Counter(0);\n"
+        "        xs.stream()\n"
+        "          .filter((x) -> x % 2 == 0)\n"
+        "          .parallel()\n"
+        "          .forEach((x) -> { c.v = c.v + 1; });\n"
+        "        // 50 evens in 1..100\n"
+        "        return c.v;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32Diag(src), 50);
+}
+
+// Stateful in chain — each terminal should reject when a take/skip
+// sits above .parallel() in the chain.
+TEST(ParallelStreamP1Tests, parallelAnyMatchRejectsStatefulInChain) {
+    auto src =
+        "package test;\n"
+        "import cajeta.error.Exception;\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        int32[] xs = new int32[100];\n"
+        "        for (int32 i = 0; i < 100; i = i + 1) { xs[i] = i; }\n"
+        "        try {\n"
+        "            boolean hit = xs.stream().take(5).parallel()\n"
+        "                            .anyMatch((x) -> x > 2);\n"
+        "            return hit ? 1 : 0;\n"
+        "        } catch (Exception e) {\n"
+        "            return -77;\n"
+        "        }\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), -77);
+}

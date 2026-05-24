@@ -1129,15 +1129,110 @@ Status of each original item:
    What did NOT ship in this pass:
 
      - **Same dispatch flip on `anyMatch / allMatch / noneMatch /
-       forEach / fold`.** Same shape as `reduce`; just hasn't been
-       wired through `ParallelDriver` yet. Tactically small with
-       the compiler fixes in place.
+       forEach`.** **Shipped** in a follow-up pass (see § 7.8).
      - **Type-changing wrappers (MapStream<U,T>, FlatMapStream<U,T>).**
        The unwind layer is still element-type-uniform. MapStream's
        T→R boundary breaks the lambda/closure composition shape
        used by the current cloneChainOver design. Lifting needs an
        Object-erasure layer or `<?>` wildcards
        (CajetaType.cpp:454 rejects wildcards today).
+     - **`fold<R>(seed, fn)` under `.parallel()`.** See errata
+       *Stream parallelism — fold(seed,fn) needs combiner overload
+       first* below.
+
+## §7.8 Wrapper-aware predicate + forEach terminals
+
+Lands the same dispatch flip on `anyMatch / allMatch / noneMatch /
+forEach` that § 7.7 landed for `reduce`. Same shape across all four:
+
+```
+public boolean anyMatch((T) -> boolean pred) {
+    if (this.isParallel) {
+        return ParallelDriver.anyMatchParallelChain<T>(this, pred);
+    }
+    // existing sequential walk
+}
+```
+
+Driver-side: `anyMatchParallelChain / allMatchParallelChain /
+noneMatchParallelChain / forEachParallelChain` — each walks
+`head.unwrap()` to find the chain root, rejects stateful
+intermediates (take/skip in chain → REJECT_STATEFUL), pulls splits
+via `cur.trySplitRoot()`, rewraps each share via
+`head.cloneChainOver(piece)`, and forks via
+`scope { spawn findHitWorker / findFailWorker / forEachWorker }`.
+The three predicate terminals reuse the existing `findHitWorker` and
+`findFailWorker` (and their shared `boolean[1]` cancel flag);
+forEach gets a new no-cancel `forEachWorker` since it visits every
+element. Tail walks `head.next()` on the orchestrator after scope
+join.
+
+Tests (`ParallelStreamP1Tests.parallel{AnyMatch,AllMatch,NoneMatch,
+ForEach}DispatchesThroughFilter`) pin the fluent dispatch through
+filter chains; `parallelAnyMatchRejectsStatefulInChain` pins the
+take/skip reject path.
+
+## §7.9 Errata — deferred concerns
+
+Items that surfaced during wrapper-aware terminal work and were
+deferred. Naming: `Stream parallelism — <concern>`.
+
+### Stream parallelism — fold(seed,fn) needs combiner overload first
+
+`Stream<T>.fold<R>(R seed, (R,T) -> R fn)` doesn't dispatch parallel
+today, and the design doc (StreamParallelism.md § Per-terminal rules)
+explicitly says the 2-arg form is sequential-only under `.parallel()`:
+the per-element accumulator `(R, T) -> R` can't merge partials. The
+parallel-friendly path is a new 3-arg overload
+`fold<R>(R seed, (R,T) -> R fn, (R,R) -> R combiner)` that the
+driver would call. Adding it touches two surfaces:
+
+  - Stream<T> declares `final R fold<R>(R, (R,T)->R, (R,R)->R)` as a
+    new overload; existing 2-arg call sites compile unchanged.
+  - ParallelDriver gets `foldParallelChain<T, R>(Stream<T> head, R
+    seed, (R,T)->R fn, (R,R)->R combiner)` — same shape as
+    reduceParallelChain but the per-share worker accumulates R from
+    T's, and the combine pass uses the user-supplied combiner.
+
+Plus the 2-arg call-site lint
+(`CAJETA_ERROR_STREAM_PARALLEL_FOLD_NO_COMBINER` per § 2.2) that
+fires when 2-arg fold is used on a parallel stream.
+
+Not blocked by any compiler gap; just hasn't been wired. Tactically
+~1 session.
+
+### Stream parallelism — collect parallel path
+
+`collect<R>(Collector<T, R>)` currently calls `fold(c.seed,
+c.accumulator)` — 2-arg fold, sequential-only under parallel. The
+v1 design adds a `combiner` field to `Collector<T, R>` (3-arg ctor)
+and routes `collect` under `.parallel()` to a parallel fold using
+that combiner. Stdlib `Collectors.toList<T>` gains an
+`appendAll`-based combiner. Same gating as fold above.
+
+### Stream parallelism — `findFirst` under parallel becomes findAny
+
+Per § R1, `findFirst` under `.parallel()` silently shifts to
+findAny semantics + emits the `[parallel-findfirst-unordered]`
+lint at the call site. Today findFirst is sequential under
+.parallel() (no dispatch); the parallel path wants a
+`findAnyParallelChain` worker that signals on first match.
+Distinct enough from anyMatch (returns the found element, not just
+a boolean) that it's its own dispatch.
+
+### Stream parallelism — anyMatch result correlation in dispatch tests
+
+The new fluent-dispatch tests for anyMatch/allMatch/noneMatch all
+pass with EITHER the sequential walk or the parallel fork, because
+the boolean results are identical (per the associativity /
+commutativity contract). The TDD signal that actually gated the
+implementation was `parallelAnyMatchRejectsStatefulInChain` — only
+the parallel dispatch path throws REJECT_STATEFUL on a stateful-in-
+chain. A stronger "did the parallel path run?" assertion would
+need either a side-channel (worker-count counter) or a
+deliberately-non-commutative predicate that observes intermediate
+state. Not pursued because the existing tests + the stateful
+reject pin enough of the contract.
 
 Status update: the "JIT codegen loop" diagnosis was incorrect.
 The bug was a runtime SEGFAULT (not a compile hang) — gtest can't
