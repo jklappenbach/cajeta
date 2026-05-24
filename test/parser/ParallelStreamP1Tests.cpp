@@ -896,6 +896,80 @@ TEST(ParallelStreamP1Tests, parallelFindFirstThroughFilter) {
     EXPECT_EQ(r % 2, 0);
 }
 
+// --- 2-arg fold rejected on parallel head ---------------------------
+// Per § 2.2, .parallel().fold(seed, fn) (2-arg) is incoherent:
+// no combiner means no way to merge partials. The 2-arg overload
+// throws at the call site; users should switch to fold(seed, fn,
+// combiner) or call .sequential() first. Mirrors take/skip rejects.
+TEST(ParallelStreamP1Tests, twoArgFoldOnParallelStreamRejects) {
+    auto src =
+        "package test;\n"
+        "import cajeta.error.Exception;\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        int32[] xs = {1, 2, 3, 4, 5};\n"
+        "        try {\n"
+        "            return xs.stream().parallel().fold(\n"
+        "                0, (int32 a, int32 x) -> a + x);\n"
+        "        } catch (Exception e) {\n"
+        "            return -42;\n"
+        "        }\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), -42);
+}
+
+// --- parallel collect rejects today ---------------------------------
+// Per § 7.9 errata "Stream parallelism — collect needs supplier":
+// Collector<T, R> aliases a single mutable `seed` across workers, so
+// `.parallel().collect(...)` would corrupt the heap on a mutable R
+// like ArrayList. The reject is the right behavior until Collector
+// grows a `supplier: () -> R` field (Java's Collector.supplier()).
+// `.sequential()` before `.collect()` is the escape hatch.
+TEST(ParallelStreamP1Tests, parallelCollectRejectsToday) {
+    auto src =
+        "package test;\n"
+        "import cajeta.collection.Collector;\n"
+        "import cajeta.collection.Collectors;\n"
+        "import cajeta.collection.ArrayList;\n"
+        "import cajeta.error.Exception;\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        int32[] xs = new int32[100];\n"
+        "        for (int32 i = 0; i < 100; i = i + 1) { xs[i] = i + 1; }\n"
+        "        Collector<int32, ArrayList<int32>> c = Collectors.toList<int32>();\n"
+        "        try {\n"
+        "            ArrayList<int32> out = xs.stream().parallel().collect(c);\n"
+        "            return out.count();\n"
+        "        } catch (Exception e) {\n"
+        "            return -42;\n"
+        "        }\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), -42);
+}
+
+// .sequential() before .collect() is the escape hatch from the
+// parallel-collect reject — flips the flag back so collect runs the
+// per-element walk safely.
+TEST(ParallelStreamP1Tests, sequentialBeforeCollectClearsParallelFlag) {
+    auto src =
+        "package test;\n"
+        "import cajeta.collection.Collector;\n"
+        "import cajeta.collection.Collectors;\n"
+        "import cajeta.collection.ArrayList;\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        int32[] xs = new int32[100];\n"
+        "        for (int32 i = 0; i < 100; i = i + 1) { xs[i] = i + 1; }\n"
+        "        Collector<int32, ArrayList<int32>> c = Collectors.toList<int32>();\n"
+        "        ArrayList<int32> out = xs.stream().parallel().sequential().collect(c);\n"
+        "        return out.count();\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32Diag(src), 100);
+}
+
 TEST(ParallelStreamP1Tests, parallelFindFirstRejectsStatefulInChain) {
     auto src =
         "package test;\n"
