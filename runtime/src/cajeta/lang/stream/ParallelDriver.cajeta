@@ -489,6 +489,110 @@ public class ParallelDriver {
     }
 
     /**
+     * Wrapper-chain-aware parallel fold with explicit combiner.
+     * Same shape as `reduceParallelChain` but with cross-type R: the
+     * per-share accumulator is `(R, T) -> R fn`, and the partials
+     * are merged via `(R, R) -> R combiner` (which the orchestrator
+     * also uses to seed-accumulate, mirroring fn's identity contract
+     * over `seed`). Per Java's reduce(seed, fn, combiner) contract:
+     *   - `combiner` MUST be associative.
+     *   - `combiner(seed, fn(seed, t))` MUST equal `fn(seed, t)` —
+     *     i.e. `seed` is the identity for both fn and combiner.
+     * Violating these gives a numerically-correct but
+     * implementation-dependent answer (same as Java's parallel
+     * collect contract).
+     *
+     * Type-changing wrappers (MapStream<U,T>, FlatMapStream<U,T>)
+     * still fall back to sequential here for the same reason as
+     * reduceParallelChain: the chain is Stream<T>-typed and the
+     * Map/FlatMap nodes flip to a different element type that
+     * Stream<T>.unwrap()=null hides. Lifting that wants either
+     * Object-erasure or wildcard support (CajetaType.cpp:454).
+     */
+    public static #R foldParallelChain<T, R>(Stream<T> head, R seed, (R, T) -> R fn, (R, R) -> R combiner) {
+        int32 depth = 0;
+        Stream<T> cur = head;
+        while (cur != null) {
+            if (cur.isStatefulWrapper()) {
+                throw new Exception("CAJETA_ERROR_STREAM_PARALLEL_REJECT_STATEFUL: stateful intermediate op (take/skip) cannot be parallelized; call .sequential() before the stateful op");
+            }
+            Stream<T> next = cur.unwrap();
+            if (next == null) {
+                break;
+            }
+            cur = next;
+            depth = depth + 1;
+        }
+        int64 sz = cur.splittableSize();
+        int32 nSplits = pickSplitCount(sz);
+        if (sz < 0L || nSplits < 2) {
+            R accY = seed;
+            Optional<T> oY = head.next();
+            while (oY.isPresent()) {
+                accY = fn(accY, oY.get());
+                oY = head.next();
+            }
+            return accY;
+        }
+        Stream<T>[] shares = new Stream<T>[nSplits - 1];
+        int32 shareCount = 0;
+        int32 si = 0;
+        while (si < nSplits - 1) {
+            Stream<T> piece = cur.trySplitRoot();
+            if (piece == null) {
+                break;
+            }
+            shares[si] = head.cloneChainOver(piece);
+            shareCount = shareCount + 1;
+            si = si + 1;
+        }
+        R[] partials = new R[shareCount + 1];
+        int32 pi = 0;
+        while (pi < shareCount + 1) {
+            partials[pi] = seed;
+            pi = pi + 1;
+        }
+        scope {
+            int32 swi = 0;
+            while (swi < shareCount) {
+                spawn foldWorker<T, R>(shares[swi], swi, partials, fn);
+                swi = swi + 1;
+            }
+        }
+        R tail = seed;
+        Optional<T> ot = head.next();
+        while (ot.isPresent()) {
+            tail = fn(tail, ot.get());
+            ot = head.next();
+        }
+        partials[shareCount] = tail;
+        R acc = seed;
+        int32 ci = 0;
+        while (ci < shareCount + 1) {
+            acc = combiner(acc, partials[ci]);
+            ci = ci + 1;
+        }
+        return acc;
+    }
+
+    /**
+     * Per-worker drain for `foldParallelChain`. Mirrors reduceWorker
+     * but with two type params — T for the element type, R for the
+     * accumulator. The combiner isn't needed inside the worker; it
+     * only fires on the orchestrator when the join-scope completes.
+     */
+    public static async int32 foldWorker<T, R>(Stream<T> share, int32 slot, R[] partials, (R, T) -> R fn) {
+        R acc = partials[slot];
+        Optional<T> o = share.next();
+        while (o.isPresent()) {
+            acc = fn(acc, o.get());
+            o = share.next();
+        }
+        partials[slot] = acc;
+        return 0;
+    }
+
+    /**
      * Wrapper-chain-aware parallel anyMatch. Same shape as
      * `reduceParallelChain`: walk unwrap, reject stateful, rebuild
      * each share via `head.cloneChainOver(piece)`, fork via

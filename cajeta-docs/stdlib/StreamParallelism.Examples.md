@@ -1177,29 +1177,17 @@ take/skip reject path.
 Items that surfaced during wrapper-aware terminal work and were
 deferred. Naming: `Stream parallelism — <concern>`.
 
-### Stream parallelism — fold(seed,fn) needs combiner overload first
+### Stream parallelism — fold(seed,fn) 2-arg call-site lint
 
-`Stream<T>.fold<R>(R seed, (R,T) -> R fn)` doesn't dispatch parallel
-today, and the design doc (StreamParallelism.md § Per-terminal rules)
-explicitly says the 2-arg form is sequential-only under `.parallel()`:
-the per-element accumulator `(R, T) -> R` can't merge partials. The
-parallel-friendly path is a new 3-arg overload
-`fold<R>(R seed, (R,T) -> R fn, (R,R) -> R combiner)` that the
-driver would call. Adding it touches two surfaces:
-
-  - Stream<T> declares `final R fold<R>(R, (R,T)->R, (R,R)->R)` as a
-    new overload; existing 2-arg call sites compile unchanged.
-  - ParallelDriver gets `foldParallelChain<T, R>(Stream<T> head, R
-    seed, (R,T)->R fn, (R,R)->R combiner)` — same shape as
-    reduceParallelChain but the per-share worker accumulates R from
-    T's, and the combine pass uses the user-supplied combiner.
-
-Plus the 2-arg call-site lint
-(`CAJETA_ERROR_STREAM_PARALLEL_FOLD_NO_COMBINER` per § 2.2) that
-fires when 2-arg fold is used on a parallel stream.
-
-Not blocked by any compiler gap; just hasn't been wired. Tactically
-~1 session.
+Resolved (3-arg overload): § 7.10 lands the parallel-friendly
+`fold<R>(seed, fn, combiner)` overload and dispatch. Remaining
+follow-up is the call-site lint
+`CAJETA_ERROR_STREAM_PARALLEL_FOLD_NO_COMBINER` (per § 2.2) that
+fires when 2-arg `fold` is invoked on a parallel-flagged stream —
+today the 2-arg overload silently runs sequentially even on a
+parallel head (`Stream<T>.fold<R>(R, (R,T)->R)` has no parallel
+branch, by design). The lint sits at semantic-analysis call sites,
+not the runtime; not pursued in this session.
 
 ### Stream parallelism — collect parallel path
 
@@ -1274,6 +1262,54 @@ the next iteration (the trySplit loop's fresh `piece` each turn)
 or, for parameter sources, read again in unrelated paths
 (HashMap.put's `this.keys[i] = key` followed by future probes);
 the drop-deactivation half is necessary and sufficient.
+
+## §7.10 fold(seed, fn, combiner) — parallel cross-type fold
+
+Lands the 3-arg `fold<R>` overload + driver entry. Same dispatch
+shape as `reduce` / the predicate terminals: `Stream<T>.fold<R>`
+consults `isParallel`; the driver's `foldParallelChain<T, R>` walks
+`head.unwrap()`, rejects stateful intermediates (take/skip →
+REJECT_STATEFUL), pulls splits via `cur.trySplitRoot()`, rebuilds
+each share via `head.cloneChainOver(piece)`, and forks workers via
+`scope { spawn foldWorker<T, R> }`. The combiner only fires on the
+orchestrator at scope-join, merging `partials[0..shareCount]`
+left-to-right with `seed` as the initial accumulator.
+
+Cross-type R is the headline payoff: int32 stream summed into int64,
+T-stream `collect`ed into ArrayList<T>, any-T-stream concatenated
+into String, etc. The 2-arg `fold<R>` overload stays unchanged
+(sequential-only); the 3-arg version is the parallel-friendly path.
+
+```cajeta
+public final R fold<R>(R seed, (R, T) -> R fn, (R, R) -> R combiner) {
+    if (this.isParallel) {
+        return ParallelDriver.foldParallelChain<T, R>(this, seed, fn, combiner);
+    }
+    // existing sequential walk
+}
+```
+
+Driver-side, the per-worker drain is template-on-(T, R) — Cajeta's
+first multi-param method-level template in stdlib:
+
+```cajeta
+public static async int32 foldWorker<T, R>(
+    Stream<T> share, int32 slot, R[] partials, (R, T) -> R fn) { ... }
+```
+
+Tests (`ParallelStreamP1Tests.foldCombiner{SeqI32ToI64,Parallel
+DirectArrayHead,ParallelThroughFilter,RejectsStatefulInChain}`)
+pin: sequential overload resolution, parallel direct-array head,
+parallel through filter chain, and stateful-reject.
+
+**Contract** (per Java + StreamParallelism.md § Per-terminal rules):
+  - `combiner` MUST be associative.
+  - `seed` MUST be the identity for both `fn` and `combiner`:
+    `combiner(seed, fn(seed, t)) == fn(seed, t)` for every t.
+
+Unblocks the next errata item — parallel `collect` — which routes
+through `fold(seed, fn, combiner)` once `Collector<T, R>` grows the
+combiner field (§ 8 migration sweep).
 
 ## §8 Migration sweep (Collector R3)
 
