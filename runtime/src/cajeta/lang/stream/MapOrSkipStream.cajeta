@@ -1,0 +1,46 @@
+package cajeta.lang.stream;
+
+import cajeta.error.RecoverableException;
+
+/**
+ * Intermediate recovery combinator: wraps another Stream<T> and
+ * applies `fn: (T) -> R` to each element, yielding a Stream<R>.
+ * Elements whose `fn` invocation throws `RecoverableException` are
+ * **dropped** — the output stream is shorter than the input.
+ *
+ * `UnrecoverableException` is NOT caught (alarm contract per
+ * `ErrorModel.md` § The hierarchy); it propagates through the
+ * pipeline unchanged. See
+ * `cajeta-docs/stdlib/StreamParallelism.ErrorHandling.md` § 3.3.
+ *
+ * Lazy — `fn` is invoked once per pull. Empty inner stream
+ * propagates as empty. Same type-changing shape as MapStream<T, R>
+ * — falls back to sequential under `.parallel()` (the wrapper-chain
+ * walk stops at the type-flip; documented limitation).
+ */
+public class MapOrSkipStream<T, R> extends Stream<R> {
+    Stream<T> source;
+    (T) -> R fn;
+
+    public MapOrSkipStream(Stream<T> source, (T) -> R fn) {
+        this.source = source;
+        this.fn = fn;
+    }
+
+    public #Optional<R> next() {
+        while (true) {
+            Optional<T> o = this.source.next();
+            if (o.isEmpty()) {
+                return heap Optional<R>(false, null);
+            }
+            try {
+                R mapped = this.fn(o.get());
+                return heap Optional<R>(true, mapped);
+            } catch (RecoverableException e) {
+                // drop the element, pull the next one
+            }
+        }
+        // unreachable; while(true) above either returns or continues
+        return heap Optional<R>(false, null);
+    }
+}

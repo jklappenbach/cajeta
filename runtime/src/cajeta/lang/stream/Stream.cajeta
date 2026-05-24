@@ -414,4 +414,43 @@ public class Stream<T> {
     public final #Stream<R> flatMap<R>((T) -> Stream<R> fn) {
         return heap FlatMapStream<T, R>(this, fn);
     }
+
+    /**
+     * Recovery intermediate: like `map`, but elements whose `fn`
+     * throws `RecoverableException` are DROPPED. Stream shortens.
+     * `UnrecoverableException` propagates (alarm contract).
+     *
+     * Use when failures are noise and you don't need the error
+     * record. See `StreamParallelism.ErrorHandling.md` § 3.3 for
+     * the full pattern catalogue.
+     */
+    public final #Stream<R> mapOrSkip<R>((T) -> R fn) {
+        return heap MapOrSkipStream<T, R>(this, fn);
+    }
+
+    /**
+     * Recovery intermediate: like `map`, but elements whose `fn`
+     * throws `RecoverableException` are SUBSTITUTED with `fallback`.
+     * Stream length unchanged. `UnrecoverableException` propagates.
+     *
+     * Use when you need a same-length stream and a sentinel value
+     * is acceptable for failures (0 for sum, identity for product).
+     */
+    public final #Stream<R> mapOrFallback<R>((T) -> R fn, R fallback) {
+        return heap MapOrFallbackStream<T, R>(this, fn, fallback);
+    }
+
+    /**
+     * Recovery intermediate: like `map`, but elements whose `fn`
+     * throws `RecoverableException` are passed to
+     * `logger: (T, Exception) -> void` and then DROPPED. Stream
+     * shortens. `UnrecoverableException` propagates.
+     *
+     * Use when you want failures observable without aborting the
+     * pipeline. The logger sees both the offending element and the
+     * caught exception.
+     */
+    public final #Stream<R> mapOrLog<R>((T) -> R fn, (T, Exception) -> void logger) {
+        return heap MapOrLogStream<T, R>(this, fn, logger);
+    }
 }
