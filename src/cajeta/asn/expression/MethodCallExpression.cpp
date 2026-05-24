@@ -3110,6 +3110,63 @@ namespace cajeta {
             builder->SetInsertPoint(nullSafeCallBB);
         }
 
+        // # transfer at call site (auto): when the callee's formal
+        // parameter is marked `#T` (isTransferred), the corresponding
+        // caller-side argument's drop entry must be deactivated — the
+        // callee takes ownership. Without this, a caller pattern like
+        //   #Stream<T> piece = ...trySplit();
+        //   shares[i] = head.cloneChainOver(piece);  // piece's drop
+        //                                            // stays active
+        // ends up running piece's drop at loop end AND treats the
+        // shares[i] store as having received ownership — double-free
+        // when the array drops at scope exit. Mirrors how
+        // LocalVariableDeclaration / ArrayElementAssign already
+        // deactivate the source's drop on `#`-marked or array-store
+        // transfers. The check fires for any IdentifierExpression arg
+        // whose Field has a drop entry (class-typed locals + owning
+        // views); other arg shapes (literals, calls, dotted reads)
+        // either don't have a drop entry or have it managed by their
+        // own emission path. See MemoryModel.md § Borrow / transfer.
+        {
+            bool callFloatingX = true;
+            for (auto& e : entries) {
+                if (e.label.empty()) { callFloatingX = false; break; }
+            }
+            MethodPtr xferTarget = targetClass->resolveMethod(
+                methodCallName, entries, /*isConstructor=*/false,
+                callFloatingX);
+            if (xferTarget) {
+                auto formalParams = xferTarget->getParameterList();
+                bool isStaticTgt = xferTarget->getModifiers().find(STATIC)
+                    != xferTarget->getModifiers().end();
+                bool hasThisP = !formalParams.empty()
+                    && formalParams.front()->getName() == "this";
+                int xferParamOffset = (isStaticTgt || !hasThisP) ? 0 : 1;
+                size_t fIdx = 0;
+                for (auto& fp : formalParams) {
+                    if ((int) fIdx < xferParamOffset) { ++fIdx; continue; }
+                    size_t argIdx = fIdx - xferParamOffset;
+                    if (argIdx >= parameters.size()) break;
+                    ++fIdx;
+                    if (!fp->isTransferred()) continue;
+                    auto argExprBase = parameters[argIdx].expression;
+                    auto idExpr = std::dynamic_pointer_cast<IdentifierExpression>(
+                        argExprBase);
+                    if (!idExpr) continue;
+                    auto scope = module->getScopeStack().peek();
+                    if (!scope) continue;
+                    FieldPtr field = scope->getField(idExpr->getTextValue());
+                    if (!field) continue;
+                    if (llvm::Value* entry = field->getDropEntry()) {
+                        if (llvm::Function* mark = module->getRuntimeFunction(
+                                "__cajeta_drop_mark_inactive")) {
+                            builder->CreateCall(mark, {entry});
+                        }
+                    }
+                }
+            }
+        }
+
         llvm::Value* callResult = targetClass->invokeMethod(methodCallName, entries,
             /*isConstructor=*/false, thisValue, /*callerModule=*/module,
             /*forceDirectCall=*/isSuperCall,

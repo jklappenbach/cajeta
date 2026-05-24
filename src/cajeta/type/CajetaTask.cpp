@@ -94,8 +94,14 @@ namespace cajeta {
             return existing;
         }
 
+        // LinkOnceODR so a Task<T> drop fn defined in multiple JIT
+        // modules (stdlib + user modules whose own `async` functions
+        // return Task<T> for the same T) merges to a single definition
+        // at link time rather than triggering "symbol multiply defined".
+        // The bodies are deterministic per-T so ODR holds.
         llvmDropFunction = llvm::Function::Create(fnTy,
-            llvm::Function::ExternalLinkage, dropName, lmod);
+            llvm::Function::LinkOnceODRLinkage, dropName, lmod);
+        llvmDropFunction->setComdat(lmod->getOrInsertComdat(dropName));
         llvm::BasicBlock* bb = llvm::BasicBlock::Create(
             ctx, "entry", llvmDropFunction);
         llvm::IRBuilder<> b(bb);

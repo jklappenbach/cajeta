@@ -1015,13 +1015,22 @@ Status of each original item:
    restore on a terminated BB).
 
 2. **§7.6 item #4 — `implements Splittable<K>` on a 2-type-param
-   class.** FIXED for the KeyStream / ValueStream cases in commit
-   `b6213d1`. The synthetic probe for the analogous shape passes
-   (TemplatedInterfaceParamProbe.twoTypeParamImplementsOneTypeParamIface).
-   HashMapEntryStream's `Splittable<Pair<K, V>>` still hangs
-   HashMap-itself construction — the diagnostic shape doesn't
-   reproduce, suggesting a cross-package parameterized-arg
-   interaction worth its own session.
+   class.** FIXED for KeyStream / ValueStream cases in commit
+   `b6213d1`; FIXED for HashMapEntryStream's `Splittable<Pair<K, V>>`
+   in this session. Root cause: `CajetaClass::instantiate`'s
+   placeholder-arg short-circuit (intended for `<R> #Stream<R> map`)
+   returned the bare template when ALL args were placeholders. With
+   `Pair<K_ph, V_ph>` that yielded bare `Pair`, then
+   `Splittable.instantiate([bare-Pair])` proceeded to a real
+   `Splittable<raw-Pair>` → `Stream<raw-Pair>` cascade whose
+   `::reduce` body's `return this.fold(...)` instantiated
+   `Stream<Pair>::fold<Pair>` with R = raw `Pair`, segfaulting at
+   `R acc = seed` (no LLVM type on raw template). Fix: extend the
+   short-circuit to also fire when the arg is itself a bare
+   (uninstantiated) template — the trail of a transitive short-
+   circuit one level deeper. HashMapEntryStream now implements
+   Splittable<Pair<K, V>> with trySplit / estimateSize and
+   HashMap.entries() ships parallel capability.
 
 3. **§7.6 item #1 — class-typed array-element-read l-value gap.**
    The documented shape (`Stream<T>[] shares; share = shares[i];
@@ -1058,8 +1067,77 @@ Status of each original item:
    infrastructure (isLintSuppressed) present; emit sites need
    wiring; nonzero-seed analyzer needs lambda-body inspection.
 
-7. **Wrapper-chain unwind** — task #54. Still gated on real
-   fork/join landing.
+7. **Wrapper-chain unwind** — task #54. **SHIPPED.**
+   `xs.stream().filter(p).parallel().reduce(...)` now actually forks
+   workers through `Stream.reduce → ParallelDriver.reduceParallelChain`.
+   Each worker gets a freshly-rebuilt wrapper chain over its share
+   via `head.cloneChainOver(piece)` — every level of the chain (Filter,
+   Peek) recursively rebuilds itself bottom-up. The depth==0 case
+   (root IS head) passes the share through unchanged via the
+   `Stream<T>.cloneChainOver` base returning `newRoot`.
+
+   What shipped:
+
+     - **Unwind protocol on the base.** `Stream<T>.unwrap()` (null
+       on Splittable roots, source on wrappers),
+       `isStatefulWrapper()` (true on TakeStream/SkipStream),
+       `splittableSize()` / `trySplitRoot()` (overridden in
+       ArrayStream and the three HashMap*Streams).
+     - **Recursive `cloneChainOver(#Stream<T>)`** on Stream<T> base
+       (returns `newRoot` unchanged) and on FilterStream / PeekStream
+       (recurse into source then wrap result in fresh
+       `heap FilterStream<T>(_, pred)` / `heap PeekStream<T>(_, fn)`).
+     - **`ParallelDriver.reduceParallelChain<T>(Stream<T>, T, fn)`**
+       — walks `unwrap()` to find the chain root + depth, throws
+       `CAJETA_ERROR_STREAM_PARALLEL_REJECT_STATEFUL` on take/skip
+       in the chain, pulls splits via `trySplitRoot()`, rewraps each
+       via `head.cloneChainOver(piece)`, forks via the existing
+       `scope { spawn reduceWorker<T> }` shape. Return type is `#T`
+       per the multi-parameter borrow-return rule.
+     - **`Stream<T>.reduce` dispatches** to `reduceParallelChain<T>`
+       when `isParallel` is set.
+     - **Three compiler fixes** that unblocked all of the above:
+
+       1. **MethodCall: # parameter at call site auto-deactivates
+          caller's drop entry.** Before, calling a method whose
+          formal was `#T param` required the caller to write `#arg`
+          explicitly; otherwise the arg's drop entry stayed active
+          and the chain double-freed when the method also returned
+          # ownership. Now any IdentifierExpression arg whose
+          formal is `#T` is auto-deactivated at the call site.
+          See `MethodCallExpression.cpp` § # transfer at call site.
+       2. **LocalVariableDeclaration: borrow detection for
+          non-#-returning method calls.** Before,
+          `Stream<T> next = cur.unwrap();` was always treated as a
+          MOVE — a fresh drop entry got registered on `next`,
+          double-freeing the borrowed reference on scope exit. Now
+          the LVD resolves the called method and skips the drop
+          entry when the method returns non-`#`. Mirrors the
+          existing borrow detection for DotExpression and
+          ArrayIndexExpression. See `LocalVariableDeclaration.cpp`
+          § GAP-fix.
+       3. **CajetaTask drop function: LinkOnceODR linkage.** The
+          per-(T) `__cajeta_task_Task_T_drop` function was emitted
+          with `ExternalLinkage`, so a stdlib JIT module defining
+          it would collide with any user module whose own `async`
+          functions returned `Task<T>` for the same T. Switched to
+          `LinkOnceODRLinkage` + comdat so the linker merges
+          duplicate definitions. Unblocks `Stream.reduce` dispatch
+          which would otherwise pull `Task<T>` into the stdlib
+          module from every test's perspective.
+
+   What did NOT ship in this pass:
+
+     - **Same dispatch flip on `anyMatch / allMatch / noneMatch /
+       forEach / fold`.** Same shape as `reduce`; just hasn't been
+       wired through `ParallelDriver` yet. Tactically small with
+       the compiler fixes in place.
+     - **Type-changing wrappers (MapStream<U,T>, FlatMapStream<U,T>).**
+       The unwind layer is still element-type-uniform. MapStream's
+       T→R boundary breaks the lambda/closure composition shape
+       used by the current cloneChainOver design. Lifting needs an
+       Object-erasure layer or `<?>` wildcards
+       (CajetaType.cpp:454 rejects wildcards today).
 
 Status update: the "JIT codegen loop" diagnosis was incorrect.
 The bug was a runtime SEGFAULT (not a compile hang) — gtest can't

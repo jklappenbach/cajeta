@@ -50,4 +50,12 @@ public class HashMapValueStream<K, V> extends Stream<V> implements Splittable<V>
     public int64 estimateSize() {
         return this.cap - this.idx;
     }
+
+    public int64 splittableSize() {
+        return this.estimateSize();
+    }
+
+    public #Stream<V> trySplitRoot() {
+        return this.trySplit();
+    }
 }

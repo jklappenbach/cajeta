@@ -1,5 +1,7 @@
 package cajeta.lang.stream;
 
+import cajeta.error.Exception;
+
 /**
  * Fork/join orchestrator for parallel stream terminals.
  *
@@ -367,6 +369,109 @@ public class ParallelDriver {
             o = share.next();
         }
         return 0;
+    }
+
+    /**
+     * Wrapper-chain-aware parallel reduce. Entry point for
+     * `Stream<T>.reduce` when `isParallel` is set on the head.
+     *
+     *   1. Walk `head.unwrap()` to find the chain root. Reject
+     *      stateful intermediates (take/skip) with
+     *      CAJETA_ERROR_STREAM_PARALLEL_REJECT_STATEFUL.
+     *   2. Pick `nSplits` from `root.splittableSize()`. If the root
+     *      isn't Splittable or the size is below threshold, fall
+     *      back to sequential `head.next()` walk.
+     *   3. For each split share, rebuild the head's wrapper chain
+     *      over the share via `head.cloneChainOver(piece)` —
+     *      wrappers recurse to rebuild themselves bottom-up,
+     *      Splittable roots return the share unchanged. Fork via
+     *      `scope { spawn reduceWorker<T> }`.
+     *   4. Tail walks `head.next()` on the orchestrator (the root's
+     *      residual after all `trySplitRoot` calls).
+     *   5. Combine partials sequentially. v1 is O(N) over splits;
+     *      tree-reduce is a v2 tuning step.
+     *
+     * Type-changing wrappers (MapStream<U,T>, FlatMapStream<U,T>)
+     * inherit Stream<T>.unwrap()=null, so the unwind stops at the
+     * MapStream itself. splittableSize on the MapStream returns -1L
+     * (inherited Stream<T> default), triggering the sequential
+     * fallback. Lifting the type-changing case wants either
+     * Object-erasure or wildcards (CajetaType.cpp:454 rejects
+     * `<?>` today).
+     */
+    public static #T reduceParallelChain<T>(Stream<T> head, T seed, (T, T) -> T fn) {
+        int32 depth = 0;
+        Stream<T> cur = head;
+        while (cur != null) {
+            if (cur.isStatefulWrapper()) {
+                throw new Exception("CAJETA_ERROR_STREAM_PARALLEL_REJECT_STATEFUL: stateful intermediate op (take/skip) cannot be parallelized; call .sequential() before the stateful op");
+            }
+            Stream<T> next = cur.unwrap();
+            if (next == null) {
+                break;
+            }
+            cur = next;
+            depth = depth + 1;
+        }
+        // Sequential fallback shared by two cases:
+        //   - root not Splittable (splittableSize returns -1L)
+        //   - source too small for fork to pay off (nSplits < 2)
+        int64 sz = cur.splittableSize();
+        int32 nSplits = pickSplitCount(sz);
+        if (sz < 0L || nSplits < 2) {
+            T accY = seed;
+            Optional<T> oY = head.next();
+            while (oY.isPresent()) {
+                accY = fn(accY, oY.get());
+                oY = head.next();
+            }
+            return accY;
+        }
+        // Pull splits, then rebuild head's wrapper chain over each
+        // via cloneChainOver. For depth==0 the base Stream<T>
+        // .cloneChainOver returns newRoot unchanged → piece becomes
+        // the share. For depth>0, each wrapper level wraps the
+        // recursive result so the worker sees the same chain over
+        // its slice.
+        Stream<T>[] shares = new Stream<T>[nSplits - 1];
+        int32 shareCount = 0;
+        int32 si = 0;
+        while (si < nSplits - 1) {
+            Stream<T> piece = cur.trySplitRoot();
+            if (piece == null) {
+                break;
+            }
+            shares[si] = head.cloneChainOver(piece);
+            shareCount = shareCount + 1;
+            si = si + 1;
+        }
+        T[] partials = new T[shareCount + 1];
+        int32 pi = 0;
+        while (pi < shareCount + 1) {
+            partials[pi] = seed;
+            pi = pi + 1;
+        }
+        scope {
+            int32 swi = 0;
+            while (swi < shareCount) {
+                spawn reduceWorker<T>(shares[swi], swi, partials, fn);
+                swi = swi + 1;
+            }
+        }
+        T tail = seed;
+        Optional<T> ot = head.next();
+        while (ot.isPresent()) {
+            tail = fn(tail, ot.get());
+            ot = head.next();
+        }
+        partials[shareCount] = tail;
+        T acc = seed;
+        int32 ci = 0;
+        while (ci < shareCount + 1) {
+            acc = fn(acc, partials[ci]);
+            ci = ci + 1;
+        }
+        return acc;
     }
 
     /**
