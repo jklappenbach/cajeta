@@ -372,6 +372,20 @@ public class ParallelDriver {
     }
 
     /**
+     * Worker for forEach. Drains `share`, invoking `fn` on each
+     * element. No short-circuit (forEach visits every element); no
+     * shared cancel flag.
+     */
+    public static async int32 forEachWorker<T>(Stream<T> share, (T) -> void fn) {
+        Optional<T> o = share.next();
+        while (o.isPresent()) {
+            fn(o.get());
+            o = share.next();
+        }
+        return 0;
+    }
+
+    /**
      * Wrapper-chain-aware parallel reduce. Entry point for
      * `Stream<T>.reduce` when `isParallel` is set on the head.
      *
@@ -472,6 +486,261 @@ public class ParallelDriver {
             ci = ci + 1;
         }
         return acc;
+    }
+
+    /**
+     * Wrapper-chain-aware parallel anyMatch. Same shape as
+     * `reduceParallelChain`: walk unwrap, reject stateful, rebuild
+     * each share via `head.cloneChainOver(piece)`, fork via
+     * `scope { spawn findHitWorker<T> }`. Short-circuits via a
+     * shared `boolean[1] hit` flag.
+     */
+    public static boolean anyMatchParallelChain<T>(Stream<T> head, (T) -> boolean predicate) {
+        int32 depth = 0;
+        Stream<T> cur = head;
+        while (cur != null) {
+            if (cur.isStatefulWrapper()) {
+                throw new Exception("CAJETA_ERROR_STREAM_PARALLEL_REJECT_STATEFUL: stateful intermediate op (take/skip) cannot be parallelized; call .sequential() before the stateful op");
+            }
+            Stream<T> next = cur.unwrap();
+            if (next == null) {
+                break;
+            }
+            cur = next;
+            depth = depth + 1;
+        }
+        int64 sz = cur.splittableSize();
+        int32 nSplits = pickSplitCount(sz);
+        if (sz < 0L || nSplits < 2) {
+            Optional<T> oY = head.next();
+            while (oY.isPresent()) {
+                if (predicate(oY.get())) {
+                    return true;
+                }
+                oY = head.next();
+            }
+            return false;
+        }
+        Stream<T>[] shares = new Stream<T>[nSplits - 1];
+        int32 shareCount = 0;
+        int32 si = 0;
+        while (si < nSplits - 1) {
+            Stream<T> piece = cur.trySplitRoot();
+            if (piece == null) {
+                break;
+            }
+            shares[si] = head.cloneChainOver(piece);
+            shareCount = shareCount + 1;
+            si = si + 1;
+        }
+        boolean[] hit = new boolean[1];
+        hit[0] = false;
+        scope {
+            int32 wi = 0;
+            while (wi < shareCount) {
+                spawn findHitWorker<T>(shares[wi], predicate, hit);
+                wi = wi + 1;
+            }
+        }
+        if (hit[0]) {
+            return true;
+        }
+        Optional<T> ot = head.next();
+        while (ot.isPresent()) {
+            if (predicate(ot.get())) {
+                return true;
+            }
+            ot = head.next();
+        }
+        return false;
+    }
+
+    /**
+     * Wrapper-chain-aware parallel allMatch. Same shape as
+     * anyMatchParallelChain but uses findFailWorker — first worker
+     * to find a non-matching element flips the shared `fail` flag;
+     * siblings observe and bail.
+     */
+    public static boolean allMatchParallelChain<T>(Stream<T> head, (T) -> boolean predicate) {
+        int32 depth = 0;
+        Stream<T> cur = head;
+        while (cur != null) {
+            if (cur.isStatefulWrapper()) {
+                throw new Exception("CAJETA_ERROR_STREAM_PARALLEL_REJECT_STATEFUL: stateful intermediate op (take/skip) cannot be parallelized; call .sequential() before the stateful op");
+            }
+            Stream<T> next = cur.unwrap();
+            if (next == null) {
+                break;
+            }
+            cur = next;
+            depth = depth + 1;
+        }
+        int64 sz = cur.splittableSize();
+        int32 nSplits = pickSplitCount(sz);
+        if (sz < 0L || nSplits < 2) {
+            Optional<T> oY = head.next();
+            while (oY.isPresent()) {
+                if (!predicate(oY.get())) {
+                    return false;
+                }
+                oY = head.next();
+            }
+            return true;
+        }
+        Stream<T>[] shares = new Stream<T>[nSplits - 1];
+        int32 shareCount = 0;
+        int32 si = 0;
+        while (si < nSplits - 1) {
+            Stream<T> piece = cur.trySplitRoot();
+            if (piece == null) {
+                break;
+            }
+            shares[si] = head.cloneChainOver(piece);
+            shareCount = shareCount + 1;
+            si = si + 1;
+        }
+        boolean[] fail = new boolean[1];
+        fail[0] = false;
+        scope {
+            int32 wi = 0;
+            while (wi < shareCount) {
+                spawn findFailWorker<T>(shares[wi], predicate, fail);
+                wi = wi + 1;
+            }
+        }
+        if (fail[0]) {
+            return false;
+        }
+        Optional<T> ot = head.next();
+        while (ot.isPresent()) {
+            if (!predicate(ot.get())) {
+                return false;
+            }
+            ot = head.next();
+        }
+        return true;
+    }
+
+    /**
+     * Wrapper-chain-aware parallel noneMatch. Same shape as
+     * anyMatchParallelChain — shares findHitWorker, but inverts the
+     * return: a hit means the result is false.
+     */
+    public static boolean noneMatchParallelChain<T>(Stream<T> head, (T) -> boolean predicate) {
+        int32 depth = 0;
+        Stream<T> cur = head;
+        while (cur != null) {
+            if (cur.isStatefulWrapper()) {
+                throw new Exception("CAJETA_ERROR_STREAM_PARALLEL_REJECT_STATEFUL: stateful intermediate op (take/skip) cannot be parallelized; call .sequential() before the stateful op");
+            }
+            Stream<T> next = cur.unwrap();
+            if (next == null) {
+                break;
+            }
+            cur = next;
+            depth = depth + 1;
+        }
+        int64 sz = cur.splittableSize();
+        int32 nSplits = pickSplitCount(sz);
+        if (sz < 0L || nSplits < 2) {
+            Optional<T> oY = head.next();
+            while (oY.isPresent()) {
+                if (predicate(oY.get())) {
+                    return false;
+                }
+                oY = head.next();
+            }
+            return true;
+        }
+        Stream<T>[] shares = new Stream<T>[nSplits - 1];
+        int32 shareCount = 0;
+        int32 si = 0;
+        while (si < nSplits - 1) {
+            Stream<T> piece = cur.trySplitRoot();
+            if (piece == null) {
+                break;
+            }
+            shares[si] = head.cloneChainOver(piece);
+            shareCount = shareCount + 1;
+            si = si + 1;
+        }
+        boolean[] hit = new boolean[1];
+        hit[0] = false;
+        scope {
+            int32 wi = 0;
+            while (wi < shareCount) {
+                spawn findHitWorker<T>(shares[wi], predicate, hit);
+                wi = wi + 1;
+            }
+        }
+        if (hit[0]) {
+            return false;
+        }
+        Optional<T> ot = head.next();
+        while (ot.isPresent()) {
+            if (predicate(ot.get())) {
+                return false;
+            }
+            ot = head.next();
+        }
+        return true;
+    }
+
+    /**
+     * Wrapper-chain-aware parallel forEach. No return value, no
+     * short-circuit — each worker drains its share to completion.
+     * Order across workers is unspecified per
+     * StreamParallelism.md § Per-terminal rules — `fn` must be
+     * commutative AND thread-safe.
+     */
+    public static void forEachParallelChain<T>(Stream<T> head, (T) -> void fn) {
+        int32 depth = 0;
+        Stream<T> cur = head;
+        while (cur != null) {
+            if (cur.isStatefulWrapper()) {
+                throw new Exception("CAJETA_ERROR_STREAM_PARALLEL_REJECT_STATEFUL: stateful intermediate op (take/skip) cannot be parallelized; call .sequential() before the stateful op");
+            }
+            Stream<T> next = cur.unwrap();
+            if (next == null) {
+                break;
+            }
+            cur = next;
+            depth = depth + 1;
+        }
+        int64 sz = cur.splittableSize();
+        int32 nSplits = pickSplitCount(sz);
+        if (sz < 0L || nSplits < 2) {
+            Optional<T> oY = head.next();
+            while (oY.isPresent()) {
+                fn(oY.get());
+                oY = head.next();
+            }
+            return;
+        }
+        Stream<T>[] shares = new Stream<T>[nSplits - 1];
+        int32 shareCount = 0;
+        int32 si = 0;
+        while (si < nSplits - 1) {
+            Stream<T> piece = cur.trySplitRoot();
+            if (piece == null) {
+                break;
+            }
+            shares[si] = head.cloneChainOver(piece);
+            shareCount = shareCount + 1;
+            si = si + 1;
+        }
+        scope {
+            int32 wi = 0;
+            while (wi < shareCount) {
+                spawn forEachWorker<T>(shares[wi], fn);
+                wi = wi + 1;
+            }
+        }
+        Optional<T> ot = head.next();
+        while (ot.isPresent()) {
+            fn(ot.get());
+            ot = head.next();
+        }
     }
 
     /**

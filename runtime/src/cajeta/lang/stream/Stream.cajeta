@@ -144,9 +144,17 @@ public class Stream<T> {
 
     /**
      * Apply `fn` to every remaining element by walking next() to
-     * exhaustion. P6.5 first lambda-taking terminal.
+     * exhaustion. Under `.parallel()` dispatches to
+     * `ParallelDriver.forEachParallelChain` — each worker drains its
+     * own share. Order across workers is unspecified per
+     * StreamParallelism.md § Per-terminal rules; `fn` must be
+     * commutative and thread-safe.
      */
     public void forEach((T) -> void fn) {
+        if (this.isParallel) {
+            ParallelDriver.forEachParallelChain<T>(this, fn);
+            return;
+        }
         Optional<T> o = this.next();
         while (o.isPresent()) {
             fn(o.get());
@@ -156,9 +164,16 @@ public class Stream<T> {
 
     /**
      * Returns true if any remaining element matches `pred`. Short-
-     * circuits on the first match. Empty stream → false.
+     * circuits on the first match. Empty stream → false. Under
+     * `.parallel()` dispatches to
+     * `ParallelDriver.anyMatchParallelChain`; the first worker to
+     * find a match flips a shared cancel flag and siblings bail at
+     * their next pull-loop checkpoint.
      */
     public boolean anyMatch((T) -> boolean pred) {
+        if (this.isParallel) {
+            return ParallelDriver.anyMatchParallelChain<T>(this, pred);
+        }
         Optional<T> o = this.next();
         while (o.isPresent()) {
             if (pred(o.get())) {
@@ -170,11 +185,15 @@ public class Stream<T> {
     }
 
     /**
-     * Returns true iff every remaining element matches `pred`. Short-
-     * circuits on the first non-match. Empty stream → true
-     * (vacuously).
+     * Returns true iff every remaining element matches `pred`.
+     * Short-circuits on the first non-match. Empty stream → true
+     * (vacuously). Parallel path symmetric with `anyMatch`, using
+     * a shared `fail` flag.
      */
     public boolean allMatch((T) -> boolean pred) {
+        if (this.isParallel) {
+            return ParallelDriver.allMatchParallelChain<T>(this, pred);
+        }
         Optional<T> o = this.next();
         while (o.isPresent()) {
             if (!pred(o.get())) {
@@ -188,8 +207,12 @@ public class Stream<T> {
     /**
      * Returns true iff no remaining element matches `pred`. Short-
      * circuits on the first match. Empty stream → true (vacuously).
+     * Parallel path symmetric with `anyMatch`.
      */
     public boolean noneMatch((T) -> boolean pred) {
+        if (this.isParallel) {
+            return ParallelDriver.noneMatchParallelChain<T>(this, pred);
+        }
         Optional<T> o = this.next();
         while (o.isPresent()) {
             if (pred(o.get())) {
