@@ -30,16 +30,26 @@ Decide and implement how wildcard-typed values are dropped.
 - Validate against the existing test suite — no regressions in
   non-wildcard code paths.
 
-## 3. TemplateInstantiator wildcard cache bucket
+## 3. TemplateInstantiator wildcard cache bucket — DONE (audit only)
 
-Update `src/cajeta/type/TemplateInstantiator.cpp` so wildcard keys
-resolve to an erased instantiation in a separate cache bucket.
+The Step 1 wildcard short-circuit in
+`CajetaClass::instantiate` already satisfies the three acceptance
+criteria. Audit + test coverage added; no implementation needed.
 
-- Wildcards do not collide with concrete instantiations.
-- One erased instantiation per generic-template / wildcard-arity pair
-  (not per use site).
-- Confirm cache invariants in `visitClassDeclaration` register path
-  (recently touched in 9b5f434).
+- Wildcards do not collide with concrete instantiations — canonical
+  keys differ (`Box<?>` vs `Box<cajeta.int32>`). Verified by
+  `TemplateWildcardP1Tests.wildcardCacheBucketDistinctFromConcrete`.
+- One erased instantiation per generic-template / args tuple —
+  `module->getStructures()[canonical]` lookup in the short-circuit
+  returns the cached proxy on repeat calls. Verified by
+  `TemplateWildcardP1Tests.wildcardProxyIsCachedAcrossInstantiateCalls`.
+  Partial-wildcard forms (`Pair<?,int32>` vs `Pair<int32,?>` vs
+  `Pair<?,?>`) get distinct buckets, verified by
+  `TemplateWildcardP1Tests.partialWildcardCacheBucketsDistinct`.
+- `visitClassDeclaration` register path (9b5f434) registers the
+  template itself under canonical + short name; the wildcard
+  short-circuit registers `Template<?>` under a suffix-bearing
+  canonical. No key overlap.
 
 ## 4. Lint pass — wildcard-in-hot-loop detector
 

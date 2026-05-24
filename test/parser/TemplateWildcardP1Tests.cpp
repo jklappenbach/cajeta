@@ -190,6 +190,66 @@ TEST(TemplateWildcardP1Tests, differentTemplateRejectedByAssignability) {
     EXPECT_FALSE(CajetaClass::isAssignableToWildcard(holderOfInt, boxWild));
 }
 
+// Step 3 cache invariant 1 — wildcard instantiation does NOT collide
+// with concrete instantiations of the same template. Box<int32> and
+// Box<?> live under distinct canonical keys in module structures.
+TEST(TemplateWildcardP1Tests, wildcardCacheBucketDistinctFromConcrete) {
+    WildcardsOn flag;
+    Compiler compiler;
+    auto src = std::string(
+        "package test;\n"
+        "public class Box<T> {\n"
+        "    T value;\n"
+        "    public Box(T v) { this.value = v; }\n"
+        "}\n");
+    auto module = compileSource(compiler, src, "test.Box");
+    auto box = module->getStructures()["test.Box"];
+    ASSERT_NE(box, nullptr);
+
+    auto int32Ty = CajetaType::of(std::string("int32"));
+    auto boxOfInt = box->instantiate({int32Ty});
+    auto boxWild = box->instantiate({CajetaType::wildcardSentinel()});
+
+    ASSERT_NE(boxOfInt, nullptr);
+    ASSERT_NE(boxWild, nullptr);
+    EXPECT_NE(boxOfInt.get(), boxWild.get());
+    EXPECT_NE(boxOfInt->getQName()->toCanonical(),
+              boxWild->getQName()->toCanonical());
+}
+
+// Step 3 cache invariant 2 — partial-wildcard instantiations remain
+// distinct from each other AND from the all-wildcard form. Pair<?,int32>,
+// Pair<int32,?>, and Pair<?,?> each get their own cache bucket because
+// the canonical key includes each arg position. (Variance — when these
+// become assignable in either direction — lands with Step 6.)
+TEST(TemplateWildcardP1Tests, partialWildcardCacheBucketsDistinct) {
+    WildcardsOn flag;
+    Compiler compiler;
+    auto src = std::string(
+        "package test;\n"
+        "public class Pair<A, B> {\n"
+        "    A first;\n"
+        "    B second;\n"
+        "    public Pair(A a, B b) { this.first = a; this.second = b; }\n"
+        "}\n");
+    auto module = compileSource(compiler, src, "test.Pair");
+    auto pair = module->getStructures()["test.Pair"];
+    ASSERT_NE(pair, nullptr);
+
+    auto wild = CajetaType::wildcardSentinel();
+    auto int32Ty = CajetaType::of(std::string("int32"));
+
+    auto wildLeft  = pair->instantiate({wild,    int32Ty});
+    auto wildRight = pair->instantiate({int32Ty, wild});
+    auto bothWild  = pair->instantiate({wild,    wild});
+
+    EXPECT_NE(wildLeft.get(),  wildRight.get());
+    EXPECT_NE(wildLeft.get(),  bothWild.get());
+    EXPECT_NE(wildRight.get(), bothWild.get());
+    EXPECT_NE(wildLeft->getQName()->toCanonical(),
+              wildRight->getQName()->toCanonical());
+}
+
 // Assignability also rejects a non-wildcard instantiation as the target
 // — `Box<?>` is the *only* legal wildcard-typed destination.
 TEST(TemplateWildcardP1Tests, nonWildcardTargetRejected) {
