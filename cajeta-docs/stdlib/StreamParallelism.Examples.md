@@ -1222,6 +1222,32 @@ deliberately-non-commutative predicate that observes intermediate
 state. Not pursued because the existing tests + the stateful
 reject pin enough of the contract.
 
+### Stream parallelism — heap-class-array writes from spawned workers
+
+Surfaced in § 7.11 (findFirst → findAny). Writing a freshly
+allocated `heap Optional<T>(...)` directly into a shared
+`Optional<T>[1]` slot from inside a `spawn`-ed worker template hung
+the test indefinitely. Worked around by storing the raw element `T`
+into `T[1]` from the worker and constructing the Optional on the
+orchestrator after scope-join. Same pattern would also bite any
+future "store fresh heap allocation into shared class-typed slot"
+work — `collect`-style mutable accumulators, eg. ArrayList<T>
+combiners, would need a fix here to work in-place. Likely a
+drop-chain or ownership-tracking interaction with the async
+worker's epilogue; not bisected yet because the T[1] workaround is
+clean and sufficient for findAny.
+
+### `findAny` result correlation in dispatch tests
+
+Same TDD weakness as anyMatch (§ 7.9 entry above). The three
+"happy path" findFirst-parallel tests (`ReturnsAMatchingElement`,
+`EmptyOnNoMatch`, `ThroughFilter`) all pass against EITHER the
+sequential walk or the parallel fork — sequential happens to
+return a valid findAny answer because any "first match" is in the
+valid match set. Only `RejectsStatefulInChain` actually gates the
+parallel dispatch path. A side-channel counter or
+deliberately-non-commutative predicate could distinguish.
+
 Status update: the "JIT codegen loop" diagnosis was incorrect.
 The bug was a runtime SEGFAULT (not a compile hang) — gtest can't
 flush its [ FAILED ] line before the binary aborts, so the test
@@ -1310,6 +1336,50 @@ parallel through filter chain, and stateful-reject.
 Unblocks the next errata item — parallel `collect` — which routes
 through `fold(seed, fn, combiner)` once `Collector<T, R>` grows the
 combiner field (§ 8 migration sweep).
+
+## §7.11 findFirst → findAny under parallel
+
+Per § R1 + § Per-terminal rules, `findFirst` under `.parallel()`
+semantically shifts to findAny — encounter order across split
+workers isn't preserved, so "first in source order" isn't meaningful.
+The dispatch flip lives entirely on the existing `findFirst` method:
+
+```cajeta
+public #Optional<T> findFirst((T) -> boolean pred) {
+    if (this.isParallel) {
+        return ParallelDriver.findAnyParallelChain<T>(this, pred);
+    }
+    // sequential walk unchanged
+}
+```
+
+Driver-side, `findAnyParallelChain<T>` follows the now-standard
+chain-aware shape (walk unwrap, reject stateful, rebuild each share
+via `head.cloneChainOver(piece)`, fork via
+`scope { spawn findAnyWorker<T> }`). The worker stores the raw
+hit-element into a shared `T[1] result` slot and flips `boolean[1]
+hit` — the orchestrator builds the `Optional<T>` wrapper after
+scope-join.
+
+**Why T[1] instead of Optional<T>[1]:** the first cut wrote a freshly
+allocated `heap Optional<T>(...)` directly into a shared
+`Optional<T>[1]` from inside the worker. Targeted test hung
+indefinitely (no failure line, no crash — pthread wait inside the
+worker fiber) — class-typed array writes from heap-new inside a
+spawned template haven't been validated end-to-end. Storing the raw
+T sidesteps that codepath: workers do a plain element-type write
+(primitive copy for T=int32, pointer store for class T), and the
+single `heap Optional<T>(true, result[0])` happens on the
+orchestrator after the scope joins. Errata-worthy as a follow-up
+("Stream parallelism — heap-class-array writes from spawned
+workers").
+
+Tests (`ParallelStreamP1Tests.parallelFindFirst{ReturnsAMatching
+Element, EmptyOnNoMatch, ThroughFilter, RejectsStatefulInChain}`).
+First three are correctness-preserving across sequential and
+parallel paths (any match in {51..100} is valid); the stateful-
+reject test is what gates the parallel dispatch (same TDD weakness
+as the predicate terminals — see § 7.9 errata).
 
 ## §8 Migration sweep (Collector R3)
 

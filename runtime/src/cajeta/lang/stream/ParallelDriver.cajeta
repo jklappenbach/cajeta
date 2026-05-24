@@ -791,6 +791,116 @@ public class ParallelDriver {
     }
 
     /**
+     * Wrapper-chain-aware parallel findAny. Returns the first
+     * matching element from ANY worker (or the tail walk) wrapped in
+     * an Optional; empty Optional if no element matches. Per § R1
+     * StreamParallelism.md, `findFirst` under `.parallel()` shifts
+     * semantically to findAny — encounter order across split workers
+     * isn't preserved, so the "first" in the sequential sense isn't
+     * meaningful. Worker writes its hit element into the shared
+     * `result` slot and flips `hit[0]` — siblings observe and bail.
+     *
+     * Same chain-walking shape as anyMatchParallelChain: walk
+     * unwrap, reject stateful, rebuild each share via
+     * `head.cloneChainOver(piece)`, fork via
+     * `scope { spawn findAnyWorker<T> }`.
+     */
+    public static #Optional<T> findAnyParallelChain<T>(Stream<T> head, (T) -> boolean predicate) {
+        int32 depth = 0;
+        Stream<T> cur = head;
+        while (cur != null) {
+            if (cur.isStatefulWrapper()) {
+                throw new Exception("CAJETA_ERROR_STREAM_PARALLEL_REJECT_STATEFUL: stateful intermediate op (take/skip) cannot be parallelized; call .sequential() before the stateful op");
+            }
+            Stream<T> next = cur.unwrap();
+            if (next == null) {
+                break;
+            }
+            cur = next;
+            depth = depth + 1;
+        }
+        int64 sz = cur.splittableSize();
+        int32 nSplits = pickSplitCount(sz);
+        if (sz < 0L || nSplits < 2) {
+            Optional<T> oY = head.next();
+            while (oY.isPresent()) {
+                if (predicate(oY.get())) {
+                    return heap Optional<T>(true, oY.get());
+                }
+                oY = head.next();
+            }
+            return heap Optional<T>(false, null);
+        }
+        Stream<T>[] shares = new Stream<T>[nSplits - 1];
+        int32 shareCount = 0;
+        int32 si = 0;
+        while (si < nSplits - 1) {
+            Stream<T> piece = cur.trySplitRoot();
+            if (piece == null) {
+                break;
+            }
+            shares[si] = head.cloneChainOver(piece);
+            shareCount = shareCount + 1;
+            si = si + 1;
+        }
+        // Shared T-slot for the hit element + boolean hit flag.
+        // Mirrors the fold partials[] + scalar pattern. Storing the
+        // raw T (not an Optional<T>) sidesteps any class-typed-array
+        // write semantics question; the orchestrator constructs the
+        // Optional after scope-join from result[0] when hit[0].
+        // Race on the slot itself is benign — findAny only requires
+        // SOME match.
+        T[] result = new T[1];
+        boolean[] hit = new boolean[1];
+        hit[0] = false;
+        scope {
+            int32 wi = 0;
+            while (wi < shareCount) {
+                spawn findAnyWorker<T>(shares[wi], predicate, result, hit);
+                wi = wi + 1;
+            }
+        }
+        if (hit[0]) {
+            return heap Optional<T>(true, result[0]);
+        }
+        // Tail walks on the orchestrator after scope-join — workers
+        // finished without a hit, but the root may have residual
+        // elements.
+        Optional<T> ot = head.next();
+        while (ot.isPresent()) {
+            if (predicate(ot.get())) {
+                return heap Optional<T>(true, ot.get());
+            }
+            ot = head.next();
+        }
+        return heap Optional<T>(false, null);
+    }
+
+    /**
+     * Worker for findAny. Drains `share`; on each iteration first
+     * checks the shared `hit[0]` cancel flag, then runs the
+     * predicate. First worker to find a match writes its element into
+     * `result[0]` (raw T) and flips `hit[0]`. The orchestrator
+     * builds the Optional wrapper after scope-join. Same shape as
+     * findHitWorker but stores the element value.
+     */
+    public static async int32 findAnyWorker<T>(Stream<T> share, (T) -> boolean predicate, T[] result, boolean[] hit) {
+        Optional<T> o = share.next();
+        while (o.isPresent()) {
+            if (hit[0]) {
+                return 0;
+            }
+            if (predicate(o.get())) {
+                result[0] = o.get();
+                hit[0] = true;
+                return 0;
+            }
+            o = share.next();
+        }
+        return 0;
+    }
+
+    /**
      * Wrapper-chain-aware parallel forEach. No return value, no
      * short-circuit — each worker drains its share to completion.
      * Order across workers is unspecified per
