@@ -244,14 +244,28 @@ total but tolerate misses," `Outcome<T>` is heavier than a sentinel
 ### §3.3 Pattern C — opt-in stdlib helpers
 
 When the lambda-local try/catch is verbose enough to obscure intent,
-the stdlib supplies named operators that codify a recovery shape
-(per `ErrorModel.md § 237`):
+the stdlib supplies named operators that codify a recovery shape:
 
-- `mapOrSkip(λ)` — drop elements whose lambda threw
-  `RecoverableException`. Returns a shorter stream.
-- `mapOrLog(λ, logger)` — log and drop.
-- `mapOrFallback(λ, fallback)` — replace failed elements with
-  `fallback`.
+```cajeta
+public final #Stream<R> mapOrSkip<R>((T) -> R fn);
+public final #Stream<R> mapOrFallback<R>((T) -> R fn, R fallback);
+public final #Stream<R> mapOrLog<R>((T) -> R fn,
+                                    (T, Exception) -> void logger);
+```
+
+Behavior:
+- **mapOrSkip** — elements whose `fn` throws `RecoverableException`
+  are DROPPED. Stream shortens.
+- **mapOrFallback** — elements whose `fn` throws `RecoverableException`
+  are SUBSTITUTED with the user-supplied `fallback`. Stream length
+  unchanged.
+- **mapOrLog** — elements whose `fn` throws `RecoverableException`
+  are passed to `logger(elem, exception)` and then DROPPED.
+
+`UnrecoverableException` (assertion failure, OOM, etc.) is NEVER
+caught by these helpers — the alarm contract from `ErrorModel.md §
+The hierarchy` is preserved. The user can still catch it at the
+terminal or let the runtime's default catch handle it.
 
 These are not magic. They expand to the same lambda-local try/catch
 pattern; the operator name is the documentation that "failures here
@@ -260,14 +274,20 @@ trailing `.onError(...)` decorator to know.
 
 ```cajeta
 int32 sum = urls.stream()
-                .parallel()
                 .mapOrFallback(u -> fetchScore(u), 0)
-                .reduce(0, (a, b) -> a + b, (a, b) -> a + b);
+                .reduce(0, (a, b) -> a + b);
 ```
 
-These helpers are sequential-clean and parallel-clean: they catch
-inside the lambda, so the parallel driver sees no worker exceptions
-and no cancellation.
+These helpers catch inside the lambda body, so the parallel driver
+sees no worker exceptions and no cancellation — parallel-clean.
+
+**Type-changing wrapper caveat.** Like `Stream<T>.map<R>`, these
+helpers are type-changing wrappers (`Stream<T> -> Stream<R>`). Under
+`.parallel()` the wrapper-chain walk stops at the type-flip, so the
+chain falls back to sequential — same documented limitation as the
+other type-changing intermediates (`StreamParallelism.Examples.md §
+7.9`). Tests for this surface live in `StreamIntermediateTests.cpp`
+as `mapOr{Skip,Fallback,Log}*`.
 
 ### §3.4 Pattern D — threshold-based abort
 

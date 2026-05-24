@@ -1,0 +1,44 @@
+package cajeta.lang.stream;
+
+import cajeta.error.RecoverableException;
+
+/**
+ * Intermediate recovery combinator: wraps another Stream<T> and
+ * applies `fn: (T) -> R` to each element, yielding a Stream<R>.
+ * Elements whose `fn` invocation throws `RecoverableException` are
+ * **replaced** with the user-supplied `fallback` value — the output
+ * stream has the SAME length as the input.
+ *
+ * `UnrecoverableException` is NOT caught; it propagates. See
+ * `cajeta-docs/stdlib/StreamParallelism.ErrorHandling.md` § 3.3.
+ *
+ * The fallback is captured at stream-construction time and reused on
+ * every failure — design intent is a fixed sentinel
+ * (`0` for sum-style accumulators, `""` for string concatenations).
+ * Callers needing per-failure derived values should use
+ * `mapOrLog` or write the lambda-local `try/catch` form.
+ */
+public class MapOrFallbackStream<T, R> extends Stream<R> {
+    Stream<T> source;
+    (T) -> R fn;
+    R fallback;
+
+    public MapOrFallbackStream(Stream<T> source, (T) -> R fn, R fallback) {
+        this.source = source;
+        this.fn = fn;
+        this.fallback = fallback;
+    }
+
+    public #Optional<R> next() {
+        Optional<T> o = this.source.next();
+        if (o.isEmpty()) {
+            return heap Optional<R>(false, null);
+        }
+        try {
+            R mapped = this.fn(o.get());
+            return heap Optional<R>(true, mapped);
+        } catch (RecoverableException e) {
+            return heap Optional<R>(true, this.fallback);
+        }
+    }
+}
