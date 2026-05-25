@@ -32,6 +32,12 @@
 // nested blocks; the gap was fixed in the lambda-capture walker so
 // the natural form is exercised here directly.) The closure stays
 // stack-resident — Probe lives on the heap, the closure borrows it.
+//
+// Side channel uses scalar fields only by convention — array-field
+// writes from inside a captured-class lambda body now work too
+// (LambdaCapturedArrayWriteTests pins the shape), but the scalar
+// counters keep the assertions about "exactly one match" and
+// "which value matched" trivially readable here.
 
 #include <gtest/gtest.h>
 #include "../jit/JitTestHelper.h"
