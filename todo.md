@@ -8,33 +8,19 @@ Last triage: 2026-05-24.
 
 ---
 
-## P1 — compiler gaps blocking natural idioms
+## P1 — compiler infrastructure
 
-Both surfaced during the lambda-walker / parallel-correlation work (commits
-`bad612a`, `9e38fc8`, `aebb740`). Each currently forces a workaround in the
-test suite or the stdlib; lifting them removes those workarounds and unblocks
-shapes users will naturally write.
+(open) None. Prior P1 items resolved:
+- **Block-body lambda return-type inference** — fixed in `cf0d299`
+  (nested-block walker descent + body-local pre-registration in the
+  lambda's resolve-time scope).
+- **Captured-class array-field writes** — turned out to be a downstream
+  symptom of the lambda-walker gap fixed in `bad612a`; regression
+  coverage pinned in `44e7d2c`.
 
-1. **Block-body lambda return-type inference inside generic-method args.**
-   `s.fold(0, (int32 acc, int32 x) -> { ... return ...; })` builds the
-   lambda with a `void` return type because `R` from `fold<R>` isn't
-   propagated to the lambda before body type-check. The body's `return t;`
-   then trips JIT verify ("Found return instr that returns non-void in
-   Function of void return type"). Current workaround: hoist the lambda to
-   a typed local `(int32, int32) -> int32 accFn = ...;` then pass `accFn`.
-   See `LambdaNestedBlockPatternsTests` for the two pinning sites. Fix: when
-   resolving a lambda argument whose target parameter type is a function
-   type, propagate the target's return type into the lambda before
-   body resolution.
-
-2. **LLVM alloca-cast assertion on lambda writes to array-field of
-   captured class.** Inside a lambda body, `cap.arr[i] = x` (where `cap`
-   is captured and `arr` is a class-typed array field) trips
-   `dyn_cast<AllocaInst>` on a non-existent value during codegen. Side-
-   channel correlation tests had to use scalar fields only — see header
-   comment in `ParallelDispatchCorrelationTests.cpp`. Reproducer is a
-   one-liner; root-cause likely lives near the captures-struct lowering
-   path for indexed assignments on captured class fields.
+Borrow tracker can still grow further (method-call returns, loop-
+induced borrows) but the v1 catches the canonical alias-mutation
+hazards; deeper coverage moves to P2 if/when use cases surface.
 
 ## P2 — language surface
 
@@ -72,12 +58,6 @@ shapes users will naturally write.
    - **`pickSplitCount` reads scheduler core count** (P5) — current
      impl uses a fixed split count; should read core count from the
      fiber scheduler for better load balance.
-
-4. **Stream<T>.fold<R> overload resolution for block-body lambdas.** Same
-   root cause as P1#1 above but the fix-vs-workaround tradeoff lives at
-   the language-surface layer (do we keep requiring typed locals, or
-   fix inference). Track here so the discussion happens with the P1
-   fix planning.
 
 ## P3 — Lombok polish
 
