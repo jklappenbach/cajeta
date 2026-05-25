@@ -105,6 +105,42 @@ TEST(TemplateWildcardP7Tests, extendsBoundProjectsThroughFieldRead) {
     EXPECT_EQ(runI32(src), 2);
 }
 
+// Wildcard parameter receives a concrete instantiation. Inside the
+// callee, the parameter is bounded-wildcard typed; field-read and
+// method-return projections should compose so chained member lookup
+// works without the caller needing to know the bound.
+//
+// This test exercises whether the call-site assignability check + the
+// in-body projections compose. Concrete `Box<Dog>` should be a valid
+// argument for a `Box<? extends Animal>` parameter (covariant subtype
+// rule already shipped — see TemplateWildcardP6Tests), and inside the
+// callee the field-read projection from P7 should give Animal.
+TEST(TemplateWildcardP7Tests, extendsBoundParameterAcceptsConcreteAndProjects) {
+    auto src =
+        "package test;\n"
+        "public class Animal {\n"
+        "    public int32 tag() { return 1; }\n"
+        "}\n"
+        "public class Dog extends Animal {\n"
+        "    public int32 tag() { return 2; }\n"
+        "}\n"
+        "public class Box<T> {\n"
+        "    T value;\n"
+        "    public Box(T v) { this.value = v; }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 inspect(Box<? extends Animal> b) {\n"
+        "        return b.value.tag();\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        Dog d = heap Dog();\n"
+        "        Box<Dog> bDog = heap Box<Dog>(d);\n"
+        "        return inspect(bDog);\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 2);
+}
+
 // V1 scope guard: unbounded wildcard `Box<?>::get()` does NOT project
 // (no bound to project to). The chained `.tag()` lookup against the
 // raw wildcard sentinel returns nothing meaningful and codegen falls

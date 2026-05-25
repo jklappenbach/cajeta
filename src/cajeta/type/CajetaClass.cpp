@@ -3303,6 +3303,18 @@ namespace cajeta {
         auto argClass = dynamic_pointer_cast<CajetaClass>(argType);
         auto declaredClass = dynamic_pointer_cast<CajetaClass>(declaredType);
         if (!argClass || !declaredClass) return -1;
+        // Wildcard-parameter compatibility (P2-2-1 capture conversion).
+        // A `Box<? extends Animal>` formal accepts a `Box<Dog>` arg per
+        // CajetaClass::isAssignableToWildcard's covariant rule. The
+        // bucket-key canonicals diverge (`Box<test.Dog>` vs
+        // `Box<?-extends-test.Animal>`), so the BFS below would otherwise
+        // return -1 and reject the call. Score as distance 1 — exact
+        // matches still win, but a compatible wildcard formal beats no
+        // match.
+        if (declaredClass->isWildcardInstantiation()
+                && CajetaClass::isAssignableToWildcard(argClass, declaredClass)) {
+            return 1;
+        }
         // BFS up the hierarchy from argClass; return the shallowest hop
         // count to declaredClass. Walks both the extends chain
         // (getSuperClasses) AND the implements chain
