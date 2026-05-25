@@ -82,12 +82,6 @@ namespace cajeta {
             return defaultResult();
         }
 
-        std::any visitStructDeclaration(
-                CajetaParser::StructDeclarationContext* ctx) override {
-            registerAndRecurse(ctx->identifier()->getText(), ctx);
-            return defaultResult();
-        }
-
         std::any visitViewDeclaration(
                 CajetaParser::ViewDeclarationContext* ctx) override {
             registerAndRecurse(ctx->identifier()->getText(), ctx);

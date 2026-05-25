@@ -382,17 +382,13 @@ namespace cajeta {
             return visitChildren(ctx);
         }
 
-        // Shared body for visitStructDeclaration and visitViewDeclaration.
-        // Per Q5 the `struct` keyword is a transitional alias for `class`
-        // (unified-class model): visitStructDeclaration now builds a
-        // CajetaClass instead of CajetaStruct. View keeps its dedicated
-        // CajetaView path (Q5 carves views out of the unification — they
-        // are typed overlays onto byte buffers, not value aggregates).
-        std::any buildStructOrViewNode(
-                const string& name,
-                antlr4::tree::ParseTree* parent,
-                antlr4::ParserRuleContext* ctx,
-                bool asView) {
+        virtual std::any visitViewDeclaration(CajetaParser::ViewDeclarationContext* ctx) override {
+            // Zero-copy memory overlay (Views.md). Views are typed overlays
+            // onto byte buffers (carved out of the unified-class model);
+            // CajetaView inherits the legacy view-style codegen via
+            // generatePrototypeImpl. Endianness/alignment annotations on
+            // the enclosing typeDeclaration are read here.
+            const string& name = ctx->identifier()->getText();
             string packageAdj;
             for (auto& structure : pModule->getStructureStack()) {
                 packageAdj.append(".");
@@ -400,56 +396,26 @@ namespace cajeta {
             }
             QualifiedNamePtr qName = QualifiedName::getOrInsert(
                 name, pModule->getQName()->getPackageName() + packageAdj);
-            CajetaClassPtr structure = asView
-                ? static_pointer_cast<CajetaClass>(make_shared<CajetaView>(pModule, qName))
-                : make_shared<CajetaClass>(pModule, qName,
-                    list<QualifiedNamePtr>{}, list<QualifiedNamePtr>{});
+            auto viewStructure = make_shared<CajetaView>(pModule, qName);
+            CajetaClassPtr structure = static_pointer_cast<CajetaClass>(viewStructure);
 
-            // Endianness / alignment annotations apply only to views (per
-            // cajeta-docs/stdlib/Views.md, structs are host-endian with compiler-chosen
-            // layout; per Views.md, views require endianness and may opt
-            // into natural alignment). The annotations sit on the enclosing
-            // typeDeclaration's classOrInterfaceModifier* prefix.
-            if (asView) {
-                auto viewStructure = static_pointer_cast<CajetaView>(structure);
-                if (auto* typeDecl = dynamic_cast<CajetaParser::TypeDeclarationContext*>(parent)) {
-                    for (auto* mod : typeDecl->classOrInterfaceModifier()) {
-                        auto* ann = mod->annotation();
-                        if (!ann) continue;
-                        string aName = ann->qualifiedName()
-                            ? ann->qualifiedName()->getText()
-                            : (ann->altAnnotationQualifiedName()
-                                ? ann->altAnnotationQualifiedName()->getText()
-                                : string());
-                        if (aName == "BigEndian") {
-                            viewStructure->setEndianness(ViewEndianness::Big);
-                        } else if (aName == "LittleEndian") {
-                            viewStructure->setEndianness(ViewEndianness::Little);
-                        } else if (aName == "HostEndian") {
-                            viewStructure->setEndianness(ViewEndianness::Host);
-                        } else if (aName == "Align") {
-                            viewStructure->setAlignment(ViewAlignment::Natural);
-                        }
-                    }
-                }
-            }
-
-            // S9.1 — `struct Foo implements I1, I2 { ... }`. Parse the
-            // implements clause from the struct's context (views don't
-            // have implements per Views.md). Stored as qImplemented
-            // QualifiedNames; resolved to actual CajetaInterface
-            // instances during CajetaStruct::generatePrototype via
-            // resolveImplementedInterfaces() so forward-refs work.
-            if (!asView) {
-                if (auto* structCtx = dynamic_cast<CajetaParser::StructDeclarationContext*>(ctx)) {
-                    list<QualifiedNamePtr> qImpl;
-                    if (auto* tl = structCtx->typeList()) {
-                        for (auto& tt : tl->typeType()) {
-                            qImpl.push_back(QualifiedName::fromContext(tt->classOrInterfaceType()));
-                        }
-                    }
-                    if (!qImpl.empty()) {
-                        structure->setQImplemented(std::move(qImpl));
+            if (auto* typeDecl = dynamic_cast<CajetaParser::TypeDeclarationContext*>(ctx->parent)) {
+                for (auto* mod : typeDecl->classOrInterfaceModifier()) {
+                    auto* ann = mod->annotation();
+                    if (!ann) continue;
+                    string aName = ann->qualifiedName()
+                        ? ann->qualifiedName()->getText()
+                        : (ann->altAnnotationQualifiedName()
+                            ? ann->altAnnotationQualifiedName()->getText()
+                            : string());
+                    if (aName == "BigEndian") {
+                        viewStructure->setEndianness(ViewEndianness::Big);
+                    } else if (aName == "LittleEndian") {
+                        viewStructure->setEndianness(ViewEndianness::Little);
+                    } else if (aName == "HostEndian") {
+                        viewStructure->setEndianness(ViewEndianness::Host);
+                    } else if (aName == "Align") {
+                        viewStructure->setAlignment(ViewAlignment::Natural);
                     }
                 }
             }
@@ -460,22 +426,6 @@ namespace cajeta {
             pModule->getStructureStack().pop_back();
             CajetaModule::getStructureToModule()[structure->getQName()->toCanonical()] = pModule;
             return static_pointer_cast<CajetaClass>(structure);
-        }
-
-        virtual std::any visitStructDeclaration(CajetaParser::StructDeclarationContext* ctx) override {
-            // Stack value aggregate (cajeta-docs/stdlib/Views.md) — full codegen lands via
-            // CajetaStruct: stack alloca + aggregate init (S6), inline
-            // composition into class fields (S7), methods (S8), interface
-            // dispatch through the fat-pointer model (S9–S11).
-            return buildStructOrViewNode(ctx->identifier()->getText(), ctx->parent, ctx, /*asView=*/false);
-        }
-
-        virtual std::any visitViewDeclaration(CajetaParser::ViewDeclarationContext* ctx) override {
-            // Zero-copy memory overlay (Views.md). S2 routes to CajetaView,
-            // which inherits the legacy view-style codegen via
-            // generatePrototypeImpl. S3-S5 extend it (owning variant,
-            // required endianness, multiple var-size fields, nested views).
-            return buildStructOrViewNode(ctx->identifier()->getText(), ctx->parent, ctx, /*asView=*/true);
         }
 
         virtual std::any visitEnumDeclaration(CajetaParser::EnumDeclarationContext* ctx) override {

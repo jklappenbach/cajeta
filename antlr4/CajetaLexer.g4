@@ -92,7 +92,6 @@ RETURN:             'return';
 STACK:              'stack';
 STATIC:             'static';
 STRICTFP:           'strictfp';
-STRUCT:             'struct';
 STRUCTURE:          'structure';
 SUPER:              'super';
 SWITCH:             'switch';

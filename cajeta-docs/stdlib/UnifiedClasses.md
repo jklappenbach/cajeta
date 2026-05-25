@@ -371,18 +371,16 @@ This is intentional asymmetry with locals: locals require explicit init (definit
 
 ## Migration from v1
 
-The v1 `struct` keyword and `new` keyword are both supported during a deprecation cycle, then retired.
+The v1 `new` keyword is supported during a deprecation cycle, then retired. The v1 `struct` keyword has been removed.
 
 ### `struct` keyword
 
 ```cajeta
-public struct Foo { int32 x; }       // v1
-public class  Foo { int32 x; }       // v2 — same semantics
+public struct Foo { int32 x; }       // v1 — parse error in v2
+public class  Foo { int32 x; }       // v2
 ```
 
-During migration, both forms compile. The v1 `struct` form behaves exactly as `class` (gains a vtable slot, may participate in inheritance, accepts `new`/`heap`/`stack` allocation). Tests written against `struct` keep working.
-
-After the migration cycle, `struct` becomes a parse error.
+The `struct` keyword has been removed from the lexer and parser. v1 `struct` declarations must be rewritten as `class` declarations; the resulting class instance can be allocated with `stack ClassName(args)` (matching v1's lifetime model) or `heap ClassName(args)`.
 
 ### `new` keyword
 

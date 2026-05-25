@@ -90,11 +90,10 @@ TEST(UnifiedClassSyntaxTests, heapAndNewProduceEquivalentBehavior) {
 // ---------------------------------------------------------------------
 
 TEST(UnifiedClassSyntaxTests, stackAggregateInitDeclares) {
-    // Aggregate-init via the explicit `stack` keyword. Behaves identically
-    // to the bare form (which v1 supports for structs).
+    // Aggregate-init via the explicit `stack` keyword.
     auto src =
         "package test;\n"
-        "public struct Point {\n"
+        "public class Point {\n"
         "    int32 x;\n"
         "    int32 y;\n"
         "}\n"
@@ -112,7 +111,7 @@ TEST(UnifiedClassSyntaxTests, stackAggregateAndBareAggregateProduceSameValue) {
     // Both are stack-allocated; both initialize fields the same way.
     auto src =
         "package test;\n"
-        "public struct Pair {\n"
+        "public class Pair {\n"
         "    int32 first;\n"
         "    int32 second;\n"
         "}\n"
@@ -134,14 +133,14 @@ TEST(UnifiedClassSyntaxTests, stackAggregateAndBareAggregateProduceSameValue) {
 // Phase 2a — `heap MyClass { f: v }` now works: malloc + per-field stores.
 // ---------------------------------------------------------------------
 
-TEST(UnifiedClassSyntaxTests, heapAggregateInitAllocatesStruct) {
-    // `heap Foo { ... }` on a struct type allocates the body on the heap
-    // (via malloc + memset) and stores each labeled binding into the
-    // matching field. The resulting reference can be passed around like
-    // any heap-allocated value; lifetime is owner-managed.
+TEST(UnifiedClassSyntaxTests, heapAggregateInitAllocates) {
+    // `heap Foo { ... }` allocates the body on the heap (via malloc +
+    // memset) and stores each labeled binding into the matching field.
+    // The resulting reference can be passed around like any heap-allocated
+    // value; lifetime is owner-managed.
     auto src =
         "package test;\n"
-        "public struct Point {\n"
+        "public class Point {\n"
         "    int32 x;\n"
         "    int32 y;\n"
         "}\n"
@@ -619,30 +618,6 @@ TEST(UnifiedClassSyntaxTests, bareClassConstructionRejected) {
         "    public static int32 run() {\n"
         "        Counter c = Counter();\n"  // ← bare construction
         "        return 0;\n"
-        "    }\n"
-        "}\n";
-    try {
-        CajetaJit::compile(src, "test.S");
-        FAIL() << "expected CAJETA_ERROR_BARE_CLASS_CONSTRUCTION";
-    } catch (cajeta::Exception& e) {
-        EXPECT_EQ(e.getErrorId(), "CAJETA_ERROR_BARE_CLASS_CONSTRUCTION");
-    }
-}
-
-TEST(UnifiedClassSyntaxTests, bareStructConstructionRejected) {
-    // Same rejection applies to struct types — v1 had `Foo(args)` on a
-    // struct segfault (S6.1); the rejection turns that into a clean
-    // diagnostic. Aggregate-init via `Foo { ... }` continues to work.
-    auto src =
-        "package test;\n"
-        "public struct Point {\n"
-        "    int32 x;\n"
-        "    int32 y;\n"
-        "}\n"
-        "public final class S {\n"
-        "    public static int32 run() {\n"
-        "        Point p = Point(3, 4);\n"  // ← bare construction on struct
-        "        return p.x;\n"
         "    }\n"
         "}\n";
     try {

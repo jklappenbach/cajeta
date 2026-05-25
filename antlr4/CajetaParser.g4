@@ -48,7 +48,7 @@ importDeclaration
 
 typeDeclaration
     : classOrInterfaceModifier*
-      (classDeclaration | structDeclaration | viewDeclaration | enumDeclaration | interfaceDeclaration | annotationTypeDeclaration)
+      (classDeclaration | viewDeclaration | enumDeclaration | interfaceDeclaration | annotationTypeDeclaration)
     | ';'
     ;
 
@@ -87,24 +87,10 @@ classDeclaration
       classBody
     ;
 
-// Stack-allocated value aggregate (Structs.md). Holds primitives, class refs,
-// nested structs; no vtable in the receiver; lifetime tied to enclosing scope;
-// may be embedded inline in class fields. Direct calls monomorphized; interface
-// dispatch via tagged fat pointer. Body reuses classBody.
-//
-// `implements` clause (S9.1): a struct can implement one or more interfaces;
-// each (struct, interface) pair gets a static vtable global the dispatch site
-// uses through the tagged-fat-pointer mechanism.
-structDeclaration
-    : STRUCT identifier typeParameters?
-      (IMPLEMENTS typeList)?
-      classBody
-    ;
-
 // Zero-copy memory overlay onto a byte buffer (Views.md). Fields restricted to
 // types directly encodable in bytes (primitives, fixed/variable arrays, nested
 // views). Endianness annotation required at the declaration. Body reuses
-// classBody. Lowered to CajetaStruct in S1; gets its own CajetaView node in S2.
+// classBody.
 viewDeclaration
     : VIEW identifier typeParameters?
       classBody
