@@ -34,6 +34,12 @@ namespace cajeta {
             return variableDeclarators;
         }
 
+        // Declared type for the local. May be null for `var`-style
+        // declarations whose type is inferred from the initializer.
+        // Used by lambda return-type inference to pre-register body
+        // locals in the lambda's resolve-time scope.
+        CajetaTypePtr getType() const { return type; }
+
         llvm::Value* generateCode(CajetaModulePtr module) override;
     };
 

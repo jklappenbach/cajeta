@@ -22,6 +22,8 @@
 #include "MethodCallExpression.h"
 #include "NewExpression.h"
 #include "../Block.h"
+#include "../LocalVariableDeclaration.h"
+#include "../VariableDeclarator.h"
 #include "../Statement.h"
 #include "../LocalVariableDeclaration.h"
 #include "../VariableDeclarator.h"
@@ -1574,12 +1576,72 @@ namespace cajeta {
             if (!expr) return CajetaType::of("void");
             return expr->getResolvedType();
         }
+        // Same Statement-subtype gap the capture walkers have: nested
+        // block / sub-statement members live as private fields rather
+        // than in `children`, so the generic getChildren() fallback
+        // silently skips them. Explicit handlers descend into the
+        // bodies so returns inside if-branches, loops, scope blocks,
+        // etc. participate in lambda return-type inference.
+        if (auto ifs = std::dynamic_pointer_cast<IfStatement>(node)) {
+            if (auto t = inferLambdaReturnFromBody(ifs->getThenBranch())) return t;
+            if (auto t = inferLambdaReturnFromBody(ifs->getElseBranch())) return t;
+            return nullptr;
+        }
+        if (auto ls = std::dynamic_pointer_cast<LabelStatement>(node)) {
+            return inferLambdaReturnFromBody(ls->getBlock());
+        }
+        if (auto ss = std::dynamic_pointer_cast<ScopeStatement>(node)) {
+            return inferLambdaReturnFromBody(ss->getBlock());
+        }
+        if (auto ws = std::dynamic_pointer_cast<WhileStatement>(node)) {
+            return inferLambdaReturnFromBody(ws->getBody());
+        }
+        if (auto ds = std::dynamic_pointer_cast<DoStatement>(node)) {
+            return inferLambdaReturnFromBody(ds->getBody());
+        }
+        if (auto fs = std::dynamic_pointer_cast<ForStatement>(node)) {
+            return inferLambdaReturnFromBody(fs->getBody());
+        }
+        if (auto efs = std::dynamic_pointer_cast<EnhancedForStatement>(node)) {
+            return inferLambdaReturnFromBody(efs->getBody());
+        }
         for (auto& c : node->getChildren()) {
             if (auto t = inferLambdaReturnFromBody(c)) {
                 return t;
             }
         }
         return nullptr;
+    }
+
+    // Walk the body for top-level LocalVariableDeclarations and
+    // collect their (name, declared-type) pairs. Used by
+    // LambdaExpression::resolveTypes to pre-populate the body's
+    // resolve-time scope so IdentifierExpression lookups for body
+    // locals (`return t;` where `int32 t = ...;` declares `t`) find
+    // a type instead of returning null. Without this the lambda's
+    // return-type inference falls through to void for any lambda
+    // whose return references a body-local rather than a parameter.
+    //
+    // Top-level only on purpose: locals declared inside nested blocks
+    // (if/for/while bodies) have block scope and shouldn't leak into
+    // the lambda's outer name space at resolve time. Returns from
+    // inside those nested blocks already reference identifiers the
+    // standard scope chain won't find at resolve time either; the
+    // typed-local workaround on the caller side remains the
+    // intended idiom for that case.
+    static void collectTopLevelBodyLocals(
+            const AbstractSyntaxNodePtr& body,
+            std::vector<std::pair<std::string, CajetaTypePtr>>& out) {
+        if (!body) return;
+        for (auto& child : body->getChildren()) {
+            auto lvd = std::dynamic_pointer_cast<LocalVariableDeclaration>(child);
+            if (!lvd) continue;
+            CajetaTypePtr declaredType = lvd->getType();
+            if (!declaredType) continue;
+            for (auto& vd : lvd->getVariableDeclarators()) {
+                out.emplace_back(vd->getIdentifier(), declaredType);
+            }
+        }
     }
 
     void LambdaExpression::resolveTypes(CajetaModulePtr module) {
@@ -1614,6 +1676,24 @@ namespace cajeta {
                 // codegen-only branches of StackField stay unused.
                 auto fld = std::make_shared<StackField>(
                     module, paramNames[i], paramTypes[i]);
+                paramScope->putField(fld);
+            }
+            // Pre-register top-level body locals so body resolveTypes
+            // can resolve `return t;` (where `int32 t = ...;` declares
+            // `t`) to t's declared type instead of leaving the
+            // identifier unresolved. Without this, inferLambdaReturnFromBody
+            // gets a null type back from `t.getResolvedType()` and the
+            // lambda's return type falls through to void — surfaces as
+            // "JIT verify: Function of void return type" at codegen.
+            // Body-locals are normally registered at generateCode time;
+            // this is a resolve-time pre-registration that mirrors what
+            // codegen would do, just for type inference.
+            std::vector<std::pair<std::string, CajetaTypePtr>> bodyLocals;
+            collectTopLevelBodyLocals(body, bodyLocals);
+            for (auto& nt : bodyLocals) {
+                if (!nt.second) continue;
+                auto fld = std::make_shared<StackField>(
+                    module, nt.first, nt.second);
                 paramScope->putField(fld);
             }
             module->getScopeStack().add(paramScope);
