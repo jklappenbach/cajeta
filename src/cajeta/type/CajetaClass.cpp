@@ -3227,8 +3227,13 @@ namespace cajeta {
                 if (!cls) return;
                 auto origin = cls->getTemplateOrigin();
                 if (!origin) return;
-                string aliasCanon = Method::buildCanonical(
-                    origin, m->getName(),
+                // Substitution-stable canonical: T-typed params land as T,
+                // not their substituted concrete type, so every Box<X>
+                // publishes the same alias hash for the same source-level
+                // method. The wildcard-receiver dispatch (below in
+                // invokeMethod) computes the lookup hash the same way.
+                string aliasCanon = Method::buildTemplateOriginCanonical(
+                    cls, m->getName(),
                     m->getParameterList(), /*labeled=*/false);
                 templateAliases[aliasCanon] = m;
             };
@@ -4111,8 +4116,11 @@ namespace cajeta {
                 // dynamic instance's vtable. See Step 5a in todo.md.
                 int64_t hash;
                 if (this->isWildcardInstantiation() && this->getTemplateOrigin()) {
-                    string aliasCanon = Method::buildCanonical(
-                        this->getTemplateOrigin(),
+                    // Substitution-stable canonical so the lookup hash
+                    // matches the alias entry every instantiation
+                    // publishes (buildVirtualTable, addAliasFor).
+                    string aliasCanon = Method::buildTemplateOriginCanonical(
+                        static_pointer_cast<CajetaClass>(shared_from_this()),
                         method->getName(),
                         method->getParameterList(),
                         /*labeled=*/false);

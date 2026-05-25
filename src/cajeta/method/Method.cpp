@@ -1529,6 +1529,65 @@ namespace cajeta {
         return canonical;
     }
 
+    string Method::buildTemplateOriginCanonical(
+            CajetaClassPtr instClass,
+            const string& name,
+            vector<FormalParameterPtr> parameters,
+            bool labeled) {
+        auto origin = instClass ? instClass->getTemplateOrigin() : nullptr;
+        if (!origin) {
+            return buildCanonical(instClass, name, parameters, labeled);
+        }
+        const auto& typeParams = instClass->getTypeParameters();
+        const auto& typeArgs = instClass->getTypeArguments();
+        // Pre-compute the unsubstituted name for each declared type arg by
+        // matching pointer identity. Identity match is the right comparison —
+        // the substitution that happened at instantiation time stored the
+        // typeArgument pointer as the field type, so a parameter whose type
+        // appears in typeArgs is exactly one that came from a template
+        // parameter slot. Equal canonicals across pointers (e.g. two
+        // independent instantiations resolving to the same primitive int32)
+        // also map back; we accept the false-positive risk because the
+        // canonical-name path lands on the same alias hash anyway.
+        auto unsubstitute = [&](CajetaTypePtr t) -> string {
+            if (!t) return "";
+            if (typeParams.size() == typeArgs.size()) {
+                for (size_t i = 0; i < typeArgs.size(); ++i) {
+                    if (typeArgs[i].get() == t.get()) {
+                        return typeParams[i].name;
+                    }
+                }
+            }
+            return t->toCanonical();
+        };
+
+        string canonical;
+        canonical.append(origin->toCanonical());
+        canonical.append("::");
+        canonical.append(name);
+        canonical.append("(");
+
+        if (labeled) {
+            sort(parameters.begin(), parameters.end(),
+                [](FormalParameterPtr a, FormalParameterPtr b) {
+                    return a->getName() > b->getName();
+                });
+        }
+
+        if (!parameters.empty()) {
+            bool first = true;
+            for (auto& parameter : parameters) {
+                if (first) first = false; else canonical.append(",");
+                if (labeled) {
+                    canonical.append(parameter->getName()).append(":");
+                }
+                canonical.append(unsubstitute(parameter->getType()));
+            }
+        }
+        canonical.append(")");
+        return canonical;
+    }
+
     string Method::buildCanonical(CajetaClassPtr parent, const string& name, vector<ParameterEntry> parameters, bool labeled) {
         string canonical;
         canonical.append(parent->toCanonical());

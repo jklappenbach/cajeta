@@ -27,7 +27,19 @@ namespace cajeta {
         // for ordinary calls (type args inferred via unification at
         // resolveMethod time). See cajeta-docs/stdlib/MethodLevelTemplate.md.
         vector<CajetaTypePtr> explicitMethodTypeArgs;
+        // Capture identity for the read-back pattern. `resolvedType` is
+        // the projected bound (via captureProject) for user-facing
+        // chained-member resolution; `preProjectionReturnType` is the
+        // un-projected wildcard sentinel. The outer call site uses
+        // the latter to detect "value came from the same wildcard
+        // receiver" — wildcard meets wildcard at the parameter check
+        // and the call resolves cleanly. v1 scope: syntactic
+        // receiver-identifier equality.
+        CajetaTypePtr preProjectionReturnType;
     public:
+        CajetaTypePtr getPreProjectionReturnType() const {
+            return preProjectionReturnType;
+        }
         MethodCallExpression(CajetaParser::MethodCallContext* ctx, antlr4::Token* token);
 
         // Method-call args aren't in `children` (children[0] is the receiver,

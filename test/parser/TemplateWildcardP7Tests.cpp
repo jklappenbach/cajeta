@@ -234,6 +234,43 @@ TEST(TemplateWildcardP7Tests, extendsBoundLocalAcceptsDirectHeapConstruction) {
     EXPECT_EQ(runI32(src), 2);
 }
 
+// Wildcard-receiver method-CALL dispatch with a T-parametric formal.
+// Substitution-stable hash means the wildcard's alias hash for
+// `set(T)` is the same one Box<Dog>#VTable carries — so the runtime
+// vtable lookup lands on Box<Dog>::set even though the static type
+// is `Box<? extends Animal>`.
+TEST(TemplateWildcardP7Tests, wildcardReceiverDispatchesTParamMethod) {
+    auto src =
+        "package test;\n"
+        "public class Animal {\n"
+        "    public int32 tag() { return 1; }\n"
+        "}\n"
+        "public class Dog extends Animal {\n"
+        "    public int32 tag() { return 2; }\n"
+        "}\n"
+        "public class Counter {\n"
+        "    public static int32 setCalls = 0;\n"
+        "}\n"
+        "public class Box<T> {\n"
+        "    T value;\n"
+        "    public Box(T v) { this.value = v; }\n"
+        "    public T get() { return this.value; }\n"
+        "    public void set(T v) {\n"
+        "        Counter.setCalls = Counter.setCalls + 1;\n"
+        "        this.value = v;\n"
+        "    }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Dog d = heap Dog();\n"
+        "        Box<? extends Animal> b = heap Box<Dog>(d);\n"
+        "        b.set(b.get());\n"
+        "        return Counter.setCalls * 100 + b.value.tag();\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 102);
+}
+
 // V1 scope guard: unbounded wildcard `Box<?>::get()` does NOT project
 // (no bound to project to). The chained `.tag()` lookup against the
 // raw wildcard sentinel returns nothing meaningful and codegen falls

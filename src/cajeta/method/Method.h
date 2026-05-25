@@ -488,6 +488,25 @@ namespace cajeta {
 
         static string buildCanonical(CajetaClassPtr parent, const string& name, vector<ParameterEntry> parameters, bool labeled);
 
+        // Template-origin canonical: same shape as `buildCanonical` but
+        // un-substitutes the instantiation's typeArguments back to the
+        // template's typeParameter names in the parameter list. Used to
+        // produce a substitution-stable hash for wildcard / capture
+        // dispatch so the lookup hash matches across all
+        // instantiations of the same template (every `Box<X>` resolves
+        // `set` to the same vtable hash).
+        //
+        // v1 scope: top-level param-type substitution only. A param of
+        // type `Optional<T>` substituted to `Optional<int32>` still
+        // canonicalizes as `Optional<int32>` — recursive descent into
+        // generic-arg lists is a follow-on slice if dispatch through
+        // wrapped-generic params surfaces a need.
+        static string buildTemplateOriginCanonical(
+            CajetaClassPtr instClass,
+            const string& name,
+            vector<FormalParameterPtr> parameters,
+            bool labeled);
+
         static string buildGeneric(CajetaClassPtr parent, const string& name, vector<FormalParameterPtr> parameters, bool labeled);
 
         static string buildGeneric(CajetaClassPtr parent, const string& name, vector<ParameterEntry> parameters, bool labeled);

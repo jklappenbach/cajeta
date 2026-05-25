@@ -2123,6 +2123,34 @@ namespace cajeta {
             }
             CajetaTypePtr et = param.expression->getResolvedType();
             if (!et) et = CajetaType::of(value);
+            // Capture identity (P2-2 item 1): if the argument is a
+            // method call on the SAME identifier-named receiver as
+            // this outer call, prefer the un-projected wildcard return
+            // type as the entry type. That way subtypeDistance sees
+            // wildcard-vs-wildcard (canonical match) and the read-back
+            // pattern `b.set(b.get())` resolves cleanly. A foreign
+            // Animal arg lacks this match and continues to be rejected
+            // (PECS soundness preserved).
+            //
+            // v1 scope: identifier-receiver match only. Chained or
+            // `this`-based receivers fall back to the projected type
+            // and reject — a deeper capture model would generalize.
+            if (!children.empty()) {
+                auto outerRecvId = dynamic_pointer_cast<IdentifierExpression>(children[0]);
+                auto argMce = dynamic_pointer_cast<MethodCallExpression>(param.expression);
+                if (outerRecvId && argMce
+                        && argMce->getPreProjectionReturnType()) {
+                    auto& argChildren = argMce->getChildren();
+                    if (!argChildren.empty()) {
+                        auto argRecvId = dynamic_pointer_cast<IdentifierExpression>(argChildren[0]);
+                        if (argRecvId
+                                && argRecvId->getTextValue()
+                                    == outerRecvId->getTextValue()) {
+                            et = argMce->getPreProjectionReturnType();
+                        }
+                    }
+                }
+            }
             entries.push_back(ParameterEntry(et, param.label, value));
         }
 
@@ -3313,8 +3341,11 @@ namespace cajeta {
                 // in T's slot. Project to the bound so downstream
                 // members (e.g., `b.get().tag()` where T is bounded
                 // by Animal) resolve against the bound's surface.
+                // Store the un-projected return alongside for capture-
+                // identity detection at the next outer call site.
+                preProjectionReturnType = resolved->getReturnType();
                 resolvedType = CajetaType::captureProject(
-                    resolved->getReturnType());
+                    preProjectionReturnType);
             }
         }
 
