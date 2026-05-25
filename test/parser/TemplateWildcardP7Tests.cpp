@@ -30,6 +30,7 @@
 #include "gtest/gtest.h"
 #include "../jit/JitTestHelper.h"
 #include "cajeta/type/CajetaType.h"
+#include "cajeta/error/Exception.h"
 
 #include <cstdint>
 #include <string>
@@ -269,6 +270,48 @@ TEST(TemplateWildcardP7Tests, wildcardReceiverDispatchesTParamMethod) {
         "    }\n"
         "}\n";
     EXPECT_EQ(runI32(src), 102);
+}
+
+// PECS write-soundness. `Box<? extends Animal>::set(? extends Animal)`
+// must reject a foreign Animal-typed argument — the receiver's actual
+// T could be a strict subtype like Dog, and writing an Animal would
+// violate the container's element-type contract. Capture identity
+// would allow the write if the value came from the same receiver
+// (covered above), but a freshly-allocated Animal carries no such
+// origin.
+//
+// Today the call silently fails to resolve (subtypeDistance returns -1,
+// resolveMethod returns null, invokeMethod produces a no-op). For
+// soundness, the compiler should reject with a clear diagnostic so
+// the user sees the violation rather than wondering why the write
+// disappeared.
+TEST(TemplateWildcardP7Tests, pecsForeignWriteToExtendsRejected) {
+    auto src =
+        "package test;\n"
+        "public class Animal { public int32 tag() { return 1; } }\n"
+        "public class Dog extends Animal { public int32 tag() { return 2; } }\n"
+        "public class Box<T> {\n"
+        "    T value;\n"
+        "    public Box(T v) { this.value = v; }\n"
+        "    public void set(T v) { this.value = v; }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Dog d = heap Dog();\n"
+        "        Animal foreign = heap Animal();\n"
+        "        Box<? extends Animal> b = heap Box<Dog>(d);\n"
+        "        b.set(foreign);\n"
+        "        return 0;\n"
+        "    }\n"
+        "}\n";
+    try {
+        CajetaJit::compile(src, "test.D");
+        FAIL() << "expected PECS write rejection on Box<? extends Animal>::set(foreign)";
+    } catch (cajeta::Exception& e) {
+        EXPECT_EQ(e.getErrorId(), "CAJETA_ERROR_PECS_WRITE_VIOLATION")
+            << "expected CAJETA_ERROR_PECS_WRITE_VIOLATION, got: "
+            << e.getErrorId() << " — " << e.getMessage();
+    }
 }
 
 // V1 scope guard: unbounded wildcard `Box<?>::get()` does NOT project

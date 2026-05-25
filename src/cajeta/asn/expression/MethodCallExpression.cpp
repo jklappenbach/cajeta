@@ -3273,6 +3273,83 @@ namespace cajeta {
             }
         }
 
+        // PECS write-soundness (P2-2-1). A wildcard-typed receiver
+        // `Box<? extends B>` exposes parameters typed `? extends B` —
+        // those slots accept reads of B (covariant) but reject writes
+        // of anything other than a value sourced from the same capture
+        // (Java's PECS rule). Capture identity above already lets the
+        // read-back pattern through (`b.set(b.get())`); this guard
+        // catches the bad-write case (`b.set(foreign)`) which today
+        // silently fails to resolve. The check fires when:
+        //   - targetClass is a wildcard instantiation,
+        //   - it has a method by `methodCallName` with a wildcard-typed
+        //     parameter at some position, and
+        //   - the corresponding argument expression isn't an MCE on
+        //     the same identifier-named receiver (no capture-identity
+        //     evidence to make the write safe).
+        if (targetClass && targetClass->isWildcardInstantiation()
+                && !isSuperCall) {
+            auto outerRecvId = !children.empty()
+                ? dynamic_pointer_cast<IdentifierExpression>(children[0])
+                : nullptr;
+            for (auto& methodEntry : targetClass->getMethods()) {
+                MethodPtr m = methodEntry.second;
+                if (!m || m->getName() != methodCallName) continue;
+                auto plist = m->getParameterList();
+                bool isStatic = m->getModifiers().find(STATIC)
+                    != m->getModifiers().end();
+                size_t thisShift = isStatic ? 0 : 1;
+                if (parameters.size() + thisShift > plist.size()) continue;
+                for (size_t i = 0; i < parameters.size(); ++i) {
+                    auto& formal = plist[i + thisShift];
+                    if (!formal || !formal->getType()) continue;
+                    // PECS: only the bounded-extends direction is the
+                    // read-only producer side that breaks on writes.
+                    // Unbounded `?` is type-erased dispatch (stdlib
+                    // chain-walker code legitimately passes values
+                    // through these slots); `? super B` is the
+                    // consumer side where B-or-narrower writes ARE
+                    // safe (separate slice if we ever tighten the
+                    // upper bound check).
+                    if (formal->getType()->wildcardKind()
+                            != CajetaType::WildcardKind::Extends) {
+                        continue;
+                    }
+                    auto argExpr = parameters[i].expression;
+                    bool sameReceiverMce = false;
+                    if (outerRecvId) {
+                        auto argMce = dynamic_pointer_cast<MethodCallExpression>(argExpr);
+                        if (argMce && !argMce->getChildren().empty()) {
+                            auto argRecvId = dynamic_pointer_cast<IdentifierExpression>(
+                                argMce->getChildren()[0]);
+                            if (argRecvId
+                                    && argRecvId->getTextValue()
+                                        == outerRecvId->getTextValue()) {
+                                sameReceiverMce = true;
+                            }
+                        }
+                    }
+                    if (!sameReceiverMce) {
+                        throw Exception(
+                            "cannot pass value to wildcard parameter '"
+                            + formal->getName() + "' of "
+                            + targetClass->toCanonical() + "::"
+                            + methodCallName + " — the receiver's "
+                            "type-parameter T is unknown beyond its bound, "
+                            "so any value not sourced from this same "
+                            "receiver might violate the container's "
+                            "element-type contract (PECS: producer "
+                            "extends, consumer super). To make the write "
+                            "safe, either narrow the receiver type or "
+                            "thread the value through the same receiver "
+                            "(e.g. `b.set(b.get())`).",
+                            "CAJETA_ERROR_PECS_WRITE_VIOLATION");
+                    }
+                }
+                break;
+            }
+        }
+
         llvm::Value* callResult = targetClass->invokeMethod(methodCallName, entries,
             /*isConstructor=*/false, thisValue, /*callerModule=*/module,
             /*forceDirectCall=*/isSuperCall,
