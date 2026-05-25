@@ -358,6 +358,22 @@ class CajetaType : public Modifiable, public Annotatable,
         // null for unbounded wildcards and non-wildcards.
         CajetaTypePtr wildcardBound() const;
 
+        // Capture conversion projection at read positions
+        // (cajeta-docs/TemplateWildcard.md § 3 Capture identity). When
+        // an expression's static type comes back from method
+        // resolution as a bounded-extends wildcard — typically the
+        // return type of a method on a `Foo<? extends B>` receiver —
+        // the caller should see the bound `B`, not the raw sentinel,
+        // so member-resolution on the result works.
+        //
+        // Scope (v1):
+        //   - `? extends B` → B
+        //   - other wildcard kinds + non-wildcards → unchanged
+        //   - nested wildcards inside generic args (`Foo<? extends B>`)
+        //     left alone; variance through type constructors needs
+        //     proper capture-identity tracking.
+        static CajetaTypePtr captureProject(CajetaTypePtr t);
+
         // Enum support. `registerEnumConstant` is called per constant when
         // the visitor sees `enum X { A, B, C }`. `lookupEnumConstant` returns
         // the int32 ordinal if `enumName.constName` is a registered enum

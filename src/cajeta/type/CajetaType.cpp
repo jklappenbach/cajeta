@@ -178,6 +178,13 @@ namespace cajeta {
         return it == g_wildcardInfo.end() ? nullptr : it->second.bound;
     }
 
+    CajetaTypePtr CajetaType::captureProject(CajetaTypePtr t) {
+        if (!t) return t;
+        if (t->wildcardKind() != WildcardKind::Extends) return t;
+        auto bound = t->wildcardBound();
+        return bound ? bound : t;
+    }
+
     void CajetaType::registerArchive(const string& canonical,
                                       const string& shortName) {
         // Both keys point at the canonical so the miss-path in

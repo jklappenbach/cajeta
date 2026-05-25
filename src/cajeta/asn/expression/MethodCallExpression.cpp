@@ -3307,7 +3307,14 @@ namespace cajeta {
             MethodPtr resolved = targetClass->resolveMethod(
                 methodCallName, entries, /*isConstructor=*/false, callFloating);
             if (resolved && resolved->getReturnType()) {
-                resolvedType = resolved->getReturnType();
+                // Capture conversion (P2-2 item 1): when the receiver
+                // is a bounded-wildcard instantiation, the method's
+                // resolved return type carries the wildcard sentinel
+                // in T's slot. Project to the bound so downstream
+                // members (e.g., `b.get().tag()` where T is bounded
+                // by Animal) resolve against the bound's surface.
+                resolvedType = CajetaType::captureProject(
+                    resolved->getReturnType());
             }
         }
 

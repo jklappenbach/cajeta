@@ -30,14 +30,27 @@ hazards; deeper coverage moves to P2 if/when use cases surface.
    bigger pieces.
 
 2. **Template wildcards — future work** (not blocking; v1 + bounded wildcards
-   shipped in `1f9d388`..`2e8cb03`):
-   - **Capture conversion proper** (`Stream<? extends Number>` produces
-     `Number` at read sites, etc.). Extends method resolution to carry
-     capture identities through the dispatch. Also: lets the 4 wildcard
-     lints fire cleanly inside method-template bodies — currently
-     suppressed there because the wildcard sentinel doubles as a
-     placeholder for uninstantiated T (see LintRules.md "Known
-     limitation" lines).
+   shipped in `1f9d388`..`2e8cb03`; minimal capture conversion landed
+   in P2-2-1 below):
+   - **Capture conversion follow-on.** First slice ("? extends" bound
+     projects to return type at call sites) shipped — `Box<? extends B>.get()`
+     now resolves members on B at chain-call sites. Remaining work:
+     - **Capture identity** ("same unknown T" across two calls on the
+       same receiver — today each call gets an independent projection;
+       Java models this with synthetic capture#N variables).
+     - **Field-read projection** through wildcard receivers (the call-site
+       projection only covers method returns today).
+     - **Parameter / write-position handling** for `? super B`
+       (contravariant write direction — accept B-or-narrower writes,
+       reject reads beyond Object).
+     - **Nested-wildcard projection** through generic type constructors
+       (`Foo<? extends B>` → `Foo<B>` requires variance tracking we
+       don't carry).
+     - **Lift the method-template lint suppression** in
+       MethodCallExpression — capture identity lets us distinguish
+       "real `?`" from "uninstantiated T placeholder" so the wildcard
+       lints can fire cleanly inside templated bodies. See LintRules.md
+       "Known limitation" notes.
    - **Stdlib producer/consumer signature migration** to use bounded
      wildcards where they'd express PECS variance more clearly than the
      current concrete instantiations.
