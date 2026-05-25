@@ -141,6 +141,99 @@ TEST(TemplateWildcardP7Tests, extendsBoundParameterAcceptsConcreteAndProjects) {
     EXPECT_EQ(runI32(src), 2);
 }
 
+// `? super B` accepts B-and-narrower writes — the PECS consumer side.
+// Given `Box<? super Dog> b` (declared upcast from a `Box<Animal>`),
+// writing a fresh Dog to `b.value` is the safe write direction:
+// every supertype of Dog (Animal, Object, ...) can hold a Dog. After
+// the write, the underlying Box<Animal>'s value field carries the new
+// Dog, and reading through the original Animal-typed reference works
+// because Dog is-a Animal.
+TEST(TemplateWildcardP7Tests, superBoundAcceptsNarrowerWrite) {
+    auto src =
+        "package test;\n"
+        "public class Animal {\n"
+        "    public int32 tag() { return 1; }\n"
+        "}\n"
+        "public class Dog extends Animal {\n"
+        "    public int32 tag() { return 2; }\n"
+        "}\n"
+        "public class Box<T> {\n"
+        "    T value;\n"
+        "    public Box(T v) { this.value = v; }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Animal seed = heap Animal();\n"
+        "        Box<Animal> bAnimal = heap Box<Animal>(seed);\n"
+        "        Box<? super Dog> b = bAnimal;\n"
+        "        Dog d = heap Dog();\n"
+        "        b.value = d;\n"
+        "        return bAnimal.value.tag();\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 2);
+}
+
+// Compose super-write with the wildcard-parameter compatibility from
+// the previous slice. `static void writeNarrower(Box<? super Dog> b, Dog d)`
+// must accept a `Box<Animal>` arg (Animal is a supertype of Dog) and
+// then write d into b.value inside the body. The write threads through
+// to the caller's bAnimal because both alias the same heap instance.
+TEST(TemplateWildcardP7Tests, superBoundParameterComposesWithWrite) {
+    auto src =
+        "package test;\n"
+        "public class Animal {\n"
+        "    public int32 tag() { return 1; }\n"
+        "}\n"
+        "public class Dog extends Animal {\n"
+        "    public int32 tag() { return 2; }\n"
+        "}\n"
+        "public class Box<T> {\n"
+        "    T value;\n"
+        "    public Box(T v) { this.value = v; }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static void writeNarrower(Box<? super Dog> b, Dog d) {\n"
+        "        b.value = d;\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        Animal seed = heap Animal();\n"
+        "        Box<Animal> bAnimal = heap Box<Animal>(seed);\n"
+        "        Dog d = heap Dog();\n"
+        "        writeNarrower(bAnimal, d);\n"
+        "        return bAnimal.value.tag();\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 2);
+}
+
+// Direct construction into a wildcard-typed local. Skips the
+// named-intermediate (`Box<Dog> bDog = ...; Box<? extends Animal> b = bDog;`)
+// pattern in case that path masks a missing covariance check on the
+// initializer expression itself.
+TEST(TemplateWildcardP7Tests, extendsBoundLocalAcceptsDirectHeapConstruction) {
+    auto src =
+        "package test;\n"
+        "public class Animal {\n"
+        "    public int32 tag() { return 1; }\n"
+        "}\n"
+        "public class Dog extends Animal {\n"
+        "    public int32 tag() { return 2; }\n"
+        "}\n"
+        "public class Box<T> {\n"
+        "    T value;\n"
+        "    public Box(T v) { this.value = v; }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Dog d = heap Dog();\n"
+        "        Box<? extends Animal> b = heap Box<Dog>(d);\n"
+        "        return b.value.tag();\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 2);
+}
+
 // V1 scope guard: unbounded wildcard `Box<?>::get()` does NOT project
 // (no bound to project to). The chained `.tag()` lookup against the
 // raw wildcard sentinel returns nothing meaningful and codegen falls
