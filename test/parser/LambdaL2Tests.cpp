@@ -324,6 +324,95 @@ TEST(LambdaL2Tests, compoundAssignToValueCaptureIsCompileError) {
     }
 }
 
+// L2-5 (nested-block coverage): assigning a value-captured primitive
+// from inside an `if`-then block must still be rejected. Before the
+// lambda-capture walker fix, enforceValueCaptureImmutability descended
+// through the generic getChildren() fallback for LabelStatement (the
+// wrapper for an if-branch block), which silently skipped the nested
+// body — the write slipped past the check. The natural form below
+// pins the check at the if-branch site.
+TEST(LambdaL2Tests, writingValueCaptureInsideIfIsCompileError) {
+    auto src =
+        "package test;\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        int32 counter = 0;\n"
+        "        (int32) -> int32 fn = n -> {\n"
+        "            if (n > 0) {\n"
+        "                counter = counter + n;\n"
+        "            }\n"
+        "            return counter;\n"
+        "        };\n"
+        "        return fn(5);\n"
+        "    }\n"
+        "}\n";
+    try {
+        CajetaJit::compile(src, "test.D");
+        FAIL() << "expected lambda value-capture write inside if-branch to throw";
+    } catch (cajeta::Exception& e) {
+        EXPECT_EQ(e.getErrorId(), "CAJETA_ERROR_TYPE");
+        EXPECT_NE(e.getMessage().find("counter"), std::string::npos);
+        EXPECT_NE(e.getMessage().find("captured by value"), std::string::npos);
+    }
+}
+
+// L2-5 (nested-block coverage): same check inside a `while` body.
+// WhileStatement was one of the Statement subtypes the walker fix
+// added an explicit handler for.
+TEST(LambdaL2Tests, writingValueCaptureInsideWhileIsCompileError) {
+    auto src =
+        "package test;\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        int32 acc = 0;\n"
+        "        (int32) -> int32 fn = n -> {\n"
+        "            int32 i = 0;\n"
+        "            while (i < n) {\n"
+        "                acc = acc + 1;\n"
+        "                i = i + 1;\n"
+        "            }\n"
+        "            return acc;\n"
+        "        };\n"
+        "        return fn(3);\n"
+        "    }\n"
+        "}\n";
+    try {
+        CajetaJit::compile(src, "test.D");
+        FAIL() << "expected lambda value-capture write inside while body to throw";
+    } catch (cajeta::Exception& e) {
+        EXPECT_EQ(e.getErrorId(), "CAJETA_ERROR_TYPE");
+        EXPECT_NE(e.getMessage().find("acc"), std::string::npos);
+    }
+}
+
+// L2-5 (nested-block coverage): compound-assign inside a `for` body.
+// ForStatement was another Statement subtype the walker fix wired in.
+// Compound `+=` exercises the same isAssignment() detection path the
+// top-level test pins for direct `=`.
+TEST(LambdaL2Tests, compoundAssignToValueCaptureInsideForIsCompileError) {
+    auto src =
+        "package test;\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        int32 sum = 0;\n"
+        "        (int32) -> int32 fn = n -> {\n"
+        "            for (int32 i = 1; i <= n; i = i + 1) {\n"
+        "                sum += i;\n"
+        "            }\n"
+        "            return sum;\n"
+        "        };\n"
+        "        return fn(4);\n"
+        "    }\n"
+        "}\n";
+    try {
+        CajetaJit::compile(src, "test.D");
+        FAIL() << "expected compound-assign to value capture inside for body to throw";
+    } catch (cajeta::Exception& e) {
+        EXPECT_EQ(e.getErrorId(), "CAJETA_ERROR_TYPE");
+        EXPECT_NE(e.getMessage().find("sum"), std::string::npos);
+    }
+}
+
 // Negative case: assigning a non-captured local (declared inside the
 // lambda block) is fine — the check is name-based on the value-captured
 // set, so a local with no shadow on the outside isn't affected.

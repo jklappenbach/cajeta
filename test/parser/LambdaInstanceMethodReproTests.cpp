@@ -268,3 +268,146 @@ TEST(LambdaInstanceMethodReproTests, blockBodyBooleanReturnWithInstanceCall) {
         "}\n");
     EXPECT_EQ(runI32(src), 1);
 }
+
+// ---------------------------------------------------------------------
+// Symmetric coverage for the OTHER Statement subtypes whose private
+// inner block / sub-statements the walker fix taught itself to
+// descend into. The if-then (LabelStatement) case above was the
+// one originally surfaced; these pin the matching shape inside
+// while / for / do / scope / enhanced-for bodies so the gap can't
+// silently reopen for any single one of them.
+// ---------------------------------------------------------------------
+
+// while-body: captured-instance call from inside a `while` loop body.
+// The walker descends into WhileStatement::getBody() via the explicit
+// handler. Pre-fix this dropped `this` exactly like the if-branch case.
+TEST(LambdaInstanceMethodReproTests, whileBodyInstanceCallOnCapturedClass) {
+    auto src = std::string(
+        "package test;\n"
+        "public class Counter {\n"
+        "    public int32 v;\n"
+        "    public Counter() { this.v = 0; }\n"
+        "    public void bump() { this.v = this.v + 1; }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Counter c = new Counter();\n"
+        "        (int32) -> void fn = (n) -> {\n"
+        "            int32 i = 0;\n"
+        "            while (i < n) {\n"
+        "                c.bump();\n"
+        "                i = i + 1;\n"
+        "            }\n"
+        "        };\n"
+        "        fn(5);\n"
+        "        return c.v;\n"
+        "    }\n"
+        "}\n");
+    EXPECT_EQ(runI32(src), 5);
+}
+
+// for-body: captured-instance call inside a C-style `for` loop body.
+// Walker descends via ForStatement::getBody().
+TEST(LambdaInstanceMethodReproTests, forBodyInstanceCallOnCapturedClass) {
+    auto src = std::string(
+        "package test;\n"
+        "public class Counter {\n"
+        "    public int32 v;\n"
+        "    public Counter() { this.v = 0; }\n"
+        "    public void add(int32 x) { this.v = this.v + x; }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Counter c = new Counter();\n"
+        "        (int32) -> void fn = (n) -> {\n"
+        "            for (int32 i = 1; i <= n; i = i + 1) {\n"
+        "                c.add(i);\n"
+        "            }\n"
+        "        };\n"
+        "        fn(4);\n"
+        "        return c.v;\n"
+        "    }\n"
+        "}\n");
+    EXPECT_EQ(runI32(src), 1 + 2 + 3 + 4);
+}
+
+// do-body: captured-instance call inside a `do { } while (cond)` loop.
+// Walker descends via DoStatement::getBody().
+TEST(LambdaInstanceMethodReproTests, doBodyInstanceCallOnCapturedClass) {
+    auto src = std::string(
+        "package test;\n"
+        "public class Counter {\n"
+        "    public int32 v;\n"
+        "    public Counter() { this.v = 0; }\n"
+        "    public void bump() { this.v = this.v + 1; }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Counter c = new Counter();\n"
+        "        (int32) -> void fn = (n) -> {\n"
+        "            int32 i = 0;\n"
+        "            do {\n"
+        "                c.bump();\n"
+        "                i = i + 1;\n"
+        "            } while (i < n);\n"
+        "        };\n"
+        "        fn(3);\n"
+        "        return c.v;\n"
+        "    }\n"
+        "}\n");
+    EXPECT_EQ(runI32(src), 3);
+}
+
+// scope-body: captured-instance call inside a bare `scope { }` block.
+// Walker descends via ScopeStatement::getBlock(). Common shape for
+// orchestrator-style lambdas that delimit a drop-batching region.
+TEST(LambdaInstanceMethodReproTests, scopeBodyInstanceCallOnCapturedClass) {
+    auto src = std::string(
+        "package test;\n"
+        "public class Counter {\n"
+        "    public int32 v;\n"
+        "    public Counter() { this.v = 0; }\n"
+        "    public void add(int32 x) { this.v = this.v + x; }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Counter c = new Counter();\n"
+        "        () -> void fn = () -> {\n"
+        "            scope {\n"
+        "                c.add(11);\n"
+        "                c.add(31);\n"
+        "            }\n"
+        "        };\n"
+        "        fn();\n"
+        "        return c.v;\n"
+        "    }\n"
+        "}\n");
+    EXPECT_EQ(runI32(src), 42);
+}
+
+// enhanced-for body: captured-instance call inside a `for (x : iter)`
+// body. Walker descends via EnhancedForStatement::getBody(). Iterates
+// a primitive array so we don't drag in iterator-protocol surface.
+TEST(LambdaInstanceMethodReproTests, enhancedForBodyInstanceCallOnCapturedClass) {
+    auto src = std::string(
+        "package test;\n"
+        "public class Counter {\n"
+        "    public int32 v;\n"
+        "    public Counter() { this.v = 0; }\n"
+        "    public void add(int32 x) { this.v = this.v + x; }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Counter c = new Counter();\n"
+        "        int32[] xs = { 10, 20, 12 };\n"
+        "        () -> void fn = () -> {\n"
+        "            for (int32 x : xs) {\n"
+        "                c.add(x);\n"
+        "            }\n"
+        "        };\n"
+        "        fn();\n"
+        "        return c.v;\n"
+        "    }\n"
+        "}\n");
+    EXPECT_EQ(runI32(src), 42);
+}

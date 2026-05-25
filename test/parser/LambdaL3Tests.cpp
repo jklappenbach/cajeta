@@ -386,3 +386,99 @@ TEST(LambdaL3Tests, escapedClosureDropFiresInCaller) {
     jit->lookup<int32_t (*)()>("run")();
     EXPECT_EQ(jit->lookup<int64_t (*)()>("read")(), 1);
 }
+
+// ---------------------------------------------------------------------
+// Transfer (`#name`) inside nested blocks of a lambda body
+// ---------------------------------------------------------------------
+//
+// Before the lambda-capture walker fix, collectTransferNames descended
+// through `getChildren()` for any Statement subtype without a dedicated
+// handler. LabelStatement (the if-branch wrapper), WhileStatement,
+// ForStatement, DoStatement, ScopeStatement, EnhancedForStatement all
+// hold their inner block as a private member that isn't in `children`,
+// so a `#name` reference inside one of those nested bodies was never
+// registered as a transfer. The downstream effects were silent and
+// nasty: the outer scope's drop still fired, the closure thought it
+// only borrowed, and outer reads after the lambda escaped the
+// use-after-move check.
+//
+// These tests pin transfer-name registration at the if-branch and
+// for-body sites — if the walker stops descending into either, the
+// outer use-after-move check fails to fire and these tests will
+// regress to the no-error path.
+
+// Transfer-name registered when `#arr` appears inside the if-then
+// block of a lambda body. Outer use after the lambda is created must
+// still trip use-after-move.
+TEST(LambdaL3Tests, transferInsideIfBranchOfLambdaMovesOuter) {
+    auto src =
+        "package test;\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        int32[] arr = new int32[3];\n"
+        "        (boolean) -> int64 fn = (b) -> {\n"
+        "            if (b) {\n"
+        "                return #arr.count();\n"
+        "            }\n"
+        "            return 0L;\n"
+        "        };\n"
+        "        int64 size = arr.count();\n"
+        "        return (int32) (fn(true) + size);\n"
+        "    }\n"
+        "}\n";
+    try {
+        CajetaJit::compile(src, "test.D");
+        FAIL() << "expected use-after-move on outer read after transfer in if-branch";
+    } catch (cajeta::Exception& e) {
+        EXPECT_EQ(e.getErrorId(), "CAJETA_ERROR_USE_AFTER_MOVE");
+        EXPECT_NE(e.getMessage().find("arr"), std::string::npos);
+    }
+}
+
+// Same shape but the `#name` lives inside a `for`-loop body.
+TEST(LambdaL3Tests, transferInsideForBodyOfLambdaMovesOuter) {
+    auto src =
+        "package test;\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        int32[] arr = new int32[3];\n"
+        "        (int32) -> int64 fn = (n) -> {\n"
+        "            int64 acc = 0L;\n"
+        "            for (int32 i = 0; i < n; i = i + 1) {\n"
+        "                acc = acc + #arr.count();\n"
+        "            }\n"
+        "            return acc;\n"
+        "        };\n"
+        "        int64 size = arr.count();\n"
+        "        return (int32) (fn(1) + size);\n"
+        "    }\n"
+        "}\n";
+    try {
+        CajetaJit::compile(src, "test.D");
+        FAIL() << "expected use-after-move on outer read after transfer in for body";
+    } catch (cajeta::Exception& e) {
+        EXPECT_EQ(e.getErrorId(), "CAJETA_ERROR_USE_AFTER_MOVE");
+        EXPECT_NE(e.getMessage().find("arr"), std::string::npos);
+    }
+}
+
+// Positive control: the transfer-only-in-nested-block lambda compiles
+// and runs (no outer use after) — confirms the if-branch transfer
+// works end-to-end, not just that the static check fires.
+TEST(LambdaL3Tests, transferInsideIfBranchOfLambdaRunsWhenNoOuterUse) {
+    auto src =
+        "package test;\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        int32[] arr = new int32[6];\n"
+        "        (boolean) -> int64 fn = (b) -> {\n"
+        "            if (b) {\n"
+        "                return #arr.count();\n"
+        "            }\n"
+        "            return 0L;\n"
+        "        };\n"
+        "        return (int32) fn(true);\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 6);
+}
