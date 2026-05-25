@@ -1282,6 +1282,48 @@ namespace cajeta {
             collectFreeIdentifiers(es->getExpression(), bound, seen, out);
             return;
         }
+        // Statement types whose inner block / sub-statements live as
+        // private members rather than in `children` need explicit
+        // handlers, or the generic getChildren() fallback below skips
+        // them — leaving free identifiers inside the nested body
+        // uncaptured. The visible bug: a captured-class identifier
+        // inside an if-branch block (LabelStatement wrapper) is never
+        // collected, the lambda's captures-struct doesn't include it,
+        // and at codegen the body's IdentifierExpression lookup
+        // returns null — the resulting instance-method call drops
+        // `this`.
+        if (auto ls = std::dynamic_pointer_cast<LabelStatement>(node)) {
+            collectFreeIdentifiers(ls->getBlock(), bound, seen, out);
+            return;
+        }
+        if (auto ss = std::dynamic_pointer_cast<ScopeStatement>(node)) {
+            collectFreeIdentifiers(ss->getBlock(), bound, seen, out);
+            return;
+        }
+        if (auto ws = std::dynamic_pointer_cast<WhileStatement>(node)) {
+            collectFreeIdentifiers(ws->getCondition(), bound, seen, out);
+            collectFreeIdentifiers(ws->getBody(), bound, seen, out);
+            return;
+        }
+        if (auto ds = std::dynamic_pointer_cast<DoStatement>(node)) {
+            collectFreeIdentifiers(ds->getBody(), bound, seen, out);
+            collectFreeIdentifiers(ds->getCondition(), bound, seen, out);
+            return;
+        }
+        if (auto fs = std::dynamic_pointer_cast<ForStatement>(node)) {
+            collectFreeIdentifiers(fs->getInit(), bound, seen, out);
+            collectFreeIdentifiers(fs->getCondition(), bound, seen, out);
+            for (auto& u : fs->getUpdate()) {
+                collectFreeIdentifiers(u, bound, seen, out);
+            }
+            collectFreeIdentifiers(fs->getBody(), bound, seen, out);
+            return;
+        }
+        if (auto efs = std::dynamic_pointer_cast<EnhancedForStatement>(node)) {
+            collectFreeIdentifiers(efs->getIterableExpr(), bound, seen, out);
+            collectFreeIdentifiers(efs->getBody(), bound, seen, out);
+            return;
+        }
         for (auto& c : node->getChildren()) {
             collectFreeIdentifiers(c, bound, seen, out);
         }
@@ -1367,6 +1409,40 @@ namespace cajeta {
             collectTransferNames(es->getExpression(), out);
             return;
         }
+        // Same gap as collectFreeIdentifiers — Statement subclasses
+        // whose inner blocks aren't in `children` need explicit
+        // descents so `#name` transfers nested inside their bodies
+        // are not silently demoted to borrows.
+        if (auto ls = std::dynamic_pointer_cast<LabelStatement>(node)) {
+            collectTransferNames(ls->getBlock(), out);
+            return;
+        }
+        if (auto ss = std::dynamic_pointer_cast<ScopeStatement>(node)) {
+            collectTransferNames(ss->getBlock(), out);
+            return;
+        }
+        if (auto ws = std::dynamic_pointer_cast<WhileStatement>(node)) {
+            collectTransferNames(ws->getCondition(), out);
+            collectTransferNames(ws->getBody(), out);
+            return;
+        }
+        if (auto ds = std::dynamic_pointer_cast<DoStatement>(node)) {
+            collectTransferNames(ds->getBody(), out);
+            collectTransferNames(ds->getCondition(), out);
+            return;
+        }
+        if (auto fs = std::dynamic_pointer_cast<ForStatement>(node)) {
+            collectTransferNames(fs->getInit(), out);
+            collectTransferNames(fs->getCondition(), out);
+            for (auto& u : fs->getUpdate()) collectTransferNames(u, out);
+            collectTransferNames(fs->getBody(), out);
+            return;
+        }
+        if (auto efs = std::dynamic_pointer_cast<EnhancedForStatement>(node)) {
+            collectTransferNames(efs->getIterableExpr(), out);
+            collectTransferNames(efs->getBody(), out);
+            return;
+        }
         for (auto& c : node->getChildren()) {
             collectTransferNames(c, out);
         }
@@ -1428,6 +1504,43 @@ namespace cajeta {
         }
         if (auto es = std::dynamic_pointer_cast<ExpressionStatement>(node)) {
             enforceValueCaptureImmutability(es->getExpression(), valueCapturedNames);
+            return;
+        }
+        // Same gap as collectFreeIdentifiers — without these descents
+        // a value-captured primitive assigned inside an if-branch
+        // block / loop body / scope block would slip past the check
+        // (the assignment is the LHS of a BinaryOpExpression hidden
+        // inside the LabelStatement / WhileStatement / etc.).
+        if (auto ls = std::dynamic_pointer_cast<LabelStatement>(node)) {
+            enforceValueCaptureImmutability(ls->getBlock(), valueCapturedNames);
+            return;
+        }
+        if (auto ss = std::dynamic_pointer_cast<ScopeStatement>(node)) {
+            enforceValueCaptureImmutability(ss->getBlock(), valueCapturedNames);
+            return;
+        }
+        if (auto ws = std::dynamic_pointer_cast<WhileStatement>(node)) {
+            enforceValueCaptureImmutability(ws->getCondition(), valueCapturedNames);
+            enforceValueCaptureImmutability(ws->getBody(), valueCapturedNames);
+            return;
+        }
+        if (auto ds = std::dynamic_pointer_cast<DoStatement>(node)) {
+            enforceValueCaptureImmutability(ds->getBody(), valueCapturedNames);
+            enforceValueCaptureImmutability(ds->getCondition(), valueCapturedNames);
+            return;
+        }
+        if (auto fs = std::dynamic_pointer_cast<ForStatement>(node)) {
+            enforceValueCaptureImmutability(fs->getInit(), valueCapturedNames);
+            enforceValueCaptureImmutability(fs->getCondition(), valueCapturedNames);
+            for (auto& u : fs->getUpdate()) {
+                enforceValueCaptureImmutability(u, valueCapturedNames);
+            }
+            enforceValueCaptureImmutability(fs->getBody(), valueCapturedNames);
+            return;
+        }
+        if (auto efs = std::dynamic_pointer_cast<EnhancedForStatement>(node)) {
+            enforceValueCaptureImmutability(efs->getIterableExpr(), valueCapturedNames);
+            enforceValueCaptureImmutability(efs->getBody(), valueCapturedNames);
             return;
         }
         for (auto& c : node->getChildren()) {

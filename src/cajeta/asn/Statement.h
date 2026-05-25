@@ -89,6 +89,12 @@ namespace cajeta {
         LabelStatement(antlr4::Token* token, BlockPtr block)
             : Statement(token), block(block) { }
 
+        // Block isn't in `children`, so walkers that visit only the
+        // children list (lambda-body free-name collection, transfer-
+        // name collection, value-capture immutability) need this
+        // accessor to descend into nested-block contents.
+        BlockPtr getBlock() const { return block; }
+
         void resolveTypes(CajetaModulePtr module) override;
         llvm::Value* generateCode(CajetaModulePtr module) override;
     };
@@ -106,6 +112,8 @@ namespace cajeta {
     public:
         ScopeStatement(antlr4::Token* token, BlockPtr block)
             : Statement(token), block(block) { }
+
+        BlockPtr getBlock() const { return block; }
 
         void resolveTypes(CajetaModulePtr module) override;
         llvm::Value* generateCode(CajetaModulePtr module) override;
@@ -156,6 +164,11 @@ namespace cajeta {
             : Statement(token), init(init), condition(cond),
               update(std::move(update)), body(body) { }
 
+        BlockStatementPtr getInit() const { return init; }
+        ExpressionPtr getCondition() const { return condition; }
+        const list<ExpressionPtr>& getUpdate() const { return update; }
+        StatementPtr getBody() const { return body; }
+
         void resolveTypes(CajetaModulePtr module) override;
         llvm::Value* generateCode(CajetaModulePtr module) override;
     };
@@ -193,6 +206,9 @@ namespace cajeta {
               iterableExpr(iterableExpr),
               body(body) { }
 
+        ExpressionPtr getIterableExpr() const { return iterableExpr; }
+        StatementPtr getBody() const { return body; }
+
         void resolveTypes(CajetaModulePtr module) override;
         llvm::Value* generateCode(CajetaModulePtr module) override;
     };
@@ -208,6 +224,9 @@ namespace cajeta {
         WhileStatement(antlr4::Token* token, ExpressionPtr cond, StatementPtr body)
             : Statement(token), condition(cond), body(body) { }
 
+        ExpressionPtr getCondition() const { return condition; }
+        StatementPtr getBody() const { return body; }
+
         void resolveTypes(CajetaModulePtr module) override;
         llvm::Value* generateCode(CajetaModulePtr module) override;
     };
@@ -222,6 +241,9 @@ namespace cajeta {
     public:
         DoStatement(antlr4::Token* token, StatementPtr body, ExpressionPtr cond)
             : Statement(token), body(body), condition(cond) { }
+
+        StatementPtr getBody() const { return body; }
+        ExpressionPtr getCondition() const { return condition; }
 
         void resolveTypes(CajetaModulePtr module) override;
         llvm::Value* generateCode(CajetaModulePtr module) override;
