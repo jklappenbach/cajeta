@@ -8,7 +8,7 @@
 // pass `(x) -> x > 50`, so the bug hides.
 //
 // Each test below installs a side channel — a shared Probe the
-// predicate-helper mutates via direct field writes — so the
+// predicate body mutates via direct field writes — so the
 // predicate's `true`-returns are observable from outside the
 // terminal. The terminal's return value is then cross-checked
 // against the side channel, not just against the static predicate.
@@ -25,16 +25,13 @@
 //   (c) terminal returns false/empty despite a predicate match
 //       (bumps > 0 but terminal said "no")
 //
-// Note on idiom: predicate logic is hoisted into a static helper
-// (returns boolean, side-effects the Probe) and the lambda body
-// stays a single-expression call to that helper. Equivalent to a
-// multi-statement block-body lambda that does the same work
-// inline; the helper form just isolates the side channel mechanics
-// from the lambda-capture mechanics so a test failure points at
-// the dispatch path, not at lambda lowering. Lambda array-field
-// writes (`p.log[idx] = x`) still trip an LLVM alloca-cast
-// assertion in unrelated code, so the side channel uses scalar
-// fields only.
+// Predicate logic lives inline in a block-body lambda that captures
+// the Probe by reference and mutates its fields from inside the
+// if-branch. (Earlier revisions hoisted this into a static helper
+// to sidestep a walker gap that dropped captures referenced inside
+// nested blocks; the gap was fixed in the lambda-capture walker so
+// the natural form is exercised here directly.) The closure stays
+// stack-resident — Probe lives on the heap, the closure borrows it.
 
 #include <gtest/gtest.h>
 #include "../jit/JitTestHelper.h"
@@ -58,9 +55,7 @@ int32_t runI32(const std::string& src) {
     }
 }
 
-// The shared Probe class + a few predicate helpers prepended to
-// every test's Cajeta source. `matchEq(p, x, target)` is the
-// single-match shape; `matchGt9999(p, x)` is the always-false shape.
+// Shared Probe class prepended to every test's Cajeta source.
 constexpr const char* kProbePrologue =
     "package test;\n"
     "public class Probe {\n"
@@ -71,10 +66,6 @@ constexpr const char* kProbePrologue =
     "        this.last = -1;\n"
     "    }\n"
     "}\n";
-
-// Each test's `public final class D { ... }` defines its own static
-// helper(s) of shape `boolean matchAndNote(Probe p, int32 x)`; the
-// lambda is then just `(x) -> matchAndNote(p, x)`.
 
 } // namespace
 
@@ -92,20 +83,19 @@ TEST(ParallelDispatchCorrelationTests, findFirstUniqueMatchReturnedValueWasObser
     std::string src = kProbePrologue;
     src +=
         "public final class D {\n"
-        "    public static boolean noteIf73(Probe p, int32 x) {\n"
-        "        if (x == 73) {\n"
-        "            p.bumps = p.bumps + 1;\n"
-        "            p.last = x;\n"
-        "            return true;\n"
-        "        }\n"
-        "        return false;\n"
-        "    }\n"
         "    public static int32 run() {\n"
         "        int32[] xs = new int32[100];\n"
         "        for (int32 i = 0; i < 100; i = i + 1) { xs[i] = i + 1; }\n"
         "        Probe p = new Probe();\n"
         "        Optional<int32> o = xs.stream().parallel()\n"
-        "                              .findFirst((x) -> noteIf73(p, x));\n"
+        "                              .findFirst((x) -> {\n"
+        "                                  if (x == 73) {\n"
+        "                                      p.bumps = p.bumps + 1;\n"
+        "                                      p.last = x;\n"
+        "                                      return true;\n"
+        "                                  }\n"
+        "                                  return false;\n"
+        "                              });\n"
         "        if (!o.isPresent()) { return -1; }\n"
         "        int32 v = o.get();\n"
         "        if (p.bumps < 1) { return -2; }\n"
@@ -128,20 +118,19 @@ TEST(ParallelDispatchCorrelationTests, findFirstEmptyImpliesPredicateNeverMatche
     std::string src = kProbePrologue;
     src +=
         "public final class D {\n"
-        "    public static boolean noteIfHuge(Probe p, int32 x) {\n"
-        "        if (x > 9999) {\n"
-        "            p.bumps = p.bumps + 1;\n"
-        "            p.last = x;\n"
-        "            return true;\n"
-        "        }\n"
-        "        return false;\n"
-        "    }\n"
         "    public static int32 run() {\n"
         "        int32[] xs = new int32[100];\n"
         "        for (int32 i = 0; i < 100; i = i + 1) { xs[i] = i + 1; }\n"
         "        Probe p = new Probe();\n"
         "        Optional<int32> o = xs.stream().parallel()\n"
-        "                              .findFirst((x) -> noteIfHuge(p, x));\n"
+        "                              .findFirst((x) -> {\n"
+        "                                  if (x > 9999) {\n"
+        "                                      p.bumps = p.bumps + 1;\n"
+        "                                      p.last = x;\n"
+        "                                      return true;\n"
+        "                                  }\n"
+        "                                  return false;\n"
+        "                              });\n"
         "        if (o.isPresent()) { return -1; }\n"
         "        if (p.bumps != 0) { return -2; }\n"
         "        return 0;\n"
@@ -163,14 +152,6 @@ TEST(ParallelDispatchCorrelationTests, findFirstThroughFilterUniqueMatchObserved
     std::string src = kProbePrologue;
     src +=
         "public final class D {\n"
-        "    public static boolean noteIf50(Probe p, int32 x) {\n"
-        "        if (x == 50) {\n"
-        "            p.bumps = p.bumps + 1;\n"
-        "            p.last = x;\n"
-        "            return true;\n"
-        "        }\n"
-        "        return false;\n"
-        "    }\n"
         "    public static int32 run() {\n"
         "        int32[] xs = new int32[100];\n"
         "        for (int32 i = 0; i < 100; i = i + 1) { xs[i] = i + 1; }\n"
@@ -179,7 +160,14 @@ TEST(ParallelDispatchCorrelationTests, findFirstThroughFilterUniqueMatchObserved
         "        Optional<int32> o = xs.stream()\n"
         "                              .filter((x) -> x % 2 == 0)\n"
         "                              .parallel()\n"
-        "                              .findFirst((x) -> noteIf50(p, x));\n"
+        "                              .findFirst((x) -> {\n"
+        "                                  if (x == 50) {\n"
+        "                                      p.bumps = p.bumps + 1;\n"
+        "                                      p.last = x;\n"
+        "                                      return true;\n"
+        "                                  }\n"
+        "                                  return false;\n"
+        "                              });\n"
         "        if (!o.isPresent()) { return -1; }\n"
         "        int32 v = o.get();\n"
         "        if (p.bumps < 1) { return -2; }\n"
@@ -205,20 +193,19 @@ TEST(ParallelDispatchCorrelationTests, anyMatchTrueImpliesPredicateMatched) {
     std::string src = kProbePrologue;
     src +=
         "public final class D {\n"
-        "    public static boolean noteIf42(Probe p, int32 x) {\n"
-        "        if (x == 42) {\n"
-        "            p.bumps = p.bumps + 1;\n"
-        "            p.last = x;\n"
-        "            return true;\n"
-        "        }\n"
-        "        return false;\n"
-        "    }\n"
         "    public static int32 run() {\n"
         "        int32[] xs = new int32[100];\n"
         "        for (int32 i = 0; i < 100; i = i + 1) { xs[i] = i + 1; }\n"
         "        Probe p = new Probe();\n"
         "        boolean hit = xs.stream().parallel()\n"
-        "                        .anyMatch((x) -> noteIf42(p, x));\n"
+        "                        .anyMatch((x) -> {\n"
+        "                            if (x == 42) {\n"
+        "                                p.bumps = p.bumps + 1;\n"
+        "                                p.last = x;\n"
+        "                                return true;\n"
+        "                            }\n"
+        "                            return false;\n"
+        "                        });\n"
         "        if (!hit) { return -1; }\n"
         "        if (p.bumps < 1) { return -2; }\n"
         "        if (p.last != 42) { return -3; }\n"
@@ -239,20 +226,19 @@ TEST(ParallelDispatchCorrelationTests, anyMatchFalseImpliesPredicateNeverMatched
     std::string src = kProbePrologue;
     src +=
         "public final class D {\n"
-        "    public static boolean noteIfHuge(Probe p, int32 x) {\n"
-        "        if (x > 9999) {\n"
-        "            p.bumps = p.bumps + 1;\n"
-        "            p.last = x;\n"
-        "            return true;\n"
-        "        }\n"
-        "        return false;\n"
-        "    }\n"
         "    public static int32 run() {\n"
         "        int32[] xs = new int32[100];\n"
         "        for (int32 i = 0; i < 100; i = i + 1) { xs[i] = i + 1; }\n"
         "        Probe p = new Probe();\n"
         "        boolean hit = xs.stream().parallel()\n"
-        "                        .anyMatch((x) -> noteIfHuge(p, x));\n"
+        "                        .anyMatch((x) -> {\n"
+        "                            if (x > 9999) {\n"
+        "                                p.bumps = p.bumps + 1;\n"
+        "                                p.last = x;\n"
+        "                                return true;\n"
+        "                            }\n"
+        "                            return false;\n"
+        "                        });\n"
         "        if (hit) { return -1; }\n"
         "        if (p.bumps != 0) { return -2; }\n"
         "        return 0;\n"
@@ -272,14 +258,6 @@ TEST(ParallelDispatchCorrelationTests, anyMatchThroughFilterCorrelation) {
     std::string src = kProbePrologue;
     src +=
         "public final class D {\n"
-        "    public static boolean noteIf50(Probe p, int32 x) {\n"
-        "        if (x == 50) {\n"
-        "            p.bumps = p.bumps + 1;\n"
-        "            p.last = x;\n"
-        "            return true;\n"
-        "        }\n"
-        "        return false;\n"
-        "    }\n"
         "    public static int32 run() {\n"
         "        int32[] xs = new int32[100];\n"
         "        for (int32 i = 0; i < 100; i = i + 1) { xs[i] = i + 1; }\n"
@@ -288,7 +266,14 @@ TEST(ParallelDispatchCorrelationTests, anyMatchThroughFilterCorrelation) {
         "        boolean hit = xs.stream()\n"
         "                        .filter((x) -> x % 2 == 0)\n"
         "                        .parallel()\n"
-        "                        .anyMatch((x) -> noteIf50(p, x));\n"
+        "                        .anyMatch((x) -> {\n"
+        "                            if (x == 50) {\n"
+        "                                p.bumps = p.bumps + 1;\n"
+        "                                p.last = x;\n"
+        "                                return true;\n"
+        "                            }\n"
+        "                            return false;\n"
+        "                        });\n"
         "        if (!hit) { return -1; }\n"
         "        if (p.bumps < 1) { return -2; }\n"
         "        if (p.last != 50) { return -3; }\n"
