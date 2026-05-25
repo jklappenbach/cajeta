@@ -24,36 +24,46 @@ hazards; deeper coverage moves to P2 if/when use cases surface.
 
 ## P2 — language surface
 
-1. **Restore lost test coverage from Phase 7 — incremental.** The 9 deleted
-   `CajetaStruct` test files contained ~105 tests; many exercised happy-path
-   behaviour still valid under the unified-class model. Pick up between
-   bigger pieces.
-
-2. **Template wildcards — future work** (not blocking; v1 + bounded wildcards
+1. **Template wildcards — future work** (not blocking; v1 + bounded wildcards
    shipped in `1f9d388`..`2e8cb03`; minimal capture conversion landed
    in P2-2-1 below):
-   - **Capture conversion follow-on.** First slice ("? extends" bound
-     projects to return type at call sites) shipped — `Box<? extends B>.get()`
-     now resolves members on B at chain-call sites. Remaining work:
+   - **Capture conversion follow-on.** Shipped so far: return-type
+     projection (`0dd053e`), field-read projection (`b288d76`),
+     wildcard-parameter compatibility (`d3cfe96`), super-write +
+     direct-ctor coverage (`467e1ca`). Remaining work:
      - **Capture identity** ("same unknown T" across two calls on the
        same receiver — today each call gets an independent projection;
-       Java models this with synthetic capture#N variables).
-     - **Field-read projection** through wildcard receivers (the call-site
-       projection only covers method returns today).
-     - **Parameter / write-position handling** for `? super B`
-       (contravariant write direction — accept B-or-narrower writes,
-       reject reads beyond Object).
+       Java models this with synthetic capture#N variables). Investigated
+       once and bounced off an architectural blocker: the wildcard-
+       erased and concrete instantiations build vtables with DIFFERENT
+       method hashes for the same source-level methods. Even if a
+       wildcard-receiver call resolves at compile time, runtime dispatch
+       through the concrete instance's vtable can't find the wildcard-
+       hashed slot. Needs unified vtable layout across erasure, or
+       synthetic capture types that route through the concrete vtable.
+       Multi-session.
+     - **PECS write-soundness.** Writes through `? extends B` and
+       `? super B` are currently loose-typed — the wildcard-typed
+       slot accepts any pointer at codegen. A `Cat → Box<? super Dog>`
+       write would compile. Adds rejection paths and negative tests.
+       Tractable in isolation; not coupled to capture identity.
      - **Nested-wildcard projection** through generic type constructors
        (`Foo<? extends B>` → `Foo<B>` requires variance tracking we
-       don't carry).
+       don't carry). Probe also surfaced an orthogonal bug:
+       constructing `Optional<wildcard>` inside a wildcard-instantiated
+       class body throws.
      - **Lift the method-template lint suppression** in
-       MethodCallExpression — capture identity lets us distinguish
-       "real `?`" from "uninstantiated T placeholder" so the wildcard
-       lints can fire cleanly inside templated bodies. See LintRules.md
+       MethodCallExpression — needs a provenance bit on the wildcard
+       sentinel to distinguish "real `?`" from "uninstantiated T
+       placeholder". Verified: dropping the suppression naively makes
+       stdlib chain-walker code (`reduceParallelChain` etc.) leak
+       warnings into user lint-suppression tests. See LintRules.md
        "Known limitation" notes.
    - **Stdlib producer/consumer signature migration** to use bounded
      wildcards where they'd express PECS variance more clearly than the
-     current concrete instantiations.
+     current concrete instantiations. Largely cosmetic until capture
+     identity propagates real type info through wildcard-typed
+     signatures.
 
 3. **Stream parallelism — loose ends** (v1 substantially shipped; P1–P5
    phases from `cajeta-docs/stdlib/StreamParallelism.md` landed across
