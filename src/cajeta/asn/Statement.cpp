@@ -4,6 +4,7 @@
 
 #include "Statement.h"
 #include "expression/Expression.h"
+#include "expression/MethodCallExpression.h"
 #include "expression/Identifier.h"
 #include "expression/DotExpression.h"
 #include "expression/NewExpression.h"
@@ -340,6 +341,54 @@ namespace cajeta {
     }
 
     llvm::Value* ExpressionStatement::generateCode(CajetaModulePtr module) {
+        // discarded-wildcard-next (cajeta-docs/LintRules.md). When an
+        // element-producing call on a wildcard receiver appears in
+        // statement position — the returned `#Optional<?>` is allocated
+        // and immediately discarded — both the heap allocation and the
+        // wildcard-dispatch indirect call are wasted. Same enclosing-
+        // context exclusions as the loop-site wildcard lints (proxy
+        // class and method-template bodies) avoid the false-positive
+        // window described in MethodCallExpression.cpp.
+        if (auto mce = dynamic_pointer_cast<MethodCallExpression>(expression)) {
+            const string& name = mce->getMethodCallName();
+            bool isElementProducing = (name == "next" || name == "get");
+            auto currentMethod = module->getCurrentMethod();
+            bool enclosingIsWildcardProxy = currentMethod
+                && currentMethod->getParent()
+                && currentMethod->getParent()->isWildcardInstantiation();
+            bool enclosingIsMethodTemplate = currentMethod
+                && (currentMethod->isMethodTemplate()
+                    || currentMethod->isMethodTemplateInstantiation());
+            if (isElementProducing && currentMethod
+                    && !enclosingIsWildcardProxy
+                    && !enclosingIsMethodTemplate
+                    && !currentMethod->isLintSuppressed(
+                        "discarded-wildcard-next")) {
+                auto& children = mce->getChildren();
+                if (!children.empty()) {
+                    auto recv = dynamic_pointer_cast<Expression>(children[0]);
+                    if (recv) {
+                        if (!recv->getResolvedType()) recv->resolveTypes(module);
+                        auto recvClass = dynamic_pointer_cast<CajetaClass>(
+                            recv->getResolvedType());
+                        if (recvClass && recvClass->isWildcardInstantiation()) {
+                            std::cerr << "warning: [discarded-wildcard-next] "
+                                << "call to '" << name
+                                << "' on wildcard-typed receiver "
+                                << recvClass->toCanonical()
+                                << " in statement position in "
+                                << currentMethod->getName()
+                                << " — the result (a heap Optional<?>) is "
+                                << "discarded; remove the call if you don't "
+                                << "need its value, or bind the result and "
+                                << "act on it. Suppress with "
+                                << "@SuppressLint(\"discarded-wildcard-next\")."
+                                << std::endl;
+                        }
+                    }
+                }
+            }
+        }
         return expression ? expression->generateCode(module) : nullptr;
     }
 

@@ -2340,6 +2340,84 @@ namespace cajeta {
                     }
                 }
             }
+
+            // wildcard-materialize-in-loop (cajeta-docs/LintRules.md).
+            // An element-producing call on a wildcard-typed receiver
+            // inside a loop body forces template-relative vtable
+            // dispatch on every iteration — the inliner can't see
+            // through it and LLVM loses the unroll/vectorize window.
+            // Trigger: hasLoopContext + receiver is a wildcard
+            // instantiation + method name is in the element-producing
+            // set (next / get). Suppressible per enclosing method via
+            // @SuppressLint("wildcard-materialize-in-loop").
+            //
+            // wildcard-crosses-hot-boundary (cajeta-docs/LintRules.md).
+            // A wildcard-return call inside a loop pays a downcast at
+            // every receive site that wants the concrete type, and
+            // the call itself can't be inline-specialized. Trigger:
+            // hasLoopContext + targetMethod's return type is a
+            // wildcard instantiation. Suppressible via
+            // @SuppressLint("wildcard-crosses-hot-boundary").
+            auto currentMethod = module->getCurrentMethod();
+            // Skip both wildcard lints when the enclosing context is a
+            // compiler artifact rather than user-authored code:
+            //   - Wildcard-proxy class: the body is generated for the
+            //     erased instantiation; the loop/receiver/return shape
+            //     is whatever the template says with T → ?.
+            //   - Method-level template instantiation: T inside the body
+            //     can resolve to the wildcard sentinel as a stand-in
+            //     because the type cache uses one sentinel for both
+            //     "real `?`" and "uninstantiated T placeholder". Without
+            //     capture conversion (P2-2 item 1) we can't distinguish,
+            //     so suppress the lint here to avoid false positives.
+            bool enclosingIsWildcardProxy = currentMethod
+                && currentMethod->getParent()
+                && currentMethod->getParent()->isWildcardInstantiation();
+            bool enclosingIsMethodTemplate = currentMethod
+                && (currentMethod->isMethodTemplate()
+                    || currentMethod->isMethodTemplateInstantiation());
+            if (currentMethod && module->hasLoopContext()
+                    && !enclosingIsWildcardProxy
+                    && !enclosingIsMethodTemplate) {
+                bool receiverIsWildcard = targetClass
+                    && targetClass->isWildcardInstantiation();
+                bool isElementProducing =
+                    methodCallName == "next" || methodCallName == "get";
+                if (receiverIsWildcard && isElementProducing
+                        && !currentMethod->isLintSuppressed(
+                            "wildcard-materialize-in-loop")) {
+                    std::cerr << "warning: [wildcard-materialize-in-loop] "
+                        << "call to '" << methodCallName
+                        << "' on wildcard-typed receiver "
+                        << targetClass->toCanonical()
+                        << " inside a loop in "
+                        << currentMethod->getName()
+                        << " — dispatch goes through the template-relative "
+                        << "vtable hash on every iteration; downcast to the "
+                        << "concrete type at the loop boundary, or suppress "
+                        << "with @SuppressLint(\"wildcard-materialize-in-loop\")."
+                        << std::endl;
+                }
+                if (targetMethod
+                        && !currentMethod->isLintSuppressed(
+                            "wildcard-crosses-hot-boundary")) {
+                    auto retClass = dynamic_pointer_cast<CajetaClass>(
+                        targetMethod->getReturnType());
+                    if (retClass && retClass->isWildcardInstantiation()) {
+                        std::cerr << "warning: [wildcard-crosses-hot-boundary] "
+                            << "call to '" << methodCallName
+                            << "' inside a loop in "
+                            << currentMethod->getName()
+                            << " returns wildcard-typed "
+                            << retClass->toCanonical()
+                            << " — the receive site can't be specialized "
+                            << "at the call boundary; restructure to "
+                            << "concrete or suppress with "
+                            << "@SuppressLint(\"wildcard-crosses-hot-boundary\")."
+                            << std::endl;
+                    }
+                }
+            }
         }
 
         // `super.method()` — bypass vtable dispatch and direct-call the

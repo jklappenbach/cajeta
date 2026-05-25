@@ -33,14 +33,14 @@ hazards; deeper coverage moves to P2 if/when use cases surface.
    shipped in `1f9d388`..`2e8cb03`):
    - **Capture conversion proper** (`Stream<? extends Number>` produces
      `Number` at read sites, etc.). Extends method resolution to carry
-     capture identities through the dispatch.
+     capture identities through the dispatch. Also: lets the 4 wildcard
+     lints fire cleanly inside method-template bodies — currently
+     suppressed there because the wildcard sentinel doubles as a
+     placeholder for uninstantiated T (see LintRules.md "Known
+     limitation" lines).
    - **Stdlib producer/consumer signature migration** to use bounded
      wildcards where they'd express PECS variance more clearly than the
      current concrete instantiations.
-   - **Lint rules from `cajeta-docs/LintRules.md` "Future rules"**:
-     `wildcard-materialize-in-loop`, `wildcard-crosses-hot-boundary`,
-     `wildcard-field-in-small-class`, `discarded-wildcard-next`. Lands on
-     the v1 lint infrastructure pattern (see existing `uncaught-throws`).
 
 3. **Stream parallelism — loose ends** (v1 substantially shipped; P1–P5
    phases from `cajeta-docs/stdlib/StreamParallelism.md` landed across

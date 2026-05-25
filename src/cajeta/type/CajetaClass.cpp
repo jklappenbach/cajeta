@@ -864,6 +864,45 @@ namespace cajeta {
         synthesizeInterfaceVTables();
 
         CajetaModule::getStructureToModule()[canonical] = module;
+
+        // wildcard-field-in-small-class (cajeta-docs/LintRules.md). A
+        // wildcard-typed field forces virtual-drop dispatch through
+        // __cajeta_class_virtual_drop on every instance teardown; for
+        // a class allocated in a hot path that's measurable noise. Lint
+        // surfaces the field site so the author can confirm the class
+        // isn't on the construction hot path (suppress) or replace with
+        // a concrete type (act).
+        //
+        // Skip the emit when:
+        //   - this is a view (no virtual-drop dispatch path),
+        //   - this class is itself a wildcard instantiation — the proxy
+        //     that the TemplateInstantiator materializes when a chain-
+        //     walker stores into `Stream<?>` is compiler-generated, not
+        //     author-written, so flagging its fields would be noise,
+        //   - the rule is suppressed at the declaration via @SuppressLint.
+        if (!dynamic_pointer_cast<CajetaView>(shared_from_this())
+                && !isWildcardInstantiation()
+                && !isLintSuppressed("wildcard-field-in-small-class")) {
+            for (auto& prop : propertyList) {
+                auto propType = prop->getType();
+                auto propClass = dynamic_pointer_cast<CajetaClass>(propType);
+                if (propClass && propClass->isWildcardInstantiation()) {
+                    std::cerr << "warning: [wildcard-field-in-small-class] "
+                        << "class " << qName->toCanonical()
+                        << " declares wildcard-typed field '"
+                        << prop->getName() << "' of type "
+                        << propClass->toCanonical()
+                        << " — every drop of an instance routes through "
+                        << "virtual-drop dispatch; if instances of this "
+                        << "class are constructed in a hot path, pick a "
+                        << "concrete element type or push the wildcard "
+                        << "outward. Suppress with "
+                        << "@SuppressLint(\"wildcard-field-in-small-class\")."
+                        << std::endl;
+                }
+            }
+        }
+
         prototypeBuilt = true;
 
         // @Builder runs LAST — after this class's prototype + vtable
