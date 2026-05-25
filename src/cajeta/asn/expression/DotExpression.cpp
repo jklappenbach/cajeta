@@ -75,7 +75,12 @@ namespace cajeta {
             [&](const CajetaClassPtr& cls) -> bool {
                 auto pit = cls->getProperties().find(identifier);
                 if (pit != cls->getProperties().end()) {
-                    resolvedType = pit->second->getType();
+                    // Capture conversion: field read through a bounded-
+                    // wildcard receiver projects to the bound so chained
+                    // member lookup works (P2-2 item 1; mirrors the MCE
+                    // return-type pin).
+                    resolvedType = CajetaType::captureProject(
+                        pit->second->getType());
                     return true;
                 }
                 for (auto& parent : cls->getSuperClasses()) {
@@ -222,7 +227,8 @@ namespace cajeta {
                             return false;
                         };
                     if (findStatic(staticKlass)) {
-                        resolvedType = staticProp->getType();
+                        resolvedType = CajetaType::captureProject(
+                            staticProp->getType());
                         return staticKlass->getOrCreateStaticFieldGlobal(
                             staticProp, module);
                     }
@@ -396,7 +402,9 @@ namespace cajeta {
         // Set our own resolvedType so callers can load-through with the right
         // element type. The pre-pass resolveTypes can't always determine this
         // (locals aren't in scope until their declarations run at codegen).
-        resolvedType = property->getType();
+        // captureProject handles bounded-wildcard receivers — `Box<? extends
+        // Animal>.value` projects to Animal so chained member lookup works.
+        resolvedType = CajetaType::captureProject(property->getType());
 
         // MultiClassing Phase 3 v4 vbase indirection. When the property
         // is declared on an ancestor of `this`'s static class (not on

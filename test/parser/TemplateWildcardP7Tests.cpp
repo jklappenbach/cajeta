@@ -76,6 +76,35 @@ TEST(TemplateWildcardP7Tests, extendsBoundResolvesMemberOnReturn) {
     EXPECT_EQ(runI32(src), 2);
 }
 
+// Field-read projection. `b.value` on a `Box<? extends Animal>`
+// receiver resolves to Animal so chained member lookup works the same
+// as the method-return path above. Without projection on field reads,
+// `b.value.tag()` falls through with the wildcard-sentinel-on-the-LHS
+// problem and codegen emits the null-return diagnostic.
+TEST(TemplateWildcardP7Tests, extendsBoundProjectsThroughFieldRead) {
+    auto src =
+        "package test;\n"
+        "public class Animal {\n"
+        "    public int32 tag() { return 1; }\n"
+        "}\n"
+        "public class Dog extends Animal {\n"
+        "    public int32 tag() { return 2; }\n"
+        "}\n"
+        "public class Box<T> {\n"
+        "    T value;\n"
+        "    public Box(T v) { this.value = v; }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Dog d = heap Dog();\n"
+        "        Box<Dog> bDog = heap Box<Dog>(d);\n"
+        "        Box<? extends Animal> b = bDog;\n"
+        "        return b.value.tag();\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 2);
+}
+
 // V1 scope guard: unbounded wildcard `Box<?>::get()` does NOT project
 // (no bound to project to). The chained `.tag()` lookup against the
 // raw wildcard sentinel returns nothing meaningful and codegen falls
