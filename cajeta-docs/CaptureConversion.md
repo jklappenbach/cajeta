@@ -63,9 +63,20 @@ Staged so each session leaves the tree green and lands a self-contained slice.
 
 ### Phase 2 — Local-variable capture creation
 
-- [ ] **2.1** `LocalVariableDeclaration` walks the declared type for wildcard type-arguments. For each wildcard at the top level of the instantiation's type args, allocate a fresh capture and substitute it. The local's stored type becomes `Box<capture#N>` instead of `Box<? extends Animal>`.
-- [ ] **2.2** Tests: two `Box<? extends Animal>` locals get distinct captures; chained reads through the captured local resolve members on the bound.
-- [ ] **2.3** Remove the syntactic receiver-identity heuristic in MCE — replaced by capture-type equality (the resolved-types match because both calls produce values of the same capture).
+- [x] **2.0** CajetaCapture registers itself in g_wildcardInfo on construction so every existing wildcard-aware code path (isWildcardInstantiation, substitution-stable hashes, PECS check) sees captures uniformly. Shipped in `71efe6d`.
+- [ ] **2.1** `LocalVariableDeclaration` walks the declared type for wildcard type-arguments. For each wildcard at the top level of the instantiation's type args, allocate a fresh capture and substitute it.
+
+  **Attempted and reverted.** The straightforward implementation — `templateOrigin->instantiate(capturedArgs)` to produce a fresh `Box<capture#N>` class per binding site — works for user code but explodes inside the stdlib chain walker: ParallelDriver's `reduceParallelChain` / `foldParallelChain` / etc. declare ~10 `Stream<?> cur` / `Stream<?> next` / `Stream<?> piece` locals each, and each binding spins up its own `Stream<capture#K>` instantiation with full vtable + RTTI + method-prototype generation. P5 parallel-stream tests start hanging (or crashing under apport).
+
+  Lighter alternatives to revisit:
+  - **Side-table approach.** Keep the local's stored type as the original wildcard instantiation; record capture identity per-typeArg-position on `HeapField` / `StackField`. MCE consults the field's capture metadata at the call site instead of reading captures off the type. Avoids the instantiation explosion at the cost of more bespoke wiring through every receiver-aware code path.
+  - **Lazy capture instantiation.** Only materialize `Box<capture#N>` when something actually needs the capture-type identity (e.g., at the call site where the read-back pattern is exercised). Defers cost to where it matters.
+  - **Capture pooling / interning.** Cache captures by (template, position, bound) across the same compile module so two `Box<? extends Animal>` locals share the same capture — loses identity-per-binding but keeps the type-system check meaningful for the common case. Combine with field-level identity for the rare per-binding-distinctness need.
+
+  Whichever direction lands, the existing Phase 1.x + 2.0 type machinery remains the foundation; only the binding-site wiring changes.
+
+- [ ] **2.2** Tests: two `Box<? extends Animal>` locals get distinct captures; chained reads through the captured local resolve members on the bound. (Blocked on a viable Phase 2.1.)
+- [ ] **2.3** Remove the syntactic receiver-identity heuristic in MCE — replaced by capture-type equality (the resolved-types match because both calls produce values of the same capture). (Blocked on Phase 2.1.)
 
 ### Phase 3 — Parameter / return capture flow
 
