@@ -9,6 +9,7 @@
 #include <set>
 #include "../compile/CajetaModule.h"
 #include "CajetaArray.h"
+#include "CajetaCapture.h"
 #include "CajetaClass.h"
 #include "CajetaTask.h"
 #include "CajetaFunctionType.h"
@@ -178,8 +179,23 @@ namespace cajeta {
         return it == g_wildcardInfo.end() ? nullptr : it->second.bound;
     }
 
+    void CajetaType::registerWildcardInfo(const string& canonical,
+                                           WildcardKind kind,
+                                           CajetaTypePtr bound) {
+        g_wildcardInfo[canonical] = {kind, bound};
+    }
+
     CajetaTypePtr CajetaType::captureProject(CajetaTypePtr t) {
         if (!t) return t;
+        // Phase 1.2 — extends-bounded capture projects to its upper
+        // bound at read positions. Mirrors the bounded-wildcard case
+        // below; future code paths that build captures at binding
+        // sites (Phase 2+) feed this same projection to chained
+        // member access.
+        if (auto cap = dynamic_pointer_cast<CajetaCapture>(t)) {
+            auto upper = cap->getUpperBound();
+            return upper ? upper : t;
+        }
         if (t->wildcardKind() != WildcardKind::Extends) return t;
         auto bound = t->wildcardBound();
         return bound ? bound : t;

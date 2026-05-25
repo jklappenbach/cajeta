@@ -36,21 +36,34 @@ namespace cajeta {
     CajetaCapturePtr CajetaCapture::forExtendsBound(
             CajetaModulePtr module, CajetaTypePtr upperBound) {
         int64_t id = nextCaptureId();
+        auto qName = makeCaptureName(id);
+        // Register as a wildcard-flavored type so existing wildcard
+        // machinery (isWildcard, wildcardKind, wildcardBound,
+        // isWildcardInstantiation, substitution-stable hashes,
+        // PECS check) accepts captures uniformly.
+        CajetaType::registerWildcardInfo(
+            qName->toCanonical(), WildcardKind::Extends, upperBound);
         return make_shared<CajetaCapture>(
-            module, makeCaptureName(id), id, upperBound, nullptr);
+            module, qName, id, upperBound, nullptr);
     }
 
     CajetaCapturePtr CajetaCapture::forSuperBound(
             CajetaModulePtr module, CajetaTypePtr lowerBound) {
         int64_t id = nextCaptureId();
+        auto qName = makeCaptureName(id);
+        CajetaType::registerWildcardInfo(
+            qName->toCanonical(), WildcardKind::Super, lowerBound);
         return make_shared<CajetaCapture>(
-            module, makeCaptureName(id), id, nullptr, lowerBound);
+            module, qName, id, nullptr, lowerBound);
     }
 
     CajetaCapturePtr CajetaCapture::forUnbounded(CajetaModulePtr module) {
         int64_t id = nextCaptureId();
+        auto qName = makeCaptureName(id);
+        CajetaType::registerWildcardInfo(
+            qName->toCanonical(), WildcardKind::Unbounded, nullptr);
         return make_shared<CajetaCapture>(
-            module, makeCaptureName(id), id, nullptr, nullptr);
+            module, qName, id, nullptr, nullptr);
     }
 
 } // namespace cajeta

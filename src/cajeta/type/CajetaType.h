@@ -358,6 +358,16 @@ class CajetaType : public Modifiable, public Annotatable,
         // null for unbounded wildcards and non-wildcards.
         CajetaTypePtr wildcardBound() const;
 
+        // Register a per-canonical wildcard-info entry. Used by
+        // CajetaCapture's factories — captures need to appear as
+        // wildcards to existing wildcard-aware code paths (isWildcard,
+        // wildcardKind, wildcardBound, isWildcardInstantiation,
+        // substitution-stable hash machinery) while retaining their
+        // own per-binding identity via the capture's unique qName.
+        static void registerWildcardInfo(const string& canonical,
+                                          WildcardKind kind,
+                                          CajetaTypePtr bound);
+
         // Capture conversion projection at read positions
         // (cajeta-docs/TemplateWildcard.md § 3 Capture identity). When
         // an expression's static type comes back from method

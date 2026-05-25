@@ -138,3 +138,120 @@ TEST(CajetaCaptureTests, isCaptureDistinguishesFromClass) {
         << "a CajetaCapturePtr should round-trip through dynamic_pointer_cast";
     EXPECT_TRUE(cap->isCapture());
 }
+
+// Phase 1.2 — captureProject projects an extends-bounded capture to
+// its upper bound. Mirrors the bounded-wildcard case (captureProject
+// already handles `? extends B` sentinels by returning B). This lets
+// chained member access through a capture-typed receiver resolve
+// against the bound's surface (e.g., a `b.get()` whose return type is
+// capture#N projects to Animal so `.tag()` resolves on Animal).
+TEST(CajetaCaptureTests, captureProjectExtendsCaptureReturnsUpperBound) {
+    Compiler compiler;
+    auto module = compileTrivial(compiler);
+    auto animal = module->getStructures()["test.Animal"];
+    ASSERT_NE(animal, nullptr);
+
+    auto cap = CajetaCapture::forExtendsBound(module, animal);
+    CajetaTypePtr asType = std::static_pointer_cast<CajetaType>(cap);
+    auto projected = cajeta::CajetaType::captureProject(asType);
+    EXPECT_EQ(projected.get(), animal.get())
+        << "extends-bounded capture should project to its upper bound";
+}
+
+// A super-bounded capture has no upper bound that's safe to project
+// to in v1 — reads through `? super B` formally produce Object,
+// which cajeta doesn't model as a projection target here. Leave the
+// super capture unchanged (the call site can decide how to handle it).
+TEST(CajetaCaptureTests, captureProjectSuperCaptureReturnsItself) {
+    Compiler compiler;
+    auto module = compileTrivial(compiler);
+    auto animal = module->getStructures()["test.Animal"];
+    ASSERT_NE(animal, nullptr);
+
+    auto cap = CajetaCapture::forSuperBound(module, animal);
+    CajetaTypePtr asType = std::static_pointer_cast<CajetaType>(cap);
+    auto projected = cajeta::CajetaType::captureProject(asType);
+    EXPECT_EQ(projected.get(), asType.get())
+        << "super-bounded capture has no read-projection target; "
+        << "captureProject should return it unchanged";
+}
+
+// An unbounded capture also has no projection target — same shape as
+// the unbounded wildcard sentinel case that captureProject already
+// leaves alone.
+TEST(CajetaCaptureTests, captureProjectUnboundedCaptureReturnsItself) {
+    Compiler compiler;
+    auto module = compileTrivial(compiler);
+
+    auto cap = CajetaCapture::forUnbounded(module);
+    CajetaTypePtr asType = std::static_pointer_cast<CajetaType>(cap);
+    auto projected = cajeta::CajetaType::captureProject(asType);
+    EXPECT_EQ(projected.get(), asType.get())
+        << "unbounded capture has no projection target; should return itself";
+}
+
+// Phase 2.0 — captures register in the wildcard-info side table so
+// every existing wildcard-aware code path (isWildcardInstantiation,
+// substitution-stable hashes, PECS check, alias publish in
+// buildVirtualTable) treats Box<capture#N> identically to
+// Box<? extends Animal>. The capture retains its per-binding
+// identity via the unique qName.
+TEST(CajetaCaptureTests, extendsCaptureReportsAsWildcardWithBound) {
+    Compiler compiler;
+    auto module = compileTrivial(compiler);
+    auto animal = module->getStructures()["test.Animal"];
+    ASSERT_NE(animal, nullptr);
+
+    auto cap = CajetaCapture::forExtendsBound(module, animal);
+    CajetaTypePtr asType = std::static_pointer_cast<CajetaType>(cap);
+    EXPECT_TRUE(asType->isWildcard())
+        << "extends capture must appear as a wildcard to existing predicates";
+    EXPECT_EQ(asType->wildcardKind(), cajeta::CajetaType::WildcardKind::Extends);
+    EXPECT_EQ(asType->wildcardBound().get(), animal.get());
+}
+
+// Super captures register as super-kind wildcards with the lower
+// bound recorded as the wildcard bound.
+TEST(CajetaCaptureTests, superCaptureReportsAsWildcardWithBound) {
+    Compiler compiler;
+    auto module = compileTrivial(compiler);
+    auto animal = module->getStructures()["test.Animal"];
+    ASSERT_NE(animal, nullptr);
+
+    auto cap = CajetaCapture::forSuperBound(module, animal);
+    CajetaTypePtr asType = std::static_pointer_cast<CajetaType>(cap);
+    EXPECT_TRUE(asType->isWildcard());
+    EXPECT_EQ(asType->wildcardKind(), cajeta::CajetaType::WildcardKind::Super);
+    EXPECT_EQ(asType->wildcardBound().get(), animal.get());
+}
+
+// Unbounded captures register as unbounded wildcards with null bound.
+TEST(CajetaCaptureTests, unboundedCaptureReportsAsUnboundedWildcard) {
+    Compiler compiler;
+    auto module = compileTrivial(compiler);
+
+    auto cap = CajetaCapture::forUnbounded(module);
+    CajetaTypePtr asType = std::static_pointer_cast<CajetaType>(cap);
+    EXPECT_TRUE(asType->isWildcard());
+    EXPECT_EQ(asType->wildcardKind(), cajeta::CajetaType::WildcardKind::Unbounded);
+    EXPECT_EQ(asType->wildcardBound(), nullptr);
+}
+
+// Two extends-captures with the same bound have DIFFERENT canonical
+// names — that's how identity is preserved through the wildcard-info
+// table. The wildcard sentinel infrastructure caches by canonical,
+// so distinct canonicals give distinct identities.
+TEST(CajetaCaptureTests, distinctCapturesHaveDistinctCanonicals) {
+    Compiler compiler;
+    auto module = compileTrivial(compiler);
+    auto animal = module->getStructures()["test.Animal"];
+    ASSERT_NE(animal, nullptr);
+
+    auto cap1 = CajetaCapture::forExtendsBound(module, animal);
+    auto cap2 = CajetaCapture::forExtendsBound(module, animal);
+    ASSERT_NE(cap1->getQName(), nullptr);
+    ASSERT_NE(cap2->getQName(), nullptr);
+    EXPECT_NE(cap1->getQName()->toCanonical(), cap2->getQName()->toCanonical())
+        << "two fresh captures must have distinct canonical names so the "
+        << "wildcard-info table stores them as distinct entries";
+}
