@@ -1,8 +1,7 @@
 //
-// CajetaView — see header for the design. Owns the legacy view-style codegen
-// previously in CajetaStruct::generatePrototype, with the variable-size /
-// endianness / alignment handling reorganized under the CajetaAggregate
-// hierarchy.
+// CajetaView — see header for the design. Owns the byte-overlay codegen
+// (variable-size / endianness / alignment) that's specific to views and
+// doesn't apply to plain classes.
 //
 
 #include "CajetaView.h"

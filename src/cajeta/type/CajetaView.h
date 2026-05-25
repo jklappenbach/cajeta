@@ -1,12 +1,11 @@
 //
 // CajetaView — zero-copy memory overlay onto a byte buffer (Views.md).
 //
-// Direct child of CajetaClass (P7.6 — CajetaAggregate and CajetaStruct
-// retired with the unified-class collapse). Owns the wire-format-view
-// codegen (packed/aligned layout, bswap, length-prefix sweep, bounds
-// check, view-constructor synthesis) plus the no-vtable field-index
-// override and the variable-size-field predicate that the old
-// CajetaAggregate carried for both view and struct.
+// Direct child of CajetaClass. Owns the wire-format-view codegen
+// (packed/aligned layout, bswap, length-prefix sweep, bounds check,
+// view-constructor synthesis) and a no-vtable field-index override —
+// views are typed overlays, not value aggregates, and skip the vtable
+// header that every plain CajetaClass instance carries at offset 0.
 //
 // v1 capabilities:
 //   - Packed layout by default; @Align(natural) opts into padding.

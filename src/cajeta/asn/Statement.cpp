@@ -1239,26 +1239,6 @@ namespace cajeta {
                         "CAJETA_ERROR_VIEW_ESCAPE");
                 }
             }
-            // S10.3 — interface escape check for BORROWED_STRUCT values.
-            // The interface local's data ptr roots in a struct body
-            // (the source struct local or an inline aggregate literal)
-            // that lives in this function's frame. Returning the
-            // interface value would hand the caller a fat pointer
-            // whose data dangles past the frame's death. The
-            // OWNED_CLASS / BORROWED_CLASS variants don't trigger —
-            // their data pointers root in heap allocations whose
-            // lifetime is independent of this frame.
-            if (f && f->interfaceBorrowsStructLocal()) {
-                throw Exception(
-                    "cannot return interface value '" + idExpr->getTextValue()
-                    + "' — its data pointer roots in a function-scope "
-                    "struct whose body lives only as long as this frame; "
-                    "returning the value would leave the caller with a "
-                    "fat pointer to freed stack memory. Box the underlying "
-                    "data in a class and assign via `#` to transfer "
-                    "ownership across the return.",
-                    "CAJETA_ERROR_INTERFACE_VALUE_ESCAPE");
-            }
             // L3-3: returning a function-typed local transfers closure
             // ownership to the caller. Deactivate the local's drop entry
             // so this scope's exit pop doesn't free the closure out from
@@ -1277,10 +1257,9 @@ namespace cajeta {
             // caller; this scope's drop entry must not fire or we'd
             // free the instance the caller now owns. The caller's
             // declared receiving local will get its own drop entry.
-            // Struct values and arrays aren't covered here — structs
-            // live inline (no drop), and arrays remain owned by the
+            // Arrays aren't covered here — they remain owned by the
             // declaring scope regardless of whether the array header
-            // is returned (that's a separate pre-existing limitation).
+            // is returned (a separate pre-existing limitation).
             //
             // Owning views (a view whose ctor took #-transferred bytes)
             // DO have a drop entry — the owning ctor pushes one paired
@@ -1330,50 +1309,30 @@ namespace cajeta {
                     "CAJETA_ERROR_BORROW_ESCAPE");
             }
         }
-        // S6.7 — struct return type. Methods returning CajetaStruct travel
-        // by VALUE (not by ptr) so the body alloca dying with the callee's
-        // frame doesn't dangle the result. Three shapes for `val` here:
+        // Interface returns travel by VALUE per the small-struct ABI:
+        // the 24-byte fat pointer is returned as a value, not through
+        // a heap pointer. When the source is a named local whose
+        // HeapField slot holds a body pointer, we need a double-load:
+        // load the slot to get the body pointer, then load the body to
+        // get the fat-pointer value the return signature expects.
         //
-        //   (1) IdentifierExpression of a struct local: val is the
-        //       HeapField slot (alloca ptr); slot holds the body ptr.
-        //       Double-load: first the slot → body ptr, then body ptr →
-        //       struct value.
-        //   (2) AggregateInitializerExpression: val is the body alloca
-        //       itself (alloca of struct LLVM type); single load gives
-        //       the struct value. The general AllocaInst branch below
-        //       handles this correctly.
-        //   (3) MethodCallExpression (struct-returning call): MCE
-        //       already repackages the result into a fresh body alloca
-        //       and returns its ptr; same shape as (2) — single load.
-        //
-        // The shape (1) branch must fire BEFORE the general AllocaInst
-        // load to avoid loading the slot just once (which would give us
-        // a body pointer where a struct value is expected, producing
-        // `ret ptr` against a struct return signature).
+        // The double-load path must fire BEFORE the general AllocaInst
+        // load below, which would load the slot once and produce a
+        // body-pointer where a struct value is expected.
         if (auto m = module->getCurrentMethod()) {
-            // Interface returns (S9.5.5) travel by VALUE per the small-
-            // struct ABI; they need a double-load when the source is a
-            // named local whose HeapField slot holds a body pointer.
             CajetaTypePtr byValRet;
             if (auto ifaceRet = dynamic_pointer_cast<CajetaClass>(m->getReturnType())) {
                 if (ifaceRet->isInterface()) byValRet = ifaceRet;
             }
             if (byValRet) {
-                // Both shapes load the slot to get a body pointer, then
-                // load the body to get the value:
-                //   (a) Struct / interface local: field type is the
-                //       aggregate, the HeapField slot holds a pointer
-                //       to the body alloca. Detected via the binding
-                //       name in scope.
-                //   (b) `this` on a struct method: ThisExpression
+                // Two shapes route through the double-load:
+                //   (a) Named interface local: field type is the
+                //       interface, the HeapField slot holds a pointer
+                //       to the 24-byte body alloca.
+                //   (b) `this` on an interface method: ThisExpression
                 //       resolves through a ParameterField also named
                 //       "this" whose type is "pointer"; the slot holds
                 //       the caller-supplied body pointer.
-                // For `return this;` ThisExpression generates the alloca
-                // directly (see ThisExpression::generateCode); for
-                // `return localStruct;` IdentifierExpression returns the
-                // HeapField slot. Both go through the same double-load
-                // path below.
                 std::string fieldName;
                 bool tryDoubleLoad = false;
                 if (auto idExpr = dynamic_pointer_cast<IdentifierExpression>(expression)) {

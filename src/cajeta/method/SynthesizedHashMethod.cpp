@@ -83,10 +83,8 @@ namespace cajeta {
     };
 
     // Decide how to hash a field's type, OR throw a diagnostic if the
-    // type isn't supported in v1. The class-vs-struct-vs-array
-    // distinction matters because CajetaArray and CajetaStruct both
-    // inherit from CajetaClass — checking the leaf type first is
-    // essential.
+    // type isn't supported in v1. CajetaArray inherits from CajetaClass,
+    // so the array case must be checked before the plain class case.
     static FieldHashKind classifyOrReject(
             const CajetaClassPtr& parent,
             const std::string& fieldName,

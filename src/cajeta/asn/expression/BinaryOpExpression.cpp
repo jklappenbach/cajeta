@@ -117,12 +117,12 @@ namespace cajeta {
             CajetaTypePtr elemType = ast->getResolvedType();
             if (elemType) {
                 llvm::Type* loadTy;
-                // Class-typed elements (CajetaArray, CajetaStruct, plain
-                // CajetaClass) are stored as pointers in the array's
-                // data slot. Loading the slot yields the heap reference,
-                // not the struct contents. CajetaArray and CajetaStruct
-                // both inherit from CajetaClass, so the dynamic_cast
-                // catches all three. Primitives load as their value type.
+                // Class-typed elements (CajetaArray, plain CajetaClass)
+                // are stored as pointers in the array's data slot.
+                // Loading the slot yields the heap reference, not the
+                // instance contents. CajetaArray inherits from CajetaClass,
+                // so the dynamic_cast catches both. Primitives load as
+                // their value type.
                 if (dynamic_pointer_cast<CajetaClass>(elemType) ||
                     (elemType->getTypeFlags() & STRUCT_FLAG)) {
                     loadTy = llvm::PointerType::get(*module->getLlvmContext(), 0);
@@ -720,10 +720,10 @@ namespace cajeta {
                     slotTy = a->getAllocatedType();
                 } else if (lhsAst && dynamic_pointer_cast<ArrayIndexExpression>(lhsAst)) {
                     if (auto elemType = lhsAst->getResolvedType()) {
-                        // Class-typed array elements (CajetaArray,
-                        // CajetaStruct, plain CajetaClass) — slot stores
-                        // a pointer to the heap instance. Primitive
-                        // arrays hold the value directly.
+                        // Class-typed array elements (CajetaArray, plain
+                        // CajetaClass) — slot stores a pointer to the
+                        // heap instance. Primitive arrays hold the
+                        // value directly.
                         if (dynamic_pointer_cast<CajetaClass>(elemType) ||
                             (elemType->getTypeFlags() & STRUCT_FLAG)) {
                             slotTy = llvm::PointerType::get(*module->getLlvmContext(), 0);
@@ -758,23 +758,23 @@ namespace cajeta {
                                         return false;
                                     };
                                 if (findProp(klass)) {
-                                    // Reject writes to variable-size struct
+                                    // Reject writes to variable-size view
                                     // fields — they can't be resized in place.
-                                    // See Views.md § Mutation rules.
-                                    // ONLY applies to CajetaStruct (POD zero-
-                                    // copy) types — a String-typed field on a
-                                    // regular CajetaClass instance is a normal
+                                    // See Views.md § Mutation rules. Only
+                                    // applies to CajetaView (wire-format
+                                    // overlay) — a String-typed field on a
+                                    // plain CajetaClass instance is a normal
                                     // owned-pointer field, freely writable.
-                                    // CajetaStruct's String fields, by
-                                    // contrast, live inline in a wire-format
-                                    // buffer with a length prefix.
-                                    bool isViewStruct =
+                                    // View String fields, by contrast, live
+                                    // inline in the byte buffer with a
+                                    // length prefix.
+                                    bool isView =
                                         dynamic_pointer_cast<CajetaView>(klass) != nullptr;
-                                    if (isViewStruct
+                                    if (isView
                                             && CajetaView::isVariableSize(found)) {
                                         char buf[256];
                                         snprintf(buf, sizeof(buf),
-                                            "cannot reassign variable-size struct field '%s'; "
+                                            "cannot reassign variable-size view field '%s'; "
                                             "build a new buffer instead",
                                             found->getName().c_str());
                                         throw Exception(buf,

@@ -540,12 +540,12 @@ namespace cajeta {
         // keyed under the interface methods' canonical hashes (see
         // CajetaClass::buildVirtualTable).
         if (isInterface()) {
-            // Interface fat pointer (S9.5.1): { ptr data, ptr vtable, i64 kind }
-            // = 24 bytes. data points at the underlying class instance or
-            // struct body; vtable points at the per-(impl, iface) global
-            // synthesized by S9.2 / S9.5.2; kind is one of
-            // IFACE_KIND_BORROWED_CLASS / OWNED_CLASS / BORROWED_STRUCT
-            // and drives drop-chain dispatch at scope exit (S10.4).
+            // Interface fat pointer: { ptr data, ptr vtable, i64 kind }
+            // = 24 bytes. data points at the underlying class instance;
+            // vtable points at the per-(impl, iface) global synthesized
+            // by synthesizeInterfaceVTables; kind is one of
+            // IFACE_KIND_BORROWED_CLASS / OWNED_CLASS and drives
+            // drop-chain dispatch at scope exit.
             llvmType = CajetaType::getOrCreateLlvmType(module->getLlvmContext(), canonical);
             typeMap[TypeKey(llvmType)] = shared_from_this();
             llvm::Type* ptrTy = llvm::PointerType::get(*module->getLlvmContext(), 0);
@@ -2227,11 +2227,9 @@ namespace cajeta {
         }
 
         // Walk owned class-ref fields in REVERSE declaration order. For
-        // each plain class-ref (not aggregate, not array, not interface),
-        // GEP the slot, load the pointer, call the referent class's
-        // own heap-drop fn. (Pre-unified-class history: this mirrored
-        // the auto-walk-owned-fields behavior CajetaStruct's drop had
-        // today, generalized to any class allocated on the stack.
+        // each plain class-ref (not view, not array, not interface), GEP
+        // the slot, load the pointer, call the referent class's own
+        // heap-drop fn.
         std::vector<StructurePropertyPtr> reversed(
             propertyList.begin(), propertyList.end());
         std::reverse(reversed.begin(), reversed.end());
@@ -2254,10 +2252,6 @@ namespace cajeta {
             refDrop = CajetaModule::ensureFunctionInModule(lmod, refDrop);
             b.CreateCall(refDrop, {refPtr});
         }
-
-        // (Historical recurse-into-embedded-struct-fields path retired
-        // with CajetaStruct under the unified-class model — embedded
-        // class-ref fields above already handle reachable owned state.)
 
         // No __cajeta_free — stack body is reclaimed by the function
         // epilogue. This is the only structural difference from
@@ -3948,12 +3942,9 @@ namespace cajeta {
                 method->getLlvmFunctionType());
         // Views have no vtable header (they are typed overlays onto
         // byte buffers; the byte buffer is the value). Methods on
-        // views are statically dispatched — the receiver's concrete
+        // Views are statically dispatched — the receiver's concrete
         // type is known at the call site. Skip the vtable path
         // entirely; LLVM gets a direct call to the resolved method.
-        // (Pre-unified-class history: this branch also covered
-        // CajetaStruct; under the unified model `struct` is just
-        // `class` and gets the normal vtable-dispatch treatment.)
         bool isView = dynamic_cast<CajetaView*>(this) != nullptr;
         // Method-level templated methods are non-virtual (templating
         // excludes them from the vtable per cajeta-docs/stdlib/
@@ -3997,22 +3988,13 @@ namespace cajeta {
                 methodArgs[0] = dataPtr;
             }
         } else if (useVtable && isInterfaceRecv) {
-            // (Historical S11.2 "same-concrete-type return through dyn
-            // dispatch" rejection retired with CajetaStruct under the
-            // unified-class model — the equivalent check for a class
-            // implementer returning its own class type would never have
-            // fired because class instances are pass-by-pointer
-            // throughout, dodging the sret-slot problem this branch
-            // guarded against.)
-
-            // S9.5.6 — interface receiver via fat pointer body. Load the
-            // per-(impl, iface) vtable from word 1 (the runtime-resolved
-            // pointer set by the assignment site that built the fat
-            // pointer); load the underlying data from word 0 and use it
-            // as the actual `this` for the implementer's function. The
-            // vtable is a flat [N x ptr] array in interface-declaration
-            // order (per S9.2 / S9.5.2), so dispatch is a GEP-to-index
-            // load — no hash lookup needed.
+            // Interface receiver via fat pointer body. Load the per-(impl,
+            // iface) vtable from word 1 (the runtime-resolved pointer set
+            // by the assignment site that built the fat pointer); load
+            // the underlying data from word 0 and use it as the actual
+            // `this` for the implementer's function. The vtable is a flat
+            // [N x ptr] array in interface-declaration order, so dispatch
+            // is a GEP-to-index load — no hash lookup needed.
             llvm::Type* ptrTy = llvm::PointerType::get(llvmCtx, 0);
             llvm::Type* bodyTy = this->getLlvmType();
 

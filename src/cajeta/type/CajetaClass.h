@@ -27,12 +27,11 @@ namespace cajeta {
 
     // Discriminator written into word 2 of an interface fat pointer.
     // Selected at the assignment site that builds the fat pointer
-    // (class→iface, struct→iface, #class→iface) and consumed by
-    // the kind-tag drop dispatch (S10.4).
+    // (class→iface, #class→iface) and consumed by the kind-tag drop
+    // dispatch in __cajeta_iface_drop.
     enum InterfaceValueKind : int64_t {
         IFACE_KIND_BORROWED_CLASS = 0,
-        IFACE_KIND_OWNED_CLASS = 1,
-        IFACE_KIND_BORROWED_STRUCT = 2
+        IFACE_KIND_OWNED_CLASS = 1
     };
 
     // Size of an interface fat-pointer value in bytes. Three machine
@@ -149,11 +148,10 @@ namespace cajeta {
         // Cached on first request so LocalVariableDeclaration's drop-entry
         // registration is a constant-time lookup per declaration site.
         llvm::Function* llvmDropFunction = nullptr;
-        // P7.1 — synthesized stack-drop wrapper. Same shape as the heap
-        // drop above but does NOT free the body; intended for stack-
-        // allocated class locals whose body is reclaimed by the function
-        // epilogue. Walks owned class-ref fields (matching CajetaStruct's
-        // existing auto-walk behavior) so embedded ownership doesn't leak.
+        // Synthesized stack-drop wrapper. Same shape as the heap drop
+        // above but does NOT free the body; intended for stack-allocated
+        // class locals whose body is reclaimed by the function epilogue.
+        // Walks owned class-ref fields so embedded ownership doesn't leak.
         llvm::Function* llvmStackDropFunction = nullptr;
         // Gap 1 (virtual dispatch on drop) — set true after the vtable
         // global's drop_fn slot has been patched to point at
@@ -162,13 +160,11 @@ namespace cajeta {
         // first patch.
         bool llvmDropFunctionPatched = false;
 
-        // S9.5.2 — per-(class, interface) vtable globals. Sibling of
-        // CajetaStruct::interfaceVTables. Keyed by interface canonical
-        // name; value is a `[N x ptr]` constant whose entries point at
-        // this class's concrete implementations in interface-declaration
-        // order. The fat-pointer dispatch model uses these as the
-        // vtable_ptr word of the interface value, regardless of whether
-        // the implementer is a class or a struct.
+        // Per-(class, interface) vtable globals. Keyed by interface
+        // canonical name; value is a `[N x ptr]` constant whose entries
+        // point at this class's concrete implementations in interface-
+        // declaration order. The fat-pointer dispatch model uses these
+        // as the vtable_ptr word of the interface value.
         std::map<std::string, llvm::GlobalVariable*> interfaceVTables;
 
         // Static class fields — one llvm::GlobalVariable per static
@@ -333,8 +329,8 @@ namespace cajeta {
         // LLVM struct index for a class field. Class instances reserve LLVM
         // slot 0 for the vtable pointer, so user properties live at LLVM
         // indices 1..N even though `StructureProperty::getOrder()` is
-        // 0-based. `CajetaStruct` overrides this to return the order
-        // verbatim (no vtable slot).
+        // 0-based. `CajetaView` overrides this to return the order
+        // verbatim (no vtable slot — views are inline byte overlays).
         // Count how many fields this class inherits from all ancestors. The
         // subclass's LLVM struct layout is { vtable, <inherited>, <own> },
         // so inherited fields occupy [1 .. 1+inherited_count) and own
@@ -567,13 +563,11 @@ namespace cajeta {
         // dispatch through getOrCreateDropFunction.
         virtual bool hasVtablePointerAtSlotZero() const { return true; }
 
-        // S9.5.2 — synthesize a per-(class, interface) vtable global for
-        // every interface this class implements. Called from
-        // generatePrototype after method prototypes exist. Same emission
-        // shape as CajetaStruct::synthesizeInterfaceVTables — flat
-        // `[N x ptr]` constant in interface-declaration order, named
-        // `class.<sanitized>_iface_<sanitized>_VTable` (the prefix
-        // distinguishes from the struct case).
+        // Synthesize a per-(class, interface) vtable global for every
+        // interface this class implements. Called from generatePrototype
+        // after method prototypes exist. Emission shape: flat `[N x ptr]`
+        // constant in interface-declaration order, named
+        // `class.<sanitized>_iface_<sanitized>_VTable`.
         void synthesizeInterfaceVTables();
 
         // Flat list of methods that an interface's per-(impl, iface)

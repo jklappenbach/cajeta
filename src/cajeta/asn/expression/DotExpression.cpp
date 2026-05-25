@@ -365,9 +365,9 @@ namespace cajeta {
             //   - resolvedType must be a CajetaClass (covers
             //     interface too — CajetaInterface extends
             //     CajetaClass).
-            //   - It must NOT be a CajetaStruct, since struct
-            //     fields are stored INLINE and the GEP already
-            //     gives the field's address directly.
+            //   - It must NOT be a CajetaView, since view fields
+            //     are stored INLINE in the byte buffer and the GEP
+            //     already gives the field's address directly.
             //   - It must NOT be a ThisExpression or SuperExpression
             //     LHS (Phase 2 / Phase 3 v2): those primaries return a
             //     ready-to-use instance pointer (potentially adjusted
@@ -383,11 +383,11 @@ namespace cajeta {
             // expression path), so leaving them out doesn't open
             // a new gap here.
             auto lhsClass = dynamic_pointer_cast<CajetaClass>(lhs->getResolvedType());
-            bool lhsIsStruct = dynamic_pointer_cast<CajetaView>(lhs->getResolvedType()) != nullptr;
+            bool lhsIsView = dynamic_pointer_cast<CajetaView>(lhs->getResolvedType()) != nullptr;
             bool lhsIsThisOrSuper =
                 dynamic_pointer_cast<ThisExpression>(lhs) != nullptr
                 || dynamic_pointer_cast<SuperExpression>(lhs) != nullptr;
-            if (lhsClass && !lhsIsStruct && !lhsIsThisOrSuper) {
+            if (lhsClass && !lhsIsView && !lhsIsThisOrSuper) {
                 auto ptrTy = llvm::PointerType::get(*module->getLlvmContext(), 0);
                 base = module->getBuilder()->CreateLoad(ptrTy, base);
             }
@@ -435,7 +435,7 @@ namespace cajeta {
 
         // Field index depends on the receiver type. CajetaClass instances
         // reserve LLVM slot 0 for the vtable pointer, so user fields land at
-        // index getOrder()+1. CajetaStruct (POD) uses getOrder() directly.
+        // index getOrder()+1. CajetaView (no vtable) uses getOrder() directly.
         unsigned fieldIdx = (unsigned) klass->getFieldLlvmIndex(property);
 
         // Variable-size view fields (`String`, `T[]`) lay out in the wire

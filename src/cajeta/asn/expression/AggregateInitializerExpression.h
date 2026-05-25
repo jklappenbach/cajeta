@@ -1,17 +1,16 @@
 //
 // AggregateInitializerExpression — `Foo { field: expr, ... }`.
 //
-// Builds a fresh stack alloca of struct `Foo`, zero-inits the body (so
+// Builds a fresh stack alloca of class `Foo`, zero-inits the body (so
 // fields the initializer omits land at 0), then stores each labeled
 // expression into the corresponding LLVM struct slot. Returns the alloca
 // pointer so the receiving site (local declaration, function argument,
-// return slot) handles it like any other aggregate-by-pointer value.
+// return slot) handles it like any other class-by-pointer value.
 //
-// S6.2 scope: receiver type must be a CajetaStruct (not CajetaView, not
-// a plain CajetaClass). Field names must match declared properties; the
-// labelled-binding form is required (positional aggregate init isn't
-// supported in v1 — labels match cajeta-docs/stdlib/Views.md's documented syntax and
-// match the keyword-arg parser shape we already accept on methodCall).
+// Receiver type must be a CajetaClass (not CajetaView). Field names
+// must match declared properties; the labelled-binding form is required
+// (positional aggregate init isn't supported in v1 — labels match the
+// keyword-arg parser shape already accepted on methodCall).
 //
 
 #pragma once

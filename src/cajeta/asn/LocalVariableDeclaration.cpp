@@ -264,13 +264,11 @@ namespace cajeta {
                 }
             }
 
-            // (Historical S6.1 implicit struct-body alloca retired with
-            // CajetaStruct under the unified-class model. `class Foo f;`
-            // without an initializer lands as an NYA-marked null class
-            // ref via the path above; `heap Foo()` / `stack Foo()` /
-            // `Foo { x: 1, y: 2 }` cover instantiation explicitly.)
+            // `class Foo f;` without an initializer lands as an NYA-marked
+            // null class ref via the path above. Instantiation is always
+            // explicit: `heap Foo()` / `stack Foo()` / `Foo { x: 1, y: 2 }`.
 
-            // S9.5.4 — interface local handling. An interface local's
+            // Interface local handling. An interface local's
             // HeapField slot holds a `ptr` pointing at a 24-byte
             // fat-pointer body. Three init shapes:
             //   - No initializer: allocate empty body, zero-init, store
@@ -348,20 +346,14 @@ namespace cajeta {
                             }
                             builder->CreateStore(vtableRef, vtSlot);
 
-                            // S10.1 — struct RHS sets BORROWED_STRUCT.
-                            // S10.2 — class RHS wrapped in MoveExpression
-                            // (`Greeter g = #h;` or `Greeter g = #new Hello();`)
+                            // Class RHS wrapped in MoveExpression
+                            // (`Greeter g = #h;` or `Greeter g = #heap Hello();`)
                             // sets OWNED_CLASS; bare class RHS sets
-                            // BORROWED_CLASS in v1. MoveExpression's own
+                            // BORROWED_CLASS. MoveExpression's own
                             // generateCode has already marked the source
                             // moved + deactivated its drop entry, so
                             // ownership transfers cleanly to the interface
-                            // value's drop chain (S10.4 dispatches on kind).
-                            // (Note: the historical IFACE_KIND_BORROWED_STRUCT
-                            // path retired with CajetaStruct under the
-                            // unified-class model — structs are now plain
-                            // CajetaClass instances and fall into the
-                            // BORROWED_CLASS bucket.)
+                            // value's drop chain (drop dispatches on kind).
                             bool rhsIsMove = dynamic_pointer_cast<MoveExpression>(rhsExpr) != nullptr;
                             int64_t kindValue;
                             if (rhsIsMove) {
@@ -423,16 +415,13 @@ namespace cajeta {
                             }
                         }
                     }
-                    // Struct view-aliasing: when the initializer is a
-                    // struct-view construction call like `Header(bytes)`,
-                    // record which field the view aliases. ReturnStatement
-                    // consults this to reject returning a view of a same-
-                    // scope local buffer. The shape we recognize:
-                    //   - MethodCallExpression with NO receiver (children[0]
-                    //     of the MCE itself is absent; we already filtered
-                    //     to the call here via children[0] of the
-                    //     VariableInitializer)
-                    //   - MCE's name matches a registered CajetaStruct
+                    // View-aliasing: when the initializer is a view
+                    // construction call like `Header(bytes)`, record which
+                    // field the view aliases. ReturnStatement consults this
+                    // to reject returning a view of a same-scope local
+                    // buffer. The shape we recognize:
+                    //   - MethodCallExpression with NO receiver
+                    //   - MCE's name matches a registered CajetaView
                     //   - Exactly one parameter, an IdentifierExpression
                     //     resolving to a field in the current scope
                     // Anything else (multi-arg ctor, dynamically-built
@@ -891,13 +880,11 @@ namespace cajeta {
                 }
             }
 
-            // (Historical S6.4 struct-local drop-entry registration retired
-            // with CajetaStruct under the unified-class model — stack-
-            // resident class instances now flow through the regular
+            // Stack-resident class instances flow through the regular
             // stack-drop path via klass->getOrCreateStackDropFunction()
-            // wired earlier in this method.)
+            // wired earlier in this method.
 
-            // S10.4 — interface local drop entry. Pushes a drop entry
+            // Interface local drop entry. Pushes a drop entry
             // pointing at __cajeta_iface_drop, the kind-tag dispatcher.
             // The helper reads the fat pointer's kind word and either
             // invokes the per-(class, iface) vtable's drop slot

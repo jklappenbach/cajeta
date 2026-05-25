@@ -73,18 +73,6 @@ namespace cajeta {
         // tracks the view-aliasing relationship via _viewSource above.
         bool _isOwningView = false;
 
-        // S10.3 — for interface-typed locals built with kind
-        // IFACE_KIND_BORROWED_STRUCT: the data pointer roots in a
-        // struct body that lives in the current function frame
-        // (either an aggregate literal, a function-local struct, or
-        // a chained field thereof). ReturnStatement rejects returning
-        // such a local with CAJETA_ERROR_INTERFACE_VALUE_ESCAPE — the
-        // caller would receive a fat pointer whose data dangles past
-        // the frame's death. Parameter-rooted BORROWED_STRUCT (struct
-        // arg passed in) is also restricted in v1, since the param's
-        // body still dies at function return.
-        bool _interfaceBorrowsStructLocal = false;
-
     public:
         Field(CajetaModulePtr module, string name, CajetaTypePtr type, FieldPtr parent = nullptr) {
             this->module = module;
@@ -201,9 +189,6 @@ namespace cajeta {
         // dangling view).
         FieldPtr getViewSource() const { return _viewSource; }
         void setViewSource(FieldPtr s) { _viewSource = std::move(s); }
-
-        bool interfaceBorrowsStructLocal() const { return _interfaceBorrowsStructLocal; }
-        void setInterfaceBorrowsStructLocal(bool v) { _interfaceBorrowsStructLocal = v; }
 
         bool isOwningView() const { return _isOwningView; }
         void setIsOwningView(bool v) { _isOwningView = v; }
