@@ -454,6 +454,7 @@ The deep-dive specs live in `cajeta-docs/`. Start here:
 | Topic                       | Doc |
 |-----------------------------|-----|
 | Class model + allocation    | [`UnifiedClasses.md`](cajeta-docs/stdlib/UnifiedClasses.md) |
+| System I/O + env + properties | [`lang/System.md`](cajeta-docs/stdlib/lang/System.md) |
 | Memory + ownership          | [`MemoryModel.md`](cajeta-docs/stdlib/MemoryModel.md) |
 | Field ownership / auto-drop | [`FieldOwnership.md`](cajeta-docs/stdlib/FieldOwnership.md) |
 | Templates + wildcards       | [`TemplateWildcard.md`](cajeta-docs/TemplateWildcard.md), [`CaptureConversion.md`](cajeta-docs/CaptureConversion.md) |

@@ -5,6 +5,10 @@ The classes every cajeta program implicitly has access to: `Object`,
 in `cajeta.lang` because so many APIs across the rest of the stdlib
 return them.
 
+`System` is a sibling namespace (not a class) that exposes process-
+level I/O, env-var access, and tunable string properties via compiler
+intrinsics — see **[`lang/System.md`](./lang/System.md)**.
+
 ## `Object` — universal root
 
 See **[`lang/Object.md`](./lang/Object.md)** for the full spec

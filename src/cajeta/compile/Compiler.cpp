@@ -753,11 +753,97 @@ namespace cajeta {
             entryFn->getName(),
             lmod);
 
-        llvm::FunctionType* mainTy = llvm::FunctionType::get(i32Ty, false);
+        // `int main(int argc, char** argv)` — argv lets us honor Java-style
+        // `-Dkey=value` startup args by installing each as a system property
+        // before user code runs. Residual argv (without the -D entries) is
+        // currently dropped because the user entry doesn't take parameters
+        // yet; once `static int32 main(String[] args)` lands we'll forward
+        // the residual through.
+        llvm::Type* ptrTy = llvm::PointerType::get(ctx, 0);
+        llvm::FunctionType* mainTy = llvm::FunctionType::get(
+            i32Ty, {i32Ty, ptrTy}, false);
         llvm::Function* mainFn = llvm::Function::Create(
             mainTy, llvm::GlobalValue::ExternalLinkage, "main", lmod);
         llvm::BasicBlock* bb = llvm::BasicBlock::Create(ctx, "entry", mainFn);
         llvm::IRBuilder<> b(bb);
+
+        // Walk argv looking for `-Dkey=value` (or `-Dkey`) tokens and feed
+        // each to __cajeta_property_install. Other args are skipped for
+        // now (no String[]-typed entry yet).
+        {
+            llvm::Value* argcVal = mainFn->getArg(0);
+            llvm::Value* argvVal = mainFn->getArg(1);
+
+            // Declare strncmp + the installer.
+            llvm::FunctionType* strncmpTy = llvm::FunctionType::get(
+                i32Ty, {ptrTy, ptrTy, llvm::Type::getInt64Ty(ctx)}, false);
+            llvm::FunctionCallee strncmpFn =
+                lmod->getOrInsertFunction("strncmp", strncmpTy);
+            llvm::FunctionType* installerTy = llvm::FunctionType::get(
+                llvm::Type::getVoidTy(ctx), {ptrTy}, false);
+            llvm::FunctionCallee installerFn =
+                lmod->getOrInsertFunction(
+                    "__cajeta_property_install", installerTy);
+
+            // const char* prefix = "-D";
+            llvm::Constant* dashD = b.CreateGlobalStringPtr("-D",
+                ".cajeta.dashD", /*AddressSpace=*/0, lmod);
+
+            llvm::BasicBlock* loopHead = llvm::BasicBlock::Create(
+                ctx, "argv.head", mainFn);
+            llvm::BasicBlock* loopBody = llvm::BasicBlock::Create(
+                ctx, "argv.body", mainFn);
+            llvm::BasicBlock* checkD   = llvm::BasicBlock::Create(
+                ctx, "argv.checkD", mainFn);
+            llvm::BasicBlock* installD = llvm::BasicBlock::Create(
+                ctx, "argv.installD", mainFn);
+            llvm::BasicBlock* loopStep = llvm::BasicBlock::Create(
+                ctx, "argv.step", mainFn);
+            llvm::BasicBlock* afterLoop = llvm::BasicBlock::Create(
+                ctx, "argv.done", mainFn);
+
+            llvm::AllocaInst* iSlot = b.CreateAlloca(i32Ty, nullptr, "argv.i");
+            b.CreateStore(llvm::ConstantInt::get(i32Ty, 1), iSlot);   // skip argv[0]
+            b.CreateBr(loopHead);
+
+            b.SetInsertPoint(loopHead);
+            llvm::Value* iCur = b.CreateLoad(i32Ty, iSlot);
+            llvm::Value* cond = b.CreateICmpSLT(iCur, argcVal);
+            b.CreateCondBr(cond, loopBody, afterLoop);
+
+            b.SetInsertPoint(loopBody);
+            llvm::Value* iCur2 = b.CreateLoad(i32Ty, iSlot);
+            llvm::Value* slotPtr = b.CreateGEP(ptrTy, argvVal, iCur2);
+            llvm::Value* tokenPtr = b.CreateLoad(ptrTy, slotPtr);
+            b.CreateBr(checkD);
+
+            b.SetInsertPoint(checkD);
+            // strncmp(token, "-D", 2) == 0 → install
+            llvm::Value* cmpResult = b.CreateCall(strncmpFn,
+                {tokenPtr, dashD, llvm::ConstantInt::get(
+                    llvm::Type::getInt64Ty(ctx), 2)});
+            llvm::Value* isDash = b.CreateICmpEQ(cmpResult,
+                llvm::ConstantInt::get(i32Ty, 0));
+            b.CreateCondBr(isDash, installD, loopStep);
+
+            b.SetInsertPoint(installD);
+            // installer takes the substring past "-D".
+            llvm::Value* afterDashD = b.CreateGEP(
+                llvm::Type::getInt8Ty(ctx), tokenPtr,
+                llvm::ConstantInt::get(llvm::Type::getInt64Ty(ctx), 2));
+            b.CreateCall(installerFn, {afterDashD});
+            b.CreateBr(loopStep);
+
+            b.SetInsertPoint(loopStep);
+            llvm::Value* iNext = b.CreateAdd(
+                b.CreateLoad(i32Ty, iSlot),
+                llvm::ConstantInt::get(i32Ty, 1));
+            b.CreateStore(iNext, iSlot);
+            b.CreateBr(loopHead);
+
+            b.SetInsertPoint(afterLoop);
+        }
+
         llvm::Value* ret = b.CreateCall(entryExtern, {});
         // Translate the cajeta return into a C exit code.
         //   int32  → cast (identity) to i32 and return.

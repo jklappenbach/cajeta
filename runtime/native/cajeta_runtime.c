@@ -2995,6 +2995,117 @@ void __cajeta_logln(int32_t stream, const char* fmt, int64_t argc, const char* c
 }
 
 // ---------------------------------------------------------------------------
+// System.env — OS environment-variable access.
+// System.property — process-scoped string properties (Java -Dkey=value).
+//
+// Both surfaces store / return char* values. The cajeta codegen wraps a
+// returned char* into a class String at the use site; callers see normal
+// String values. NULL returns from `get` map to a null String reference
+// at the cajeta level.
+//
+// `env` is a thin wrapper over libc getenv / setenv. The returned char*
+// for getenv points into the process's environ strip and is invalidated by
+// subsequent setenv / putenv calls — so the codegen-side wrap copies the
+// bytes into a fresh cajeta int8[] header before exposing them. The
+// __cajeta_env_get helper here just returns the libc pointer; callers
+// are responsible for copying.
+//
+// `property` is an in-process key→value map. Lookups are linear over a
+// singly-linked list of entries; insert/update walks the list and either
+// rewrites the value or appends. Both keys and values are heap-allocated
+// strdup'd copies so caller pointers don't have to outlive the call. A
+// shared mutex protects concurrent set/get from racing on the list head
+// (cajeta's parallel-driver workers can hit property accessors from
+// multiple fibers; the same single-carrier scheduler runs them today but
+// the property map is process-global, so locking is the right shape for
+// when multi-carrier lands).
+// ---------------------------------------------------------------------------
+
+const char* __cajeta_env_get(const char* name) {
+    if (!name) return NULL;
+    return getenv(name);
+}
+
+int32_t __cajeta_env_set(const char* name, const char* value) {
+    if (!name) return -1;
+    if (!value) {
+        // setenv with NULL value is undefined on some libcs; treat as unset.
+        return unsetenv(name);
+    }
+    return setenv(name, value, /*overwrite=*/1);
+}
+
+struct cajeta_property_entry {
+    char* key;
+    char* value;
+    struct cajeta_property_entry* next;
+};
+
+static struct cajeta_property_entry* __cajeta_property_head = NULL;
+static pthread_mutex_t __cajeta_property_mu = PTHREAD_MUTEX_INITIALIZER;
+
+const char* __cajeta_property_get(const char* name) {
+    if (!name) return NULL;
+    pthread_mutex_lock(&__cajeta_property_mu);
+    for (struct cajeta_property_entry* e = __cajeta_property_head; e; e = e->next) {
+        if (e->key && strcmp(e->key, name) == 0) {
+            pthread_mutex_unlock(&__cajeta_property_mu);
+            return e->value;
+        }
+    }
+    pthread_mutex_unlock(&__cajeta_property_mu);
+    return NULL;
+}
+
+void __cajeta_property_set(const char* name, const char* value) {
+    if (!name) return;
+    pthread_mutex_lock(&__cajeta_property_mu);
+    // Update in place if key exists.
+    for (struct cajeta_property_entry* e = __cajeta_property_head; e; e = e->next) {
+        if (e->key && strcmp(e->key, name) == 0) {
+            free(e->value);
+            e->value = value ? strdup(value) : NULL;
+            pthread_mutex_unlock(&__cajeta_property_mu);
+            return;
+        }
+    }
+    // Insert at head.
+    struct cajeta_property_entry* e = (struct cajeta_property_entry*) malloc(sizeof(*e));
+    if (!e) {
+        pthread_mutex_unlock(&__cajeta_property_mu);
+        return;
+    }
+    e->key = strdup(name);
+    e->value = value ? strdup(value) : NULL;
+    e->next = __cajeta_property_head;
+    __cajeta_property_head = e;
+    pthread_mutex_unlock(&__cajeta_property_mu);
+}
+
+// Parse a `key=value` string and install it via __cajeta_property_set.
+// Used by the C-main shim (Compiler::emitCMainShim's argv walk) to honor
+// `-Dkey=value` CLI args at program startup, mirroring Java's
+// `java -Dkey=value …` convention. A token without `=` installs an empty
+// string value (`-Dflag` sets `flag` to ""); explicit empty
+// (`-Dflag=`) is the same.
+void __cajeta_property_install(const char* keyEqValue) {
+    if (!keyEqValue) return;
+    const char* eq = strchr(keyEqValue, '=');
+    if (!eq) {
+        __cajeta_property_set(keyEqValue, "");
+        return;
+    }
+    size_t keyLen = (size_t) (eq - keyEqValue);
+    if (keyLen == 0) return;
+    char* key = (char*) malloc(keyLen + 1);
+    if (!key) return;
+    memcpy(key, keyEqValue, keyLen);
+    key[keyLen] = '\0';
+    __cajeta_property_set(key, eq + 1);
+    free(key);
+}
+
+// ---------------------------------------------------------------------------
 // cajeta.io.file — Phase A runtime helpers.
 //
 // One-shot reads / writes plus the streaming open / read / write / close /

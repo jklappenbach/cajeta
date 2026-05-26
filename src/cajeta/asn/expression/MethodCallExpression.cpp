@@ -206,6 +206,26 @@ namespace cajeta {
         if (!dot) return "";
         const std::string& name = dot->getIdentifier();
         if (systemStreamFd(name) >= 0) return "";   // known stream, OK
+        // Other recognized System.<ns> namespaces — env / property — also
+        // bypass the unknown-stream diagnostic (their own intrinsic detector
+        // dispatches them).
+        if (name == "env" || name == "property") return "";
+        const auto& dotChildren = const_cast<DotExpression*>(dot.get())->getChildren();
+        if (dotChildren.empty()) return "";
+        auto sys = dynamic_pointer_cast<IdentifierExpression>(dotChildren[0]);
+        if (!sys) return "";
+        if (sys->getTextValue() != "System") return "";
+        return name;
+    }
+
+    // Detect `System.env` or `System.property` receiver shape for the
+    // env-var / system-property intrinsics. Returns the namespace name
+    // ("env" / "property") or empty string when the shape doesn't match.
+    static std::string detectSystemNamespaceReceiver(const AbstractSyntaxNodePtr& receiver) {
+        auto dot = dynamic_pointer_cast<DotExpression>(receiver);
+        if (!dot) return "";
+        const std::string& name = dot->getIdentifier();
+        if (name != "env" && name != "property") return "";
         const auto& dotChildren = const_cast<DotExpression*>(dot.get())->getChildren();
         if (dotChildren.empty()) return "";
         auto sys = dynamic_pointer_cast<IdentifierExpression>(dotChildren[0]);
@@ -625,6 +645,131 @@ namespace cajeta {
 
         // ----- System.<stream>.<method>(...) intrinsic -----
         if (!children.empty()) {
+            // ----- System.env.<method>(...) / System.property.<method>(...) -----
+            // OS environment variables (env) and process-scoped string
+            // properties (property — populated by the binary's -Dkey=value
+            // CLI args at startup). Both expose `get(String)` returning a
+            // class String and `set(String, String)` returning void.
+            {
+                std::string sysNs = detectSystemNamespaceReceiver(children[0]);
+                if (!sysNs.empty()) {
+                    llvm::Type* i8Ty  = llvm::Type::getInt8Ty(llvmCtx);
+                    llvm::Type* i32Ty = llvm::Type::getInt32Ty(llvmCtx);
+                    llvm::Type* i64Ty = llvm::Type::getInt64Ty(llvmCtx);
+                    llvm::Type* ptrTy = llvm::PointerType::get(llvmCtx, 0);
+
+                    if (methodCallName == "get" && parameters.size() == 1) {
+                        std::string fnName = "__cajeta_" + sysNs + "_get";
+                        llvm::Function* getFn = module->getRuntimeFunction(fnName);
+                        if (!getFn) return nullptr;
+                        llvm::Value* nameArg = loadStringArg(module, parameters[0].expression);
+                        llvm::Value* cstrResult = builder->CreateCall(getFn, {nameArg},
+                            std::string("system.") + sysNs + ".get.cstr");
+
+                        // Wrap the returned char* into a class String pointer.
+                        // Layout: { ptr vtable, ptr bytes, i32 byteLength, i32 mode,
+                        // i32 cachedCpLength }. Returns null when the runtime gave
+                        // a null pointer (env var not set, property absent) — the
+                        // cajeta-side caller compares against null normally.
+                        auto stringType = CajetaType::of("String");
+                        auto stringClass = dynamic_pointer_cast<CajetaClass>(stringType);
+                        if (!stringClass || !stringClass->getLlvmType()) {
+                            return cstrResult;
+                        }
+                        llvm::Type* stringStructTy = stringClass->getLlvmType();
+
+                        llvm::Function* curFn = builder->GetInsertBlock()->getParent();
+                        llvm::BasicBlock* nullBB = llvm::BasicBlock::Create(
+                            llvmCtx, "system." + sysNs + ".null", curFn);
+                        llvm::BasicBlock* wrapBB = llvm::BasicBlock::Create(
+                            llvmCtx, "system." + sysNs + ".wrap", curFn);
+                        llvm::BasicBlock* joinBB = llvm::BasicBlock::Create(
+                            llvmCtx, "system." + sysNs + ".join", curFn);
+
+                        llvm::Value* isNull = builder->CreateICmpEQ(cstrResult,
+                            llvm::ConstantPointerNull::get(
+                                llvm::cast<llvm::PointerType>(ptrTy)));
+                        builder->CreateCondBr(isNull, nullBB, wrapBB);
+
+                        // Null arm — yield a null String pointer.
+                        builder->SetInsertPoint(nullBB);
+                        llvm::Value* nullStr = llvm::ConstantPointerNull::get(
+                            llvm::cast<llvm::PointerType>(ptrTy));
+                        builder->CreateBr(joinBB);
+
+                        // Non-null arm — wrap into a class String via the same
+                        // shape BinaryOpExpression's `+` concat uses for its
+                        // char* result. Header: { i64 count, char[count + 1] }.
+                        builder->SetInsertPoint(wrapBB);
+                        llvm::Function* strlenFn = module->getRuntimeFunction("__cajeta_str_len");
+                        llvm::Value* lenI64 = builder->CreateCall(strlenFn, {cstrResult},
+                            "system.len");
+                        llvm::Value* lenI32 = builder->CreateIntCast(lenI64, i32Ty,
+                            /*isSigned=*/true);
+                        llvm::Value* arrSize = builder->CreateAdd(lenI64,
+                            llvm::ConstantInt::get(i64Ty, 9));
+                        llvm::FunctionType* allocTy = llvm::FunctionType::get(
+                            ptrTy, {i64Ty}, false);
+                        llvm::FunctionCallee allocFn =
+                            module->getLlvmModule()->getOrInsertFunction(
+                                "__cajeta_alloc", allocTy);
+                        llvm::Value* arrPtr = builder->CreateCall(allocFn, {arrSize});
+                        builder->CreateMemSet(arrPtr,
+                            llvm::ConstantInt::get(i8Ty, 0),
+                            arrSize, llvm::MaybeAlign(8));
+                        builder->CreateStore(lenI64, arrPtr);
+                        llvm::Value* dataPtr = builder->CreateInBoundsGEP(i8Ty,
+                            arrPtr, llvm::ConstantInt::get(i64Ty, 8));
+                        builder->CreateMemCpy(dataPtr, llvm::MaybeAlign(1),
+                            cstrResult, llvm::MaybeAlign(1), lenI64);
+
+                        const llvm::DataLayout& dl =
+                            module->getLlvmModule()->getDataLayout();
+                        llvm::Constant* sSize = llvm::ConstantInt::get(i64Ty,
+                            dl.getTypeAllocSize(stringStructTy));
+                        llvm::Value* sPtr = MemoryManager::createMallocInstruction(
+                            module, sSize, builder->GetInsertBlock());
+
+                        llvm::Constant* vtableRef = llvm::ConstantPointerNull::get(
+                            llvm::cast<llvm::PointerType>(ptrTy));
+                        if (auto* vt = stringClass->getVirtualTableGlobal()) {
+                            vtableRef = CajetaModule::ensureGlobalInModule(
+                                module->getLlvmModule(), vt);
+                        }
+                        builder->CreateStore(vtableRef,
+                            builder->CreateStructGEP(stringStructTy, sPtr, 0));
+                        builder->CreateStore(arrPtr,
+                            builder->CreateStructGEP(stringStructTy, sPtr, 1));
+                        builder->CreateStore(lenI32,
+                            builder->CreateStructGEP(stringStructTy, sPtr, 2));
+                        builder->CreateStore(llvm::ConstantInt::get(i32Ty, 0),
+                            builder->CreateStructGEP(stringStructTy, sPtr, 3));
+                        builder->CreateStore(llvm::ConstantInt::get(i32Ty, -1),
+                            builder->CreateStructGEP(stringStructTy, sPtr, 4));
+                        builder->CreateBr(joinBB);
+
+                        // Join the two arms into one ptr-typed phi.
+                        builder->SetInsertPoint(joinBB);
+                        llvm::PHINode* phi = builder->CreatePHI(ptrTy, 2,
+                            "system." + sysNs + ".get");
+                        phi->addIncoming(nullStr, nullBB);
+                        phi->addIncoming(sPtr, wrapBB);
+                        return phi;
+                    }
+                    if (methodCallName == "set" && parameters.size() == 2) {
+                        std::string fnName = "__cajeta_" + sysNs + "_set";
+                        llvm::Function* setFn = module->getRuntimeFunction(fnName);
+                        if (!setFn) return nullptr;
+                        llvm::Value* nameArg  = loadStringArg(module, parameters[0].expression);
+                        llvm::Value* valueArg = loadStringArg(module, parameters[1].expression);
+                        return builder->CreateCall(setFn, {nameArg, valueArg});
+                    }
+                    // Unknown method on a known namespace — let it fall through;
+                    // resolveMethod will throw a clean error on the missing
+                    // method instead of us synthesizing one here.
+                }
+            }
+
             // Catch the `System.<unknown>.<method>(...)` shape — usually
             // `System.out.println(...)` from a Java reflex — before the
             // call-resolution path drops it silently. Diag-hint suggests
