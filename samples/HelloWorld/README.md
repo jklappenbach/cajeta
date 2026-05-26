@@ -2,6 +2,8 @@
 
 The smallest possible cajeta program — prints `Hello world.` and exits 0.
 
+The binary is **~36 KB** on x86_64 Linux. The cajeta compiler emits one ELF section per function and global (`FunctionSections` / `DataSections`), the link step runs `--gc-sections` to drop everything HelloWorld doesn't reference (the JSON codec, hash families, parallel-stream driver, …), and `--strip-all` removes the debug + symbol tables. Set `DEBUG=1 ./build-bin.sh` to keep symbols for a debuggable build (~170 KB).
+
 ```
 samples/HelloWorld/
 ├── README.md

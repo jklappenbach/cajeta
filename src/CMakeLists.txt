@@ -155,6 +155,7 @@ set(CAJETA_RT_EMBED ${CMAKE_CURRENT_BINARY_DIR}/cajeta_runtime_embedded.cpp)
 add_custom_command(
         OUTPUT ${CAJETA_RT_BC}
         COMMAND ${CAJETA_CLANG} -c -emit-llvm -O2 -fno-builtin
+                -ffunction-sections -fdata-sections
                 -o ${CAJETA_RT_BC} ${CAJETA_RT_SRC}
         DEPENDS ${CAJETA_RT_SRC}
         COMMENT "Compiling Cajeta runtime to LLVM bitcode")

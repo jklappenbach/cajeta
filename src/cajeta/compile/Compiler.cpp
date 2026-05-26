@@ -44,6 +44,15 @@ namespace cajeta {
         // Caller can still override RM via setRelocationModel for embedded /
         // kernel targets that want absolute addressing.
         auto effectiveRM = RM.has_value() ? RM : std::optional<llvm::Reloc::Model>(llvm::Reloc::PIC_);
+        // Emit one ELF section per function and per data global. The linker's
+        // --gc-sections pass can then drop sections nothing references —
+        // critical for HelloWorld-class programs that link against the full
+        // stdlib (parsed once into a single .o) but exercise only a handful
+        // of stdlib symbols. Without per-symbol sections, --gc-sections
+        // can't safely drop individual functions / globals and the binary
+        // carries all of JSON / hashing / parallel-stream / etc.
+        opt.FunctionSections = true;
+        opt.DataSections     = true;
         targetMachine = target->createTargetMachine(targetTriple, cpu, features, opt, effectiveRM);
     }
 

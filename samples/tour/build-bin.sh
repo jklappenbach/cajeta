@@ -59,11 +59,19 @@ if [[ ${#OBJECTS[@]} -eq 0 ]]; then
 fi
 
 echo "[2/2] Linking → $OUT_BINARY"
+# --gc-sections drops unused stdlib symbols (works because the cajeta
+# TargetMachine emits one ELF section per function/global). DEBUG=1
+# keeps the symbol + debug tables for stack traces.
+LINK_FLAGS=( -Wl,--gc-sections )
+if [[ "${DEBUG:-}" != "1" ]]; then
+    LINK_FLAGS+=( -Wl,--strip-all )
+fi
 "$CLANG_BIN" \
     -o "$OUT_BINARY" \
     "${OBJECTS[@]}" \
     -lpthread \
-    -lm
+    -lm \
+    "${LINK_FLAGS[@]}"
 
 echo ""
 echo "built: $OUT_BINARY"

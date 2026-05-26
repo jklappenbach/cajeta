@@ -58,11 +58,23 @@ if [[ ${#OBJECTS[@]} -eq 0 ]]; then
 fi
 
 echo "[2/2] Linking → $OUT_BINARY"
+# --gc-sections drops stdlib functions / globals nothing references
+# (JSON codec, hash families, parallel-stream driver, etc.) — only
+# works because the cajeta TargetMachine emits one ELF section per
+# function + data global (FunctionSections / DataSections).
+# --strip-all drops debug + symbol tables. Set DEBUG=1 to keep them
+# (e.g. DEBUG=1 ./build-bin.sh produces a debuggable binary with
+# named stack frames).
+LINK_FLAGS=( -Wl,--gc-sections )
+if [[ "${DEBUG:-}" != "1" ]]; then
+    LINK_FLAGS+=( -Wl,--strip-all )
+fi
 "$CLANG_BIN" \
     -o "$OUT_BINARY" \
     "${OBJECTS[@]}" \
     -lpthread \
-    -lm
+    -lm \
+    "${LINK_FLAGS[@]}"
 
 echo ""
 echo "built: $OUT_BINARY"
