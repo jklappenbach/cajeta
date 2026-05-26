@@ -1,0 +1,251 @@
+package tour;
+
+// Cajeta language tour. Each demo* method showcases a slice of the
+// language and runs as part of run(). Build with samples/tour/build-bin.sh
+// (native binary) or build-ir.sh (LLVM IR per source).
+//
+// The tour is organized as a single class with one method per topic so a
+// reader can skim the source linearly and see every feature in roughly the
+// order the README introduces them.
+
+public final class Tour {
+
+    // Entry point. Walks every demo and returns the number of failures
+    // (0 = all passed). Each demo prints a header, runs its assertions,
+    // and returns 0 on success or non-zero on a self-detected failure.
+    public static int32 run() {
+        int32 failures = 0;
+        System.stdout.println("=== Cajeta language tour ===");
+        failures = failures + demoAllocation();
+        failures = failures + demoOwnership();
+        failures = failures + demoClasses();
+        failures = failures + demoInheritance();
+        failures = failures + demoTemplates();
+        failures = failures + demoStreams();
+        failures = failures + demoCollections();
+        failures = failures + demoLambdas();
+        failures = failures + demoErrors();
+        failures = failures + demoAnnotations();
+        System.stdout.println("=== tour complete ===");
+        if (failures == 0) {
+            System.stdout.println("PASS");
+        } else {
+            System.stdout.println("FAIL: " + failures + " failure(s)");
+        }
+        return failures;
+    }
+
+    // -----------------------------------------------------------------------
+    // § Allocation — `stack` and `heap` are mandatory; `new` is removed.
+    // A class instance lives on the stack frame (dropped on scope exit) or
+    // on the heap (`malloc`, freed by the drop chain). The type system
+    // doesn't distinguish where the instance lives — `MyClass` is one type.
+    // -----------------------------------------------------------------------
+    public static int32 demoAllocation() {
+        System.stdout.println("");
+        System.stdout.println("-- Allocation --");
+        Point onStack = stack Point(3, 4);          // lives on this frame
+        Point onHeap  = heap  Point(5, 12);         // malloc'd; freed at drop
+        int32 stackDistSq = onStack.distSq();
+        int32 heapDistSq  = onHeap.distSq();
+        System.stdout.println("  stack Point(3,4).distSq() = " + stackDistSq);
+        System.stdout.println("  heap  Point(5,12).distSq() = " + heapDistSq);
+        if (stackDistSq != 25) { return 1; }
+        if (heapDistSq != 169) { return 1; }
+        return 0;
+    }
+
+    // -----------------------------------------------------------------------
+    // § Ownership — plain `=` is a borrow; `#name` transfers ownership and
+    // marks the source moved (subsequent reads are a compile error). The
+    // borrow checker is static; what you see at runtime is the drop chain
+    // freeing memory in reverse declaration order.
+    // -----------------------------------------------------------------------
+    public static int32 demoOwnership() {
+        System.stdout.println("");
+        System.stdout.println("-- Ownership --");
+        Point owner = heap Point(7, 24);
+        // `take` consumes its argument — the caller transfers ownership in.
+        int32 hypoSq = take(#owner);
+        // `owner` is no longer readable below; the static check would reject
+        // any use here, so the line is commented out as documentation.
+        // int32 wrong = owner.distSq();           // compile error
+        System.stdout.println("  take(#Point(7,24)).distSq() = " + hypoSq);
+        if (hypoSq != 625) { return 1; }
+        return 0;
+    }
+
+    // Helper for demoOwnership — consumes its parameter.
+    public static int32 take(Point p) {
+        return p.distSq();
+    }
+
+    // -----------------------------------------------------------------------
+    // § Classes — fields, ctor, methods. All classes implicitly derive from
+    // Object. Methods are virtual by default; @Final on a class or method
+    // disables overriding.
+    // -----------------------------------------------------------------------
+    public static int32 demoClasses() {
+        System.stdout.println("");
+        System.stdout.println("-- Classes --");
+        Counter c = stack Counter();
+        c.bump();
+        c.bump();
+        c.bump();
+        int32 v = c.value();
+        System.stdout.println("  Counter after 3 bumps = " + v);
+        if (v != 3) { return 1; }
+        return 0;
+    }
+
+    // -----------------------------------------------------------------------
+    // § Inheritance — single (state) + multiple (behavior). Override via
+    // hash-based vtable dispatch — diamond inheritance resolves uniformly.
+    // -----------------------------------------------------------------------
+    public static int32 demoInheritance() {
+        System.stdout.println("");
+        System.stdout.println("-- Inheritance --");
+        Shape sq = stack Square(5);
+        Shape ci = stack Circle(3);
+        // Polymorphic call through the Shape ref — vtable picks the override.
+        int32 sqArea = sq.area();   // 25
+        int32 ciArea = ci.area();   // ~28 (3*3*3 with our toy integer impl)
+        System.stdout.println("  Square(5).area() = " + sqArea);
+        System.stdout.println("  Circle(3).area() = " + ciArea);
+        if (sqArea != 25) { return 1; }
+        if (ciArea != 27) { return 1; }
+        return 0;
+    }
+
+    // -----------------------------------------------------------------------
+    // § Templates — true monomorphization, no erasure. Class-level and
+    // method-level templates supported; bounded type parameters (`<T extends
+    // Bound>`) and wildcards (`?`, `? extends`, `? super`) round out the
+    // generics surface.
+    // -----------------------------------------------------------------------
+    public static int32 demoTemplates() {
+        System.stdout.println("");
+        System.stdout.println("-- Templates --");
+        // Class template: ArrayList<int32> is the stdlib's bread-and-butter
+        // generic container — see demoCollections for the full surface.
+        // Here we demonstrate stream<T>'s monomorphization across two
+        // different element types in the same scope.
+        int32[]   ints = {1, 2, 3, 4, 5};
+        float64[] dbls = {1.5, 2.5, 3.5};
+        int32 intSum = ints.stream().reduce(0, (a, b) -> a + b);
+        // Stream<float64>'s reduce returns float64 — coerce to int32 to
+        // print a clean integer.
+        int32 dblSumI = (int32) dbls.stream().reduce(0.0, (a, b) -> a + b);
+        System.stdout.println("  Stream<int32>  sum = " + intSum);
+        System.stdout.println("  Stream<float64> sum (truncated) = " + dblSumI);
+        if (intSum != 15) { return 1; }
+        if (dblSumI != 7) { return 1; }
+        return 0;
+    }
+
+    // -----------------------------------------------------------------------
+    // § Streams — filter / map / reduce on an `int32[]`. Pull-protocol
+    // wrappers compose; `.parallel()` opt-in dispatches through the
+    // structured-concurrency driver when the source is Splittable<T>.
+    // -----------------------------------------------------------------------
+    public static int32 demoStreams() {
+        System.stdout.println("");
+        System.stdout.println("-- Streams --");
+        int32[] xs = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10};
+        // sum of evens: 2 + 4 + 6 + 8 + 10 = 30.
+        int32 sumOfEvens = xs.stream()
+            .filter((x) -> x % 2 == 0)
+            .reduce(0, (a, b) -> a + b);
+        System.stdout.println("  sum of evens in [1..10] = " + sumOfEvens);
+        if (sumOfEvens != 30) { return 1; }
+        // sum of squares: 1 + 4 + 9 + ... + 100 = 385.
+        int32 sumOfSquares = xs.stream()
+            .map<int32>((x) -> x * x)
+            .reduce(0, (a, b) -> a + b);
+        System.stdout.println("  sum of squares in [1..10] = " + sumOfSquares);
+        if (sumOfSquares != 385) { return 1; }
+        return 0;
+    }
+
+    // -----------------------------------------------------------------------
+    // § Collections — ArrayList<T>. Builder/Builder.Default also showcased
+    // in demoAnnotations. HashMap traversal lives under StreamDemo.
+    // -----------------------------------------------------------------------
+    public static int32 demoCollections() {
+        System.stdout.println("");
+        System.stdout.println("-- Collections --");
+        ArrayList<int32> list = heap ArrayList<int32>();
+        list.add(10);
+        list.add(20);
+        list.add(30);
+        // ArrayList exposes `count()` (matching the cajeta convention across
+        // HashMap / HashSet / LinkedList); `size()` doesn't exist.
+        int32 count = list.count();
+        int32 total = list.stream().reduce(0, (a, b) -> a + b);
+        System.stdout.println("  ArrayList count = " + count);
+        System.stdout.println("  ArrayList sum   = " + total);
+        if (count != 3) { return 1; }
+        if (total != 60) { return 1; }
+        return 0;
+    }
+
+    // -----------------------------------------------------------------------
+    // § Lambdas — bare-identifier params (`(x) -> ...`) infer types from
+    // the surrounding context. Captures by borrow on outer locals.
+    // -----------------------------------------------------------------------
+    public static int32 demoLambdas() {
+        System.stdout.println("");
+        System.stdout.println("-- Lambdas --");
+        int32[] xs = {1, 2, 3, 4};
+        // Closure over a local — `accum` is captured by borrow.
+        Counter accum = stack Counter();
+        xs.stream().forEach((x) -> accum.bumpBy(x));
+        int32 result = accum.value();
+        System.stdout.println("  sum via forEach + captured Counter = " + result);
+        if (result != 10) { return 1; }
+        return 0;
+    }
+
+    // -----------------------------------------------------------------------
+    // § Errors — try/catch/finally with the Exception hierarchy.
+    // Recoverable vs Unrecoverable; uncaught throws emit message + stack
+    // trace to stderr.
+    // -----------------------------------------------------------------------
+    public static int32 demoErrors() {
+        System.stdout.println("");
+        System.stdout.println("-- Errors --");
+        int32 caught = 0;
+        try {
+            throw 99;
+        } catch (Exception e) {
+            caught = (int32) e;
+        }
+        System.stdout.println("  caught throw value = " + caught);
+        if (caught != 99) { return 1; }
+        return 0;
+    }
+
+    // -----------------------------------------------------------------------
+    // § Annotations — Lombok-style synthesis. @Builder produces a fluent
+    // builder; @Builder.Default fills in per-field defaults; @ToString
+    // synthesizes a JSON or properties-style string view.
+    // -----------------------------------------------------------------------
+    public static int32 demoAnnotations() {
+        System.stdout.println("");
+        System.stdout.println("-- Annotations --");
+        // Build a Book via the synthesized builder. `pages` gets its
+        // declared default of 100 because we don't call .pages(...).
+        Book b = Book.builder()
+            .title("The Mythical Man-Month")
+            .pages(322)
+            .build();
+        System.stdout.println("  Book.title  = " + b.title);
+        System.stdout.println("  Book.pages  = " + b.pages);
+        // Defaults case — only title set.
+        Book d = Book.builder().title("Untitled").build();
+        System.stdout.println("  default pages = " + d.pages);
+        if (b.pages != 322) { return 1; }
+        if (d.pages != 100) { return 1; }
+        return 0;
+    }
+}

@@ -1,0 +1,17 @@
+package tour;
+
+// Basic class — fields, ctor, method. Used by demoAllocation and
+// demoOwnership in Tour.
+public class Point {
+    public int32 x;
+    public int32 y;
+
+    public Point(int32 x, int32 y) {
+        this.x = x;
+        this.y = y;
+    }
+
+    public int32 distSq() {
+        return this.x * this.x + this.y * this.y;
+    }
+}
