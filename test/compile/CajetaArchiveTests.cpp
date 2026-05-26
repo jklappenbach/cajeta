@@ -165,6 +165,81 @@ TEST(CajetaArchiveTests, addsBitcodeEntryWithCorrectNameAndPayload) {
     std::filesystem::remove(path);
 }
 
+// --- Reader roundtrip -----------------------------------------------------
+
+TEST(CajetaArchiveTests, readerRoundtripEmptyArchive) {
+    auto path = std::filesystem::temp_directory_path() / "cja_rt_empty.cja";
+    {
+        CajetaArchive arc("rt-test", "1.0", CajetaArchive::Kind::Thin);
+        arc.writeTo(path.string());
+    }
+    auto loaded = CajetaArchive::readFrom(path.string());
+    EXPECT_EQ(loaded.getName(),    "rt-test");
+    EXPECT_EQ(loaded.getVersion(), "1.0");
+    EXPECT_EQ(loaded.getKind(),    CajetaArchive::Kind::Thin);
+    EXPECT_TRUE(loaded.getEntries().empty());
+    std::filesystem::remove(path);
+}
+
+TEST(CajetaArchiveTests, readerRoundtripUberKind) {
+    auto path = std::filesystem::temp_directory_path() / "cja_rt_uber.cja";
+    {
+        CajetaArchive arc("rt-uber", "2", CajetaArchive::Kind::Uber);
+        arc.writeTo(path.string());
+    }
+    auto loaded = CajetaArchive::readFrom(path.string());
+    EXPECT_EQ(loaded.getKind(), CajetaArchive::Kind::Uber);
+    std::filesystem::remove(path);
+}
+
+TEST(CajetaArchiveTests, readerRoundtripEntriesByteForByte) {
+    auto path = std::filesystem::temp_directory_path() / "cja_rt_entries.cja";
+    std::vector<uint8_t> bits1{0xCA, 0xFE, 0xBA, 0xBE};
+    std::vector<uint8_t> bits2{0xDE, 0xAD, 0xBE, 0xEF, 0x12, 0x34};
+    {
+        CajetaArchive arc("rt-entries", "1", CajetaArchive::Kind::Thin);
+        CajetaArchiveEntry e1{
+            "pkg/A.bc", 0, CajetaArchive::EntryKind::ClassBitcode, bits1};
+        CajetaArchiveEntry e2{
+            "pkg/sub/B.bc", 1, CajetaArchive::EntryKind::ClassBitcode, bits2};
+        arc.addEntry(std::move(e1));
+        arc.addEntry(std::move(e2));
+        arc.writeTo(path.string());
+    }
+    auto loaded = CajetaArchive::readFrom(path.string());
+    ASSERT_EQ(loaded.getEntries().size(), 2u);
+    EXPECT_EQ(loaded.getEntries()[0].name,      "pkg/A.bc");
+    EXPECT_EQ(loaded.getEntries()[0].originTag, 0);
+    EXPECT_EQ(loaded.getEntries()[0].data,      bits1);
+    EXPECT_EQ(loaded.getEntries()[1].name,      "pkg/sub/B.bc");
+    EXPECT_EQ(loaded.getEntries()[1].originTag, 1);
+    EXPECT_EQ(loaded.getEntries()[1].data,      bits2);
+    std::filesystem::remove(path);
+}
+
+TEST(CajetaArchiveTests, readerRejectsBadMagic) {
+    auto path = std::filesystem::temp_directory_path() / "cja_rt_badmagic.cja";
+    {
+        std::ofstream f(path, std::ios::binary);
+        // 32 bytes of "not CAJETA01" — the reader checks bytes 0..7.
+        const char garbage[33] = "NOPE-NOT-A-CAJETA-ARCHIVE--ATALL";
+        f.write(garbage, 32);
+    }
+    EXPECT_THROW(CajetaArchive::readFrom(path.string()), std::runtime_error);
+    std::filesystem::remove(path);
+}
+
+TEST(CajetaArchiveTests, readerRejectsTruncated) {
+    auto path = std::filesystem::temp_directory_path() / "cja_rt_short.cja";
+    {
+        std::ofstream f(path, std::ios::binary);
+        const char shortHeader[5] = "CAJE";
+        f.write(shortHeader, 4);
+    }
+    EXPECT_THROW(CajetaArchive::readFrom(path.string()), std::runtime_error);
+    std::filesystem::remove(path);
+}
+
 TEST(CajetaArchiveTests, manifestCountsEntries) {
     auto path = std::filesystem::temp_directory_path() / "cja_count.cja";
     {

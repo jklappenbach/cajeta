@@ -88,6 +88,14 @@ namespace cajeta {
         // Collected .o paths from Obj/Exe emissions, fed to the linker for Exe mode.
         std::vector<string> objectFiles;
 
+        // --classpath archive paths. Set via CLI (one or more
+        // --classpath=a.cja,b.cja args; comma-separates and repeats both
+        // accumulate). Read by emitArchive(uber=true) to bundle each
+        // listed archive's entries into the output with the
+        // Origin::Dependency tag and an `origins` map entry pointing at
+        // the source archive's manifest name.
+        std::vector<string> classpath;
+
         // (Re)build the TargetMachine for the current triple/cpu/features. Called from
         // the constructor and again after any CLI flag changes the target settings.
         void rebuildTargetMachine();
@@ -191,6 +199,9 @@ namespace cajeta {
 
         EmitMode getEmitMode() const { return emitMode; }
         void setEmitMode(EmitMode m) { emitMode = m; }
+
+        void addClasspath(string s) { classpath.push_back(std::move(s)); }
+        const std::vector<string>& getClasspath() const { return classpath; }
 
         const string& getOutputPath() const { return outputPath; }
         void setOutputPath(const string& p) { outputPath = p; }

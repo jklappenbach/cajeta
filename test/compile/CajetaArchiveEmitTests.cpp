@@ -12,6 +12,8 @@
 
 #include <gtest/gtest.h>
 
+#include "cajeta/compile/CajetaArchive.h"
+
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -145,6 +147,133 @@ TEST(CajetaArchiveEmitTests, uberModeManifestSaysUber) {
         << "manifest = " << manifest;
 
     fs::remove_all(proj.sourceRoot.parent_path());
+}
+
+// --- --classpath ingestion + uber bundling --------------------------------
+
+namespace {
+
+// Lay out a tiny "dep" cajeta project with a stand-alone library class
+// no user code references at build time — purely a payload for uber
+// to bundle. Returns the resulting .cja path.
+fs::path buildDepArchive(const std::string& tag) {
+    static std::mt19937_64 rng(std::random_device{}());
+    auto base = fs::temp_directory_path()
+              / ("cajeta_dep_" + tag + "_" + std::to_string(rng()));
+    auto src = base / "src" / "deplib";
+    auto build = base / "build";
+    fs::create_directories(src);
+    fs::create_directories(build);
+    {
+        std::ofstream out(src / "Util.cajeta");
+        out << "package deplib;\n"
+            << "public final class Util {\n"
+            << "    public static int32 ten() { return 10; }\n"
+            << "}\n";
+        out.flush();
+    }
+    std::string cmd =
+        compilerPath()
+        + " --emit=archive deplib.Util.ten "
+        + (base / "src").string() + " "
+        + build.string()
+        + " > /dev/null 2>&1";
+    int rc = std::system(cmd.c_str());
+    if (rc != 0) return {};
+    auto cja = build / "Util.cja";
+    if (!fs::exists(cja)) return {};
+    return cja;
+}
+
+} // anonymous namespace
+
+TEST(CajetaArchiveEmitTests, uberWithClasspathBundlesDepEntries) {
+    auto depCja = buildDepArchive("classpath");
+    ASSERT_FALSE(depCja.empty()) << "buildDepArchive failed";
+    ASSERT_TRUE(fs::exists(depCja));
+
+    // Read the dep so we know what names to expect in the uber output.
+    auto depArc = cajeta::CajetaArchive::readFrom(depCja.string());
+    std::vector<std::string> depEntryNames;
+    for (const auto& e : depArc.getEntries()) {
+        depEntryNames.push_back(e.name);
+    }
+    ASSERT_FALSE(depEntryNames.empty()) << "dep archive has no entries?";
+
+    // Build a user project that doesn't reference the dep at all —
+    // uber should still bundle the dep entries because we pass it via
+    // --classpath (v1's "bundle everything from classpath" policy).
+    auto proj = makeTmpProject("uberCp");
+    std::string cmd =
+        compilerPath()
+        + " --emit=uber --classpath=" + depCja.string()
+        + " demo.Hello.run "
+        + proj.sourceRoot.string() + " "
+        + proj.buildRoot.string()
+        + " > /dev/null 2>&1";
+    ASSERT_EQ(std::system(cmd.c_str()), 0);
+
+    auto uberCja = proj.buildRoot / "Hello.cja";
+    auto uber = cajeta::CajetaArchive::readFrom(uberCja.string());
+
+    // Every dep entry name should appear in the uber's entries.
+    for (const auto& depName : depEntryNames) {
+        bool found = false;
+        for (const auto& uberEntry : uber.getEntries()) {
+            if (uberEntry.name == depName) {
+                EXPECT_EQ(uberEntry.originTag,
+                          (uint8_t) cajeta::CajetaArchive::Origin::Dependency)
+                    << "dep entry " << depName
+                    << " not tagged as Dependency in uber output";
+                found = true;
+                break;
+            }
+        }
+        EXPECT_TRUE(found) << "uber missing dep entry: " << depName;
+    }
+
+    fs::remove_all(proj.sourceRoot.parent_path());
+    fs::remove_all(depCja.parent_path().parent_path());
+}
+
+TEST(CajetaArchiveEmitTests, uberDedupesSameNamedEntriesAcrossClasspath) {
+    // Two identical dep archives — uber should bundle each entry once.
+    auto depA = buildDepArchive("dupA");
+    auto depB = buildDepArchive("dupB");
+    ASSERT_FALSE(depA.empty());
+    ASSERT_FALSE(depB.empty());
+
+    auto a = cajeta::CajetaArchive::readFrom(depA.string());
+    auto b = cajeta::CajetaArchive::readFrom(depB.string());
+    ASSERT_EQ(a.getEntries().size(), b.getEntries().size());
+
+    auto proj = makeTmpProject("uberDup");
+    std::string cmd =
+        compilerPath()
+        + " --emit=uber --classpath=" + depA.string() + "," + depB.string()
+        + " demo.Hello.run "
+        + proj.sourceRoot.string() + " "
+        + proj.buildRoot.string()
+        + " > /dev/null 2>&1";
+    ASSERT_EQ(std::system(cmd.c_str()), 0);
+
+    auto uber = cajeta::CajetaArchive::readFrom(
+        (proj.buildRoot / "Hello.cja").string());
+
+    // The dep archives have the same entry names. Each name should
+    // appear exactly once in the uber output (first-archive-wins).
+    for (const auto& depEntry : a.getEntries()) {
+        int count = 0;
+        for (const auto& ub : uber.getEntries()) {
+            if (ub.name == depEntry.name) count++;
+        }
+        EXPECT_EQ(count, 1) << "name `" << depEntry.name << "` appears "
+                            << count << " times in uber output";
+    }
+
+    fs::remove_all(proj.sourceRoot.parent_path());
+    fs::remove_all(depA.parent_path().parent_path());
+    fs::remove_all(depB.parent_path().parent_path());
 }
 
 TEST(CajetaArchiveEmitTests, archiveContainsUserAndStdlibEntries) {

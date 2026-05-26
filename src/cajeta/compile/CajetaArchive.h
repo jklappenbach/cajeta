@@ -70,11 +70,31 @@ namespace cajeta {
         // Throws std::runtime_error on I/O failure.
         void writeTo(const std::string& path);
 
+        // Read an archive from `path`. Throws std::runtime_error on
+        // missing file / bad magic / format-version mismatch / truncated
+        // bytes. The returned archive carries the parsed manifest's
+        // name / version / kind, plus every entry as a CajetaArchiveEntry.
+        static CajetaArchive readFrom(const std::string& path);
+
+        // Accessors used by readers (uber bundler, `cja` CLI tool, tests).
+        const std::string& getName()    const { return name; }
+        const std::string& getVersion() const { return version; }
+        Kind               getKind()    const { return kind; }
+        const std::vector<CajetaArchiveEntry>& getEntries() const { return entries; }
+
+        // When this archive was loaded from disk (via readFrom), record
+        // any dependency origins seen in the source archive's manifest.
+        // emitArchive(uber) uses this to retag classpath-loaded entries
+        // with their original source-archive name.
+        void setSourceArchiveName(std::string s) { sourceArchiveName = std::move(s); }
+        const std::string& getSourceArchiveName() const { return sourceArchiveName; }
+
     private:
         std::string name;
         std::string version;
         Kind        kind;
         std::vector<CajetaArchiveEntry> entries;
+        std::string sourceArchiveName;   // set by readFrom; otherwise empty
 
         // Build the manifest JSON. Format spelled out in Compilation.md
         // § Manifest extensions — name, version, kind, entry_count,

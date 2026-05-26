@@ -918,6 +918,44 @@ namespace cajeta {
         CajetaArchive arc(archiveName, "1.0.0",
             uber ? CajetaArchive::Kind::Uber : CajetaArchive::Kind::Thin);
 
+        // Uber mode: ingest every --classpath archive and copy its entries
+        // into the output with the Origin::Dependency tag. The output
+        // entries keep their original names so consumers see the same
+        // canonical paths regardless of the bundling step. Same-named
+        // entries from multiple classpath archives are kept first-seen
+        // (consistent with .jar shading defaults); a future
+        // version-collision check lands when the manifest carries
+        // class-version metadata. Thin mode skips classpath entirely —
+        // the consumer's compiler resolves deps at their build time.
+        if (uber) {
+            for (const auto& cpPath : classpath) {
+                try {
+                    auto dep = CajetaArchive::readFrom(cpPath);
+                    for (const auto& depEntry : dep.getEntries()) {
+                        // Dedupe by entry name (first archive wins).
+                        bool seen = false;
+                        for (const auto& already : arc.getEntries()) {
+                            if (already.name == depEntry.name) {
+                                seen = true;
+                                break;
+                            }
+                        }
+                        if (seen) continue;
+                        CajetaArchiveEntry copied;
+                        copied.name      = depEntry.name;
+                        copied.originTag = (uint8_t) CajetaArchive::Origin::Dependency;
+                        copied.kindTag   = depEntry.kindTag;
+                        copied.data      = depEntry.data;
+                        arc.addEntry(std::move(copied));
+                    }
+                } catch (const std::exception& e) {
+                    cerr << "cajeta: --classpath ingestion failed for `"
+                         << cpPath << "`: " << e.what() << std::endl;
+                    throw;
+                }
+            }
+        }
+
         // Serialize each parsed module to LLVM bitcode and add as an entry.
         // The entry name follows the .jar-style convention: package path
         // with '/' separators, ending in `.bc`. The stdlib module's bitcode
@@ -925,13 +963,6 @@ namespace cajeta {
         // single entry is the whole stdlib (until E6's per-feature gating
         // lands and stdlib starts splitting).
         for (auto& module : modules) {
-            std::string bitcode;
-            {
-                llvm::raw_string_ostream os(bitcode);
-                llvm::WriteBitcodeToFile(*module->getLlvmModule(), os);
-                os.flush();
-            }
-
             std::string canonical = module->getQName()
                 ? module->getQName()->toCanonical()
                 : std::string("anonymous");
@@ -940,6 +971,29 @@ namespace cajeta {
             // archive path convention.
             std::replace(entryName.begin(), entryName.end(), '.', '/');
             entryName += ".bc";
+
+            // Dedupe against classpath-ingested entries — uber mode can have
+            // already taken the stdlib in via a dep archive, in which case
+            // emitting it again here would produce duplicate `.bc` entries
+            // and a non-deterministic bundle. First-added wins; the
+            // classpath ingestion above ran first, so any conflict means
+            // the dep already supplied an equivalent (-ish — versioning is
+            // a follow-up) module.
+            bool seen = false;
+            for (const auto& already : arc.getEntries()) {
+                if (already.name == entryName) {
+                    seen = true;
+                    break;
+                }
+            }
+            if (seen) continue;
+
+            std::string bitcode;
+            {
+                llvm::raw_string_ostream os(bitcode);
+                llvm::WriteBitcodeToFile(*module->getLlvmModule(), os);
+                os.flush();
+            }
 
             // Mark stdlib classes (qName starts with `cajeta.runtime` or any
             // package under `cajeta.*`) as Stdlib origin so uber consumers

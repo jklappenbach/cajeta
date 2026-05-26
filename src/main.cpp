@@ -37,6 +37,8 @@ void printUsage(const char* progname) {
               << "\n"
               << "Output:\n"
               << "  --emit=ir|obj|archive|uber|exe       Output mode. Default ir.\n"
+              << "  --classpath=a.cja,b.cja              Cajeta archives to ingest as dependencies\n"
+              << "                                       (repeatable; comma-separates inside each occurrence).\n"
               << "  --target=<triple>                    LLVM target triple. Default: host.\n"
               << "  --cpu=<name>                         Target CPU. Default: generic.\n"
               << "  --features=<list>                    Comma-separated target features (e.g. +neon).\n"
@@ -177,6 +179,23 @@ int main(int argc, const char* argv[]) {
                           << " (expected ir|obj|archive|uber|exe)\n";
                 printUsage(argv[0]);
                 return 1;
+            }
+        } else if (match(arg, "classpath", value)) {
+            // Java-style classpath — comma-separated `.cja` paths.
+            // Repeatable; commas split within each occurrence. Empty
+            // entries are skipped (so trailing/duplicate commas don't
+            // explode).
+            size_t start = 0;
+            while (start <= value.size()) {
+                size_t comma = value.find(',', start);
+                std::string piece = (comma == std::string::npos)
+                    ? value.substr(start)
+                    : value.substr(start, comma - start);
+                if (!piece.empty()) {
+                    compiler.addClasspath(piece);
+                }
+                if (comma == std::string::npos) break;
+                start = comma + 1;
             }
         } else if (match(arg, "target", value)) {
             compiler.setTargetTriple(value);
