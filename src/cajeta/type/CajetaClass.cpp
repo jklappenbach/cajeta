@@ -6,6 +6,7 @@
 #include "CajetaFunctionType.h"
 #include "CajetaView.h"
 #include "StructureMetadata.h"
+#include "../error/Diagnostics.h"
 #include "../field/Field.h"
 #include "../method/Method.h"
 #include "../asn/ClassBodyDeclaration.h"
@@ -1303,11 +1304,27 @@ namespace cajeta {
                     if (prop->getName() == name) { match = prop; break; }
                 }
                 if (!match) {
+                    // --diag-hints: when on, look for nearby field
+                    // names (Levenshtein ≤ 2) so a typo'd `of={...}`
+                    // entry surfaces the suggestion alongside the
+                    // error. Off-mode skips the lookup entirely.
+                    std::string hint;
+                    if (module && module->getFlags().diagHints) {
+                        std::vector<std::string> candidates;
+                        candidates.reserve(propertyList.size());
+                        for (auto& prop : propertyList) {
+                            if (!prop || prop->isStatic()) continue;
+                            candidates.push_back(prop->getName());
+                        }
+                        auto suggestions = pickSimilar(name, candidates);
+                        hint = formatDidYouMean(suggestions);
+                    }
                     throw Exception(
                         "@ToString(of={...}) on `"
                         + qName->toCanonical()
-                        + "` names unknown field `" + name + "`. "
-                        "Allowlisted field names must match a "
+                        + "` names unknown field `" + name + "`."
+                        + hint
+                        + " Allowlisted field names must match a "
                         "non-static field declared on the class.",
                         "CAJETA_ERROR_TOSTRING_UNKNOWN_FIELD");
                 }
