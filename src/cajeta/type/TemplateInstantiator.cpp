@@ -81,28 +81,69 @@ namespace cajeta {
             return static_pointer_cast<CajetaClass>(shared_from_this());
         }
 
-        // Placeholder-arg short-circuit. When ANY supplied type arg is
-        // a placeholder (a fresh CajetaClass marked
-        // placeholderFlag=true — set by the method-template visitor
-        // when pushing T-vars onto the substitution stack), the
-        // caller is walking inside a still-unresolved template
-        // declaration. Examples:
-        //   public final <R> #Stream<R> map((T) -> R fn) { ... }
-        // The return type `Stream<R>` is parsed at declaration time
-        // with R bound to a placeholder. Attempting full instantiation
-        // here would build a real `Stream<placeholder-R>` class —
-        // polluting the structure cache and cascading down nested
-        // references. Return the template itself as a stand-in; the
-        // real instantiation happens later when the method is
-        // actually instantiated with a concrete R (e.g.
-        // MethodTemplateInstantiator binds R=int64, re-walks the
-        // body with concrete-args substitution, and the typed
-        // `Stream<int64>` reference instantiates normally).
+        // Placeholder-arg short-circuit. Two flavors of placeholder
+        // reach here:
+        //
+        //   (a) T-var placeholder — created by the method-template
+        //       visitor when pushing T-vars onto the substitution
+        //       stack. The qName has an EMPTY package; the type
+        //       name is the bare param letter ("T", "R"). Example:
+        //         public final <R> #Stream<R> map((T) -> R fn)
+        //       Return type `Stream<R>` is parsed at declaration
+        //       time with R bound to a placeholder. Building a real
+        //       `Stream<placeholder-R>` would pollute the structure
+        //       cache. Short-circuit — the real instantiation
+        //       happens when the method is later instantiated with
+        //       a concrete R (MethodTemplateInstantiator).
+        //
+        //   (b) Forward-reference placeholder — created by
+        //       CajetaType::fromContext's miss-path when a user
+        //       class is referenced before its declaration is
+        //       body-walked. The qName carries a real package
+        //       (e.g. `test.DemoClass`). The placeholder will be
+        //       FILLED IN PLACE when the class's visitClassDeclaration
+        //       eventually runs — same shared_ptr, just populated.
+        //       So we can proceed with instantiation now; the
+        //       resulting instantiation's references to the
+        //       placeholder shared_ptr auto-upgrade as the
+        //       placeholder fills.
+        //
+        // The bug fixed here: pre-fix we short-circuited BOTH
+        // flavors, so `ArrayList<DemoClass>` in a file parsed
+        // before DemoClass's declaration silently degraded to the
+        // bare `ArrayList` template — `list.add()`/`list.count()`
+        // dispatched against the template's unbound `T` methods,
+        // `sizeCount` never incremented, and `count()` returned 0.
         for (auto& arg : args) {
             if (auto cls = dynamic_pointer_cast<CajetaClass>(arg)) {
                 if (cls->isPlaceholder()) {
-                    return static_pointer_cast<CajetaClass>(
-                        shared_from_this());
+                    bool isTVar = !cls->getQName()
+                        || cls->getQName()->getPackageName().empty();
+                    // Templated-INTERFACE instantiation continues to
+                    // short-circuit on any placeholder arg. The
+                    // interface vtable verification is signature-
+                    // strict; building a real `Encoder<placeholder-M>`
+                    // and running the conformance check against an
+                    // implementer that uses `static` methods (a
+                    // @Encoding typeclass pattern) flags the
+                    // static-vs-instance mismatch — pre-fix the
+                    // short-circuit hid that. Until the verification
+                    // learns to accept static methods as substitutes,
+                    // we preserve the pre-fix behavior for
+                    // interfaces.
+                    if (isTVar || interfaceFlag) {
+                        return static_pointer_cast<CajetaClass>(
+                            shared_from_this());
+                    }
+                    // Forward-ref placeholder on a class template —
+                    // fall through to the normal instantiation path.
+                    // Body walk uses CajetaClass::getLlvmType() which
+                    // returns ptr for unfilled placeholders, so
+                    // layouts compose correctly. When the placeholder
+                    // is later filled in, the instantiation's
+                    // references (held by shared_ptr in field types,
+                    // method signatures) see the populated class
+                    // automatically — same shared_ptr identity.
                 }
                 // Also short-circuit when the arg is itself a bare
                 // (uninstantiated) template — the trail left by a

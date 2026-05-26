@@ -217,3 +217,37 @@ TEST(MultiSourceCompileTests, unknownTypeStillRejected) {
         SUCCEED();
     }
 }
+
+// `ArrayList<UserClass>` across files. Main is keyed alphabetically
+// before DemoClass, so it parses first; when Main references
+// `ArrayList<DemoClass>`, DemoClass is still a forward-ref
+// placeholder. Pre-fix the placeholder-arg short-circuit in
+// CajetaClass::instantiate returned the bare `ArrayList` template,
+// dropping the type-args — `list.add` and `list.count` then
+// dispatched against the template's unbound `T`-methods so
+// `sizeCount` never incremented and the test returned 0 instead
+// of 3. Fix: forward-ref placeholders (real package) proceed
+// through normal instantiation; only T-var placeholders (empty
+// package — set by the method-template visitor) short-circuit.
+TEST(MultiSourceCompileTests, arrayListOfUserClassCrossFile) {
+    std::map<std::string, std::string> sources;
+    sources["test.Main"] =
+        "package test;\n"
+        "import cajeta.collection.ArrayList;\n"
+        "public final class Main {\n"
+        "    public static int32 run() {\n"
+        "        ArrayList<DemoClass> list = heap ArrayList<DemoClass>();\n"
+        "        list.add(heap DemoClass(7));\n"
+        "        list.add(heap DemoClass(11));\n"
+        "        list.add(heap DemoClass(13));\n"
+        "        return list.count();\n"
+        "    }\n"
+        "}\n";
+    sources["test.DemoClass"] =
+        "package test;\n"
+        "public class DemoClass {\n"
+        "    public int32 v;\n"
+        "    public DemoClass(int32 x) { this.v = x; }\n"
+        "}\n";
+    EXPECT_EQ(runI32(sources, "test.Main"), 3);
+}
