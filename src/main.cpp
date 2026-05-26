@@ -39,6 +39,9 @@ void printUsage(const char* progname) {
               << "  --emit=ir|obj|archive|uber|exe       Output mode. Default ir.\n"
               << "  --classpath=a.cja,b.cja              Cajeta archives to ingest as dependencies\n"
               << "                                       (repeatable; comma-separates inside each occurrence).\n"
+              << "  --prune-uber=on|off                  When --emit=uber, only bundle classpath entries\n"
+              << "                                       transitively referenced by user / stdlib bitcode.\n"
+              << "                                       Default on; --prune-uber=off bundles everything.\n"
               << "  --target=<triple>                    LLVM target triple. Default: host.\n"
               << "  --cpu=<name>                         Target CPU. Default: generic.\n"
               << "  --features=<list>                    Comma-separated target features (e.g. +neon).\n"
@@ -180,6 +183,16 @@ int main(int argc, const char* argv[]) {
                 printUsage(argv[0]);
                 return 1;
             }
+        } else if (match(arg, "prune-uber", value)) {
+            // Local bool because setPruneUber lives on Compiler (not on
+            // CompilerFlags). The setBoolFlag helper writes through a
+            // reference, so we route through a temporary.
+            bool tmp = true;
+            if (!setBoolFlag("prune-uber", value, tmp)) {
+                printUsage(argv[0]);
+                return 1;
+            }
+            compiler.setPruneUber(tmp);
         } else if (match(arg, "classpath", value)) {
             // Java-style classpath — comma-separated `.cja` paths.
             // Repeatable; commas split within each occurrence. Empty

@@ -17,6 +17,7 @@
 #include "../type/CajetaType.h"
 #include "cajeta/error/CajetaExceptions.h"
 #include "CajetaParserBaseVisitor.h"
+#include <algorithm>
 #include <sys/stat.h>
 
 #ifdef CAJETA_HAS_LLD
@@ -918,75 +919,36 @@ namespace cajeta {
         CajetaArchive arc(archiveName, "1.0.0",
             uber ? CajetaArchive::Kind::Uber : CajetaArchive::Kind::Thin);
 
-        // Uber mode: ingest every --classpath archive and copy its entries
-        // into the output with the Origin::Dependency tag. The output
-        // entries keep their original names so consumers see the same
-        // canonical paths regardless of the bundling step. Same-named
-        // entries from multiple classpath archives are kept first-seen
-        // (consistent with .jar shading defaults); a future
-        // version-collision check lands when the manifest carries
-        // class-version metadata. Thin mode skips classpath entirely —
-        // the consumer's compiler resolves deps at their build time.
-        if (uber) {
-            for (const auto& cpPath : classpath) {
-                try {
-                    auto dep = CajetaArchive::readFrom(cpPath);
-                    for (const auto& depEntry : dep.getEntries()) {
-                        // Dedupe by entry name (first archive wins).
-                        bool seen = false;
-                        for (const auto& already : arc.getEntries()) {
-                            if (already.name == depEntry.name) {
-                                seen = true;
-                                break;
-                            }
-                        }
-                        if (seen) continue;
-                        CajetaArchiveEntry copied;
-                        copied.name      = depEntry.name;
-                        copied.originTag = (uint8_t) CajetaArchive::Origin::Dependency;
-                        copied.kindTag   = depEntry.kindTag;
-                        copied.data      = depEntry.data;
-                        arc.addEntry(std::move(copied));
-                    }
-                } catch (const std::exception& e) {
-                    cerr << "cajeta: --classpath ingestion failed for `"
-                         << cpPath << "`: " << e.what() << std::endl;
-                    throw;
-                }
+        // Per-entry struct used as a staging buffer while we compute
+        // reachability — entries land in the output archive only after
+        // the pruner decides which deps to keep. Holds both the binary
+        // entry shape (name + origin + kindTag + bytes) and the
+        // derived canonical name we use for reachability lookups.
+        struct StagingEntry {
+            CajetaArchiveEntry entry;
+            std::string canonical;   // pkg.subpkg.Class form, no '.bc' suffix
+            bool included = true;    // pruning sets false for excluded deps
+        };
+        auto entryNameToCanonical = [](const std::string& entryName) {
+            std::string c = entryName;
+            // Strip trailing '.bc'.
+            if (c.size() > 3 && c.compare(c.size() - 3, 3, ".bc") == 0) {
+                c.resize(c.size() - 3);
             }
-        }
+            // '/' → '.'
+            std::replace(c.begin(), c.end(), '/', '.');
+            return c;
+        };
 
-        // Serialize each parsed module to LLVM bitcode and add as an entry.
-        // The entry name follows the .jar-style convention: package path
-        // with '/' separators, ending in `.bc`. The stdlib module's bitcode
-        // carries the parsed-stdlib classes plus the runtime helpers — that
-        // single entry is the whole stdlib (until E6's per-feature gating
-        // lands and stdlib starts splitting).
+        // ---- Stage user + stdlib modules ----
+        std::vector<StagingEntry> staged;
         for (auto& module : modules) {
             std::string canonical = module->getQName()
                 ? module->getQName()->toCanonical()
                 : std::string("anonymous");
             std::string entryName = canonical;
-            // canonical uses '.' as a separator; switch to '/' for the
-            // archive path convention.
             std::replace(entryName.begin(), entryName.end(), '.', '/');
             entryName += ".bc";
-
-            // Dedupe against classpath-ingested entries — uber mode can have
-            // already taken the stdlib in via a dep archive, in which case
-            // emitting it again here would produce duplicate `.bc` entries
-            // and a non-deterministic bundle. First-added wins; the
-            // classpath ingestion above ran first, so any conflict means
-            // the dep already supplied an equivalent (-ish — versioning is
-            // a follow-up) module.
-            bool seen = false;
-            for (const auto& already : arc.getEntries()) {
-                if (already.name == entryName) {
-                    seen = true;
-                    break;
-                }
-            }
-            if (seen) continue;
 
             std::string bitcode;
             {
@@ -995,19 +957,104 @@ namespace cajeta {
                 os.flush();
             }
 
-            // Mark stdlib classes (qName starts with `cajeta.runtime` or any
-            // package under `cajeta.*`) as Stdlib origin so uber consumers
-            // can distinguish runtime-bundled from user-bundled.
             bool isStdlib = canonical.rfind("cajeta.", 0) == 0;
-
-            CajetaArchiveEntry entry;
-            entry.name      = entryName;
-            entry.originTag = (uint8_t) (isStdlib
+            StagingEntry se;
+            se.entry.name      = entryName;
+            se.entry.originTag = (uint8_t) (isStdlib
                 ? CajetaArchive::Origin::Stdlib
                 : CajetaArchive::Origin::User);
-            entry.kindTag   = CajetaArchive::EntryKind::ClassBitcode;
-            entry.data      = std::vector<uint8_t>(bitcode.begin(), bitcode.end());
-            arc.addEntry(std::move(entry));
+            se.entry.kindTag   = CajetaArchive::EntryKind::ClassBitcode;
+            se.entry.data.assign(bitcode.begin(), bitcode.end());
+            se.canonical       = canonical;
+            // User + stdlib are always included (reachability prunes
+            // only dep entries).
+            se.included = true;
+            staged.push_back(std::move(se));
+        }
+
+        // ---- Stage classpath (uber only) ----
+        if (uber) {
+            // Reachability-prune semantics: dep entries default to
+            // included=false; the closure pass below flips included=true
+            // for each dep canonical that any already-included bitcode
+            // references via substring match. When pruneUber is off,
+            // every dep entry is included up front.
+            std::size_t userStdlibCount = staged.size();
+            for (const auto& cpPath : classpath) {
+                try {
+                    auto dep = CajetaArchive::readFrom(cpPath);
+                    for (const auto& depEntry : dep.getEntries()) {
+                        // Dedupe by entry name (first archive wins).
+                        bool seen = false;
+                        for (const auto& already : staged) {
+                            if (already.entry.name == depEntry.name) {
+                                seen = true;
+                                break;
+                            }
+                        }
+                        if (seen) continue;
+                        StagingEntry se;
+                        se.entry.name      = depEntry.name;
+                        se.entry.originTag = (uint8_t) CajetaArchive::Origin::Dependency;
+                        se.entry.kindTag   = depEntry.kindTag;
+                        se.entry.data      = depEntry.data;
+                        se.canonical       = entryNameToCanonical(depEntry.name);
+                        // Default to "include" when prune is off; otherwise
+                        // wait for the closure pass to vouch.
+                        se.included        = !pruneUber;
+                        staged.push_back(std::move(se));
+                    }
+                } catch (const std::exception& e) {
+                    cerr << "cajeta: --classpath ingestion failed for `"
+                         << cpPath << "`: " << e.what() << std::endl;
+                    throw;
+                }
+            }
+
+            if (pruneUber) {
+                // Iterative substring-scan closure. Initial reachable set
+                // is the user+stdlib stage range [0, userStdlibCount). On
+                // each pass, scan every reachable entry's bitcode for any
+                // not-yet-reachable dep canonical's name as a substring;
+                // promote matches and re-iterate until quiescent.
+                //
+                // Substring match works because cajeta's RTTI globals
+                // embed the canonical name as a literal C string and
+                // every method's LLVM function name carries the
+                // canonical prefix. Substring is conservative — false-
+                // positives keep over-large dep entries (acceptable),
+                // false-negatives would drop needed ones (which the
+                // closure's repeated passes avoid).
+                bool changed = true;
+                while (changed) {
+                    changed = false;
+                    for (std::size_t i = 0; i < staged.size(); ++i) {
+                        if (staged[i].included) continue;
+                        // Scan against every included entry's bitcode.
+                        for (std::size_t j = 0; j < staged.size(); ++j) {
+                            if (!staged[j].included) continue;
+                            const auto& bc = staged[j].entry.data;
+                            const auto& needle = staged[i].canonical;
+                            if (needle.empty()) continue;
+                            // C++ std::search over the bitcode bytes.
+                            auto it = std::search(
+                                bc.begin(), bc.end(),
+                                needle.begin(), needle.end());
+                            if (it != bc.end()) {
+                                staged[i].included = true;
+                                changed = true;
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // ---- Emit included entries in stage order ----
+        for (auto& se : staged) {
+            if (!se.included) continue;
+            arc.addEntry(std::move(se.entry));
         }
 
         arc.writeTo(outPath);

@@ -95,6 +95,11 @@ namespace cajeta {
         // Origin::Dependency tag and an `origins` map entry pointing at
         // the source archive's manifest name.
         std::vector<string> classpath;
+        // Default behavior of --emit=uber. true → prune classpath
+        // entries to the transitively-referenced closure (set via
+        // --prune-uber=on, the default); false → bundle every
+        // classpath entry (set via --prune-uber=off).
+        bool pruneUber = true;
 
         // (Re)build the TargetMachine for the current triple/cpu/features. Called from
         // the constructor and again after any CLI flag changes the target settings.
@@ -202,6 +207,17 @@ namespace cajeta {
 
         void addClasspath(string s) { classpath.push_back(std::move(s)); }
         const std::vector<string>& getClasspath() const { return classpath; }
+
+        // Uber-archive reachability pruning. Default true — only bundle
+        // classpath-archive entries whose canonical name appears as a
+        // substring in user / stdlib / already-reachable-dep bitcode.
+        // Catches direct references AND transitive reach through the
+        // iterative closure. Set to false to bundle ALL classpath entries
+        // (the v1 "include everything" behavior) — useful when the user
+        // knows about reflective / dynamic-dispatch paths the bitcode
+        // scan can't see.
+        void setPruneUber(bool v) { pruneUber = v; }
+        bool getPruneUber() const { return pruneUber; }
 
         const string& getOutputPath() const { return outputPath; }
         void setOutputPath(const string& p) { outputPath = p; }

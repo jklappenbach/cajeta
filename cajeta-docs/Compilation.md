@@ -463,6 +463,26 @@ The reachability set includes:
 
 Resources (`@Embedded`-annotated files, classpath-loaded YAMLs, etc.) are bundled separately — a `resources` flag on `--emit=uber` controls inclusion. Default: include resources from the user project, NOT from deps (deps include their own at consumption time via their own thin archive; uber doesn't re-bundle).
 
+### v1 reachability — bitcode substring closure
+
+The full reachability above wants the compile-time type graph (every CajetaClass field type, parameter type, return type, body reference). That graph is fully reachable today inside the parsed user / stdlib modules but the **dep modules from classpath archives aren't parsed** — only their bitcode is ingested. So v1 ships a slightly conservative approximation: an iterative substring-scan closure over LLVM bitcode bytes.
+
+**Algorithm:**
+
+1. **Seed.** Every user + stdlib module's staged bitcode is included by default.
+2. **Iteration.** For each not-yet-included dep entry with canonical name `C`, scan every currently-included entry's bitcode bytes for the substring `C`. If matched, mark the dep included.
+3. **Repeat** to fixed point — including a dep may unlock OTHER deps whose canonical only appears in the just-promoted dep's bitcode (transitive reach).
+
+**Why substring works:** cajeta's bitcode embeds each class's canonical name in multiple places — the RTTI globals (`@"<canonical>#RttiGlobal"` carrying the literal C string `"<canonical>\0"`), the vtable globals (`@"<canonical>#VTable"`), and every method's mangled function name (`@"<canonical>::method(...)"`). Any reference to a class from another class's bitcode produces at least one of these markers. Substring is conservative — false positives bundle extra (acceptable), false negatives drop needed entries (rare, would surface as runtime missing-symbol).
+
+**Override.** `--prune-uber=off` disables the closure and bundles every classpath entry (the previous v1 "include everything" policy). Useful when:
+
+- Reflective dispatch loads classes by string-encoded names the bitcode scan can't see.
+- A dep's class is referenced only via a `@Native` C function whose name doesn't carry the canonical.
+- Build determinism is more important than archive size (the closure depends on what user code happens to reference; opt-out gives bit-for-bit reproducible bundles).
+
+**Limitation (v1).** The closure only sees references that survive into bitcode. The cajeta compile path doesn't currently load classpath archives at parse time — when user code writes `import deplib.Util;` the compiler can't find Util's class and silently drops the reference. The bitcode pruner correctly drops the dep in that scenario because nothing in the included bitcode references it. Compile-time classpath ingestion is the next roadmap item; once it lands, user references will land in the user bitcode and the pruner will keep the deps they reach.
+
 ### Versioning + collisions
 
 When two dependency archives expose the same canonical class name (`com.example.Util` in both `lib-a-1.0.cja` and `lib-b-2.0.cja`):
