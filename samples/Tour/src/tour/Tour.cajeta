@@ -61,7 +61,7 @@ public final class Tour {
 
         // Stream over the list — virtual dispatch lands each
         // subclass's execute() override.
-        demos.stream().forEach((DemoClass d) -> d.execute());
+        demos.stream().forEach((d) -> d.execute());
 
         System.stdout.println("");
         System.stdout.println("=== tour complete ===");

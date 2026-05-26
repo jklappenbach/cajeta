@@ -33,7 +33,7 @@ public class ArrayListDemo extends DemoClass {
         pts.add(heap Point(3, 4));
         pts.add(heap Point(5, 6));
         int32 xSum = pts.stream().fold<int32>(0,
-            (int32 acc, Point p) -> acc + p.x);
+            (acc, p) -> acc + p.x);
         System.stdout.println("  ArrayList<Point> count = " + pts.count());
         System.stdout.println("  ArrayList<Point> xSum  = " + xSum);
     }

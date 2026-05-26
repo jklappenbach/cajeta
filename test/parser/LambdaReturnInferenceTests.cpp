@@ -265,3 +265,40 @@ TEST(LambdaReturnInferenceTests, foldWithCombinerBareIdentifierLambdas) {
     auto jit = CajetaJit::compile(src, "test.D");
     EXPECT_EQ(jit->lookup<int64_t (*)()>("run")(), 10LL);
 }
+
+// `ArrayList<UserClass>.stream().fold<R>(seed, (acc, p) -> ...)` —
+// the bare-id lambda has paramTypes empty at MCE generateCode time.
+// Pre-fix, the lambda's earlier resolveTypes produced a placeholder
+// `() -> void` resolvedType (no scope for the bare-id params), and
+// the MCE propagator's `!getResolvedType()` gate skipped inference
+// entirely. Combined with a stale `fold<UserClass>` instantiation
+// already cached on Stream<UserClass> (from `reduce` delegation),
+// matches went to 2 → propagator's `matches==1` block skipped →
+// lambda compiled with empty paramTypes → CAJETA_ERROR_TYPE_INFERENCE
+// at generateCode.
+//
+// Fix: paramTypes/paramNames arity is the inference-needed signal,
+// not resolvedType presence; and method-template INSTANTIATIONS
+// from prior call sites are filtered out of findCandidate (they
+// can't be re-bound to fresh explicit type args).
+TEST(LambdaReturnInferenceTests, foldBareIdLambdaOverArrayListUserClass) {
+    auto src =
+        "package test;\n"
+        "import cajeta.collection.ArrayList;\n"
+        "public class P {\n"
+        "    public int32 x;\n"
+        "    public P(int32 x) { this.x = x; }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        ArrayList<P> pts = heap ArrayList<P>();\n"
+        "        pts.add(heap P(1));\n"
+        "        pts.add(heap P(2));\n"
+        "        pts.add(heap P(3));\n"
+        "        return pts.stream().fold<int32>(0,\n"
+        "            (acc, p) -> acc + p.x);\n"
+        "    }\n"
+        "}\n";
+    auto jit = CajetaJit::compile(src, "test.D");
+    EXPECT_EQ(jit->lookup<int32_t (*)()>("run")(), 6);
+}
