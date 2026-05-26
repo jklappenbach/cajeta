@@ -78,6 +78,11 @@ namespace cajeta {
         // and executables land at <archive-root>/<entry-name>.
         string outputPath;
 
+        // Entry method (`pkg.Class.method` dotted form) — set by
+        // Compiler::compile(entryMethod, ...) before parsing fires. Read by
+        // emitCMainShim after Phase-2 codegen, when binary emit is on.
+        string entryMethod;
+
         // Collected .o paths from Obj/Exe emissions, fed to the linker for Exe mode.
         std::vector<string> objectFiles;
 
@@ -91,6 +96,15 @@ namespace cajeta {
         // Phase-2 linker step for --emit=exe; collects everything in objectFiles and
         // invokes lld (when CAJETA_HAS_LLD is defined at CMake-configure time).
         void linkExecutable(const string& archiveRootPath);
+
+        // Emit a C-callable `main` symbol that invokes the user's static entry
+        // method (the `entryMethod` positional arg, dotted form like
+        // `demo.Hello.run`). Synthesized into the stdlib module so the linker
+        // resolves the symbol regardless of which user module declared the
+        // entry. Only runs for binary emit (obj/exe) where the program needs
+        // a C ABI entry point. No-op (with diagnostic) if the entry method
+        // doesn't resolve.
+        void emitCMainShim(const std::string& entryMethod);
 
     public:
         Compiler(int argc, const char* argv[]) : Compiler() { }

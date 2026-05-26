@@ -36,7 +36,15 @@ namespace cajeta {
             targetMachine = nullptr;
             return;
         }
-        targetMachine = target->createTargetMachine(targetTriple, cpu, features, opt, RM);
+        // Default to PIC so .o files link cleanly into PIE executables — modern
+        // Linux distros (Ubuntu ≥ 17.04, etc.) configure their toolchains to
+        // produce PIE by default, and a non-PIC object trips
+        //   relocation R_X86_64_32 against symbol `foo' can not be used
+        //   when making a PIE object
+        // Caller can still override RM via setRelocationModel for embedded /
+        // kernel targets that want absolute addressing.
+        auto effectiveRM = RM.has_value() ? RM : std::optional<llvm::Reloc::Model>(llvm::Reloc::PIC_);
+        targetMachine = target->createTargetMachine(targetTriple, cpu, features, opt, effectiveRM);
     }
 
     // ANTLR-based pre-scan visitor. Walks the parse tree shallowly
@@ -411,6 +419,10 @@ namespace cajeta {
     }
 
     void Compiler::compile(string entryMethod, string sourceRootPath, string archiveRootPath) {
+        // Stash on the instance so the post-Phase-2 emitCMainShim call can
+        // see what the user passed without threading it through Phase 1/2.
+        this->entryMethod = entryMethod;
+
         if (sourceRootPath[sourceRootPath.size() - 1] != '/') {
             sourceRootPath.append("/");
         }
@@ -422,6 +434,16 @@ namespace cajeta {
 //        std::filesystem::path cwd = std::filesystem::current_path();
 
         ensureStdlibModule();
+
+        // Stdlib module was constructed without an archiveRoot (its alt ctor
+        // doesn't take one). For binary emit (--emit=obj/exe) we need the .o
+        // to land alongside the user modules' .o files, so retro-fit the
+        // archive root onto it now that we know it. Harmless for IR emit;
+        // writeIRFileTarget concatenates archiveRoot + archivePath either
+        // way.
+        if (auto stdlib = CajetaModule::getStdlibModule()) {
+            stdlib->setArchiveRoot(archiveRootPath);
+        }
 
         // Pre-scan: enumerate every class/interface/struct declared
         // anywhere under sourceRootPath into the archive registry.
@@ -524,6 +546,15 @@ namespace cajeta {
                 if (klass) klass->generateStaticInitializers();
             }
         }
+        // Binary emit needs a C-ABI `main` to satisfy the loader. Synthesize
+        // a shim that forwards to the user's static entry method. Skipped
+        // for IR emit; the JIT and IR-archive consumers invoke the entry
+        // by mangled name directly.
+        if ((emitMode == EmitMode::Obj || emitMode == EmitMode::Exe)
+                && !entryMethod.empty()) {
+            emitCMainShim(entryMethod);
+        }
+
         for (auto& module: modules) {
             // Runtime is linked once into the stdlib module (see
             // parseStdlibInto); user modules carry only extern decls
@@ -618,5 +649,86 @@ namespace cajeta {
         for (auto& obj : objectFiles) cerr << obj << " ";
         cerr << "-o <executable>" << std::endl;
 #endif
+    }
+
+    void Compiler::emitCMainShim(const std::string& entryMethod) {
+        // entryMethod arrives as `pkg.subpkg.Class.method` (dotted). Split
+        // on the last '.' to separate class canonical from method name.
+        // No method name → no shim.
+        auto lastDot = entryMethod.rfind('.');
+        if (lastDot == std::string::npos || lastDot + 1 >= entryMethod.size()) {
+            cerr << "cajeta: --emit=" << (emitMode == EmitMode::Exe ? "exe" : "obj")
+                 << " entry method `" << entryMethod
+                 << "` must be in `package.Class.method` form" << std::endl;
+            return;
+        }
+        std::string classCanonical = entryMethod.substr(0, lastDot);
+        std::string methodName     = entryMethod.substr(lastDot + 1);
+
+        // Walk every user module looking for the matching class + method.
+        // Static, parameter-less; int32 or void return supported. Other
+        // shapes (e.g. `main(String[] args)`) are deferred — pre-parse
+        // argv handling needs the cajeta String[] materialization path.
+        MethodPtr entry;
+        for (auto& m : modules) {
+            auto it = m->getStructures().find(classCanonical);
+            if (it == m->getStructures().end() || !it->second) continue;
+            for (auto& mEntry : it->second->getMethods()) {
+                auto& candidate = mEntry.second;
+                if (!candidate || candidate->getName() != methodName) continue;
+                if (candidate->isMethodTemplate()) continue;
+                auto& mods = candidate->getModifiers();
+                if (mods.find(STATIC) == mods.end()) continue;
+                // Static method's parameterList has no `this` prepended; the
+                // entry shim wants a parameter-less function.
+                if (!candidate->getParameterList().empty()) continue;
+                entry = candidate;
+                break;
+            }
+            if (entry) break;
+        }
+        if (!entry || !entry->getLlvmFunction()) {
+            cerr << "cajeta: --emit=" << (emitMode == EmitMode::Exe ? "exe" : "obj")
+                 << " could not find static no-arg method `" << entryMethod
+                 << "` to use as the program entry point" << std::endl;
+            return;
+        }
+
+        // Synthesize `int main(void)` in the stdlib module (always linked).
+        auto stdlib = CajetaModule::getStdlibModule();
+        if (!stdlib) return;
+        llvm::LLVMContext& ctx = *stdlib->getLlvmContext();
+        llvm::Module* lmod = stdlib->getLlvmModule();
+        llvm::Type* i32Ty = llvm::Type::getInt32Ty(ctx);
+
+        // External decl for the cajeta-mangled entry symbol in this module.
+        llvm::Function* entryFn = entry->getLlvmFunction();
+        llvm::Function* entryExtern = llvm::Function::Create(
+            entryFn->getFunctionType(),
+            llvm::GlobalValue::ExternalLinkage,
+            entryFn->getName(),
+            lmod);
+
+        llvm::FunctionType* mainTy = llvm::FunctionType::get(i32Ty, false);
+        llvm::Function* mainFn = llvm::Function::Create(
+            mainTy, llvm::GlobalValue::ExternalLinkage, "main", lmod);
+        llvm::BasicBlock* bb = llvm::BasicBlock::Create(ctx, "entry", mainFn);
+        llvm::IRBuilder<> b(bb);
+        llvm::Value* ret = b.CreateCall(entryExtern, {});
+        // Translate the cajeta return into a C exit code.
+        //   int32  → cast (identity) to i32 and return.
+        //   void   → return 0.
+        //   other  → return 0 (the caller can inspect side effects).
+        if (entryFn->getReturnType()->isIntegerTy(32)) {
+            b.CreateRet(ret);
+        } else if (entryFn->getReturnType()->isVoidTy()) {
+            b.CreateRet(llvm::ConstantInt::get(i32Ty, 0));
+        } else if (entryFn->getReturnType()->isIntegerTy()) {
+            // Wider/narrower int — truncate or zext to i32.
+            llvm::Value* trunc = b.CreateIntCast(ret, i32Ty, /*isSigned=*/true);
+            b.CreateRet(trunc);
+        } else {
+            b.CreateRet(llvm::ConstantInt::get(i32Ty, 0));
+        }
     }
 }

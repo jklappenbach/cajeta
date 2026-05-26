@@ -70,11 +70,24 @@ namespace cajeta {
 
         int suffixIndex = sourcePath.find(CAJETA_EXTENSION);
         if (suffixIndex >= 0) {
+            // `temp` is sourcePath stripped of sourceRoot prefix and ".cajeta"
+            // suffix. Whether it starts with PATH_SEPARATOR depends on whether
+            // the caller's sourceRoot ended with one. CLI driver (Compiler::compile
+            // with positional args) appends a trailing '/'; direct createModule
+            // callers (tests) typically don't. Normalize the leading separator
+            // out so the package-extraction math is independent of that detail.
             string temp = sourcePath.substr(sourceRoot.size(), suffixIndex - sourceRoot.size());
-            int moduleNameIndex = temp.rfind(PATH_SEPARATOR) + 1;
-            string moduleName = temp.substr(moduleNameIndex, suffixIndex);
-            string packageName = temp.substr(1, moduleNameIndex - 2);
-            archivePath = temp + CAJETA_IR_EXTENSION;
+            if (!temp.empty() && temp[0] == PATH_SEPARATOR) {
+                temp.erase(0, 1);
+            }
+            int lastSep = (int) temp.rfind(PATH_SEPARATOR);
+            string moduleName = (lastSep < 0)
+                ? temp
+                : temp.substr(lastSep + 1);
+            string packageName = (lastSep < 0)
+                ? string()
+                : temp.substr(0, lastSep);
+            archivePath = string(1, PATH_SEPARATOR) + temp + CAJETA_IR_EXTENSION;
             replace(packageName.begin(), packageName.end(), PATH_SEPARATOR, PACKAGE_SEPARATOR);
             qName = QualifiedName::getOrInsert(moduleName, packageName);
 
