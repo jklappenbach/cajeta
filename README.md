@@ -473,6 +473,7 @@ The deep-dive specs live in `cajeta-docs/`. Start here:
 | Errors                      | [`ErrorModel.md`](cajeta-docs/stdlib/ErrorModel.md) |
 | Lints                       | [`LintRules.md`](cajeta-docs/LintRules.md) |
 | Compiler modes              | [`CompilerModes.md`](cajeta-docs/CompilerModes.md) |
+| Embedded targets (roadmap)  | [`Embedded.md`](cajeta-docs/Embedded.md) |
 | JSON codec                  | [`stdlib/codec/Json.md`](cajeta-docs/stdlib/codec/Json.md) |
 | Method-level templates      | [`MethodLevelTemplate.md`](cajeta-docs/stdlib/MethodLevelTemplate.md) |
 | Multi-classing              | [`MultiClassing.md`](cajeta-docs/stdlib/MultiClassing.md) |
