@@ -2983,6 +2983,17 @@ void __cajeta_log(int32_t stream, const char* fmt, int64_t argc, const char* con
     }
 }
 
+// `println` variant of __cajeta_log — same `{}`-substitution semantics, but
+// terminate the line with a single '\n' regardless of whether the format
+// string ended with one. Mirrors __cajeta_println's relationship to
+// __cajeta_print. The codegen routes
+// `System.stdout.println(fmt, arg1, arg2, ...)` here so format-with-args
+// printing doesn't need a trailing "\n" in the format string.
+void __cajeta_logln(int32_t stream, const char* fmt, int64_t argc, const char* const* argv) {
+    __cajeta_log(stream, fmt, argc, argv);
+    __cajeta_emit(stream, "\n", 1);
+}
+
 // ---------------------------------------------------------------------------
 // cajeta.io.file — Phase A runtime helpers.
 //

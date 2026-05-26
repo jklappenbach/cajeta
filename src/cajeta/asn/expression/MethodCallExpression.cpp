@@ -655,6 +655,81 @@ namespace cajeta {
                 llvm::Type* ptrTy = llvm::PointerType::get(llvmCtx, 0);
 
                 llvm::Value* streamArg = llvm::ConstantInt::get(i32Ty, streamFd);
+
+                // Multi-arg `print(fmt, x, y, ...)` / `println(fmt, x, y, ...)`
+                // — convenience formatting that walks `{}` placeholders in the
+                // first arg and substitutes each subsequent arg. Each non-
+                // String arg is stringified through the same runtime helpers
+                // the single-arg dispatch uses (__cajeta_i64_to_str /
+                // __cajeta_f64_to_str / __cajeta_bool_to_str). The resulting
+                // char** is stack-allocated and passed to __cajeta_log
+                // (print) or __cajeta_logln (println).
+                if ((methodCallName == "print" || methodCallName == "println")
+                        && parameters.size() >= 2) {
+                    const char* runtimeName = methodCallName == "println"
+                        ? "__cajeta_logln" : "__cajeta_log";
+                    llvm::Function* logFn = module->getRuntimeFunction(runtimeName);
+                    if (logFn) {
+                        // First arg is the format string. Reuse loadStringArg
+                        // (unwraps class String → char*) so the runtime helper
+                        // sees a plain C string.
+                        llvm::Value* fmt = loadStringArg(module, parameters[0].expression);
+                        size_t argCount = parameters.size() - 1;
+
+                        // char** argv = alloca [argCount x ptr]
+                        llvm::Value* argv = builder->CreateAlloca(
+                            ptrTy,
+                            llvm::ConstantInt::get(i64Ty, argCount),
+                            "printtmpl.argv");
+
+                        for (size_t ai = 0; ai < argCount; ++ai) {
+                            llvm::Value* raw = loadStringArg(module,
+                                parameters[ai + 1].expression);
+                            llvm::Type* rawTy = raw->getType();
+                            llvm::Value* cstr = nullptr;
+                            if (rawTy->isPointerTy()) {
+                                // Already a char* (String unwrap or null).
+                                cstr = raw;
+                            } else if (rawTy->isIntegerTy(1)) {
+                                llvm::Value* widened = builder->CreateZExt(raw, i32Ty);
+                                llvm::Function* fn = module->getRuntimeFunction("__cajeta_bool_to_str");
+                                cstr = builder->CreateCall(fn, {widened},
+                                    "printtmpl.bool");
+                            } else if (rawTy->isIntegerTy()) {
+                                llvm::Value* widened = builder->CreateIntCast(raw, i64Ty, /*isSigned=*/true);
+                                llvm::Function* fn = module->getRuntimeFunction("__cajeta_i64_to_str");
+                                cstr = builder->CreateCall(fn, {widened},
+                                    "printtmpl.i64");
+                            } else if (rawTy->isFloatingPointTy()) {
+                                llvm::Type* f64Ty = llvm::Type::getDoubleTy(llvmCtx);
+                                if (rawTy != f64Ty) {
+                                    raw = builder->CreateFPCast(raw, f64Ty);
+                                }
+                                llvm::Function* fn = module->getRuntimeFunction("__cajeta_f64_to_str");
+                                cstr = builder->CreateCall(fn, {raw},
+                                    "printtmpl.f64");
+                            } else {
+                                // Last-resort: emit a `null` placeholder
+                                // pointer so the runtime substitutes "null"
+                                // rather than crashing. Hits classes that
+                                // don't expose toString yet.
+                                cstr = llvm::ConstantPointerNull::get(
+                                    llvm::cast<llvm::PointerType>(ptrTy));
+                            }
+                            llvm::Value* slot = builder->CreateGEP(
+                                ptrTy, argv,
+                                llvm::ConstantInt::get(i64Ty, ai),
+                                std::string("printtmpl.slot.") + std::to_string(ai));
+                            builder->CreateStore(cstr, slot);
+                        }
+
+                        llvm::Value* argcArg = llvm::ConstantInt::get(
+                            i64Ty, (uint64_t) argCount);
+                        return builder->CreateCall(logFn,
+                            {streamArg, fmt, argcArg, argv});
+                    }
+                }
+
                 if ((methodCallName == "print" || methodCallName == "println")
                         && parameters.size() == 1) {
                     // Dispatch on the argument's LLVM type. Pointers (including String)
