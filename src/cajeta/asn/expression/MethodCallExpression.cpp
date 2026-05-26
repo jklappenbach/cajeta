@@ -1996,17 +1996,37 @@ namespace cajeta {
                     for (auto& mEntry : cls->getMethods()) {
                         auto& m = mEntry.second;
                         if (m->getName() != methodCallName) continue;
-                        // Method-templates carry only `this` in
-                        // parameterList until instantiation; defer the
-                        // arity check to after we instantiate (below).
-                        // When explicit type-args are present and the
-                        // template's type-param count matches, accept
-                        // the template as a candidate and let the
-                        // instantiation step verify arity.
+                        // Method-template overloads share a name and
+                        // (with explicit type-args) the same type-param
+                        // count — `fold<R>(R, (R,T)->R)` and
+                        // `fold<R>(R, (R,T)->R, (R,R)->R)` both match
+                        // a `<int64>` call. Disambiguate by value-arity
+                        // here using the template's source-declared
+                        // parameterList. Generic templates skip
+                        // generatePrototype's `this`-prepend (Method.cpp
+                        // line ~415 returns early for templates), so
+                        // the raw parameterList may have no `this`
+                        // entry; the propagator below at line ~2080
+                        // already uses the same `front()->getName() ==
+                        // "this"` detection to handle the instantiated-
+                        // mid-build state.
                         bool isMethodTpl = m->isMethodTemplate();
                         if (isMethodTpl && !explicitMethodTypeArgs.empty()
                                 && explicitMethodTypeArgs.size()
                                     == m->getMethodTypeParameters().size()) {
+                            auto pList = m->getParameterList();
+                            bool hasThisTpl = !pList.empty()
+                                && pList.front()->getName() == "this";
+                            int declaredTpl = (int) pList.size()
+                                - (hasThisTpl ? 1 : 0);
+                            // Static methods have no `this`; un-
+                            // instantiated instance templates also omit
+                            // it because generatePrototype skips
+                            // template signatures. Either way the
+                            // `hasThisTpl` check is the right subtractor.
+                            if (declaredTpl != (int) parameters.size()) {
+                                continue;
+                            }
                             candidate = m;
                             ++matches;
                             continue;

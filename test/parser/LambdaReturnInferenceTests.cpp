@@ -240,3 +240,28 @@ TEST(LambdaReturnInferenceTests, userGenericHelperInlineBlockBodyLambda) {
         "}\n";
     EXPECT_EQ(runI32(src), 14);
 }
+
+// Bare-identifier lambdas passed to an OVERLOADED method-template
+// (Stream<T>.fold has both `fold<R>(R, (R,T)->R)` and
+// `fold<R>(R, (R,T)->R, (R,R)->R)`). With explicit type-args
+// `.fold<int64>(...)`, the call site uniquely identifies the
+// 3-arg overload by value-arity (3 args vs the 2-arg form's 2). The
+// lambda-expectedType propagator in MethodCallExpression must
+// disambiguate by arity in the method-template candidate path; without
+// that, both overloads match the type-arg count check, the propagator
+// records matches=2 and skips, and the bare-identifier lambdas land at
+// CAJETA_ERROR_TYPE_INFERENCE because no expectedType was pinned.
+TEST(LambdaReturnInferenceTests, foldWithCombinerBareIdentifierLambdas) {
+    auto src = std::string(PRELUDE) +
+        "public final class D {\n"
+        "    public static int64 run() {\n"
+        "        int32[] xs = { 1, 2, 3, 4 };\n"
+        "        ArrayStream<int32> s = heap ArrayStream<int32>(xs, 4);\n"
+        "        return s.fold<int64>(0L,\n"
+        "            (acc, x) -> acc + (int64) x,\n"
+        "            (a, b) -> a + b);\n"
+        "    }\n"
+        "}\n";
+    auto jit = CajetaJit::compile(src, "test.D");
+    EXPECT_EQ(jit->lookup<int64_t (*)()>("run")(), 10LL);
+}
