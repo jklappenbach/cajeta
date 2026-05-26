@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Build HelloWorld into a thin cajeta archive (.cja). Bundles every
-# parsed module's LLVM bitcode into a single file with a manifest.
-# Thin form — user modules + parsed-stdlib classes only; dependency
-# archives stay external. Suitable for distributing a library.
+# Build the Tour project into a single .cja cajeta archive (uber form,
+# zstd-compressed). Bundles user modules + parsed-stdlib + every
+# transitively-referenced classpath dep into one self-contained,
+# runnable artifact.
 #
-# See cajeta-docs/Compilation.md § Archive format for the on-disk shape
-# and § Uber archives for the uber-form (build-uber.sh).
+# See cajeta-docs/Compilation.md § Output formats for the contract and
+# § Uber archives for the deps/<name>-<version>/ nested layout.
 
 set -euo pipefail
 
@@ -15,7 +15,7 @@ REPO_ROOT="$( cd -- "${SCRIPT_DIR}/../.." &> /dev/null && pwd )"
 CAJETA_BIN="${CAJETA_BIN:-${REPO_ROOT}/build/src/cajeta}"
 
 SRC_ROOT="${SCRIPT_DIR}/src"
-BUILD_DIR="${SCRIPT_DIR}/build/archive"
+BUILD_DIR="${SCRIPT_DIR}/build/uber"
 
 if [[ ! -x "$CAJETA_BIN" ]]; then
     echo "error: cajeta compiler not found at $CAJETA_BIN" >&2
@@ -23,22 +23,22 @@ if [[ ! -x "$CAJETA_BIN" ]]; then
     exit 1
 fi
 
-ENTRY_METHOD="helloworld.HelloWorld.run"
+ENTRY_METHOD="tour.Tour.run"
 
 rm -rf "$BUILD_DIR"
 mkdir -p "$BUILD_DIR"
 
-echo "Compiling cajeta sources → .cja archive (thin)"
+echo "Compiling cajeta sources → .cja archive (uber)"
 echo "  entry: $ENTRY_METHOD"
 echo "  src:   $SRC_ROOT"
 echo "  out:   $BUILD_DIR"
 "$CAJETA_BIN" \
-    --emit=archive \
+    --emit=uber \
     "$ENTRY_METHOD" \
     "$SRC_ROOT" \
     "$BUILD_DIR" \
     > "${BUILD_DIR}/cajeta-compile.log" 2>&1 || {
-    echo "error: cajeta --emit=archive failed (see ${BUILD_DIR}/cajeta-compile.log)" >&2
+    echo "error: cajeta --emit=uber failed (see ${BUILD_DIR}/cajeta-compile.log)" >&2
     tail -20 "${BUILD_DIR}/cajeta-compile.log" >&2
     exit 1
 }

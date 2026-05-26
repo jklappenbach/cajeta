@@ -6,7 +6,7 @@ A walkthrough of every load-bearing language feature, one class per feature. Eac
 samples/Tour/
 ├── README.md             ← you are here
 ├── build-bin.sh          ← compile + link to a native binary (build/tour)
-├── build-cja.sh          ← compile to a single .cja archive (build/cja/Tour.cja)
+├── build-uber.sh         ← compile to a runnable .cja archive (build/uber/Tour.cja)
 └── src/tour/
     ├── Tour.cajeta              ← entry point — builds the demos[] array
     ├── DemoClass.cajeta         ← base class with virtual execute()
@@ -76,8 +76,8 @@ Then from this directory:
 ./build-bin.sh
 ./build/tour
 
-# Single .cja archive (produces build/cja/Tour.cja):
-./build-cja.sh
+# Runnable .cja uber archive (produces build/uber/Tour.cja):
+./build-uber.sh
 ```
 
 ### Output modes at a glance
@@ -85,7 +85,7 @@ Then from this directory:
 | Mode | Script | Output |
 |---|---|---|
 | Native binary | `build-bin.sh` | `build/tour` — ELF executable (~300 KB) |
-| .cja archive | `build-cja.sh` | `build/cja/Tour.cja` — uber-form bundle (~415 KB) |
+| .cja uber archive | `build-uber.sh` | `build/uber/Tour.cja` — self-contained bundle (project + stdlib + deps) |
 
 See [`cajeta-docs/Compilation.md`](../../cajeta-docs/Compilation.md) for the full output-mode reference and the `.cja` container spec.
 

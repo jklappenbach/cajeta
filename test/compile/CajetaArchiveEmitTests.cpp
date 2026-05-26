@@ -1,14 +1,13 @@
-// End-to-end tests for --emit=archive / --emit=uber. Drives the
+// End-to-end tests for --emit=cja / --emit=uber. Drives the
 // in-tree cajeta compiler via fork+exec, points it at a tiny
 // cajeta source tree, then inspects the resulting .cja file for
 // the expected header / manifest / entry shape.
 //
-// The bitcode-roundtrip side (parsing the embedded bitcode and
-// validating it) lands when CajetaArchive grows a reader (which is
-// the prerequisite for --classpath ingestion and full --emit=uber).
-// For v1 these tests pin "the writer in --emit=archive mode produces
-// the same bytes the unit-level CajetaArchiveTests verify the
-// underlying writer produces."
+// --emit=cja: project-only library archive (no stdlib, no deps).
+// --emit=uber: project + stdlib + transitively-referenced classpath
+// deps nested under deps/<name>-<version>/. The unit-level
+// CajetaArchiveTests pin the writer's byte-level output; these
+// tests pin the compile-driver wiring.
 
 #include <gtest/gtest.h>
 
@@ -86,11 +85,11 @@ TmpProject makeTmpProject(const std::string& tag) {
 
 } // namespace
 
-TEST(CajetaArchiveEmitTests, archiveModeWritesCjaWithMagicHeader) {
+TEST(CajetaArchiveEmitTests, cjaModeWritesCjaWithMagicHeader) {
     auto proj = makeTmpProject("magic");
     std::string cmd =
         compilerPath()
-        + " --emit=archive demo.Hello.run "
+        + " --emit=cja demo.Hello.run "
         + proj.sourceRoot.string() + " "
         + proj.buildRoot.string()
         + " > /dev/null 2>&1";
@@ -110,11 +109,11 @@ TEST(CajetaArchiveEmitTests, archiveModeWritesCjaWithMagicHeader) {
     fs::remove_all(proj.sourceRoot.parent_path());
 }
 
-TEST(CajetaArchiveEmitTests, archiveModeManifestSaysThin) {
-    auto proj = makeTmpProject("thin");
+TEST(CajetaArchiveEmitTests, cjaModeManifestSaysCja) {
+    auto proj = makeTmpProject("cja_kind");
     std::string cmd =
         compilerPath()
-        + " --emit=archive demo.Hello.run "
+        + " --emit=cja demo.Hello.run "
         + proj.sourceRoot.string() + " "
         + proj.buildRoot.string()
         + " > /dev/null 2>&1";
@@ -122,7 +121,7 @@ TEST(CajetaArchiveEmitTests, archiveModeManifestSaysThin) {
 
     auto arc = cajeta::CajetaArchive::readFrom(
         (proj.buildRoot / "Hello.cja").string());
-    EXPECT_EQ(arc.getKind(), cajeta::CajetaArchive::Kind::Thin);
+    EXPECT_EQ(arc.getKind(), cajeta::CajetaArchive::Kind::Cja);
     EXPECT_EQ(arc.getName(), "demo.Hello");
 
     fs::remove_all(proj.sourceRoot.parent_path());
@@ -170,7 +169,7 @@ fs::path buildDepArchive(const std::string& tag) {
     }
     std::string cmd =
         compilerPath()
-        + " --emit=archive deplib.Util.ten "
+        + " --emit=cja deplib.Util.ten "
         + (base / "src").string() + " "
         + build.string()
         + " > /dev/null 2>&1";
@@ -186,7 +185,8 @@ fs::path buildDepArchive(const std::string& tag) {
 TEST(CajetaArchiveEmitTests, uberWithClasspathBundlesDepEntriesNoPrune) {
     // --prune-uber=off path: uber bundles every classpath entry
     // regardless of whether user code references it. The default
-    // pruning-on path is covered separately below.
+    // pruning-on path is covered separately below. Nested layout:
+    // each dep's entries land under deps/<name>-<version>/<orig>.
     auto depCja = buildDepArchive("classpath");
     ASSERT_FALSE(depCja.empty()) << "buildDepArchive failed";
     ASSERT_TRUE(fs::exists(depCja));
@@ -197,6 +197,8 @@ TEST(CajetaArchiveEmitTests, uberWithClasspathBundlesDepEntriesNoPrune) {
         depEntryNames.push_back(e.name);
     }
     ASSERT_FALSE(depEntryNames.empty());
+    std::string depPrefix = "deps/"
+        + depArc.getName() + "-" + depArc.getVersion() + "/";
 
     auto proj = makeTmpProject("uberCp");
     std::string cmd =
@@ -212,39 +214,44 @@ TEST(CajetaArchiveEmitTests, uberWithClasspathBundlesDepEntriesNoPrune) {
     auto uber = cajeta::CajetaArchive::readFrom(uberCja.string());
 
     for (const auto& depName : depEntryNames) {
+        std::string nestedName = depPrefix + depName;
         bool found = false;
         for (const auto& uberEntry : uber.getEntries()) {
-            if (uberEntry.name == depName) {
+            if (uberEntry.name == nestedName) {
                 found = true;
-                // The dep-uniquely-named entries (deplib/Util.bc) MUST
-                // be tagged Dependency. Names that also exist in the
-                // user-stdlib staging (cajeta/runtime/__stdlib__.bc)
-                // keep the user-side stage's Stdlib tag — same canonical
-                // class, first-staged wins.
-                if (depName.rfind("cajeta/", 0) != 0) {
-                    EXPECT_EQ(uberEntry.originTag,
-                              (uint8_t) cajeta::CajetaArchive::Origin::Dependency)
-                        << depName << " not tagged Dependency";
-                }
+                EXPECT_EQ(uberEntry.originTag,
+                          (uint8_t) cajeta::CajetaArchive::Origin::Dependency)
+                    << nestedName << " not tagged Dependency";
                 break;
             }
         }
-        EXPECT_TRUE(found) << "uber missing dep entry: " << depName;
+        EXPECT_TRUE(found) << "uber missing dep entry: " << nestedName;
     }
+
+    // Manifest deps array carries the dep summary.
+    bool depFound = false;
+    for (const auto& d : uber.getDeps()) {
+        if (d.name == depArc.getName()) { depFound = true; break; }
+    }
+    EXPECT_TRUE(depFound) << "manifest deps array missing entry for "
+                          << depArc.getName();
 
     fs::remove_all(proj.sourceRoot.parent_path());
     fs::remove_all(depCja.parent_path().parent_path());
 }
 
 TEST(CajetaArchiveEmitTests, uberDedupesSameNamedEntriesAcrossClasspathNoPrune) {
-    // --prune-uber=off; same-named entries across two dep archives
-    // dedupe to one copy in the uber output.
+    // --prune-uber=off; two dep archives with the same manifest
+    // name+version produce the same deps/<name>-<version>/ prefix,
+    // so per-entry dedupe (first-archive-wins) keeps exactly one
+    // copy at each nested path.
     auto depA = buildDepArchive("dupA");
     auto depB = buildDepArchive("dupB");
     ASSERT_FALSE(depA.empty());
     ASSERT_FALSE(depB.empty());
 
     auto a = cajeta::CajetaArchive::readFrom(depA.string());
+    std::string depPrefix = "deps/" + a.getName() + "-" + a.getVersion() + "/";
 
     auto proj = makeTmpProject("uberDup");
     std::string cmd =
@@ -261,11 +268,12 @@ TEST(CajetaArchiveEmitTests, uberDedupesSameNamedEntriesAcrossClasspathNoPrune) 
         (proj.buildRoot / "Hello.cja").string());
 
     for (const auto& depEntry : a.getEntries()) {
+        std::string nestedName = depPrefix + depEntry.name;
         int count = 0;
         for (const auto& ub : uber.getEntries()) {
-            if (ub.name == depEntry.name) count++;
+            if (ub.name == nestedName) count++;
         }
-        EXPECT_EQ(count, 1) << "name `" << depEntry.name
+        EXPECT_EQ(count, 1) << "name `" << nestedName
                             << "` appears " << count << "x in uber";
     }
 
@@ -278,9 +286,13 @@ TEST(CajetaArchiveEmitTests, uberDedupesSameNamedEntriesAcrossClasspathNoPrune) 
 
 TEST(CajetaArchiveEmitTests, uberDefaultPrunesUnreferencedDepEntries) {
     // User code doesn't reference deplib at all → uber should NOT
-    // bundle `deplib/Util.bc` from the classpath archive.
+    // bundle anything from the dep's deps/<name>-<version>/ subtree
+    // AND should not list the dep in the manifest deps array.
     auto depCja = buildDepArchive("prune_unref");
     ASSERT_FALSE(depCja.empty());
+
+    auto depArc = cajeta::CajetaArchive::readFrom(depCja.string());
+    std::string depPrefix = "deps/" + depArc.getName() + "-" + depArc.getVersion() + "/";
 
     auto proj = makeTmpProject("prune_unref");
     std::string cmd =
@@ -295,19 +307,21 @@ TEST(CajetaArchiveEmitTests, uberDefaultPrunesUnreferencedDepEntries) {
     auto uber = cajeta::CajetaArchive::readFrom(
         (proj.buildRoot / "Hello.cja").string());
 
-    // `deplib/Util.bc` must NOT be in the uber output (user never
-    // references deplib.Util). The user's `demo/Hello.bc` and the
-    // stdlib bundle are present unconditionally.
-    bool depUtilSeen = false;
+    // The whole dep subtree must be absent. The user's
+    // `demo/Hello.bc` and the stdlib bundle are present unconditionally.
+    bool depSubtreeSeen = false;
     bool userHelloSeen = false;
     for (const auto& e : uber.getEntries()) {
-        if (e.name == "deplib/Util.bc") depUtilSeen = true;
-        if (e.name == "demo/Hello.bc")  userHelloSeen = true;
+        if (e.name.rfind(depPrefix, 0) == 0) depSubtreeSeen = true;
+        if (e.name == "demo/Hello.bc")       userHelloSeen = true;
     }
-    EXPECT_FALSE(depUtilSeen)
-        << "deplib/Util.bc should have been pruned (unreferenced)";
+    EXPECT_FALSE(depSubtreeSeen)
+        << depPrefix << " subtree should have been pruned (unreferenced)";
     EXPECT_TRUE(userHelloSeen)
         << "demo/Hello.bc must always be included";
+    // Dep dropped from the manifest deps array since nothing survived.
+    EXPECT_TRUE(uber.getDeps().empty())
+        << "manifest deps array should be empty when the only dep was pruned";
 
     fs::remove_all(proj.sourceRoot.parent_path());
     fs::remove_all(depCja.parent_path().parent_path());
@@ -351,6 +365,10 @@ TEST(CajetaArchiveEmitTests, uberDefaultKeepsReferencedDepEntries) {
     }
 
     auto uber = cajeta::CajetaArchive::readFrom((build / "Hello.cja").string());
+    auto depArc = cajeta::CajetaArchive::readFrom(depCja.string());
+    std::string depPrefix = "deps/" + depArc.getName() + "-" + depArc.getVersion() + "/";
+    std::string depUtilNested = depPrefix + "deplib/Util.bc";
+
     // The pruner only keeps a dep entry if the substring of its
     // canonical name appears in some included bitcode. The compiler's
     // current parse path doesn't resolve `deplib.Util` against the
@@ -370,7 +388,7 @@ TEST(CajetaArchiveEmitTests, uberDefaultKeepsReferencedDepEntries) {
                 needle.begin(), needle.end());
             userBitcodeReferencesDep = (it != e.data.end());
         }
-        if (e.name == "deplib/Util.bc") depUtilSeen = true;
+        if (e.name == depUtilNested) depUtilSeen = true;
     }
     if (!userBitcodeReferencesDep) {
         GTEST_SKIP() << "user bitcode doesn't yet carry the dep "
@@ -381,18 +399,22 @@ TEST(CajetaArchiveEmitTests, uberDefaultKeepsReferencedDepEntries) {
                         "in the included bitcode references it.";
     }
     EXPECT_TRUE(depUtilSeen)
-        << "deplib/Util.bc should have been kept (user bitcode "
+        << depUtilNested << " should have been kept (user bitcode "
         << "references the dep canonical)";
 
     fs::remove_all(base);
     fs::remove_all(depCja.parent_path().parent_path());
 }
 
-TEST(CajetaArchiveEmitTests, archiveContainsUserAndStdlibEntries) {
+TEST(CajetaArchiveEmitTests, cjaContainsProjectEntriesOnly) {
+    // --emit=cja produces a project-only library archive — the
+    // parsed-stdlib module is stripped, no deps are bundled. The
+    // user's demo/Hello.bc is the sole entry; consumers must bring
+    // their own stdlib via --classpath at compile time.
     auto proj = makeTmpProject("entries");
     std::string cmd =
         compilerPath()
-        + " --emit=archive demo.Hello.run "
+        + " --emit=cja demo.Hello.run "
         + proj.sourceRoot.string() + " "
         + proj.buildRoot.string()
         + " > /dev/null 2>&1";
@@ -401,16 +423,20 @@ TEST(CajetaArchiveEmitTests, archiveContainsUserAndStdlibEntries) {
     auto arc = cajeta::CajetaArchive::readFrom(
         (proj.buildRoot / "Hello.cja").string());
 
-    // At minimum: the user's demo.Hello and the stdlib bundle
-    // (cajeta.runtime.__stdlib__). entry_count varies as the stdlib
-    // grows; pin a lower bound rather than exact.
-    ASSERT_GE(arc.getEntries().size(), 2u);
-    // Every entry name follows the jar-style convention: '/' separators,
-    // `.bc` suffix.
+    bool userHelloSeen = false;
+    bool stdlibSeen = false;
     for (const auto& e : arc.getEntries()) {
+        if (e.name == "demo/Hello.bc") userHelloSeen = true;
+        if (e.name.rfind("cajeta/", 0) == 0) stdlibSeen = true;
+        // Every entry follows the jar-style convention: '/' separator,
+        // '.bc' suffix.
         EXPECT_NE(e.name.find(".bc"), std::string::npos)
             << "entry name = " << e.name;
     }
+    EXPECT_TRUE(userHelloSeen) << "demo/Hello.bc must be present";
+    EXPECT_FALSE(stdlibSeen)
+        << "--emit=cja must not bundle stdlib (cajeta.* entries)";
+    EXPECT_TRUE(arc.getDeps().empty()) << "cja archives must not list deps";
 
     fs::remove_all(proj.sourceRoot.parent_path());
 }

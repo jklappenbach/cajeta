@@ -60,7 +60,7 @@ uint64_t readU64LE(const std::vector<uint8_t>& bytes, size_t offset) {
 TEST(CajetaArchiveTests, emptyArchiveHasCorrectMagicAndVersion) {
     auto path = std::filesystem::temp_directory_path() / "cja_empty.cja";
     {
-        CajetaArchive arc("test-empty", "1.0.0", CajetaArchive::Kind::Thin);
+        CajetaArchive arc("test-empty", "1.0.0", CajetaArchive::Kind::Cja);
         arc.setCompression(CajetaArchive::Compression::None);
         arc.writeTo(path.string());
     }
@@ -85,10 +85,10 @@ TEST(CajetaArchiveTests, emptyArchiveHasCorrectMagicAndVersion) {
 
 // --- Manifest --------------------------------------------------------------
 
-TEST(CajetaArchiveTests, emptyArchiveHasManifestWithThinKind) {
+TEST(CajetaArchiveTests, emptyArchiveHasManifestWithCjaKind) {
     auto path = std::filesystem::temp_directory_path() / "cja_manifest.cja";
     {
-        CajetaArchive arc("my-lib", "2.0.1", CajetaArchive::Kind::Thin);
+        CajetaArchive arc("my-lib", "2.0.1", CajetaArchive::Kind::Cja);
         arc.setCompression(CajetaArchive::Compression::None);   // probe raw manifest bytes
         arc.writeTo(path.string());
     }
@@ -105,7 +105,7 @@ TEST(CajetaArchiveTests, emptyArchiveHasManifestWithThinKind) {
     EXPECT_NE(manifest.find("\"name\":\"my-lib\""), std::string::npos)
         << "manifest = " << manifest;
     EXPECT_NE(manifest.find("\"version\":\"2.0.1\""), std::string::npos);
-    EXPECT_NE(manifest.find("\"kind\":\"thin\""), std::string::npos);
+    EXPECT_NE(manifest.find("\"kind\":\"cja\""), std::string::npos);
 
     std::filesystem::remove(path);
 }
@@ -132,7 +132,7 @@ TEST(CajetaArchiveTests, addsBitcodeEntryWithCorrectNameAndPayload) {
     auto path = std::filesystem::temp_directory_path() / "cja_one_entry.cja";
     std::string bitcode = "BCfake_bitcode_payload";   // not real bitcode, just a payload
     {
-        CajetaArchive arc("test", "0", CajetaArchive::Kind::Thin);
+        CajetaArchive arc("test", "0", CajetaArchive::Kind::Cja);
         arc.setCompression(CajetaArchive::Compression::None);
         CajetaArchiveEntry entry;
         entry.name       = "demo/App.bc";
@@ -176,13 +176,13 @@ TEST(CajetaArchiveTests, addsBitcodeEntryWithCorrectNameAndPayload) {
 TEST(CajetaArchiveTests, readerRoundtripEmptyArchive) {
     auto path = std::filesystem::temp_directory_path() / "cja_rt_empty.cja";
     {
-        CajetaArchive arc("rt-test", "1.0", CajetaArchive::Kind::Thin);
+        CajetaArchive arc("rt-test", "1.0", CajetaArchive::Kind::Cja);
         arc.writeTo(path.string());
     }
     auto loaded = CajetaArchive::readFrom(path.string());
     EXPECT_EQ(loaded.getName(),    "rt-test");
     EXPECT_EQ(loaded.getVersion(), "1.0");
-    EXPECT_EQ(loaded.getKind(),    CajetaArchive::Kind::Thin);
+    EXPECT_EQ(loaded.getKind(),    CajetaArchive::Kind::Cja);
     EXPECT_TRUE(loaded.getEntries().empty());
     std::filesystem::remove(path);
 }
@@ -203,7 +203,7 @@ TEST(CajetaArchiveTests, readerRoundtripEntriesByteForByte) {
     std::vector<uint8_t> bits1{0xCA, 0xFE, 0xBA, 0xBE};
     std::vector<uint8_t> bits2{0xDE, 0xAD, 0xBE, 0xEF, 0x12, 0x34};
     {
-        CajetaArchive arc("rt-entries", "1", CajetaArchive::Kind::Thin);
+        CajetaArchive arc("rt-entries", "1", CajetaArchive::Kind::Cja);
         CajetaArchiveEntry e1{
             "pkg/A.bc", 0, CajetaArchive::EntryKind::ClassBitcode, bits1};
         CajetaArchiveEntry e2{
@@ -251,7 +251,7 @@ TEST(CajetaArchiveTests, readerRejectsTruncated) {
 TEST(CajetaArchiveTests, compressedArchiveSetsFlagsBit0And1) {
     auto path = std::filesystem::temp_directory_path() / "cja_zstd_flags.cja";
     {
-        CajetaArchive arc("zstd", "1", CajetaArchive::Kind::Thin);
+        CajetaArchive arc("zstd", "1", CajetaArchive::Kind::Cja);
         arc.setCompression(CajetaArchive::Compression::Zstd);
         // Need at least one entry so flag bit 1 is meaningful (the
         // writer sets the bit unconditionally when compression is on,
@@ -311,7 +311,7 @@ TEST(CajetaArchiveTests, compressedArchiveIsSmallerThanUncompressed) {
     std::vector<uint8_t> payload(16 * 1024, 0x7A);
     auto buildAndWrite = [&](CajetaArchive::Compression c,
                               const std::filesystem::path& path) {
-        CajetaArchive arc("sz", "1", CajetaArchive::Kind::Thin);
+        CajetaArchive arc("sz", "1", CajetaArchive::Kind::Cja);
         arc.setCompression(c);
         CajetaArchiveEntry e{"p/Big.bc", 0,
             CajetaArchive::EntryKind::ClassBitcode, payload};
@@ -347,7 +347,7 @@ TEST(CajetaArchiveTests, readerHandlesBothCompressedAndUncompressed) {
 
     auto build = [&](CajetaArchive::Compression c,
                       const std::filesystem::path& path) {
-        CajetaArchive arc("both", "1", CajetaArchive::Kind::Thin);
+        CajetaArchive arc("both", "1", CajetaArchive::Kind::Cja);
         arc.setCompression(c);
         CajetaArchiveEntry e{"a/B.bc", 0,
             CajetaArchive::EntryKind::ClassBitcode, payload};
@@ -373,7 +373,7 @@ TEST(CajetaArchiveTests, readerHandlesBothCompressedAndUncompressed) {
 TEST(CajetaArchiveTests, writerWritesNonZeroIndexOffsetAndLength) {
     auto path = std::filesystem::temp_directory_path() / "cja_idx_basic.cja";
     {
-        CajetaArchive arc("idx", "1", CajetaArchive::Kind::Thin);
+        CajetaArchive arc("idx", "1", CajetaArchive::Kind::Cja);
         arc.setCompression(CajetaArchive::Compression::None);
         CajetaArchiveEntry e{"a/B.bc", 0,
             CajetaArchive::EntryKind::ClassBitcode,
@@ -403,7 +403,7 @@ TEST(CajetaArchiveTests, findEntryFindsByName) {
     std::vector<uint8_t> payload1{0x11, 0x22};
     std::vector<uint8_t> payload2{0x33, 0x44, 0x55};
     {
-        CajetaArchive arc("find", "1", CajetaArchive::Kind::Thin);
+        CajetaArchive arc("find", "1", CajetaArchive::Kind::Cja);
         arc.addEntry({"x/A.bc", 0,
             CajetaArchive::EntryKind::ClassBitcode, payload1});
         arc.addEntry({"x/y/B.bc", 0,
@@ -428,7 +428,7 @@ TEST(CajetaArchiveTests, indexSurvivesCompression) {
     // not logical entry indices.
     auto path = std::filesystem::temp_directory_path() / "cja_idx_zstd.cja";
     {
-        CajetaArchive arc("idx-zstd", "1", CajetaArchive::Kind::Thin);
+        CajetaArchive arc("idx-zstd", "1", CajetaArchive::Kind::Cja);
         arc.setCompression(CajetaArchive::Compression::Zstd);
         arc.addEntry({"a.bc", 0,
             CajetaArchive::EntryKind::ClassBitcode,
@@ -456,7 +456,7 @@ TEST(CajetaArchiveTests, indexSurvivesCompression) {
 TEST(CajetaArchiveTests, manifestCountsEntries) {
     auto path = std::filesystem::temp_directory_path() / "cja_count.cja";
     {
-        CajetaArchive arc("multi", "1", CajetaArchive::Kind::Thin);
+        CajetaArchive arc("multi", "1", CajetaArchive::Kind::Cja);
         arc.setCompression(CajetaArchive::Compression::None);
         for (int i = 0; i < 3; ++i) {
             CajetaArchiveEntry e;

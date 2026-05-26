@@ -36,7 +36,7 @@ void printUsage(const char* progname) {
               << "  --profile-counters=on|off            Per-method PGO-collection instrumentation.\n"
               << "\n"
               << "Output:\n"
-              << "  --emit=ir|obj|archive|uber|exe       Output mode. Default ir.\n"
+              << "  --emit=ir|obj|cja|uber|exe           Output mode. Default ir.\n"
               << "  --classpath=a.cja,b.cja              Cajeta archives to ingest as dependencies\n"
               << "                                       (repeatable; comma-separates inside each occurrence).\n"
               << "  --prune-uber=on|off                  When --emit=uber, only bundle classpath entries\n"
@@ -171,15 +171,15 @@ int main(int argc, const char* argv[]) {
                 compiler.setEmitMode(EmitMode::IR);
             } else if (value == "obj") {
                 compiler.setEmitMode(EmitMode::Obj);
-            } else if (value == "archive") {
-                compiler.setEmitMode(EmitMode::Archive);
+            } else if (value == "cja") {
+                compiler.setEmitMode(EmitMode::Cja);
             } else if (value == "uber") {
                 compiler.setEmitMode(EmitMode::Uber);
             } else if (value == "exe") {
                 compiler.setEmitMode(EmitMode::Exe);
             } else {
                 std::cerr << "cajeta: unrecognized value for --emit: " << value
-                          << " (expected ir|obj|archive|uber|exe)\n";
+                          << " (expected ir|obj|cja|uber|exe)\n";
                 printUsage(argv[0]);
                 return 1;
             }

@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Build the Tour project into a single .cja cajeta archive (uber form,
-# zstd-compressed). Bundles user modules + parsed-stdlib classes into
-# one file; suitable for distributing the program as a library or for
-# feeding into a downstream compile via --classpath.
+# Build HelloWorld into a project-only cajeta archive (.cja). Bundles
+# the user's compiled bitcode into a single file with a manifest —
+# stdlib is NOT included (consumers bring their own via --classpath).
+# The library distribution shape.
 #
-# See cajeta-docs/Compilation.md § Archive format for the on-disk
-# layout and § Uber archives for the uber-form contract.
+# See cajeta-docs/Compilation.md § Output formats for the contract and
+# § Uber archives for the runnable, self-contained form (build-uber.sh).
 
 set -euo pipefail
 
@@ -23,22 +23,22 @@ if [[ ! -x "$CAJETA_BIN" ]]; then
     exit 1
 fi
 
-ENTRY_METHOD="tour.Tour.run"
+ENTRY_METHOD="helloworld.HelloWorld.run"
 
 rm -rf "$BUILD_DIR"
 mkdir -p "$BUILD_DIR"
 
-echo "Compiling cajeta sources → .cja archive (uber)"
+echo "Compiling cajeta sources → .cja archive (project-only)"
 echo "  entry: $ENTRY_METHOD"
 echo "  src:   $SRC_ROOT"
 echo "  out:   $BUILD_DIR"
 "$CAJETA_BIN" \
-    --emit=uber \
+    --emit=cja \
     "$ENTRY_METHOD" \
     "$SRC_ROOT" \
     "$BUILD_DIR" \
     > "${BUILD_DIR}/cajeta-compile.log" 2>&1 || {
-    echo "error: cajeta --emit=uber failed (see ${BUILD_DIR}/cajeta-compile.log)" >&2
+    echo "error: cajeta --emit=cja failed (see ${BUILD_DIR}/cajeta-compile.log)" >&2
     tail -20 "${BUILD_DIR}/cajeta-compile.log" >&2
     exit 1
 }

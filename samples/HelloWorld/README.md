@@ -8,8 +8,8 @@ The binary is **~36 KB** on x86_64 Linux. The cajeta compiler emits one ELF sect
 samples/HelloWorld/
 ├── README.md
 ├── build-ir.sh                ← compile to exploded LLVM IR (.ll per module)
-├── build-archive.sh           ← compile to a single thin .cja archive
-├── build-uber.sh              ← compile to an uber .cja archive
+├── build-cja.sh               ← compile to a project-only .cja library archive
+├── build-uber.sh              ← compile to a runnable uber .cja archive
 ├── build-bin.sh               ← compile + link to a native binary
 └── src/helloworld/
     └── HelloWorld.cajeta      ← `package helloworld;` + `public static int32 run()`
@@ -37,10 +37,10 @@ Then from this directory:
 ./build-ir.sh
 ls build/ir/
 
-# Single thin .cja archive (build/archive/HelloWorld.cja):
-./build-archive.sh
+# Project-only .cja library archive (build/cja/HelloWorld.cja):
+./build-cja.sh
 
-# Single uber .cja archive (build/uber/HelloWorld.cja):
+# Runnable uber .cja archive (build/uber/HelloWorld.cja):
 ./build-uber.sh
 ```
 
@@ -50,8 +50,8 @@ ls build/ir/
 |---|---|---|
 | Native binary | `build-bin.sh` | `build/HelloWorld` — 36 KB ELF executable |
 | Exploded IR | `build-ir.sh` | `build/ir/{...}.ll` — one text-IR file per module |
-| Thin archive | `build-archive.sh` | `build/archive/HelloWorld.cja` — single bundled bitcode + manifest |
-| Uber archive | `build-uber.sh` | `build/uber/HelloWorld.cja` — same container, `kind: uber` |
+| Cja archive | `build-cja.sh` | `build/cja/HelloWorld.cja` — project-only library form (no stdlib, no deps) |
+| Uber archive | `build-uber.sh` | `build/uber/HelloWorld.cja` — project + stdlib + transitively-referenced deps under `deps/<name>-<ver>/` |
 
 See [`cajeta-docs/Compilation.md`](../../cajeta-docs/Compilation.md) for the full output-mode reference and the `.cja` container spec.
 

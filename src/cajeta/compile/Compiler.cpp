@@ -614,7 +614,7 @@ namespace cajeta {
         // Archive emit bundles every parsed module's bitcode into one
         // `.cja` file. The exploded per-module loop below is skipped —
         // a single artifact is the whole point.
-        if (emitMode == EmitMode::Archive || emitMode == EmitMode::Uber) {
+        if (emitMode == EmitMode::Cja || emitMode == EmitMode::Uber) {
             emitArchive(archiveRootPath, emitMode == EmitMode::Uber);
         } else {
             for (auto& module: modules) {
@@ -905,10 +905,6 @@ namespace cajeta {
             outPath = root + baseName + ".cja";
         }
 
-        // Build the archive header. v1's uber emit doesn't actually bundle
-        // dependencies (no --classpath yet); the manifest kind tag still
-        // reflects the user's intent so a future reader can identify the
-        // archive shape correctly.
         std::string archiveName = "cajeta-archive";
         if (!entryMethod.empty()) {
             auto lastDot = entryMethod.rfind('.');
@@ -917,35 +913,39 @@ namespace cajeta {
             }
         }
         CajetaArchive arc(archiveName, "1.0.0",
-            uber ? CajetaArchive::Kind::Uber : CajetaArchive::Kind::Thin);
+            uber ? CajetaArchive::Kind::Uber : CajetaArchive::Kind::Cja);
 
         // Per-entry struct used as a staging buffer while we compute
         // reachability — entries land in the output archive only after
         // the pruner decides which deps to keep. Holds both the binary
         // entry shape (name + origin + kindTag + bytes) and the
         // derived canonical name we use for reachability lookups.
+        // depIndex identifies which entry came from which classpath
+        // archive — -1 for user / stdlib, otherwise an index into the
+        // staged-deps vector below. The dep-keyed prune drops an
+        // entire depIndex group when no canonical from it survives.
         struct StagingEntry {
             CajetaArchiveEntry entry;
             std::string canonical;   // pkg.subpkg.Class form, no '.bc' suffix
-            bool included = true;    // pruning sets false for excluded deps
-        };
-        auto entryNameToCanonical = [](const std::string& entryName) {
-            std::string c = entryName;
-            // Strip trailing '.bc'.
-            if (c.size() > 3 && c.compare(c.size() - 3, 3, ".bc") == 0) {
-                c.resize(c.size() - 3);
-            }
-            // '/' → '.'
-            std::replace(c.begin(), c.end(), '/', '.');
-            return c;
+            int depIndex = -1;       // -1 for user/stdlib; otherwise index into stagedDeps
+            bool included = true;    // pruning sets false for excluded entries
         };
 
         // ---- Stage user + stdlib modules ----
+        // Cja mode: user code only — strip the parsed-stdlib module so the
+        // archive is a true library (consumer brings its own stdlib).
+        // Uber mode: include stdlib (the artifact is meant to run, not be
+        // re-consumed). Stdlib canonicals start with "cajeta.".
         std::vector<StagingEntry> staged;
         for (auto& module : modules) {
             std::string canonical = module->getQName()
                 ? module->getQName()->toCanonical()
                 : std::string("anonymous");
+            bool isStdlib = canonical.rfind("cajeta.", 0) == 0;
+            if (!uber && isStdlib) {
+                // Cja: project-only. Skip the stdlib module entirely.
+                continue;
+            }
             std::string entryName = canonical;
             std::replace(entryName.begin(), entryName.end(), '.', '/');
             entryName += ".bc";
@@ -957,7 +957,6 @@ namespace cajeta {
                 os.flush();
             }
 
-            bool isStdlib = canonical.rfind("cajeta.", 0) == 0;
             StagingEntry se;
             se.entry.name      = entryName;
             se.entry.originTag = (uint8_t) (isStdlib
@@ -966,11 +965,18 @@ namespace cajeta {
             se.entry.kindTag   = CajetaArchive::EntryKind::ClassBitcode;
             se.entry.data.assign(bitcode.begin(), bitcode.end());
             se.canonical       = canonical;
-            // User + stdlib are always included (reachability prunes
-            // only dep entries).
+            se.depIndex        = -1;
+            // User + stdlib are always included (reachability prunes only
+            // dep entries; the stdlib bundle is always reachable since
+            // user code links it).
             se.included = true;
             staged.push_back(std::move(se));
         }
+
+        // Per-dep summary captured during classpath staging — name +
+        // version come from each loaded classpath archive's manifest;
+        // included_entry_count is filled in after pruning.
+        std::vector<CajetaArchive::DepSummary> stagedDeps;
 
         // ---- Stage classpath (uber only) ----
         if (uber) {
@@ -979,26 +985,61 @@ namespace cajeta {
             // for each dep canonical that any already-included bitcode
             // references via substring match. When pruneUber is off,
             // every dep entry is included up front.
-            std::size_t userStdlibCount = staged.size();
             for (const auto& cpPath : classpath) {
                 try {
                     auto dep = CajetaArchive::readFrom(cpPath);
+                    int thisDepIdx = (int) stagedDeps.size();
+                    CajetaArchive::DepSummary summary;
+                    summary.name    = dep.getName().empty()
+                        ? std::string("anonymous")
+                        : dep.getName();
+                    summary.version = dep.getVersion().empty()
+                        ? std::string("0.0.0")
+                        : dep.getVersion();
+                    summary.includedEntryCount = 0;  // patched post-prune
+                    stagedDeps.push_back(summary);
+
+                    // Nested layout: every dep entry lives under
+                    // deps/<name>-<version>/<original-path>. Two deps
+                    // sharing a class canonical no longer collide on
+                    // entry path (each gets its own subtree); same-class
+                    // duplicates are a manifest-level version conflict
+                    // that the cja shade tool resolves, not a writer-
+                    // level dedupe concern.
+                    std::string depPrefix = "deps/"
+                        + summary.name + "-" + summary.version + "/";
+
                     for (const auto& depEntry : dep.getEntries()) {
-                        // Dedupe by entry name (first archive wins).
+                        std::string nestedName = depPrefix + depEntry.name;
+                        // Dedupe by nested path (same dep listed twice on
+                        // classpath — first wins).
                         bool seen = false;
                         for (const auto& already : staged) {
-                            if (already.entry.name == depEntry.name) {
+                            if (already.entry.name == nestedName) {
                                 seen = true;
                                 break;
                             }
                         }
                         if (seen) continue;
+
+                        // Canonical name for reachability lookup uses the
+                        // ORIGINAL dep-internal path (no `deps/...` prefix),
+                        // because that's what shows up in any cross-module
+                        // reference's mangled symbol string.
+                        std::string canonical = depEntry.name;
+                        if (canonical.size() > 3
+                                && canonical.compare(canonical.size() - 3, 3, ".bc") == 0) {
+                            canonical.resize(canonical.size() - 3);
+                        }
+                        std::replace(canonical.begin(), canonical.end(), '/', '.');
+
                         StagingEntry se;
-                        se.entry.name      = depEntry.name;
+                        se.entry.name      = std::move(nestedName);
                         se.entry.originTag = (uint8_t) CajetaArchive::Origin::Dependency;
                         se.entry.kindTag   = depEntry.kindTag;
                         se.entry.data      = depEntry.data;
-                        se.canonical       = entryNameToCanonical(depEntry.name);
+                        se.canonical       = std::move(canonical);
+                        se.depIndex        = thisDepIdx;
                         // Default to "include" when prune is off; otherwise
                         // wait for the closure pass to vouch.
                         se.included        = !pruneUber;
@@ -1013,8 +1054,8 @@ namespace cajeta {
 
             if (pruneUber) {
                 // Iterative substring-scan closure. Initial reachable set
-                // is the user+stdlib stage range [0, userStdlibCount). On
-                // each pass, scan every reachable entry's bitcode for any
+                // is the user+stdlib entries (depIndex == -1). On each
+                // pass, scan every reachable entry's bitcode for any
                 // not-yet-reachable dep canonical's name as a substring;
                 // promote matches and re-iterate until quiescent.
                 //
@@ -1030,13 +1071,11 @@ namespace cajeta {
                     changed = false;
                     for (std::size_t i = 0; i < staged.size(); ++i) {
                         if (staged[i].included) continue;
-                        // Scan against every included entry's bitcode.
                         for (std::size_t j = 0; j < staged.size(); ++j) {
                             if (!staged[j].included) continue;
                             const auto& bc = staged[j].entry.data;
                             const auto& needle = staged[i].canonical;
                             if (needle.empty()) continue;
-                            // C++ std::search over the bitcode bytes.
                             auto it = std::search(
                                 bc.begin(), bc.end(),
                                 needle.begin(), needle.end());
@@ -1051,10 +1090,26 @@ namespace cajeta {
             }
         }
 
-        // ---- Emit included entries in stage order ----
+        // ---- Emit included entries in stage order, count per-dep survivors ----
         for (auto& se : staged) {
             if (!se.included) continue;
+            if (se.depIndex >= 0
+                    && (std::size_t) se.depIndex < stagedDeps.size()) {
+                stagedDeps[se.depIndex].includedEntryCount++;
+            }
             arc.addEntry(std::move(se.entry));
+        }
+
+        // Drop deps whose entire entry set was pruned — manifest deps
+        // array reflects only deps that contributed at least one entry
+        // to the final archive. Lets readers see at a glance what
+        // actually got bundled.
+        if (uber) {
+            std::vector<CajetaArchive::DepSummary> kept;
+            for (auto& d : stagedDeps) {
+                if (d.includedEntryCount > 0) kept.push_back(std::move(d));
+            }
+            arc.setDeps(std::move(kept));
         }
 
         arc.writeTo(outPath);

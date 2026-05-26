@@ -64,6 +64,53 @@ namespace cajeta {
             return m.substr(pos, end - pos);
         }
 
+        // Scan the manifest's `deps` array — uber-only. Each element is
+        // {"name":"...","version":"...","included_entry_count":N}.
+        // Compact JSON with no nesting, no whitespace, no escapes inside
+        // the controlled value set, so a simple linear scan suffices.
+        // Returns an empty vector when the field is absent.
+        std::vector<CajetaArchive::DepSummary>
+        scanManifestDeps(const std::string& m) {
+            std::vector<CajetaArchive::DepSummary> out;
+            const std::string headerKey = "\"deps\":[";
+            auto arrStart = m.find(headerKey);
+            if (arrStart == std::string::npos) return out;
+            arrStart += headerKey.size();
+            auto arrEnd = m.find(']', arrStart);
+            if (arrEnd == std::string::npos) return out;
+            std::string body = m.substr(arrStart, arrEnd - arrStart);
+
+            // Each object is "{...},{...}" — split on `},{`.
+            std::size_t cursor = 0;
+            while (cursor < body.size()) {
+                auto objStart = body.find('{', cursor);
+                if (objStart == std::string::npos) break;
+                auto objEnd = body.find('}', objStart);
+                if (objEnd == std::string::npos) break;
+                std::string obj = body.substr(objStart, objEnd - objStart + 1);
+
+                CajetaArchive::DepSummary d;
+                d.name    = scanManifestString(obj, "name");
+                d.version = scanManifestString(obj, "version");
+                // included_entry_count is a numeric, not string-quoted.
+                const std::string cntKey = "\"included_entry_count\":";
+                auto cntPos = obj.find(cntKey);
+                if (cntPos != std::string::npos) {
+                    cntPos += cntKey.size();
+                    auto cntEnd = obj.find_first_of(",}", cntPos);
+                    if (cntEnd != std::string::npos) {
+                        try {
+                            d.includedEntryCount = (uint32_t) std::stoul(
+                                obj.substr(cntPos, cntEnd - cntPos));
+                        } catch (...) { /* leave at 0 */ }
+                    }
+                }
+                if (!d.name.empty()) out.push_back(std::move(d));
+                cursor = objEnd + 1;
+            }
+            return out;
+        }
+
         // zstd compression level. 3 is the default — fast encoder, very
         // fast decoder, decent ratio. Levels 1-3 are speed-optimized;
         // 19-22 are ratio-optimized. The .cja write-few-read-many
@@ -136,7 +183,7 @@ namespace cajeta {
         // entry_count is an integer. If user names ever carry a `"` we'd
         // need a real escaper; for now the cajeta canonical-name format
         // is restricted to ASCII identifier chars + dots.
-        std::string kindStr = (kind == Kind::Uber) ? "uber" : "thin";
+        std::string kindStr = (kind == Kind::Uber) ? "uber" : "cja";
         std::string out;
         out += "{";
         out += "\"name\":\"" + name + "\"";
@@ -144,6 +191,22 @@ namespace cajeta {
         out += ",\"kind\":\"" + kindStr + "\"";
         out += ",\"format_version\":" + std::to_string(FORMAT_VERSION);
         out += ",\"entry_count\":" + std::to_string(entries.size());
+        // Uber-only: deps array describes the classpath archives whose
+        // entries were nested under deps/<name>-<version>/. Cja archives
+        // ship project-only (no stdlib, no deps), so this key is absent
+        // from the cja manifest entirely.
+        if (kind == Kind::Uber && !deps.empty()) {
+            out += ",\"deps\":[";
+            for (std::size_t i = 0; i < deps.size(); ++i) {
+                if (i > 0) out += ",";
+                out += "{\"name\":\"" + deps[i].name + "\"";
+                out += ",\"version\":\"" + deps[i].version + "\"";
+                out += ",\"included_entry_count\":"
+                    + std::to_string(deps[i].includedEntryCount);
+                out += "}";
+            }
+            out += "]";
+        }
         out += "}";
         return out;
     }
@@ -362,10 +425,16 @@ namespace cajeta {
         std::string archiveName = scanManifestString(manifest, "name");
         std::string archiveVer  = scanManifestString(manifest, "version");
         std::string kindStr     = scanManifestString(manifest, "kind");
-        Kind archKind = (kindStr == "uber") ? Kind::Uber : Kind::Thin;
+        // Accept both the current "cja" and the legacy "thin" tag —
+        // "thin" was emitted by pre-rename dev snapshots that may
+        // still sit in CI caches. New writes always emit "cja".
+        Kind archKind = (kindStr == "uber") ? Kind::Uber : Kind::Cja;
 
         CajetaArchive arc(archiveName, archiveVer, archKind);
         arc.setSourceArchiveName(archiveName);
+        if (archKind == Kind::Uber) {
+            arc.setDeps(scanManifestDeps(manifest));
+        }
 
         // Entries — sequential read until the entries-section end
         // (start of trailing index, or EOF for pre-index archives).

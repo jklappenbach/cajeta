@@ -16,9 +16,11 @@
 //   ...
 //
 // Used by Compiler::emitForModule when the user passes
-// --emit=archive (thin form) or --emit=uber. Uber form populates the
-// manifest with an "origins" map and adds dep-archive entries; the
-// container shape is otherwise identical.
+// --emit=cja (project-only, library form) or --emit=uber
+// (project + stdlib + transitively-referenced classpath deps,
+// runnable form). Uber form populates the manifest with a `deps`
+// array and nests each dep's entries under deps/<name>-<version>/;
+// the container shape is otherwise identical.
 //
 // v1 omits zstd compression, the trailing index, the resources block,
 // and the runtime-bitcode block. Adding them later only flips header
@@ -37,10 +39,12 @@ namespace cajeta {
 
     class CajetaArchive {
     public:
-        // Thin vs uber distinction. Stored in the manifest's "kind"
-        // field; the on-disk container is identical otherwise.
+        // Cja (project-only library) vs uber (project + stdlib +
+        // transitively-referenced classpath deps) distinction.
+        // Stored in the manifest's "kind" field; the on-disk
+        // container is otherwise identical.
         enum class Kind {
-            Thin,
+            Cja,
             Uber,
         };
 
@@ -51,10 +55,11 @@ namespace cajeta {
             RuntimeBitcode = 2,  // C runtime bitcode (for --emit=exe inputs)
         };
 
-        // Origin tags written as a single byte on each entry. Lets uber
-        // archives' "origins" manifest map track where each entry
-        // originated. Thin archives use Origin::User for user code and
-        // Origin::Stdlib for parsed-stdlib classes.
+        // Origin tags written as a single byte on each entry. Cja
+        // archives carry only Origin::User (stdlib + deps stripped);
+        // uber archives mix Origin::User (project code) with
+        // Origin::Stdlib (parsed stdlib bundle) and Origin::Dependency
+        // (entries nested under deps/<name>-<version>/).
         enum class Origin : uint8_t {
             User    = 0,
             Stdlib  = 1,
@@ -116,11 +121,24 @@ namespace cajeta {
         void setSourceArchiveName(std::string s) { sourceArchiveName = std::move(s); }
         const std::string& getSourceArchiveName() const { return sourceArchiveName; }
 
+        // Per-dependency summary written into the manifest's "deps"
+        // array. emitArchive(uber) builds one of these per classpath
+        // archive that survives reachability pruning. Cja archives
+        // never carry deps.
+        struct DepSummary {
+            std::string name;
+            std::string version;
+            uint32_t    includedEntryCount = 0;
+        };
+        void setDeps(std::vector<DepSummary> d) { deps = std::move(d); }
+        const std::vector<DepSummary>& getDeps() const { return deps; }
+
     private:
         std::string name;
         std::string version;
         Kind        kind;
         std::vector<CajetaArchiveEntry> entries;
+        std::vector<DepSummary>         deps;
         std::string sourceArchiveName;   // set by readFrom; otherwise empty
         Compression compression = Compression::Zstd;
         // Lazy lookup table — built on first findEntry call from the
@@ -131,8 +149,8 @@ namespace cajeta {
         mutable std::unordered_map<std::string, std::size_t> nameIndex;
 
         // Build the manifest JSON. Format spelled out in Compilation.md
-        // § Manifest extensions — name, version, kind, entry_count,
-        // and (for uber) the origins map.
+        // § Output formats § Manifest — name, version, kind,
+        // entry_count, and (for uber) the deps array.
         std::string buildManifest() const;
     };
 

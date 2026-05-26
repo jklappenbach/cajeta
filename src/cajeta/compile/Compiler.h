@@ -48,8 +48,8 @@ namespace cajeta {
     enum class EmitMode {
         IR,       // Default: exploded text LLVM IR (.ll) per module
         Obj,      // Exploded native object files (.o) per module
-        Archive,  // Single .cja archive (thin) — bundles user + parsed-stdlib bitcode
-        Uber,     // Single .cja archive (uber) — bundles user + transitively-referenced deps
+        Cja,      // Single .cja archive — project-only IR (no stdlib, no deps)
+        Uber,     // Single .cja archive — project + stdlib + transitively-referenced deps under deps/<name>-<ver>/
         Exe,      // Linked executable (requires lld in-process; see D1 / Compiler.cpp)
     };
 
@@ -92,8 +92,7 @@ namespace cajeta {
         // --classpath=a.cja,b.cja args; comma-separates and repeats both
         // accumulate). Read by emitArchive(uber=true) to bundle each
         // listed archive's entries into the output with the
-        // Origin::Dependency tag and an `origins` map entry pointing at
-        // the source archive's manifest name.
+        // Origin::Dependency tag, nested under `deps/<name>-<version>/`.
         std::vector<string> classpath;
         // Default behavior of --emit=uber. true → prune classpath
         // entries to the transitively-referenced closure (set via
@@ -108,13 +107,16 @@ namespace cajeta {
         // Per-module emit dispatch based on emitMode.
         void emitForModule(CajetaModulePtr module);
 
-        // Archive emit (--emit=archive or --emit=uber). Bundles every
-        // module's LLVM bitcode into a single .cja file. Thin form
-        // uses ArchiveKind::Thin; uber form uses ArchiveKind::Uber
-        // (which for v1 is structurally identical — bundling
-        // transitively-referenced deps requires --classpath ingestion,
-        // which is a follow-up). The output path is `outputPath` when
-        // set via -o, else `<archiveRoot>/cajeta.cja`.
+        // Archive emit (--emit=cja or --emit=uber). Bundles every
+        // module's LLVM bitcode into a single .cja file. Cja form
+        // uses ArchiveKind::Cja and ships ONLY the user's project
+        // bitcode (stdlib + classpath deps stripped — a library
+        // archive). Uber form uses ArchiveKind::Uber and bundles
+        // the project, stdlib, and every transitively-referenced
+        // classpath dep nested under deps/<name>-<version>/ —
+        // a runnable, self-contained deployment artifact. The
+        // output path is `outputPath` when set via -o, else
+        // `<archiveRoot>/cajeta.cja`.
         void emitArchive(const std::string& archiveRootPath, bool uber);
 
         // Phase-2 linker step for --emit=exe; collects everything in objectFiles and
