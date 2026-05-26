@@ -9,8 +9,27 @@ Makefile
 Testing
 generated/
 *.gch
-*.ll
 *.tokens
+
+# Cajeta compiler output (per-source artifacts from cajetac)
+*.cja
+*.ll
+*.bc
+*.o
+*.obj
+*.a
+*.so
+*.dylib
+*.dll
+*.exe
+
+# GPU codegen artifacts (per CajetaGPU spec)
+*.cubin
+*.ptx
+*.hsaco
+*.spv
+*.cajeta-*
+
 .DS_Store
 
 # Stray build artifacts that appear when cmake is accidentally invoked
