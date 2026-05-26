@@ -25,6 +25,16 @@
 #include "llvm/Support/TargetSelect.h"
 #include "llvm/Support/raw_ostream.h"
 
+// Runtime hooks defined in runtime/native/cajeta_runtime.c. The runtime
+// is linked into the test binary as a native object (see src/CMakeLists.txt
+// — "Also compile the runtime as a native object so tests can observe
+// runtime state directly from C++"), so these resolve at link time.
+extern "C" {
+    void __cajeta_set_poison_free(int enabled);
+    void __cajeta_set_drop_chain_validate(int enabled);
+    void __cajeta_set_stack_trace_capture(int enabled);
+}
+
 namespace cajeta_test {
 
 using namespace cajeta;
@@ -360,6 +370,43 @@ std::unique_ptr<CajetaJit> CajetaJit::compile(
         throw std::runtime_error("LLJIT initialize failed: "
             + llvm::toString(std::move(err)));
     }
+
+    // Apply per-test runtime-flag overrides. The runtime ships in two
+    // places — the embedded bitcode merged into the JIT module, AND
+    // the native object linked into the test binary. Each has its own
+    // copy of `__cajeta_poison_free_enabled` (the static is module-
+    // local). The JIT'd user code calls the JIT's free path → JIT's
+    // poison helper → JIT's flag. The test's `extern "C"` direct
+    // calls hit the host's flag. Both copies must stay in sync, so
+    // we set both here on every compile() — gives each test a
+    // deterministic starting point regardless of what the previous
+    // test left behind.
+    int desiredPoison = opts.poisonFreeEnabled ? 1 : 0;
+    if (auto sym = jitState->jit->lookup("__cajeta_set_poison_free")) {
+        auto setFn = reinterpret_cast<void(*)(int)>(sym->getValue());
+        if (setFn) setFn(desiredPoison);
+    } else {
+        llvm::consumeError(sym.takeError());
+    }
+    ::__cajeta_set_poison_free(desiredPoison);
+
+    int desiredValidate = opts.dropChainValidateEnabled ? 1 : 0;
+    if (auto sym = jitState->jit->lookup("__cajeta_set_drop_chain_validate")) {
+        auto setFn = reinterpret_cast<void(*)(int)>(sym->getValue());
+        if (setFn) setFn(desiredValidate);
+    } else {
+        llvm::consumeError(sym.takeError());
+    }
+    ::__cajeta_set_drop_chain_validate(desiredValidate);
+
+    int desiredTrace = opts.stackTraceCaptureEnabled ? 1 : 0;
+    if (auto sym = jitState->jit->lookup("__cajeta_set_stack_trace_capture")) {
+        auto setFn = reinterpret_cast<void(*)(int)>(sym->getValue());
+        if (setFn) setFn(desiredTrace);
+    } else {
+        llvm::consumeError(sym.takeError());
+    }
+    ::__cajeta_set_stack_trace_capture(desiredTrace);
 
     return jitState;
 }

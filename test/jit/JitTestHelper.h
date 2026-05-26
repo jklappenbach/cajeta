@@ -41,6 +41,25 @@ public:
         // to Strict (the Debug default); tests verifying the off path
         // skip the runtime registration emit.
         std::optional<cajeta::LiveSet> liveSetMode;
+        // Poison-on-free (--poison-free=on). When true, the JIT
+        // initializer calls __cajeta_set_poison_free(1) so freed
+        // chunks get memset with 0xDB before free(). Default off for
+        // tests so the existing suite stays deterministic; tests that
+        // exercise UAF surfaces explicitly opt in. Compiler default
+        // for binary builds (CompilerFlags::poisonFree) is true and
+        // wires through a global ctor in --emit=exe mode.
+        bool poisonFreeEnabled = false;
+        // Drop-chain validation (--drop-chain-validate=on). When true,
+        // every drop-chain push / pop / mark_inactive checks invariants
+        // and aborts with a diagnostic on corruption (LIFO discipline,
+        // active-bit sanity). Default off; tests that deliberately
+        // induce corruption opt in.
+        bool dropChainValidateEnabled = false;
+        // Stack-trace capture on throw (--stack-trace-capture=on).
+        // Defaults true to preserve the runtime's default (every
+        // throw records its native stack via backtrace(3)); tests
+        // verifying the off path explicitly opt out.
+        bool stackTraceCaptureEnabled = true;
     };
 
     // Compile `source` (a Cajeta compilation unit) into a JIT instance. The class

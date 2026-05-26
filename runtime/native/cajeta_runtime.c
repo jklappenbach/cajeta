@@ -14,8 +14,51 @@
 #include <pthread.h>
 #include <execinfo.h>
 #include <signal.h>
+#include <malloc.h>
 
 typedef void (*cajeta_ctor_fn)(void* self);
+
+// ============================================================================
+// Poison-on-free (CompilerModes.md § --poison-free).
+//
+// When enabled, every heap block is memset to a sentinel byte right before
+// the actual free() runs. The pattern (0xDB) is unlikely to read as a valid
+// pointer or sensible integer, so a use-after-free against poisoned memory
+// either traps (deref of 0xDBDBDBDB...) or surfaces obviously wrong data.
+//
+// Flag wiring: __cajeta_set_poison_free(int) is called from the JIT-init
+// hook (CajetaJit::compile) with the active CompilerFlags.poisonFree value,
+// or — for binary compilation — from a global ctor emitted by the compiler.
+// Default is off (0) so existing tests that don't go through the JIT hook
+// keep prior behavior.
+//
+// Chunk-size source: malloc_usable_size(3) returns the actual allocated
+// chunk (≥ requested size, may be larger due to malloc rounding). Poisoning
+// the whole chunk is harmless — the over-fill stays inside the chunk and
+// gets reclaimed at free time anyway.
+// ============================================================================
+static int __cajeta_poison_free_enabled = 0;
+
+void __cajeta_set_poison_free(int enabled) {
+    __cajeta_poison_free_enabled = enabled ? 1 : 0;
+}
+
+int __cajeta_get_poison_free(void) {
+    return __cajeta_poison_free_enabled;
+}
+
+// Sentinel-fill a buffer with 0xDB up to its allocator-tracked chunk size.
+// No-op when the flag is off or ptr is NULL. Kept as a separate symbol so
+// tests can exercise the poison logic without dipping into use-after-free
+// undefined behavior (the buffer is still valid after this call until free
+// runs).
+void __cajeta_poison_buffer(void* ptr) {
+    if (!__cajeta_poison_free_enabled) return;
+    if (!ptr) return;
+    size_t n = malloc_usable_size(ptr);
+    if (n == 0) return;
+    memset(ptr, 0xDB, n);
+}
 
 // ============================================================================
 // Live-allocation set (FieldOwnership.md § Solution B).
@@ -169,6 +212,7 @@ void* __cajeta_new_array_header(uint64_t header_size, uint64_t elem_size, uint64
 void __cajeta_free_array(void* ptr) {
     if (!ptr) return;
     if (!__cajeta_live_set_claim(ptr)) return;
+    __cajeta_poison_buffer(ptr);
     free(ptr);
 }
 
@@ -183,6 +227,7 @@ void __cajeta_view_drop_owned(void* data_ptr) {
     if (data_ptr == NULL) return;
     void* header = (void*) ((char*) data_ptr - 8);
     if (!__cajeta_live_set_claim(header)) return;
+    __cajeta_poison_buffer(header);
     free(header);
 }
 
@@ -242,6 +287,7 @@ void* __cajeta_alloc(uint64_t size) {
 void __cajeta_free(void* ptr) {
     if (!ptr) return;
     __cajeta_live_set_claim(ptr);  // remove if present; ignore result
+    __cajeta_poison_buffer(ptr);
     free(ptr);
 }
 
@@ -1058,10 +1104,67 @@ void __cajeta_drop_count_reset(void) {
     __atomic_store_n(&__cajeta_drop_count, 0, __ATOMIC_SEQ_CST);
 }
 
+// ----------------------------------------------------------------------------
+// Drop-chain validation (CompilerModes.md § --drop-chain-validate).
+//
+// When enabled, runtime invariants on the drop chain are checked at every
+// push / pop / mark_inactive transition. Violations dump the chain to
+// stderr with a labeled error code and abort — the same fail-loud rule the
+// glibc heap-corruption path uses. Caught corruption modes:
+//
+//   - **Push-onto-self.** Caller hands push() an entry pointer equal to
+//     the current top — would create an immediate self-cycle (e->prev = e)
+//     and walks would loop forever. Almost always a compiler-codegen bug
+//     where two distinct locals share the same entry slot.
+//   - **Pop with mismatched top.** Caller passes entry `e` to pop_run but
+//     `*top != e` — out-of-order pop, double-pop, or chain reordering. The
+//     LIFO discipline is load-bearing for unwinding to work, so this is a
+//     hard error rather than a soft skip.
+//   - **`active` neither 0 nor 1.** Bit-rot somewhere — uninitialized stack
+//     reuse, wild store, etc. Surfaces before we'd otherwise misread it
+//     as "skip drop" or "fire drop".
+//
+// Flag default is OFF (release-mode and the existing-behavior contract for
+// the pre-instrumented chain). JIT init flips it on per-test from
+// Options.dropChainValidateEnabled.
+// ----------------------------------------------------------------------------
+static int __cajeta_drop_chain_validate_enabled = 0;
+
+void __cajeta_set_drop_chain_validate(int enabled) {
+    __cajeta_drop_chain_validate_enabled = enabled ? 1 : 0;
+}
+
+int __cajeta_get_drop_chain_validate(void) {
+    return __cajeta_drop_chain_validate_enabled;
+}
+
+// Forward decl — the dumper lives below the push helpers.
+int32_t __cajeta_dump_drop_chain(void);
+
+static void __cajeta_drop_chain_corruption(const char* code, const char* what) {
+    fprintf(stderr,
+        "cajeta: drop chain corruption detected (%s): %s\n",
+        code, what);
+    __cajeta_dump_drop_chain();
+    abort();
+}
+
 // Push an owner onto the drop chain. The entry storage is stack-allocated in
 // the caller's frame; we never own the memory, only chain pointers through it.
 void __cajeta_drop_push(struct cajeta_drop_entry* e, void* obj, void (*drop_fn)(void*)) {
     struct cajeta_drop_entry** top = __cajeta_drop_top_ptr();
+    if (__cajeta_drop_chain_validate_enabled) {
+        if (e == *top && *top != NULL) {
+            __cajeta_drop_chain_corruption(
+                "CAJETA_ERROR_DROP_CHAIN_SELF_PUSH",
+                "push entry pointer equals current top (would self-cycle)");
+        }
+        if (e == NULL) {
+            __cajeta_drop_chain_corruption(
+                "CAJETA_ERROR_DROP_CHAIN_NULL_PUSH",
+                "push called with NULL entry pointer");
+        }
+    }
     e->obj = obj;
     e->drop_fn = drop_fn;
     e->prev = *top;
@@ -1085,6 +1188,18 @@ void __cajeta_drop_push_debug(struct cajeta_drop_entry_debug* e, void* obj,
                               void (*drop_fn)(void*),
                               const char* alloc_file, int32_t alloc_line) {
     struct cajeta_drop_entry** top = __cajeta_drop_top_ptr();
+    if (__cajeta_drop_chain_validate_enabled) {
+        if ((struct cajeta_drop_entry*) e == *top && *top != NULL) {
+            __cajeta_drop_chain_corruption(
+                "CAJETA_ERROR_DROP_CHAIN_SELF_PUSH",
+                "push (debug) entry pointer equals current top (would self-cycle)");
+        }
+        if (e == NULL) {
+            __cajeta_drop_chain_corruption(
+                "CAJETA_ERROR_DROP_CHAIN_NULL_PUSH",
+                "push (debug) called with NULL entry pointer");
+        }
+    }
     e->obj = obj;
     e->drop_fn = drop_fn;
     e->prev = *top;
@@ -1231,6 +1346,24 @@ static void __cajeta_runtime_init(void) {
 // trusts the caller).
 void __cajeta_drop_pop_run(struct cajeta_drop_entry* e) {
     struct cajeta_drop_entry** top = __cajeta_drop_top_ptr();
+    if (__cajeta_drop_chain_validate_enabled) {
+        if (e == NULL) {
+            __cajeta_drop_chain_corruption(
+                "CAJETA_ERROR_DROP_CHAIN_NULL_POP",
+                "pop_run called with NULL entry pointer");
+        }
+        if (*top != e) {
+            __cajeta_drop_chain_corruption(
+                "CAJETA_ERROR_DROP_CHAIN_POP_MISMATCH",
+                "pop_run entry does not match chain top "
+                "(out-of-order pop, double-pop, or chain reordering)");
+        }
+        if (e->active != 0 && e->active != 1) {
+            __cajeta_drop_chain_corruption(
+                "CAJETA_ERROR_DROP_CHAIN_BAD_ACTIVE",
+                "entry active flag is neither 0 nor 1 (bit-rot)");
+        }
+    }
     if (e->active && e->drop_fn) {
         __atomic_fetch_add(&__cajeta_drop_count, 1, __ATOMIC_SEQ_CST);
         e->drop_fn(e->obj);
@@ -1242,6 +1375,18 @@ void __cajeta_drop_pop_run(struct cajeta_drop_entry* e) {
 // remains on the chain so scope-exit pop logic still finds it, but the drop
 // function won't run.
 void __cajeta_drop_mark_inactive(struct cajeta_drop_entry* e) {
+    if (__cajeta_drop_chain_validate_enabled) {
+        if (e == NULL) {
+            __cajeta_drop_chain_corruption(
+                "CAJETA_ERROR_DROP_CHAIN_NULL_MARK",
+                "mark_inactive called with NULL entry pointer");
+        }
+        if (e->active != 0 && e->active != 1) {
+            __cajeta_drop_chain_corruption(
+                "CAJETA_ERROR_DROP_CHAIN_BAD_ACTIVE",
+                "mark_inactive on entry with bit-rotted active flag");
+        }
+    }
     e->active = 0;
 }
 
@@ -1503,8 +1648,25 @@ static pthread_mutex_t __cajeta_trace_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 #define CAJETA_TRACE_MAX_FRAMES 64
 
+// --stack-trace-capture flag (CompilerModes.md § --stack-trace-capture).
+// Defaults on so existing tests + the default ergonomic of "see the
+// stack on uncaught throw" both keep working. JIT init flips it via
+// Options.stackTraceCaptureEnabled. When off, __cajeta_trace_record is
+// a fast no-op — the throwable still surfaces (message + error id) but
+// the trace dump on uncaught throws is empty.
+static int __cajeta_stack_trace_capture_enabled = 1;
+
+void __cajeta_set_stack_trace_capture(int enabled) {
+    __cajeta_stack_trace_capture_enabled = enabled ? 1 : 0;
+}
+
+int __cajeta_get_stack_trace_capture(void) {
+    return __cajeta_stack_trace_capture_enabled;
+}
+
 static void __cajeta_trace_record(void* throwable) {
     if (!throwable) return;
+    if (!__cajeta_stack_trace_capture_enabled) return;
     // Skip trace capture inside a fiber. backtrace(3) walks the stack via
     // frame pointers / DWARF; on a makecontext-allocated fiber stack the
     // unwinder reaches the makecontext boundary and SIGSEGVs trying to walk
