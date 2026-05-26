@@ -1,0 +1,61 @@
+package tour;
+
+// Cajeta language tour. Every load-bearing feature of the language
+// has a demo class extending DemoClass; this entry point puts one
+// instance of every demo into an array, then walks the array calling
+// execute() on each. Adding a new demo means:
+//
+//   1. Write a new DemoClass subclass in this package.
+//   2. Bump `DEMO_COUNT` and add one `demos[N] = heap NewDemo();` line.
+//
+// Build with samples/Tour/build-bin.sh (native binary) or
+// build-cja.sh (single .cja archive).
+//
+// Implementation note: the demo list is a native `DemoClass[]`, not
+// `ArrayList<DemoClass>`. v1 has a compiler-side bug instantiating
+// `ArrayList<T>` when T is a class type — add() doesn't increment
+// sizeCount correctly. Bare arrays sidestep it. Once the
+// templated-class-element path is fixed in the stdlib, this can
+// move to `ArrayList<DemoClass>` with `forEach((DemoClass d) -> d.execute())`.
+public final class Tour {
+
+    // Entry point. Walks every demo and returns 0. The C `main` shim
+    // (synthesized by --emit=obj when compiling with this method as
+    // the entry) wires this up as the program's main.
+    public static int32 run() {
+        System.stdout.println("=== Cajeta language tour ===");
+
+        // Heap-allocate one instance of every demo. The array owns
+        // each element; the drop chain releases them in reverse
+        // index order at scope exit.
+        DemoClass[] demos = new DemoClass[18];
+        demos[0]  = heap AllocationDemo();
+        demos[1]  = heap OwnershipDemo();
+        demos[2]  = heap ClassesDemo();
+        demos[3]  = heap InheritanceDemo();
+        demos[4]  = heap TemplatesDemo();
+        demos[5]  = heap StreamsDemo();
+        demos[6]  = heap ArrayListDemo();
+        demos[7]  = heap HashMapDemo();
+        demos[8]  = heap HashSetDemo();
+        demos[9]  = heap LinkedListDemo();
+        demos[10] = heap LambdasDemo();
+        demos[11] = heap ErrorsDemo();
+        demos[12] = heap AnnotationsDemo();
+        demos[13] = heap PrimitivesDemo();
+        demos[14] = heap StringDemo();
+        demos[15] = heap ControlFlowDemo();
+        demos[16] = heap MathDemo();
+        demos[17] = heap FormatStringDemo();
+
+        // Iterate the array — dispatches through the vtable to each
+        // subclass's execute() override.
+        for (int32 i = 0; i < 18; i = i + 1) {
+            demos[i].execute();
+        }
+
+        System.stdout.println("");
+        System.stdout.println("=== tour complete ===");
+        return 0;
+    }
+}

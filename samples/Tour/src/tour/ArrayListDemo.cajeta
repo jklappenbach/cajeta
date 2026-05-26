@@ -1,0 +1,20 @@
+package tour;
+
+import cajeta.collection.ArrayList;
+
+// Dynamic array backed by a heap-allocated T[] that grows on demand.
+// Exposes count() (matching the cajeta convention across HashMap /
+// HashSet / LinkedList); size() doesn't exist.
+public class ArrayListDemo extends DemoClass {
+    public void execute() {
+        System.stdout.println("");
+        System.stdout.println("-- ArrayList --");
+        ArrayList<int32> list = heap ArrayList<int32>();
+        list.add(10);
+        list.add(20);
+        list.add(30);
+        int32 total = list.stream().reduce(0, (a, b) -> a + b);
+        System.stdout.println("  count = " + list.count());
+        System.stdout.println("  sum   = " + total);
+    }
+}

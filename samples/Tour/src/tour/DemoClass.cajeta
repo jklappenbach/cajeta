@@ -1,0 +1,22 @@
+package tour;
+
+// Base class for every demo in the tour. Each language-feature demo
+// extends DemoClass and overrides execute() to walk that feature.
+//
+// Tour.run() builds an ArrayList<DemoClass>, pushes one instance of
+// every subclass into it, then iterates the list calling execute()
+// on each — so adding a new demo means writing a new .cajeta file
+// here and one `demos.add(heap NewDemo());` line in Tour.cajeta.
+//
+// Cajeta has no formal `abstract` keyword today (see
+// runtime/.../Stream.cajeta § "Abstract via empty-default convention"),
+// so execute() lands as an empty concrete method; subclasses override
+// via the `override` modifier. The base body is never invoked because
+// every subclass overrides — but if someone forgets to override, the
+// no-op silently passes rather than failing at compile time. Future
+// work: real abstract-method support so forgetting an override is a
+// compile-time error.
+public class DemoClass {
+    public void execute() {
+    }
+}

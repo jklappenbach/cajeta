@@ -7,7 +7,7 @@ public class Square extends Shape {
         this.side = s;
     }
 
-    public int32 area() override {
+    public int32 area() {
         return this.side * this.side;
     }
 }

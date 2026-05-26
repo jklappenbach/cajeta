@@ -10,7 +10,7 @@ public class Circle extends Shape {
         this.radius = r;
     }
 
-    public int32 area() override {
+    public int32 area() {
         return 3 * this.radius * this.radius;
     }
 }

@@ -1,0 +1,24 @@
+package tour;
+
+import cajeta.lang.Math;
+
+// `Math.max` / `min` / `clamp` are method-level templates — each
+// monomorphizes per T at the call site with zero dispatch cost.
+// `Math.max(3, 7)` produces a max<int32>; `Math.max(1.5, 2.5)`
+// produces a max<float64>. Primitives only for v1.
+public class MathDemo extends DemoClass {
+    public void execute() {
+        System.stdout.println("");
+        System.stdout.println("-- Math --");
+        int32 a = Math.max(3, 7);
+        int32 b = Math.min(3, 7);
+        int32 c = Math.clamp(15, 0, 10);    // 10 — clamped to upper bound
+        int32 d = Math.clamp(-5, 0, 10);    // 0  — clamped to lower bound
+        int32 e = Math.clamp(5, 0, 10);     // 5  — in range
+        System.stdout.println("  max(3, 7)        = " + a);
+        System.stdout.println("  min(3, 7)        = " + b);
+        System.stdout.println("  clamp(15, 0, 10) = " + c);
+        System.stdout.println("  clamp(-5, 0, 10) = " + d);
+        System.stdout.println("  clamp(5, 0, 10)  = " + e);
+    }
+}
