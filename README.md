@@ -235,7 +235,7 @@ public class Algo {
 }
 ```
 
-**Bounded templates** (`<T extends Foo>`), **template wildcards** (`?`, `? extends Bound`, `? super Bound`), and **capture conversion** are all supported. See [`TemplateWildcard.md`](cajeta-docs/TemplateWildcard.md) and [`CaptureConversion.md`](cajeta-docs/CaptureConversion.md).
+**Bounded templates** (`<T extends Foo>`), **template wildcards** (`?`, `? extends Bound`, `? super Bound`), and **capture conversion** are all supported. See [`TemplateWildcard.md`](cajeta-docs/TemplateWildcard.md) and [`CaptureConversion.md`](cajeta-docs/CaptureConversion.md), and a runnable PECS + capture-read-back walk in [`samples/Tour/src/tour/WildcardsDemo.cajeta`](samples/Tour/src/tour/WildcardsDemo.cajeta).
 
 ```cajeta
 public void inspect(Box<? extends Animal> b) {
@@ -269,7 +269,7 @@ public void parse(byte[] buf) {
 }
 ```
 
-Views support `@BigEndian`, `@LittleEndian`, `@HostEndian`, inline nested views, fixed-size and variable-size trailing fields, and ownership-transferred (`stack View(#buf)`) and borrow (`stack View(buf)`) construction forms. Views participate in interface dispatch via fat-pointer kind tags. See [`Views.md`](cajeta-docs/stdlib/Views.md).
+Views support `@BigEndian`, `@LittleEndian`, `@HostEndian`, inline nested views, fixed-size and variable-size trailing fields, and ownership-transferred (`stack View(#buf)`) and borrow (`stack View(buf)`) construction forms. Views participate in interface dispatch via fat-pointer kind tags. See [`Views.md`](cajeta-docs/stdlib/Views.md) and a runnable end-to-end walk through all three endianness flavors plus nested views in [`samples/Tour/src/tour/ViewsDemo.cajeta`](samples/Tour/src/tour/ViewsDemo.cajeta).
 
 ### Lambdas and method references
 
@@ -307,7 +307,7 @@ int64 sum = xs.stream().parallel()
         (a, b)   -> a + b);
 ```
 
-See [`Streams.md`](cajeta-docs/stdlib/Streams.md) and [`StreamParallelism.md`](cajeta-docs/stdlib/StreamParallelism.md).
+See [`Streams.md`](cajeta-docs/stdlib/Streams.md) and [`StreamParallelism.md`](cajeta-docs/stdlib/StreamParallelism.md). A runnable walk through `reduce`, fold-with-combiner, the predicate terminals, `findFirst`→`findAny`, and `forEach` accumulation under `.parallel()` lives in [`samples/Tour/src/tour/ParallelStreamsDemo.cajeta`](samples/Tour/src/tour/ParallelStreamsDemo.cajeta).
 
 ### Annotations
 
@@ -347,7 +347,7 @@ Connection c = Connection.builder()
 
 ### Aspects, DI, advice
 
-Spring-style dependency injection plus AspectJ-style advice, woven at compile time through the LLVM IR. `@Aspect`, `@Component`, `@Inject` for DI; `@Pointcut`, `@Around`, `@Before`, `@AfterReturning`, `@AfterThrowing` for advice. See [`AspectModel.md`](cajeta-docs/stdlib/AspectModel.md).
+Spring-style dependency injection plus AspectJ-style advice, woven at compile time through the LLVM IR. `@Aspect`, `@Component`, `@Inject` for DI; `@Pointcut`, `@Around`, `@Before`, `@AfterReturning`, `@AfterThrowing` for advice. See [`AspectModel.md`](cajeta-docs/stdlib/AspectModel.md) and a runnable walk through `@Before` / `@After` / `@Around` plus DI singleton identity and transitive resolution in [`samples/Tour/src/tour/AspectsDiDemo.cajeta`](samples/Tour/src/tour/AspectsDiDemo.cajeta).
 
 ```cajeta
 @Aspect
@@ -382,6 +382,8 @@ public static async int32 fetchAll(String[] urls) {
 
 Stream `.parallel()` rides this same machinery — `ParallelDriver.reduceParallelChain` opens a `scope` and `spawn`s one worker per split share.
 
+A runnable walk through `async` / `await` / `spawn` / `scope` / `detach` — including primitive-arg propagation, nested awaits, fork-join with a shared `Counter`, the implicit function-body scope, and fire-and-forget detach — lives in [`samples/Tour/src/tour/AsyncDemo.cajeta`](samples/Tour/src/tour/AsyncDemo.cajeta).
+
 ### Errors and stack traces
 
 `throw` / `try` / `catch` / `finally` with `Exception` hierarchy. Recoverable vs unrecoverable distinguishes "expected, catchable" from "alarm" — unrecoverable abort the process with a SIGABRT and a stderr dump. Every throw site captures a native stack trace via `backtrace(3)` (gated by `--stack-trace-capture=on`), and the uncaught-throw handler dumps the message + trace + drop chain on exit.
@@ -412,7 +414,7 @@ User u = Json.parse<User>(bytes, bytes.length);   // {7, "alice", true}
 byte[] out = Json.toBytes<User>(u);               // round-trip
 ```
 
-Tier-3 `Json.toBytes(JsonValue)` for ad-hoc tree manipulation. See [`Json.md`](cajeta-docs/stdlib/codec/Json.md).
+Tier-3 `Json.toBytes(JsonValue)` for ad-hoc tree manipulation. See [`Json.md`](cajeta-docs/stdlib/codec/Json.md) and the runnable parse + round-trip + nested-class walk in [`samples/Tour/src/tour/JsonDemo.cajeta`](samples/Tour/src/tour/JsonDemo.cajeta).
 
 ---
 

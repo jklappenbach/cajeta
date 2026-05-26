@@ -1,22 +1,26 @@
 package tour;
 
+import cajeta.collection.ArrayList;
+
 // Cajeta language tour. Every load-bearing feature of the language
 // has a demo class extending DemoClass; this entry point puts one
-// instance of every demo into an array, then walks the array calling
+// instance of every demo into a list, then walks the list calling
 // execute() on each. Adding a new demo means:
 //
 //   1. Write a new DemoClass subclass in this package.
-//   2. Bump `DEMO_COUNT` and add one `demos[N] = heap NewDemo();` line.
+//   2. Add one `demos.add(heap NewDemo());` line.
 //
 // Build with samples/Tour/build-bin.sh (native binary) or
 // build-cja.sh (single .cja archive).
 //
-// Implementation note: the demo list is a native `DemoClass[]`, not
-// `ArrayList<DemoClass>`. v1 has a compiler-side bug instantiating
-// `ArrayList<T>` when T is a class type — add() doesn't increment
-// sizeCount correctly. Bare arrays sidestep it. Once the
-// templated-class-element path is fixed in the stdlib, this can
-// move to `ArrayList<DemoClass>` with `forEach((DemoClass d) -> d.execute())`.
+// The demo list is `ArrayList<DemoClass>` — a class-typed template
+// instantiation. Cross-file `ArrayList<UserClass>` works through the
+// forward-reference placeholder mechanism: Tour parses before
+// DemoClass (alphabetical order), so DemoClass is a placeholder
+// when this file references it; the placeholder is filled in place
+// during DemoClass's body walk and the instantiation's references
+// auto-upgrade. Stream `forEach((T) -> void)` dispatches through
+// each element's vtable so the correct subclass `execute` runs.
 public final class Tour {
 
     // Entry point. Walks every demo and returns 0. The C `main` shim
@@ -25,34 +29,39 @@ public final class Tour {
     public static int32 run() {
         System.stdout.println("=== Cajeta language tour ===");
 
-        // Heap-allocate one instance of every demo. The array owns
-        // each element; the drop chain releases them in reverse
-        // index order at scope exit.
-        DemoClass[] demos = new DemoClass[18];
-        demos[0]  = heap AllocationDemo();
-        demos[1]  = heap OwnershipDemo();
-        demos[2]  = heap ClassesDemo();
-        demos[3]  = heap InheritanceDemo();
-        demos[4]  = heap TemplatesDemo();
-        demos[5]  = heap StreamsDemo();
-        demos[6]  = heap ArrayListDemo();
-        demos[7]  = heap HashMapDemo();
-        demos[8]  = heap HashSetDemo();
-        demos[9]  = heap LinkedListDemo();
-        demos[10] = heap LambdasDemo();
-        demos[11] = heap ErrorsDemo();
-        demos[12] = heap AnnotationsDemo();
-        demos[13] = heap PrimitivesDemo();
-        demos[14] = heap StringDemo();
-        demos[15] = heap ControlFlowDemo();
-        demos[16] = heap MathDemo();
-        demos[17] = heap FormatStringDemo();
+        // Heap-allocate one instance of every demo. The list owns
+        // each element; the drop chain releases them at scope exit.
+        ArrayList<DemoClass> demos = heap ArrayList<DemoClass>();
+        demos.add(heap AllocationDemo());
+        demos.add(heap OwnershipDemo());
+        demos.add(heap ClassesDemo());
+        demos.add(heap InheritanceDemo());
+        demos.add(heap TemplatesDemo());
+        demos.add(heap StreamsDemo());
+        demos.add(heap ArrayListDemo());
+        demos.add(heap HashMapDemo());
+        demos.add(heap HashSetDemo());
+        demos.add(heap LinkedListDemo());
+        demos.add(heap LambdasDemo());
+        demos.add(heap ErrorsDemo());
+        demos.add(heap AnnotationsDemo());
+        demos.add(heap PrimitivesDemo());
+        demos.add(heap StringDemo());
+        demos.add(heap ControlFlowDemo());
+        demos.add(heap MathDemo());
+        demos.add(heap FormatStringDemo());
+        demos.add(heap ViewsDemo());
+        demos.add(heap ParallelStreamsDemo());
+        demos.add(heap AsyncDemo());
+        demos.add(heap JsonDemo());
+        demos.add(heap AspectsDiDemo());
+        demos.add(heap WildcardsDemo());
+        demos.add(heap SwitchTernaryDemo());
+        demos.add(heap FileIoDemo());
 
-        // Iterate the array — dispatches through the vtable to each
+        // Stream over the list — virtual dispatch lands each
         // subclass's execute() override.
-        for (int32 i = 0; i < 18; i = i + 1) {
-            demos[i].execute();
-        }
+        demos.stream().forEach((DemoClass d) -> d.execute());
 
         System.stdout.println("");
         System.stdout.println("=== tour complete ===");

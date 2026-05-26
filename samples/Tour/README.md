@@ -29,6 +29,25 @@ samples/Tour/
     ├── ControlFlowDemo.cajeta   ← if / while / for / enhanced-for
     ├── MathDemo.cajeta          ← Math.max / min / clamp (method-level templates)
     ├── FormatStringDemo.cajeta  ← System.stdout.println(fmt, args...) with `{}`
+    ├── ViewsDemo.cajeta         ← view types & wire formats (@BigEndian /
+    │                              @LittleEndian / @HostEndian, fixed +
+    │                              variable-size fields, nested views)
+    ├── ParallelStreamsDemo.cajeta ← .parallel() over Splittable<T>: reduce,
+    │                              fold-with-combiner, anyMatch / allMatch /
+    │                              noneMatch, findFirst→findAny, forEach
+    ├── AsyncDemo.cajeta         ← async / await / spawn / scope / detach —
+    │                              structured concurrency over stackful fibers
+    ├── JsonDemo.cajeta          ← Tier-1 JSON codec: Json.parse<T> /
+    │                              Json.toBytes<T> with per-class synthesizer
+    ├── AspectsDiDemo.cajeta     ← compile-time AOP + DI: @Aspect, @Before,
+    │                              @After, @Around, @Component, @Inject
+    ├── WildcardsDemo.cajeta     ← template wildcards <? extends T> /
+    │                              <? super T> + capture-conversion
+    │                              read-back (b.set(b.get()))
+    ├── SwitchTernaryDemo.cajeta ← switch statement + arrow-form
+    │                              switch expression + ternary + instanceof
+    ├── FileIoDemo.cajeta        ← cajeta.io.file: one-shot read/write
+    │                              + streaming FileReader / FileWriter
     │
     │  (support classes used by the demos above)
     ├── Point.cajeta              ← class with fields + ctor
@@ -99,8 +118,10 @@ See [`cajeta-docs/Compilation.md`](../../cajeta-docs/Compilation.md) for the ful
   sum of squares in [1..10] = 385
 
 -- ArrayList --
-  count = 3
-  sum   = 60
+  ArrayList<int32> count = 3
+  ArrayList<int32> sum   = 60
+  ArrayList<Point> count = 3
+  ArrayList<Point> xSum  = 9
 
 -- HashMap --
   count    = 3
@@ -164,6 +185,108 @@ See [`cajeta-docs/Compilation.md`](../../cajeta-docs/Compilation.md) for the ful
   pi  ≈ 3.14159
   2 + 3 = 5
 
+-- Views and wire formats --
+  @BigEndian PacketHeader.magic    = 51966
+  @BigEndian PacketHeader.version  = 1
+  @BigEndian PacketHeader.payload  = 256
+  @HostEndian CacheEntry.key       = 100
+  @HostEndian CacheEntry.hits      = 7
+  @LittleEndian UserRecord.id      = 9001
+  @LittleEndian UserRecord.name    = Alex
+  @LittleEndian UserRecord.email   = a@e.
+  nested Line  dx,dy            = 3,4
+
+-- Parallel streams --
+  count          par=1000  seq=1000
+  reduce sum     1..1000 = 500500
+  fold combiner  1..1000 widened = 500500
+  anyMatch(>500)   = true
+  allMatch(>0)     = true
+  noneMatch(<0)    = true
+  filter+parallel allMatch(evens) = true
+  findFirst(>500) found a value in (500, 1000]: true
+  findFirst(>9999) miss isPresent = false
+  forEach bump count over 100 elements = 100
+
+-- Async / scope / spawn --
+  await leaf()                    = 21
+  await spawn leaf()              = 21
+  await spawn add(17, 25)         = 42
+  await spawn nested() = leaf()*2 = 42
+  three independent spawn-awaits  = 21, 30, 42
+  scope { 3 bumpWorkers } tally   = 111
+  inner scope join — probe        = 999
+  detach announce(42) — fire+forget
+
+-- JSON codec --
+  parse single object:
+    id     = 42
+    score  = 1000000
+    active = true
+    name   = alice
+  parse with missing-key field:
+    id (set)        = 7
+    score (set)     = 99
+    active (set)    = false
+    name (missing)  set? false
+  round-trip primitives:
+    serialized length = 41
+    parsed.id         = 99
+    parsed.score      = 123456789
+    parsed.active     = true
+  parse nested object:
+    id      = 1
+    point.x = 10
+    point.y = 20
+  round-trip nested:
+    serialized length = 34
+    parsed.id         = 5
+    parsed.point.x    = 100
+    parsed.point.y    = 200
+
+-- Aspects + DI --
+  @Before + @After:
+    [before]  entering @Traced method
+    [body]    work() running
+    [after]   leaving @Traced method
+    result = 7
+  @Around with proceed:
+    [around]  input=5, forwarding x*3=15
+    [body]    compute(15) running
+    [around]  body returned 30; adding 1
+    final result = 31
+  DI singleton identity:
+    a == b cached singleton -> b.entries = 250
+  DI transitive resolution:
+    Service.used()  = 3
+    Service.spare() = 247
+
+-- Template wildcards & capture conversion --
+  ? extends Animal . value.tag() = 2  (Dog::tag overrides at runtime)
+  ? extends Animal . value.tag() = 3  (Cat::tag at runtime)
+  before super write: bAnimal.value.tag() = 1
+  after  super write: bAnimal.value.tag() = 2  (Dog landed in Animal slot)
+  capture read-back: b.set(b.get()) accepted; b.value.tag() = 2
+  inspect(WildBox<Dog>) = 2; inspect(WildBox<Cat>) = 3
+
+-- Switch / ternary / instanceof --
+  statement switch(3) = 23  (case 2/3 fall-through arm)
+  expr switch(2) = 200
+  expr switch(2) via case 1,2,3 = 50
+  1000 + expr switch(2) = 1007
+  min(5, 10) via ternary  = 5
+  min(3, 8, 6) via nested ternary = 3
+  side-effect on true branch: x = 100
+  cond=false ? 1.5 : 2 (coerced f64) = 2
+  (int32 5) instanceof int32   = true
+  (int32 5) instanceof float64 = false
+  pi instanceof float64 ? "f64" : "other" = f64
+
+-- File I/O --
+  oneShot: wrote 5 bytes, readAllBytes returned 5 bytes
+  streamingWriter: wrote 2 lines, total bytes = 23
+  streamingReader: read 23 bytes; position after read = 23
+
 === tour complete ===
 ```
 
@@ -181,31 +304,23 @@ See [`cajeta-docs/Compilation.md`](../../cajeta-docs/Compilation.md) for the ful
        }
    }
    ```
-2. In `Tour.cajeta`, bump the array length and append the instance:
+2. In `Tour.cajeta`, append one line to the `ArrayList<DemoClass>` initializer:
    ```cajeta
-   DemoClass[] demos = new DemoClass[19];
-   ...
-   demos[18] = heap MyFeatureDemo();
+   demos.add(heap MyFeatureDemo());
    ```
-3. Bump the loop bound to match (`i < 19`).
+   Stream iteration picks the new demo up automatically — no count to bump.
 
 ## What's NOT in this tour
 
 These features work but aren't exercised here because they'd either expand the demo significantly, depend on environment setup, or hit JIT-tested paths that the binary emit isn't yet smoke-pinned for:
 
-- **`view` types and wire formats** (`@BigEndian` / `@LittleEndian` / `@HostEndian`, fixed and variable-size fields). See [`cajeta-docs/stdlib/Views.md`](../../cajeta-docs/stdlib/Views.md).
-- **Parallel streams** (`.parallel()` over `Splittable<T>` with structured-concurrency workers). See [`cajeta-docs/stdlib/StreamParallelism.md`](../../cajeta-docs/stdlib/StreamParallelism.md).
-- **Async / `scope` / `spawn`**. See [`cajeta-docs/stdlib/Thread.md`](../../cajeta-docs/stdlib/Thread.md).
-- **JSON codec** (`Json.parse<T>` / `Json.toBytes<T>`). See [`cajeta-docs/stdlib/codec/Json.md`](../../cajeta-docs/stdlib/codec/Json.md).
-- **Aspects + DI** (`@Aspect` / `@Component` / `@Inject` / `@Around` / `@Before` / `@After`). See [`cajeta-docs/stdlib/AspectModel.md`](../../cajeta-docs/stdlib/AspectModel.md).
-- **Template wildcards** (`Box<? extends Animal>`, capture conversion). See [`cajeta-docs/TemplateWildcard.md`](../../cajeta-docs/TemplateWildcard.md) and [`cajeta-docs/CaptureConversion.md`](../../cajeta-docs/CaptureConversion.md).
-- **Switch statements + switch expressions, ternary + instanceof, file I/O, networking** — covered by the test suite; deferred from the tour to keep the surface manageable.
+- **Networking** — covered by the test suite; deferred from the tour to keep the surface manageable.
 
 ## Known wrinkles
 
 A few rough edges surfaced while bringing this sample up. None block the demo as written; they're listed here so the next sample can avoid them:
 
-- **`ArrayList<DemoClass>` doesn't accept class-typed elements correctly**. `add()` on `ArrayList<T>` where T is a class type does not increment `sizeCount` after the slot write — the resulting list reports count 0 and `stream()` yields nothing. Bare `DemoClass[]` (a native array via `new DemoClass[N]`) works fine and is what the tour uses.
+- ~~**`ArrayList<DemoClass>` doesn't accept class-typed elements correctly**~~ — **fixed.** Cross-file `ArrayList<UserClass>` now works through the forward-reference placeholder mechanism. Pre-fix, `CajetaClass::instantiate`'s placeholder-arg short-circuit treated forward-ref placeholders (real package) the same as T-var placeholders (empty package), silently degrading `ArrayList<UserClass>` to the bare `ArrayList` template; the fix narrows the short-circuit to T-vars only (`src/cajeta/type/TemplateInstantiator.cpp`, `MultiSourceCompileTests.arrayListOfUserClassCrossFile`).
 - **Lambda parameter type-inference fails** for `forEach((d) -> d.execute())` over a `Stream<DemoClass>` from `ArrayList<DemoClass>.stream()` — annotating the parameter (`(DemoClass d) -> ...`) sidesteps it.
 - ~~**`Box<int32>.get()` returns garbage in multi-module builds**~~ — **fixed** (pre-seed placeholder typeParameters at prescan time, see commit `6d30574`).
 - ~~**`System.out` (Java idiom) silently compiles to a no-op**~~ — **fixed.** The compiler now emits `CAJETA_ERROR_UNKNOWN_SYSTEM_STREAM` with a "did you mean `stdout`?" hint.

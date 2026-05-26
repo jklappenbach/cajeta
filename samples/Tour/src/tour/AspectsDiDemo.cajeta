@@ -1,0 +1,191 @@
+package tour;
+
+// Aspects + Dependency Injection — compile-time AOP/DI. The
+// compiler resolves the entire DI graph and weaves all advice into
+// the binary directly: no runtime proxies, no annotation processors,
+// no reflection. Unaffected methods compile unchanged.
+//
+// This demo covers six annotations from cajeta.aot:
+//
+//   - @Aspect      — class holds advice methods.
+//   - @Before      — runs before the matched method body.
+//   - @After       — runs on every exit path (normal or throw).
+//   - @Around      — wraps the call; receives a typed `proceed`
+//                    function via @Original; can transform args
+//                    and / or the return value.
+//   - @Component   — registered with the compile-time DI graph;
+//                    `Type.__cajeta_inject()` returns the
+//                    lazily-constructed singleton.
+//   - @Inject      — field that the synthesized __postConstruct
+//                    populates with the corresponding singleton
+//                    before any user code observes the receiver.
+//
+// See cajeta-docs/stdlib/AspectModel.md for the full surface
+// (@AfterReturning, @AfterThrowing, @Order, name-qualified
+// injection, allocation lifespans, @Profile, @PostConstruct, ...).
+
+// User-defined marker annotations. Pointcuts in this demo use
+// marker-based matching: the aspect's @Before / @After / @Around
+// reference these classes, and only methods carrying the matching
+// annotation get wrapped.
+@interface Traced { }
+@interface Multiplied { }
+
+// An @Aspect class. Advice methods are public static; the compiler
+// emits the wrapper around each pointcut-matched target method.
+@Aspect public class DemoAspect {
+
+    // @Before fires after scope_enter, before the body. Runs once
+    // per call. The body itself sees no change to its return shape.
+    @Before(Traced.class)
+    public static void onBefore() {
+        System.stdout.println("    [before]  entering @Traced method");
+    }
+
+    // @After fires on every normal-exit path (and would fire on
+    // throws too if a try/catch wrapped the call; here every call
+    // returns normally).
+    @After(Traced.class)
+    public static void onAfter() {
+        System.stdout.println("    [after]   leaving @Traced method");
+    }
+
+    // @Around wraps the call. The first parameter is the typed
+    // proceed function — the compiler extracts the original method
+    // body into a private helper and binds proceed to it. The
+    // remaining parameters match the original method's signature,
+    // so the advice can inspect / transform the args before
+    // forwarding, and the return value before returning.
+    @Around(Multiplied.class)
+    public static int32 aroundTriple((int32) -> int32 proceed, int32 x) {
+        System.stdout.println("    [around]  input=" + x + ", forwarding x*3="
+            + (x * 3));
+        int32 raw = proceed(x * 3);
+        System.stdout.println("    [around]  body returned " + raw
+            + "; adding 1");
+        return raw + 1;
+    }
+}
+
+// User class with advised methods. The @Traced / @Multiplied
+// annotations opt the method into the corresponding pointcut.
+// Methods without an annotation compile unchanged — no wrapper,
+// no overhead.
+public class AspectTarget {
+    @Traced public static int32 work() {
+        System.stdout.println("    [body]    work() running");
+        return 7;
+    }
+
+    @Multiplied public static int32 compute(int32 x) {
+        System.stdout.println("    [body]    compute(" + x + ") running");
+        return x * 2;
+    }
+}
+
+// DI graph — three @Component classes.
+//
+// Registry is a leaf: no @Inject fields, just state.
+@Component public class Registry {
+    public int32 entries;
+    public Registry() {
+        this.entries = 100;
+        return;
+    }
+}
+
+// AuditTrail depends on Registry. The compiler synthesizes:
+//   - __cajeta_inject() — returns the lazy singleton; the first
+//     call allocates AuditTrail, runs its constructor, then writes
+//     each @Inject field (resolving Registry by its singleton too).
+@Component public class AuditTrail {
+    @Inject Registry registry;
+    public int32 audits;
+    public AuditTrail() {
+        this.audits = 0;
+        return;
+    }
+    public int32 capacity() {
+        return this.registry.entries - this.audits;
+    }
+    public void bump() {
+        this.audits = this.audits + 1;
+    }
+}
+
+// Service depends on both. Transitive resolution: requesting Service
+// builds AuditTrail (which builds Registry); all three singletons
+// are populated on the first __cajeta_inject() call.
+@Component public class Service {
+    @Inject Registry registry;
+    @Inject AuditTrail trail;
+    public Service() { return; }
+    public int32 used() {
+        this.trail.bump();
+        this.trail.bump();
+        this.trail.bump();
+        return this.trail.audits;
+    }
+    public int32 spare() {
+        return this.trail.capacity();
+    }
+}
+
+public class AspectsDiDemo extends DemoClass {
+    public void execute() {
+        System.stdout.println("");
+        System.stdout.println("-- Aspects + DI --");
+
+        this.aspectsBeforeAfter();
+        this.aspectsAround();
+        this.diBootstrap();
+        this.diTransitive();
+    }
+
+    // 1. @Before + @After on the same target method. The aspect's
+    // wrapper interleaves the advice calls with the body: before,
+    // body, after.
+    public void aspectsBeforeAfter() {
+        System.stdout.println("  @Before + @After:");
+        int32 r = AspectTarget.work();
+        System.stdout.println("    result = " + r);
+    }
+
+    // 2. @Around with @Original proceed. The advice triples the
+    // input before forwarding, then adds 1 to the body's return —
+    // observable proof that the wrapper is intercepting both ends.
+    //
+    // compute(x=5) — body sees 15 (= 5*3), returns 30 (= 15*2),
+    // advice adds 1 → final 31.
+    public void aspectsAround() {
+        System.stdout.println("  @Around with proceed:");
+        int32 r = AspectTarget.compute(5);
+        System.stdout.println("    final result = " + r);
+    }
+
+    // 3. DI bootstrap. Registry has no dependencies, so its
+    // synthesized __cajeta_inject() just allocates + constructs +
+    // caches. Second call returns the SAME singleton — verified by
+    // mutating through one handle and reading through another.
+    public void diBootstrap() {
+        Registry a = Registry.__cajeta_inject();
+        Registry b = Registry.__cajeta_inject();
+        a.entries = 250;
+        System.stdout.println("  DI singleton identity:");
+        System.stdout.println("    a == b cached singleton -> b.entries = "
+            + b.entries);
+    }
+
+    // 4. Transitive resolution. Requesting Service from cold builds
+    // Registry, then AuditTrail (which gets Registry @Inject'd), then
+    // Service (which gets both @Inject'd). All three singletons are
+    // populated on the first call; subsequent calls hit the cache.
+    public void diTransitive() {
+        Service s = Service.__cajeta_inject();
+        int32 used = s.used();
+        int32 spare = s.spare();
+        System.stdout.println("  DI transitive resolution:");
+        System.stdout.println("    Service.used()  = " + used);
+        System.stdout.println("    Service.spare() = " + spare);
+    }
+}
