@@ -36,6 +36,24 @@ namespace cajeta {
     // class-shaped placeholder. Populated by the prescan visitor's
     // visitEnumDeclaration override.
     static set<string> g_enumArchive;
+    // Per-class template metadata captured by the prescan when the
+    // class declaration carries `typeParameters`. Lets the placeholder-
+    // synthesis path in fromContext below pre-populate enough state on
+    // the placeholder that `isTemplate()` returns true AND a use-site
+    // `T<args>` reference can immediately call `placeholder->instantiate(args)`
+    // — even though the placeholder's REAL visitClassDeclaration hasn't
+    // fired yet. The instantiation re-parses templateSource with the
+    // pinned typeParameter names substituted, producing a fully-built
+    // `T<args>` class up-front. Without this, the typeArguments at the
+    // use site are silently dropped (Box<int32>::get() multi-module bug)
+    // because the placeholder's `isTemplate()` returns false.
+    //
+    // Keyed by canonical name; entries set only for templated classes.
+    struct ArchiveTemplateMeta {
+        vector<TypeParameter> typeParameters;
+        string templateSource;
+    };
+    static map<string, ArchiveTemplateMeta> g_archiveTemplateMeta;
     // Wildcard feature-flag override (Step 1). Set by tests via
     // CajetaType::setWildcardsEnabledForTest. Null means "fall back
     // to the CAJETA_WILDCARDS env var" (the production path).
@@ -80,6 +98,7 @@ namespace cajeta {
         enumConstants.clear();
         g_archive.clear();
         g_enumArchive.clear();
+        g_archiveTemplateMeta.clear();
         g_wildcardInfo.clear();
         // Test override survives resetGlobals on purpose — a test
         // turning the feature on expects the next Compiler instance
@@ -94,6 +113,29 @@ namespace cajeta {
 
     bool CajetaType::isArchiveEnum(const string& canonical) {
         return g_enumArchive.count(canonical) > 0;
+    }
+
+    void CajetaType::registerArchiveTemplate(const string& canonical,
+                                              const vector<TypeParameter>& typeParameters,
+                                              const string& templateSource) {
+        if (canonical.empty() || typeParameters.empty()) return;
+        auto& meta = g_archiveTemplateMeta[canonical];
+        meta.typeParameters = typeParameters;
+        meta.templateSource = templateSource;
+    }
+
+    const vector<TypeParameter>* CajetaType::lookupArchiveTemplateParameters(
+            const string& canonical) {
+        auto it = g_archiveTemplateMeta.find(canonical);
+        if (it == g_archiveTemplateMeta.end()) return nullptr;
+        return &it->second.typeParameters;
+    }
+
+    const string* CajetaType::lookupArchiveTemplateSource(
+            const string& canonical) {
+        auto it = g_archiveTemplateMeta.find(canonical);
+        if (it == g_archiveTemplateMeta.end()) return nullptr;
+        return &it->second.templateSource;
     }
 
     bool CajetaType::wildcardsEnabled() {
@@ -535,6 +577,24 @@ namespace cajeta {
                                 std::list<QualifiedNamePtr>{},
                                 std::list<QualifiedNamePtr>{});
                             placeholder->setPlaceholder(true);
+                            // Template-metadata seeding. If the prescan
+                            // captured typeParameters + source for this
+                            // class, install them on the placeholder now —
+                            // then `placeholder->isTemplate()` returns
+                            // true and a use-site `T<args>` reference can
+                            // immediately call instantiate(args), instead
+                            // of silently dropping the type-args. The
+                            // real visitClassDeclaration later overwrites
+                            // both fields with identical values from the
+                            // real parse (harmless).
+                            if (const auto* archParams =
+                                    lookupArchiveTemplateParameters(canonical)) {
+                                placeholder->setTypeParameters(*archParams);
+                                if (const auto* archSrc =
+                                        lookupArchiveTemplateSource(canonical)) {
+                                    placeholder->setTemplateSource(*archSrc);
+                                }
+                            }
                             // Don't pre-set llvmType — leave it null so
                             // the real generatePrototype's
                             // getOrCreateLlvmType call creates a named

@@ -7,6 +7,7 @@
 #include "Modifiable.h"
 #include "Annotatable.h"
 #include "QualifiedName.h"
+#include "Templates.h"
 #include <optional>
 #include "llvm/IR/Module.h"
 #include "llvm/IR/Type.h"
@@ -261,6 +262,26 @@ class CajetaType : public Modifiable, public Annotatable,
         // registerArchive(canonical, shortName).
         static void markArchiveEnum(const string& canonical);
         static bool isArchiveEnum(const string& canonical);
+
+        // Record template metadata for an archived class. Called by
+        // the prescan visitor for any class/interface declaration
+        // that carries a `typeParameters` clause. The templateSource
+        // is the literal text of the enclosing typeDeclaration —
+        // mirroring what visitClassDeclaration captures at parse
+        // time. Lets fromContext's placeholder-synthesis path
+        // pre-set typeParameters + templateSource on a placeholder
+        // so an early `T<args>` use site can instantiate before
+        // the real visitClassDeclaration runs.
+        static void registerArchiveTemplate(const string& canonical,
+                                            const vector<TypeParameter>& typeParameters,
+                                            const string& templateSource);
+        // Read accessors — return null if no template entry exists
+        // for `canonical`. Pointers stay valid for the lifetime of
+        // the static archive map.
+        static const vector<TypeParameter>* lookupArchiveTemplateParameters(
+            const string& canonical);
+        static const string* lookupArchiveTemplateSource(
+            const string& canonical);
 
         static map<llvm::Type::TypeID, CajetaTypePtr>& getTypeIdMap();
 

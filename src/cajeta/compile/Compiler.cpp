@@ -81,12 +81,14 @@ namespace cajeta {
         std::any visitClassDeclaration(
                 CajetaParser::ClassDeclarationContext* ctx) override {
             registerAndRecurse(ctx->identifier()->getText(), ctx);
+            captureTemplateMeta(ctx);
             return defaultResult();
         }
 
         std::any visitInterfaceDeclaration(
                 CajetaParser::InterfaceDeclarationContext* ctx) override {
             registerAndRecurse(ctx->identifier()->getText(), ctx);
+            captureTemplateMeta(ctx);
             return defaultResult();
         }
 
@@ -127,10 +129,52 @@ namespace cajeta {
             canonical += shortName;
             CajetaType::registerArchive(canonical, shortName);
             if (markEnum) CajetaType::markArchiveEnum(canonical);
+            lastCanonical = canonical;
             enclosingStack.push_back(shortName);
             visitChildren(tree);
             enclosingStack.pop_back();
         }
+
+        // Capture template metadata for a class / interface declaration that
+        // carries a `typeParameters` clause. Mirrors the visitor's parse-time
+        // capture (CajetaLlvmVisitor.h:220-247) so a use-site `T<args>`
+        // reference in an OTHER file that parses before this one can still
+        // instantiate up front. The visitor's later real parse may overwrite
+        // these with the same values — harmless.
+        template <typename ClassOrInterfaceCtx>
+        void captureTemplateMeta(ClassOrInterfaceCtx* ctx) {
+            auto* tps = ctx->typeParameters();
+            if (!tps) return;
+            std::vector<cajeta::TypeParameter> params;
+            for (auto* tp : tps->typeParameter()) {
+                cajeta::TypeParameter param(tp->identifier()->getText());
+                if (auto* bound = tp->typeBound()) {
+                    for (auto* tt : bound->typeType()) {
+                        if (auto* coi = tt->classOrInterfaceType()) {
+                            param.bounds.push_back(cajeta::QualifiedName::fromContext(coi));
+                        }
+                    }
+                }
+                params.push_back(std::move(param));
+            }
+            // Capture the literal text of the enclosing typeDeclaration so
+            // `instantiate(args)` can re-parse the body with substitution.
+            antlr4::ParserRuleContext* enclosing = ctx;
+            if (auto* td = dynamic_cast<CajetaParser::TypeDeclarationContext*>(ctx->parent)) {
+                enclosing = td;
+            }
+            std::string source;
+            auto* startTok = enclosing->getStart();
+            auto* stopTok = enclosing->getStop();
+            if (startTok && stopTok && startTok->getInputStream()) {
+                antlr4::misc::Interval interval(
+                    startTok->getStartIndex(), stopTok->getStopIndex());
+                source = startTok->getInputStream()->getText(interval);
+            }
+            CajetaType::registerArchiveTemplate(lastCanonical, params, source);
+        }
+
+        std::string lastCanonical;
     };
 
     // Pre-scan one source via ANTLR.

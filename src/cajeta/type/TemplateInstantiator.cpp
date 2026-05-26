@@ -208,6 +208,26 @@ namespace cajeta {
         if (cached != structures.end()) {
             return cached->second;
         }
+        // Process-wide check via the structureToModule registry. Templated
+        // classes referenced cross-module produce one instantiation, owned
+        // by whichever module triggered the first build (commonly the user
+        // module that named `T<args>` before the template's real
+        // declaration parsed — placeholder-template path in
+        // CajetaType::fromContext). Without this lookup, a later parse in
+        // the template's actual module would re-build the same `T<args>`,
+        // producing duplicate `#RttiGlobal` / `#VTable` definitions across
+        // .o files and a linker error.
+        {
+            auto& structToMod = CajetaModule::getStructureToModule();
+            auto stIt = structToMod.find(instCanonical);
+            if (stIt != structToMod.end() && stIt->second) {
+                auto& owningStructures = stIt->second->getStructures();
+                auto cachedGlobal = owningStructures.find(instCanonical);
+                if (cachedGlobal != owningStructures.end()) {
+                    return cachedGlobal->second;
+                }
+            }
+        }
 
         // Templated-interface instantiation. We re-parse the captured
         // interfaceDeclaration source under the type-parameter

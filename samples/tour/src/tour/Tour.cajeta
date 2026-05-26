@@ -126,15 +126,18 @@ public final class Tour {
     public static int32 demoTemplates() {
         System.stdout.println("");
         System.stdout.println("-- Templates --");
-        // Class template: ArrayList<int32> is the stdlib's bread-and-butter
-        // generic container — see demoCollections for the full surface.
-        // Here we demonstrate stream<T>'s monomorphization across two
-        // different element types in the same scope.
+        // Class template: Box<int32>. Each (Class, type-arg) pair
+        // materializes a distinct runtime type with its own vtable
+        // (true monomorphization — no type erasure).
+        Box<int32> bi = heap Box<int32>(42);
+        int32 unboxed = bi.get();
+        System.stdout.println("  Box<int32>(42).get() = " + unboxed);
+        if (unboxed != 42) { return 1; }
+        // Stream-level monomorphization across two element types in
+        // the same scope — Stream<int32> and Stream<float64>.
         int32[]   ints = {1, 2, 3, 4, 5};
         float64[] dbls = {1.5, 2.5, 3.5};
-        int32 intSum = ints.stream().reduce(0, (a, b) -> a + b);
-        // Stream<float64>'s reduce returns float64 — coerce to int32 to
-        // print a clean integer.
+        int32 intSum  = ints.stream().reduce(0, (a, b) -> a + b);
         int32 dblSumI = (int32) dbls.stream().reduce(0.0, (a, b) -> a + b);
         System.stdout.println("  Stream<int32>  sum = " + intSum);
         System.stdout.println("  Stream<float64> sum (truncated) = " + dblSumI);
