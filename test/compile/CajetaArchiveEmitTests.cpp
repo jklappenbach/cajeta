@@ -98,14 +98,13 @@ TEST(CajetaArchiveEmitTests, archiveModeWritesCjaWithMagicHeader) {
 
     auto cja = proj.buildRoot / "Hello.cja";
     ASSERT_TRUE(fs::exists(cja)) << "expected " << cja;
+    // Magic + version are stable across compression modes; everything past
+    // the header may be zstd-compressed (current writer default), so use
+    // the reader for the deeper assertions.
     auto bytes = readBytes(cja.string());
-    ASSERT_GE(bytes.size(), (size_t) 40);
-
+    ASSERT_GE(bytes.size(), (size_t) 32);
     EXPECT_EQ(std::string((const char*) bytes.data(), 8), std::string("CAJETA01"));
-    EXPECT_EQ(readU32LE(bytes, 8),  1u);      // format version
-    EXPECT_EQ(readU32LE(bytes, 12), 0u);      // flags (v1: no compression)
-    EXPECT_EQ(readU64LE(bytes, 16), 0u);      // index offset (v1)
-    EXPECT_EQ(readU64LE(bytes, 24), 0u);      // index length (v1)
+    EXPECT_EQ(readU32LE(bytes, 8), 1u);
 
     fs::remove_all(proj.sourceRoot.parent_path());
 }
@@ -120,12 +119,10 @@ TEST(CajetaArchiveEmitTests, archiveModeManifestSaysThin) {
         + " > /dev/null 2>&1";
     ASSERT_EQ(std::system(cmd.c_str()), 0);
 
-    auto bytes = readBytes((proj.buildRoot / "Hello.cja").string());
-    uint64_t manifestLen = readU64LE(bytes, 32);
-    std::string manifest((const char*) bytes.data() + 40, manifestLen);
-    EXPECT_NE(manifest.find("\"kind\":\"thin\""), std::string::npos)
-        << "manifest = " << manifest;
-    EXPECT_NE(manifest.find("\"name\":\"demo.Hello\""), std::string::npos);
+    auto arc = cajeta::CajetaArchive::readFrom(
+        (proj.buildRoot / "Hello.cja").string());
+    EXPECT_EQ(arc.getKind(), cajeta::CajetaArchive::Kind::Thin);
+    EXPECT_EQ(arc.getName(), "demo.Hello");
 
     fs::remove_all(proj.sourceRoot.parent_path());
 }
@@ -140,11 +137,9 @@ TEST(CajetaArchiveEmitTests, uberModeManifestSaysUber) {
         + " > /dev/null 2>&1";
     ASSERT_EQ(std::system(cmd.c_str()), 0);
 
-    auto bytes = readBytes((proj.buildRoot / "Hello.cja").string());
-    uint64_t manifestLen = readU64LE(bytes, 32);
-    std::string manifest((const char*) bytes.data() + 40, manifestLen);
-    EXPECT_NE(manifest.find("\"kind\":\"uber\""), std::string::npos)
-        << "manifest = " << manifest;
+    auto arc = cajeta::CajetaArchive::readFrom(
+        (proj.buildRoot / "Hello.cja").string());
+    EXPECT_EQ(arc.getKind(), cajeta::CajetaArchive::Kind::Uber);
 
     fs::remove_all(proj.sourceRoot.parent_path());
 }
@@ -286,31 +281,19 @@ TEST(CajetaArchiveEmitTests, archiveContainsUserAndStdlibEntries) {
         + " > /dev/null 2>&1";
     ASSERT_EQ(std::system(cmd.c_str()), 0);
 
-    auto bytes = readBytes((proj.buildRoot / "Hello.cja").string());
-    uint64_t manifestLen = readU64LE(bytes, 32);
-    std::string manifest((const char*) bytes.data() + 40, manifestLen);
+    auto arc = cajeta::CajetaArchive::readFrom(
+        (proj.buildRoot / "Hello.cja").string());
 
-    // We expect at least two entries: the user's demo.Hello and the
-    // stdlib bundle (cajeta.runtime.__stdlib__). entry_count's exact
-    // value depends on how many modules the compiler retains today;
-    // pin a lower bound rather than exact for forward-compatibility.
-    auto countPos = manifest.find("\"entry_count\":");
-    ASSERT_NE(countPos, std::string::npos);
-    int count = std::atoi(manifest.c_str() + countPos
-        + std::strlen("\"entry_count\":"));
-    EXPECT_GE(count, 2);
-
-    // First entry is a user (origin tag 0) or stdlib (1) bitcode file.
-    // Walk past header (32) + manifest_len (8) + manifest (manifestLen).
-    size_t cursor = 32 + 8 + manifestLen;
-    ASSERT_LT(cursor + 4, bytes.size());
-    uint32_t nameLen = readU32LE(bytes, cursor);
-    cursor += 4;
-    ASSERT_LE(cursor + nameLen, bytes.size());
-    std::string firstName((const char*) bytes.data() + cursor, nameLen);
-    // Name should be a .bc with '/' separators (jar-style convention).
-    EXPECT_NE(firstName.find(".bc"), std::string::npos)
-        << "first entry name = " << firstName;
+    // At minimum: the user's demo.Hello and the stdlib bundle
+    // (cajeta.runtime.__stdlib__). entry_count varies as the stdlib
+    // grows; pin a lower bound rather than exact.
+    ASSERT_GE(arc.getEntries().size(), 2u);
+    // Every entry name follows the jar-style convention: '/' separators,
+    // `.bc` suffix.
+    for (const auto& e : arc.getEntries()) {
+        EXPECT_NE(e.name.find(".bc"), std::string::npos)
+            << "entry name = " << e.name;
+    }
 
     fs::remove_all(proj.sourceRoot.parent_path());
 }

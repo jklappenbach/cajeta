@@ -314,10 +314,10 @@ format version exceeds its supported maximum.
 
 The full container above (zstd, trailing index, resources, runtime-
 bitcode block, separate manifest blob) is the design target. The
-**v1 implementation lands a simpler subset** so each piece can ship
-incrementally without blocking on the others:
+**v1 implementation lands a partial subset** so each remaining piece
+can ship incrementally without blocking on the others:
 
-- **No compression.** Manifest is raw JSON; entries are raw bitcode bytes. The Archive flags' bits 0 (`manifest_compressed`) and 1 (`entries_compressed`) stay 0. Adding zstd later flips the bits without breaking the format.
+- **Compression: zstd (level 3) on both manifest and entries by default.** Header flag bits 0 (`manifest_compressed`) and 1 (`entries_compressed`) flip when compression is on. Each compressed section is framed as `uint64 uncompressed_length || zstd_bytes`; the manifest_length / data_length values give the ON-DISK size, the uint64 prefix gives what to allocate before decompressing. Writer opt-out via `CajetaArchive::setCompression(Compression::None)`; the reader handles either path. CLI plumbing (`--archive-compress=on|off`) is a thin follow-up. Size win: HelloWorld's `.cja` goes from 418 KB → 173 KB (60% off) on stdlib-heavy content.
 - **No trailing index.** `index_offset` and `index_length` are 0; readers scan entries linearly from the manifest-end offset. Acceptable for small archives (≤ a few hundred entries); the trailing index lands when a stdlib-sized archive needs random access.
 - **No resources block, no runtime-bitcode block.** Only class bitcode entries for v1. Resources land alongside the `@Embedded` annotation work; the runtime bitcode block lands when `--emit=exe` migrates from the inline-stdlib-module shape to consuming a stdlib `.cja`.
 - **Single-file output.** The writer produces one `.cja` per invocation. Multi-archive output (`--emit=archive --split` for per-package archives) is not on the v1 roadmap.

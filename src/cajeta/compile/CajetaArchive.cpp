@@ -5,6 +5,8 @@
 #include <iterator>
 #include <stdexcept>
 
+#include <zstd.h>
+
 namespace cajeta {
 
     namespace {
@@ -61,6 +63,63 @@ namespace cajeta {
             if (end == std::string::npos) return "";
             return m.substr(pos, end - pos);
         }
+
+        // zstd compression level. 3 is the default — fast encoder, very
+        // fast decoder, decent ratio. Levels 1-3 are speed-optimized;
+        // 19-22 are ratio-optimized. The .cja write-few-read-many
+        // workload favors decompression speed (libraries written once,
+        // read by every consumer that links them), so 3 is the sweet
+        // spot.
+        constexpr int ZSTD_COMPRESS_LEVEL = 3;
+
+        // Header flag bits — written into the 4-byte flags field at
+        // offset 12. Bit 0 marks the manifest section as zstd-
+        // compressed; bit 1 marks every entry's data block. Both
+        // sections, when compressed, are framed as:
+        //   uint64 uncompressed_length || zstd_compressed_bytes
+        // The on-disk length-prefix (manifest_len for the manifest,
+        // data_length per entry) describes the COMPRESSED on-disk size.
+        constexpr uint32_t FLAG_MANIFEST_COMPRESSED = 1u << 0;
+        constexpr uint32_t FLAG_ENTRIES_COMPRESSED  = 1u << 1;
+
+        // Compress raw bytes with zstd. Returns the compressed buffer.
+        // Throws on zstd failure (malformed input is impossible since we
+        // pass valid bytes; out-of-memory is the realistic case).
+        std::vector<uint8_t> zstdCompress(const uint8_t* src, size_t srcLen) {
+            size_t bound = ZSTD_compressBound(srcLen);
+            std::vector<uint8_t> out(bound);
+            size_t written = ZSTD_compress(out.data(), bound,
+                src, srcLen, ZSTD_COMPRESS_LEVEL);
+            if (ZSTD_isError(written)) {
+                throw std::runtime_error(
+                    std::string("CajetaArchive: zstd compress failed: ")
+                    + ZSTD_getErrorName(written));
+            }
+            out.resize(written);
+            return out;
+        }
+
+        // Decompress zstd bytes given the known uncompressed size (the
+        // .cja format stores it as a uint64 prefix in each compressed
+        // section).
+        std::vector<uint8_t> zstdDecompress(const uint8_t* src, size_t srcLen,
+                                             uint64_t uncompressedSize) {
+            std::vector<uint8_t> out((size_t) uncompressedSize);
+            size_t produced = ZSTD_decompress(out.data(), out.size(),
+                src, srcLen);
+            if (ZSTD_isError(produced)) {
+                throw std::runtime_error(
+                    std::string("CajetaArchive: zstd decompress failed: ")
+                    + ZSTD_getErrorName(produced));
+            }
+            if (produced != (size_t) uncompressedSize) {
+                throw std::runtime_error(
+                    "CajetaArchive: zstd decompress produced "
+                    + std::to_string(produced) + " bytes, expected "
+                    + std::to_string(uncompressedSize));
+            }
+            return out;
+        }
     }
 
     CajetaArchive::CajetaArchive(std::string name, std::string version, Kind kind)
@@ -99,17 +158,34 @@ namespace cajeta {
             throw std::runtime_error("CajetaArchive: cannot open output: " + path);
         }
 
+        bool compressed = (compression == Compression::Zstd);
+        uint32_t flags = 0;
+        if (compressed) {
+            flags |= FLAG_MANIFEST_COMPRESSED | FLAG_ENTRIES_COMPRESSED;
+        }
+
         // ---- Header (32 bytes) ----
         out.write(MAGIC, 8);
         writeU32LE(out, FORMAT_VERSION);
-        writeU32LE(out, /*flags=*/0);          // v1: no compression, no trailing index
+        writeU32LE(out, flags);
         writeU64LE(out, /*index_offset=*/0);
         writeU64LE(out, /*index_length=*/0);
 
         // ---- Manifest ----
         std::string manifest = buildManifest();
-        writeU64LE(out, (uint64_t) manifest.size());
-        out.write(manifest.data(), (std::streamsize) manifest.size());
+        if (compressed) {
+            // Frame: uint64 uncompressed_len || zstd_compressed_bytes.
+            // The manifest_len that follows in the format gives the
+            // on-disk size, which here is 8 + zstd_bytes.size().
+            auto comp = zstdCompress(
+                (const uint8_t*) manifest.data(), manifest.size());
+            writeU64LE(out, (uint64_t) (8 + comp.size()));
+            writeU64LE(out, (uint64_t) manifest.size());
+            out.write((const char*) comp.data(), (std::streamsize) comp.size());
+        } else {
+            writeU64LE(out, (uint64_t) manifest.size());
+            out.write(manifest.data(), (std::streamsize) manifest.size());
+        }
 
         // ---- Entries ----
         for (const auto& e : entries) {
@@ -123,8 +199,16 @@ namespace cajeta {
             out.write(&kindByte,   1);
             out.write(reserved,    2);
 
-            writeU64LE(out, (uint64_t) e.data.size());
-            out.write((const char*) e.data.data(), (std::streamsize) e.data.size());
+            if (compressed) {
+                auto comp = zstdCompress(e.data.data(), e.data.size());
+                writeU64LE(out, (uint64_t) (8 + comp.size()));
+                writeU64LE(out, (uint64_t) e.data.size());
+                out.write((const char*) comp.data(), (std::streamsize) comp.size());
+            } else {
+                writeU64LE(out, (uint64_t) e.data.size());
+                out.write((const char*) e.data.data(),
+                    (std::streamsize) e.data.size());
+            }
         }
 
         if (!out) {
@@ -164,28 +248,50 @@ namespace cajeta {
                 "CajetaArchive: " + path + " unsupported format version "
                 + std::to_string(version));
         }
-        // v1 only supports flags == 0 (uncompressed, no trailing index).
-        // zstd / trailing-index land later via flag bits 0 / 1 / 2 —
-        // this reject keeps a future-shaped archive from silently
-        // misparsing through the v1 reader.
-        if (flags != 0) {
+        // Recognized flag bits: bit 0 (manifest_compressed) + bit 1
+        // (entries_compressed). Other bits would be a future format
+        // extension we don't yet understand — reject loudly so a
+        // future-shaped archive can't silently misparse through this
+        // reader.
+        constexpr uint32_t KNOWN_FLAGS =
+            FLAG_MANIFEST_COMPRESSED | FLAG_ENTRIES_COMPRESSED;
+        if ((flags & ~KNOWN_FLAGS) != 0) {
             throw std::runtime_error(
-                "CajetaArchive: " + path + " uses flags=0x"
-                + std::to_string(flags)
-                + " which this reader doesn't support yet");
+                "CajetaArchive: " + path + " uses unknown flags=0x"
+                + std::to_string(flags));
         }
+        bool manifestCompressed = (flags & FLAG_MANIFEST_COMPRESSED) != 0;
+        bool entriesCompressed  = (flags & FLAG_ENTRIES_COMPRESSED) != 0;
 
-        // Manifest: uint64 length-prefixed UTF-8 JSON.
+        // Manifest: uint64 on-disk length-prefixed UTF-8 JSON. When
+        // compressed, the on-disk block is uint64 uncompressed_len ||
+        // zstd_bytes (total length = on-disk length).
         if (bytes.size() < 40) {
             throw std::runtime_error("CajetaArchive: " + path + " truncated at manifest");
         }
-        uint64_t manifestLen = readU64LE(bytes.data() + 32);
-        if (manifestLen > bytes.size() - 40) {
+        uint64_t manifestOnDisk = readU64LE(bytes.data() + 32);
+        if (manifestOnDisk > bytes.size() - 40) {
             throw std::runtime_error("CajetaArchive: " + path + " manifest length out of range");
         }
-        std::string manifest(
-            (const char*) bytes.data() + 40, manifestLen);
-        size_t cursor = 40 + (size_t) manifestLen;
+        std::string manifest;
+        if (manifestCompressed) {
+            if (manifestOnDisk < 8) {
+                throw std::runtime_error(
+                    "CajetaArchive: " + path + " compressed manifest too short");
+            }
+            uint64_t uncompressedLen = readU64LE(bytes.data() + 40);
+            auto decompressed = zstdDecompress(
+                bytes.data() + 48,
+                (size_t) (manifestOnDisk - 8),
+                uncompressedLen);
+            manifest.assign((const char*) decompressed.data(),
+                decompressed.size());
+        } else {
+            manifest.assign(
+                (const char*) bytes.data() + 40,
+                (size_t) manifestOnDisk);
+        }
+        size_t cursor = 40 + (size_t) manifestOnDisk;
 
         std::string archiveName = scanManifestString(manifest, "name");
         std::string archiveVer  = scanManifestString(manifest, "version");
@@ -220,9 +326,9 @@ namespace cajeta {
             uint8_t kindTag   = bytes[cursor + 1];
             // skip 2 reserved bytes
             cursor += 4;
-            uint64_t dataLen = readU64LE(bytes.data() + cursor);
+            uint64_t dataOnDisk = readU64LE(bytes.data() + cursor);
             cursor += 8;
-            if (bytes.size() - cursor < dataLen) {
+            if (bytes.size() - cursor < dataOnDisk) {
                 throw std::runtime_error(
                     "CajetaArchive: " + path + " truncated entry data");
             }
@@ -231,10 +337,22 @@ namespace cajeta {
             entry.name      = std::move(name);
             entry.originTag = originTag;
             entry.kindTag   = (EntryKind) kindTag;
-            entry.data.assign(
-                bytes.data() + cursor,
-                bytes.data() + cursor + dataLen);
-            cursor += (size_t) dataLen;
+            if (entriesCompressed) {
+                if (dataOnDisk < 8) {
+                    throw std::runtime_error(
+                        "CajetaArchive: " + path + " compressed entry too short");
+                }
+                uint64_t uncompressedLen = readU64LE(bytes.data() + cursor);
+                entry.data = zstdDecompress(
+                    bytes.data() + cursor + 8,
+                    (size_t) (dataOnDisk - 8),
+                    uncompressedLen);
+            } else {
+                entry.data.assign(
+                    bytes.data() + cursor,
+                    bytes.data() + cursor + dataOnDisk);
+            }
+            cursor += (size_t) dataOnDisk;
 
             arc.addEntry(std::move(entry));
         }

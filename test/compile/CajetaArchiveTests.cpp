@@ -61,6 +61,7 @@ TEST(CajetaArchiveTests, emptyArchiveHasCorrectMagicAndVersion) {
     auto path = std::filesystem::temp_directory_path() / "cja_empty.cja";
     {
         CajetaArchive arc("test-empty", "1.0.0", CajetaArchive::Kind::Thin);
+        arc.setCompression(CajetaArchive::Compression::None);
         arc.writeTo(path.string());
     }
     auto bytes = readBytes(path.string());
@@ -86,6 +87,7 @@ TEST(CajetaArchiveTests, emptyArchiveHasManifestWithThinKind) {
     auto path = std::filesystem::temp_directory_path() / "cja_manifest.cja";
     {
         CajetaArchive arc("my-lib", "2.0.1", CajetaArchive::Kind::Thin);
+        arc.setCompression(CajetaArchive::Compression::None);   // probe raw manifest bytes
         arc.writeTo(path.string());
     }
     auto bytes = readBytes(path.string());
@@ -110,6 +112,7 @@ TEST(CajetaArchiveTests, uberArchiveManifestCarriesUberKind) {
     auto path = std::filesystem::temp_directory_path() / "cja_uber.cja";
     {
         CajetaArchive arc("my-app", "0.1.0", CajetaArchive::Kind::Uber);
+        arc.setCompression(CajetaArchive::Compression::None);
         arc.writeTo(path.string());
     }
     auto bytes = readBytes(path.string());
@@ -128,6 +131,7 @@ TEST(CajetaArchiveTests, addsBitcodeEntryWithCorrectNameAndPayload) {
     std::string bitcode = "BCfake_bitcode_payload";   // not real bitcode, just a payload
     {
         CajetaArchive arc("test", "0", CajetaArchive::Kind::Thin);
+        arc.setCompression(CajetaArchive::Compression::None);
         CajetaArchiveEntry entry;
         entry.name       = "demo/App.bc";
         entry.originTag  = 0;                                            // user
@@ -240,10 +244,133 @@ TEST(CajetaArchiveTests, readerRejectsTruncated) {
     std::filesystem::remove(path);
 }
 
+// --- Compression -----------------------------------------------------------
+
+TEST(CajetaArchiveTests, compressedArchiveSetsFlagsBit0And1) {
+    auto path = std::filesystem::temp_directory_path() / "cja_zstd_flags.cja";
+    {
+        CajetaArchive arc("zstd", "1", CajetaArchive::Kind::Thin);
+        arc.setCompression(CajetaArchive::Compression::Zstd);
+        // Need at least one entry so flag bit 1 is meaningful (the
+        // writer sets the bit unconditionally when compression is on,
+        // but the assertion below also reads the manifest's flag bit 0).
+        CajetaArchiveEntry e;
+        e.name = "a/B.bc";
+        e.originTag = 0;
+        e.kindTag   = CajetaArchive::EntryKind::ClassBitcode;
+        e.data.assign(1024, 0x42);  // 1KB of 'B' — highly compressible
+        arc.addEntry(std::move(e));
+        arc.writeTo(path.string());
+    }
+    auto bytes = readBytes(path.string());
+    ASSERT_GE(bytes.size(), (size_t) 32);
+    uint32_t flags = readU32LE(bytes, 12);
+    EXPECT_TRUE(flags & 0x1) << "manifest_compressed flag should be set";
+    EXPECT_TRUE(flags & 0x2) << "entries_compressed flag should be set";
+    std::filesystem::remove(path);
+}
+
+TEST(CajetaArchiveTests, compressedRoundtripPreservesEntries) {
+    auto path = std::filesystem::temp_directory_path() / "cja_zstd_rt.cja";
+    std::vector<uint8_t> payload(2048);
+    // Deterministic but non-trivial pattern so compression has something
+    // to do.
+    for (size_t i = 0; i < payload.size(); ++i) {
+        payload[i] = (uint8_t) ((i * 7 + 11) & 0xFF);
+    }
+    {
+        CajetaArchive arc("rt-zstd", "1", CajetaArchive::Kind::Uber);
+        arc.setCompression(CajetaArchive::Compression::Zstd);
+        CajetaArchiveEntry e1{"x/A.bc", 0,
+            CajetaArchive::EntryKind::ClassBitcode, payload};
+        CajetaArchiveEntry e2{"x/y/B.bc", 2,
+            CajetaArchive::EntryKind::ClassBitcode,
+            std::vector<uint8_t>{0xDE, 0xAD, 0xBE, 0xEF}};
+        arc.addEntry(std::move(e1));
+        arc.addEntry(std::move(e2));
+        arc.writeTo(path.string());
+    }
+    auto loaded = CajetaArchive::readFrom(path.string());
+    EXPECT_EQ(loaded.getName(),    "rt-zstd");
+    EXPECT_EQ(loaded.getKind(),    CajetaArchive::Kind::Uber);
+    ASSERT_EQ(loaded.getEntries().size(), 2u);
+    EXPECT_EQ(loaded.getEntries()[0].name, "x/A.bc");
+    EXPECT_EQ(loaded.getEntries()[0].data, payload);
+    EXPECT_EQ(loaded.getEntries()[1].name, "x/y/B.bc");
+    EXPECT_EQ(loaded.getEntries()[1].data,
+        (std::vector<uint8_t>{0xDE, 0xAD, 0xBE, 0xEF}));
+    std::filesystem::remove(path);
+}
+
+TEST(CajetaArchiveTests, compressedArchiveIsSmallerThanUncompressed) {
+    auto pathRaw  = std::filesystem::temp_directory_path() / "cja_size_raw.cja";
+    auto pathZstd = std::filesystem::temp_directory_path() / "cja_size_zstd.cja";
+    // Highly compressible payload — a 16 KB run of the same byte.
+    std::vector<uint8_t> payload(16 * 1024, 0x7A);
+    auto buildAndWrite = [&](CajetaArchive::Compression c,
+                              const std::filesystem::path& path) {
+        CajetaArchive arc("sz", "1", CajetaArchive::Kind::Thin);
+        arc.setCompression(c);
+        CajetaArchiveEntry e{"p/Big.bc", 0,
+            CajetaArchive::EntryKind::ClassBitcode, payload};
+        arc.addEntry(std::move(e));
+        arc.writeTo(path.string());
+    };
+    buildAndWrite(CajetaArchive::Compression::None, pathRaw);
+    buildAndWrite(CajetaArchive::Compression::Zstd, pathZstd);
+
+    auto rawSize  = std::filesystem::file_size(pathRaw);
+    auto zstdSize = std::filesystem::file_size(pathZstd);
+    EXPECT_LT(zstdSize, rawSize)
+        << "expected zstd to compress the 16 KB run; "
+        << "raw=" << rawSize << " zstd=" << zstdSize;
+    // 16 KB of the same byte should compress to a few hundred bytes
+    // at most; the file should be < 1 KB total including the header
+    // and manifest framing.
+    EXPECT_LT(zstdSize, (uintmax_t) 1024)
+        << "zstd archive of a single-byte run should be tiny; got "
+        << zstdSize << " bytes";
+
+    std::filesystem::remove(pathRaw);
+    std::filesystem::remove(pathZstd);
+}
+
+TEST(CajetaArchiveTests, readerHandlesBothCompressedAndUncompressed) {
+    // The same payload via both writer paths should produce identical
+    // reader outputs (modulo the source archive's compression flag,
+    // which the reader doesn't track post-decompress).
+    auto pathRaw  = std::filesystem::temp_directory_path() / "cja_both_raw.cja";
+    auto pathZstd = std::filesystem::temp_directory_path() / "cja_both_zstd.cja";
+    std::vector<uint8_t> payload{0x11, 0x22, 0x33, 0x44, 0x55};
+
+    auto build = [&](CajetaArchive::Compression c,
+                      const std::filesystem::path& path) {
+        CajetaArchive arc("both", "1", CajetaArchive::Kind::Thin);
+        arc.setCompression(c);
+        CajetaArchiveEntry e{"a/B.bc", 0,
+            CajetaArchive::EntryKind::ClassBitcode, payload};
+        arc.addEntry(std::move(e));
+        arc.writeTo(path.string());
+    };
+    build(CajetaArchive::Compression::None, pathRaw);
+    build(CajetaArchive::Compression::Zstd, pathZstd);
+
+    auto loadedRaw  = CajetaArchive::readFrom(pathRaw.string());
+    auto loadedZstd = CajetaArchive::readFrom(pathZstd.string());
+    ASSERT_EQ(loadedRaw.getEntries().size(),  1u);
+    ASSERT_EQ(loadedZstd.getEntries().size(), 1u);
+    EXPECT_EQ(loadedRaw.getEntries()[0].data,  payload);
+    EXPECT_EQ(loadedZstd.getEntries()[0].data, payload);
+
+    std::filesystem::remove(pathRaw);
+    std::filesystem::remove(pathZstd);
+}
+
 TEST(CajetaArchiveTests, manifestCountsEntries) {
     auto path = std::filesystem::temp_directory_path() / "cja_count.cja";
     {
         CajetaArchive arc("multi", "1", CajetaArchive::Kind::Thin);
+        arc.setCompression(CajetaArchive::Compression::None);
         for (int i = 0; i < 3; ++i) {
             CajetaArchiveEntry e;
             e.name = "pkg/Class" + std::to_string(i) + ".bc";

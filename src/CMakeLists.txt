@@ -265,7 +265,8 @@ target_link_libraries(${CMAKE_PROJECT_NAME}_lib
         pthread
         ${LLVM_LIBS}
         ${CAJETA_LLD_LIBS}
-        glog::glog)
+        glog::glog
+        zstd)
 target_include_directories(${CMAKE_PROJECT_NAME}_lib PUBLIC
         ${PROJECT_SOURCE_DIR}/src
         ${LLVM_INCLUDE_DIRS}

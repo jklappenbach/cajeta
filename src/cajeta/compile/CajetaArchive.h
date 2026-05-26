@@ -60,7 +60,25 @@ namespace cajeta {
             Dependency = 2,
         };
 
+        // Compression algorithm for both the manifest and entry payloads.
+        // None keeps writes raw (header flags 0, smaller writer, larger
+        // file). Zstd compresses both with zstd at level 3 — fast encoder,
+        // very fast decoder, decent ratio. The reader auto-detects via
+        // header flag bits 0 (manifest) and 1 (entries) and decompresses
+        // transparently regardless of how the writer was configured.
+        enum class Compression {
+            None,
+            Zstd,
+        };
+
         CajetaArchive(std::string name, std::string version, Kind kind);
+
+        // Choose the compression algorithm for the writer. Default: Zstd —
+        // user-facing archives get small files out of the box. Tests that
+        // probe raw header bytes explicitly call setCompression(None) so
+        // their byte-offset assertions stay stable.
+        void setCompression(Compression c) { compression = c; }
+        Compression getCompression() const { return compression; }
 
         // Add one entry. Takes ownership of the entry's data vector
         // (move-into). The order added is the order written.
@@ -95,6 +113,7 @@ namespace cajeta {
         Kind        kind;
         std::vector<CajetaArchiveEntry> entries;
         std::string sourceArchiveName;   // set by readFrom; otherwise empty
+        Compression compression = Compression::Zstd;
 
         // Build the manifest JSON. Format spelled out in Compilation.md
         // § Manifest extensions — name, version, kind, entry_count,
