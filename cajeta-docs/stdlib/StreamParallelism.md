@@ -294,7 +294,14 @@ shape construction):
   parallel `Collectors` chain.
 
 **P4 — Source coverage + diagnostics.**
-- `HashMap` stream views become Splittable.
+- `HashMap` stream views become Splittable. **Shipped.**
+  `HashMapKeyStream` / `HashMapValueStream` / `HashMapEntryStream`
+  each `implements Splittable<T>` and override
+  `trySplit / estimateSize / splittableSize / trySplitRoot` —
+  halving the slot-array index range, same disjoint-share model as
+  `ArrayStream`. Verified end-to-end across count / reduce / fold-
+  with-combiner / anyMatch / allMatch / noneMatch / forEach
+  terminals in `test/collections/HashMapStreamParallelTests.cpp`.
 - Lint passes for `[parallel-stateful-op]` /
   `[parallel-collector-no-combiner]`.
 - Runtime exceptions wired.
