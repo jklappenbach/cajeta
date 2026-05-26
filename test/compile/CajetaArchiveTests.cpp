@@ -71,12 +71,14 @@ TEST(CajetaArchiveTests, emptyArchiveHasCorrectMagicAndVersion) {
     EXPECT_EQ(std::string((const char*) bytes.data(), 8), std::string("CAJETA01"));
     // Format version: uint32 LE at offset 8 — current is 1
     EXPECT_EQ(readU32LE(bytes, 8), 1u);
-    // Flags: uint32 LE at offset 12 — v1 is all zero (no compression yet)
+    // Flags: 0 because this test opted out of zstd compression.
     EXPECT_EQ(readU32LE(bytes, 12), 0u);
-    // Index offset: uint64 LE at offset 16 — v1 is 0 (no trailing index)
-    EXPECT_EQ(readU64LE(bytes, 16), 0u);
-    // Index length: uint64 LE at offset 24 — v1 is 0
-    EXPECT_EQ(readU64LE(bytes, 24), 0u);
+    // index_offset + index_length point at the trailing random-access
+    // index. offset > header size; offset + length reaches EOF.
+    uint64_t indexOff = readU64LE(bytes, 16);
+    uint64_t indexLen = readU64LE(bytes, 24);
+    EXPECT_GE(indexOff, (uint64_t) 32);
+    EXPECT_EQ(indexOff + indexLen, (uint64_t) bytes.size());
 
     std::filesystem::remove(path);
 }
@@ -364,6 +366,91 @@ TEST(CajetaArchiveTests, readerHandlesBothCompressedAndUncompressed) {
 
     std::filesystem::remove(pathRaw);
     std::filesystem::remove(pathZstd);
+}
+
+// --- Trailing random-access index -----------------------------------------
+
+TEST(CajetaArchiveTests, writerWritesNonZeroIndexOffsetAndLength) {
+    auto path = std::filesystem::temp_directory_path() / "cja_idx_basic.cja";
+    {
+        CajetaArchive arc("idx", "1", CajetaArchive::Kind::Thin);
+        arc.setCompression(CajetaArchive::Compression::None);
+        CajetaArchiveEntry e{"a/B.bc", 0,
+            CajetaArchive::EntryKind::ClassBitcode,
+            std::vector<uint8_t>{0xAA, 0xBB}};
+        arc.addEntry(std::move(e));
+        arc.writeTo(path.string());
+    }
+    auto bytes = readBytes(path.string());
+    ASSERT_GE(bytes.size(), (size_t) 32);
+    uint64_t indexOffset = readU64LE(bytes, 16);
+    uint64_t indexLength = readU64LE(bytes, 24);
+    EXPECT_GT(indexOffset, (uint64_t) 32);                  // past header
+    EXPECT_GT(indexLength, (uint64_t) 0);
+    EXPECT_EQ(indexOffset + indexLength, (uint64_t) bytes.size())
+        << "trailing index must extend to EOF";
+
+    // The index block starts with a uint32 entry_count.
+    ASSERT_LE(indexOffset + 4, bytes.size());
+    uint32_t entryCount = readU32LE(bytes, (size_t) indexOffset);
+    EXPECT_EQ(entryCount, 1u);
+
+    std::filesystem::remove(path);
+}
+
+TEST(CajetaArchiveTests, findEntryFindsByName) {
+    auto path = std::filesystem::temp_directory_path() / "cja_idx_find.cja";
+    std::vector<uint8_t> payload1{0x11, 0x22};
+    std::vector<uint8_t> payload2{0x33, 0x44, 0x55};
+    {
+        CajetaArchive arc("find", "1", CajetaArchive::Kind::Thin);
+        arc.addEntry({"x/A.bc", 0,
+            CajetaArchive::EntryKind::ClassBitcode, payload1});
+        arc.addEntry({"x/y/B.bc", 0,
+            CajetaArchive::EntryKind::ClassBitcode, payload2});
+        arc.writeTo(path.string());
+    }
+    auto loaded = CajetaArchive::readFrom(path.string());
+    const auto* a = loaded.findEntry("x/A.bc");
+    const auto* b = loaded.findEntry("x/y/B.bc");
+    const auto* missing = loaded.findEntry("nope/Missing.bc");
+    ASSERT_NE(a, nullptr);
+    ASSERT_NE(b, nullptr);
+    EXPECT_EQ(missing, nullptr);
+    EXPECT_EQ(a->data, payload1);
+    EXPECT_EQ(b->data, payload2);
+    std::filesystem::remove(path);
+}
+
+TEST(CajetaArchiveTests, indexSurvivesCompression) {
+    // The index follows the entries regardless of whether they're
+    // compressed — the offsets it records are on-disk byte positions,
+    // not logical entry indices.
+    auto path = std::filesystem::temp_directory_path() / "cja_idx_zstd.cja";
+    {
+        CajetaArchive arc("idx-zstd", "1", CajetaArchive::Kind::Thin);
+        arc.setCompression(CajetaArchive::Compression::Zstd);
+        arc.addEntry({"a.bc", 0,
+            CajetaArchive::EntryKind::ClassBitcode,
+            std::vector<uint8_t>(2048, 0x77)});
+        arc.addEntry({"b.bc", 0,
+            CajetaArchive::EntryKind::ClassBitcode,
+            std::vector<uint8_t>{0x12, 0x34}});
+        arc.writeTo(path.string());
+    }
+    auto bytes = readBytes(path.string());
+    uint64_t indexOffset = readU64LE(bytes, 16);
+    uint64_t indexLength = readU64LE(bytes, 24);
+    EXPECT_GT(indexOffset, (uint64_t) 32);
+    EXPECT_GT(indexLength, (uint64_t) 0);
+
+    auto loaded = CajetaArchive::readFrom(path.string());
+    ASSERT_EQ(loaded.getEntries().size(), 2u);
+    const auto* a = loaded.findEntry("a.bc");
+    ASSERT_NE(a, nullptr);
+    EXPECT_EQ(a->data.size(), (size_t) 2048);
+
+    std::filesystem::remove(path);
 }
 
 TEST(CajetaArchiveTests, manifestCountsEntries) {

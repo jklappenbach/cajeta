@@ -30,6 +30,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace cajeta {
@@ -94,6 +95,14 @@ namespace cajeta {
         // name / version / kind, plus every entry as a CajetaArchiveEntry.
         static CajetaArchive readFrom(const std::string& path);
 
+        // O(1) lookup by entry name. Returns a pointer to the entry, or
+        // null if the name isn't present. The lookup table is built
+        // eagerly (either from the on-disk trailing index when present,
+        // or from a linear walk of the entries vector at the end of
+        // readFrom), so this stays constant-time regardless of which
+        // path produced the archive.
+        const CajetaArchiveEntry* findEntry(const std::string& name) const;
+
         // Accessors used by readers (uber bundler, `cja` CLI tool, tests).
         const std::string& getName()    const { return name; }
         const std::string& getVersion() const { return version; }
@@ -114,6 +123,12 @@ namespace cajeta {
         std::vector<CajetaArchiveEntry> entries;
         std::string sourceArchiveName;   // set by readFrom; otherwise empty
         Compression compression = Compression::Zstd;
+        // Lazy lookup table — built on first findEntry call from the
+        // entries vector. The trailing on-disk index that writeTo
+        // produces is for FUTURE random-access readers; today's
+        // findEntry just builds the in-memory map from the entries
+        // vector itself, which is identical information.
+        mutable std::unordered_map<std::string, std::size_t> nameIndex;
 
         // Build the manifest JSON. Format spelled out in Compilation.md
         // § Manifest extensions — name, version, kind, entry_count,

@@ -148,6 +148,19 @@ namespace cajeta {
         return out;
     }
 
+    const CajetaArchiveEntry* CajetaArchive::findEntry(const std::string& name) const {
+        if (nameIndex.empty() && !entries.empty()) {
+            // Build lazily on first call. First-wins for duplicates so the
+            // semantic matches what the writer's dedupe pass produced.
+            for (std::size_t i = 0; i < entries.size(); ++i) {
+                nameIndex.emplace(entries[i].name, i);
+            }
+        }
+        auto it = nameIndex.find(name);
+        if (it == nameIndex.end()) return nullptr;
+        return &entries[it->second];
+    }
+
     void CajetaArchive::writeTo(const std::string& path) {
         std::filesystem::path p(path);
         if (p.has_parent_path()) {
@@ -165,11 +178,14 @@ namespace cajeta {
         }
 
         // ---- Header (32 bytes) ----
+        // index_offset / index_length are placeholders; we patch them
+        // post-write once the index has been appended and we know its
+        // actual offset + length.
         out.write(MAGIC, 8);
         writeU32LE(out, FORMAT_VERSION);
         writeU32LE(out, flags);
-        writeU64LE(out, /*index_offset=*/0);
-        writeU64LE(out, /*index_length=*/0);
+        writeU64LE(out, /*index_offset=*/0);     // patched below
+        writeU64LE(out, /*index_length=*/0);     // patched below
 
         // ---- Manifest ----
         std::string manifest = buildManifest();
@@ -188,7 +204,15 @@ namespace cajeta {
         }
 
         // ---- Entries ----
+        // Track each entry's start offset for the trailing index.
+        std::vector<uint64_t> entryOffsets;
+        std::vector<uint64_t> entryOnDiskSizes;
+        entryOffsets.reserve(entries.size());
+        entryOnDiskSizes.reserve(entries.size());
         for (const auto& e : entries) {
+            uint64_t startOffset = (uint64_t) out.tellp();
+            entryOffsets.push_back(startOffset);
+
             writeU32LE(out, (uint32_t) e.name.size());
             out.write(e.name.data(), (std::streamsize) e.name.size());
 
@@ -209,7 +233,38 @@ namespace cajeta {
                 out.write((const char*) e.data.data(),
                     (std::streamsize) e.data.size());
             }
+
+            entryOnDiskSizes.push_back((uint64_t) out.tellp() - startOffset);
         }
+
+        // ---- Trailing index ----
+        // Format:
+        //   uint32 entry_count
+        //   for each entry:
+        //     uint32 name_length
+        //     bytes  name
+        //     uint64 entry_offset    (start of name_length field)
+        //     uint64 entry_size      (total on-disk bytes including
+        //                             name+tags+data+framing)
+        // Always written; readers consult `index_offset != 0` in the
+        // header to decide whether to use it for random access. Cost is
+        // small (~24 bytes per entry + names); benefit is O(1) lookup
+        // by name across an arbitrarily large archive.
+        uint64_t indexOffset = (uint64_t) out.tellp();
+        writeU32LE(out, (uint32_t) entries.size());
+        for (std::size_t i = 0; i < entries.size(); ++i) {
+            const auto& e = entries[i];
+            writeU32LE(out, (uint32_t) e.name.size());
+            out.write(e.name.data(), (std::streamsize) e.name.size());
+            writeU64LE(out, entryOffsets[i]);
+            writeU64LE(out, entryOnDiskSizes[i]);
+        }
+        uint64_t indexLength = (uint64_t) out.tellp() - indexOffset;
+
+        // Patch header's index_offset (byte 16) and index_length (byte 24).
+        out.seekp(16);
+        writeU64LE(out, indexOffset);
+        writeU64LE(out, indexLength);
 
         if (!out) {
             throw std::runtime_error("CajetaArchive: write failure: " + path);
@@ -292,6 +347,17 @@ namespace cajeta {
                 (size_t) manifestOnDisk);
         }
         size_t cursor = 40 + (size_t) manifestOnDisk;
+        // Entries end at the trailing index (when present) or at EOF.
+        // Earlier writes (v1.0 before the trailing index landed) set
+        // both indexOff and indexLen to 0 — in that case fall through
+        // to EOF.
+        size_t entriesEnd = (indexOff != 0)
+            ? (size_t) indexOff
+            : bytes.size();
+        if (entriesEnd > bytes.size()) {
+            throw std::runtime_error(
+                "CajetaArchive: " + path + " index_offset past EOF");
+        }
 
         std::string archiveName = scanManifestString(manifest, "name");
         std::string archiveVer  = scanManifestString(manifest, "version");
@@ -301,9 +367,9 @@ namespace cajeta {
         CajetaArchive arc(archiveName, archiveVer, archKind);
         arc.setSourceArchiveName(archiveName);
 
-        // Entries — sequential read until end of file. v1 has no
-        // trailing index so we scan linearly.
-        while (cursor < bytes.size()) {
+        // Entries — sequential read until the entries-section end
+        // (start of trailing index, or EOF for pre-index archives).
+        while (cursor < entriesEnd) {
             if (bytes.size() - cursor < 4) {
                 throw std::runtime_error(
                     "CajetaArchive: " + path + " truncated entry name length");
