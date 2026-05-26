@@ -1,0 +1,16 @@
+package helloworld;
+
+// Smallest possible cajeta program. Compiled with --emit=ir, produces
+// one .ll per source under build/ir/. Compiled with --emit=obj and
+// linked with clang, produces a native binary that prints the line and
+// exits 0.
+//
+// The entry method name (`run`) is passed to the cajeta compiler as
+// the `pkg.Class.method` positional arg; the binary build also uses
+// it to find the static no-arg method to wire up as the C `main` shim.
+public final class HelloWorld {
+    public static int32 run() {
+        System.stdout.println("Hello world.");
+        return 0;
+    }
+}
