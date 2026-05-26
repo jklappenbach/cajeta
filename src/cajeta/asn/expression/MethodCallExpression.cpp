@@ -2249,24 +2249,20 @@ namespace cajeta {
         // (overloaded by arity match), no propagation runs and the
         // lambda lands at the default — at which point overload
         // resolution fails downstream the same way it did before.
-        // A bare-identifier lambda (`(acc, p) -> ...`) reaches here with
-        // empty paramTypes — the body's earlier resolveTypes ran without
-        // a scope for the params, fell back to a placeholder resolvedType
-        // (typically `() -> void`), and pinned that on the lambda.
-        // Checking `!getResolvedType()` would skip propagation in that
-        // case, since the lambda LOOKS resolved. The real signal that
-        // inference is still needed is `paramTypes.size() < paramNames
-        // .size()` — bare-id slots that never got a type. Once we have
-        // a candidate-derived expectedType, generateCode below pins
-        // paramTypes from it and re-runs resolveTypes against the now-
-        // scoped body. Typed-param lambdas have paramTypes == paramNames
-        // and skip the propagator (their resolveTypes already produced
-        // a real CajetaFunctionType).
+        // Run the propagator when ANY lambda arg needs help:
+        //   - It has no resolvedType yet (typed-param lambdas resolved
+        //     post-MCE only).
+        //   - OR its paramTypes/paramNames arity doesn't match (a bare-id
+        //     lambda whose earlier resolveTypes ran without a parameter
+        //     scope, fell back to `() -> void`, and pinned that on the
+        //     lambda — `getResolvedType()` returns the stale placeholder
+        //     so the original "no resolvedType" gate skipped these).
         bool anyLambda = false;
         for (auto& param : parameters) {
             if (auto lam = std::dynamic_pointer_cast<LambdaExpression>(
                     param.expression)) {
-                if (lam->getParamTypes().size() < lam->getParamNames().size()) {
+                if (!lam->getResolvedType()
+                        || lam->getParamTypes().size() < lam->getParamNames().size()) {
                     anyLambda = true;
                     break;
                 }
@@ -2414,12 +2410,12 @@ namespace cajeta {
                     if (argIdx >= parameters.size()) break;
                     if (auto lambda = std::dynamic_pointer_cast<LambdaExpression>(
                             parameters[argIdx].expression)) {
-                        // Same bare-id detection as the anyLambda gate
-                        // above — pin expectedType when paramTypes are
-                        // still empty, regardless of whether a stale
-                        // placeholder resolvedType was computed earlier.
-                        bool needsInference = lambda->getParamTypes().size()
-                            < lambda->getParamNames().size();
+                        // Pin expectedType when the lambda either has no
+                        // resolvedType yet OR has unresolved bare-id
+                        // params (stale `() -> void` placeholder).
+                        bool needsInference = !lambda->getResolvedType()
+                            || lambda->getParamTypes().size()
+                                < lambda->getParamNames().size();
                         if (needsInference && p->getType()) {
                             lambda->setExpectedType(p->getType());
                         }
