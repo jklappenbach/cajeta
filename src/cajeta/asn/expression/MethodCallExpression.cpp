@@ -9,6 +9,7 @@
 #include "cajeta/type/CajetaView.h"
 #include "cajeta/type/CajetaFunctionType.h"
 #include "cajeta/method/Method.h"
+#include "cajeta/error/Diagnostics.h"
 #include "cajeta/error/Exception.h"
 #include "cajeta/util/MemoryManager.h"
 #include "Expression.h"
@@ -191,6 +192,26 @@ namespace cajeta {
         if (name == "stderr" || name == "stderror") return 2;
         if (name == "stdin") return 0;
         return -1;
+    }
+
+    // When the receiver looks like `System.<something>` but `<something>` isn't
+    // a known stream (stdout/stderr/stdin), return that misspelled name so
+    // the caller can throw a diagnostic. Empty string means the receiver
+    // isn't `System.<x>` shape and the call-site should proceed with regular
+    // method resolution. (Static-method calls on a real `System` class
+    // someday would fall through this path because the methodCall would be
+    // on `System.foo(...)` directly, not `System.foo.bar(...)`.)
+    static std::string detectSystemUnknownStream(const AbstractSyntaxNodePtr& receiver) {
+        auto dot = dynamic_pointer_cast<DotExpression>(receiver);
+        if (!dot) return "";
+        const std::string& name = dot->getIdentifier();
+        if (systemStreamFd(name) >= 0) return "";   // known stream, OK
+        const auto& dotChildren = const_cast<DotExpression*>(dot.get())->getChildren();
+        if (dotChildren.empty()) return "";
+        auto sys = dynamic_pointer_cast<IdentifierExpression>(dotChildren[0]);
+        if (!sys) return "";
+        if (sys->getTextValue() != "System") return "";
+        return name;
     }
 
     // Inspect children[0] for the shape `System.<stream>` — used by the intrinsic
@@ -604,6 +625,29 @@ namespace cajeta {
 
         // ----- System.<stream>.<method>(...) intrinsic -----
         if (!children.empty()) {
+            // Catch the `System.<unknown>.<method>(...)` shape — usually
+            // `System.out.println(...)` from a Java reflex — before the
+            // call-resolution path drops it silently. Diag-hint suggests
+            // the correct cajeta receiver via Levenshtein over the known
+            // stream names.
+            std::string sysMisspelling = detectSystemUnknownStream(children[0]);
+            if (!sysMisspelling.empty()) {
+                std::string hint;
+                if (module->getFlags().diagHints) {
+                    std::vector<std::string> candidates = {
+                        "stdout", "stderr", "stdin"
+                    };
+                    auto suggestions = cajeta::pickSimilar(sysMisspelling, candidates,
+                        /*maxDistance=*/3);
+                    hint = cajeta::formatDidYouMean(suggestions);
+                }
+                throw Exception(
+                    "no `System." + sysMisspelling
+                    + "` — cajeta exposes only `System.stdout`, "
+                    "`System.stderr`, and `System.stdin` as I/O streams."
+                    + hint,
+                    "CAJETA_ERROR_UNKNOWN_SYSTEM_STREAM");
+            }
             int streamFd = detectSystemStreamReceiver(children[0]);
             if (streamFd >= 0) {
                 llvm::Type* i32Ty = llvm::Type::getInt32Ty(llvmCtx);
@@ -655,7 +699,24 @@ namespace cajeta {
                         if (!argsExpr->getResolvedType()) argsExpr->resolveTypes(module);
                         arrType = dynamic_pointer_cast<CajetaArray>(argsExpr->getResolvedType());
                     }
-                    if (!arrType) return nullptr;
+                    if (!arrType) {
+                        // Java/C-style `printf(fmt, x)` with raw scalar args
+                        // is not cajeta's contract — the second arg must be a
+                        // String[] of substitutions. Surface a clear error
+                        // instead of silently dropping the call. String
+                        // concatenation (`fmt + value`) is the usual fix.
+                        std::string actualType = "?";
+                        if (argsExpr && argsExpr->getResolvedType()) {
+                            actualType = argsExpr->getResolvedType()->toCanonical();
+                        }
+                        std::string msg =
+                            "System." + std::string(streamFd == 2 ? "stderr" : "stdout")
+                            + ".printf expects (String fmt, String[] args); got second "
+                            "argument of type `" + actualType
+                            + "`. Build a String[] of the substitutions, or use "
+                            "concatenation: `System.stdout.println(\"x=\" + value);`.";
+                        throw Exception(msg, "CAJETA_ERROR_PRINTF_BAD_ARGS");
+                    }
                     llvm::Type* hdrTy = arrType->getLlvmType();
                     llvm::Value* sizePtr = builder->CreateStructGEP(hdrTy, argsHdr,
                         CajetaArray::SIZE_FIELD_INDEX);

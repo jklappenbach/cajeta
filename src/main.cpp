@@ -4,6 +4,7 @@
 #include <llvm/Support/InitLLVM.h>
 #include "cajeta/compile/Compiler.h"
 #include "cajeta/compile/CompilerMode.h"
+#include "cajeta/error/Exception.h"
 
 using namespace std;
 using namespace antlr4;
@@ -202,6 +203,14 @@ int main(int argc, const char* argv[]) {
         return 1;
     }
 
-    compiler.compile(positional[0], positional[1], positional[2]);
+    try {
+        compiler.compile(positional[0], positional[1], positional[2]);
+    } catch (cajeta::Exception& e) {
+        std::cerr << "cajeta: " << e.getErrorId() << ": " << e.getMessage() << "\n";
+        return 1;
+    } catch (const std::exception& e) {
+        std::cerr << "cajeta: " << e.what() << "\n";
+        return 1;
+    }
     return 0;
 }
