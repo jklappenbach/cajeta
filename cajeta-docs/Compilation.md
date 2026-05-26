@@ -17,6 +17,7 @@ describes the *machinery*.
 2. [Compilation phases](#compilation-phases)
 3. [Output formats](#output-formats)
 4. [Archive format](#archive-format)
+5. [Uber archives](#uber-archives)
 5. [Resources](#resources)
 6. [Binary releases](#binary-releases)
 7. [Optimization](#optimization)
@@ -52,7 +53,7 @@ Project layout, Maven-style with cajeta naming:
 │           └── fixtures/
 │               └── golden.json
 ├── lib/                        # local / vendored archive dependencies
-│   └── <archive>.car
+│   └── <archive>.cja
 └── build/                      # compiler output (gitignored)
     ├── ir/                     # --emit=ir output
     ├── obj/                    # --emit=obj output
@@ -127,7 +128,7 @@ mixed with source), and survives multi-language projects (a future
     ▼
 ┌──────────────┐
 │ 5. Emit      │   Depending on --emit: write .ll text IR,
-│              │   .o native object, .car archive, or linked
+│              │   .o native object, .cja archive, or linked
 │              │   executable.
 └──────────────┘
 ```
@@ -161,36 +162,46 @@ opt-in via flags.
 
 **Phase 5 — Emit.** Output format set by `--emit`:
 
-- `--emit=ir` — text LLVM IR (`.ll`), one file per module
-- `--emit=obj` — native object (`.o` / `.obj`)
-- `--emit=archive` — cajeta archive (`.car`), see below
-- `--emit=exe` — linked executable, native target
+- `--emit=ir` — exploded text LLVM IR (`.ll`), one file per module under a directory tree mirroring the source-tree package layout.
+- `--emit=obj` — exploded native objects (`.o` / `.obj`), same directory shape.
+- `--emit=archive` — single cajeta archive (`.cja`) bundling every compiled module's bitcode + a manifest. Thin form — user modules only; reads dependencies from the classpath at consumption time. See [Archive format](#archive-format).
+- `--emit=uber` — single cajeta archive (`.cja`) bundling the user's modules AND every dependency archive on the `--classpath` that user code transitively references. Java's "uber-jar" equivalent. Same `.cja` extension; the manifest's `kind` field distinguishes thin from uber. See [Uber archives](#uber-archives).
+- `--emit=exe` — linked executable, native target.
 
 ---
 
 ## Output formats
 
-### `--emit=ir` (text LLVM IR)
+### `--emit=ir` (exploded text LLVM IR)
 
-Human-readable LLVM `.ll` output per cajeta module. Useful for
-debugging the compiler, inspecting generated IR, feeding into
-external LLVM tooling (`opt`, `llc`, `llvm-link`). Not intended for
-deployment.
+Human-readable LLVM `.ll` output per cajeta module, laid out as a directory tree mirroring the source-tree package layout. One `.ll` file per `.cajeta` source plus one for the stdlib (`cajeta.runtime.__stdlib__.ll`). Useful for debugging the compiler, inspecting generated IR, feeding into external LLVM tooling (`opt`, `llc`, `llvm-link`). Not intended for deployment.
 
-### `--emit=obj` (native object)
+```
+build/ir/
+├── cajeta.runtime.__stdlib__.ll       ← stdlib + embedded C runtime
+└── <package>/<sub>/<Class>.ll         ← one per user source
+```
+
+### `--emit=obj` (exploded native object)
 
 Native object files per module — ELF `.o` on Linux, COFF `.obj` on
-Windows, Mach-O on macOS. Caller links with a system linker.
-Useful when integrating cajeta code into a larger build that
-already has its own linker invocation.
+Windows, Mach-O on macOS. Same directory shape as `--emit=ir`. Caller
+links with a system linker. Useful when integrating cajeta code into
+a larger build that already has its own linker invocation.
 
-### `--emit=archive` (cajeta archive `.car`)
+### `--emit=archive` (cajeta archive `.cja`, thin)
 
-Single archive file containing every compiled class's bitcode,
-class metadata, embedded resources, and a manifest. The
-distribution format for cajeta libraries (including stdlib) and
-the input format the compiler reads from `--classpath`. See
-[Archive format](#archive-format) for the on-disk shape.
+Single archive file containing every compiled class's bitcode, class metadata, embedded resources, and a manifest. **Thin form** — bundles user modules and parsed stdlib classes but NOT dependency archives (the consumer's compiler resolves those at compile time via `--classpath`). The distribution format for cajeta libraries — the stdlib itself ships as a `.cja`. See [Archive format](#archive-format) for the on-disk shape.
+
+The manifest's `kind` field is `"thin"`.
+
+### `--emit=uber` (cajeta archive `.cja`, uber)
+
+Same `.cja` container as `--emit=archive`, but bundles user modules **plus** every dependency archive on `--classpath` that user code transitively references — Java's "uber-jar" pattern. Dependency entries land at the manifest's top level alongside user-code entries; the manifest's `kind` field is `"uber"`, and an `origins` map identifies which entries came from which source archive.
+
+Used for **deployment**: one self-contained `.cja` you can hand to a runner without separately distributing the classpath. Adds storage size (every transitive dep is inlined); not appropriate for libraries (which want others to consume them as deps, not absorb them whole).
+
+See [Uber archives](#uber-archives) for the spec.
 
 ### `--emit=exe` (linked executable)
 
@@ -206,7 +217,7 @@ executable as `.rodata` segments addressable by path at runtime.
 ## Archive format
 
 Cajeta archives use a custom container format with the file
-extension `.car` (Cajeta ARchive). The design priority is
+extension `.cja` (Cajeta ARchive). The design priority is
 **write-few-read-many**: a stdlib archive gets built once and
 loaded by every cajeta program that runs against it, so
 decompression speed and seekable random access matter more than
@@ -240,7 +251,7 @@ hierarchy).
 ### On-disk layout
 
 ```
-.car file:
+.cja file:
 ┌─────────────────────────────────────────────────┐
 │ Magic       (8 bytes):  "CAJETA01"              │
 │ Format ver  (4 bytes):  uint32 little-endian    │
@@ -299,6 +310,40 @@ compatible additions (new entry kinds, new manifest fields) don't
 bump the version. The compiler refuses to load an archive whose
 format version exceeds its supported maximum.
 
+### Minimum-viable v1
+
+The full container above (zstd, trailing index, resources, runtime-
+bitcode block, separate manifest blob) is the design target. The
+**v1 implementation lands a simpler subset** so each piece can ship
+incrementally without blocking on the others:
+
+- **No compression.** Manifest is raw JSON; entries are raw bitcode bytes. The Archive flags' bits 0 (`manifest_compressed`) and 1 (`entries_compressed`) stay 0. Adding zstd later flips the bits without breaking the format.
+- **No trailing index.** `index_offset` and `index_length` are 0; readers scan entries linearly from the manifest-end offset. Acceptable for small archives (≤ a few hundred entries); the trailing index lands when a stdlib-sized archive needs random access.
+- **No resources block, no runtime-bitcode block.** Only class bitcode entries for v1. Resources land alongside the `@Embedded` annotation work; the runtime bitcode block lands when `--emit=exe` migrates from the inline-stdlib-module shape to consuming a stdlib `.cja`.
+- **Single-file output.** The writer produces one `.cja` per invocation. Multi-archive output (`--emit=archive --split` for per-package archives) is not on the v1 roadmap.
+
+The header shape, magic bytes, format version field, manifest schema, and entry encoding ARE final in v1 — additions land via flag bits and manifest fields, not format-version bumps.
+
+### Entry encoding (v1)
+
+Each entry is length-prefixed and self-describing:
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│ name_length  (4 bytes, uint32 LE)                            │
+│ name         (name_length bytes, UTF-8)                      │   e.g. "demo/App.bc"
+│ origin_tag   (1 byte)                                        │   0=user, 1=stdlib, 2=dep
+│ kind_tag     (1 byte)                                        │   0=class bitcode, 1=resource, 2=runtime bitcode
+│ reserved     (2 bytes)                                       │   zero
+│ data_length  (8 bytes, uint64 LE)                            │
+│ data         (data_length bytes)                             │   raw bytes (LLVM bitcode for kinds 0/2, raw file for kind 1)
+└──────────────────────────────────────────────────────────────┘
+```
+
+Names use forward-slash path separators regardless of host platform (matches `.jar` / `.zip` convention). Bitcode entries use `.bc` extension; resources keep their original extension.
+
+`origin_tag` lets uber archives keep track of which dependency each entry came from at extraction time (the manifest's `origins` map gives the symbolic name; the tag is the categorical bucket). Thin archives have origin_tag=0 for every user entry; the parsed-stdlib classes go in with origin_tag=1.
+
 ### Internal structure mirrors the source tree
 
 For a project with package `com.example`:
@@ -315,7 +360,7 @@ Same path structure, just minus the `src/main/cajeta/` or
 files. Resources keep their original filename + extension.
 
 This mirroring is intentional: a developer reading the archive (via
-`car ls <archive>` / `car cat <archive> <path>`) sees the same
+`cja ls <archive>` / `cja cat <archive> <path>`) sees the same
 layout they wrote, without having to map between source and
 artifact paths.
 
@@ -339,16 +384,125 @@ repeated lookups are O(1) hash table reads.
 ### CLI tools
 
 ```
-car create <archive> --manifest <file> --root <dir>
-car ls     <archive>
-car cat    <archive> <entry-path>
-car extract <archive> --out <dir>
-car verify <archive>          # check checksums + format
-car info   <archive>          # print manifest, entry count, sizes
+cja create <archive> --manifest <file> --root <dir>
+cja ls     <archive>
+cja cat    <archive> <entry-path>
+cja extract <archive> --out <dir>
+cja verify <archive>          # check checksums + format
+cja info   <archive>          # print manifest, entry count, sizes
 ```
 
-The cajeta compiler embeds the writer; standalone `car` ships as
+The cajeta compiler embeds the writer; standalone `cja` ships as
 part of the cajeta toolchain for inspection and repackaging.
+
+---
+
+## Uber archives
+
+A `.cja` file produced by `--emit=uber` carries the user's modules PLUS every dependency archive on the `--classpath` that user code transitively references. Same container as a thin archive; the manifest's `"kind": "uber"` field and an `"origins"` mapping let consumers distinguish bundled deps from user code.
+
+### Why uber
+
+Java's `.jar` ecosystem has the same split. **Thin jars** are library archives — depend on other libraries at compile time, get assembled into a complete classpath at deployment time. **Uber jars** (also "fat jars" or "shaded jars") collapse a tree of dependencies into a single self-contained artifact — you hand the file to whoever's running it, they invoke a runner, done. No classpath wrangling, no version mismatches between user code and bundled deps.
+
+Cajeta inherits the same rationale. Libraries publish as thin `.cja`s (`stdlib.cja`, `my-json-utils.cja`, …) so consumers can pin / replace specific versions. Applications publish as uber `.cja`s so deployment is one file. Microservices, CLI tools, sample programs, demos — all natural fits for uber.
+
+### Manifest extensions
+
+A thin manifest:
+
+```json
+{
+    "name": "my-app",
+    "version": "1.0.0",
+    "kind": "thin",
+    "cajeta_lang_version": "1.0",
+    "dependencies": [
+        { "name": "cajeta-stdlib", "version": "1.0.0" },
+        { "name": "json-utils",     "version": "2.1.4" }
+    ],
+    "entry_method": "demo.App.run"
+}
+```
+
+An uber manifest adds `origins`, listing where each entry came from:
+
+```json
+{
+    "name": "my-app",
+    "version": "1.0.0",
+    "kind": "uber",
+    "cajeta_lang_version": "1.0",
+    "dependencies": [
+        { "name": "cajeta-stdlib", "version": "1.0.0" },
+        { "name": "json-utils",     "version": "2.1.4" }
+    ],
+    "entry_method": "demo.App.run",
+    "origins": {
+        "demo/App.bc":              "my-app",
+        "cajeta/lang/Object.bc":    "cajeta-stdlib",
+        "cajeta/lang/String.bc":    "cajeta-stdlib",
+        "json/JsonReader.bc":       "json-utils",
+        "json/JsonWriter.bc":       "json-utils"
+    }
+}
+```
+
+`origins` is the source-archive name from each dep's own manifest. The consumer can rebuild the original dep set if needed (for license-attribution generators, security scanners, etc.).
+
+### Inclusion rules
+
+Only **transitively referenced** dependency classes get bundled. The compiler runs a reachability analysis from the entry method and the user-code roots; classes that nothing references are excluded. This keeps uber archives lean — bundling `cajeta-stdlib` doesn't drag in JSON, hashing, parallel streams, etc. if user code doesn't use them.
+
+The reachability set includes:
+
+1. The `entry_method` and everything it transitively calls.
+2. Every class user code declares a field, parameter, return type, or local of.
+3. Every class user code's body references by name (including reflective uses via `@Reflect` annotation — Reflection.md).
+4. Anything those classes recursively reference, transitively to fixed point.
+
+Resources (`@Embedded`-annotated files, classpath-loaded YAMLs, etc.) are bundled separately — a `resources` flag on `--emit=uber` controls inclusion. Default: include resources from the user project, NOT from deps (deps include their own at consumption time via their own thin archive; uber doesn't re-bundle).
+
+### Versioning + collisions
+
+When two dependency archives expose the same canonical class name (`com.example.Util` in both `lib-a-1.0.cja` and `lib-b-2.0.cja`):
+
+1. If the canonicals AND class-version metadata agree, dedupe (one entry covers both deps; `origins` lists both).
+2. If they disagree, `--emit=uber` fails with `CAJETA_ERROR_UBER_CLASS_COLLISION` and lists every conflicting entry. The user resolves by upgrading one dep, excluding via `--classpath-exclude`, or repackaging via the `cja` tool's `shade` subcommand (renames a namespace).
+
+The collision behavior is conservative on purpose: silently picking one resolution would break the consumer when the wrong version's API gets called.
+
+### On-disk layout
+
+Same container as a thin archive — just larger and with the manifest extensions above. A reader doesn't need to know it's an uber until it reads the manifest's `kind` field; thin and uber readers are interchangeable for the actual bitcode extraction.
+
+```
+my-app-uber.cja:
+├── header  (CAJETA01 magic + version + flags + kind=1 (uber))
+├── manifest (zstd-compressed JSON; "kind": "uber" + "origins")
+├── demo/App.bc            ← from my-app
+├── cajeta/lang/Object.bc  ← from cajeta-stdlib
+├── cajeta/lang/String.bc  ← from cajeta-stdlib
+├── json/JsonReader.bc     ← from json-utils
+├── json/JsonWriter.bc     ← from json-utils
+├── resources/             ← user-project only
+│   └── templates/greet.html
+└── index (zstd-compressed JSON pointing at all the above)
+```
+
+### Trade-offs
+
+| | Thin | Uber |
+|---|---|---|
+| Use case | Library | Application |
+| File size | Small (user code only) | Large (user + deps) |
+| Distribution | One file per artifact, classpath-resolved | One file, self-contained |
+| Reproducibility | Depends on classpath resolution | Fully captured in the file |
+| License + audit | Manageable per-dep | Single file, harder to audit deps |
+| Security patching | Bump one dep version | Rebuild uber |
+| Bandwidth | Small artifact + classpath cache | Larger artifact, no cache |
+
+Pick thin for everything that other projects might depend on; pick uber for everything you'd hand to a runtime.
 
 ---
 
@@ -672,7 +826,7 @@ build-tool wrapper); the build tool's flavor flags (`--release`,
 | `--entry-method=<name>`       | Entry point (for `--emit=exe`). e.g. `com.example.Main::main`. |
 | `--output=<path>`, `-o <path>`| Output path. Defaults vary by `--emit`.        |
 | `--classpath=<paths>`         | Colon-separated (Unix) / semicolon-separated (Windows) list of archive paths the compiler resolves stdlib + library types against. |
-| `--archive-out=<path>`        | Path for `--emit=archive` output. Defaults to `build/archive/<project>.car`. |
+| `--archive-out=<path>`        | Path for `--emit=archive` output. Defaults to `build/archive/<project>.cja`. |
 
 ### Emit mode
 
@@ -680,7 +834,7 @@ build-tool wrapper); the build tool's flavor flags (`--release`,
 |---------------------|------------------------------------------------------|
 | `--emit=ir`         | Text LLVM IR (`.ll`). Default for development.       |
 | `--emit=obj`        | Native object files (`.o` / `.obj`).                 |
-| `--emit=archive`    | Cajeta archive (`.car`). For library distribution.   |
+| `--emit=archive`    | Cajeta archive (`.cja`). For library distribution.   |
 | `--emit=exe`        | Linked native executable. Requires entry method.     |
 
 ### Target
@@ -743,12 +897,12 @@ build-tool wrapper); the build tool's flavor flags (`--release`,
 
 | Subcommand              | Description                                    |
 |-------------------------|------------------------------------------------|
-| `car create <path>`     | Create a new archive from a directory.         |
-| `car ls <archive>`      | List archive contents.                          |
-| `car cat <archive> <path>` | Read one entry to stdout.                    |
-| `car extract <archive> --out=<dir>` | Extract entries to a directory.    |
-| `car verify <archive>`  | Verify checksums + format integrity.            |
-| `car info <archive>`    | Print archive manifest + summary stats.         |
+| `cja create <path>`     | Create a new archive from a directory.         |
+| `cja ls <archive>`      | List archive contents.                          |
+| `cja cat <archive> <path>` | Read one entry to stdout.                    |
+| `cja extract <archive> --out=<dir>` | Extract entries to a directory.    |
+| `cja verify <archive>`  | Verify checksums + format integrity.            |
+| `cja info <archive>`    | Print archive manifest + summary stats.         |
 
 ---
 
@@ -762,7 +916,7 @@ build-tool wrapper); the build tool's flavor flags (`--release`,
   the compiler focused on translating source to artifacts and
   lets the build tool evolve dependency / project management
   independently.
-- **Format-version compatibility window.** How many `.car` format
+- **Format-version compatibility window.** How many `.cja` format
   versions back should the compiler accept? Rust's rlib format
   effectively requires matched compiler version; Java's `.class`
   format supports decades-back class files. Lean: support N-2 (the

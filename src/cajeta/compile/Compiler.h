@@ -46,9 +46,11 @@ namespace cajeta {
     void emitUnrecoverableMarker(CajetaModulePtr module);
 
     enum class EmitMode {
-        IR,    // Default: text LLVM IR (.ll) per module
-        Obj,   // Native object file (.o) for the configured target
-        Exe,   // Linked executable (requires lld in-process; see D1 / Compiler.cpp)
+        IR,       // Default: exploded text LLVM IR (.ll) per module
+        Obj,      // Exploded native object files (.o) per module
+        Archive,  // Single .cja archive (thin) — bundles user + parsed-stdlib bitcode
+        Uber,     // Single .cja archive (uber) — bundles user + transitively-referenced deps
+        Exe,      // Linked executable (requires lld in-process; see D1 / Compiler.cpp)
     };
 
     class Compiler {
@@ -92,6 +94,15 @@ namespace cajeta {
 
         // Per-module emit dispatch based on emitMode.
         void emitForModule(CajetaModulePtr module);
+
+        // Archive emit (--emit=archive or --emit=uber). Bundles every
+        // module's LLVM bitcode into a single .cja file. Thin form
+        // uses ArchiveKind::Thin; uber form uses ArchiveKind::Uber
+        // (which for v1 is structurally identical — bundling
+        // transitively-referenced deps requires --classpath ingestion,
+        // which is a follow-up). The output path is `outputPath` when
+        // set via -o, else `<archiveRoot>/cajeta.cja`.
+        void emitArchive(const std::string& archiveRootPath, bool uber);
 
         // Phase-2 linker step for --emit=exe; collects everything in objectFiles and
         // invokes lld (when CAJETA_HAS_LLD is defined at CMake-configure time).

@@ -7,7 +7,9 @@ The binary is **~36 KB** on x86_64 Linux. The cajeta compiler emits one ELF sect
 ```
 samples/HelloWorld/
 ├── README.md
-├── build-ir.sh                ← compile to LLVM IR (.ll per module)
+├── build-ir.sh                ← compile to exploded LLVM IR (.ll per module)
+├── build-archive.sh           ← compile to a single thin .cja archive
+├── build-uber.sh              ← compile to an uber .cja archive
 ├── build-bin.sh               ← compile + link to a native binary
 └── src/helloworld/
     └── HelloWorld.cajeta      ← `package helloworld;` + `public static int32 run()`
@@ -31,10 +33,27 @@ Then from this directory:
 ./build/HelloWorld
 # → Hello world.
 
-# LLVM IR archive (produces build/ir/**/*.ll, one per module):
+# Exploded LLVM IR tree (one .ll per module under build/ir/):
 ./build-ir.sh
 ls build/ir/
+
+# Single thin .cja archive (build/archive/HelloWorld.cja):
+./build-archive.sh
+
+# Single uber .cja archive (build/uber/HelloWorld.cja):
+./build-uber.sh
 ```
+
+### Output modes at a glance
+
+| Mode | Script | Output |
+|---|---|---|
+| Native binary | `build-bin.sh` | `build/HelloWorld` — 36 KB ELF executable |
+| Exploded IR | `build-ir.sh` | `build/ir/{...}.ll` — one text-IR file per module |
+| Thin archive | `build-archive.sh` | `build/archive/HelloWorld.cja` — single bundled bitcode + manifest |
+| Uber archive | `build-uber.sh` | `build/uber/HelloWorld.cja` — same container, `kind: uber` |
+
+See [`cajeta-docs/Compilation.md`](../../cajeta-docs/Compilation.md) for the full output-mode reference and the `.cja` container spec.
 
 ## What's in the source
 

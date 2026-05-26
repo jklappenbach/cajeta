@@ -3,10 +3,12 @@
 //
 
 #include "Compiler.h"
+#include "CajetaArchive.h"
 #include "CajetaModule.h"
 #include "CajetaLlvmVisitor.h"
 #include "StdlibEmbedded.h"
 #include "llvm/Bitcode/BitcodeReader.h"
+#include "llvm/Bitcode/BitcodeWriter.h"
 #include "llvm/IR/LegacyPassManager.h"
 #include "llvm/MC/TargetRegistry.h"
 #include "llvm/Support/FileSystem.h"
@@ -608,11 +610,18 @@ namespace cajeta {
             emitCMainShim(entryMethod);
         }
 
-        for (auto& module: modules) {
-            // Runtime is linked once into the stdlib module (see
-            // parseStdlibInto); user modules carry only extern decls
-            // for runtime helpers, resolved by the JIT/AOT link step.
-            emitForModule(module);
+        // Archive emit bundles every parsed module's bitcode into one
+        // `.cja` file. The exploded per-module loop below is skipped —
+        // a single artifact is the whole point.
+        if (emitMode == EmitMode::Archive || emitMode == EmitMode::Uber) {
+            emitArchive(archiveRootPath, emitMode == EmitMode::Uber);
+        } else {
+            for (auto& module: modules) {
+                // Runtime is linked once into the stdlib module (see
+                // parseStdlibInto); user modules carry only extern decls
+                // for runtime helpers, resolved by the JIT/AOT link step.
+                emitForModule(module);
+            }
         }
 
         if (emitMode == EmitMode::Exe) {
@@ -869,5 +878,84 @@ namespace cajeta {
         } else {
             b.CreateRet(llvm::ConstantInt::get(i32Ty, 0));
         }
+    }
+
+    void Compiler::emitArchive(const std::string& archiveRootPath, bool uber) {
+        // Build an archive name from the entry method's class when the user
+        // didn't pass -o. Fall back to "cajeta.cja" if nothing else.
+        std::string outPath;
+        if (!outputPath.empty()) {
+            outPath = outputPath;
+        } else {
+            std::string baseName = "cajeta";
+            if (!entryMethod.empty()) {
+                auto lastDot = entryMethod.rfind('.');
+                if (lastDot != std::string::npos && lastDot > 0) {
+                    // Use the class portion: pkg.Class.method → Class
+                    auto classPart = entryMethod.substr(0, lastDot);
+                    auto pkgDot = classPart.rfind('.');
+                    baseName = (pkgDot == std::string::npos)
+                        ? classPart
+                        : classPart.substr(pkgDot + 1);
+                }
+            }
+            std::string root = archiveRootPath;
+            if (!root.empty() && root.back() != '/') root += '/';
+            outPath = root + baseName + ".cja";
+        }
+
+        // Build the archive header. v1's uber emit doesn't actually bundle
+        // dependencies (no --classpath yet); the manifest kind tag still
+        // reflects the user's intent so a future reader can identify the
+        // archive shape correctly.
+        std::string archiveName = "cajeta-archive";
+        if (!entryMethod.empty()) {
+            auto lastDot = entryMethod.rfind('.');
+            if (lastDot != std::string::npos && lastDot > 0) {
+                archiveName = entryMethod.substr(0, lastDot);
+            }
+        }
+        CajetaArchive arc(archiveName, "1.0.0",
+            uber ? CajetaArchive::Kind::Uber : CajetaArchive::Kind::Thin);
+
+        // Serialize each parsed module to LLVM bitcode and add as an entry.
+        // The entry name follows the .jar-style convention: package path
+        // with '/' separators, ending in `.bc`. The stdlib module's bitcode
+        // carries the parsed-stdlib classes plus the runtime helpers — that
+        // single entry is the whole stdlib (until E6's per-feature gating
+        // lands and stdlib starts splitting).
+        for (auto& module : modules) {
+            std::string bitcode;
+            {
+                llvm::raw_string_ostream os(bitcode);
+                llvm::WriteBitcodeToFile(*module->getLlvmModule(), os);
+                os.flush();
+            }
+
+            std::string canonical = module->getQName()
+                ? module->getQName()->toCanonical()
+                : std::string("anonymous");
+            std::string entryName = canonical;
+            // canonical uses '.' as a separator; switch to '/' for the
+            // archive path convention.
+            std::replace(entryName.begin(), entryName.end(), '.', '/');
+            entryName += ".bc";
+
+            // Mark stdlib classes (qName starts with `cajeta.runtime` or any
+            // package under `cajeta.*`) as Stdlib origin so uber consumers
+            // can distinguish runtime-bundled from user-bundled.
+            bool isStdlib = canonical.rfind("cajeta.", 0) == 0;
+
+            CajetaArchiveEntry entry;
+            entry.name      = entryName;
+            entry.originTag = (uint8_t) (isStdlib
+                ? CajetaArchive::Origin::Stdlib
+                : CajetaArchive::Origin::User);
+            entry.kindTag   = CajetaArchive::EntryKind::ClassBitcode;
+            entry.data      = std::vector<uint8_t>(bitcode.begin(), bitcode.end());
+            arc.addEntry(std::move(entry));
+        }
+
+        arc.writeTo(outPath);
     }
 }
