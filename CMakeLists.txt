@@ -37,6 +37,26 @@ add_compile_definitions(
     CAJETA_GIT_HASH="${CAJETA_GIT_HASH}"
 )
 
+# macOS link-search-path fix. brew's lib directory (/opt/homebrew/lib on
+# Apple Silicon, /usr/local/lib on Intel) isn't on ld's default library
+# search path. LLVM's transitive deps emit bare `-lzstd` (and a few
+# others); without -L<brew>/lib, ld fails with "library 'zstd' not found"
+# even though the IMPORTED target zstd::libzstd_shared in src/CMakeLists.txt
+# passed the full .dylib path. Set link_directories at TOP level (not in
+# src/CMakeLists.txt) so the path propagates to every subdirectory's
+# targets — including test/.
+if(APPLE)
+    execute_process(COMMAND brew --prefix
+            OUTPUT_VARIABLE CAJETA_BREW_PREFIX
+            OUTPUT_STRIP_TRAILING_WHITESPACE
+            ERROR_QUIET
+            RESULT_VARIABLE CAJETA_BREW_RC)
+    if(CAJETA_BREW_RC EQUAL 0 AND CAJETA_BREW_PREFIX)
+        message(STATUS "Adding brew lib dir to linker search path: ${CAJETA_BREW_PREFIX}/lib")
+        link_directories(${CAJETA_BREW_PREFIX}/lib)
+    endif()
+endif()
+
 include_directories(src)
 
 add_subdirectory(src)
