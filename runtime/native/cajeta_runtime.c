@@ -4,12 +4,26 @@
 // Keep these helpers small and pointer-only at their ABI boundary; the optimizer
 // inlines and specializes them across user code.
 
-// macOS deprecated the ucontext.h routines (swapcontext / getcontext /
-// makecontext) and only exposes them when _XOPEN_SOURCE is defined.
-// Set it BEFORE any system header is included so the feature-test macro
-// propagates correctly through <ucontext.h> down at line ~380.
-#if defined(__APPLE__) && !defined(_XOPEN_SOURCE)
-#  define _XOPEN_SOURCE 600
+// macOS feature-test macros. Set BEFORE any system header is included.
+//
+//   - _XOPEN_SOURCE = 600 re-exposes the ucontext.h routines (swapcontext
+//     / getcontext / makecontext) that Apple deprecated in 10.6. They
+//     still work, just emit -Wdeprecated-declarations warnings. The
+//     fiber implementation depends on them; no stackful alternative on
+//     macOS until the planned stackless rewrite lands.
+//
+//   - _DARWIN_C_SOURCE re-exposes BSD extensions that _XOPEN_SOURCE
+//     would otherwise hide: flock(2) + LOCK_EX / LOCK_NB / LOCK_UN
+//     from <sys/file.h>, O_CLOEXEC from <fcntl.h>, etc. Without it,
+//     _XOPEN_SOURCE puts the headers into strict-POSIX mode and the
+//     BSD-only entries disappear. Defining both gives us both surfaces.
+#if defined(__APPLE__)
+#  ifndef _XOPEN_SOURCE
+#    define _XOPEN_SOURCE 600
+#  endif
+#  ifndef _DARWIN_C_SOURCE
+#    define _DARWIN_C_SOURCE 1
+#  endif
 #endif
 
 #include <setjmp.h>
