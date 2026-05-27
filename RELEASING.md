@@ -1,9 +1,18 @@
 # Releasing cajeta
 
-Cajeta versions are bumped manually and pushed as git tags; pushing a `v*`
-tag triggers `.github/workflows/release.yml`, which cross-builds the
-compiler binary for every supported target and uploads the artifacts to
-the matching GitHub Release.
+Cajeta versions are bumped manually. Releases are produced by
+`.github/workflows/release.yml`, which cross-builds the compiler binary
+for every supported target and uploads the artifacts.
+
+The workflow has two triggers, and three operating modes when manually
+triggered:
+
+| Trigger | Mode | Tag created? | Release published? | Use for |
+|---|---|---|---|---|
+| Push `v*` tag | (always production) | yes (the pushed tag) | yes, "latest" | Normal release cuts driven from a local `git tag` |
+| Actions UI → Run workflow → `dry-run` | dry-run | **no** | **no** | Verify the matrix without burning a version |
+| Actions UI → Run workflow → `staging` | staging | `staging-<version>-<run>` | yes, **pre-release** | Early-access binaries; testing the publish path |
+| Actions UI → Run workflow → `production` | production | `v<version>` | yes, "latest" | Cut a real release from the UI instead of `git tag` |
 
 ## Version scheme
 
@@ -25,31 +34,87 @@ repo root. `CMakeLists.txt` reads it at configure time and bakes it into
 the compiler as the `CAJETA_VERSION` define; `cajeta --version` prints
 it back.
 
-## Cutting a release
+## Recommended flow
 
-From a clean main branch with the regression suite green:
+The "don't burn version numbers on broken builds" flow:
 
 ```sh
 # 1. Bump VERSION. Be specific about which level moved.
 $EDITOR VERSION
-
-# 2. Commit. Tag message can be empty; the GitHub Release notes
-#    are generated from the tag message + the workflow's commit-list
-#    summary (auto-populated by softprops/action-gh-release).
 git add VERSION
-git commit -m "release: v$(cat VERSION)"
+git commit -m "release: prepare v$(cat VERSION)"
 git push origin main
+```
 
-# 3. Tag and push the tag. THIS is what triggers the workflow.
+```text
+# 2. Trigger a dry-run first to verify the matrix.
+# Actions → release → Run workflow → mode = dry-run → Run workflow
+# (Watch the run, fix anything that breaks. No tag is created;
+# nothing public is touched.)
+```
+
+```sh
+# 3. Once dry-run is green on every target, cut the real tag.
 git tag "v$(cat VERSION)"
 git push origin "v$(cat VERSION)"
 ```
 
-Once the tag lands on origin, watch the workflow at
-`https://github.com/jklappenbach/cajeta/actions`. Six jobs run in
-parallel (one per target), then a final `release` job collects all
-the artifacts and creates / updates the GitHub Release at
+Once the tag lands, watch the workflow at
+`https://github.com/jklappenbach/cajeta/actions`. Five build jobs run
+in parallel (one per target), then a final `release` job collects all
+the artifacts and publishes them at
 `https://github.com/jklappenbach/cajeta/releases/tag/v<version>`.
+
+If you'd rather cut releases entirely from the UI (no local `git tag`):
+bump VERSION + push to main, then Actions → release → Run workflow →
+mode = production → Run. The workflow creates the tag itself at the
+end.
+
+For early-access binaries that shouldn't show as "latest" on the repo
+page: same UI flow with mode = staging. The Release lands at
+`staging-<version>-<runNumber>` and is marked pre-release.
+
+## When a dry-run fails
+
+That's the happy path of dry-runs — they exist to catch failures
+before you commit a version number. Inspect the failing job's log,
+push a fixup commit to main, re-trigger the dry-run from the UI. The
+VERSION number doesn't move until you cut a real tag.
+
+## When a published release fails to build for one target
+
+The build matrix is `fail-fast: false`, so one target failing doesn't
+abort the others. The `release` job still runs and attaches whichever
+artifacts did build. The Release page then has a partial set of
+binaries.
+
+To fix: push a commit that addresses the failure, bump VERSION to the
+next patch (`v0.1.0` → `v0.1.1`), and cut a new tag. The original
+Release stays as a record of the partial-success cut.
+
+For a tag that's been pushed but the workflow hasn't picked up yet
+(seconds-scale race), or hasn't been pulled by any downstream consumer,
+you can force-re-tag — but only do this if you're certain no one has
+downloaded the partial release yet:
+
+```sh
+git tag -d v<x.y.z>
+git push origin :refs/tags/v<x.y.z>
+gh release delete v<x.y.z> --yes   # if a partial Release was created
+# (re-push the tag from the fixed HEAD)
+git tag v<x.y.z>
+git push origin v<x.y.z>
+```
+
+## Notifications
+
+GitHub's default notification settings email the workflow's triggering
+user when any run fails — Settings → Notifications → Actions, ensure
+"Send notifications for: Failed workflows only" is selected.
+
+For a richer signal (Slack, auto-issue-on-failure, etc.), the workflow
+has a single trailing job that's the natural place to add a
+`failure-notify` step. Not wired in by default.
 
 ## Supported binary targets
 

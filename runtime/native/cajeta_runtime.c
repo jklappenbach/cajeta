@@ -14,7 +14,25 @@
 #include <pthread.h>
 #include <execinfo.h>
 #include <signal.h>
-#include <malloc.h>
+
+// `malloc_usable_size` ships in different headers per platform, and Apple's
+// equivalent is renamed to `malloc_size` (in <malloc/malloc.h>). Conditionalize
+// the include + provide a portable shim so the rest of the runtime can stay
+// platform-agnostic. Used only by the optional poison-on-free path; if a
+// platform has neither, the shim returns 0 (which makes __cajeta_poison_buffer
+// silently skip — acceptable since poison-on-free is itself opt-in).
+#if defined(__APPLE__)
+#  include <malloc/malloc.h>
+#  define cajeta_malloc_usable_size(p) malloc_size(p)
+#elif defined(_WIN32)
+#  include <malloc.h>
+#  define cajeta_malloc_usable_size(p) _msize(p)
+#elif defined(__GLIBC__) || defined(__linux__)
+#  include <malloc.h>
+#  define cajeta_malloc_usable_size(p) malloc_usable_size(p)
+#else
+#  define cajeta_malloc_usable_size(p) ((size_t) 0)
+#endif
 
 typedef void (*cajeta_ctor_fn)(void* self);
 
@@ -55,7 +73,7 @@ int __cajeta_get_poison_free(void) {
 void __cajeta_poison_buffer(void* ptr) {
     if (!__cajeta_poison_free_enabled) return;
     if (!ptr) return;
-    size_t n = malloc_usable_size(ptr);
+    size_t n = cajeta_malloc_usable_size(ptr);
     if (n == 0) return;
     memset(ptr, 0xDB, n);
 }

@@ -16,10 +16,44 @@
 
 name: release
 
+# Three ways to trigger:
+#
+#   1. Push a `v*` tag — full production release. Always.
+#      `git tag v0.1.1 && git push origin v0.1.1`
+#
+#   2. Actions UI → "release" → "Run workflow", mode = staging.
+#      Builds + tests, publishes a PRE-RELEASE at
+#      `staging-<VERSION>-<run-number>`. Useful for handing out
+#      early-access binaries or verifying the publish path without
+#      cutting a "latest" release. Doesn't show as latest on the
+#      repo page.
+#
+#   3. Actions UI → "release" → "Run workflow", mode = dry-run.
+#      Builds + tests every target, skips the Release publish step
+#      entirely. Use to verify the matrix works without touching
+#      the public surface. Default mode when triggered manually.
+#
+#   4. (Bonus.) Actions UI → "release" → "Run workflow",
+#      mode = production. Equivalent to a `v*` tag push but
+#      triggered from the UI — reads VERSION at run time, creates
+#      the tag, publishes as latest. For when you don't want to do
+#      the local tag dance.
+
 on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'Release mode'
+        required: true
+        type: choice
+        default: 'dry-run'
+        options:
+          - dry-run
+          - staging
+          - production
 
 permissions:
   contents: write   # needed for softprops/action-gh-release to create / update the Release
@@ -66,21 +100,59 @@ jobs:
           # hash, which is allowed but defeats the point.
           fetch-depth: 0
 
-      - name: Read VERSION
+      - name: Read VERSION + derive release mode/tag
         id: version
+        shell: bash
         run: |
+          set -euo pipefail
           if [ -f VERSION ]; then
             V=$(cat VERSION | tr -d '[:space:]')
           else
             V="0.0.0-untagged"
           fi
           echo "version=$V" >> "$GITHUB_OUTPUT"
-          # Tag may differ from VERSION (someone re-tagged); use the
-          # git-ref version as the artifact name so it lines up with
-          # the Release URL.
-          REF_TAG="${GITHUB_REF_NAME#v}"
+
+          # The dispatched mode (dry-run / staging / production); a tag
+          # push always counts as production. The artifact name uses the
+          # ref version when present so it lines up with the Release URL.
+          MODE="${{ github.event_name == 'push' && 'production' || inputs.mode }}"
+          echo "mode=$MODE" >> "$GITHUB_OUTPUT"
+
+          if [ "$MODE" = "production" ]; then
+            if [ "${{ github.event_name }}" = "push" ]; then
+              # Tag push — ref version is authoritative.
+              REF_TAG="${GITHUB_REF_NAME#v}"
+              TAG="${GITHUB_REF_NAME}"
+            else
+              # Manual production trigger — derive from VERSION.
+              REF_TAG="$V"
+              TAG="v$V"
+            fi
+            PRERELEASE=false
+            REL_NAME="cajeta $TAG"
+          elif [ "$MODE" = "staging" ]; then
+            # Staging: prerelease at `staging-<version>-<run-number>`.
+            # Run number disambiguates multiple staging cuts of the
+            # same VERSION (e.g. two attempts at v0.1.1 hardening).
+            REF_TAG="$V-staging-${{ github.run_number }}"
+            TAG="staging-$V-${{ github.run_number }}"
+            PRERELEASE=true
+            REL_NAME="cajeta staging $V (run ${{ github.run_number }})"
+          else
+            # Dry-run: still compute an artifact name so the upload step
+            # works, but the release-publish job will short-circuit.
+            REF_TAG="$V-dryrun-${{ github.run_number }}"
+            TAG=""
+            PRERELEASE=false
+            REL_NAME=""
+          fi
+
           echo "ref_version=$REF_TAG" >> "$GITHUB_OUTPUT"
-        shell: bash
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "prerelease=$PRERELEASE" >> "$GITHUB_OUTPUT"
+          echo "release_name=$REL_NAME" >> "$GITHUB_OUTPUT"
+
+          echo "::notice::release mode = $MODE; tag = ${TAG:-<none>}; prerelease = $PRERELEASE"
 
       # ---- Linux dependency install (apt) -------------------------------
       - name: Install dependencies (Linux)
@@ -250,6 +322,48 @@ jobs:
     # on a user-initiated cancel.
     if: always() && needs.build.result != 'cancelled'
     steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Re-derive release params
+        id: params
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Same derivation as the build job's `Read VERSION` step.
+          # Re-doing it here (rather than passing job outputs) keeps each
+          # job's logic self-contained and avoids matrix→single-job
+          # output forwarding awkwardness.
+          if [ -f VERSION ]; then
+            V=$(cat VERSION | tr -d '[:space:]')
+          else
+            V="0.0.0-untagged"
+          fi
+          MODE="${{ github.event_name == 'push' && 'production' || inputs.mode }}"
+          if [ "$MODE" = "production" ]; then
+            if [ "${{ github.event_name }}" = "push" ]; then
+              TAG="${GITHUB_REF_NAME}"
+            else
+              TAG="v$V"
+            fi
+            PRERELEASE=false
+            REL_NAME="cajeta $TAG"
+          elif [ "$MODE" = "staging" ]; then
+            TAG="staging-$V-${{ github.run_number }}"
+            PRERELEASE=true
+            REL_NAME="cajeta staging $V (run ${{ github.run_number }})"
+          else
+            TAG=""
+            PRERELEASE=false
+            REL_NAME=""
+          fi
+          echo "mode=$MODE" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "prerelease=$PRERELEASE" >> "$GITHUB_OUTPUT"
+          echo "release_name=$REL_NAME" >> "$GITHUB_OUTPUT"
+
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
@@ -259,20 +373,37 @@ jobs:
         run: ls -laR artifacts
 
       - name: Create / update GitHub Release
+        # Skip on dry-run: artifacts uploaded by the build job stay
+        # available as Actions artifacts (downloadable from the workflow
+        # run page, 90-day default expiry), but no public Release or
+        # git tag is created. That's the whole point of dry-run mode.
+        if: steps.params.outputs.mode != 'dry-run'
         uses: softprops/action-gh-release@v2
         with:
-          # Auto-derive the tag from GITHUB_REF_NAME (e.g. "v0.1.0").
-          # softprops/action-gh-release picks up `${{ github.ref_name }}`
-          # by default; explicit here so it's obvious.
-          tag_name: ${{ github.ref_name }}
-          name: cajeta ${{ github.ref_name }}
+          tag_name: ${{ steps.params.outputs.tag }}
+          name: ${{ steps.params.outputs.release_name }}
+          prerelease: ${{ steps.params.outputs.prerelease }}
+          # `make_latest` defaults to true only for non-prereleases on
+          # a v* tag pattern; staging Releases stay off the "latest"
+          # marker automatically. Explicit for the production path.
+          make_latest: ${{ steps.params.outputs.prerelease == 'false' && 'true' || 'false' }}
           body: |
-            Automated release of cajeta `${{ github.ref_name }}`.
+            Automated release of cajeta `${{ steps.params.outputs.tag }}`.
+
+            ${{ steps.params.outputs.mode == 'staging' && '**This is a staging pre-release.** Not promoted to "latest"; binaries here may have known issues and are intended for testing the release process or for early-access verification.' || '' }}
 
             See `RELEASING.md` for the supported binary targets and
             artifact shape. Pre-1.0 versions are subject to non-backward-
             compatible changes between minor releases.
           fail_on_unmatched_files: false
+          # Glob catches both `cajeta-v0.1.0-<triple>` (production) and
+          # `cajeta-v0.1.0-staging-<run>-<triple>` (staging) shapes.
           files: |
-            artifacts/**/cajeta-v*-*.tar.gz
-            artifacts/**/cajeta-v*-*.zip
+            artifacts/**/cajeta-v*.tar.gz
+            artifacts/**/cajeta-v*.zip
+
+      - name: Dry-run summary
+        if: steps.params.outputs.mode == 'dry-run'
+        run: |
+          echo "::notice::Dry-run complete. No Release created, no git tag pushed."
+          echo "::notice::Artifacts uploaded as workflow artifacts only — download from the run page (90-day expiry)."
