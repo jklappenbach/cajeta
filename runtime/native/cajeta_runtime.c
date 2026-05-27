@@ -1562,12 +1562,21 @@ void* __cajeta_vtable_lookup(void* vptr, int64_t hash) {
 
 // Marker global set by codegen to UnrecoverableException's vtable address.
 // __cajeta_is_unrecoverable compares each ancestor vtable against this.
-// `extern weak` here; the user module's compilation emits the strong
-// definition with its initializer pointing at
-// cajeta.lang.UnrecoverableException#VTable. The weak attribute lets the
-// native test-binary link (which doesn't go through emitUnrecoverableMarker)
-// resolve the symbol to NULL — the runtime null-checks it below.
-extern void* __cajeta_unrecoverable_vtable_marker __attribute__((weak));
+// The user module's compilation emits a STRONG definition with its
+// initializer pointing at cajeta.lang.UnrecoverableException#VTable —
+// when both definitions are present at link time, the strong one wins.
+// When the native test-binary links (which doesn't go through
+// emitUnrecoverableMarker), only the weak NULL definition is around and
+// the runtime null-checks it below.
+//
+// Why a WEAK DEFINITION rather than a `extern ... __attribute__((weak))`
+// declaration: Apple's ld doesn't treat weak external references the
+// same as GNU ld. Under macOS the bare `extern weak` form leaves the
+// symbol unresolved at link time and fails the `cajeta_test` link with
+// "Undefined symbols for architecture arm64". A weak definition with a
+// NULL initializer compiles to the same end state (zero pointer the
+// runtime checks for) and is portable across both linkers.
+__attribute__((weak)) void* __cajeta_unrecoverable_vtable_marker = NULL;
 
 // Walk a Throwable's vtable chain to determine whether it's an
 // UnrecoverableException (or any descendant thereof). Returns 1 if so,
