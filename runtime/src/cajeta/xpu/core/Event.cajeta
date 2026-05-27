@@ -1,0 +1,53 @@
+package cajeta.xpu.core;
+
+/**
+ * Event — device-side fence handle.
+ *
+ * Records a point in a Stream's submission order. A second Stream
+ * can `waitFor(event)` to introduce a cross-stream dependency,
+ * which the runtime resolves device-side (no host roundtrip).
+ *
+ * Events are reusable: `record(stream)` overwrites the recording
+ * point with the new stream's current tail.
+ *
+ * Per CajetaXPU.md §3.5, Events map to `cuEvent` / `hipEvent` /
+ * `VkEvent`-or-timeline-semaphore-value on the three backends.
+ */
+public final class Event {
+    int64 handle;
+
+    Event(int64 handle) {
+        this.handle = handle;
+    }
+
+    @Native("__cajeta_xpu_event_create")
+    public static Event create();
+
+    /**
+     * Record this event at `stream`'s current tail. After this
+     * call, anything that `waitFor`s this event will block until
+     * everything submitted to `stream` before this point completes.
+     *
+     * Named `recordOn` rather than the spec's `record` because
+     * `record` is a Cajeta keyword (record-type declarations).
+     */
+    @Native("__cajeta_xpu_event_record")
+    public void recordOn(Stream stream);
+
+    /**
+     * Block the host until this event has been signaled on the
+     * device. Use sparingly — prefer cross-stream waits via
+     * `Stream.waitFor(event)`.
+     */
+    @Native("__cajeta_xpu_event_wait")
+    public void waitHost();
+
+    /**
+     * Non-blocking poll. True iff the event has been signaled.
+     */
+    @Native("__cajeta_xpu_event_query")
+    public boolean query();
+
+    @Native("__cajeta_xpu_event_destroy")
+    public void destroy();
+}

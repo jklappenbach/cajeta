@@ -344,7 +344,8 @@ set(CAJETA_STDLIB_DIRS
         # Larger-than-memory collections. Listed after collection/wire/
         # io.file so its dependencies (BPlusTree shape, Encoder, File) are
         # already in the prelude when these parse.
-        ${CAJETA_STDLIB_ROOT}/cajeta/collection/ltm)
+        ${CAJETA_STDLIB_ROOT}/cajeta/collection/ltm
+        ${CAJETA_STDLIB_ROOT}/cajeta/xpu/core)
 set(CAJETA_STDLIB_FILES "")
 foreach(dir ${CAJETA_STDLIB_DIRS})
     file(GLOB dir_files CONFIGURE_DEPENDS ${dir}/*.cajeta)
