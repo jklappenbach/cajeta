@@ -16,6 +16,7 @@
 #include "../type/FormalParameter.h"
 #include "../field/ParameterField.h"
 #include "../util/Printer.h"
+#include "../xpu/core/KernelArgTrait.h"
 
 using namespace std;
 
@@ -695,6 +696,14 @@ namespace cajeta {
         if (llvmBasicBlock != nullptr) {
             return;
         }
+
+        // XPU @Kernel parameter-type validation (CajetaXPU step 3).
+        // No-op when the method isn't a @Kernel. Throws cajeta::Exception
+        // (errorId XPU-K01) on a non-admissible parameter type so the
+        // diagnostic surfaces before we waste codegen on an invalid
+        // kernel. The llvmBasicBlock guard above means this runs once
+        // per method, not once per generateCode invocation.
+        cajeta::xpu::validateKernelParams(shared_from_this());
 
         // @Native("symbol") — the method's body is a forwarding call to
         // a C runtime function with the given symbol name. Used by
