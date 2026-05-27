@@ -4,15 +4,17 @@ Cajeta versions are bumped manually. Releases are produced by
 `.github/workflows/release.yml`, which cross-builds the compiler binary
 for every supported target and uploads the artifacts.
 
-The workflow has two triggers, and three operating modes when manually
-triggered:
+The workflow has two triggers and two operating modes:
 
 | Trigger | Mode | Tag created? | Release published? | Use for |
 |---|---|---|---|---|
 | Push `v*` tag | (always production) | yes (the pushed tag) | yes, "latest" | Normal release cuts driven from a local `git tag` |
 | Actions UI → Run workflow → `dry-run` | dry-run | **no** | **no** | Verify the matrix without burning a version |
-| Actions UI → Run workflow → `staging` | staging | `staging-<version>-<run>` | yes, **pre-release** | Early-access binaries; testing the publish path |
 | Actions UI → Run workflow → `production` | production | `v<version>` | yes, "latest" | Cut a real release from the UI instead of `git tag` |
+
+**Pre-releases** are handled via semver: push a tag with a `-` suffix
+(`v0.2.0-rc1`, `v0.2.0-beta1`) and `softprops/action-gh-release` auto-
+detects it as a pre-release. No special workflow mode needed.
 
 ## Version scheme
 
@@ -70,9 +72,12 @@ bump VERSION + push to main, then Actions → release → Run workflow →
 mode = production → Run. The workflow creates the tag itself at the
 end.
 
-For early-access binaries that shouldn't show as "latest" on the repo
-page: same UI flow with mode = staging. The Release lands at
-`staging-<version>-<runNumber>` and is marked pre-release.
+For early-access / pre-release binaries that shouldn't show as "latest"
+on the repo page: tag with a semver pre-release suffix like
+`v0.2.0-rc1`, `v0.2.0-beta1`, or `v0.2.0-alpha2`. Pushing such a tag
+publishes a Release that GitHub auto-flags as a pre-release (the
+`softprops/action-gh-release` action detects the `-` suffix). The tag
+itself is permanent, like any production tag.
 
 ## When a dry-run fails
 
