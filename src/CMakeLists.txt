@@ -207,17 +207,26 @@ if(NOT CAJETA_XXHASH_INCLUDE_DIR)
 endif()
 message(STATUS "CAJETA_XXHASH_INCLUDE_DIR: ${CAJETA_XXHASH_INCLUDE_DIR}")
 
-# Runtime compile flags. On aarch64 (NVIDIA Grace / Apple Silicon under
-# Linux / Ampere / etc.), pass -mno-outline-atomics so clang emits inline
-# `ldadd` (LSE atomics, armv8.1+) instead of the
-# `__aarch64_ldadd8_acq_rel` outline helpers that live in compiler-rt.
-# The JIT can't materialize compiler-rt helpers without explicit
-# registration, so tests that drive cajeta through LLJIT see the
-# helpers as unresolved symbols. Modern ARM CPUs (any post-2017) have
-# LSE; the requirement is fine for our supported targets.
+# Runtime compile flags. Pattern: avoid clang/LLVM lowerings that
+# reference compiler-rt helpers, because the LLJIT can't materialize
+# those symbols at runtime — every helper miss surfaces as
+# "Symbols not found: [ ___FOO ]" when the test harness loads the
+# embedded runtime bitcode into a JIT module.
+#
+#   - aarch64-linux: -mno-outline-atomics forces inline LSE `ldadd`
+#     etc. (armv8.1+) instead of __aarch64_outline_atomics_* helpers.
+#     Modern ARM CPUs (post-2017) all have LSE; fine for our targets.
+#   - Apple targets (macOS arm64 / Intel): -fno-emulated-tls makes
+#     clang emit real dyld TLS calls (_tlv_bootstrap) for the
+#     runtime's __thread variables instead of the __emutls_get_address
+#     helper. LLJIT can resolve dyld's TLS via DynamicLibrarySearchGenerator;
+#     the emutls helper isn't on its search path.
 set(CAJETA_RT_FLAGS "")
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64)$" AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
     list(APPEND CAJETA_RT_FLAGS "-mno-outline-atomics")
+endif()
+if(APPLE)
+    list(APPEND CAJETA_RT_FLAGS "-fno-emulated-tls")
 endif()
 
 add_custom_command(
