@@ -3618,3 +3618,96 @@ void __cajeta_run_atexit_handlers(void) {
         n = next;
     }
 }
+
+// ============================================================================
+// cajeta.xpu.core runtime stubs (CajetaXPU phases 1-2, step 2).
+//
+// The cajeta.xpu.core stdlib classes (Stream / Event / Fence / Thread /
+// Workgroup / Barrier / Wave) declare their methods @Native and forward to
+// the symbols below. LLJIT eagerly materializes all externs at module load
+// time, so these have to exist before any XPU implementation does.
+//
+// Every stub returns the zero value (NULL / 0 / false) or no-ops. Calling
+// any of them in v1 yields a null Stream / zero coordinate / false flag —
+// not a crash. Step 7 (CPU-emulation backend) replaces these with real
+// implementations: thread-local globals for the coordinate readers, a host-
+// side ordered queue for Stream/Event, etc. The native and Vulkan
+// backends (steps 9-11) replace call sites at codegen time so these stubs
+// only fire on the CPU-emulation path.
+//
+// Buffer<T>'s @Native methods are generic; they emit only when a Buffer<T>
+// is instantiated, so no stubs appear here until a real allocator lands.
+// ============================================================================
+
+// --- Stream ----------------------------------------------------------------
+void* __cajeta_xpu_stream_current(void) { return NULL; }
+void* __cajeta_xpu_stream_create(void) { return NULL; }
+void __cajeta_xpu_stream_sync(void* self) { (void)self; }
+void __cajeta_xpu_stream_wait_for(void* self, void* event) {
+    (void)self; (void)event;
+}
+void __cajeta_xpu_stream_destroy(void* self) { (void)self; }
+
+// --- Event -----------------------------------------------------------------
+void* __cajeta_xpu_event_create(void) { return NULL; }
+void __cajeta_xpu_event_record(void* self, void* stream) {
+    (void)self; (void)stream;
+}
+void __cajeta_xpu_event_wait(void* self) { (void)self; }
+bool __cajeta_xpu_event_query(void* self) { (void)self; return false; }
+void __cajeta_xpu_event_destroy(void* self) { (void)self; }
+
+// --- Fence -----------------------------------------------------------------
+void* __cajeta_xpu_fence_create(void) { return NULL; }
+void __cajeta_xpu_fence_signal(void* self, void* stream) {
+    (void)self; (void)stream;
+}
+void __cajeta_xpu_fence_wait(void* self) { (void)self; }
+bool __cajeta_xpu_fence_query(void* self) { (void)self; return false; }
+void __cajeta_xpu_fence_destroy(void* self) { (void)self; }
+
+// --- Thread / Workgroup coordinate readers ---------------------------------
+// Returns zero in v1; step 7 plumbs these into TLS set by the emulation
+// dispatch loop so kernel bodies see real thread indices.
+uint32_t __cajeta_xpu_thread_x(void) { return 0; }
+uint32_t __cajeta_xpu_thread_y(void) { return 0; }
+uint32_t __cajeta_xpu_thread_z(void) { return 0; }
+uint32_t __cajeta_xpu_thread_global_id_x(void) { return 0; }
+uint32_t __cajeta_xpu_thread_global_id_y(void) { return 0; }
+uint32_t __cajeta_xpu_thread_global_id_z(void) { return 0; }
+uint32_t __cajeta_xpu_workgroup_x(void) { return 0; }
+uint32_t __cajeta_xpu_workgroup_y(void) { return 0; }
+uint32_t __cajeta_xpu_workgroup_z(void) { return 0; }
+uint32_t __cajeta_xpu_workgroup_dim_x(void) { return 0; }
+uint32_t __cajeta_xpu_workgroup_dim_y(void) { return 0; }
+uint32_t __cajeta_xpu_workgroup_dim_z(void) { return 0; }
+
+// --- Barrier ---------------------------------------------------------------
+void __cajeta_xpu_barrier_workgroup(void) { /* no-op on CPU emulation */ }
+void __cajeta_xpu_barrier_wave(void) { /* no-op on CPU emulation */ }
+
+// --- Wave ------------------------------------------------------------------
+// width=1 on CPU emulation (single-threaded) is the variance-correct
+// default that doesn't make any kernel's wave-uniformity assumption
+// false on this backend.
+uint32_t __cajeta_xpu_wave_width(void) { return 1; }
+uint32_t __cajeta_xpu_wave_shuffle_sync_u32(uint32_t value, uint32_t srcLane) {
+    (void)srcLane; return value;
+}
+uint64_t __cajeta_xpu_wave_ballot_sync(bool predicate) {
+    return predicate ? 1ULL : 0ULL;
+}
+
+// --- Buffer<T> --------------------------------------------------------------
+// One symbol per method name; every Buffer<T> instantiation forwards to the
+// same C stub regardless of T because the LLVM-side signatures are all
+// pointer-shaped (self + array-pointer). The C stubs accept void* for both.
+// Step 7 replaces these with a real CPU-side allocator that backs Buffer<T>
+// with host malloc/free; later steps swap in the per-backend allocator.
+void __cajeta_xpu_buffer_upload(void* self, void* host) {
+    (void)self; (void)host;
+}
+void __cajeta_xpu_buffer_download(void* self, void* host) {
+    (void)self; (void)host;
+}
+void __cajeta_xpu_buffer_free(void* self) { (void)self; }
