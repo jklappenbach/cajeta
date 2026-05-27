@@ -1562,21 +1562,28 @@ void* __cajeta_vtable_lookup(void* vptr, int64_t hash) {
 
 // Marker global set by codegen to UnrecoverableException's vtable address.
 // __cajeta_is_unrecoverable compares each ancestor vtable against this.
-// The user module's compilation emits a STRONG definition with its
-// initializer pointing at cajeta.lang.UnrecoverableException#VTable —
-// when both definitions are present at link time, the strong one wins.
-// When the native test-binary links (which doesn't go through
-// emitUnrecoverableMarker), only the weak NULL definition is around and
-// the runtime null-checks it below.
+// Compiler::emitUnrecoverableMarker (Compiler.cpp) looks up THIS extern
+// declaration in the linked-in runtime bitcode and re-tags it to a
+// strong external definition with an initializer pointing at
+// cajeta.lang.UnrecoverableException#VTable. So at JIT load time the
+// marker storage native code references here gets populated with the
+// real vtable address by the JIT's linker.
 //
-// Why a WEAK DEFINITION rather than a `extern ... __attribute__((weak))`
-// declaration: Apple's ld doesn't treat weak external references the
-// same as GNU ld. Under macOS the bare `extern weak` form leaves the
-// symbol unresolved at link time and fails the `cajeta_test` link with
-// "Undefined symbols for architecture arm64". A weak definition with a
-// NULL initializer compiles to the same end state (zero pointer the
-// runtime checks for) and is portable across both linkers.
-__attribute__((weak)) void* __cajeta_unrecoverable_vtable_marker = NULL;
+// Platform-conditional declaration:
+//   - Linux + everything else: `extern ... __attribute__((weak))`.
+//     GNU ld resolves an undefined weak external to NULL at native
+//     link time; the JIT's MachOLink / RuntimeDyld then patches the
+//     strong definition over the top when stdlib bitcode loads.
+//   - macOS: Apple's ld rejects unresolved weak externs in a static
+//     link ("Undefined symbols for architecture arm64"). Use
+//     `weak_import` instead — Apple's "this symbol may not exist
+//     at link time; leave the reference dangling and resolve at
+//     runtime" annotation. The JIT then populates it the same way.
+#if defined(__APPLE__)
+extern void* __cajeta_unrecoverable_vtable_marker __attribute__((weak_import));
+#else
+extern void* __cajeta_unrecoverable_vtable_marker __attribute__((weak));
+#endif
 
 // Walk a Throwable's vtable chain to determine whether it's an
 // UnrecoverableException (or any descendant thereof). Returns 1 if so,
