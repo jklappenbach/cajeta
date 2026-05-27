@@ -5,6 +5,7 @@
 #include "cajeta/compile/Compiler.h"
 #include "cajeta/compile/CompilerMode.h"
 #include "cajeta/error/Exception.h"
+#include "cajeta/cli/ArchiveCommands.h"
 
 using namespace std;
 using namespace antlr4;
@@ -97,6 +98,15 @@ bool setBoolFlag(const char* flagName, const std::string& value, bool& out) {
 } // namespace
 
 int main(int argc, const char* argv[]) {
+    // Top-level subcommand dispatch. `cajeta archive ...` routes to
+    // the archive-management surface (cajeta-docs/ArchiveManagement.md);
+    // anything else falls through to the legacy compile flow below.
+    // When BuildTool.md ships, more subcommands ("build", "test",
+    // "run", ...) land alongside `archive`.
+    if (argc >= 2 && std::string(argv[1]) == "archive") {
+        return cajeta::dispatchArchive(argc, argv);
+    }
+
     Compiler compiler(argc, argv);
     std::vector<std::string> positional;
 

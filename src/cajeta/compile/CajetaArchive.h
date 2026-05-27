@@ -111,11 +111,20 @@ namespace cajeta {
         // path produced the archive.
         const CajetaArchiveEntry* findEntry(const std::string& name) const;
 
-        // Accessors used by readers (uber bundler, `cja` CLI tool, tests).
+        // Accessors used by readers (uber bundler, `cajeta archive`
+        // subcommands, tests).
         const std::string& getName()    const { return name; }
         const std::string& getVersion() const { return version; }
         Kind               getKind()    const { return kind; }
         const std::vector<CajetaArchiveEntry>& getEntries() const { return entries; }
+
+        // Raw on-disk manifest JSON as last loaded via readFrom. Empty
+        // when this CajetaArchive was constructed in-memory (writer
+        // path). The `cajeta archive info --json` subcommand prints
+        // this verbatim so script consumers see the full field set,
+        // not just the cherry-picked accessors above.
+        const std::string& getRawManifest() const { return rawManifest; }
+        void setRawManifest(std::string s) { rawManifest = std::move(s); }
 
         // When this archive was loaded from disk (via readFrom), record
         // any dependency origins seen in the source archive's manifest.
@@ -143,6 +152,7 @@ namespace cajeta {
         std::vector<CajetaArchiveEntry> entries;
         std::vector<DepSummary>         deps;
         std::string sourceArchiveName;   // set by readFrom; otherwise empty
+        std::string rawManifest;         // set by readFrom; otherwise empty
         Compression compression = Compression::Zstd;
         // Lazy lookup table — built on first findEntry call from the
         // entries vector. The trailing on-disk index that writeTo

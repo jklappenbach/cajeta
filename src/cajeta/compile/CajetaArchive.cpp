@@ -432,6 +432,7 @@ namespace cajeta {
 
         CajetaArchive arc(archiveName, archiveVer, archKind);
         arc.setSourceArchiveName(archiveName);
+        arc.setRawManifest(manifest);
         if (archKind == Kind::Uber) {
             arc.setDeps(scanManifestDeps(manifest));
         }
