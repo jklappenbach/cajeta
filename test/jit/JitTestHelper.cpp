@@ -18,12 +18,15 @@
 #include "llvm/Bitcode/BitcodeReader.h"
 #include "llvm/Bitcode/BitcodeWriter.h"
 #include "llvm/ExecutionEngine/Orc/ExecutionUtils.h"
+#include "llvm/ExecutionEngine/Orc/JITTargetMachineBuilder.h"
+#include "llvm/ExecutionEngine/Orc/LLJIT.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/Verifier.h"
 #include "llvm/Linker/Linker.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/TargetSelect.h"
 #include "llvm/Support/raw_ostream.h"
+#include "llvm/Target/TargetOptions.h"
 
 // Runtime hooks defined in runtime/native/cajeta_runtime.c. The runtime
 // is linked into the test binary as a native object (see src/CMakeLists.txt
@@ -338,7 +341,29 @@ std::unique_ptr<CajetaJit> CajetaJit::compile(
     }
     llvm::orc::ThreadSafeModule tsModule(std::move(*parsed), std::move(tsContext));
 
-    auto jitOrErr = llvm::orc::LLJITBuilder().create();
+    // Customize the JIT's TargetMachine before construction so we can
+    // pin TLS lowering to "real" (dyld TLV on macOS, __tls_get_addr on
+    // Linux glibc). Without this, LLJIT's default TargetMachine on
+    // macOS arm64 enables emulated TLS — bitcode with `thread_local`
+    // globals (the cajeta runtime has 4: per-fiber scope chain, drop
+    // chain, etc.) gets lowered to `__emutls_get_address` calls at JIT
+    // compile time, which the JIT can't resolve (compiler-rt ships
+    // those as static archives only, not on the process symbol search
+    // path). Real TLS resolves cleanly via the
+    // DynamicLibrarySearchGenerator we install a few lines below.
+    auto tmbOrErr = llvm::orc::JITTargetMachineBuilder::detectHost();
+    if (!tmbOrErr) {
+        throw std::runtime_error("LLJIT detectHost failed");
+    }
+    // EmulatedTLS defaults to false in LLVM's TargetOptions but detectHost
+    // sets it true on some platforms (notably macOS arm64). Force it back
+    // off so `thread_local` lowers to real dyld TLV / __tls_get_addr
+    // calls that the process-symbol generator below can resolve.
+    tmbOrErr->getOptions().EmulatedTLS = false;
+
+    auto jitOrErr = llvm::orc::LLJITBuilder()
+        .setJITTargetMachineBuilder(std::move(*tmbOrErr))
+        .create();
     if (!jitOrErr) {
         throw std::runtime_error("LLJIT create failed");
     }
