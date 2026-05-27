@@ -1322,6 +1322,83 @@ namespace cajeta {
             case BINARY_OP_USHIFTRIGHT_EQUALS:
             case BINARY_OP_SHIFTLEFT_EQUALS:
             case BINARY_OP_MOD_EQUALS: {
+                // Operator-overload dispatch for compound assignment on
+                // class-typed LHS (cajeta-docs/OperatorOverloading.md §6).
+                // Lookup order:
+                //   1. Explicit instance `operator+=` on LHS class —
+                //      mutates `this` in place.
+                //   2. Else derive from the static binary form:
+                //      `a += b` → `a = T.operator+(a, b)`; the static
+                //      binary returns a fresh value which we store back
+                //      into the LHS slot.
+                //   3. Else fall through to the primitive arithmetic
+                //      path below (which the class lookup miss leaves
+                //      well-defined for non-class operands).
+                const char* cmpSym  = nullptr;
+                const char* baseSym = nullptr;
+                switch (binaryOp) {
+                    case BINARY_OP_ADD_EQUALS:        cmpSym = "+=";   baseSym = "+";   break;
+                    case BINARY_OP_SUB_EQUALS:        cmpSym = "-=";   baseSym = "-";   break;
+                    case BINARY_OP_MUL_EQUALS:        cmpSym = "*=";   baseSym = "*";   break;
+                    case BINARY_OP_DIV_EQUALS:        cmpSym = "/=";   baseSym = "/";   break;
+                    case BINARY_OP_MOD_EQUALS:        cmpSym = "%=";   baseSym = "%";   break;
+                    case BINARY_OP_BITAND_EQUALS:     cmpSym = "&=";   baseSym = "&";   break;
+                    case BINARY_OP_BITOR_EQUALS:      cmpSym = "|=";   baseSym = "|";   break;
+                    case BINARY_OP_BITXOR_EQUALS:     cmpSym = "^=";   baseSym = "^";   break;
+                    case BINARY_OP_SHIFTLEFT_EQUALS:  cmpSym = "<<=";  baseSym = "<<";  break;
+                    case BINARY_OP_SHIFTRIGHT_EQUALS: cmpSym = ">>=";  baseSym = ">>";  break;
+                    case BINARY_OP_USHIFTRIGHT_EQUALS:cmpSym = ">>>="; baseSym = ">>>"; break;
+                    default: break;
+                }
+                if (cmpSym && lhsAst) {
+                    if (!lhsAst->getResolvedType()) lhsAst->resolveTypes(module);
+                    auto lhsClass = dynamic_pointer_cast<CajetaClass>(lhsAst->getResolvedType());
+                    if (lhsClass && !lhsClass->isInterface()
+                            && !(lhsClass->getTypeFlags() & PRIMITIVE_FLAG)) {
+                        if (rhsAst && !rhsAst->getResolvedType()) {
+                            rhsAst->resolveTypes(module);
+                        }
+                        CajetaTypePtr lhsType = lhsAst->getResolvedType();
+                        CajetaTypePtr rhsType = rhsAst ? rhsAst->getResolvedType() : nullptr;
+                        if (lhsType && rhsType) {
+                            llvm::Value* recvVal = loadIfLValue(module, lhs, lhsAst);
+                            llvm::Value* rhsVal  = loadIfLValue(module, rhs, rhsAst);
+                            // (1) Explicit instance form: lhs.operator+=(rhs)
+                            std::string cmpName = std::string("operator") + cmpSym;
+                            vector<ParameterEntry> instEntries;
+                            instEntries.push_back(ParameterEntry(rhsType, "", rhsVal));
+                            if (lhsClass->resolveMethod(cmpName, instEntries,
+                                    /*isConstructor=*/false, /*floatingParams=*/false)) {
+                                result = lhsClass->invokeMethod(cmpName, instEntries,
+                                    /*isConstructor=*/false, recvVal,
+                                    /*callerModule=*/module);
+                                break;
+                            }
+                            // (2) Derive from binary: lhs = T.operator+(lhs, rhs)
+                            std::string baseName = std::string("operator") + baseSym;
+                            vector<ParameterEntry> binEntries;
+                            binEntries.push_back(ParameterEntry(lhsType, "", recvVal));
+                            binEntries.push_back(ParameterEntry(rhsType, "", rhsVal));
+                            if (lhsClass->resolveMethod(baseName, binEntries,
+                                    /*isConstructor=*/false, /*floatingParams=*/false)) {
+                                llvm::Value* newVal = lhsClass->invokeMethod(
+                                    baseName, binEntries,
+                                    /*isConstructor=*/false,
+                                    /*thisInstance=*/nullptr,
+                                    /*callerModule=*/module);
+                                if (newVal) {
+                                    // Store the binary op's result back
+                                    // into the LHS slot. `lhs` is the slot
+                                    // (alloca / GEP / field address) per
+                                    // the assignment-expression contract.
+                                    builder->CreateStore(newVal, lhs);
+                                    result = newVal;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
                 auto [l, r] = coerceArithPair(module, loadL(lhs), loadR(rhs));
                 llvm::Value* newVal = nullptr;
                 bool isFp = l->getType()->isFloatingPointTy();

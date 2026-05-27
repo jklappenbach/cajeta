@@ -422,6 +422,46 @@ namespace cajeta {
 
             pModule->getStructureStack().push_back(structure);
             structure->setClassBody(std::any_cast<ClassBodyDeclarationPtr>(visitChildren(ctx)));
+
+            // Hash / equals consistency lint (cajeta-docs/OperatorOverloading.md §7).
+            // A class that defines `operator==` for structural equality
+            // MUST also override `hash()` — otherwise HashMap<MyClass, V>
+            // silently mis-keys (two `==`-equal instances with different
+            // identity hashes land in different buckets). Object.cajeta
+            // is the base case; classes that override operator== without
+            // a matching hash() override get a warning steering them
+            // toward @AutoHash or a hand-written hash().
+            //
+            // The check is restricted to user-defined `operator==` —
+            // any class is allowed to inherit Object's identity-hash
+            // default. Detection: look for a method named "operator=="
+            // declared on this class. If present, require a "hash"
+            // method also declared on this class (not just inherited).
+            // The Object class itself is exempt — it's the source of
+            // both methods and the warning would be circular.
+            {
+                bool hasOpEq = false;
+                bool hasHash = false;
+                for (auto& kv : structure->getMethods()) {
+                    if (kv.first == "operator==") hasOpEq = true;
+                    if (kv.first == "hash")       hasHash = true;
+                }
+                bool isObject = structure->getQName()->toCanonical()
+                              == "cajeta.lang.Object";
+                if (hasOpEq && !hasHash && !isObject) {
+                    std::cerr << "warning: class '"
+                              << structure->getQName()->toCanonical()
+                              << "' defines operator== but does not override "
+                                 "hash(). HashMap<this, V> will mis-key two "
+                                 "==-equal instances with different identity "
+                                 "hashes. Fix: add `@AutoHash` to the class "
+                                 "to synthesize structural hash, or override "
+                                 "hash() manually. See cajeta-docs/"
+                                 "OperatorOverloading.md §7. "
+                                 "[CAJETA_WARN_HASH_EQUALS_MISMATCH]\n";
+                }
+            }
+
             structure->generatePrototype();
             pModule->getStructureStack().pop_back();
             CajetaModule::getStructureToModule()[structure->getQName()->toCanonical()] = pModule;
@@ -989,45 +1029,87 @@ namespace cajeta {
             // method with substitutions pushed without needing to
             // retain ANTLR contexts.
             // Operator-overload post-check (cajeta-docs/OperatorOverloading.md §1).
-            // Binary arithmetic / bitwise / comparison and non-mutating
-            // unary operators are `public static` with both operands
-            // explicit; ++/--/[]/[]= stay instance. Enforce here, AFTER
+            // Enforces the per-category staticness + arity rules AFTER
             // the modifier walk above has stamped STATIC onto the
-            // method's modifier set. The check covers binary-arity ops
-            // only — single-operand declarations (unary `- + ! ~`) are
-            // also required to be static but don't conflict with the
-            // mutating-unary forms so the arity-based distinction stays
-            // out of this gate.
+            // method's modifier set. Per §1:
+            //   - static (1 or 2 params):  + -
+            //   - static (exactly 2):      * / % == != < > <= >= & | ^
+            //   - static (exactly 1):      ! ~
+            //   - instance (0 params):     ++ --
+            //   - instance (1 param):      []
+            //   - instance (2 params):     []=
+            //   - instance (1 param):      += -= *= /= %= &= |= ^= <<= >>= >>>=
+            // Diagnostics surface the exact Fix-It from §11.
             if (auto methodDecl = std::dynamic_pointer_cast<MethodDeclaration>(memberDeclaration)) {
                 if (auto m = methodDecl->getMethod()) {
                     const std::string& name = m->getName();
-                    // Binary operators that must be static + 2-param.
-                    // Compound assignment, ++/--, []/[]=, unary ! ~ are
-                    // intentionally not in this list (different rule).
-                    static const std::unordered_set<std::string> kBinaryStaticOps = {
-                        "operator+", "operator-", "operator*", "operator/", "operator%",
-                        "operator==", "operator!=", "operator<", "operator>",
-                        "operator<=", "operator>=",
-                        "operator&", "operator|", "operator^",
-                    };
-                    if (kBinaryStaticOps.count(name)) {
-                        bool isStatic = m->getModifiers().find(STATIC)
-                                      != m->getModifiers().end();
-                        bool twoParams = m->getParameterList().size() == 2;
-                        if (!isStatic || !twoParams) {
+                    bool isStatic = m->getModifiers().find(STATIC)
+                                  != m->getModifiers().end();
+                    size_t arity = m->getParameterList().size();
+
+                    // Category 1: must-be-static operators. Map maps the
+                    // operator name → (minArity, maxArity).
+                    static const std::unordered_map<std::string, std::pair<size_t, size_t>>
+                        kStaticOps = {
+                            {"operator+",  {1, 2}}, {"operator-",  {1, 2}},
+                            {"operator*",  {2, 2}}, {"operator/",  {2, 2}}, {"operator%",  {2, 2}},
+                            {"operator==", {2, 2}}, {"operator!=", {2, 2}},
+                            {"operator<",  {2, 2}}, {"operator>",  {2, 2}},
+                            {"operator<=", {2, 2}}, {"operator>=", {2, 2}},
+                            {"operator&",  {2, 2}}, {"operator|",  {2, 2}}, {"operator^",  {2, 2}},
+                            {"operator!",  {1, 1}}, {"operator~",  {1, 1}},
+                        };
+                    // Category 2: must-be-instance operators. Map maps
+                    // the operator name → expected param count.
+                    static const std::unordered_map<std::string, size_t>
+                        kInstanceOps = {
+                            {"operator++",  0}, {"operator--",  0},
+                            {"operator[]",  1}, {"operator[]=", 2},
+                            {"operator+=", 1}, {"operator-=", 1}, {"operator*=", 1},
+                            {"operator/=", 1}, {"operator%=", 1},
+                            {"operator&=", 1}, {"operator|=", 1}, {"operator^=", 1},
+                            {"operator<<=", 1}, {"operator>>=", 1}, {"operator>>>=", 1},
+                        };
+
+                    auto itStatic = kStaticOps.find(name);
+                    if (itStatic != kStaticOps.end()) {
+                        size_t lo = itStatic->second.first;
+                        size_t hi = itStatic->second.second;
+                        bool arityOk = arity >= lo && arity <= hi;
+                        if (!isStatic || !arityOk) {
                             char buf[512];
+                            const char* arityHint = (lo == hi)
+                                ? (lo == 1 ? "one parameter" : "two parameters (LHS, RHS)")
+                                : "one or two parameters (unary or binary form)";
                             snprintf(buf, sizeof(buf),
                                 "'%s' must be declared `public static` with "
-                                "two parameters (LHS, RHS). Cajeta's binary "
+                                "%s. Cajeta's binary / non-mutating-unary "
                                 "operator overloads are static — both "
                                 "operands are explicit, neither is mutated, "
                                 "the return is a fresh value. See "
-                                "cajeta-docs/OperatorOverloading.md §2. "
-                                "Fix: rewrite as `public static T %s "
-                                "(T a, T b) { ... }`.",
-                                name.c_str(), name.c_str());
+                                "cajeta-docs/OperatorOverloading.md §2-3. "
+                                "Fix: rewrite as `public static T %s (...)`.",
+                                name.c_str(), arityHint, name.c_str());
                             throw Exception(buf,
                                 "CAJETA_ERROR_OPERATOR_NOT_STATIC");
+                        }
+                    }
+                    auto itInstance = kInstanceOps.find(name);
+                    if (itInstance != kInstanceOps.end()) {
+                        size_t expected = itInstance->second;
+                        if (isStatic || arity != expected) {
+                            char buf[512];
+                            snprintf(buf, sizeof(buf),
+                                "'%s' must be declared as an instance method "
+                                "(no `static` modifier) with %zu parameter%s. "
+                                "Mutating unary, indexed access, and compound "
+                                "assignment operators have a privileged "
+                                "receiver — the host IS the target. See "
+                                "cajeta-docs/OperatorOverloading.md §§4-6.",
+                                name.c_str(), expected,
+                                expected == 1 ? "" : "s");
+                            throw Exception(buf,
+                                "CAJETA_ERROR_OPERATOR_NOT_INSTANCE");
                         }
                     }
                     if (m->isMethodTemplate()) {
@@ -1129,15 +1211,12 @@ namespace cajeta {
                     }
                 }
             }
-            // Most operator overloads declare a non-void return via
-            // bare `typeType`; the indexed-assignment form (operator[]=)
-            // uses `typeTypeOrVoid` so `void` is acceptable as the
-            // return. Prefer typeType when present (the existing form);
-            // fall back to typeTypeOrVoid for the bracket-only path.
+            // All operator-overload alternatives now use `typeTypeOrVoid`
+            // for the return slot (see CajetaParser.g4 §
+            // operatorOverloadDeclaration), so each operator can declare
+            // a concrete return, `#T` ownership transfer, or `void`.
             CajetaTypePtr returnType;
-            if (ctx->typeType()) {
-                returnType = CajetaType::fromContext(ctx->typeType(), pModule);
-            } else if (ctx->typeTypeOrVoid()) {
+            if (ctx->typeTypeOrVoid()) {
                 returnType = CajetaType::fromContext(ctx->typeTypeOrVoid(), pModule);
             }
             BlockPtr block;
@@ -1156,17 +1235,11 @@ namespace cajeta {
                 // nested classBody) .back() is the immediately
                 // enclosing class, which is the correct parent.
                 pModule->getStructureStack().back());
-            // `#T operator+ (...)` — return transfers ownership.
-            // Two grammar paths put the `#` in different places:
-            //   - Binary operator alternatives: REFERENCE? is at the
-            //     operatorOverloadDeclaration level (sibling of
-            //     typeType).
-            //   - Bracket form: REFERENCE? lives inside typeTypeOrVoid,
-            //     so check that subtree too.
-            if (ctx->REFERENCE() != nullptr) {
-                method->setReturnsOwnership(true);
-            } else if (ctx->typeTypeOrVoid()
-                       && ctx->typeTypeOrVoid()->REFERENCE() != nullptr) {
+            // `#T operator+ (...)` — return transfers ownership. With
+            // the unified typeTypeOrVoid grammar, REFERENCE lives
+            // inside the typeTypeOrVoid subtree for every alternative.
+            if (ctx->typeTypeOrVoid()
+                    && ctx->typeTypeOrVoid()->REFERENCE() != nullptr) {
                 method->setReturnsOwnership(true);
             }
             return static_pointer_cast<MemberDeclaration>(

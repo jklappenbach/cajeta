@@ -201,6 +201,109 @@ TEST(OperatorOverloadTests, staticOperatorPlusCanReturnOwnershipTransfer) {
     EXPECT_EQ(runI32(src), 7);
 }
 
+// Instance `operator++` mutates `this`. Both x++ and ++x lower to
+// `x.operator++()` for class-typed operands — the pre/post distinction
+// is moot because the expression value is the receiver pointer either
+// way, post-mutation. Borrow checker requires a mutable borrow at the
+// call site.
+TEST(OperatorOverloadTests, instanceIncrementMutatesReceiver) {
+    auto src =
+        "package test;\n"
+        "public class Tick {\n"
+        "    public int32 count;\n"
+        "    public Tick() { this.count = 0; }\n"
+        "    public void operator++ () {\n"
+        "        this.count = this.count + 1;\n"
+        "    }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Tick t = new Tick();\n"
+        "        t++;\n"
+        "        t++;\n"
+        "        t++;\n"
+        "        return t.count;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 3);
+}
+
+// Static `operator-` for unary negation. Single-operand static
+// method, takes the value, returns a fresh negated copy. The
+// borrow checker requires `#T` + heap-return because a multi-param
+// free function can't return a borrow — but a single-param static
+// CAN return a borrow (the result's lifetime is bounded by the
+// operand's), so `T operator-(T v)` with `stack T(...)` works.
+TEST(OperatorOverloadTests, staticUnaryNegationDispatches) {
+    auto src =
+        "package test;\n"
+        "public class Vec {\n"
+        "    public int32 v;\n"
+        "    public Vec(int32 v) { this.v = v; }\n"
+        "    public static #Vec operator- (Vec a) {\n"
+        "        return heap Vec(-a.v);\n"
+        "    }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Vec a = stack Vec(42);\n"
+        "        Vec neg = -a;\n"
+        "        return neg.v;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), -42);
+}
+
+// Compound assignment derives from the static binary operator. The
+// class declares `operator+` only; the compiler rewrites `a += b`
+// to `a = T.operator+(a, b)`. No explicit `operator+=` needed.
+TEST(OperatorOverloadTests, compoundAssignmentDerivesFromBinary) {
+    auto src =
+        "package test;\n"
+        "public class Acc {\n"
+        "    public int32 v;\n"
+        "    public Acc(int32 v) { this.v = v; }\n"
+        "    public static #Acc operator+ (Acc a, Acc b) {\n"
+        "        return heap Acc(a.v + b.v);\n"
+        "    }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Acc a = heap Acc(1);\n"
+        "        Acc b = heap Acc(10);\n"
+        "        a += b;\n"
+        "        return a.v;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 11);
+}
+
+// Visitor enforcement: `operator++` declared as static (wrong
+// category) is rejected at parse time with
+// CAJETA_ERROR_OPERATOR_NOT_INSTANCE.
+TEST(OperatorOverloadTests, staticIncrementOperatorIsRejected) {
+    auto src =
+        "package test;\n"
+        "public class Tick {\n"
+        "    public int32 v;\n"
+        "    public Tick() { this.v = 0; }\n"
+        "    public static void operator++ (Tick t) {\n"  // wrong: must be instance
+        "        t.v = t.v + 1;\n"
+        "    }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() { return 0; }\n"
+        "}\n";
+    bool threw = false;
+    try {
+        auto jit = CajetaJit::compile(src, "test.D");
+        (void) jit;
+    } catch (...) {
+        threw = true;
+    }
+    EXPECT_TRUE(threw);
+}
+
 // An instance-method binary `operator+` is rejected at parse time
 // with CAJETA_ERROR_OPERATOR_NOT_STATIC. The user is steered toward
 // the static form via the diagnostic.

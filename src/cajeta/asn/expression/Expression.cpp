@@ -4,6 +4,7 @@
 
 #include "Expression.h"
 #include "cajeta/compile/CajetaModule.h"
+#include "cajeta/type/CajetaClass.h"
 #include "cajeta/type/CajetaFunctionType.h"
 #include "cajeta/type/FormalParameter.h"
 #include "cajeta/field/StackField.h"
@@ -639,12 +640,81 @@ namespace cajeta {
         return {nullptr, raw};
     }
 
+    // Dispatch a unary operator to a user-defined overload on a class
+    // operand. For `++ --` (mutating), the lookup is for an INSTANCE
+    // method taking 0 params; for `- + ! ~` (non-mutating), the lookup
+    // is for a STATIC method taking 1 param. Returns the call's result
+    // when dispatched, nullptr to fall through to the primitive path
+    // (cajeta-docs/OperatorOverloading.md §§3-4 + §8 dispatch table).
+    static llvm::Value* tryDispatchUnaryClassOperator(
+            CajetaModulePtr module, AbstractSyntaxNodePtr operandAst,
+            llvm::Value* operandVal, const char* opSym, bool mutating) {
+        if (!operandAst) return nullptr;
+        auto opExprAst = std::dynamic_pointer_cast<Expression>(operandAst);
+        if (!opExprAst) return nullptr;
+        if (!opExprAst->getResolvedType()) opExprAst->resolveTypes(module);
+        auto opClass = std::dynamic_pointer_cast<CajetaClass>(
+            opExprAst->getResolvedType());
+        if (!opClass) return nullptr;
+        if (opClass->isInterface()) return nullptr;
+        if (opClass->getTypeFlags() & PRIMITIVE_FLAG) return nullptr;
+
+        std::string opName = std::string("operator") + opSym;
+        std::vector<ParameterEntry> entries;
+        if (mutating) {
+            // x++ / x-- → x.operator++() (no explicit params; the
+            // receiver IS the target). Borrow checker enforces a
+            // mutable borrow at the call site.
+            if (!opClass->resolveMethod(opName, entries,
+                    /*isConstructor=*/false, /*floatingParams=*/false)) {
+                return nullptr;
+            }
+            return opClass->invokeMethod(opName, entries,
+                /*isConstructor=*/false,
+                /*thisInstance=*/operandVal,
+                /*callerModule=*/module);
+        }
+        // -x / +x / !x / ~x → T.operator-(x) (static, one param).
+        entries.push_back(ParameterEntry(opExprAst->getResolvedType(),
+            "", operandVal));
+        if (!opClass->resolveMethod(opName, entries,
+                /*isConstructor=*/false, /*floatingParams=*/false)) {
+            return nullptr;
+        }
+        return opClass->invokeMethod(opName, entries,
+            /*isConstructor=*/false,
+            /*thisInstance=*/nullptr,
+            /*callerModule=*/module);
+    }
+
     llvm::Value* PrefixExpression::generateCode(CajetaModulePtr module) {
         if (children.empty()) return nullptr;
         auto* builder = module->getBuilder();
         auto [addr, val] = loadOperand(module, children[0]);
         if (!val) return nullptr;
         llvm::Type* ty = val->getType();
+
+        // Class-type operator dispatch — runs BEFORE the primitive
+        // switch so a class with `static T operator-(T)` or instance
+        // `void operator++()` takes priority over the (nonsensical)
+        // primitive lowering on a class pointer. Primitive operands
+        // fall through with opSym == nullptr or the class-resolve miss.
+        const char* opSym = nullptr;
+        bool mutating = false;
+        switch (op) {
+            case PREFIX_OP_INC:      opSym = "++"; mutating = true;  break;
+            case PREFIX_OP_DEC:      opSym = "--"; mutating = true;  break;
+            case PREFIX_OP_NEGATIVE: opSym = "-";  mutating = false; break;
+            case PREFIX_OP_POSITIVE: opSym = "+";  mutating = false; break;
+            case PREFIX_OP_LOGNOT:   opSym = "!";  mutating = false; break;
+            case PREFIX_OP_BITNOT:   opSym = "~";  mutating = false; break;
+        }
+        if (opSym) {
+            if (auto* result = tryDispatchUnaryClassOperator(
+                    module, children[0], val, opSym, mutating)) {
+                return result;
+            }
+        }
 
         switch (op) {
             case PREFIX_OP_POSITIVE:
@@ -830,7 +900,25 @@ namespace cajeta {
         if (children.empty()) return nullptr;
         auto* builder = module->getBuilder();
         auto [addr, val] = loadOperand(module, children[0]);
-        if (!val || !addr) return val;
+        if (!val) return nullptr;
+        // Class-type ++/-- dispatch. For primitives, the existing
+        // pre/post distinction matters because the expression value is
+        // a scalar. For classes, the operator mutates `this` and the
+        // expression value is the receiver pointer in either case —
+        // postfix vs prefix collapse semantically. Try dispatch
+        // BEFORE the alloca-only addr requirement that the primitive
+        // path needs (a class operand often lacks a writable alloca
+        // when fed by a method call).
+        const char* opSym = (op == POSTFIX_OP_INC) ? "++"
+                          : (op == POSTFIX_OP_DEC) ? "--"
+                          : nullptr;
+        if (opSym) {
+            if (auto* result = tryDispatchUnaryClassOperator(
+                    module, children[0], val, opSym, /*mutating=*/true)) {
+                return result;
+            }
+        }
+        if (!addr) return val;
         llvm::Type* ty = val->getType();
         llvm::Value* one = ty->isFloatingPointTy()
             ? (llvm::Value*) llvm::ConstantFP::get(ty, 1.0)

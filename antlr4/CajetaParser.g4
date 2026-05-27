@@ -174,44 +174,47 @@ memberDeclaration
     | enumDeclaration
     ;
 
-// Optional REFERENCE prefix on the return type — same shape as
-// methodDeclaration via `typeTypeOrVoid`. Lets operators that build
-// fresh allocations declare `#T operator+ (T other)` so the caller
-// receives an owning reference. Without `#`, returning a fresh
-// allocation trips CAJETA_ERROR_FRESH_RETURN_NEEDS_TRANSFER. The
-// indexing form below uses `typeTypeOrVoid` which already permits
-// `REFERENCE?` (and also `void` for the setter's return).
+// Return type is `typeTypeOrVoid` (= `REFERENCE? typeType | VOID`),
+// so each alternative can declare either a concrete return (`#T` for
+// ownership transfer or bare `T` for value/borrow) or `void`.
+// `void` is the natural return for mutating-unary (`++`, `--`),
+// compound-assignment (`+=` etc.), and indexed-write (`[]=`) — the
+// expression value isn't the operator's "result," the receiver is.
+// Per-operator staticness + arity + return-type constraints are
+// enforced semantically in CajetaLlvmVisitor's
+// visitClassBodyDeclaration post-pass (see
+// cajeta-docs/OperatorOverloading.md §10 — Option B).
 operatorOverloadDeclaration
-    : REFERENCE? typeType OPERATOR ASSIGN formalParameters methodBody
-    | REFERENCE? typeType OPERATOR GT formalParameters methodBody
-    | REFERENCE? typeType OPERATOR LT formalParameters methodBody
-    | REFERENCE? typeType OPERATOR EQUAL formalParameters methodBody
-    | REFERENCE? typeType OPERATOR LE formalParameters methodBody
-    | REFERENCE? typeType OPERATOR GE formalParameters methodBody
-    | REFERENCE? typeType OPERATOR NOTEQUAL formalParameters methodBody
-    | REFERENCE? typeType OPERATOR AND formalParameters methodBody
-    | REFERENCE? typeType OPERATOR OR formalParameters methodBody
-    | REFERENCE? typeType OPERATOR INC formalParameters methodBody
-    | REFERENCE? typeType OPERATOR DEC formalParameters methodBody
-    | REFERENCE? typeType OPERATOR ADD formalParameters methodBody
-    | REFERENCE? typeType OPERATOR SUB formalParameters methodBody
-    | REFERENCE? typeType OPERATOR MUL formalParameters methodBody
-    | REFERENCE? typeType OPERATOR DIV formalParameters methodBody
-    | REFERENCE? typeType OPERATOR BITAND formalParameters methodBody
-    | REFERENCE? typeType OPERATOR BITOR formalParameters methodBody
-    | REFERENCE? typeType OPERATOR CARET formalParameters methodBody
-    | REFERENCE? typeType OPERATOR MOD formalParameters methodBody
-    | REFERENCE? typeType OPERATOR ADD_ASSIGN formalParameters methodBody
-    | REFERENCE? typeType OPERATOR SUB_ASSIGN formalParameters methodBody
-    | REFERENCE? typeType OPERATOR MUL_ASSIGN formalParameters methodBody
-    | REFERENCE? typeType OPERATOR DIV_ASSIGN formalParameters methodBody
-    | REFERENCE? typeType OPERATOR AND_ASSIGN formalParameters methodBody
-    | REFERENCE? typeType OPERATOR OR_ASSIGN formalParameters methodBody
-    | REFERENCE? typeType OPERATOR XOR_ASSIGN formalParameters methodBody
-    | REFERENCE? typeType OPERATOR MOD_ASSIGN formalParameters methodBody
-    | REFERENCE? typeType OPERATOR LSHIFT_ASSIGN formalParameters methodBody
-    | REFERENCE? typeType OPERATOR RSHIFT_ASSIGN formalParameters methodBody
-    | REFERENCE? typeType OPERATOR URSHIFT_ASSIGN formalParameters methodBody
+    : typeTypeOrVoid OPERATOR ASSIGN formalParameters methodBody
+    | typeTypeOrVoid OPERATOR GT formalParameters methodBody
+    | typeTypeOrVoid OPERATOR LT formalParameters methodBody
+    | typeTypeOrVoid OPERATOR EQUAL formalParameters methodBody
+    | typeTypeOrVoid OPERATOR LE formalParameters methodBody
+    | typeTypeOrVoid OPERATOR GE formalParameters methodBody
+    | typeTypeOrVoid OPERATOR NOTEQUAL formalParameters methodBody
+    | typeTypeOrVoid OPERATOR AND formalParameters methodBody
+    | typeTypeOrVoid OPERATOR OR formalParameters methodBody
+    | typeTypeOrVoid OPERATOR INC formalParameters methodBody
+    | typeTypeOrVoid OPERATOR DEC formalParameters methodBody
+    | typeTypeOrVoid OPERATOR ADD formalParameters methodBody
+    | typeTypeOrVoid OPERATOR SUB formalParameters methodBody
+    | typeTypeOrVoid OPERATOR MUL formalParameters methodBody
+    | typeTypeOrVoid OPERATOR DIV formalParameters methodBody
+    | typeTypeOrVoid OPERATOR BITAND formalParameters methodBody
+    | typeTypeOrVoid OPERATOR BITOR formalParameters methodBody
+    | typeTypeOrVoid OPERATOR CARET formalParameters methodBody
+    | typeTypeOrVoid OPERATOR MOD formalParameters methodBody
+    | typeTypeOrVoid OPERATOR ADD_ASSIGN formalParameters methodBody
+    | typeTypeOrVoid OPERATOR SUB_ASSIGN formalParameters methodBody
+    | typeTypeOrVoid OPERATOR MUL_ASSIGN formalParameters methodBody
+    | typeTypeOrVoid OPERATOR DIV_ASSIGN formalParameters methodBody
+    | typeTypeOrVoid OPERATOR AND_ASSIGN formalParameters methodBody
+    | typeTypeOrVoid OPERATOR OR_ASSIGN formalParameters methodBody
+    | typeTypeOrVoid OPERATOR XOR_ASSIGN formalParameters methodBody
+    | typeTypeOrVoid OPERATOR MOD_ASSIGN formalParameters methodBody
+    | typeTypeOrVoid OPERATOR LSHIFT_ASSIGN formalParameters methodBody
+    | typeTypeOrVoid OPERATOR RSHIFT_ASSIGN formalParameters methodBody
+    | typeTypeOrVoid OPERATOR URSHIFT_ASSIGN formalParameters methodBody
     // Indexing operators (read + write) collapsed into a single
     // alternative with optional ASSIGN — ANTLR4 LL(*) prediction
     // gets confused by two separate alternatives both starting with

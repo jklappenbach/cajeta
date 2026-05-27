@@ -11,7 +11,7 @@ package tour;
 //      stay instance — the receiver IS the target, and the borrow
 //      checker enforces a mutable borrow at the call site.
 //
-// This demo exercises three flavors:
+// This demo exercises five flavors:
 //
 //   1. Static arithmetic on a Vec2 value class — `+`, `-`, `*` all
 //      take two operands, return a fresh Vec2. The chain `acc + b - c`
@@ -21,14 +21,14 @@ package tour;
 //   3. Instance subscript `[]` (read) + `[]=` (write) on a Grid wrapper.
 //      cajeta's HashMap exposes the same pair (see
 //      runtime/src/cajeta/collection/HashMap.cajeta).
-//
-// Deferred (the methods register but expression-side dispatch isn't
-// wired yet):
-//
-//   - Mutating unary operators (`++ --`)
-//   - Compound assignment (`+= -= *= /= %=`) — derives from binary `+`
-//     by default; an explicit instance `operator+=` can override for
-//     in-place semantics (Tensor-shaped large values).
+//   4. Instance `++` on a Counter class — mutates `this`, returns
+//      void. Both `x++` and `++x` lower to `x.operator++()` for
+//      class-typed operands (the pre/post distinction is moot —
+//      the operator mutates the receiver and the expression value
+//      is the receiver pointer either way).
+//   5. Compound assignment `+=` on Vec2 — derived automatically from
+//      the static `operator+`. No explicit `operator+=` declaration
+//      needed; the compiler rewrites `a += b` to `a = Vec2.operator+(a, b)`.
 
 // 2-D vector with the canonical static-operator surface. Compare to
 // any C# / Rust / Scala Vec2 — same shape, different syntax skin.
@@ -73,6 +73,28 @@ public class Vec2 {
     }
 }
 
+// Counter-shaped class for the `++` demo — distinct from the
+// `Counter` class earlier in the Tour project. Mutating-unary,
+// instance method, no parameters, void return. The body mutates
+// `this` in place; the borrow checker requires a mutable borrow of
+// the receiver at the call site (so `x++` on an immutable borrow
+// is a compile error).
+public class Ticker {
+    public int32 count;
+
+    public Ticker() {
+        this.count = 0;
+    }
+
+    public void operator++ () {
+        this.count = this.count + 1;
+    }
+
+    public void operator-- () {
+        this.count = this.count - 1;
+    }
+}
+
 // A tiny grid that supports `g[i] = v` and `g[i]` via int64 index.
 // Subscript operators are INSTANCE — the host IS the target.
 // Backing store is a fixed-size int32[] so the demo doesn't depend
@@ -112,6 +134,8 @@ public class OperatorOverloadDemo extends DemoClass {
         this.arithmetic();
         this.equality();
         this.indexing();
+        this.mutatingUnary();
+        this.compoundAssign();
     }
 
     // 1. Chained `acc + b - c`. Each static binary op builds a fresh
@@ -148,6 +172,28 @@ public class OperatorOverloadDemo extends DemoClass {
         } else {
             System.stdout.println("  p == r? no (y differs)");
         }
+    }
+
+    // 4. Mutating unary `++`/`--` on a Ticker class. Both x++ and ++x
+    // lower to x.operator++() — the receiver IS the target.
+    public void mutatingUnary() {
+        Ticker t = stack Ticker();
+        t++;
+        t++;
+        t++;
+        t--;
+        System.stdout.println("  Ticker after 3 ++ then 1 -- = " + t.count);
+    }
+
+    // 5. Compound assignment `+=` derives from binary `+`. Vec2 only
+    // declares `operator+` (static); the compiler rewrites `a += b` to
+    // `a = Vec2.operator+(a, b)`. No explicit operator+= needed.
+    public void compoundAssign() {
+        Vec2 acc = heap Vec2(1, 2);
+        Vec2 b   = stack Vec2(10, 20);
+        acc += b;                     // acc = (1+10, 2+20) = (11, 22)
+        acc += b;                     // acc = (21, 42)
+        System.stdout.println("  Vec2 after acc += b twice = (" + acc.x + ", " + acc.y + ")");
     }
 
     // 3. Instance subscript get + set. Both forms route through the
