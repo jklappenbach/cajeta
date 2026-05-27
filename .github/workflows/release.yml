@@ -265,12 +265,21 @@ jobs:
           # may still find C:/mingw64/bin/cc.exe ahead of cl.exe on PATH
           # even after the msvc-dev-cmd action ran. Forcing it here keeps
           # the compiler choice unambiguous.
+          #
+          # LLVM_DIR explicitly points at chocolatey's LLVM install
+          # (C:/Program Files/LLVM/lib/cmake/llvm). We DON'T vcpkg-install
+          # llvm — that builds from source (~40 min). The chocolatey
+          # toolchain ships LLVMConfig.cmake under its install root, but
+          # the vcpkg toolchain file intercepts find_package() and only
+          # searches vcpkg's installed paths, so we have to hand cmake
+          # the LLVM location directly.
           cmake -S . -B build -G Ninja `
             -DCMAKE_C_COMPILER=cl `
             -DCMAKE_CXX_COMPILER=cl `
             -DCMAKE_BUILD_TYPE=Release `
             -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_TOOLCHAIN" `
-            -DVCPKG_TARGET_TRIPLET=x64-windows
+            -DVCPKG_TARGET_TRIPLET=x64-windows `
+            -DLLVM_DIR="C:/Program Files/LLVM/lib/cmake/llvm"
 
       - name: Build
         run: cmake --build build --config Release -- -j 4
