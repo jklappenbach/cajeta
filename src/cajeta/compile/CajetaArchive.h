@@ -53,6 +53,9 @@ namespace cajeta {
             ClassBitcode  = 0,   // LLVM bitcode for one cajeta class
             Resource      = 1,   // raw bytes (templates, configs, etc.)
             RuntimeBitcode = 2,  // C runtime bitcode (for --emit=exe inputs)
+            ClassSource   = 3,   // Original .cajeta source bytes — used by
+                                 // classpath ingestion to re-parse a dep's
+                                 // classes into the consumer's compile.
         };
 
         // Origin tags written as a single byte on each entry. Cja

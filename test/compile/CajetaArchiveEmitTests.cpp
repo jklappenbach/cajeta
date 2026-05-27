@@ -328,8 +328,11 @@ TEST(CajetaArchiveEmitTests, uberDefaultPrunesUnreferencedDepEntries) {
 }
 
 TEST(CajetaArchiveEmitTests, uberDefaultKeepsReferencedDepEntries) {
-    // User code DOES reference deplib.Util → pruning keeps the dep
-    // entry in the uber output.
+    // User code DOES reference deplib.Util → compile-time classpath
+    // ingestion resolves the import, user bitcode carries the dep
+    // canonical, and the uber pruner keeps the dep entry. End-to-end
+    // proof that classpath ingestion is wired through parse → codegen
+    // → uber bundling.
     auto depCja = buildDepArchive("prune_kept");
     ASSERT_FALSE(depCja.empty());
 
@@ -347,7 +350,7 @@ TEST(CajetaArchiveEmitTests, uberDefaultKeepsReferencedDepEntries) {
             << "import deplib.Util;\n"
             << "public final class Hello {\n"
             << "    public static int32 run() {\n"
-            << "        return deplib.Util.ten();\n"
+            << "        return Util.ten();\n"
             << "    }\n"
             << "}\n";
         out.flush();
@@ -359,30 +362,22 @@ TEST(CajetaArchiveEmitTests, uberDefaultKeepsReferencedDepEntries) {
         + (base / "src").string() + " "
         + build.string()
         + " > /dev/null 2>&1";
-    int rc = std::system(cmd.c_str());
-    if (rc != 0) {
-        GTEST_SKIP() << "compiler returned non-zero — skipping";
-    }
+    ASSERT_EQ(std::system(cmd.c_str()), 0)
+        << "compile failed; classpath ingestion should have resolved "
+        << "deplib.Util — see cajeta-compile.log";
 
     auto uber = cajeta::CajetaArchive::readFrom((build / "Hello.cja").string());
     auto depArc = cajeta::CajetaArchive::readFrom(depCja.string());
     std::string depPrefix = "deps/" + depArc.getName() + "-" + depArc.getVersion() + "/";
     std::string depUtilNested = depPrefix + "deplib/Util.bc";
 
-    // The pruner only keeps a dep entry if the substring of its
-    // canonical name appears in some included bitcode. The compiler's
-    // current parse path doesn't resolve `deplib.Util` against the
-    // classpath archive (compile-time classpath ingestion is the next
-    // roadmap item), so the user's bitcode doesn't currently carry the
-    // canonical name → pruner drops the dep → this test correctly
-    // reports the state of affairs. Once compile-time classpath
-    // resolution lands, the pruner will see the reference and this
-    // assertion's expected-true side activates.
+    // The pruner keeps the dep entry only when some included bitcode
+    // references its canonical. With classpath ingestion live, the
+    // user's bitcode carries `deplib.Util` mangled symbols.
     bool userBitcodeReferencesDep = false;
     bool depUtilSeen = false;
     for (const auto& e : uber.getEntries()) {
         if (e.name == "demo/Hello.bc") {
-            // Search the user's bitcode bytes for "deplib.Util".
             const std::string needle = "deplib.Util";
             auto it = std::search(e.data.begin(), e.data.end(),
                 needle.begin(), needle.end());
@@ -390,14 +385,9 @@ TEST(CajetaArchiveEmitTests, uberDefaultKeepsReferencedDepEntries) {
         }
         if (e.name == depUtilNested) depUtilSeen = true;
     }
-    if (!userBitcodeReferencesDep) {
-        GTEST_SKIP() << "user bitcode doesn't yet carry the dep "
-                        "canonical (compile-time classpath ingestion "
-                        "is the next roadmap item — see Compilation.md "
-                        "§ Uber archives § Inclusion rules). The "
-                        "pruner correctly drops the dep when nothing "
-                        "in the included bitcode references it.";
-    }
+    EXPECT_TRUE(userBitcodeReferencesDep)
+        << "user bitcode should reference deplib.Util — classpath "
+        << "ingestion must have resolved the import";
     EXPECT_TRUE(depUtilSeen)
         << depUtilNested << " should have been kept (user bitcode "
         << "references the dep canonical)";
@@ -423,20 +413,173 @@ TEST(CajetaArchiveEmitTests, cjaContainsProjectEntriesOnly) {
     auto arc = cajeta::CajetaArchive::readFrom(
         (proj.buildRoot / "Hello.cja").string());
 
-    bool userHelloSeen = false;
+    bool userHelloBcSeen = false;
+    bool userHelloSrcSeen = false;
     bool stdlibSeen = false;
     for (const auto& e : arc.getEntries()) {
-        if (e.name == "demo/Hello.bc") userHelloSeen = true;
+        if (e.name == "demo/Hello.bc")     userHelloBcSeen  = true;
+        if (e.name == "demo/Hello.cajeta") userHelloSrcSeen = true;
         if (e.name.rfind("cajeta/", 0) == 0) stdlibSeen = true;
-        // Every entry follows the jar-style convention: '/' separator,
-        // '.bc' suffix.
-        EXPECT_NE(e.name.find(".bc"), std::string::npos)
-            << "entry name = " << e.name;
+        // Every entry is either bitcode (.bc) or source (.cajeta) and
+        // uses jar-style '/' separators.
+        bool isBc  = e.name.size() >= 3
+            && e.name.compare(e.name.size() - 3, 3, ".bc") == 0;
+        bool isSrc = e.name.size() >= 7
+            && e.name.compare(e.name.size() - 7, 7, ".cajeta") == 0;
+        EXPECT_TRUE(isBc || isSrc) << "entry name = " << e.name;
     }
-    EXPECT_TRUE(userHelloSeen) << "demo/Hello.bc must be present";
+    EXPECT_TRUE(userHelloBcSeen) << "demo/Hello.bc must be present";
+    EXPECT_TRUE(userHelloSrcSeen)
+        << "demo/Hello.cajeta must be present (source-shipping for "
+        << "downstream --classpath ingestion)";
     EXPECT_FALSE(stdlibSeen)
         << "--emit=cja must not bundle stdlib (cajeta.* entries)";
     EXPECT_TRUE(arc.getDeps().empty()) << "cja archives must not list deps";
 
     fs::remove_all(proj.sourceRoot.parent_path());
+}
+
+// --- Classpath ingestion ---------------------------------------------------
+//
+// The compiler must load + parse the source of every class shipped in
+// each --classpath archive at compile-start, so user code can `import`
+// those classes and the codegen path emits proper extern references.
+// Tests below pin the behavior end-to-end.
+
+namespace {
+
+// Build a tiny user project that imports + calls deplib.Util.ten().
+// Returns (sourceRoot, buildRoot). Caller cleans up.
+TmpProject makeUserProjectThatCallsDep(const std::string& tag) {
+    static std::mt19937_64 rng(std::random_device{}());
+    auto base = fs::temp_directory_path()
+              / ("cajeta_classpath_user_" + tag + "_" + std::to_string(rng()));
+    auto src = base / "src" / "demo";
+    auto build = base / "build";
+    fs::create_directories(src);
+    fs::create_directories(build);
+    std::ofstream out(src / "Hello.cajeta");
+    out << "package demo;\n"
+        << "import deplib.Util;\n"
+        << "public final class Hello {\n"
+        << "    public static int32 run() {\n"
+        << "        return Util.ten();\n"
+        << "    }\n"
+        << "}\n";
+    return TmpProject{base / "src", build};
+}
+
+} // anonymous namespace
+
+TEST(ClasspathIngestionTests, cjaCarriesClassSourceEntries) {
+    // For classpath ingestion to work, the writer must ship the original
+    // .cajeta source bytes alongside each .bc. The reader needs them to
+    // re-parse the dep's classes into the canonical-name registry.
+    auto depCja = buildDepArchive("source_entries");
+    ASSERT_FALSE(depCja.empty());
+
+    auto dep = cajeta::CajetaArchive::readFrom(depCja.string());
+
+    bool foundUtilSrc = false;
+    for (const auto& e : dep.getEntries()) {
+        if (e.name == "deplib/Util.cajeta"
+            && e.kindTag == cajeta::CajetaArchive::EntryKind::ClassSource) {
+            foundUtilSrc = true;
+            // Spot-check the bytes — sanity, the source we packaged.
+            std::string text((const char*) e.data.data(), e.data.size());
+            EXPECT_NE(text.find("package deplib"), std::string::npos)
+                << "ClassSource entry content doesn't look like the dep source";
+            EXPECT_NE(text.find("class Util"), std::string::npos);
+            break;
+        }
+    }
+    EXPECT_TRUE(foundUtilSrc)
+        << "deplib/Util.cajeta ClassSource entry missing from "
+        << depCja.string()
+        << " — writer must ship per-class source alongside bitcode";
+
+    fs::remove_all(depCja.parent_path().parent_path());
+}
+
+TEST(ClasspathIngestionTests, userIrReferencesClasspathClassUnderEmitIr) {
+    // Simplest end-to-end check. Compile a user project that imports +
+    // calls deplib.Util.ten() with the dep on --classpath. With
+    // classpath ingestion working: compile succeeds AND the resulting
+    // user .ll text references the deplib.Util canonical.
+    auto depCja = buildDepArchive("emit_ir_ingest");
+    ASSERT_FALSE(depCja.empty());
+
+    auto proj = makeUserProjectThatCallsDep("emit_ir");
+    auto logPath = proj.buildRoot / "compile.log";
+    std::string cmd =
+        compilerPath()
+        + " --emit=ir --classpath=" + depCja.string()
+        + " demo.Hello.run "
+        + proj.sourceRoot.string() + " "
+        + proj.buildRoot.string()
+        + " > " + logPath.string() + " 2>&1";
+    int rc = std::system(cmd.c_str());
+    if (rc != 0) {
+        std::ifstream logf(logPath);
+        std::string log(
+            (std::istreambuf_iterator<char>(logf)),
+            std::istreambuf_iterator<char>());
+        FAIL() << "compile failed (rc=" << rc << ") — classpath "
+                  "ingestion should have resolved deplib.Util. log:\n"
+               << log;
+    }
+
+    // Find the user IR. With --emit=ir the compiler writes one .ll per
+    // module; demo.Hello goes to <build>/demo/Hello.ll.
+    fs::path userIr = proj.buildRoot / "demo" / "Hello.ll";
+    ASSERT_TRUE(fs::exists(userIr))
+        << "expected user IR at " << userIr;
+
+    std::ifstream irFile(userIr);
+    std::string irText(
+        (std::istreambuf_iterator<char>(irFile)),
+        std::istreambuf_iterator<char>());
+    EXPECT_NE(irText.find("deplib.Util"), std::string::npos)
+        << "user IR doesn't reference deplib.Util — resolution failed.\n"
+        << "IR head:\n" << irText.substr(0, 800);
+
+    fs::remove_all(proj.sourceRoot.parent_path());
+    fs::remove_all(depCja.parent_path().parent_path());
+}
+
+TEST(ClasspathIngestionTests, classpathClassNotEmittedInUserCja) {
+    // The classpath class is ingested for resolution only — its
+    // bitcode/IR must not land in the user's project archive (that
+    // would defeat the point of having it as a classpath dep).
+    auto depCja = buildDepArchive("no_double_emit");
+    ASSERT_FALSE(depCja.empty());
+
+    auto proj = makeUserProjectThatCallsDep("no_double_emit");
+    auto logPath = proj.buildRoot / "compile.log";
+    std::string cmd =
+        compilerPath()
+        + " --emit=cja --classpath=" + depCja.string()
+        + " demo.Hello.run "
+        + proj.sourceRoot.string() + " "
+        + proj.buildRoot.string()
+        + " > " + logPath.string() + " 2>&1";
+    ASSERT_EQ(std::system(cmd.c_str()), 0)
+        << "compile failed; expected classpath ingestion to succeed";
+
+    auto arc = cajeta::CajetaArchive::readFrom(
+        (proj.buildRoot / "Hello.cja").string());
+
+    bool depBcInUserCja = false;
+    bool userBcPresent = false;
+    for (const auto& e : arc.getEntries()) {
+        if (e.name == "deplib/Util.bc") depBcInUserCja = true;
+        if (e.name == "demo/Hello.bc")  userBcPresent  = true;
+    }
+    EXPECT_TRUE(userBcPresent) << "user code must be in the cja";
+    EXPECT_FALSE(depBcInUserCja)
+        << "classpath dep bitcode must NOT be in the user's --emit=cja "
+        << "archive (it's a library form; deps stay external)";
+
+    fs::remove_all(proj.sourceRoot.parent_path());
+    fs::remove_all(depCja.parent_path().parent_path());
 }

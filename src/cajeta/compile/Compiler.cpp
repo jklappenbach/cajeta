@@ -432,6 +432,103 @@ namespace cajeta {
         return module;
     }
 
+    // Read every classpath archive, find each ClassSource entry, and
+    // re-parse it into a fresh CajetaModule registered in the
+    // canonical-name map. After this returns:
+    //   - Every class declared in any classpath archive is in the
+    //     canonical-name map; user code's `import deplib.Util;` and
+    //     direct-canonical references like `deplib.Util.ten()` resolve.
+    //   - The classpath modules live in `externalModules` (not in
+    //     `modules`); the emitter never writes their IR / bitcode out.
+    //     User code that calls into them produces extern decls at
+    //     codegen time, resolved at link/uber-bundle time against the
+    //     dep's own bitcode.
+    void Compiler::ingestClasspath() {
+        if (classpath.empty()) return;
+
+        // Phase 1 — prescan. Pre-register every classpath class's
+        // canonical name in the archive registry so forward refs from
+        // ONE classpath archive into another (e.g. `Json` extending
+        // `cajeta.lang.Object` is fine without prescan since stdlib's
+        // already there; but `deplib.Util` extending `otherlib.Base`
+        // needs both names available before either body walks) work
+        // exactly like the user-source prescan does.
+        for (const auto& cpPath : classpath) {
+            try {
+                auto arc = CajetaArchive::readFrom(cpPath);
+                for (const auto& entry : arc.getEntries()) {
+                    if (entry.kindTag != CajetaArchive::EntryKind::ClassSource)
+                        continue;
+                    std::string text(
+                        (const char*) entry.data.data(), entry.data.size());
+                    antlr4::ANTLRInputStream input(text);
+                    prescanSource(input);
+                }
+            } catch (const std::exception& e) {
+                std::cerr << "cajeta: --classpath read failed for `"
+                          << cpPath << "`: " << e.what() << std::endl;
+                throw;
+            }
+        }
+
+        // Phase 2 — full parse. Each ClassSource entry becomes a
+        // standalone CajetaModule. The module's qName is derived from
+        // the entry name (`deplib/Util.cajeta` → `deplib.Util`); its
+        // LLVM module is a throwaway (vtables / RTTI for the class
+        // get emitted there, but we never write the module out — the
+        // authoritative bitcode is the classpath archive's own `.bc`).
+        for (const auto& cpPath : classpath) {
+            auto arc = CajetaArchive::readFrom(cpPath);
+            for (const auto& entry : arc.getEntries()) {
+                if (entry.kindTag != CajetaArchive::EntryKind::ClassSource)
+                    continue;
+
+                // entry.name has the shape `<pkg-slashed>/<Class>.cajeta`.
+                std::string entryName = entry.name;
+                const std::string suffix = ".cajeta";
+                if (entryName.size() <= suffix.size()
+                    || entryName.compare(entryName.size() - suffix.size(),
+                        suffix.size(), suffix) != 0) {
+                    continue;
+                }
+                std::string canonicalPath = entryName.substr(
+                    0, entryName.size() - suffix.size());
+                auto slashIdx = canonicalPath.rfind('/');
+                std::string pkg = (slashIdx == std::string::npos)
+                    ? std::string()
+                    : canonicalPath.substr(0, slashIdx);
+                std::string cls = (slashIdx == std::string::npos)
+                    ? canonicalPath
+                    : canonicalPath.substr(slashIdx + 1);
+                std::replace(pkg.begin(), pkg.end(), '/', '.');
+
+                auto qName = QualifiedName::getOrInsert(cls, pkg);
+                auto extMod = std::make_shared<CajetaModule>(
+                    &llvmContext, qName, targetTriple, targetMachine);
+                extMod->setFlags(flags);
+                externalModules.push_back(extMod);
+
+                auto prevActive = CajetaModule::getActiveModule();
+                CajetaModule::setActiveModule(extMod);
+                std::string text(
+                    (const char*) entry.data.data(), entry.data.size());
+                antlr4::ANTLRInputStream input(text);
+                parseSource(extMod, input, /*label=*/"");
+                CajetaModule::setActiveModule(prevActive);
+            }
+        }
+
+        // Lay out every parsed classpath class so its vtable / RTTI
+        // globals exist in its (throwaway) LLVM module, and — more
+        // importantly — its methods become resolvable LLVM Functions
+        // that user code's codegen can wire to via extern decls.
+        // Without this, user calls to classpath methods come back as
+        // null llvm::Value at codegen time and the return gets
+        // silently lowered to null. Mirrors the stdlib's own
+        // ensureStdlibModule → buildPendingPrototypes flow.
+        CajetaModule::buildPendingPrototypes();
+    }
+
     CajetaModulePtr Compiler::ensureStdlibModule() {
         auto existing = CajetaModule::getStdlibModule();
         if (existing) return existing;
@@ -500,6 +597,17 @@ namespace cajeta {
         if (auto stdlib = CajetaModule::getStdlibModule()) {
             stdlib->setArchiveRoot(archiveRootPath);
         }
+
+        // Ingest classpath archives — read each `.cja`'s ClassSource
+        // entries, re-parse them into externalModules, and register
+        // their CajetaClass objects in the canonical-name map BEFORE
+        // user-source prescan starts. User imports like
+        // `import deplib.Util;` and direct refs like
+        // `deplib.Util.ten()` then resolve like any other compile-unit
+        // class. The classpath modules' own LLVM bitcode is never
+        // emitted — definitions live in each classpath archive's `.bc`
+        // entries, which the link / uber-bundle step consumes.
+        ingestClasspath();
 
         // Pre-scan: enumerate every class/interface/struct declared
         // anywhere under sourceRootPath into the archive registry.
@@ -971,6 +1079,41 @@ namespace cajeta {
             // user code links it).
             se.included = true;
             staged.push_back(std::move(se));
+
+            // Ship the original .cajeta source bytes alongside the
+            // bitcode so a downstream compile can ingest this archive
+            // via --classpath and re-parse our classes into its own
+            // canonical-name registry. Only for modules backed by a
+            // real source file (user modules); the stdlib module is
+            // synthesized from many embedded files into one logical
+            // module and has no single source path — skip.
+            if (!isStdlib && !module->getSourcePath().empty()) {
+                std::ifstream srcFile(
+                    module->getSourcePath(), std::ios::binary);
+                if (srcFile) {
+                    std::string srcText(
+                        (std::istreambuf_iterator<char>(srcFile)),
+                        std::istreambuf_iterator<char>());
+                    std::string sourceEntryName = canonical;
+                    std::replace(sourceEntryName.begin(),
+                        sourceEntryName.end(), '.', '/');
+                    sourceEntryName += ".cajeta";
+
+                    StagingEntry sse;
+                    sse.entry.name      = sourceEntryName;
+                    sse.entry.originTag = (uint8_t) CajetaArchive::Origin::User;
+                    sse.entry.kindTag   = CajetaArchive::EntryKind::ClassSource;
+                    sse.entry.data.assign(srcText.begin(), srcText.end());
+                    sse.canonical       = canonical;
+                    sse.depIndex        = -1;
+                    sse.included        = true;
+                    staged.push_back(std::move(sse));
+                } else {
+                    std::cerr << "cajeta: warning — could not read source "
+                              << "for archive packaging: "
+                              << module->getSourcePath() << std::endl;
+                }
+            }
         }
 
         // Per-dep summary captured during classpath staging — name +

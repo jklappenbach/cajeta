@@ -90,10 +90,25 @@ namespace cajeta {
 
         // --classpath archive paths. Set via CLI (one or more
         // --classpath=a.cja,b.cja args; comma-separates and repeats both
-        // accumulate). Read by emitArchive(uber=true) to bundle each
-        // listed archive's entries into the output with the
-        // Origin::Dependency tag, nested under `deps/<name>-<version>/`.
+        // accumulate). Consumed twice:
+        //   1. ingestClasspath() at compile-start, which reads each
+        //      archive's ClassSource entries and re-parses them into
+        //      `externalModules`, registering their classes in the
+        //      canonical-name map so user code can resolve imports
+        //      against them.
+        //   2. emitArchive(uber=true), which bundles each archive's
+        //      bitcode entries into the uber output under
+        //      `deps/<name>-<version>/`.
         std::vector<string> classpath;
+
+        // Modules built from classpath archives' ClassSource entries.
+        // Each holds a parsed CajetaModule whose classes were
+        // registered in the canonical-name map; the LLVM module
+        // backing it is NEVER emitted/linked (the corresponding
+        // bitcode lives in the consumer's bundled dep — uber — or in
+        // the classpath archive consumed at the next compile-stage
+        // link).
+        std::list<CajetaModulePtr> externalModules;
         // Default behavior of --emit=uber. true → prune classpath
         // entries to the transitively-referenced closure (set via
         // --prune-uber=on, the default); false → bundle every
@@ -106,6 +121,14 @@ namespace cajeta {
 
         // Per-module emit dispatch based on emitMode.
         void emitForModule(CajetaModulePtr module);
+
+        // Walk every archive on `classpath`, re-parse each ClassSource
+        // entry into a fresh CajetaModule, and register the resulting
+        // CajetaClass objects in the canonical-name map. Called once,
+        // immediately after the stdlib parse and before user-source
+        // prescan, so user imports can resolve against classpath
+        // classes during their own parse. No-op when classpath empty.
+        void ingestClasspath();
 
         // Archive emit (--emit=cja or --emit=uber). Bundles every
         // module's LLVM bitcode into a single .cja file. Cja form

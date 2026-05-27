@@ -18,10 +18,11 @@ describes the *machinery*.
 3. [Output formats](#output-formats)
 4. [Archive format](#archive-format)
 5. [Uber archives](#uber-archives)
-5. [Resources](#resources)
-6. [Binary releases](#binary-releases)
-7. [Optimization](#optimization)
-8. [Compiler flag index](#compiler-flag-index)
+6. [Classpath ingestion](#classpath-ingestion)
+7. [Resources](#resources)
+8. [Binary releases](#binary-releases)
+9. [Optimization](#optimization)
+10. [Compiler flag index](#compiler-flag-index)
 
 ---
 
@@ -336,16 +337,18 @@ Each entry is length-prefixed and self-describing:
 │ name_length  (4 bytes, uint32 LE)                            │
 │ name         (name_length bytes, UTF-8)                      │   e.g. "demo/App.bc"
 │ origin_tag   (1 byte)                                        │   0=user, 1=stdlib, 2=dep
-│ kind_tag     (1 byte)                                        │   0=class bitcode, 1=resource, 2=runtime bitcode
+│ kind_tag     (1 byte)                                        │   0=class bitcode, 1=resource, 2=runtime bitcode, 3=class source
 │ reserved     (2 bytes)                                       │   zero
 │ data_length  (8 bytes, uint64 LE)                            │
-│ data         (data_length bytes)                             │   raw bytes (LLVM bitcode for kinds 0/2, raw file for kind 1)
+│ data         (data_length bytes)                             │   raw bytes (LLVM bitcode for kinds 0/2, raw file for kind 1, UTF-8 .cajeta source for kind 3)
 └──────────────────────────────────────────────────────────────┘
 ```
 
-Names use forward-slash path separators regardless of host platform (matches `.jar` / `.zip` convention). Bitcode entries use `.bc` extension; resources keep their original extension.
+Names use forward-slash path separators regardless of host platform (matches `.jar` / `.zip` convention). Bitcode entries use `.bc` extension; class-source entries use `.cajeta` extension; resources keep their original extension.
 
 `origin_tag` lets readers bucket each entry without parsing the manifest: 0=user, 1=stdlib (uber only — cja strips stdlib), 2=dep (uber only). In uber archives, the `deps/<name>-<version>/` path prefix carries the symbolic name; the tag is the categorical bucket. Cja archives only contain entries with origin_tag=0.
+
+`kind_tag=3` (ClassSource) carries the original `.cajeta` source bytes of each user class — the substrate the [classpath ingestion](#classpath-ingestion) machinery re-parses at the next compile. Cja and uber archives both ship one `ClassSource` per user class, named `<canonical-slashed>.cajeta` (e.g. `deplib/Util.cajeta`). The stdlib bundle in uber archives has no single source file (the parsed stdlib is many embedded files), so no `ClassSource` is emitted for it.
 
 ### Internal structure mirrors the source tree
 
@@ -353,14 +356,18 @@ For a project with package `com.example`:
 
 ```
 src/main/cajeta/com/example/User.cajeta    →  com/example/User.bc
+                                              com/example/User.cajeta    (ClassSource entry)
 src/main/cajeta/com/example/Service.cajeta →  com/example/Service.bc
+                                              com/example/Service.cajeta (ClassSource entry)
 src/main/resources/templates/greet.html    →  templates/greet.html
 src/main/resources/config/default.yaml     →  config/default.yaml
 ```
 
 Same path structure, just minus the `src/main/cajeta/` or
-`src/main/resources/` prefix and with `.cajeta` → `.bc` for code
-files. Resources keep their original filename + extension.
+`src/main/resources/` prefix. Each user class lands as two entries:
+the compiled `.bc` and the original `.cajeta` source (for
+classpath ingestion at the next compile). Resources keep their
+original filename + extension.
 
 This mirroring is intentional: a developer reading the archive (via
 `cja ls <archive>` / `cja cat <archive> <path>`) sees the same
@@ -471,9 +478,9 @@ The reachability set includes:
 
 Resources (`@Embedded`-annotated files, classpath-loaded YAMLs, etc.) are bundled separately — a `resources` flag on `--emit=uber` controls inclusion. Default: include resources from the user project, NOT from deps (deps include their own at consumption time via their own cja archive; uber doesn't re-bundle).
 
-### v1 reachability — bitcode substring closure
+### Reachability — bitcode substring closure
 
-The full reachability above wants the compile-time type graph (every CajetaClass field type, parameter type, return type, body reference). That graph is fully reachable today inside the parsed user / stdlib modules but the **dep modules from classpath archives aren't parsed** — only their bitcode is ingested. So v1 ships a slightly conservative approximation: an iterative substring-scan closure over LLVM bitcode bytes.
+The full reachability above wants the compile-time type graph (every CajetaClass field type, parameter type, return type, body reference). With [classpath ingestion](#classpath-ingestion) wired through parse + codegen, every user reference to a classpath class lands in the user bitcode as a mangled symbol — so the substring-scan closure over bitcode bytes faithfully captures the dependency set.
 
 **Algorithm:**
 
@@ -483,13 +490,11 @@ The full reachability above wants the compile-time type graph (every CajetaClass
 
 **Why substring works:** cajeta's bitcode embeds each class's canonical name in multiple places — the RTTI globals (`@"<canonical>#RttiGlobal"` carrying the literal C string `"<canonical>\0"`), the vtable globals (`@"<canonical>#VTable"`), and every method's mangled function name (`@"<canonical>::method(...)"`). Any reference to a class from another class's bitcode produces at least one of these markers. Substring is conservative — false positives bundle extra (acceptable), false negatives drop needed entries (rare, would surface as runtime missing-symbol).
 
-**Override.** `--prune-uber=off` disables the closure and bundles every classpath entry (the previous v1 "include everything" policy). Useful when:
+**Override.** `--prune-uber=off` disables the closure and bundles every classpath entry. Useful when:
 
 - Reflective dispatch loads classes by string-encoded names the bitcode scan can't see.
 - A dep's class is referenced only via a `@Native` C function whose name doesn't carry the canonical.
 - Build determinism is more important than archive size (the closure depends on what user code happens to reference; opt-out gives bit-for-bit reproducible bundles).
-
-**Limitation (v1).** The closure only sees references that survive into bitcode. The cajeta compile path doesn't currently load classpath archives at parse time — when user code writes `import deplib.Util;` the compiler can't find Util's class and silently drops the reference. The bitcode pruner correctly drops the dep in that scenario because nothing in the included bitcode references it. Compile-time classpath ingestion is the next roadmap item; once it lands, user references will land in the user bitcode and the pruner will keep the deps they reach.
 
 ### Versioning + collisions
 
@@ -535,6 +540,47 @@ my-app-uber.cja:
 | Bandwidth | Small artifact + classpath cache | Larger artifact, no cache |
 
 Pick cja for everything that other projects might depend on; pick uber for everything you'd hand to a runtime.
+
+---
+
+## Classpath ingestion
+
+When the compiler runs with `--classpath=a.cja,b.cja,…`, each listed archive is loaded at compile-start and its classes are pulled into the consumer's compile so user code can `import` and reference them like any other class. This is what makes the cja/uber split useful: a library author publishes `mylib.cja`, the consumer adds it to `--classpath`, and `mylib`'s public surface is available during the consumer's parse + codegen.
+
+### Mechanism
+
+Cajeta does not parse LLVM bitcode to recover class metadata. Instead, every cja and uber archive ships the original `.cajeta` source bytes for each user class alongside the compiled `.bc`, as a separate entry tagged `EntryKind::ClassSource` (`kind_tag=3`). At ingestion time the compiler re-runs the standard parser pipeline against those source bytes — the same parser, visitor, and prototype-builder it uses for the project's own sources. The result is a real `CajetaClass` registered in the canonical-name map with full method/field metadata, indistinguishable to the rest of the compiler from a class declared in the current project's tree.
+
+Two phases run for the classpath, in order, before any user-source prescan:
+
+1. **Prescan.** For every `ClassSource` entry in every classpath archive, the lexer/parser does a name-only walk and registers each class's canonical name in the archive registry. Forward references between classpath archives (`otherlib.X` declared in archive A, referenced by archive B) resolve to placeholders here that the next phase fills in.
+2. **Parse.** Each `ClassSource` entry is parsed in full into a fresh "external" `CajetaModule`, with the module's `QualifiedName` derived from the entry's path (`deplib/Util.cajeta` → `deplib.Util`). The module's classes register in `canonicalMap`; the module's methods register in `Method::getArchive()`; the module's LLVM module gets RTTI/vtable/method-prototype globals via `CajetaModule::buildPendingPrototypes()`.
+
+After both phases complete, user-source prescan runs, then user-source parse — at which point the user's `import deplib.Util;` and any call like `Util.ten()` resolve to the classpath-loaded `CajetaClass` and `Method`, and codegen emits the standard cross-module extern declaration for the call site (the same machinery that resolves stdlib method calls in user IR).
+
+### Why source-shipping, not metadata-only
+
+Three options for "tell the consumer compile what this archive exports":
+
+- **Ship a class-metadata header** alongside each `.bc` (fields, methods, signatures, hierarchy — Java's `.class` model). Pro: smaller, faster load, source not exposed. Con: separate format to design + maintain, separate metadata loader code path that has to track the parser semantically.
+- **Parse the LLVM bitcode** to recover class shape. Pro: no archive-format addition. Con: LLVM bitcode doesn't carry source-level intent (visibility, modifiers, generic parameters) — would require structural reverse-engineering of cajeta's encoder conventions, and any encoder change breaks every consumer.
+- **Ship the source** and re-parse. Pro: zero new code paths — the parser is the metadata loader, so the schema the consumer reads matches the schema the writer emitted by construction. Con: source visibility (a real concern for proprietary libs); archive size bloat.
+
+The MVP ships source. Trades a small archive-size increase and source-visibility concession for code-path simplicity. A metadata-only emit mode is a sensible follow-up for closed-source distribution.
+
+### Output filtering
+
+Classpath-ingested modules live in the compiler's `externalModules` list, not the project's `modules` list. The emitter walks only `modules`, so classpath classes never get re-emitted into the consumer's `.cja` / `.ll` / `.o` / `.cja-uber` output — they remain external by definition. The classpath archive's own `.bc` entries are bundled in uber-form output via the existing dep-bundling path (under `deps/<name>-<version>/`), not via the external-module pipeline.
+
+### Stdlib
+
+Today the cajeta compiler embeds the stdlib source files (`runtime/src/cajeta/`) into its own binary and parses them on every compile. The stdlib is not consumed via `--classpath`. A future shipping mode where the stdlib is a separate `cajeta-stdlib.cja` consumed via classpath uses exactly the same machinery — it's a packaging change, not a compiler-design change.
+
+### Diagnostics
+
+When a classpath archive has no `ClassSource` entries (older `.cja` files predating this feature, or archives produced by a future metadata-only emit mode), `ingestClasspath` silently skips it — the bitcode is still bundled by uber emit, but the consumer's parser will see unresolved imports. A future cleanup will distinguish these cases explicitly.
+
+When `CajetaArchive::readFrom` fails on a classpath path (file missing, format mismatch), the compiler prints the path + reason to stderr and aborts the compile — the alternative (silently degrading to "no classpath") would mask configuration bugs.
 
 ---
 
@@ -857,7 +903,7 @@ build-tool wrapper); the build tool's flavor flags (`--release`,
 | `--test-resource-root=<path>` | Test resources tree. Defaults to `src/test/resources`. |
 | `--entry-method=<name>`       | Entry point (for `--emit=exe`). e.g. `com.example.Main::main`. |
 | `--output=<path>`, `-o <path>`| Output path. Defaults vary by `--emit`.        |
-| `--classpath=<paths>`         | Colon-separated (Unix) / semicolon-separated (Windows) list of archive paths the compiler resolves stdlib + library types against. |
+| `--classpath=<paths>`         | Comma-separated list of `.cja` archive paths to ingest at compile-start. Each archive's `ClassSource` entries are re-parsed into the consumer's compile so user code can `import` their classes; the archive's bitcode is also bundled into `--emit=uber` output under `deps/<name>-<version>/`. Flag is repeatable; commas split within each occurrence. See [Classpath ingestion](#classpath-ingestion). |
 | `-o <path>`                   | Single-file output path override (used by `--emit=cja` and `--emit=uber` for the `.cja` filename, and by `--emit=exe` for the executable). When unset, the compiler derives the filename from the entry method's class. |
 
 ### Emit mode
