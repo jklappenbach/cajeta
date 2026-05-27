@@ -453,7 +453,7 @@ elementValuePairs
     ;
 
 elementValuePair
-    : identifier '=' elementValue
+    : identifier ('=' | ':') elementValue
     ;
 
 elementValue
