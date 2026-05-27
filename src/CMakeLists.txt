@@ -116,6 +116,25 @@ message(STATUS "Using LLVMConfig.cmake in: ${LLVM_DIR}")
 message(STATUS "Using LLVM includes at: ${LLVM_INCLUDE_DIRS}")
 message(STATUS "Using project includes at: ${CMAKE_INCLUDE_SOURCE_DIR}/include")
 
+# macOS link-search-path fix. brew's lib directory (/opt/homebrew/lib on
+# Apple Silicon, /usr/local/lib on Intel) isn't on ld's default library
+# search path. LLVM's transitive deps emit bare `-lzstd` (and a few
+# others); without -L<brew>/lib, ld fails with "library 'zstd' not found"
+# even though the IMPORTED target zstd::libzstd_shared above passed the
+# full .dylib path. Add brew's lib explicitly so the bare-name lookups
+# also resolve.
+if(APPLE)
+    execute_process(COMMAND brew --prefix
+            OUTPUT_VARIABLE CAJETA_BREW_PREFIX
+            OUTPUT_STRIP_TRAILING_WHITESPACE
+            ERROR_QUIET
+            RESULT_VARIABLE CAJETA_BREW_RC)
+    if(CAJETA_BREW_RC EQUAL 0 AND CAJETA_BREW_PREFIX)
+        message(STATUS "Adding brew lib dir to linker search path: ${CAJETA_BREW_PREFIX}/lib")
+        link_directories(${CAJETA_BREW_PREFIX}/lib)
+    endif()
+endif()
+
 # Resolve LLVM component libraries. The compiler initializes all targets at
 # startup, so we need every backend linked in.
 llvm_map_components_to_libnames(LLVM_LIBS
