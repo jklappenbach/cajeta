@@ -23,7 +23,7 @@ was shipped off-core and a result will come back.
 Cajeta adopts the term for the same reason. Today `cajeta.xpu.*` ships
 three peer backends, and every one of them is a GPU:
 
-- **`cajeta.xpu.nvidia`** — NVIDIA GPUs via LLVM NVPTX + CUDA driver
+- **cajeta.xpu.nvidia** — NVIDIA GPUs via LLVM NVPTX + CUDA driver
 - **`cajeta.xpu.amd`** — AMD GPUs (consumer + datacenter) via LLVM
   AMDGPU + HIP runtime
 - **`cajeta.xpu.vulkan`** — any Vulkan-capable device (NV, AMD, Intel
@@ -158,6 +158,23 @@ every backend supports. Sized intentionally narrow: anything in
 `xpu.core` must mean the same thing on NVIDIA, AMD, and Vulkan
 hardware. Features that exist on only some hardware live in vendor
 namespaces (§5–6).
+
+### 3.0 Variance discipline
+
+`xpu.core` is the surface two future backends must share with NVIDIA
+without breaking. To keep that surface honest during the NVIDIA-first
+phase, every candidate `xpu.core` API runs a three-column check before
+landing: does it work on NVIDIA (the implementation that exists), and
+does it work on AMD and Vulkan without invalidating the API shape (the
+mental models). When a column would force a redesign, the API is
+restructured *before* merge — not after — because the expensive case
+is retrofitting across already-shipped kernels.
+
+The full discipline — the axes of variance the three backends diverge
+along, the hard pre-AMD checkpoints, and the per-PR process — lives in
+[`CajetaXPU-Variance.md`](CajetaXPU-Variance.md). The table there is
+the working register; rows get appended as NVIDIA-first work surfaces
+new divergences.
 
 ### 3.1 Language surface
 
