@@ -1,0 +1,169 @@
+package tour;
+
+import cajeta.collection.ArrayList;
+
+// Parallel streams — fork/join over the existing pull protocol. The
+// stream source (`ArrayStream<T>`, `ArrayList<T>.stream()`,
+// `HashMap<K,V>.values()/keys()/entries()`) implements `Splittable<T>`
+// — `trySplit()` halves the source's index range and returns a fresh
+// disjoint sub-stream. A terminal called on a `.parallel()` head
+// unwinds the wrapper chain to the splittable root, picks
+// `ceil(sqrt(estimateSize))` splits capped at the scheduler's core
+// count, opens a `scope { spawn worker(...) ... }` block per split,
+// each worker reconstructs the wrapper chain over its share and
+// drains via `next()`, the orchestrator combines partials at scope
+// exit.
+//
+// Borrow semantics are unchanged: workers borrow the source buffer
+// through their share-stream; the scope joins before the borrow
+// expires. Partial-result transfer back to the orchestrator uses
+// `#`. Per-fiber drop chains keep workers' allocations isolated.
+//
+// This demo walks five scenarios:
+//
+//   1. parallelCount     — flag-flip is a no-op for correctness; same
+//                          count whether you call .parallel() or not.
+//   2. parallelReduceSum — sum 1..1000 via reduce. The combine
+//                          function is the SAME as the per-worker
+//                          accumulator (commutative + associative).
+//   3. parallelFoldCombiner — cross-type fold int32 → int64. The
+//                          3-arg overload takes a separate combiner
+//                          for merging worker partials. This is the
+//                          fold shape that PARALLELIZES; the 2-arg
+//                          form is sequential-only.
+//   4. parallelFilterPredicates — anyMatch / allMatch / noneMatch
+//                          short-circuit across workers; a hit in
+//                          any one trips scope cancellation and the
+//                          siblings bail at their next checkpoint.
+//   5. parallelFindAny   — `findFirst` under .parallel() silently
+//                          becomes `findAny`: any matching element
+//                          is a valid answer. Useful when the search
+//                          target is somewhere in the source and you
+//                          don't care which copy you find.
+//
+// See cajeta-docs/stdlib/StreamParallelism.md for the full surface.
+public class ParallelStreamsDemo extends DemoClass {
+    public void execute() {
+        System.stdout.println("");
+        System.stdout.println("-- Parallel streams --");
+
+        this.parallelCount();
+        this.parallelReduceSum();
+        this.parallelFoldCombiner();
+        this.parallelFilterPredicates();
+        this.parallelFindAny();
+        this.parallelForEachAccumulate();
+    }
+
+    // 1. Flag-flip is correctness-preserving: parallel and sequential
+    // both produce the same count. The driver may fall back to a
+    // sequential walk if the source is below the min-per-split
+    // threshold; either way the answer is the same.
+    public void parallelCount() {
+        int32[] xs = new int32[1000];
+        for (int32 i = 0; i < 1000; i = i + 1) { xs[i] = i; }
+        int32 par = xs.stream().parallel().count();
+        int32 seq = xs.stream().count();
+        System.stdout.println("  count          par=" + par + "  seq=" + seq);
+    }
+
+    // 2. Reduce — workers run the accumulator on disjoint shares;
+    // partials feed back into the same lambda for the final merge.
+    // sum(1..1000) = 1000 * 1001 / 2 = 500500.
+    public void parallelReduceSum() {
+        int32[] xs = new int32[1000];
+        for (int32 i = 0; i < 1000; i = i + 1) { xs[i] = i + 1; }
+        int32 total = xs.stream().parallel()
+                       .reduce(0, (a, b) -> a + b);
+        System.stdout.println("  reduce sum     1..1000 = " + total);
+    }
+
+    // 3. fold<R> with combiner — the cross-type reduction shape.
+    // The per-worker accumulator widens int32 → int64; the combiner
+    // merges int64 partials. Without a combiner the 2-arg fold is
+    // sequential-only — the 3-arg overload is what unlocks parallel
+    // folds.
+    public void parallelFoldCombiner() {
+        int32[] xs = new int32[1000];
+        for (int32 i = 0; i < 1000; i = i + 1) { xs[i] = i + 1; }
+        int64 total = xs.stream().parallel()
+                        .fold<int64>(
+                            0L,
+                            (int64 acc, int32 x) -> acc + (int64) x,
+                            (int64 a, int64 b) -> a + b);
+        System.stdout.println("  fold combiner  1..1000 widened = " + total);
+    }
+
+    // 4. Predicate terminals — anyMatch / allMatch / noneMatch
+    // short-circuit through parallel workers. anyMatch returns as
+    // soon as ANY worker finds a match; the scope cancels and
+    // siblings observe at their next pull-loop checkpoint.
+    public void parallelFilterPredicates() {
+        int32[] xs = new int32[1000];
+        for (int32 i = 0; i < 1000; i = i + 1) { xs[i] = i + 1; }
+
+        boolean anyOver500 = xs.stream().parallel()
+                              .anyMatch((x) -> x > 500);
+        boolean allPositive = xs.stream().parallel()
+                              .allMatch((x) -> x > 0);
+        boolean noneNegative = xs.stream().parallel()
+                              .noneMatch((x) -> x < 0);
+
+        System.stdout.println("  anyMatch(>500)   = " + anyOver500);
+        System.stdout.println("  allMatch(>0)     = " + allPositive);
+        System.stdout.println("  noneMatch(<0)    = " + noneNegative);
+
+        // Combine .parallel() with a .filter() — the wrapper chain
+        // is unwound at terminal time; each worker re-wraps its
+        // share with a copy of the filter. allMatch over evens-only.
+        boolean allEvensOk = xs.stream()
+                              .filter((x) -> x % 2 == 0)
+                              .parallel()
+                              .allMatch((x) -> x % 2 == 0);
+        System.stdout.println("  filter+parallel allMatch(evens) = " + allEvensOk);
+    }
+
+    // 5. findFirst under .parallel() = findAny. Workers race; the
+    // first one to find a match cancels the scope. The returned
+    // element is SOMEWHERE in the match set but its position is
+    // unspecified — under parallel, encounter order is lost.
+    public void parallelFindAny() {
+        int32[] xs = new int32[1000];
+        for (int32 i = 0; i < 1000; i = i + 1) { xs[i] = i + 1; }
+
+        Optional<int32> hit = xs.stream().parallel()
+                                .findFirst((x) -> x > 500);
+        if (hit.isPresent()) {
+            int32 v = hit.get();
+            // The element is somewhere in 501..1000 — we report the
+            // matched range rather than the value itself, since the
+            // exact value depends on worker scheduling.
+            System.stdout.println("  findFirst(>500) found a value in (500, 1000]: "
+                + (v > 500 && v <= 1000));
+        }
+
+        Optional<int32> miss = xs.stream().parallel()
+                                 .findFirst((x) -> x > 9999);
+        System.stdout.println("  findFirst(>9999) miss isPresent = " + miss.isPresent());
+    }
+
+    // 6. forEach with a shared accumulator. Order across workers is
+    // unspecified — same as Java. The lambda mutates a shared
+    // counter through capture-by-borrow; cajeta's atomic semantics
+    // for the counter increment are the user's responsibility (here
+    // we use a single-field class so the field race is benign for
+    // demonstration; production code should pick an atomic
+    // primitive or accumulate via fold).
+    public void parallelForEachAccumulate() {
+        ArrayList<int32> ints = heap ArrayList<int32>();
+        int32 i = 0;
+        while (i < 100) {
+            ints.add(i + 1);
+            i = i + 1;
+        }
+        Counter c = heap Counter();
+        ints.stream().parallel()
+            .forEach((int32 x) -> c.bump());
+        System.stdout.println("  forEach bump count over 100 elements = " + c.value());
+    }
+}

@@ -1,0 +1,90 @@
+# Cajeta IntelliJ IDEA Plugin
+
+First-party IntelliJ IDEA plugin for the Cajeta language. Covers
+the v0.1 scope defined in [`Plan.md`](Plan.md):
+
+- **Syntax tier** — file type, ANTLR-driven lexer/parser, PSI,
+  syntax highlighting, brace matching, commenter, structure view.
+- **Linting tier** — real-time syntax errors plus `cajetac` lint
+  warnings surfaced as squigglies and Problems-tool entries.
+  Ships in **degraded mode** (regex over stderr) until the
+  compiler-side `--lint --diag-format=json --stdin` work lands;
+  see Plan.md § Follow-up.
+- **Markdown comments** — comment regions fold to a single-line
+  summary; caret enters → fold expands to raw source; caret
+  leaves → re-collapses. Obsidian live-preview shape, with rich
+  HTML rendering deferred to a follow-up (see
+  `TODO(rendered-markdown-html)` in
+  `markdown/CajetaCommentFoldingBuilder.kt`).
+
+## Build
+
+Requires JDK 21+ on `PATH`. From this directory:
+
+```sh
+./gradlew buildPlugin
+```
+
+Produces `build/distributions/cajeta-idea-0.1.0.zip`.
+
+The build copies `../../antlr4/CajetaLexer.g4` and
+`../../antlr4/CajetaParser.g4` into `src/main/antlr/` (gitignored),
+generates Java lexer/parser into `build/generated-src/`, then
+compiles Kotlin against that.
+
+## Run in a sandbox IDE
+
+```sh
+./gradlew runIde
+```
+
+Downloads (cached after first run) IntelliJ IDEA Community
+2024.2.4 and launches a clean sandbox with the plugin loaded.
+
+## Install into your IntelliJ
+
+1. Build the distributable per above.
+2. IntelliJ → Settings → Plugins → ⚙ → Install Plugin from
+   Disk… → select `build/distributions/cajeta-idea-0.1.0.zip`.
+3. Restart.
+4. Settings → Languages & Frameworks → Cajeta → set the path to
+   your `cajetac` binary (default
+   `/home/julian/code/cpp/cajeta/build/src/cajeta`).
+
+## Verification samples
+
+Open `~/code/cpp/cajeta/samples/Tour/` as an IntelliJ project.
+Recommended files:
+
+- `OwnershipDemo.cajeta` — exercises the parser and structure
+  view; deliberate `;` deletion verifies error recovery.
+- `AspectsDiDemo.cajeta` — has bulleted `//` markdown comments
+  for the comment-folding feature.
+
+See [`Plan.md`](Plan.md) § Verification checklist for the full
+per-tier acceptance criteria.
+
+## Layout
+
+```
+src/main/
+├── kotlin/dev/cajeta/idea/
+│   ├── CajetaLanguage.kt        Language singleton
+│   ├── CajetaFileType.kt        .cajeta file type
+│   ├── CajetaIcons.kt           File icon
+│   ├── parser/                  ANTLR adaptor wiring
+│   │   ├── CajetaParserDefinition.kt
+│   │   ├── CajetaErrorStrategy.kt  (anchor-sync recovery)
+│   │   ├── CajetaTokenTypes.kt
+│   │   ├── CajetaElementTypes.kt
+│   │   └── CajetaPsiFile.kt
+│   ├── highlighting/            Lexer-based syntax coloring
+│   ├── editor/                  Brace matcher, commenter, structure view
+│   ├── lint/                    ExternalAnnotator + cajetac runner
+│   ├── settings/                Application settings + Configurable
+│   └── markdown/                Comment folding + caret-following toggle
+│       └── engines/             Pluggable markdown renderers
+└── resources/
+    ├── META-INF/plugin.xml
+    └── icons/cajetaFile.svg
+```

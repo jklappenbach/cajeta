@@ -1,0 +1,8 @@
+package com.example;
+
+public class UnterminatedString {
+    public static int32 main() {
+        System.stdout.println("hello world);
+        return 0;
+    }
+}

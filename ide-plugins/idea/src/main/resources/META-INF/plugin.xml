@@ -1,0 +1,78 @@
+<idea-plugin>
+    <id>dev.cajeta.idea</id>
+    <name>Cajeta</name>
+    <vendor>cajeta</vendor>
+
+    <description><![CDATA[
+        <p>IntelliJ IDEA support for the Cajeta language: syntax
+        highlighting, parser-driven PSI, compiler-driven linting,
+        and Obsidian-style rendered markdown in comments.</p>
+    ]]></description>
+
+    <depends>com.intellij.modules.platform</depends>
+
+    <extensions defaultExtensionNs="com.intellij">
+        <fileType
+            name="Cajeta"
+            implementationClass="dev.cajeta.idea.CajetaFileType"
+            fieldName="INSTANCE"
+            language="Cajeta"
+            extensions="cajeta"/>
+
+        <lang.parserDefinition
+            language="Cajeta"
+            implementationClass="dev.cajeta.idea.parser.CajetaParserDefinition"/>
+
+        <lang.syntaxHighlighterFactory
+            language="Cajeta"
+            implementationClass="dev.cajeta.idea.highlighting.CajetaSyntaxHighlighterFactory"/>
+
+        <lang.braceMatcher
+            language="Cajeta"
+            implementationClass="dev.cajeta.idea.editor.CajetaBraceMatcher"/>
+
+        <lang.commenter
+            language="Cajeta"
+            implementationClass="dev.cajeta.idea.editor.CajetaCommenter"/>
+
+        <lang.psiStructureViewFactory
+            language="Cajeta"
+            implementationClass="dev.cajeta.idea.editor.CajetaStructureViewFactory"/>
+
+        <externalAnnotator
+            language="Cajeta"
+            implementationClass="dev.cajeta.idea.lint.CajetaLintAnnotator"/>
+
+        <applicationService
+            serviceImplementation="dev.cajeta.idea.settings.CajetaSettings"/>
+
+        <applicationConfigurable
+            parentId="language"
+            id="dev.cajeta.idea.settings"
+            displayName="Cajeta"
+            instance="dev.cajeta.idea.settings.CajetaConfigurable"/>
+
+        <applicationService
+            serviceImplementation="dev.cajeta.idea.markdown.MarkdownEngineRegistry"/>
+
+        <postStartupActivity
+            implementation="dev.cajeta.idea.markdown.InstallCommentCaretListener"/>
+
+        <postStartupActivity
+            implementation="dev.cajeta.idea.markdown.InstallMarkdownFoldManager"/>
+
+        <newProjectWizard.languageGenerator
+            implementation="dev.cajeta.idea.wizard.CajetaNewProjectWizard"/>
+    </extensions>
+
+    <actions>
+        <group id="dev.cajeta.idea.toolsGroup" text="Cajeta" popup="true">
+            <add-to-group group-id="ToolsMenu" anchor="last"/>
+            <action
+                id="dev.cajeta.idea.TypeFixtureAction"
+                class="dev.cajeta.idea.harness.TypeFixtureAction"
+                text="Type Fixture into Editor"
+                description="Run the typing-simulator harness against a fixture file."/>
+        </group>
+    </actions>
+</idea-plugin>

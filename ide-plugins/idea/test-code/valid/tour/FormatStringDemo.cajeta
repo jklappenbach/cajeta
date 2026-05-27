@@ -1,0 +1,18 @@
+package tour;
+
+// `{}` template-formatting for System.stdout.println(fmt, args...).
+// Each `{}` consumes one arg from the trailing varargs in order. The
+// runtime dispatches each arg through a per-type formatter — int32,
+// int64, float, String, and class .toString() all work.
+public class FormatStringDemo extends DemoClass {
+    public void execute() {
+        System.stdout.println("");
+        System.stdout.println("-- Format strings --");
+        String name = "Cajeta";
+        int32 version = 1;
+        float64 pi = 3.14159;
+        System.stdout.println("  hello {}, version {}", name, version);
+        System.stdout.println("  pi  ≈ {}", pi);
+        System.stdout.println("  {} + {} = {}", 2, 3, 2 + 3);
+    }
+}

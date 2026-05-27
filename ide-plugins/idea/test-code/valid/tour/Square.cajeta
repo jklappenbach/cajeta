@@ -1,0 +1,13 @@
+package tour;
+
+public class Square extends Shape {
+    int32 side;
+
+    public Square(int32 s) {
+        this.side = s;
+    }
+
+    public int32 area() {
+        return this.side * this.side;
+    }
+}

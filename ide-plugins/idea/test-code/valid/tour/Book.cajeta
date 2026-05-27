@@ -1,0 +1,15 @@
+package tour;
+
+// Annotation showcase. @Builder synthesizes the fluent builder; each
+// non-final field gets a same-name setter. @Builder.Default makes the
+// declared initializer the fallback when the caller doesn't call that
+// setter. @ToString synthesizes a printable view.
+//
+//   Book b = Book.builder().title("...").pages(322).build();
+//   Book b = Book.builder().title("...").build();           // pages = 100
+@Builder
+@ToString
+public class Book {
+    public String title;
+    @Builder.Default public int32 pages = 100;
+}

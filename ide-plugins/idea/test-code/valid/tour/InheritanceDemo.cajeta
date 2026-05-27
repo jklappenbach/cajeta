@@ -1,0 +1,16 @@
+package tour;
+
+// Single inheritance for state, multiple inheritance for behavior.
+// Override via hash-based vtable dispatch — diamond inheritance resolves
+// uniformly. Override modifier is required on overriding methods.
+public class InheritanceDemo extends DemoClass {
+    public void execute() {
+        System.stdout.println("");
+        System.stdout.println("-- Inheritance --");
+        Shape sq = stack Square(5);
+        Shape ci = stack Circle(3);
+        // Polymorphic call through the Shape ref — vtable picks the override.
+        System.stdout.println("  Square(5).area() = " + sq.area());
+        System.stdout.println("  Circle(3).area() = " + ci.area());
+    }
+}

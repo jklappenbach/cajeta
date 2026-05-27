@@ -1,0 +1,16 @@
+package tour;
+
+// Toy integer-only circle. area() approximates π * r² as 3 * r² so the
+// tour result is a clean integer (sidesteps integer/float coercion in
+// the demo). Real math lives in cajeta.lang.Math.
+public class Circle extends Shape {
+    int32 radius;
+
+    public Circle(int32 r) {
+        this.radius = r;
+    }
+
+    public int32 area() {
+        return 3 * this.radius * this.radius;
+    }
+}

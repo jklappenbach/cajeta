@@ -1,0 +1,15 @@
+package com.example;
+
+public class Point {
+    public int32 x;
+    public int32 y;
+    public Point(int32 x, int32 y) { this.x = x; this.y = y; }
+}
+
+public final class AllocDemo {
+    public static int32 run() {
+        Point onStack = stack Point(3, 4);
+        Point onHeap  = heap  Point(5, 12);
+        return onStack.x + onHeap.y;
+    }
+}

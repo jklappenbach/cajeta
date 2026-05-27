@@ -1,0 +1,14 @@
+package com.example;
+
+public class TrailingComments {
+    public int32 x;                       // a plain trailing comment
+    public int32 y;                       // **bold** trailing
+    public int32 z;                       // `mono` trailing
+    public bool   flag;                   // _italic_ trailing
+
+    public int32 compute() {
+        int32 a = 1;                      // step one
+        int32 b = 2;                      // step two with `code`
+        return a + b;                     // **sum** of inputs
+    }
+}

@@ -1,0 +1,22 @@
+package com.example;
+
+import cajeta.collection.ArrayList;
+
+public class Point {
+    public int32 x;
+    public int32 y;
+    public Point(int32 x, int32 y) { this.x = x; this.y = y; }
+    public int32 distSq() { return this.x * this.x + this.y * this.y; }
+}
+
+public final class StreamDemo {
+    public static int32 run() {
+        ArrayList<Point> points = heap ArrayList<Point>();
+        points.add(#stack Point(1, 2));
+        points.add(#stack Point(3, 4));
+
+        return points.stream()
+            .map<int32>((p) -> p.distSq())
+            .reduce(0, (acc, v) -> acc + v);
+    }
+}

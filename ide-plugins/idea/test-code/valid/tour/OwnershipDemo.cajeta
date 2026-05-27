@@ -1,0 +1,23 @@
+package tour;
+
+// Plain `=` is a borrow; `#name` transfers ownership and marks the
+// source moved at compile time. The borrow checker also catches
+// escape-on-return, alias-mutation, and definite-assignment violations.
+public class OwnershipDemo extends DemoClass {
+    public void execute() {
+        System.stdout.println("");
+        System.stdout.println("-- Ownership --");
+        Point owner = heap Point(7, 24);
+        // `consume` takes ownership of its argument; `#owner` is the
+        // syntactic transfer marker. After this line, `owner` is no
+        // longer readable — a use here would be CAJETA_ERROR_USE_AFTER_MOVE.
+        int32 hypoSq = this.consume(#owner);
+        System.stdout.println("  consume(#Point(7,24)).distSq() = " + hypoSq);
+    }
+
+    // Helper that takes ownership of `p` (it's destroyed when this
+    // method returns).
+    public int32 consume(Point p) {
+        return p.distSq();
+    }
+}

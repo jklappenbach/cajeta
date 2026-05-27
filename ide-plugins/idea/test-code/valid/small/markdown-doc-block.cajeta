@@ -1,0 +1,14 @@
+package com.example;
+
+// # MarkdownBlock
+//
+// This is a **markdown-styled** doc block.
+//
+//   - bullet one with `inline code`
+//   - bullet two with _emphasis_
+//   - bullet three
+//
+// A paragraph after the list.
+public class MarkdownBlock {
+    public int32 value;
+}

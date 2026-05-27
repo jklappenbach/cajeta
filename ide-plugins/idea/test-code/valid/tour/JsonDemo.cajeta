@@ -1,0 +1,161 @@
+package tour;
+
+import cajeta.codec.json.Json;
+
+// JSON codec — Tier 1 (`Json.parse<T>` / `Json.toBytes<T>`).
+//
+// `Json.parse<T>(bytes, length)` and `Json.toBytes<T>(value)` are
+// method-level templates. At each call site the compiler walks T's
+// declared fields and emits per-field reader / writer code that talks
+// directly to the underlying `JsonReader` / `JsonWriter` — no
+// `JsonValue` tree, no runtime reflection, no `Encoder<T>` indirection.
+//
+// User classes need no class-level annotation: a plain class with
+// public fields is JSON-compatible by construction. Field-level
+// annotations (`@JsonProperty("wire_name")`, `@JsonIgnore`,
+// `@JsonRequired`, `@JsonInclude(NON_NULL)`, ...) steer the mapping
+// when defaults aren't enough. See cajeta-docs/stdlib/codec/Json.md.
+//
+// Two other tiers exist for adjacent use cases — Tier 2 is the
+// `JsonReader` / `JsonWriter` pull tokenizer (streaming, no
+// allocation); Tier 3 is the `JsonValue` tree (ad-hoc, slowest).
+// This demo focuses on Tier 1 — the fast path with the cleanest
+// surface.
+
+// Plain class — no JSON-specific machinery. Fields are public so we
+// can read them post-parse and assign pre-write without accessors.
+// The codegen path walks declared fields in source order.
+public class JsonMix {
+    public int32 id;
+    public int64 score;
+    public boolean active;
+    public String name;
+}
+
+// Primitive-only target. Json.toBytes<T> over a class with String
+// fields is not yet stable (the synthesizer's String-field write
+// path is pending), so round-trip examples use this primitives-only
+// shape.
+public class JsonNum {
+    public int32 id;
+    public int64 score;
+    public boolean active;
+}
+
+// Nested-class round-trip target. `Outer.point` is itself a class,
+// so the synthesizer emits a recursive descent — the parse/write
+// for Inner is called from the parent's field arm with the same
+// reader / writer.
+public class JsonInner {
+    public int32 x;
+    public int32 y;
+}
+public class JsonOuter {
+    public int32 id;
+    public JsonInner point;
+}
+
+public class JsonDemo extends DemoClass {
+    public void execute() {
+        System.stdout.println("");
+        System.stdout.println("-- JSON codec --");
+
+        this.parseSingleObject();
+        this.parseMixedPrimitives();
+        this.roundTripMixed();
+        this.parseNested();
+        this.roundTripNested();
+    }
+
+    // 1. Parse a hand-typed JSON literal directly into a class. The
+    // String literal exposes its underlying byte buffer via .bytes
+    // and .byteLength — Json.parse<T> consumes (int8[], int64).
+    public void parseSingleObject() {
+        String src = "{\"id\":42,\"score\":1000000,\"active\":true,\"name\":\"alice\"}";
+        JsonMix m = Json.parse<JsonMix>(src.bytes, (int64) src.byteLength);
+        System.stdout.println("  parse single object:");
+        System.stdout.println("    id     = " + m.id);
+        System.stdout.println("    score  = " + m.score);
+        System.stdout.println("    active = " + m.active);
+        System.stdout.println("    name   = " + m.name);
+    }
+
+    // 2. Same parser, but only the int32 / int64 / boolean fields —
+    // demonstrating that missing-key fields receive no assignment
+    // (default-initialized). The synthesizer's unknown-key policy is
+    // accept-and-skip by default; closed-schema callers can flip it
+    // with @JsonStrict on the class.
+    public void parseMixedPrimitives() {
+        String src = "{\"id\":7,\"score\":99,\"active\":false}";
+        JsonMix m = Json.parse<JsonMix>(src.bytes, (int64) src.byteLength);
+        System.stdout.println("  parse with missing-key field:");
+        System.stdout.println("    id (set)        = " + m.id);
+        System.stdout.println("    score (set)     = " + m.score);
+        System.stdout.println("    active (set)    = " + m.active);
+        // m.name was never assigned — default null for class fields.
+        // Reporting presence rather than printing the null reference.
+        boolean nameSet = m.name != null;
+        System.stdout.println("    name (missing)  set? " + nameSet);
+    }
+
+    // 3. Round-trip — populate a class, serialize to bytes, parse
+    // back, verify equality of every field. This is the canonical
+    // "the codec is sound" check; the synthesized parse / write
+    // pair must agree on every field's wire shape.
+    //
+    // Uses a primitives-only class. Tier-1 String round-trip is
+    // verified by the parse-side cases above; the write side for
+    // String fields is in flight on the synthesizer.
+    public void roundTripMixed() {
+        JsonNum a = heap JsonNum();
+        a.id = 99;
+        a.score = 123456789L;
+        a.active = true;
+
+        int8[] bytes = Json.toBytes<JsonNum>(a);
+        int64 len = (int64) bytes.count();
+        JsonNum b = Json.parse<JsonNum>(bytes, len);
+
+        System.stdout.println("  round-trip primitives:");
+        System.stdout.println("    serialized length = " + len);
+        System.stdout.println("    parsed.id         = " + b.id);
+        System.stdout.println("    parsed.score      = " + b.score);
+        System.stdout.println("    parsed.active     = " + b.active);
+    }
+
+    // 4. Nested class parse. The synthesizer walks JsonOuter's
+    // declared fields; when it hits a class-typed field (`point`),
+    // it emits a recursive call to parse JsonInner inline against
+    // the same JsonReader. No tree materialization.
+    public void parseNested() {
+        String src = "{\"id\":1,\"point\":{\"x\":10,\"y\":20}}";
+        JsonOuter o = Json.parse<JsonOuter>(src.bytes, (int64) src.byteLength);
+        System.stdout.println("  parse nested object:");
+        System.stdout.println("    id      = " + o.id);
+        System.stdout.println("    point.x = " + o.point.x);
+        System.stdout.println("    point.y = " + o.point.y);
+    }
+
+    // 5. Round-trip nested. Construct the tree manually, write,
+    // re-parse, verify. Drop chain reclaims both layers at scope
+    // exit — the inner JsonInner is owned by the outer's `point`
+    // field which is owned by the outer.
+    public void roundTripNested() {
+        JsonOuter o = heap JsonOuter();
+        o.id = 5;
+        JsonInner p = heap JsonInner();
+        p.x = 100;
+        p.y = 200;
+        o.point = p;
+
+        int8[] bytes = Json.toBytes<JsonOuter>(o);
+        int64 len = (int64) bytes.count();
+        JsonOuter parsed = Json.parse<JsonOuter>(bytes, len);
+
+        System.stdout.println("  round-trip nested:");
+        System.stdout.println("    serialized length = " + len);
+        System.stdout.println("    parsed.id         = " + parsed.id);
+        System.stdout.println("    parsed.point.x    = " + parsed.point.x);
+        System.stdout.println("    parsed.point.y    = " + parsed.point.y);
+    }
+}

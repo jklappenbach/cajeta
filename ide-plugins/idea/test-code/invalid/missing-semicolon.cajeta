@@ -1,0 +1,6 @@
+package com.example;
+
+public class MissingSemicolon {
+    public int32 x
+    public int32 y;
+}

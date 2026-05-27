@@ -1,0 +1,9 @@
+package com.example;
+
+public class UnbalancedBraces {
+    public int32 method() {
+        if (true) {
+            return 1;
+        return 2;
+    }
+}

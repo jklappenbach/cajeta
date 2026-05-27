@@ -1,0 +1,21 @@
+package tour;
+
+import cajeta.error.Exception;
+
+// try / catch / finally with the Exception hierarchy. Recoverable
+// (catchable, propagates normally) vs Unrecoverable (alarm — SIGABRTs
+// at the uncaught boundary). `throw` accepts any value; the catch
+// clause type-narrows.
+public class ErrorsDemo extends DemoClass {
+    public void execute() {
+        System.stdout.println("");
+        System.stdout.println("-- Errors --");
+        int32 caught = 0;
+        try {
+            throw 99;
+        } catch (Exception e) {
+            caught = (int32) e;
+        }
+        System.stdout.println("  caught throw value = " + caught);
+    }
+}
