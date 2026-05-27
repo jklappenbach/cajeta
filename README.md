@@ -30,7 +30,6 @@ Supported binary targets (see [RELEASING.md](RELEASING.md) for the full matrix):
 |---|---|---|
 | Linux x86_64 | `x86_64-linux-gnu` | `ubuntu-latest` |
 | Linux ARM64 (incl. NVIDIA Grace) | `aarch64-linux-gnu` | `ubuntu-24.04-arm` |
-| macOS Intel | `x86_64-apple-darwin` | `macos-13` |
 | macOS Apple Silicon | `aarch64-apple-darwin` | `macos-14` |
 | Windows x86_64 | `x86_64-pc-windows-msvc` | `windows-latest` |
 | Linux RISC-V 64 *(best-effort, QEMU-cross)* | `riscv64-linux-gnu` | `ubuntu-latest` |

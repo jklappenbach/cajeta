@@ -122,8 +122,8 @@ has a single trailing job that's the natural place to add a
 |---|---|---|---|
 | Linux x86_64 | `x86_64-linux-gnu` | `ubuntu-latest` | tier 1 (primary dev platform) |
 | Linux ARM64 (incl. NVIDIA Grace, Ampere Altra, AWS Graviton, Apple Silicon under Linux) | `aarch64-linux-gnu` | `ubuntu-24.04-arm` | tier 1 |
-| macOS Intel | `x86_64-apple-darwin` | `macos-13` | tier 1 |
 | macOS Apple Silicon | `aarch64-apple-darwin` | `macos-14` | tier 1 |
+| macOS Intel | `x86_64-apple-darwin` | (not in matrix) | build from source — see below |
 | Windows x86_64 | `x86_64-pc-windows-msvc` | `windows-latest` | tier 1 |
 | Linux RISC-V 64 | `riscv64-linux-gnu` | `ubuntu-latest` + QEMU cross | best-effort (no native runner; cross-compiled, not test-run on host) |
 
@@ -133,6 +133,27 @@ consume the Linux ARM64 build. CUDA-codegen support
 (`nvptx64-nvidia-cuda`) is a separate roadmap item; "NVIDIA ARM" here
 refers to running cajeta-compiled programs on NVIDIA's CPU silicon,
 not targeting their GPUs as a codegen sink.
+
+### Intel macOS — build from source
+
+`x86_64-apple-darwin` is not in the release matrix because GitHub-hosted
+`macos-13` (Intel) runners are scarce and slow to dispatch (Apple
+stopped selling Intel Macs in 2022; the GH runner pool is being wound
+down). Intel Mac users build from source:
+
+```sh
+brew install cmake ninja llvm@20 antlr4-cpp-runtime openjdk@17 \
+    googletest glog zstd xxhash
+export LLVM_DIR="$(brew --prefix llvm@20)/lib/cmake/llvm"
+git clone https://github.com/jklappenbach/cajeta.git
+cd cajeta
+./setup.sh && ./build.sh
+./build/src/cajeta --version
+```
+
+Same recipe as the workflow's `aarch64-apple-darwin` job. When
+runner availability improves (or you ask for an x86_64 binary
+specifically), restoring the matrix row is a 4-line YAML edit.
 
 ## Artifact shape
 

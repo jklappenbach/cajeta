@@ -74,10 +74,11 @@ jobs:
             target: aarch64-linux-gnu
             archive_ext: tar.gz
             shell: bash
-          - os: macos-13
-            target: x86_64-apple-darwin
-            archive_ext: tar.gz
-            shell: bash
+          # x86_64-apple-darwin removed from the matrix: GitHub-hosted
+          # macos-13 (Intel) runners are scarce + slow to dispatch
+          # (Apple stopped selling Intel Macs in 2022; runner pool is
+          # being wound down). Intel Mac users build from source —
+          # documented in RELEASING.md.
           - os: macos-14
             target: aarch64-apple-darwin
             archive_ext: tar.gz
