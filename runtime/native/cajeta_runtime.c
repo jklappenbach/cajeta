@@ -1562,25 +1562,36 @@ void* __cajeta_vtable_lookup(void* vptr, int64_t hash) {
 
 // Marker global set by codegen to UnrecoverableException's vtable address.
 // __cajeta_is_unrecoverable compares each ancestor vtable against this.
-// Compiler::emitUnrecoverableMarker (Compiler.cpp) looks up THIS extern
-// declaration in the linked-in runtime bitcode and re-tags it to a
+// Compiler::emitUnrecoverableMarker (Compiler.cpp) looks up THIS
+// declaration in the linked-in runtime bitcode and re-tags it as a
 // strong external definition with an initializer pointing at
-// cajeta.lang.UnrecoverableException#VTable. So at JIT load time the
-// marker storage native code references here gets populated with the
-// real vtable address by the JIT's linker.
+// cajeta.lang.UnrecoverableException#VTable.
 //
-// Platform-conditional declaration:
-//   - Linux + everything else: `extern ... __attribute__((weak))`.
+// Platform-conditional declaration is unavoidable because GNU ld and
+// Apple ld treat undefined weak externals differently in a static link:
+//
+//   - Linux (+ other GNU ld targets): `extern ... __attribute__((weak))`.
 //     GNU ld resolves an undefined weak external to NULL at native
-//     link time; the JIT's MachOLink / RuntimeDyld then patches the
-//     strong definition over the top when stdlib bitcode loads.
+//     link time. The JIT then loads stdlib bitcode whose strong
+//     definition the linker patches over the same storage so reads
+//     of the marker through this symbol see the real vtable address.
+//     This is the path the AOT-emitted binary takes too — at final
+//     link the strong def from emitUnrecoverableMarker wins.
+//
 //   - macOS: Apple's ld rejects unresolved weak externs in a static
-//     link ("Undefined symbols for architecture arm64"). Use
-//     `weak_import` instead — Apple's "this symbol may not exist
-//     at link time; leave the reference dangling and resolve at
-//     runtime" annotation. The JIT then populates it the same way.
+//     link ("Undefined symbols for architecture arm64"). `weak_import`
+//     isn't enough — that's for symbols dlopen'd from a dylib at
+//     runtime, not for static-link deferral. Use a weak DEFINITION
+//     with a NULL initializer instead. Tradeoff: in-JIT-test reads
+//     of the marker see NULL (the JIT's strong def lives in JIT
+//     memory and doesn't patch our static slot on macOS); the JIT-
+//     driven ErrorModelTests.uncaughtUnrecoverableAborts test fails.
+//     That test is in the `continue-on-error: true` zone on non-
+//     primary platforms so doesn't block the release. AOT users on
+//     macOS get full functionality — their cajeta-emitted strong
+//     def overrides this weak def at their binary's final link.
 #if defined(__APPLE__)
-extern void* __cajeta_unrecoverable_vtable_marker __attribute__((weak_import));
+__attribute__((weak)) void* __cajeta_unrecoverable_vtable_marker = NULL;
 #else
 extern void* __cajeta_unrecoverable_vtable_marker __attribute__((weak));
 #endif
