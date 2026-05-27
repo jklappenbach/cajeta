@@ -31,18 +31,32 @@ find_package(OpenSSL REQUIRED)
 # LLVM 18 on Ubuntu 24.04 expects an IMPORTED target zstd::libzstd_shared,
 # but libzstd-dev (which ships the cmake config) is not always installed.
 # Create a fallback IMPORTED target pointing at the system shared library.
+#
+# Portability: search across multi-arch Linux paths (x86_64 + aarch64),
+# macOS Homebrew prefixes (Intel /usr/local, ARM /opt/homebrew), and
+# the default cmake search paths. Cover .so / .so.1 (Linux) and .dylib
+# (macOS) name variants. Without these the original hardcoded
+# x86_64-linux-gnu search failed on aarch64-linux-gnu and on macOS
+# regardless of arch.
 if(NOT TARGET zstd::libzstd_shared)
     find_library(ZSTD_LIBRARY
-            NAMES libzstd.so libzstd.so.1
-            PATHS /usr/lib/x86_64-linux-gnu /usr/lib
-            NO_DEFAULT_PATH)
+            NAMES zstd libzstd.so libzstd.so.1 libzstd.dylib libzstd.1.dylib
+            HINTS
+                /opt/homebrew/opt/zstd/lib
+                /usr/local/opt/zstd/lib
+                $ENV{VCPKG_INSTALLATION_ROOT}/installed/x64-windows/lib
+                C:/vcpkg/installed/x64-windows/lib
+            PATHS
+                /usr/lib/${CMAKE_LIBRARY_ARCHITECTURE}
+                /usr/lib
+                /usr/local/lib)
     if(ZSTD_LIBRARY)
         add_library(zstd::libzstd_shared SHARED IMPORTED)
         set_target_properties(zstd::libzstd_shared PROPERTIES
                 IMPORTED_LOCATION ${ZSTD_LIBRARY})
         message(STATUS "Created fallback zstd::libzstd_shared -> ${ZSTD_LIBRARY}")
     else()
-        message(FATAL_ERROR "Could not locate libzstd. Install libzstd-dev or libzstd1.")
+        message(FATAL_ERROR "Could not locate libzstd. Install libzstd-dev (Linux), brew install zstd (macOS), or vcpkg install zstd (Windows).")
     endif()
 endif()
 
@@ -51,16 +65,33 @@ add_definitions(${LLVM_DEFINITIONS})
 include_directories(${LLVM_INCLUDE_DIRS})
 find_package(ANTLR REQUIRED)
 
-# System antlr4 runtime headers (Debian/Ubuntu install at /usr/include/antlr4-runtime).
+# System antlr4 runtime headers + library. Portability: search across
+# multi-arch Linux paths, Homebrew prefixes (Intel + ARM), and vcpkg's
+# installed root on Windows. NAMES covers Linux .so, macOS .dylib, and
+# the MSVC `antlr4-runtime.lib` form via cmake's default suffix
+# mangling on the bare `antlr4-runtime` name.
 find_path(ANTLR4_INCLUDE_DIR
         NAMES antlr4-runtime.h
         PATH_SUFFIXES antlr4-runtime
+        HINTS
+            /opt/homebrew/opt/antlr4-cpp-runtime/include
+            /usr/local/opt/antlr4-cpp-runtime/include
+            $ENV{VCPKG_INSTALLATION_ROOT}/installed/x64-windows/include
+            C:/vcpkg/installed/x64-windows/include
         PATHS /usr/include /usr/local/include)
 find_library(ANTLR4_RUNTIME_LIB
         NAMES antlr4-runtime
-        PATHS /usr/lib/x86_64-linux-gnu /usr/lib /usr/local/lib)
+        HINTS
+            /opt/homebrew/opt/antlr4-cpp-runtime/lib
+            /usr/local/opt/antlr4-cpp-runtime/lib
+            $ENV{VCPKG_INSTALLATION_ROOT}/installed/x64-windows/lib
+            C:/vcpkg/installed/x64-windows/lib
+        PATHS
+            /usr/lib/${CMAKE_LIBRARY_ARCHITECTURE}
+            /usr/lib
+            /usr/local/lib)
 if(NOT ANTLR4_INCLUDE_DIR OR NOT ANTLR4_RUNTIME_LIB)
-    message(FATAL_ERROR "Could not locate antlr4-runtime headers/library. Install libantlr4-runtime-dev.")
+    message(FATAL_ERROR "Could not locate antlr4-runtime headers/library. Install libantlr4-runtime-dev (Linux), brew install antlr4-cpp-runtime (macOS), or vcpkg install antlr4 (Windows).")
 endif()
 include_directories(${ANTLR4_INCLUDE_DIR})
 
