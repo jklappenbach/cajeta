@@ -355,6 +355,54 @@ namespace cajeta {
             // codegen worklist by way of having no methods at all.
             if (!structure->isTemplate()) {
                 structure->setClassBody(std::any_cast<ClassBodyDeclarationPtr>(visitChildren(ctx)));
+
+                // Hash / equals + != / == consistency checks
+                // (cajeta-docs/OperatorOverloading.md §7). Skipped for
+                // templates (whose body walk is skipped above —
+                // re-runs at instantiation time).
+                bool hasOpEq = false;
+                bool hasOpNe = false;
+                bool hasHash = false;
+                // The methods map is keyed by canonical signature
+                // (e.g. `Tag::operator!=(Tag,Tag)`), so match via the
+                // method's bare name instead of the key.
+                for (auto& kv : structure->getMethods()) {
+                    const std::string& mname = kv.second->getName();
+                    if (mname == "operator==") hasOpEq = true;
+                    if (mname == "operator!=") hasOpNe = true;
+                    if (mname == "hash")       hasHash = true;
+                }
+                bool isObject = structure->getQName()->toCanonical()
+                              == "cajeta.lang.Object";
+                // Reject `operator!=` declared without `operator==` —
+                // != derives from == automatically. Standalone != is
+                // almost always a bug (forgot to define == too).
+                if (hasOpNe && !hasOpEq) {
+                    char buf[400];
+                    snprintf(buf, sizeof(buf),
+                        "class '%s' declares operator!= but not operator==. "
+                        "Cajeta derives `a != b` from `operator==` "
+                        "automatically (returns the negation); standalone "
+                        "operator!= is almost always a mistake. Fix: define "
+                        "operator== too, and remove operator!= unless its "
+                        "behavior genuinely differs from `!(a == b)`. "
+                        "See cajeta-docs/OperatorOverloading.md §7.",
+                        structure->getQName()->toCanonical().c_str());
+                    throw Exception(buf,
+                        "CAJETA_ERROR_OPERATOR_NE_WITHOUT_EQ");
+                }
+                if (hasOpEq && !hasHash && !isObject) {
+                    std::cerr << "warning: class '"
+                              << structure->getQName()->toCanonical()
+                              << "' defines operator== but does not override "
+                                 "hash(). HashMap<this, V> will mis-key two "
+                                 "==-equal instances with different identity "
+                                 "hashes. Fix: add `@AutoHash` to the class "
+                                 "to synthesize structural hash, or override "
+                                 "hash() manually. See cajeta-docs/"
+                                 "OperatorOverloading.md §7. "
+                                 "[CAJETA_WARN_HASH_EQUALS_MISMATCH]\n";
+                }
             }
             // tryGeneratePrototype is the deferred-aware variant: if any
             // superclass / implemented interface is still a placeholder
@@ -422,46 +470,6 @@ namespace cajeta {
 
             pModule->getStructureStack().push_back(structure);
             structure->setClassBody(std::any_cast<ClassBodyDeclarationPtr>(visitChildren(ctx)));
-
-            // Hash / equals consistency lint (cajeta-docs/OperatorOverloading.md §7).
-            // A class that defines `operator==` for structural equality
-            // MUST also override `hash()` — otherwise HashMap<MyClass, V>
-            // silently mis-keys (two `==`-equal instances with different
-            // identity hashes land in different buckets). Object.cajeta
-            // is the base case; classes that override operator== without
-            // a matching hash() override get a warning steering them
-            // toward @AutoHash or a hand-written hash().
-            //
-            // The check is restricted to user-defined `operator==` —
-            // any class is allowed to inherit Object's identity-hash
-            // default. Detection: look for a method named "operator=="
-            // declared on this class. If present, require a "hash"
-            // method also declared on this class (not just inherited).
-            // The Object class itself is exempt — it's the source of
-            // both methods and the warning would be circular.
-            {
-                bool hasOpEq = false;
-                bool hasHash = false;
-                for (auto& kv : structure->getMethods()) {
-                    if (kv.first == "operator==") hasOpEq = true;
-                    if (kv.first == "hash")       hasHash = true;
-                }
-                bool isObject = structure->getQName()->toCanonical()
-                              == "cajeta.lang.Object";
-                if (hasOpEq && !hasHash && !isObject) {
-                    std::cerr << "warning: class '"
-                              << structure->getQName()->toCanonical()
-                              << "' defines operator== but does not override "
-                                 "hash(). HashMap<this, V> will mis-key two "
-                                 "==-equal instances with different identity "
-                                 "hashes. Fix: add `@AutoHash` to the class "
-                                 "to synthesize structural hash, or override "
-                                 "hash() manually. See cajeta-docs/"
-                                 "OperatorOverloading.md §7. "
-                                 "[CAJETA_WARN_HASH_EQUALS_MISMATCH]\n";
-                }
-            }
-
             structure->generatePrototype();
             pModule->getStructureStack().pop_back();
             CajetaModule::getStructureToModule()[structure->getQName()->toCanonical()] = pModule;

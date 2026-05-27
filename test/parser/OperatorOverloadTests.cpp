@@ -304,6 +304,93 @@ TEST(OperatorOverloadTests, staticIncrementOperatorIsRejected) {
     EXPECT_TRUE(threw);
 }
 
+// != derivation: `a != b` on a class with operator== (but no
+// operator!=) auto-derives as `!(a == b)`. Spec §7.
+TEST(OperatorOverloadTests, notEqualsDerivesFromEquals) {
+    auto src =
+        "package test;\n"
+        "public class Tag {\n"
+        "    public int32 v;\n"
+        "    public Tag(int32 v) { this.v = v; }\n"
+        "    public static boolean operator== (Tag a, Tag b) {\n"
+        "        return a.v == b.v;\n"
+        "    }\n"
+        "    public int64 hash() override { return (int64) this.v; }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Tag a = stack Tag(1);\n"
+        "        Tag b = stack Tag(2);\n"
+        "        Tag c = stack Tag(1);\n"
+        "        if (a != b && !(a != c)) {\n"
+        "            return 42;\n"
+        "        }\n"
+        "        return 0;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 42);
+}
+
+// > / >= / <= derive from < (assuming total order):
+//   a > b  ≡ b < a
+//   a >= b ≡ !(a < b)
+//   a <= b ≡ !(b < a)
+TEST(OperatorOverloadTests, comparisonsDeriveFromLessThan) {
+    auto src =
+        "package test;\n"
+        "public class V {\n"
+        "    public int32 v;\n"
+        "    public V(int32 v) { this.v = v; }\n"
+        "    public static boolean operator< (V a, V b) {\n"
+        "        return a.v < b.v;\n"
+        "    }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        V a = stack V(1);\n"
+        "        V b = stack V(2);\n"
+        "        // Tally a 1 for each comparison that returns the\n"
+        "        // expected boolean; final score should be 7 (all four\n"
+        "        // comparisons + 3 negations).\n"
+        "        int32 score = 0;\n"
+        "        if (a <  b) score = score + 1;\n"
+        "        if (b >  a) score = score + 2;\n"
+        "        if (a <= b) score = score + 4;\n"
+        "        if (b >= a) score = score + 8;\n"
+        "        if (!(b < a)) score = score + 16;\n"
+        "        return score;\n"
+        "    }\n"
+        "}\n";
+    // 1 + 2 + 4 + 8 + 16 = 31
+    EXPECT_EQ(runI32(src), 31);
+}
+
+// `operator!=` declared without `operator==` is rejected at parse
+// time. != is auto-derived from == anyway; standalone != is almost
+// always a bug (forgot to define == too).
+TEST(OperatorOverloadTests, operatorNeWithoutEqIsRejected) {
+    auto src =
+        "package test;\n"
+        "public class Tag {\n"
+        "    public int32 v;\n"
+        "    public Tag(int32 v) { this.v = v; }\n"
+        "    public static boolean operator!= (Tag a, Tag b) {\n"
+        "        return a.v != b.v;\n"
+        "    }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() { return 0; }\n"
+        "}\n";
+    bool threw = false;
+    try {
+        auto jit = CajetaJit::compile(src, "test.D");
+        (void) jit;
+    } catch (...) {
+        threw = true;
+    }
+    EXPECT_TRUE(threw);
+}
+
 // An instance-method binary `operator+` is rejected at parse time
 // with CAJETA_ERROR_OPERATOR_NOT_STATIC. The user is steered toward
 // the static form via the diagnostic.

@@ -691,6 +691,57 @@ namespace cajeta {
                         /*thisInstance=*/nullptr,
                         /*callerModule=*/module);
                 }
+
+                // Comparison derivations — when the direct lookup misses,
+                // synthesize the result from a related operator. Per
+                // cajeta-docs/OperatorOverloading.md §7:
+                //   - `a != b`  ≡  !(a == b)
+                //   - `a >  b`  ≡  (b <  a)            [swap operands]
+                //   - `a >= b`  ≡  !(a <  b)
+                //   - `a <= b`  ≡  !(b <  a)
+                // The < / > / <= / >= derivations assume the user's `<`
+                // defines a total order; users with partial orderings
+                // declare each operator explicitly. (Same assumption
+                // C++ and Rust make for std::less / Ord.)
+                auto tryDerivation = [&](const char* baseSym,
+                                         bool swapOperands,
+                                         bool negateResult) -> llvm::Value* {
+                    std::string baseName = std::string("operator") + baseSym;
+                    vector<ParameterEntry> ents;
+                    if (swapOperands) {
+                        ents.push_back(ParameterEntry(rhsType, "", rhsVal));
+                        ents.push_back(ParameterEntry(lhsType, "", lhsVal));
+                    } else {
+                        ents.push_back(ParameterEntry(lhsType, "", lhsVal));
+                        ents.push_back(ParameterEntry(rhsType, "", rhsVal));
+                    }
+                    if (!lhsClass->resolveMethod(baseName, ents,
+                            /*isConstructor=*/false, /*floatingParams=*/fp)) {
+                        return nullptr;
+                    }
+                    llvm::Value* baseResult = lhsClass->invokeMethod(
+                        baseName, ents,
+                        /*isConstructor=*/false,
+                        /*thisInstance=*/nullptr,
+                        /*callerModule=*/module);
+                    if (!baseResult) return nullptr;
+                    if (negateResult) {
+                        // The base operator returns boolean (i1).
+                        // CreateNot on i1 is the boolean negation.
+                        return builder->CreateNot(baseResult,
+                            std::string("derived.") + opSym);
+                    }
+                    return baseResult;
+                };
+                if (binaryOp == BINARY_OP_NE) {
+                    if (auto* v = tryDerivation("==", /*swap=*/false, /*neg=*/true)) return v;
+                } else if (binaryOp == BINARY_OP_GT) {
+                    if (auto* v = tryDerivation("<",  /*swap=*/true,  /*neg=*/false)) return v;
+                } else if (binaryOp == BINARY_OP_GE) {
+                    if (auto* v = tryDerivation("<",  /*swap=*/false, /*neg=*/true)) return v;
+                } else if (binaryOp == BINARY_OP_LE) {
+                    if (auto* v = tryDerivation("<",  /*swap=*/true,  /*neg=*/true)) return v;
+                }
             }
         }
         fallthrough_to_builtin:;
