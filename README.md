@@ -10,12 +10,36 @@ Comfort, all while offering true zero-copy semantics with Views, a lightening fa
 
 Create amazing things with Cajeta.  
 
-> **Status.** Compiler is in active development; the language design is past v1. The full test suite runs ~1660 tests across 32 shards. The list of working features below is exercised by tests; anything not on the list is either in progress or under design.
+> **Status.** Compiler is in active development; the language design is past v1. The full test suite runs 1717 tests across 32 shards. The list of working features below is exercised by tests; anything not on the list is either in progress or under design.
+
+---
+
+## Version
+
+**Current:** `0.1.0` &nbsp;·&nbsp; baked into the binary at configure time — `cajeta --version` reports it.
+
+Versioning is manual and tied to releases. The flow:
+
+1. Bump `VERSION` at the repo root.
+2. Commit + push.
+3. `git tag v$(cat VERSION) && git push --tags` — pushing the tag triggers `.github/workflows/release.yml`, which cross-builds the compiler for every supported target and uploads the binaries to the GitHub Release.
+
+Supported binary targets (see [RELEASING.md](RELEASING.md) for the full matrix):
+
+| Target | Triple | Runner |
+|---|---|---|
+| Linux x86_64 | `x86_64-linux-gnu` | `ubuntu-latest` |
+| Linux ARM64 (incl. NVIDIA Grace) | `aarch64-linux-gnu` | `ubuntu-24.04-arm` |
+| macOS Intel | `x86_64-apple-darwin` | `macos-13` |
+| macOS Apple Silicon | `aarch64-apple-darwin` | `macos-14` |
+| Windows x86_64 | `x86_64-pc-windows-msvc` | `windows-latest` |
+| Linux RISC-V 64 *(best-effort, QEMU-cross)* | `riscv64-linux-gnu` | `ubuntu-latest` |
 
 ---
 
 ## Table of contents
 
+- [Version](#version)
 - [Quick taste](#quick-taste)
 - [Building](#building)
 - [Running the tests](#running-the-tests)

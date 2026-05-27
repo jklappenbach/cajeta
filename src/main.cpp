@@ -2,16 +2,44 @@
 #include <string>
 #include <vector>
 #include <llvm/Support/InitLLVM.h>
+#include <llvm/Config/llvm-config.h>
+#include <llvm/TargetParser/Host.h>
 #include "cajeta/compile/Compiler.h"
 #include "cajeta/compile/CompilerMode.h"
 #include "cajeta/error/Exception.h"
 #include "cajeta/cli/ArchiveCommands.h"
+
+// CAJETA_VERSION and CAJETA_GIT_HASH are stamped at configure time by the
+// top-level CMakeLists.txt. Fall back to a placeholder if a non-CMake build
+// somehow gets here, so `cajeta --version` always prints something rather
+// than failing to compile.
+#ifndef CAJETA_VERSION
+#define CAJETA_VERSION "0.0.0-unknown"
+#endif
+#ifndef CAJETA_GIT_HASH
+#define CAJETA_GIT_HASH "unknown"
+#endif
 
 using namespace std;
 using namespace antlr4;
 using namespace cajeta;
 
 namespace {
+
+// Single-line + multi-line version output. `--version` short form prints
+// the one-liner; the longer block goes to stdout for `--version --verbose`
+// or anything else that wants the full build provenance. Kept here in
+// main.cpp rather than buried in Compiler because (a) version reporting
+// shouldn't drag in the whole codegen pipeline, and (b) the build-info
+// macros above are file-scope to this TU.
+void printVersion(bool verbose) {
+    std::cout << "cajeta " << CAJETA_VERSION
+              << " (" << CAJETA_GIT_HASH << ")" << std::endl;
+    if (verbose) {
+        std::cout << "LLVM:   " << LLVM_VERSION_STRING << std::endl;
+        std::cout << "host:   " << llvm::sys::getDefaultTargetTriple() << std::endl;
+    }
+}
 
 void printUsage(const char* progname) {
     std::cerr << "Usage: " << progname
@@ -47,7 +75,9 @@ void printUsage(const char* progname) {
               << "  --cpu=<name>                         Target CPU. Default: generic.\n"
               << "  --features=<list>                    Comma-separated target features (e.g. +neon).\n"
               << "  -o <path>                            Output path for the final artifact.\n"
-              << "  --help, -h                           This message.\n";
+              << "  --help, -h                           This message.\n"
+              << "  --version, -V                        Print version + build provenance and exit.\n"
+              << "                                       Pair with --verbose for LLVM + host-triple lines.\n";
 }
 
 bool startsWith(const std::string& s, const std::string& prefix) {
@@ -105,6 +135,25 @@ int main(int argc, const char* argv[]) {
     // "run", ...) land alongside `archive`.
     if (argc >= 2 && std::string(argv[1]) == "archive") {
         return cajeta::dispatchArchive(argc, argv);
+    }
+
+    // --version / -V short-circuit. Handled before Compiler construction
+    // (which initializes LLVM targets, runs codegen-irrelevant work)
+    // because `cajeta --version` should be sub-millisecond cheap. Verbose
+    // form prints the LLVM version + host triple too — useful for bug
+    // reports when something codegen-specific goes wrong on a particular
+    // host CPU or LLVM build.
+    for (int i = 1; i < argc; i++) {
+        std::string arg = argv[i];
+        if (arg == "--version" || arg == "-V") {
+            bool verbose = false;
+            for (int j = 1; j < argc; j++) {
+                std::string a = argv[j];
+                if (a == "--verbose" || a == "-v") { verbose = true; break; }
+            }
+            printVersion(verbose);
+            return 0;
+        }
     }
 
     Compiler compiler(argc, argv);

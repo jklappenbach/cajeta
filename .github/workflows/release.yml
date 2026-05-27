@@ -1,0 +1,278 @@
+# Release workflow. Triggered when a tag matching v* lands on origin.
+# Cross-builds the cajeta compiler for every supported target, then
+# attaches the artifacts to the matching GitHub Release. The full flow
+# and supported targets are documented in RELEASING.md.
+#
+# Non-trivial parts called out in inline comments:
+#   - macOS jobs install LLVM via Homebrew and pass LLVM_DIR explicitly
+#     to CMake (brew doesn't put LLVM on the default search path).
+#   - Windows uses Chocolatey for LLVM 20 + vcpkg for ANTLR4 runtime
+#     (apt-style "everything in one place" isn't available there).
+#   - The build matrix is `fail-fast: false` so a flaky transient on
+#     one target doesn't take down the whole release.
+#   - RISC-V is not yet wired — cross-compilation needs a riscv64
+#     sysroot with LLVM + ANTLR4 + zstd already provisioned. Tracked
+#     in RELEASING.md as best-effort / future.
+
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write   # needed for softprops/action-gh-release to create / update the Release
+
+jobs:
+  build:
+    name: build (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-linux-gnu
+            archive_ext: tar.gz
+            shell: bash
+          - os: ubuntu-24.04-arm
+            target: aarch64-linux-gnu
+            archive_ext: tar.gz
+            shell: bash
+          - os: macos-13
+            target: x86_64-apple-darwin
+            archive_ext: tar.gz
+            shell: bash
+          - os: macos-14
+            target: aarch64-apple-darwin
+            archive_ext: tar.gz
+            shell: bash
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            archive_ext: zip
+            shell: pwsh
+
+    defaults:
+      run:
+        shell: ${{ matrix.shell }}
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          # Fetch the full history so CMake's git rev-parse can stamp the
+          # short hash into the binary. Shallow clones produce a "unknown"
+          # hash, which is allowed but defeats the point.
+          fetch-depth: 0
+
+      - name: Read VERSION
+        id: version
+        run: |
+          if [ -f VERSION ]; then
+            V=$(cat VERSION | tr -d '[:space:]')
+          else
+            V="0.0.0-untagged"
+          fi
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+          # Tag may differ from VERSION (someone re-tagged); use the
+          # git-ref version as the artifact name so it lines up with
+          # the Release URL.
+          REF_TAG="${GITHUB_REF_NAME#v}"
+          echo "ref_version=$REF_TAG" >> "$GITHUB_OUTPUT"
+        shell: bash
+
+      # ---- Linux dependency install (apt) -------------------------------
+      - name: Install dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          # Mirror setup.sh's install_linux_apt list. llvm-20 is the
+          # baseline; lld-20-dev may not ship on 24.04 ARM yet, so
+          # leave it best-effort.
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            cmake \
+            ninja-build \
+            clang-20 \
+            llvm-20-dev \
+            libllvm20 \
+            libantlr4-runtime-dev \
+            openjdk-17-jre \
+            libgtest-dev \
+            libgoogle-glog-dev \
+            libzstd-dev \
+            vim-common \
+            libxxhash-dev \
+            libssl-dev
+          sudo apt-get install -y lld-20-dev || \
+            echo "::warning::lld-20-dev unavailable on this runner; --emit=exe will fall back to system linker"
+
+      # ---- macOS dependency install (brew) ------------------------------
+      - name: Install dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          set -euo pipefail
+          # Homebrew on macOS-13 (Intel) is at /usr/local; on macos-14
+          # (Apple Silicon) it's at /opt/homebrew. `brew --prefix`
+          # abstracts that for us.
+          brew update
+          brew install \
+            cmake \
+            ninja \
+            llvm@20 \
+            antlr4-cpp-runtime \
+            openjdk@17 \
+            googletest \
+            glog \
+            zstd \
+            xxhash
+          echo "LLVM_DIR=$(brew --prefix llvm@20)/lib/cmake/llvm" >> "$GITHUB_ENV"
+          # Apple's system clang doesn't know about llvm@20 headers/libs
+          # unless we point CMake at the brew prefix explicitly.
+          echo "CMAKE_PREFIX_PATH=$(brew --prefix llvm@20)" >> "$GITHUB_ENV"
+
+      # ---- Windows dependency install (choco + vcpkg) -------------------
+      #
+      # Windows is the most fragile leg of the matrix. Two known wrinkles
+      # the first release run is likely to hit:
+      #   1. ANTLR4 runtime isn't on chocolatey; the workflow installs
+      #      it via vcpkg. vcpkg pulls + builds antlr4-cpp-runtime from
+      #      source the first time, which can take 5+ minutes.
+      #   2. The cajeta CMake script may need a vcpkg toolchain file
+      #      pointer (`-DCMAKE_TOOLCHAIN_FILE=...`) to actually pick up
+      #      the vcpkg-installed packages — added below.
+      - name: Install dependencies (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          choco install llvm --version=20.1.0 -y
+          choco install ninja -y
+          choco install temurin17 -y
+          # vcpkg is preinstalled on windows-latest at C:\vcpkg.
+          vcpkg install antlr4:x64-windows zstd:x64-windows xxhash:x64-windows gtest:x64-windows
+          # Expose vcpkg's toolchain file to the build step.
+          echo "VCPKG_TOOLCHAIN=C:/vcpkg/scripts/buildsystems/vcpkg.cmake" >> $env:GITHUB_ENV
+
+      # ---- Configure + build --------------------------------------------
+      - name: Configure (Linux / macOS)
+        if: runner.os != 'Windows'
+        run: |
+          set -euo pipefail
+          # setup.sh derives LLVM_DIR from CAJETA_LLVM_VERSION; we just
+          # let CMake auto-detect via PATH for now, with the LLVM_DIR
+          # hint set above on macOS.
+          export CAJETA_SKIP_DEPS=1
+          ./setup.sh
+
+      - name: Configure (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          cmake -S . -B build -G Ninja `
+            -DCMAKE_BUILD_TYPE=Release `
+            -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_TOOLCHAIN" `
+            -DVCPKG_TARGET_TRIPLET=x64-windows
+
+      - name: Build
+        run: cmake --build build --config Release -- -j 4
+
+      # ---- Smoke test: cajeta --version must succeed --------------------
+      - name: Smoke test (Linux / macOS)
+        if: runner.os != 'Windows'
+        run: |
+          ./build/src/cajeta --version
+          ./build/src/cajeta --version --verbose
+
+      - name: Smoke test (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          ./build/src/Release/cajeta.exe --version
+          ./build/src/Release/cajeta.exe --version --verbose
+
+      # ---- Run the full regression suite --------------------------------
+      #
+      # The release-builds need to pass tests too — a release that
+      # ships a broken compiler is worse than a delayed release. Failure
+      # here fails the whole job for that target; the release job still
+      # runs and attaches whatever artifacts did succeed.
+      - name: Run regression (Linux / macOS)
+        if: runner.os != 'Windows'
+        run: |
+          CAJETA_SOURCE_ROOT=$PWD ./build/test/cajeta_test
+
+      - name: Run regression (Windows)
+        if: runner.os == 'Windows'
+        env:
+          CAJETA_SOURCE_ROOT: ${{ github.workspace }}
+        run: ./build/test/Release/cajeta_test.exe
+
+      # ---- Package ------------------------------------------------------
+      - name: Stage release contents
+        run: |
+          set -euo pipefail
+          V="${{ steps.version.outputs.ref_version }}"
+          T="${{ matrix.target }}"
+          STAGE="cajeta-v${V}-${T}"
+          mkdir -p "$STAGE/bin" "$STAGE"
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            cp build/src/Release/cajeta.exe "$STAGE/bin/"
+          else
+            cp build/src/cajeta "$STAGE/bin/"
+          fi
+          cp VERSION README.md "$STAGE/"
+          [ -f LICENSE ] && cp LICENSE "$STAGE/" || true
+          echo "STAGE_DIR=$STAGE" >> "$GITHUB_ENV"
+        shell: bash
+
+      - name: Archive (tar.gz)
+        if: matrix.archive_ext == 'tar.gz'
+        run: tar -czf "${STAGE_DIR}.tar.gz" "$STAGE_DIR"
+        shell: bash
+
+      - name: Archive (zip)
+        if: matrix.archive_ext == 'zip'
+        run: Compress-Archive -Path "$env:STAGE_DIR" -DestinationPath "$env:STAGE_DIR.zip"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cajeta-${{ matrix.target }}
+          path: |
+            cajeta-v${{ steps.version.outputs.ref_version }}-${{ matrix.target }}.tar.gz
+            cajeta-v${{ steps.version.outputs.ref_version }}-${{ matrix.target }}.zip
+          if-no-files-found: ignore
+
+  release:
+    name: Publish GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    # `if: always()` so partial-matrix successes still publish what was
+    # built. Use `needs.build.result != 'cancelled'` to suppress publish
+    # on a user-initiated cancel.
+    if: always() && needs.build.result != 'cancelled'
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Show staged artifacts
+        run: ls -laR artifacts
+
+      - name: Create / update GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          # Auto-derive the tag from GITHUB_REF_NAME (e.g. "v0.1.0").
+          # softprops/action-gh-release picks up `${{ github.ref_name }}`
+          # by default; explicit here so it's obvious.
+          tag_name: ${{ github.ref_name }}
+          name: cajeta ${{ github.ref_name }}
+          body: |
+            Automated release of cajeta `${{ github.ref_name }}`.
+
+            See `RELEASING.md` for the supported binary targets and
+            artifact shape. Pre-1.0 versions are subject to non-backward-
+            compatible changes between minor releases.
+          fail_on_unmatched_files: false
+          files: |
+            artifacts/**/cajeta-v*-*.tar.gz
+            artifacts/**/cajeta-v*-*.zip
