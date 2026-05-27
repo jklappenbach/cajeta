@@ -988,8 +988,48 @@ namespace cajeta {
             // here so per-call monomorphization can re-parse the
             // method with substitutions pushed without needing to
             // retain ANTLR contexts.
+            // Operator-overload post-check (cajeta-docs/OperatorOverloading.md §1).
+            // Binary arithmetic / bitwise / comparison and non-mutating
+            // unary operators are `public static` with both operands
+            // explicit; ++/--/[]/[]= stay instance. Enforce here, AFTER
+            // the modifier walk above has stamped STATIC onto the
+            // method's modifier set. The check covers binary-arity ops
+            // only — single-operand declarations (unary `- + ! ~`) are
+            // also required to be static but don't conflict with the
+            // mutating-unary forms so the arity-based distinction stays
+            // out of this gate.
             if (auto methodDecl = std::dynamic_pointer_cast<MethodDeclaration>(memberDeclaration)) {
                 if (auto m = methodDecl->getMethod()) {
+                    const std::string& name = m->getName();
+                    // Binary operators that must be static + 2-param.
+                    // Compound assignment, ++/--, []/[]=, unary ! ~ are
+                    // intentionally not in this list (different rule).
+                    static const std::unordered_set<std::string> kBinaryStaticOps = {
+                        "operator+", "operator-", "operator*", "operator/", "operator%",
+                        "operator==", "operator!=", "operator<", "operator>",
+                        "operator<=", "operator>=",
+                        "operator&", "operator|", "operator^",
+                    };
+                    if (kBinaryStaticOps.count(name)) {
+                        bool isStatic = m->getModifiers().find(STATIC)
+                                      != m->getModifiers().end();
+                        bool twoParams = m->getParameterList().size() == 2;
+                        if (!isStatic || !twoParams) {
+                            char buf[512];
+                            snprintf(buf, sizeof(buf),
+                                "'%s' must be declared `public static` with "
+                                "two parameters (LHS, RHS). Cajeta's binary "
+                                "operator overloads are static — both "
+                                "operands are explicit, neither is mutated, "
+                                "the return is a fresh value. See "
+                                "cajeta-docs/OperatorOverloading.md §2. "
+                                "Fix: rewrite as `public static T %s "
+                                "(T a, T b) { ... }`.",
+                                name.c_str(), name.c_str());
+                            throw Exception(buf,
+                                "CAJETA_ERROR_OPERATOR_NOT_STATIC");
+                        }
+                    }
                     if (m->isMethodTemplate()) {
                         auto& mods = m->getModifiers();
                         bool isFinal = mods.find(FINAL) != mods.end();
@@ -1116,6 +1156,19 @@ namespace cajeta {
                 // nested classBody) .back() is the immediately
                 // enclosing class, which is the correct parent.
                 pModule->getStructureStack().back());
+            // `#T operator+ (...)` — return transfers ownership.
+            // Two grammar paths put the `#` in different places:
+            //   - Binary operator alternatives: REFERENCE? is at the
+            //     operatorOverloadDeclaration level (sibling of
+            //     typeType).
+            //   - Bracket form: REFERENCE? lives inside typeTypeOrVoid,
+            //     so check that subtree too.
+            if (ctx->REFERENCE() != nullptr) {
+                method->setReturnsOwnership(true);
+            } else if (ctx->typeTypeOrVoid()
+                       && ctx->typeTypeOrVoid()->REFERENCE() != nullptr) {
+                method->setReturnsOwnership(true);
+            }
             return static_pointer_cast<MemberDeclaration>(
                 make_shared<MethodDeclaration>(method, ctx->getStart()));
         }

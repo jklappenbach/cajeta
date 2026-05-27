@@ -58,6 +58,7 @@ public final class Tour {
         demos.add(heap WildcardsDemo());
         demos.add(heap SwitchTernaryDemo());
         demos.add(heap FileIoDemo());
+        demos.add(heap OperatorOverloadDemo());
 
         // Stream over the list — virtual dispatch lands each
         // subclass's execute() override.

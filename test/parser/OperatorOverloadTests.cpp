@@ -1,15 +1,15 @@
 //
 // Operator-overload behavioral tests. v1 scope:
-//   - Binary arithmetic operators on class types (+, -, *, /, %)
-//   - Equality / comparison operators on class types (==, !=, <, >, <=, >=)
-//   - The operator method is treated as any other instance method —
-//     `this` is implicit, the single named parameter is the RHS, and
-//     dispatch goes through the same machinery as `obj.method(arg)`.
+//   - Binary arithmetic / comparison operators on class types
+//     declared as `public static` with two explicit parameters
+//     (cajeta-docs/OperatorOverloading.md §2).
+//   - Indexed access `[]` / `[]=` as instance methods.
 //
 // Deferred:
-//   - Unary operator overloads (++, --, !, ~, unary -)
-//   - Compound assignment operators (+=, -=, ...) — methods register, but
-//     the BinaryOpExpression dispatch path doesn't yet route to them
+//   - Unary `++`, `--` (mutating, instance)
+//   - Non-mutating unary `- + ! ~` (static, single operand)
+//   - Compound assignment (`+= -= ...`) — derived from `+`/`-`/... by
+//     default; explicit instance form overrides.
 //
 
 #include "gtest/gtest.h"
@@ -30,13 +30,14 @@ int32_t runI32(const std::string& src) {
 
 } // namespace
 
-// Most basic case: `a + b` where a is a class with operator+ defined
-// dispatches to the operator method, not the built-in numeric add.
-TEST(OperatorOverloadTests, classPlusDispatchesToOperatorMethod) {
+// Most basic case: `a + b` where a is a class with a static
+// operator+ defined dispatches to the operator method, not the
+// built-in numeric add.
+TEST(OperatorOverloadTests, classPlusDispatchesToStaticOperator) {
     auto src =
         "package test;\n"
         "public class Counter {\n"
-        "    public int32 operator+ (Counter other) { return 42; }\n"
+        "    public static int32 operator+ (Counter a, Counter b) { return 42; }\n"
         "}\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
@@ -49,12 +50,12 @@ TEST(OperatorOverloadTests, classPlusDispatchesToOperatorMethod) {
 }
 
 // Equality operator: `a == b` for two class instances routes through
-// the user-defined operator==.
-TEST(OperatorOverloadTests, classEqualsDispatchesToOperatorMethod) {
+// the user-defined static operator==.
+TEST(OperatorOverloadTests, classEqualsDispatchesToStaticOperator) {
     auto src =
         "package test;\n"
         "public class Tag {\n"
-        "    public int32 operator== (Tag other) { return 1; }\n"
+        "    public static boolean operator== (Tag a, Tag b) { return true; }\n"
         "}\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
@@ -70,14 +71,10 @@ TEST(OperatorOverloadTests, classEqualsDispatchesToOperatorMethod) {
 }
 
 // Indexing operator: `obj[i]` for a class with `operator[]` defined
-// dispatches to the operator method. The receiver is `this`, the
+// dispatches to the operator method. The receiver is `this` (instance
+// dispatch — indexed access stays instance per §5 of the spec), the
 // index expression is the single named parameter, and the method's
 // return value is the index expression's value.
-//
-// This is the GET form — `T value = obj[i]`. Writing (`obj[i] = v`)
-// goes through BinaryOpExpression's assignment path which still
-// targets native arrays only; supporting operator[]-typed assignment
-// targets is a separate cut.
 TEST(OperatorOverloadTests, classIndexDispatchesToOperatorMethod) {
     // resolveMethod's canonical-name match is strict on parameter
     // type, so the index expression must literally be int64-typed —
@@ -100,7 +97,7 @@ TEST(OperatorOverloadTests, classIndexDispatchesToOperatorMethod) {
 }
 
 // Write-form `obj[i] = v` dispatches to `operator[]=`. The class
-// declares both `operator[]` (read) and `operator[]= (write); each
+// declares both `operator[]` (read) and `operator[]=` (write); each
 // records into a tag field so the test can verify the write actually
 // landed by reading back through `operator[]`.
 TEST(OperatorOverloadTests, classIndexedAssignmentDispatchesToOperatorSet) {
@@ -144,4 +141,92 @@ TEST(OperatorOverloadTests, classIndexPassesArgumentToOperatorMethod) {
         "    }\n"
         "}\n";
     EXPECT_EQ(runI32(src), 42);
+}
+
+// Static binary `+` produces a fresh value at each step. Chained
+// `a + b - c` walks through two static calls; the operands `a`,
+// `b`, `c` survive unchanged, and `r` is a distinct fresh Vec.
+// Multi-parameter free functions must return ownership (the borrow
+// checker rejects a returned borrow because there's no privileged
+// receiver whose lifetime would anchor it), so the operators
+// declare `#Vec` and return `heap Vec(...)`.
+TEST(OperatorOverloadTests, staticOperatorChainProducesFreshValues) {
+    auto src =
+        "package test;\n"
+        "public class Vec {\n"
+        "    public int32 v;\n"
+        "    public Vec(int32 v) { this.v = v; }\n"
+        "    public static #Vec operator+ (Vec a, Vec b) {\n"
+        "        return heap Vec(a.v + b.v);\n"
+        "    }\n"
+        "    public static #Vec operator- (Vec a, Vec b) {\n"
+        "        return heap Vec(a.v - b.v);\n"
+        "    }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Vec a = stack Vec(10);\n"
+        "        Vec b = stack Vec(3);\n"
+        "        Vec c = stack Vec(2);\n"
+        "        Vec r = a + b - c;\n"
+        "        return r.v;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 11);
+}
+
+// `#T operator+` — return ownership transfers to the caller. The
+// operator body builds a fresh heap allocation and the caller
+// receives an owning reference (drops at scope exit). Grammar
+// accepts the `#` prefix on operator returns; visitor threads
+// setReturnsOwnership(true) through.
+TEST(OperatorOverloadTests, staticOperatorPlusCanReturnOwnershipTransfer) {
+    auto src =
+        "package test;\n"
+        "public class Vec {\n"
+        "    public int32 v;\n"
+        "    public Vec(int32 v) { this.v = v; }\n"
+        "    public static #Vec operator+ (Vec a, Vec b) {\n"
+        "        return heap Vec(a.v + b.v);\n"
+        "    }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Vec a = stack Vec(3);\n"
+        "        Vec b = stack Vec(4);\n"
+        "        Vec c = a + b;\n"
+        "        return c.v;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 7);
+}
+
+// An instance-method binary `operator+` is rejected at parse time
+// with CAJETA_ERROR_OPERATOR_NOT_STATIC. The user is steered toward
+// the static form via the diagnostic.
+TEST(OperatorOverloadTests, instanceBinaryOperatorIsRejected) {
+    auto src =
+        "package test;\n"
+        "public class Vec {\n"
+        "    public int32 v;\n"
+        "    public Vec(int32 v) { this.v = v; }\n"
+        "    public Vec operator+ (Vec other) {\n"      // missing `static`
+        "        this.v = this.v + other.v;\n"
+        "        return this;\n"
+        "    }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() { return 0; }\n"
+        "}\n";
+    bool threw = false;
+    try {
+        auto jit = CajetaJit::compile(src, "test.D");
+        (void) jit;
+    } catch (...) {
+        // cajeta::Exception doesn't inherit from std::exception, so a
+        // generic catch is the portable way to confirm the parse
+        // rejected the instance-method binary operator.
+        threw = true;
+    }
+    EXPECT_TRUE(threw);
 }

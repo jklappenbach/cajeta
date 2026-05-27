@@ -147,7 +147,7 @@ public class Object {
      * method (no explicit operator!= declaration needed) — the
      * compiler synthesizes `a != b` as the negation of `a == b`.
      */
-    public boolean operator== (Object other) {
-        return this.hash() == other.hash();
+    public static boolean operator== (Object a, Object b) {
+        return a.hash() == b.hash();
     }
 }

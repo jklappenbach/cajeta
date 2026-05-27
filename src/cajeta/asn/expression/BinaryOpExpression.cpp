@@ -296,6 +296,25 @@ namespace cajeta {
                 }
             }
         }
+        // Any LLVM CallInst result. Methods returning class types return
+        // `ptr` per the class-pass-by-pointer convention; the pointer IS
+        // the language-level value, NOT a slot to load through. The
+        // MethodCallExpression carve-out above covers direct calls (`obj
+        // .method()`), but operator overloads dispatch through a
+        // BinaryOpExpression / ArrayIndexExpression that wraps the same
+        // call — those wrappers ARE the ast and don't match the
+        // MethodCallExpression check. Catch the CallInst itself instead;
+        // cajeta methods always return values, not slots, so loading
+        // through a CallInst result is always wrong.
+        //
+        // Symptom before this fix: `Vec r = a + b - c` where `+`/`-`
+        // are mutating operators returning `this` (a borrow of acc)
+        // produced IR that loaded `acc.vtable` and used it as `-`'s
+        // receiver — segfault in AOT, accidental "pass" in JIT
+        // because LLJIT places globals on writable pages.
+        if (llvm::isa<llvm::CallInst>(v)) {
+            return v;
+        }
         // IdentifierExpression that resolved to a class property via the
         // implicit-this fallback also returns a GEP — same load story.
         // We detect it by v being a pointer-typed value (the GEP) while
@@ -636,35 +655,40 @@ namespace cajeta {
                 }
                 CajetaTypePtr rhsType = rhsAst ? rhsAst->getResolvedType() : nullptr;
                 if (!rhsType) rhsType = CajetaType::of(rhs);
+                CajetaTypePtr lhsType = lhsAst->getResolvedType();
                 // resolveMethod's canonical computation calls
                 // `parameter.type->toCanonical()` which crashes on null —
                 // bail out if we still don't have a usable type rather than
                 // attempt the lookup.
-                if (!rhsType) {
+                if (!rhsType || !lhsType) {
                     goto fallthrough_to_builtin;
                 }
-                // l-value coercion: identifier expressions evaluate to the
-                // alloca holding the heap pointer; array-index / dot-field
-                // expressions evaluate to a GEP whose slot holds the heap
-                // pointer. invokeMethod expects the actual instance pointer
-                // (so the called function receives `this` as a Counter*,
-                // not a Counter**), so route both shapes through
-                // loadIfLValue. Without the GEP load-through, `arr[i] ==
-                // other` and `obj.field == other` passed the SLOT POINTER
-                // as `this` to the operator== method, and the vtable lookup
-                // walked instance bytes treated as a vtable — infinite
-                // probe loop inside `__cajeta_vtable_lookup` because the
-                // version/count header bytes resolved to garbage values.
-                // Symptom: HashMap<class K, V>'s put/get/containsKey hung
-                // forever the first time `keys[idx] == key` fired.
-                llvm::Value* recvVal = loadIfLValue(module, lhs, lhsAst);
+                // l-value coercion (same shape that single-arg dispatch
+                // used): identifier expressions evaluate to the alloca
+                // holding the heap pointer; array-index / dot-field
+                // expressions evaluate to a GEP whose slot holds the
+                // heap pointer. Static `operator+(LHS, RHS)` expects the
+                // language-level instance values; route both through
+                // loadIfLValue so neither operand passes through as a
+                // slot pointer.
+                llvm::Value* lhsVal = loadIfLValue(module, lhs, lhsAst);
                 llvm::Value* rhsVal = loadIfLValue(module, rhs, rhsAst);
+                // Cajeta binary operator overloads are static (per
+                // cajeta-docs/OperatorOverloading.md §2): both operands
+                // are explicit parameters, no `this`. Build the entries
+                // vector with LHS first, RHS second, and invoke with a
+                // null receiver — invokeMethod's `isStatic` branch
+                // (CajetaClass.cpp ~line 3863) skips the implicit
+                // `this` prepend when the resolved method carries the
+                // STATIC modifier.
                 vector<ParameterEntry> entries;
+                entries.push_back(ParameterEntry(lhsType, "", lhsVal));
                 entries.push_back(ParameterEntry(rhsType, "", rhsVal));
                 if (auto m = lhsClass->resolveMethod(opName, entries,
                         /*isConstructor=*/false, /*floatingParams=*/fp)) {
                     return lhsClass->invokeMethod(opName, entries,
-                        /*isConstructor=*/false, recvVal,
+                        /*isConstructor=*/false,
+                        /*thisInstance=*/nullptr,
                         /*callerModule=*/module);
                 }
             }

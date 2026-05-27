@@ -48,6 +48,10 @@ samples/Tour/
     │                              switch expression + ternary + instanceof
     ├── FileIoDemo.cajeta        ← cajeta.io.file: one-shot read/write
     │                              + streaming FileReader / FileWriter
+    ├── OperatorOverloadDemo.cajeta ← operator+, operator*, operator==,
+    │                              operator[] / operator[]= dispatch
+    │                              on a Vec2 value class and a Grid
+    │                              subscript wrapper
     │
     │  (support classes used by the demos above)
     ├── Point.cajeta              ← class with fields + ctor

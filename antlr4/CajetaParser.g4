@@ -174,37 +174,44 @@ memberDeclaration
     | enumDeclaration
     ;
 
+// Optional REFERENCE prefix on the return type — same shape as
+// methodDeclaration via `typeTypeOrVoid`. Lets operators that build
+// fresh allocations declare `#T operator+ (T other)` so the caller
+// receives an owning reference. Without `#`, returning a fresh
+// allocation trips CAJETA_ERROR_FRESH_RETURN_NEEDS_TRANSFER. The
+// indexing form below uses `typeTypeOrVoid` which already permits
+// `REFERENCE?` (and also `void` for the setter's return).
 operatorOverloadDeclaration
-    : typeType OPERATOR ASSIGN formalParameters methodBody
-    | typeType OPERATOR GT formalParameters methodBody
-    | typeType OPERATOR LT formalParameters methodBody
-    | typeType OPERATOR EQUAL formalParameters methodBody
-    | typeType OPERATOR LE formalParameters methodBody
-    | typeType OPERATOR GE formalParameters methodBody
-    | typeType OPERATOR NOTEQUAL formalParameters methodBody
-    | typeType OPERATOR AND formalParameters methodBody
-    | typeType OPERATOR OR formalParameters methodBody
-    | typeType OPERATOR INC formalParameters methodBody
-    | typeType OPERATOR DEC formalParameters methodBody
-    | typeType OPERATOR ADD formalParameters methodBody
-    | typeType OPERATOR SUB formalParameters methodBody
-    | typeType OPERATOR MUL formalParameters methodBody
-    | typeType OPERATOR DIV formalParameters methodBody
-    | typeType OPERATOR BITAND formalParameters methodBody
-    | typeType OPERATOR BITOR formalParameters methodBody
-    | typeType OPERATOR CARET formalParameters methodBody
-    | typeType OPERATOR MOD formalParameters methodBody
-    | typeType OPERATOR ADD_ASSIGN formalParameters methodBody
-    | typeType OPERATOR SUB_ASSIGN formalParameters methodBody
-    | typeType OPERATOR MUL_ASSIGN formalParameters methodBody
-    | typeType OPERATOR DIV_ASSIGN formalParameters methodBody
-    | typeType OPERATOR AND_ASSIGN formalParameters methodBody
-    | typeType OPERATOR OR_ASSIGN formalParameters methodBody
-    | typeType OPERATOR XOR_ASSIGN formalParameters methodBody
-    | typeType OPERATOR MOD_ASSIGN formalParameters methodBody
-    | typeType OPERATOR LSHIFT_ASSIGN formalParameters methodBody
-    | typeType OPERATOR RSHIFT_ASSIGN formalParameters methodBody
-    | typeType OPERATOR URSHIFT_ASSIGN formalParameters methodBody
+    : REFERENCE? typeType OPERATOR ASSIGN formalParameters methodBody
+    | REFERENCE? typeType OPERATOR GT formalParameters methodBody
+    | REFERENCE? typeType OPERATOR LT formalParameters methodBody
+    | REFERENCE? typeType OPERATOR EQUAL formalParameters methodBody
+    | REFERENCE? typeType OPERATOR LE formalParameters methodBody
+    | REFERENCE? typeType OPERATOR GE formalParameters methodBody
+    | REFERENCE? typeType OPERATOR NOTEQUAL formalParameters methodBody
+    | REFERENCE? typeType OPERATOR AND formalParameters methodBody
+    | REFERENCE? typeType OPERATOR OR formalParameters methodBody
+    | REFERENCE? typeType OPERATOR INC formalParameters methodBody
+    | REFERENCE? typeType OPERATOR DEC formalParameters methodBody
+    | REFERENCE? typeType OPERATOR ADD formalParameters methodBody
+    | REFERENCE? typeType OPERATOR SUB formalParameters methodBody
+    | REFERENCE? typeType OPERATOR MUL formalParameters methodBody
+    | REFERENCE? typeType OPERATOR DIV formalParameters methodBody
+    | REFERENCE? typeType OPERATOR BITAND formalParameters methodBody
+    | REFERENCE? typeType OPERATOR BITOR formalParameters methodBody
+    | REFERENCE? typeType OPERATOR CARET formalParameters methodBody
+    | REFERENCE? typeType OPERATOR MOD formalParameters methodBody
+    | REFERENCE? typeType OPERATOR ADD_ASSIGN formalParameters methodBody
+    | REFERENCE? typeType OPERATOR SUB_ASSIGN formalParameters methodBody
+    | REFERENCE? typeType OPERATOR MUL_ASSIGN formalParameters methodBody
+    | REFERENCE? typeType OPERATOR DIV_ASSIGN formalParameters methodBody
+    | REFERENCE? typeType OPERATOR AND_ASSIGN formalParameters methodBody
+    | REFERENCE? typeType OPERATOR OR_ASSIGN formalParameters methodBody
+    | REFERENCE? typeType OPERATOR XOR_ASSIGN formalParameters methodBody
+    | REFERENCE? typeType OPERATOR MOD_ASSIGN formalParameters methodBody
+    | REFERENCE? typeType OPERATOR LSHIFT_ASSIGN formalParameters methodBody
+    | REFERENCE? typeType OPERATOR RSHIFT_ASSIGN formalParameters methodBody
+    | REFERENCE? typeType OPERATOR URSHIFT_ASSIGN formalParameters methodBody
     // Indexing operators (read + write) collapsed into a single
     // alternative with optional ASSIGN — ANTLR4 LL(*) prediction
     // gets confused by two separate alternatives both starting with
