@@ -23,6 +23,10 @@ add_definitions(-DANTLR4CPP_STATIC)
 
 find_package(glog 0.6.0 REQUIRED)
 find_package(GTest REQUIRED)
+# libcrypto from OpenSSL backs `cajeta archive sign` / `verify-sig`
+# (ed25519 detached signatures + PEM key parsing). See
+# cajeta-docs/ArchiveManagement.md §8.
+find_package(OpenSSL REQUIRED)
 
 # LLVM 18 on Ubuntu 24.04 expects an IMPORTED target zstd::libzstd_shared,
 # but libzstd-dev (which ships the cmake config) is not always installed.
@@ -266,7 +270,8 @@ target_link_libraries(${CMAKE_PROJECT_NAME}_lib
         ${LLVM_LIBS}
         ${CAJETA_LLD_LIBS}
         glog::glog
-        zstd)
+        zstd
+        OpenSSL::Crypto)
 target_include_directories(${CMAKE_PROJECT_NAME}_lib PUBLIC
         ${PROJECT_SOURCE_DIR}/src
         ${LLVM_INCLUDE_DIRS}

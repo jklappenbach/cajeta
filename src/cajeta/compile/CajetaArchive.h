@@ -89,6 +89,14 @@ namespace cajeta {
         void setCompression(Compression c) { compression = c; }
         Compression getCompression() const { return compression; }
 
+        // zstd compression level (1-22). 1-3 are speed-optimized; 19-22
+        // are ratio-optimized. The default of 3 is the .cja
+        // write-few-read-many sweet spot. `cajeta archive repack
+        // --zstd=<n>` is the user-facing surface; the compiler's
+        // --emit=cja / --emit=uber paths keep the default.
+        void setCompressionLevel(int level) { compressionLevel = level; }
+        int  getCompressionLevel() const { return compressionLevel; }
+
         // Add one entry. Takes ownership of the entry's data vector
         // (move-into). The order added is the order written.
         void addEntry(struct CajetaArchiveEntry entry);
@@ -97,11 +105,28 @@ namespace cajeta {
         // Throws std::runtime_error on I/O failure.
         void writeTo(const std::string& path);
 
+        // Serialize to an arbitrary output stream. Used by the
+        // `cajeta archive` write subcommands (repack / strip / merge)
+        // when the user passes `-` to mean stdout. The archive bytes
+        // are buffered in memory first and then dumped in one shot,
+        // because the writer needs to seek back to patch header
+        // index_offset / index_length, and not all output streams
+        // (stdout in particular) are seekable.
+        void writeToStream(std::ostream& out);
+
         // Read an archive from `path`. Throws std::runtime_error on
         // missing file / bad magic / format-version mismatch / truncated
         // bytes. The returned archive carries the parsed manifest's
         // name / version / kind, plus every entry as a CajetaArchiveEntry.
         static CajetaArchive readFrom(const std::string& path);
+
+        // Same as readFrom, but parses from an in-memory byte buffer.
+        // Used by the `cajeta archive` read subcommands when the user
+        // passes `-` to mean stdin (the CLI reads stdin into a vector
+        // and hands it here). `sourceName` is what appears in error
+        // diagnostics — typically `<stdin>` or a path string.
+        static CajetaArchive readFromBytes(const std::vector<uint8_t>& bytes,
+                                            const std::string& sourceName);
 
         // O(1) lookup by entry name. Returns a pointer to the entry, or
         // null if the name isn't present. The lookup table is built
@@ -154,6 +179,7 @@ namespace cajeta {
         std::string sourceArchiveName;   // set by readFrom; otherwise empty
         std::string rawManifest;         // set by readFrom; otherwise empty
         Compression compression = Compression::Zstd;
+        int         compressionLevel = 3;
         // Lazy lookup table — built on first findEntry call from the
         // entries vector. The trailing on-disk index that writeTo
         // produces is for FUTURE random-access readers; today's

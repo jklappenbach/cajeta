@@ -26,7 +26,7 @@ so only the CLI dispatch moves.
 5. [Output formats](#5-output-formats)
 6. [Pipe conventions](#6-pipe-conventions)
 7. [Examples](#7-examples)
-8. [Signing (v2 — deferred)](#8-signing-v2--deferred)
+8. [Signing](#8-signing)
 9. [Open questions](#9-open-questions)
 
 ---
@@ -57,24 +57,25 @@ so only the CLI dispatch moves.
 
 ## 2. Subcommand catalog
 
-| Subcommand                                    | Purpose                                                          | v1   |
-|-----------------------------------------------|------------------------------------------------------------------|------|
-| [`list`](#31-list)                            | Show entries + per-entry metadata (name, kind, origin, sizes)    | yes  |
-| [`cat`](#32-cat)                              | Dump one entry's bytes to stdout                                 | yes  |
-| [`extract`](#33-extract)                      | Explode entries to a directory                                   | yes  |
-| [`info`](#34-info)                            | Print the manifest (kind, name, version, build info, deps count) | yes  |
-| [`deps`](#35-deps)                            | Print the `deps` array (uber archives)                           | yes  |
-| [`verify`](#36-verify)                        | Structural integrity + entry-checksum recomputation              | yes  |
-| [`diff`](#37-diff)                            | Entry-by-entry diff between two archives                         | yes  |
-| [`repack`](#38-repack)                        | Re-emit with different compression level / algorithm             | v1+  |
-| [`strip`](#39-strip)                          | Drop entries by name glob                                        | v1+  |
-| [`merge`](#310-merge)                         | Combine archives into one (ad-hoc uber bundling)                 | v1+  |
-| [`sign`](#8-signing-v2--deferred)             | Detached ed25519 signature                                       | v2   |
-| [`verify-sig`](#8-signing-v2--deferred)       | Verify a detached signature                                      | v2   |
+| Subcommand                  | Purpose                                                          |
+|-----------------------------|------------------------------------------------------------------|
+| [`list`](#31-list)          | Show entries + per-entry metadata (name, kind, origin, sizes)    |
+| [`cat`](#32-cat)            | Dump one entry's bytes to stdout                                 |
+| [`extract`](#33-extract)    | Explode entries to a directory                                   |
+| [`info`](#34-info)          | Print the manifest (kind, name, version, build info, deps count) |
+| [`deps`](#35-deps)          | Print the `deps` array (uber archives)                           |
+| [`verify`](#36-verify)      | Structural integrity + entry-checksum recomputation              |
+| [`diff`](#37-diff)          | Entry-by-entry diff between two archives                         |
+| [`repack`](#38-repack)      | Re-emit with different compression level / algorithm             |
+| [`strip`](#39-strip)        | Drop entries by name glob                                        |
+| [`merge`](#310-merge)       | Combine archives into one (ad-hoc uber bundling)                 |
+| [`sign`](#311-sign)         | Detached ed25519 signature over the archive bytes                |
+| [`verify-sig`](#312-verify-sig) | Verify a detached signature against a public key             |
 
-The v1 set is what lands first; the v1+ set rounds out routine
-archive manipulation; the v2 (signing) set requires a crypto
-dependency and a key-distribution story, so it ships separately.
+All twelve subcommands ship in the current implementation. Signing
+uses OpenSSL libcrypto for PEM key parsing + ed25519 sign/verify;
+keys are interchangeable with OpenSSL's `openssl genpkey -algorithm
+ed25519` output.
 
 ---
 
@@ -308,7 +309,7 @@ bytes — two entries with the same name but different content show as
 Exits 0 if the archives are byte-equal in entry content; 1 if any
 difference is detected (CI-friendly).
 
-### 3.8 `repack` (v1+)
+### 3.8 `repack`
 
 ```
 cajeta archive repack <in.cja> <out.cja> [flags]
@@ -325,7 +326,7 @@ manifest is preserved; only the on-disk layout changes.
 --keep-index        Rebuild the trailing index. Default: yes.
 ```
 
-### 3.9 `strip` (v1+)
+### 3.9 `strip`
 
 ```
 cajeta archive strip <in.cja> <out.cja> [flags]
@@ -346,7 +347,7 @@ slice (`--exclude="deps/**"`).
 Exits with error if `--exclude` would drop entries the manifest's
 metadata still references.
 
-### 3.10 `merge` (v1+)
+### 3.10 `merge`
 
 ```
 cajeta archive merge <out.cja> <a.cja> <b.cja> [<c.cja>...] [flags]
@@ -496,30 +497,68 @@ cajeta archive merge bundle.cja \
 
 ---
 
-## 8. Signing (v2 — deferred)
+## 8. Signing
 
-`sign` and `verify-sig` cover detached cryptographic signatures.
-Deferred from v1 because:
+`sign` and `verify-sig` produce and validate **detached ed25519
+signatures** over the archive bytes. Implementation uses OpenSSL
+libcrypto (`EVP_PKEY` / `PEM_read_bio_*`); keys are PEM-encoded
+and round-trip through `openssl genpkey -algorithm ed25519`.
 
-1. The crypto dependency (ed25519 / sha2) needs a deliberate vendoring
-   decision — pulling in libsodium adds a system dependency; rolling
-   our own RNG-and-curve code is exposure.
-2. Key distribution is its own problem space: PGP-style web of trust,
-   per-registry pinned public keys, sigstore / cosign-style transparency
-   log. v2 commits to a model after [`BuildTool.md`'s repository
-   protocol](BuildTool.md#7-repositories) lands and we know what
-   trust roots the build tool already requires.
-
-The v2 shape will likely be:
+### 3.11 `sign`
 
 ```
-cajeta archive sign       <archive> --key <ed25519.pem> [--out <archive.sig>]
-cajeta archive verify-sig <archive> [--sig <archive.sig>] --pubkey <pem>
+cajeta archive sign <archive> --key <ed25519.pem> [--out <archive.sig>]
 ```
 
-with the signature stored either as a detached `.sig` file or
-appended after the trailing index inside the archive (header flag
-bit reserved for this).
+Generates a detached 64-byte ed25519 signature over the archive's
+raw bytes and writes it to `<archive>.sig` (or the path given via
+`--out`). The signature file contains the raw 64 bytes — no
+header, no encoding, no length prefix.
+
+The private key must be ed25519-flavored (PKCS#8-wrapped is the
+common shape, what `openssl genpkey -algorithm ed25519` emits).
+Non-ed25519 keys (RSA, ECDSA, etc.) are rejected with a clear
+error pointing at the expected algorithm.
+
+`<archive>` accepts `-` for stdin; when stdin is used, `--out` is
+mandatory (we can't infer a `.sig` filename without a source path).
+
+### 3.12 `verify-sig`
+
+```
+cajeta archive verify-sig <archive> --pubkey <pem> [--sig <archive.sig>]
+```
+
+Verifies the detached signature against a public key. Exits 0 when
+the signature validates, exits 11 (`E_SIG_INVALID`) on any mismatch
+or on OpenSSL-side parse / verify failures. Public key is PEM-encoded
+(`openssl pkey -in <priv> -pubout` emits the matching shape).
+
+`--sig` defaults to `<archive>.sig`. `<archive>` accepts `-` for
+stdin; when stdin is used, `--sig` is mandatory.
+
+### Trust roots and key distribution
+
+The current implementation is intentionally key-agnostic: the user
+brings their own public key and decides whether to trust it. That
+matches the minimal "checksum-on-steroids" use case — a publisher
+generates a keypair, distributes the pubkey via whatever channel
+their consumers already trust, and signs every release.
+
+For richer trust models — PGP-style web of trust, per-registry
+pinned public keys, sigstore / cosign-style transparency logs — the
+hook is `BuildTool.md`'s [repository
+protocol](BuildTool.md#7-repositories): a registry can advertise a
+pinned public key for each archive, and the build tool calls
+`cajeta archive verify-sig` automatically during ingestion. That
+integration lands when the build tool ships.
+
+### Signature storage
+
+Detached `.sig` files are the only supported form today. A header
+flag bit is reserved in the `.cja` container for "signature embedded
+after the trailing index" — adding that as a future option only
+requires writer/reader support, not a format-version bump.
 
 ---
 
@@ -540,7 +579,8 @@ bit reserved for this).
 - **Symlinks during `extract`.** The `.cja` format has no symlink
   entry kind today. If we add one later, `extract` needs a
   `--no-symlinks` for safety (zip-slip / tar-slip equivalents). Flag
-  reserved for v2 even if no symlink entries exist yet.
+  reserved for a future format extension even if no symlink entries
+  exist yet.
 - **`cajeta archive merge` and origin tags.** When merging two
   user-origin archives, the output is also user-origin. When merging
   a user archive with a stdlib archive (via `--prefix-deps`), the

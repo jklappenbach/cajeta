@@ -3,6 +3,8 @@
 #include <cstring>
 #include <fstream>
 #include <iterator>
+#include <ostream>
+#include <sstream>
 #include <stdexcept>
 
 #include <zstd.h>
@@ -16,7 +18,7 @@ namespace cajeta {
         constexpr const char* MAGIC = "CAJETA01";
         constexpr uint32_t FORMAT_VERSION = 1;
 
-        void writeU32LE(std::ofstream& out, uint32_t v) {
+        void writeU32LE(std::ostream& out, uint32_t v) {
             char buf[4] = {
                 (char) (v & 0xFF),
                 (char) ((v >> 8) & 0xFF),
@@ -26,7 +28,7 @@ namespace cajeta {
             out.write(buf, 4);
         }
 
-        void writeU64LE(std::ofstream& out, uint64_t v) {
+        void writeU64LE(std::ostream& out, uint64_t v) {
             char buf[8];
             for (int i = 0; i < 8; ++i) {
                 buf[i] = (char) ((v >> (i * 8)) & 0xFF);
@@ -111,13 +113,10 @@ namespace cajeta {
             return out;
         }
 
-        // zstd compression level. 3 is the default — fast encoder, very
-        // fast decoder, decent ratio. Levels 1-3 are speed-optimized;
-        // 19-22 are ratio-optimized. The .cja write-few-read-many
-        // workload favors decompression speed (libraries written once,
-        // read by every consumer that links them), so 3 is the sweet
-        // spot.
-        constexpr int ZSTD_COMPRESS_LEVEL = 3;
+        // Default zstd compression level. 3 is the .cja write-few-read-many
+        // sweet spot — fast encoder, very fast decoder, decent ratio.
+        // `cajeta archive repack --zstd=<n>` exposes 1..22.
+        constexpr int ZSTD_DEFAULT_LEVEL = 3;
 
         // Header flag bits — written into the 4-byte flags field at
         // offset 12. Bit 0 marks the manifest section as zstd-
@@ -129,14 +128,16 @@ namespace cajeta {
         constexpr uint32_t FLAG_MANIFEST_COMPRESSED = 1u << 0;
         constexpr uint32_t FLAG_ENTRIES_COMPRESSED  = 1u << 1;
 
-        // Compress raw bytes with zstd. Returns the compressed buffer.
-        // Throws on zstd failure (malformed input is impossible since we
-        // pass valid bytes; out-of-memory is the realistic case).
-        std::vector<uint8_t> zstdCompress(const uint8_t* src, size_t srcLen) {
+        // Compress raw bytes with zstd at the given level. Returns the
+        // compressed buffer. Throws on zstd failure (malformed input
+        // is impossible since we pass valid bytes; out-of-memory is the
+        // realistic case).
+        std::vector<uint8_t> zstdCompress(const uint8_t* src, size_t srcLen,
+                                          int level) {
             size_t bound = ZSTD_compressBound(srcLen);
             std::vector<uint8_t> out(bound);
             size_t written = ZSTD_compress(out.data(), bound,
-                src, srcLen, ZSTD_COMPRESS_LEVEL);
+                src, srcLen, level);
             if (ZSTD_isError(written)) {
                 throw std::runtime_error(
                     std::string("CajetaArchive: zstd compress failed: ")
@@ -233,6 +234,21 @@ namespace cajeta {
         if (!out) {
             throw std::runtime_error("CajetaArchive: cannot open output: " + path);
         }
+        writeToStream(out);
+        if (!out) {
+            throw std::runtime_error("CajetaArchive: write failure: " + path);
+        }
+    }
+
+    void CajetaArchive::writeToStream(std::ostream& sink) {
+        // Build the archive into a local string buffer first. The
+        // writer needs to seek back to patch header index_offset /
+        // index_length once the trailing index has been emitted, and
+        // not every `ostream` is seekable (stdout pipes aren't). The
+        // buffer is one extra in-memory copy of the archive bytes —
+        // acceptable for the MB-scale archives cajeta produces.
+        std::ostringstream buf(std::ios::binary);
+        std::ostream& out = buf;
 
         bool compressed = (compression == Compression::Zstd);
         uint32_t flags = 0;
@@ -257,7 +273,8 @@ namespace cajeta {
             // The manifest_len that follows in the format gives the
             // on-disk size, which here is 8 + zstd_bytes.size().
             auto comp = zstdCompress(
-                (const uint8_t*) manifest.data(), manifest.size());
+                (const uint8_t*) manifest.data(), manifest.size(),
+                compressionLevel);
             writeU64LE(out, (uint64_t) (8 + comp.size()));
             writeU64LE(out, (uint64_t) manifest.size());
             out.write((const char*) comp.data(), (std::streamsize) comp.size());
@@ -287,7 +304,8 @@ namespace cajeta {
             out.write(reserved,    2);
 
             if (compressed) {
-                auto comp = zstdCompress(e.data.data(), e.data.size());
+                auto comp = zstdCompress(e.data.data(), e.data.size(),
+                    compressionLevel);
                 writeU64LE(out, (uint64_t) (8 + comp.size()));
                 writeU64LE(out, (uint64_t) e.data.size());
                 out.write((const char*) comp.data(), (std::streamsize) comp.size());
@@ -324,14 +342,17 @@ namespace cajeta {
         }
         uint64_t indexLength = (uint64_t) out.tellp() - indexOffset;
 
-        // Patch header's index_offset (byte 16) and index_length (byte 24).
+        // Patch header's index_offset (byte 16) and index_length (byte 24)
+        // on the in-memory buffer, then dump to the caller's sink.
         out.seekp(16);
         writeU64LE(out, indexOffset);
         writeU64LE(out, indexLength);
 
         if (!out) {
-            throw std::runtime_error("CajetaArchive: write failure: " + path);
+            throw std::runtime_error("CajetaArchive: stringstream write failure");
         }
+        std::string archive = buf.str();
+        sink.write(archive.data(), (std::streamsize) archive.size());
     }
 
     CajetaArchive CajetaArchive::readFrom(const std::string& path) {
@@ -342,6 +363,15 @@ namespace cajeta {
         std::vector<uint8_t> bytes(
             (std::istreambuf_iterator<char>(in)),
             std::istreambuf_iterator<char>());
+        return readFromBytes(bytes, path);
+    }
+
+    CajetaArchive CajetaArchive::readFromBytes(
+            const std::vector<uint8_t>& bytes, const std::string& sourceName) {
+        // `sourceName` is what appears in the error diagnostics; callers
+        // pass the file path for file-loaded archives and "<stdin>" for
+        // stream-loaded ones. The body below treats it as opaque.
+        const std::string& path = sourceName;
 
         // Header is 32 bytes. Bail loudly on anything that doesn't look
         // like a cajeta archive — the reader is a security surface

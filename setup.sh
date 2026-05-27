@@ -69,6 +69,7 @@ install_linux_apt() {
         libzstd-dev
         vim-common
         libxxhash-dev
+        libssl-dev
     )
     [[ "${CAJETA_NO_LLD:-0}" == "1" ]] || pkgs+=("lld-${LLVM_VER}-dev")
 
