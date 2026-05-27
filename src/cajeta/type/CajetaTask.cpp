@@ -6,6 +6,7 @@
 #include "CajetaArray.h"
 #include "CajetaView.h"
 #include "../compile/CajetaModule.h"
+#include "llvm/TargetParser/Triple.h"
 
 namespace cajeta {
 
@@ -101,7 +102,19 @@ namespace cajeta {
         // The bodies are deterministic per-T so ODR holds.
         llvmDropFunction = llvm::Function::Create(fnTy,
             llvm::Function::LinkOnceODRLinkage, dropName, lmod);
-        llvmDropFunction->setComdat(lmod->getOrInsertComdat(dropName));
+        // COMDAT-based grouping is an ELF/COFF feature and isn't
+        // representable in MachO's object format; LLVM's MachO writer
+        // aborts with "MachO doesn't support COMDATs" when it sees one.
+        // LinkOnceODR linkage alone gives the merge semantics — the
+        // explicit COMDAT was a belt-and-suspenders for ELF/COFF
+        // toolchains that sometimes need the explicit group to dedupe.
+        // Gate on the target's binary format so we keep the explicit
+        // COMDAT where it's supported (Linux, Windows) and skip on
+        // macOS / iOS / watchOS.
+        llvm::Triple lmodTriple(lmod->getTargetTriple());
+        if (!lmodTriple.isOSBinFormatMachO()) {
+            llvmDropFunction->setComdat(lmod->getOrInsertComdat(dropName));
+        }
         llvm::BasicBlock* bb = llvm::BasicBlock::Create(
             ctx, "entry", llvmDropFunction);
         llvm::IRBuilder<> b(bb);
