@@ -2,7 +2,7 @@
 
 A specification for `cajeta.prism`, a deep-learning framework
 designed from first principles for cajeta — leveraging the type
-system, ownership model, fiber runtime, and `cajeta.ml` numerical
+system, ownership model, fiber runtime, and `cajeta.math` numerical
 foundation. Not a port of any existing framework. The goal is to
 take everything researchers learned from PyTorch / JAX / TensorFlow /
 Flax / Burn / MLX and ask: what would the framework look like if
@@ -177,15 +177,15 @@ cajeta.prism.compile          — XLA-equivalent graph compiler
 ## cajeta.prism.tensor
 
 The foundational type. Shape, dtype, device, and grad-tracking all
-live in the type. The elements are stored in a `cajeta.ml.tensor.
+live in the type. The elements are stored in a `cajeta.math.tensor.
 Tensor` underneath; this layer adds the type-level metadata.
 
 ```cajeta
 public final class Tensor<S extends Shape, T extends DType, D extends Device, G extends GradMode> {
     // The wrapped data. Shape / dtype / device are reflected at
-    // compile time via S, T, D; the runtime data is a cajeta.ml
+    // compile time via S, T, D; the runtime data is a cajeta.math
     // tensor specialized over T's element type.
-    private cajeta.ml.tensor.Tensor<T::Element> data;
+    private cajeta.math.tensor.Tensor<T::Element> data;
 
     // ----- factories (return values, not heap allocations) -----
     public static <S, T, D> Tensor<S, T, D, NoGrad> zeros();
@@ -655,7 +655,7 @@ A reasonable order, given dependencies:
 
 1. **cajeta.prism.tensor** with statically-known shapes only first.
    Type-level shape arithmetic, broadcast / matmul / reshape /
-   reductions. Wraps cajeta.ml.tensor.Tensor for storage.
+   reductions. Wraps cajeta.math.tensor.Tensor for storage.
 2. **cajeta.prism.random.** RngKey + split + the standard
    distributions. Self-contained, low dependency.
 3. **cajeta.prism.autograd: grad / value_and_grad** for functions
@@ -735,10 +735,10 @@ Deferred to follow-ups (separate libraries):
   exclusive? PyTorch's trailing-underscore convention is one
   option; another is no in-place API at all and rely on the
   compiler. Lean: no in-place API; trust the optimizer.
-- **Tensor backing relationship with cajeta.ml.tensor.** prism's
-  Tensor wraps cajeta.ml.tensor's. Round-trip across libraries
+- **Tensor backing relationship with cajeta.math.tensor.** prism's
+  Tensor wraps cajeta.math.tensor's. Round-trip across libraries
   should be zero-copy via the shared backing buffer; same question
-  raised in CajetaML.md / CajetaTorch.md. Cohesive resolution
+  raised in CajetaMath.md / CajetaTorch.md. Cohesive resolution
   needed across all three before any goes public.
 - **Distributed control-plane minimum.** Multi-host needs cajeta.io.net.
   cajeta.io.net needs the reactor work that's blocked on the harness.

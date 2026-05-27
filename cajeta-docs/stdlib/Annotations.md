@@ -524,7 +524,7 @@ contributors don't reach for them expecting them to work.
 | `@NoVTable`             | class           | Suppress vtable header for classes that don't need virtual dispatch. Smaller instances.          | (no doc yet)        |
 | `@Reflectable`          | class           | Opts in to full RTTI metadata (field list, annotations) for runtime reflection.                  | `CajetaReflect.md`  |
 | `@Retained`             | annotation type | Marks an annotation as runtime-readable (Java's `@Retention(RUNTIME)` equivalent).               | `CajetaReflect.md`  |
-| `@Trainable`            | field           | ML training-loop marker (parameter slot for gradient updates).                                   | `CajetaML.md`       |
+| `@Trainable`            | field           | ML training-loop marker (parameter slot for gradient updates).                                   | `CajetaMath.md`       |
 | `@Transactional`        | method          | Aspect marker for transactional methods (user-defined, but reserved name).                       | `AspectModel.md`    |
 | `@DisplayAs("name")`    | method, field   | Override the display name in IDE / debugger views.                                               | `Debugging.md`      |
 | `@Parameter`            | parameter       | Reflection hint — retains the parameter name in the symbol table for introspection.              | `CajetaReflect.md`  |

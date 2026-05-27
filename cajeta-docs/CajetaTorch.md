@@ -1,7 +1,7 @@
 # CajetaTorch.md
 
 A faithful port of the PyTorch surface to cajeta, packaged as
-`cajeta.torch` (separate from stdlib, separate from `cajeta.ml`). The
+`cajeta.torch` (separate from stdlib, separate from `cajeta.math`). The
 target user is someone with a working PyTorch script who wants to run
 the equivalent in cajeta with minimal edits. API names, method
 signatures, and ordering mirror `torch.*` wherever the differences
@@ -13,9 +13,9 @@ Implementation lands incrementally as `.cajeta` files under
 `./libraries/cajeta.torch/src/`. Ships as its own package with its
 own version cadence.
 
-## Why a separate library from cajeta.ml
+## Why a separate library from cajeta.math
 
-`cajeta.ml` (see CajetaML.md) is the numpy + scipy + scikit-learn
+`cajeta.math` (see CajetaMath.md) is the numpy + scipy + scikit-learn
 equivalent — broad numerical and classical ML, with `Tensor` shaped
 to mirror `np.ndarray`. The autograd / `nn` modules sketched there
 are designed to be PyTorch-style but aren't trying to be a 1:1
@@ -25,7 +25,7 @@ migration target.
 script ports cleanly," not "build the best deep-learning framework
 from first principles." Two different audiences:
 
-- **cajeta.ml** users are writing new code, mixing tensor ops with
+- **cajeta.math** users are writing new code, mixing tensor ops with
   classical ML, and want a coherent native cajeta API.
 - **cajeta.torch** users are porting an existing PyTorch codebase or
   reading a PyTorch paper's reference implementation; they want
@@ -33,8 +33,8 @@ from first principles." Two different audiences:
   what they already mean.
 
 Keeping them separate means cajeta.torch can chase PyTorch API
-churn without dragging stdlib or cajeta.ml along. cajeta.torch's
-`Tensor` is its own type, distinct from `cajeta.ml.tensor.Tensor`,
+churn without dragging stdlib or cajeta.math along. cajeta.torch's
+`Tensor` is its own type, distinct from `cajeta.math.tensor.Tensor`,
 because PyTorch's tensor has autograd-aware semantics baked in
 (every op records into the graph by default; numpy's doesn't). The
 two share lower layers — both delegate matmul / fft / random to the
@@ -60,7 +60,7 @@ same underlying kernels — but the user-facing types are independent.
   device logic the day the GPU backend lands.
 - **Mixed precision built in.** PyTorch's `autocast` + `GradScaler`
   shape, layered onto cajeta.math's RoundingMode-aware casting (see
-  CajetaML.md). fp4 / fp8 training is a first-class scenario.
+  CajetaMath.md). fp4 / fp8 training is a first-class scenario.
 - **Familiar training loop.** The standard `model.train(); for batch
   in loader: optimizer.zero_grad(); loss = ...; loss.backward();
   optimizer.step()` shape works verbatim.
@@ -124,15 +124,15 @@ cajeta.torch.linalg              — matmul, inv, pinv, solve, lstsq, eig,
                             eigh, svd, qr, cholesky, det, slogdet,
                             norm, ... — namespace + signatures
                             mirror PyTorch's torch.linalg exactly.
-                            Backed by cajeta.ml.linalg.
+                            Backed by cajeta.math.linalg.
 cajeta.torch.fft                 — fft, ifft, fftn, ifftn, rfft, irfft,
-                            fftshift, fftfreq. Backed by cajeta.ml.fft.
+                            fftshift, fftfreq. Backed by cajeta.math.signal.
 cajeta.torch.special             — gamma, lgamma, erf, erfc, beta, digamma,
                             polygamma, ... — mirrors PyTorch's
                             torch.special namespace.
 cajeta.torch.random              — manual_seed, get_rng_state,
                             set_rng_state, fork_rng. Distinct PRNG
-                            stream per device. Backed by cajeta.ml.random.
+                            stream per device. Backed by cajeta.math.random.
 cajeta.torch.io                  — save / load (state-dict-compatible .pt),
                             tensor I/O helpers (from_numpy / numpy()
                             via npy bridge)
@@ -160,7 +160,7 @@ cajeta.torch.quantization        — PTQ / QAT
 
 ## torch.Tensor
 
-The user-facing type. Wraps a `cajeta.ml.tensor.Tensor` for storage
+The user-facing type. Wraps a `cajeta.math.tensor.Tensor` for storage
 and dispatches arithmetic through it; adds the autograd graph hookup
 and PyTorch-shaped methods.
 
@@ -276,7 +276,7 @@ public enum DeviceType { CPU, CUDA, MPS, XLA }
 ```
 
 **Storage strategy.** A `torch.Tensor` holds:
-- a `cajeta.ml.tensor.Tensor` for the actual element buffer + shape,
+- a `cajeta.math.tensor.Tensor` for the actual element buffer + shape,
 - a `Device` tag,
 - `requiresGrad: boolean`,
 - `grad: Tensor` (populated post-backward),
@@ -284,7 +284,7 @@ public enum DeviceType { CPU, CUDA, MPS, XLA }
 
 Ops that don't need grad (called inside a `no_grad` scope, or where
 no input has `requiresGrad`) skip the graph hookup and run as a thin
-pass-through to the underlying cajeta.ml tensor op.
+pass-through to the underlying cajeta.math tensor op.
 
 ---
 
@@ -569,7 +569,7 @@ for (Batch<...> batch : loader) {
 ```
 
 The autocast scope swaps the dtype-policy for ops inside; cajeta.math's
-RoundingMode-aware casting (CajetaML.md "Prerequisite: cajeta.math
+RoundingMode-aware casting (CajetaMath.md "Prerequisite: cajeta.math
 expansion") is what makes the down-casts well-defined. fp8 training
 is a supported autocast dtype in v1.
 
@@ -611,7 +611,7 @@ modern format, and is the recommended save path for new code.
 
 A reasonable order, given dependencies:
 
-1. **torch.Tensor + cajeta.ml.tensor backing.** No autograd yet.
+1. **torch.Tensor + cajeta.math.tensor backing.** No autograd yet.
    Eager ops, factory functions, indexing, shape ops, casting,
    device tag (CPU only resolves). Mirrors the torch namespace
    surface enough to run a numpy-style script.
@@ -644,7 +644,7 @@ A reasonable order, given dependencies:
     training. Hooks into cajeta.math casting.
 12. **torch.linalg + torch.fft + torch.special + torch.random.**
     Surface mirrors of torch.* sub-namespaces; mostly thin wrappers
-    over cajeta.ml equivalents.
+    over cajeta.math equivalents.
 13. **torch.utils.data: multi-worker DataLoader.** Fiber-backed
     workers + prefetch + persistent workers. Single-worker path is
     enough for v1; multi-worker is performance, not correctness.
@@ -674,11 +674,11 @@ Deferred (not v1, separate follow-up libraries):
   cajeta-house style says camelCase. Worth a deliberate decision
   before locking the API. Initial lean: camelCase for everything,
   with the rationale that PyTorch users adapt fast and consistency
-  with cajeta.ml / stdlib matters more long-term.
-- **Tensor: own type or alias of cajeta.ml.tensor.Tensor?** Sketch
+  with cajeta.math / stdlib matters more long-term.
+- **Tensor: own type or alias of cajeta.math.tensor.Tensor?** Sketch
   above says own type. The reverse — alias plus extension methods
   for autograd hookup — would mean fewer types in the ecosystem
-  but couples cajeta.ml's tensor evolution to cajeta.torch's. Probably
+  but couples cajeta.math's tensor evolution to cajeta.torch's. Probably
   worth keeping them distinct; revisit if the duplication becomes
   painful.
 - **Pickle subset for .pt loading.** Where exactly to draw the
@@ -693,8 +693,8 @@ Deferred (not v1, separate follow-up libraries):
   ever lands, decide whether to mirror TorchScript syntax (limited
   Python subset annotated with `@jit.script`) or design a cajeta-
   native scope-based form (`withTrace { ... }`).
-- **Shared tensor backing with cajeta.ml.** When user code uses
-  both libraries (e.g. cajeta.ml.linalg result fed into a cajeta.torch
+- **Shared tensor backing with cajeta.math.** When user code uses
+  both libraries (e.g. cajeta.math.linalg result fed into a cajeta.torch
   forward pass), do tensors round-trip zero-copy through the
   shared backing buffer, or does each library own its own copy?
   Worth resolving before either library lands a public API.

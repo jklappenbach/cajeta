@@ -173,7 +173,7 @@ single-pass preprocessor.
     // automatically based on the resolution rules.
     "dependencies": {
         "cajeta.io.net.http":   "1.2.*",
-        "cajeta.ml":     "0.5.0",
+        "cajeta.math":     "0.5.0",
         "acme.metrics": {
             "version": "1.0.*",
             "from":    "company-nexus"      // optional repository pin
@@ -376,9 +376,9 @@ The path contains a tree:
 │   ├── 1.2.4/
 │   │   └── cajeta.io.net.http-1.2.4.car
 │   └── versions.json          # { "versions": ["1.0.0", "1.2.4"] }
-├── cajeta.ml/
+├── cajeta.math/
 │   └── ...
-└── index.json                 # { "packages": ["cajeta.io.net.http", "cajeta.ml", ...] }
+└── index.json                 # { "packages": ["cajeta.io.net.http", "cajeta.math", ...] }
 ```
 
 Used for dev overrides, vendoring, and CI scenarios that pre-stage

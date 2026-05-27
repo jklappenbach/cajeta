@@ -673,7 +673,7 @@ PNG or HTML.
 
 Stdlib types ship sensible defaults:
 
-- `cajeta.ml.tensor.Tensor` — text repr for small shapes,
+- `cajeta.math.tensor.Tensor` — text repr for small shapes,
   HTML table or PNG heatmap for larger 2D / 3D shapes.
 - `cajeta.io.Buffer` — hex dump up to a configurable cap.
 - `Array<T>` — bracketed comma list for small arrays, truncated
