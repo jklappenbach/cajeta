@@ -187,10 +187,43 @@ set(CAJETA_RT_SRC ${PROJECT_SOURCE_DIR}/runtime/native/cajeta_runtime.c)
 set(CAJETA_RT_BC  ${CMAKE_CURRENT_BINARY_DIR}/cajeta_runtime.bc)
 set(CAJETA_RT_EMBED ${CMAKE_CURRENT_BINARY_DIR}/cajeta_runtime_embedded.cpp)
 
+# xxhash header location for the runtime compile. Debian/Ubuntu install
+# at /usr/include (default path, no flag needed); macOS Homebrew puts it
+# at /opt/homebrew/opt/xxhash/include (Apple Silicon) or
+# /usr/local/opt/xxhash/include (Intel); Windows vcpkg at
+# C:/vcpkg/installed/x64-windows/include. Look in all three.
+find_path(CAJETA_XXHASH_INCLUDE_DIR
+        NAMES xxhash.h
+        HINTS
+            /opt/homebrew/opt/xxhash/include
+            /usr/local/opt/xxhash/include
+            $ENV{VCPKG_INSTALLATION_ROOT}/installed/x64-windows/include
+            C:/vcpkg/installed/x64-windows/include
+        PATHS /usr/include /usr/local/include)
+if(NOT CAJETA_XXHASH_INCLUDE_DIR)
+    message(FATAL_ERROR "Could not locate xxhash.h. Install libxxhash-dev (Linux), brew install xxhash (macOS), or vcpkg install xxhash (Windows).")
+endif()
+message(STATUS "CAJETA_XXHASH_INCLUDE_DIR: ${CAJETA_XXHASH_INCLUDE_DIR}")
+
+# Runtime compile flags. On aarch64 (NVIDIA Grace / Apple Silicon under
+# Linux / Ampere / etc.), pass -mno-outline-atomics so clang emits inline
+# `ldadd` (LSE atomics, armv8.1+) instead of the
+# `__aarch64_ldadd8_acq_rel` outline helpers that live in compiler-rt.
+# The JIT can't materialize compiler-rt helpers without explicit
+# registration, so tests that drive cajeta through LLJIT see the
+# helpers as unresolved symbols. Modern ARM CPUs (any post-2017) have
+# LSE; the requirement is fine for our supported targets.
+set(CAJETA_RT_FLAGS "")
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64)$" AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    list(APPEND CAJETA_RT_FLAGS "-mno-outline-atomics")
+endif()
+
 add_custom_command(
         OUTPUT ${CAJETA_RT_BC}
         COMMAND ${CAJETA_CLANG} -c -emit-llvm -O2 -fno-builtin
                 -ffunction-sections -fdata-sections
+                -I${CAJETA_XXHASH_INCLUDE_DIR}
+                ${CAJETA_RT_FLAGS}
                 -o ${CAJETA_RT_BC} ${CAJETA_RT_SRC}
         DEPENDS ${CAJETA_RT_SRC}
         COMMENT "Compiling Cajeta runtime to LLVM bitcode")

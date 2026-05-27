@@ -4,6 +4,14 @@
 // Keep these helpers small and pointer-only at their ABI boundary; the optimizer
 // inlines and specializes them across user code.
 
+// macOS deprecated the ucontext.h routines (swapcontext / getcontext /
+// makecontext) and only exposes them when _XOPEN_SOURCE is defined.
+// Set it BEFORE any system header is included so the feature-test macro
+// propagates correctly through <ucontext.h> down at line ~380.
+#if defined(__APPLE__) && !defined(_XOPEN_SOURCE)
+#  define _XOPEN_SOURCE 600
+#endif
+
 #include <setjmp.h>
 #include <stdbool.h>
 #include <stddef.h>
