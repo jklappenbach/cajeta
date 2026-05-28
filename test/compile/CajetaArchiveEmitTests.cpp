@@ -14,6 +14,7 @@
 #include "cajeta/compile/CajetaArchive.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -23,6 +24,14 @@
 #include <random>
 #include <string>
 #include <vector>
+
+// std::system runs via cmd.exe on Windows, where /dev/null is an invalid
+// path (the redirect fails and the command returns non-zero). Use NUL there.
+#ifdef _WIN32
+#  define CAJETA_DEVNULL "NUL"
+#else
+#  define CAJETA_DEVNULL "/dev/null"
+#endif
 
 namespace {
 
@@ -55,8 +64,18 @@ uint64_t readU64LE(const std::vector<uint8_t>& bytes, size_t offset) {
 // var isn't set.
 std::string compilerPath() {
     const char* root = std::getenv("CAJETA_SOURCE_ROOT");
-    if (!root) root = ".";
-    return std::string(root) + "/build/src/cajeta";
+    std::string r = root ? root : ".";
+#ifdef _WIN32
+    // CAJETA_SOURCE_ROOT is often an MSYS path ("/d/code/..."); std::system
+    // runs via cmd.exe, which needs a drive-letter path. Convert "/x/..." to
+    // "x:/...", and use the .exe suffix.
+    if (r.size() >= 3 && r[0] == '/' && std::isalpha((unsigned char) r[1]) && r[2] == '/') {
+        r = std::string(1, r[1]) + ":" + r.substr(2);
+    }
+    return r + "/build/src/cajeta.exe";
+#else
+    return r + "/build/src/cajeta";
+#endif
 }
 
 // Lay out a one-file cajeta source tree under a fresh temp dir,
@@ -92,7 +111,7 @@ TEST(CajetaArchiveEmitTests, cjaModeWritesCjaWithMagicHeader) {
         + " --emit=cja demo.Hello.run "
         + proj.sourceRoot.string() + " "
         + proj.buildRoot.string()
-        + " > /dev/null 2>&1";
+        + " > " CAJETA_DEVNULL " 2>&1";
     int rc = std::system(cmd.c_str());
     ASSERT_EQ(rc, 0) << "compiler exited non-zero: " << cmd;
 
@@ -116,7 +135,7 @@ TEST(CajetaArchiveEmitTests, cjaModeManifestSaysCja) {
         + " --emit=cja demo.Hello.run "
         + proj.sourceRoot.string() + " "
         + proj.buildRoot.string()
-        + " > /dev/null 2>&1";
+        + " > " CAJETA_DEVNULL " 2>&1";
     ASSERT_EQ(std::system(cmd.c_str()), 0);
 
     auto arc = cajeta::CajetaArchive::readFrom(
@@ -134,7 +153,7 @@ TEST(CajetaArchiveEmitTests, uberModeManifestSaysUber) {
         + " --emit=uber demo.Hello.run "
         + proj.sourceRoot.string() + " "
         + proj.buildRoot.string()
-        + " > /dev/null 2>&1";
+        + " > " CAJETA_DEVNULL " 2>&1";
     ASSERT_EQ(std::system(cmd.c_str()), 0);
 
     auto arc = cajeta::CajetaArchive::readFrom(
@@ -172,7 +191,7 @@ fs::path buildDepArchive(const std::string& tag) {
         + " --emit=cja deplib.Util.ten "
         + (base / "src").string() + " "
         + build.string()
-        + " > /dev/null 2>&1";
+        + " > " CAJETA_DEVNULL " 2>&1";
     int rc = std::system(cmd.c_str());
     if (rc != 0) return {};
     auto cja = build / "Util.cja";
@@ -207,7 +226,7 @@ TEST(CajetaArchiveEmitTests, uberWithClasspathBundlesDepEntriesNoPrune) {
         + " demo.Hello.run "
         + proj.sourceRoot.string() + " "
         + proj.buildRoot.string()
-        + " > /dev/null 2>&1";
+        + " > " CAJETA_DEVNULL " 2>&1";
     ASSERT_EQ(std::system(cmd.c_str()), 0);
 
     auto uberCja = proj.buildRoot / "Hello.cja";
@@ -261,7 +280,7 @@ TEST(CajetaArchiveEmitTests, uberDedupesSameNamedEntriesAcrossClasspathNoPrune) 
         + " demo.Hello.run "
         + proj.sourceRoot.string() + " "
         + proj.buildRoot.string()
-        + " > /dev/null 2>&1";
+        + " > " CAJETA_DEVNULL " 2>&1";
     ASSERT_EQ(std::system(cmd.c_str()), 0);
 
     auto uber = cajeta::CajetaArchive::readFrom(
@@ -301,7 +320,7 @@ TEST(CajetaArchiveEmitTests, uberDefaultPrunesUnreferencedDepEntries) {
         + " demo.Hello.run "
         + proj.sourceRoot.string() + " "
         + proj.buildRoot.string()
-        + " > /dev/null 2>&1";
+        + " > " CAJETA_DEVNULL " 2>&1";
     ASSERT_EQ(std::system(cmd.c_str()), 0);
 
     auto uber = cajeta::CajetaArchive::readFrom(
@@ -361,7 +380,7 @@ TEST(CajetaArchiveEmitTests, uberDefaultKeepsReferencedDepEntries) {
         + " demo.Hello.run "
         + (base / "src").string() + " "
         + build.string()
-        + " > /dev/null 2>&1";
+        + " > " CAJETA_DEVNULL " 2>&1";
     ASSERT_EQ(std::system(cmd.c_str()), 0)
         << "compile failed; classpath ingestion should have resolved "
         << "deplib.Util — see cajeta-compile.log";
@@ -407,7 +426,7 @@ TEST(CajetaArchiveEmitTests, cjaContainsProjectEntriesOnly) {
         + " --emit=cja demo.Hello.run "
         + proj.sourceRoot.string() + " "
         + proj.buildRoot.string()
-        + " > /dev/null 2>&1";
+        + " > " CAJETA_DEVNULL " 2>&1";
     ASSERT_EQ(std::system(cmd.c_str()), 0);
 
     auto arc = cajeta::CajetaArchive::readFrom(
@@ -539,6 +558,7 @@ TEST(ClasspathIngestionTests, userIrReferencesClasspathClassUnderEmitIr) {
     std::string irText(
         (std::istreambuf_iterator<char>(irFile)),
         std::istreambuf_iterator<char>());
+    irFile.close();  // Windows can't remove_all() a file that's still open.
     EXPECT_NE(irText.find("deplib.Util"), std::string::npos)
         << "user IR doesn't reference deplib.Util — resolution failed.\n"
         << "IR head:\n" << irText.substr(0, 800);
