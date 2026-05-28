@@ -16,6 +16,7 @@
 #include "cajeta/method/Method.h"
 
 #include "JitWinSymbols.h"
+#include "JitErrorShim.h"
 
 #include "llvm/Bitcode/BitcodeReader.h"
 #include "llvm/Bitcode/BitcodeWriter.h"
@@ -109,7 +110,7 @@ CajetaJit::~CajetaJit() {
             auto fn = reinterpret_cast<void(*)()>(sym->getValue());
             if (fn) fn();
         } else {
-            llvm::consumeError(sym.takeError());
+            cajeta::jittest::consumeError(sym.takeError());
         }
     }
 }
@@ -336,7 +337,7 @@ std::unique_ptr<CajetaJit> CajetaJit::compile(
                                           *tsContext.getContext());
 #endif
     if (!parsed) {
-        std::string err = llvm::toString(parsed.takeError());
+        std::string err = cajeta::jittest::toString(parsed.takeError());
         throw std::runtime_error("JIT bitcode reparse failed: " + err);
     }
     llvm::orc::ThreadSafeModule tsModule(std::move(*parsed), std::move(tsContext));
@@ -380,7 +381,7 @@ std::unique_ptr<CajetaJit> CajetaJit::compile(
                     llvm::orc::ExecutorAddr::fromPtr(winSyms[i].addr),
                     llvm::JITSymbolFlags::Exported);
         }
-        llvm::cantFail(
+        cajeta::jittest::cantFail(
             mainDylib.define(llvm::orc::absoluteSymbols(std::move(winSymMap))));
     }
 #endif
@@ -396,7 +397,7 @@ std::unique_ptr<CajetaJit> CajetaJit::compile(
     // call to execute its initializer.
     if (auto err = jitState->jit->initialize(mainDylib)) {
         throw std::runtime_error("LLJIT initialize failed: "
-            + llvm::toString(std::move(err)));
+            + cajeta::jittest::toString(std::move(err)));
     }
 
     // Apply per-test runtime-flag overrides. The runtime ships in two
@@ -414,7 +415,7 @@ std::unique_ptr<CajetaJit> CajetaJit::compile(
         auto setFn = reinterpret_cast<void(*)(int)>(sym->getValue());
         if (setFn) setFn(desiredPoison);
     } else {
-        llvm::consumeError(sym.takeError());
+        cajeta::jittest::consumeError(sym.takeError());
     }
     ::__cajeta_set_poison_free(desiredPoison);
 
@@ -423,7 +424,7 @@ std::unique_ptr<CajetaJit> CajetaJit::compile(
         auto setFn = reinterpret_cast<void(*)(int)>(sym->getValue());
         if (setFn) setFn(desiredValidate);
     } else {
-        llvm::consumeError(sym.takeError());
+        cajeta::jittest::consumeError(sym.takeError());
     }
     ::__cajeta_set_drop_chain_validate(desiredValidate);
 
@@ -432,7 +433,7 @@ std::unique_ptr<CajetaJit> CajetaJit::compile(
         auto setFn = reinterpret_cast<void(*)(int)>(sym->getValue());
         if (setFn) setFn(desiredTrace);
     } else {
-        llvm::consumeError(sym.takeError());
+        cajeta::jittest::consumeError(sym.takeError());
     }
     ::__cajeta_set_stack_trace_capture(desiredTrace);
 
@@ -444,7 +445,7 @@ void* CajetaJit::lookupAddress(const std::string& shortName) {
     if (it == nameMap.end()) return nullptr;
     auto sym = jit->lookup(it->second);
     if (!sym) {
-        llvm::consumeError(sym.takeError());
+        cajeta::jittest::consumeError(sym.takeError());
         return nullptr;
     }
     return reinterpret_cast<void*>(sym->getValue());
@@ -453,7 +454,7 @@ void* CajetaJit::lookupAddress(const std::string& shortName) {
 void* CajetaJit::lookupRawSymbol(const std::string& exactName) {
     auto sym = jit->lookup(exactName);
     if (!sym) {
-        llvm::consumeError(sym.takeError());
+        cajeta::jittest::consumeError(sym.takeError());
         return nullptr;
     }
     return reinterpret_cast<void*>(sym->getValue());

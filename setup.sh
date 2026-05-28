@@ -4,20 +4,21 @@
 # installed packages, and cmake re-configures in place.
 #
 # Knobs:
-#   CAJETA_LLVM_VERSION  — major LLVM version to target (default 20). Used to
+#   CAJETA_LLVM_VERSION  — major LLVM version to target (default 22). Used to
 #                          derive LLVM_DIR and the apt package set if neither
 #                          is overridden explicitly. Bump this when moving the
 #                          project's LLVM baseline.
-#                          Why 20: LLVM 18 doesn't know about Zen 5 (znver5)
-#                          and reports Host CPU: (unknown); LLVM 21 introduced
-#                          a wave of cajeta test regressions in vtable/drop/
-#                          chained-form/with-annotation codegen (the cajeta
-#                          compiler hits some LLVM API behavior that changed
-#                          between 20 → 21). LLVM 20 has full znver5 support,
-#                          passes everything LLVM 18 passes, and additionally
-#                          fixes SpawnDrop / EncodingTypes / ViewOwning that
-#                          flake on 18. It's the sweet spot until we audit
-#                          our cajeta-side use of the changed LLVM-21 APIs.
+#                          Why 22: it's the current upstream baseline. LLVM 18
+#                          lacks znver5 host-CPU detection (reports Host CPU:
+#                          (unknown)), so don't go below 22.
+#                          Use a MAINLINE LLVM (the apt llvm-N-dev / Homebrew
+#                          llvm@N packages are upstream builds), NOT a vendor
+#                          fork. Vendor forks such as ROCm's /opt/rocm*/llvm are
+#                          built with LLVM_ENABLE_RTTI=OFF and ship no C++
+#                          typeinfo for their classes; the test JIT helper then
+#                          fails to link against llvm::ErrorInfoBase. (The build
+#                          guards for this — see test/CMakeLists.txt — but
+#                          mainline avoids the issue entirely.)
 #   LLVM_DIR             — override the LLVMConfig.cmake location (default
 #                          /usr/lib/llvm-${CAJETA_LLVM_VERSION}/lib/cmake/llvm).
 #   CAJETA_SKIP_DEPS=1   — skip the dependency-install phase (useful on
@@ -27,7 +28,7 @@
 
 set -euo pipefail
 
-LLVM_VER="${CAJETA_LLVM_VERSION:-20}"
+LLVM_VER="${CAJETA_LLVM_VERSION:-22}"
 
 # LLVM_DIR default per platform — LLVMConfig.cmake lives at a different
 # canonical path on each.
@@ -69,7 +70,7 @@ install_linux_apt() {
     # cajeta.hash (runtime/native/cajeta_runtime.c includes <xxhash.h>).
     # Note: glog's Debian package is libgoogle-glog-dev, not libglog-dev.
     #
-    # LLVM-family packages are version-suffixed via $LLVM_VER (default 21, see
+    # LLVM-family packages are version-suffixed via $LLVM_VER (default 22, see
     # CAJETA_LLVM_VERSION). Each is probed via apt-cache below, so the script
     # gracefully skips any that don't exist on the current Ubuntu release
     # (e.g. lld-N-dev hasn't shipped in apt on 26.04+ for any N; the static-
@@ -172,7 +173,7 @@ install_deps() {
         MINGW*|MSYS*|CYGWIN*)
             echo "[deps] Windows detected. setup.sh does not auto-install on Windows." >&2
             echo "       Use scripts/install-xxhash-windows.ps1 for xxhash; install the" >&2
-            echo "       rest (LLVM 18, ANTLR4 runtime, glog, gtest) via vcpkg or your" >&2
+            echo "       rest (LLVM 22, ANTLR4 runtime, glog, gtest) via vcpkg or your" >&2
             echo "       preferred package manager." >&2
             return 1
             ;;

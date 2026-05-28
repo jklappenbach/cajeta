@@ -18,7 +18,7 @@ SCRIPT_DIR="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
 REPO_ROOT="$( cd -- "${SCRIPT_DIR}/../.." &> /dev/null && pwd )"
 
 CAJETA_BIN="${CAJETA_BIN:-${REPO_ROOT}/build/src/cajeta}"
-CLANG_BIN="${CLANG_BIN:-clang-20}"
+CLANG_BIN="${CLANG_BIN:-clang-22}"
 
 SRC_ROOT="${SCRIPT_DIR}/src"
 BUILD_DIR="${SCRIPT_DIR}/build/bin"

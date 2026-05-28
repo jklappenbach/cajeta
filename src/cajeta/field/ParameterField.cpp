@@ -21,7 +21,8 @@ namespace cajeta {
         if (alloca == nullptr) {
             alloca = this->getOrCreateAllocation();
         }
-        return module->getBuilder()->CreateLoad(type->getLlvmType()->getPointerTo(), alloca);
+        return module->getBuilder()->CreateLoad(
+            llvm::PointerType::get(*module->getLlvmContext(), 0), alloca);
     }
 
     llvm::Value* ParameterField::createStore(llvm::Value* value) {
@@ -52,7 +53,7 @@ namespace cajeta {
             } else if (type->getTypeFlags() & PRIMITIVE_FLAG) {
                 llvmType = type->getLlvmType();
             } else {
-                llvmType = type->getLlvmType()->getPointerTo();
+                llvmType = llvm::PointerType::get(*module->getLlvmContext(), 0);
             }
             alloca = module->getBuilder()->CreateAlloca(llvmType);
             module->getBuilder()->CreateStore(llvmFunction->getArg(paramIndex), alloca);

@@ -929,7 +929,7 @@ namespace cajeta {
                     "__cajeta_property_install", installerTy);
 
             // const char* prefix = "-D";
-            llvm::Constant* dashD = b.CreateGlobalStringPtr("-D",
+            llvm::Constant* dashD = b.CreateGlobalString("-D",
                 ".cajeta.dashD", /*AddressSpace=*/0, lmod);
 
             llvm::BasicBlock* loopHead = llvm::BasicBlock::Create(

@@ -2,7 +2,7 @@
 
 Cajeta is a hybrid systems / application language combining C++-style true templates, multiple-inheritance, and operator overloading.  It's also Java-style class semantics and annotations, It's Rust-inspired ownership for memory management — with a single explicit allocation idiom that lets the caller pick stack or heap at every creation.
 
-The compiler is LLVM-backed (LLVM 20) and produces either IR or native binaries.  Cajeta believes in a compiler that walks you or an AI through the code through abundant linting and verbose error messages. 
+The compiler is LLVM-backed (LLVM 22) and produces either IR or native binaries.  Cajeta believes in a compiler that walks you or an AI through the code through abundant linting and verbose error messages. 
 
 Cajeta may not be your choice for embedded, but it's lean enough to perform that role.  It doesn't have the "safety" of Rust, but it offers many benefits in return:  a memory model that won't fight you.  Syntax and grammar that will make C#, Java, javascript, and Typescript developers feel at home.
 
@@ -109,18 +109,18 @@ The compiler is configured via CMake and built with Ninja. Two scripts wrap the 
 
 ```sh
 sudo apt install \
-    cmake ninja-build clang-20 llvm-20-dev libllvm20 \
+    cmake ninja-build clang-22 llvm-22-dev libllvm22 \
     libantlr4-runtime-dev openjdk-17-jre \
     libgtest-dev libgoogle-glog-dev libzstd-dev vim-common libxxhash-dev
 ```
 
 Notes:
-- `clang-20` is required at compiler-build time to compile `runtime/native/cajeta_runtime.c` to LLVM bitcode, which is then embedded into the Cajeta compiler binary.
+- `clang-22` is required at compiler-build time to compile `runtime/native/cajeta_runtime.c` to LLVM bitcode, which is then embedded into the Cajeta compiler binary.
 - `vim-common` provides `xxd`, used to convert the bitcode bytes into a C array.
 - `openjdk-17-jre` runs the bundled ANTLR4 jar in `tools/antlr/`.
 - `libxxhash-dev` is the xxhash header for the cajeta.hash runtime.
-- The project defaults to LLVM 20. LLVM 21 has known cajeta-side codegen regressions pending an API-surface audit. LLVM 18 doesn't know about Zen 5 CPUs.
-- To target a different LLVM, set `CAJETA_LLVM_VERSION` (or `LLVM_DIR`) before running setup: `CAJETA_LLVM_VERSION=21 ./setup.sh`.
+- The project defaults to LLVM 22 (mainline upstream — the apt/Homebrew packages). Use a mainline build, not a vendor fork: ROCm's LLVM is compiled without RTTI and won't link the test JIT helper cleanly. LLVM 18 doesn't know about Zen 5 CPUs, so don't go below 22.
+- To target a different LLVM, set `CAJETA_LLVM_VERSION` (or `LLVM_DIR`) before running setup: `CAJETA_LLVM_VERSION=22 ./setup.sh`.
 
 ### Build outputs
 

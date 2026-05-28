@@ -11,7 +11,8 @@ namespace cajeta {
 
     llvm::AllocaInst* HeapField::getOrCreateAllocation() {
         if (!alloca) {
-            alloca = module->getBuilder()->CreateAlloca(type->getLlvmType()->getPointerTo());
+            alloca = module->getBuilder()->CreateAlloca(
+                llvm::PointerType::get(type->getLlvmType()->getContext(), 0));
             if (initializer) {
                 // An initializer whose generateCode returns null is a
                 // legitimate "no usable r-value" — e.g. a `s.foo` on a
@@ -23,8 +24,7 @@ namespace cajeta {
                 llvm::Value* initVal = initializer->generateCode(module);
                 if (!initVal) {
                     initVal = llvm::ConstantPointerNull::get(
-                        llvm::cast<llvm::PointerType>(
-                            type->getLlvmType()->getPointerTo()));
+                        llvm::PointerType::get(type->getLlvmType()->getContext(), 0));
                 }
                 module->getBuilder()->CreateStore(initVal, alloca);
             }
@@ -40,7 +40,8 @@ namespace cajeta {
         if (alloca == nullptr) {
             alloca = this->getOrCreateAllocation();
         }
-        return module->getBuilder()->CreateLoad(type->getLlvmType()->getPointerTo(), alloca);
+        return module->getBuilder()->CreateLoad(
+            llvm::PointerType::get(type->getLlvmType()->getContext(), 0), alloca);
     }
 
     void HeapField::onDelete() {

@@ -215,7 +215,7 @@ namespace cajeta {
                 auto klass = std::dynamic_pointer_cast<CajetaClass>(stringTy);
                 if (!klass || !klass->getLlvmType()
                         || !llvm::isa<llvm::StructType>(klass->getLlvmType())) {
-                    return module->getBuilder()->CreateGlobalStringPtr(decoded, "str");
+                    return module->getBuilder()->CreateGlobalString(decoded, "str");
                 }
                 auto* structTy = llvm::cast<llvm::StructType>(klass->getLlvmType());
                 auto* mod = module->getLlvmModule();

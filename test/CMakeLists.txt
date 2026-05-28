@@ -14,7 +14,29 @@ cmake_policy(SET CMP0075 NEW)
 
 find_package(GTest REQUIRED)
 
+# Re-discover LLVM here purely to read LLVM_ENABLE_RTTI (find_package
+# variables don't cross sibling add_subdirectory scopes; the real LLVM
+# detection + libs come from src/). QUIET because src/ already reported it.
+find_package(LLVM CONFIG QUIET)
+
 add_executable(${BINARY} ${TEST_SOURCES})
+
+# ROCm / upstream LLVM is built with LLVM_ENABLE_RTTI=OFF, so it ships no
+# C++ typeinfo for its own classes — it uses LLVM's hand-rolled
+# isa<>/dyn_cast<> RTTI instead. The llvm::Error consumers (toString /
+# cantFail / consumeError) expand inline to code that instantiates the
+# C++ typeinfo for llvm::ErrorInfo<ErrorList, ErrorInfoBase>; compiled
+# with the default -frtti that typeinfo dangles a reference to
+# `typeinfo for llvm::ErrorInfoBase`, which the -fno-rtti LLVM omits ->
+# undefined reference at link. Those calls are isolated in JitErrorShim.cpp
+# (ANTLR-free, so unlike JitTestHelper.cpp it can be built -fno-rtti);
+# compiling just that TU -fno-rtti emits no such typeinfo. The rest of
+# test/ keeps RTTI (it dynamic_casts on cajeta + ANTLR types). Against a
+# distro LLVM built with RTTI on, the symbol exists, so this is a no-op.
+if(DEFINED LLVM_ENABLE_RTTI AND NOT LLVM_ENABLE_RTTI)
+    set_source_files_properties(jit/JitErrorShim.cpp PROPERTIES
+            COMPILE_OPTIONS "-fno-rtti")
+endif()
 
 target_link_libraries(${BINARY} PRIVATE
         ${CMAKE_PROJECT_NAME}_lib

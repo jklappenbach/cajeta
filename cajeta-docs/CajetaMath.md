@@ -1090,7 +1090,7 @@ import / export operates on `Module` graphs, not raw tensors.
 The same `Tensor` / `Module` API targets:
 
 - **CPU + LLVM SIMD intrinsics** — the default and the only one with
-  no external dependencies. Lowering uses the LLVM 20 vector
+  no external dependencies. Lowering uses the LLVM 22 vector
   intrinsics; loop kernels are aggressively autovectorized. AVX-512,
   NEON, SVE are all in scope.
 - **`cajeta.xpu.nvidia`** — when a CUDA device is present and the

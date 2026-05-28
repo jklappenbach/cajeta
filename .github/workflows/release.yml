@@ -6,7 +6,7 @@
 # Non-trivial parts called out in inline comments:
 #   - macOS jobs install LLVM via Homebrew and pass LLVM_DIR explicitly
 #     to CMake (brew doesn't put LLVM on the default search path).
-#   - Windows uses Chocolatey for LLVM 20 + vcpkg for ANTLR4 runtime
+#   - Windows uses Chocolatey for LLVM 22 + vcpkg for ANTLR4 runtime
 #     (apt-style "everything in one place" isn't available there).
 #   - The build matrix is `fail-fast: false` so a flaky transient on
 #     one target doesn't take down the whole release.
@@ -157,15 +157,15 @@ jobs:
         run: |
           set -euo pipefail
           sudo apt-get update
-          # Mirror setup.sh's install_linux_apt list. llvm-20 is the
-          # baseline; lld-20-dev may not ship on 24.04 ARM yet, so
+          # Mirror setup.sh's install_linux_apt list. llvm-22 is the
+          # baseline; lld-22-dev may not ship on 24.04 ARM yet, so
           # leave it best-effort.
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
             cmake \
             ninja-build \
-            clang-20 \
-            llvm-20-dev \
-            libllvm20 \
+            clang-22 \
+            llvm-22-dev \
+            libllvm22 \
             libantlr4-runtime-dev \
             openjdk-17-jre \
             libgtest-dev \
@@ -174,8 +174,8 @@ jobs:
             vim-common \
             libxxhash-dev \
             libssl-dev
-          sudo apt-get install -y lld-20-dev || \
-            echo "::warning::lld-20-dev unavailable on this runner; --emit=exe will fall back to system linker"
+          sudo apt-get install -y lld-22-dev || \
+            echo "::warning::lld-22-dev unavailable on this runner; --emit=exe will fall back to system linker"
 
       # ---- macOS dependency install (brew) ------------------------------
       - name: Install dependencies (macOS)
@@ -189,17 +189,17 @@ jobs:
           brew install \
             cmake \
             ninja \
-            llvm@20 \
+            llvm@22 \
             antlr4-cpp-runtime \
             openjdk@17 \
             googletest \
             glog \
             zstd \
             xxhash
-          echo "LLVM_DIR=$(brew --prefix llvm@20)/lib/cmake/llvm" >> "$GITHUB_ENV"
-          # Apple's system clang doesn't know about llvm@20 headers/libs
+          echo "LLVM_DIR=$(brew --prefix llvm@22)/lib/cmake/llvm" >> "$GITHUB_ENV"
+          # Apple's system clang doesn't know about llvm@22 headers/libs
           # unless we point CMake at the brew prefix explicitly.
-          echo "CMAKE_PREFIX_PATH=$(brew --prefix llvm@20)" >> "$GITHUB_ENV"
+          echo "CMAKE_PREFIX_PATH=$(brew --prefix llvm@22)" >> "$GITHUB_ENV"
 
       # ---- Windows: MSYS2 / MinGW-w64 ----------------------------------
       #

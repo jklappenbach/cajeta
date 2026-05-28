@@ -329,4 +329,4 @@ A few rough edges surfaced while bringing this sample up. None block the demo as
 - ~~**`Box<int32>.get()` returns garbage in multi-module builds**~~ — **fixed** (pre-seed placeholder typeParameters at prescan time, see commit `6d30574`).
 - ~~**`System.out` (Java idiom) silently compiles to a no-op**~~ — **fixed.** The compiler now emits `CAJETA_ERROR_UNKNOWN_SYSTEM_STREAM` with a "did you mean `stdout`?" hint.
 - ~~**`printf("template {}", arg)` produces no output in binary emit**~~ — **fixed.** The printf intrinsic checks args at lower time and now throws `CAJETA_ERROR_PRINTF_BAD_ARGS` for misshapen calls.
-- **`--emit=exe` (in-process lld link)** requires `lld-N-dev` at compiler-build time. Without it, the in-process linker prints a hint. `build-bin.sh` works around this by using `--emit=obj` + `clang-20` for the final link.
+- **`--emit=exe` (in-process lld link)** requires `lld-N-dev` at compiler-build time. Without it, the in-process linker prints a hint. `build-bin.sh` works around this by using `--emit=obj` + `clang-22` for the final link.

@@ -721,7 +721,8 @@ namespace cajeta {
             qName->getPackageName());
         CajetaTypePtr pointerType = CajetaType::of(pointerName);
         if (!pointerType) {
-            pointerType = CajetaType::create(pointerName, llvmType->getPointerTo(), POINTER_FLAG);
+            pointerType = CajetaType::create(pointerName,
+                llvm::PointerType::get(llvmType->getContext(), 0), POINTER_FLAG);
         }
         return pointerType;
     }
