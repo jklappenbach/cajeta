@@ -151,6 +151,14 @@ if(CAJETA_LLD_INCLUDE_DIR AND CAJETA_LLD_COMMON_LIB AND CAJETA_LLD_ELF_LIB)
     set(CAJETA_LLD_LIBS ${CAJETA_LLD_ELF_LIB} ${CAJETA_LLD_COMMON_LIB})
     set(CAJETA_HAS_LLD ON)
     message(STATUS "lld libraries found; --emit=exe will use lld in-process.")
+    # lld's ThinLTO BitcodeCompiler references llvm::lto::* — pull libLLVMLTO
+    # (and its transitive deps, which on some LLVM builds includes Polly) ONLY
+    # when lld is actually linked. Gating on lld keeps the Linux CI hard-gate
+    # build (no lld there) from requiring libPolly.a, which apt's llvm-N-dev
+    # doesn't ship. Prepended so it precedes the JIT LLVM libs, satisfying
+    # lld's references before GNU ld's single left-to-right pass moves past.
+    llvm_map_components_to_libnames(CAJETA_LLD_LLVM_DEPS lto)
+    list(PREPEND LLVM_LIBS ${CAJETA_LLD_LLVM_DEPS})
 else()
     set(CAJETA_LLD_LIBS "")
     set(CAJETA_HAS_LLD OFF)
@@ -357,6 +365,13 @@ target_link_libraries(${CMAKE_PROJECT_NAME}_lib
         glog::glog
         zstd
         OpenSSL::Crypto)
+# The native runtime (cajeta_runtime.c, embedded in this lib) uses
+# BCryptGenRandom for its RNG on Windows — link the bcrypt system lib.
+# Only the test binary actually pulls the native runtime object; on
+# cajeta.exe this is a harmless unused import.
+if(WIN32)
+    target_link_libraries(${CMAKE_PROJECT_NAME}_lib PUBLIC bcrypt)
+endif()
 target_include_directories(${CMAKE_PROJECT_NAME}_lib PUBLIC
         ${PROJECT_SOURCE_DIR}/src
         ${LLVM_INCLUDE_DIRS}
