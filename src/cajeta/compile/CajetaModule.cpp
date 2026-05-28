@@ -77,6 +77,13 @@ namespace cajeta {
             // callers (tests) typically don't. Normalize the leading separator
             // out so the package-extraction math is independent of that detail.
             string temp = sourcePath.substr(sourceRoot.size(), suffixIndex - sourceRoot.size());
+#ifdef _WIN32
+            // The filesystem hands back Windows paths with '\' separators, but
+            // package derivation below keys off PATH_SEPARATOR ('/'). Normalize
+            // so `<root>\test\D.cajeta` yields package "test", not "". Backslash
+            // is never a valid filename char on Windows, so this is lossless.
+            std::replace(temp.begin(), temp.end(), '\\', '/');
+#endif
             if (!temp.empty() && temp[0] == PATH_SEPARATOR) {
                 temp.erase(0, 1);
             }
