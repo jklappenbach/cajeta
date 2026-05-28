@@ -45,6 +45,29 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+#ifdef _WIN32
+#include <malloc.h>  // _aligned_malloc / _aligned_free (no posix_memalign on MinGW)
+#endif
+
+// Aligned alloc/free abstracted because MinGW/MSVCRT has no posix_memalign,
+// and memory from _aligned_malloc MUST be released with _aligned_free.
+static void* emutls_aligned_alloc(size_t align, size_t size) {
+#ifdef _WIN32
+    return _aligned_malloc(size, align);
+#else
+    void* p = NULL;
+    if (posix_memalign(&p, align, size) != 0) return NULL;
+    return p;
+#endif
+}
+
+static void emutls_aligned_free(void* p) {
+#ifdef _WIN32
+    _aligned_free(p);
+#else
+    free(p);
+#endif
+}
 
 // Matches compiler-rt's emutls_control struct.
 typedef struct __emutls_control {
@@ -68,7 +91,7 @@ static void emutls_key_destructor(void* ptr) {
     // arr[0] holds the current array capacity (in entries, NOT bytes).
     size_t cap = (size_t) (uintptr_t) arr[0];
     for (size_t i = 1; i <= cap; ++i) {
-        if (arr[i]) free(arr[i]);
+        if (arr[i]) emutls_aligned_free(arr[i]);
     }
     free(arr);
 }
@@ -81,9 +104,9 @@ static void* emutls_allocate_object(__emutls_control* control) {
     size_t align = control->align ? control->align : sizeof(void*);
     // Round size up to alignment so aligned_alloc is happy.
     size_t size = (control->size + align - 1) & ~(align - 1);
-    void* obj;
-    if (posix_memalign(&obj, align < sizeof(void*) ? sizeof(void*) : align,
-                       size ? size : sizeof(void*)) != 0) {
+    void* obj = emutls_aligned_alloc(align < sizeof(void*) ? sizeof(void*) : align,
+                                     size ? size : sizeof(void*));
+    if (!obj) {
         return NULL;
     }
     if (control->value) {
