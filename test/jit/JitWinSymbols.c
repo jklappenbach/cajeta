@@ -82,6 +82,19 @@ static const CajetaJitWinSym kSymbols[] = {
     CJ_SYM("___chkstk_ms",     &___chkstk_ms),
     CJ_SYM("sincos",           &sincos),
     CJ_SYM("sincosf",          &sincosf),
+    // Stateful CRT functions that maintain process-global tables. These MUST
+    // resolve to the same CRT instance as the host test binary (and as the
+    // open/read/write above) — otherwise the JIT'd code operates on a
+    // different table than the host. Without binding them here, LLJIT's
+    // process-symbol generator resolves them independently (e.g. against
+    // ucrtbase.dll), and:
+    //   _commit  — gets an fd opened in the runtime's CRT, sees it as foreign,
+    //              and fast-fails (0xC0000409) — crashed File.writeAllBytes.
+    //   getenv / _putenv_s — read/write a different environment block, so
+    //              host-set vars are invisible to JIT'd System.env.get.
+    CJ_SYM("_commit",          &_commit),
+    CJ_SYM("getenv",           &getenv),
+    CJ_SYM("_putenv_s",        &_putenv_s),
 };
 
 const CajetaJitWinSym* cajeta_jit_win_symbols(size_t* count) {
