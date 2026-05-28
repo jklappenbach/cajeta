@@ -65,7 +65,17 @@ if(NOT TARGET zstd::libzstd_shared)
 endif()
 
 find_package(LLVM REQUIRED CONFIG)
-add_definitions(${LLVM_DEFINITIONS})
+# LLVM_DEFINITIONS is a single space-separated string (e.g.
+# "-D_GLIBCXX_USE_CXX11_ABI=1 -D__STDC_CONSTANT_MACROS ..."). Passing it to
+# add_definitions() verbatim collapses the whole string into ONE malformed
+# definition, so the first macro's value swallows the remaining -D tokens
+# (_GLIBCXX_USE_CXX11_ABI becomes "1 -D_FILE_OFFSET_BITS=64 ..."). Most
+# tokens are never used in an #if so this stayed silent on some toolchains,
+# but mingw LLVM's string defines _GLIBCXX_USE_CXX11_ABI=1, which libstdc++
+# evaluates in #if and rejects ("token '=' is not valid"). Split into a
+# proper list first.
+separate_arguments(LLVM_DEFINITIONS_LIST NATIVE_COMMAND "${LLVM_DEFINITIONS}")
+add_definitions(${LLVM_DEFINITIONS_LIST})
 include_directories(${LLVM_INCLUDE_DIRS})
 find_package(ANTLR REQUIRED)
 
@@ -122,16 +132,40 @@ message(STATUS "Using project includes at: ${CMAKE_INCLUDE_SOURCE_DIR}/include")
 # (The macOS brew-lib link-search-path fix lives in the TOP-level
 # CMakeLists.txt so it propagates to test/ targets as well as src/.)
 
-# Resolve LLVM component libraries. The compiler initializes all targets at
-# startup, so we need every backend linked in.
-llvm_map_components_to_libnames(LLVM_LIBS
-        support core irreader option
-        target mc passes analysis bitwriter bitreader
-        orcjit executionengine runtimedyld linker
-        AllTargetsAsmParsers
-        AllTargetsCodeGens
-        AllTargetsDescs
-        AllTargetsInfos)
+# Resolve LLVM libraries. The compiler initializes all targets at startup,
+# so we need every backend linked in.
+#
+# On Windows/MinGW where LLVM is packaged as a single shared library
+# (LLVM_LINK_LLVM_DYLIB ON, the MSYS2 default), link that one dylib instead of
+# the static component archives. This is REQUIRED on MSYS2: the lld static libs
+# there were built against libLLVM.dll, so their references into llvm:: (the
+# demangler, llvm::lto::DTLTO, ...) are PE __declspec(dllimport) and resolve
+# ONLY against the LLVM import library — the static component .a's cannot
+# satisfy `__imp_`-prefixed refs. The dylib also bundles every component (LTO,
+# Demangle, ...), so no further component juggling is needed.
+#
+# Scoped to WIN32: the dllimport problem is PE-specific. Linux/macOS keep the
+# static-component linking they already ship green with, even if their LLVM
+# package happens to set LLVM_LINK_LLVM_DYLIB.
+if(WIN32 AND LLVM_LINK_LLVM_DYLIB)
+    set(CAJETA_USE_LLVM_DYLIB ON)
+else()
+    set(CAJETA_USE_LLVM_DYLIB OFF)
+endif()
+
+if(CAJETA_USE_LLVM_DYLIB)
+    set(LLVM_LIBS LLVM)
+    message(STATUS "Linking the monolithic LLVM dylib (Windows + LLVM_LINK_LLVM_DYLIB)")
+else()
+    llvm_map_components_to_libnames(LLVM_LIBS
+            support core irreader option
+            target mc passes analysis bitwriter bitreader
+            orcjit executionengine runtimedyld linker
+            AllTargetsAsmParsers
+            AllTargetsCodeGens
+            AllTargetsDescs
+            AllTargetsInfos)
+endif()
 
 # Optional: detect lld libraries (lld-${LLVM_VERSION_MAJOR}-dev on Ubuntu when
 # the distro ships one — note Ubuntu 26.04+ dropped lld-N-dev for all N). When
@@ -148,17 +182,27 @@ find_path(CAJETA_LLD_INCLUDE_DIR
 find_library(CAJETA_LLD_COMMON_LIB NAMES lldCommon)
 find_library(CAJETA_LLD_ELF_LIB NAMES lldELF)
 if(CAJETA_LLD_INCLUDE_DIR AND CAJETA_LLD_COMMON_LIB AND CAJETA_LLD_ELF_LIB)
-    set(CAJETA_LLD_LIBS ${CAJETA_LLD_ELF_LIB} ${CAJETA_LLD_COMMON_LIB})
+    # lld's ELF OutputSection compression references zlib (adler32, deflate*)
+    # and zstd. zstd is already linked below; zlib is otherwise unused by
+    # cajeta, so pull it in here, next to lld, the only consumer. Placed after
+    # the lld archives so GNU ld's single left-to-right pass resolves lld's
+    # zlib refs. On Linux-without-lld this stays unlinked (this branch is off).
+    find_package(ZLIB REQUIRED)
+    set(CAJETA_LLD_LIBS ${CAJETA_LLD_ELF_LIB} ${CAJETA_LLD_COMMON_LIB} ZLIB::ZLIB)
     set(CAJETA_HAS_LLD ON)
     message(STATUS "lld libraries found; --emit=exe will use lld in-process.")
     # lld's ThinLTO BitcodeCompiler references llvm::lto::* — pull libLLVMLTO
     # (and its transitive deps, which on some LLVM builds includes Polly) ONLY
-    # when lld is actually linked. Gating on lld keeps the Linux CI hard-gate
-    # build (no lld there) from requiring libPolly.a, which apt's llvm-N-dev
-    # doesn't ship. Prepended so it precedes the JIT LLVM libs, satisfying
-    # lld's references before GNU ld's single left-to-right pass moves past.
-    llvm_map_components_to_libnames(CAJETA_LLD_LLVM_DEPS lto)
-    list(PREPEND LLVM_LIBS ${CAJETA_LLD_LLVM_DEPS})
+    # when lld is actually linked AND we're using the static component libs.
+    # Gating on lld keeps the Linux CI hard-gate build (no lld there) from
+    # requiring libPolly.a, which apt's llvm-N-dev doesn't ship. Prepended so
+    # it precedes the JIT LLVM libs, satisfying lld's references before GNU
+    # ld's single left-to-right pass moves past. When we link the monolithic
+    # dylib (CAJETA_USE_LLVM_DYLIB) LTO is already inside libLLVM, so skip this.
+    if(NOT CAJETA_USE_LLVM_DYLIB)
+        llvm_map_components_to_libnames(CAJETA_LLD_LLVM_DEPS lto)
+        list(PREPEND LLVM_LIBS ${CAJETA_LLD_LLVM_DEPS})
+    endif()
 else()
     set(CAJETA_LLD_LIBS "")
     set(CAJETA_HAS_LLD OFF)
