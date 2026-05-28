@@ -35,6 +35,7 @@
 #include <string.h>
 #include <pthread.h>
 #include <signal.h>
+#include <unistd.h>   // write(2) for abort-survivable diagnostics (see below)
 
 // execinfo.h (backtrace + backtrace_symbols) — glibc + macOS only.
 // MinGW-w64 doesn't ship it; stub on Windows so the runtime compiles
@@ -1191,8 +1192,18 @@ void __cajeta_lock_destroy(void* p) {
 // Abort with a diagnostic when an array index is out of bounds. Compiler emits a
 // conditional branch to this from ArrayIndexExpression when bounds checking is on.
 void __cajeta_array_bounds_fail(int64_t index, int64_t dim) {
-    fprintf(stderr, "cajeta: array index %lld out of bounds for dimension size %lld\n",
-            (long long) index, (long long) dim);
+    // write(2) rather than fprintf(stderr): abort() does not flush stdio, and
+    // on Windows stderr is block-buffered when piped (e.g. under a gtest death
+    // test), so an fprintf'd message is lost — the diagnostic must reach the
+    // fd directly. snprintf into a stack buffer first (no FILE* involved).
+    char buf[160];
+    int n = snprintf(buf, sizeof(buf),
+                     "cajeta: array index %lld out of bounds for dimension size %lld\n",
+                     (long long) index, (long long) dim);
+    if (n > 0) {
+        if (n > (int) sizeof(buf)) n = (int) sizeof(buf);
+        (void) write(2, buf, (size_t) n);
+    }
     abort();
 }
 
@@ -1956,10 +1967,23 @@ static void __cajeta_emit_uncaught(void* value, int is_unrec) {
     if (value && (uintptr_t) value >= 4096) {
         msg = ((void**) value)[1];
     }
+    // write(2), not fprintf(stderr): the caller abort()s (unrecoverable) or
+    // exit()s, and abort() doesn't flush stdio. On Windows stderr is block-
+    // buffered when piped (e.g. under a gtest death test), so an fprintf'd
+    // message never reaches the fd. Format into a stack buffer, then write the
+    // raw bytes to fd 2 directly.
+    char buf[1024];
+    int n;
     if (msg) {
-        fprintf(stderr, "cajeta: %s exception: %s\n", kind, (const char*) msg);
+        n = snprintf(buf, sizeof(buf), "cajeta: %s exception: %s\n",
+                     kind, (const char*) msg);
     } else {
-        fprintf(stderr, "cajeta: %s exception (value=%p)\n", kind, value);
+        n = snprintf(buf, sizeof(buf), "cajeta: %s exception (value=%p)\n",
+                     kind, value);
+    }
+    if (n > 0) {
+        if (n > (int) sizeof(buf)) n = (int) sizeof(buf);
+        (void) write(2, buf, (size_t) n);
     }
     __cajeta_print_trace(value, 2);
 }
