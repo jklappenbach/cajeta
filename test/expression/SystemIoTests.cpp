@@ -8,9 +8,13 @@
 #include "../jit/JitTestHelper.h"
 
 #include <cstdint>
+#include <cstdio>
 #include <string>
+#ifdef _WIN32
+#include <io.h>
+#else
 #include <unistd.h>
-#include <fcntl.h>
+#endif
 
 using cajeta_test::CajetaJit;
 
@@ -29,34 +33,35 @@ std::string makeSource(const std::string& body) {
 // Run a no-arg int32-returning JIT function while capturing the requested fd
 // (1=stdout or 2=stderr). Returns the captured bytes as a std::string.
 //
-// Uses pipe() + dup2() to redirect the descriptor through a read-end we control.
-// O_NONBLOCK on the read end is critical: the runtime writes via write(fd, ...)
-// directly so we can drain the pipe without worrying about stdio buffering, and
-// the non-blocking read prevents hangs if the program doesn't actually emit.
+// Redirects the descriptor to a temp file via dup2(), runs, restores, then
+// reads the file back. The runtime writes via write(fd, ...) directly, which
+// a file-backed fd captures faithfully. This avoids pipe()/fcntl()/O_NONBLOCK
+// (absent on MinGW) and can't deadlock on a full pipe buffer the way a
+// pipe-based capture could for large output. tmpfile() opens in binary mode
+// on Windows, so no CRLF translation skews the captured bytes.
 std::string captureFd(int fd, int32_t (*fn)()) {
-    int pipefd[2];
-    if (pipe(pipefd) != 0) return "<pipe failed>";
+    std::FILE* tmp = std::tmpfile();
+    if (!tmp) return "<tmpfile failed>";
+    int tmpFd = fileno(tmp);
+    std::FILE* cfile = (fd == 2) ? stderr : stdout;
+    std::fflush(cfile);
     int origFd = dup(fd);
-    if (origFd == -1) return "<dup failed>";
-    dup2(pipefd[1], fd);
-    close(pipefd[1]);
+    if (origFd == -1) { std::fclose(tmp); return "<dup failed>"; }
+    dup2(tmpFd, fd);
     fn();
-    // Restore the original fd before reading so the program-end of the pipe
-    // closes and read() returns the remaining bytes.
+    std::fflush(cfile);
     dup2(origFd, fd);
     close(origFd);
 
-    int flags = fcntl(pipefd[0], F_GETFL, 0);
-    fcntl(pipefd[0], F_SETFL, flags | O_NONBLOCK);
-
+    std::fflush(tmp);
+    std::fseek(tmp, 0, SEEK_SET);
     std::string out;
     char buf[1024];
-    for (;;) {
-        ssize_t n = read(pipefd[0], buf, sizeof(buf));
-        if (n <= 0) break;
+    size_t n;
+    while ((n = std::fread(buf, 1, sizeof(buf), tmp)) > 0) {
         out.append(buf, n);
     }
-    close(pipefd[0]);
+    std::fclose(tmp);
     return out;
 }
 

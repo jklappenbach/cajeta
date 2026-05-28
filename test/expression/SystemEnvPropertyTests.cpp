@@ -4,6 +4,7 @@
 
 #include "gtest/gtest.h"
 #include "../jit/JitTestHelper.h"
+#include "../PortableEnv.h"
 
 #include <cstdint>
 #include <cstdlib>
