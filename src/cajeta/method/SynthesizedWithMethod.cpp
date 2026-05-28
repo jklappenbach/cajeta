@@ -74,7 +74,7 @@ namespace cajeta {
 
         // Memcpy intrinsic — preserves the vtable pointer at slot 0 and
         // every field bit-for-bit. We then overwrite the targeted field.
-        llvm::Function* memcpyFn = llvm::Intrinsic::getDeclaration(
+        llvm::Function* memcpyFn = llvm::Intrinsic::getOrInsertDeclaration(
             lmod, llvm::Intrinsic::memcpy,
             {ptrTy, ptrTy, i64Ty});
 

@@ -34,7 +34,10 @@ namespace cajeta {
 
     void Compiler::rebuildTargetMachine() {
         string error;
-        target = llvm::TargetRegistry::lookupTarget(targetTriple, error);
+        // LLVM 21 dropped the std::string overloads of lookupTarget /
+        // createTargetMachine in favor of llvm::Triple. Build it once.
+        llvm::Triple triple(targetTriple);
+        target = llvm::TargetRegistry::lookupTarget(triple, error);
         if (!target) {
             cerr << "cajeta: could not lookup target '" << targetTriple << "': " << error << std::endl;
             targetMachine = nullptr;
@@ -57,7 +60,7 @@ namespace cajeta {
         // carries all of JSON / hashing / parallel-stream / etc.
         opt.FunctionSections = true;
         opt.DataSections     = true;
-        targetMachine = target->createTargetMachine(targetTriple, cpu, features, opt, effectiveRM);
+        targetMachine = target->createTargetMachine(triple, cpu, features, opt, effectiveRM);
     }
 
     // ANTLR-based pre-scan visitor. Walks the parse tree shallowly

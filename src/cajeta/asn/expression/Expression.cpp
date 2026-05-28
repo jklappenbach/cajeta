@@ -587,7 +587,7 @@ namespace cajeta {
             builder->CreateCondBr(outOfBounds, failBB, okBB);
             builder->SetInsertPoint(failBB);
             if (boundsMode == BoundsCheck::Trap) {
-                llvm::Function* trapFn = llvm::Intrinsic::getDeclaration(
+                llvm::Function* trapFn = llvm::Intrinsic::getOrInsertDeclaration(
                     module->getLlvmModule(), llvm::Intrinsic::trap);
                 builder->CreateCall(trapFn);
             } else {

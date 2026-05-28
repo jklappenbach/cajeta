@@ -117,7 +117,7 @@ namespace cajeta {
         llvm::Type* t = v->getType();
         if (!t->isIntegerTy()) return v;          // float bswap is post-v1
         if (t->getIntegerBitWidth() <= 8) return v;  // single byte has no byte order
-        llvm::Function* fn = llvm::Intrinsic::getDeclaration(
+        llvm::Function* fn = llvm::Intrinsic::getOrInsertDeclaration(
             module->getLlvmModule(), llvm::Intrinsic::bswap, {t});
         return module->getBuilder()->CreateCall(fn, {v});
     }

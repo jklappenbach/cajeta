@@ -1367,12 +1367,12 @@ namespace cajeta {
                 if (methodCallName == "abs" && parameters.size() == 1) {
                     llvm::Value* x = loadArg(0);
                     if (x->getType()->isFloatingPointTy()) {
-                        llvm::Function* fn = llvm::Intrinsic::getDeclaration(
+                        llvm::Function* fn = llvm::Intrinsic::getOrInsertDeclaration(
                             lm, llvm::Intrinsic::fabs, {x->getType()});
                         return builder->CreateCall(fn, {x});
                     }
                     x = toI64(x);
-                    llvm::Function* fn = llvm::Intrinsic::getDeclaration(
+                    llvm::Function* fn = llvm::Intrinsic::getOrInsertDeclaration(
                         lm, llvm::Intrinsic::abs, {i64Ty});
                     return builder->CreateCall(fn, {x, llvm::ConstantInt::getFalse(llvmCtx)});
                 }
@@ -1387,45 +1387,45 @@ namespace cajeta {
                         b = toF64(b);
                         llvm::Intrinsic::ID id = methodCallName == "max"
                             ? llvm::Intrinsic::maxnum : llvm::Intrinsic::minnum;
-                        llvm::Function* fn = llvm::Intrinsic::getDeclaration(lm, id, {f64Ty});
+                        llvm::Function* fn = llvm::Intrinsic::getOrInsertDeclaration(lm, id, {f64Ty});
                         return builder->CreateCall(fn, {a, b});
                     }
                     a = toI64(a);
                     b = toI64(b);
                     llvm::Intrinsic::ID id = methodCallName == "max"
                         ? llvm::Intrinsic::smax : llvm::Intrinsic::smin;
-                    llvm::Function* fn = llvm::Intrinsic::getDeclaration(lm, id, {i64Ty});
+                    llvm::Function* fn = llvm::Intrinsic::getOrInsertDeclaration(lm, id, {i64Ty});
                     return builder->CreateCall(fn, {a, b});
                 }
                 if (methodCallName == "sqrt" && parameters.size() == 1) {
                     llvm::Value* x = toF64(loadArg(0));
-                    llvm::Function* fn = llvm::Intrinsic::getDeclaration(
+                    llvm::Function* fn = llvm::Intrinsic::getOrInsertDeclaration(
                         lm, llvm::Intrinsic::sqrt, {f64Ty});
                     return builder->CreateCall(fn, {x});
                 }
                 if (methodCallName == "pow" && parameters.size() == 2) {
                     llvm::Value* x = toF64(loadArg(0));
                     llvm::Value* y = toF64(loadArg(1));
-                    llvm::Function* fn = llvm::Intrinsic::getDeclaration(
+                    llvm::Function* fn = llvm::Intrinsic::getOrInsertDeclaration(
                         lm, llvm::Intrinsic::pow, {f64Ty});
                     return builder->CreateCall(fn, {x, y});
                 }
                 if (methodCallName == "floor" && parameters.size() == 1) {
                     llvm::Value* x = toF64(loadArg(0));
-                    llvm::Function* fn = llvm::Intrinsic::getDeclaration(
+                    llvm::Function* fn = llvm::Intrinsic::getOrInsertDeclaration(
                         lm, llvm::Intrinsic::floor, {f64Ty});
                     return builder->CreateCall(fn, {x});
                 }
                 if (methodCallName == "ceil" && parameters.size() == 1) {
                     llvm::Value* x = toF64(loadArg(0));
-                    llvm::Function* fn = llvm::Intrinsic::getDeclaration(
+                    llvm::Function* fn = llvm::Intrinsic::getOrInsertDeclaration(
                         lm, llvm::Intrinsic::ceil, {f64Ty});
                     return builder->CreateCall(fn, {x});
                 }
                 if (methodCallName == "round" && parameters.size() == 1) {
                     // Match Java's Math.round(double) → long: half-up rounding to i64.
                     llvm::Value* x = toF64(loadArg(0));
-                    llvm::Function* fn = llvm::Intrinsic::getDeclaration(
+                    llvm::Function* fn = llvm::Intrinsic::getOrInsertDeclaration(
                         lm, llvm::Intrinsic::round, {f64Ty});
                     llvm::Value* rounded = builder->CreateCall(fn, {x});
                     return builder->CreateFPToSI(rounded, i64Ty);
@@ -1442,16 +1442,16 @@ namespace cajeta {
                 for (const auto& u : unaryFns) {
                     if (methodCallName == u.name && parameters.size() == 1) {
                         llvm::Value* x = toF64(loadArg(0));
-                        llvm::Function* fn = llvm::Intrinsic::getDeclaration(lm, u.id, {f64Ty});
+                        llvm::Function* fn = llvm::Intrinsic::getOrInsertDeclaration(lm, u.id, {f64Ty});
                         return builder->CreateCall(fn, {x});
                     }
                 }
                 // tan has no direct intrinsic in LLVM 18 — emit sin/cos division.
                 if (methodCallName == "tan" && parameters.size() == 1) {
                     llvm::Value* x = toF64(loadArg(0));
-                    llvm::Function* sinFn = llvm::Intrinsic::getDeclaration(
+                    llvm::Function* sinFn = llvm::Intrinsic::getOrInsertDeclaration(
                         lm, llvm::Intrinsic::sin, {f64Ty});
-                    llvm::Function* cosFn = llvm::Intrinsic::getDeclaration(
+                    llvm::Function* cosFn = llvm::Intrinsic::getOrInsertDeclaration(
                         lm, llvm::Intrinsic::cos, {f64Ty});
                     return builder->CreateFDiv(
                         builder->CreateCall(sinFn, {x}),
@@ -1620,7 +1620,7 @@ namespace cajeta {
                     } else {
                         id = llvm::Intrinsic::bitreverse;
                     }
-                    llvm::Function* fn = llvm::Intrinsic::getDeclaration(lm, id, {opTy});
+                    llvm::Function* fn = llvm::Intrinsic::getOrInsertDeclaration(lm, id, {opTy});
                     llvm::Value* call;
                     if (needsZeroFlag) {
                         // false = return bit-width when input is zero (Java's behavior),

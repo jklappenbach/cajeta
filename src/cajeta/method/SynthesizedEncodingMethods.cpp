@@ -146,7 +146,7 @@ namespace cajeta {
         // memcpy(this, tmp, sizeof(parent)).
         llvm::Type* parentTy = parent->getLlvmType();
         uint64_t parentSize = dl.getTypeAllocSize(parentTy);
-        llvm::Function* memcpyFn = llvm::Intrinsic::getDeclaration(
+        llvm::Function* memcpyFn = llvm::Intrinsic::getOrInsertDeclaration(
             lmod, llvm::Intrinsic::memcpy,
             {ptrTy, ptrTy, i64Ty});
         b.CreateCall(memcpyFn, {

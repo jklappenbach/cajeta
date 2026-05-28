@@ -40,7 +40,7 @@ namespace cajeta {
         auto* okBB = llvm::BasicBlock::Create(ctx, label + ".ok", curFn);
         b.CreateCondBr(condTrap, trapBB, okBB);
         b.SetInsertPoint(trapBB);
-        llvm::Function* trapFn = llvm::Intrinsic::getDeclaration(
+        llvm::Function* trapFn = llvm::Intrinsic::getOrInsertDeclaration(
             lmod, llvm::Intrinsic::trap);
         b.CreateCall(trapFn);
         b.CreateUnreachable();
@@ -63,7 +63,7 @@ namespace cajeta {
                                              llvm::Value* r,
                                              const std::string& label) {
         auto* lmod = module->getLlvmModule();
-        llvm::Function* fn = llvm::Intrinsic::getDeclaration(
+        llvm::Function* fn = llvm::Intrinsic::getOrInsertDeclaration(
             lmod, intrinId, {l->getType()});
         llvm::Value* pair = b.CreateCall(fn, {l, r}, label + ".pair");
         llvm::Value* ofBit = b.CreateExtractValue(pair, {1}, label + ".of");
