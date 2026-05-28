@@ -422,4 +422,13 @@ void* CajetaJit::lookupAddress(const std::string& shortName) {
     return reinterpret_cast<void*>(sym->getValue());
 }
 
+void* CajetaJit::lookupRawSymbol(const std::string& exactName) {
+    auto sym = jit->lookup(exactName);
+    if (!sym) {
+        llvm::consumeError(sym.takeError());
+        return nullptr;
+    }
+    return reinterpret_cast<void*>(sym->getValue());
+}
+
 } // namespace cajeta_test

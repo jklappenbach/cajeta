@@ -43,25 +43,26 @@ namespace {
             auto fn = jit->lookup<const CajetaStringLayout* (*)()>("run");
             const CajetaStringLayout* s = fn();
             if (!s) return std::string("<null>");
-            // Class String shape: vtable looks like a valid pointer
-            // (high bits set or low bits zero from page alignment),
-            // byteLength matches the expected ASCII shape. The
-            // synthesized-toString fallback (legacy malloc'd
-            // C-string) lands at a different memory layout — bytes
-            // at offset 0 are ASCII printable. Distinguish via the
-            // byte value at offset 0.
-            const uint8_t* first = (const uint8_t*) s;
-            if (first[0] >= 0x20 && first[0] <= 0x7E
-                    && first[1] >= 0x20 && first[1] <= 0x7E) {
-                // Legacy malloc'd char* path — read as C-string.
-                return std::string((const char*) s);
+            // Two return shapes share this path: a real cajeta.lang.String
+            // struct (literal returns) and a legacy malloc'd C-string
+            // (__cajeta_str_concat, used by the synthesizer). Discriminate
+            // deterministically by comparing the leading field against the
+            // real String vtable address — NOT by sniffing pointer bytes.
+            // The old byte heuristic misfired whenever the JIT happened to
+            // place the String vtable global at an address whose low two
+            // bytes were both printable ASCII (~14% chance), which is why it
+            // was MachO/COFF-flaky while passing on ELF by luck of layout.
+            const void* strVtable = jit->lookupRawSymbol("cajeta.lang.String#VTable");
+            if (strVtable && s->vtable == strVtable) {
+                // Real cajeta.lang.String — read the bytes field.
+                if (!s->bytes || s->byteLength <= 0) return std::string("");
+                // bytes points to { i64 count, [N x i8] data }. Skip past
+                // the 8-byte count header to get the data.
+                const char* data = (const char*) s->bytes + sizeof(int64_t);
+                return std::string(data, (size_t) s->byteLength);
             }
-            // Class String — read bytes field.
-            if (!s->bytes || s->byteLength <= 0) return std::string("");
-            // bytes points to { i64 count, [N x i8] data }. Skip past
-            // the 8-byte count header to get the data.
-            const char* data = (const char*) s->bytes + sizeof(int64_t);
-            return std::string(data, (size_t) s->byteLength);
+            // Legacy malloc'd char* path — read as C-string.
+            return std::string((const char*) s);
         } catch (cajeta::Exception& e) {
             std::cerr << "[CAUGHT cajeta::Exception]: " << e.getMessage()
                 << " errorId=" << e.getErrorId() << std::endl;

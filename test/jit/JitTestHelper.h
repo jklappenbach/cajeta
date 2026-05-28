@@ -97,6 +97,14 @@ public:
         return reinterpret_cast<T>(lookupAddress(shortName));
     }
 
+    // Resolve an exact (unmangled IR) symbol name to its JIT address —
+    // e.g. a data global like "cajeta.lang.String#VTable". LLJIT applies
+    // the platform mangling internally, so the IR name works on every
+    // target. Returns nullptr if unresolved. Used by tests that must
+    // distinguish a real cajeta.lang.String return from a legacy
+    // malloc'd char* without sniffing pointer bytes.
+    void* lookupRawSymbol(const std::string& exactName);
+
 private:
     CajetaJit();
 
