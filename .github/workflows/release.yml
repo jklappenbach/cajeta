@@ -213,6 +213,10 @@ jobs:
           # headers).
           choco install ninja -y
           choco install temurin17 -y
+          # vim ships xxd.exe (used by the runtime-bitcode embed step
+          # in src/CMakeLists.txt). chocolatey adds vim's bin dir to
+          # PATH, so cmake's find_program(NAMES xxd) picks it up.
+          choco install vim -y
 
           # Download + extract LLVM 20.1.8 developer tarball.
           $url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-20.1.8/clang+llvm-20.1.8-x86_64-pc-windows-msvc.tar.xz"
