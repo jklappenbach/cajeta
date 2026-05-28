@@ -79,10 +79,20 @@ jobs:
             target: aarch64-apple-darwin
             archive_ext: tar.gz
             shell: bash
+          # Windows build uses MSYS2 / MinGW-w64 rather than MSVC.
+          # MSYS2's pacman repo ships pre-built mingw-w64 packages for
+          # LLVM, antlr4-runtime, etc. — no LLVM tarball download, no
+          # vcpkg-from-source builds, no MSVC env setup, no diaguids
+          # patching. The POSIX-ish surface (pthread via winpthreads,
+          # ucontext via libucontext) means cajeta_runtime.c compiles
+          # with minimal conditionals vs the heavy MSVC shim that would
+          # otherwise be needed. Resulting binary is native PE (no
+          # cygwin1.dll runtime dependency); target triple is
+          # x86_64-w64-mingw32.
           - os: windows-latest
-            target: x86_64-pc-windows-msvc
+            target: x86_64-w64-mingw32
             archive_ext: zip
-            shell: pwsh
+            shell: 'msys2 {0}'
 
     defaults:
       run:
@@ -191,155 +201,55 @@ jobs:
           # unless we point CMake at the brew prefix explicitly.
           echo "CMAKE_PREFIX_PATH=$(brew --prefix llvm@20)" >> "$GITHUB_ENV"
 
-      # ---- Windows dependency install (choco + vcpkg) -------------------
+      # ---- Windows: MSYS2 / MinGW-w64 ----------------------------------
       #
-      # Windows is the most fragile leg of the matrix. Two known wrinkles
-      # the first release run is likely to hit:
-      #   1. ANTLR4 runtime isn't on chocolatey; the workflow installs
-      #      it via vcpkg. vcpkg pulls + builds antlr4-cpp-runtime from
-      #      source the first time, which can take 5+ minutes.
-      #   2. The cajeta CMake script may need a vcpkg toolchain file
-      #      pointer (`-DCMAKE_TOOLCHAIN_FILE=...`) to actually pick up
-      #      the vcpkg-installed packages — added below.
-      - name: Install dependencies (Windows)
+      # MSYS2's mingw-w64 environment provides a near-POSIX surface on
+      # Windows (winpthreads, libucontext, etc.) so the Unix-style cajeta
+      # runtime compiles with minimal conditionals. All deps land via
+      # pacman — no LLVM tarball, no vcpkg-from-source, no MSVC env, no
+      # diaguids hack. Produces a native PE binary (no cygwin1.dll
+      # runtime dependency); the toolchain triple is x86_64-w64-mingw32.
+      - name: Setup MSYS2 (Windows)
         if: runner.os == 'Windows'
-        run: |
-          # Skip `choco install llvm` — that ships the runtime toolchain
-          # only (clang.exe / lld-link.exe), no dev-side LLVMConfig.cmake.
-          # find_package(LLVM CONFIG) needs the developer tarball, which
-          # the LLVM project publishes separately as
-          # clang+llvm-X.Y.Z-x86_64-pc-windows-msvc.tar.xz (~940 MB,
-          # includes lib/cmake/llvm/LLVMConfig.cmake + target libs +
-          # headers).
-          choco install ninja -y
-          choco install temurin17 -y
-          # vim ships xxd.exe (used by the runtime-bitcode embed step
-          # in src/CMakeLists.txt). chocolatey adds vim's bin dir to
-          # PATH, so cmake's find_program(NAMES xxd) picks it up.
-          choco install vim -y
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: false
+          install: >-
+            mingw-w64-x86_64-clang
+            mingw-w64-x86_64-llvm
+            mingw-w64-x86_64-lld
+            mingw-w64-x86_64-cmake
+            mingw-w64-x86_64-ninja
+            mingw-w64-x86_64-antlr4-runtime-cpp
+            mingw-w64-x86_64-zstd
+            mingw-w64-x86_64-xxhash
+            mingw-w64-x86_64-glog
+            mingw-w64-x86_64-gtest
+            mingw-w64-x86_64-openssl
+            mingw-w64-x86_64-libucontext
+            mingw-w64-x86_64-jre
+            vim
 
-          # Download + extract LLVM 20.1.8 developer tarball.
-          $url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-20.1.8/clang+llvm-20.1.8-x86_64-pc-windows-msvc.tar.xz"
-          $archive = "$env:RUNNER_TEMP\llvm.tar.xz"
-          Write-Host "Downloading LLVM dev tarball from $url"
-          Invoke-WebRequest -Uri $url -OutFile $archive
-          Write-Host "Extracting..."
-          # Windows ships BSD tar (tar.exe) with .xz support since
-          # Windows 10 1803. -J = xz decompression.
-          tar -xJf $archive -C C:\
-          # The tarball extracts to clang+llvm-20.1.8-x86_64-pc-windows-msvc/.
-          # The `+` in the path is technically fine but some build tools
-          # choke; rename to a clean directory.
-          Move-Item "C:\clang+llvm-20.1.8-x86_64-pc-windows-msvc" "C:\llvm"
-          $llvmRoot = "C:\llvm"
-          Write-Host "LLVM root: $llvmRoot"
-          Get-ChildItem "$llvmRoot\lib\cmake\llvm\LLVMConfig.cmake"
-          echo "LLVM_ROOT=$llvmRoot" >> $env:GITHUB_ENV
-          echo "$llvmRoot\bin" | Out-File -FilePath $env:GITHUB_PATH -Append
-
-          # vcpkg is preinstalled on windows-latest at C:\vcpkg. Install
-          # every dep find_package() needs in src/CMakeLists.txt:
-          #   - antlr4 (parser runtime)
-          #   - zstd, xxhash (archive compression + hashing)
-          #   - gtest (test framework)
-          #   - glog 0.6.0 (logging — REQUIRED)
-          #   - openssl (libcrypto for `cajeta archive sign / verify-sig`)
-          vcpkg install `
-            antlr4:x64-windows `
-            zstd:x64-windows `
-            xxhash:x64-windows `
-            gtest:x64-windows `
-            glog:x64-windows `
-            openssl:x64-windows
-          # Expose vcpkg's toolchain file to the build step.
-          echo "VCPKG_TOOLCHAIN=C:/vcpkg/scripts/buildsystems/vcpkg.cmake" >> $env:GITHUB_ENV
-
-      # MSVC environment. Without this, cmake auto-discovers C:/mingw64/bin/cc.exe
-      # (MinGW GCC ships preinstalled on windows-latest), and the vcpkg packages
-      # — built for the x64-windows MSVC ABI — fail to link against MinGW output.
-      # ilammy/msvc-dev-cmd@v1 sources vcvars64.bat into the environment for the
-      # rest of the job so cmake picks up cl.exe / link.exe.
-      - name: Set up MSVC environment (Windows)
-        if: runner.os == 'Windows'
-        uses: ilammy/msvc-dev-cmd@v1
-
-      # Patch the diaguids.lib path that LLVM's Windows tarball hardcodes.
-      # The tarball's LLVMExports.cmake references diaguids.lib (from the
-      # DIA SDK) at the VS install path that LLVM's CI used when building
-      # the release — typically VS 2019 Professional. The runner has VS
-      # 2022 Enterprise, so that path doesn't exist and the link step
-      # fails with "ninja: 'C:/Program Files (x86)/Microsoft Visual
-      # Studio/2019/Professional/DIA SDK/lib/amd64/diaguids.lib' missing".
-      # Locate the real diaguids.lib in the runner's VS install and copy
-      # it to the LLVM-expected location.
-      - name: Patch diaguids.lib path (Windows)
-        if: runner.os == 'Windows'
-        run: |
-          $expected = "C:\Program Files (x86)\Microsoft Visual Studio\2019\Professional\DIA SDK\lib\amd64\diaguids.lib"
-          if (Test-Path $expected) {
-            Write-Host "diaguids.lib already present at expected path"
-            exit 0
-          }
-          $actual = Get-ChildItem -Path "C:\Program Files\Microsoft Visual Studio" `
-            -Recurse -Filter "diaguids.lib" -ErrorAction SilentlyContinue `
-            | Where-Object { $_.FullName -like "*amd64*" } `
-            | Select-Object -First 1
-          if (-not $actual) {
-            Write-Error "Could not find diaguids.lib anywhere under C:\Program Files\Microsoft Visual Studio"
-            exit 1
-          }
-          New-Item -ItemType Directory -Force -Path (Split-Path $expected) | Out-Null
-          Copy-Item $actual.FullName $expected
-          Write-Host "Copied $($actual.FullName) -> $expected"
-
-      # ---- Configure + build --------------------------------------------
-      - name: Configure (Linux / macOS)
-        if: runner.os != 'Windows'
+      # ---- Configure + build (all platforms) ----------------------------
+      # setup.sh's dep-install logic is gated by CAJETA_SKIP_DEPS=1 here
+      # because the dependency install already happened above per-platform.
+      # The cmake configure that setup.sh runs is portable across all
+      # three host paths (apt Linux, brew macOS, MSYS2 mingw-w64-cmake).
+      - name: Configure
         run: |
           set -euo pipefail
-          # setup.sh derives LLVM_DIR from CAJETA_LLVM_VERSION; we just
-          # let CMake auto-detect via PATH for now, with the LLVM_DIR
-          # hint set above on macOS.
           export CAJETA_SKIP_DEPS=1
           ./setup.sh
-
-      - name: Configure (Windows)
-        if: runner.os == 'Windows'
-        run: |
-          # CC / CXX explicitly set to MSVC's cl.exe — without this, cmake
-          # may still find C:/mingw64/bin/cc.exe ahead of cl.exe on PATH
-          # even after the msvc-dev-cmd action ran. Forcing it here keeps
-          # the compiler choice unambiguous.
-          #
-          # LLVM_ROOT was set by the install step to C:\llvm (the
-          # extracted developer tarball root). LLVMConfig.cmake lives
-          # at $LLVM_ROOT/lib/cmake/llvm/LLVMConfig.cmake; pass it as
-          # CMAKE_PREFIX_PATH so find_package(LLVM CONFIG) picks it up
-          # alongside vcpkg's installed root.
-          cmake -S . -B build -G Ninja `
-            -DCMAKE_C_COMPILER=cl `
-            -DCMAKE_CXX_COMPILER=cl `
-            -DCMAKE_BUILD_TYPE=Release `
-            -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_TOOLCHAIN" `
-            -DVCPKG_TARGET_TRIPLET=x64-windows `
-            -DCMAKE_PREFIX_PATH="$env:LLVM_ROOT;C:/vcpkg/installed/x64-windows" `
-            -DLLVM_DIR="$env:LLVM_ROOT/lib/cmake/llvm"
 
       - name: Build
         run: cmake --build build --config Release -- -j 4
 
       # ---- Smoke test: cajeta --version must succeed --------------------
-      - name: Smoke test (Linux / macOS)
-        if: runner.os != 'Windows'
+      - name: Smoke test
         run: |
           ./build/src/cajeta --version
           ./build/src/cajeta --version --verbose
-
-      - name: Smoke test (Windows)
-        if: runner.os == 'Windows'
-        run: |
-          ./build/src/Release/cajeta.exe --version
-          ./build/src/Release/cajeta.exe --version --verbose
 
       # ---- Run the full regression suite --------------------------------
       #
@@ -348,24 +258,20 @@ jobs:
       # failures are non-fatal (`continue-on-error: true`) — the
       # binary itself shipped by --emit=obj works fine, but JIT-driven
       # tests can hit platform-specific lowering issues (e.g.
-      # __aarch64_outline_atomics_* helpers on ARM Linux LLJIT, ucontext
-      # quirks on macOS) that don't affect AOT releases. Known issues
-      # like that are tracked separately; gating the release on them
-      # would be too tight a contract for v0.x.
-      - name: Run regression (Linux / macOS)
-        if: runner.os != 'Windows'
+      # __aarch64_outline_atomics_* helpers on ARM Linux LLJIT,
+      # __emutls_get_address on macOS arm64) that don't affect AOT
+      # releases. Known issues are tracked separately; gating the
+      # release on them would be too tight a contract for v0.x.
+      - name: Run regression
         continue-on-error: ${{ matrix.target != 'x86_64-linux-gnu' }}
         run: |
-          CAJETA_SOURCE_ROOT=$PWD ./build/test/cajeta_test
-
-      - name: Run regression (Windows)
-        if: runner.os == 'Windows'
-        continue-on-error: true
-        env:
-          CAJETA_SOURCE_ROOT: ${{ github.workspace }}
-        run: ./build/test/Release/cajeta_test.exe
+          CAJETA_SOURCE_ROOT="$(pwd)" ./build/test/cajeta_test
 
       # ---- Package ------------------------------------------------------
+      # MSYS2 ships bash + tar + zip, so the staging and archive logic
+      # is uniform across all three platforms. cajeta the binary lands
+      # at build/src/cajeta on Linux/macOS and build/src/cajeta.exe
+      # under MSYS2 (mingw32-make / ninja produce .exe automatically).
       - name: Stage release contents
         run: |
           set -euo pipefail
@@ -374,23 +280,26 @@ jobs:
           STAGE="cajeta-v${V}-${T}"
           mkdir -p "$STAGE/bin" "$STAGE"
           if [ "${{ runner.os }}" = "Windows" ]; then
-            cp build/src/Release/cajeta.exe "$STAGE/bin/"
+            cp build/src/cajeta.exe "$STAGE/bin/"
           else
             cp build/src/cajeta "$STAGE/bin/"
           fi
           cp VERSION README.md "$STAGE/"
           [ -f LICENSE ] && cp LICENSE "$STAGE/" || true
           echo "STAGE_DIR=$STAGE" >> "$GITHUB_ENV"
-        shell: bash
 
       - name: Archive (tar.gz)
         if: matrix.archive_ext == 'tar.gz'
         run: tar -czf "${STAGE_DIR}.tar.gz" "$STAGE_DIR"
-        shell: bash
 
       - name: Archive (zip)
         if: matrix.archive_ext == 'zip'
-        run: Compress-Archive -Path "$env:STAGE_DIR" -DestinationPath "$env:STAGE_DIR.zip"
+        run: |
+          # MSYS2 ships `zip` via the zip package — but it's not in
+          # the install list above. Use a more universal alternative:
+          # python -c '...' to make a deterministic zip. python is
+          # available in MSYS2's MINGW64 by default.
+          python -c "import shutil; shutil.make_archive(r'${STAGE_DIR}', 'zip', '.', r'${STAGE_DIR}')"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4

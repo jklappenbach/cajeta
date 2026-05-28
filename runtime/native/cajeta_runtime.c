@@ -34,8 +34,20 @@
 #include <stdlib.h>
 #include <string.h>
 #include <pthread.h>
-#include <execinfo.h>
 #include <signal.h>
+
+// execinfo.h (backtrace + backtrace_symbols) — glibc + macOS only.
+// MinGW-w64 doesn't ship it; stub on Windows so the runtime compiles
+// there. Stack-trace capture on Windows uses DbgHelp's
+// CaptureStackBackTrace + SymFromAddr; that path lands in a later
+// release. For v0.1.x, Windows binaries report empty stack traces
+// (callers null-check / handle that already).
+#if defined(_WIN32)
+static int backtrace(void** buf, int max) { (void) buf; (void) max; return 0; }
+static char** backtrace_symbols(void* const* buf, int n) { (void) buf; (void) n; return NULL; }
+#else
+#include <execinfo.h>
+#endif
 
 // `malloc_usable_size` ships in different headers per platform, and Apple's
 // equivalent is renamed to `malloc_size` (in <malloc/malloc.h>). Conditionalize
@@ -3405,6 +3417,39 @@ int32_t __cajeta_file_sync(int32_t fd) {
     return fsync(fd) == 0 ? 0 : -1;
 }
 
+// flock + LOCK_EX / LOCK_NB / LOCK_UN — POSIX file-locking via
+// <sys/file.h>. MinGW-w64 doesn't ship sys/file.h with flock; map
+// to Win32 LockFileEx / UnlockFileEx instead. _get_osfhandle turns
+// a CRT fd into a Win32 HANDLE.
+#if defined(_WIN32)
+#  include <io.h>
+#  define WIN32_LEAN_AND_MEAN
+#  include <windows.h>
+int32_t __cajeta_file_lock(int32_t fd) {
+    if (fd < 0) return -1;
+    HANDLE h = (HANDLE) _get_osfhandle(fd);
+    if (h == INVALID_HANDLE_VALUE) return -1;
+    OVERLAPPED ov = {0};
+    return LockFileEx(h, LOCKFILE_EXCLUSIVE_LOCK, 0, MAXDWORD, MAXDWORD, &ov)
+        ? 0 : -1;
+}
+int32_t __cajeta_file_try_lock(int32_t fd) {
+    if (fd < 0) return 0;
+    HANDLE h = (HANDLE) _get_osfhandle(fd);
+    if (h == INVALID_HANDLE_VALUE) return 0;
+    OVERLAPPED ov = {0};
+    return LockFileEx(h,
+        LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY,
+        0, MAXDWORD, MAXDWORD, &ov) ? 1 : 0;
+}
+int32_t __cajeta_file_unlock(int32_t fd) {
+    if (fd < 0) return -1;
+    HANDLE h = (HANDLE) _get_osfhandle(fd);
+    if (h == INVALID_HANDLE_VALUE) return -1;
+    OVERLAPPED ov = {0};
+    return UnlockFileEx(h, 0, MAXDWORD, MAXDWORD, &ov) ? 0 : -1;
+}
+#else
 #include <sys/file.h>
 int32_t __cajeta_file_lock(int32_t fd) {
     if (fd < 0) return -1;
@@ -3420,6 +3465,7 @@ int32_t __cajeta_file_unlock(int32_t fd) {
     if (fd < 0) return -1;
     return flock(fd, LOCK_UN) == 0 ? 0 : -1;
 }
+#endif
 
 // Streaming flush. No user-space buffering today (FileWriter writes
 // straight through), so this is a no-op stub. When the 8 KiB

@@ -28,7 +28,27 @@
 set -euo pipefail
 
 LLVM_VER="${CAJETA_LLVM_VERSION:-20}"
-LLVM_DIR="${LLVM_DIR:-/usr/lib/llvm-${LLVM_VER}/lib/cmake/llvm}"
+
+# LLVM_DIR default per platform — LLVMConfig.cmake lives at a different
+# canonical path on each.
+case "$(uname -s)" in
+    MINGW*|MSYS*)
+        # MSYS2 mingw-w64 install layout. The `llvm` pacman package
+        # installs everything under /mingw64/.
+        LLVM_DIR="${LLVM_DIR:-/mingw64/lib/cmake/llvm}"
+        ;;
+    Darwin)
+        # Defer to brew's prefix. Callers typically set LLVM_DIR
+        # explicitly via the workflow before invoking setup.sh.
+        if command -v brew >/dev/null 2>&1; then
+            LLVM_DIR="${LLVM_DIR:-$(brew --prefix llvm@${LLVM_VER})/lib/cmake/llvm}"
+        fi
+        ;;
+    *)
+        # Debian/Ubuntu apt install layout.
+        LLVM_DIR="${LLVM_DIR:-/usr/lib/llvm-${LLVM_VER}/lib/cmake/llvm}"
+        ;;
+esac
 
 # ---------------------------------------------------------------------------
 # Dependency install
