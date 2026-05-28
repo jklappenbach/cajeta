@@ -38,10 +38,10 @@ namespace cajeta {
     // are known-to-exist somewhere in the compilation unit.
     void prescanSourceRoot(const std::string& rootPath);
 
-    // Emit the per-module `__cajeta_unrecoverable_vtable_marker` global
-    // pointing at UnrecoverableException's vtable. Must be called AFTER
-    // CajetaModule::buildPendingPrototypes — the vtable doesn't exist
-    // until the deferred-prototype pass lays out the stdlib classes.
+    // Emit a per-module global ctor that registers UnrecoverableException's
+    // vtable with the runtime (__cajeta_set_unrecoverable_vtable). Must be
+    // called AFTER CajetaModule::buildPendingPrototypes — the vtable doesn't
+    // exist until the deferred-prototype pass lays out the stdlib classes.
     // Idempotent; safe to call multiple times per module.
     void emitUnrecoverableMarker(CajetaModulePtr module);
 

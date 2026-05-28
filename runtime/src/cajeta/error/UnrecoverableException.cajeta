@@ -1,9 +1,9 @@
 package cajeta.error;
 
 // Unrecoverable subtype: invariant violation, programmer error, OOM.
-// The runtime publishes UnrecoverableException's vtable as a global
-// marker (__cajeta_unrecoverable_vtable_marker); thrown instances
-// whose vtable chain reaches this marker bypass user catch handlers
+// Codegen registers UnrecoverableException's vtable with the runtime via
+// a global ctor (__cajeta_set_unrecoverable_vtable); thrown instances
+// whose vtable chain reaches that address bypass user catch handlers
 // and propagate to abort. See cajeta-docs/stdlib/ErrorModel.md.
 public class UnrecoverableException extends Exception {
     public UnrecoverableException(String message) {

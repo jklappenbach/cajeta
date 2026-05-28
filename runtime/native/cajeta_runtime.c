@@ -1707,41 +1707,21 @@ void* __cajeta_vtable_lookup(void* vptr, int64_t hash) {
     return NULL;
 }
 
-// Marker global set by codegen to UnrecoverableException's vtable address.
+// UnrecoverableException's vtable address, published by codegen.
 // __cajeta_is_unrecoverable compares each ancestor vtable against this.
-// Compiler::emitUnrecoverableMarker (Compiler.cpp) looks up THIS
-// declaration in the linked-in runtime bitcode and re-tags it as a
-// strong external definition with an initializer pointing at
-// cajeta.lang.UnrecoverableException#VTable.
 //
-// Platform-conditional declaration is unavoidable because GNU ld and
-// Apple ld treat undefined weak externals differently in a static link:
-//
-//   - Linux (+ other GNU ld targets): `extern ... __attribute__((weak))`.
-//     GNU ld resolves an undefined weak external to NULL at native
-//     link time. The JIT then loads stdlib bitcode whose strong
-//     definition the linker patches over the same storage so reads
-//     of the marker through this symbol see the real vtable address.
-//     This is the path the AOT-emitted binary takes too — at final
-//     link the strong def from emitUnrecoverableMarker wins.
-//
-//   - macOS: Apple's ld rejects unresolved weak externs in a static
-//     link ("Undefined symbols for architecture arm64"). `weak_import`
-//     isn't enough — that's for symbols dlopen'd from a dylib at
-//     runtime, not for static-link deferral. Use a weak DEFINITION
-//     with a NULL initializer instead. Tradeoff: in-JIT-test reads
-//     of the marker see NULL (the JIT's strong def lives in JIT
-//     memory and doesn't patch our static slot on macOS); the JIT-
-//     driven ErrorModelTests.uncaughtUnrecoverableAborts test fails.
-//     That test is in the `continue-on-error: true` zone on non-
-//     primary platforms so doesn't block the release. AOT users on
-//     macOS get full functionality — their cajeta-emitted strong
-//     def overrides this weak def at their binary's final link.
-#if defined(__APPLE__)
-__attribute__((weak)) void* __cajeta_unrecoverable_vtable_marker = NULL;
-#else
-extern void* __cajeta_unrecoverable_vtable_marker __attribute__((weak));
-#endif
+// Codegen (Compiler::emitUnrecoverableMarker) emits a module global ctor
+// that calls __cajeta_set_unrecoverable_vtable with
+// cajeta.lang.UnrecoverableException#VTable. A ctor + plain runtime call
+// resolves identically on ELF/MachO/COFF and in both JIT (LLJIT runs
+// llvm.global_ctors at initialize()) and AOT (the C runtime runs them
+// before main) — unlike the previous weak-global-override scheme, which
+// only bound under ELF and left JIT detection reading NULL on MachO/COFF.
+static void* g_unrecoverable_vtable = NULL;
+
+void __cajeta_set_unrecoverable_vtable(void* vtable) {
+    g_unrecoverable_vtable = vtable;
+}
 
 // Walk a Throwable's vtable chain to determine whether it's an
 // UnrecoverableException (or any descendant thereof). Returns 1 if so,
@@ -1759,9 +1739,9 @@ int32_t __cajeta_is_unrecoverable(void* throwable) {
     // in favor of real Throwable instances.
     if ((uintptr_t) throwable < 4096) return 0;
     void* vtable = *(void**) throwable;   // instance slot 0 = vtable ptr
-    if (!__cajeta_unrecoverable_vtable_marker) return 0;
+    if (!g_unrecoverable_vtable) return 0;
     while (vtable) {
-        if (vtable == __cajeta_unrecoverable_vtable_marker) return 1;
+        if (vtable == g_unrecoverable_vtable) return 1;
         vtable = *(void**) ((char*) vtable + CAJETA_VTABLE_PARENT_OFFSET);
     }
     return 0;

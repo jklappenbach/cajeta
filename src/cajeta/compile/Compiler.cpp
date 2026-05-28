@@ -13,6 +13,7 @@
 #include "llvm/MC/TargetRegistry.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/raw_ostream.h"
+#include "llvm/Transforms/Utils/ModuleUtils.h"
 #include "../asn/AbstractSyntaxNode.h"
 #include "../type/CajetaType.h"
 #include "cajeta/error/CajetaExceptions.h"
@@ -370,17 +371,27 @@ namespace cajeta {
         parseSource(module, userInput, /*label=*/"user");
     }
 
-    // Error-model #210: emit the marker global the runtime uses to
-    // detect Unrecoverable throws. UnrecoverableException's vtable
-    // address is published as `__cajeta_unrecoverable_vtable_marker`;
-    // the runtime helper `__cajeta_is_unrecoverable` walks a thrown
-    // instance's vtable chain and matches against this address to
-    // decide whether the throw should bypass user catch handlers.
+    // Error-model #210: publish UnrecoverableException's vtable address
+    // to the runtime so `__cajeta_is_unrecoverable` can match a thrown
+    // instance's vtable chain against it and bypass user catch handlers.
     //
-    // Must run AFTER CajetaModule::buildPendingPrototypes — the
-    // vtable global is created during UnrecoverableException's
-    // generatePrototype, which the deferred-prototype machinery may
-    // delay until after the module's parse finishes.
+    // Mechanism: emit a module global constructor that calls the runtime
+    // setter `__cajeta_set_unrecoverable_vtable(UnrecoverableException#VTable)`.
+    // This replaced an earlier weak-global-override scheme that only
+    // resolved under ELF — on MachO/COFF the JIT never bound the
+    // compiler-emitted strong definition over the runtime's weak slot, so
+    // JIT-mode detection silently read NULL. A global ctor + plain runtime
+    // call resolves identically on ELF/MachO/COFF and in both JIT (LLJIT
+    // runs llvm.global_ctors at initialize()) and AOT (the C runtime runs
+    // them before main), because runtime symbols are always resolvable and
+    // global_ctors is honored by every object format. The Linker merges
+    // each module's global_ctors during the JIT module-merge, so the
+    // stdlib-emitted ctor carries into the primary module.
+    //
+    // Must run AFTER CajetaModule::buildPendingPrototypes — the vtable
+    // global is created during UnrecoverableException's generatePrototype,
+    // which the deferred-prototype machinery may delay until after the
+    // module's parse finishes.
     void emitUnrecoverableMarker(CajetaModulePtr module) {
         auto& structures = module->getStructures();
         auto it = structures.find("cajeta.error.UnrecoverableException");
@@ -389,27 +400,29 @@ namespace cajeta {
         llvm::GlobalVariable* unrecVT = unrecClass->getVirtualTableGlobal();
         if (!unrecVT) return;
         llvm::Module* lmod = module->getLlvmModule();
-        // The runtime bitcode declares the marker as `extern void*` so
-        // its `__cajeta_is_unrecoverable` helper can read it.
-        // linkRuntime brings that declaration in; we then upgrade it
-        // to a definition by setting an initializer + external
-        // linkage. If there is no pre-existing entry (no runtime
-        // linked in this module) we create the global outright. The
-        // already-has-an-initializer case is the second-call no-op.
+        const char* ctorName = "__cajeta_register_unrecoverable_vtable";
+        if (lmod->getFunction(ctorName)) return;   // re-entry guard
+
         auto& llvmCtx = *module->getLlvmContext();
         llvm::PointerType* ptrTy = llvm::PointerType::get(llvmCtx, 0);
-        if (auto* existing = lmod->getGlobalVariable(
-                "__cajeta_unrecoverable_vtable_marker", true)) {
-            if (existing->hasInitializer()) return;
-            existing->setInitializer(unrecVT);
-            existing->setLinkage(llvm::GlobalValue::ExternalLinkage);
-            return;
-        }
-        new llvm::GlobalVariable(
-            *lmod, ptrTy, /*isConstant=*/false,
-            llvm::GlobalValue::ExternalLinkage,
-            unrecVT,
-            "__cajeta_unrecoverable_vtable_marker");
+        // Setter is defined by the linked runtime bitcode.
+        llvm::FunctionType* setterTy = llvm::FunctionType::get(
+            llvm::Type::getVoidTy(llvmCtx), {ptrTy}, /*isVarArg=*/false);
+        llvm::FunctionCallee setter = lmod->getOrInsertFunction(
+            "__cajeta_set_unrecoverable_vtable", setterTy);
+
+        llvm::FunctionType* ctorTy = llvm::FunctionType::get(
+            llvm::Type::getVoidTy(llvmCtx), /*isVarArg=*/false);
+        llvm::Function* ctor = llvm::Function::Create(
+            ctorTy, llvm::Function::PrivateLinkage, ctorName, lmod);
+        llvm::BasicBlock* bb = llvm::BasicBlock::Create(llvmCtx, "entry", ctor);
+        llvm::IRBuilder<> b(bb);
+        b.CreateCall(setter, {unrecVT});
+        b.CreateRetVoid();
+
+        // Same priority bucket as the clinit ctors; order among them is
+        // irrelevant — this one only needs to run before any user code.
+        llvm::appendToGlobalCtors(*lmod, ctor, /*Priority=*/65535);
     }
 
     bool fileExists(string& sourcePath) {
