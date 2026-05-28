@@ -14,6 +14,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <fcntl.h>
+#include <filesystem>
 #include <string>
 #include <unistd.h>
 
@@ -23,6 +24,20 @@ inline void writeRaw(const std::string& path, const std::string& content) {
     if (fd < 0) return;
     if (!content.empty()) ::write(fd, content.data(), content.size());
     ::close(fd);
+}
+
+// A unique temp path in forward-slash form. Forward slashes are safe inside
+// cajeta string literals (backslashes would be escape sequences) and are
+// accepted by stat/open on both POSIX and Windows. Earlier stat-touching
+// tests hardcoded POSIX paths like "/etc/passwd" / "/etc" / "/tmp", which
+// don't exist on Windows; deriving a real path from temp_directory_path()
+// keeps them portable and actually exercises the platform's stat.
+inline std::string tmpFwd(const std::string& name) {
+    static int ctr = 0;
+    auto p = std::filesystem::temp_directory_path() /
+             ("cajeta_path_" + std::to_string((long long) ::getpid()) + "_" +
+              std::to_string(ctr++) + "_" + name);
+    return p.generic_string();
 }
 } // namespace
 
@@ -163,10 +178,12 @@ TEST(PathTests, resolveOntoRelativePath) {
 // --- Phase C: stat-touching predicates ----------------------------------
 
 TEST(PathTests, existsTrueForRealFile) {
-    // Use a stable path that exists on every POSIX system.
+    std::string path = tmpFwd("exists.txt");
+    writeRaw(path, "x");
     EXPECT_EQ(runI32(makeSource(
-        "Path p = Path.of(\"/etc/passwd\");\n"
+        "Path p = Path.of(\"" + path + "\");\n"
         "return p.exists() ? 1 : 0;")), 1);
+    std::filesystem::remove(path);
 }
 
 TEST(PathTests, existsFalseForMissingFile) {
@@ -176,15 +193,21 @@ TEST(PathTests, existsFalseForMissingFile) {
 }
 
 TEST(PathTests, isFileTrueForRegular) {
+    std::string path = tmpFwd("isfile.txt");
+    writeRaw(path, "x");
     EXPECT_EQ(runI32(makeSource(
-        "Path p = Path.of(\"/etc/passwd\");\n"
+        "Path p = Path.of(\"" + path + "\");\n"
         "return p.isFile() ? 1 : 0;")), 1);
+    std::filesystem::remove(path);
 }
 
 TEST(PathTests, isDirTrueForDirectory) {
+    std::string dir = tmpFwd("isdir_d");
+    std::filesystem::create_directories(dir);
     EXPECT_EQ(runI32(makeSource(
-        "Path p = Path.of(\"/etc\");\n"
+        "Path p = Path.of(\"" + dir + "\");\n"
         "return p.isDir() ? 1 : 0;")), 1);
+    std::filesystem::remove(dir);
 }
 
 TEST(PathTests, isFileFalseForDirectory) {
