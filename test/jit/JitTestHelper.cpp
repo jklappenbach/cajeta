@@ -15,8 +15,11 @@
 #include "cajeta/error/Exception.h"
 #include "cajeta/method/Method.h"
 
+#include "JitWinSymbols.h"
+
 #include "llvm/Bitcode/BitcodeReader.h"
 #include "llvm/Bitcode/BitcodeWriter.h"
+#include "llvm/ExecutionEngine/Orc/AbsoluteSymbols.h"
 #include "llvm/ExecutionEngine/Orc/ExecutionUtils.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/Verifier.h"
@@ -356,6 +359,31 @@ std::unique_ptr<CajetaJit> CajetaJit::compile(
         throw std::runtime_error("LLJIT process-symbol generator failed");
     }
     mainDylib.addGenerator(std::move(*generator));
+
+#ifdef _WIN32
+    // The generator above dlsym's the current process, but MinGW's CRT /
+    // libgcc functions are statically linked into this test binary and not
+    // in its PE export table, so it can't find them — the embedded runtime
+    // bitcode's calls to write/open/__mingw_fprintf/stat64i32/... then fail
+    // to materialize, cascading to every runtime-dependent symbol. Bind them
+    // explicitly to the addresses JitWinSymbols.c took (in a TU compiled with
+    // the same MinGW headers as the runtime, so each address is the exact
+    // entry point the bitcode references).
+    {
+        size_t winSymCount = 0;
+        const CajetaJitWinSym* winSyms = cajeta_jit_win_symbols(&winSymCount);
+        auto& execSession = jitState->jit->getExecutionSession();
+        llvm::orc::SymbolMap winSymMap;
+        for (size_t i = 0; i < winSymCount; ++i) {
+            winSymMap[execSession.intern(winSyms[i].name)] =
+                llvm::orc::ExecutorSymbolDef(
+                    llvm::orc::ExecutorAddr::fromPtr(winSyms[i].addr),
+                    llvm::JITSymbolFlags::Exported);
+        }
+        llvm::cantFail(
+            mainDylib.define(llvm::orc::absoluteSymbols(std::move(winSymMap))));
+    }
+#endif
 
     // Run any global ctors / static initializers (P6.2 clinit, etc.)
     // before handing control to test code. LLJIT does NOT run
