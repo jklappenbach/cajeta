@@ -45,6 +45,12 @@
 #if defined(_WIN32)
 static int backtrace(void** buf, int max) { (void) buf; (void) max; return 0; }
 static char** backtrace_symbols(void* const* buf, int n) { (void) buf; (void) n; return NULL; }
+
+// MinGW provides _commit(fd) in <io.h> as the equivalent of POSIX
+// fsync(fd) — sync a file descriptor's data to disk. Macro-substitute
+// so the runtime code reads the same on every platform.
+#include <io.h>
+#define fsync(fd) _commit(fd)
 #else
 #include <execinfo.h>
 #endif
@@ -1397,6 +1403,42 @@ int32_t __cajeta_dump_drop_chain(void) {
 // (typically glibc heap-corruption detection), dump the drop chain to
 // stderr with source tags when available, then chain to the previous
 // handler so the abort still kills the process.
+//
+// POSIX path uses sigaction (richer 3-arg handler with siginfo + ucontext).
+// Windows / MinGW doesn't provide sigaction; fall back to the basic
+// signal(SIGABRT, ...) C89 surface. We lose the siginfo + ucontext
+// payload but the abort-and-dump-drop-chain still fires.
+#if defined(_WIN32)
+
+static void (*__cajeta_prev_sigabrt)(int) = NULL;
+
+static void __cajeta_sigabrt_handler(int signo) {
+    fprintf(stderr,
+        "\ncajeta: SIGABRT caught — likely heap corruption or assertion.\n");
+    __cajeta_dump_drop_chain();
+    if (__cajeta_prev_sigabrt && __cajeta_prev_sigabrt != SIG_DFL
+            && __cajeta_prev_sigabrt != SIG_IGN) {
+        __cajeta_prev_sigabrt(signo);
+        return;
+    }
+    signal(SIGABRT, SIG_DFL);
+    raise(SIGABRT);
+}
+
+void __cajeta_install_sigabrt_handler(void) {
+    // No "is something already installed?" probe on Windows — `signal()`
+    // returns the previous handler when setting a new one, no
+    // distinction between SIG_DFL and "user-installed but unknown."
+    // Just install; the host's static copy fires before any JIT module
+    // loads anyway.
+    void (*prev)(int) = signal(SIGABRT, __cajeta_sigabrt_handler);
+    if (prev != SIG_ERR) {
+        __cajeta_prev_sigabrt = prev;
+    }
+}
+
+#else
+
 static struct sigaction __cajeta_prev_sigabrt;
 
 static void __cajeta_sigabrt_handler(int signo, siginfo_t* info, void* uctx) {
@@ -1452,6 +1494,8 @@ void __cajeta_install_sigabrt_handler(void) {
     sigemptyset(&sa.sa_mask);
     sigaction(SIGABRT, &sa, &__cajeta_prev_sigabrt);
 }
+
+#endif
 
 // Auto-install at runtime load. Constructor runs before main(); the handler
 // is then armed for the program lifetime, including before any Cajeta code
@@ -2287,6 +2331,20 @@ static uint64_t __cajeta_hash_seed_value = 0;
 __attribute__((constructor))
 static void __cajeta_hash_seed_init(void) {
     uint64_t s = 0;
+#if defined(_WIN32)
+    // Windows: BCryptGenRandom (CNG) is the modern equivalent of
+    // /dev/urandom — cryptographically strong, no /dev needed.
+    // BCRYPT_USE_SYSTEM_PREFERRED_RNG saves us providing an algorithm
+    // provider handle. Available since Vista.
+#  include <bcrypt.h>
+#  pragma comment(lib, "bcrypt.lib")
+    if (BCryptGenRandom(NULL, (PUCHAR) &s, sizeof(s),
+            BCRYPT_USE_SYSTEM_PREFERRED_RNG) == 0 /* STATUS_SUCCESS */
+            && s != 0) {
+        __cajeta_hash_seed_value = s;
+        return;
+    }
+#else
     int fd = open("/dev/urandom", O_RDONLY | O_CLOEXEC);
     if (fd >= 0) {
         ssize_t n = read(fd, &s, sizeof(s));
@@ -2296,13 +2354,18 @@ static void __cajeta_hash_seed_init(void) {
             return;
         }
     }
+#endif
     // Fallback: wall clock + pid mixed through SplitMix64. Lower-entropy
     // than /dev/urandom but still per-process-distinct and stable for
     // the lifetime of the process.
     struct timespec ts;
     clock_gettime(CLOCK_REALTIME, &ts);
     uint64_t x = (uint64_t) ts.tv_sec * 1000000000ULL + (uint64_t) ts.tv_nsec;
+#if defined(_WIN32)
+    x ^= (uint64_t) GetCurrentProcessId() * 0x9E3779B97F4A7C15ULL;
+#else
     x ^= (uint64_t) getpid() * 0x9E3779B97F4A7C15ULL;
+#endif
     x ^= x >> 33;
     x *= 0xff51afd7ed558ccdULL;
     x ^= x >> 33;
@@ -3175,11 +3238,20 @@ const char* __cajeta_env_get(const char* name) {
 
 int32_t __cajeta_env_set(const char* name, const char* value) {
     if (!name) return -1;
+#if defined(_WIN32)
+    // Windows CRT uses _putenv_s: pass "" as the value to unset. Returns
+    // 0 on success, errno on failure.
+    if (!value) {
+        return _putenv_s(name, "") == 0 ? 0 : -1;
+    }
+    return _putenv_s(name, value) == 0 ? 0 : -1;
+#else
     if (!value) {
         // setenv with NULL value is undefined on some libcs; treat as unset.
         return unsetenv(name);
     }
     return setenv(name, value, /*overwrite=*/1);
+#endif
 }
 
 struct cajeta_property_entry {
