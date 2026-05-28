@@ -28,16 +28,20 @@ find_package(GTest REQUIRED)
 # cajeta-docs/ArchiveManagement.md §8.
 find_package(OpenSSL REQUIRED)
 
-# LLVM 18 on Ubuntu 24.04 expects an IMPORTED target zstd::libzstd_shared,
-# but libzstd-dev (which ships the cmake config) is not always installed.
-# Create a fallback IMPORTED target pointing at the system shared library.
+# LLVM (since 18) expects an IMPORTED target zstd::libzstd_shared.
+# Prefer the proper find_package(zstd CONFIG) path — MSYS2 (mingw-w64),
+# vcpkg, and most modern distros ship zstdConfig.cmake. Falls back to
+# a manual find_library + add_library(IMPORTED) only when no cmake
+# config is available (e.g. older Ubuntu where libzstd-dev didn't ship
+# the config). The fallback covers multi-arch Linux paths
+# (x86_64 + aarch64), macOS Homebrew prefixes, and the default cmake
+# search paths.
 #
-# Portability: search across multi-arch Linux paths (x86_64 + aarch64),
-# macOS Homebrew prefixes (Intel /usr/local, ARM /opt/homebrew), and
-# the default cmake search paths. Cover .so / .so.1 (Linux) and .dylib
-# (macOS) name variants. Without these the original hardcoded
-# x86_64-linux-gnu search failed on aarch64-linux-gnu and on macOS
-# regardless of arch.
+# IMPORTANT: don't define our fallback IMPORTED target if find_package
+# succeeded — zstdConfig.cmake defines a whole family
+# (libzstd_shared, libzstd_static, libzstd) and errors out if one of
+# them was pre-defined by us.
+find_package(zstd CONFIG QUIET)
 if(NOT TARGET zstd::libzstd_shared)
     find_library(ZSTD_LIBRARY
             NAMES zstd libzstd.so libzstd.so.1 libzstd.dylib libzstd.1.dylib
