@@ -232,6 +232,13 @@ TEST(PathTests, deleteRemovesEmptyFile) {
 }
 
 TEST(PathTests, canonicalResolvesSymlinkFreePathToItself) {
+    // /etc/passwd is canonical on Linux only: macOS resolves /etc -> /private/etc
+    // (so canonical() differs from the input), and Windows has no such path. The
+    // assertion is about realpath()-style canonicalization of an already-canonical
+    // path, which is a Linux-specific guarantee here.
+#ifndef __linux__
+    GTEST_SKIP() << "canonical(/etc/passwd) == /etc/passwd is Linux-specific";
+#else
     // /etc/passwd is canonical on most distros; if a vendor's image
     // symlinks /etc to something else, this test won't apply — adjust
     // the path under the inevitable Linux container variability rather
@@ -241,5 +248,6 @@ TEST(PathTests, canonicalResolvesSymlinkFreePathToItself) {
         "Path c = p.canonical();\n"
         "String s = heap String(c.bytes, (int32) c.bytes.count());\n"
         "return s.equals(\"/etc/passwd\") ? 1 : 0;")), 1);
+#endif
 }
 
