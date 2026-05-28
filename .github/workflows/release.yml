@@ -259,6 +259,35 @@ jobs:
         if: runner.os == 'Windows'
         uses: ilammy/msvc-dev-cmd@v1
 
+      # Patch the diaguids.lib path that LLVM's Windows tarball hardcodes.
+      # The tarball's LLVMExports.cmake references diaguids.lib (from the
+      # DIA SDK) at the VS install path that LLVM's CI used when building
+      # the release — typically VS 2019 Professional. The runner has VS
+      # 2022 Enterprise, so that path doesn't exist and the link step
+      # fails with "ninja: 'C:/Program Files (x86)/Microsoft Visual
+      # Studio/2019/Professional/DIA SDK/lib/amd64/diaguids.lib' missing".
+      # Locate the real diaguids.lib in the runner's VS install and copy
+      # it to the LLVM-expected location.
+      - name: Patch diaguids.lib path (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          $expected = "C:\Program Files (x86)\Microsoft Visual Studio\2019\Professional\DIA SDK\lib\amd64\diaguids.lib"
+          if (Test-Path $expected) {
+            Write-Host "diaguids.lib already present at expected path"
+            exit 0
+          }
+          $actual = Get-ChildItem -Path "C:\Program Files\Microsoft Visual Studio" `
+            -Recurse -Filter "diaguids.lib" -ErrorAction SilentlyContinue `
+            | Where-Object { $_.FullName -like "*amd64*" } `
+            | Select-Object -First 1
+          if (-not $actual) {
+            Write-Error "Could not find diaguids.lib anywhere under C:\Program Files\Microsoft Visual Studio"
+            exit 1
+          }
+          New-Item -ItemType Directory -Force -Path (Split-Path $expected) | Out-Null
+          Copy-Item $actual.FullName $expected
+          Write-Host "Copied $($actual.FullName) -> $expected"
+
       # ---- Configure + build --------------------------------------------
       - name: Configure (Linux / macOS)
         if: runner.os != 'Windows'
