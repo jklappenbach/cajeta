@@ -775,7 +775,6 @@ namespace cajeta {
      * @return
      */
     CajetaTypeFlags CajetaType::getTypeFlagsOf(llvm::Value* op) {
-        unsigned long flags;
         llvm::Type* opType = op->getType();
         if (opType->getTypeID() == llvm::Type::StructTyID) {
             return STRUCT_TYPE_ID;

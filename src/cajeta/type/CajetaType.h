@@ -330,7 +330,7 @@ class CajetaType : public Modifiable, public Annotatable,
             return result;
         }
 
-        static unsigned long getTypeFlagsOf(llvm::Value* op);
+        static CajetaTypeFlags getTypeFlagsOf(llvm::Value* op);
 
         // Template wildcards (`<?>`) — Step 1 foundation. Gated by the
         // CAJETA_WILDCARDS env var (or a test override) so the existing
