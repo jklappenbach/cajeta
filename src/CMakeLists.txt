@@ -346,8 +346,14 @@ target_link_libraries(${CMAKE_PROJECT_NAME}_lib
         PUBLIC
         ${ANTLR4_RUNTIME_LIB}
         pthread
-        ${LLVM_LIBS}
+        # lld libs MUST precede the LLVM component libs: lldELF/lldCommon
+        # reference llvm::opt (LLVMOption) and llvm::TarWriter (LLVMSupport),
+        # and GNU ld (MinGW) resolves static archives in a single left-to-
+        # right pass. LLVM never references lld, so this ordering satisfies
+        # every reference in one pass. (Apple ld64 rescans, so order is
+        # immaterial there; on Linux CAJETA_LLD_LIBS is usually empty.)
         ${CAJETA_LLD_LIBS}
+        ${LLVM_LIBS}
         glog::glog
         zstd
         OpenSSL::Crypto)
