@@ -15,19 +15,19 @@
 // no need to know whether mkdir is 1-arg, what struct stat layout is used,
 // etc. We register each under the name the JIT actually asks for.
 //
-// Two flags must match the runtime's compile so the header remapping agrees:
-//   _FILE_OFFSET_BITS=64    -> stat/fstat lower to stat64i32/fstat64i32
-//   __USE_MINGW_ANSI_STDIO  -> fprintf/snprintf lower to __mingw_* (we bind
-//                              those by their real names below regardless)
-// The runtime is built with _FILE_OFFSET_BITS=64 (via LLVM_DEFINITIONS); the
-// test target may not carry that define, so force it for this TU.
+// Header remapping must match the runtime's compile so &fn resolves to the
+// same symbol the bitcode references. Critically, the runtime bitcode is built
+// (src/CMakeLists.txt CAJETA_RT_FLAGS) WITHOUT _FILE_OFFSET_BITS, so its `stat`
+// lowers to stat64i32 and `lseek`/`ftruncate` stay 32-bit-offset. We must NOT
+// define _FILE_OFFSET_BITS here — doing so remaps &stat/&lseek to the 64-bit
+// variants (different symbol + struct layout), so the JIT would call a stat
+// with the wrong ABI and every File/Path op returns garbage.
+//
+// __USE_MINGW_ANSI_STDIO only affects fprintf/snprintf, which we bind by their
+// real __mingw_* names below regardless.
 
 #ifdef _WIN32
 
-#ifdef _FILE_OFFSET_BITS
-#undef _FILE_OFFSET_BITS
-#endif
-#define _FILE_OFFSET_BITS 64
 #ifndef __USE_MINGW_ANSI_STDIO
 #define __USE_MINGW_ANSI_STDIO 1
 #endif
@@ -52,6 +52,12 @@ extern double __mingw_strtod(const char*, char**);
 // libgcc stack-probe intrinsic clang emits for functions with large frames.
 extern void ___chkstk_ms(void);
 
+// LLVM lowers tan (and sometimes sin/cos) to a combined sincos() libcall.
+// sincos is a GNU/libmingwex extension — UCRT/MSVCRT don't export it, so the
+// JIT's process-symbol generator can't find it. libmingwex provides it.
+extern void sincos(double, double*, double*);
+extern void sincosf(float, float*, float*);
+
 // Function-pointer -> void* is not strictly portable C, but is well-defined on
 // every Windows/MinGW target; the cast silences -Wpedantic noise.
 #define CJ_SYM(jitname, fn) { jitname, (void*) (fn) }
@@ -74,6 +80,8 @@ static const CajetaJitWinSym kSymbols[] = {
     CJ_SYM("__mingw_snprintf", &__mingw_snprintf),
     CJ_SYM("__mingw_strtod",   &__mingw_strtod),
     CJ_SYM("___chkstk_ms",     &___chkstk_ms),
+    CJ_SYM("sincos",           &sincos),
+    CJ_SYM("sincosf",          &sincosf),
 };
 
 const CajetaJitWinSym* cajeta_jit_win_symbols(size_t* count) {
