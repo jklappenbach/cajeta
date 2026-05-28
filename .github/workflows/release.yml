@@ -244,6 +244,26 @@ jobs:
           export CAJETA_SKIP_DEPS=1
           ./setup.sh
 
+      - name: Inspect LLVM install (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          # Debug: see what chocolatey's `llvm` package actually installed.
+          # If LLVMConfig.cmake isn't here, we're going to need to switch
+          # away from chocolatey to the direct LLVM Windows release.
+          Write-Host "--- C:/Program Files/LLVM ---"
+          if (Test-Path "C:/Program Files/LLVM") {
+            Get-ChildItem "C:/Program Files/LLVM" -Recurse -Filter "LLVMConfig.cmake" -ErrorAction SilentlyContinue
+            Get-ChildItem "C:/Program Files/LLVM" -Directory
+          } else {
+            Write-Host "MISSING"
+          }
+          Write-Host "--- C:/ProgramData/chocolatey/lib/llvm ---"
+          if (Test-Path "C:/ProgramData/chocolatey/lib/llvm") {
+            Get-ChildItem "C:/ProgramData/chocolatey/lib/llvm" -Recurse -Filter "LLVMConfig.cmake" -ErrorAction SilentlyContinue | Select-Object -First 5
+          } else {
+            Write-Host "MISSING"
+          }
+
       - name: Configure (Windows)
         if: runner.os == 'Windows'
         run: |
@@ -252,19 +272,19 @@ jobs:
           # even after the msvc-dev-cmd action ran. Forcing it here keeps
           # the compiler choice unambiguous.
           #
-          # LLVM_DIR explicitly points at chocolatey's LLVM install
-          # (C:/Program Files/LLVM/lib/cmake/llvm). We DON'T vcpkg-install
-          # llvm — that builds from source (~40 min). The chocolatey
-          # toolchain ships LLVMConfig.cmake under its install root, but
-          # the vcpkg toolchain file intercepts find_package() and only
-          # searches vcpkg's installed paths, so we have to hand cmake
-          # the LLVM location directly.
+          # CMAKE_PREFIX_PATH includes chocolatey's LLVM install AND
+          # vcpkg's installed root. vcpkg's toolchain file overrides
+          # find_package's search paths, so an explicit -DLLVM_DIR=...
+          # can get clobbered — but CMAKE_PREFIX_PATH is composable
+          # with vcpkg's modifications. The trailing `;` separates
+          # entries in the PowerShell-quoted string.
           cmake -S . -B build -G Ninja `
             -DCMAKE_C_COMPILER=cl `
             -DCMAKE_CXX_COMPILER=cl `
             -DCMAKE_BUILD_TYPE=Release `
             -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_TOOLCHAIN" `
             -DVCPKG_TARGET_TRIPLET=x64-windows `
+            -DCMAKE_PREFIX_PATH="C:/Program Files/LLVM;C:/vcpkg/installed/x64-windows" `
             -DLLVM_DIR="C:/Program Files/LLVM/lib/cmake/llvm"
 
       - name: Build
