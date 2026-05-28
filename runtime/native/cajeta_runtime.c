@@ -462,11 +462,19 @@ typedef struct {
 static VOID CALLBACK __cajeta_w32_fiber_trampoline(LPVOID param) {
     ucontext_t* uc = (ucontext_t*) param;
     if (uc && uc->entry) uc->entry();
-    // Fall-through: switch back to the calling fiber (mimics ucontext's
-    // uc_link semantics). cajeta's fiber entry uses explicit swapcontext
-    // before falling off, so this is defensive.
-    LPVOID caller = GetCurrentFiber();
-    if (caller) SwitchToFiber(caller);
+    // The fiber function returned. Hand control to uc_link (the carrier that
+    // dispatched us), mirroring ucontext's uc_link semantics.
+    //
+    // It MUST be uc_link, not GetCurrentFiber(): GetCurrentFiber() returns
+    // THIS fiber, and SwitchToFiber(self) is undefined — in practice the
+    // callback then returns and Windows terminates the carrier thread, so the
+    // carrier dies after the first task finishes and any later task never runs
+    // (its awaiter deadlocks). swapcontext/uc_link is the path glibc takes when
+    // a makecontext fiber falls off its end.
+    ucontext_t* link = uc ? (ucontext_t*) uc->uc_link : NULL;
+    if (link && link->fiber) {
+        SwitchToFiber(link->fiber);
+    }
 }
 
 static inline int __cajeta_w32_getcontext(ucontext_t* uc) {
