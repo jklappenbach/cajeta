@@ -209,12 +209,26 @@ jobs:
       # pacman — no LLVM tarball, no vcpkg-from-source, no MSVC env, no
       # diaguids hack. Produces a native PE binary (no cygwin1.dll
       # runtime dependency); the toolchain triple is x86_64-w64-mingw32.
+      #
+      # Java is installed via actions/setup-java rather than pacman —
+      # MSYS2's Java packaging is inconsistent (both mingw-w64-x86_64-jre
+      # and mingw-w64-x86_64-jdk-openjdk don't exist). setup-java works
+      # reliably across all platforms and adds java to PATH so MSYS2's
+      # bash inherits it.
+      - name: Setup Java (Windows)
+        if: runner.os == 'Windows'
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
       - name: Setup MSYS2 (Windows)
         if: runner.os == 'Windows'
         uses: msys2/setup-msys2@v2
         with:
           msystem: MINGW64
           update: false
+          path-type: inherit  # inherit Windows PATH so `java` from setup-java is visible
           install: >-
             mingw-w64-x86_64-clang
             mingw-w64-x86_64-llvm
@@ -227,7 +241,6 @@ jobs:
             mingw-w64-x86_64-glog
             mingw-w64-x86_64-gtest
             mingw-w64-x86_64-openssl
-            mingw-w64-x86_64-jdk-openjdk
             vim
 
       # ---- Configure + build (all platforms) ----------------------------
