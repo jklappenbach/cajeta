@@ -227,8 +227,7 @@ jobs:
             mingw-w64-x86_64-glog
             mingw-w64-x86_64-gtest
             mingw-w64-x86_64-openssl
-            mingw-w64-x86_64-libucontext
-            mingw-w64-x86_64-jre
+            mingw-w64-x86_64-jdk-openjdk
             vim
 
       # ---- Configure + build (all platforms) ----------------------------

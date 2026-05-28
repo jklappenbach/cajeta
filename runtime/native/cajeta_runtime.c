@@ -409,7 +409,75 @@ void __cajeta_closure_drop(void* p) {
 // matches Java 21's virtual-thread model and is acceptable for v1. A
 // stackless rewrite remains possible later if measured cost demands it.
 
+// ucontext.h — glibc + macOS provide swapcontext / getcontext / makecontext
+// for stackful coroutine context-switching. MinGW-w64 doesn't ship a
+// ucontext.h (libucontext isn't packaged for mingw-w64), so on Windows we
+// roll a minimal shim over the Win32 Fibers API (CreateFiber +
+// SwitchToFiber + ConvertThreadToFiber), which is the canonical Windows
+// equivalent for cooperative user-mode coroutines.
+//
+// The shim's ucontext_t struct keeps the uc_stack { ss_sp, ss_size } /
+// uc_link fields the cajeta fiber init code reads, even though Windows
+// manages the fiber stack internally — the fields are ignored at runtime.
+#if defined(_WIN32)
+#  define WIN32_LEAN_AND_MEAN
+#  include <windows.h>
+
+typedef struct {
+    LPVOID fiber;                         // Windows fiber handle
+    void (*entry)(void);                  // makecontext-supplied entry
+    struct { void* ss_sp; size_t ss_size; } uc_stack;
+    void* uc_link;
+} ucontext_t;
+
+static VOID CALLBACK __cajeta_w32_fiber_trampoline(LPVOID param) {
+    ucontext_t* uc = (ucontext_t*) param;
+    if (uc && uc->entry) uc->entry();
+    // Fall-through: switch back to the calling fiber (mimics ucontext's
+    // uc_link semantics). cajeta's fiber entry uses explicit swapcontext
+    // before falling off, so this is defensive.
+    LPVOID caller = GetCurrentFiber();
+    if (caller) SwitchToFiber(caller);
+}
+
+static inline int __cajeta_w32_getcontext(ucontext_t* uc) {
+    if (uc) {
+        uc->fiber = NULL;
+        uc->entry = NULL;
+        uc->uc_stack.ss_sp = NULL;
+        uc->uc_stack.ss_size = 0;
+        uc->uc_link = NULL;
+    }
+    return 0;
+}
+
+static inline void __cajeta_w32_makecontext(ucontext_t* uc, void (*func)(void), int argc) {
+    (void) argc;  // cajeta always passes 0
+    uc->entry = func;
+    SIZE_T stack_size = uc->uc_stack.ss_size > 0
+        ? (SIZE_T) uc->uc_stack.ss_size : 64 * 1024;
+    uc->fiber = CreateFiber(stack_size, __cajeta_w32_fiber_trampoline, uc);
+}
+
+static inline int __cajeta_w32_swapcontext(ucontext_t* from, ucontext_t* to) {
+    // First swap on the carrier thread must promote it to a fiber.
+    if (!IsThreadAFiber()) {
+        LPVOID cur = ConvertThreadToFiber(NULL);
+        if (from) from->fiber = cur;
+    } else if (from && !from->fiber) {
+        from->fiber = GetCurrentFiber();
+    }
+    if (to && to->fiber) SwitchToFiber(to->fiber);
+    return 0;
+}
+
+#define getcontext(uc)              __cajeta_w32_getcontext(uc)
+#define makecontext(uc, func, argc) __cajeta_w32_makecontext(uc, func, argc)
+#define swapcontext(from, to)       __cajeta_w32_swapcontext(from, to)
+
+#else
 #include <ucontext.h>
+#endif
 #include <string.h>
 
 #define CAJETA_FIBER_STACK_SIZE (64 * 1024)
