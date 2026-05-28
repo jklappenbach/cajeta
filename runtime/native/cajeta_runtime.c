@@ -50,9 +50,32 @@ static char** backtrace_symbols(void* const* buf, int n) { (void) buf; (void) n;
 // fsync(fd) — sync a file descriptor's data to disk. Macro-substitute
 // so the runtime code reads the same on every platform.
 #include <io.h>
+#include <sys/stat.h>
 #define fsync(fd) _commit(fd)
+
+// MinGW's mkdir takes a single path argument (no mode). POSIX mkdir
+// takes (path, mode). Provide a uniform call site via a helper macro
+// that drops the mode on Windows.
+#define cajeta_mkdir(path, mode) mkdir(path)
+
+// lstat / S_ISLNK don't exist on MinGW. Windows handles symlinks via
+// reparse points (FILE_ATTRIBUTE_REPARSE_POINT); a faithful port would
+// use GetFileAttributesEx and translate. For v0.1.0 we degrade: lstat
+// just calls stat (which dereferences symlinks instead of inspecting
+// them) and S_ISLNK returns 0 (every path is "not a symlink"). Means
+// symlink-aware code paths treat symlinks as their target on Windows.
+// Tracked for v0.1.x.
+#define lstat(path, statbuf) stat(path, statbuf)
+#define S_ISLNK(mode) 0
+
+// realpath -> MinGW provides _fullpath in <stdlib.h>. Passing NULL as
+// the buffer allocates one; the caller frees it (same lifetime
+// contract as POSIX realpath).
+#include <stdlib.h>
+#define realpath(in, _ignored) _fullpath(NULL, (in), 0)
 #else
 #include <execinfo.h>
+#define cajeta_mkdir(path, mode) mkdir(path, mode)
 #endif
 
 // `malloc_usable_size` ships in different headers per platform, and Apple's
@@ -3754,7 +3777,7 @@ int32_t __cajeta_path_mkdirs(const char* bytes, int64_t length) {
             *p = '\0';
             struct stat st;
             if (stat(path, &st) != 0) {
-                if (mkdir(path, 0777) != 0 && errno != EEXIST) {
+                if (cajeta_mkdir(path, 0777) != 0 && errno != EEXIST) {
                     *p = '/';
                     return -1;
                 }
@@ -3770,7 +3793,7 @@ int32_t __cajeta_path_mkdirs(const char* bytes, int64_t length) {
     if (stat(path, &st) == 0) {
         return S_ISDIR(st.st_mode) ? 0 : -1;
     }
-    if (mkdir(path, 0777) != 0 && errno != EEXIST) return -1;
+    if (cajeta_mkdir(path, 0777) != 0 && errno != EEXIST) return -1;
     return 0;
 }
 
