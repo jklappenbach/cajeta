@@ -10,6 +10,7 @@
 
 #include "gtest/gtest.h"
 #include "../jit/JitTestHelper.h"
+#include "../DeathTestUtil.h"
 
 #include <cstdint>
 
@@ -113,7 +114,7 @@ TEST(DropChainValidateDeathTests, popMismatchAborts) {
         __cajeta_drop_push(&a, &payload, noopDropFn);
         __cajeta_drop_push(&b, &payload, noopDropFn);
         __cajeta_drop_pop_run(&a);  // mismatch — top is &b
-    }, ::testing::KilledBySignal(SIGABRT),
+    }, CAJETA_DIED_BY_ABORT,
        "CAJETA_ERROR_DROP_CHAIN_POP_MISMATCH");
 }
 
@@ -124,7 +125,7 @@ TEST(DropChainValidateDeathTests, nullPushAborts) {
         __cajeta_set_drop_chain_validate(1);
         int payload = 0;
         __cajeta_drop_push(nullptr, &payload, noopDropFn);
-    }, ::testing::KilledBySignal(SIGABRT),
+    }, CAJETA_DIED_BY_ABORT,
        "CAJETA_ERROR_DROP_CHAIN_NULL_PUSH");
 }
 
@@ -134,7 +135,7 @@ TEST(DropChainValidateDeathTests, nullPopAborts) {
     ASSERT_EXIT({
         __cajeta_set_drop_chain_validate(1);
         __cajeta_drop_pop_run(nullptr);
-    }, ::testing::KilledBySignal(SIGABRT),
+    }, CAJETA_DIED_BY_ABORT,
        "CAJETA_ERROR_DROP_CHAIN_NULL_POP");
 }
 
@@ -143,7 +144,7 @@ TEST(DropChainValidateDeathTests, nullMarkInactiveAborts) {
     ASSERT_EXIT({
         __cajeta_set_drop_chain_validate(1);
         __cajeta_drop_mark_inactive(nullptr);
-    }, ::testing::KilledBySignal(SIGABRT),
+    }, CAJETA_DIED_BY_ABORT,
        "CAJETA_ERROR_DROP_CHAIN_NULL_MARK");
 }
 
@@ -157,7 +158,7 @@ TEST(DropChainValidateDeathTests, selfPushAborts) {
         cajeta_drop_entry_layout a{};
         __cajeta_drop_push(&a, &payload, noopDropFn);
         __cajeta_drop_push(&a, &payload, noopDropFn);  // self-cycle
-    }, ::testing::KilledBySignal(SIGABRT),
+    }, CAJETA_DIED_BY_ABORT,
        "CAJETA_ERROR_DROP_CHAIN_SELF_PUSH");
 }
 
@@ -172,7 +173,7 @@ TEST(DropChainValidateDeathTests, badActiveOnPopAborts) {
         __cajeta_drop_push(&a, &payload, noopDropFn);
         a.active = 0x7F;  // bit-rot
         __cajeta_drop_pop_run(&a);
-    }, ::testing::KilledBySignal(SIGABRT),
+    }, CAJETA_DIED_BY_ABORT,
        "CAJETA_ERROR_DROP_CHAIN_BAD_ACTIVE");
 }
 

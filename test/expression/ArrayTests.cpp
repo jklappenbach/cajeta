@@ -6,6 +6,7 @@
 
 #include "gtest/gtest.h"
 #include "../jit/JitTestHelper.h"
+#include "../DeathTestUtil.h"
 
 #include <cstdint>
 
@@ -118,7 +119,7 @@ TEST(ArrayTests, boundsCheckFiresOnOutOfRange) {
     auto fn = jit->lookup<int32_t (*)()>("run");
     ASSERT_NE(fn, nullptr);
     // Aborts via __cajeta_array_bounds_fail.
-    EXPECT_EXIT(fn(), ::testing::KilledBySignal(SIGABRT), "out of bounds");
+    EXPECT_EXIT(fn(), CAJETA_DIED_BY_ABORT, "out of bounds");
 }
 
 TEST(ArrayTests, boundsCheckFiresOnNegativeIndex) {
@@ -127,7 +128,7 @@ TEST(ArrayTests, boundsCheckFiresOnNegativeIndex) {
         "int32 idx = -1;\n"
         "return arr[idx];"), "test.A");
     auto fn = jit->lookup<int32_t (*)()>("run");
-    EXPECT_EXIT(fn(), ::testing::KilledBySignal(SIGABRT), "out of bounds");
+    EXPECT_EXIT(fn(), CAJETA_DIED_BY_ABORT, "out of bounds");
 }
 
 // --- nested arrays (multi-dim) ------------------------------------------------

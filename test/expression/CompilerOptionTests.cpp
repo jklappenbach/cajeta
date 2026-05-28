@@ -5,6 +5,7 @@
 
 #include "gtest/gtest.h"
 #include "../jit/JitTestHelper.h"
+#include "../DeathTestUtil.h"
 
 #include "cajeta/compile/Compiler.h"
 #include "cajeta/compile/CajetaModule.h"
@@ -58,7 +59,7 @@ TEST(CompilerOptionTests, boundsCheckOnFiresHelper) {
         "int32[] arr = new int32[3];\n"
         "return arr[5];"), "test.O", opts);
     auto fn = jit->lookup<int32_t (*)()>("run");
-    EXPECT_EXIT(fn(), ::testing::KilledBySignal(SIGABRT), "out of bounds");
+    EXPECT_EXIT(fn(), CAJETA_DIED_BY_ABORT, "out of bounds");
 }
 
 // Emit=obj: drive the Compiler directly (not via the JIT helper) so we can pick the
@@ -159,7 +160,7 @@ TEST(CompilerOptionTests, ubTrapsDivideByZeroTraps) {
     auto jit = CajetaJit::compile(src, "test.O");
     auto fn = jit->lookup<int32_t (*)()>("run");
     ASSERT_NE(fn, nullptr);
-    EXPECT_EXIT(fn(), ::testing::KilledBySignal(SIGILL), "");
+    EXPECT_EXIT(fn(), CAJETA_DIED_BY_TRAP, "");
 }
 
 // --ub-traps=on: modulo-by-zero traps the same way (SRem on rhs=0
@@ -177,7 +178,7 @@ TEST(CompilerOptionTests, ubTrapsModByZeroTraps) {
     auto jit = CajetaJit::compile(src, "test.O");
     auto fn = jit->lookup<int32_t (*)()>("run");
     ASSERT_NE(fn, nullptr);
-    EXPECT_EXIT(fn(), ::testing::KilledBySignal(SIGILL), "");
+    EXPECT_EXIT(fn(), CAJETA_DIED_BY_TRAP, "");
 }
 
 // --ub-traps=on: shift count >= operand bit-width traps. On int32,
@@ -195,7 +196,7 @@ TEST(CompilerOptionTests, ubTrapsOversizedShiftTraps) {
     auto jit = CajetaJit::compile(src, "test.O");
     auto fn = jit->lookup<int32_t (*)()>("run");
     ASSERT_NE(fn, nullptr);
-    EXPECT_EXIT(fn(), ::testing::KilledBySignal(SIGILL), "");
+    EXPECT_EXIT(fn(), CAJETA_DIED_BY_TRAP, "");
 }
 
 // --ub-traps=on: in-range division still works. Sanity that the
@@ -229,7 +230,7 @@ TEST(CompilerOptionTests, overflowChecksSignedAddTraps) {
     auto jit = CajetaJit::compile(src, "test.O");
     auto fn = jit->lookup<int32_t (*)()>("run");
     ASSERT_NE(fn, nullptr);
-    EXPECT_EXIT(fn(), ::testing::KilledBySignal(SIGILL), "");
+    EXPECT_EXIT(fn(), CAJETA_DIED_BY_TRAP, "");
 }
 
 // --overflow-checks=on: signed sub at int32 min - 1 traps.
@@ -246,7 +247,7 @@ TEST(CompilerOptionTests, overflowChecksSignedSubTraps) {
     auto jit = CajetaJit::compile(src, "test.O");
     auto fn = jit->lookup<int32_t (*)()>("run");
     ASSERT_NE(fn, nullptr);
-    EXPECT_EXIT(fn(), ::testing::KilledBySignal(SIGILL), "");
+    EXPECT_EXIT(fn(), CAJETA_DIED_BY_TRAP, "");
 }
 
 // --overflow-checks=on: signed mul int32 max * 2 traps.
@@ -263,7 +264,7 @@ TEST(CompilerOptionTests, overflowChecksSignedMulTraps) {
     auto jit = CajetaJit::compile(src, "test.O");
     auto fn = jit->lookup<int32_t (*)()>("run");
     ASSERT_NE(fn, nullptr);
-    EXPECT_EXIT(fn(), ::testing::KilledBySignal(SIGILL), "");
+    EXPECT_EXIT(fn(), CAJETA_DIED_BY_TRAP, "");
 }
 
 // --overflow-checks=on: in-range arithmetic still produces correct results.
@@ -377,7 +378,7 @@ TEST(CompilerOptionTests, overflowChecksCompoundAddTraps) {
     auto jit = CajetaJit::compile(src, "test.O");
     auto fn = jit->lookup<int32_t (*)()>("run");
     ASSERT_NE(fn, nullptr);
-    EXPECT_EXIT(fn(), ::testing::KilledBySignal(SIGILL), "");
+    EXPECT_EXIT(fn(), CAJETA_DIED_BY_TRAP, "");
 }
 
 // --overflow-checks=on: compound -= traps.
@@ -394,7 +395,7 @@ TEST(CompilerOptionTests, overflowChecksCompoundSubTraps) {
     auto jit = CajetaJit::compile(src, "test.O");
     auto fn = jit->lookup<int32_t (*)()>("run");
     ASSERT_NE(fn, nullptr);
-    EXPECT_EXIT(fn(), ::testing::KilledBySignal(SIGILL), "");
+    EXPECT_EXIT(fn(), CAJETA_DIED_BY_TRAP, "");
 }
 
 // --overflow-checks=on: compound *= traps.
@@ -411,7 +412,7 @@ TEST(CompilerOptionTests, overflowChecksCompoundMulTraps) {
     auto jit = CajetaJit::compile(src, "test.O");
     auto fn = jit->lookup<int32_t (*)()>("run");
     ASSERT_NE(fn, nullptr);
-    EXPECT_EXIT(fn(), ::testing::KilledBySignal(SIGILL), "");
+    EXPECT_EXIT(fn(), CAJETA_DIED_BY_TRAP, "");
 }
 
 // --overflow-checks=on: compound assignment on uint32 wraps silently.
@@ -445,7 +446,7 @@ TEST(CompilerOptionTests, overflowChecksUnaryNegIntMinTraps) {
     auto jit = CajetaJit::compile(src, "test.O");
     auto fn = jit->lookup<int32_t (*)()>("run");
     ASSERT_NE(fn, nullptr);
-    EXPECT_EXIT(fn(), ::testing::KilledBySignal(SIGILL), "");
+    EXPECT_EXIT(fn(), CAJETA_DIED_BY_TRAP, "");
 }
 
 // --overflow-checks=on: normal negation works.
@@ -494,7 +495,7 @@ TEST(CompilerOptionTests, overflowChecksPrefixIncTraps) {
     auto jit = CajetaJit::compile(src, "test.O");
     auto fn = jit->lookup<int32_t (*)()>("run");
     ASSERT_NE(fn, nullptr);
-    EXPECT_EXIT(fn(), ::testing::KilledBySignal(SIGILL), "");
+    EXPECT_EXIT(fn(), CAJETA_DIED_BY_TRAP, "");
 }
 
 // --overflow-checks=on: prefix -- traps at INT_MIN.
@@ -511,7 +512,7 @@ TEST(CompilerOptionTests, overflowChecksPrefixDecTraps) {
     auto jit = CajetaJit::compile(src, "test.O");
     auto fn = jit->lookup<int32_t (*)()>("run");
     ASSERT_NE(fn, nullptr);
-    EXPECT_EXIT(fn(), ::testing::KilledBySignal(SIGILL), "");
+    EXPECT_EXIT(fn(), CAJETA_DIED_BY_TRAP, "");
 }
 
 // --overflow-checks=on: postfix ++ traps at INT_MAX.
@@ -528,7 +529,7 @@ TEST(CompilerOptionTests, overflowChecksPostfixIncTraps) {
     auto jit = CajetaJit::compile(src, "test.O");
     auto fn = jit->lookup<int32_t (*)()>("run");
     ASSERT_NE(fn, nullptr);
-    EXPECT_EXIT(fn(), ::testing::KilledBySignal(SIGILL), "");
+    EXPECT_EXIT(fn(), CAJETA_DIED_BY_TRAP, "");
 }
 
 // --overflow-checks=on: postfix -- traps at INT_MIN.
@@ -545,7 +546,7 @@ TEST(CompilerOptionTests, overflowChecksPostfixDecTraps) {
     auto jit = CajetaJit::compile(src, "test.O");
     auto fn = jit->lookup<int32_t (*)()>("run");
     ASSERT_NE(fn, nullptr);
-    EXPECT_EXIT(fn(), ::testing::KilledBySignal(SIGILL), "");
+    EXPECT_EXIT(fn(), CAJETA_DIED_BY_TRAP, "");
 }
 
 // --overflow-checks=on: ++ / -- on uint*, modular wrap, no trap.
@@ -599,7 +600,7 @@ TEST(CompilerOptionTests, boundsCheckTrapVariantTraps) {
     auto jit = CajetaJit::compile(src, "test.O", opts);
     auto fn = jit->lookup<int32_t (*)()>("run");
     ASSERT_NE(fn, nullptr);
-    EXPECT_EXIT(fn(), ::testing::KilledBySignal(SIGILL), "");
+    EXPECT_EXIT(fn(), CAJETA_DIED_BY_TRAP, "");
 }
 
 // --live-set=off: __cajeta_live_set_add is not called after malloc,
