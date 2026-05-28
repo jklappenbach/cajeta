@@ -509,6 +509,31 @@ static inline int __cajeta_w32_swapcontext(ucontext_t* from, ucontext_t* to) {
 #endif
 #include <string.h>
 
+// Apple deprecated the ucontext.h family in 10.6 but ships no replacement for
+// user-space context switching (its guidance -- GCD / pthreads -- can't express
+// a cooperative fiber scheduler). ucontext is still the portable mechanism:
+// glibc and the BSDs implement it, macOS implements it (just deprecated), and
+// Windows is covered by the shim above. Route the three calls through wrappers
+// so the residual macOS deprecation warning is silenced in exactly one place
+// rather than at every call site; on every other platform these are zero-cost
+// pass-throughs (and on Windows they expand to the __cajeta_w32_* shims).
+#if defined(__APPLE__)
+#  pragma clang diagnostic push
+#  pragma clang diagnostic ignored "-Wdeprecated-declarations"
+#endif
+static inline int __cajeta_getcontext(ucontext_t* uc) {
+    return getcontext(uc);
+}
+static inline void __cajeta_makecontext(ucontext_t* uc, void (*func)(void), int argc) {
+    makecontext(uc, func, argc);
+}
+static inline int __cajeta_swapcontext(ucontext_t* from, ucontext_t* to) {
+    return swapcontext(from, to);
+}
+#if defined(__APPLE__)
+#  pragma clang diagnostic pop
+#endif
+
 #define CAJETA_FIBER_STACK_SIZE (64 * 1024)
 
 typedef void (*cajeta_task_trampoline_fn)(void* arg);
@@ -658,7 +683,7 @@ static void __cajeta_fiber_park(void) {
     f->next = __cajeta_parked_head;
     __cajeta_parked_head = f;
     pthread_mutex_unlock(&__cajeta_task_mutex);
-    swapcontext(&f->ctx, &__cajeta_carrier_ctx);
+    __cajeta_swapcontext(&f->ctx, &__cajeta_carrier_ctx);
 }
 
 // Carrier loop: pop a ready fiber, swap into it, observe its post-yield
@@ -692,13 +717,13 @@ static void* __cajeta_carrier_loop(void* arg) {
                 fprintf(stderr, "cajeta: fiber stack malloc failed\n");
                 abort();
             }
-            getcontext(&f->ctx);
+            __cajeta_getcontext(&f->ctx);
             f->ctx.uc_stack.ss_sp = f->stack;
             f->ctx.uc_stack.ss_size = CAJETA_FIBER_STACK_SIZE;
             f->ctx.uc_link = &__cajeta_carrier_ctx;
-            makecontext(&f->ctx, __cajeta_fiber_entry, 0);
+            __cajeta_makecontext(&f->ctx, __cajeta_fiber_entry, 0);
         }
-        swapcontext(&__cajeta_carrier_ctx, &f->ctx);
+        __cajeta_swapcontext(&__cajeta_carrier_ctx, &f->ctx);
         __cajeta_current_fiber = NULL;
         if (f->state == CAJETA_FIBER_DONE) {
             free(f->stack);
@@ -1092,7 +1117,7 @@ void __cajeta_lock_acquire(void* p) {
         }
         self->state = CAJETA_FIBER_PARKED;
         pthread_mutex_unlock(&l->mutex);
-        swapcontext(&self->ctx, &__cajeta_carrier_ctx);
+        __cajeta_swapcontext(&self->ctx, &__cajeta_carrier_ctx);
     }
 }
 

@@ -147,9 +147,9 @@ stopped selling Intel Macs in 2022; the GH runner pool is being wound
 down). Intel Mac users build from source:
 
 ```sh
-brew install cmake ninja llvm@22 antlr4-cpp-runtime openjdk@17 \
+brew install cmake ninja llvm antlr4-cpp-runtime openjdk@17 \
     googletest glog zstd xxhash
-export LLVM_DIR="$(brew --prefix llvm@22)/lib/cmake/llvm"
+export LLVM_DIR="$(brew --prefix llvm)/lib/cmake/llvm"
 git clone https://github.com/jklappenbach/cajeta.git
 cd cajeta
 ./setup.sh && ./build.sh
@@ -191,7 +191,7 @@ publish the artifacts that built cleanly. To diagnose a failed job:
    common failure modes:
    - **LLVM not found.** A runner image bumped its preinstalled LLVM
      version; the workflow's `apt-get install llvm-22-dev` (or `brew
-     install llvm@22`) didn't materialize. Bump the workflow's LLVM
+     install llvm`) didn't materialize. Bump the workflow's LLVM
      version pin in lockstep with `setup.sh`.
    - **antlr4 generator timeout.** ANTLR4 codegen runs `java` against
      the parser grammar; if the runner image is missing JRE 17, the

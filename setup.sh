@@ -30,6 +30,16 @@ set -euo pipefail
 
 LLVM_VER="${CAJETA_LLVM_VERSION:-22}"
 
+# macOS Homebrew formula for LLVM. Homebrew keeps the newest LLVM as the
+# unversioned `llvm` formula and only ships `llvm@N` for some older majors --
+# there is no `llvm@22` while 22 is current. Prefer the versioned formula when
+# it exists, else fall back to `llvm` (which tracks the latest, currently 22.x).
+# Only meaningful on macOS; harmless elsewhere.
+BREW_LLVM="llvm@${LLVM_VER}"
+if [[ "$(uname -s)" == "Darwin" ]] && command -v brew >/dev/null 2>&1; then
+    brew info --formula "llvm@${LLVM_VER}" >/dev/null 2>&1 || BREW_LLVM="llvm"
+fi
+
 # LLVM_DIR default per platform — LLVMConfig.cmake lives at a different
 # canonical path on each.
 case "$(uname -s)" in
@@ -42,7 +52,7 @@ case "$(uname -s)" in
         # Defer to brew's prefix. Callers typically set LLVM_DIR
         # explicitly via the workflow before invoking setup.sh.
         if command -v brew >/dev/null 2>&1; then
-            LLVM_DIR="${LLVM_DIR:-$(brew --prefix llvm@${LLVM_VER})/lib/cmake/llvm}"
+            LLVM_DIR="${LLVM_DIR:-$(brew --prefix ${BREW_LLVM})/lib/cmake/llvm}"
         fi
         ;;
     *)
@@ -65,6 +75,22 @@ need_sudo() {
 
 install_linux_apt() {
     local SUDO; SUDO="$(need_sudo)"
+
+    # LLVM 22 isn't in every distro's stock repos yet. If the versioned llvm
+    # package isn't visible to apt, add the official apt.llvm.org source for
+    # this release's codename (it serves both amd64 and arm64). Skipped when
+    # the package is already available -- distros that ship llvm-$LLVM_VER, or
+    # an image/host that already has the repo (so this won't disturb a working
+    # setup).
+    if ! apt-cache show "llvm-${LLVM_VER}-dev" >/dev/null 2>&1 && [[ -r /etc/os-release ]]; then
+        . /etc/os-release
+        echo "[deps] llvm-${LLVM_VER}-dev not in apt; adding apt.llvm.org (${VERSION_CODENAME})"
+        wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key \
+            | $SUDO tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc >/dev/null
+        echo "deb http://apt.llvm.org/${VERSION_CODENAME}/ llvm-toolchain-${VERSION_CODENAME}-${LLVM_VER} main" \
+            | $SUDO tee "/etc/apt/sources.list.d/llvm-${LLVM_VER}.list" >/dev/null
+        $SUDO apt-get update
+    fi
 
     # Package list mirrors README "Build prerequisites" plus libxxhash-dev for
     # cajeta.hash (runtime/native/cajeta_runtime.c includes <xxhash.h>).
@@ -143,14 +169,14 @@ install_macos_brew() {
     # bitcode-emit step (clang in src/CMakeLists.txt is found by versioned
     # name, then plain name as a fallback). Caller may need to set LLVM_DIR
     # to the brew prefix, e.g.:
-    #   LLVM_DIR="$(brew --prefix llvm@${LLVM_VER})/lib/cmake/llvm" ./setup.sh
+    #   LLVM_DIR="$(brew --prefix ${BREW_LLVM})/lib/cmake/llvm" ./setup.sh
     local formulas=(
-        cmake ninja "llvm@${LLVM_VER}" antlr4-cpp-runtime openjdk@17
+        cmake ninja "${BREW_LLVM}" antlr4-cpp-runtime openjdk@17
         googletest glog zstd xxhash
     )
     echo "[deps] running: brew install ${formulas[*]}"
     brew install "${formulas[@]}"
-    echo "[deps] note: set LLVM_DIR=\"\$(brew --prefix llvm@${LLVM_VER})/lib/cmake/llvm\" before re-running setup.sh"
+    echo "[deps] note: set LLVM_DIR=\"\$(brew --prefix ${BREW_LLVM})/lib/cmake/llvm\" before re-running setup.sh"
     echo "       if cmake can't locate LLVM."
 }
 

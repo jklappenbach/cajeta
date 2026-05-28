@@ -115,6 +115,7 @@ sudo apt install \
 ```
 
 Notes:
+- LLVM 22 isn't in Ubuntu's stock repos yet. If the `llvm-22-*` packages aren't found, add the [apt.llvm.org](https://apt.llvm.org) source first (`./setup.sh` does this automatically): ``echo "deb http://apt.llvm.org/$(. /etc/os-release; echo $VERSION_CODENAME)/ llvm-toolchain-$(. /etc/os-release; echo $VERSION_CODENAME)-22 main" | sudo tee /etc/apt/sources.list.d/llvm-22.list`` (after importing the repo key).
 - `clang-22` is required at compiler-build time to compile `runtime/native/cajeta_runtime.c` to LLVM bitcode, which is then embedded into the Cajeta compiler binary.
 - `vim-common` provides `xxd`, used to convert the bitcode bytes into a C array.
 - `openjdk-17-jre` runs the bundled ANTLR4 jar in `tools/antlr/`.

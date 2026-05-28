@@ -156,10 +156,19 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           set -euo pipefail
+          # LLVM 22 isn't in Ubuntu's stock repos yet, so add the official
+          # apt.llvm.org source for this release's codename. It serves both
+          # amd64 and arm64 for noble, covering the x86_64 and aarch64
+          # runners. Adding it is idempotent if the image already has it.
+          . /etc/os-release
+          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key \
+            | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc >/dev/null
+          echo "deb http://apt.llvm.org/${VERSION_CODENAME}/ llvm-toolchain-${VERSION_CODENAME}-22 main" \
+            | sudo tee /etc/apt/sources.list.d/llvm-22.list >/dev/null
           sudo apt-get update
-          # Mirror setup.sh's install_linux_apt list. llvm-22 is the
-          # baseline; lld-22-dev may not ship on 24.04 ARM yet, so
-          # leave it best-effort.
+          # Mirror setup.sh's install_linux_apt list. clang-22 builds the
+          # runtime bitcode; llvm-22-dev provides the headers/libs (the C++
+          # compiler itself is the system g++).
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
             cmake \
             ninja-build \
@@ -186,20 +195,24 @@ jobs:
           # (Apple Silicon) it's at /opt/homebrew. `brew --prefix`
           # abstracts that for us.
           brew update
+          # Homebrew has no versioned llvm@22 formula; the unversioned `llvm`
+          # is currently 22.x. The compiler only needs the LLVM >= 21 API
+          # (the Triple-based lookupTarget / createTargetMachine), so tracking
+          # `llvm` is fine -- LLVM_DIR below pins CMake to whatever it resolves.
           brew install \
             cmake \
             ninja \
-            llvm@22 \
+            llvm \
             antlr4-cpp-runtime \
             openjdk@17 \
             googletest \
             glog \
             zstd \
             xxhash
-          echo "LLVM_DIR=$(brew --prefix llvm@22)/lib/cmake/llvm" >> "$GITHUB_ENV"
-          # Apple's system clang doesn't know about llvm@22 headers/libs
+          echo "LLVM_DIR=$(brew --prefix llvm)/lib/cmake/llvm" >> "$GITHUB_ENV"
+          # Apple's system clang doesn't know about the brew llvm headers/libs
           # unless we point CMake at the brew prefix explicitly.
-          echo "CMAKE_PREFIX_PATH=$(brew --prefix llvm@22)" >> "$GITHUB_ENV"
+          echo "CMAKE_PREFIX_PATH=$(brew --prefix llvm)" >> "$GITHUB_ENV"
 
       # ---- Windows: MSYS2 / MinGW-w64 ----------------------------------
       #
