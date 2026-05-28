@@ -8,6 +8,7 @@
 #include "Annotatable.h"
 #include "QualifiedName.h"
 #include "Templates.h"
+#include <cstdint>
 #include <optional>
 #include "llvm/IR/Module.h"
 #include "llvm/IR/Type.h"
@@ -102,7 +103,10 @@ namespace cajeta {
     #define TYPE_ID_MASK            0xFFFFFFFF00000000
     #define TYPE_ID(flags)          ((flags & TYPE_ID_MASK) >> 16)
 
-    typedef unsigned long CajetaTypeFlags;
+    // 64-bit on every supported target. `unsigned long` is 32-bit on Windows
+    // (LLP64), which silently truncates the upper-32 _ID component of every
+    // TYPE_ID and collapses distinct types onto the same numeric value.
+    typedef uint64_t CajetaTypeFlags;
 
     class Method;
     typedef shared_ptr<Method> MethodPtr;
