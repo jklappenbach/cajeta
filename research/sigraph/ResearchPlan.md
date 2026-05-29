@@ -1,6 +1,6 @@
 # Computer Graphics (SIGGRAPH) — Research Plan
 
-> Initial research index for Cajeta. Status: initial pass (2026-05-28); virtual-geometry + Lumen deep-dive added 2026-05-28.
+> Initial research index for Cajeta. Status: initial pass (2026-05-28); virtual-geometry + Lumen deep-dive added 2026-05-28; fluid/cloud simulation added 2026-05-28.
 
 ## Goals
 
@@ -153,6 +153,44 @@ Cajeta aims to give engine builders a native, borrow-checked systems language wi
 - **Algorithms to capture:** 3DGS tile-based differentiable rasterizer (frustum cull → per-tile depth sort → front-to-back alpha-blend of projected 2D Gaussians); adaptive densification/pruning during optimization; spherical-harmonic view-dependent color; multiresolution hash-grid feature encoding + tiny MLP; ray-marched volume rendering with occupancy/density grid skipping.
 - **Implementation notes:** The splat rasterizer is a GPU-offload kernel: per-tile sort + atomic alpha compositing — pairs well with Cajeta's GPU codegen and atomic-buffer types. Gaussian parameters (position, covariance/quaternion+scale, SH coeffs, opacity) form a SoA value-type buffer owned by a `GaussianCloud`. Hash-grid NeRF needs the same tensor/inference interop as the neural denoiser; share an `inference` abstraction. Differentiable training is out of scope for v1 (inference/rendering first); note borrow-checking interplay with autodiff buffers as an open question.
 
+### Fluid Simulation — Water, Oceans & Waves
+
+- **What:** Open-ocean surfaces (spectral/FFT), interactive water-body waves, and full liquid dynamics (grid + particle).
+- **Why for Cajeta:** Oceans, lakes, rivers, and splashes are core to many engines; offering both cheap surface methods and full simulation behind one `fluid`/`ocean` module is high value and exercises the GPU-codegen + FFT + sort paths.
+- **Key papers / sources:**
+  - [Simulating Ocean Water](https://jtessen.people.clemson.edu/reports/papers_files/coursenotes2004.pdf) — Jerry Tessendorf; SIGGRAPH course notes, 2004. The FFT ocean: Phillips spectrum → inverse FFT heightfield + choppiness. The industry-standard ocean. (PDF verified — 2.6 MB.)
+  - [Wave Particles](https://www.cemyuksel.com/research/waveparticles/waveparticles.pdf) — Yuksel, House, Keyser; SIGGRAPH 2007. Real-time interactive surface waves with two-way object interaction; simple, fast, unconditionally stable. (PDF verified — 1.2 MB.)
+  - [Water Surface Wavelets](https://pub.ist.ac.at/group_wojtan/projects/2018_Jeschke_WaterSurfaceWavelets/WaterSurfaceWavelets.pdf) — Jeschke, Skřivan, Müller-Fischer, Chentanez, Macklin, Wojtan; SIGGRAPH 2018. A wavelet transform over space/frequency/direction that generalizes FFT ocean to handle local interactions and boundaries. (PDF verified — 21 MB.)
+  - [Particle-Based Fluid Simulation for Interactive Applications (SPH)](https://matthias-research.github.io/pages/publications/sca03.pdf) — Müller, Charypar, Gross; SCA 2003. Interactive SPH with surface tension; the SPH entry point. (PDF verified — 2.5 MB.)
+  - [Position Based Fluids](https://mmacklin.com/pbf_sig_preprint.pdf) — Macklin, Müller; SIGGRAPH 2013. PBD density solve → incompressible fluids at large timesteps, real-time, GPU-friendly. (PDF verified — 5.6 MB.)
+  - [Animating Sand as a Fluid (FLIP)](https://www.cs.ubc.ca/~rbridson/docs/zhu-siggraph05-sandfluid.pdf) — Zhu, Bridson; SIGGRAPH 2005. Brought FLIP (hybrid grid+particle) to graphics; basis of most production liquid solvers. (PDF verified — 1.6 MB.)
+- **Algorithms to capture:** Phillips/JONSWAP spectrum + IFFT ocean heightfield + Gerstner choppiness; wave particles; water surface wavelets; Eulerian MAC-grid solver with pressure projection; PIC/FLIP/APIC particle↔grid transfer; SPH/PCISPH/PBF density solve; surface reconstruction (marching cubes / screen-space fluids).
+- **Implementation notes:** FFT ocean is a small kernel + an FFT — cross-ref the GPU codegen path and an `fft` library primitive; spectra are POD params. The MAC grid is a strided Cajeta buffer; FLIP/APIC particle↔grid is a GPU scatter/gather where the borrow checker separates particle SoA from grid scratch. Reuse the sorting module's GPU radix sort for SPH neighbor binning. Shares the grid + Poisson solver with the smoke/gas section below.
+
+### Fluid Simulation — Smoke, Gas, Air & Fire
+
+- **What:** Gaseous fluid simulation — smoke, air, fire — via incompressible Euler/Navier-Stokes on a grid, with synthesized turbulence detail.
+- **Why for Cajeta:** Smoke/fire/air are ubiquitous VFX and share the grid + Poisson-solve machinery with the liquid solver — one solver core, two front-ends.
+- **Key papers / sources:**
+  - [Stable Fluids](https://pages.cs.wisc.edu/~chaol/data/cs777/stam-stable_fluids.pdf) — Jos Stam; SIGGRAPH 1999. Unconditionally stable semi-Lagrangian advection + pressure projection — the foundation of graphics fluid sim. (PDF verified — 1.2 MB.)
+  - [Visual Simulation of Smoke](http://physbam.stanford.edu/papers/stanford2001-01.pdf) — Fedkiw, Stam, Jensen; SIGGRAPH 2001. Inviscid Euler + **vorticity confinement** to restore the small-scale roll-up that numerical dissipation kills. (PDF verified — 1.4 MB.)
+  - [Wavelet Turbulence for Fluid Simulation](https://www.cs.cornell.edu/~tedkim/WTURB/wavelet_turbulence.pdf) — Kim, Thürey, James, Gross; SIGGRAPH 2008. Cheaply add high-frequency turbulent detail on top of a low-res sim via wavelet band synthesis. (PDF verified — 9.7 MB.)
+  - [An Angular-Momentum-Conserving Affine Particle-In-Cell Method](https://arxiv.org/pdf/1603.06188) — Jiang, Schroeder, Teran, et al., 2017 (open companion to APIC, SIGGRAPH 2015). Low-dissipation, momentum-conserving particle↔grid transfer used by modern hybrid gas/liquid/MPM solvers. (arXiv PDF verified — 1.7 MB.)
+- **Algorithms to capture:** Semi-Lagrangian advection; MAC-grid pressure projection (Poisson via Jacobi/CG/multigrid); vorticity confinement; buoyancy/temperature coupling; wavelet/noise turbulence synthesis; APIC particle↔grid transfer.
+- **Implementation notes:** Shares the MAC-grid + Poisson-solver machinery with the liquid solver — one `Grid3D<T>` + pressure-solve library serves both. The Poisson solve is the perf-critical kernel (a strong CG/multigrid GPU-codegen showcase). Render via the volumetric raymarch path (cross-ref clouds). Borrow model owns the double-buffered velocity/density fields.
+
+### Volumetric Clouds, Sky & Atmosphere
+
+- **What:** Real-time volumetric cloudscapes (raymarched density fields) plus physically based sky/atmosphere (Rayleigh/Mie scattering).
+- **Why for Cajeta:** Sky + clouds are the backdrop of every outdoor scene; a `sky`/`volumetrics` module is table-stakes for an engine library and reuses the volumetric raymarch the smoke renderer needs.
+- **Key papers / sources:**
+  - [The Real-time Volumetric Cloudscapes of Horizon Zero Dawn](http://advances.realtimerendering.com/s2015/) — Schneider, Vos (Guerrilla); SIGGRAPH 2015 Advances. The "Nubis" system: Perlin–Worley noise density modeling, raymarch + energy-conserving lighting, ~2 ms / 20 MB. (PDF verified — 5.7 MB.)
+  - [Physically Based Sky, Atmosphere & Cloud Rendering in Frostbite](https://media.contentapi.ea.com/content/dam/eacom/frostbite/files/s2016-pbs-frostbite-sky-clouds-new.pdf) — Sébastien Hillaire (EA); SIGGRAPH 2016. Production sky + atmosphere + clouds as unified participating media. (PDF verified — 50 MB.)
+  - [A Scalable and Production Ready Sky and Atmosphere Rendering Technique](https://sebh.github.io/publications/egsr2020.pdf) — Sébastien Hillaire; EGSR 2020. The modern LUT-based sky-atmosphere model (the technique behind UE5's SkyAtmosphere). (PDF verified — 34 MB.)
+  - [Precomputed Atmospheric Scattering](https://inria.hal.science/inria-00288758) — Bruneton, Neyret; EGSR 2008. Foundational precomputed transmittance/multiple-scattering LUTs for ground-to-space sky. (HAL landing verified; direct PDF blocked from this env — backlog.)
+- **Algorithms to capture:** Perlin–Worley cloud density noise; cloud raymarch with Beer–Powder lighting + cheap multiple-scattering approximation; transmittance + multiscatter + sky-view LUTs; Rayleigh/Mie phase functions; aerial perspective; temporal reprojection/upsampling.
+- **Implementation notes:** Clouds/atmosphere are raymarch compute kernels over 3D noise textures + precomputed LUTs — the same volumetric-integration primitive smoke rendering wants. LUTs are owned GPU textures recomputed on sky change; noise is a static asset. Cross-ref the denoiser/temporal-reprojection infra. A `ParticipatingMedium` abstraction unifies clouds, smoke rendering, and fog.
+
 ## PDF / paper backlog
 
 - [x] Spatiotemporal Reservoir Resampling (ReSTIR DI) — https://cs.dartmouth.edu/~wjarosz/publications/bitterli20spatiotemporal.html — papers/bitterli-2020-restir-di.pdf
@@ -179,6 +217,20 @@ Cajeta aims to give engine builders a native, borrow-checked systems language wi
 - [x] Lumen: Real-time Global Illumination in UE5 (Wright 2022) — https://advances.realtimerendering.com/s2022/SIGGRAPH2022-Advances-Lumen-Wright%20et%20al.pdf — papers/wright-2022-lumen-ue5-gi.pdf
 - [x] Radiance Cascades (Sannikov 2023) — https://github.com/Raikiri/RadianceCascadesPaper — papers/sannikov-2023-radiance-cascades.pdf
 - [x] Real-Time Neural Radiance Caching for Path Tracing (Müller 2021) — https://arxiv.org/pdf/2106.12372 — papers/muller-2021-neural-radiance-caching.pdf
+- [x] Simulating Ocean Water / FFT ocean (Tessendorf 2004) — https://jtessen.people.clemson.edu/reports/papers_files/coursenotes2004.pdf — papers/tessendorf-2004-simulating-ocean-water.pdf
+- [x] Wave Particles (Yuksel 2007) — https://www.cemyuksel.com/research/waveparticles/waveparticles.pdf — papers/yuksel-2007-wave-particles.pdf
+- [x] Water Surface Wavelets (Jeschke 2018) — https://pub.ist.ac.at/group_wojtan/projects/2018_Jeschke_WaterSurfaceWavelets/WaterSurfaceWavelets.pdf — papers/jeschke-2018-water-surface-wavelets.pdf
+- [x] Particle-Based Fluid Simulation / SPH (Müller 2003) — https://matthias-research.github.io/pages/publications/sca03.pdf — papers/muller-2003-sph-particle-fluid.pdf
+- [x] Position Based Fluids (Macklin & Müller 2013) — https://mmacklin.com/pbf_sig_preprint.pdf — papers/macklin-2013-position-based-fluids.pdf
+- [x] Animating Sand as a Fluid / FLIP (Zhu & Bridson 2005) — https://www.cs.ubc.ca/~rbridson/docs/zhu-siggraph05-sandfluid.pdf — papers/zhu-bridson-2005-animating-sand-as-fluid-flip.pdf
+- [x] Stable Fluids (Stam 1999) — https://pages.cs.wisc.edu/~chaol/data/cs777/stam-stable_fluids.pdf — papers/stam-1999-stable-fluids.pdf
+- [x] Visual Simulation of Smoke (Fedkiw, Stam, Jensen 2001) — http://physbam.stanford.edu/papers/stanford2001-01.pdf — papers/fedkiw-2001-visual-simulation-of-smoke.pdf
+- [x] Wavelet Turbulence for Fluid Simulation (Kim 2008) — https://www.cs.cornell.edu/~tedkim/WTURB/wavelet_turbulence.pdf — papers/kim-2008-wavelet-turbulence.pdf
+- [x] Angular-Momentum-Conserving APIC (Jiang et al. 2017; APIC 2015) — https://arxiv.org/pdf/1603.06188 — papers/jiang-2017-angular-momentum-apic.pdf
+- [x] Real-time Volumetric Cloudscapes of Horizon Zero Dawn (Schneider 2015) — http://advances.realtimerendering.com/s2015/ — papers/schneider-2015-horizon-volumetric-cloudscapes.pdf
+- [x] Physically Based Sky, Atmosphere & Cloud Rendering in Frostbite (Hillaire 2016) — https://media.contentapi.ea.com/content/dam/eacom/frostbite/files/s2016-pbs-frostbite-sky-clouds-new.pdf — papers/hillaire-2016-frostbite-sky-atmosphere-clouds.pdf
+- [x] A Scalable and Production Ready Sky and Atmosphere Rendering Technique (Hillaire 2020) — https://sebh.github.io/publications/egsr2020.pdf — papers/hillaire-2020-scalable-sky-atmosphere.pdf
+- [ ] Precomputed Atmospheric Scattering (Bruneton & Neyret 2008) — https://inria.hal.science/inria-00288758 — (HAL direct PDF blocked from this env, not downloaded)
 - [ ] Sparse Virtual Textures (Sean Barrett) — https://silverspaceship.com/src/svt/ — (html-only, not downloaded)
 - [x] Physically Based Shading at Disney (2012 BRDF) — https://media.disneyanimation.com/uploads/production/publication_asset/48/asset/s2012_pbs_disney_brdf_notes_v3.pdf — papers/burley-2012-disney-brdf.pdf
 - [x] Extending the Disney BRDF to a BSDF (2015) — https://blog.selfshadow.com/publications/s2015-shading-course/burley/s2015_pbs_disney_bsdf_notes.pdf — papers/burley-2015-disney-bsdf.pdf
