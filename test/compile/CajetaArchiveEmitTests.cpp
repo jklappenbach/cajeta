@@ -72,7 +72,14 @@ std::string compilerPath() {
     if (r.size() >= 3 && r[0] == '/' && std::isalpha((unsigned char) r[1]) && r[2] == '/') {
         r = std::string(1, r[1]) + ":" + r.substr(2);
     }
-    return r + "/build/src/cajeta.exe";
+    std::string p = r + "/build/src/cajeta.exe";
+    // std::system runs via cmd.exe, which cannot execute a program path
+    // spelled with forward slashes — it treats '/' as a switch lead-in and
+    // bails with "The system cannot find the path specified" (rc=1). Normalize
+    // to backslashes so both the relative "." default and an absolute
+    // CAJETA_SOURCE_ROOT path are launchable.
+    std::replace(p.begin(), p.end(), '/', '\\');
+    return p;
 #else
     return r + "/build/src/cajeta";
 #endif

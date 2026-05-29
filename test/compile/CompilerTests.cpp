@@ -40,7 +40,10 @@ TEST(CompilerTests, canThrowOnInvalidInput) {
 // when stdlib's structure count actually changes; prior values
 // drifted ahead of reality during the multi-class push, so re-anchor
 // by running the test and reading the actual size if it diverges.
-static constexpr size_t STDLIB_STRUCTURE_COUNT = 74;
+// 2026-05-29: bumped 74 → 96 after the cajeta-xpu work merged the
+// cajeta.xpu.core prelude (Stream, Buffer, Thread, Workgroup, Barrier,
+// Event, Wave, …) into the implicitly-loaded stdlib — +22 structures.
+static constexpr size_t STDLIB_STRUCTURE_COUNT = 96;
 
 TEST(CompilerTests, canParseOnValidShortPackage) {
     string inputPath = CAJETA_TEST_ROOT + string("/compile/code/src/cajeta/Test.cajeta");
