@@ -203,3 +203,47 @@ TEST(XpuNvptxEmitTests, lowersSaxpyKernelToPtx) {
     EXPECT_NE(ptx.find("mul.rn.f32"), std::string::npos) << ptx;
     EXPECT_NE(ptx.find("add.rn.f32"), std::string::npos) << ptx;
 }
+
+// ptxas assembles the SAXPY PTX into a cubin — proving LLVM 22's PTX is
+// accepted by the CUDA 12.9 assembler for sm_89. No GPU needed (ptxas is
+// a host tool); skipped if ptxas isn't installed.
+TEST(XpuNvptxEmitTests, assemblesSaxpyPtxToCubin) {
+    if (findPtxas().empty()) {
+        GTEST_SKIP() << "ptxas not found; skipping cubin assembly";
+    }
+
+    auto src =
+        "package test;\n"
+        "import cajeta.xpu.core.Buffer;\n"
+        "import cajeta.xpu.core.Thread;\n"
+        "public class M {\n"
+        "    @Kernel\n"
+        "    public static void saxpy(Buffer<float32> y, Buffer<float32> x,\n"
+        "                              float32 a, uint32 n) {\n"
+        "        uint32 i = Thread.globalIdX();\n"
+        "        if (i < n) { y[i] = a * x[i] + y[i]; }\n"
+        "    }\n"
+        "}\n";
+    Compiler compiler;
+    auto module = compileForInspection(compiler, src, "test.M");
+    auto saxpy = findMethod(module->getStructures()["test.M"], "saxpy");
+    ASSERT_NE(saxpy, nullptr);
+
+    auto tm = createNvptxTargetMachine("sm_89");
+    ASSERT_NE(tm, nullptr);
+    llvm::LLVMContext deviceCtx;
+    llvm::Module deviceModule("xpu_saxpy_device", deviceCtx);
+    configureDeviceModule(deviceModule, *tm);
+    lowerKernel(saxpy, deviceModule);
+    std::string ptx = emitPtx(deviceModule, *tm);
+    ASSERT_FALSE(ptx.empty());
+
+    std::vector<uint8_t> cubin = assembleCubin(ptx, "sm_89");
+    ASSERT_FALSE(cubin.empty()) << "ptxas produced no cubin";
+    // cubin is an ELF object: magic 0x7F 'E' 'L' 'F'.
+    ASSERT_GE(cubin.size(), 4u);
+    EXPECT_EQ(cubin[0], 0x7Fu);
+    EXPECT_EQ(cubin[1], 'E');
+    EXPECT_EQ(cubin[2], 'L');
+    EXPECT_EQ(cubin[3], 'F');
+}
