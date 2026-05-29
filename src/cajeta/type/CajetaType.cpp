@@ -647,6 +647,32 @@ namespace cajeta {
                     }
                 } else {
                     auto templateClass = dynamic_pointer_cast<CajetaClass>(type);
+                    // Same-short-name collision guard. A parameterized
+                    // reference `Foo<...>` can ONLY denote a generic class —
+                    // you cannot parameterize a non-generic one. If the bare
+                    // short-name fallback above landed a NON-template (e.g.
+                    // unqualified `Stream<T>` resolved to the final,
+                    // non-generic `cajeta.xpu.core.Stream` instead of the
+                    // generic `cajeta.lang.stream.Stream`, because both
+                    // register the bare key "Stream" in the process-global
+                    // canonicalMap and the last writer wins), re-resolve to a
+                    // same-short-name TEMPLATE. Without this the type
+                    // arguments are silently dropped and the intended generic
+                    // type/parent is lost — which broke every
+                    // `ArrayStream<T>`-derived stream (fold/map/reduce/…) once
+                    // `cajeta.xpu.core.Stream` was added to the build.
+                    if (!templateClass || !templateClass->isTemplate()) {
+                        const std::string& shortName = qName->getTypeName();
+                        for (auto& kv : canonicalMap) {
+                            auto cand = dynamic_pointer_cast<CajetaClass>(kv.second);
+                            if (cand && cand->isTemplate() && cand->getQName()
+                                    && cand->getQName()->getTypeName() == shortName) {
+                                templateClass = cand;
+                                type = cand;
+                                break;
+                            }
+                        }
+                    }
                     if (templateClass && templateClass->isTemplate()) {
                         vector<CajetaTypePtr> args;
                         for (auto* targ : targs->typeArgument()) {
