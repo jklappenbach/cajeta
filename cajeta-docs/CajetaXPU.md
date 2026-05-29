@@ -96,6 +96,47 @@ naming.
   pipelines belong to [`cajeta.render`](CajetaRender.md), which
   consumes `cajeta.xpu.vulkan` as its dispatch substrate.
 
+### 1.3 What's distinctive about Cajeta's combination
+
+The toolchain mechanics (LLVM device codegen → PTX/cubin assembly →
+driver dispatch) are standard, and well-trodden: a general-purpose
+language whose own LLVM backend lowers kernels to NVPTX and launches
+them via the driver is exactly what Julia (`CUDA.jl`), Numba
+(`@cuda.jit`), and Rust-CUDA already do. Where Cajeta is staking
+less-common ground is the *combination* of memory-safety with GPU as a
+first-class, multi-backend language feature:
+
+1. **Borrow-checking across the host/device launch boundary** — the
+   deferred-borrow-until-`Stream.sync()` model (§3.5, §11). Rust-CUDA
+   and cubecl inherit Rust's borrow checker for device-side code, but
+   full lifetime tracking of a buffer borrowed by an in-flight launch
+   until the next sync is not something the surveyed ecosystems model
+   deeply. This is the genuinely novel part.
+2. **Address-space-qualified types in the type system**
+   (`Global<T>` / `Shared<T>` / …, §3.1.2) with backend-resolved
+   numbering — most accelerator languages bury address spaces in the
+   backend; few surface them as first-class, borrow-checked types.
+3. **One memory-safe general-purpose language, one `xpu.core` surface,
+   three peer backends** (NVPTX / AMDGPU / SPIR-V) with compile-time
+   capability traits (§3.3) — Julia / KernelAbstractions get the
+   portability; SYCL / DPC++ gets single-source; but capability-trait-
+   bounded kernels *inside a borrow-checked language* is a particular
+   synthesis.
+
+So: the *how* (LLVM-NVPTX single-source) is established and battle-
+tested — Julia is the proof that it works as a language feature, not
+just a DSL. The *what* that's differentiated is doing it inside a
+borrow-checked, address-space-typed, multi-backend general-purpose
+language. The closest single comparison overall is Julia's `CUDA.jl` +
+`KernelAbstractions.jl`, but with Rust-style static safety instead of
+dynamic typing.
+
+> **Calibration note.** This positioning reflects a survey current to
+> early 2026 of a fast-moving space (Mojo, cubecl, and the Julia GPU
+> stack are all evolving quickly). The borrow-across-launch claim in
+> particular is the one most worth re-verifying before leaning on it in
+> external messaging.
+
 ---
 
 ## 2. Architecture at a glance
