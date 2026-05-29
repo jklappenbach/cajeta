@@ -1,0 +1,58 @@
+package cajeta.threading;
+
+/**
+ * Read-heavy shared state — cajeta-docs/stdlib/Thread.md § `RwLock<T>`.
+ * Like `Mutex<T>` it owns the protected value, but distinguishes shared
+ * reads from exclusive writes: many readers may hold the read lock at
+ * once, a writer holds it exclusively. Writer-preference in the runtime
+ * keeps a steady stream of readers from starving a writer.
+ *
+ * Same closure/scoped shape as `Mutex<T>` (the protected value doesn't
+ * escape a write region). Reach for it only over `Mutex<T>` when reads
+ * vastly dominate writes — and note that under today's single-carrier
+ * scheduler there is no wall-clock read parallelism; the shared-read
+ * semantics still matter (a parked reader doesn't block other readers),
+ * but the throughput win arrives with the work-stealing pool (R8).
+ *
+ * v1 surface: `read` (snapshot under a shared lock) + `withWrite`
+ * (exclusive mutate-and-store). A closure-based `withRead((T) -> R)` for
+ * computing under a shared lock without copying the value out lands in a
+ * later sub-phase.
+ */
+public class RwLock<T> {
+    pointer handle;
+    T value;
+
+    public RwLock(T initial) {
+        this.handle = Cajeta.rwlockNew();
+        this.value = initial;
+    }
+
+    public ~RwLock() {
+        Cajeta.rwlockDestroy(this.handle);
+    }
+
+    /**
+     * Snapshot the protected value under a shared read lock. Many readers
+     * may hold the read lock concurrently. Intended for value/primitive
+     * `T` — returns an independent copy.
+     */
+    public T read() {
+        Cajeta.rwlockRdlock(this.handle);
+        T snapshot = this.value;
+        Cajeta.rwlockRdunlock(this.handle);
+        return snapshot;
+    }
+
+    /**
+     * Exclusive write critical section: acquire the write lock, pass the
+     * current value to `fn`, store its result, release. Exception-safe via
+     * the method-scoped `WriteGuard` drop (fires on normal return AND
+     * exception unwind).
+     */
+    public void withWrite((T) -> T fn) {
+        Cajeta.rwlockWrlock(this.handle);
+        WriteGuard g = new WriteGuard(this.handle);
+        this.value = fn(this.value);
+    }
+}

@@ -368,6 +368,11 @@ set(CAJETA_STDLIB_DIRS
         ${CAJETA_STDLIB_ROOT}/cajeta/lang
         ${CAJETA_STDLIB_ROOT}/cajeta/lang/stream
         ${CAJETA_STDLIB_ROOT}/cajeta/error
+        # Threading sync primitives (Lock/LockGuard today; Mutex/RwLock/
+        # ConditionVariable/Channel/Semaphore land in later R7 sub-phases).
+        # After cajeta/lang (needs Object) and cajeta/error (future
+        # Channel close/timeout throws).
+        ${CAJETA_STDLIB_ROOT}/cajeta/threading
         ${CAJETA_STDLIB_ROOT}/cajeta/io/file
         ${CAJETA_STDLIB_ROOT}/cajeta/hash
         ${CAJETA_STDLIB_ROOT}/cajeta/collection

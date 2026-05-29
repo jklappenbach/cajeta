@@ -1535,6 +1535,330 @@ void __cajeta_lock_destroy(void* p) {
     free(l);
 }
 
+// --- Threading sync primitives: condition variable (R7-B) ----------------
+//
+// Fiber-aware condvar, paired with a Lock handle. `Mutex<T>.withLockWhen`
+// (cajeta-docs/stdlib/Thread.md § Mutex) builds on it: wait-for-predicate
+// inside a held lock, with notify on every mutation. A single condvar with
+// notify-all + per-waiter predicate re-check is the v1 strategy (spurious
+// wakeups are possible but harmless — each waiter re-tests its own
+// condition).
+//
+// Same single-carrier discipline as the Lock: a fiber waiter enqueues on
+// the condvar's own wait queue and swaps to the carrier; a main-thread
+// waiter blocks on the condvar's pthread cond. notify_all moves every fiber
+// waiter onto the carrier ready queue and broadcasts the pthread cond.
+
+struct cajeta_async_condvar {
+    pthread_mutex_t mutex;        // protects the wait queue; serializes with notify
+    pthread_cond_t  main_cond;    // main-thread waiters block here
+    struct cajeta_fiber* wait_head;
+    struct cajeta_fiber* wait_tail;
+};
+
+void* __cajeta_condvar_new(void) {
+    struct cajeta_async_condvar* cv =
+        (struct cajeta_async_condvar*) malloc(sizeof(*cv));
+    if (!cv) {
+        fprintf(stderr, "cajeta: __cajeta_condvar_new failed\n");
+        abort();
+    }
+    if (pthread_mutex_init(&cv->mutex, NULL) != 0) {
+        fprintf(stderr, "cajeta: condvar pthread_mutex_init failed\n");
+        free(cv);
+        abort();
+    }
+    if (pthread_cond_init(&cv->main_cond, NULL) != 0) {
+        fprintf(stderr, "cajeta: condvar pthread_cond_init failed\n");
+        pthread_mutex_destroy(&cv->mutex);
+        free(cv);
+        abort();
+    }
+    cv->wait_head = NULL;
+    cv->wait_tail = NULL;
+    return cv;
+}
+
+// Atomically release `lockp`, suspend until notified, then reacquire `lockp`.
+// The caller MUST hold `lockp` on entry; it holds it again on return.
+void __cajeta_condvar_wait(void* cvp, void* lockp) {
+    if (!cvp || !lockp) return;
+    struct cajeta_async_condvar* cv = (struct cajeta_async_condvar*) cvp;
+    if (__cajeta_current_fiber) {
+        // Fiber path: enqueue self on the condvar wait queue, release the
+        // user lock, then swap to the carrier. Enqueue happens under
+        // cv->mutex BEFORE the lock release so a concurrent notify_all
+        // (which also takes cv->mutex) can't slip between enqueue and
+        // release and lose the wakeup — once we're on the queue, notify
+        // will move us to the ready queue and we'll be resumed.
+        struct cajeta_fiber* self = __cajeta_current_fiber;
+        pthread_mutex_lock(&cv->mutex);
+        self->next = NULL;
+        if (cv->wait_tail) {
+            cv->wait_tail->next = self;
+            cv->wait_tail = self;
+        } else {
+            cv->wait_head = self;
+            cv->wait_tail = self;
+        }
+        self->state = CAJETA_FIBER_PARKED;
+        pthread_mutex_unlock(&cv->mutex);
+        __cajeta_lock_release(lockp);
+        __cajeta_swapcontext(&self->ctx, &__cajeta_carrier_ctx);
+        // Resumed by notify_all (carrier re-dispatched us). Reacquire the
+        // user lock before returning — may itself park if the lock is held.
+        __cajeta_lock_acquire(lockp);
+        return;
+    }
+    // Main-thread path: classic cond_wait. Release the user lock, block on
+    // the condvar's own pthread cond, reacquire on wake. cv->mutex guards
+    // the wait so it pairs with notify_all's broadcast under the same mutex.
+    pthread_mutex_lock(&cv->mutex);
+    __cajeta_lock_release(lockp);
+    pthread_cond_wait(&cv->main_cond, &cv->mutex);
+    pthread_mutex_unlock(&cv->mutex);
+    __cajeta_lock_acquire(lockp);
+}
+
+// Wake every waiter: move all fiber waiters onto the carrier ready queue and
+// broadcast the main-thread cond. Woken waiters re-check their predicate.
+void __cajeta_condvar_notify_all(void* cvp) {
+    if (!cvp) return;
+    struct cajeta_async_condvar* cv = (struct cajeta_async_condvar*) cvp;
+    pthread_mutex_lock(&cv->mutex);
+    struct cajeta_fiber* w = cv->wait_head;
+    cv->wait_head = NULL;
+    cv->wait_tail = NULL;
+    pthread_cond_broadcast(&cv->main_cond);
+    pthread_mutex_unlock(&cv->mutex);
+    if (w) {
+        pthread_mutex_lock(&__cajeta_task_mutex);
+        while (w) {
+            struct cajeta_fiber* next = w->next;
+            w->state = CAJETA_FIBER_READY;
+            w->next = NULL;
+            if (__cajeta_ready_tail) {
+                __cajeta_ready_tail->next = w;
+                __cajeta_ready_tail = w;
+            } else {
+                __cajeta_ready_head = w;
+                __cajeta_ready_tail = w;
+            }
+            w = next;
+        }
+        pthread_cond_signal(&__cajeta_task_queue_cond);
+        pthread_mutex_unlock(&__cajeta_task_mutex);
+    }
+}
+
+void __cajeta_condvar_destroy(void* cvp) {
+    if (!cvp) return;
+    struct cajeta_async_condvar* cv = (struct cajeta_async_condvar*) cvp;
+    pthread_cond_destroy(&cv->main_cond);
+    pthread_mutex_destroy(&cv->mutex);
+    free(cv);
+}
+
+// --- Threading sync primitives: reader-writer lock (R7-D) ----------------
+//
+// Fiber-aware RW lock backing `RwLock<T>` (cajeta-docs/stdlib/Thread.md §
+// RwLock). Many readers may hold it concurrently; a writer holds it
+// exclusively. Writer-preference: a reader blocks while any writer is
+// waiting, so a steady stream of readers can't starve a writer.
+//
+// Same single-carrier discipline as Lock/condvar: a blocked fiber parks on
+// the appropriate wait queue and swaps to the carrier; a blocked main
+// thread cond_waits. Unlock wakes ALL waiters (writers first) and lets each
+// re-check its predicate — spurious wakeups are harmless, matching the
+// condvar's notify-all strategy. Under the single carrier this costs little.
+
+// Move a NULL-terminated fiber list onto the carrier ready queue (FIFO) and
+// signal the carrier. Shared by the rwlock unlock paths.
+static void __cajeta_ready_enqueue_list(struct cajeta_fiber* head) {
+    if (!head) return;
+    pthread_mutex_lock(&__cajeta_task_mutex);
+    while (head) {
+        struct cajeta_fiber* next = head->next;
+        head->state = CAJETA_FIBER_READY;
+        head->next = NULL;
+        if (__cajeta_ready_tail) {
+            __cajeta_ready_tail->next = head;
+            __cajeta_ready_tail = head;
+        } else {
+            __cajeta_ready_head = head;
+            __cajeta_ready_tail = head;
+        }
+        head = next;
+    }
+    pthread_cond_signal(&__cajeta_task_queue_cond);
+    pthread_mutex_unlock(&__cajeta_task_mutex);
+}
+
+struct cajeta_async_rwlock {
+    pthread_mutex_t mutex;        // protects state + wait queues
+    pthread_cond_t  main_cond;    // main-thread readers + writers block here
+    int readers;                  // active shared-read holders
+    int writer;                   // 1 if a writer holds it exclusively
+    int writers_waiting;          // queued writers (drives writer-preference)
+    struct cajeta_fiber* rwait_head;   // fiber readers waiting
+    struct cajeta_fiber* rwait_tail;
+    struct cajeta_fiber* wwait_head;   // fiber writers waiting
+    struct cajeta_fiber* wwait_tail;
+};
+
+void* __cajeta_rwlock_new(void) {
+    struct cajeta_async_rwlock* rw =
+        (struct cajeta_async_rwlock*) malloc(sizeof(*rw));
+    if (!rw) {
+        fprintf(stderr, "cajeta: __cajeta_rwlock_new failed\n");
+        abort();
+    }
+    if (pthread_mutex_init(&rw->mutex, NULL) != 0) {
+        fprintf(stderr, "cajeta: rwlock pthread_mutex_init failed\n");
+        free(rw);
+        abort();
+    }
+    if (pthread_cond_init(&rw->main_cond, NULL) != 0) {
+        fprintf(stderr, "cajeta: rwlock pthread_cond_init failed\n");
+        pthread_mutex_destroy(&rw->mutex);
+        free(rw);
+        abort();
+    }
+    rw->readers = 0;
+    rw->writer = 0;
+    rw->writers_waiting = 0;
+    rw->rwait_head = NULL;
+    rw->rwait_tail = NULL;
+    rw->wwait_head = NULL;
+    rw->wwait_tail = NULL;
+    return rw;
+}
+
+void __cajeta_rwlock_rdlock(void* p) {
+    if (!p) return;
+    struct cajeta_async_rwlock* rw = (struct cajeta_async_rwlock*) p;
+    if (!__cajeta_current_fiber) {
+        pthread_mutex_lock(&rw->mutex);
+        while (rw->writer || rw->writers_waiting > 0) {
+            pthread_cond_wait(&rw->main_cond, &rw->mutex);
+        }
+        rw->readers++;
+        pthread_mutex_unlock(&rw->mutex);
+        return;
+    }
+    struct cajeta_fiber* self = __cajeta_current_fiber;
+    pthread_mutex_lock(&rw->mutex);
+    for (;;) {
+        if (!rw->writer && rw->writers_waiting == 0) {
+            rw->readers++;
+            pthread_mutex_unlock(&rw->mutex);
+            return;
+        }
+        self->next = NULL;
+        if (rw->rwait_tail) {
+            rw->rwait_tail->next = self;
+            rw->rwait_tail = self;
+        } else {
+            rw->rwait_head = self;
+            rw->rwait_tail = self;
+        }
+        self->state = CAJETA_FIBER_PARKED;
+        pthread_mutex_unlock(&rw->mutex);
+        __cajeta_swapcontext(&self->ctx, &__cajeta_carrier_ctx);
+        pthread_mutex_lock(&rw->mutex);
+    }
+}
+
+void __cajeta_rwlock_wrlock(void* p) {
+    if (!p) return;
+    struct cajeta_async_rwlock* rw = (struct cajeta_async_rwlock*) p;
+    if (!__cajeta_current_fiber) {
+        pthread_mutex_lock(&rw->mutex);
+        rw->writers_waiting++;
+        while (rw->writer || rw->readers > 0) {
+            pthread_cond_wait(&rw->main_cond, &rw->mutex);
+        }
+        rw->writers_waiting--;
+        rw->writer = 1;
+        pthread_mutex_unlock(&rw->mutex);
+        return;
+    }
+    struct cajeta_fiber* self = __cajeta_current_fiber;
+    pthread_mutex_lock(&rw->mutex);
+    rw->writers_waiting++;
+    for (;;) {
+        if (!rw->writer && rw->readers == 0) {
+            rw->writers_waiting--;
+            rw->writer = 1;
+            pthread_mutex_unlock(&rw->mutex);
+            return;
+        }
+        self->next = NULL;
+        if (rw->wwait_tail) {
+            rw->wwait_tail->next = self;
+            rw->wwait_tail = self;
+        } else {
+            rw->wwait_head = self;
+            rw->wwait_tail = self;
+        }
+        self->state = CAJETA_FIBER_PARKED;
+        pthread_mutex_unlock(&rw->mutex);
+        __cajeta_swapcontext(&self->ctx, &__cajeta_carrier_ctx);
+        pthread_mutex_lock(&rw->mutex);
+    }
+}
+
+// Detach both wait queues (writers first) and wake them once unlocked, so
+// woken fibers re-check their predicate against the new state.
+static void __cajeta_rwlock_wake_all_locked(struct cajeta_async_rwlock* rw,
+                                            struct cajeta_fiber** ww,
+                                            struct cajeta_fiber** rwq) {
+    *ww = rw->wwait_head;
+    rw->wwait_head = NULL;
+    rw->wwait_tail = NULL;
+    *rwq = rw->rwait_head;
+    rw->rwait_head = NULL;
+    rw->rwait_tail = NULL;
+    pthread_cond_broadcast(&rw->main_cond);
+}
+
+void __cajeta_rwlock_rdunlock(void* p) {
+    if (!p) return;
+    struct cajeta_async_rwlock* rw = (struct cajeta_async_rwlock*) p;
+    struct cajeta_fiber* ww = NULL;
+    struct cajeta_fiber* rwq = NULL;
+    pthread_mutex_lock(&rw->mutex);
+    if (rw->readers > 0) rw->readers--;
+    // Only the last reader out can let a writer in; wake then.
+    if (rw->readers == 0) {
+        __cajeta_rwlock_wake_all_locked(rw, &ww, &rwq);
+    }
+    pthread_mutex_unlock(&rw->mutex);
+    __cajeta_ready_enqueue_list(ww);
+    __cajeta_ready_enqueue_list(rwq);
+}
+
+void __cajeta_rwlock_wrunlock(void* p) {
+    if (!p) return;
+    struct cajeta_async_rwlock* rw = (struct cajeta_async_rwlock*) p;
+    struct cajeta_fiber* ww = NULL;
+    struct cajeta_fiber* rwq = NULL;
+    pthread_mutex_lock(&rw->mutex);
+    rw->writer = 0;
+    __cajeta_rwlock_wake_all_locked(rw, &ww, &rwq);
+    pthread_mutex_unlock(&rw->mutex);
+    __cajeta_ready_enqueue_list(ww);
+    __cajeta_ready_enqueue_list(rwq);
+}
+
+void __cajeta_rwlock_destroy(void* p) {
+    if (!p) return;
+    struct cajeta_async_rwlock* rw = (struct cajeta_async_rwlock*) p;
+    pthread_cond_destroy(&rw->main_cond);
+    pthread_mutex_destroy(&rw->mutex);
+    free(rw);
+}
+
 // Abort with a diagnostic when an array index is out of bounds. Compiler emits a
 // conditional branch to this from ArrayIndexExpression when bounds checking is on.
 void __cajeta_array_bounds_fail(int64_t index, int64_t dim) {
