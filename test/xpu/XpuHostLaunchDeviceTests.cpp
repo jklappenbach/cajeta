@@ -32,38 +32,22 @@
 using cajeta_test::CajetaJit;
 using cajeta::xpu::nvidia::CudaDriver;
 
-// DISABLED pending a frontend codegen fix unrelated to the device path.
+// The step-11 milestone, live: BOTH the @Kernel AND the host driver are Cajeta
+// source, compiled through the LLJIT, running SAXPY on the real GPU. The full
+// NVPTX host-launch infrastructure backs it — the CUDA-backed runtime
+// (cajeta_runtime.c), the Buffer<T>.elementBytes() intrinsic, the
+// cubin-registration global-ctor pass (NvptxRegistration) wired into
+// JitTestHelper, and the device kernel host stub.
 //
-// The full NVPTX host-launch infrastructure is in place and exercised by the
-// rest of the XPU suite: the CUDA-backed runtime (cajeta_runtime.c), the
-// Buffer<T>.elementBytes() intrinsic, the cubin-registration global-ctor pass
-// (NvptxRegistration) wired into JitTestHelper, and the device kernel host
-// stub. The proven device path (Cajeta @Kernel -> PTX -> cubin -> cuLaunch)
-// runs in XpuSaxpyDeviceTests on the real GPU.
-//
-// What blocks running the host driver *through the JIT* is a pre-existing
-// compiler codegen gap, surfaced for the first time here because this is the
-// first code to actually *call* Buffer<T>'s methods:
-//
-//   - Using the return value of an @Native-forwarder *instance* method
-//     (`int64 h = this.deviceAlloc(bytes)`) trips an LLVM
-//     `dyn_cast on a non-existent value` assertion during Phase-2 codegen.
-//     A void @Native instance call (`this.deviceFree(h)`) and a real-bodied
-//     instance call whose value is used (`uint64 n = x.length()`) both work,
-//     so the fault is specific to @Native instance methods that return a
-//     value (allocate / upload / download).
-//   - Calling a *static* method qualified by the generic class name
-//     (`Buffer.deviceAlloc(...)`) resolves to the uninstantiated template and
-//     lowers to null; the generic static factory `Buffer<T>.alloc(n)` via
-//     LHS-inference likewise lowers to null (and explicit `Buffer<float32>.
-//     alloc(n)` crashes the parser with a bad any_cast).
-//
-// Once @Native-instance-return codegen is fixed, restoring this to a live
-// TEST(...) should make Cajeta host source drive the kernel end to end:
-//   Buffer<float32> y = heap Buffer<float32>(0, n); y.allocate(); y.upload(hy);
-//   saxpy.launch(s, grid:[g], block:[b])(y, x, 2.0f, n); s.sync(); y.download(hy);
-// expecting y[i] == a*x[i] + y[i] (sum == 4*n for x=1,y=2,a=2).
-TEST(XpuHostLaunchDeviceTests, DISABLED_saxpyHostSourceOnDevice) {
+// Lighting this up required one frontend codegen fix, surfaced here because
+// this is the first code to actually orchestrate a kernel from Cajeta source:
+// Stream.current() returns a NULL handle (the CUDA default-stream sentinel),
+// but `s.sync()` was virtually dispatched, loading the vtable from the null
+// receiver and segfaulting. @Native methods are leaf forwarders to a fixed C
+// symbol — inherently non-polymorphic — so CajetaClass::invokeMethod now
+// direct-dispatches them, passing the null handle through to the forwarder
+// (which ignores `self`) instead of dereferencing it. See CajetaClass.cpp.
+TEST(XpuHostLaunchDeviceTests, saxpyHostSourceOnDevice) {
     if (!CudaDriver::available()) {
         GTEST_SKIP() << "no CUDA device/driver available";
     }

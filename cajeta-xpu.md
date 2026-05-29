@@ -55,8 +55,10 @@ deferrals first. Six commits on `cajeta-xpu` (after the restore commits):
 
 **Still open (generalization + carried-over deferrals):**
 
-- **Host launch via Cajeta source.** Infrastructure **done**; one frontend
-  codegen bug blocks the on-device run through the JIT.
+- **Host launch via Cajeta source. DONE** — `XpuHostLaunchDeviceTests.
+  saxpyHostSourceOnDevice` runs SAXPY on the real GPU with BOTH the `@Kernel`
+  AND the host driver written in Cajeta, compiled through the LLJIT
+  (allocate / upload / launch / sync / download / free, sum == 4*n).
   - `CallExpression::generateCode` lowers `kernel.launch(stream, grid:,
     block:)(args)` to `__cajeta_xpu_launch(name, gridX, blockX, argv)`,
     marshalling Buffer args to their device handle and scalars by value
@@ -78,17 +80,20 @@ deferrals first. Six commits on `cajeta-xpu` (after the restore commits):
     and emits an `llvm.global_ctors` entry calling `__cajeta_xpu_register_module`
     with the embedded cubin bytes; wired into `JitTestHelper` (ctors run at
     `jit->initialize()`).
-  - **Blocker** (`test/xpu/XpuHostLaunchDeviceTests.cpp`, `DISABLED_`): using
-    the return value of an `@Native`-forwarder *instance* method
-    (`int64 h = this.deviceAlloc(bytes)`) trips an LLVM `dyn_cast on a
-    non-existent value` assertion in Phase-2 codegen. A *void* `@Native`
-    instance call (`this.deviceFree(h)`) and a real-bodied instance call whose
-    value is used (`x.length()`) both work — so the fault is specific to
-    `@Native` instance methods that return a value. Related generic gaps:
-    a static call qualified by the generic class name (`Buffer.deviceAlloc(...)`)
-    resolves to the uninstantiated template and lowers to null, and explicit
-    `Buffer<float32>.alloc(n)` crashes the parser (bad any_cast). Fixing
-    `@Native`-instance-return codegen unblocks the end-to-end host-source run.
+  - **Dispatch fix** (`CajetaClass::invokeMethod`): `@Native` instance methods
+    are now **direct-dispatched**, not virtual. They are leaf forwarders to a
+    fixed C symbol — inherently non-polymorphic — and may be invoked on a
+    handle/sentinel receiver: `Stream.current()` returns a NULL handle (the
+    CUDA default stream), and `s.sync()` (a `@Native` void forwarder that
+    ignores `self`) must not load a vtable from the null receiver. The virtual
+    path segfaulted there; the direct call passes the null through to the
+    forwarder, which discards it. (This was the sole blocker for the on-device
+    host-source run.)
+  - Known generic gaps, not on the host-launch path: a static call qualified by
+    the generic class name (`Buffer.deviceAlloc(...)`) resolves to the
+    uninstantiated template and lowers to null, and explicit
+    `Buffer<float32>.alloc(n)` crashes the parser (bad any_cast). The working
+    path uses instance methods (`this.deviceAlloc(...)`) and `heap Buffer<T>(...)`.
 - **Launch-borrow-scope checking** (deferral #4): **done (core case)** —
   `launch` borrows each Buffer arg, released at `Stream.sync()` /
   `Event.waitHost()`; freeing a still-borrowed buffer is `XPU-K02`

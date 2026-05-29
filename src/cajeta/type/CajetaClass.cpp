@@ -4024,8 +4024,23 @@ namespace cajeta {
         // MethodLevelTemplate.md). Always direct-dispatch — the
         // concrete instantiation's LLVM function is the static target.
         bool isMethodTemplateInst = method->isMethodTemplateInstantiation();
+        // @Native method on a `final` class → direct dispatch. A @Native
+        // method is a leaf forwarder to a fixed C symbol (the symbol IS the
+        // implementation); on a final class no subclass can override it, so
+        // virtual dispatch is both unnecessary and unsafe for a handle/
+        // sentinel receiver. Stream.current() returns a NULL handle for the
+        // CUDA default stream, and `s.sync()` (a @Native void forwarder that
+        // ignores `self`) must not dereference `s` to load a vtable — the
+        // virtual path segfaults on null, the direct call passes null through
+        // to the forwarder, which discards it. Gating on `final` is required:
+        // a non-final base class's @Native method CAN be overridden by a
+        // subclass's real body (e.g. cajeta.lang.stream.Stream), and a
+        // base-typed receiver there must still dispatch through the vtable.
+        bool isNativeForwarder = method->findAnnotation("Native") != nullptr;
+        bool isFinalClass = this->getModifiers().find(FINAL) != this->getModifiers().end();
         bool useVtable = thisValue && !isStatic && !isConstructor && !isView
-            && !forceDirectCall && !isMethodTemplateInst;
+            && !forceDirectCall && !isMethodTemplateInst
+            && !(isNativeForwarder && isFinalClass);
         bool isInterfaceRecv = this->isInterface();
         // Interface formal whose resolved method lives on a CLASS
         // ancestor (e.g. `Splittable<T> extends Stream<T>` and we're
