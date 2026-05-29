@@ -35,6 +35,8 @@ deferrals first. Six commits on `cajeta-xpu` (after the restore commits):
 | C | `NvptxBackend` (TargetMachine + PTX emit) and `NvptxKernelLowering` (kernel AST → device IR) | `XpuNvptxEmitTests` |
 | D | `ptxas` → cubin assembly (`assembleCubin`) | `XpuNvptxEmitTests` |
 | E+F | `CudaDriver` (dlopen nvcuda) + SAXPY launched & verified on-device | `XpuSaxpyDeviceTests` |
+| G | host-source launch (`kernel.launch(...)` → `__cajeta_xpu_launch`) + cubin registration ctors + launch-borrow-scope checking | `XpuLaunchCodegenTests`, `XpuLaunchBorrowTests`, `XpuHostLaunchDeviceTests` |
+| H | general single-kernel compute bodies: mutable locals (entry allocas + mem2reg), `for`/`while`/`do-while`, unlabeled `break`/`continue`, compound assignment, full int/float operator set, unary/prefix/postfix `++`/`--`, numeric casts, `Barrier.workgroup()` | `XpuNvptxLoopEmitTests`, `XpuLoopDeviceTests` |
 
 **Deviations from [`CajetaXPU.md`](cajeta-docs/CajetaXPU.md) (intentional, slice-scoped):**
 
@@ -102,7 +104,15 @@ deferrals first. Six commits on `cajeta-xpu` (after the restore commits):
   (§11 cases 2–3).
 - **`--xpu-backend` / `--xpu-arch` / `--xpu-emit` CLI flags** for the AOT
   `cajeta` path (the slice is JIT-test-driven).
-- Broaden `NvptxKernelLowering`'s construct coverage beyond the SAXPY subset.
+- **Broaden `NvptxKernelLowering`'s construct coverage. DONE (increment H)** —
+  the device lowerer now handles general single-kernel compute bodies (loops,
+  unlabeled break/continue, compound assignment, the full int/float operator set,
+  unary/prefix/postfix `++`/`--`, numeric casts, `Barrier.workgroup()`), with
+  entry-block-alloca mutable slots promoted by mem2reg before PTX emit. Verified
+  on-device (`XpuLoopDeviceTests`) and in PTX text (`XpuNvptxLoopEmitTests`).
+  Still `XPU-N01` (next increment, preferred order — shared memory first): shared
+  memory (`Shared<T>`, addrspace 3), Wave shuffles/ballots, calls to user
+  `@Device` helpers, for-each loops, and labeled break/continue.
 
 ---
 
