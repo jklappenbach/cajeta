@@ -1,0 +1,30 @@
+package cajeta.threading;
+
+/**
+ * The no-data RAII gate from cajeta-docs/stdlib/Thread.md § `Lock`. Wraps
+ * the async-aware lock intrinsics (`Cajeta.lock*`). `acquire()` returns a
+ * `#LockGuard` whose drop releases the lock; `tryAcquire()` is
+ * non-blocking (1 = acquired, 0 = already held). The underlying mutex is
+ * destroyed by this class's synthesized drop wrapper at scope exit.
+ *
+ * Async behaviour (cajeta-docs/stdlib/AsyncStatus.md): on the single-carrier
+ * cooperative scheduler a fiber that hits a held lock parks and yields to
+ * the carrier rather than blocking the OS thread; the main thread blocks
+ * on the lock's condvar. Use `Mutex<T>` instead when there is a single
+ * piece of data to pair the lock with.
+ */
+public class Lock {
+    private pointer handle;
+    public Lock() { this.handle = Cajeta.lockNew(); }
+    public ~Lock() { Cajeta.lockDestroy(this.handle); }
+    public #LockGuard acquire() {
+        Cajeta.lockAcquire(this.handle);
+        return new LockGuard(this.handle);
+    }
+    public int32 tryAcquire() {
+        return Cajeta.lockTryAcquire(this.handle);
+    }
+    public void releaseLock() {
+        Cajeta.lockRelease(this.handle);
+    }
+}

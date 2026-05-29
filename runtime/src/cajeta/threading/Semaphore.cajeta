@@ -1,0 +1,76 @@
+package cajeta.threading;
+
+/**
+ * Counting permit pool — cajeta-docs/stdlib/Thread.md § `Semaphore`. Bounds
+ * the number of concurrent operations against an unbounded set of
+ * consumers. Built directly on the lock + condition-variable intrinsics
+ * (the same primitives `Mutex<T>` uses): `acquire` waits for a free permit
+ * then takes one, `release` returns one and wakes a waiter.
+ *
+ * (Conceptually this is a `Mutex<int32>` of the permit count; it's spelled
+ * out over the intrinsics rather than holding a `Mutex<int32>` field
+ * because `Semaphore` itself is not generic and the lock/condvar handles
+ * are exactly what it needs.)
+ *
+ * Often you don't need a semaphore: if the workload is statically
+ * batchable into "K at a time", a chunked `scope { spawn K times }`
+ * expresses the limit in the program's shape. Reach for `Semaphore` when
+ * the consumers are unbounded and no scope can serve as the batching
+ * boundary.
+ */
+public class Semaphore {
+    pointer handle;
+    pointer cond;
+    int32 count;
+
+    public Semaphore(int32 initial) {
+        this.handle = Cajeta.lockNew();
+        this.cond = Cajeta.condvarNew();
+        this.count = initial;
+    }
+
+    public ~Semaphore() {
+        Cajeta.condvarDestroy(this.cond);
+        Cajeta.lockDestroy(this.handle);
+    }
+
+    /** Take one permit, blocking (parking the fiber) until one is free. */
+    public void acquire() {
+        Cajeta.lockAcquire(this.handle);
+        while (this.count <= 0) {
+            Cajeta.condvarWait(this.cond, this.handle);
+        }
+        this.count = this.count - 1;
+        Cajeta.lockRelease(this.handle);
+    }
+
+    /** Return one permit, waking a waiter so it can re-check. */
+    public void release() {
+        Cajeta.lockAcquire(this.handle);
+        this.count = this.count + 1;
+        Cajeta.condvarNotifyAll(this.cond);
+        Cajeta.lockRelease(this.handle);
+    }
+
+    /**
+     * Run `fn` while holding a permit, releasing it even if `fn` throws.
+     * The permit is held for the whole of `fn` (the bounded operation),
+     * not just the brief count updates.
+     */
+    public void withPermit(() -> void fn) {
+        this.acquire();
+        try {
+            fn();
+        } finally {
+            this.release();
+        }
+    }
+
+    /** Current free-permit count (snapshot; advisory under contention). */
+    public int32 availablePermits() {
+        Cajeta.lockAcquire(this.handle);
+        int32 c = this.count;
+        Cajeta.lockRelease(this.handle);
+        return c;
+    }
+}

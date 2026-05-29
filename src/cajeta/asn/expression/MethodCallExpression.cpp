@@ -1629,6 +1629,58 @@ namespace cajeta {
                     llvm::Value* h = loadValue(0);
                     return builder->CreateCall(fn, {h});
                 }
+                // Condition-variable intrinsics (R7-B). Fiber-aware, paired
+                // with a lock handle; `Mutex<T>.withLockWhen` builds on them.
+                // condvarWait(cv, lock) atomically releases `lock`, parks the
+                // fiber (or cond_waits on the main thread), and reacquires
+                // `lock` on wake. condvarNotifyAll wakes every waiter (which
+                // re-checks its own predicate). See cajeta-docs/stdlib/Thread.md.
+                if (ns == "Cajeta" && methodCallName == "condvarNew" && parameters.empty()) {
+                    llvm::Function* fn = module->getRuntimeFunction("__cajeta_condvar_new");
+                    return builder->CreateCall(fn, {});
+                }
+                if (ns == "Cajeta" && methodCallName == "condvarWait" && parameters.size() == 2) {
+                    llvm::Function* fn = module->getRuntimeFunction("__cajeta_condvar_wait");
+                    llvm::Value* cv = loadValue(0);
+                    llvm::Value* lock = loadValue(1);
+                    return builder->CreateCall(fn, {cv, lock});
+                }
+                if (ns == "Cajeta" && methodCallName == "condvarNotifyAll" && parameters.size() == 1) {
+                    llvm::Function* fn = module->getRuntimeFunction("__cajeta_condvar_notify_all");
+                    llvm::Value* cv = loadValue(0);
+                    return builder->CreateCall(fn, {cv});
+                }
+                if (ns == "Cajeta" && methodCallName == "condvarDestroy" && parameters.size() == 1) {
+                    llvm::Function* fn = module->getRuntimeFunction("__cajeta_condvar_destroy");
+                    llvm::Value* cv = loadValue(0);
+                    return builder->CreateCall(fn, {cv});
+                }
+                // Reader-writer lock intrinsics (R7-D). Fiber-aware; back
+                // `RwLock<T>`. Many readers share; a writer is exclusive.
+                if (ns == "Cajeta" && methodCallName == "rwlockNew" && parameters.empty()) {
+                    llvm::Function* fn = module->getRuntimeFunction("__cajeta_rwlock_new");
+                    return builder->CreateCall(fn, {});
+                }
+                if (ns == "Cajeta" && methodCallName == "rwlockRdlock" && parameters.size() == 1) {
+                    llvm::Function* fn = module->getRuntimeFunction("__cajeta_rwlock_rdlock");
+                    return builder->CreateCall(fn, {loadValue(0)});
+                }
+                if (ns == "Cajeta" && methodCallName == "rwlockWrlock" && parameters.size() == 1) {
+                    llvm::Function* fn = module->getRuntimeFunction("__cajeta_rwlock_wrlock");
+                    return builder->CreateCall(fn, {loadValue(0)});
+                }
+                if (ns == "Cajeta" && methodCallName == "rwlockRdunlock" && parameters.size() == 1) {
+                    llvm::Function* fn = module->getRuntimeFunction("__cajeta_rwlock_rdunlock");
+                    return builder->CreateCall(fn, {loadValue(0)});
+                }
+                if (ns == "Cajeta" && methodCallName == "rwlockWrunlock" && parameters.size() == 1) {
+                    llvm::Function* fn = module->getRuntimeFunction("__cajeta_rwlock_wrunlock");
+                    return builder->CreateCall(fn, {loadValue(0)});
+                }
+                if (ns == "Cajeta" && methodCallName == "rwlockDestroy" && parameters.size() == 1) {
+                    llvm::Function* fn = module->getRuntimeFunction("__cajeta_rwlock_destroy");
+                    return builder->CreateCall(fn, {loadValue(0)});
+                }
                 if (ns == "System" && methodCallName == "exit" && parameters.size() == 1) {
                     llvm::Function* fn = module->getRuntimeFunction("__cajeta_exit");
                     llvm::Value* code = loadValue(0);
