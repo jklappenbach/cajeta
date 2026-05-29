@@ -7,10 +7,67 @@ discipline is [`cajeta-docs/CajetaXPU-Variance.md`](cajeta-docs/CajetaXPU-Varian
 This file tracks *implementation status* — what's built, what's stubbed,
 and what's next.
 
-> **Status: step 7 of 11 complete.** Phase 1+2 milestone of the design
-> roadmap ([`CajetaXPU.md` §12](cajeta-docs/CajetaXPU.md)) — SAXPY runs
-> end-to-end on the CPU-emulation path. Steps 8–11 (the NVIDIA/NVPTX
-> native backend) are not started.
+> **Status: SAXPY runs on a real NVIDIA GPU (design phase 2 milestone).**
+> The NVPTX vertical slice is proven end-to-end on an RTX 4090 (sm_89,
+> CUDA 12.9, LLVM 22.1.4): the spec SAXPY `@Kernel` source compiles
+> `cajeta → device LLVM IR → PTX → .cubin → cuLaunchKernel` and the
+> on-device result matches the CPU reference over 2^20 elements
+> (`test/xpu/XpuSaxpyDeviceTests.cpp`). Steps 9–11 of the original plan
+> are demonstrated; what remains is generalization + the carried-over
+> frontend deferrals (see "Vertical-slice status" below).
+>
+> Earlier baseline (still true on the CPU-emulation path): step 7 of 11,
+> the design phase-1+2 CPU-emulation milestone ([`CajetaXPU.md`
+> §12](cajeta-docs/CajetaXPU.md)).
+
+---
+
+## Vertical-slice status (NVPTX, steps 8–11)
+
+The NVIDIA backend was built as a **vertical slice** to de-risk the
+external toolchain early rather than finishing all of step 8's frontend
+deferrals first. Six commits on `cajeta-xpu` (after the restore commits):
+
+| Increment | What landed | Tests |
+|-----------|-------------|-------|
+| A | launch grammar (`kernel.launch(cfg)(args)`, `[...]` literals) + `CallExpression` / `ArrayLiteralExpression` AST | `XpuLaunchGrammarTests` |
+| B | launch-site recognition + MIR `bodyOps`/launch-site walker (`XpuMirBuilder`) | `XpuMirLaunchSiteTests` |
+| C | `NvptxBackend` (TargetMachine + PTX emit) and `NvptxKernelLowering` (kernel AST → device IR) | `XpuNvptxEmitTests` |
+| D | `ptxas` → cubin assembly (`assembleCubin`) | `XpuNvptxEmitTests` |
+| E+F | `CudaDriver` (dlopen nvcuda) + SAXPY launched & verified on-device | `XpuSaxpyDeviceTests` |
+
+**Deviations from [`CajetaXPU.md`](cajeta-docs/CajetaXPU.md) (intentional, slice-scoped):**
+
+1. **Kernel bodies lower via a dedicated `NvptxKernelLowering`** that walks
+   the kernel AST and emits device IR directly — NOT by reusing the host
+   `CajetaLlvmVisitor` (entangled with scope/drop/bounds runtime emits),
+   and NOT "from MIR" as §5.2 diagrams. MIR stays thin metadata. The
+   lowerer builds device LLVM types fresh from `CajetaType` flags in the
+   device `LLVMContext` (never `getLlvmType()`, whose cache is host-context-
+   bound). Supported subset = SAXPY-class kernels; unsupported constructs
+   raise `XPU-N01`. Generalizing the subset is follow-on work.
+2. **Single `sm_89` cubin, no fatbin** (multi-arch §5.2/§10.2 deferred).
+3. **dlopen `nvcuda.dll`** rather than link `cuda.lib` — matches §1.1/§9
+   and keeps the build CUDA-free; absent driver ⇒ `CudaDriver::available()`
+   is false and device tests skip.
+4. Spec `@kernel`/`global_id_x()` vs code `@Kernel`/`Thread.globalIdX()` —
+   unchanged; carried-over deferral #6.
+
+**Still open (generalization + carried-over deferrals):**
+
+- **Host launch via Cajeta source.** Today the host orchestration in the
+  device test is C++ via `CudaDriver`. To make the *host* side also
+  compile from Cajeta `saxpy.launch(stream, grid:, block:)(args)`: lower
+  `CallExpression` (launch form) to runtime calls, wire the `@Native`
+  `Buffer`/`Stream` stubs in `cajeta_runtime.c` to `CudaDriver`, embed the
+  cubin into the host module (or register it), and have `JitTestHelper`
+  build the device cubin before JIT. (Compiler plumbing — not a toolchain
+  risk now that the runtime path is proven.)
+- **Launch-borrow-scope checking** (deferral #4): borrow each `Buffer` arg
+  at `launch`, release at next `Stream.sync()` / `Event.waitHost()`.
+- **`--xpu-backend` / `--xpu-arch` / `--xpu-emit` CLI flags** for the AOT
+  `cajeta` path (the slice is JIT-test-driven).
+- Broaden `NvptxKernelLowering`'s construct coverage beyond the SAXPY subset.
 
 ---
 
