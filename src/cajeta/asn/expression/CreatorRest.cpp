@@ -37,7 +37,12 @@ namespace cajeta {
             dataLayout.getTypeAllocSize(structTy));
 
         llvm::Value* instance;
-        if (stackAlloc) {
+        if (nrvoTarget) {
+            // NRVO: build directly into the caller's sret slot — no separate
+            // alloca/malloc and no copy. The memset + vtable init + ctor below
+            // all run against the caller-owned slot.
+            instance = nrvoTarget;
+        } else if (stackAlloc) {
             // P2a — entry-block alloca for `stack MyClass(args)`. Hoist the
             // alloca to the function entry so it lives for the whole frame
             // (LLVM convention; allocas in arbitrary blocks are legal but

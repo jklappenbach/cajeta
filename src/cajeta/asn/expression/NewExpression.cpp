@@ -150,6 +150,11 @@ namespace cajeta {
                 ccr->setStackAlloc(true);
             }
         }
+        // NRVO: when this construction is the returned value of a value-
+        // returning method, build straight into the caller's sret slot.
+        if (nrvoTarget) {
+            creatorRest->setNrvoTarget(nrvoTarget);
+        }
         return creatorRest->generateCode(module);
     }
 } // code

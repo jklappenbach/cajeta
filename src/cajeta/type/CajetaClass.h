@@ -677,10 +677,16 @@ namespace cajeta {
         CajetaClassPtr getTemplateOrigin() const { return templateOrigin; }
         void setTemplateOrigin(CajetaClassPtr origin) { templateOrigin = std::move(origin); }
 
+        // sretTarget: for a value-returning (sret) method, the caller-owned
+        // slot the result is constructed into. When null and the resolved
+        // method returns a stack value, invokeMethod materializes a temp slot
+        // in the caller's frame and returns a pointer to it — so the result
+        // behaves like any class-instance pointer. See ValueReturns.md.
         llvm::Value* invokeMethod(string& methodName, vector<ParameterEntry> parameters, bool isConstructor, llvm::Value* thisInstance = nullptr,
                                    CajetaModulePtr callerModule = nullptr,
                                    bool forceDirectCall = false,
-                                   const vector<CajetaTypePtr>& explicitMethodTypeArgs = {});
+                                   const vector<CajetaTypePtr>& explicitMethodTypeArgs = {},
+                                   llvm::Value* sretTarget = nullptr);
 
         // Look up a method on this class or any of its ancestors. Each class
         // indexes methods under keys that embed its own class name, so the
