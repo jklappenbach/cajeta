@@ -2,11 +2,31 @@
 
 Tracks the R1–R5 rollout of the async runtime described in `cajeta-docs/stdlib/Thread.md`. Counterpart to `history/ImplementationStatus.md` (which covers the now-complete MemoryModel rollout).
 
+<!-- SYNC NOTE: this file is mirrored at cajeta-docs-site/src/pages/docs/AsyncStatus.md
+     (the published-site copy, which adds Astro frontmatter and uses bare doc names).
+     Keep the body content of the two in sync when editing either. -->
+
+
 ---
 
 ## Current status
 
 **Phases R1 through R5-D + error-model v1 complete.** Full structured-concurrency story functional end-to-end: stackful fibers, scope joins, cancellation, exception escalation. Error model has stdlib Throwable hierarchy (in `package cajeta.error;`, with `cause` chaining), `throws` clause grammar + advisory lint with try/catch coverage awareness, runtime exception path on `void*`, Task<T> exception slot with await re-raise, and stack-trace capture at throw sites with auto-print on uncaught.
+
+> **Scheduler reality (authoritative — this doc is the source of truth).** The
+> executor is a **single carrier OS thread** running all fibers cooperatively.
+> "Complete" above means the R1–R5 *structured-concurrency* rollout is complete on
+> that single-carrier model — it does **not** mean the concurrency runtime is
+> finished. Specifically NOT yet shipped: a **work-stealing multi-carrier pool**
+> (so there is no wall-clock parallelism — `spawn`ed fibers interleave on one
+> thread), a **timer wheel** (`withTimeout`/`withDeadline`), and an **async I/O
+> reactor / netpoller** (so a blocking syscall inside a fiber blocks every fiber).
+> If `Thread.md` or `Features.md` ever read as if those three shipped, they are
+> wrong and this note governs. They are the planned R8/R9 work.
+
+**R5-C / R5-D — shipped (named here precisely, since `Features.md` S-805 long read "designed"):**
+- [x] R5-C cooperative cancellation — `CancellationException extends RecoverableException`; scope sets each child fiber's `cancel_with`; `__cajeta_task_wait` re-raises it on the next park-resume (commit `fa7c7f8`).
+- [x] R5-D scope exception-escalation — `scope_exit`/`scope_exit_to` join children, cancel surviving siblings on the first non-null exception slot, then re-raise the first throw into the containing frame.
 
 **Post-v1 polish items — all shipped:**
 - [x] Recoverable/Unrecoverable distinction via vtable type-check (#210) — commit `ea5ca6e`.
