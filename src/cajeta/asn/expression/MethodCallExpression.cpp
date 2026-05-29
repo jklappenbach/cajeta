@@ -15,6 +15,8 @@
 #include "Expression.h"
 #include "DotExpression.h"
 #include "Identifier.h"
+#include "cajeta/type/Scope.h"
+#include "cajeta/field/Field.h"
 #include <llvm/IR/IntrinsicInst.h>
 #include <llvm/IR/Intrinsics.h>
 
@@ -303,6 +305,42 @@ namespace cajeta {
     llvm::Value* MethodCallExpression::generateCode(CajetaModulePtr module) {
         auto* builder = module->getBuilder();
         llvm::LLVMContext& llvmCtx = *module->getLlvmContext();
+
+        // CajetaXPU launch borrow scope (§3.5 / §11). A `kernel.launch(...)`
+        // borrows each Buffer arg until the next Stream.sync() /
+        // Event.waitHost(); freeing a still-borrowed buffer is a use-after-
+        // free of memory an in-flight kernel references. Gated strictly on
+        // the receiver being an xpu.core Stream/Event/Buffer so it never
+        // touches a same-named method on an unrelated type.
+        if ((methodCallName == "sync" || methodCallName == "waitHost" ||
+             methodCallName == "free") && !children.empty()) {
+            if (auto recvId =
+                    std::dynamic_pointer_cast<IdentifierExpression>(children[0])) {
+                if (auto sc = module->getScopeStack().peek()) {
+                    std::string canonical;
+                    const std::string& recv = recvId->getTextValue();
+                    if (sc->containsField(recv)) {
+                        if (auto f = sc->getField(recv)) {
+                            if (f->getType()) canonical = f->getType()->toCanonical();
+                        }
+                    }
+                    bool isStream = canonical == "cajeta.xpu.core.Stream";
+                    bool isEvent  = canonical == "cajeta.xpu.core.Event";
+                    bool isBuffer =
+                        canonical.rfind("cajeta.xpu.core.Buffer", 0) == 0;
+                    if ((isStream && methodCallName == "sync") ||
+                        (isEvent && methodCallName == "waitHost")) {
+                        sc->releaseLaunchBorrows();
+                    } else if (isBuffer && methodCallName == "free" &&
+                               sc->isLaunchBorrowed(recv)) {
+                        throw Exception(
+                            "buffer '" + recv + "' is freed while a launch still "
+                            "references it — sync the stream (Stream.sync()) "
+                            "before freeing", "XPU-K02");
+                    }
+                }
+            }
+        }
 
         // `super(args)` ctor delegation. Look up the enclosing class's
         // first declared parent, resolve a constructor matching the args,

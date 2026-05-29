@@ -75,6 +75,17 @@ namespace cajeta {
         // scope is destroyed, matching the borrower's lifetime.
         map<string, set<string>> liveBorrows;
 
+        // CajetaXPU §3.5 / §11 — launch borrow scope. A `kernel.launch(...)`
+        // borrows each Buffer argument for the duration of the (asynchronous)
+        // launch; the borrow is released at the next `Stream.sync()` /
+        // `Event.waitHost()`. Unlike liveBorrows (released at scope exit), a
+        // launch borrow is released at an explicit sync point — so it's
+        // tracked separately. Names here are buffer locals with an in-flight
+        // launch outstanding. Freeing / reassigning such a buffer before a
+        // sync is a compile error (a use-after-free of memory a running kernel
+        // still references).
+        set<string> launchBorrows;
+
         void putField(FieldPtr field, string propertyPath);
 
     public:
@@ -163,6 +174,21 @@ namespace cajeta {
         // borrow's path on the first match, or empty string when
         // the write is safe.
         string findInvalidatingBorrow(const string& writePath);
+
+        // CajetaXPU launch borrow scope (§3.5 / §11).
+        // recordLaunchBorrow: mark `bufferName` as borrowed by an in-flight
+        //   launch (recorded on this scope).
+        // isLaunchBorrowed: true iff `bufferName` has an outstanding launch
+        //   borrow in this scope or any ancestor.
+        // releaseLaunchBorrows: clear all launch borrows in this scope and its
+        //   ancestors — called at a Stream.sync() / Event.waitHost() point
+        //   (single-stream model in v1; per-stream tracking is a later cut).
+        // pendingLaunchBorrows: the still-borrowed names in this scope (for the
+        //   "freed/dropped before sync" diagnostic).
+        void recordLaunchBorrow(const string& bufferName);
+        bool isLaunchBorrowed(const string& bufferName);
+        void releaseLaunchBorrows();
+        const set<string>& pendingLaunchBorrows() const { return launchBorrows; }
 
         // P3b — flow-analysis snapshot helpers. IfStatement (and other
         // branching control-flow nodes) save the NYA set before each
