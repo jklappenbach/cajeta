@@ -4006,3 +4006,24 @@ void __cajeta_xpu_buffer_download(void* self, void* host) {
     (void)self; (void)host;
 }
 void __cajeta_xpu_buffer_free(void* self) { (void)self; }
+
+// --- Launch + module registration -------------------------------------------
+// The compiler lowers `kernel.launch(stream, grid:, block:)(args)` to a call
+// here, passing the kernel's PTX entry name, 1-D grid/block, and the CUDA
+// kernelParams argv (an array of pointers to each argument value). The real
+// NVPTX path (cuLaunchKernel via the dlopen'd driver) lands in the host-launch
+// runtime; this is the not-yet-wired no-op so the symbol resolves and host
+// codegen of a launch site links.
+void __cajeta_xpu_launch(const char* kernelName, int32_t gridX, int32_t blockX,
+                         void* argv) {
+    (void)kernelName; (void)gridX; (void)blockX; (void)argv;
+}
+
+// Register a kernel's compiled cubin image under its entry name. The device-
+// cubin pass emits a module global constructor that calls this; the launch
+// path loads the CUDA module lazily on first use. No-op until the NVPTX launch
+// runtime lands.
+void __cajeta_xpu_register_module(const char* kernelName, const void* image,
+                                  uint64_t len) {
+    (void)kernelName; (void)image; (void)len;
+}
