@@ -1,2 +1,0 @@
-# Original source for ct-llvm-2025-338.pdf
-https://eprint.iacr.org/2025/338.pdf

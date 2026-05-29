@@ -1,2 +1,0 @@
-# Original source for somasundaram-2024-spela-single-forward-pass.pdf
-https://arxiv.org/pdf/2402.09769

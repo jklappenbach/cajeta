@@ -1,2 +1,0 @@
-# Original source for baydin-2018-autodiff-survey.pdf
-https://arxiv.org/pdf/1502.05767

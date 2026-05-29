@@ -1,2 +1,0 @@
-# Original source for blackford-2002-updated-blas.pdf
-https://tsapps.nist.gov/publication/get_pdf.cfm?pub_id=50982

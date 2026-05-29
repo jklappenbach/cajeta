@@ -1,2 +1,0 @@
-# Original source for steindorfer-2015-champ-hamt.pdf
-https://michael.steindorfer.name/publications/oopsla15.pdf

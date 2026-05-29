@@ -1,2 +1,0 @@
-# Original source for hollemeersch-2010-virtual-texturing-cuda.pdf
-https://www.nvidia.com/content/GTC/posters/37__Hollemeersch_Accelerating_Virtual_Texturing_Using_CUDA.pdf

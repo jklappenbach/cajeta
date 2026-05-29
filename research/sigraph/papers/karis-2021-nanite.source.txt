@@ -1,2 +1,0 @@
-# Original source for karis-2021-nanite.pdf
-https://advances.realtimerendering.com/s2021/Karis_Nanite_SIGGRAPH_Advances_2021_final.pdf

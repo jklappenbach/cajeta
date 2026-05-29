@@ -1,2 +1,0 @@
-# Original source for mcinnes-2018-umap.pdf
-https://arxiv.org/pdf/1802.03426

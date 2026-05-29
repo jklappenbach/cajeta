@@ -1,2 +1,0 @@
-# Original source for blumofe-leiserson-1999-work-stealing.pdf
-https://www.csd.uwo.ca/~mmorenom/CS433-CS9624/Resources/Scheduling_multithreaded_computations_by_work_stealing.pdf

@@ -1,2 +1,0 @@
-# Original source for bernstein-2006-curve25519.pdf
-https://iacr.org/archive/pkc2006/39580209/39580209.pdf

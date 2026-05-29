@@ -1,2 +1,0 @@
-# Original source for michael-2004-hazard-pointers.pdf
-https://www.cs.otago.ac.nz/cosc440/readings/hazard-pointers.pdf

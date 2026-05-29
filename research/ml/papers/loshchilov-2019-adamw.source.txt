@@ -1,2 +1,0 @@
-# Original source for loshchilov-2019-adamw.pdf
-https://arxiv.org/pdf/1711.05101

@@ -1,2 +1,0 @@
-# Original source for dardha-perez-2018-comparing-type-systems-deadlock.pdf
-https://arxiv.org/pdf/1810.00635

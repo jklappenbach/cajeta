@@ -1,2 +1,0 @@
-# Original source for dao-2022-flashattention.pdf
-https://arxiv.org/pdf/2205.14135

@@ -1,2 +1,0 @@
-# Original source for wyman-2023-gentle-intro-restir-course.pdf
-https://intro-to-restir.cwyman.org/presentations/2023ReSTIR_Course_Notes.pdf

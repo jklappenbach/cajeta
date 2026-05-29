@@ -1,2 +1,0 @@
-# Original source for edelkamp-2016-blockquicksort.pdf
-https://drops.dagstuhl.de/storage/00lipics/lipics-vol057-esa2016/LIPIcs.ESA.2016.38/LIPIcs.ESA.2016.38.pdf

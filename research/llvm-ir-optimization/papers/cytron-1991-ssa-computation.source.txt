@@ -1,2 +1,0 @@
-# Original source for cytron-1991-ssa-computation.pdf
-https://www.cs.utexas.edu/~pingali/CS380C/2010/papers/ssaCytron.pdf

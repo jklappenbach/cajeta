@@ -1,2 +1,0 @@
-# Original source for majercik-2019-ddgi.pdf
-http://jcgt.org/published/0008/02/01/paper.pdf

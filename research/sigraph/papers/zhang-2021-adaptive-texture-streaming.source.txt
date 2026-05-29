@@ -1,2 +1,0 @@
-# Original source for zhang-2021-adaptive-texture-streaming.pdf
-https://www.fraunhofer.sg/content/dam/singapur/documents/Publications/20210601%20High%20Performance,%20Adaptive%20Texture%20Streaming%20and%20Rendering%20of%20Large%203D%20Cities.pdf

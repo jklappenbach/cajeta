@@ -1,2 +1,0 @@
-# Original source for goto-2008-anatomy-matmul.pdf
-https://www.cs.utexas.edu/~flame/pubs/GotoTOMS.pdf

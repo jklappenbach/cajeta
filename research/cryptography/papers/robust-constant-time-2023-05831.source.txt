@@ -1,2 +1,0 @@
-# Original source for robust-constant-time-2023-05831.pdf
-https://arxiv.org/pdf/2311.05831

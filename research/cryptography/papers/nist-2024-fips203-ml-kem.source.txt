@@ -1,2 +1,0 @@
-# Original source for nist-2024-fips203-ml-kem.pdf
-https://nvlpubs.nist.gov/nistpubs/FIPS/NIST.FIPS.203.pdf

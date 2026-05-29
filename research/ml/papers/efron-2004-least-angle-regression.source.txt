@@ -1,2 +1,0 @@
-# Original source for efron-2004-least-angle-regression.pdf
-https://arxiv.org/pdf/math/0406456

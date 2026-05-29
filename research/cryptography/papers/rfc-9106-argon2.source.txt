@@ -1,2 +1,0 @@
-# Original source for rfc-9106-argon2.pdf
-https://www.rfc-editor.org/rfc/rfc9106.pdf

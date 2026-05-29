@@ -1,2 +1,0 @@
-# Original source for burley-2015-disney-bsdf.pdf
-https://blog.selfshadow.com/publications/s2015-shading-course/burley/s2015_pbs_disney_bsdf_notes.pdf

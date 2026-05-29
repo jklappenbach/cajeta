@@ -1,2 +1,0 @@
-# Original source for balzer-2019-manifest-deadlock-freedom.pdf
-https://www.cs.cmu.edu/~fp/papers/esop19.pdf

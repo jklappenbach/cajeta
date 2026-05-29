@@ -1,2 +1,0 @@
-# Original source for blumofe-1995-cilk-runtime.pdf
-https://publications.csail.mit.edu/lcs/pubs/pdf/MIT-LCS-TM-548.pdf

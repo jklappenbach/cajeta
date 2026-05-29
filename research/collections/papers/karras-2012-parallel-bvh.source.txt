@@ -1,2 +1,0 @@
-# Original source for karras-2012-parallel-bvh.pdf
-https://cgvr.cs.uni-bremen.de/teaching/mpar_literatur/Parallel%20BVH%20Construction,%20with%20Application%20to%20Collision%20Detection.pdf

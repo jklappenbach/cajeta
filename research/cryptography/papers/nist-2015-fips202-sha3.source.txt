@@ -1,2 +1,0 @@
-# Original source for nist-2015-fips202-sha3.pdf
-https://nvlpubs.nist.gov/nistpubs/fips/nist.fips.202.pdf

@@ -1,2 +1,0 @@
-# Original source for blake3-2020-spec.pdf
-https://raw.githubusercontent.com/BLAKE3-team/BLAKE3-specs/master/blake3.pdf

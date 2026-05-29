@@ -1,2 +1,0 @@
-# Original source for mordido-perez-2025-deadlock-free-context-free-session.pdf
-https://arxiv.org/pdf/2506.20356

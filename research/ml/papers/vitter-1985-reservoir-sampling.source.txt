@@ -1,2 +1,0 @@
-# Original source for vitter-1985-reservoir-sampling.pdf
-https://www.cs.umd.edu/~samir/498/vitter.pdf

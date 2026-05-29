@@ -1,2 +1,0 @@
-# Original source for dunning-2019-tdigest.pdf
-https://arxiv.org/pdf/1902.04023

@@ -1,2 +1,0 @@
-# Original source for kerbl-2023-3d-gaussian-splatting.pdf
-https://arxiv.org/pdf/2308.04079
