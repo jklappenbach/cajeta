@@ -222,3 +222,41 @@ rm -rf build && ./setup.sh && ./build.sh
 
 If those two checks pass on Linux, the workflow's Linux jobs almost
 always pass; the cross-platform jobs are where most fixup happens.
+
+## What the release workflow tests
+
+The workflow does **not** run the full ~1725-test battery on every target —
+that's too expensive across the four-platform matrix, and most of the suite
+is the host-independent front-end (parser / typer / borrow-checker), which
+can't regress because of cross-compilation. Each build job instead runs:
+
+1. **Build** — proves the compiler + runtime compile and link on the target.
+2. **Smoke** — `cajeta --version` (and `--version --verbose`): the binary
+   loads and runs.
+3. **Release tests** — `release_tests.sh`, the curated subset of
+   cross-compilation-sensitive suites in `test/release_filter.txt`: numeric
+   intrinsics, byte serialization + the `.cja` archive format, struct/view
+   layout & alignment, atomics/locks, TLS + the drop chain, async/fibers,
+   threading, OS/file I/O, plus a thin codegen/dispatch smoke. These are the
+   areas the LLVM back-end + C runtime lower differently per ISA / OS /
+   endianness / ABI — where a binary can break even though the front-end is
+   green everywhere.
+
+The subset is a **hard gate on `x86_64-linux-gnu`** and informational
+(`continue-on-error`) on the other targets, matching the prior posture
+(JIT-driven tests can hit known platform lowering quirks that don't affect
+AOT releases).
+
+Run the same subset locally:
+
+```sh
+./release_tests.sh                 # build + run the subset (sharded)
+# or via the build system:
+cmake --build build --target release_tests
+```
+
+`release_tests.sh` fails loudly if any pattern in `release_filter.txt`
+matches zero tests (a suite was renamed/removed) — so the filter can't
+silently rot into a no-op. When you rename a test suite that's listed there,
+update `release_filter.txt`. The full battery still runs locally via
+`./run_tests.sh` (no args).

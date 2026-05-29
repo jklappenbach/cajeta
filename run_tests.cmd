@@ -141,7 +141,23 @@ set "TMPD=%TEMP%\cajeta_test_shards_%RANDOM%%RANDOM%"
 md "%TMPD%" 2>nul
 
 echo ^>^> Discovering tests...
-"%TEST_BIN%" --gtest_list_tests > "%TMPD%\list.txt" 2>nul
+rem When filter patterns are present (e.g. release_tests.cmd delegates a
+rem curated subset here with PARALLEL forced), restrict discovery to those
+rem patterns so the shards cover only the selected tests. With no patterns
+rem listfilter stays empty and every test is discovered as before.
+set "listfilter="
+for /l %%i in (1,1,%npat%) do (
+    set "p=!pat_%%i!"
+    set "hasdot="
+    set "hasstar="
+    echo(!p!| findstr /C:"." >nul && set "hasdot=1"
+    echo(!p!| findstr /C:"*" >nul && set "hasstar=1"
+    if not defined hasdot if not defined hasstar set "p=!p!.*"
+    if defined listfilter ( set "listfilter=!listfilter!:!p!" ) else ( set "listfilter=!p!" )
+)
+set "lfarg="
+if defined listfilter set "lfarg=--gtest_filter=!listfilter!"
+"%TEST_BIN%" --gtest_list_tests !lfarg! > "%TMPD%\list.txt" 2>nul
 
 rem gtest prints one line per suite ending in `.`, then indented test names
 rem (with optional ` # ...` type/value-param comments). tokens=1 strips the
