@@ -30,6 +30,13 @@
 namespace cajeta {
     class Method;
     using MethodPtr = std::shared_ptr<Method>;
+
+    // Forward declaration matching the canonical typedef in
+    // asn/expression/Expression.h — launch sites hold AST expression
+    // references (stream / grid / block / kernel args) that the host
+    // launch codegen re-walks later.
+    class Expression;
+    using ExpressionPtr = std::shared_ptr<Expression>;
 }
 
 namespace cajeta {
@@ -75,13 +82,21 @@ namespace mir {
 
     using XpuMirKernelPtr = std::shared_ptr<XpuMirKernel>;
 
-    // Per-call-site record for `kernelMethod.launch(stream, ...,
-    // args: [...])` calls. v1 placeholder — populated by
-    // LaunchSiteResolver in step 6.
+    // Per-call-site record for a host-side
+    // `kernel.launch(stream, grid: [...], block: [...])(args)` call.
+    // Recognized and populated by XpuMirBuilder by walking host method
+    // bodies. The dimension and argument expressions are held as AST
+    // references; the host launch codegen (CajetaXPU step ~E) re-walks
+    // them to compute grid/block and marshal the cuLaunchKernel arg
+    // array. `kernelCanonicalName` resolves to the matching @Kernel's
+    // canonical when one is found in the module, else the bare receiver
+    // name from the call site.
     struct XpuMirLaunchSite {
         std::string kernelCanonicalName;
-        // Step 6 fills in grid/block/stream/args references; for now
-        // just having the type registered lets later steps slot in.
+        ExpressionPtr stream;                  // first positional launch() arg
+        std::vector<ExpressionPtr> grid;       // `grid:  [...]` element exprs
+        std::vector<ExpressionPtr> block;      // `block: [...]` element exprs
+        std::vector<ExpressionPtr> kernelArgs; // the trailing `(args)`
     };
 
     using XpuMirLaunchSitePtr = std::shared_ptr<XpuMirLaunchSite>;
