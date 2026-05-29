@@ -3410,6 +3410,17 @@ void __cajeta_property_install(const char* keyEqValue) {
 #include <sys/stat.h>
 #include <unistd.h>
 
+// On Windows/MinGW, open() defaults to TEXT mode, which translates
+// \n <-> \r\n on read and write. That silently corrupts binary payloads
+// (e.g. the LtmBPlusTree pager's fixed-size index pages), and the damage
+// only surfaces after a real disk round-trip — a close + cold reopen reads
+// back garbage offsets/sizes and aborts. Every file the runtime touches is
+// binary, so force O_BINARY. It's undefined on POSIX, where open() has no
+// text mode; define it to 0 there so the bitwise-or is a no-op.
+#ifndef O_BINARY
+#define O_BINARY 0
+#endif
+
 // File-open mode enum — must mirror runtime/src/cajeta/io/file/OpenMode.cajeta
 // ordinal order. Caller passes the ordinal as int32.
 //   0 READ       — O_RDONLY
@@ -3419,12 +3430,12 @@ void __cajeta_property_install(const char* keyEqValue) {
 //   4 CREATE_NEW — O_WRONLY | O_CREAT | O_EXCL
 static int __cajeta_file_mode_to_flags(int32_t mode) {
     switch (mode) {
-        case 0: return O_RDONLY;
-        case 1: return O_WRONLY | O_CREAT | O_TRUNC;
-        case 2: return O_WRONLY | O_CREAT | O_APPEND;
-        case 3: return O_RDWR | O_CREAT;
-        case 4: return O_WRONLY | O_CREAT | O_EXCL;
-        default: return O_RDONLY;
+        case 0: return O_RDONLY | O_BINARY;
+        case 1: return O_WRONLY | O_CREAT | O_TRUNC | O_BINARY;
+        case 2: return O_WRONLY | O_CREAT | O_APPEND | O_BINARY;
+        case 3: return O_RDWR | O_CREAT | O_BINARY;
+        case 4: return O_WRONLY | O_CREAT | O_EXCL | O_BINARY;
+        default: return O_RDONLY | O_BINARY;
     }
 }
 
@@ -3441,7 +3452,7 @@ static int __cajeta_file_mode_to_flags(int32_t mode) {
 // up the chain.
 void* __cajeta_file_read_all(const char* path) {
     if (!path) return NULL;
-    int fd = open(path, O_RDONLY);
+    int fd = open(path, O_RDONLY | O_BINARY);
     if (fd < 0) return NULL;
 
     struct stat st;
@@ -3502,7 +3513,7 @@ int32_t __cajeta_file_write_all(const char* path, const void* data, int32_t len)
     if (pathLen + 32 >= sizeof(tmp)) return -1;
     snprintf(tmp, sizeof(tmp), "%s.tmp.%d", path, (int) getpid());
 
-    int fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    int fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC | O_BINARY, 0644);
     if (fd < 0) return -1;
     int32_t remaining = len;
     const char* p = (const char*) data;
