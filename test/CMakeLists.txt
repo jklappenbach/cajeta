@@ -52,3 +52,28 @@ target_compile_definitions(${BINARY} PRIVATE
 
 include(GoogleTest)
 gtest_discover_tests(${BINARY})
+
+# `release_tests` target — runs the curated cross-compilation subset (see
+# release_filter.txt + release_tests.sh) instead of the full battery. It
+# delegates to the platform runner script, which reads release_filter.txt at
+# run time (so the suite list stays a single source of truth) and shards the
+# run. DEPENDS on the test binary so `cmake --build build --target
+# release_tests` builds it first, then NO_BUILD avoids a redundant rebuild
+# inside the script.
+if(WIN32)
+    add_custom_target(release_tests
+            COMMAND ${CMAKE_COMMAND} -E env NO_BUILD=1
+                    cmd /c "${PROJECT_SOURCE_DIR}/release_tests.cmd"
+            DEPENDS ${BINARY}
+            WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
+            USES_TERMINAL
+            COMMENT "Running cross-compilation release test subset")
+else()
+    add_custom_target(release_tests
+            COMMAND ${CMAKE_COMMAND} -E env NO_BUILD=1
+                    "${PROJECT_SOURCE_DIR}/release_tests.sh"
+            DEPENDS ${BINARY}
+            WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
+            USES_TERMINAL
+            COMMENT "Running cross-compilation release test subset")
+endif()

@@ -131,7 +131,23 @@ fi
 #       intAdd
 #       intSub
 echo ">> Discovering tests..."
-raw_list=$(CAJETA_SOURCE_ROOT="$SCRIPT_DIR" "$TEST_BIN" --gtest_list_tests 2>/dev/null || true)
+# When filter patterns are present (e.g. release_tests.sh delegates a curated
+# subset here with PARALLEL forced), restrict discovery to those patterns so
+# the shards cover only the selected tests. With no patterns this is empty and
+# every test is discovered as before.
+list_filter_args=()
+if [ ${#patterns[@]} -gt 0 ]; then
+    lf=""
+    for p in "${patterns[@]}"; do
+        # Append `.*` to bare suite names, same as the serial path.
+        if [[ "$p" != *.* && "$p" != *\** ]]; then
+            p="${p}.*"
+        fi
+        if [ -z "$lf" ]; then lf="$p"; else lf="${lf}:${p}"; fi
+    done
+    list_filter_args=("--gtest_filter=$lf")
+fi
+raw_list=$(CAJETA_SOURCE_ROOT="$SCRIPT_DIR" "$TEST_BIN" --gtest_list_tests "${list_filter_args[@]}" 2>/dev/null || true)
 tests=()
 current_suite=""
 while IFS= read -r line; do

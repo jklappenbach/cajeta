@@ -283,21 +283,30 @@ jobs:
           ./build/src/cajeta --version
           ./build/src/cajeta --version --verbose
 
-      # ---- Run the full regression suite --------------------------------
+      # ---- Run the release regression subset ----------------------------
       #
-      # The regression suite is a HARD GATE on the primary platform
-      # (x86_64-linux-gnu) only. On every other target it runs but
-      # failures are non-fatal (`continue-on-error: true`) — the
-      # binary itself shipped by --emit=obj works fine, but JIT-driven
-      # tests can hit platform-specific lowering issues (e.g.
-      # __aarch64_outline_atomics_* helpers on ARM Linux LLJIT,
-      # __emutls_get_address on macOS arm64) that don't affect AOT
-      # releases. Known issues are tracked separately; gating the
-      # release on them would be too tight a contract for v0.x.
-      - name: Run regression
+      # NOT the full ~1725-test battery — running that on all four matrix
+      # targets is too expensive, and most of it is the host-independent
+      # front-end (parser/typer/borrow-checker), which can't regress due to
+      # cross-compilation. release_tests.sh runs only the curated subset in
+      # test/release_filter.txt: the back-end/runtime areas that lower
+      # differently per ISA/OS/endianness/ABI (numeric intrinsics, byte
+      # serialization + .cja archive format, struct/view layout, atomics,
+      # TLS + drop chain, async/fibers, threading, OS/file I/O) plus a thin
+      # codegen/dispatch smoke. NO_BUILD=1 — the Build step above already
+      # built the tree; the script just runs against it (sharded).
+      #
+      # HARD GATE on the primary platform (x86_64-linux-gnu) only. On every
+      # other target it runs but failures are non-fatal
+      # (`continue-on-error: true`) — the binary shipped by --emit=obj works
+      # fine, but JIT-driven tests can hit platform-specific lowering issues
+      # (e.g. __aarch64_outline_atomics_* helpers on ARM Linux LLJIT,
+      # __emutls_get_address on macOS arm64) that don't affect AOT releases.
+      # Known issues are tracked separately; gating the release on them would
+      # be too tight a contract for v0.x.
+      - name: Run release tests
         continue-on-error: ${{ matrix.target != 'x86_64-linux-gnu' }}
-        run: |
-          CAJETA_SOURCE_ROOT="$(pwd)" ./build/test/cajeta_test
+        run: NO_BUILD=1 ./release_tests.sh
 
       # ---- Package ------------------------------------------------------
       # MSYS2 ships bash + tar + zip, so the staging and archive logic
