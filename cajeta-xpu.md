@@ -55,16 +55,24 @@ deferrals first. Six commits on `cajeta-xpu` (after the restore commits):
 
 **Still open (generalization + carried-over deferrals):**
 
-- **Host launch via Cajeta source.** Today the host orchestration in the
-  device test is C++ via `CudaDriver`. To make the *host* side also
-  compile from Cajeta `saxpy.launch(stream, grid:, block:)(args)`: lower
-  `CallExpression` (launch form) to runtime calls, wire the `@Native`
-  `Buffer`/`Stream` stubs in `cajeta_runtime.c` to `CudaDriver`, embed the
-  cubin into the host module (or register it), and have `JitTestHelper`
-  build the device cubin before JIT. (Compiler plumbing — not a toolchain
-  risk now that the runtime path is proven.)
-- **Launch-borrow-scope checking** (deferral #4): borrow each `Buffer` arg
-  at `launch`, release at next `Stream.sync()` / `Event.waitHost()`.
+- **Host launch via Cajeta source.** The compiler half is **done**:
+  `CallExpression::generateCode` lowers `kernel.launch(stream, grid:,
+  block:)(args)` to `__cajeta_xpu_launch(name, gridX, blockX, argv)`,
+  marshalling Buffer args to their device handle and scalars by value
+  (`XpuLaunchCodegenTests`). Still to wire so it runs on-device through the
+  JIT: make the `__cajeta_xpu_launch` / `_buffer_*` / `_stream_*` runtime
+  symbols real (CUDA-backed — must live in the C runtime bitcode so the JIT
+  resolves them, mirroring `CudaDriver`), a `Buffer.alloc` factory, a
+  compile pass that builds each `@Kernel`'s cubin and emits a global ctor
+  calling `__cajeta_xpu_register_module`, and the `JitTestHelper` hook to run
+  it. (Compiler plumbing — not a toolchain risk now that the runtime path is
+  proven.)
+- **Launch-borrow-scope checking** (deferral #4): **done (core case)** —
+  `launch` borrows each Buffer arg, released at `Stream.sync()` /
+  `Event.waitHost()`; freeing a still-borrowed buffer is `XPU-K02`
+  (`XpuLaunchBorrowTests`). Deferred: per-stream tracking, the move/reassign
+  and auto-drop-at-scope-exit-without-sync cases, and cross-stream WAR/RAW
+  (§11 cases 2–3).
 - **`--xpu-backend` / `--xpu-arch` / `--xpu-emit` CLI flags** for the AOT
   `cajeta` path (the slice is JIT-test-driven).
 - Broaden `NvptxKernelLowering`'s construct coverage beyond the SAXPY subset.
