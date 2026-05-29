@@ -226,6 +226,26 @@ namespace cajeta {
         llvm::Value* generateCode(CajetaModulePtr module) override;
     };
 
+    // List literal: `[e1, e2, ...]` (and the empty `[]`). Grammar:
+    // `arrayLiteral : '[' expressionList? ']'`, reachable from `primary`
+    // (CajetaParser.g4). Introduced for the XPU launch dimensions
+    // (`grid: [(n+255)/256]`, `block: [256]`) per CajetaXPU.md §3.1.3, but
+    // general-purpose. Each element expression is held in `children` in
+    // source order. Value codegen is deferred — the launch path reads the
+    // element expressions directly off the AST — so generateCode rejects
+    // standalone use for now.
+    class ArrayLiteralExpression : public Expression {
+    public:
+        ArrayLiteralExpression(CajetaParser::ArrayLiteralContext* ctx, antlr4::Token* token);
+
+        // Element expressions in source order (also mirrored into children).
+        const vector<ExpressionPtr>& getElements() const { return elements; }
+
+        llvm::Value* generateCode(CajetaModulePtr module) override;
+    private:
+        vector<ExpressionPtr> elements;
+    };
+
 
     /**
      * '(' annotation* typeType ('&' typeType)* ')' expression

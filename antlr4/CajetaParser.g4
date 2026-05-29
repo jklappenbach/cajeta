@@ -653,6 +653,14 @@ parameterList
     : parameterEntry (',' parameterEntry)*
     ;
 
+// XPU launch dimensions and any list literal: `[e1, e2, ...]` (and `[]`).
+// Reachable from `primary`, so it only matches where a value is expected —
+// never colliding with the postfix index form `expression '[' expression ']'`,
+// which requires a preceding expression. See CajetaXPU.md §3.1.3 (`grid: [...]`).
+arrayLiteral
+    : '[' expressionList? ']'
+    ;
+
 // Method-level template call-site form: `identifier<TypeArgs>(args)`.
 // The optional `<typeList>` between the name and `(` carries explicit
 // type arguments for method-templated callees. Inference (no type
@@ -670,7 +678,15 @@ methodCall
     ;
 
 expression
-    : primary
+    // methodCall is listed FIRST (ahead of `primary`) so a base call
+    // `foo(x)` matches the whole methodCall form before the general
+    // postfix-call suffix below can reinterpret it as primary(foo) applied
+    // to `(x)`. Without this ordering, adding `expression '(' parameterList?
+    // ')'` silently turns every ordinary call into a postfix call. A bare
+    // identifier (no `(`) cleanly falls through to `primary`; `a < b`
+    // comparisons still fall through because methodCall needs a trailing `(`.
+    : methodCall
+    | primary
     | expression bop='.'
       (
          // methodCall MUST come before bare identifier — for inputs
@@ -695,7 +711,15 @@ expression
        | SUPER superSuffix
       )
     | expression '[' expression ']'
-    | methodCall
+    // XPU: postfix call applied to the result of an expression — the
+    // `(args)` that follows `kernel.launch(stream, grid:, block:)`. General
+    // by design: any expression yielding a callable can be invoked this way.
+    // Listed after the DOT/methodCall/index forms so established call shapes
+    // (`foo(x)`, `obj.foo(x)`) keep winning; this alternative only fires for a
+    // bare `(args)` trailing a non-identifier expression result. The
+    // classic cast-vs-call ambiguity on `(T)(x)` resolves to the earlier
+    // cast alternative below, which is the conventional choice.
+    | expression '(' parameterList? ')'
     | NEW creator
     // Unified-class allocation prefixes (UnifiedClasses.md). `heap` and
     // `stack` are mandatory at the allocation site — bare `MyClass(args)`
@@ -787,6 +811,7 @@ primary
     | THIS
     | SUPER
     | literal
+    | arrayLiteral
     | aggregateInitializer
     | identifier
     | typeTypeOrVoid '.' CLASS
