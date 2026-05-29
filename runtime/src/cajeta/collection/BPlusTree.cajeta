@@ -1,0 +1,293 @@
+package cajeta.collection;
+
+/**
+ * In-memory ordered map backed by a **B+ tree**: all entries live in
+ * leaves, internal nodes hold only separator keys, and leaves are
+ * singly linked in ascending order for cheap range scans. Compared to
+ * `RedBlackTree` (a binary search tree), the high branching factor
+ * keeps the tree shallow — the shape that also makes the B+ tree the
+ * natural basis for the disk-backed `cajeta.collection.ltm.BPlusTree`.
+ *
+ * ## Ordering
+ *
+ * Keys are ordered by `<` / `>` on `K`, like `cajeta.lang.Math`.
+ * Primitive K works today; class K needs `operator<` / `operator>`
+ * (the v1 operator-overloading-through-templates limitation). A
+ * separator routes `key` to the right child when `key >= separator`,
+ * matching the copy-up scheme where a separator equals the first key
+ * of the subtree it fronts.
+ *
+ * ## v1 surface
+ *
+ * `put` / `get` / `containsKey` / `min` / `keysInOrder` / `count` /
+ * `isEmpty`. Misses return the type's zero value (stdlib convention).
+ *
+ * **Deletion is deferred** (leaf underflow with borrow/merge and the
+ * separator rewrite is the intricate, least-testable half; it lands
+ * with the error model + a test harness). This is an insert/lookup
+ * ordered map — the common index case — until then.
+ *
+ * @see cajeta.collection.BPlusTreeNode
+ * @see cajeta.collection.RedBlackTree
+ */
+public class BPlusTree<K, V> {
+
+    private BPlusTreeNode<K, V> root;
+    private int64 sizeCount;
+    /** Max keys per node; a node splits once it would hold order+1. */
+    private int32 order;
+
+    public BPlusTree() {
+        this.root = null;
+        this.sizeCount = 0;
+        this.order = 32;
+    }
+
+    /**
+     * @returns the number of entries.
+     */
+    public int64 count() {
+        return this.sizeCount;
+    }
+
+    public boolean isEmpty() {
+        return this.root == null;
+    }
+
+    /**
+     * Insert or update the entry for `key`. O(log n). Splits the leaf
+     * (and cascades splits up to the root) when a node overflows.
+     */
+    public void put(K key, V value) {
+        if (this.root == null) {
+            BPlusTreeNode<K, V> r = heap BPlusTreeNode<K, V>(true, this.order);
+            r.keys[0] = key;
+            r.values[0] = value;
+            r.numKeys = 1;
+            this.root = r;
+            this.sizeCount = 1;
+            return;
+        }
+        BPlusTreeNode<K, V> leaf = this.findLeaf(key);
+        // Locate insertion point; update in place on an exact match.
+        int32 pos = 0;
+        while (pos < leaf.numKeys && leaf.keys[pos] < key) {
+            pos = pos + 1;
+        }
+        if (pos < leaf.numKeys) {
+            // keys[pos] >= key; equal iff not (key < keys[pos]).
+            if ((key < leaf.keys[pos]) == false) {
+                leaf.values[pos] = value;
+                return;
+            }
+        }
+        // Shift right and insert.
+        int32 j = leaf.numKeys;
+        while (j > pos) {
+            leaf.keys[j] = leaf.keys[j - 1];
+            leaf.values[j] = leaf.values[j - 1];
+            j = j - 1;
+        }
+        leaf.keys[pos] = key;
+        leaf.values[pos] = value;
+        leaf.numKeys = leaf.numKeys + 1;
+        this.sizeCount = this.sizeCount + 1;
+
+        if (leaf.numKeys > this.order) {
+            this.splitLeaf(leaf);
+        }
+    }
+
+    /**
+     * Value bound to `key`, or the type's zero value if absent.
+     */
+    public V get(K key) {
+        if (this.root == null) {
+            V[] missDefault = new V[1];
+            return missDefault[0];
+        }
+        BPlusTreeNode<K, V> leaf = this.findLeaf(key);
+        int32 i = 0;
+        while (i < leaf.numKeys) {
+            if ((key < leaf.keys[i]) == false && (leaf.keys[i] < key) == false) {
+                return leaf.values[i];
+            }
+            i = i + 1;
+        }
+        V[] missDefault = new V[1];
+        return missDefault[0];
+    }
+
+    /**
+     * @returns true iff `key` is present.
+     */
+    public boolean containsKey(K key) {
+        if (this.root == null) {
+            return false;
+        }
+        BPlusTreeNode<K, V> leaf = this.findLeaf(key);
+        int32 i = 0;
+        while (i < leaf.numKeys) {
+            if ((key < leaf.keys[i]) == false && (leaf.keys[i] < key) == false) {
+                return true;
+            }
+            i = i + 1;
+        }
+        return false;
+    }
+
+    /**
+     * Smallest key, or the type's zero value if empty.
+     */
+    public K min() {
+        if (this.root == null) {
+            K[] missDefault = new K[1];
+            return missDefault[0];
+        }
+        BPlusTreeNode<K, V> node = this.root;
+        while (node.leaf == false) {
+            node = node.children[0];
+        }
+        return node.keys[0];
+    }
+
+    /**
+     * All keys in ascending order, walking the linked leaves. Returns
+     * a fresh heap `ArrayList<K>` whose ownership transfers to the
+     * caller.
+     */
+    public #ArrayList<K> keysInOrder() {
+        ArrayList<K> out = heap ArrayList<K>();
+        // Single `return #out` at the end: moving `out` on an early
+        // return would mark it moved for the fall-through path too, so the
+        // whole walk is guarded under one conditional instead.
+        if (this.root != null) {
+            BPlusTreeNode<K, V> node = this.root;
+            while (node.leaf == false) {
+                node = node.children[0];
+            }
+            while (node != null) {
+                int32 i = 0;
+                while (i < node.numKeys) {
+                    // Bind the array element through a named local before
+                    // passing it — a direct `out.add(node.keys[i])` lowers
+                    // the element read to a slot l-value and mistypes the
+                    // argument (same workaround as ArrayList.appendAll).
+                    K k = node.keys[i];
+                    out.add(k);
+                    i = i + 1;
+                }
+                node = node.next;
+            }
+        }
+        return #out;
+    }
+
+    // ----- internals ---------------------------------------------------
+
+    /** Descend from the root to the leaf that would contain `key`. */
+    private BPlusTreeNode<K, V> findLeaf(K key) {
+        BPlusTreeNode<K, V> node = this.root;
+        while (node.leaf == false) {
+            // First child whose separator is > key; route key==sep right.
+            int32 i = 0;
+            while (i < node.numKeys && (key < node.keys[i]) == false) {
+                i = i + 1;
+            }
+            node = node.children[i];
+        }
+        return node;
+    }
+
+    /** Split an overflowed leaf and propagate the separator upward. */
+    private void splitLeaf(BPlusTreeNode<K, V> leaf) {
+        int32 total = leaf.numKeys;
+        int32 mid = total / 2;
+        BPlusTreeNode<K, V> right = heap BPlusTreeNode<K, V>(true, this.order);
+        right.numKeys = total - mid;
+        int32 k = 0;
+        while (k < right.numKeys) {
+            right.keys[k] = leaf.keys[mid + k];
+            right.values[k] = leaf.values[mid + k];
+            k = k + 1;
+        }
+        leaf.numKeys = mid;
+        right.next = leaf.next;
+        leaf.next = right;
+        right.parent = leaf.parent;
+        // Copy-up: the separator equals the first key of the right leaf.
+        K sep = right.keys[0];
+        this.insertIntoParent(leaf, sep, right);
+    }
+
+    /**
+     * Insert separator `sep` (and the new `right` child that follows
+     * `left`) into `left`'s parent, creating a new root or cascading a
+     * split as needed.
+     */
+    private void insertIntoParent(BPlusTreeNode<K, V> left, K sep,
+                                  BPlusTreeNode<K, V> right) {
+        BPlusTreeNode<K, V> parent = left.parent;
+        if (parent == null) {
+            BPlusTreeNode<K, V> newRoot = heap BPlusTreeNode<K, V>(false, this.order);
+            newRoot.keys[0] = sep;
+            newRoot.numKeys = 1;
+            newRoot.children[0] = left;
+            newRoot.children[1] = right;
+            left.parent = newRoot;
+            right.parent = newRoot;
+            this.root = newRoot;
+            return;
+        }
+        // Index of `left` among the parent's children.
+        int32 i = 0;
+        while (i <= parent.numKeys && parent.children[i] != left) {
+            i = i + 1;
+        }
+        // Shift keys right of `i`, then children right of `i+1`.
+        int32 j = parent.numKeys;
+        while (j > i) {
+            parent.keys[j] = parent.keys[j - 1];
+            j = j - 1;
+        }
+        parent.keys[i] = sep;
+        int32 c = parent.numKeys + 1;
+        while (c > i + 1) {
+            parent.children[c] = parent.children[c - 1];
+            c = c - 1;
+        }
+        parent.children[i + 1] = right;
+        parent.numKeys = parent.numKeys + 1;
+        right.parent = parent;
+
+        if (parent.numKeys > this.order) {
+            this.splitInternal(parent);
+        }
+    }
+
+    /** Split an overflowed internal node; the median key moves up. */
+    private void splitInternal(BPlusTreeNode<K, V> node) {
+        int32 total = node.numKeys;
+        int32 mid = total / 2;
+        K promote = node.keys[mid];
+        BPlusTreeNode<K, V> right = heap BPlusTreeNode<K, V>(false, this.order);
+        right.numKeys = total - mid - 1;
+        // Right keys: node.keys[mid+1 ..].
+        int32 k = 0;
+        while (k < right.numKeys) {
+            right.keys[k] = node.keys[mid + 1 + k];
+            k = k + 1;
+        }
+        // Right children: node.children[mid+1 ..] (numKeys+1 of them).
+        int32 c = 0;
+        while (c <= right.numKeys) {
+            BPlusTreeNode<K, V> child = node.children[mid + 1 + c];
+            right.children[c] = child;
+            child.parent = right;
+            c = c + 1;
+        }
+        node.numKeys = mid;
+        right.parent = node.parent;
+        this.insertIntoParent(node, promote, right);
+    }
+}

@@ -11,11 +11,15 @@ Streams.md for the full stream protocol and combinator surface.
 |------|--------|
 | `ArrayList<T>` | shipped (with `.stream()` factory; multi-inheritance from Stream not yet) |
 | `HashMap<K, V>` | shipped (no Stream surface yet) |
-| `HashSet<T>` | designed, not implemented |
-| `LinkedList<T>` | designed, not implemented |
+| `HashSet<T>` | shipped |
+| `LinkedList<T>` | shipped |
 | `Deque<T>` / `Stack<T>` | designed, not implemented |
-| `Heap<T>` (priority queue) | designed, not implemented |
-| Tree types (`TreeMap`, `TreeSet`, `BTreeMap`, …) | designed, not implemented |
+| `Heap<T>` (priority queue) | implemented — min-heap, `<`-ordered (pending compile/test) |
+| `ImmutableList<T>` / `ImmutableSet<T>` / `ImmutableMap<K, V>` | implemented — Guava-style frozen snapshots (pending compile/test) |
+| `RedBlackTree<K, V>` (ordered map) | implemented — insert/lookup, delete deferred (pending compile/test) |
+| `BPlusTree<K, V>` (ordered map) | implemented — insert/lookup, delete deferred (pending compile/test) |
+| `ltm.BPlusTree<K, V>` (larger-than-memory, disk-backed) | planned — see "Larger-than-memory" below |
+| Tree types (`TreeMap`, `TreeSet`, `BTreeMap`, …) | superseded by `RedBlackTree` / `BPlusTree` |
 | `Collector<T, R>` + `Collectors` | designed, not implemented |
 
 ## `ArrayList<T>` — shipped
@@ -264,6 +268,73 @@ the multiple-inheritance design eliminates the need for a separate
 Today the for-each loop works over arrays directly
 (`for (int32 x : xs)`) via the array-iteration intrinsic; the
 stream-receiver lowering is the next step.
+
+## Planned: common collection interfaces
+
+The container types ship today as standalone classes — there is no
+common supertype. The plan is to **explore factoring out a thin
+capability hierarchy** so generic code can operate over "any
+collection" — common iteration, `count()`, `isEmpty()` — without
+caring about the concrete type, while keeping the honest distinctions
+between the kinds of container:
+
+- **`Iterable<T>` — the real unifier:** `stream() -> Stream<T>` plus
+  `count()` / `isEmpty()`. Everything that yields elements implements
+  it: `ArrayList`, `HashSet`, `LinkedList`, `Heap`, the immutables,
+  and (over keys / values / entries) the maps. This subsumes the
+  "every container multiple-inherits `Stream<E>`" idea (see
+  "For-loop desugaring through Stream") into a named, minimal contract.
+- **`Map<K, V>` is its own interface, NOT a collection.** A map's
+  element type is really `Pair<K, V>`, and `get(K)` / `containsKey(K)`
+  have no analog on a list or set. Folding maps into one
+  `Collection<T>` is the mistake Java explicitly avoids — keep them
+  separate (a map is `Iterable<Pair<K, V>>` via `entries()`).
+- **Mutation behind its own interface.** `add` / `remove` live on a
+  `MutableCollection<T>` (with a map equivalent), so the immutable
+  collections and read-only views simply don't implement it rather
+  than carrying unsupported mutators.
+
+Value: enables generic "operate on any sequence / any map" code and a
+uniform iteration + `count()` story across the package.
+
+Cost / sequencing: retrofitting interfaces onto the already-shipped
+classes is a cross-cutting change with vtable / dispatch implications,
+and it brushes against the operator-overloading-through-templates
+limitation `Math` notes (ordered containers compare via `<` / `>`). So
+the plan is to land the concrete types first, then introduce
+`Iterable<T>` / `Map<K, V>` / `MutableCollection<T>` as a deliberate
+follow-up pass in which every collection declares conformance at once.
+
+## Larger-than-memory (`cajeta.collection.ltm`)
+
+The in-memory collections above stay the defaults in
+`cajeta.collection`. Disk-backed, larger-than-memory variants live in
+a separate `cajeta.collection.ltm` package rather than as a mode flag
+on the in-memory types — because they carry a genuinely different
+contract: operations do I/O that can block or fail (`IoException`),
+keys/values must be serializable, and there is an explicit lifecycle
+(`open` / `close` / `flush` / `sync` / durability). Surfacing that at
+the type level (you reach for `ltm.BPlusTree`) keeps the in-memory
+common case free of disk-shaped API.
+
+- **`ltm.BPlusTree<K, V>`** (planned, first): a paged B+ tree over
+  `cajeta.io.file.File`. Nodes are fixed-size pages addressed by
+  page-id × pageSize offsets; child links are page-ids, not object
+  pointers; a buffer pool reads pages on demand and **evicts/frees**
+  clean pages under memory pressure, flushing dirty ones. Same B+
+  shape as the in-memory tree (linked leaves → range scans), so the
+  algorithm is shared and only the node-access layer differs.
+- **`ltm.HashMap<K, V>`** (later): extendible (or linear) hashing over
+  the same pager — O(1) point lookups, no ordering. A directory keyed
+  on the top bits of `key.hash()` points at bucket pages; a bucket
+  overflow splits and doubles the directory only when local depth
+  exceeds global depth.
+
+Open design decision for the `ltm` types: how generic `K` / `V`
+serialize into fixed-size page slots — an `Encoder<K>` / `Encoder<V>`
+bound (`cajeta.wire`), versus restricting to fixed-width primitive
+keys + `int8[]` values. Leaning toward the `Encoder` bound so the
+types stay generic.
 
 ## Open items
 

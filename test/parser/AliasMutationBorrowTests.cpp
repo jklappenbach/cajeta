@@ -1,24 +1,22 @@
 //
-// Gap 4 (MemoryModel.md § Known gaps): alias-mutation invalidates
-// outstanding borrows.
+// Alias-mutation: reassigning a field that a local still aliases.
 //
-// Cajeta's path-based borrow tracker today catches use-after-move
-// (PathBorrowTests covers that). What it does NOT catch:
+// HISTORY: this file once asserted that reassigning a borrowed slot
+// (`String n = p.name; p.name = #"Charlie";`) was a use-after-move
+// error ("Gap 4" live-borrow guard). That guard has been REMOVED.
 //
-//     Person p = heap Person { name: "Bob" };
-//     String  n = p.name;              // borrow into p.name
-//     p.name  = #"Charlie";            // mutates the borrowed slot
-//     // `n` now dangles — accepted today, should be rejected.
+// Rationale: a field reassignment emits no eager drop. A node is freed
+// only at the SCOPE BOUNDARY, via its own drop-chain entry — never by
+// the act of reassigning a reference to it. So overwriting a borrowed
+// slot frees nothing, the alias does not dangle, and the guard was a
+// false positive that also blocked valid ownership transfers (tree
+// rotations: `y = x.right; x.right = y.left;`) and intentional
+// replacement of an owned field. Drop-exactly-once is the scope-exit
+// drop chain's job, not a per-write check. Genuine use-after-`#`-move
+// READS are still rejected (see PathBorrowTests / UseAfterMoveTests).
 //
-// Fix outline: extend Scope's path machinery with a second set
-// tracking LIVE READ-BORROWS. On a borrowing init (`Foo b = a.f`),
-// record the borrowed path. On a move-assign through a path
-// (`a.f = #other`), reject if any live borrow's path prefix-matches.
-//
-// These tests are DISABLED_ until the live-borrow pass lands —
-// enabling them now would flag CI red on a gap that's queued for its
-// own session. Once the live-borrow tracker exists, drop the
-// DISABLED_ prefix.
+// These tests now pin the POSITIVE contract: such reassignments
+// compile.
 //
 
 #include "gtest/gtest.h"
@@ -31,23 +29,22 @@ using cajeta_test::CajetaJit;
 
 namespace {
 
-void expectAliasMutationError(const std::string& source) {
+void expectCompiles(const std::string& source) {
     try {
-        CajetaJit::compile(source, "test.A");
-        FAIL() << "expected alias-mutation error but compile succeeded";
+        auto jit = CajetaJit::compile(source, "test.A");
+        SUCCEED();
     } catch (cajeta::Exception& e) {
-        EXPECT_EQ(e.getErrorId(), "CAJETA_ERROR_USE_AFTER_MOVE");
-    } catch (std::exception& e) {
-        FAIL() << "expected cajeta::Exception, got std::exception: " << e.what();
+        FAIL() << "expected successful compile, got "
+               << e.getErrorId() << ": " << e.getMessage();
     }
 }
 
 } // namespace
 
-// A live String borrow into p.name; then p.name is reassigned via
-// move. The borrow's referent is gone — accepting this would leave
-// a dangling alias. Rejected by the live-borrow tracker.
-TEST(AliasMutationBorrowTests, writeThroughAliasInvalidatesLiveBorrow) {
+// Reassigning a field a local aliases is allowed: the write frees
+// nothing (freeing is deferred to the scope boundary), so `alias`
+// stays valid until scope exit.
+TEST(AliasMutationBorrowTests, writeThroughAliasIsAllowed) {
     auto src =
         "package test;\n"
         "public class Person { String name; "
@@ -55,18 +52,17 @@ TEST(AliasMutationBorrowTests, writeThroughAliasInvalidatesLiveBorrow) {
         "public final class A {\n"
         "    public static int32 run() {\n"
         "        Person p = heap Person(\"Bob\");\n"
-        "        String alias = p.name;\n"        // live read-borrow on "p.name"
-        "        p.name = #\"Charlie\";\n"       // invalidates alias
+        "        String alias = p.name;\n"
+        "        p.name = #\"Charlie\";\n"
         "        return 0;\n"
         "    }\n"
         "}\n";
-    expectAliasMutationError(src);
+    expectCompiles(src);
 }
 
-// Same shape but the write goes through a prefix of the borrowed
-// path. Reassigning the whole `p` clobbers `p.name` too, so any
-// live borrow rooted at `p.*` is invalidated.
-TEST(AliasMutationBorrowTests, writeToPrefixInvalidatesNestedBorrow) {
+// Reassigning a prefix of the borrowed path (the whole `p`) is
+// likewise allowed.
+TEST(AliasMutationBorrowTests, writeToPrefixIsAllowed) {
     auto src =
         "package test;\n"
         "public class Person { String name; "
@@ -74,19 +70,17 @@ TEST(AliasMutationBorrowTests, writeToPrefixInvalidatesNestedBorrow) {
         "public final class A {\n"
         "    public static int32 run() {\n"
         "        Person p = heap Person(\"Bob\");\n"
-        "        String alias = p.name;\n"        // borrows p.name
-        "        p = heap Person(\"Charlie\");\n" // prefix write
+        "        String alias = p.name;\n"
+        "        p = heap Person(\"Charlie\");\n"
         "        return 0;\n"
         "    }\n"
         "}\n";
-    expectAliasMutationError(src);
+    expectCompiles(src);
 }
 
-// Borrow through a nested field: `String alias = p.addr.city`
-// is rooted at p.addr.city; writing to `p.addr` (a prefix of
-// the borrowed path) should reject — that write replaces the
-// Address instance the alias still points into.
-TEST(AliasMutationBorrowTests, writeToBorrowedPathPrefixInvalidates) {
+// Reassigning a nested-field prefix (`p.addr` while `p.addr.city` is
+// aliased) is allowed for the same reason.
+TEST(AliasMutationBorrowTests, writeToBorrowedPathPrefixIsAllowed) {
     auto src =
         "package test;\n"
         "public class Address { String city; "
@@ -96,24 +90,16 @@ TEST(AliasMutationBorrowTests, writeToBorrowedPathPrefixInvalidates) {
         "public final class A {\n"
         "    public static int32 run() {\n"
         "        Person p = heap Person(heap Address(\"NYC\"));\n"
-        "        String alias = p.addr.city;\n"        // borrows p.addr.city
-        "        p.addr = #heap Address(\"LA\");\n"   // prefix write
+        "        String alias = p.addr.city;\n"
+        "        p.addr = #heap Address(\"LA\");\n"
         "        return 0;\n"
         "    }\n"
         "}\n";
-    try {
-        CajetaJit::compile(src, "test.A");
-        FAIL() << "expected alias-mutation error";
-    } catch (cajeta::Exception& e) {
-        EXPECT_EQ(e.getErrorId(), "CAJETA_ERROR_USE_AFTER_MOVE");
-    }
+    expectCompiles(src);
 }
 
-// Negative case (should compile): write to an UNRELATED path while a
-// borrow into a different path is live. p.age and p.name are
-// disjoint, so a write to one doesn't affect a borrow of the other.
-// (Pin once the live-borrow tracker lands — guards against
-// over-zealous invalidation.)
+// Disjoint write while a borrow is live: always fine, and the program
+// runs to return the written value.
 TEST(AliasMutationBorrowTests, writeToDisjointPathLeavesBorrowIntact) {
     auto src =
         "package test;\n"
@@ -122,8 +108,8 @@ TEST(AliasMutationBorrowTests, writeToDisjointPathLeavesBorrowIntact) {
         "public final class A {\n"
         "    public static int32 run() {\n"
         "        Person p = heap Person(\"Bob\");\n"
-        "        String alias = p.name;\n"        // borrows p.name
-        "        p.age = 42;\n"                   // disjoint write
+        "        String alias = p.name;\n"
+        "        p.age = 42;\n"
         "        return p.age;\n"
         "    }\n"
         "}\n";

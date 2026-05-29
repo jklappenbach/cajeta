@@ -1,0 +1,117 @@
+package cajeta.collection;
+
+import cajeta.lang.stream.ArrayStream;
+
+/**
+ * Immutable, array-backed list. A frozen snapshot of an
+ * `ArrayList<T>`: the backing array is copied once at construction
+ * and never mutated, so reads are O(1) and the structure is safe to
+ * share without defensive copies.
+ *
+ * Modeled on Guava's `RegularImmutableList` — a thin, dense array
+ * wrapper with no per-element indirection. There are no mutators;
+ * to "change" an `ImmutableList` you build a new one from a fresh
+ * `ArrayList<T>`.
+ *
+ * ## v1 surface
+ *
+ * `count` / `isEmpty` / `get` / `contains` / `indexOf` / `stream`.
+ * Like `ArrayList`, `get` returns the type's zero value (null for
+ * class T, 0 for primitive T) on an out-of-range index rather than
+ * throwing — a bounds-checking variant lands with the error model.
+ *
+ * Sizes are tracked as `int32` to mirror `ArrayList` and feed
+ * `ArrayStream(T[], int32 limit)` directly; `count()` widens to
+ * `int64` at the API boundary for parity with the hash-based
+ * collections.
+ *
+ * @see cajeta.collection.ArrayList
+ */
+public class ImmutableList<T> {
+
+    /** Frozen backing storage, sized exactly to the element count. */
+    private T[] data;
+    private int32 sizeCount;
+
+    /**
+     * Build an immutable copy of `src`. Copies every element of
+     * `src` (in order) into a right-sized owned array; the source
+     * `ArrayList` is left untouched and still owned by the caller.
+     *
+     * @param src the list whose elements to snapshot.
+     */
+    public ImmutableList(ArrayList<T> src) {
+        int32 n = src.count();
+        T[] copy = new T[n];
+        int32 i = 0;
+        while (i < n) {
+            copy[i] = src.get(i);
+            i = i + 1;
+        }
+        // `#copy` transfers ownership of the fresh array into the
+        // field — without it, the local's scope-exit drop would free
+        // the storage we just installed. Same pattern as
+        // ArrayList.add / HashMap.resize.
+        this.data = #copy;
+        this.sizeCount = n;
+    }
+
+    /**
+     * @returns the number of elements.
+     */
+    public int64 count() {
+        return (int64) this.sizeCount;
+    }
+
+    public boolean isEmpty() {
+        return this.sizeCount == 0;
+    }
+
+    /**
+     * Element at index `i` (0-based), or the type's zero value if
+     * `i` is out of range.
+     */
+    public T get(int32 i) {
+        if (i < 0 || i >= this.sizeCount) {
+            T[] missDefault = new T[1];
+            return missDefault[0];
+        }
+        return this.data[i];
+    }
+
+    /**
+     * @returns true iff some element is `==`-equal to `v`. O(n).
+     */
+    public boolean contains(T v) {
+        int32 i = 0;
+        while (i < this.sizeCount) {
+            if (this.data[i] == v) {
+                return true;
+            }
+            i = i + 1;
+        }
+        return false;
+    }
+
+    /**
+     * @returns the index of the first `==`-equal element, or -1 if
+     *          none. O(n).
+     */
+    public int32 indexOf(T v) {
+        int32 i = 0;
+        while (i < this.sizeCount) {
+            if (this.data[i] == v) {
+                return i;
+            }
+            i = i + 1;
+        }
+        return -1;
+    }
+
+    /**
+     * Heap-allocated stream walking all elements in order.
+     */
+    public #ArrayStream<T> stream() {
+        return heap ArrayStream<T>(this.data, this.sizeCount);
+    }
+}

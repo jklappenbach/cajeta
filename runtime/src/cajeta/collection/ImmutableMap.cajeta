@@ -1,0 +1,182 @@
+package cajeta.collection;
+
+import cajeta.lang.Pair;
+
+/**
+ * Immutable, hash-indexed map. A frozen snapshot of `(key, value)`
+ * pairs.
+ *
+ * Modeled on Guava's `RegularImmutableMap`: entries are stored once in
+ * dense parallel `keyArr` / `valArr` arrays (cheaply indexable in
+ * insertion order), and an open-addressing hash table holds
+ * `(entryIndex + 1)` for O(1) `get` / `containsKey`. Built once; no
+ * put, remove, tombstones, or resize.
+ *
+ * ## Construction
+ *
+ * Built from an `ArrayList<Pair<K, V>>` of entries. Duplicate keys
+ * resolve **last-wins** (the later pair's value replaces the earlier),
+ * matching how a builder fold would behave; this avoids needing the
+ * exception machinery to reject duplicates. A `copyOf(HashMap<K, V>)`
+ * convenience can layer on once entry iteration into an array is
+ * ergonomic.
+ *
+ * ## Hashing and equality
+ *
+ * Same contract as `HashMap`: `K.hash()` for the bucket, `==` for
+ * key equality. Class K defaults to identity (override `hash()` + `==`
+ * for value keys); primitive K lowers `.hash()` to the intrinsic.
+ *
+ * @see cajeta.collection.HashMap
+ * @see cajeta.lang.Pair
+ */
+public class ImmutableMap<K, V> {
+
+    /** Dense entry storage; live range `[0, entryCount)`. */
+    private K[] keyArr;
+    private V[] valArr;
+    private int32 entryCount;
+
+    /**
+     * Open-addressing index: `table[slot]` holds `entryIndex + 1`, or
+     * 0 for empty. Power-of-2 length; slot is `hash & (tableCap - 1)`
+     * with linear probing.
+     */
+    private int64[] table;
+    private int64 tableCap;
+
+    /**
+     * Build a frozen map from `src`. Iterates in order; for each pair
+     * a key already present has its value overwritten (last-wins),
+     * otherwise a new entry is appended. The source list is untouched.
+     *
+     * @param src entries to snapshot, as `Pair<key, value>`.
+     */
+    public ImmutableMap(ArrayList<Pair<K, V>> src) {
+        int32 n = src.count();
+        int64 cap = 8;
+        while (cap < (int64) n * 2) {
+            cap = cap * 2;
+        }
+        K[] keys = new K[n];
+        V[] vals = new V[n];
+        int64[] tab = new int64[cap];
+        int32 count = 0;
+
+        int32 i = 0;
+        while (i < n) {
+            Pair<K, V> p = src.get(i);
+            K k = p.first();
+            V v = p.second();
+            int64 h = k.hash();
+            int64 idx = h & (cap - 1);
+            boolean replaced = false;
+            boolean scanning = true;
+            while (scanning) {
+                if (tab[idx] == 0) {
+                    scanning = false;
+                } else {
+                    int32 ei = (int32) (tab[idx] - 1);
+                    if (keys[ei] == k) {
+                        vals[ei] = v;
+                        replaced = true;
+                        scanning = false;
+                    } else {
+                        idx = (idx + 1) & (cap - 1);
+                    }
+                }
+            }
+            if (replaced == false) {
+                keys[count] = k;
+                vals[count] = v;
+                tab[idx] = (int64) (count + 1);
+                count = count + 1;
+            }
+            i = i + 1;
+        }
+        this.keyArr = #keys;
+        this.valArr = #vals;
+        this.table = #tab;
+        this.entryCount = count;
+        this.tableCap = cap;
+    }
+
+    /**
+     * Value bound to `key`, or the type's zero value (null for class
+     * V, 0 for primitive V) if absent. Use `containsKey` to
+     * distinguish "absent" from "present-and-null/zero".
+     */
+    public V get(K key) {
+        int64 h = key.hash();
+        int64 idx = h & (this.tableCap - 1);
+        boolean scanning = true;
+        while (scanning) {
+            if (this.table[idx] == 0) {
+                scanning = false;
+            } else {
+                int32 ei = (int32) (this.table[idx] - 1);
+                if (this.keyArr[ei] == key) {
+                    return this.valArr[ei];
+                }
+                idx = (idx + 1) & (this.tableCap - 1);
+            }
+        }
+        V[] missDefault = new V[1];
+        return missDefault[0];
+    }
+
+    /**
+     * @returns true iff `key` is present.
+     */
+    public boolean containsKey(K key) {
+        int64 h = key.hash();
+        int64 idx = h & (this.tableCap - 1);
+        boolean scanning = true;
+        while (scanning) {
+            if (this.table[idx] == 0) {
+                scanning = false;
+            } else {
+                int32 ei = (int32) (this.table[idx] - 1);
+                if (this.keyArr[ei] == key) {
+                    return true;
+                }
+                idx = (idx + 1) & (this.tableCap - 1);
+            }
+        }
+        return false;
+    }
+
+    /** Subscript read: `m[key]` → `get(key)`. */
+    public V operator[] (K key) {
+        return this.get(key);
+    }
+
+    /**
+     * @returns the number of entries.
+     */
+    public int64 count() {
+        return (int64) this.entryCount;
+    }
+
+    public boolean isEmpty() {
+        return this.entryCount == 0;
+    }
+
+    /** Key at dense index `i` (0-based, insertion order); zero value if out of range. */
+    public K keyAt(int32 i) {
+        if (i < 0 || i >= this.entryCount) {
+            K[] missDefault = new K[1];
+            return missDefault[0];
+        }
+        return this.keyArr[i];
+    }
+
+    /** Value at dense index `i` (0-based, insertion order); zero value if out of range. */
+    public V valAt(int32 i) {
+        if (i < 0 || i >= this.entryCount) {
+            V[] missDefault = new V[1];
+            return missDefault[0];
+        }
+        return this.valArr[i];
+    }
+}

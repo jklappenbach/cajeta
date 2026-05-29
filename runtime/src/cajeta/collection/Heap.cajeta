@@ -1,0 +1,148 @@
+package cajeta.collection;
+
+/**
+ * Array-backed binary heap / priority queue.
+ *
+ * A **min-heap**: `peek()` and `pop()` return the smallest element by
+ * the `<` ordering on `T`. Backed by a single dense array that grows
+ * on demand (doubling, like `ArrayList`); the heap invariant
+ * (`parent <= child`) is restored by sift-up on `push` and sift-down
+ * on `pop`, both O(log n).
+ *
+ * ## Ordering
+ *
+ * Element order comes from the `<` operator on `T`, exactly like
+ * `cajeta.lang.Math.min` / `max`. Primitive T (int*, float, …) uses
+ * the built-in comparison and works today. Class T needs an
+ * `operator<` overload; that links once operator overloading flows
+ * through template specializations (same v1 limitation Math notes).
+ * For a max-heap, wrap values in a type whose `<` is reversed.
+ *
+ * ## v1 surface
+ *
+ * `push` / `peek` / `pop` / `count` / `isEmpty`. `peek` and `pop` on
+ * an empty heap return the type's zero value (matching the stdlib's
+ * miss-path convention) rather than throwing; an exception-throwing
+ * variant lands with the error model.
+ *
+ * @see cajeta.lang.Math
+ * @see cajeta.collection.ArrayList
+ */
+public class Heap<T> {
+
+    private T[] data;
+    private int32 sizeCount;
+    private int32 capacity;
+
+    public Heap() {
+        this.capacity = 16;
+        this.data = new T[16];
+        this.sizeCount = 0;
+    }
+
+    /**
+     * @returns the number of elements currently in the heap.
+     */
+    public int64 count() {
+        return (int64) this.sizeCount;
+    }
+
+    public boolean isEmpty() {
+        return this.sizeCount == 0;
+    }
+
+    /**
+     * Insert `v`, restoring the heap invariant by sifting it up to
+     * its ordered position. O(log n) amortized (O(n) on the rare
+     * grow). Grows the backing array by doubling when full.
+     */
+    public void push(T v) {
+        if (this.sizeCount >= this.capacity) {
+            int32 newCap = this.capacity * 2;
+            T[] grown = new T[newCap];
+            int32 i = 0;
+            while (i < this.sizeCount) {
+                grown[i] = this.data[i];
+                i = i + 1;
+            }
+            // Ownership transfer of the fresh storage into the field
+            // (see ArrayList.add for why `#` is required here).
+            this.data = #grown;
+            this.capacity = newCap;
+        }
+        this.data[this.sizeCount] = v;
+        // Sift up from the new leaf toward the root.
+        int32 child = this.sizeCount;
+        boolean sifting = true;
+        while (sifting) {
+            if (child == 0) {
+                sifting = false;
+            } else {
+                int32 parent = (child - 1) / 2;
+                if (this.data[child] < this.data[parent]) {
+                    T tmp = this.data[child];
+                    this.data[child] = this.data[parent];
+                    this.data[parent] = tmp;
+                    child = parent;
+                } else {
+                    sifting = false;
+                }
+            }
+        }
+        this.sizeCount = this.sizeCount + 1;
+    }
+
+    /**
+     * @returns the smallest element without removing it, or the
+     *          type's zero value if the heap is empty.
+     */
+    public T peek() {
+        if (this.sizeCount == 0) {
+            T[] missDefault = new T[1];
+            return missDefault[0];
+        }
+        return this.data[0];
+    }
+
+    /**
+     * Remove and return the smallest element, restoring the heap
+     * invariant by sifting the moved last element down. O(log n).
+     * Returns the type's zero value if the heap is empty.
+     */
+    public T pop() {
+        if (this.sizeCount == 0) {
+            T[] missDefault = new T[1];
+            return missDefault[0];
+        }
+        T top = this.data[0];
+        this.sizeCount = this.sizeCount - 1;
+        // Move the last element to the root and sift it down.
+        this.data[0] = this.data[this.sizeCount];
+        int32 i = 0;
+        boolean sifting = true;
+        while (sifting) {
+            int32 l = 2 * i + 1;
+            int32 r = 2 * i + 2;
+            int32 smallest = i;
+            if (l < this.sizeCount) {
+                if (this.data[l] < this.data[smallest]) {
+                    smallest = l;
+                }
+            }
+            if (r < this.sizeCount) {
+                if (this.data[r] < this.data[smallest]) {
+                    smallest = r;
+                }
+            }
+            if (smallest == i) {
+                sifting = false;
+            } else {
+                T tmp = this.data[i];
+                this.data[i] = this.data[smallest];
+                this.data[smallest] = tmp;
+                i = smallest;
+            }
+        }
+        return top;
+    }
+}

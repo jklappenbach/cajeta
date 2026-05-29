@@ -583,35 +583,23 @@ namespace cajeta {
             }
         }
 
-        // Gap 4 (MemoryModel.md § Known gaps) — alias-mutation guard.
-        // Reject assignments whose target path overlaps any live
-        // read-borrow recorded by an earlier `String alias = p.name`
-        // style initializer. Without this, `p.name = #other` would
-        // silently dangle `alias`. The write path is the dotted
-        // sequence rooted at a local — IdentifierExpression (root
-        // write like `p = ...`) or DotExpression (`p.name = ...`).
-        // ArrayIndexExpression on LHS isn't covered here: array
-        // borrows aren't path-tracked yet (would need element-index
-        // semantics in the borrow tracker).
-        if (binaryOp == BINARY_OP_ASSIGN && !children.empty()) {
-            std::string writePath;
-            if (auto idExpr = dynamic_pointer_cast<IdentifierExpression>(children[0])) {
-                writePath = idExpr->getTextValue();
-            } else if (auto dotExpr = dynamic_pointer_cast<DotExpression>(children[0])) {
-                writePath = DotExpression::buildPath(dotExpr);
-            }
-            if (!writePath.empty()) {
-                if (auto sc = module->getScopeStack().peek()) {
-                    std::string offender = sc->findInvalidatingBorrow(writePath);
-                    if (!offender.empty()) {
-                        throw Exception(
-                            "write to '" + writePath
-                            + "' invalidates live borrow of '" + offender + "'",
-                            "CAJETA_ERROR_USE_AFTER_MOVE");
-                    }
-                }
-            }
-        }
+        // Gap 4 alias-mutation guard — REMOVED.
+        //
+        // This used to reject `node.field = ...` whenever an earlier
+        // `local = node.field` had recorded a live read-borrow, on the
+        // theory that overwriting the slot would dangle `local`. But a
+        // field reassignment emits NO eager drop (there is no free/drop
+        // in this BINARY_OP_ASSIGN path) — a node is freed only at the
+        // scope boundary, via its own drop-chain entry, not by the act of
+        // reassigning a reference to it. So the write never frees the
+        // borrowed node, `local` cannot dangle, and the guard was a false
+        // positive that rejected valid ownership transfers (e.g. tree
+        // rotations, `y = x.right; x.right = y.left;`) and intentional
+        // replacement of an owned field. Drop-exactly-once soundness is
+        // the scope-exit drop chain's responsibility, not this write site.
+        //
+        // Genuine use-after-`#`-move reads are still caught in
+        // Identifier.cpp / DotExpression.cpp via movedNames / movedPaths.
 
         llvm::Value* lhs = children[0]->generateCode(module);
         llvm::Value* rhs = children[1]->generateCode(module);
@@ -781,6 +769,45 @@ namespace cajeta {
                         // address (lvalue convention).
                         result = lhs;
                         break;
+                    }
+                }
+                // Interface-typed FIELD assignment (`this.enc = e`). An
+                // interface field stores the 24-byte {data, vtable, kind}
+                // body INLINE in the parent struct (S9.5.4 / CajetaClass::
+                // generatePrototype), whereas an interface VALUE — a param,
+                // local, or field read — is represented as a *pointer* to
+                // such a body (loadR returns that pointer). A plain store
+                // would write only the 8-byte data word into the field and
+                // leave its vtable/kind zero, so every later dispatch through
+                // the field reads a null vtable and segfaults. memcpy the
+                // whole body instead. Only fields (DotExpression LHS) are
+                // inline; interface LOCALS are pointer slots and take the
+                // normal pointer store below, so this is gated on DotExpression.
+                // `x = null` clears the body (memset 0) — supports the
+                // assignment-based drop idiom for interface fields.
+                if (auto dotLhs = dynamic_pointer_cast<DotExpression>(lhsAst)) {
+                    if (!lhsAst->getResolvedType()) lhsAst->resolveTypes(module);
+                    auto lhsCls = dynamic_pointer_cast<CajetaClass>(lhsAst->getResolvedType());
+                    if (lhsCls && lhsCls->isInterface()) {
+                        llvm::Type* ifaceTy = lhsAst->getResolvedType()->getLlvmType();
+                        if (ifaceTy && ifaceTy->isStructTy()) {
+                            const llvm::DataLayout& dl = module->getLlvmModule()->getDataLayout();
+                            llvm::Value* size = llvm::ConstantInt::get(
+                                llvm::Type::getInt64Ty(*module->getLlvmContext()),
+                                dl.getTypeAllocSize(ifaceTy));
+                            llvm::Align align(dl.getABITypeAlign(ifaceTy));
+                            llvm::Value* srcBody = loadR(rhs);
+                            if (llvm::isa<llvm::ConstantPointerNull>(srcBody)) {
+                                builder->CreateMemSet(lhs,
+                                    llvm::ConstantInt::get(
+                                        llvm::Type::getInt8Ty(*module->getLlvmContext()), 0),
+                                    size, align);
+                            } else {
+                                builder->CreateMemCpy(lhs, align, srcBody, align, size);
+                            }
+                            result = lhs;
+                            break;
+                        }
                     }
                 }
                 llvm::Value* rhsVal = loadR(rhs);

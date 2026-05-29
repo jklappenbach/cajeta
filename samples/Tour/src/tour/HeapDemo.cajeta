@@ -1,0 +1,25 @@
+package tour;
+
+import cajeta.collection.Heap;
+
+// Binary min-heap (priority queue). `push(v)` sifts up, `pop()`
+// removes and returns the current minimum, `peek()` looks without
+// removing. Popping repeatedly yields ascending order.
+public class HeapDemo extends DemoClass {
+    public void execute() {
+        System.stdout.println("");
+        System.stdout.println("-- Heap (min priority queue) --");
+
+        Heap<int32> h = heap Heap<int32>();
+        h.push(5);
+        h.push(1);
+        h.push(9);
+        h.push(3);
+
+        System.stdout.println("  count   = " + (int32) h.count());
+        System.stdout.println("  peek    = " + h.peek());
+        int32 a = h.pop();
+        int32 b = h.pop();
+        System.stdout.println("  pop, pop = " + a + ", " + b);
+    }
+}
