@@ -256,6 +256,18 @@ namespace cajeta {
             // See AspectModel.md § Implementation roadmap A1.
             if (auto* typeDecl = dynamic_cast<CajetaParser::TypeDeclarationContext*>(ctx->parent)) {
                 for (auto* mod : typeDecl->classOrInterfaceModifier()) {
+                    // Keyword modifiers (final / public / abstract / …) on the
+                    // class declaration: capture onto the structure so codegen
+                    // can ask `getModifiers()`. `final` in particular lets
+                    // CajetaClass::invokeMethod devirtualize a final class's
+                    // methods (no subclass can override them). A
+                    // classOrInterfaceModifier is EITHER an annotation OR a
+                    // keyword — annotation() is null for the keyword form.
+                    if (!mod->annotation()) {
+                        Modifier m = Modifiable::toModifier(mod->getText());
+                        if (m != NONE) structure->addModifier(m);
+                        continue;
+                    }
                     if (auto inst = parseAnnotationInstance(mod->annotation())) {
                         structure->addAnnotationInstance(inst);
                         // @SuppressLint on a class declaration: derive
