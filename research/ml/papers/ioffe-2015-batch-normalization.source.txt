@@ -1,0 +1,2 @@
+# Original source for ioffe-2015-batch-normalization.pdf
+https://arxiv.org/pdf/1502.03167

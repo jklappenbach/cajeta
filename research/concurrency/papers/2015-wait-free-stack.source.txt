@@ -1,0 +1,2 @@
+# Original source for 2015-wait-free-stack.pdf
+https://arxiv.org/pdf/1510.00116

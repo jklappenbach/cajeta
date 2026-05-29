@@ -1,0 +1,2 @@
+# Original source for boksansky-2021-crash-course-brdf.pdf
+https://boksajak.github.io/files/CrashCourseBRDF.pdf

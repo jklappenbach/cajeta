@@ -1,0 +1,2 @@
+# Original source for kmeans-pp-arthur-2007.pdf
+https://theory.stanford.edu/~sergei/papers/kMeansPP-soda.pdf

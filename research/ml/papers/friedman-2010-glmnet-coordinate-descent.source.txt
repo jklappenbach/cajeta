@@ -1,0 +1,2 @@
+# Original source for friedman-2010-glmnet-coordinate-descent.pdf
+https://www.jstatsoft.org/article/view/v033i01/v33i01.pdf

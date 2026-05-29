@@ -1,0 +1,2 @@
+# Original source for acar-2013-private-deques.pdf
+https://www.chargueraud.org/research/2013/ppopp/full.pdf

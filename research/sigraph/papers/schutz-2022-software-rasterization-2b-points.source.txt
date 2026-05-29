@@ -1,0 +1,2 @@
+# Original source for schutz-2022-software-rasterization-2b-points.pdf
+https://arxiv.org/pdf/2204.01287

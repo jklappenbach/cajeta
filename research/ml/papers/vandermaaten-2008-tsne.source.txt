@@ -1,0 +1,2 @@
+# Original source for vandermaaten-2008-tsne.pdf
+https://www.jmlr.org/papers/volume9/vandermaaten08a/vandermaaten08a.pdf

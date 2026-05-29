@@ -1,0 +1,2 @@
+# Original source for ba-2016-layer-normalization.pdf
+https://arxiv.org/pdf/1607.06450

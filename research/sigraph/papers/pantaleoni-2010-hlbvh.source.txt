@@ -1,0 +1,2 @@
+# Original source for pantaleoni-2010-hlbvh.pdf
+https://research.nvidia.com/sites/default/files/pubs/2010-06_HLBVH-Hierarchical-LBVH/HLBVH-final.pdf

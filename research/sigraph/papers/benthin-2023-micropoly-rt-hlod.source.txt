@@ -1,0 +1,2 @@
+# Original source for benthin-2023-micropoly-rt-hlod.pdf
+https://momentsingraphics.de/Media/HPG2023/benthin2023-real_time_ray_tracing_of_micro_poly_geometry_with_hlod-paper.pdf

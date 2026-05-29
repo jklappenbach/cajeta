@@ -1,0 +1,2 @@
+# Original source for zeng-2025-restir-pg.pdf
+https://research.nvidia.com/labs/rtr/publication/zeng2025restirpg/zeng2025restirpg_paper.pdf

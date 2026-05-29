@@ -1,0 +1,2 @@
+# Original source for ke-2017-lightgbm.pdf
+https://papers.nips.cc/paper/2017/file/6449f44a102fde848669bdd9eb6b76fa-Paper.pdf

@@ -1,0 +1,2 @@
+# Original source for steindorfer-2016-heterogeneous-hamt.pdf
+https://arxiv.org/pdf/1608.01036

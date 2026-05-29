@@ -1,0 +1,2 @@
+# Original source for dettmers-2022-llm-int8.pdf
+https://arxiv.org/pdf/2208.07339

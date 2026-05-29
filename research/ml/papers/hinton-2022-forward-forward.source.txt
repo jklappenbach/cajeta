@@ -1,0 +1,2 @@
+# Original source for hinton-2022-forward-forward.pdf
+https://arxiv.org/pdf/2212.13345

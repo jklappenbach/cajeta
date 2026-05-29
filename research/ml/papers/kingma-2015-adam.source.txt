@@ -1,0 +1,2 @@
+# Original source for kingma-2015-adam.pdf
+https://arxiv.org/pdf/1412.6980

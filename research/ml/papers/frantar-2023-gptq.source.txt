@@ -1,0 +1,2 @@
+# Original source for frantar-2023-gptq.pdf
+https://arxiv.org/pdf/2210.17323

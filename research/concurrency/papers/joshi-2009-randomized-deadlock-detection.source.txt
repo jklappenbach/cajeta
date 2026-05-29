@@ -1,0 +1,2 @@
+# Original source for joshi-2009-randomized-deadlock-detection.pdf
+https://people.eecs.berkeley.edu/~ksen/papers/deadlock.pdf

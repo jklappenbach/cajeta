@@ -1,0 +1,2 @@
+# Original source for vaswani-2017-attention.pdf
+https://arxiv.org/pdf/1706.03762

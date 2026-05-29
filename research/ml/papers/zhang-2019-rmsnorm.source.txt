@@ -1,0 +1,2 @@
+# Original source for zhang-2019-rmsnorm.pdf
+https://openreview.net/pdf?id=SygkZ3MTJE

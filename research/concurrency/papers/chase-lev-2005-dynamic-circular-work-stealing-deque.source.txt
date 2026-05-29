@@ -1,0 +1,2 @@
+# Original source for chase-lev-2005-dynamic-circular-work-stealing-deque.pdf
+https://www.dre.vanderbilt.edu/~schmidt/PDF/work-stealing-dequeue.pdf

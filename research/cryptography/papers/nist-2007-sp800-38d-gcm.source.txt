@@ -1,0 +1,2 @@
+# Original source for nist-2007-sp800-38d-gcm.pdf
+https://nvlpubs.nist.gov/nistpubs/legacy/sp/nistspecialpublication800-38d.pdf

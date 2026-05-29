@@ -1,0 +1,2 @@
+# Original source for michael-scott-1996-concurrent-queues.pdf
+https://www.cs.rochester.edu/~scott/papers/1996_PODC_queues.pdf

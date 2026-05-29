@@ -1,0 +1,2 @@
+# Original source for bagwell-2001-ideal-hash-trees.pdf
+https://lampwww.epfl.ch/papers/idealhashtrees.pdf

@@ -1,0 +1,2 @@
+# Original source for burley-2012-disney-brdf.pdf
+https://media.disneyanimation.com/uploads/production/publication_asset/48/asset/s2012_pbs_disney_brdf_notes_v3.pdf

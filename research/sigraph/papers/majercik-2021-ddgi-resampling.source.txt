@@ -1,0 +1,2 @@
+# Original source for majercik-2021-ddgi-resampling.pdf
+https://arxiv.org/pdf/2108.05263
