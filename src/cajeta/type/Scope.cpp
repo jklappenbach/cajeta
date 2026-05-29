@@ -150,4 +150,20 @@ namespace cajeta {
         if (parent) return parent->findInvalidatingBorrow(writePath);
         return "";
     }
+
+    void Scope::recordLaunchBorrow(const string& bufferName) {
+        if (bufferName.empty()) return;
+        launchBorrows.insert(bufferName);
+    }
+
+    bool Scope::isLaunchBorrowed(const string& bufferName) {
+        if (bufferName.empty()) return false;
+        if (launchBorrows.count(bufferName)) return true;
+        return parent ? parent->isLaunchBorrowed(bufferName) : false;
+    }
+
+    void Scope::releaseLaunchBorrows() {
+        launchBorrows.clear();
+        if (parent) parent->releaseLaunchBorrows();
+    }
 }

@@ -6,6 +6,7 @@
 #include "Identifier.h"
 #include "cajeta/compile/CajetaModule.h"
 #include "cajeta/type/CajetaClass.h"
+#include "cajeta/type/Scope.h"
 #include "cajeta/error/Exception.h"
 
 #include "llvm/IR/DerivedTypes.h"
@@ -127,6 +128,14 @@ namespace cajeta {
 
             llvm::Value* slot;
             if (isBuffer) {
+                // Launch borrow scope (CajetaXPU §3.5/§11): a launch borrows
+                // each Buffer arg until the next Stream.sync()/Event.waitHost().
+                // Record the borrow so a free/reassign-before-sync is caught.
+                if (auto id = std::dynamic_pointer_cast<IdentifierExpression>(argExpr)) {
+                    if (auto sc = module->getScopeStack().peek()) {
+                        sc->recordLaunchBorrow(id->getTextValue());
+                    }
+                }
                 auto& props = klass->getProperties();
                 auto it = props.find("deviceHandle");
                 if (it == props.end()) {
