@@ -43,10 +43,17 @@ namespace mir {
         static XpuMirKernelPtr buildKernelForMethod(const MethodPtr& method);
 
         // Build a per-module envelope by walking every @Kernel method
-        // in the given module. Returns an XpuMirModule whose `kernels`
-        // vector contains one record per @Kernel found. `launchSites`
-        // is empty in v1 — populated in step 6.
+        // in the given module (one XpuMirKernel each, with bodyOps
+        // populated) and every method body for host-side launch sites
+        // (one XpuMirLaunchSite each).
         static XpuMirModulePtr buildForModule(const CajetaModulePtr& module);
+
+        // Walk a @Kernel body for leaf builtins (Thread / Workgroup /
+        // Barrier calls) and append the matching XpuMirOp leaves to
+        // `out`. Public so tests and the backend pass can run it
+        // standalone. No-op for a method with no body.
+        static void collectBodyOps(const MethodPtr& method,
+                                   std::vector<XpuMirOpPtr>& out);
     };
 
 } // namespace mir
