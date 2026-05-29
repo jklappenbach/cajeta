@@ -11,7 +11,7 @@
 ## Non-goals (v1)
 
 - Preemptive cancellation. Cancellation is cooperative — a task observes a cancel signal at its next `await`.
-- Custom executors beyond the built-in work-stealing pool.
+- Custom executors beyond the built-in scheduler. (Today that scheduler is a single cooperative carrier; a work-stealing pool is planned, not shipped.)
 - Distributed actors (RPC across machines).
 - Effect handlers / algebraic effects.
 - Async iteration / streaming (`AsyncIterator` style); covered separately if added.
@@ -437,10 +437,18 @@ Suspension is delivered by `ucontext.h` (`getcontext` / `makecontext` / `swapcon
 
 ## Implementation status
 
-Full runtime status lives in `cajeta-docs/AsyncStatus.md`. As of
-recent commits, R1-R5-A' have shipped: stackful fibers, work-
-stealing scheduler, timer wheel, async I/O reactor. R5-C / R5-D
-items remain (see AsyncStatus.md).
+Full runtime status lives in `cajeta-docs/stdlib/AsyncStatus.md`. As of
+recent commits, R1 through R5-D plus error-model v1 have shipped:
+stackful fibers, a **single-carrier cooperative scheduler**, explicit
+`scope { }` + implicit function-body scopes with join-on-exit, R5-C
+cooperative cancellation, and R5-D scope exception-escalation.
+
+**NOT YET shipped** (despite earlier drafts of this section claiming
+otherwise): a work-stealing multi-carrier pool, a timer wheel
+(`withTimeout`/`withDeadline`), and an async I/O reactor / netpoller.
+Today a single carrier OS thread runs all fibers cooperatively, and any
+blocking syscall inside a fiber blocks every fiber. Those three are the
+planned R8/R9 work.
 
 ## Pinning tests
 
