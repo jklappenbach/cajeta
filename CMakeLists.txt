@@ -59,5 +59,12 @@ endif()
 
 include_directories(src)
 
+# Enable CTest at the top level so gtest_discover_tests() in test/ actually
+# registers its cases. Without this, add_test() in any subdirectory is a
+# no-op: the generated CTestTestfile.cmake stays empty and `ctest -R ...`
+# reports "No tests were found" even though cajeta_test.exe runs fine
+# directly. Must precede add_subdirectory(test).
+enable_testing()
+
 add_subdirectory(src)
 add_subdirectory(test)

@@ -21,6 +21,7 @@
 #include "LiteralExpression.h"
 #include "AggregateInitializerExpression.h"
 #include "MethodCallExpression.h"
+#include "CallExpression.h"
 #include "NewExpression.h"
 #include "../Block.h"
 #include "../LocalVariableDeclaration.h"
@@ -119,11 +120,20 @@ namespace cajeta {
         } else if (ctx->identifier()) {
             result = make_shared<IdentifierExpression>(ctx->identifier(), ctx->primary() != nullptr);
         } else if (ctx->LPAREN()) {
-            // Cast: '(' annotation* typeType ('&' typeType)* ')' expression
-            // We don't yet support intersection casts (multiple typeTypes); take the first.
+            // Two expression forms carry a top-level LPAREN:
+            //   - Cast:         '(' annotation* typeType ('&' typeType)* ')' expression
+            //   - Postfix call: expression '(' parameterList? ')'   (XPU launch)
+            // The cast carries a typeType; the postfix call does not. (A bare
+            // standalone call `foo(...)` lives inside a MethodCallContext, so
+            // its LPAREN never surfaces at this level.)
             if (!ctx->typeType().empty()) {
+                // Intersection casts (multiple typeTypes) aren't supported yet; take the first.
                 CajetaTypePtr destType = CajetaType::fromContext(ctx->typeType(0), nullptr);
                 result = make_shared<CastExpression>(destType, token);
+            } else {
+                // `<callee>(args)` — the callee expression is attached as
+                // children[0] by the child loop at the bottom of this function.
+                result = make_shared<CallExpression>(ctx, token);
             }
         } else if (ctx->LBRACK()) {
             result = make_shared<ArrayIndexExpression>(ctx, token);
@@ -347,6 +357,31 @@ namespace cajeta {
     ArrayIndexExpression::ArrayIndexExpression(CajetaParser::ExpressionContext* ctx, antlr4::Token* token) : Expression(
         token) {
 
+    }
+
+    ArrayLiteralExpression::ArrayLiteralExpression(
+        CajetaParser::ArrayLiteralContext* ctx, antlr4::Token* token)
+        : Expression(token) {
+        if (auto* list = ctx->expressionList()) {
+            for (auto* e : list->expression()) {
+                auto elem = Expression::fromContext(e);
+                elements.push_back(elem);
+                // Mirror into children so generic AST walks (free-variable
+                // scans, type resolution) reach the elements too.
+                addChild(elem);
+            }
+        }
+    }
+
+    llvm::Value* ArrayLiteralExpression::generateCode(CajetaModulePtr module) {
+        // A list literal has no standalone value lowering yet — it exists to
+        // carry XPU launch dimensions, which the launch path reads element-by-
+        // element off the AST (see CallExpression / the launch-site lowering).
+        // Used anywhere else, reject clearly rather than emit null IR.
+        throw Exception(
+            "array literal expression (only supported today as XPU launch "
+            "grid/block dimensions)",
+            "CAJETA_ERROR_NOT_IMPLEMENTED");
     }
 
     // Resolve a value-of-slot for sites that consumed an l-value (alloca or ArrayIndex
@@ -978,6 +1013,10 @@ namespace cajeta {
             // `{ ... }`.
             result = make_shared<AggregateInitializerExpression>(
                 ctx->aggregateInitializer(), ctx->getStart());
+        } else if (ctx->arrayLiteral()) {
+            // `[e1, e2, ...]` list literal (XPU launch dims; general-purpose).
+            result = make_shared<ArrayLiteralExpression>(
+                ctx->arrayLiteral(), ctx->getStart());
         } else if (ctx->identifier()) {
             result = make_shared<IdentifierExpression>(ctx->identifier(), true);
         } else if (ctx->THIS()) {

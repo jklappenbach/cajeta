@@ -1841,6 +1841,14 @@ namespace cajeta {
             return visitChildren(ctx);
         }
 
+        // `arrayLiteral : '[' expressionList? ']'` (XPU launch dims). Like the
+        // other expression-subtree rules, the AST is built by
+        // Expression::fromContext / ArrayLiteralExpression, so this visitor
+        // entry just descends — it isn't on the codegen path.
+        virtual std::any visitArrayLiteral(CajetaParser::ArrayLiteralContext* ctx) override {
+            return visitChildren(ctx);
+        }
+
         virtual std::any visitExpression(CajetaParser::ExpressionContext* ctx) override {
             // Expression::fromContext builds the full sub-tree (including children) via
             // its own recursive descent; no further visitor-driven addChild loop is
