@@ -1,10 +1,12 @@
 # Cajeta
 
-Cajeta is a hybrid systems / application language combining C++-style true templates, multiple-inheritance, and operator overloading.  It's also Java-style class semantics and annotations, It's Rust-inspired ownership for memory management — with a single explicit allocation idiom that lets the caller pick stack or heap at every creation.
+Cajeta is a hybrid systems / application language combining C++-style true templates, multiple-inheritance, and operator overloading.  It's also Java-style class semantics and annotations, It's Rust-inspired ownership for memory management — with a single explicit allocation idiom that lets the caller pick stack or heap at initialization.
 
-The compiler is LLVM-backed (LLVM 22) and produces either IR or native binaries.  Cajeta believes in a compiler that walks you or an AI through the code through abundant linting and verbose error messages. 
+The compiler is LLVM-backed (LLVM 22) and produces either IR or native binaries.  Cajeta believes in a compiler that walks you or an AI through the code with abundant linting and verbose error messages. 
 
-Cajeta may not be your choice for embedded, but it's lean enough to perform that role.  It doesn't have the "safety" of Rust, but it offers many benefits in return:  a memory model that won't fight you.  Syntax and grammar that will make C#, Java, javascript, and Typescript developers feel at home.
+Cajeta may not be your choice for embedded, but it's lean enough to perform that role.  A future roadmap will produce a version that will be able to exist even in the most austere environments.
+
+It doesn't have the "safety" of Rust, but it offers many benefits in return:  a memory model that won't fight you.  Syntax and grammar that will make C#, Java, Javascript, and Typescript developers feel at home.
 
 Comfort, all while offering true zero-copy semantics with Views, a lightening fast networking stack, and memory management free of reference counting.
 
