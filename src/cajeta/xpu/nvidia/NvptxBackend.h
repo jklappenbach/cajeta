@@ -10,8 +10,10 @@
 
 #pragma once
 
+#include <cstdint>
 #include <memory>
 #include <string>
+#include <vector>
 
 namespace llvm {
     class Module;
@@ -41,6 +43,17 @@ namespace nvidia {
     // configureDeviceModule). Returns the PTX, or an empty string if
     // the target machine can't emit assembly.
     std::string emitPtx(llvm::Module& deviceModule, llvm::TargetMachine& tm);
+
+    // Locate the CUDA `ptxas` assembler: $CUDA_PATH/bin first, then PATH.
+    // Returns an empty string if not found.
+    std::string findPtxas();
+
+    // Assemble PTX text into a .cubin for `arch` (e.g. "sm_89") by
+    // shelling out to ptxas. Returns the cubin bytes, or empty on failure
+    // (ptxas missing, or a ptxas error — which is logged). This is the
+    // single-arch path; multi-arch fatbin is a later increment.
+    std::vector<uint8_t> assembleCubin(const std::string& ptx,
+                                       const std::string& arch = "sm_89");
 
 } // namespace nvidia
 } // namespace xpu
