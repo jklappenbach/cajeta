@@ -220,6 +220,17 @@ class CajetaType : public Modifiable, public Annotatable,
 
         static CajetaTypePtr of(QualifiedNamePtr qName);
 
+        // Find a generic (template) class registered under the bare short
+        // name `shortName`, scanning the process-global canonicalMap. Used to
+        // recover from same-short-name collisions: a parameterized reference
+        // `Foo<...>` can only denote a generic class, so when an ordinary
+        // name lookup lands a NON-template (e.g. `Stream` resolving to the
+        // final, non-generic cajeta.xpu.core.Stream instead of the generic
+        // cajeta.lang.stream.Stream because both register the bare key
+        // "Stream" with last-writer-wins), callers re-resolve through here.
+        // Returns nullptr when no same-short-name template exists.
+        static CajetaTypePtr findTemplateByShortName(const string& shortName);
+
         static CajetaTypePtr of(llvm::Type* type, CajetaTypePtr parent = nullptr);
 
         static CajetaTypePtr of(llvm::Value* value, CajetaTypePtr parent = nullptr);
