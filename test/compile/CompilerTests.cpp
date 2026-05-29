@@ -25,8 +25,11 @@ TEST(CompilerTests, canThrowOnInvalidInput) {
 // cajeta.error.{Throwable, Exception, RecoverableException,
 // UnrecoverableException, EncodingException} + cajeta.hash.Hash +
 // cajeta.collection.{HashMap, HashSet, ArrayList, LinkedList,
-// LinkedListNode} + cajeta.lang.stream.{HashMapKeyStream,
-// HashMapValueStream, HashMapEntryStream}. Each source file under
+// LinkedListNode, ImmutableList, ImmutableSet, ImmutableMap, Heap,
+// RedBlackTree, RedBlackNode, BPlusTree, BPlusTreeNode} +
+// cajeta.collection.ltm.{LtmBPlusTree, LtmBPlusTreeNode, LtmPager} +
+// cajeta.lang.stream.{HashMapKeyStream, HashMapValueStream,
+// HashMapEntryStream}. Each source file under
 // runtime/src/cajeta/ adds one entry to
 // CajetaModule::strutureToModule via CajetaModule::create(),
 // counted whether the class is template or concrete. Bump when
@@ -37,7 +40,7 @@ TEST(CompilerTests, canThrowOnInvalidInput) {
 // when stdlib's structure count actually changes; prior values
 // drifted ahead of reality during the multi-class push, so re-anchor
 // by running the test and reading the actual size if it diverges.
-static constexpr size_t STDLIB_STRUCTURE_COUNT = 63;
+static constexpr size_t STDLIB_STRUCTURE_COUNT = 74;
 
 TEST(CompilerTests, canParseOnValidShortPackage) {
     string inputPath = CAJETA_TEST_ROOT + string("/compile/code/src/cajeta/Test.cajeta");

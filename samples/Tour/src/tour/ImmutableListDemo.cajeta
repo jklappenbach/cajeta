@@ -1,0 +1,25 @@
+package tour;
+
+import cajeta.collection.ArrayList;
+import cajeta.collection.ImmutableList;
+
+// Immutable, index-addressable list. Built once from a mutable
+// ArrayList snapshot; afterwards it has no mutators, so it can be
+// shared freely without defensive copies. `get(i)` is O(1); `count()`
+// returns the element count (int64).
+public class ImmutableListDemo extends DemoClass {
+    public void execute() {
+        System.stdout.println("");
+        System.stdout.println("-- ImmutableList --");
+
+        ArrayList<int32> src = heap ArrayList<int32>();
+        src.add(10);
+        src.add(20);
+        src.add(30);
+
+        ImmutableList<int32> il = heap ImmutableList<int32>(src);
+        System.stdout.println("  count  = " + (int32) il.count());
+        System.stdout.println("  get(1) = " + il.get(1));
+        System.stdout.println("  contains(30) = " + il.contains(30));
+    }
+}

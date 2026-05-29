@@ -1,0 +1,47 @@
+package cajeta.collection;
+
+/**
+ * Node in an in-memory `BPlusTree<K, V>`. A node is either a **leaf**
+ * (holds keys + values + a `next` pointer to the following leaf) or an
+ * **internal** node (holds separator keys + child pointers). All
+ * user values live in leaves; internal nodes only route.
+ *
+ * Arrays are over-allocated by one slot (`order + 1` keys,
+ * `order + 2` children) so an insert can temporarily overflow a full
+ * node in place before `BPlusTree` splits it. `numKeys` is the live
+ * key count; a leaf has `numKeys` values, an internal node has
+ * `numKeys + 1` children.
+ *
+ * Separate top-level class (no nested classes yet), per the
+ * `LinkedListNode` precedent; the tree owns its nodes and rewrites
+ * these public fields directly during split/route.
+ *
+ * @see cajeta.collection.BPlusTree
+ */
+public class BPlusTreeNode<K, V> {
+    public boolean leaf;
+    public int32 numKeys;
+    public K[] keys;
+    /** Leaf only: values parallel to `keys`. Null on internal nodes. */
+    public V[] values;
+    /** Internal only: `numKeys + 1` child links. Null on leaves. */
+    public BPlusTreeNode<K, V>[] children;
+    /** Leaf only: next leaf in ascending order (range-scan thread). */
+    public BPlusTreeNode<K, V> next;
+    public BPlusTreeNode<K, V> parent;
+
+    public BPlusTreeNode(boolean leaf, int32 order) {
+        this.leaf = leaf;
+        this.numKeys = 0;
+        this.keys = new K[order + 1];
+        if (leaf) {
+            this.values = new V[order + 1];
+            this.children = null;
+        } else {
+            this.values = null;
+            this.children = new BPlusTreeNode<K, V>[order + 2];
+        }
+        this.next = null;
+        this.parent = null;
+    }
+}

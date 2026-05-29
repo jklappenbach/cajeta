@@ -1,0 +1,153 @@
+package cajeta.collection;
+
+import cajeta.lang.stream.ArrayStream;
+
+/**
+ * Immutable, hash-indexed set. A frozen, de-duplicated snapshot of an
+ * `ArrayList<T>`.
+ *
+ * Modeled on Guava's `RegularImmutableSet`: members are stored once in
+ * a dense `elements` array (so the set is also cheaply indexable /
+ * streamable in insertion order), and a separate open-addressing hash
+ * table holds `(elementIndex + 1)` for O(1) `contains`. The table is
+ * built once at construction; there is no removal, no tombstones, and
+ * no resize — the immutable contract removes every reason for them.
+ *
+ * ## Hashing and equality
+ *
+ * Same contract as `HashMap` / `HashSet`: `T.hash()` selects the
+ * bucket and `==` decides membership within it. Class T defaults to
+ * identity semantics (override `hash()` + `==` for value semantics);
+ * primitive T lowers `.hash()` to the `__cajeta_hash_X` intrinsic.
+ *
+ * @see cajeta.collection.HashSet
+ * @see cajeta.collection.ArrayList
+ */
+public class ImmutableSet<T> {
+
+    /**
+     * Unique members in first-seen order. Live range is
+     * `[0, elemCount)`; if `src` contained duplicates the array has
+     * unused trailing slack (cheaper than a second exact-size copy).
+     */
+    private T[] elements;
+    private int32 elemCount;
+
+    /**
+     * Open-addressing index: `table[slot]` holds `elementIndex + 1`,
+     * or 0 for an empty slot. Power-of-2 length; slot is
+     * `hash & (tableCap - 1)` with linear probing.
+     */
+    private int64[] table;
+    private int64 tableCap;
+
+    /**
+     * Build a frozen, de-duplicated set from `src`. The first
+     * occurrence of each `==`-equal value wins; later duplicates are
+     * dropped. The source `ArrayList` is left untouched.
+     *
+     * @param src the values to snapshot.
+     */
+    public ImmutableSet(ArrayList<T> src) {
+        int32 n = src.count();
+        // Table sized to keep the load factor under ~0.5 (members ×2),
+        // power-of-2, minimum 8.
+        int64 cap = 8;
+        while (cap < (int64) n * 2) {
+            cap = cap * 2;
+        }
+        T[] elems = new T[n];
+        int64[] tab = new int64[cap];
+        int32 count = 0;
+
+        int32 i = 0;
+        while (i < n) {
+            T e = src.get(i);
+            int64 h = e.hash();
+            int64 idx = h & (cap - 1);
+            boolean dup = false;
+            boolean scanning = true;
+            // Walk to either an empty slot (insert here) or a slot
+            // already holding an `==`-equal member (skip — duplicate).
+            while (scanning) {
+                if (tab[idx] == 0) {
+                    scanning = false;
+                } else {
+                    int32 ei = (int32) (tab[idx] - 1);
+                    if (elems[ei] == e) {
+                        dup = true;
+                        scanning = false;
+                    } else {
+                        idx = (idx + 1) & (cap - 1);
+                    }
+                }
+            }
+            if (dup == false) {
+                elems[count] = e;
+                tab[idx] = (int64) (count + 1);
+                count = count + 1;
+            }
+            i = i + 1;
+        }
+        this.elements = #elems;
+        this.table = #tab;
+        this.elemCount = count;
+        this.tableCap = cap;
+    }
+
+    /**
+     * @returns the number of unique members.
+     */
+    public int64 count() {
+        return (int64) this.elemCount;
+    }
+
+    public boolean isEmpty() {
+        return this.elemCount == 0;
+    }
+
+    /**
+     * @returns true iff `v` is a member (`==`-equal to a stored
+     *          value). O(1) average.
+     */
+    public boolean contains(T v) {
+        int64 h = v.hash();
+        int64 idx = h & (this.tableCap - 1);
+        boolean scanning = true;
+        boolean found = false;
+        while (scanning) {
+            if (this.table[idx] == 0) {
+                scanning = false;
+            } else {
+                int32 ei = (int32) (this.table[idx] - 1);
+                if (this.elements[ei] == v) {
+                    found = true;
+                    scanning = false;
+                } else {
+                    idx = (idx + 1) & (this.tableCap - 1);
+                }
+            }
+        }
+        return found;
+    }
+
+    /**
+     * Member at dense index `i` (0-based, first-seen order), or the
+     * type's zero value if out of range. Lets callers iterate members
+     * without a stream.
+     */
+    public T get(int32 i) {
+        if (i < 0 || i >= this.elemCount) {
+            T[] missDefault = new T[1];
+            return missDefault[0];
+        }
+        return this.elements[i];
+    }
+
+    /**
+     * Heap-allocated stream over the unique members, first-seen order.
+     */
+    public #ArrayStream<T> stream() {
+        return heap ArrayStream<T>(this.elements, this.elemCount);
+    }
+}

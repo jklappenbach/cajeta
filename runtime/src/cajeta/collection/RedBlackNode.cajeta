@@ -1,0 +1,35 @@
+package cajeta.collection;
+
+/**
+ * Node in a `RedBlackTree<K, V>`. Holds a key, a value, the three
+ * tree links, and the red/black colour bit.
+ *
+ * Kept as a separate top-level class (Cajeta has no nested classes
+ * yet) following the `LinkedListNode` precedent. The tree owns its
+ * nodes — `RedBlackTree.put` heap-allocates one and links it in.
+ * Fields are public so the tree's rotation / fix-up code can rewrite
+ * links directly without per-field accessors.
+ *
+ * A null child link is an implicit black leaf (the classic
+ * RB-tree convention — no explicit sentinel node).
+ *
+ * @see cajeta.collection.RedBlackTree
+ */
+public class RedBlackNode<K, V> {
+    public K key;
+    public V value;
+    public RedBlackNode<K, V> left;
+    public RedBlackNode<K, V> right;
+    public RedBlackNode<K, V> parent;
+    /** true = red, false = black. New nodes are born red. */
+    public boolean red;
+
+    public RedBlackNode(K key, V value) {
+        this.key = key;
+        this.value = value;
+        this.left = null;
+        this.right = null;
+        this.parent = null;
+        this.red = true;
+    }
+}

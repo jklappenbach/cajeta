@@ -381,6 +381,17 @@ namespace cajeta {
                         module, methodName, returnType, formals,
                         /*block=*/nullptr, ifInst);
                     method->setAbstract(true);
+                    // `#T foo()` — return transfers ownership. The normal
+                    // visitMethodDeclaration path carries this from the `#`
+                    // (REFERENCE) on typeTypeOrVoid; this inline interface-
+                    // instantiation walk must do the same or callers of the
+                    // instantiated interface method (`Encoder<int32>.encode`)
+                    // misclassify the owned `#int8[]` return as a borrow and
+                    // never free it (leak). See MemoryModel.md.
+                    if (common->typeTypeOrVoid()
+                            && common->typeTypeOrVoid()->REFERENCE() != nullptr) {
+                        method->setReturnsOwnership(true);
+                    }
                     ifBody->getDeclarations().push_back(
                         make_shared<MethodDeclaration>(method, common->getStart()));
                 }

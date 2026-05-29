@@ -1,0 +1,313 @@
+package cajeta.collection;
+
+/**
+ * Ordered map backed by a left-leaning-free, parent-pointered
+ * **red-black tree** (CLRS formulation). Keys are kept in sorted
+ * order by the `<` / `>` operators on `K`, so the tree supports
+ * ordered queries (`min`, `max`, in-order key listing) that a hash
+ * map cannot, at O(log n) lookup / insert.
+ *
+ * ## Ordering
+ *
+ * Comparison uses `<` and `>` on `K`, exactly like
+ * `cajeta.lang.Math.min` / `max`. Primitive K (int*, float, …) works
+ * today; class K needs `operator<` / `operator>` overloads, which
+ * link once operator overloading flows through template
+ * specializations (the v1 limitation Math documents). Equality is
+ * "neither `<` nor `>`" — a class K should keep that consistent with
+ * its `==`.
+ *
+ * ## v1 surface
+ *
+ * `put` / `get` / `containsKey` / `min` / `max` / `keysInOrder` /
+ * `count` / `isEmpty`. `get` / `min` / `max` return the type's zero
+ * value when absent / empty (the stdlib miss-path convention).
+ *
+ * **Deletion is deferred.** Red-black delete (the delete-fixup with
+ * its double-black cases) is the most intricate and least-testable
+ * part of the structure; it lands in a follow-up once the error model
+ * and a test harness are in place. Until then this is an
+ * insert/lookup ordered map — already the common case for a sorted
+ * index.
+ *
+ * @see cajeta.collection.RedBlackNode
+ * @see cajeta.lang.Math
+ */
+public class RedBlackTree<K, V> {
+
+    private RedBlackNode<K, V> root;
+    private int64 sizeCount;
+
+    public RedBlackTree() {
+        this.root = null;
+        this.sizeCount = 0;
+    }
+
+    /**
+     * @returns the number of entries.
+     */
+    public int64 count() {
+        return this.sizeCount;
+    }
+
+    public boolean isEmpty() {
+        return this.root == null;
+    }
+
+    /**
+     * Insert or update the entry for `key`. If `key` is already
+     * present (neither `<` nor `>` any existing key) its value is
+     * replaced; otherwise a new red node is inserted and the
+     * red-black invariants restored. O(log n).
+     */
+    public void put(K key, V value) {
+        if (this.root == null) {
+            RedBlackNode<K, V> r = heap RedBlackNode<K, V>(key, value);
+            r.red = false;
+            this.root = r;
+            this.sizeCount = 1;
+            return;
+        }
+        // Descend to the insertion parent.
+        RedBlackNode<K, V> parent = this.root;
+        boolean goLeft = true;
+        boolean searching = true;
+        while (searching) {
+            if (key < parent.key) {
+                if (parent.left == null) {
+                    goLeft = true;
+                    searching = false;
+                } else {
+                    parent = parent.left;
+                }
+            } else if (key > parent.key) {
+                if (parent.right == null) {
+                    goLeft = false;
+                    searching = false;
+                } else {
+                    parent = parent.right;
+                }
+            } else {
+                parent.value = value;
+                return;
+            }
+        }
+        RedBlackNode<K, V> z = heap RedBlackNode<K, V>(key, value);
+        z.parent = parent;
+        if (goLeft) {
+            parent.left = z;
+        } else {
+            parent.right = z;
+        }
+        this.sizeCount = this.sizeCount + 1;
+        this.insertFixup(z);
+    }
+
+    /**
+     * Value bound to `key`, or the type's zero value if absent. Use
+     * `containsKey` to disambiguate absent from present-and-zero.
+     */
+    public V get(K key) {
+        RedBlackNode<K, V> cur = this.root;
+        while (cur != null) {
+            if (key < cur.key) {
+                cur = cur.left;
+            } else if (key > cur.key) {
+                cur = cur.right;
+            } else {
+                return cur.value;
+            }
+        }
+        V[] missDefault = new V[1];
+        return missDefault[0];
+    }
+
+    /**
+     * @returns true iff `key` is present.
+     */
+    public boolean containsKey(K key) {
+        RedBlackNode<K, V> cur = this.root;
+        while (cur != null) {
+            if (key < cur.key) {
+                cur = cur.left;
+            } else if (key > cur.key) {
+                cur = cur.right;
+            } else {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Smallest key, or the type's zero value if the tree is empty.
+     */
+    public K min() {
+        RedBlackNode<K, V> n = this.minNode();
+        if (n == null) {
+            K[] missDefault = new K[1];
+            return missDefault[0];
+        }
+        return n.key;
+    }
+
+    /**
+     * Largest key, or the type's zero value if the tree is empty.
+     */
+    public K max() {
+        if (this.root == null) {
+            K[] missDefault = new K[1];
+            return missDefault[0];
+        }
+        RedBlackNode<K, V> n = this.root;
+        while (n.right != null) {
+            n = n.right;
+        }
+        return n.key;
+    }
+
+    /**
+     * All keys in ascending order, as a fresh heap-allocated
+     * `ArrayList<K>`. Uses parent-pointer successor walking (O(1)
+     * extra space, no recursion). Ownership of the list transfers to
+     * the caller.
+     */
+    public #ArrayList<K> keysInOrder() {
+        ArrayList<K> out = heap ArrayList<K>();
+        RedBlackNode<K, V> cur = this.minNode();
+        while (cur != null) {
+            out.add(cur.key);
+            cur = this.successor(cur);
+        }
+        return #out;
+    }
+
+    // ----- internals ---------------------------------------------------
+
+    /** Leftmost (minimum) node, or null when empty. */
+    private RedBlackNode<K, V> minNode() {
+        if (this.root == null) {
+            return null;
+        }
+        RedBlackNode<K, V> n = this.root;
+        while (n.left != null) {
+            n = n.left;
+        }
+        return n;
+    }
+
+    /** In-order successor of `node` via subtree / parent pointers. */
+    private RedBlackNode<K, V> successor(RedBlackNode<K, V> node) {
+        if (node.right != null) {
+            RedBlackNode<K, V> n = node.right;
+            while (n.left != null) {
+                n = n.left;
+            }
+            return n;
+        }
+        RedBlackNode<K, V> n = node;
+        RedBlackNode<K, V> p = node.parent;
+        while (p != null && n == p.right) {
+            n = p;
+            p = p.parent;
+        }
+        return p;
+    }
+
+    /**
+     * Restore the red-black invariants after inserting red node `z`.
+     * Standard CLRS RB-INSERT-FIXUP: recolour while the parent is red,
+     * rotating at the grandparent when the uncle is black. `z.parent`
+     * / `z.parent.parent` are re-read after each rotation so the
+     * references stay valid.
+     */
+    private void insertFixup(RedBlackNode<K, V> z) {
+        boolean fixing = true;
+        while (fixing) {
+            if (z.parent == null) {
+                fixing = false;
+            } else if (z.parent.red == false) {
+                fixing = false;
+            } else {
+                // Parent is red ⇒ it is not the root, so the grandparent
+                // exists. Ancestors are walked via direct `z.parent` /
+                // `z.parent.parent` chains rather than cached in locals:
+                // caching a node-field read in a local makes it a borrow,
+                // and the later `z = z.parent.parent` reassignment would
+                // invalidate it (CAJETA_ERROR_USE_AFTER_MOVE). Reassigning
+                // `z` straight from its own field chain is the same shape
+                // as LinkedList's `cur = cur.next`, which is allowed.
+                if (z.parent == z.parent.parent.left) {
+                    if (z.parent.parent.right != null && z.parent.parent.right.red) {
+                        z.parent.red = false;
+                        z.parent.parent.right.red = false;
+                        z.parent.parent.red = true;
+                        z = z.parent.parent;
+                    } else {
+                        if (z == z.parent.right) {
+                            z = z.parent;
+                            this.rotateLeft(z);
+                        }
+                        z.parent.red = false;
+                        z.parent.parent.red = true;
+                        this.rotateRight(z.parent.parent);
+                    }
+                } else {
+                    if (z.parent.parent.left != null && z.parent.parent.left.red) {
+                        z.parent.red = false;
+                        z.parent.parent.left.red = false;
+                        z.parent.parent.red = true;
+                        z = z.parent.parent;
+                    } else {
+                        if (z == z.parent.left) {
+                            z = z.parent;
+                            this.rotateRight(z);
+                        }
+                        z.parent.red = false;
+                        z.parent.parent.red = true;
+                        this.rotateLeft(z.parent.parent);
+                    }
+                }
+            }
+        }
+        this.root.red = false;
+    }
+
+    /** Left-rotate around `x`, fixing parent links and the root. */
+    private void rotateLeft(RedBlackNode<K, V> x) {
+        RedBlackNode<K, V> y = x.right;
+        x.right = y.left;
+        if (y.left != null) {
+            y.left.parent = x;
+        }
+        y.parent = x.parent;
+        if (x.parent == null) {
+            this.root = y;
+        } else if (x == x.parent.left) {
+            x.parent.left = y;
+        } else {
+            x.parent.right = y;
+        }
+        y.left = x;
+        x.parent = y;
+    }
+
+    /** Right-rotate around `x`, fixing parent links and the root. */
+    private void rotateRight(RedBlackNode<K, V> x) {
+        RedBlackNode<K, V> y = x.left;
+        x.left = y.right;
+        if (y.right != null) {
+            y.right.parent = x;
+        }
+        y.parent = x.parent;
+        if (x.parent == null) {
+            this.root = y;
+        } else if (x == x.parent.right) {
+            x.parent.right = y;
+        } else {
+            x.parent.left = y;
+        }
+        y.right = x;
+        x.parent = y;
+    }
+}

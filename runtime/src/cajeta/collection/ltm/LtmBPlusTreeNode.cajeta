@@ -1,0 +1,51 @@
+package cajeta.collection.ltm;
+
+/**
+ * In-memory image of a single B+ tree page for the disk-backed
+ * `ltm.BPlusTree`. The `LtmPager` materializes one of these from a
+ * page on a cache miss and serializes it back when the page is dirty
+ * and evicted / flushed.
+ *
+ * Children are referenced by **page id** (`int64`), not object
+ * pointer, so a node can be evicted while its children stay on disk.
+ * `pageId == 0` is reserved for the file header, so a real node's id
+ * is >= 1; `-1` denotes "no page" (e.g. a leaf with no successor).
+ *
+ * Plain data holder — the pager owns (de)serialization (it holds the
+ * encoders), and `BPlusTree` owns the algorithm. Arrays are
+ * over-allocated by one slot so an insert can overflow in place
+ * before the tree splits the node.
+ *
+ * @see cajeta.collection.ltm.LtmPager
+ * @see cajeta.collection.ltm.BPlusTree
+ */
+public class LtmBPlusTreeNode<K, V> {
+    public int64 pageId;
+    public boolean leaf;
+    public int32 numKeys;
+    public K[] keys;
+    /** Leaf only: values parallel to `keys`. Null on internal nodes. */
+    public V[] values;
+    /** Internal only: `numKeys + 1` child page ids. Null on leaves. */
+    public int64[] childIds;
+    /** Leaf only: page id of the next leaf in order, or -1. */
+    public int64 nextLeafId;
+    /** Set when the in-memory image diverges from disk; cleared on write. */
+    public boolean dirty;
+
+    public LtmBPlusTreeNode(int64 pageId, boolean leaf, int32 order) {
+        this.pageId = pageId;
+        this.leaf = leaf;
+        this.numKeys = 0;
+        this.keys = new K[order + 1];
+        if (leaf) {
+            this.values = new V[order + 1];
+            this.childIds = null;
+        } else {
+            this.values = null;
+            this.childIds = new int64[order + 2];
+        }
+        this.nextLeafId = -1;
+        this.dirty = true;
+    }
+}

@@ -1,0 +1,458 @@
+package cajeta.collection.ltm;
+
+import cajeta.lang.String;
+import cajeta.wire.Encoder;
+import cajeta.io.file.File;
+import cajeta.io.file.OpenMode;
+
+/**
+ * Fixed-size, file-backed buffer pool for the disk-backed
+ * `cajeta.collection.ltm.BPlusTree`. This is the piece that makes the
+ * tree **larger-than-memory**: at most `capacity` node pages are
+ * resident at once, no matter how big the tree grows on disk.
+ *
+ * ## Pages
+ *
+ * The file is a sequence of fixed-size pages. Page 0 is the header
+ * (magic, order, root page id, allocation high-water, entry count);
+ * pages >= 1 each hold one serialized node. A node references its
+ * children by page id (`int64`), never by pointer, so a child stays on
+ * disk while its parent is resident and vice-versa.
+ *
+ * ## Eviction and "freeing"
+ *
+ * Frames are looked up by page id. On a miss the pager picks a victim
+ * (the least-recently-used *unpinned* frame), writes it back if dirty,
+ * and **reassigns the frame slot to the freshly read node** — that
+ * reassignment is the drop: Cajeta releases the evicted image by
+ * overwriting its owning reference (no `delete`/`free`). Pinning keeps
+ * the frames an in-flight operation is still touching (a B+ tree's
+ * root-to-leaf path during a split) from being chosen as a victim.
+ *
+ * ## Serialization
+ *
+ * Keys and values are turned into bytes by caller-supplied
+ * `Encoder<K>` / `Encoder<V>`, length-prefixed so variable-width
+ * encodings round-trip. A node must serialize within one page; choose
+ * `order` so `order + 1` max-size entries fit `pageSize`.
+ *
+ * @see cajeta.collection.ltm.BPlusTree
+ * @see cajeta.collection.ltm.LtmBPlusTreeNode
+ * @see cajeta.wire.Encoder
+ */
+public class LtmPager<K, V> {
+
+    private File file;
+    private Encoder<K> keyEnc;
+    private Encoder<V> valEnc;
+
+    private int32 order;
+    private int32 pageSize;
+
+    private int64 rootPageId;
+    private int64 nextPageId;
+    private int64 entryCount;
+
+    // Buffer pool: parallel arrays indexed by frame. `framePageId[i] ==
+    // -1` marks an empty frame; `frameNode[i]` is null until populated.
+    private int32 capacity;
+    private int64[] framePageId;
+    private LtmBPlusTreeNode<K, V>[] frameNode;
+    private boolean[] frameDirty;
+    private int32[] framePins;
+    private int64[] frameUsed;
+    private int64 clock;
+
+    public LtmPager(String path, Encoder<K> keyEnc, Encoder<V> valEnc,
+                    int32 order, int32 pageSize, int32 capacity) {
+        this.keyEnc = keyEnc;
+        this.valEnc = valEnc;
+        this.pageSize = pageSize;
+        this.capacity = capacity;
+        this.clock = 0;
+
+        // Move the opened File into the field: a plain `this.file = f`
+        // leaves `f` owned by this ctor scope, so its drop fires at ctor
+        // exit and closes the fd the pager still needs (use-after-free).
+        File f = File.open(path, OpenMode.READ_WRITE);
+        this.file = #f;
+        int64 sz = this.file.size();
+        if (sz == 0) {
+            this.order = order;
+            this.rootPageId = -1;
+            this.nextPageId = 1;
+            this.entryCount = 0;
+        } else {
+            // order / root / next / entry come from the on-disk header.
+            this.order = order;
+            this.readHeader();
+        }
+
+        this.framePageId = new int64[capacity];
+        this.frameNode = new LtmBPlusTreeNode<K, V>[capacity];
+        this.frameDirty = new boolean[capacity];
+        this.framePins = new int32[capacity];
+        this.frameUsed = new int64[capacity];
+        int32 i = 0;
+        while (i < capacity) {
+            this.framePageId[i] = -1;
+            this.frameNode[i] = null;
+            this.frameDirty[i] = false;
+            this.framePins[i] = 0;
+            this.frameUsed[i] = 0;
+            i = i + 1;
+        }
+
+        if (sz == 0) {
+            this.writeHeader();
+        }
+    }
+
+    // ----- public surface used by the tree -----------------------------
+
+    public int32 getOrder() {
+        return this.order;
+    }
+
+    public int64 getRoot() {
+        return this.rootPageId;
+    }
+
+    public void setRoot(int64 pageId) {
+        this.rootPageId = pageId;
+    }
+
+    public int64 getEntryCount() {
+        return this.entryCount;
+    }
+
+    public void incEntryCount() {
+        this.entryCount = this.entryCount + 1;
+    }
+
+    /** Resident node for `pageId`, reading + deserializing on a miss. */
+    public LtmBPlusTreeNode<K, V> fetch(int64 pageId) {
+        int32 hit = this.findFrame(pageId);
+        if (hit >= 0) {
+            this.touchFrame(hit);
+            LtmBPlusTreeNode<K, V> n = this.frameNode[hit];
+            return n;
+        }
+        int32 idx = this.acquireFrame();
+        // Bind pageSize through a local before the (int64) cast: casting a
+        // field read directly leaves the operand an l-value (slot pointer),
+        // which lowers to `sext ptr` and fails verification.
+        int32 psz = this.pageSize;
+        int64 ps = (int64) psz;
+        int8[] buf = new int8[psz];
+        int64 off = pageId * ps;
+        this.file.seek(off);
+        this.file.read(buf, 0, ps);
+        LtmBPlusTreeNode<K, V> node = this.deserializeNode(pageId, buf);
+        this.frameNode[idx] = node;
+        this.framePageId[idx] = pageId;
+        this.frameDirty[idx] = false;
+        this.framePins[idx] = 0;
+        this.touchFrame(idx);
+        LtmBPlusTreeNode<K, V> ret = this.frameNode[idx];
+        return ret;
+    }
+
+    /** Allocate a brand-new page, resident and dirty, and return it. */
+    public LtmBPlusTreeNode<K, V> allocNode(boolean leaf) {
+        int64 pageId = this.nextPageId;
+        this.nextPageId = this.nextPageId + 1;
+        int32 idx = this.acquireFrame();
+        LtmBPlusTreeNode<K, V> node = heap LtmBPlusTreeNode<K, V>(pageId, leaf, this.order);
+        this.frameNode[idx] = node;
+        this.framePageId[idx] = pageId;
+        this.frameDirty[idx] = true;
+        this.framePins[idx] = 0;
+        this.touchFrame(idx);
+        LtmBPlusTreeNode<K, V> ret = this.frameNode[idx];
+        return ret;
+    }
+
+    public void markDirty(int64 pageId) {
+        int32 idx = this.findFrame(pageId);
+        if (idx >= 0) {
+            this.frameDirty[idx] = true;
+        }
+    }
+
+    public void pin(int64 pageId) {
+        int32 idx = this.findFrame(pageId);
+        if (idx >= 0) {
+            this.framePins[idx] = this.framePins[idx] + 1;
+        }
+    }
+
+    public void unpin(int64 pageId) {
+        int32 idx = this.findFrame(pageId);
+        if (idx >= 0 && this.framePins[idx] > 0) {
+            this.framePins[idx] = this.framePins[idx] - 1;
+        }
+    }
+
+    /** Flush every dirty resident page plus the header to disk. */
+    public void flush() {
+        int32 i = 0;
+        while (i < this.capacity) {
+            if (this.framePageId[i] != -1 && this.frameDirty[i]) {
+                this.writeFrame(i);
+            }
+            i = i + 1;
+        }
+        this.writeHeader();
+        this.file.sync();
+    }
+
+    public void close() {
+        this.flush();
+        this.file.close();
+    }
+
+    // ----- buffer-pool internals ---------------------------------------
+
+    private int32 findFrame(int64 pageId) {
+        int32 i = 0;
+        while (i < this.capacity) {
+            if (this.framePageId[i] == pageId) {
+                return i;
+            }
+            i = i + 1;
+        }
+        return -1;
+    }
+
+    private void touchFrame(int32 idx) {
+        this.clock = this.clock + 1;
+        this.frameUsed[idx] = this.clock;
+    }
+
+    // A free frame, or the LRU unpinned victim (written back if dirty).
+    // The victim's node image is released when fetch / allocNode
+    // reassigns frameNode[idx] to the replacement.
+    private int32 acquireFrame() {
+        int32 i = 0;
+        while (i < this.capacity) {
+            if (this.framePageId[i] == -1) {
+                return i;
+            }
+            i = i + 1;
+        }
+        int32 victim = -1;
+        int64 best = 0;
+        boolean haveBest = false;
+        i = 0;
+        while (i < this.capacity) {
+            if (this.framePins[i] == 0) {
+                if (haveBest == false || this.frameUsed[i] < best) {
+                    best = this.frameUsed[i];
+                    victim = i;
+                    haveBest = true;
+                }
+            }
+            i = i + 1;
+        }
+        if (this.frameDirty[victim]) {
+            this.writeFrame(victim);
+        }
+        this.framePageId[victim] = -1;
+        this.frameDirty[victim] = false;
+        return victim;
+    }
+
+    private void writeFrame(int32 idx) {
+        LtmBPlusTreeNode<K, V> node = this.frameNode[idx];
+        int8[] buf = this.serializeNode(node);
+        int32 psz = this.pageSize;
+        int64 ps = (int64) psz;
+        int64 off = node.pageId * ps;
+        this.file.seek(off);
+        this.file.write(buf, 0, ps);
+        this.frameDirty[idx] = false;
+    }
+
+    // ----- header ------------------------------------------------------
+
+    private void writeHeader() {
+        int32 psz = this.pageSize;
+        int64 ps = (int64) psz;
+        int8[] buf = new int8[psz];
+        this.putI32(buf, 0, 0x42504C54);
+        this.putI32(buf, 4, this.order);
+        this.putI64(buf, 8, this.rootPageId);
+        this.putI64(buf, 16, this.nextPageId);
+        this.putI64(buf, 24, this.entryCount);
+        this.file.seek(0);
+        this.file.write(buf, 0, ps);
+    }
+
+    private void readHeader() {
+        int32 psz = this.pageSize;
+        int64 ps = (int64) psz;
+        int8[] buf = new int8[psz];
+        this.file.seek(0);
+        this.file.read(buf, 0, ps);
+        this.order = this.getI32(buf, 4);
+        this.rootPageId = this.getI64(buf, 8);
+        this.nextPageId = this.getI64(buf, 16);
+        this.entryCount = this.getI64(buf, 24);
+    }
+
+    // ----- node (de)serialization --------------------------------------
+
+    private #int8[] serializeNode(LtmBPlusTreeNode<K, V> node) {
+        int32 psz = this.pageSize;
+        int8[] buf = new int8[psz];
+        int32 leafByte = 0;
+        if (node.leaf) {
+            leafByte = 1;
+        }
+        buf[0] = (int8) leafByte;
+        this.putI32(buf, 1, node.numKeys);
+        this.putI64(buf, 5, node.nextLeafId);
+        int32 p = 13;
+        int32 i = 0;
+        while (i < node.numKeys) {
+            K k = node.keys[i];
+            int8[] kb = this.keyEnc.encode(k);
+            int32 klen = (int32) kb.count();
+            this.putI32(buf, p, klen);
+            p = p + 4;
+            int32 j = 0;
+            while (j < klen) {
+                buf[p + j] = kb[j];
+                j = j + 1;
+            }
+            p = p + klen;
+            i = i + 1;
+        }
+        if (node.leaf) {
+            i = 0;
+            while (i < node.numKeys) {
+                V v = node.values[i];
+                int8[] vb = this.valEnc.encode(v);
+                int32 vlen = (int32) vb.count();
+                this.putI32(buf, p, vlen);
+                p = p + 4;
+                int32 j = 0;
+                while (j < vlen) {
+                    buf[p + j] = vb[j];
+                    j = j + 1;
+                }
+                p = p + vlen;
+                i = i + 1;
+            }
+        } else {
+            int32 nc = node.numKeys + 1;
+            i = 0;
+            while (i < nc) {
+                int64 cid = node.childIds[i];
+                this.putI64(buf, p, cid);
+                p = p + 8;
+                i = i + 1;
+            }
+        }
+        return #buf;
+    }
+
+    private #LtmBPlusTreeNode<K, V> deserializeNode(int64 pageId, int8[] buf) {
+        int32 leafByte = (int32) buf[0];
+        boolean leaf = false;
+        if (leafByte == 1) {
+            leaf = true;
+        }
+        int32 numKeys = this.getI32(buf, 1);
+        int64 nextLeafId = this.getI64(buf, 5);
+        LtmBPlusTreeNode<K, V> node = heap LtmBPlusTreeNode<K, V>(pageId, leaf, this.order);
+        node.numKeys = numKeys;
+        node.nextLeafId = nextLeafId;
+        int32 p = 13;
+        int32 i = 0;
+        while (i < numKeys) {
+            int32 klen = this.getI32(buf, p);
+            p = p + 4;
+            int8[] kslice = new int8[klen];
+            int32 j = 0;
+            while (j < klen) {
+                kslice[j] = buf[p + j];
+                j = j + 1;
+            }
+            p = p + klen;
+            K k = this.keyEnc.decode(kslice);
+            node.keys[i] = k;
+            i = i + 1;
+        }
+        if (leaf) {
+            i = 0;
+            while (i < numKeys) {
+                int32 vlen = this.getI32(buf, p);
+                p = p + 4;
+                int8[] vslice = new int8[vlen];
+                int32 j = 0;
+                while (j < vlen) {
+                    vslice[j] = buf[p + j];
+                    j = j + 1;
+                }
+                p = p + vlen;
+                V v = this.valEnc.decode(vslice);
+                node.values[i] = v;
+                i = i + 1;
+            }
+        } else {
+            int32 nc = numKeys + 1;
+            i = 0;
+            while (i < nc) {
+                int64 cid = this.getI64(buf, p);
+                node.childIds[i] = cid;
+                p = p + 8;
+                i = i + 1;
+            }
+        }
+        node.dirty = false;
+        return #node;
+    }
+
+    // ----- little-endian byte codec ------------------------------------
+
+    private void putI32(int8[] b, int32 off, int32 v) {
+        b[off] = (int8) (v & 0xFF);
+        b[off + 1] = (int8) ((v >> 8) & 0xFF);
+        b[off + 2] = (int8) ((v >> 16) & 0xFF);
+        b[off + 3] = (int8) ((v >> 24) & 0xFF);
+    }
+
+    private int32 getI32(int8[] b, int32 off) {
+        int32 b0 = ((int32) b[off]) & 0xFF;
+        int32 b1 = ((int32) b[off + 1]) & 0xFF;
+        int32 b2 = ((int32) b[off + 2]) & 0xFF;
+        int32 b3 = ((int32) b[off + 3]) & 0xFF;
+        return b0 | (b1 << 8) | (b2 << 16) | (b3 << 24);
+    }
+
+    private void putI64(int8[] b, int32 off, int64 v) {
+        b[off] = (int8) (v & 0xFF);
+        b[off + 1] = (int8) ((v >> 8) & 0xFF);
+        b[off + 2] = (int8) ((v >> 16) & 0xFF);
+        b[off + 3] = (int8) ((v >> 24) & 0xFF);
+        b[off + 4] = (int8) ((v >> 32) & 0xFF);
+        b[off + 5] = (int8) ((v >> 40) & 0xFF);
+        b[off + 6] = (int8) ((v >> 48) & 0xFF);
+        b[off + 7] = (int8) ((v >> 56) & 0xFF);
+    }
+
+    private int64 getI64(int8[] b, int32 off) {
+        int64 r = 0;
+        r = r | (((int64) b[off]) & 0xFF);
+        r = r | ((((int64) b[off + 1]) & 0xFF) << 8);
+        r = r | ((((int64) b[off + 2]) & 0xFF) << 16);
+        r = r | ((((int64) b[off + 3]) & 0xFF) << 24);
+        r = r | ((((int64) b[off + 4]) & 0xFF) << 32);
+        r = r | ((((int64) b[off + 5]) & 0xFF) << 40);
+        r = r | ((((int64) b[off + 6]) & 0xFF) << 48);
+        r = r | ((((int64) b[off + 7]) & 0xFF) << 56);
+        return r;
+    }
+}

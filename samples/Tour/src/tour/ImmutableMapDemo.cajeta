@@ -1,0 +1,25 @@
+package tour;
+
+import cajeta.collection.ArrayList;
+import cajeta.collection.ImmutableMap;
+import cajeta.lang.Pair;
+
+// Immutable key/value map, built from a snapshot list of Pair<K,V>.
+// `get(key)` returns the value; `containsKey(key)` tests membership.
+// Like the other immutables it has no mutators once constructed.
+public class ImmutableMapDemo extends DemoClass {
+    public void execute() {
+        System.stdout.println("");
+        System.stdout.println("-- ImmutableMap --");
+
+        ArrayList<Pair<int32, int32>> src = heap ArrayList<Pair<int32, int32>>();
+        src.add(heap Pair<int32, int32>(1, 100));
+        src.add(heap Pair<int32, int32>(2, 200));
+        src.add(heap Pair<int32, int32>(3, 300));
+
+        ImmutableMap<int32, int32> m = heap ImmutableMap<int32, int32>(src);
+        System.stdout.println("  count       = " + (int32) m.count());
+        System.stdout.println("  get(2)      = " + m.get(2));
+        System.stdout.println("  containsKey(3) = " + m.containsKey(3));
+    }
+}

@@ -1,0 +1,330 @@
+package cajeta.collection.ltm;
+
+import cajeta.lang.String;
+import cajeta.wire.Encoder;
+
+/**
+ * Disk-backed, **larger-than-memory** ordered map: the same B+ tree
+ * shape as `cajeta.collection.BPlusTree`, but every node lives on disk
+ * as a page and is paged in on demand by an `LtmPager`. Only `capacity`
+ * pages are resident at once, so the map can far exceed RAM.
+ *
+ * ## Construction
+ *
+ * `new LtmBPlusTree(path, keyEnc, valEnc, order, capacity)` opens (or
+ * creates) the index file at `path`. A fresh file is initialized with
+ * the given `order`; an existing one is reopened from its header (the
+ * stored order wins). `keyEnc` / `valEnc` turn keys and values into
+ * bytes — see `cajeta.wire.Encoder`. Always `close()` (or at least
+ * `flush()`) to make writes durable.
+ *
+ * ## Ordering
+ *
+ * Keys are ordered by `<` / `>` on `K`, like `cajeta.collection.BPlusTree`
+ * and `cajeta.lang.Math`. Primitive K works today; class K needs
+ * `operator<` / `operator>` (the v1 limitation).
+ *
+ * ## v1 surface
+ *
+ * `put` / `get` / `containsKey` / `min` / `count` / `isEmpty` /
+ * `flush` / `close`. Misses return the type's zero value.
+ * **Deletion is deferred**, same as the in-memory tree — this is an
+ * insert/lookup index.
+ *
+ * ## Memory discipline
+ *
+ * `put` records the root-to-leaf path and pins those pages while it
+ * works, so a split that allocates new pages can't evict the nodes it
+ * is still editing. Reads hold no page across a `fetch`, so they need
+ * no pinning. Eviction "frees" a page by reassigning its frame slot —
+ * Cajeta's drop-by-assignment, no `delete`/`free`.
+ *
+ * @see cajeta.collection.ltm.LtmPager
+ * @see cajeta.collection.BPlusTree
+ */
+public class LtmBPlusTree<K, V> {
+
+    private LtmPager<K, V> pager;
+
+    public LtmBPlusTree(String path, Encoder<K> keyEnc, Encoder<V> valEnc,
+                        int32 order, int32 capacity) {
+        this.pager = heap LtmPager<K, V>(path, keyEnc, valEnc, order, 4096, capacity);
+    }
+
+    public int64 count() {
+        return this.pager.getEntryCount();
+    }
+
+    public boolean isEmpty() {
+        return this.pager.getRoot() == -1;
+    }
+
+    public void flush() {
+        this.pager.flush();
+    }
+
+    public void close() {
+        this.pager.close();
+    }
+
+    /**
+     * Insert or update the entry for `key`. O(log n). Splits the leaf
+     * (cascading up to a new root) when a node overflows.
+     */
+    public void put(K key, V value) {
+        int64 rootId = this.pager.getRoot();
+        if (rootId == -1) {
+            LtmBPlusTreeNode<K, V> r = this.pager.allocNode(true);
+            r.keys[0] = key;
+            r.values[0] = value;
+            r.numKeys = 1;
+            this.pager.markDirty(r.pageId);
+            this.pager.setRoot(r.pageId);
+            this.pager.incEntryCount();
+            return;
+        }
+
+        // Descend to the target leaf, pinning each page on the path so a
+        // later allocNode (split) can't evict the working set.
+        int64[] path = new int64[64];
+        int32 depth = 0;
+        int64 cur = rootId;
+        boolean atLeaf = false;
+        while (atLeaf == false) {
+            LtmBPlusTreeNode<K, V> node = this.pager.fetch(cur);
+            this.pager.pin(cur);
+            path[depth] = cur;
+            depth = depth + 1;
+            if (node.leaf) {
+                atLeaf = true;
+            } else {
+                int32 i = 0;
+                while (i < node.numKeys && (key < node.keys[i]) == false) {
+                    i = i + 1;
+                }
+                cur = node.childIds[i];
+            }
+        }
+
+        int64 leafId = path[depth - 1];
+        LtmBPlusTreeNode<K, V> leaf = this.pager.fetch(leafId);
+        int32 pos = 0;
+        while (pos < leaf.numKeys && leaf.keys[pos] < key) {
+            pos = pos + 1;
+        }
+        boolean updated = false;
+        if (pos < leaf.numKeys) {
+            // keys[pos] >= key; equal iff not (key < keys[pos]).
+            if ((key < leaf.keys[pos]) == false) {
+                leaf.values[pos] = value;
+                this.pager.markDirty(leafId);
+                updated = true;
+            }
+        }
+        if (updated == false) {
+            int32 j = leaf.numKeys;
+            while (j > pos) {
+                leaf.keys[j] = leaf.keys[j - 1];
+                leaf.values[j] = leaf.values[j - 1];
+                j = j - 1;
+            }
+            leaf.keys[pos] = key;
+            leaf.values[pos] = value;
+            leaf.numKeys = leaf.numKeys + 1;
+            this.pager.markDirty(leafId);
+            this.pager.incEntryCount();
+            int32 order = this.pager.getOrder();
+            if (leaf.numKeys > order) {
+                this.splitLeaf(path, depth);
+            }
+        }
+
+        int32 u = 0;
+        while (u < depth) {
+            // Bind the array element through a local before passing it —
+            // a direct unpin(path[u]) lowers the read to a slot l-value and
+            // mistypes the argument (same workaround as ArrayList.appendAll).
+            int64 pid = path[u];
+            this.pager.unpin(pid);
+            u = u + 1;
+        }
+    }
+
+    /**
+     * Value bound to `key`, or the type's zero value if absent.
+     */
+    public V get(K key) {
+        int64 rootId = this.pager.getRoot();
+        if (rootId == -1) {
+            V[] miss = new V[1];
+            return miss[0];
+        }
+        int64 cur = rootId;
+        LtmBPlusTreeNode<K, V> node = this.pager.fetch(cur);
+        while (node.leaf == false) {
+            int32 i = 0;
+            while (i < node.numKeys && (key < node.keys[i]) == false) {
+                i = i + 1;
+            }
+            cur = node.childIds[i];
+            node = this.pager.fetch(cur);
+        }
+        int32 i = 0;
+        while (i < node.numKeys) {
+            if ((key < node.keys[i]) == false && (node.keys[i] < key) == false) {
+                V v = node.values[i];
+                return v;
+            }
+            i = i + 1;
+        }
+        V[] miss = new V[1];
+        return miss[0];
+    }
+
+    /**
+     * @returns true iff `key` is present.
+     */
+    public boolean containsKey(K key) {
+        int64 rootId = this.pager.getRoot();
+        if (rootId == -1) {
+            return false;
+        }
+        int64 cur = rootId;
+        LtmBPlusTreeNode<K, V> node = this.pager.fetch(cur);
+        while (node.leaf == false) {
+            int32 i = 0;
+            while (i < node.numKeys && (key < node.keys[i]) == false) {
+                i = i + 1;
+            }
+            cur = node.childIds[i];
+            node = this.pager.fetch(cur);
+        }
+        int32 i = 0;
+        while (i < node.numKeys) {
+            if ((key < node.keys[i]) == false && (node.keys[i] < key) == false) {
+                return true;
+            }
+            i = i + 1;
+        }
+        return false;
+    }
+
+    /**
+     * Smallest key, or the type's zero value if empty.
+     */
+    public K min() {
+        int64 rootId = this.pager.getRoot();
+        if (rootId == -1) {
+            K[] miss = new K[1];
+            return miss[0];
+        }
+        int64 cur = rootId;
+        LtmBPlusTreeNode<K, V> node = this.pager.fetch(cur);
+        while (node.leaf == false) {
+            cur = node.childIds[0];
+            node = this.pager.fetch(cur);
+        }
+        K kmin = node.keys[0];
+        return kmin;
+    }
+
+    // ----- internals ---------------------------------------------------
+
+    /** Split the overflowed leaf at the bottom of `path` and copy up. */
+    private void splitLeaf(int64[] path, int32 depth) {
+        int64 leafId = path[depth - 1];
+        LtmBPlusTreeNode<K, V> leaf = this.pager.fetch(leafId);
+        int32 total = leaf.numKeys;
+        int32 mid = total / 2;
+        LtmBPlusTreeNode<K, V> right = this.pager.allocNode(true);
+        int64 rightId = right.pageId;
+        right.numKeys = total - mid;
+        int32 k = 0;
+        while (k < right.numKeys) {
+            right.keys[k] = leaf.keys[mid + k];
+            right.values[k] = leaf.values[mid + k];
+            k = k + 1;
+        }
+        leaf.numKeys = mid;
+        right.nextLeafId = leaf.nextLeafId;
+        leaf.nextLeafId = rightId;
+        this.pager.markDirty(leafId);
+        this.pager.markDirty(rightId);
+        K sep = right.keys[0];
+        this.insertIntoParent(path, depth, sep, rightId);
+    }
+
+    /**
+     * Insert separator `upKey` and the new right child `rightId` above
+     * the node at `path[depth-1]`, creating a new root or cascading
+     * internal splits up the pinned path as needed.
+     */
+    private void insertIntoParent(int64[] path, int32 depth, K upKey, int64 rightId) {
+        int32 level = depth - 1;
+        K curKey = upKey;
+        int64 curRight = rightId;
+        boolean done = false;
+        while (done == false) {
+            if (level == 0) {
+                LtmBPlusTreeNode<K, V> nr = this.pager.allocNode(false);
+                nr.keys[0] = curKey;
+                nr.numKeys = 1;
+                nr.childIds[0] = path[0];
+                nr.childIds[1] = curRight;
+                this.pager.markDirty(nr.pageId);
+                this.pager.setRoot(nr.pageId);
+                done = true;
+            } else {
+                int64 leftId = path[level];
+                int64 parentId = path[level - 1];
+                LtmBPlusTreeNode<K, V> parent = this.pager.fetch(parentId);
+                int32 ci = 0;
+                while (ci <= parent.numKeys && parent.childIds[ci] != leftId) {
+                    ci = ci + 1;
+                }
+                int32 j = parent.numKeys;
+                while (j > ci) {
+                    parent.keys[j] = parent.keys[j - 1];
+                    j = j - 1;
+                }
+                parent.keys[ci] = curKey;
+                int32 c = parent.numKeys + 1;
+                while (c > ci + 1) {
+                    parent.childIds[c] = parent.childIds[c - 1];
+                    c = c - 1;
+                }
+                parent.childIds[ci + 1] = curRight;
+                parent.numKeys = parent.numKeys + 1;
+                this.pager.markDirty(parentId);
+
+                int32 order = this.pager.getOrder();
+                if (parent.numKeys > order) {
+                    int32 total = parent.numKeys;
+                    int32 mid = total / 2;
+                    K promote = parent.keys[mid];
+                    LtmBPlusTreeNode<K, V> rightInternal = this.pager.allocNode(false);
+                    int64 riId = rightInternal.pageId;
+                    rightInternal.numKeys = total - mid - 1;
+                    int32 kk = 0;
+                    while (kk < rightInternal.numKeys) {
+                        rightInternal.keys[kk] = parent.keys[mid + 1 + kk];
+                        kk = kk + 1;
+                    }
+                    int32 cc = 0;
+                    while (cc <= rightInternal.numKeys) {
+                        rightInternal.childIds[cc] = parent.childIds[mid + 1 + cc];
+                        cc = cc + 1;
+                    }
+                    parent.numKeys = mid;
+                    this.pager.markDirty(parentId);
+                    this.pager.markDirty(riId);
+                    curKey = promote;
+                    curRight = riId;
+                    level = level - 1;
+                } else {
+                    done = true;
+                }
+            }
+        }
+    }
+}
