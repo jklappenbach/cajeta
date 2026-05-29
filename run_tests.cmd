@@ -185,7 +185,7 @@ set /a last=shards-1
 rem Round-robin distribute test names into per-shard filter strings.
 for /l %%s in (0,1,%last%) do set "sf_%%s="
 for /l %%i in (1,1,%ntests%) do (
-    set /a s=(%%i-1) %% shards
+    set /a "s=(%%i-1) %% shards"
     for %%S in (!s!) do (
         if defined sf_%%S ( set "sf_%%S=!sf_%%S!:!test_%%i!" ) else ( set "sf_%%S=!test_%%i!" )
     )
@@ -280,11 +280,11 @@ rem Failed count: --gtest_brief=1 prints only per-test `[  FAILED  ] Suite.test`
 rem lines (the next char after `] ` is an identifier char), not the numeric
 rem count-summary line -- count those.
 set "failed=0"
-for /f %%a in ('findstr /R "^\[  FAILED  \] [a-zA-Z_]" "%out%" 2^>nul ^| find /c /v ""') do set "failed=%%a"
+for /f %%a in ('findstr /R /C:"^\[  FAILED  \] [a-zA-Z_]" "%out%" 2^>nul ^| find /c /v ""') do set "failed=%%a"
 
 set /a total_pass+=passed
 set /a total_fail+=failed
-if %failed% GTR 0 findstr /R "^\[  FAILED  \] [a-zA-Z_]" "%out%" >> "%TMPD%\failures.txt" 2>nul
+if %failed% GTR 0 findstr /R /C:"^\[  FAILED  \] [a-zA-Z_]" "%out%" >> "%TMPD%\failures.txt" 2>nul
 
 rem Non-zero exit with no counted failure == crashed mid-run. Re-run the shard
 rem under --gtest_brief=0 to surface the [ RUN ] sequence and name the last
