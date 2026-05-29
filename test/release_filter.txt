@@ -1,0 +1,104 @@
+# Release regression subset — the curated set of gtest suites run by the
+# release workflow (instead of the full ~1725-test battery) on every
+# cross-compiled target.
+#
+# RATIONALE
+# ---------
+# The front-end (lexer / parser / typer / borrow-checker) is host-
+# independent: if a suite passes on the primary x86_64-linux build it
+# passes on every target, because nothing in it is target-conditional.
+# Those suites (JSON synth, lambdas, template wildcards, annotations,
+# aspects/DI, multiclassing, getters/setters, ...) are validated by the
+# full local suite and are intentionally NOT here.
+#
+# This file lists only what the LLVM back-end + C runtime lower
+# DIFFERENTLY per ISA / OS / endianness / ABI — i.e. where a cross-built
+# binary can break even though the front-end is green everywhere — plus a
+# thin end-to-end codegen/dispatch smoke that proves a compiled program
+# actually runs on the host.
+#
+# FORMAT
+# ------
+# One gtest filter pattern per line (`Suite.*` matches a whole suite).
+# Blank lines and `#` comments are ignored. Consumers (release_tests.sh,
+# release_tests.cmd, and the CMake `release_tests` target) join the
+# patterns with `:` into a single --gtest_filter.
+#
+# MAINTENANCE
+# -----------
+# release_tests.sh fails loudly if any pattern below matches zero
+# discovered tests (a suite was renamed or removed) — so this list can't
+# silently rot into a no-op. When a suite is renamed, fix the line here.
+
+# --- Codegen / link / dispatch smoke (vtable layout + dispatch are ABI-
+#     sensitive; proves a JIT-compiled program runs on the host) ---------
+CompilerTests.*
+BinaryOpTests.*
+ControlFlowTests.*
+ArrayTests.*
+InheritanceSmokeTests.*
+VirtualTableSmokeTests.*
+DynamicDispatchTests.*
+RttiSmokeTests.*
+
+# --- Numeric lowering (FP semantics, int widen/narrow, libm/intrinsics
+#     lower per-ISA) ------------------------------------------------------
+MathIntrinsicTests.*
+ConversionIntrinsicTests.*
+FpTests.*
+CastTests.*
+MathTests.*
+
+# --- Endianness & byte serialization (the classic cross-comp bug; the
+#     .cja archive byte format must be portable) -------------------------
+EndianAlignTests.*
+EncodingPhaseATests.*
+EncodingPhaseBTests.*
+EncodingTypesTests.*
+SipHashTests.*
+XXHash3Tests.*
+MD5Tests.*
+StringHashTests.*
+CajetaArchiveTests.*
+CajetaArchiveEmitTests.*
+ClasspathIngestionTests.*
+
+# --- Struct / view layout & alignment (views read/write raw memory at
+#     computed offsets) ---------------------------------------------------
+StructViewTests.*
+StructViewBoundsTests.*
+MultiVarSizeViewTests.*
+NestedViewTests.*
+ViewMethodsTests.*
+
+# --- Atomics / locks (__aarch64_outline_atomics_* on ARM Linux LLJIT) ---
+LockIntrinsicTests.*
+LockClassTests.*
+
+# --- TLS + drop chain (__emutls_get_address on macOS arm64; the drop
+#     chain is thread-local) ----------------------------------------------
+DropChainTests.*
+ClassDropTests.*
+AutoFieldDropTests.*
+OwnedStringDropTests.*
+PerFiberDropChainTests.*
+SpawnDropTests.*
+
+# --- Async / fibers (ucontext / libucontext context-switch ABI) ---------
+AsyncSyntaxTests.*
+TaskTypingTests.*
+DetachTests.*
+
+# --- Threading / parallel dispatch (pthread / winpthreads) --------------
+ParallelStreamP1Tests.*
+HashMapStreamParallelTests.*
+ParallelDispatchCorrelationTests.*
+
+# --- OS surface + disk (path separators, fds, env; the disk-backed B+
+#     tree exercises file I/O + byte encoding together) ------------------
+SystemIoTests.*
+FileIoTests.*
+SystemEnvTests.*
+SystemPropertyTests.*
+SystemUtilTests.*
+LtmBPlusTreeTests.*
