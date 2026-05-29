@@ -306,6 +306,35 @@ namespace cajeta {
         auto* builder = module->getBuilder();
         llvm::LLVMContext& llvmCtx = *module->getLlvmContext();
 
+        // ----- Buffer<T>.elementBytes() intrinsic -----
+        // Cajeta has no source-level sizeof, but the Buffer<T> device methods
+        // (alloc/upload/download) need n*sizeof(T) byte counts. This call is
+        // lowered to a constant: the target DataLayout byte size of T, where
+        // T is the element type of the instantiated Buffer<T> that owns the
+        // current method. The declared placeholder body is never emitted as a
+        // real call. Gated on the enclosing class being an xpu.core Buffer
+        // instantiation so it can't shadow a same-named method elsewhere.
+        if (methodCallName == "elementBytes") {
+            if (auto cm = module->getCurrentMethod()) {
+                auto parent = cm->getParent();
+                if (parent && parent->isInstantiation()
+                        && parent->toCanonical().rfind(
+                               "cajeta.xpu.core.Buffer", 0) == 0
+                        && !parent->getTypeArguments().empty()) {
+                    auto elemT = parent->getTypeArguments()[0];
+                    llvm::Type* lt = elemT ? elemT->getLlvmType() : nullptr;
+                    uint64_t sz = 0;
+                    if (lt) {
+                        sz = module->getLlvmModule()->getDataLayout()
+                                 .getTypeAllocSize(lt);
+                    }
+                    if (auto u64 = CajetaType::of("uint64")) resolvedType = u64;
+                    return llvm::ConstantInt::get(
+                        llvm::Type::getInt64Ty(llvmCtx), sz);
+                }
+            }
+        }
+
         // CajetaXPU launch borrow scope (§3.5 / §11). A `kernel.launch(...)`
         // borrows each Buffer arg until the next Stream.sync() /
         // Event.waitHost(); freeing a still-borrowed buffer is a use-after-
