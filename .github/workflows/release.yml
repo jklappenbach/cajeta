@@ -54,6 +54,13 @@ on:
 permissions:
   contents: write   # needed for softprops/action-gh-release to create / update the Release
 
+# The research/ PDFs live in Git LFS, but no build/test/release job needs
+# them. Skip the LFS smudge filter on checkout so the ~900 MB of PDFs are
+# never downloaded here — the pointers stay as small text files and don't
+# count against the repo's LFS bandwidth on every CI run.
+env:
+  GIT_LFS_SKIP_SMUDGE: 1
+
 jobs:
   build:
     name: build (${{ matrix.target }})

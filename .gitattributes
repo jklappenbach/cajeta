@@ -1,5 +1,5 @@
 # Large research PDFs (many bundle embedded video / high-res supplements and
-# run to hundreds of MB) are tracked with Git LFS. The pointer is committed
-# here; the bytes live in a LOCAL store (see tools/lfs-localstore.py and the
-# repo-local `lfs.standalonetransferagent` config), not on GitHub.
+# run to hundreds of MB) are tracked with Git LFS and stored on GitHub's LFS.
+# CI skips the smudge filter (GIT_LFS_SKIP_SMUDGE=1 in .github/workflows) so
+# build/test jobs don't download them.
 research/**/*.pdf filter=lfs diff=lfs merge=lfs -text
