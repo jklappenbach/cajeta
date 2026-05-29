@@ -13,12 +13,24 @@ package cajeta.xpu.core;
  * functions and produces a borrow of the element type. On the
  * host, callers use the explicit upload/download paths.
  *
- * Per CajetaXPU.md §3.6. The allocator path is intentionally not
- * exposed here in v1 — `alloc(count)` lands once generic static
- * factories are wired in the compiler (the Optional Some/None
- * factories block the same item). Until then, Buffer instances are
- * constructed by the launch-site machinery and surfaced to the user
- * through helpers in the vendor namespaces.
+ * MEMORY MODEL (CajetaXPU.md §3.5/§3.6). A Buffer is a small host-side
+ * handle (deviceHandle + elementCount) over device memory that lives in
+ * VRAM. The two lifetimes are independent:
+ *
+ *   - the *handle* (this 24-byte struct) may live on the stack or heap.
+ *     `Buffer<T>.alloc(n)` returns a `heap` handle because a factory's
+ *     result escapes its frame (a `stack` handle there is a use-after-
+ *     return the escape checker rejects). For the common same-scope
+ *     pattern, construct `stack Buffer<T>(...)` directly at the use site
+ *     — cheaper, and equally safe.
+ *   - the *device memory* (deviceHandle) is governed by the launch-borrow
+ *     checker regardless of where the handle lives: a launch borrows each
+ *     Buffer argument until the next `Stream.sync()`, and `free()` while a
+ *     launch still references it is a compile error (XPU-K02).
+ *
+ * Element byte size is supplied by the compiler — `elementBytes()` lowers
+ * to the target DataLayout size of T — so the runtime primitives speak
+ * only int64 handles and byte counts and stay independent of T.
  */
 public final class Buffer<T> {
     int64 deviceHandle;
@@ -34,17 +46,83 @@ public final class Buffer<T> {
     }
 
     /**
-     * Host → device transfer of `host` into this buffer. The host
-     * array's element count must equal `length()`. Issued on the
-     * default stream; for stream-ordered uploads, see the vendor
-     * namespace.
+     * Compiler intrinsic: lowered at each call site to the target
+     * DataLayout byte size of the enclosing Buffer<T>'s element type T.
+     * The body here is a resolution placeholder — it is never emitted as
+     * a real call (CallExpression / MethodCallExpression intercepts it).
      */
+    private static uint64 elementBytes() {
+        return 0;
+    }
+
+    // Device-memory primitives. These are *instance* @Native methods rather
+    // than statics: a static call qualified by the generic class name
+    // (`Buffer.foo()`) resolves to the uninstantiated template and lowers to
+    // null, whereas instance dispatch (`this.foo()`) resolves against the
+    // runtime instantiation. The leading `this` the forwarder passes is
+    // ignored by the C side. Pointer-shaped at the ABI boundary, so one C
+    // symbol per name serves every Buffer<T>; the element size is folded into
+    // the byte counts the callers pass.
+    @Native("__cajeta_xpu_buffer_alloc")
+    private int64 deviceAlloc(uint64 byteCount);
+
     @Native("__cajeta_xpu_buffer_upload")
-    public void upload(T[] host);
+    private void deviceUpload(int64 handle, T[] host, uint64 byteCount);
 
     @Native("__cajeta_xpu_buffer_download")
-    public void download(T[] host);
+    private void deviceDownload(int64 handle, T[] host, uint64 byteCount);
 
     @Native("__cajeta_xpu_buffer_free")
-    public void free();
+    private void deviceFree(int64 handle);
+
+    /**
+     * Allocate a device buffer of `n` elements and return a heap handle.
+     * Heap is mandatory here: the result escapes this frame, so a stack
+     * handle would be rejected by the escape checker. For same-scope
+     * allocations prefer `stack Buffer<T>(...)` + `allocate()` at the use
+     * site.
+     */
+    public static #Buffer<T> alloc(uint64 n) {
+        Buffer<T> buf = heap Buffer<T>(0, n);
+        buf.allocate();
+        return #buf;
+    }
+
+    /**
+     * Allocate device storage for this buffer's `length()` elements. Use with
+     * direct construction when a `heap`/`stack` handle is preferred over the
+     * `alloc` factory:
+     *
+     *     Buffer<float32> x = stack Buffer<float32>(0, n);
+     *     x.allocate();
+     *
+     * Replaces any previously held handle (call once per buffer).
+     */
+    public void allocate() {
+        uint64 bytes = this.elementCount * elementBytes();
+        int64 h = this.deviceAlloc(bytes);
+        this.deviceHandle = h;
+    }
+
+    /**
+     * Host → device transfer of `host` into this buffer. The host array's
+     * element count must equal `length()`. Issued on the default stream;
+     * for stream-ordered uploads, see the vendor namespace.
+     */
+    public void upload(T[] host) {
+        uint64 bytes = this.elementCount * elementBytes();
+        int64 h = this.deviceHandle;
+        this.deviceUpload(h, host, bytes);
+    }
+
+    public void download(T[] host) {
+        uint64 bytes = this.elementCount * elementBytes();
+        int64 h = this.deviceHandle;
+        this.deviceDownload(h, host, bytes);
+    }
+
+    public void free() {
+        int64 h = this.deviceHandle;
+        this.deviceFree(h);
+    }
 }

@@ -55,18 +55,40 @@ deferrals first. Six commits on `cajeta-xpu` (after the restore commits):
 
 **Still open (generalization + carried-over deferrals):**
 
-- **Host launch via Cajeta source.** The compiler half is **done**:
-  `CallExpression::generateCode` lowers `kernel.launch(stream, grid:,
-  block:)(args)` to `__cajeta_xpu_launch(name, gridX, blockX, argv)`,
-  marshalling Buffer args to their device handle and scalars by value
-  (`XpuLaunchCodegenTests`). Still to wire so it runs on-device through the
-  JIT: make the `__cajeta_xpu_launch` / `_buffer_*` / `_stream_*` runtime
-  symbols real (CUDA-backed — must live in the C runtime bitcode so the JIT
-  resolves them, mirroring `CudaDriver`), a `Buffer.alloc` factory, a
-  compile pass that builds each `@Kernel`'s cubin and emits a global ctor
-  calling `__cajeta_xpu_register_module`, and the `JitTestHelper` hook to run
-  it. (Compiler plumbing — not a toolchain risk now that the runtime path is
-  proven.)
+- **Host launch via Cajeta source.** Infrastructure **done**; one frontend
+  codegen bug blocks the on-device run through the JIT.
+  - `CallExpression::generateCode` lowers `kernel.launch(stream, grid:,
+    block:)(args)` to `__cajeta_xpu_launch(name, gridX, blockX, argv)`,
+    marshalling Buffer args to their device handle and scalars by value
+    (`XpuLaunchCodegenTests`).
+  - The `__cajeta_xpu_*` runtime symbols are now **real, CUDA-backed** in the
+    C runtime bitcode (`runtime/native/cajeta_runtime.c`): a lazily-dlopen'd
+    `nvcuda` driver (mirroring `CudaDriver`) backs
+    `_buffer_alloc`/`_upload`/`_download`/`_free` (cuMemAlloc / cuMemcpy* /
+    cuMemFree), `_stream_sync` (cuCtxSynchronize), `_register_module`
+    (cuModuleLoadData, keyed by entry name) and `_launch`
+    (cuModuleGetFunction + cuLaunchKernel). Absent GPU ⇒ graceful no-op.
+  - `Buffer<T>` device methods are real Cajeta now (`alloc` factory +
+    `allocate`/`upload`/`download`/`free`), with element size supplied by a
+    compiler-recognized `Buffer<T>.elementBytes()` intrinsic (DataLayout size
+    of `T`; `MethodCallExpression`). A `@Kernel` taking `Buffer<T>` args gets
+    an empty **host stub** body (`Method::generateCode`) since buffer indexing
+    is device-only.
+  - `NvptxRegistration::emitKernelRegistration` builds each `@Kernel`'s cubin
+    and emits an `llvm.global_ctors` entry calling `__cajeta_xpu_register_module`
+    with the embedded cubin bytes; wired into `JitTestHelper` (ctors run at
+    `jit->initialize()`).
+  - **Blocker** (`test/xpu/XpuHostLaunchDeviceTests.cpp`, `DISABLED_`): using
+    the return value of an `@Native`-forwarder *instance* method
+    (`int64 h = this.deviceAlloc(bytes)`) trips an LLVM `dyn_cast on a
+    non-existent value` assertion in Phase-2 codegen. A *void* `@Native`
+    instance call (`this.deviceFree(h)`) and a real-bodied instance call whose
+    value is used (`x.length()`) both work — so the fault is specific to
+    `@Native` instance methods that return a value. Related generic gaps:
+    a static call qualified by the generic class name (`Buffer.deviceAlloc(...)`)
+    resolves to the uninstantiated template and lowers to null, and explicit
+    `Buffer<float32>.alloc(n)` crashes the parser (bad any_cast). Fixing
+    `@Native`-instance-return codegen unblocks the end-to-end host-source run.
 - **Launch-borrow-scope checking** (deferral #4): **done (core case)** —
   `launch` borrows each Buffer arg, released at `Stream.sync()` /
   `Event.waitHost()`; freeing a still-borrowed buffer is `XPU-K02`

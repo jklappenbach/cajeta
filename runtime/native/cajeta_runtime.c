@@ -3934,10 +3934,138 @@ void __cajeta_run_atexit_handlers(void) {
 // is instantiated, so no stubs appear here until a real allocator lands.
 // ============================================================================
 
-// --- Stream ----------------------------------------------------------------
+// ============================================================================
+// CUDA Driver API binding (dlopen'd) — backs the real NVPTX device path.
+// ============================================================================
+// Mirrors src/cajeta/xpu/nvidia/CudaDriver.cpp, but lives in the runtime
+// bitcode so the LLJIT host path resolves these symbols from merged bitcode
+// (the C++ CudaDriver is not visible to the JIT'd module). The driver is
+// bound lazily on first use; an absent GPU/driver leaves every entry a
+// graceful no-op (alloc returns 0, copies/launch return silently) so host
+// code that never touches the device still links and runs.
+
+#if !defined(_WIN32)
+#  include <dlfcn.h>
+#endif
+
+typedef unsigned long long cajeta_cudeviceptr;
+
+struct cajeta_cuda_api {
+    int loaded;            // 0 untried, 1 ready, -1 unavailable
+    void* lib;
+    void* ctx;
+    int device;
+    int (*cuInit)(unsigned);
+    int (*cuDeviceGetCount)(int*);
+    int (*cuDeviceGet)(int*, int);
+    int (*cuCtxCreate)(void**, unsigned, int);
+    int (*cuModuleLoadData)(void**, const void*);
+    int (*cuModuleGetFunction)(void**, void*, const char*);
+    int (*cuMemAlloc)(cajeta_cudeviceptr*, size_t);
+    int (*cuMemcpyHtoD)(cajeta_cudeviceptr, const void*, size_t);
+    int (*cuMemcpyDtoH)(void*, cajeta_cudeviceptr, size_t);
+    int (*cuMemFree)(cajeta_cudeviceptr);
+    int (*cuLaunchKernel)(void*, unsigned, unsigned, unsigned,
+                          unsigned, unsigned, unsigned, unsigned,
+                          void*, void**, void**);
+    int (*cuCtxSynchronize)(void);
+};
+static struct cajeta_cuda_api g_xpu_cuda;                       // zero-initialized
+static pthread_mutex_t g_xpu_cuda_lock = PTHREAD_MUTEX_INITIALIZER;
+
+static void* cajeta_xpu_libsym(void* lib, const char* name) {
+#if defined(_WIN32)
+    return (void*) GetProcAddress((HMODULE) lib, name);
+#else
+    return dlsym(lib, name);
+#endif
+}
+
+// Resolve the driver and create a context. Returns 1 on success. Caller holds
+// g_xpu_cuda_lock. Idempotent via the `loaded` tri-state. The driver API
+// exposes size-versioned symbols (cuMemAlloc_v2, …); we bind those explicitly.
+static int cajeta_xpu_cuda_init_locked(void) {
+    if (g_xpu_cuda.loaded == 1) return 1;
+    if (g_xpu_cuda.loaded == -1) return 0;
+    g_xpu_cuda.loaded = -1;  // assume failure until everything resolves
+#if defined(_WIN32)
+    g_xpu_cuda.lib = (void*) LoadLibraryA("nvcuda.dll");
+#else
+    g_xpu_cuda.lib = dlopen("libcuda.so.1", RTLD_NOW | RTLD_LOCAL);
+#endif
+    if (!g_xpu_cuda.lib) return 0;
+    #define CAJ_BIND(fp, nm)                                                  \
+        do { *(void**)(&g_xpu_cuda.fp) = cajeta_xpu_libsym(g_xpu_cuda.lib, nm); \
+             if (!g_xpu_cuda.fp) return 0; } while (0)
+    CAJ_BIND(cuInit, "cuInit");
+    CAJ_BIND(cuDeviceGetCount, "cuDeviceGetCount");
+    CAJ_BIND(cuDeviceGet, "cuDeviceGet");
+    CAJ_BIND(cuCtxCreate, "cuCtxCreate_v2");
+    CAJ_BIND(cuModuleLoadData, "cuModuleLoadData");
+    CAJ_BIND(cuModuleGetFunction, "cuModuleGetFunction");
+    CAJ_BIND(cuMemAlloc, "cuMemAlloc_v2");
+    CAJ_BIND(cuMemcpyHtoD, "cuMemcpyHtoD_v2");
+    CAJ_BIND(cuMemcpyDtoH, "cuMemcpyDtoH_v2");
+    CAJ_BIND(cuMemFree, "cuMemFree_v2");
+    CAJ_BIND(cuLaunchKernel, "cuLaunchKernel");
+    CAJ_BIND(cuCtxSynchronize, "cuCtxSynchronize");
+    #undef CAJ_BIND
+    if (g_xpu_cuda.cuInit(0) != 0) return 0;
+    int count = 0;
+    if (g_xpu_cuda.cuDeviceGetCount(&count) != 0 || count <= 0) return 0;
+    if (g_xpu_cuda.cuDeviceGet(&g_xpu_cuda.device, 0) != 0) return 0;
+    if (g_xpu_cuda.cuCtxCreate(&g_xpu_cuda.ctx, 0, g_xpu_cuda.device) != 0) return 0;
+    g_xpu_cuda.loaded = 1;
+    return 1;
+}
+
+// Thread-safe "is the device usable?" gate. Once loaded == 1 the bound
+// function pointers and single context are stable, so call sites read them
+// unlocked after this returns true.
+static int cajeta_xpu_cuda_ready(void) {
+    int ok;
+    pthread_mutex_lock(&g_xpu_cuda_lock);
+    ok = cajeta_xpu_cuda_init_locked();
+    pthread_mutex_unlock(&g_xpu_cuda_lock);
+    return ok;
+}
+
+// --- registered kernel modules (cubin images keyed by PTX entry name) -------
+// The device-cubin pass emits a global constructor that calls
+// __cajeta_xpu_register_module once per @Kernel; the launch path loads the
+// CUDA module + resolves the function lazily on first use of each name.
+struct cajeta_xpu_module {
+    char name[256];
+    const void* image;
+    void* module;     // CUmodule, lazily loaded
+    void* function;   // CUfunction, lazily resolved
+};
+#define CAJETA_XPU_MAX_MODULES 128
+static struct cajeta_xpu_module g_xpu_modules[CAJETA_XPU_MAX_MODULES];
+static int g_xpu_module_count;
+
+// Caller holds g_xpu_cuda_lock.
+static struct cajeta_xpu_module* cajeta_xpu_find_module(const char* name) {
+    int i;
+    for (i = 0; i < g_xpu_module_count; i++) {
+        if (strncmp(g_xpu_modules[i].name, name,
+                    sizeof(g_xpu_modules[i].name)) == 0) {
+            return &g_xpu_modules[i];
+        }
+    }
+    return NULL;
+}
+
+// --- Stream -----------------------------------------------------------------
+// v1 uses the default stream; current()/create() return a null handle (the
+// CUDA default stream) and the launch path passes NULL. sync() drains the
+// context, which also releases the deferred launch borrows on the host side.
 void* __cajeta_xpu_stream_current(void) { return NULL; }
 void* __cajeta_xpu_stream_create(void) { return NULL; }
-void __cajeta_xpu_stream_sync(void* self) { (void)self; }
+void __cajeta_xpu_stream_sync(void* self) {
+    (void) self;
+    if (cajeta_xpu_cuda_ready()) g_xpu_cuda.cuCtxSynchronize();
+}
 void __cajeta_xpu_stream_wait_for(void* self, void* event) {
     (void)self; (void)event;
 }
@@ -3993,19 +4121,46 @@ uint64_t __cajeta_xpu_wave_ballot_sync(bool predicate) {
     return predicate ? 1ULL : 0ULL;
 }
 
-// --- Buffer<T> --------------------------------------------------------------
-// One symbol per method name; every Buffer<T> instantiation forwards to the
-// same C stub regardless of T because the LLVM-side signatures are all
-// pointer-shaped (self + array-pointer). The C stubs accept void* for both.
-// Step 7 replaces these with a real CPU-side allocator that backs Buffer<T>
-// with host malloc/free; later steps swap in the per-backend allocator.
-void __cajeta_xpu_buffer_upload(void* self, void* host) {
-    (void)self; (void)host;
+// --- Buffer<T> device memory (CUDA driver-backed) ---------------------------
+// The Buffer<T> stdlib methods (alloc/upload/download/free) are ordinary
+// Cajeta now; they construct the handle via `heap`/`stack` + the generated
+// constructor and forward byte-sized primitives here. The element byte size
+// is supplied by the compiler (Buffer<T>.elementBytes() intrinsic), so these
+// symbols are monomorphism-independent: they speak only int64 handles and
+// byte counts.
+//
+// `host` is a Cajeta T[] header — { i64 count, [count x T] data } laid out
+// contiguously — so the element bytes begin at offset 8 (matches
+// __cajeta_new_array_header). byteCount is count * sizeof(T), already
+// computed caller-side.
+// `self` is the Buffer instance pointer the instance-method forwarder passes;
+// the device side is keyed on the int64 handle, so self is ignored.
+int64_t __cajeta_xpu_buffer_alloc(void* self, uint64_t byteCount) {
+    (void) self;
+    if (byteCount == 0 || !cajeta_xpu_cuda_ready()) return 0;
+    cajeta_cudeviceptr p = 0;
+    if (g_xpu_cuda.cuMemAlloc(&p, (size_t) byteCount) != 0) return 0;
+    return (int64_t) p;
 }
-void __cajeta_xpu_buffer_download(void* self, void* host) {
-    (void)self; (void)host;
+void __cajeta_xpu_buffer_upload(void* self, int64_t handle, void* host,
+                                uint64_t byteCount) {
+    (void) self;
+    if (!handle || !host || byteCount == 0 || !cajeta_xpu_cuda_ready()) return;
+    const void* data = (const void*) ((const char*) host + 8);
+    g_xpu_cuda.cuMemcpyHtoD((cajeta_cudeviceptr) handle, data, (size_t) byteCount);
 }
-void __cajeta_xpu_buffer_free(void* self) { (void)self; }
+void __cajeta_xpu_buffer_download(void* self, int64_t handle, void* host,
+                                  uint64_t byteCount) {
+    (void) self;
+    if (!handle || !host || byteCount == 0 || !cajeta_xpu_cuda_ready()) return;
+    void* data = (void*) ((char*) host + 8);
+    g_xpu_cuda.cuMemcpyDtoH(data, (cajeta_cudeviceptr) handle, (size_t) byteCount);
+}
+void __cajeta_xpu_buffer_free(void* self, int64_t handle) {
+    (void) self;
+    if (!handle || !cajeta_xpu_cuda_ready()) return;
+    g_xpu_cuda.cuMemFree((cajeta_cudeviceptr) handle);
+}
 
 // --- Launch + module registration -------------------------------------------
 // The compiler lowers `kernel.launch(stream, grid:, block:)(args)` to a call
@@ -4016,14 +4171,53 @@ void __cajeta_xpu_buffer_free(void* self) { (void)self; }
 // codegen of a launch site links.
 void __cajeta_xpu_launch(const char* kernelName, int32_t gridX, int32_t blockX,
                          void* argv) {
-    (void)kernelName; (void)gridX; (void)blockX; (void)argv;
+    if (!kernelName || !cajeta_xpu_cuda_ready()) return;
+    pthread_mutex_lock(&g_xpu_cuda_lock);
+    struct cajeta_xpu_module* e = cajeta_xpu_find_module(kernelName);
+    if (e) {
+        if (!e->module) {
+            if (g_xpu_cuda.cuModuleLoadData(&e->module, e->image) != 0)
+                e->module = NULL;
+        }
+        if (e->module && !e->function) {
+            if (g_xpu_cuda.cuModuleGetFunction(&e->function, e->module,
+                                               kernelName) != 0)
+                e->function = NULL;
+        }
+    }
+    void* fn = e ? e->function : NULL;
+    pthread_mutex_unlock(&g_xpu_cuda_lock);
+    if (!fn) {
+        fprintf(stderr, "cajeta.xpu: no registered kernel '%s' to launch\n",
+                kernelName);
+        return;
+    }
+    // 1-D grid/block; default stream; kernelParams = the CUDA argv the launch
+    // site marshalled (pointers to each arg value).
+    g_xpu_cuda.cuLaunchKernel(fn, (unsigned) gridX, 1, 1,
+                              (unsigned) blockX, 1, 1,
+                              /*sharedMem=*/0, /*stream=*/NULL,
+                              (void**) argv, /*extra=*/NULL);
 }
 
-// Register a kernel's compiled cubin image under its entry name. The device-
-// cubin pass emits a module global constructor that calls this; the launch
-// path loads the CUDA module lazily on first use. No-op until the NVPTX launch
-// runtime lands.
+// Register a kernel's compiled cubin image under its PTX entry name. The
+// device-cubin pass emits a module global constructor that calls this; the
+// launch path (above) loads the CUDA module + resolves the function lazily on
+// first use. The image pointer lives in the host module's constant data and
+// stays valid for the process lifetime.
 void __cajeta_xpu_register_module(const char* kernelName, const void* image,
                                   uint64_t len) {
-    (void)kernelName; (void)image; (void)len;
+    (void) len;
+    if (!kernelName || !image) return;
+    pthread_mutex_lock(&g_xpu_cuda_lock);
+    if (!cajeta_xpu_find_module(kernelName)
+            && g_xpu_module_count < CAJETA_XPU_MAX_MODULES) {
+        struct cajeta_xpu_module* e = &g_xpu_modules[g_xpu_module_count++];
+        strncpy(e->name, kernelName, sizeof(e->name) - 1);
+        e->name[sizeof(e->name) - 1] = '\0';
+        e->image = image;
+        e->module = NULL;
+        e->function = NULL;
+    }
+    pthread_mutex_unlock(&g_xpu_cuda_lock);
 }

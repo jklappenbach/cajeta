@@ -14,6 +14,8 @@
 #include "cajeta/compile/CajetaModule.h"
 #include "cajeta/error/Exception.h"
 #include "cajeta/method/Method.h"
+#include "cajeta/xpu/core/XpuAttributes.h"
+#include "cajeta/xpu/nvidia/NvptxRegistration.h"
 
 #include "JitWinSymbols.h"
 #include "JitErrorShim.h"
@@ -276,6 +278,24 @@ std::unique_ptr<CajetaJit> CajetaJit::compile(
                                        std::move(donor))) {
             throw std::runtime_error("JIT module-merge failed");
         }
+    }
+
+    // CajetaXPU host launch: build each @Kernel's cubin and emit a global
+    // constructor that registers it with the runtime, so a JIT'd
+    // `kernel.launch(...)` resolves the device function by name at runtime.
+    // The ctors run in jit->initialize() below (after the JIT is built). No-op
+    // when there are no kernels or ptxas is unavailable.
+    {
+        std::vector<cajeta::MethodPtr> kernels;
+        for (auto& m : compiler->getModules()) {
+            for (auto& method : m->getAllMethods()) {
+                if (method && cajeta::xpu::isKernel(*method)) {
+                    kernels.push_back(method);
+                }
+            }
+        }
+        cajeta::xpu::nvidia::emitKernelRegistration(
+            kernels, *primary->getLlvmModule());
     }
 
     llvm::Module* llvmModule = primary->getLlvmModule();

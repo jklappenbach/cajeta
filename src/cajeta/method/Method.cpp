@@ -17,6 +17,7 @@
 #include "../field/ParameterField.h"
 #include "../util/Printer.h"
 #include "../xpu/core/KernelArgTrait.h"
+#include "../xpu/core/XpuAttributes.h"
 
 using namespace std;
 
@@ -704,6 +705,38 @@ namespace cajeta {
         // kernel. The llvmBasicBlock guard above means this runs once
         // per method, not once per generateCode invocation.
         cajeta::xpu::validateKernelParams(shared_from_this());
+
+        // CajetaXPU: a @Kernel taking Buffer<T> arguments operates on device
+        // memory and cannot execute on the host — buffer indexing (buf[i]) is
+        // device-only (CajetaXPU.md §3.6). Its real lowering is the device
+        // cubin (NvptxRegistration); the host function is never called in the
+        // launch model. Emit a trivial host stub so host Phase-2 codegen
+        // doesn't attempt to lower device-only constructs and crash on the
+        // resulting null operand. Kernels that take only host arrays /
+        // primitives keep their real body for the CPU-emulation path.
+        if (cajeta::xpu::isKernel(*this)) {
+            bool hasDeviceBuffer = false;
+            for (auto& p : parameterList) {
+                if (p && p->getType()
+                        && p->getType()->toCanonical().rfind(
+                               "cajeta.xpu.core.Buffer", 0) == 0) {
+                    hasDeviceBuffer = true;
+                    break;
+                }
+            }
+            if (hasDeviceBuffer) {
+                llvm::BasicBlock* bb = llvm::BasicBlock::Create(
+                    *module->getLlvmContext(), "entry", llvmFunction);
+                llvm::IRBuilder<> b(bb);
+                if (llvmFunction->getReturnType()->isVoidTy()) {
+                    b.CreateRetVoid();
+                } else {
+                    b.CreateRet(llvm::Constant::getNullValue(
+                        llvmFunction->getReturnType()));
+                }
+                return;
+            }
+        }
 
         // @Native("symbol") — the method's body is a forwarding call to
         // a C runtime function with the given symbol name. Used by
