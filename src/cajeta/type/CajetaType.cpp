@@ -386,6 +386,17 @@ namespace cajeta {
         return CajetaType::canonicalMap[qName->toCanonical()];
     }
 
+    CajetaTypePtr CajetaType::findTemplateByShortName(const string& shortName) {
+        for (auto& kv : canonicalMap) {
+            auto cand = std::dynamic_pointer_cast<CajetaClass>(kv.second);
+            if (cand && cand->isTemplate() && cand->getQName()
+                    && cand->getQName()->getTypeName() == shortName) {
+                return std::static_pointer_cast<CajetaType>(cand);
+            }
+        }
+        return nullptr;
+    }
+
     CajetaTypePtr CajetaType::fromContext(CajetaParser::PrimitiveTypeContext* ctx, CajetaModulePtr module) {
         QualifiedNamePtr qName = QualifiedName::getOrInsert(ctx->getText(), "code");
         return CajetaType::canonicalMap[qName->toCanonical()];
@@ -662,15 +673,9 @@ namespace cajeta {
                     // `ArrayStream<T>`-derived stream (fold/map/reduce/…) once
                     // `cajeta.xpu.core.Stream` was added to the build.
                     if (!templateClass || !templateClass->isTemplate()) {
-                        const std::string& shortName = qName->getTypeName();
-                        for (auto& kv : canonicalMap) {
-                            auto cand = dynamic_pointer_cast<CajetaClass>(kv.second);
-                            if (cand && cand->isTemplate() && cand->getQName()
-                                    && cand->getQName()->getTypeName() == shortName) {
-                                templateClass = cand;
-                                type = cand;
-                                break;
-                            }
+                        if (auto t = findTemplateByShortName(qName->getTypeName())) {
+                            templateClass = dynamic_pointer_cast<CajetaClass>(t);
+                            type = t;
                         }
                     }
                     if (templateClass && templateClass->isTemplate()) {

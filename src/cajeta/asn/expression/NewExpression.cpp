@@ -36,6 +36,13 @@ namespace cajeta {
         if (!type) return;
         if (!typeArguments.empty()) {
             auto klass = dynamic_pointer_cast<CajetaClass>(type);
+            // Same-short-name collision guard (see CajetaType::
+            // findTemplateByShortName): `heap Stream<int32>()` must build the
+            // generic cajeta.lang.stream.Stream, not the non-generic
+            // cajeta.xpu.core.Stream the bare-name lookup may have landed.
+            if (!klass || !klass->isTemplate()) {
+                if (auto t = CajetaType::findTemplateByShortName(typeName)) klass = dynamic_pointer_cast<CajetaClass>(t);
+            }
             if (klass && klass->isTemplate()) {
                 type = klass->instantiate(typeArguments);
             }
@@ -78,6 +85,10 @@ namespace cajeta {
         // allocate against.
         if (!typeArguments.empty()) {
             auto klass = dynamic_pointer_cast<CajetaClass>(type);
+            // Same-short-name collision guard — see resolveTypes above.
+            if (!klass || !klass->isTemplate()) {
+                if (auto t = CajetaType::findTemplateByShortName(typeName)) klass = dynamic_pointer_cast<CajetaClass>(t);
+            }
             if (klass && klass->isTemplate()) {
                 type = klass->instantiate(typeArguments);
             }
