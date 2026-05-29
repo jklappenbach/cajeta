@@ -13,6 +13,8 @@
 #include "../asn/DefaultBlock.h"
 #include "../asn/Statement.h"
 #include "../asn/expression/MethodCallExpression.h"
+#include "../asn/expression/NewExpression.h"
+#include "../asn/expression/AggregateInitializerExpression.h"
 #include "../type/FormalParameter.h"
 #include "../field/ParameterField.h"
 #include "cajeta/dbg/DebugCodegen.h"
@@ -82,6 +84,92 @@ namespace cajeta {
 
     void Method::setBlock(BlockPtr block) {
         this->block = block;
+    }
+
+    // --- Value-return determination (M1) -----------------------------------
+    // A return expression is a `stack` construction when it's a `stack X(...)`
+    // (NewExpression with stackAlloc) or a stack aggregate-initializer. Storage
+    // class lives on the construction, not the type — so this is how the
+    // compiler learns a method returns by copy.
+    static bool exprIsStackConstruction(const ExpressionPtr& e) {
+        if (!e) return false;
+        if (auto ne = dynamic_pointer_cast<NewExpression>(e)) {
+            return ne->getStackAlloc();
+        }
+        if (auto ai = dynamic_pointer_cast<AggregateInitializerExpression>(e)) {
+            return ai->getStackAlloc();
+        }
+        return false;
+    }
+
+    static bool nodeHasStackReturn(const AbstractSyntaxNodePtr& node);
+
+    static bool blockHasStackReturn(const BlockPtr& block) {
+        if (!block) return false;
+        for (auto& child : block->getChildren()) {
+            if (nodeHasStackReturn(child)) return true;
+        }
+        return false;
+    }
+
+    // Walk statement containers looking for any `return stack X(...)`. The
+    // branch/loop bodies hidden behind private fields (then/else, loop body,
+    // nested scope/label blocks) aren't in `children`, so descend through their
+    // accessors explicitly; everything else falls back to the generic child
+    // walk. (try/switch bodies have no public accessors today — returns nested
+    // directly inside a try/switch aren't detected; not needed for v1.)
+    static bool nodeHasStackReturn(const AbstractSyntaxNodePtr& node) {
+        if (!node) return false;
+        if (auto ret = dynamic_pointer_cast<ReturnStatement>(node)) {
+            return exprIsStackConstruction(ret->getExpression());
+        }
+        if (auto lbl = dynamic_pointer_cast<LabelStatement>(node)) {
+            return blockHasStackReturn(lbl->getBlock());
+        }
+        if (auto sc = dynamic_pointer_cast<ScopeStatement>(node)) {
+            return blockHasStackReturn(sc->getBlock());
+        }
+        if (auto iff = dynamic_pointer_cast<IfStatement>(node)) {
+            return nodeHasStackReturn(iff->getThenBranch())
+                || nodeHasStackReturn(iff->getElseBranch());
+        }
+        if (auto wh = dynamic_pointer_cast<WhileStatement>(node)) {
+            return nodeHasStackReturn(wh->getBody());
+        }
+        if (auto fr = dynamic_pointer_cast<ForStatement>(node)) {
+            return nodeHasStackReturn(fr->getBody());
+        }
+        if (auto efr = dynamic_pointer_cast<EnhancedForStatement>(node)) {
+            return nodeHasStackReturn(efr->getBody());
+        }
+        if (auto dod = dynamic_pointer_cast<DoStatement>(node)) {
+            return nodeHasStackReturn(dod->getBody());
+        }
+        for (auto& c : node->getChildren()) {
+            if (nodeHasStackReturn(c)) return true;
+        }
+        return false;
+    }
+
+    bool Method::returnsStackValue() {
+        if (returnsStackValueCache != -1) {
+            return returnsStackValueCache == 1;
+        }
+        returnsStackValueCache = 0;
+        // A `#`-marked return is an explicit heap ownership transfer, never a
+        // by-value copy — they're mutually exclusive.
+        if (returnsOwnership) return false;
+        // Only class (value) returns travel by copy. void/primitive returns
+        // never do; interfaces already have their own by-value fat-pointer ABI
+        // (Method::generatePrototype S9.5.5); arrays are reference-typed.
+        auto rtClass = dynamic_pointer_cast<CajetaClass>(returnType);
+        if (!rtClass) return false;
+        if (rtClass->isInterface()) return false;
+        if (dynamic_pointer_cast<CajetaArray>(returnType)) return false;
+        if (blockHasStackReturn(block)) {
+            returnsStackValueCache = 1;
+        }
+        return returnsStackValueCache == 1;
     }
 
     // Emit the body of an @Native-annotated method: a thin wrapper that
@@ -635,6 +723,14 @@ namespace cajeta {
         // STRUCTURE itself (the three-word tuple) is callee-local stack
         // for any synthesized interface value, so by-value return is
         // the only safe shape.
+        // Way 2 value-return ABI (sret + NRVO): a method that returns a
+        // `stack`-constructed value hands it back by copy. The LLVM function
+        // returns `void` and takes a hidden leading `ptr` (param 0, before
+        // `this`) carrying the `sret(structTy)` attribute; the callee
+        // constructs its result directly into that caller-owned slot. See
+        // cajeta-docs/stdlib/ValueReturns.md.
+        bool sretReturn = returnsStackValue();
+        llvm::Type* sretStructTy = nullptr;
         llvm::Type* llvmRet;
         {
             CajetaTypePtr rt = returnType;
@@ -646,7 +742,12 @@ namespace cajeta {
             bool isInterfaceR = rtClass && rtClass->isInterface();
             bool returnByPointer = isClassLikeR && (isArrR || !isPrimR)
                 && !isInterfaceR;
-            if (returnByPointer) {
+            if (sretReturn) {
+                sretStructTy = rt ? rt->getLlvmType() : nullptr;
+                llvmRet = llvm::Type::getVoidTy(*module->getLlvmContext());
+                llvmTypes.insert(llvmTypes.begin(),
+                    llvm::PointerType::get(*module->getLlvmContext(), 0));
+            } else if (returnByPointer) {
                 llvmRet = llvm::PointerType::get(*module->getLlvmContext(), 0);
             } else {
                 llvmRet = rt ? rt->getLlvmType() : nullptr;
@@ -678,6 +779,14 @@ namespace cajeta {
         } else {
             llvmFunction = llvm::Function::Create(llvmFunctionType, llvm::Function::ExternalLinkage,
                 canonical, module->getLlvmModule());
+        }
+
+        // Tag the hidden sret pointer (arg 0) so the backend + optimizer treat
+        // it as the return slot. Idempotent across reprototype calls.
+        if (sretReturn && sretStructTy && llvmFunction->arg_size() > 0) {
+            llvmFunction->getArg(0)->addAttr(
+                llvm::Attribute::getWithStructRetType(
+                    *module->getLlvmContext(), sretStructTy));
         }
 
         archive[canonical] = shared_from_this();
@@ -804,7 +913,9 @@ namespace cajeta {
 
         createScope();
 
-        int i = 0;
+        // Value-returning (sret) methods reserve arg 0 for the hidden result
+        // pointer, so the real parameters (including `this`) start at arg 1.
+        int i = returnsStackValue() ? 1 : 0;
         for (auto& parameter: parameterList) {
             FieldPtr parameterField = make_shared<ParameterField>(module, parameter, bodyFn, i++);
             module->getScopeStack().peek()->putField(parameterField);

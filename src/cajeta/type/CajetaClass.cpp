@@ -3774,7 +3774,8 @@ namespace cajeta {
 
     llvm::Value* CajetaClass::invokeMethod(string& methodName, vector<ParameterEntry> parameters, bool isConstructor, llvm::Value* thisValue,
                                             CajetaModulePtr callerModule, bool forceDirectCall,
-                                            const vector<CajetaTypePtr>& explicitMethodTypeArgs) {
+                                            const vector<CajetaTypePtr>& explicitMethodTypeArgs,
+                                            llvm::Value* sretTarget) {
         bool floatingParams = true;
         for (auto &param : parameters) {
             if (param.label.empty()) {
@@ -3876,6 +3877,30 @@ namespace cajeta {
         // pass their own module; the fallback is preserved for sites
         // that haven't been threaded through yet.
         CajetaModulePtr emitMod = callerModule ? callerModule : module;
+        // Value-return (sret) ABI: a method that returns a stack value by copy
+        // takes the result slot as hidden arg 0 (before `this`). Use the
+        // caller-supplied slot, or materialize a temp in the caller's frame; the
+        // returned pointer then behaves like any class-instance pointer. See
+        // cajeta-docs/stdlib/ValueReturns.md.
+        bool usesSret = method->returnsStackValue();
+        int sretOffset = usesSret ? 1 : 0;
+        llvm::Value* sretSlot = sretTarget;
+        if (usesSret) {
+            if (!sretSlot) {
+                llvm::Type* structTy = method->getReturnType()
+                    ? method->getReturnType()->getLlvmType() : nullptr;
+                if (structTy) {
+                    llvm::Function* parentFn =
+                        emitMod->getBuilder()->GetInsertBlock()->getParent();
+                    llvm::IRBuilder<> entryBuilder(&parentFn->getEntryBlock(),
+                        parentFn->getEntryBlock().begin());
+                    sretSlot = entryBuilder.CreateAlloca(structTy);
+                }
+            }
+            if (sretSlot) {
+                methodArgs.insert(methodArgs.begin(), sretSlot);
+            }
+        }
         // Coerce each arg to match the function's parameter type. Integer
         // literals default to i64, but the function may expect i32 / i8 / etc.
         // Without coercion the JIT verifier rejects the call as a type
@@ -3956,8 +3981,8 @@ namespace cajeta {
                     v = bodyAlloca;
                 }
             }
-            if (mft && (int) mft->getNumParams() > i + thisOffset) {
-                llvm::Type* expected = mft->getParamType(i + thisOffset);
+            if (mft && (int) mft->getNumParams() > i + thisOffset + sretOffset) {
+                llvm::Type* expected = mft->getParamType(i + thisOffset + sretOffset);
                 if (v && v->getType() != expected) {
                     if (expected->isIntegerTy() && v->getType()->isIntegerTy()) {
                         v = coerceBuilder->CreateIntCast(v, expected, /*isSigned=*/true);
@@ -4038,9 +4063,13 @@ namespace cajeta {
         // base-typed receiver there must still dispatch through the vtable.
         bool isNativeForwarder = method->findAnnotation("Native") != nullptr;
         bool isFinalClass = this->getModifiers().find(FINAL) != this->getModifiers().end();
+        // Value-returning (sret) methods dispatch directly in v1: the hidden
+        // result pointer is part of the function type, so virtual dispatch
+        // would require sret-shaped vtable slots (deferred — see ValueReturns.md
+        // M5). Channel.receive et al. aren't overridden, so direct is correct.
         bool useVtable = thisValue && !isStatic && !isConstructor && !isView
             && !forceDirectCall && !isMethodTemplateInst
-            && !(isNativeForwarder && isFinalClass);
+            && !(isNativeForwarder && isFinalClass) && !usesSret;
         bool isInterfaceRecv = this->isInterface();
         // Interface formal whose resolved method lives on a CLASS
         // ancestor (e.g. `Splittable<T> extends Stream<T>` and we're
@@ -4183,10 +4212,12 @@ namespace cajeta {
             const CajetaClass* declaring = method->getParent().get();
             if (declaring && declaring != this) {
                 uint64_t off = this->getSubObjectByteOffset(declaring);
-                if (off != 0 && !methodArgs.empty()) {
+                // `this` sits at methodArgs[sretOffset] (after the hidden sret
+                // pointer, when present).
+                if (off != 0 && (int) methodArgs.size() > sretOffset) {
                     llvm::Type* i8Ty = llvm::Type::getInt8Ty(llvmCtx);
-                    methodArgs[0] = builder->CreateInBoundsGEP(
-                        i8Ty, methodArgs[0],
+                    methodArgs[sretOffset] = builder->CreateInBoundsGEP(
+                        i8Ty, methodArgs[sretOffset],
                         llvm::ConstantInt::get(
                             llvm::Type::getInt64Ty(llvmCtx), off),
                         "subobj_this");
@@ -4194,8 +4225,15 @@ namespace cajeta {
             }
         }
 
-        return builder->CreateCall(method->getLlvmFunctionType(),
+        llvm::Value* callInst = builder->CreateCall(method->getLlvmFunctionType(),
             callee, llvm::ArrayRef<llvm::Value*>(methodArgs));
+        // For a value-return (sret) call the LLVM result is void; hand back a
+        // pointer to the constructed value so the caller treats it like any
+        // class-instance pointer.
+        if (usesSret && sretSlot) {
+            return sretSlot;
+        }
+        return callInst;
     }
 
     /**
