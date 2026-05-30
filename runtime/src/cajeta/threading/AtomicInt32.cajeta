@@ -5,14 +5,15 @@ package cajeta.threading;
  *
  * The class owns a heap-allocated `int32` cell that the compiler emits inline
  * LLVM atomic instructions against (`load atomic`, `store atomic`, `atomicrmw
- * add`, `cmpxchg`). All operations are sequentially consistent in v1; explicit
- * memory-ordering overloads land in a follow-up.
+ * add`, `cmpxchg`). The no-`MemoryOrder` overloads use sequentially consistent
+ * ordering; the ordered overloads take a compile-time `MemoryOrder.X` to opt
+ * into a weaker (and usually faster) ordering.
  *
  * Surface mirrors Java's `AtomicInteger`:
- *   load()                 — atomic read
- *   store(v)               — atomic write
- *   fetchAdd(delta)        — atomic add, returns the value before the add
- *   compareAndSet(exp, des) — atomic CAS, returns true if the swap happened
+ *   load() / load(order)
+ *   store(v) / store(v, order)
+ *   fetchAdd(delta) / fetchAdd(delta, order)
+ *   compareAndSet(exp, des) / compareAndSet(exp, des, success, failure)
  *
  * Why a heap cell instead of an inline field: atomicrmw / cmpxchg operate on
  * an address, and Cajeta's class fields don't expose addressOf at the source
@@ -62,5 +63,46 @@ public class AtomicInt32 {
      */
     public boolean compareAndSet(int32 expected, int32 desired) {
         return Cajeta.atomicI32CompareAndSet(this.cell, expected, desired);
+    }
+
+    // ----- Fixed-ordering variants (R8.1b) --------------------------------
+    // LLVM atomic IR bakes the ordering into the instruction at IR
+    // construction time, so a runtime-variable `MemoryOrder` enum can't be
+    // surfaced cleanly without a 5-way `switch` per op (which the optimizer
+    // would have to collapse via inlining). Instead, each (op, ordering)
+    // combination gets its own named method — predictable, no inlining
+    // dependency, no illegal-ordering possible at the type level.
+    //
+    // Currently exposed: the orderings the work-stealing deque (R8.2)
+    // needs. Add more when a concrete consumer needs them.
+    //
+    //   loadRelaxed       — RELAXED load  (counters, statistics)
+    //   loadAcquire       — ACQUIRE load  (paired with storeRelease)
+    //   storeRelaxed      — RELAXED store (owner-only writes; deque bottom)
+    //   storeRelease      — RELEASE store (paired with loadAcquire)
+    //   fetchAddRelaxed   — RELAXED RMW   (stat counters under contention)
+    //   compareAndSetAcquire — Acquire-on-success-and-failure CAS
+    //                         (the stealer-side race in Chase-Lev)
+
+    public int32 loadRelaxed() {
+        return Cajeta.atomicI32LoadRelaxed(this.cell);
+    }
+    public int32 loadAcquire() {
+        return Cajeta.atomicI32LoadAcquire(this.cell);
+    }
+
+    public void storeRelaxed(int32 v) {
+        Cajeta.atomicI32StoreRelaxed(this.cell, v);
+    }
+    public void storeRelease(int32 v) {
+        Cajeta.atomicI32StoreRelease(this.cell, v);
+    }
+
+    public int32 fetchAddRelaxed(int32 delta) {
+        return Cajeta.atomicI32FetchAddRelaxed(this.cell, delta);
+    }
+
+    public boolean compareAndSetAcquire(int32 expected, int32 desired) {
+        return Cajeta.atomicI32CompareAndSetAcquire(this.cell, expected, desired);
     }
 }

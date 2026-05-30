@@ -154,3 +154,88 @@ TEST(AtomicTests, i64CompareAndSetSwapsLargeValues) {
         "}\n";
     EXPECT_EQ(runI64(src), int64_t{9000000000001LL});
 }
+
+// ----- R8.1b — fixed-ordering variants -------------------------------------
+// Functional smoke for each named ordered method. Atomicity across carriers
+// can't be tested on the single-carrier scheduler; what's exercised here is
+// that the LLVM IR emitted by the fixed-ordering intrinsics is valid and
+// produces the right value semantics under sequential execution.
+
+TEST(AtomicTests, i32RelaxedFetchAddAccumulates) {
+    auto src =
+        "package test;\n"
+        "import cajeta.threading.AtomicInt32;\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        AtomicInt32 a = heap AtomicInt32(0);\n"
+        "        for (int32 i = 0; i < 50; i = i + 1) {\n"
+        "            a.fetchAddRelaxed(1);\n"
+        "        }\n"
+        "        return a.loadRelaxed();\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 50);
+}
+
+TEST(AtomicTests, i32ReleaseStoreAcquireLoadHandshake) {
+    // The publish/subscribe pattern: writer stores with Release, reader
+    // loads with Acquire. Same carrier here, so this just checks the
+    // value path; the ordering pair is the contract the codegen pins.
+    auto src =
+        "package test;\n"
+        "import cajeta.threading.AtomicInt32;\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        AtomicInt32 flag = heap AtomicInt32(0);\n"
+        "        flag.storeRelease(42);\n"
+        "        return flag.loadAcquire();\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 42);
+}
+
+TEST(AtomicTests, i32AcquireCasSuccessAndFailure) {
+    auto src =
+        "package test;\n"
+        "import cajeta.threading.AtomicInt32;\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        AtomicInt32 a = heap AtomicInt32(7);\n"
+        "        boolean ok1 = a.compareAndSetAcquire(7, 100);\n"
+        "        boolean ok2 = a.compareAndSetAcquire(7, 999);\n"  // expected 7, actual 100 → false
+        "        if (!ok1) return -1;\n"
+        "        if (ok2) return -2;\n"
+        "        return a.load();\n"  // 100
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 100);
+}
+
+TEST(AtomicTests, i64ReleaseStoreAcquireLoadHandshake) {
+    auto src =
+        "package test;\n"
+        "import cajeta.threading.AtomicInt64;\n"
+        "public final class D {\n"
+        "    public static int64 run() {\n"
+        "        AtomicInt64 seq = heap AtomicInt64(0L);\n"
+        "        seq.storeRelease(123456789012345L);\n"
+        "        return seq.loadAcquire();\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI64(src), int64_t{123456789012345LL});
+}
+
+TEST(AtomicTests, i64RelaxedFetchAddAccumulates) {
+    auto src =
+        "package test;\n"
+        "import cajeta.threading.AtomicInt64;\n"
+        "public final class D {\n"
+        "    public static int64 run() {\n"
+        "        AtomicInt64 a = heap AtomicInt64(1000000000000L);\n"
+        "        a.fetchAddRelaxed(1L);\n"
+        "        a.fetchAddRelaxed(1L);\n"
+        "        return a.loadRelaxed();\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI64(src), int64_t{1000000000002LL});
+}
