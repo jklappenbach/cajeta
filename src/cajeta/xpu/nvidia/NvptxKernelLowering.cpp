@@ -144,6 +144,9 @@ private:
     };
     std::vector<ParamBinding> paramBindings;
     std::map<std::string, bool> bufferElemSigned;  // buffer name -> elem signed?
+    // At most one dynamic (runtime-sized) shared array per kernel — CUDA's
+    // extern __shared__ is a single region; multiple would alias the same base.
+    bool emittedDynamicShared = false;
 
     // continue/break targets for the innermost enclosing loop.
     struct LoopTarget { llvm::BasicBlock* continueBB; llvm::BasicBlock* breakBB; };
@@ -262,15 +265,18 @@ private:
         }
     }
 
-    // `Shared<T> name = shared T[N];` — workgroup-shared memory. Static shared
-    // memory in CUDA is a module-level global in addrspace(3) reserved per
-    // block, NOT a per-thread alloca: every thread sees the same region. So we
-    // emit ONE internal addrspace(3) global of [N x T], then register its
-    // decayed element pointer in the buffer maps — after which indexing
-    // (tile[i]), assignment, and compound-assignment all reuse the existing
-    // addrspace-agnostic buffer path (LLVM tracks the address space on the
-    // pointer). Size N must be a compile-time constant (dynamic shared memory,
-    // sized from the launch config, is a later increment).
+    // `Shared<T> name = shared T[size];` — workgroup-shared memory. Shared
+    // memory in CUDA is reserved per block (every thread sees the same region),
+    // NOT a per-thread alloca, so it lowers to ONE module-level addrspace(3)
+    // global; we then register its decayed element pointer in the buffer maps,
+    // after which indexing (tile[i]), assignment, and compound-assignment all
+    // reuse the existing addrspace-agnostic buffer path (LLVM tracks the
+    // address space on the pointer). Two flavors, by whether `size` folds:
+    //   - constant size N -> STATIC: an internal [N x T] global (per-block,
+    //     reserved by ptxas; .shared in PTX).
+    //   - runtime size     -> DYNAMIC: an external, unsized [0 x T] global
+    //     (.extern .shared). The byte count comes from the launch config
+    //     (cuLaunchKernel sharedMemBytes); CUDA allows one such region/kernel.
     void lowerSharedDecl(const std::string& nm, const CajetaTypePtr& declType,
                          const std::shared_ptr<NewExpression>& ne) {
         // Element type comes from the Shared<T> LHS type argument (T).
@@ -285,38 +291,50 @@ private:
         if (!elemTy) unsupported("shared local '" + nm +
                                  "' needs a scalar element type (Shared<T>)");
 
-        // Size from the array creator's single, constant size operand.
+        // Size from the array creator's single size operand.
         auto acr = std::dynamic_pointer_cast<ArrayCreatorRest>(ne->getCreatorRest());
         if (!acr) unsupported("shared local '" + nm +
-                              "' must be an array creation: `shared T[N]`");
+                              "' must be an array creation: `shared T[size]`");
         if (acr->getChildren().size() != 1) {
             unsupported("shared array '" + nm +
                         "' must have exactly one dimension");
         }
         auto sizeExpr = std::dynamic_pointer_cast<Expression>(
             acr->getChildren()[0]);
-        llvm::Value* sizeV = lowerExpr(sizeExpr);
-        auto* sizeCI = llvm::dyn_cast<llvm::ConstantInt>(sizeV);
-        if (!sizeCI) {
-            unsupported("shared array '" + nm + "' size must be a compile-time "
-                        "constant (dynamic shared memory not yet supported)");
-        }
-        uint64_t n = sizeCI->getZExtValue();
-        if (n == 0) unsupported("shared array '" + nm + "' size must be > 0");
+        llvm::Value* sizeV = lowerExpr(sizeExpr);  // constant => static path
 
-        // One per-block addrspace(3) global: [N x T] undef, internal linkage.
+        // Static [N x T] (internal, undef) vs dynamic [0 x T] (external). The
+        // dynamic size value is unused on the device — the launch sizes it —
+        // and is left for DCE.
+        llvm::GlobalValue::LinkageTypes linkage;
+        llvm::Constant* init;
+        uint64_t n;
+        if (auto* sizeCI = llvm::dyn_cast<llvm::ConstantInt>(sizeV)) {
+            n = sizeCI->getZExtValue();
+            if (n == 0) unsupported("shared array '" + nm + "' size must be > 0");
+            linkage = llvm::GlobalValue::InternalLinkage;
+        } else {
+            if (emittedDynamicShared) {
+                unsupported("at most one dynamic (runtime-sized) shared array "
+                            "per kernel; '" + nm + "' is a second");
+            }
+            emittedDynamicShared = true;
+            n = 0;                                      // unsized
+            linkage = llvm::GlobalValue::ExternalLinkage;
+        }
         llvm::ArrayType* arrTy = llvm::ArrayType::get(elemTy, n);
+        init = (linkage == llvm::GlobalValue::ExternalLinkage)
+                   ? nullptr                            // external: no initializer
+                   : (llvm::Constant*) llvm::UndefValue::get(arrTy);
         auto* gv = new llvm::GlobalVariable(
-            mod, arrTy, /*isConstant=*/false,
-            llvm::GlobalValue::InternalLinkage,
-            llvm::UndefValue::get(arrTy),
+            mod, arrTy, /*isConstant=*/false, linkage, init,
             // '_' not '.': the device global's name becomes a PTX symbol, and
             // '.' is PTX's directive separator (the AsmPrinter would mangle it).
             fn->getName().str() + "_" + nm, /*InsertBefore=*/nullptr,
             llvm::GlobalValue::NotThreadLocal, kSharedAS);
         gv->setAlignment(llvm::MaybeAlign(16));
 
-        // Decay [N x T]* -> T* (addrspace 3) and register like a buffer base so
+        // Decay [n x T]* -> T* (addrspace 3) and register like a buffer base so
         // tile[i] reuses lowerLValueAddr's GEP/load/store path unchanged.
         llvm::Value* zero =
             llvm::ConstantInt::get(llvm::Type::getInt64Ty(ctx), 0);

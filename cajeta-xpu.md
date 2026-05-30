@@ -38,6 +38,7 @@ deferrals first. Six commits on `cajeta-xpu` (after the restore commits):
 | G | host-source launch (`kernel.launch(...)` → `__cajeta_xpu_launch`) + cubin registration ctors + launch-borrow-scope checking | `XpuLaunchCodegenTests`, `XpuLaunchBorrowTests`, `XpuHostLaunchDeviceTests` |
 | H | general single-kernel compute bodies: mutable locals (entry allocas + mem2reg), `for`/`while`/`do-while`, unlabeled `break`/`continue`, compound assignment, full int/float operator set, unary/prefix/postfix `++`/`--`, numeric casts, `Barrier.workgroup()` | `XpuNvptxLoopEmitTests`, `XpuLoopDeviceTests` |
 | I | workgroup **shared memory** via a `shared` placement keyword (sibling of `heap`/`stack`): `Shared<T> tile = shared T[N];` → one per-block `addrspace(3)` global of constant size N, indexed/assigned like a buffer. Device-only (`XPU-K03` on the host path). | `XpuNvptxSharedEmitTests`, `XpuSharedDeviceTests` |
+| J | **dynamic shared memory**: a runtime-sized `shared T[expr]` lowers to an external unsized `addrspace(3)` global (`.extern .shared`), sized at launch via a new `sharedBytes:` launch-config key threaded through `__cajeta_xpu_launch` → `cuLaunchKernel`'s `sharedMemBytes`. One dynamic region per kernel. | `XpuNvptxSharedEmitTests`, `XpuSharedDeviceTests`, `XpuLaunchCodegenTests` |
 
 **Deviations from [`CajetaXPU.md`](cajeta-docs/CajetaXPU.md) (intentional, slice-scoped):**
 
@@ -126,9 +127,17 @@ deferrals first. Six commits on `cajeta-xpu` (after the restore commits):
   pointer). Device-only — the host codegen path rejects `shared` with `XPU-K03`.
   Verified on-device (256-wide tree reduction, `XpuSharedDeviceTests`) and in PTX
   text / via the AOT CLI (`.shared`/`ld.shared`/`st.shared`/`bar.sync`,
-  `XpuNvptxSharedEmitTests`). Deferred: **dynamic** shared memory (size from the
-  launch config) stays `XPU-N01`; the shared-aliasing borrow rule (overlapping
-  `&mut` slices, spec §11 case 2) is a separate deferred item.
+  `XpuNvptxSharedEmitTests`).
+- **Dynamic shared memory. DONE (increment J)** — a runtime-sized `shared T[expr]`
+  (non-constant size) lowers to an external unsized `addrspace(3)` global
+  (`.extern .shared`), sized at launch. A new `sharedBytes:` launch-config key
+  (named to dodge the `shared` keyword + match CUDA's `sharedMemBytes`) threads
+  the byte count through `__cajeta_xpu_launch` (now 5-arg) → `cuLaunchKernel`'s
+  `sharedMemBytes`; `CudaDriver::launch` gains a defaulted `sharedMemBytes`. One
+  dynamic region per kernel. Verified on-device (dynamic tree reduction sized at
+  launch, `XpuSharedDeviceTests`) + PTX `.extern .shared` + launch lowering
+  (`XpuLaunchCodegenTests`). The shared-aliasing borrow rule (overlapping `&mut`
+  slices, spec §11 case 2) remains a separate deferred item.
 
 ---
 

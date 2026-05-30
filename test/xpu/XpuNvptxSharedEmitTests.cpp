@@ -135,6 +135,44 @@ TEST(XpuNvptxSharedEmitTests, lowersSharedTileReduction) {
     EXPECT_NE(ptx.find("bar.sync"), std::string::npos) << ptx;
 }
 
+// A runtime-sized `shared T[expr]` (expr is a kernel param, not a constant) is
+// DYNAMIC shared memory: an external, unsized .shared region sized by the
+// launch's `shared:` byte count. Distinguished in PTX by `.extern .shared`.
+TEST(XpuNvptxSharedEmitTests, lowersDynamicSharedExtern) {
+    auto src =
+        "package test;\n"
+        "import cajeta.xpu.core.Buffer;\n"
+        "import cajeta.xpu.core.Thread;\n"
+        "import cajeta.xpu.core.Workgroup;\n"
+        "import cajeta.xpu.core.Barrier;\n"
+        "import cajeta.xpu.core.Shared;\n"
+        "public class M {\n"
+        "    @Kernel\n"
+        "    public static void dynreduce(Buffer<int32> out, Buffer<int32> in,\n"
+        "                                 uint32 n, uint32 tileLen) {\n"
+        "        Shared<int32> tile = shared int32[tileLen];\n"
+        "        uint32 t = Thread.x();\n"
+        "        uint32 g = Thread.globalIdX();\n"
+        "        if (g < n) { tile[t] = in[g]; } else { tile[t] = 0; }\n"
+        "        Barrier.workgroup();\n"
+        "        for (uint32 s = 128; s > 0; s >>= 1) {\n"
+        "            if (t < s) { tile[t] += tile[t + s]; }\n"
+        "            Barrier.workgroup();\n"
+        "        }\n"
+        "        if (t == 0) { out[Workgroup.x()] = tile[0]; }\n"
+        "    }\n"
+        "}\n";
+    std::string ptx = lowerToPtx(src, "test.M", "dynreduce");
+    ASSERT_FALSE(ptx.empty());
+
+    EXPECT_NE(ptx.find(".visible .entry dynreduce"), std::string::npos) << ptx;
+    // Dynamic shared memory is an EXTERNAL (unsized) .shared region.
+    EXPECT_NE(ptx.find(".extern .shared"), std::string::npos) << ptx;
+    EXPECT_NE(ptx.find("ld.shared"), std::string::npos) << ptx;
+    EXPECT_NE(ptx.find("st.shared"), std::string::npos) << ptx;
+    EXPECT_NE(ptx.find("bar.sync"), std::string::npos) << ptx;
+}
+
 // `shared` is device-only: used outside an @Kernel (i.e. on the host codegen
 // path), it must be rejected (XPU-K03), not mis-lowered as a host allocation.
 // compile(module) only parses + builds prototypes, so drive host body codegen
