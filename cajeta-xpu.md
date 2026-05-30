@@ -7,6 +7,12 @@ discipline is [`cajeta-docs/CajetaXPU-Variance.md`](cajeta-docs/CajetaXPU-Varian
 This file tracks *implementation status* — what's built, what's stubbed,
 and what's next.
 
+> **On the AMD box? Read [`cajeta-amd.md`](cajeta-amd.md) instead.** The
+> "what's next" below is NVIDIA *refinement* (wave ops, multi-arch). The
+> next strategic move is the **AMD second backend** — extract the backend
+> seam by threading AMDGPU through it, discover the NVIDIA∩AMD overlap
+> empirically. `cajeta-amd.md` is the self-contained pickup for that work.
+
 > **Status: SAXPY runs on a real NVIDIA GPU (design phase 2 milestone).**
 > The NVPTX vertical slice is proven end-to-end on an RTX 4090 (sm_89,
 > CUDA 12.9, LLVM 22.1.4): the spec SAXPY `@Kernel` source compiles
