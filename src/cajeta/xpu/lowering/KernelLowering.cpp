@@ -676,6 +676,20 @@ private:
                 target.workgroupBarrier(builder, mod);
                 return llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), 0);
             }
+        } else if (recv == "Wave") {
+            const auto& args = mc->getParameters();
+            if (name == "width") return target.waveWidth(builder, mod);
+            if (name == "shuffleSync") {
+                if (args.size() != 2) unsupported("Wave.shuffleSync arity");
+                llvm::Value* value = lowerExpr(args[0].expression);
+                llvm::Value* srcLane = lowerExpr(args[1].expression);
+                return target.waveShuffle(builder, mod, value, srcLane);
+            }
+            if (name == "ballotSync") {
+                if (args.size() != 1) unsupported("Wave.ballotSync arity");
+                llvm::Value* pred = toI1(lowerExpr(args[0].expression));
+                return target.waveBallot(builder, mod, pred);
+            }
         }
         unsupported("device builtin '" + recv + "." + name + "()'");
     }

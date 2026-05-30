@@ -84,6 +84,30 @@ public:
         fn->setCallingConv(llvm::CallingConv::AMDGPU_KERNEL);
     }
 
+    // Wave ops. Wavefront size is target-/feature-dependent (32 or 64 on
+    // RDNA; default 32 for compute here). readlane is shuffle-by-index; ballot
+    // returns the wave-width mask (i32 in the wave32 default), widened to i64.
+    llvm::Value* waveWidth(llvm::IRBuilderBase& b, llvm::Module& m) override {
+        llvm::Function* f = llvm::Intrinsic::getOrInsertDeclaration(
+            &m, llvm::Intrinsic::amdgcn_wavefrontsize);
+        return b.CreateCall(f, {}, "wavesize");
+    }
+    llvm::Value* waveShuffle(llvm::IRBuilderBase& b, llvm::Module& m,
+                             llvm::Value* value, llvm::Value* srcLane) override {
+        llvm::Type* i32 = llvm::Type::getInt32Ty(m.getContext());
+        llvm::Function* f = llvm::Intrinsic::getOrInsertDeclaration(
+            &m, llvm::Intrinsic::amdgcn_readlane, {i32});
+        return b.CreateCall(f, {value, srcLane}, "readlane");
+    }
+    llvm::Value* waveBallot(llvm::IRBuilderBase& b, llvm::Module& m,
+                            llvm::Value* pred) override {
+        llvm::LLVMContext& ctx = m.getContext();
+        llvm::Function* f = llvm::Intrinsic::getOrInsertDeclaration(
+            &m, llvm::Intrinsic::amdgcn_ballot, {llvm::Type::getInt32Ty(ctx)});
+        llvm::Value* bits = b.CreateCall(f, {pred}, "ballot");
+        return b.CreateZExt(bits, llvm::Type::getInt64Ty(ctx));
+    }
+
 private:
     static llvm::Value* readId(llvm::IRBuilderBase& b, llvm::Module& m,
                                llvm::Intrinsic::ID id) {
