@@ -155,3 +155,92 @@ TEST(XpuSharedDeviceTests, sharedTreeReductionRunsOnDevice) {
 
     EXPECT_EQ(result, expected);
 }
+
+// Same reduction, but the tile is DYNAMIC shared memory: its size is a runtime
+// kernel arg, so the device global is external/unsized and the byte count is
+// supplied at launch (cuLaunchKernel sharedMemBytes). Proves the dynamic path
+// end to end on the GPU.
+TEST(XpuSharedDeviceTests, dynamicSharedReductionRunsOnDevice) {
+    if (!CudaDriver::available()) {
+        GTEST_SKIP() << "no CUDA device/driver available";
+    }
+
+    const char* src =
+        "package test;\n"
+        "import cajeta.xpu.core.Buffer;\n"
+        "import cajeta.xpu.core.Thread;\n"
+        "import cajeta.xpu.core.Workgroup;\n"
+        "import cajeta.xpu.core.Barrier;\n"
+        "import cajeta.xpu.core.Shared;\n"
+        "public class M {\n"
+        "    @Kernel\n"
+        "    public static void dynreduce(Buffer<int32> out, Buffer<int32> in,\n"
+        "                                 uint32 n, uint32 tileLen) {\n"
+        "        Shared<int32> tile = shared int32[tileLen];\n"
+        "        uint32 t = Thread.x();\n"
+        "        uint32 g = Thread.globalIdX();\n"
+        "        if (g < n) {\n"
+        "            tile[t] = in[g];\n"
+        "        } else {\n"
+        "            tile[t] = 0;\n"
+        "        }\n"
+        "        Barrier.workgroup();\n"
+        "        for (uint32 s = 128; s > 0; s >>= 1) {\n"
+        "            if (t < s) {\n"
+        "                tile[t] += tile[t + s];\n"
+        "            }\n"
+        "            Barrier.workgroup();\n"
+        "        }\n"
+        "        if (t == 0) {\n"
+        "            out[Workgroup.x()] = tile[0];\n"
+        "        }\n"
+        "    }\n"
+        "}\n";
+    Compiler compiler;
+    auto module = compileForInspection(compiler, src, "test.M");
+    auto reduce = findMethod(module->getStructures()["test.M"], "dynreduce");
+    ASSERT_NE(reduce, nullptr);
+
+    auto tm = createNvptxTargetMachine("sm_89");
+    ASSERT_NE(tm, nullptr);
+    llvm::LLVMContext deviceCtx;
+    llvm::Module deviceModule("xpu_dynshared_device", deviceCtx);
+    configureDeviceModule(deviceModule, *tm);
+    ASSERT_NE(lowerKernel(reduce, deviceModule), nullptr);
+    std::string ptx = emitPtx(deviceModule, *tm);
+    ASSERT_FALSE(ptx.empty());
+    std::vector<uint8_t> cubin = assembleCubin(ptx, "sm_89");
+    ASSERT_FALSE(cubin.empty());
+
+    const uint32_t n = 256;
+    const uint32_t tileLen = 256;
+    std::vector<int32_t> in(n);
+    for (uint32_t i = 0; i < n; ++i) in[i] = (int32_t) i;
+    const int32_t expected = (int32_t) ((uint64_t) n * (n - 1) / 2);
+
+    CudaDriver cuda;
+    ASSERT_TRUE(cuda.init());
+    CudaModule mod = cuda.loadModule(cubin.data(), cubin.size());
+    ASSERT_NE(mod, nullptr);
+    CudaFunction fn = cuda.getFunction(mod, "dynreduce");
+    ASSERT_NE(fn, nullptr);
+
+    CudaDevicePtr dOut = cuda.alloc(sizeof(int32_t));
+    CudaDevicePtr dIn = cuda.alloc(std::size_t(n) * sizeof(int32_t));
+    ASSERT_NE(dOut, 0u);
+    ASSERT_NE(dIn, 0u);
+    ASSERT_TRUE(cuda.memcpyHtoD(dIn, in.data(), std::size_t(n) * sizeof(int32_t)));
+
+    // The launch supplies the dynamic shared byte count: tileLen int32s.
+    void* params[] = { &dOut, &dIn, (void*) &n, (void*) &tileLen };
+    ASSERT_TRUE(cuda.launch(fn, /*grid=*/1, /*block=*/256, params,
+                            /*sharedMemBytes=*/tileLen * sizeof(int32_t)));
+    ASSERT_TRUE(cuda.synchronize());
+
+    int32_t result = -1;
+    ASSERT_TRUE(cuda.memcpyDtoH(&result, dOut, sizeof(int32_t)));
+    cuda.free(dOut);
+    cuda.free(dIn);
+
+    EXPECT_EQ(result, expected);
+}

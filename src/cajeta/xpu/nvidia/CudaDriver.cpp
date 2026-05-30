@@ -160,9 +160,9 @@ void CudaDriver::free(CudaDevicePtr p) {
 }
 
 bool CudaDriver::launch(CudaFunction f, unsigned gridX, unsigned blockX,
-                        void** kernelParams) {
+                        void** kernelParams, unsigned sharedMemBytes) {
     return ok(api->cuLaunchKernel(f, gridX, 1, 1, blockX, 1, 1,
-                                  /*sharedMem=*/0, /*stream=*/nullptr,
+                                  sharedMemBytes, /*stream=*/nullptr,
                                   kernelParams, /*extra=*/nullptr),
               "cuLaunchKernel");
 }

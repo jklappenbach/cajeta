@@ -4181,7 +4181,7 @@ void __cajeta_xpu_buffer_free(void* self, int64_t handle) {
 // runtime; this is the not-yet-wired no-op so the symbol resolves and host
 // codegen of a launch site links.
 void __cajeta_xpu_launch(const char* kernelName, int32_t gridX, int32_t blockX,
-                         void* argv) {
+                         uint32_t sharedBytes, void* argv) {
     if (!kernelName || !cajeta_xpu_cuda_ready()) return;
     pthread_mutex_lock(&g_xpu_cuda_lock);
     struct cajeta_xpu_module* e = cajeta_xpu_find_module(kernelName);
@@ -4204,10 +4204,11 @@ void __cajeta_xpu_launch(const char* kernelName, int32_t gridX, int32_t blockX,
         return;
     }
     // 1-D grid/block; default stream; kernelParams = the CUDA argv the launch
-    // site marshalled (pointers to each arg value).
+    // site marshalled (pointers to each arg value). sharedBytes sizes the
+    // kernel's dynamic (extern) shared memory; 0 for static-only kernels.
     g_xpu_cuda.cuLaunchKernel(fn, (unsigned) gridX, 1, 1,
                               (unsigned) blockX, 1, 1,
-                              /*sharedMem=*/0, /*stream=*/NULL,
+                              (unsigned) sharedBytes, /*stream=*/NULL,
                               (void**) argv, /*extra=*/NULL);
 }
 

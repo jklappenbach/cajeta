@@ -18,16 +18,18 @@
 //     assignment (+=, -=, …)
 //   - if/else, for / while / do-while loops, unlabeled break / continue
 //   - buffer/array index load & store (addrspace(1) GEP)
-//   - workgroup-shared memory: `Shared<T> tile = shared T[N];` (the `shared`
-//     placement keyword) -> one per-block addrspace(3) global of constant
-//     size N; indexed/assigned exactly like a buffer
+//   - workgroup-shared memory via the `shared` placement keyword,
+//     `Shared<T> tile = shared T[size];` -> one addrspace(3) global, indexed
+//     /assigned exactly like a buffer. Constant size -> a per-block internal
+//     [N x T] (static). Runtime size -> an external unsized [0 x T] (dynamic,
+//     sized by the launch's `shared:` byte count; one per kernel).
 //   - full integer + float operator set: +-*/ %, & | ^, << >> (logical/
 //     arithmetic by signedness), short-circuit && ||, comparisons
 //   - unary +/-/~/!, prefix & postfix ++/--, numeric casts
-// Still raised as XPU-N01 (next increment): dynamic shared memory (size from
-// the launch config), Wave shuffles/ballots, calls to user @Device helpers,
-// for-each loops, and labeled break/continue. The shared-aliasing borrow rule
-// (overlapping &mut slices, spec §11 case 2) is a separate deferred item.
+// Still raised as XPU-N01 (next increment): Wave shuffles/ballots, calls to
+// user @Device helpers, for-each loops, and labeled break/continue. The
+// shared-aliasing borrow rule (overlapping &mut slices, spec §11 case 2) is a
+// separate deferred item.
 //
 
 #pragma once
