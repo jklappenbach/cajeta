@@ -15,7 +15,7 @@
 #include "cajeta/error/Exception.h"
 #include "cajeta/method/Method.h"
 #include "cajeta/xpu/core/XpuAttributes.h"
-#include "cajeta/xpu/nvidia/NvptxRegistration.h"
+#include "cajeta/xpu/XpuTarget.h"
 
 #include "JitWinSymbols.h"
 #include "JitErrorShim.h"
@@ -294,8 +294,13 @@ std::unique_ptr<CajetaJit> CajetaJit::compile(
                 }
             }
         }
-        cajeta::xpu::nvidia::emitKernelRegistration(
-            kernels, *primary->getLlvmModule());
+        // The JIT host-launch path is NVIDIA-only (AMD on-device tests drive
+        // the amd:: backend directly, mirroring XpuSaxpyDeviceTests), so the
+        // backend is fixed to Nvptx here. Routed through the dispatch seam so
+        // there is a single registration entry point.
+        cajeta::xpu::emitKernelRegistration(
+            cajeta::xpu::Backend::Nvptx, kernels, *primary->getLlvmModule(),
+            "sm_89");
     }
 
     llvm::Module* llvmModule = primary->getLlvmModule();
