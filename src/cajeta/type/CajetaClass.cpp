@@ -4063,13 +4063,17 @@ namespace cajeta {
         // base-typed receiver there must still dispatch through the vtable.
         bool isNativeForwarder = method->findAnnotation("Native") != nullptr;
         bool isFinalClass = this->getModifiers().find(FINAL) != this->getModifiers().end();
-        // Value-returning (sret) methods dispatch directly in v1: the hidden
-        // result pointer is part of the function type, so virtual dispatch
-        // would require sret-shaped vtable slots (deferred — see ValueReturns.md
-        // M5). Channel.receive et al. aren't overridden, so direct is correct.
+        // Value-returning (sret) methods participate in virtual dispatch: the
+        // concrete override's LLVM function already carries the sret signature
+        // (Method::generatePrototype), so the vtable slot's stored fn-ptr type
+        // matches the indirect-call type. The sret pointer rides as
+        // methodArgs[0] and is left untouched by the class-vtable path; the
+        // interface fat-pointer branches don't intersect (interface-declared
+        // methods can't be sret today — returnsStackValue() is gated false for
+        // interface returns).
         bool useVtable = thisValue && !isStatic && !isConstructor && !isView
             && !forceDirectCall && !isMethodTemplateInst
-            && !(isNativeForwarder && isFinalClass) && !usesSret;
+            && !(isNativeForwarder && isFinalClass);
         bool isInterfaceRecv = this->isInterface();
         // Interface formal whose resolved method lives on a CLASS
         // ancestor (e.g. `Splittable<T> extends Stream<T>` and we're
