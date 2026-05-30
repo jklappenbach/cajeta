@@ -1863,28 +1863,40 @@ namespace cajeta {
         //      `new Holder(seed, (T acc, U x) -> { ...; return acc; })`).
         //   4. Fallback: void. A nonsensical lambda surfaces at codegen.
         CajetaTypePtr ret;
+        // M5(b) — function-type return ABI is sret form iff the body yields a
+        // stack value (an expression body that IS `stack X(...)`, or a block
+        // body whose returns are `return stack X(...)`). An expectedType from
+        // the LHS pins the ABI; otherwise infer it the same way Method does.
+        bool returnsOwn = true;
         if (auto expectedFn = std::dynamic_pointer_cast<CajetaFunctionType>(expectedType)) {
             ret = expectedFn->getReturnType();
+            returnsOwn = expectedFn->isReturnsOwnership();
         }
         if (!ret) {
             if (auto bexpr = std::dynamic_pointer_cast<Expression>(body)) {
                 ret = bexpr->getResolvedType();
+                if (Method::exprIsStackConstruction(bexpr)) {
+                    returnsOwn = false;
+                }
             }
         }
         if (!ret) {
             // Block body — walk for the first explicit return statement.
             // Returns void if the body has no `return` at all.
             ret = inferLambdaReturnFromBody(body);
+            if (Method::nodeHasStackReturn(body)) {
+                returnsOwn = false;
+            }
         }
         if (!ret) ret = CajetaType::of("void");
-        std::string canon = CajetaFunctionType::buildCanonical(paramTypes, ret);
+        std::string canon = CajetaFunctionType::buildCanonical(paramTypes, ret, returnsOwn);
         auto& cmap = CajetaType::getCanonicalMap();
         auto it = cmap.find(canon);
         if (it != cmap.end()) {
             resolvedType = it->second;
         } else {
             auto fnType = std::make_shared<CajetaFunctionType>(
-                module, paramTypes, ret);
+                module, paramTypes, ret, returnsOwn);
             cmap[canon] = static_pointer_cast<CajetaType>(fnType);
             resolvedType = fnType;
         }
@@ -2051,6 +2063,22 @@ namespace cajeta {
             synthesizedName,
             lmod);
 
+        // M5(b) — sret form: arg 0 is the caller-allocated result slot,
+        // captures and user params shift by one. The sret attribute carries
+        // the struct type so the backend / optimizer can reason about the
+        // pointer's role (and CallInst sites use it too). The shift offset
+        // `sretOffset` is reused for every fn->getArg() index that follows.
+        unsigned sretOffset = 0;
+        if (fnType->usesSret()) {
+            auto retClass = std::dynamic_pointer_cast<CajetaClass>(fnType->getReturnType());
+            llvm::Type* structTy = retClass ? retClass->getLlvmType() : nullptr;
+            if (structTy) {
+                fn->addParamAttr(0, llvm::Attribute::get(
+                    llvmCtx, llvm::Attribute::StructRet, structTy));
+            }
+            sretOffset = 1;
+        }
+
         // Save current insertion state — we're going to emit the lambda's
         // body into its own function, then restore the outer cursor so the
         // surrounding expression continues building.
@@ -2139,11 +2167,12 @@ namespace cajeta {
             // identifier lookups inside the body load through it (same
             // pattern as method params). LLVM arg 0 is the implicit
             // `captures` pointer (L2 ABI), so user param i lives at LLVM
-            // arg i + 1.
+            // arg i + 1. Under sret form the sret slot precedes captures,
+            // adding `sretOffset` to every LLVM arg index.
             auto formal = std::make_shared<FormalParameter>(
                 paramNames[i], paramTypes[i]);
             auto field = std::make_shared<ParameterField>(
-                module, formal, fn, (int) i + 1);
+                module, formal, fn, (int) i + 1 + (int) sretOffset);
             // Force the alloca + store now so getOrCreateAllocation later
             // returns the populated slot.
             field->getOrCreateAllocation();
@@ -2157,7 +2186,7 @@ namespace cajeta {
         //      so the body's identifier lookups find the captured value as
         //      if it were a normal local.
         if (capturesTy) {
-            llvm::Value* capArg = fn->getArg(0);
+            llvm::Value* capArg = fn->getArg(sretOffset);
             llvm::Type* ptrLlvmTy = llvm::PointerType::get(llvmCtx, 0);
             for (size_t i = 0; i < captures.size(); ++i) {
                 auto& cap = captures[i];
@@ -2187,6 +2216,16 @@ namespace cajeta {
         // becomes the implicit return; block bodies produce no value and
         // contain their own ReturnStatement(s).
         bool blockBody = std::dynamic_pointer_cast<Block>(body) != nullptr;
+        // M5(b) NRVO — when the lambda is sret-shaped and the expression
+        // body IS a `stack X(...)` construction, redirect the construction
+        // target at the sret slot so the ctor writes its fields straight
+        // into the caller's memory (zero copy). For block bodies the same
+        // redirection happens inside ReturnStatement (Statement.cpp).
+        if (sretOffset && !blockBody) {
+            if (auto nx = std::dynamic_pointer_cast<NewExpression>(body)) {
+                if (nx->getStackAlloc()) nx->setNrvoTarget(fn->getArg(0));
+            }
+        }
         llvm::Value* bodyVal = body->generateCode(module);
 
         if (blockBody) {
@@ -2247,23 +2286,50 @@ namespace cajeta {
                 }
             }
             if (bodyVal) {
-                // Coerce to the function return type if width differs
-                // (literal i64 going to an i32 return slot, etc.) —
-                // mirrors what invokeMethod does at the call site.
-                llvm::Type* retTy = fn->getReturnType();
-                if (retTy && !retTy->isVoidTy() && bodyVal->getType() != retTy) {
-                    if (retTy->isIntegerTy() && bodyVal->getType()->isIntegerTy()) {
-                        bodyVal = lambdaBuilder->CreateIntCast(
-                            bodyVal, retTy, /*isSigned=*/true);
-                    } else if (retTy->isFloatingPointTy()
-                            && bodyVal->getType()->isFloatingPointTy()) {
-                        bodyVal = lambdaBuilder->CreateFPCast(bodyVal, retTy);
+                // M5(b) sret form: body already wrote into the caller-
+                // owned slot (NRVO when body was a `stack` construction;
+                // otherwise bodyVal is a pointer to copy in). RetVoid.
+                if (sretOffset) {
+                    llvm::Value* sretPtr = fn->getArg(0);
+                    if (bodyVal != sretPtr) {
+                        auto retClass = std::dynamic_pointer_cast<CajetaClass>(
+                            fnType->getReturnType());
+                        llvm::Type* structTy = retClass
+                            ? retClass->getLlvmType() : nullptr;
+                        if (structTy) {
+                            if (bodyVal->getType()->isPointerTy()) {
+                                const llvm::DataLayout& dl2 = lmod->getDataLayout();
+                                llvm::Value* sz = llvm::ConstantInt::get(
+                                    llvm::Type::getInt64Ty(llvmCtx),
+                                    dl2.getTypeAllocSize(structTy));
+                                lambdaBuilder->CreateMemCpy(sretPtr,
+                                    llvm::MaybeAlign(8), bodyVal,
+                                    llvm::MaybeAlign(8), sz);
+                            } else {
+                                lambdaBuilder->CreateStore(bodyVal, sretPtr);
+                            }
+                        }
                     }
-                }
-                if (retTy->isVoidTy()) {
                     lambdaBuilder->CreateRetVoid();
                 } else {
-                    lambdaBuilder->CreateRet(bodyVal);
+                    // Coerce to the function return type if width differs
+                    // (literal i64 going to an i32 return slot, etc.) —
+                    // mirrors what invokeMethod does at the call site.
+                    llvm::Type* retTy = fn->getReturnType();
+                    if (retTy && !retTy->isVoidTy() && bodyVal->getType() != retTy) {
+                        if (retTy->isIntegerTy() && bodyVal->getType()->isIntegerTy()) {
+                            bodyVal = lambdaBuilder->CreateIntCast(
+                                bodyVal, retTy, /*isSigned=*/true);
+                        } else if (retTy->isFloatingPointTy()
+                                && bodyVal->getType()->isFloatingPointTy()) {
+                            bodyVal = lambdaBuilder->CreateFPCast(bodyVal, retTy);
+                        }
+                    }
+                    if (retTy->isVoidTy()) {
+                        lambdaBuilder->CreateRetVoid();
+                    } else {
+                        lambdaBuilder->CreateRet(bodyVal);
+                    }
                 }
             } else {
                 if (fn->getReturnType()->isVoidTy()) {
@@ -2493,14 +2559,17 @@ namespace cajeta {
                 paramTypes.push_back(pl[i]->getType());
             }
             CajetaTypePtr ret = std::static_pointer_cast<CajetaType>(targetClass);
-            std::string canon = CajetaFunctionType::buildCanonical(paramTypes, ret);
+            // Constructor returns ownership of a heap instance — always
+            // ownership-form function type.
+            bool returnsOwn = true;
+            std::string canon = CajetaFunctionType::buildCanonical(paramTypes, ret, returnsOwn);
             auto& cmap = CajetaType::getCanonicalMap();
             auto it = cmap.find(canon);
             if (it != cmap.end()) {
                 resolvedType = it->second;
             } else {
                 auto fnType = std::make_shared<CajetaFunctionType>(
-                    module, paramTypes, ret);
+                    module, paramTypes, ret, returnsOwn);
                 cmap[canon] = std::static_pointer_cast<CajetaType>(fnType);
                 resolvedType = fnType;
             }
@@ -2520,14 +2589,19 @@ namespace cajeta {
                 paramTypes.push_back(p->getType());
             }
             CajetaTypePtr ret = staticMethod->getReturnType();
-            std::string canon = CajetaFunctionType::buildCanonical(paramTypes, ret);
+            // Function-type ABI: sret form iff the target method returns
+            // by stack value (M5(b)). Borrow and `#R` returns both produce
+            // the ownership-form pointer-return signature today, so they
+            // share the `returnsOwn=true` shape.
+            bool returnsOwn = !staticMethod->returnsStackValue();
+            std::string canon = CajetaFunctionType::buildCanonical(paramTypes, ret, returnsOwn);
             auto& cmap = CajetaType::getCanonicalMap();
             auto it = cmap.find(canon);
             if (it != cmap.end()) {
                 resolvedType = it->second;
             } else {
                 auto fnType = std::make_shared<CajetaFunctionType>(
-                    module, paramTypes, ret);
+                    module, paramTypes, ret, returnsOwn);
                 cmap[canon] = std::static_pointer_cast<CajetaType>(fnType);
                 resolvedType = fnType;
             }
@@ -2557,14 +2631,17 @@ namespace cajeta {
                 paramTypes.push_back(pl[i]->getType());
             }
             CajetaTypePtr ret = instanceMethod->getReturnType();
-            std::string canon = CajetaFunctionType::buildCanonical(paramTypes, ret);
+            // M5(b) — sret form iff the target method returns by stack
+            // value. Same shape rule as the static case above.
+            bool returnsOwn = !instanceMethod->returnsStackValue();
+            std::string canon = CajetaFunctionType::buildCanonical(paramTypes, ret, returnsOwn);
             auto& cmap = CajetaType::getCanonicalMap();
             auto it = cmap.find(canon);
             if (it != cmap.end()) {
                 resolvedType = it->second;
             } else {
                 auto fnType = std::make_shared<CajetaFunctionType>(
-                    module, paramTypes, ret);
+                    module, paramTypes, ret, returnsOwn);
                 cmap[canon] = std::static_pointer_cast<CajetaType>(fnType);
                 resolvedType = fnType;
             }
@@ -2718,51 +2795,78 @@ namespace cajeta {
             ? existing
             : llvm::Function::Create(fnType->getLlvmFunctionType(),
                 llvm::Function::ExternalLinkage, thunkName, lmod);
+        // M5(b) — when the function-type is sret-shaped the thunk also takes
+        // a hidden sret slot at arg 0; mirror the attribute on its parameter
+        // and shift captures/user-arg indices by 1.
+        unsigned sretOffset = 0;
+        if (!existing && fnType->usesSret()) {
+            auto retClass = std::dynamic_pointer_cast<CajetaClass>(fnType->getReturnType());
+            llvm::Type* structTy = retClass ? retClass->getLlvmType() : nullptr;
+            if (structTy) {
+                thunk->addParamAttr(0, llvm::Attribute::get(
+                    llvmCtx, llvm::Attribute::StructRet, structTy));
+            }
+            sretOffset = 1;
+        }
         if (!existing) {
             llvm::BasicBlock* tbb = llvm::BasicBlock::Create(
                 llvmCtx, "entry", thunk);
             llvm::IRBuilder<> tb(tbb);
             std::vector<llvm::Value*> callArgs;
+            // When the target method itself is sret-shaped, its arg 0 IS the
+            // sret slot. Forward the thunk's sret arg straight through.
+            if (sretOffset) {
+                callArgs.push_back(thunk->getArg(0));
+            }
             if (kind == Kind::BOUND_INSTANCE) {
-                // Captures struct is `{ ptr receiver }`. Load the
-                // receiver and pass it as `this`. User args follow at
-                // thunk arg 1..
+                // Captures struct is `{ ptr receiver }` at thunk arg
+                // `sretOffset`. Load the receiver and pass it as `this`,
+                // then user args at thunk arg `sretOffset + 1..`.
                 std::vector<llvm::Type*> capFields = {(llvm::Type*) ptrTy};
                 llvm::StructType* capStructTy = llvm::StructType::get(
                     llvmCtx, capFields);
-                llvm::Value* capArg = thunk->getArg(0);
+                llvm::Value* capArg = thunk->getArg(sretOffset);
                 llvm::Value* recvSlot = tb.CreateStructGEP(
                     capStructTy, capArg, 0, "captured.this");
                 llvm::Value* recvVal = tb.CreateLoad(ptrTy, recvSlot, "this");
                 callArgs.push_back(recvVal);
                 unsigned thunkArgCount = thunk->arg_size();
-                for (unsigned i = 1; i < thunkArgCount; ++i) {
+                for (unsigned i = sretOffset + 1; i < thunkArgCount; ++i) {
                     callArgs.push_back(thunk->getArg(i));
                 }
             } else if (kind == Kind::UNBOUND_INSTANCE) {
-                // Thunk arg 1 IS the receiver (passed by the caller as
-                // the function value's first explicit arg). The method
-                // expects `this` first; pass arg 1 there, then args 2..
-                callArgs.push_back(thunk->getArg(1));
+                // Thunk arg `sretOffset + 1` IS the receiver. Pass it as
+                // `this`, then args from `sretOffset + 2..`.
+                callArgs.push_back(thunk->getArg(sretOffset + 1));
                 unsigned thunkArgCount = thunk->arg_size();
-                for (unsigned i = 2; i < thunkArgCount; ++i) {
+                for (unsigned i = sretOffset + 2; i < thunkArgCount; ++i) {
                     callArgs.push_back(thunk->getArg(i));
                 }
             } else {
-                // STATIC — captures is unused; forward args verbatim.
+                // STATIC — captures is unused; forward args from
+                // `sretOffset + 1..`.
                 unsigned thunkArgCount = thunk->arg_size();
-                for (unsigned i = 1; i < thunkArgCount; ++i) {
+                for (unsigned i = sretOffset + 1; i < thunkArgCount; ++i) {
                     callArgs.push_back(thunk->getArg(i));
                 }
             }
             llvm::Function* targetFn = CajetaModule::ensureFunctionInModule(
                 lmod, target->getLlvmFunction());
-            llvm::Value* callResult = tb.CreateCall(
+            llvm::CallInst* call = tb.CreateCall(
                 target->getLlvmFunctionType(), targetFn, callArgs);
+            // Mirror the sret call-site attribute the call ABI requires.
+            if (sretOffset) {
+                auto retClass = std::dynamic_pointer_cast<CajetaClass>(fnType->getReturnType());
+                llvm::Type* structTy = retClass ? retClass->getLlvmType() : nullptr;
+                if (structTy) {
+                    call->addParamAttr(0, llvm::Attribute::get(
+                        llvmCtx, llvm::Attribute::StructRet, structTy));
+                }
+            }
             if (thunk->getReturnType()->isVoidTy()) {
                 tb.CreateRetVoid();
             } else {
-                tb.CreateRet(callResult);
+                tb.CreateRet(call);
             }
         }
 

@@ -91,7 +91,7 @@ namespace cajeta {
     // (NewExpression with stackAlloc) or a stack aggregate-initializer. Storage
     // class lives on the construction, not the type — so this is how the
     // compiler learns a method returns by copy.
-    static bool exprIsStackConstruction(const ExpressionPtr& e) {
+    bool Method::exprIsStackConstruction(const ExpressionPtr& e) {
         if (!e) return false;
         if (auto ne = dynamic_pointer_cast<NewExpression>(e)) {
             return ne->getStackAlloc();
@@ -102,9 +102,7 @@ namespace cajeta {
         return false;
     }
 
-    static bool nodeHasStackReturn(const AbstractSyntaxNodePtr& node);
-
-    static bool blockHasStackReturn(const BlockPtr& block) {
+    bool Method::blockHasStackReturn(const BlockPtr& block) {
         if (!block) return false;
         for (auto& child : block->getChildren()) {
             if (nodeHasStackReturn(child)) return true;
@@ -118,7 +116,7 @@ namespace cajeta {
     // accessors explicitly; everything else falls back to the generic child
     // walk. (try/switch bodies have no public accessors today — returns nested
     // directly inside a try/switch aren't detected; not needed for v1.)
-    static bool nodeHasStackReturn(const AbstractSyntaxNodePtr& node) {
+    bool Method::nodeHasStackReturn(const AbstractSyntaxNodePtr& node) {
         if (!node) return false;
         if (auto ret = dynamic_pointer_cast<ReturnStatement>(node)) {
             return exprIsStackConstruction(ret->getExpression());
