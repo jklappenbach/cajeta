@@ -117,6 +117,29 @@ namespace xpu {
         virtual llvm::Value* bufferElementPtr(
             llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* base,
             llvm::Type* elemTy, llvm::Value* index);
+
+        // --- wave / subgroup ops (the @Wave variance-shaped feature) ---------
+        //
+        // All three backends have hardware wave ops, but they diverge in
+        // intrinsic, lane-width, and ballot shape — so these are pure-virtual
+        // seam points, the headline test of whether the abstraction holds for a
+        // genuinely divergent capability (cajeta-amd.md §2).
+
+        // Lanes per wave: i32. NVPTX warpsize sreg (32); AMDGPU wavefrontsize
+        // intrinsic; Vulkan spv.wave.get_lane_count.
+        virtual llvm::Value* waveWidth(llvm::IRBuilderBase& b,
+                                       llvm::Module& m) = 0;
+
+        // Read i32 `value` from lane `srcLane` (i32), broadcast across the wave
+        // (shuffle-by-index / readlane). Returns i32.
+        virtual llvm::Value* waveShuffle(llvm::IRBuilderBase& b, llvm::Module& m,
+                                         llvm::Value* value,
+                                         llvm::Value* srcLane) = 0;
+
+        // Ballot: an i64 bitmask whose bit i is set iff lane i's `pred` (i1) is
+        // true. Backends whose native ballot is narrower (i32) zero-extend.
+        virtual llvm::Value* waveBallot(llvm::IRBuilderBase& b, llvm::Module& m,
+                                        llvm::Value* pred) = 0;
     };
 
 } // namespace xpu

@@ -156,6 +156,35 @@ public:
         return b.CreateGEP(elemTy, base, {index}, "idx");
     }
 
+    // Wave ops via the SPIR-V subgroup intrinsics (→ OpGroupNonUniform*).
+    llvm::Value* waveWidth(llvm::IRBuilderBase& b, llvm::Module& m) override {
+        llvm::Function* f = llvm::Intrinsic::getOrInsertDeclaration(
+            &m, llvm::Intrinsic::spv_wave_get_lane_count);
+        return b.CreateCall(f, {}, "lanecount");
+    }
+    llvm::Value* waveShuffle(llvm::IRBuilderBase& b, llvm::Module& m,
+                             llvm::Value* value, llvm::Value* srcLane) override {
+        llvm::Function* f = llvm::Intrinsic::getOrInsertDeclaration(
+            &m, llvm::Intrinsic::spv_wave_readlane,
+            {llvm::Type::getInt32Ty(m.getContext())});
+        return b.CreateCall(f, {value, srcLane}, "readlane");
+    }
+    llvm::Value* waveBallot(llvm::IRBuilderBase& b, llvm::Module& m,
+                            llvm::Value* pred) override {
+        // spv.wave.ballot yields a <4 x i32> (128-bit) mask; combine the low two
+        // lanes (covering up to 64 wave lanes) into the i64 API value.
+        llvm::LLVMContext& ctx = m.getContext();
+        llvm::Type* i64 = llvm::Type::getInt64Ty(ctx);
+        llvm::Function* f = llvm::Intrinsic::getOrInsertDeclaration(
+            &m, llvm::Intrinsic::spv_wave_ballot);
+        llvm::Value* vec = b.CreateCall(f, {pred}, "ballot");
+        llvm::Value* lo = b.CreateZExt(
+            b.CreateExtractElement(vec, uint64_t(0)), i64);
+        llvm::Value* hi = b.CreateZExt(
+            b.CreateExtractElement(vec, uint64_t(1)), i64);
+        return b.CreateOr(lo, b.CreateShl(hi, llvm::ConstantInt::get(i64, 32)));
+    }
+
 private:
     static llvm::Value* readCoord(llvm::IRBuilderBase& b, llvm::Module& m,
                                   llvm::Intrinsic::ID id, unsigned dim) {

@@ -80,6 +80,32 @@ public:
             ->addOperand(llvm::MDNode::get(ctx, ops));
     }
 
+    // Wave ops: NVIDIA warps are 32 wide; shuffle + ballot are hardware.
+    llvm::Value* waveWidth(llvm::IRBuilderBase& b, llvm::Module& m) override {
+        return readSreg(b, m, llvm::Intrinsic::nvvm_read_ptx_sreg_warpsize);
+    }
+    llvm::Value* waveShuffle(llvm::IRBuilderBase& b, llvm::Module& m,
+                             llvm::Value* value, llvm::Value* srcLane) override {
+        // shfl.sync.idx.b32: full-warp membermask, idx mode clamp 0x1f.
+        llvm::Type* i32 = llvm::Type::getInt32Ty(m.getContext());
+        llvm::Function* f = llvm::Intrinsic::getOrInsertDeclaration(
+            &m, llvm::Intrinsic::nvvm_shfl_sync_idx_i32);
+        return b.CreateCall(f, {llvm::ConstantInt::get(i32, 0xFFFFFFFFu), value,
+                                srcLane, llvm::ConstantInt::get(i32, 0x1Fu)},
+                            "shfl");
+    }
+    llvm::Value* waveBallot(llvm::IRBuilderBase& b, llvm::Module& m,
+                            llvm::Value* pred) override {
+        // vote.ballot.sync over the full warp → i32, widened to the i64 API.
+        llvm::LLVMContext& ctx = m.getContext();
+        llvm::Function* f = llvm::Intrinsic::getOrInsertDeclaration(
+            &m, llvm::Intrinsic::nvvm_vote_ballot_sync);
+        llvm::Value* bits = b.CreateCall(
+            f, {llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), 0xFFFFFFFFu),
+                pred}, "ballot");
+        return b.CreateZExt(bits, llvm::Type::getInt64Ty(ctx));
+    }
+
 private:
     static llvm::Value* readSreg(llvm::IRBuilderBase& b, llvm::Module& m,
                                  llvm::Intrinsic::ID id) {
