@@ -173,14 +173,32 @@ branch and a `heap`/borrow in another is a type error (or must use `#` and go
 heap). For uniform methods (`Optional`/`Channel`: every return is `stack`), it's
 unambiguous — which is the case that matters now.
 
-## Recommendation
+## What shipped
 
-**Way 1.** Generalize the interface by-value-return ABI to stack/value class
-returns; resolve the return's storage class in the type-resolution pass so the ABI
-decision is the same storage-class query used at assignment/param boundaries; remove
-the `FRESH_RETURN_NEEDS_TRANSFER` rejection for stack returns; caller receives into a
-stack slot; heap-owning fields still drop at caller scope-exit. Add NRVO (Way 2)
-later only if measured.
+**Way 2 — explicit sret + NRVO.** A value-returning method lowers to a `void`
+LLVM function taking a hidden `ptr sret(struct)` at arg 0 (before `this`); the
+returned `stack X(...)` constructs **directly into the caller-owned slot** (NRVO,
+zero copy), with a memcpy fallback for non-construction stack returns. The
+`FRESH_RETURN_NEEDS_TRANSFER` rejection is bypassed for stack returns.
+`CajetaClass::invokeMethod` self-allocates the result slot when none is supplied
+and returns a pointer to it — so the result behaves like any class-instance
+pointer, and the local/assignment/member-access sites need no change. The
+determination (which method returns by value) is the body scan over `return stack
+X(...)` described above, because storage class lives on the construction expression
+in the grammar (`STACK (creator | aggregateInitializer)`), not on the type.
 
-This keeps **one way**: storage class (stack = copy / heap = reference) is the single
-dimension, now governing `return` identically to assignment and parameters.
+Way 2 was chosen over Way 1 to guarantee zero-copy on **large** value returns
+(NRVO elides the construct→sret copy that even Way 1's implicit-sret would
+otherwise perform), accepting the function-type ripple. Way 1 — generalizing the
+interface by-value path — remains documented above as the path not taken; it would
+have been cheaper in surface area and faster for the small-return regime (register
+return) but ties Way 2 only when NRVO fires.
+
+**Status (commit `f9cebc3` on `stack-borrowing`):** shipped for direct-dispatched
+calls (incl. virtual receivers whose static type pins the override) with the value
+type as a pure-value class. Deferred: sret-shaped vtable slots for virtual
+value-returns, function-pointer / method-reference types carrying sret, and the
+caller-scope drop path for value types that own heap fields.
+
+This keeps **one way**: storage class (stack = copy / heap = reference) is the
+single dimension, now governing `return` identically to assignment and parameters.
