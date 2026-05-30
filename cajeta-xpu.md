@@ -16,6 +16,21 @@ and what's next.
 > below for the measured variance surface (the deliverable the whole strategy
 > exists to produce). `cajeta-amd.md` was the pickup plan for this work.
 
+> **Vulkan third backend: DONE (SPIR-V, on-device via RADV).** SAXPY and a
+> static workgroup-shared tree reduction compile through `--xpu-backend=vulkan`
+> (LLVM 22 → Khronos SPIR-V, no external assembler) and run on the Strix Halo
+> APU via the radeon Vulkan ICD, from the SAME Cajeta source. Vulkan is the
+> *bigger* fork the strategy was built to measure: with no raw-pointer kernel
+> ABI and no Buffer Device Address path in LLVM 22's SPIR-V backend, buffers
+> become descriptor-set storage buffers — so the kernel **signature** and
+> **buffer access** fork, not just the coordinate leaf reads. Full log:
+> [`cajeta-vulkan.md`](cajeta-vulkan.md); the four-column capability matrix
+> (NVIDIA · AMD · Vulkan · core) is [`cajeta-xpu-matrix.md`](cajeta-xpu-matrix.md).
+> The build also surfaced that LLVM 22 emits a Vulkan-invalid workgroup barrier
+> (SequentiallyConsistent semantics) — fixed by a one-instruction SPIR-V
+> post-emit pass, so the emitted modules pass strict `spirv-val`; the one
+> remaining caveat is the compile-time-fixed block dim.
+
 > **Status: SAXPY runs on a real NVIDIA GPU (design phase 2 milestone).**
 > The NVPTX vertical slice is proven end-to-end on an RTX 4090 (sm_89,
 > CUDA 12.9, LLVM 22.1.4): the spec SAXPY `@Kernel` source compiles
@@ -223,6 +238,34 @@ Backend-module decisions outside the AST walk (the `*Backend` /
 
 This table is the empirical NVIDIA∩AMD core, and the input to the later "how
 much of this core extends to Vulkan/SPIR-V" question.
+
+### Extending to Vulkan/SPIR-V — the third backend's answer
+
+Vulkan was then threaded through the same seam ([`cajeta-vulkan.md`](cajeta-vulkan.md)),
+which *answered* that question with measurements rather than projection:
+
+- **The coordinate leaf reads generalize cleanly** — better than AMD, even.
+  `workgroupDim` (AMD's ugliest fork, a dispatch-packet load) is a *native*
+  single intrinsic on SPIR-V (`llvm.spv.workgroup.size`), and `globalId` is
+  native too (`llvm.spv.thread.id`). `addrspace(3)` shared memory maps straight
+  to the Workgroup storage class — a non-fork, exactly as predicted.
+- **But the kernel-argument model forks hard, and that's new.** LLVM 22's SPIR-V
+  backend has **no raw-pointer kernel ABI and no Buffer Device Address path**, so
+  buffers must be descriptor-set storage buffers. Unlike AMD (which forked only
+  `LoweringTarget`'s leaf reads), Vulkan forks the kernel **signature** (`void
+  main()`, no params) *and* the body's **buffer element access** (`getpointer`
+  vs GEP). The seam grew by three hooks — `createKernel`, `materializeParam`,
+  `bufferElementPtr` — all with NV/AMD-preserving defaults.
+- **Two measured limitations, recorded not hidden:** the workgroup barrier emits
+  Vulkan-forbidden SequentiallyConsistent semantics (runs on RADV, fails strict
+  `spirv-val`); and block dim is fixed at SPIR-V compile time (Vulkan has no free
+  per-dispatch workgroup size).
+
+So the NVIDIA∩AMD∩Vulkan core is *smaller* than NVIDIA∩AMD's ≈90% — the
+kernel-argument ABI dropped out of the shared set — but the body walk, control
+flow, operators, coordinate reads, shared memory, and the entire frontend +
+name-keyed registration still hold across all three. The full per-feature
+breakdown is [`cajeta-xpu-matrix.md`](cajeta-xpu-matrix.md).
 
 ### AMD on-device increments (cajeta-amd.md) — all landed
 

@@ -19,8 +19,12 @@
 
 #pragma once
 
+#include <string>
+#include <vector>
+
 namespace llvm {
     class Value;
+    class Type;
     class Module;
     class Function;
     class IRBuilderBase;
@@ -66,6 +70,53 @@ namespace xpu {
         // any kernel-marker metadata. NVPTX: ptx_kernel CC + nvvm.annotations.
         // AMDGPU: amdgpu_kernel CC, no metadata.
         virtual void decorateKernel(llvm::Function* fn, llvm::Module& m) = 0;
+
+        // --- kernel signature / parameter model (the Vulkan fork) -----------
+        //
+        // NVPTX/AMDGPU take kernel arguments as a flat parameter list: buffers
+        // as addrspace(1) pointers, scalars by value, matching the cuLaunch/
+        // hipModuleLaunch kernelParams ABI. Vulkan/SPIR-V has NO raw-pointer
+        // kernel ABI — its compute entry is `void main()` and arguments arrive
+        // through descriptor-bound storage buffers (resource.handlefrombinding
+        // + getpointer). That divergence is exactly these three hooks; their
+        // defaults reproduce the NVPTX/AMDGPU pointer-arg model, so those
+        // backends are behavior-preserving and only Vulkan overrides them.
+        // (This is the "bigger fork than AMD" measured by the Vulkan bring-up:
+        // unlike AMD, the kernel SIGNATURE and BUFFER ACCESS fork, not just the
+        // coordinate leaf reads.)
+
+        // One admitted kernel parameter, as seen by the signature/prologue hooks.
+        struct KernelParam {
+            std::string name;
+            bool isBuffer;       // Buffer<T>/array (else a scalar primitive)
+            llvm::Type* type;    // buffer element type, or the scalar type
+            bool isSigned;       // scalar signedness / buffer-element signedness
+        };
+
+        // Create the kernel function for `name`. Default: a void-returning
+        // function taking ptr addrspace(1) per buffer + the scalar type per
+        // primitive, then decorateKernel(). Vulkan overrides to build `void()`
+        // + its HLSL compute markers (no parameters).
+        virtual llvm::Function* createKernel(
+            llvm::Module& m, const std::string& name,
+            const std::vector<KernelParam>& params);
+
+        // Materialize parameter `idx` into `b`'s current (entry) block and
+        // return its runtime value: a scalar value (the caller stores it into a
+        // mutable slot) or a buffer base/handle (kept in bufferBases). Default:
+        // fn->getArg(idx). Vulkan binds descriptor resources here instead.
+        virtual llvm::Value* materializeParam(
+            llvm::IRBuilderBase& b, llvm::Module& m, llvm::Function* fn,
+            unsigned idx, const KernelParam& p);
+
+        // Pointer to buffer element `index` of `base` (element type `elemTy`,
+        // `index` already widened to i64). Default: an addrspace-preserving GEP
+        // (correct for NVPTX/AMDGPU global+shared and for Vulkan shared-mem
+        // globals). Vulkan routes descriptor-buffer handles through
+        // resource.getpointer instead, self-dispatching on the base's type.
+        virtual llvm::Value* bufferElementPtr(
+            llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* base,
+            llvm::Type* elemTy, llvm::Value* index);
     };
 
 } // namespace xpu
