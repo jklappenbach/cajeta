@@ -59,12 +59,24 @@ uint64_t readU64LE(const std::vector<uint8_t>& bytes, size_t offset) {
     return v;
 }
 
-// Resolve the in-tree compiler binary from CAJETA_SOURCE_ROOT (set by
-// the test runner). Falls back to the default build path when the env
-// var isn't set.
+// Resolve the in-tree compiler binary from CAJETA_SOURCE_ROOT. The env
+// var wins (lets a CI / developer override without recompiling); next is
+// CAJETA_SOURCE_ROOT_DEFAULT, baked in by CMake to PROJECT_SOURCE_DIR
+// (matches CajetaUnitTest.cpp's lookupSourceRoot fallback chain) so a
+// bare `ctest` from the build dir works without env-var plumbing; ".",
+// the last resort, only matters if neither path is set.
 std::string compilerPath() {
-    const char* root = std::getenv("CAJETA_SOURCE_ROOT");
-    std::string r = root ? root : ".";
+    const char* envRoot = std::getenv("CAJETA_SOURCE_ROOT");
+    std::string r;
+    if (envRoot && *envRoot) {
+        r = envRoot;
+    } else {
+#ifdef CAJETA_SOURCE_ROOT_DEFAULT
+        r = CAJETA_SOURCE_ROOT_DEFAULT;
+#else
+        r = ".";
+#endif
+    }
 #ifdef _WIN32
     // CAJETA_SOURCE_ROOT is often an MSYS path ("/d/code/..."); std::system
     // runs via cmd.exe, which needs a drive-letter path. Convert "/x/..." to
