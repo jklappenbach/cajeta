@@ -102,8 +102,14 @@ deferrals first. Six commits on `cajeta-xpu` (after the restore commits):
   (`XpuLaunchBorrowTests`). Deferred: per-stream tracking, the move/reassign
   and auto-drop-at-scope-exit-without-sync cases, and cross-stream WAR/RAW
   (§11 cases 2–3).
-- **`--xpu-backend` / `--xpu-arch` / `--xpu-emit` CLI flags** for the AOT
-  `cajeta` path (the slice is JIT-test-driven).
+- **`--xpu-backend` / `--xpu-arch` / `--xpu-emit` CLI flags. DONE** — the AOT
+  `cajeta` binary now drives the NVPTX path (no longer JIT-test-only).
+  `--xpu-backend=nvptx` embeds each `@Kernel`'s cubin + registration ctor into
+  its host module (same `emitKernelRegistration` the JIT helper runs, hooked into
+  `Compiler::compile` after Phase-1/2 quiescence); `--xpu-arch=<sm_xx>` selects the
+  SM target; `--xpu-emit=ptx|cubin` also drops a per-kernel artifact for
+  inspection. Default `--xpu-backend=none` leaves the host-only path unchanged.
+  `XpuAotCliTests` (GPU-free for the PTX case; cubin gated on ptxas).
 - **Broaden `NvptxKernelLowering`'s construct coverage. DONE (increment H)** —
   the device lowerer now handles general single-kernel compute bodies (loops,
   unlabeled break/continue, compound assignment, the full int/float operator set,
