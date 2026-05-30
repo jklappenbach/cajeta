@@ -75,12 +75,14 @@ void printUsage(const char* progname) {
               << "  --cpu=<name>                         Target CPU. Default: generic.\n"
               << "  --features=<list>                    Comma-separated target features (e.g. +neon).\n"
               << "\n"
-              << "XPU (NVIDIA GPU compute, cajeta-docs/CajetaXPU.md):\n"
-              << "  --xpu-backend=none|nvptx             Device backend for @Kernel methods. Default none\n"
-              << "                                       (host-only). nvptx embeds each kernel's cubin +\n"
-              << "                                       registration ctor so kernel.launch(...) resolves at runtime.\n"
-              << "  --xpu-arch=<sm_xx>                   NVPTX SM target for the kernel + ptxas. Default sm_89.\n"
-              << "  --xpu-emit=none|ptx|cubin            Also drop a per-kernel device artifact for inspection.\n"
+              << "XPU (GPU compute, cajeta-docs/CajetaXPU.md):\n"
+              << "  --xpu-backend=none|nvptx|amdgpu      Device backend for @Kernel methods. Default none\n"
+              << "                                       (host-only). nvptx/amdgpu embed each kernel's device\n"
+              << "                                       binary + registration ctor so kernel.launch(...) resolves at runtime.\n"
+              << "  --xpu-arch=<arch>                    Device arch: nvptx SM target (e.g. sm_89, default) or\n"
+              << "                                       amdgpu GFX target (e.g. gfx1151, the amdgpu default).\n"
+              << "  --xpu-emit=none|ptx|cubin|isa|hsaco  Also drop a per-kernel device artifact for inspection\n"
+              << "                                       (ptx/cubin are nvptx; isa/hsaco are amdgpu).\n"
               << "                                       Default none (registration only).\n"
               << "  -o <path>                            Output path for the final artifact.\n"
               << "  --help, -h                           This message.\n"
@@ -166,6 +168,10 @@ int main(int argc, const char* argv[]) {
 
     Compiler compiler(argc, argv);
     std::vector<std::string> positional;
+    // Track whether --xpu-arch was given explicitly so the amdgpu backend can
+    // default its arch to gfx1151 (vs the nvptx sm_89 default) only when the
+    // user didn't pin one. The two backends share a single xpuArch field.
+    bool xpuArchExplicit = false;
 
     auto parseModeName = [&](const std::string& name) -> bool {
         if (name == "debug")            { compiler.setMode(CompilerMode::Debug); return true; }
@@ -286,19 +292,22 @@ int main(int argc, const char* argv[]) {
         } else if (match(arg, "xpu-backend", value)) {
             XpuBackend b;
             if (!setEnumFlag<XpuBackend>("xpu-backend", value,
-                    { {"none", XpuBackend::None}, {"nvptx", XpuBackend::Nvptx} }, b)) {
+                    { {"none", XpuBackend::None}, {"nvptx", XpuBackend::Nvptx},
+                      {"amdgpu", XpuBackend::Amdgpu} }, b)) {
                 printUsage(argv[0]); return 1;
             }
             compiler.setXpuBackend(b);
         } else if (match(arg, "xpu-emit", value)) {
             XpuEmit e;
             if (!setEnumFlag<XpuEmit>("xpu-emit", value,
-                    { {"none", XpuEmit::None}, {"ptx", XpuEmit::Ptx}, {"cubin", XpuEmit::Cubin} }, e)) {
+                    { {"none", XpuEmit::None}, {"ptx", XpuEmit::Ptx}, {"cubin", XpuEmit::Cubin},
+                      {"isa", XpuEmit::Isa}, {"hsaco", XpuEmit::Hsaco} }, e)) {
                 printUsage(argv[0]); return 1;
             }
             compiler.setXpuEmit(e);
         } else if (match(arg, "xpu-arch", value)) {
             compiler.setXpuArch(value);
+            xpuArchExplicit = true;
         } else if (arg == "-o") {
             if (i + 1 >= argc) {
                 std::cerr << "cajeta: -o requires a path argument\n";
@@ -320,6 +329,12 @@ int main(int argc, const char* argv[]) {
     if (positional.size() < 3) {
         printUsage(argc > 0 ? argv[0] : "cajeta");
         return 1;
+    }
+
+    // The xpuArch default ("sm_89") is NVPTX-shaped; for the amdgpu backend
+    // default to a GFX target instead, unless the user pinned --xpu-arch.
+    if (compiler.getXpuBackend() == XpuBackend::Amdgpu && !xpuArchExplicit) {
+        compiler.setXpuArch("gfx1151");
     }
 
     try {

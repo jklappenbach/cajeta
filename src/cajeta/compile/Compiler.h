@@ -62,14 +62,17 @@ namespace cajeta {
     enum class XpuBackend {
         None,     // Default: no device codegen.
         Nvptx,    // NVIDIA: AST → device IR → PTX → ptxas → cubin, registered in-module.
+        Amdgpu,   // AMD: AST → device IR → AMDGCN ISA → lld → hsaco, registered in-module.
     };
 
     // What device artifact (if any) to also drop to disk for inspection,
     // alongside the normal --emit output. None registers cubins only.
     enum class XpuEmit {
         None,     // Default: registration only, no standalone artifact.
-        Ptx,      // Write a per-kernel .ptx next to the module output.
-        Cubin,    // Write a per-kernel .cubin (implies ptxas must be present).
+        Ptx,      // NVPTX: write a per-kernel .ptx next to the module output.
+        Cubin,    // NVPTX: write a per-kernel .cubin (implies ptxas present).
+        Isa,      // AMDGPU: write a per-kernel .isa (AMDGCN assembly text).
+        Hsaco,    // AMDGPU: write a per-kernel .hsaco (implies ld.lld present).
     };
 
     class Compiler {
@@ -96,8 +99,9 @@ namespace cajeta {
         EmitMode emitMode = EmitMode::IR;
         // XPU device backend + per-kernel artifact emit (--xpu-backend /
         // --xpu-emit / --xpu-arch). Default None: the AOT path is host-only and
-        // unchanged. xpuArch is the SM target handed to the NVPTX TargetMachine
-        // and ptxas (e.g. "sm_89"); only consulted when xpuBackend == Nvptx.
+        // unchanged. xpuArch is the device arch handed to the backend's
+        // TargetMachine + assembler (e.g. "sm_89" for nvptx, "gfx1151" for
+        // amdgpu); consulted whenever xpuBackend != None.
         XpuBackend xpuBackend = XpuBackend::None;
         XpuEmit xpuEmit = XpuEmit::None;
         string xpuArch = "sm_89";
