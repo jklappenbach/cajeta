@@ -574,9 +574,26 @@ namespace cajeta {
                                     mcName, mcEntries,
                                     /*isConstructor=*/false, floatingAll);
                                 if (resolved && !resolved->isReturnsOwnership()) {
-                                    // Non-# return — the local is a borrow
-                                    // of whatever the callee returned.
-                                    initIsBorrow = true;
+                                    if (resolved->returnsStackValue()) {
+                                        // Value-return (sret + NRVO): the callee
+                                        // constructed a stack instance into the
+                                        // caller's sret slot, so this local owns
+                                        // its fields and needs the stack-drop
+                                        // variant (drops owned fields, does NOT
+                                        // free the alloca). Mirrors the path a
+                                        // direct `stack X(...)` initializer takes.
+                                        // KNOWN LIMITATION: reassigning the local
+                                        // in a loop (`o = ch.receive()` repeatedly)
+                                        // doesn't fire pre-overwrite drops, so a
+                                        // value type that owns heap fields leaks
+                                        // one set of fields per iteration. See
+                                        // cajeta-docs/stdlib/ValueReturns.md (M5).
+                                        initIsStackAlloc = true;
+                                    } else {
+                                        // Non-# return — the local is a borrow
+                                        // of whatever the callee returned.
+                                        initIsBorrow = true;
+                                    }
                                 }
                             }
                         }
