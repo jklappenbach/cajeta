@@ -14,27 +14,31 @@ namespace cajeta {
 
     std::string CajetaFunctionType::buildCanonical(
         const std::vector<CajetaTypePtr>& parameterTypes,
-        CajetaTypePtr returnType) {
+        CajetaTypePtr returnType,
+        bool returnsOwnership) {
         std::string s = "(";
         for (size_t i = 0; i < parameterTypes.size(); ++i) {
             if (i > 0) s += ",";
             s += parameterTypes[i] ? parameterTypes[i]->toCanonical() : std::string("?");
         }
         s += ") -> ";
+        if (returnsOwnership) s += "#";
         s += returnType ? returnType->toCanonical() : std::string("?");
         return s;
     }
 
     CajetaFunctionType::CajetaFunctionType(CajetaModulePtr module,
         std::vector<CajetaTypePtr> parameterTypes,
-        CajetaTypePtr returnType)
+        CajetaTypePtr returnType,
+        bool returnsOwnership)
         : parameterTypes(std::move(parameterTypes)),
-          returnType(std::move(returnType)) {
+          returnType(std::move(returnType)),
+          returnsOwnership(returnsOwnership) {
         // Function values are pointers at the value level — a lambda
         // assignment stores the address of the synthesized function. The
         // *signature* lives in llvmFunctionType (cached below) and gets
         // used at call sites to type the indirect call instruction.
-        std::string canon = buildCanonical(this->parameterTypes, this->returnType);
+        std::string canon = buildCanonical(this->parameterTypes, this->returnType, returnsOwnership);
         this->qName = QualifiedName::getOrInsert(canon, "");
         this->canonical = canon;
         this->typeFlags = POINTER_FLAG;
