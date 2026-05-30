@@ -1710,6 +1710,108 @@ namespace cajeta {
                     llvm::Function* fn = module->getRuntimeFunction("__cajeta_rwlock_destroy");
                     return builder->CreateCall(fn, {loadValue(0)});
                 }
+                // Atomic<T> intrinsics (R8 Slice 1). The new/destroy pair is
+                // a small runtime helper (malloc/free of the underlying
+                // word). The load/store/fetch_add/compareAndSet are emitted
+                // INLINE as LLVM atomic instructions — a runtime-call would
+                // defeat atomicity's whole purpose and block the optimizer
+                // from reasoning about ordering. All seq_cst for v1;
+                // memory-order parameterization is R8 Slice 1b.
+                // See cajeta-docs/stdlib/Thread.md and the AtomicInt32 /
+                // AtomicInt64 wrapper classes in cajeta.threading.
+                if (ns == "Cajeta" && methodCallName == "atomicI32New" && parameters.size() == 1) {
+                    llvm::Function* fn = module->getRuntimeFunction("__cajeta_atomic_i32_new");
+                    llvm::Value* v = loadValue(0);
+                    if (v->getType() != i32Ty) v = builder->CreateIntCast(v, i32Ty, /*isSigned=*/true);
+                    return builder->CreateCall(fn, {v});
+                }
+                if (ns == "Cajeta" && methodCallName == "atomicI32Destroy" && parameters.size() == 1) {
+                    llvm::Function* fn = module->getRuntimeFunction("__cajeta_atomic_i32_destroy");
+                    return builder->CreateCall(fn, {loadValue(0)});
+                }
+                if (ns == "Cajeta" && methodCallName == "atomicI32Load" && parameters.size() == 1) {
+                    auto* load = builder->CreateLoad(i32Ty, loadValue(0), "atomic.i32.load");
+                    load->setAtomic(llvm::AtomicOrdering::SequentiallyConsistent);
+                    load->setAlignment(llvm::Align(4));
+                    return load;
+                }
+                if (ns == "Cajeta" && methodCallName == "atomicI32Store" && parameters.size() == 2) {
+                    llvm::Value* v = loadValue(1);
+                    if (v->getType() != i32Ty) v = builder->CreateIntCast(v, i32Ty, /*isSigned=*/true);
+                    auto* store = builder->CreateStore(v, loadValue(0));
+                    store->setAtomic(llvm::AtomicOrdering::SequentiallyConsistent);
+                    store->setAlignment(llvm::Align(4));
+                    return store;
+                }
+                if (ns == "Cajeta" && methodCallName == "atomicI32FetchAdd" && parameters.size() == 2) {
+                    llvm::Value* v = loadValue(1);
+                    if (v->getType() != i32Ty) v = builder->CreateIntCast(v, i32Ty, /*isSigned=*/true);
+                    return builder->CreateAtomicRMW(
+                        llvm::AtomicRMWInst::Add, loadValue(0), v,
+                        llvm::MaybeAlign(4),
+                        llvm::AtomicOrdering::SequentiallyConsistent);
+                }
+                if (ns == "Cajeta" && methodCallName == "atomicI32CompareAndSet"
+                        && parameters.size() == 3) {
+                    llvm::Value* expected = loadValue(1);
+                    llvm::Value* desired = loadValue(2);
+                    if (expected->getType() != i32Ty) expected = builder->CreateIntCast(expected, i32Ty, true);
+                    if (desired->getType() != i32Ty) desired = builder->CreateIntCast(desired, i32Ty, true);
+                    auto* cmpxchg = builder->CreateAtomicCmpXchg(
+                        loadValue(0), expected, desired,
+                        llvm::MaybeAlign(4),
+                        llvm::AtomicOrdering::SequentiallyConsistent,
+                        llvm::AtomicOrdering::SequentiallyConsistent);
+                    // The cmpxchg result is `{ T old, i1 success }`; we
+                    // surface the boolean success flag (matches Java's
+                    // compareAndSet shape).
+                    return builder->CreateExtractValue(cmpxchg, 1, "atomic.cas.ok");
+                }
+                if (ns == "Cajeta" && methodCallName == "atomicI64New" && parameters.size() == 1) {
+                    llvm::Function* fn = module->getRuntimeFunction("__cajeta_atomic_i64_new");
+                    llvm::Value* v = loadValue(0);
+                    if (v->getType() != i64Ty) v = builder->CreateIntCast(v, i64Ty, /*isSigned=*/true);
+                    return builder->CreateCall(fn, {v});
+                }
+                if (ns == "Cajeta" && methodCallName == "atomicI64Destroy" && parameters.size() == 1) {
+                    llvm::Function* fn = module->getRuntimeFunction("__cajeta_atomic_i64_destroy");
+                    return builder->CreateCall(fn, {loadValue(0)});
+                }
+                if (ns == "Cajeta" && methodCallName == "atomicI64Load" && parameters.size() == 1) {
+                    auto* load = builder->CreateLoad(i64Ty, loadValue(0), "atomic.i64.load");
+                    load->setAtomic(llvm::AtomicOrdering::SequentiallyConsistent);
+                    load->setAlignment(llvm::Align(8));
+                    return load;
+                }
+                if (ns == "Cajeta" && methodCallName == "atomicI64Store" && parameters.size() == 2) {
+                    llvm::Value* v = loadValue(1);
+                    if (v->getType() != i64Ty) v = builder->CreateIntCast(v, i64Ty, /*isSigned=*/true);
+                    auto* store = builder->CreateStore(v, loadValue(0));
+                    store->setAtomic(llvm::AtomicOrdering::SequentiallyConsistent);
+                    store->setAlignment(llvm::Align(8));
+                    return store;
+                }
+                if (ns == "Cajeta" && methodCallName == "atomicI64FetchAdd" && parameters.size() == 2) {
+                    llvm::Value* v = loadValue(1);
+                    if (v->getType() != i64Ty) v = builder->CreateIntCast(v, i64Ty, /*isSigned=*/true);
+                    return builder->CreateAtomicRMW(
+                        llvm::AtomicRMWInst::Add, loadValue(0), v,
+                        llvm::MaybeAlign(8),
+                        llvm::AtomicOrdering::SequentiallyConsistent);
+                }
+                if (ns == "Cajeta" && methodCallName == "atomicI64CompareAndSet"
+                        && parameters.size() == 3) {
+                    llvm::Value* expected = loadValue(1);
+                    llvm::Value* desired = loadValue(2);
+                    if (expected->getType() != i64Ty) expected = builder->CreateIntCast(expected, i64Ty, true);
+                    if (desired->getType() != i64Ty) desired = builder->CreateIntCast(desired, i64Ty, true);
+                    auto* cmpxchg = builder->CreateAtomicCmpXchg(
+                        loadValue(0), expected, desired,
+                        llvm::MaybeAlign(8),
+                        llvm::AtomicOrdering::SequentiallyConsistent,
+                        llvm::AtomicOrdering::SequentiallyConsistent);
+                    return builder->CreateExtractValue(cmpxchg, 1, "atomic.cas.ok");
+                }
                 if (ns == "System" && methodCallName == "exit" && parameters.size() == 1) {
                     llvm::Function* fn = module->getRuntimeFunction("__cajeta_exit");
                     llvm::Value* code = loadValue(0);

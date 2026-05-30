@@ -1,0 +1,66 @@
+package cajeta.threading;
+
+/**
+ * Atomic 32-bit signed integer — cajeta-docs/stdlib/Thread.md § Atomics.
+ *
+ * The class owns a heap-allocated `int32` cell that the compiler emits inline
+ * LLVM atomic instructions against (`load atomic`, `store atomic`, `atomicrmw
+ * add`, `cmpxchg`). All operations are sequentially consistent in v1; explicit
+ * memory-ordering overloads land in a follow-up.
+ *
+ * Surface mirrors Java's `AtomicInteger`:
+ *   load()                 — atomic read
+ *   store(v)               — atomic write
+ *   fetchAdd(delta)        — atomic add, returns the value before the add
+ *   compareAndSet(exp, des) — atomic CAS, returns true if the swap happened
+ *
+ * Why a heap cell instead of an inline field: atomicrmw / cmpxchg operate on
+ * an address, and Cajeta's class fields don't expose addressOf at the source
+ * level. The cell is one indirection past `this`, which the optimizer can
+ * still alias-analyze across calls.
+ */
+public class AtomicInt32 {
+    pointer cell;
+
+    public AtomicInt32(int32 initial) {
+        this.cell = Cajeta.atomicI32New(initial);
+    }
+
+    public ~AtomicInt32() {
+        Cajeta.atomicI32Destroy(this.cell);
+    }
+
+    /**
+     * Atomic load (seq_cst). Returns whatever any prior store on any
+     * carrier has installed; never tears.
+     */
+    public int32 load() {
+        return Cajeta.atomicI32Load(this.cell);
+    }
+
+    /**
+     * Atomic store (seq_cst). Discards the previous value.
+     */
+    public void store(int32 v) {
+        Cajeta.atomicI32Store(this.cell, v);
+    }
+
+    /**
+     * Atomic fetch-and-add. The cell becomes (current + delta); returns
+     * the value the cell held BEFORE the add. Used for counters and
+     * sequence numbers under contention.
+     */
+    public int32 fetchAdd(int32 delta) {
+        return Cajeta.atomicI32FetchAdd(this.cell, delta);
+    }
+
+    /**
+     * Atomic compare-and-set. If the cell currently equals `expected`,
+     * replace it with `desired` and return true; otherwise leave it
+     * untouched and return false. The whole read-compare-write is a
+     * single hardware step.
+     */
+    public boolean compareAndSet(int32 expected, int32 desired) {
+        return Cajeta.atomicI32CompareAndSet(this.cell, expected, desired);
+    }
+}
