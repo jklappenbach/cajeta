@@ -194,11 +194,31 @@ interface by-value path — remains documented above as the path not taken; it w
 have been cheaper in surface area and faster for the small-return regime (register
 return) but ties Way 2 only when NRVO fires.
 
-**Status (commit `f9cebc3` on `stack-borrowing`):** shipped for direct-dispatched
-calls (incl. virtual receivers whose static type pins the override) with the value
-type as a pure-value class. Deferred: sret-shaped vtable slots for virtual
-value-returns, function-pointer / method-reference types carrying sret, and the
-caller-scope drop path for value types that own heap fields.
+**Status:** shipped on `stack-borrowing` —
+- `f9cebc3` direct-dispatched value returns (sret + NRVO core).
+- `61a4e1f` virtual dispatch for value-returning methods (M5(a) — sret-shaped
+  vtable slots).
+- `07d2240` caller-scope stack-drop for value-returned locals (M5(c) — owned
+  fields fire at scope exit without freeing the alloca).
+- `b435772` function-pointer / method-reference types carrying sret (M5(b)
+  codegen): lambda body-scan picks sret form when the body is a
+  `stack X(...)` construction; method references to value-returning methods
+  produce sret-shaped function-types; the indirect-call sites allocate the
+  result slot and thread it as the closure's hidden arg 0.
+- `c075b7e` function-type syntax (`(P) -> R` sret form vs `(P) -> #R`
+  ownership form). The grammar's REFERENCE flag on `typeTypeOrVoid` is now
+  threaded through `CajetaType.cpp` and embedded in the canonical name;
+  non-sret-eligible returns (primitive, void, interface, array, view) are
+  normalized to ownership so `(T) -> boolean` doesn't spuriously split.
+  Source migration of existing `(P) -> R` class-return sites to `(P) -> #R`
+  came with this commit.
+- `(this)` borrow→sret adapter for method references: `b::peekBorrowMethod`
+  bound into `() -> R sret` (no `#`) synthesizes a thunk that calls the
+  borrow method and memcpys the returned `R*` into the caller-owned sret
+  slot. Matrix-rejected combinations (`#R` method → sret slot;
+  stack-value method → `#R` slot) throw `CAJETA_ERROR_TYPE_MISMATCH` at
+  resolveTypes via the expected-type hint LocalVariableDeclaration now
+  forwards to MethodReferenceExpression.
 
 This keeps **one way**: storage class (stack = copy / heap = reference) is the
 single dimension, now governing `return` identically to assignment and parameters.

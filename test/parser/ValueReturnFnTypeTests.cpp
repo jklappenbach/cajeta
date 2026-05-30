@@ -24,6 +24,7 @@
 
 #include "gtest/gtest.h"
 #include "../jit/JitTestHelper.h"
+#include "cajeta/error/Exception.h"
 
 #include <cstdint>
 #include <string>
@@ -135,4 +136,56 @@ TEST(ValueReturnFnTypeTests, ownershipFormConstructorRefStillWorks) {
         "    }\n"
         "}\n";
     EXPECT_EQ(runI32(src), 5);
+}
+
+// M5(b) adapter — assigning a method reference to a borrow-returning
+// method (`Box::peek` returns the owned inner Counter) into an sret-form
+// callback. The thunk synthesizes a copy: call peek to get the borrowed
+// R*, memcpy the bytes into the caller's sret slot, ret void. The
+// caller's local now holds an independent struct-resident copy whose
+// drop is the stack-drop variant.
+TEST(ValueReturnFnTypeTests, methodRefBorrowToSretAdapter) {
+    auto src =
+        "package test;\n"
+        "public class Counter {\n"
+        "    public int32 v;\n"
+        "    public Counter(int32 v) { this.v = v; }\n"
+        "}\n"
+        "public class Box {\n"
+        "    Counter inner;\n"
+        "    public Box(int32 v) { this.inner = heap Counter(v); }\n"
+        "    public Counter peek() { return this.inner; }\n"  // borrow return
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Box b = heap Box(73);\n"
+        "        () -> Counter f = b::peek;\n"  // sret form via expectedType override
+        "        Counter c = f();\n"
+        "        return c.v;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 73);
+}
+
+// Matrix rejection: ownership-returning method (`Maker::make`) into an
+// sret slot. The plan's "would leak" error fires at resolveTypes — we
+// never reach generateCode.
+TEST(ValueReturnFnTypeTests, methodRefOwnershipToSretRejected) {
+    auto src =
+        "package test;\n"
+        "public class Box {\n"
+        "    public int32 v;\n"
+        "    public Box(int32 v) { this.v = v; }\n"
+        "}\n"
+        "public class Maker {\n"
+        "    public #Box make() { return heap Box(11); }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Maker m = heap Maker();\n"
+        "        () -> Box f = m::make;\n"  // matrix error — # → sret rejected
+        "        return 0;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_THROW(runI32(src), cajeta::Exception);
 }

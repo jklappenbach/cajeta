@@ -178,6 +178,12 @@ namespace cajeta {
                 if (!children.empty()) {
                     if (auto lambda = dynamic_pointer_cast<LambdaExpression>(children[0])) {
                         lambda->setExpectedType(type);
+                    } else if (auto mref = dynamic_pointer_cast<MethodReferenceExpression>(children[0])) {
+                        // M5(b) adapter — sret-form LHS + borrow-returning
+                        // target needs the method-ref to know the expected
+                        // ABI so it can pick the sret-shaped fnType and
+                        // synthesize the borrow→sret adapter thunk.
+                        mref->setExpectedType(type);
                     }
                 }
             }

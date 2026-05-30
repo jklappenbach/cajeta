@@ -2560,8 +2560,19 @@ namespace cajeta {
             }
             CajetaTypePtr ret = std::static_pointer_cast<CajetaType>(targetClass);
             // Constructor returns ownership of a heap instance — always
-            // ownership-form function type.
+            // ownership-form function type. Assigning a constructor ref to
+            // an sret-form slot would leak the heap instance after the
+            // adapter copy, so reject upfront per the matrix.
             bool returnsOwn = true;
+            if (auto expectedFn = std::dynamic_pointer_cast<CajetaFunctionType>(expectedType)) {
+                if (!expectedFn->isReturnsOwnership() && expectedFn->usesSret()) {
+                    throw Exception(
+                        "method reference '::new' returns a heap-owned "
+                        "instance; cannot assign to an sret-form function "
+                        "type (would leak the allocation)",
+                        "CAJETA_ERROR_TYPE_MISMATCH");
+                }
+            }
             std::string canon = CajetaFunctionType::buildCanonical(paramTypes, ret, returnsOwn);
             auto& cmap = CajetaType::getCanonicalMap();
             auto it = cmap.find(canon);
@@ -2592,8 +2603,32 @@ namespace cajeta {
             // Function-type ABI: sret form iff the target method returns
             // by stack value (M5(b)). Borrow and `#R` returns both produce
             // the ownership-form pointer-return signature today, so they
-            // share the `returnsOwn=true` shape.
+            // share the `returnsOwn=true` shape. When the LHS pins an
+            // sret-form callback type, override to sret — the adapter in
+            // generateCode bridges a borrow method into the sret slot.
+            // Ownership-returning methods can't adapt: an sret target
+            // would discard the heap pointer's owner role and leak.
             bool returnsOwn = !staticMethod->returnsStackValue();
+            if (auto expectedFn = std::dynamic_pointer_cast<CajetaFunctionType>(expectedType)) {
+                bool expectedSret = !expectedFn->isReturnsOwnership()
+                    && expectedFn->usesSret();
+                if (expectedSret) {
+                    if (staticMethod->isReturnsOwnership()) {
+                        throw Exception(
+                            "method reference '" + methodName + "' returns "
+                            "heap ownership; cannot assign to an sret-form "
+                            "function type (would leak the allocation)",
+                            "CAJETA_ERROR_TYPE_MISMATCH");
+                    }
+                    returnsOwn = false;
+                } else if (staticMethod->returnsStackValue()) {
+                    throw Exception(
+                        "method reference '" + methodName + "' returns by "
+                        "stack value; cannot assign to a #R ownership "
+                        "function type",
+                        "CAJETA_ERROR_TYPE_MISMATCH");
+                }
+            }
             std::string canon = CajetaFunctionType::buildCanonical(paramTypes, ret, returnsOwn);
             auto& cmap = CajetaType::getCanonicalMap();
             auto it = cmap.find(canon);
@@ -2632,8 +2667,29 @@ namespace cajeta {
             }
             CajetaTypePtr ret = instanceMethod->getReturnType();
             // M5(b) — sret form iff the target method returns by stack
-            // value. Same shape rule as the static case above.
+            // value. Same shape rule + LHS-pinned override + matrix
+            // checks as the static case above.
             bool returnsOwn = !instanceMethod->returnsStackValue();
+            if (auto expectedFn = std::dynamic_pointer_cast<CajetaFunctionType>(expectedType)) {
+                bool expectedSret = !expectedFn->isReturnsOwnership()
+                    && expectedFn->usesSret();
+                if (expectedSret) {
+                    if (instanceMethod->isReturnsOwnership()) {
+                        throw Exception(
+                            "method reference '" + methodName + "' returns "
+                            "heap ownership; cannot assign to an sret-form "
+                            "function type (would leak the allocation)",
+                            "CAJETA_ERROR_TYPE_MISMATCH");
+                    }
+                    returnsOwn = false;
+                } else if (instanceMethod->returnsStackValue()) {
+                    throw Exception(
+                        "method reference '" + methodName + "' returns by "
+                        "stack value; cannot assign to a #R ownership "
+                        "function type",
+                        "CAJETA_ERROR_TYPE_MISMATCH");
+                }
+            }
             std::string canon = CajetaFunctionType::buildCanonical(paramTypes, ret, returnsOwn);
             auto& cmap = CajetaType::getCanonicalMap();
             auto it = cmap.find(canon);
@@ -2808,14 +2864,23 @@ namespace cajeta {
             }
             sretOffset = 1;
         }
+        // M5(b) adapter — the thunk is sret-shaped but the target method
+        // returns by pointer (borrow). The call doesn't take an sret slot;
+        // instead capture its returned R* and memcpy into the thunk's sret
+        // slot before ret void. Matrix-rejected combinations (ownership
+        // method → sret target, sret method → ownership target) are
+        // already filtered in resolveTypes above.
+        bool sretAdapter = sretOffset && !target->returnsStackValue();
         if (!existing) {
             llvm::BasicBlock* tbb = llvm::BasicBlock::Create(
                 llvmCtx, "entry", thunk);
             llvm::IRBuilder<> tb(tbb);
             std::vector<llvm::Value*> callArgs;
             // When the target method itself is sret-shaped, its arg 0 IS the
-            // sret slot. Forward the thunk's sret arg straight through.
-            if (sretOffset) {
+            // sret slot — forward the thunk's sret arg straight through. In
+            // the adapter case the target has no sret arg; skip the prepend
+            // and copy the call result into the sret slot after the call.
+            if (sretOffset && !sretAdapter) {
                 callArgs.push_back(thunk->getArg(0));
             }
             if (kind == Kind::BOUND_INSTANCE) {
@@ -2854,13 +2919,30 @@ namespace cajeta {
                 lmod, target->getLlvmFunction());
             llvm::CallInst* call = tb.CreateCall(
                 target->getLlvmFunctionType(), targetFn, callArgs);
-            // Mirror the sret call-site attribute the call ABI requires.
-            if (sretOffset) {
+            if (sretOffset && !sretAdapter) {
+                // Matched sret-to-sret — mirror the sret call-site
+                // attribute (LLVM verify wants it on indirect calls; for
+                // direct calls it's redundant but harmless).
                 auto retClass = std::dynamic_pointer_cast<CajetaClass>(fnType->getReturnType());
                 llvm::Type* structTy = retClass ? retClass->getLlvmType() : nullptr;
                 if (structTy) {
                     call->addParamAttr(0, llvm::Attribute::get(
                         llvmCtx, llvm::Attribute::StructRet, structTy));
+                }
+            }
+            if (sretAdapter) {
+                // Adapter: borrow method returned a `ptr` (R*). Copy the
+                // bytes into the thunk's sret slot — caller-owned memory —
+                // so it acts like a value-return at the closure boundary.
+                auto retClass = std::dynamic_pointer_cast<CajetaClass>(fnType->getReturnType());
+                llvm::Type* structTy = retClass ? retClass->getLlvmType() : nullptr;
+                if (structTy && call) {
+                    const llvm::DataLayout& dl = lmod->getDataLayout();
+                    llvm::Value* sz = llvm::ConstantInt::get(
+                        llvm::Type::getInt64Ty(llvmCtx),
+                        dl.getTypeAllocSize(structTy));
+                    tb.CreateMemCpy(thunk->getArg(0), llvm::MaybeAlign(8),
+                        call, llvm::MaybeAlign(8), sz);
                 }
             }
             if (thunk->getReturnType()->isVoidTy()) {
