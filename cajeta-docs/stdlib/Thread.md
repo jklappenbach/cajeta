@@ -303,6 +303,37 @@ Built on `Mutex<int32>` + `ConditionVariable`. Use case: bound the *number* of c
 
 **Often you don't need a semaphore.** If the workload is statically batchable into "K at a time," chunked `scope { spawn N times }` expresses the limit in the program's shape with no permit bookkeeping. Reach for `Semaphore` when the consumers are unbounded and no scope can serve as the batching boundary.
 
+### `AtomicInt32` / `AtomicInt64` — single-word atomics
+
+```
+AtomicInt32 hits = new AtomicInt32(0);
+
+// any carrier
+hits.fetchAdd(1);
+
+// any carrier
+int32 snapshot = hits.load();
+```
+
+Owns a heap-allocated word that compiler-emitted inline LLVM atomic
+instructions operate against (`load atomic`, `store atomic`, `atomicrmw
+add`, `cmpxchg`). All operations are sequentially consistent in v1;
+explicit `MemoryOrder` overloads (`Relaxed` / `Acquire` / `Release` /
+`AcqRel` / `SeqCst`) land in a follow-up.
+
+API:
+- `load() → T` — atomic read.
+- `store(T v) → void` — atomic write.
+- `fetchAdd(T delta) → T` — atomic add, returns the value the cell held
+  before the add. Use for sequence numbers and counters.
+- `compareAndSet(T expected, T desired) → boolean` — atomic CAS,
+  returns whether the swap actually happened. Use as the lock-free
+  retry-loop building block.
+
+Backs the lock-free runtime data structures (Chase-Lev deque,
+Treiber-style free lists) that the work-stealing pool — R8 § Executor —
+needs to scale beyond a single carrier.
+
 ---
 
 ## Deferred: `actor` (v2+)

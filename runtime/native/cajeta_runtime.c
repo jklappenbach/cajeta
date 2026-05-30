@@ -1859,6 +1859,47 @@ void __cajeta_rwlock_destroy(void* p) {
     free(rw);
 }
 
+// --- atomic<T> backing storage (R8 Slice 1) ---------------------------------
+//
+// Atomic<T> classes (cajeta.threading.AtomicInt32 / AtomicInt64) own a heap-
+// allocated word that the compiler-emitted inline LLVM atomic instructions
+// (atomicrmw / cmpxchg / load atomic / store atomic) operate on directly. The
+// runtime's role is just the alloc/free of the underlying cell — the
+// arithmetic and ordering live in IR so the optimizer can reason about them
+// (a runtime call would defeat the point of an atomic). Plain malloc/free is
+// fine: these cells aren't tracked in the live-set (the owning Atomic<T>
+// class's drop wrapper calls the destroy intrinsic, and the cell never
+// outlives its owner).
+int32_t* __cajeta_atomic_i32_new(int32_t initial) {
+    int32_t* cell = (int32_t*) malloc(sizeof(int32_t));
+    if (!cell) {
+        fprintf(stderr, "cajeta: __cajeta_atomic_i32_new failed\n");
+        abort();
+    }
+    // Initial store is seq_cst so a subsequent reader on another carrier
+    // sees the constructed value without an extra fence at the call site.
+    __atomic_store_n(cell, initial, __ATOMIC_SEQ_CST);
+    return cell;
+}
+
+void __cajeta_atomic_i32_destroy(int32_t* cell) {
+    if (cell) free(cell);
+}
+
+int64_t* __cajeta_atomic_i64_new(int64_t initial) {
+    int64_t* cell = (int64_t*) malloc(sizeof(int64_t));
+    if (!cell) {
+        fprintf(stderr, "cajeta: __cajeta_atomic_i64_new failed\n");
+        abort();
+    }
+    __atomic_store_n(cell, initial, __ATOMIC_SEQ_CST);
+    return cell;
+}
+
+void __cajeta_atomic_i64_destroy(int64_t* cell) {
+    if (cell) free(cell);
+}
+
 // Abort with a diagnostic when an array index is out of bounds. Compiler emits a
 // conditional branch to this from ArrayIndexExpression when bounds checking is on.
 void __cajeta_array_bounds_fail(int64_t index, int64_t dim) {
