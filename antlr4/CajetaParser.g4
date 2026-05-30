@@ -729,6 +729,11 @@ expression
     // call.
     | HEAP  (creator | aggregateInitializer)
     | STACK (creator | aggregateInitializer)
+    // `shared` is a third placement (GPU workgroup-shared memory, NV addrspace
+    // 3). Device-only: legal only inside an @Kernel body, where the device
+    // lowerer (NvptxKernelLowering) turns `shared T[N]` into one per-block
+    // addrspace(3) global. The host codegen path rejects it. See CajetaXPU.md.
+    | SHARED (creator | aggregateInitializer)
     | '(' annotation* typeType ('&' typeType)* ')' expression
     | expression postfix=('++' | '--')
     | prefix=('+'|'-'|'++'|'--') expression

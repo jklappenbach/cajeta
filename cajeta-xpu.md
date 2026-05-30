@@ -37,6 +37,7 @@ deferrals first. Six commits on `cajeta-xpu` (after the restore commits):
 | E+F | `CudaDriver` (dlopen nvcuda) + SAXPY launched & verified on-device | `XpuSaxpyDeviceTests` |
 | G | host-source launch (`kernel.launch(...)` → `__cajeta_xpu_launch`) + cubin registration ctors + launch-borrow-scope checking | `XpuLaunchCodegenTests`, `XpuLaunchBorrowTests`, `XpuHostLaunchDeviceTests` |
 | H | general single-kernel compute bodies: mutable locals (entry allocas + mem2reg), `for`/`while`/`do-while`, unlabeled `break`/`continue`, compound assignment, full int/float operator set, unary/prefix/postfix `++`/`--`, numeric casts, `Barrier.workgroup()` | `XpuNvptxLoopEmitTests`, `XpuLoopDeviceTests` |
+| I | workgroup **shared memory** via a `shared` placement keyword (sibling of `heap`/`stack`): `Shared<T> tile = shared T[N];` → one per-block `addrspace(3)` global of constant size N, indexed/assigned like a buffer. Device-only (`XPU-K03` on the host path). | `XpuNvptxSharedEmitTests`, `XpuSharedDeviceTests` |
 
 **Deviations from [`CajetaXPU.md`](cajeta-docs/CajetaXPU.md) (intentional, slice-scoped):**
 
@@ -116,9 +117,18 @@ deferrals first. Six commits on `cajeta-xpu` (after the restore commits):
   unary/prefix/postfix `++`/`--`, numeric casts, `Barrier.workgroup()`), with
   entry-block-alloca mutable slots promoted by mem2reg before PTX emit. Verified
   on-device (`XpuLoopDeviceTests`) and in PTX text (`XpuNvptxLoopEmitTests`).
-  Still `XPU-N01` (next increment, preferred order — shared memory first): shared
-  memory (`Shared<T>`, addrspace 3), Wave shuffles/ballots, calls to user
+  Still `XPU-N01` (next increment): Wave shuffles/ballots, calls to user
   `@Device` helpers, for-each loops, and labeled break/continue.
+- **Workgroup shared memory. DONE (increment I)** — a third placement keyword
+  `shared` (sibling of `heap`/`stack`): `Shared<T> tile = shared T[N];` lowers to
+  one per-block `internal addrspace(3)` global of compile-time-constant size N;
+  indexing/assignment reuse the buffer path (LLVM tracks the address space on the
+  pointer). Device-only — the host codegen path rejects `shared` with `XPU-K03`.
+  Verified on-device (256-wide tree reduction, `XpuSharedDeviceTests`) and in PTX
+  text / via the AOT CLI (`.shared`/`ld.shared`/`st.shared`/`bar.sync`,
+  `XpuNvptxSharedEmitTests`). Deferred: **dynamic** shared memory (size from the
+  launch config) stays `XPU-N01`; the shared-aliasing borrow rule (overlapping
+  `&mut` slices, spec §11 case 2) is a separate deferred item.
 
 ---
 
