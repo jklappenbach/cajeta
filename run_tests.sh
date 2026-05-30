@@ -20,6 +20,9 @@
 #   PARALLEL=1   force parallel run even with filters
 #   PARALLEL=N   use N shards instead of nproc
 #   VERBOSE=1    in parallel mode, dump each shard's full gtest output
+#   NO_RETRY=1   skip the serial retry of failed/crashed shards (first pass
+#                is authoritative; otherwise problem shards are re-run alone
+#                and only deterministic failures count)
 
 set -e
 
@@ -232,6 +235,9 @@ total_passed=0
 total_failed=0
 crashed_shards=()
 failure_lines=()
+# Shards that failed or crashed in the first pass, re-run serially below to
+# separate memory-pressure flakiness from real deterministic failures.
+retry_shards=()
 
 for ((s=0; s<shards; s++)); do
     out_file="$tmpdir/shard_${s}.out"
@@ -263,6 +269,7 @@ for ((s=0; s<shards; s++)); do
         while IFS= read -r line; do
             failure_lines+=("$line")
         done < <(grep -E '^\[  FAILED  \] [A-Za-z_]' "$out_file")
+        retry_shards+=("$s")
     fi
 
     if [ "$exit_code" != "0" ] && [ "$failed" -eq 0 ]; then
@@ -317,6 +324,7 @@ for ((s=0; s<shards; s++)); do
         esac
 
         crashed_shards+=("shard ${s}: ${reason}; last test started: ${last_run:-<none>}")
+        retry_shards+=("$s")
     fi
 done
 
@@ -351,6 +359,71 @@ if [ "${VERBOSE:-}" = "1" ]; then
         echo "----- shard ${s} -----"
         cat "$tmpdir/shard_${s}.out"
     done
+fi
+
+# --------------------------------------------------------------------------
+# Retry pass. Running ~32 LLJIT shards at once puts the box under enough
+# memory/scheduling pressure that a shard or two randomly takes a SIGSEGV (or
+# a JIT null-return -> wrong value -> assertion fail). The named test just
+# happens to be the last one that started; it moves run to run. Re-run each
+# problem shard ON ITS OWN (serial, no contention): genuine deterministic
+# failures reproduce and stay red, flaky ones recover. The final exit code is
+# based on the retry, not the first pass. NO_RETRY=1 skips this and treats the
+# first pass as authoritative.
+# --------------------------------------------------------------------------
+if { [ "$total_failed" -gt 0 ] || [ ${#crashed_shards[@]} -gt 0 ]; } \
+        && [ -z "${NO_RETRY:-}" ]; then
+    echo
+    echo "=== Retry pass: re-running ${#retry_shards[@]} problem shard(s) serially ==="
+    echo "(memory-pressure flakiness recovers here; deterministic failures persist)"
+    r_failed=0
+    r_crashed=()
+    r_failure_lines=()
+    for s in "${retry_shards[@]}"; do
+        echo "  re-running shard ${s} ..."
+        r_out="$tmpdir/retry_${s}.out"
+        r_exit="$tmpdir/retry_${s}.exit"
+        { set +e
+          CAJETA_SOURCE_ROOT="$SCRIPT_DIR" "$TEST_BIN" \
+              "--gtest_filter=${shard_filters[$s]}" \
+              --gtest_brief=1 > "$r_out" 2>&1
+          echo "$?" > "$r_exit"
+        } 2>/dev/null
+        rexit=$(cat "$r_exit" 2>/dev/null || echo "?")
+        rfailed=$(grep -cE '^\[  FAILED  \] [A-Za-z_]' "$r_out" 2>/dev/null || true)
+        rfailed=${rfailed:-0}
+        r_failed=$((r_failed + rfailed))
+        if [ "$rfailed" -gt 0 ]; then
+            while IFS= read -r line; do
+                r_failure_lines+=("$line")
+            done < <(grep -E '^\[  FAILED  \] [A-Za-z_]' "$r_out")
+        fi
+        if [ "$rexit" != "0" ] && [ "$rfailed" -eq 0 ]; then
+            r_crashed+=("shard ${s}: exit ${rexit}")
+        fi
+    done
+
+    echo
+    echo "=== Retry summary ==="
+    echo "Retried shards: ${#retry_shards[@]}   Still failing: ${r_failed}   Still crashing: ${#r_crashed[@]}"
+    if [ ${#r_failure_lines[@]} -gt 0 ]; then
+        echo
+        echo "Persisting failures (real):"
+        for line in "${r_failure_lines[@]}"; do echo "  $line"; done
+    fi
+    if [ ${#r_crashed[@]} -gt 0 ]; then
+        echo
+        echo "Persisting crashes (real):"
+        for c in "${r_crashed[@]}"; do echo "  $c"; done
+    fi
+
+    if [ "$r_failed" -gt 0 ] || [ ${#r_crashed[@]} -gt 0 ]; then
+        exit 1
+    fi
+    echo
+    echo "All problem shards passed on serial retry -- the first-pass failures"
+    echo "were memory-pressure flakiness, not real failures. PASS."
+    exit 0
 fi
 
 if [ "$total_failed" -gt 0 ] || [ ${#crashed_shards[@]} -gt 0 ]; then

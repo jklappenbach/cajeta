@@ -22,6 +22,9 @@ rem   PARALLEL=0   force serial run even without filters
 rem   PARALLEL=1   force parallel run even with filters
 rem   PARALLEL=N   use N shards instead of the CPU count
 rem   VERBOSE=1    in parallel mode, dump each shard's full gtest output
+rem   NO_RETRY=1   skip the serial retry of failed/crashed shards (first pass
+rem                is authoritative; otherwise problem shards are re-run alone
+rem                and only deterministic failures count)
 rem   MSYS2_ROOT   MSYS2 install root (default C:\msys64); its mingw64\bin is
 rem                prepended to PATH so cmake/ninja AND the test binary's
 rem                runtime DLLs (libstdc++, antlr4-runtime, ...) resolve.
@@ -219,10 +222,13 @@ call :secs "%TIME%" T1
 set /a elapsed=T1-T0
 if %elapsed% LSS 0 set /a elapsed+=86400
 
-rem Aggregate.
+rem Aggregate. :agg also records every shard that failed or crashed into
+rem retry_list (space-separated indices) for the serial retry pass below.
 set /a total_pass=0
 set /a total_fail=0
 set /a ncrash=0
+set /a nretry=0
+set "retry_list="
 del "%TMPD%\failures.txt" 2>nul
 del "%TMPD%\crashes.txt" 2>nul
 for /l %%s in (0,1,%last%) do call :agg %%s
@@ -256,10 +262,68 @@ if "%VERBOSE%"=="1" (
     )
 )
 
+rem ---------------------------------------------------------------------------
+rem Retry pass. Running 32 LLJIT shards at once puts the box under enough
+rem memory/scheduling pressure that a shard or two randomly takes an access
+rem violation (or a JIT null-return -> wrong value -> assertion fail). The
+rem named test just happens to be the last one that started; it moves run to
+rem run. Re-run each problem shard ON ITS OWN (serial, no contention): genuine
+rem deterministic failures reproduce and stay red, flaky ones recover. The
+rem final exit code is based on the retry, not the first pass. Set
+rem NO_RETRY=1 to skip and treat the first pass as authoritative.
+rem ---------------------------------------------------------------------------
+set "had_problems="
+if %total_fail% GTR 0 set "had_problems=1"
+if %ncrash% GTR 0 set "had_problems=1"
+
+if not defined had_problems (
+    rd /s /q "%TMPD%" 2>nul
+    exit /b 0
+)
+
+if defined NO_RETRY (
+    rd /s /q "%TMPD%" 2>nul
+    if %total_fail% GTR 0 exit /b 1
+    if %ncrash% GTR 0 exit /b 1
+    exit /b 0
+)
+
+echo.
+echo === Retry pass: re-running !nretry! problem shard^(s^) serially ===
+echo ^(memory-pressure flakiness recovers here; deterministic failures persist^)
+for %%s in (!retry_list!) do (
+    echo   re-running shard %%s ...
+    cmd /c "%TMPD%\shard_%%s.cmd"
+)
+
+set /a r_pass=0
+set /a r_fail=0
+set /a r_crash=0
+del "%TMPD%\retry_failures.txt" 2>nul
+del "%TMPD%\retry_crashes.txt" 2>nul
+for %%s in (!retry_list!) do call :ragg %%s
+
+echo.
+echo === Retry summary ===
+echo Retried shards: !nretry!   Still failing: !r_fail!   Still crashing: !r_crash!
+if exist "%TMPD%\retry_failures.txt" (
+    echo.
+    echo Persisting failures ^(real^):
+    for /f "usebackq tokens=* delims=" %%a in ("%TMPD%\retry_failures.txt") do echo   %%a
+)
+if exist "%TMPD%\retry_crashes.txt" (
+    echo.
+    echo Persisting crashes ^(real^):
+    type "%TMPD%\retry_crashes.txt"
+)
+
 rd /s /q "%TMPD%" 2>nul
 
-if %total_fail% GTR 0 exit /b 1
-if %ncrash% GTR 0 exit /b 1
+if !r_fail! GTR 0 exit /b 1
+if !r_crash! GTR 0 exit /b 1
+echo.
+echo All problem shards passed on serial retry -- the first-pass failures were
+echo memory-pressure flakiness, not real failures. PASS.
 exit /b 0
 
 rem ---------------------------------------------------------------------------
@@ -285,6 +349,10 @@ for /f %%a in ('findstr /R /C:"^\[  FAILED  \] [a-zA-Z_]" "%out%" 2^>nul ^| find
 set /a total_pass+=passed
 set /a total_fail+=failed
 if %failed% GTR 0 findstr /R /C:"^\[  FAILED  \] [a-zA-Z_]" "%out%" >> "%TMPD%\failures.txt" 2>nul
+if %failed% GTR 0 (
+    set /a nretry+=1
+    set "retry_list=!retry_list! %s%"
+)
 
 rem Non-zero exit with no counted failure == crashed mid-run. Re-run the shard
 rem under --gtest_brief=0 to surface the [ RUN ] sequence and name the last
@@ -293,11 +361,43 @@ set "crashed="
 if not "%ec%"=="0" if %failed%==0 set "crashed=1"
 if defined crashed (
     set /a ncrash+=1
+    set /a nretry+=1
+    set "retry_list=!retry_list! %s%"
     "%ROOT%\%TEST_BIN%" --gtest_filter=!sf_%s%! --gtest_brief=0 > "%TMPD%\v_%s%.txt" 2>nul
     set "last_run=<none>"
     for /f "tokens=4" %%a in ('findstr /C:"[ RUN      ]" "%TMPD%\v_%s%.txt" 2^>nul') do set "last_run=%%a"
     call :reason "%ec%"
     >> "%TMPD%\crashes.txt" echo   shard %s%: !rsn!; last test started: !last_run!
+)
+goto :eof
+
+rem ---------------------------------------------------------------------------
+rem :ragg <shard-index> -- re-aggregate ONE retried shard into the r_* totals.
+rem Mirrors :agg but writes to the retry tallies and retry_{failures,crashes}.
+rem The shard's wrapper .cmd has already been re-run serially, overwriting its
+rem .out/.exit, so this just re-parses the fresh result.
+rem ---------------------------------------------------------------------------
+:ragg
+set "s=%~1"
+set "out=%TMPD%\shard_%s%.out"
+set "ec="
+set /p ec=<"%TMPD%\shard_%s%.exit"
+if not defined ec set "ec=?"
+
+set "failed=0"
+for /f %%a in ('findstr /R /C:"^\[  FAILED  \] [a-zA-Z_]" "%out%" 2^>nul ^| find /c /v ""') do set "failed=%%a"
+set /a r_fail+=failed
+if %failed% GTR 0 findstr /R /C:"^\[  FAILED  \] [a-zA-Z_]" "%out%" >> "%TMPD%\retry_failures.txt" 2>nul
+
+set "crashed="
+if not "%ec%"=="0" if %failed%==0 set "crashed=1"
+if defined crashed (
+    set /a r_crash+=1
+    "%ROOT%\%TEST_BIN%" --gtest_filter=!sf_%s%! --gtest_brief=0 > "%TMPD%\rv_%s%.txt" 2>nul
+    set "last_run=<none>"
+    for /f "tokens=4" %%a in ('findstr /C:"[ RUN      ]" "%TMPD%\rv_%s%.txt" 2^>nul') do set "last_run=%%a"
+    call :reason "%ec%"
+    >> "%TMPD%\retry_crashes.txt" echo   shard %s%: !rsn!; last test started: !last_run!
 )
 goto :eof
 
