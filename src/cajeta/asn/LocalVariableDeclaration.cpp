@@ -595,6 +595,35 @@ namespace cajeta {
                                         initIsBorrow = true;
                                     }
                                 }
+                                // M5(b) — fn-typed MCE through a function-
+                                // typed local or field: when the fn-type
+                                // uses sret, the local takes ownership of
+                                // the caller-allocated sret slot's value
+                                // (stack-drop variant), same as a direct
+                                // sret-method call above.
+                                if (!resolved && !initIsStackAlloc && !initIsBorrow) {
+                                    CajetaFunctionTypePtr fnTy;
+                                    if (mcKids.empty()) {
+                                        auto scope = module->getScopeStack().peek();
+                                        FieldPtr fld = scope
+                                            ? scope->getField(mcName) : nullptr;
+                                        if (fld) {
+                                            fnTy = dynamic_pointer_cast<CajetaFunctionType>(
+                                                fld->getType());
+                                        }
+                                    }
+                                    if (!fnTy && targetCls) {
+                                        auto& props = targetCls->getProperties();
+                                        auto pit = props.find(mcName);
+                                        if (pit != props.end()) {
+                                            fnTy = dynamic_pointer_cast<CajetaFunctionType>(
+                                                pit->second->getType());
+                                        }
+                                    }
+                                    if (fnTy && fnTy->usesSret()) {
+                                        initIsStackAlloc = true;
+                                    }
+                                }
                             }
                         }
                     } else if (dynamic_pointer_cast<DotExpression>(children[0])

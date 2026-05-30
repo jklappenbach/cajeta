@@ -492,8 +492,25 @@ namespace cajeta {
                     llvm::Value* captures = builder->CreateLoad(
                         ptrTy, capSlot, "captures_ptr");
 
+                    // M5(b) — sret form: caller allocates the result slot
+                    // in its own frame and threads it as the closure's
+                    // hidden arg 0. The call returns void; MCE's value is
+                    // the slot pointer (callers chain into it like any
+                    // class instance pointer).
+                    llvm::Value* sretSlot = nullptr;
+                    auto retClass = dynamic_pointer_cast<CajetaClass>(fnType->getReturnType());
+                    if (fnType->usesSret() && retClass) {
+                        llvm::Function* curFn = builder->GetInsertBlock()->getParent();
+                        llvm::IRBuilder<> entryBuilder(
+                            &curFn->getEntryBlock(),
+                            curFn->getEntryBlock().begin());
+                        sretSlot = entryBuilder.CreateAlloca(
+                            retClass->getLlvmType(), nullptr, "fn_sret");
+                    }
                     vector<llvm::Value*> args;
-                    args.push_back(captures);  // implicit first arg per L2 ABI
+                    if (sretSlot) args.push_back(sretSlot);
+                    args.push_back(captures);  // implicit captures arg per L2 ABI
+                    size_t baseIdx = sretSlot ? 2 : 1;
                     llvm::FunctionType* sig = fnType->getLlvmFunctionType();
                     for (size_t i = 0; i < parameters.size(); ++i) {
                         if (parameters[i].expression
@@ -512,9 +529,9 @@ namespace cajeta {
                         v = loadIfLValue(module, v, exprAst);
                         // Width-coerce to the function signature's expected
                         // param type (matches the coercion invokeMethod does
-                        // for ordinary calls). Signature index is i + 1 to
-                        // skip the captures slot.
-                        size_t sigIdx = i + 1;
+                        // for ordinary calls). Signature index is baseIdx + i
+                        // (sret-shifted when applicable).
+                        size_t sigIdx = baseIdx + i;
                         if (sig && sigIdx < sig->getNumParams() && v
                                 && v->getType() != sig->getParamType(sigIdx)) {
                             llvm::Type* expected = sig->getParamType(sigIdx);
@@ -527,7 +544,19 @@ namespace cajeta {
                         }
                         args.push_back(v);
                     }
-                    return builder->CreateCall(sig, callee, args);
+                    llvm::CallInst* call = builder->CreateCall(sig, callee, args);
+                    if (sretSlot && retClass) {
+                        call->addParamAttr(0, llvm::Attribute::get(
+                            llvmCtx, llvm::Attribute::StructRet,
+                            retClass->getLlvmType()));
+                        // Pin resolvedType so chained `.field` / `.method()`
+                        // see the value-typed result the sret slot holds.
+                        if (fnType->getReturnType()) {
+                            resolvedType = fnType->getReturnType();
+                        }
+                        return sretSlot;
+                    }
+                    return call;
                 }
             }
         }
@@ -1988,15 +2017,30 @@ namespace cajeta {
                         closureTy, closurePtr, 1, "closure.captures");
                     llvm::Value* captures = builder->CreateLoad(
                         ptrTy, capSlot, "captures_ptr");
+                    // M5(b) — sret form: allocate the caller-owned result
+                    // slot and thread it as the closure's hidden arg 0;
+                    // call returns void, MCE value is the slot pointer.
+                    llvm::Value* sretSlot = nullptr;
+                    auto retClass = dynamic_pointer_cast<CajetaClass>(fnType->getReturnType());
+                    if (fnType->usesSret() && retClass) {
+                        llvm::Function* curFn = builder->GetInsertBlock()->getParent();
+                        llvm::IRBuilder<> entryBuilder(
+                            &curFn->getEntryBlock(),
+                            curFn->getEntryBlock().begin());
+                        sretSlot = entryBuilder.CreateAlloca(
+                            retClass->getLlvmType(), nullptr, "fn_sret");
+                    }
                     vector<llvm::Value*> args;
+                    if (sretSlot) args.push_back(sretSlot);
                     args.push_back(captures);
+                    size_t baseIdx = sretSlot ? 2 : 1;
                     llvm::FunctionType* sig = fnType->getLlvmFunctionType();
                     for (size_t i = 0; i < parameters.size(); ++i) {
                         llvm::Value* v = parameters[i].expression->generateCode(module);
                         if (auto* a = llvm::dyn_cast_or_null<llvm::AllocaInst>(v)) {
                             v = builder->CreateLoad(a->getAllocatedType(), a);
                         }
-                        size_t sigIdx = i + 1;
+                        size_t sigIdx = baseIdx + i;
                         if (sig && sigIdx < sig->getNumParams() && v
                                 && v->getType() != sig->getParamType(sigIdx)) {
                             llvm::Type* expected = sig->getParamType(sigIdx);
@@ -2016,7 +2060,14 @@ namespace cajeta {
                     if (fnType->getReturnType()) {
                         resolvedType = fnType->getReturnType();
                     }
-                    return builder->CreateCall(sig, callee, args);
+                    llvm::CallInst* call = builder->CreateCall(sig, callee, args);
+                    if (sretSlot && retClass) {
+                        call->addParamAttr(0, llvm::Attribute::get(
+                            llvmCtx, llvm::Attribute::StructRet,
+                            retClass->getLlvmType()));
+                        return sretSlot;
+                    }
+                    return call;
                 }
             }
         }

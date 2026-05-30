@@ -373,6 +373,14 @@ namespace cajeta {
         // body for a `return stack X(...)`; cached. See returnsStackValueCache.
         bool returnsStackValue();
 
+        // Shared body-scan helpers, exposed for lambdas (M5(b)) which run the
+        // same "does this body return by stack value?" question over their
+        // expression or block body to choose the sret-vs-ownership function-
+        // type ABI. Definitions live in Method.cpp.
+        static bool exprIsStackConstruction(const ExpressionPtr& e);
+        static bool nodeHasStackReturn(const AbstractSyntaxNodePtr& node);
+        static bool blockHasStackReturn(const BlockPtr& block);
+
         // Push a fresh (empty) drop frame onto the stack. Block::generateCode
         // calls this at its entry; the frame collects every owned local
         // declared inside the block until the matching pop.

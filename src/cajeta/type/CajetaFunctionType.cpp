@@ -55,9 +55,29 @@ namespace cajeta {
         // lambdas (L2-2+) pass the address of their captures struct. The
         // synthesized function ignores the arg in L2-1 — it's about the
         // ABI shape, not capture semantics.
+        //
+        // M5(b) — sret value-return form. When returnsOwnership is false
+        // and the return is a class (non-interface, non-array), the
+        // signature switches to the explicit sret ABI mirroring
+        // Method::generatePrototype: `void (ptr sret(R), ptr captures,
+        // params...)`. The sret attribute itself is set at the Function
+        // / CallInst level (FunctionType only knows the parameter is a
+        // `ptr`). Methods that returnsStackValue() and method-refs to
+        // them share this shape, so a direct binding flows the same
+        // ABI through. See cajeta-docs/stdlib/ValueReturns.md.
+        bool useSret = false;
+        if (!returnsOwnership) {
+            auto rtClass = std::dynamic_pointer_cast<CajetaClass>(this->returnType);
+            bool isArr = std::dynamic_pointer_cast<CajetaArray>(this->returnType) != nullptr;
+            bool isView = std::dynamic_pointer_cast<CajetaView>(this->returnType) != nullptr;
+            useSret = rtClass && !rtClass->isInterface() && !isArr && !isView;
+        }
         std::vector<llvm::Type*> llvmParams;
-        llvmParams.reserve(this->parameterTypes.size() + 1);
-        llvmParams.push_back(ptrTy);
+        llvmParams.reserve(this->parameterTypes.size() + 2);
+        if (useSret) {
+            llvmParams.push_back(ptrTy);  // sret slot — param 0
+        }
+        llvmParams.push_back(ptrTy);  // captures — param 0 (ownership form) or 1 (sret form)
         for (auto& p : this->parameterTypes) {
             llvmParams.push_back(toCallingConvType(p, ptrTy));
         }
@@ -66,11 +86,25 @@ namespace cajeta {
         // struct itself. Without this the indirect-call's return type
         // mismatches the underlying method's signature, which goes
         // through the same coercion in Method::generatePrototype.
-        llvm::Type* llvmRet = toCallingConvType(this->returnType, ptrTy);
-        if (!llvmRet) {
+        llvm::Type* llvmRet;
+        if (useSret) {
             llvmRet = llvm::Type::getVoidTy(*module->getLlvmContext());
+        } else {
+            llvmRet = toCallingConvType(this->returnType, ptrTy);
+            if (!llvmRet) {
+                llvmRet = llvm::Type::getVoidTy(*module->getLlvmContext());
+            }
         }
         this->llvmFunctionType = llvm::FunctionType::get(llvmRet, llvmParams, /*isVarArg=*/false);
+    }
+
+    bool CajetaFunctionType::usesSret() const {
+        if (returnsOwnership) return false;
+        auto rtClass = std::dynamic_pointer_cast<CajetaClass>(returnType);
+        if (!rtClass || rtClass->isInterface()) return false;
+        if (std::dynamic_pointer_cast<CajetaArray>(returnType)) return false;
+        if (std::dynamic_pointer_cast<CajetaView>(returnType)) return false;
+        return true;
     }
 
     // Mirror of Method::generatePrototype's pass-by-pointer choice for

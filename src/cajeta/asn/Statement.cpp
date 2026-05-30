@@ -1160,50 +1160,70 @@ namespace cajeta {
             if (auto m = module->getCurrentMethod()) m->emitOwnerDrops(module);
             return builder->CreateRetVoid();
         }
-        // Value-return (sret + NRVO): the enclosing method hands back a
-        // `stack`-constructed value by copy. Its LLVM signature returns `void`
-        // and takes the result slot as hidden arg 0. Build the returned value
-        // directly into that caller-owned slot (NRVO for a `stack X(...)`
-        // construction; memcpy/store fallback otherwise), then `ret void`. No
-        // pointer escapes the dying frame — the bytes already live in the
-        // caller. This bypasses the fresh-return rejection + by-pointer load
-        // machinery below, which both assume a pointer/value return.
+        // Value-return (sret + NRVO): the enclosing method/lambda hands back
+        // a `stack`-constructed value by copy. Its LLVM signature returns
+        // `void` and takes the result slot as hidden arg 0. Build the
+        // returned value directly into that caller-owned slot (NRVO for a
+        // `stack X(...)` construction; memcpy/store fallback otherwise),
+        // then `ret void`. No pointer escapes the dying frame — the bytes
+        // already live in the caller. This bypasses the fresh-return
+        // rejection + by-pointer load machinery below, which both assume a
+        // pointer/value return. Triggered for methods via
+        // Method::returnsStackValue() (the body-scan that drives the sret
+        // ABI in Method.cpp) and for lambdas via the LLVM signature itself
+        // (M5(b) — lambdas have no Method context but their underlying
+        // function carries the sret attribute on arg 0).
         // See cajeta-docs/stdlib/ValueReturns.md.
+        llvm::Function* curFn = builder->GetInsertBlock()->getParent();
+        bool sretMethod = false;
         if (auto m = module->getCurrentMethod()) {
-            if (m->returnsStackValue() && expression) {
-                llvm::Function* fn = builder->GetInsertBlock()->getParent();
-                llvm::Value* sretPtr = fn->getArg(0);
-                if (auto newExpr = dynamic_pointer_cast<NewExpression>(expression)) {
-                    newExpr->setNrvoTarget(sretPtr);
-                    expression->generateCode(module);
-                } else {
-                    // Fallback (e.g. `return someStackLocal;` or a stack
-                    // aggregate): produce the value/pointer and copy it into
-                    // the sret slot.
-                    llvm::Value* v = expression->generateCode(module);
-                    llvm::Type* structTy = m->getReturnType()
-                        ? m->getReturnType()->getLlvmType() : nullptr;
-                    if (v && structTy) {
-                        if (v->getType()->isPointerTy()) {
-                            const llvm::DataLayout& dl =
-                                module->getLlvmModule()->getDataLayout();
-                            llvm::Value* sz = llvm::ConstantInt::get(
-                                llvm::Type::getInt64Ty(*module->getLlvmContext()),
-                                dl.getTypeAllocSize(structTy));
-                            builder->CreateMemCpy(sretPtr, llvm::MaybeAlign(8),
-                                v, llvm::MaybeAlign(8), sz);
-                        } else {
-                            builder->CreateStore(v, sretPtr);
-                        }
+            sretMethod = m->returnsStackValue();
+        }
+        bool sretFnSig = curFn && curFn->getReturnType()->isVoidTy()
+            && curFn->arg_size() > 0
+            && curFn->getArg(0)->hasAttribute(llvm::Attribute::StructRet);
+        if ((sretMethod || sretFnSig) && expression) {
+            llvm::Value* sretPtr = curFn->getArg(0);
+            if (auto newExpr = dynamic_pointer_cast<NewExpression>(expression)) {
+                newExpr->setNrvoTarget(sretPtr);
+                expression->generateCode(module);
+            } else {
+                // Fallback (e.g. `return someStackLocal;` or a stack
+                // aggregate): produce the value/pointer and copy it into
+                // the sret slot.
+                llvm::Value* v = expression->generateCode(module);
+                llvm::Type* structTy = nullptr;
+                if (auto m = module->getCurrentMethod()) {
+                    if (m->getReturnType()) structTy = m->getReturnType()->getLlvmType();
+                }
+                if (!structTy && sretFnSig) {
+                    // Recover the struct type from the sret param attribute
+                    // (set when the function was created).
+                    structTy = curFn->getArg(0)->getAttribute(
+                        llvm::Attribute::StructRet).getValueAsType();
+                }
+                if (v && structTy) {
+                    if (v->getType()->isPointerTy()) {
+                        const llvm::DataLayout& dl =
+                            module->getLlvmModule()->getDataLayout();
+                        llvm::Value* sz = llvm::ConstantInt::get(
+                            llvm::Type::getInt64Ty(*module->getLlvmContext()),
+                            dl.getTypeAllocSize(structTy));
+                        builder->CreateMemCpy(sretPtr, llvm::MaybeAlign(8),
+                            v, llvm::MaybeAlign(8), sz);
+                    } else {
+                        builder->CreateStore(v, sretPtr);
                     }
                 }
+            }
+            if (auto m = module->getCurrentMethod()) {
                 m->emitAfterAdvice(module);
                 m->emitAfterReturningAdvice(module);
                 m->emitAfterThrowingTryPop(module);
-                emitScopeExitToWatermark(module);
-                m->emitOwnerDrops(module);
-                return builder->CreateRetVoid();
             }
+            emitScopeExitToWatermark(module);
+            if (auto m = module->getCurrentMethod()) m->emitOwnerDrops(module);
+            return builder->CreateRetVoid();
         }
         // Memory-model § Function signatures: returning a fresh
         // allocation (`return heap X(...)`, `return new X(...)`,

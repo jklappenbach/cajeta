@@ -47,6 +47,14 @@ namespace cajeta {
         bool isReturnsOwnership() const { return returnsOwnership; }
         llvm::FunctionType* getLlvmFunctionType() const { return llvmFunctionType; }
 
+        // True iff the LLVM signature uses the sret ABI: `void (ptr sret(R),
+        // ptr captures, params...)`. Call sites consult this to allocate the
+        // result slot, prepend it, set the sret attribute on the call, and
+        // recover the slot pointer as the call's value. Mirrors the
+        // `useSret` decision made when building the cached llvmFunctionType
+        // — kept consistent here so call-site logic doesn't drift.
+        bool usesSret() const;
+
         // Canonical name follows the source form: `(T1,T2) -> R` for the
         // sret value-return form, `(T1,T2) -> #R` for the heap-ownership
         // form. The `#` mirrors the source-level annotation on method
