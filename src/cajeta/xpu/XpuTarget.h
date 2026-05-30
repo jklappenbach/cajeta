@@ -34,10 +34,11 @@ namespace cajeta {
 namespace cajeta {
 namespace xpu {
 
-    // The concrete device backends. (Vulkan/SPIR-V is a later gap-filler.)
+    // The concrete device backends.
     enum class Backend {
         Nvptx,     // NVIDIA: AST -> device IR -> PTX -> ptxas -> cubin.
         Amdgpu,    // AMD:    AST -> device IR -> AMDGCN ISA -> lld -> hsaco.
+        Spirv,     // Vulkan: AST -> device IR -> SPIR-V (descriptor-set SSBOs).
     };
 
     // Lowercase backend name for diagnostics / artifact suffixes.
@@ -45,6 +46,7 @@ namespace xpu {
         switch (b) {
             case Backend::Nvptx:  return "nvptx";
             case Backend::Amdgpu: return "amdgpu";
+            case Backend::Spirv:  return "spirv";
         }
         return "?";
     }

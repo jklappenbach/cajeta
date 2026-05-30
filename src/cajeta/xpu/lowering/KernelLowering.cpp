@@ -100,23 +100,33 @@ public:
     DeviceLowerer(llvm::Module& m, llvm::Function* fn, LoweringTarget& target)
         : mod(m), ctx(m.getContext()), builder(ctx), fn(fn), target(target) {}
 
+    // The admitted kernel params (computed by lowerKernel); materialized into
+    // the entry block by lowerBody via target.materializeParam (allocas /
+    // descriptor binds need the entry block to exist first).
+    void setParams(std::vector<LoweringTarget::KernelParam> p) {
+        kparams = std::move(p);
+    }
+
     void lowerBody(const MethodPtr& method) {
         builder.SetInsertPoint(llvm::BasicBlock::Create(ctx, "entry", fn));
         // Materialize params now that the entry block exists. Scalars get a
         // mutable alloca slot (so they can be reassigned / serve as loop
-        // counters); buffers keep their direct addrspace(1) base pointer.
-        for (auto& pb : paramBindings) {
-            if (pb.bufferElem) {
-                bufferBases[pb.name] = pb.arg;
-                bufferElems[pb.name] = pb.bufferElem;
-                bufferElemSigned[pb.name] = pb.elemSigned;
+        // counters); buffers keep their base/handle. HOW a param's runtime
+        // value is obtained is the backend's call (target.materializeParam):
+        // NVPTX/AMDGPU read fn->getArg(idx); Vulkan binds a descriptor here.
+        unsigned idx = 0;
+        for (auto& p : kparams) {
+            llvm::Value* v = target.materializeParam(builder, mod, fn, idx++, p);
+            if (p.isBuffer) {
+                bufferBases[p.name] = v;
+                bufferElems[p.name] = p.type;
+                bufferElemSigned[p.name] = p.isSigned;
             } else {
-                llvm::Type* t = pb.arg->getType();
-                llvm::Value* slot = entryAlloca(t, pb.name);
-                builder.CreateStore(pb.arg, slot);
-                values[pb.name] = slot;
-                slotTypes[pb.name] = t;
-                signedness[pb.name] = pb.isSigned;
+                llvm::Value* slot = entryAlloca(p.type, p.name);
+                builder.CreateStore(v, slot);
+                values[p.name] = slot;
+                slotTypes[p.name] = p.type;
+                signedness[p.name] = p.isSigned;
             }
         }
         lowerStatement(method->getBlock());
@@ -124,13 +134,6 @@ public:
         if (!builder.GetInsertBlock()->getTerminator()) {
             builder.CreateRetVoid();
         }
-    }
-
-    // Record a parameter binding; materialized into the entry block by
-    // lowerBody (allocas need the entry block to exist first).
-    void bindParam(const std::string& name, llvm::Value* v,
-                   bool isSigned, llvm::Type* bufferElem, bool elemSigned) {
-        paramBindings.push_back({name, v, isSigned, bufferElem, elemSigned});
     }
 
 private:
@@ -150,11 +153,7 @@ private:
     std::map<std::string, llvm::Value*> bufferBases;  // buffer name -> addrspace(1) ptr
     std::map<std::string, llvm::Type*> bufferElems;   // buffer name -> element type
 
-    struct ParamBinding {
-        std::string name; llvm::Value* arg; bool isSigned; llvm::Type* bufferElem;
-        bool elemSigned;
-    };
-    std::vector<ParamBinding> paramBindings;
+    std::vector<LoweringTarget::KernelParam> kparams;  // admitted params
     std::map<std::string, bool> bufferElemSigned;  // buffer name -> elem signed?
     // At most one dynamic (runtime-sized) shared array per kernel — the
     // extern unsized addrspace(3) region is a single base; multiple would
@@ -636,7 +635,11 @@ private:
             idx = builder.CreateIntCast(idx, llvm::Type::getInt64Ty(ctx),
                                         exprSigned(idxExpr));
         }
-        llvm::Value* addr = builder.CreateGEP(be->second, bv->second, {idx}, "idx");
+        // Element pointer is a backend decision: NVPTX/AMDGPU GEP the base
+        // pointer; Vulkan routes descriptor-buffer handles through getpointer
+        // (shared-mem globals still GEP). See LoweringTarget::bufferElementPtr.
+        llvm::Value* addr =
+            target.bufferElementPtr(builder, mod, bv->second, be->second, idx);
         return {addr, be->second};
     }
 
@@ -810,20 +813,60 @@ private:
 
 } // namespace
 
+// ---- LoweringTarget default hooks (NVPTX/AMDGPU pointer-arg model) --------
+//
+// These reproduce the pre-Vulkan signature/parameter behavior, so NVPTX and
+// AMDGPU inherit them unchanged. Vulkan overrides all three (SpirvTarget).
+
+llvm::Function* LoweringTarget::createKernel(
+    llvm::Module& m, const std::string& name,
+    const std::vector<KernelParam>& params) {
+    llvm::LLVMContext& ctx = m.getContext();
+    // Buffer<T> / arrays -> addrspace(1) pointers; primitives by value.
+    std::vector<llvm::Type*> tys;
+    tys.reserve(params.size());
+    for (auto& p : params) {
+        tys.push_back(p.isBuffer
+                          ? (llvm::Type*) llvm::PointerType::get(ctx, kGlobalAS)
+                          : p.type);
+    }
+    auto* fnTy = llvm::FunctionType::get(llvm::Type::getVoidTy(ctx), tys,
+                                         /*vararg=*/false);
+    auto* fn = llvm::Function::Create(fnTy, llvm::Function::ExternalLinkage,
+                                      name, &m);
+    unsigned i = 0;
+    for (auto& p : params) fn->getArg(i++)->setName(p.name);
+    decorateKernel(fn, m);  // calling convention + any kernel-marker metadata
+    return fn;
+}
+
+llvm::Value* LoweringTarget::materializeParam(llvm::IRBuilderBase& /*b*/,
+                                              llvm::Module& /*m*/,
+                                              llvm::Function* fn, unsigned idx,
+                                              const KernelParam& /*p*/) {
+    return fn->getArg(idx);  // the value IS the argument
+}
+
+llvm::Value* LoweringTarget::bufferElementPtr(llvm::IRBuilderBase& b,
+                                              llvm::Module& /*m*/,
+                                              llvm::Value* base,
+                                              llvm::Type* elemTy,
+                                              llvm::Value* index) {
+    // addrspace-preserving GEP — the base pointer carries its address space
+    // (1 for global buffers, 3 for shared globals); correct on NVPTX/AMDGPU.
+    return b.CreateGEP(elemTy, base, {index}, "idx");
+}
+
 llvm::Function* lowerKernel(const MethodPtr& method, llvm::Module& deviceModule,
                             LoweringTarget& target) {
     if (!method) unsupported("null kernel method");
     llvm::LLVMContext& ctx = deviceModule.getContext();
 
-    // Build the device function signature. Buffer<T> / arrays become
-    // addrspace(1) pointers; primitives pass by value. This is identical for
-    // every backend (both put global buffers in addrspace(1)), so it stays
-    // shared — only decorateKernel below forks.
-    std::vector<llvm::Type*> paramTys;
-    struct PInfo {
-        std::string name; bool isSigned; llvm::Type* bufferElem; bool elemSigned;
-    };
-    std::vector<PInfo> infos;
+    // Admit the kernel parameters: Buffer<T>/arrays carry an element type,
+    // primitives a scalar type. This classification is backend-neutral; HOW
+    // the params become a signature is the backend's call (target.createKernel
+    // / materializeParam) — the Vulkan fork.
+    std::vector<LoweringTarget::KernelParam> params;
     for (auto& p : method->getParameterList()) {
         if (!p) continue;
         if (p->getName() == "this") continue;
@@ -838,33 +881,21 @@ llvm::Function* lowerKernel(const MethodPtr& method, llvm::Module& deviceModule,
                 }
             }
             if (!elem) elem = llvm::Type::getFloatTy(ctx);  // default element
-            paramTys.push_back(llvm::PointerType::get(ctx, kGlobalAS));
-            infos.push_back({p->getName(), false, elem, elemSigned});
+            params.push_back({p->getName(), /*isBuffer=*/true, elem, elemSigned});
         } else {
             llvm::Type* st = deviceScalarType(t, ctx);
             if (!st) unsupported("kernel parameter type '" +
                                  (t ? t->toCanonical() : std::string("?")) + "'");
-            paramTys.push_back(st);
-            infos.push_back({p->getName(), typeIsSigned(t), nullptr, false});
+            params.push_back({p->getName(), /*isBuffer=*/false, st,
+                              typeIsSigned(t)});
         }
     }
 
-    auto* fnTy = llvm::FunctionType::get(
-        llvm::Type::getVoidTy(ctx), paramTys, /*vararg=*/false);
-    auto* fn = llvm::Function::Create(
-        fnTy, llvm::Function::ExternalLinkage, method->getName(), &deviceModule);
-
-    // Backend-specific kernel marking: calling convention + any metadata.
-    target.decorateKernel(fn, deviceModule);
+    llvm::Function* fn =
+        target.createKernel(deviceModule, method->getName(), params);
 
     DeviceLowerer lowerer(deviceModule, fn, target);
-    unsigned i = 0;
-    for (auto& info : infos) {
-        llvm::Argument* arg = fn->getArg(i++);
-        arg->setName(info.name);
-        lowerer.bindParam(info.name, arg, info.isSigned, info.bufferElem,
-                          info.elemSigned);
-    }
+    lowerer.setParams(std::move(params));
     lowerer.lowerBody(method);
     return fn;
 }

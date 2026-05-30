@@ -76,13 +76,14 @@ void printUsage(const char* progname) {
               << "  --features=<list>                    Comma-separated target features (e.g. +neon).\n"
               << "\n"
               << "XPU (GPU compute, cajeta-docs/CajetaXPU.md):\n"
-              << "  --xpu-backend=none|nvptx|amdgpu      Device backend for @Kernel methods. Default none\n"
-              << "                                       (host-only). nvptx/amdgpu embed each kernel's device\n"
+              << "  --xpu-backend=none|nvptx|amdgpu|vulkan  Device backend for @Kernel methods. Default none\n"
+              << "                                       (host-only). nvptx/amdgpu/vulkan embed each kernel's device\n"
               << "                                       binary + registration ctor so kernel.launch(...) resolves at runtime.\n"
-              << "  --xpu-arch=<arch>                    Device arch: nvptx SM target (e.g. sm_89, default) or\n"
-              << "                                       amdgpu GFX target (e.g. gfx1151, the amdgpu default).\n"
-              << "  --xpu-emit=none|ptx|cubin|isa|hsaco  Also drop a per-kernel device artifact for inspection\n"
-              << "                                       (ptx/cubin are nvptx; isa/hsaco are amdgpu).\n"
+              << "  --xpu-arch=<arch>                    Device arch: nvptx SM target (e.g. sm_89, default),\n"
+              << "                                       amdgpu GFX target (e.g. gfx1151), or vulkan SPIR-V env\n"
+              << "                                       (e.g. vulkan1.3, the vulkan default).\n"
+              << "  --xpu-emit=none|ptx|cubin|isa|hsaco|spirv|spvasm  Also drop a per-kernel device artifact for\n"
+              << "                                       inspection (ptx/cubin nvptx; isa/hsaco amdgpu; spirv/spvasm vulkan).\n"
               << "                                       Default none (registration only).\n"
               << "  -o <path>                            Output path for the final artifact.\n"
               << "  --help, -h                           This message.\n"
@@ -293,7 +294,7 @@ int main(int argc, const char* argv[]) {
             XpuBackend b;
             if (!setEnumFlag<XpuBackend>("xpu-backend", value,
                     { {"none", XpuBackend::None}, {"nvptx", XpuBackend::Nvptx},
-                      {"amdgpu", XpuBackend::Amdgpu} }, b)) {
+                      {"amdgpu", XpuBackend::Amdgpu}, {"vulkan", XpuBackend::Vulkan} }, b)) {
                 printUsage(argv[0]); return 1;
             }
             compiler.setXpuBackend(b);
@@ -301,7 +302,8 @@ int main(int argc, const char* argv[]) {
             XpuEmit e;
             if (!setEnumFlag<XpuEmit>("xpu-emit", value,
                     { {"none", XpuEmit::None}, {"ptx", XpuEmit::Ptx}, {"cubin", XpuEmit::Cubin},
-                      {"isa", XpuEmit::Isa}, {"hsaco", XpuEmit::Hsaco} }, e)) {
+                      {"isa", XpuEmit::Isa}, {"hsaco", XpuEmit::Hsaco},
+                      {"spirv", XpuEmit::Spirv}, {"spvasm", XpuEmit::Spvasm} }, e)) {
                 printUsage(argv[0]); return 1;
             }
             compiler.setXpuEmit(e);
@@ -332,7 +334,11 @@ int main(int argc, const char* argv[]) {
     }
 
     // The xpuArch default ("sm_89") is NVPTX-shaped; for the amdgpu backend
-    // default to a GFX target instead, unless the user pinned --xpu-arch.
+    // default to a GFX target instead, and for vulkan a SPIR-V target env,
+    // unless the user pinned --xpu-arch.
+    if (compiler.getXpuBackend() == XpuBackend::Vulkan && !xpuArchExplicit) {
+        compiler.setXpuArch("vulkan1.3");
+    }
     if (compiler.getXpuBackend() == XpuBackend::Amdgpu && !xpuArchExplicit) {
         compiler.setXpuArch("gfx1151");
     }

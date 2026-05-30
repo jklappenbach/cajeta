@@ -63,6 +63,7 @@ namespace cajeta {
         None,     // Default: no device codegen.
         Nvptx,    // NVIDIA: AST → device IR → PTX → ptxas → cubin, registered in-module.
         Amdgpu,   // AMD: AST → device IR → AMDGCN ISA → lld → hsaco, registered in-module.
+        Vulkan,   // Vulkan: AST → device IR → SPIR-V (descriptor-set SSBOs), registered in-module.
     };
 
     // What device artifact (if any) to also drop to disk for inspection,
@@ -73,6 +74,8 @@ namespace cajeta {
         Cubin,    // NVPTX: write a per-kernel .cubin (implies ptxas present).
         Isa,      // AMDGPU: write a per-kernel .isa (AMDGCN assembly text).
         Hsaco,    // AMDGPU: write a per-kernel .hsaco (implies ld.lld present).
+        Spirv,    // Vulkan: write a per-kernel .spv (Khronos SPIR-V binary).
+        Spvasm,   // Vulkan: write a per-kernel .spvasm (SPIR-V disassembly text).
     };
 
     class Compiler {

@@ -23,7 +23,16 @@ matrix says so explicitly rather than pretending otherwise:
 |--------|--------|-------|
 | **NVIDIA** | **Measured** — live backend, on-device | NVPTX → cubin, runs via CUDA driver. Emit + on-device tests green. |
 | **AMD** | **Measured** — live backend, on-device | AMDGPU → hsaco, runs on gfx1151 (Strix Halo) via HIP. Emit + on-device tests green. |
-| **Vulkan** | **Verified-feasible** — *not yet built / not yet on-device* | LLVM 22 SPIR-V emission + the SPIR-V leaf-intrinsic mapping confirmed by read-only probe on 2026-05-30. The backend has **not** been threaded through cajeta and has **not** run on a device. Cells are projections *by construction*, not measurements. |
+| **Vulkan** | **Measured** — live backend, on-device | SPIR-V (descriptor-set SSBOs) → `vkCmdDispatch`. Built 2026-05-30 (see [`cajeta-vulkan.md`](cajeta-vulkan.md)); SAXPY + static-shared tree reduction run on the Strix Halo APU via the radeon (RADV) ICD, and the emitted modules pass strict `spirv-val`. One build-discovered finding shaped the design: **BDA is unavailable**, so the buffer model is descriptor sets (§3). (LLVM 22's barrier emits Vulkan-invalid semantics; a post-emit fixup corrects it — §1.) |
+
+> **Build-discovered correction (2026-05-30).** An earlier draft of this matrix
+> projected the Vulkan column on the assumption that **Buffer Device Address**
+> would carry buffers as raw pointers (keeping the kernel body identical to
+> NV/AMD). The build overturned that: LLVM 22's SPIR-V backend has **no
+> PhysicalStorageBuffer/BDA path from IR**, so the only Vulkan buffer model is
+> **descriptor-set storage buffers**, which fork the kernel signature *and* the
+> body's buffer access — a bigger fork than AMD. The cells below reflect what
+> was actually built and measured, not the original projection.
 
 **Cell vocabulary**
 
@@ -33,9 +42,10 @@ matrix says so explicitly rather than pretending otherwise:
 - `not possible: …` — cannot be provided on this platform as specified; the `…` says why.
 - `—` — not applicable / not yet a capability on any platform.
 
-**⚑** marks a Vulkan cell that the build must still confirm empirically (these
-are exactly the increments in the
-[plan](#status--what-remains-to-make-the-vulkan-column-measured)).
+**⚑** marks a Vulkan cell that carries a measured *caveat or limitation* the
+build surfaced (the fixed compile-time block dim, deferred dynamic shared) — see
+the [status section](#status--vulkan-column-now-measured). (The barrier
+limitation the build found is now fixed by a post-emit pass — §1.)
 
 The **Core** column describes what the shared `KernelLowering` walk + the
 backend-neutral registration provide independent of vendor — the ≈90% that did
@@ -56,13 +66,15 @@ These are the entire `LoweringTarget` leaf-read interface
 | Workgroup (block) id `x/y/z` | one `workgroupId(dim)` seam method | `native` · `nvvm.read.ptx.sreg.ctaid.*` | `native` · `amdgcn.workgroup.id.*` | `native` · `llvm.spv.group.id` (WorkgroupId) |
 | Workgroup (block) **dim** `x/y/z` | one `workgroupDim(dim)` seam method | `native` · `nvvm.read.ptx.sreg.ntid.*` | `forks: ` **dispatch-packet load** (`amdgcn.dispatch.ptr` + i16 @ off 4/6/8) — no `ntid` intrinsic exists on AMD | `native` · `llvm.spv.workgroup.size` (WorkgroupSize) — the coordinate that was AMD's ugliest fork is a **direct read** here |
 | Global id `x/y/z` | `globalId(dim)` default = `workgroupId*workgroupDim + threadId` | `native` (computed default holds) | `native` (computed default holds) | `native` · `llvm.spv.thread.id` (GlobalInvocationId) — **overrides** the computed default with a single hardware read |
-| Workgroup barrier | one `workgroupBarrier()` seam method | `native` · `nvvm.barrier.cta.sync.aligned.all` | `forks: ` `amdgcn.s.barrier` wrapped in workgroup-scoped release/acquire fences (LDS visibility) | `native` · `llvm.spv.group.memory.barrier.with.group.sync` — single intrinsic, ordering folded in |
+| Workgroup barrier | one `workgroupBarrier()` seam method | `native` · `nvvm.barrier.cta.sync.aligned.all` | `forks: ` `amdgcn.s.barrier` wrapped in workgroup-scoped release/acquire fences (LDS visibility) | `abstraction: ` `llvm.spv.group.memory.barrier.with.group.sync` + a **post-emit fixup**. LLVM 22 emits `OpControlBarrier` with Vulkan-forbidden **SequentiallyConsistent** semantics (`VUID-StandaloneSpirv-MemorySemantics-10866`); `SpirvBackend::fixupControlBarriers` rewrites each barrier's memory-semantics to `WorkgroupMemory\|AcquireRelease` (0x108) by adding one uint constant + repointing. The module then passes strict `spirv-val` **and** runs on-device (verified: `XpuVulkanEmitTests.workgroupBarrierIsSpecValid` + the on-device reduction). |
 | Num-workgroups (grid dim) read | not yet a Cajeta builtin | `native` (`nctaid`) | `native` (dispatch packet) | `native` · `llvm.spv.num.workgroups` |
 
-**Reading:** every coordinate read is `native` on Vulkan, and *two* of them
+**Reading:** every coordinate *read* is `native` on Vulkan, and *two* of them
 (`workgroupDim`, `globalId`) are native single-intrinsic reads where AMD needed a
-structural workaround. The leaf-read variance surface holds for a third backend —
-in fact Vulkan is the *least* divergent of the three on this axis.
+structural workaround — on this axis Vulkan is the least divergent of the three.
+The one wrinkle is the **barrier**: LLVM 22 emits Vulkan-forbidden semantics, so
+a one-instruction post-emit fixup (see the cell above) rewrites it — after which
+the execution-model column is fully native + spec-valid on all three backends.
 
 ---
 
@@ -74,7 +86,7 @@ Khronos storage-class enum values, not LLVM address spaces).
 
 | Address space | Core (Cajeta `AddressSpace`) | NVIDIA `addrspace` | AMD `addrspace` | Vulkan storage class |
 |---------------|------------------------------|--------------------|-----------------|----------------------|
-| Global (device buffers) | `Global` | 1 | 1 | `native` · StorageBuffer (12) — or **PhysicalStorageBuffer** under BDA, see §3 |
+| Global (device buffers) | `Global` | 1 | 1 | `native` · StorageBuffer (storage-class 12; LLVM addrspace 11), bound by descriptor set — see §3 |
 | Shared (workgroup) | `Shared` | 3 | 3 | `native` · Workgroup (4) |
 | Constant (uniform) | `Constant` | 4 | 4 | `native` · Uniform (2) |
 | Private (per-thread) | `Private` | 5 | 5 | `native` · Function (7) |
@@ -88,7 +100,7 @@ seam method.
 
 ---
 
-## 3. Kernel-argument ABI ⚑ — the one genuinely new Vulkan seam coordinate
+## 3. Kernel-argument ABI — the Vulkan fork (signature + buffer access)
 
 NVIDIA and AMD both pass kernel args as a flat `kernelParams` array: buffers as
 raw `addrspace(1)` device pointers, scalars by value. Vulkan has **no
@@ -97,16 +109,19 @@ bring-up turns on.
 
 | Feature | Core | NVIDIA | AMD | Vulkan |
 |---------|------|--------|-----|--------|
-| `Buffer<T>` arg as raw device pointer | `addrspace(1) T*` function param | `native` · pointer in `kernelParams[i]` | `native` · pointer in `kernelParams[i]` | `abstraction: ` **Buffer Device Address** — `VK_KHR_buffer_device_address` (core VK 1.2) + SPIR-V `PhysicalStorageBuffer`. Buffer → 64-bit `VkDeviceAddress` in a push-constant block, reconstituted as a `PhysicalStorageBuffer` pointer in the entry block. **Kernel body GEPs are unchanged** — same shape as `addrspace(1)`. |
-| Scalar arg by value | scalar function param | `native` | `native` | `abstraction: ` packed into the same push-constant block |
-| Where the fork lands on the seam | param-**materialization** hook (default = direct `addrspace(1)` params, preserves NV/AMD) | default | default | `forks: ` the new hook emits the push-constant block + pointer reconstitution. **Only the kernel *signature/prologue* forks — not the body walk.** |
-| Fallback if `bufferDeviceAddress` unsupported | — | — | — | `abstraction (fallback): ` descriptor-set / SSBO — each buffer an `OpVariable StorageBuffer` decorated DescriptorSet/Binding. Heavier (forks the signature *and* the launch path); only taken if a device lacks BDA. |
+| `Buffer<T>` arg as raw device pointer | `addrspace(1) T*` function param | `native` · pointer in `kernelParams[i]` | `native` · pointer in `kernelParams[i]` | `abstraction: ` **descriptor-set SSBO** — each `Buffer<T>` is an `OpVariable StorageBuffer` (set 0, binding = arg index) accessed via `llvm.spv.resource.handlefrombinding` → `getpointer`. (BDA was the intended path but is **not possible** — see the row below.) |
+| Scalar arg by value | scalar function param | `native` | `native` | `abstraction: ` carried as a **single-element SSBO** at its own binding (first measured cut). A push-constant block (`llvm.spv.pushconstant.getpointer`) is the natural refinement. |
+| Why not Buffer Device Address | — | — | — | `not possible: ` LLVM 22's SPIR-V backend exposes **no PhysicalStorageBuffer/BDA intrinsic** — the `PhysicalStorageBuffer64EXT` strings are capability enum names only. So raw-pointer kernel args can't be reconstituted from IR; descriptor sets are the only model. |
+| Where the fork lands on the seam | param-materialization + buffer-access hooks (default preserves NV/AMD) | default | default | `forks: ` **both** the kernel signature (`void main()`, no params; `createKernel` + `materializeParam` hooks) **and** the body's buffer element access (`bufferElementPtr` → `getpointer` instead of GEP). Bigger than AMD: the body walk forks, not just the prologue. |
 
-**Reading:** Vulkan's missing raw-pointer ABI is the headline divergence, and it
-is fully bridgeable by an abstraction (BDA) that keeps the ≈90% kernel-body core
-shared. The cost is exactly one new seam coordinate — parameter materialization —
-versus the leaf-read methods that already existed. The descriptor-set fallback is
-the "if we can't do BDA, here's why it's heavier" branch.
+**Reading:** Vulkan's missing raw-pointer ABI is the headline divergence — and
+the build proved it's *not* bridgeable by Buffer Device Address (no IR path),
+only by descriptor-set SSBOs. That is the "bigger fork than AMD" the pass set
+out to measure: where AMD forked only the coordinate leaf reads, Vulkan forks
+the kernel **signature** (`void main()`, descriptor binds) *and* the body's
+**buffer element access** (`getpointer` vs GEP). The coordinate reads, control
+flow, operators, scalar-slot model, and `addrspace(3)` shared memory still stay
+shared — so the core is smaller than NV∩AMD's ≈90%, but still the majority.
 
 ---
 
@@ -115,11 +130,11 @@ the "if we can't do BDA, here's why it's heavier" branch.
 | Feature | Core | NVIDIA | AMD | Vulkan |
 |---------|------|--------|-----|--------|
 | Grid dim (number of blocks) | launch-config `grid` | `native` · `cuLaunchKernel` gridX | `native` · `hipModuleLaunchKernel` gridX | `native` · `vkCmdDispatch(gridX,1,1)` |
-| **Block dim** (workgroup size) | launch-config `block` | `native` · free per-launch param | `native` · free per-launch param | `abstraction: ` `LocalSizeId` **specialization constant resolved at pipeline-creation** — Vulkan does not take block dim as a free per-dispatch value. ⚑ Requires **per-(kernel, blockDim) pipeline caching**. |
+| **Block dim** (workgroup size) | launch-config `block` | `native` · free per-launch param | `native` · free per-launch param | ⚑ `abstraction: ` first cut bakes a **fixed `LocalSize` (64)** into the SPIR-V via `hlsl.numthreads` — Vulkan fixes workgroup size at compile time, so the launch must match the baked value (`kVulkanLocalSizeX`). A spec-constant `LocalSizeId` + per-blockDim pipeline cache is the refinement. |
 | Module load | name-keyed registration (§6) | `native` · `cuModuleLoadData` | `native` · `hipModuleLoadData` | `forks: ` `vkCreateShaderModule` → pipeline-layout → compute-pipeline (heaviest of the three) |
 | Argument binding | marshal `argv` | `native` · `kernelParams` array | `native` · `kernelParams` array | `forks: ` push-constant write (BDA, §3) recorded into a command buffer |
 | Dispatch + sync | `Stream.sync()` | `native` · `cuLaunchKernel` + sync | `native` · launch + `hipDeviceSynchronize` | `forks: ` `vkQueueSubmit` + `vkQueueWaitIdle` |
-| Driver acquisition | dlopen vendor lib | `native` · `libcuda.so.1` | `native` · `libamdhip64.so` (+ pinned `libhsa`) | `abstraction: ` dlopen `libvulkan.so.1`; pick a physical device advertising `bufferDeviceAddress` (radeon ICD reaches the Strix Halo APU) |
+| Driver acquisition | dlopen vendor lib | `native` · `libcuda.so.1` | `native` · `libamdhip64.so` (+ pinned `libhsa`) | `abstraction: ` dlopen `libvulkan.so.1`, resolve entry points via `vkGetInstanceProcAddr`/`vkGetDeviceProcAddr`; pick the first physical device with a compute queue (radeon/RADV ICD reaches the Strix Halo APU) |
 
 **Reading:** the *launch-config shape* (grid/block + a buffer/scalar arg list)
 stays universal at the Cajeta surface, but block dim partially migrates from
@@ -166,8 +181,8 @@ the third backend inherits all of it for free.
 
 | Feature | Core | NVIDIA | AMD | Vulkan |
 |---------|------|--------|-----|--------|
-| Static shared `Shared<T> t = shared T[N]` | internal `[N x T] addrspace(3)` global | `native` | `native` | `native` ⚑ · Workgroup-storage-class array, fixed N |
-| Dynamic shared `shared T[expr]` | external unsized `[0 x T] addrspace(3)`, sized at launch | `native` · `cuLaunchKernel` `sharedMemBytes` | `native` · `hipModuleLaunchKernel` `sharedMemBytes` (= groupMemBytes) | `abstraction: ` **spec-constant array length resolved at pipeline creation**, pipeline-cache keyed on shared size. ⚑ `not possible (as a free per-dispatch byte count): ` Vulkan workgroup arrays are sized at pipeline-creation, not per-`vkCmdDispatch` — so dynamic LDS is a pipeline-cache key, not a launch scalar. |
+| Static shared `Shared<T> t = shared T[N]` | internal `[N x T] addrspace(3)` global | `native` | `native` | `native` · `addrspace(3)` → Workgroup storage class (a **non-fork**: the shared lowerer's hardcoded `addrspace(3)` is exactly Workgroup on SPIR-V). **Measured on-device** — the tree reduction returns the correct sum, with a spec-valid barrier (§1). |
+| Dynamic shared `shared T[expr]` | external unsized `[0 x T] addrspace(3)`, sized at launch | `native` · `cuLaunchKernel` `sharedMemBytes` | `native` · `hipModuleLaunchKernel` `sharedMemBytes` (= groupMemBytes) | ⚑ `deferred / not possible as a free per-dispatch byte count: ` Vulkan workgroup arrays are sized at pipeline-creation (spec-constant array length), not per-`vkCmdDispatch` — so dynamic LDS would be a pipeline-cache key, not a launch scalar. **Not implemented this pass** (static shared is the measured proof). |
 
 **Reading:** static shared is a clean `native` three-way. Dynamic shared is the
 second place (after block dim, §4) where a value Cajeta treats as launch-time on
@@ -201,7 +216,7 @@ will exercise it.
 
 | Feature | Core | NVIDIA | AMD | Vulkan |
 |---------|------|--------|-----|--------|
-| Atomic RMW on global / shared | LLVM `atomicrmw` + scope | `native` | `native` | `native` ⚑ · SPIR-V atomic ops with explicit Scope + Memory-Semantics |
+| Atomic RMW on global / shared | LLVM `atomicrmw` + scope | `native` | `native` | `native` · SPIR-V atomic ops with explicit Scope + Memory-Semantics (by construction; not exercised on-device this pass) |
 | Scoped fences | `Fence` (type declared, not yet functional) | `native` | `native` (workgroup release/acquire already used for the barrier) | `native` · `OpMemoryBarrier` with scope |
 
 ---
@@ -233,46 +248,47 @@ Where a platform lacks a native primitive — can Cajeta provide it, and if not,
 
 **Provided cleanly (abstraction layer bridges the gap):**
 
-- **Vulkan · raw-pointer buffer args** → Buffer Device Address (`PhysicalStorageBuffer` + push-constant addresses). Keeps the kernel body identical to NV/AMD. *(§3)*
-- **Vulkan · runtime block dim** → `LocalSizeId` specialization constant + per-blockDim pipeline cache. *(§4)*
-- **Vulkan · dynamic shared memory** → spec-constant array length + pipeline cache keyed on shared size. *(§7)*
+- **Vulkan · raw-pointer buffer args** → **descriptor-set SSBOs** (`resource.handlefrombinding` + `getpointer`); scalars as single-element SSBOs. Forks signature + body buffer access; the rest of the body stays shared. *(§3)*
+- **Vulkan · workgroup barrier** → `group.memory.barrier.with.group.sync` + a one-instruction post-emit fixup (`SpirvBackend::fixupControlBarriers`) that corrects LLVM 22's Vulkan-forbidden SequentiallyConsistent semantics to `WorkgroupMemory|AcquireRelease`. Now passes strict `spirv-val` and runs on-device. *(§1)*
+- **Vulkan · block dim** → fixed compile-time `LocalSize` (first cut); spec-constant `LocalSizeId` is the refinement. *(§4)*
 - **AMD · workgroup dim read** → dispatch-packet load (no `ntid` intrinsic, but the value is recoverable). *(§1)*
 
 **Not cleanly possible (and why):**
 
-- **Vulkan · generic/flat address space** → SPIR-V has no Generic storage class outside the OpenCL `Kernel` capability. **Benign**: Cajeta's lowerer tracks every pointer's address space explicitly and never relies on flat generic deref, so nothing is actually lost. *(§2)*
-- **Vulkan · dynamic shared as a *free per-dispatch* byte count** → workgroup arrays are sized at pipeline creation, not per-`vkCmdDispatch`. We provide *dynamic* shared, but it becomes a pipeline-cache key rather than a launch scalar — the semantics are slightly narrower than CUDA's `sharedMemBytes`. *(§7)*
+- **Vulkan · Buffer Device Address (raw pointers)** → LLVM 22's SPIR-V backend has **no PhysicalStorageBuffer/BDA intrinsic** from IR. This forced the descriptor-set model above — the central build-discovered finding. *(§3)*
+- **Vulkan · generic/flat address space** → SPIR-V has no Generic storage class outside the OpenCL `Kernel` capability. **Benign**: the lowerer tracks every pointer's address space explicitly and never relies on flat generic deref. *(§2)*
+- **Vulkan · dynamic shared as a *free per-dispatch* byte count** → workgroup arrays are sized at pipeline creation, not per-`vkCmdDispatch`. Deferred this pass. *(§7)*
 
-**Needed nowhere (already universal):** the entire kernel-body AST walk, the
-coordinate/barrier leaf reads, address-space numbering for buffers/shared, the
-name-keyed registration symbol, and the whole frontend. This is the measured
-NVIDIA∩AMD core (≈90%), and every signal in this analysis says it extends to
-Vulkan as a third column.
-
----
-
-## Status — what remains to make the Vulkan column *measured*
-
-The Vulkan column is **verified-feasible, not measured**. To promote each ⚑ cell
-from projection to measurement, the Vulkan backend must be threaded through the
-seam exactly as AMD was (full plan in the approved implementation plan; mirrors
-`cajeta-amd.md` increments 0–5):
-
-| Increment | Promotes | Tier |
-|-----------|----------|------|
-| 0 | `Backend::Spirv` enum + `--xpu-backend=vulkan` CLI | refactor |
-| 1 | SPIR-V emission (`SpirvBackend`) — §5 | Tier-0 (GPU-free) |
-| 2 | `SpirvTarget` leaf reads (§1) + the BDA param hook (§3) | Tier-0 |
-| 3 | `VulkanRegistration` + AOT `--xpu-emit=spv` (§6) | Tier-0 |
-| 4 | `VulkanDriver` + on-device SAXPY (§3,§4) | Tier-1 (on-device) |
-| 5 | static + dynamic workgroup-shared reductions (§7) | Tier-1 |
-
-Until those land, treat every Vulkan cell as *by construction*. The NVIDIA and
-AMD columns are measured and on-device today.
+**Needed nowhere (already shared across all three):** the entire kernel-body AST
+walk, the coordinate leaf reads, `addrspace(3)` shared memory (→ Workgroup on
+SPIR-V, a non-fork), the name-keyed registration symbol, and the whole frontend.
 
 ---
 
-*Generated 2026-05-30. NVIDIA/AMD: measured (two live on-device backends).
-Vulkan: verified-feasible via LLVM 22 SPIR-V emission + intrinsic mapping;
-backend not yet built. See [`cajeta-xpu.md`](cajeta-xpu.md) §"The NVIDIA∩AMD
+## Status — Vulkan column now *measured*
+
+The Vulkan backend was built 2026-05-30 by threading SPIR-V through the same
+`LoweringTarget` seam AMD uses (full log: [`cajeta-vulkan.md`](cajeta-vulkan.md)).
+All increments landed; the on-device tests run on the Strix Halo APU via RADV.
+
+| Increment | Delivered | Tier | Tests |
+|-----------|-----------|------|-------|
+| 0 | `Backend::Spirv` enum + `--xpu-backend=vulkan`/`--xpu-emit=spv\|spvasm` CLI | refactor | NV/AMD stay green |
+| 1 | SPIR-V emission (`SpirvBackend`) — §5 | Tier-0 | `XpuVulkanEmitTests` |
+| 2 | `SpirvTarget` leaf reads (§1) + the signature/buffer-access fork (§3) | Tier-0 | `XpuVulkanEmitTests` (+ NV/AMD green) |
+| 3 | `VulkanRegistration` + AOT `--xpu-emit=spv` (§6) | Tier-0 | `XpuVulkanAotCliTests` |
+| 4 | `VulkanDriver` (descriptor sets + pipeline + dispatch) + on-device SAXPY (§3,§4) | Tier-1 | `XpuSaxpyVulkanDeviceTests` |
+| 5 | static workgroup-shared tree reduction on-device (§7); dynamic deferred | Tier-1 | `XpuSharedVulkanDeviceTests` |
+| 5b | barrier post-emit fixup → spec-valid `OpControlBarrier` (§1) | Tier-0 | `XpuVulkanEmitTests.workgroupBarrierIsSpecValid` |
+
+One cell carries a measured caveat — block dim is fixed at SPIR-V compile time
+(§4); dynamic shared is deferred. The barrier limitation found during the build
+is now **fixed** (§1). Everything else in the Vulkan column is on-device-measured
+and spec-valid.
+
+---
+
+*Generated 2026-05-30; Vulkan column updated after the on-device build.
+NVIDIA/AMD/Vulkan: all three are measured on live backends (NVIDIA on-device
+gated on CUDA hardware). See [`cajeta-xpu.md`](cajeta-xpu.md) §"The NVIDIA∩AMD
 overlap reckoning" and [`cajeta-amd.md`](cajeta-amd.md).*

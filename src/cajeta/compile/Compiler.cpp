@@ -24,6 +24,8 @@
 #include "../xpu/nvidia/NvptxKernelLowering.h"
 #include "../xpu/amd/AmdgpuBackend.h"
 #include "../xpu/amd/AmdgpuKernelLowering.h"
+#include "../xpu/vulkan/SpirvBackend.h"
+#include "../xpu/vulkan/SpirvKernelLowering.h"
 #include "../method/Method.h"
 #include "llvm/IR/Module.h"
 #include <algorithm>
@@ -830,9 +832,12 @@ namespace cajeta {
         // Map the compiler-level backend enum onto the xpu-layer dispatch
         // enum (the xpu/ code does not depend on compile/). None already
         // returned above, so the remaining cases are concrete backends.
-        cajeta::xpu::Backend backend = (xpuBackend == XpuBackend::Amdgpu)
-            ? cajeta::xpu::Backend::Amdgpu
-            : cajeta::xpu::Backend::Nvptx;
+        cajeta::xpu::Backend backend = cajeta::xpu::Backend::Nvptx;
+        if (xpuBackend == XpuBackend::Amdgpu) {
+            backend = cajeta::xpu::Backend::Amdgpu;
+        } else if (xpuBackend == XpuBackend::Vulkan) {
+            backend = cajeta::xpu::Backend::Spirv;
+        }
         for (auto& module : modules) {
             std::vector<MethodPtr> kernels;
             for (auto& method : module->getAllMethods()) {
@@ -903,7 +908,7 @@ namespace cajeta {
                             out.write(reinterpret_cast<const char*>(cubin.data()),
                                       (std::streamsize) cubin.size());
                         }
-                    } else {  // cajeta::xpu::Backend::Amdgpu
+                    } else if (backend == cajeta::xpu::Backend::Amdgpu) {
                         if (xpuEmit != XpuEmit::Isa && xpuEmit != XpuEmit::Hsaco) {
                             cerr << "cajeta: XPU: --xpu-emit=ptx/cubin is nvptx-"
                                     "only; ignoring for amdgpu" << std::endl;
@@ -940,6 +945,44 @@ namespace cajeta {
                             std::ofstream out(stem + ".hsaco", std::ios::binary);
                             out.write(reinterpret_cast<const char*>(hsaco.data()),
                                       (std::streamsize) hsaco.size());
+                        }
+                    } else {  // cajeta::xpu::Backend::Spirv
+                        if (xpuEmit != XpuEmit::Spirv && xpuEmit != XpuEmit::Spvasm) {
+                            cerr << "cajeta: XPU: --xpu-emit=ptx/cubin/isa/hsaco is "
+                                    "not vulkan; use spirv/spvasm" << std::endl;
+                            continue;
+                        }
+                        auto tm = cajeta::xpu::vulkan::createSpirvTargetMachine(xpuArch);
+                        if (!tm) {
+                            cerr << "cajeta: XPU: spirv target unavailable in this "
+                                    "LLVM build; skipping " << kernel->getName() << std::endl;
+                            continue;
+                        }
+                        llvm::LLVMContext deviceCtx;
+                        llvm::Module deviceModule("xpu_device", deviceCtx);
+                        cajeta::xpu::vulkan::configureDeviceModule(deviceModule, *tm);
+                        cajeta::xpu::vulkan::lowerKernel(kernel, deviceModule);
+                        if (xpuEmit == XpuEmit::Spvasm) {
+                            std::string text =
+                                cajeta::xpu::vulkan::emitSpirvText(deviceModule, *tm);
+                            if (text.empty()) {
+                                cerr << "cajeta: XPU: SPIR-V text emission produced "
+                                        "nothing for " << kernel->getName() << std::endl;
+                                continue;
+                            }
+                            std::ofstream out(stem + ".spvasm", std::ios::binary);
+                            out << text;
+                        } else {  // XpuEmit::Spirv
+                            std::vector<uint8_t> spirv =
+                                cajeta::xpu::vulkan::emitSpirv(deviceModule, *tm);
+                            if (spirv.empty()) {
+                                cerr << "cajeta: XPU: SPIR-V emission produced nothing "
+                                        "for " << kernel->getName() << std::endl;
+                                continue;
+                            }
+                            std::ofstream out(stem + ".spv", std::ios::binary);
+                            out.write(reinterpret_cast<const char*>(spirv.data()),
+                                      (std::streamsize) spirv.size());
                         }
                     }
                 } catch (cajeta::Exception& e) {
