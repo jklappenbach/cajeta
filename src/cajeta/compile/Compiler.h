@@ -53,6 +53,25 @@ namespace cajeta {
         Exe,      // Linked executable (requires lld in-process; see D1 / Compiler.cpp)
     };
 
+    // XPU (GPU compute) backend selection for the AOT path. None (default)
+    // leaves @Kernel methods as host stubs — the host-only program is
+    // byte-identical to a no-XPU build. Nvptx builds each @Kernel's cubin and
+    // embeds it + a registration ctor into the host module (mirroring the JIT
+    // helper), so a compiled `kernel.launch(...)` resolves the device function
+    // at runtime. (cajeta-xpu.md — was JIT-test-only before these CLI flags.)
+    enum class XpuBackend {
+        None,     // Default: no device codegen.
+        Nvptx,    // NVIDIA: AST → device IR → PTX → ptxas → cubin, registered in-module.
+    };
+
+    // What device artifact (if any) to also drop to disk for inspection,
+    // alongside the normal --emit output. None registers cubins only.
+    enum class XpuEmit {
+        None,     // Default: registration only, no standalone artifact.
+        Ptx,      // Write a per-kernel .ptx next to the module output.
+        Cubin,    // Write a per-kernel .cubin (implies ptxas must be present).
+    };
+
     class Compiler {
     private:
         string targetTriple;
@@ -75,6 +94,13 @@ namespace cajeta {
         // Output mode. Default IR (write .ll). --emit=obj or --emit=exe switches to
         // native codegen for the configured target.
         EmitMode emitMode = EmitMode::IR;
+        // XPU device backend + per-kernel artifact emit (--xpu-backend /
+        // --xpu-emit / --xpu-arch). Default None: the AOT path is host-only and
+        // unchanged. xpuArch is the SM target handed to the NVPTX TargetMachine
+        // and ptxas (e.g. "sm_89"); only consulted when xpuBackend == Nvptx.
+        XpuBackend xpuBackend = XpuBackend::None;
+        XpuEmit xpuEmit = XpuEmit::None;
+        string xpuArch = "sm_89";
         // Optional output path override for single-file builds (--output / -o).
         // When empty, .ll/.o files land in the archive root mirroring the source tree
         // and executables land at <archive-root>/<entry-name>.
@@ -121,6 +147,15 @@ namespace cajeta {
 
         // Per-module emit dispatch based on emitMode.
         void emitForModule(CajetaModulePtr module);
+
+        // XPU device codegen for the AOT path (--xpu-backend=nvptx). Collects
+        // every @Kernel across the parsed modules, embeds each one's cubin +
+        // registration ctor into its host module (NvptxRegistration, the same
+        // pass the JIT helper runs), and — when --xpu-emit is ptx/cubin — also
+        // drops a per-kernel .ptx/.cubin under `archiveRootPath` for inspection.
+        // No-op when xpuBackend == None. Never throws: unsupported kernels
+        // (XPU-N01) or a missing ptxas are skipped with a diagnostic.
+        void emitXpuKernels(const std::string& archiveRootPath);
 
         // Walk every archive on `classpath`, re-parse each ClassSource
         // entry into a fresh CajetaModule, and register the resulting
@@ -229,6 +264,13 @@ namespace cajeta {
 
         EmitMode getEmitMode() const { return emitMode; }
         void setEmitMode(EmitMode m) { emitMode = m; }
+
+        XpuBackend getXpuBackend() const { return xpuBackend; }
+        void setXpuBackend(XpuBackend b) { xpuBackend = b; }
+        XpuEmit getXpuEmit() const { return xpuEmit; }
+        void setXpuEmit(XpuEmit e) { xpuEmit = e; }
+        const string& getXpuArch() const { return xpuArch; }
+        void setXpuArch(const string& a) { xpuArch = a; }
 
         void addClasspath(string s) { classpath.push_back(std::move(s)); }
         const std::vector<string>& getClasspath() const { return classpath; }

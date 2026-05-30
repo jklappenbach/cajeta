@@ -74,6 +74,14 @@ void printUsage(const char* progname) {
               << "  --target=<triple>                    LLVM target triple. Default: host.\n"
               << "  --cpu=<name>                         Target CPU. Default: generic.\n"
               << "  --features=<list>                    Comma-separated target features (e.g. +neon).\n"
+              << "\n"
+              << "XPU (NVIDIA GPU compute, cajeta-docs/CajetaXPU.md):\n"
+              << "  --xpu-backend=none|nvptx             Device backend for @Kernel methods. Default none\n"
+              << "                                       (host-only). nvptx embeds each kernel's cubin +\n"
+              << "                                       registration ctor so kernel.launch(...) resolves at runtime.\n"
+              << "  --xpu-arch=<sm_xx>                   NVPTX SM target for the kernel + ptxas. Default sm_89.\n"
+              << "  --xpu-emit=none|ptx|cubin            Also drop a per-kernel device artifact for inspection.\n"
+              << "                                       Default none (registration only).\n"
               << "  -o <path>                            Output path for the final artifact.\n"
               << "  --help, -h                           This message.\n"
               << "  --version, -V                        Print version + build provenance and exit.\n"
@@ -275,6 +283,22 @@ int main(int argc, const char* argv[]) {
             compiler.setCpu(value);
         } else if (match(arg, "features", value)) {
             compiler.setFeatures(value);
+        } else if (match(arg, "xpu-backend", value)) {
+            XpuBackend b;
+            if (!setEnumFlag<XpuBackend>("xpu-backend", value,
+                    { {"none", XpuBackend::None}, {"nvptx", XpuBackend::Nvptx} }, b)) {
+                printUsage(argv[0]); return 1;
+            }
+            compiler.setXpuBackend(b);
+        } else if (match(arg, "xpu-emit", value)) {
+            XpuEmit e;
+            if (!setEnumFlag<XpuEmit>("xpu-emit", value,
+                    { {"none", XpuEmit::None}, {"ptx", XpuEmit::Ptx}, {"cubin", XpuEmit::Cubin} }, e)) {
+                printUsage(argv[0]); return 1;
+            }
+            compiler.setXpuEmit(e);
+        } else if (match(arg, "xpu-arch", value)) {
+            compiler.setXpuArch(value);
         } else if (arg == "-o") {
             if (i + 1 >= argc) {
                 std::cerr << "cajeta: -o requires a path argument\n";
