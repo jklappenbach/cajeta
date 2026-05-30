@@ -69,6 +69,16 @@ namespace cajeta {
         if (!creatorRest) {
             return nullptr;
         }
+        // `shared` is GPU workgroup-shared placement (NV addrspace 3). It is
+        // device-only — the NVPTX kernel lowerer handles it by walking the AST
+        // directly (kernels get empty host stubs, so this normally never runs).
+        // If it surfaces on the host path, the user wrote `shared` outside a
+        // kernel: reject with a clear diagnostic rather than mis-lowering it.
+        if (sharedAlloc) {
+            throw cajeta::Exception(
+                "`shared` placement is only valid inside an @Kernel body "
+                "(GPU workgroup-shared memory)", "XPU-K03");
+        }
         // Look up the target type by name. typeName names the class for `new Foo()`, or
         // the element type for `new T[...]`. Package is "" for primitives (e.g. int32).
         // boundElementType was captured at parse-walk time when the

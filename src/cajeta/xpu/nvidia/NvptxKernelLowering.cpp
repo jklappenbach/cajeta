@@ -20,6 +20,8 @@
 #include "../../asn/expression/MethodCallExpression.h"
 #include "../../asn/expression/BinaryOpExpression.h"
 #include "../../asn/expression/LiteralExpression.h"
+#include "../../asn/expression/NewExpression.h"
+#include "../../asn/expression/CreatorRest.h"
 
 #include "llvm/IR/Function.h"
 #include "llvm/IR/IRBuilder.h"
@@ -43,8 +45,10 @@ namespace {
         "XPU-N01");
 }
 
-// addrspace(1) == CUDA global memory (AddressSpace.h nvidiaNumberFor).
+// addrspace(1) == CUDA global memory, addrspace(3) == CUDA shared / workgroup
+// memory (AddressSpace.h nvidiaNumberFor: Global->1, Shared->3).
 constexpr unsigned kGlobalAS = 1;
+constexpr unsigned kSharedAS = 3;
 
 // Map a primitive CajetaType to a device LLVM scalar type, built fresh
 // in the device context (NOT via CajetaType::getLlvmType(), whose cache
@@ -239,6 +243,15 @@ private:
             }
             auto initExpr = std::dynamic_pointer_cast<Expression>(
                 init->getChildren()[0]);
+            // `Shared<T> tile = shared T[N];` — workgroup-shared memory. The
+            // `shared` placement keyword flags the array creation; lower it to a
+            // per-block addrspace(3) global instead of a scalar slot.
+            if (auto ne = std::dynamic_pointer_cast<NewExpression>(initExpr)) {
+                if (ne->getSharedAlloc()) {
+                    lowerSharedDecl(nm, declType, ne);
+                    continue;
+                }
+            }
             llvm::Value* v = lowerExpr(initExpr);
             if (!slotTy) slotTy = v->getType();  // infer slot type from initializer
             llvm::Value* slot = entryAlloca(slotTy, nm);
@@ -247,6 +260,71 @@ private:
             slotTypes[nm] = slotTy;
             signedness[nm] = typeIsSigned(declType);
         }
+    }
+
+    // `Shared<T> name = shared T[N];` — workgroup-shared memory. Static shared
+    // memory in CUDA is a module-level global in addrspace(3) reserved per
+    // block, NOT a per-thread alloca: every thread sees the same region. So we
+    // emit ONE internal addrspace(3) global of [N x T], then register its
+    // decayed element pointer in the buffer maps — after which indexing
+    // (tile[i]), assignment, and compound-assignment all reuse the existing
+    // addrspace-agnostic buffer path (LLVM tracks the address space on the
+    // pointer). Size N must be a compile-time constant (dynamic shared memory,
+    // sized from the launch config, is a later increment).
+    void lowerSharedDecl(const std::string& nm, const CajetaTypePtr& declType,
+                         const std::shared_ptr<NewExpression>& ne) {
+        // Element type comes from the Shared<T> LHS type argument (T).
+        llvm::Type* elemTy = nullptr;
+        bool elemSigned = true;
+        if (auto cls = std::dynamic_pointer_cast<CajetaClass>(declType)) {
+            if (!cls->getTypeArguments().empty()) {
+                elemTy = deviceScalarType(cls->getTypeArguments()[0], ctx);
+                elemSigned = typeIsSigned(cls->getTypeArguments()[0]);
+            }
+        }
+        if (!elemTy) unsupported("shared local '" + nm +
+                                 "' needs a scalar element type (Shared<T>)");
+
+        // Size from the array creator's single, constant size operand.
+        auto acr = std::dynamic_pointer_cast<ArrayCreatorRest>(ne->getCreatorRest());
+        if (!acr) unsupported("shared local '" + nm +
+                              "' must be an array creation: `shared T[N]`");
+        if (acr->getChildren().size() != 1) {
+            unsupported("shared array '" + nm +
+                        "' must have exactly one dimension");
+        }
+        auto sizeExpr = std::dynamic_pointer_cast<Expression>(
+            acr->getChildren()[0]);
+        llvm::Value* sizeV = lowerExpr(sizeExpr);
+        auto* sizeCI = llvm::dyn_cast<llvm::ConstantInt>(sizeV);
+        if (!sizeCI) {
+            unsupported("shared array '" + nm + "' size must be a compile-time "
+                        "constant (dynamic shared memory not yet supported)");
+        }
+        uint64_t n = sizeCI->getZExtValue();
+        if (n == 0) unsupported("shared array '" + nm + "' size must be > 0");
+
+        // One per-block addrspace(3) global: [N x T] undef, internal linkage.
+        llvm::ArrayType* arrTy = llvm::ArrayType::get(elemTy, n);
+        auto* gv = new llvm::GlobalVariable(
+            mod, arrTy, /*isConstant=*/false,
+            llvm::GlobalValue::InternalLinkage,
+            llvm::UndefValue::get(arrTy),
+            // '_' not '.': the device global's name becomes a PTX symbol, and
+            // '.' is PTX's directive separator (the AsmPrinter would mangle it).
+            fn->getName().str() + "_" + nm, /*InsertBefore=*/nullptr,
+            llvm::GlobalValue::NotThreadLocal, kSharedAS);
+        gv->setAlignment(llvm::MaybeAlign(16));
+
+        // Decay [N x T]* -> T* (addrspace 3) and register like a buffer base so
+        // tile[i] reuses lowerLValueAddr's GEP/load/store path unchanged.
+        llvm::Value* zero =
+            llvm::ConstantInt::get(llvm::Type::getInt64Ty(ctx), 0);
+        llvm::Value* base = builder.CreateGEP(arrTy, gv, {zero, zero},
+                                              nm + ".base");
+        bufferBases[nm] = base;
+        bufferElems[nm] = elemTy;
+        bufferElemSigned[nm] = elemSigned;
     }
 
     // Coerce any scalar to an i1 truth value (for conditions).

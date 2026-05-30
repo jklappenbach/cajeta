@@ -117,6 +117,23 @@ namespace cajeta {
                 newExpr->setStackAlloc(true);
                 result = newExpr;
             }
+        } else if (ctx->SHARED()) {
+            // `shared` placement — GPU workgroup-shared memory (NV addrspace 3),
+            // a sibling of heap/stack (CajetaXPU.md §3.1.2). Device-only: the
+            // NVPTX kernel lowerer turns `shared T[N]` into one per-block
+            // addrspace(3) global; the host generateCode path rejects it.
+            // v1 supports only the array-creation form (`shared T[N]`); the
+            // aggregate / class-creator forms parse but are rejected downstream.
+            if (ctx->creator()) {
+                auto newExpr = make_shared<NewExpression>(ctx->creator(), token);
+                newExpr->setSharedAlloc(true);
+                result = newExpr;
+            } else if (ctx->aggregateInitializer()) {
+                auto agg = make_shared<AggregateInitializerExpression>(
+                    ctx->aggregateInitializer(), token);
+                agg->setStackAlloc(false);
+                result = agg;  // host path rejects; v1 has no shared-aggregate
+            }
         } else if (ctx->identifier()) {
             result = make_shared<IdentifierExpression>(ctx->identifier(), ctx->primary() != nullptr);
         } else if (ctx->LPAREN()) {
