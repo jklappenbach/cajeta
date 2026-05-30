@@ -7,11 +7,14 @@ discipline is [`cajeta-docs/CajetaXPU-Variance.md`](cajeta-docs/CajetaXPU-Varian
 This file tracks *implementation status* — what's built, what's stubbed,
 and what's next.
 
-> **On the AMD box? Read [`cajeta-amd.md`](cajeta-amd.md) instead.** The
-> "what's next" below is NVIDIA *refinement* (wave ops, multi-arch). The
-> next strategic move is the **AMD second backend** — extract the backend
-> seam by threading AMDGPU through it, discover the NVIDIA∩AMD overlap
-> empirically. `cajeta-amd.md` is the self-contained pickup for that work.
+> **AMD second backend: DONE (gfx1151, on-device).** SAXPY, a strided loop,
+> and static + dynamic shared-memory (LDS) reductions all compile through
+> `--xpu-backend=amdgpu` and run on a real Strix Halo APU (gfx1151) from the
+> SAME Cajeta source that runs on NVIDIA. The seam was extracted empirically
+> by threading AMDGPU through the originally NVIDIA-only path — see
+> **[The NVIDIA∩AMD overlap reckoning](#the-nvidiaamd-overlap-reckoning)**
+> below for the measured variance surface (the deliverable the whole strategy
+> exists to produce). `cajeta-amd.md` was the pickup plan for this work.
 
 > **Status: SAXPY runs on a real NVIDIA GPU (design phase 2 milestone).**
 > The NVPTX vertical slice is proven end-to-end on an RTX 4090 (sm_89,
@@ -144,6 +147,110 @@ deferrals first. Six commits on `cajeta-xpu` (after the restore commits):
   launch, `XpuSharedDeviceTests`) + PTX `.extern .shared` + launch lowering
   (`XpuLaunchCodegenTests`). The shared-aliasing borrow rule (overlapping `&mut`
   slices, spec §11 case 2) remains a separate deferred item.
+
+---
+
+## The NVIDIA∩AMD overlap reckoning
+
+The AMD second backend (cajeta-amd.md) was built to *measure* the
+NVIDIA∩AMD intersection, not assume it: the seam was extracted by threading
+AMDGPU through the originally NVIDIA-only lowerer, so the methods that ended
+up on the abstraction ARE the variance surface. With two backends now real
+and on-device, here is what actually forked vs. what stayed shared.
+
+### What forked — the `LoweringTarget` vtable (the whole variance surface)
+
+The ~885-line kernel-body AST walk is shared
+(`src/cajeta/xpu/lowering/KernelLowering.cpp`); only these decisions differ,
+and they are the *entire* `LoweringTarget` interface
+(`src/cajeta/xpu/lowering/LoweringTarget.h`):
+
+| `LoweringTarget` method | NVPTX | AMDGPU |
+|-------------------------|-------|--------|
+| `allocaAddressSpace()` | 0 (generic) | **5 (private)** — the one address-space fork; an AS-0 alloca is invalid IR on AMDGPU |
+| `threadId(dim)` | `nvvm.read.ptx.sreg.tid.*` | `amdgcn.workitem.id.*` |
+| `workgroupId(dim)` | `nvvm.read.ptx.sreg.ctaid.*` | `amdgcn.workgroup.id.*` |
+| `workgroupDim(dim)` | `nvvm.read.ptx.sreg.ntid.*` | **dispatch-packet load** (`amdgcn.dispatch.ptr` + i16 @ offset 4/6/8) — block dim is NOT an intrinsic on AMD |
+| `workgroupBarrier()` | `nvvm.barrier.cta.sync.aligned.all` | `amdgcn.s.barrier` wrapped in workgroup-scoped release/acquire fences (LDS visibility) |
+| `decorateKernel()` | `ptx_kernel` CC **+ `nvvm.annotations`** metadata | `amdgpu_kernel` CC, **no metadata** |
+| `globalId(dim)` | *shared default* — `workgroupId*workgroupDim + threadId` holds on both; not a fork |
+
+Backend-module decisions outside the AST walk (the `*Backend` /
+`*Registration` / driver files), also forked but mechanically:
+
+| Decision | NVPTX | AMDGPU |
+|----------|-------|--------|
+| Device triple | `nvptx64-nvidia-cuda` | `amdgcn-amd-amdhsa` |
+| Assemble | PTX → `ptxas` → cubin | object emitted directly by the TargetMachine → `ld.lld -shared` → hsaco (**no external assembler**) |
+| Driver / loader | `nvcuda` (`cuModuleLoadData` / `cuLaunchKernel`) | HIP (`hipModuleLoadData` / `hipModuleLaunchKernel`) |
+| Dynamic shared sizing | `cuLaunchKernel` `sharedMemBytes` | `hipModuleLaunchKernel` `sharedMemBytes` (= groupMemBytes) — *same launch-config shape* |
+
+### What stayed shared (≈90% — the measured core)
+
+- The **entire kernel-body AST walk**: statements, control flow
+  (`if`/`for`/`while`/`do`, unlabeled `break`/`continue`), the full int/float
+  operator set, short-circuit `&&`/`||`, unary/prefix/postfix, numeric casts,
+  the mutable-slot scalar model + mem2reg-before-emit.
+- **Buffer/array params → `addrspace(1)` pointers** — identical on both.
+- The **`shared` keyword → `addrspace(3)` globals**: static (internal
+  `[N x T]`) and dynamic (external unsized `[0 x T]`, launch-sized) — the IR
+  is byte-for-byte the same; only the launch-time byte count plumbs through a
+  different driver call.
+- **Address-space numbers** (`AddressSpace.h`): `amdNumberFor ≡
+  nvidiaNumberFor` confirmed — Global=1, Shared=3 agree. AS is *not* a fork
+  point for buffers or shared memory (only for allocas).
+- **Registration shape**: embed device bytes as a host constant + an
+  `llvm.global_ctors` entry calling the **backend-neutral**
+  `__cajeta_xpu_register_module(name, bytes, len)` — keyed by entry name.
+  Only the binary format behind it (cubin→hsaco) changed.
+- **All frontend work** — `@Kernel`/`@Device` recognition, `KernelArg`
+  validation (`XPU-K01`), launch grammar, MIR scaffolding, launch-borrow
+  checking — never touched; AMD inherited it for free.
+
+### What this measured that was previously a guess
+
+- **Address space is a near-non-fork.** The doc predicted Global/Shared agree;
+  confirmed. The *only* AS divergence is the alloca/private space (0 vs 5) —
+  exactly the "classic first AMDGPU bug" cajeta-amd.md §2 warned about.
+- **Block dim is the single most divergent coordinate.** Every other
+  coordinate read is a 1:1 intrinsic swap; only `workgroupDim` is structurally
+  different (AMD has no `ntid` intrinsic — it reads the HSA dispatch packet).
+- **The launch/registration surface is genuinely universal.** The
+  name-keyed runtime symbol and the launch-config shape (incl. `sharedMemBytes`)
+  did not fork at all — only the binary format and the driver entry points did.
+- **AMD needs no external assembler.** The TargetMachine emits the object
+  directly; `lld` links it — simpler than the NVPTX `ptxas` round-trip.
+
+This table is the empirical NVIDIA∩AMD core, and the input to the later "how
+much of this core extends to Vulkan/SPIR-V" question.
+
+### AMD on-device increments (cajeta-amd.md) — all landed
+
+| Increment | What landed | Tests |
+|-----------|-------------|-------|
+| 0 | `XpuBackend::Amdgpu` + CLI (`--xpu-backend=amdgpu`, `gfx1151` default) + backend dispatch seam (`xpu::emitKernelRegistration`) | NVIDIA stays green |
+| 1 | `AmdgpuBackend` (TargetMachine, `emitIsa`, `assembleHsaco` via lld) | `XpuAmdgpuEmitTests` |
+| 2 | `LoweringTarget` seam + `AmdgpuKernelLowering` over the shared AST walk; NVPTX lowerer refactored onto the same shared lowerer (behavior-preserving) | `XpuAmdgpuLoopEmitTests` (+ all NVPTX emit tests still green) |
+| 3 | `AmdgpuRegistration` (hsaco + global_ctors) + AOT `--xpu-emit=isa\|hsaco` | `XpuAmdgpuAotCliTests` |
+| 4 | `HipDriver` (dlopen libamdhip64) + on-device SAXPY | `XpuSaxpyAmdDeviceTests` (gfx1151) |
+| 5 | static + dynamic LDS reductions on-device | `XpuSharedAmdDeviceTests` (gfx1151) |
+
+> **Box gotcha (environment, not Cajeta).** This Strix Halo box's
+> `ROCM_PATH` / `LD_LIBRARY_PATH` point at `/opt/rocm-7.x` (7.2.53210), whose
+> `libhsa-runtime64` **segfaults at code-object load** (deep in
+> `ReleaseQueueMainScratch` during the executable freeze). The
+> alternatives-canonical `/opt/rocm` (7.2.2) works. `HipDriver` defends
+> against this by pinning the canonical `/opt/rocm/lib/libhsa-runtime64.so.1`
+> with `RTLD_GLOBAL` before loading `libamdhip64`, so a poisoned
+> `LD_LIBRARY_PATH` can't bind the broken HSA runtime — the on-device tests
+> pass under the default (broken) env with no fiddling. Worth fixing the
+> shell env regardless (`/opt/rocm-7.x` looks like a broken dev build).
+
+**Still AMD-side refinement (not blocking the phase):** wave ops (the first
+variance-shaped feature that justifies the seam — `nvvm.shfl.sync` vs
+`amdgcn.ds.bpermute`/swizzle), the JIT host-source launch path for AMD (the
+AMD analog of `XpuHostLaunchDeviceTests` — the device tests currently drive
+`amd::` directly), multi-arch bundling, and `@Device` helper calls.
 
 ---
 
