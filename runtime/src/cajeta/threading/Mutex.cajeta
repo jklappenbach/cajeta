@@ -50,7 +50,7 @@ public class Mutex<T> {
      * `LockGuard`'s drop, which fires on normal return AND on exception
      * unwind through this frame — so a throw inside `fn` still releases.
      */
-    public void withLock((T) -> T fn) {
+    public void withLock((T) -> #T fn) {
         Cajeta.lockAcquire(this.handle);
         LockGuard g = new LockGuard(this.handle);
         this.value = fn(this.value);
@@ -69,7 +69,7 @@ public class Mutex<T> {
      * Exception-safe via the same method-scoped `LockGuard` drop as
      * `withLock`.
      */
-    public void withLockWhen((T) -> boolean cond, (T) -> T fn) {
+    public void withLockWhen((T) -> boolean cond, (T) -> #T fn) {
         Cajeta.lockAcquire(this.handle);
         LockGuard g = new LockGuard(this.handle);
         while (!cond(this.value)) {

@@ -20,10 +20,10 @@ import cajeta.error.RecoverableException;
  */
 public class MapOrFallbackStream<T, R> extends Stream<R> {
     Stream<T> source;
-    (T) -> R fn;
+    (T) -> #R fn;
     R fallback;
 
-    public MapOrFallbackStream(Stream<T> source, (T) -> R fn, R fallback) {
+    public MapOrFallbackStream(Stream<T> source, (T) -> #R fn, R fallback) {
         this.source = source;
         this.fn = fn;
         this.fallback = fallback;

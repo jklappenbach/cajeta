@@ -431,6 +431,16 @@ namespace cajeta {
                 paramTypes.push_back(fromContext(p, module));
             }
             CajetaTypePtr ret;
+            // M5(b) — function-type return ABI discriminator. Source-level
+            // `(P) -> #R` (REFERENCE present) means the ownership/heap
+            // pointer-return form `R* (params)`; `(P) -> R` (no `#`) means
+            // the sret value-return form `void (ptr sret(R), params)`. The
+            // distinction is only meaningful when the return type can be
+            // sret-shaped (class, non-interface, non-array, non-view) —
+            // CajetaFunctionType's canonical-build normalizes non-eligible
+            // returns to ownership so primitive/void/interface fn-types
+            // don't get spurious canonical splits.
+            bool returnsOwn = true;
             if (auto* rt = fnt->typeTypeOrVoid()) {
                 if (rt->VOID()) {
                     // Resolve void via canonicalMap (registered by the
@@ -440,6 +450,7 @@ namespace cajeta {
                     ret = canonicalMap[voidQ->toCanonical()];
                 } else if (rt->typeType()) {
                     ret = fromContext(rt->typeType(), module);
+                    returnsOwn = (rt->REFERENCE() != nullptr);
                 }
             }
             // ret may be null when the return slot names an unknown
@@ -449,11 +460,11 @@ namespace cajeta {
             // original problem. Preserve that shape: build the
             // CajetaFunctionType with a null return; buildCanonical
             // already handles it ("?" slot).
-            std::string canon = CajetaFunctionType::buildCanonical(paramTypes, ret);
+            std::string canon = CajetaFunctionType::buildCanonical(paramTypes, ret, returnsOwn);
             auto it = canonicalMap.find(canon);
             if (it != canonicalMap.end()) return it->second;
             auto fnType = std::make_shared<CajetaFunctionType>(
-                module, std::move(paramTypes), std::move(ret));
+                module, std::move(paramTypes), std::move(ret), returnsOwn);
             canonicalMap[canon] = static_pointer_cast<CajetaType>(fnType);
             return static_pointer_cast<CajetaType>(fnType);
         }

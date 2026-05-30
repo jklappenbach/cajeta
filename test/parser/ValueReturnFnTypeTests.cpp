@@ -54,3 +54,85 @@ TEST(ValueReturnFnTypeTests, primitiveFnTypedLocalSmoke) {
         "}\n";
     EXPECT_EQ(runI32(src), 42);
 }
+
+// Lambda body is `stack X(...)`; the LHS sret-form fn-type pins the ABI
+// (returnsOwn=false). The lambda's underlying function takes the sret slot
+// at arg 0; NRVO constructs the Optional directly into the caller-owned
+// slot the indirect-call site allocates. M5(b) — matched-ABI direct path.
+TEST(ValueReturnFnTypeTests, lambdaStackReturnIntoSretCallback) {
+    auto src =
+        "package test;\n"
+        "import cajeta.lang.Optional;\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        (int32) -> Optional<int32> f = (int32 x) -> stack Optional<int32>(true, x);\n"
+        "        Optional<int32> o = f(42);\n"
+        "        return o.get();\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 42);
+}
+
+// Block-body variant — Method::nodeHasStackReturn (now exposed for lambdas)
+// walks the block for any `return stack X(...)`. The signature-driven
+// ReturnStatement path in Statement.cpp fires the NRVO/memcpy into the
+// lambda's sret slot.
+TEST(ValueReturnFnTypeTests, lambdaBlockStackReturnIntoSretCallback) {
+    auto src =
+        "package test;\n"
+        "import cajeta.lang.Optional;\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        (int32) -> Optional<int32> f = (int32 x) -> {\n"
+        "            return stack Optional<int32>(true, x + 1);\n"
+        "        };\n"
+        "        Optional<int32> o = f(7);\n"
+        "        return o.get();\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 8);
+}
+
+// Method reference to a value-returning method, bound through an sret-form
+// fn-typed local. resolveTypes computes returnsOwn=!returnsStackValue() so
+// `m::mk` produces the same canonical the LHS declared; the thunk's
+// underlying call forwards the sret slot straight to Maker.mk's sret arg.
+TEST(ValueReturnFnTypeTests, methodRefToSretMethodDirectBinding) {
+    auto src =
+        "package test;\n"
+        "import cajeta.lang.Optional;\n"
+        "public class Maker {\n"
+        "    public Optional<int32> mk() {\n"
+        "        return stack Optional<int32>(true, 99);\n"
+        "    }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Maker m = heap Maker();\n"
+        "        () -> Optional<int32> f = m::mk;\n"
+        "        Optional<int32> o = f();\n"
+        "        return o.get();\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 99);
+}
+
+// Negative-shape control: an ownership-form (`#R`) fn-type still works as
+// before (constructor refs, heap-returning lambdas). Locks in the matrix's
+// "direct" diagonal for the heap-ownership path.
+TEST(ValueReturnFnTypeTests, ownershipFormConstructorRefStillWorks) {
+    auto src =
+        "package test;\n"
+        "public class Counter {\n"
+        "    public int32 v;\n"
+        "    public Counter() { this.v = 5; }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        () -> #Counter ctor = Counter::new;\n"
+        "        Counter c = ctor();\n"
+        "        return c.v;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 5);
+}
