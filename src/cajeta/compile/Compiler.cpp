@@ -18,7 +18,14 @@
 #include "../type/CajetaType.h"
 #include "cajeta/error/CajetaExceptions.h"
 #include "CajetaParserBaseVisitor.h"
+#include "../xpu/core/XpuAttributes.h"
+#include "../xpu/nvidia/NvptxBackend.h"
+#include "../xpu/nvidia/NvptxKernelLowering.h"
+#include "../xpu/nvidia/NvptxRegistration.h"
+#include "../method/Method.h"
+#include "llvm/IR/Module.h"
 #include <algorithm>
+#include <fstream>
 #include <sys/stat.h>
 
 #ifdef CAJETA_HAS_LLD
@@ -726,6 +733,11 @@ namespace cajeta {
                 if (klass) klass->generateStaticInitializers();
             }
         }
+        // XPU device codegen (--xpu-backend=nvptx): embed each @Kernel's cubin +
+        // registration ctor into its host module, before the host module is
+        // written out below. No-op for the default host-only path.
+        emitXpuKernels(archiveRootPath);
+
         // Binary emit needs a C-ABI `main` to satisfy the loader. Synthesize
         // a shim that forwards to the user's static entry method. Skipped
         // for IR emit; the JIT and IR-archive consumers invoke the entry
@@ -798,6 +810,88 @@ namespace cajeta {
                 dest.flush();
                 objectFiles.push_back(objPath);
                 return;
+            }
+        }
+    }
+
+    // XPU device codegen for the AOT path. Mirrors the JIT helper's kernel
+    // registration (test/jit/JitTestHelper.cpp): for each parsed module, embed
+    // each @Kernel's cubin + a registration ctor into that module's own host
+    // LLVM module — correct for AOT since every module's object links together.
+    // When --xpu-emit is ptx/cubin, also drop a standalone per-kernel artifact
+    // for inspection. Never throws (NvptxRegistration swallows XPU-N01 / absent
+    // ptxas; the artifact path catches the same and skips with a diagnostic).
+    void Compiler::emitXpuKernels(const std::string& archiveRootPath) {
+        if (xpuBackend != XpuBackend::Nvptx) {
+            return;
+        }
+        for (auto& module : modules) {
+            std::vector<MethodPtr> kernels;
+            for (auto& method : module->getAllMethods()) {
+                if (method && cajeta::xpu::isKernel(*method)) {
+                    kernels.push_back(method);
+                }
+            }
+            if (kernels.empty()) {
+                continue;
+            }
+            // Embed cubin + registration ctor into this module's host module.
+            cajeta::xpu::nvidia::emitKernelRegistration(
+                kernels, *module->getLlvmModule(), xpuArch);
+
+            if (xpuEmit == XpuEmit::None) {
+                continue;
+            }
+            // Standalone artifact(s) for inspection. Base each file on the
+            // module's IR output path (archiveRoot + archivePath, ending .ll),
+            // suffixed with the kernel's name + .ptx/.cubin.
+            std::string base = module->getArchiveRoot() + module->getArchivePath();
+            if (base.size() >= 3 && base.substr(base.size() - 3) == ".ll") {
+                base.resize(base.size() - 3);
+            }
+            std::filesystem::create_directories(
+                std::filesystem::path(base).parent_path());
+
+            for (auto& kernel : kernels) {
+                try {
+                    auto tm = cajeta::xpu::nvidia::createNvptxTargetMachine(xpuArch);
+                    if (!tm) {
+                        cerr << "cajeta: XPU: nvptx target unavailable in this "
+                                "LLVM build; skipping " << kernel->getName() << std::endl;
+                        continue;
+                    }
+                    llvm::LLVMContext deviceCtx;
+                    llvm::Module deviceModule("xpu_device", deviceCtx);
+                    cajeta::xpu::nvidia::configureDeviceModule(deviceModule, *tm);
+                    cajeta::xpu::nvidia::lowerKernel(kernel, deviceModule);
+                    std::string ptx = cajeta::xpu::nvidia::emitPtx(deviceModule, *tm);
+                    if (ptx.empty()) {
+                        cerr << "cajeta: XPU: PTX emission produced nothing for "
+                             << kernel->getName() << std::endl;
+                        continue;
+                    }
+                    std::string stem = base + "." + kernel->getName();
+                    if (xpuEmit == XpuEmit::Ptx) {
+                        std::ofstream out(stem + ".ptx", std::ios::binary);
+                        out << ptx;
+                    } else {  // XpuEmit::Cubin
+                        std::vector<uint8_t> cubin =
+                            cajeta::xpu::nvidia::assembleCubin(ptx, xpuArch);
+                        if (cubin.empty()) {
+                            cerr << "cajeta: XPU: ptxas unavailable or failed; no "
+                                    "cubin for " << kernel->getName() << std::endl;
+                            continue;
+                        }
+                        std::ofstream out(stem + ".cubin", std::ios::binary);
+                        out.write(reinterpret_cast<const char*>(cubin.data()),
+                                  (std::streamsize) cubin.size());
+                    }
+                } catch (cajeta::Exception& e) {
+                    // XPU-N01 (unsupported construct) or similar — skip, don't abort.
+                    cerr << "cajeta: XPU: skipping kernel " << kernel->getName()
+                         << " (" << e.getErrorId() << "): " << e.getMessage()
+                         << std::endl;
+                }
             }
         }
     }
