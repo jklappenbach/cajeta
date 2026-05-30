@@ -50,7 +50,7 @@ public class RwLock<T> {
      * the method-scoped `WriteGuard` drop (fires on normal return AND
      * exception unwind).
      */
-    public void withWrite((T) -> T fn) {
+    public void withWrite((T) -> #T fn) {
         Cajeta.rwlockWrlock(this.handle);
         WriteGuard g = new WriteGuard(this.handle);
         this.value = fn(this.value);

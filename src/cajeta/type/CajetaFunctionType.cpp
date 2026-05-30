@@ -12,6 +12,20 @@
 
 namespace cajeta {
 
+    // Non-sret-eligible returns (primitive, void, interface fat-ptr, array,
+    // view) have no semantic distinction between ownership and sret form —
+    // the LLVM signature is identical regardless. Normalizing them all to
+    // "embed #" in the canonical avoids spurious splits when source-level
+    // `(P) -> R` (no #, returnsOwn=false from the parser) meets a method-ref
+    // typed `(P) -> R` via returnsOwn=true: both ought to be the same type.
+    static bool sretCanonicalDiscriminates(const CajetaTypePtr& returnType) {
+        auto rtClass = std::dynamic_pointer_cast<CajetaClass>(returnType);
+        if (!rtClass || rtClass->isInterface()) return false;
+        if (std::dynamic_pointer_cast<CajetaArray>(returnType)) return false;
+        if (std::dynamic_pointer_cast<CajetaView>(returnType)) return false;
+        return true;
+    }
+
     std::string CajetaFunctionType::buildCanonical(
         const std::vector<CajetaTypePtr>& parameterTypes,
         CajetaTypePtr returnType,
@@ -22,7 +36,7 @@ namespace cajeta {
             s += parameterTypes[i] ? parameterTypes[i]->toCanonical() : std::string("?");
         }
         s += ") -> ";
-        if (returnsOwnership) s += "#";
+        if (returnsOwnership || !sretCanonicalDiscriminates(returnType)) s += "#";
         s += returnType ? returnType->toCanonical() : std::string("?");
         return s;
     }

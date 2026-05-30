@@ -89,7 +89,7 @@ public class ParallelDriver {
      * because `fn` is associative + identity-respecting per the
      * contract above).
      */
-    public static T reduceParallel<T>(Splittable<T> source, T seed, (T, T) -> T fn) {
+    public static T reduceParallel<T>(Splittable<T> source, T seed, (T, T) -> #T fn) {
         int64 sz = source.estimateSize();
         int32 nSplits = pickSplitCount(sz);
         if (nSplits < 2) {
@@ -154,7 +154,7 @@ public class ParallelDriver {
      * targets need a return type; the meaningful output is the
      * partials[slot] write.
      */
-    public static async int32 reduceWorker<T>(Stream<T> share, int32 slot, T[] partials, (T, T) -> T fn) {
+    public static async int32 reduceWorker<T>(Stream<T> share, int32 slot, T[] partials, (T, T) -> #T fn) {
         T acc = partials[slot];
         Optional<T> o = share.next();
         while (o.isPresent()) {
@@ -413,7 +413,7 @@ public class ParallelDriver {
      * Object-erasure or wildcards (CajetaType.cpp:454 rejects
      * `<?>` today).
      */
-    public static #T reduceParallelChain<T>(Stream<T> head, T seed, (T, T) -> T fn) {
+    public static #T reduceParallelChain<T>(Stream<T> head, T seed, (T, T) -> #T fn) {
         int32 depth = 0;
         Stream<?> cur = head;
         while (cur != null) {
@@ -491,8 +491,8 @@ public class ParallelDriver {
     /**
      * Wrapper-chain-aware parallel fold with explicit combiner.
      * Same shape as `reduceParallelChain` but with cross-type R: the
-     * per-share accumulator is `(R, T) -> R fn`, and the partials
-     * are merged via `(R, R) -> R combiner` (which the orchestrator
+     * per-share accumulator is `(R, T) -> #R fn`, and the partials
+     * are merged via `(R, R) -> #R combiner` (which the orchestrator
      * also uses to seed-accumulate, mirroring fn's identity contract
      * over `seed`). Per Java's reduce(seed, fn, combiner) contract:
      *   - `combiner` MUST be associative.
@@ -509,7 +509,7 @@ public class ParallelDriver {
      * Stream<T>.unwrap()=null hides. Lifting that wants either
      * Object-erasure or wildcard support (CajetaType.cpp:454).
      */
-    public static #R foldParallelChain<T, R>(Stream<T> head, R seed, (R, T) -> R fn, (R, R) -> R combiner) {
+    public static #R foldParallelChain<T, R>(Stream<T> head, R seed, (R, T) -> #R fn, (R, R) -> #R combiner) {
         int32 depth = 0;
         Stream<?> cur = head;
         while (cur != null) {
@@ -581,7 +581,7 @@ public class ParallelDriver {
      * accumulator. The combiner isn't needed inside the worker; it
      * only fires on the orchestrator when the join-scope completes.
      */
-    public static async int32 foldWorker<T, R>(Stream<T> share, int32 slot, R[] partials, (R, T) -> R fn) {
+    public static async int32 foldWorker<T, R>(Stream<T> share, int32 slot, R[] partials, (R, T) -> #R fn) {
         R acc = partials[slot];
         Optional<T> o = share.next();
         while (o.isPresent()) {
@@ -602,7 +602,7 @@ public class ParallelDriver {
      * the worker side is identical; only the partials[] seeding
      * differs.
      */
-    public static #R collectParallelChain<T, R>(Stream<T> head, () -> R supplier, (R, T) -> R accumulator, (R, R) -> R combiner) {
+    public static #R collectParallelChain<T, R>(Stream<T> head, () -> #R supplier, (R, T) -> #R accumulator, (R, R) -> #R combiner) {
         int32 depth = 0;
         Stream<?> cur = head;
         while (cur != null) {

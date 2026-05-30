@@ -11,9 +11,9 @@ package cajeta.lang.stream;
  */
 public class MapStream<T, R> extends Stream<R> {
     Stream<T> source;
-    (T) -> R fn;
+    (T) -> #R fn;
 
-    public MapStream(Stream<T> source, (T) -> R fn) {
+    public MapStream(Stream<T> source, (T) -> #R fn) {
         this.source = source;
         this.fn = fn;
     }
