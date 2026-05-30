@@ -1812,6 +1812,99 @@ namespace cajeta {
                         llvm::AtomicOrdering::SequentiallyConsistent);
                     return builder->CreateExtractValue(cmpxchg, 1, "atomic.cas.ok");
                 }
+                // Fixed-ordering atomic intrinsics (R8.1b). LLVM atomic IR
+                // bakes the ordering at instruction construction; a runtime-
+                // variable ordering would force a per-op switch (collapsed
+                // only via the inliner, perf-unpredictable at -O0). So each
+                // (op, ordering) combo is its own intrinsic + class method,
+                // matching the named-method approach in cajeta.threading.
+                // AtomicInt32 / AtomicInt64. The orderings shipped now are
+                // the ones the work-stealing deque (R8.2) needs; add more
+                // when a concrete consumer surfaces.
+                //
+                // Pattern below: small lambda factories for the four atomic
+                // shapes (load / store / fetchAdd / casExpectedOK) keyed on
+                // type width + ordering; each named intrinsic delegates to
+                // them with its fixed ordering.
+                auto atomicLoadOrd = [&](llvm::Type* ty, unsigned alignBytes,
+                                          llvm::AtomicOrdering ord,
+                                          const char* nameHint) -> llvm::Value* {
+                    auto* load = builder->CreateLoad(ty, loadValue(0), nameHint);
+                    load->setAtomic(ord);
+                    load->setAlignment(llvm::Align(alignBytes));
+                    return load;
+                };
+                auto atomicStoreOrd = [&](llvm::Type* ty, unsigned alignBytes,
+                                           llvm::AtomicOrdering ord) -> llvm::Value* {
+                    llvm::Value* v = loadValue(1);
+                    if (v->getType() != ty) v = builder->CreateIntCast(v, ty, /*isSigned=*/true);
+                    auto* store = builder->CreateStore(v, loadValue(0));
+                    store->setAtomic(ord);
+                    store->setAlignment(llvm::Align(alignBytes));
+                    return store;
+                };
+                auto atomicFetchAddOrd = [&](llvm::Type* ty, unsigned alignBytes,
+                                              llvm::AtomicOrdering ord) -> llvm::Value* {
+                    llvm::Value* v = loadValue(1);
+                    if (v->getType() != ty) v = builder->CreateIntCast(v, ty, /*isSigned=*/true);
+                    return builder->CreateAtomicRMW(
+                        llvm::AtomicRMWInst::Add, loadValue(0), v,
+                        llvm::MaybeAlign(alignBytes), ord);
+                };
+                auto atomicCasOrd = [&](llvm::Type* ty, unsigned alignBytes,
+                                         llvm::AtomicOrdering succ,
+                                         llvm::AtomicOrdering fail) -> llvm::Value* {
+                    llvm::Value* expected = loadValue(1);
+                    llvm::Value* desired = loadValue(2);
+                    if (expected->getType() != ty) expected = builder->CreateIntCast(expected, ty, /*isSigned=*/true);
+                    if (desired->getType() != ty) desired = builder->CreateIntCast(desired, ty, /*isSigned=*/true);
+                    auto* cmpxchg = builder->CreateAtomicCmpXchg(
+                        loadValue(0), expected, desired,
+                        llvm::MaybeAlign(alignBytes), succ, fail);
+                    return builder->CreateExtractValue(cmpxchg, 1, "atomic.cas.ok");
+                };
+                // ---- i32 ----
+                if (ns == "Cajeta" && methodCallName == "atomicI32LoadRelaxed" && parameters.size() == 1) {
+                    return atomicLoadOrd(i32Ty, 4, llvm::AtomicOrdering::Monotonic, "atomic.i32.load.rlx");
+                }
+                if (ns == "Cajeta" && methodCallName == "atomicI32LoadAcquire" && parameters.size() == 1) {
+                    return atomicLoadOrd(i32Ty, 4, llvm::AtomicOrdering::Acquire, "atomic.i32.load.acq");
+                }
+                if (ns == "Cajeta" && methodCallName == "atomicI32StoreRelaxed" && parameters.size() == 2) {
+                    return atomicStoreOrd(i32Ty, 4, llvm::AtomicOrdering::Monotonic);
+                }
+                if (ns == "Cajeta" && methodCallName == "atomicI32StoreRelease" && parameters.size() == 2) {
+                    return atomicStoreOrd(i32Ty, 4, llvm::AtomicOrdering::Release);
+                }
+                if (ns == "Cajeta" && methodCallName == "atomicI32FetchAddRelaxed" && parameters.size() == 2) {
+                    return atomicFetchAddOrd(i32Ty, 4, llvm::AtomicOrdering::Monotonic);
+                }
+                if (ns == "Cajeta" && methodCallName == "atomicI32CompareAndSetAcquire" && parameters.size() == 3) {
+                    return atomicCasOrd(i32Ty, 4,
+                        llvm::AtomicOrdering::Acquire,
+                        llvm::AtomicOrdering::Acquire);
+                }
+                // ---- i64 ----
+                if (ns == "Cajeta" && methodCallName == "atomicI64LoadRelaxed" && parameters.size() == 1) {
+                    return atomicLoadOrd(i64Ty, 8, llvm::AtomicOrdering::Monotonic, "atomic.i64.load.rlx");
+                }
+                if (ns == "Cajeta" && methodCallName == "atomicI64LoadAcquire" && parameters.size() == 1) {
+                    return atomicLoadOrd(i64Ty, 8, llvm::AtomicOrdering::Acquire, "atomic.i64.load.acq");
+                }
+                if (ns == "Cajeta" && methodCallName == "atomicI64StoreRelaxed" && parameters.size() == 2) {
+                    return atomicStoreOrd(i64Ty, 8, llvm::AtomicOrdering::Monotonic);
+                }
+                if (ns == "Cajeta" && methodCallName == "atomicI64StoreRelease" && parameters.size() == 2) {
+                    return atomicStoreOrd(i64Ty, 8, llvm::AtomicOrdering::Release);
+                }
+                if (ns == "Cajeta" && methodCallName == "atomicI64FetchAddRelaxed" && parameters.size() == 2) {
+                    return atomicFetchAddOrd(i64Ty, 8, llvm::AtomicOrdering::Monotonic);
+                }
+                if (ns == "Cajeta" && methodCallName == "atomicI64CompareAndSetAcquire" && parameters.size() == 3) {
+                    return atomicCasOrd(i64Ty, 8,
+                        llvm::AtomicOrdering::Acquire,
+                        llvm::AtomicOrdering::Acquire);
+                }
                 if (ns == "System" && methodCallName == "exit" && parameters.size() == 1) {
                     llvm::Function* fn = module->getRuntimeFunction("__cajeta_exit");
                     llvm::Value* code = loadValue(0);

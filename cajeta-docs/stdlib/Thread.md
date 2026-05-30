@@ -317,11 +317,10 @@ int32 snapshot = hits.load();
 
 Owns a heap-allocated word that compiler-emitted inline LLVM atomic
 instructions operate against (`load atomic`, `store atomic`, `atomicrmw
-add`, `cmpxchg`). All operations are sequentially consistent in v1;
-explicit `MemoryOrder` overloads (`Relaxed` / `Acquire` / `Release` /
-`AcqRel` / `SeqCst`) land in a follow-up.
+add`, `cmpxchg`). The default no-suffix methods are sequentially
+consistent; named ordered variants opt into a weaker ordering.
 
-API:
+Default (seq_cst) API:
 - `load() → T` — atomic read.
 - `store(T v) → void` — atomic write.
 - `fetchAdd(T delta) → T` — atomic add, returns the value the cell held
@@ -329,6 +328,27 @@ API:
 - `compareAndSet(T expected, T desired) → boolean` — atomic CAS,
   returns whether the swap actually happened. Use as the lock-free
   retry-loop building block.
+
+Fixed-ordering variants (R8.1b — named, not enum-parameterized, because
+LLVM atomic IR bakes the ordering at instruction construction; a
+runtime-variable `MemoryOrder` would force a per-op `switch` that only
+collapses through inlining, which is unpredictable at lower opt
+levels):
+- `loadRelaxed() / loadAcquire()` — RELAXED for stats / counters where
+  ordering doesn't matter; ACQUIRE pairs with `storeRelease` for
+  publish/subscribe handshakes on a sentinel flag.
+- `storeRelaxed(v) / storeRelease(v)` — RELAXED for owner-only writes
+  (e.g. the deque's bottom pointer from its owning carrier); RELEASE
+  for publishes the consumer pairs with an ACQUIRE load.
+- `fetchAddRelaxed(delta)` — relaxed atomic add, the right call for
+  stat counters under contention (atomicity without ordering).
+- `compareAndSetAcquire(exp, des)` — CAS with Acquire on both success
+  and failure. The stealer-side race in Chase-Lev needs exactly this
+  shape.
+
+The surface only enumerates the orderings the work-stealing deque
+(R8.2) is about to need; add more named variants when a concrete
+consumer surfaces.
 
 Backs the lock-free runtime data structures (Chase-Lev deque,
 Treiber-style free lists) that the work-stealing pool — R8 § Executor —
