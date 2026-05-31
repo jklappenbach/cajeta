@@ -204,6 +204,7 @@ Beyond R4's Lock, the threading package ships:
 - **R9.2** — `cajeta.time.Duration` value type with `ofNanos`/`ofMillis`/`ofSeconds`/`ofMinutes` factories and `toNanos` accessor.
 - **R9.3** — `cajeta.threading.Tasks.withTimeout<R>(Duration, Task<R>) -> Optional<R>` and `withDeadline<R>(int64 deadlineNanos, Task<R>) -> Optional<R>`. Optional reports present-or-timeout; on timeout the body is cooperatively cancelled (`Cajeta.taskCancel` → `__cajeta_fiber_cancel`), bodies that yield short-circuit on next park, bodies without yield points run to natural completion. A legacy `withTimeoutInt32` specialization remains for callers already pinned to it.
 - **R9.4** — Linux epoll-based I/O reactor: `Cajeta.epollCreate`, `Cajeta.epollAdd`, `Cajeta.epollWait`, `Cajeta.eventfdCreate`, `Cajeta.eventfdSignal`, `Cajeta.eventfdConsume`, `Cajeta.fdClose` intrinsics. Carrier hosts the reactor thread; fibers park on fd-readiness events.
+- **R9.5** — `cajeta.threading.Tasks.runBlocking<R>(() -> R body) -> R`: sync→async bridge. Spawns `body` on the carrier pool, blocks the calling OS thread on the body's done flag, returns its result. The runtime's `__cajeta_task_wait` already condvar-waits when there is no current fiber, so a plain non-async `main` can drive async work without itself being `async`. v1 covers primitive / value-return R via the spawn-of-lambda ABI; heap-class return callers keep using the explicit `await spawn body()` form.
 
 ## Language surface for async-driving stdlib ✅ complete
 
