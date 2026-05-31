@@ -20,9 +20,11 @@
 
 #include <functional>
 #include <istream>
+#include <map>
 #include <memory>
 #include <ostream>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "cajeta/dap/Json.h"
@@ -69,9 +71,19 @@ namespace cajeta::dap {
         // terminates; emit the matching `stopped` / `terminated` event.
         void runToStopOrExit(const Emit& emit);
 
+        // Whether the program should actually park at this safepoint: true if
+        // the matching breakpoint has no condition, or its condition holds
+        // against the stopped frame's locals (CP6f). A false condition is
+        // silently resumed in runToStopOrExit.
+        bool shouldStopAt(const cajeta::dbg::StopEvent& stop,
+                          const std::vector<cajeta::dbg::DbgFrameInfo>& frames) const;
+
         int seq_ = 1;                          // outbound seq counter
         cajeta::jit::JitRunOptions launchOpts_;
         std::vector<cajeta::jit::Breakpoint> breakpoints_;
+        // CP6f: per-breakpoint condition keyed by (file basename, line). Empty
+        // or absent entry means an unconditional breakpoint.
+        std::map<std::pair<std::string, int>, std::string> conditions_;
         std::unique_ptr<cajeta::jit::JitDebugSession> session_;
         cajeta::dbg::StopEvent currentStop_;   // last stop (for stackTrace)
         // CP5: frames + locals snapshotted from the dbg chain at the last stop

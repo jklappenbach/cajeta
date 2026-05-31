@@ -17,7 +17,9 @@
 using cajeta::dbg::walkFrames;
 using cajeta::dbg::formatValue;
 using cajeta::dbg::writeValue;
+using cajeta::dbg::evaluateCondition;
 using cajeta::dbg::DbgFrameInfo;
+using cajeta::dbg::DbgVar;
 
 // Native runtime frame-chain builders + the head selector (native copy).
 extern "C" {
@@ -85,6 +87,66 @@ TEST(DebugVarsWrite, RejectsObjectAndGarbage) {
 
     int32_t i = 0;
     EXPECT_FALSE(writeValue("int32", &i, "not-a-number", &err));
+}
+
+// ---- evaluateCondition (CP6f) ----
+
+namespace {
+    // Build a locals vector pointing at caller-owned storage.
+    DbgVar local(const char* name, const char* type, void* addr) {
+        DbgVar v; v.name = name; v.type = type; v.addr = addr; return v;
+    }
+}
+
+TEST(EvaluateCondition, IntegerComparisons) {
+    int32_t a = 6;
+    std::vector<DbgVar> locals{local("a", "int32", &a)};
+    std::string err;
+    EXPECT_TRUE(evaluateCondition("a == 6", locals, &err)) << err;
+    EXPECT_TRUE(err.empty());
+    EXPECT_FALSE(evaluateCondition("a == 7", locals, &err));
+    EXPECT_TRUE(evaluateCondition("a != 7", locals, &err));
+    EXPECT_TRUE(evaluateCondition("a < 10", locals, &err));
+    EXPECT_TRUE(evaluateCondition("a <= 6", locals, &err));
+    EXPECT_FALSE(evaluateCondition("a > 6", locals, &err));
+    EXPECT_TRUE(evaluateCondition("a >= 6", locals, &err));
+}
+
+TEST(EvaluateCondition, WhitespaceAndNegativesAndUnsigned) {
+    int32_t n = -3;
+    uint32_t u = 5;
+    std::vector<DbgVar> locals{local("n", "int32", &n), local("u", "uint32", &u)};
+    std::string err;
+    EXPECT_TRUE(evaluateCondition("n<0", locals, &err)) << err;       // no spaces
+    EXPECT_TRUE(evaluateCondition("  n   ==   -3 ", locals, &err));   // padded
+    EXPECT_TRUE(evaluateCondition("u >= 5", locals, &err));
+}
+
+TEST(EvaluateCondition, BooleanAndFloat) {
+    uint8_t flag = 1;
+    double d = 2.5;
+    std::vector<DbgVar> locals{local("flag", "boolean", &flag),
+                               local("d", "float64", &d)};
+    std::string err;
+    EXPECT_TRUE(evaluateCondition("flag == true", locals, &err)) << err;
+    EXPECT_FALSE(evaluateCondition("flag == false", locals, &err));
+    EXPECT_TRUE(evaluateCondition("d > 2.0", locals, &err));
+    EXPECT_FALSE(evaluateCondition("d < 2.0", locals, &err));
+}
+
+TEST(EvaluateCondition, MalformedStopsWithError) {
+    int32_t a = 6;
+    std::vector<DbgVar> locals{local("a", "int32", &a)};
+    std::string err;
+    // No operator -> stop (true) + error.
+    EXPECT_TRUE(evaluateCondition("a", locals, &err));
+    EXPECT_FALSE(err.empty());
+    // Unknown local -> stop + error.
+    EXPECT_TRUE(evaluateCondition("z == 1", locals, &err));
+    EXPECT_FALSE(err.empty());
+    // Unparseable literal -> stop + error.
+    EXPECT_TRUE(evaluateCondition("a == xyz", locals, &err));
+    EXPECT_FALSE(err.empty());
 }
 
 // ---- runtime chain via native builders ----

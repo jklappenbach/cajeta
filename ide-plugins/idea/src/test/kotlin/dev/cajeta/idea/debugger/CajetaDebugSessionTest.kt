@@ -169,6 +169,30 @@ class CajetaDebugSessionTest {
     }
 
     @Test
+    fun setBreakpointsSendsConditionWhenPresent() {
+        connect()
+        runServer()
+        session.start()
+
+        session.setBreakpoints(
+            "Calc.cajeta",
+            listOf(
+                CajetaDebugSession.LineBreakpoint("Calc.cajeta", 4),               // unconditional
+                CajetaDebugSession.LineBreakpoint("Calc.cajeta", 6, "a == 6"),     // conditional
+            ),
+        ).get(5, TimeUnit.SECONDS)
+
+        val bps = lastRequestByCommand["setBreakpoints"]!!.at("arguments").at("breakpoints")
+        assertEquals(2, bps.size)
+        // Unconditional line carries no "condition" key.
+        assertEquals(4, bps[0].at("line").asInt())
+        assertEquals(null, bps[0].opt("condition"))
+        // Conditional line carries the expression.
+        assertEquals(6, bps[1].at("line").asInt())
+        assertEquals("a == 6", bps[1].at("condition").asString())
+    }
+
+    @Test
     fun parseStackFramesDecodesFramesFromBody() {
         val response = Json.obj(
             "body" to Json.obj(

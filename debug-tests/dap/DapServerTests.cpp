@@ -264,6 +264,70 @@ TEST(DapServerSession, ScopesVariablesAndSetVariable) {
     }
 }
 
+// CP6f: a conditional breakpoint whose condition holds stops; one whose
+// condition is false runs straight through to termination.
+TEST(DapServerSession, ConditionalBreakpointStopsOnlyWhenConditionHolds) {
+    // a == 6 is true at line 6 -> the server must stop there.
+    {
+        TempProgram p("demo", "Calc.cajeta", kProg);
+        DapServer srv;
+        std::vector<Json> log;
+        drive(srv, req(1, "initialize", Json::object()), log);
+        Json launchArgs = Json::object();
+        launchArgs["entry-method"] = "demo.Calc.main";
+        launchArgs["sourceRoot"] = p.sourceRoot();
+        drive(srv, req(2, "launch", launchArgs), log);
+
+        Json bpArgs = Json::object();
+        Json src = Json::object(); src["path"] = "Calc.cajeta";
+        bpArgs["source"] = src;
+        Json bps = Json::array();
+        Json bp = Json::object(); bp["line"] = 6; bp["condition"] = "a == 6";
+        bps.push_back(bp);
+        bpArgs["breakpoints"] = bps;
+        drive(srv, req(3, "setBreakpoints", bpArgs), log);
+
+        drive(srv, req(4, "configurationDone", Json::object()), log);
+        EXPECT_EQ(countEvent(log, "stopped"), 1);
+        EXPECT_EQ(countEvent(log, "terminated"), 0);
+        // Resume to completion so the parked carrier unblocks before the
+        // DapServer is destroyed (its dtor join()s the carrier thread; leaving
+        // it parked would deadlock).
+        drive(srv, req(5, "continue", Json::object()), log);
+        EXPECT_EQ(countEvent(log, "terminated"), 1);
+    }
+    // a == 999 is never true -> no stop, runs to termination (exit 42).
+    {
+        TempProgram p("demo", "Calc.cajeta", kProg);
+        DapServer srv;
+        std::vector<Json> log;
+        drive(srv, req(1, "initialize", Json::object()), log);
+        Json launchArgs = Json::object();
+        launchArgs["entry-method"] = "demo.Calc.main";
+        launchArgs["sourceRoot"] = p.sourceRoot();
+        drive(srv, req(2, "launch", launchArgs), log);
+
+        Json bpArgs = Json::object();
+        Json src = Json::object(); src["path"] = "Calc.cajeta";
+        bpArgs["source"] = src;
+        Json bps = Json::array();
+        Json bp = Json::object(); bp["line"] = 6; bp["condition"] = "a == 999";
+        bps.push_back(bp);
+        bpArgs["breakpoints"] = bps;
+        drive(srv, req(3, "setBreakpoints", bpArgs), log);
+
+        drive(srv, req(4, "configurationDone", Json::object()), log);
+        EXPECT_EQ(countEvent(log, "stopped"), 0);
+        EXPECT_EQ(countEvent(log, "terminated"), 1);
+        for (const auto& m : log) {
+            if (m.at("type").asString() == "event" &&
+                m.at("event").asString() == "exited") {
+                EXPECT_EQ(m.at("body").at("exitCode").asInt(), 42);
+            }
+        }
+    }
+}
+
 TEST(DapServerSession, NoBreakpointsRunsToTermination) {
     TempProgram p("demo", "Calc.cajeta", kProg);
     DapServer srv;

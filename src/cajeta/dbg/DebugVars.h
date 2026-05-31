@@ -43,4 +43,21 @@ namespace cajeta::dbg {
     bool writeValue(const std::string& type, void* addr,
                     const std::string& text, std::string* err);
 
+    // Evaluate a constrained breakpoint condition against a frame's locals
+    // (debugger CP6f). The supported grammar is deliberately tiny — there is no
+    // expression engine in the tree — and covers the common case:
+    //
+    //     <localName> <op> <literal>      op ∈ { ==, !=, <, <=, >, >= }
+    //
+    // The named local is read by its primitive type; integer/char/boolean are
+    // compared in the integer domain (boolean also accepts true/false literals),
+    // float32/64 in the double domain. Returns whether the breakpoint should
+    // STOP: true when the condition holds. On any error (no operator, unknown
+    // local, non-primitive, unparseable literal) it fills *err and returns true
+    // — a malformed condition stops so the user notices, matching common IDE
+    // behavior. On success *err is cleared.
+    bool evaluateCondition(const std::string& expr,
+                           const std::vector<DbgVar>& locals,
+                           std::string* err);
+
 } // namespace cajeta::dbg

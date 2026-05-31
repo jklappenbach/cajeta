@@ -71,11 +71,19 @@ void DapServer::runToStopOrExit(const Emit& emit) {
     while (true) {
         StopEvent ev;
         if (session_->controller().waitForStop(ev, milliseconds(50))) {
-            currentStop_ = ev;
-            haveStop_ = true;
             // CP5: snapshot the frame chain + locals while the carrier is
             // parked (the chain is stable until we resume).
-            frames_ = cajeta::dbg::walkFrames(ev.frameTop);
+            auto frames = cajeta::dbg::walkFrames(ev.frameTop);
+            // CP6f: a conditional breakpoint whose condition is false does not
+            // stop — resume the carrier and keep running. The snapshot above is
+            // exactly what the condition needs (this frame's locals).
+            if (!shouldStopAt(ev, frames)) {
+                session_->controller().resume();
+                continue;
+            }
+            currentStop_ = ev;
+            haveStop_ = true;
+            frames_ = std::move(frames);
             Json body = Json::object();
             body["reason"] = "breakpoint";
             body["threadId"] = 1;
@@ -95,6 +103,25 @@ void DapServer::runToStopOrExit(const Emit& emit) {
             return;
         }
     }
+}
+
+bool DapServer::shouldStopAt(const StopEvent& stop,
+                             const std::vector<cajeta::dbg::DbgFrameInfo>& frames)
+                             const {
+    if (conditions_.empty()) return true;
+    // Resolve the stopped loc to (file basename, line) and look up a condition.
+    const auto& table = globalDbgLocTable();
+    if (stop.locId < 0 || static_cast<size_t>(stop.locId) >= table.size())
+        return true;
+    const auto& loc = table.at(stop.locId);
+    std::string base = std::filesystem::path(loc.file).filename().string();
+    auto it = conditions_.find({base, loc.line});
+    if (it == conditions_.end() || it->second.empty()) return true;
+    // Evaluate against the innermost frame's locals (where the bp sits).
+    if (frames.empty()) return true;
+    std::string err;
+    return cajeta::dbg::evaluateCondition(it->second, frames.front().locals,
+                                          &err);
 }
 
 bool DapServer::handle(const Json& request, const Emit& emit) {
@@ -139,6 +166,11 @@ bool DapServer::handle(const Json& request, const Emit& emit) {
         for (size_t i = 0; i < bps.size(); ++i) {
             int line = bps[i].at("line").asInt();
             breakpoints_.push_back(cajeta::jit::Breakpoint{base, line});
+            // CP6f: an optional condition (whole-file replace semantics — a
+            // bp without a condition clears any prior one for that loc).
+            std::string cond = bps[i].at("condition").asString();
+            if (!cond.empty()) conditions_[{base, line}] = cond;
+            else conditions_.erase({base, line});
             Json b = Json::object();
             b["verified"] = true;
             b["line"] = line;
