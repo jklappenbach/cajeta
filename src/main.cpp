@@ -56,6 +56,8 @@ void printUsage(const char* progname) {
               << "  --source-tags=on|off                 Carry alloc/drop source positions on chain entries.\n"
               << "  --poison-free=on|off                 Sentinel-fill freed bytes.\n"
               << "  --live-set=strict|bounded|off        Live-allocation set discipline.\n"
+              << "  --opt=O0|O1|O2|O3                    IR optimization for --emit=obj/exe (default O0;\n"
+              << "                                       --release/--fast imply O2/O3).\n"
               << "  --drop-chain-validate=on|off         Per-push/pop integrity checks.\n"
               << "  --ub-traps=on|off                    Trap before would-be UB.\n"
               << "  --use-after-move-rt=on|off           Runtime backup for the static use-after-move check.\n"
@@ -224,6 +226,13 @@ int main(int argc, const char* argv[]) {
             if (!setEnumFlag<LiveSet>("live-set", value,
                     { {"strict", LiveSet::Strict}, {"bounded", LiveSet::Bounded}, {"off", LiveSet::Off} },
                     compiler.getMutableFlags().liveSet)) {
+                printUsage(argv[0]); return 1;
+            }
+        } else if (match(arg, "opt", value)) {
+            if (!setEnumFlag<OptLevel>("opt", value,
+                    { {"O0", OptLevel::O0}, {"O1", OptLevel::O1},
+                      {"O2", OptLevel::O2}, {"O3", OptLevel::O3} },
+                    compiler.getMutableFlags().opt)) {
                 printUsage(argv[0]); return 1;
             }
         } else if (match(arg, "diag-verbosity", value)) {

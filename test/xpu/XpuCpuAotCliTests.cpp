@@ -142,3 +142,47 @@ TEST(XpuCpuAotCliTests, cpuBackendEmitsObjectArtifact) {
 
     fs::remove_all(src.parent_path());
 }
+
+// Inc 5B: the CPU kernel is wrapped in a per-block work-item loop and
+// LoopVectorize turns it into SIMD — always, independent of --opt. A
+// divergence-free kernel (no `if (i<n)` guard → no masked store) vectorizes on
+// any x86 host (SSE2 baseline), not just AVX, so the assertion is host-robust.
+TEST(XpuCpuAotCliTests, cpuBackendVectorizesBlockWrapper) {
+    static std::mt19937_64 rng(std::random_device{}());
+    auto base = fs::temp_directory_path()
+              / ("cajeta_xpu_cpuvec_" + std::to_string(rng()));
+    auto srcDir = base / "src" / "test";
+    auto build = base / "build";
+    fs::create_directories(srcDir);
+    fs::create_directories(build);
+    std::ofstream(srcDir / "M.cajeta") <<
+        "package test;\n"
+        "import cajeta.xpu.core.Buffer;\n"
+        "import cajeta.xpu.core.Thread;\n"
+        "public class M {\n"
+        "    @Kernel\n"
+        "    public static void scale(Buffer<float32> y, Buffer<float32> x,\n"
+        "                             float32 a) {\n"
+        "        uint32 i = Thread.globalIdX();\n"
+        "        y[i] = a * x[i];\n"   // divergence-free → vectorizes everywhere
+        "    }\n"
+        "}\n";
+
+    Compiler compiler;
+    compiler.setEmitMode(EmitMode::IR);
+    compiler.setXpuBackend(XpuBackend::Cpu);
+    compiler.compile("test.M.scale", (base / "src").string(), build.string());
+
+    auto llPath = findArtifact(build, ".ll");
+    ASSERT_FALSE(llPath.empty()) << "no .ll written under " << build;
+    std::string ir = readFile(llPath);
+    // The per-block wrapper exists (the Inc 5B launch ABI).
+    EXPECT_NE(ir.find("__cajeta_xpu_cpu_block.scale"), std::string::npos) << ir;
+    // And its work-item loop is vectorized: a vectorized loop body + SIMD ops.
+    bool vectorized = ir.find("vector.body") != std::string::npos
+                   || ir.find("x float>") != std::string::npos;
+    EXPECT_TRUE(vectorized)
+        << "expected SIMD vector ops in the per-block wrapper\n" << ir;
+
+    fs::remove_all(base);
+}

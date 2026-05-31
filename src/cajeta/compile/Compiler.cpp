@@ -6,6 +6,7 @@
 #include "CajetaArchive.h"
 #include "CajetaModule.h"
 #include "CajetaLlvmVisitor.h"
+#include "Optimizer.h"
 #include "StdlibEmbedded.h"
 #include "llvm/Bitcode/BitcodeReader.h"
 #include "llvm/Bitcode/BitcodeWriter.h"
@@ -813,6 +814,11 @@ namespace cajeta {
                          << " for writing: " << ec.message() << std::endl;
                     return;
                 }
+
+                // IR optimization (--opt). No-op at O0 (the historical default);
+                // O2/O3 run the full per-module pipeline (incl. LoopVectorize +
+                // SLP) over this user module before codegen.
+                optimizeModule(*module->getLlvmModule(), targetMachine, flags.opt);
 
                 llvm::legacy::PassManager pm;
                 auto fileType = llvm::CodeGenFileType::ObjectFile;

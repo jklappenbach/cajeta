@@ -4896,18 +4896,17 @@ struct cajeta_cpu_grid_slice {
     int32_t cxEnd;
 };
 
-// Run a contiguous slice of blocks. Each worker owns its coord[9] (no sharing),
-// so the only cross-thread state is the buffers the kernel writes — and a
+// Run a contiguous slice of blocks. The launcher thunk is the per-BLOCK wrapper
+// (Inc 5B): it loops the block's work-items internally (vectorized), so we call
+// it ONCE PER BLOCK, setting ctaid.x + ntid.x. coord = [tid.xyz (unused here),
+// ctaid.xyz, ntid.xyz]. Each worker owns its coord[9] (no sharing); a
 // data-parallel, barrier-free CPU kernel writes disjoint elements, so the
 // fan-out is race-free for any kernel that is correct on a GPU.
 static void cajeta_xpu_cpu_run_slice(const struct cajeta_cpu_grid_slice* s) {
     int32_t coord[9] = {0, 0, 0, 0, 0, 0, s->blockX, 1, 1};   // ntid=(blockX,1,1)
     for (int32_t cx = s->cxStart; cx < s->cxEnd; ++cx) {
         coord[3] = cx;                                        // ctaid.x
-        for (int32_t tx = 0; tx < s->blockX; ++tx) {
-            coord[0] = tx;                                    // tid.x
-            s->fn(s->argv, coord);
-        }
+        s->fn(s->argv, coord);   // per-block; the wrapper loops work-items
     }
 }
 

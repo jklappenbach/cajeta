@@ -21,30 +21,21 @@ namespace cpu {
         if (!fnptr) return false;   // no kernel registered under `name`
         auto fn = reinterpret_cast<CpuLaunchFn>(fnptr);
 
-        // Block dim (ntid) is constant across the launch; coordinate layout is
-        // [tid.xyz, ctaid.xyz, ntid.xyz]. We iterate blocks × work-items and call
-        // the thunk per work-item, varying only tid + ctaid.
-        std::int32_t coord[9];
-        coord[6] = static_cast<std::int32_t>(blockX);   // ntid.x
-        coord[7] = static_cast<std::int32_t>(blockY);   // ntid.y
-        coord[8] = static_cast<std::int32_t>(blockZ);   // ntid.z
-
+        // The launcher thunk is the per-BLOCK wrapper (Inc 5B) — it loops the
+        // block's work-items internally (vectorized). So we call it once per
+        // BLOCK, setting only ctaid + ntid; tid is the wrapper's loop var.
+        // coord layout: [tid.xyz (unused here), ctaid.xyz, ntid.xyz].
+        std::int32_t coord[9] = {0, 0, 0, 0, 0, 0,
+                                 static_cast<std::int32_t>(blockX),
+                                 static_cast<std::int32_t>(blockY),
+                                 static_cast<std::int32_t>(blockZ)};
         for (unsigned cz = 0; cz < gridZ; ++cz) {
             coord[5] = static_cast<std::int32_t>(cz);   // ctaid.z
             for (unsigned cy = 0; cy < gridY; ++cy) {
                 coord[4] = static_cast<std::int32_t>(cy);   // ctaid.y
                 for (unsigned cx = 0; cx < gridX; ++cx) {
                     coord[3] = static_cast<std::int32_t>(cx);   // ctaid.x
-                    for (unsigned tz = 0; tz < blockZ; ++tz) {
-                        coord[2] = static_cast<std::int32_t>(tz);   // tid.z
-                        for (unsigned ty = 0; ty < blockY; ++ty) {
-                            coord[1] = static_cast<std::int32_t>(ty); // tid.y
-                            for (unsigned tx = 0; tx < blockX; ++tx) {
-                                coord[0] = static_cast<std::int32_t>(tx); // tid.x
-                                fn(argv, coord);
-                            }
-                        }
-                    }
+                    fn(argv, coord);   // per-block; wrapper loops work-items
                 }
             }
         }
