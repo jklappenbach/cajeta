@@ -15,6 +15,7 @@
 #include "gtest/gtest.h"
 
 #include "cajeta/xpu/amd/AmdgpuBackend.h"
+#include "XpuDeviceTestUtil.h"
 
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/Intrinsics.h"
@@ -93,12 +94,12 @@ TEST(XpuAmdgpuEmitTests, emitsIsaForHandBuiltKernel) {
 }
 
 // ld.lld links the relocatable AMDGCN object into an hsaco code object —
-// proving LLVM 22's AMDGPU object is accepted by lld for gfx1151. No GPU
-// needed (lld is a host tool); skipped if ld.lld isn't installed.
+// proving LLVM 22's AMDGPU object is accepted by lld for gfx1151. Gated on an
+// actual ROCm/HIP device: the link needs ROCm's lld (a generic host ld.lld on
+// PATH cannot link an amdgpu object — it errors "incompatible with
+// elf64-x86-64"), so hardware presence is the reliable skip condition.
 TEST(XpuAmdgpuEmitTests, assemblesProbeIsaToHsaco) {
-    if (findLld().empty()) {
-        GTEST_SKIP() << "ld.lld not found; skipping hsaco link";
-    }
+    CAJETA_SKIP_IF_NO_HIP();
     auto tm = createAmdgpuTargetMachine("gfx1151");
     ASSERT_NE(tm, nullptr);
 

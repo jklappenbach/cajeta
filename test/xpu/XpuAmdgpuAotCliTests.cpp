@@ -13,6 +13,7 @@
 
 #include "cajeta/compile/Compiler.h"
 #include "cajeta/xpu/amd/AmdgpuBackend.h"
+#include "XpuDeviceTestUtil.h"
 
 #include <filesystem>
 #include <fstream>
@@ -108,12 +109,12 @@ TEST(XpuAmdgpuAotCliTests, defaultBackendEmitsNoIsaArtifact) {
     fs::remove_all(src.parent_path());
 }
 
-// --xpu-emit=hsaco links through ld.lld. Gated on lld being present so the
-// suite stays green on boxes without ROCm.
+// --xpu-emit=hsaco links the AMDGCN object through ROCm's ld.lld. Gated on an
+// actual ROCm/HIP device: a generic host ld.lld merely being on PATH does NOT
+// mean an AMDGCN link will work (it fails "incompatible with elf64-x86-64"),
+// so hardware presence is the reliable skip condition on non-AMD boxes.
 TEST(XpuAmdgpuAotCliTests, amdgpuBackendEmitsHsacoWhenLldPresent) {
-    if (cajeta::xpu::amd::findLld().empty()) {
-        GTEST_SKIP() << "ld.lld not found; skipping hsaco link";
-    }
+    CAJETA_SKIP_IF_NO_HIP();
     auto [src, build] = makeProject();
 
     Compiler compiler;

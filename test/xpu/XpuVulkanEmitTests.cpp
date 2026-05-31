@@ -106,7 +106,10 @@ std::optional<bool> validateSpirv(const std::vector<uint8_t>& spirv) {
     }
     llvm::StringRef env = "--target-env";
     llvm::StringRef ver = "vulkan1.3";
-    llvm::StringRef file = path.c_str();
+    // path::c_str() is const wchar_t* on Windows; go through string() so
+    // the StringRef has a char buffer to bind to (held until after the wait).
+    std::string fileStr = path.string();
+    llvm::StringRef file = fileStr;
     llvm::SmallVector<llvm::StringRef, 4> args = {*tool, env, ver, file};
     int rc = llvm::sys::ExecuteAndWait(*tool, args);
     std::filesystem::remove(path);

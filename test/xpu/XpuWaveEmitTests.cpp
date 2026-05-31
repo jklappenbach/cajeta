@@ -166,7 +166,10 @@ TEST(XpuWaveEmitTests, spirvLowersSubgroupOpsAndValidates) {
     { std::ofstream o(path, std::ios::binary);
       o.write(reinterpret_cast<const char*>(spirv.data()),
               (std::streamsize) spirv.size()); }
-    llvm::StringRef env = "--target-env", ver = "vulkan1.3", file = path.c_str();
+    // path::c_str() is const wchar_t* on Windows; go through string() so
+    // the StringRef has a char buffer to bind to (held until after the wait).
+    std::string fileStr = path.string();
+    llvm::StringRef env = "--target-env", ver = "vulkan1.3", file = fileStr;
     llvm::SmallVector<llvm::StringRef, 4> args = {*tool, env, ver, file};
     int rc = llvm::sys::ExecuteAndWait(*tool, args);
     std::filesystem::remove(path);
