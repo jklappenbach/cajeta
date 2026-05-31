@@ -172,6 +172,22 @@ const char* kSaxpyGuardedSource =
     "    }\n"
     "}\n";
 
+// A uniquely-named kernel so this test's registry entry is created fresh by THIS
+// test (not aliased to a "saxpy" some other test already registered+owns) — that
+// is what makes the dangling-key regression below reproducible in isolation.
+const char* kSaxpyTeardownSource =
+    "package test;\n"
+    "import cajeta.xpu.core.Buffer;\n"
+    "import cajeta.xpu.core.Thread;\n"
+    "public class M {\n"
+    "    @Kernel\n"
+    "    public static void saxpy_teardown_probe(Buffer<float32> y,\n"
+    "                                             Buffer<float32> x, float32 a) {\n"
+    "        uint32 i = Thread.globalIdX();\n"
+    "        y[i] = a * x[i] + y[i];\n"
+    "    }\n"
+    "}\n";
+
 } // namespace
 
 // CpuDriver resolves the kernel by name and runs it over a grid; globalId.x =
@@ -243,6 +259,27 @@ TEST(XpuCpuDriverTests, scalarUnpackingAcrossParamShapes) {
 // The precise "no such kernel" contract: launching an unregistered name fails
 // rather than crashing.
 TEST(XpuCpuDriverTests, lookupMissOnUnknownKernel) {
+    CpuDriver d;
+    void* argv[] = {};
+    EXPECT_FALSE(d.launch("definitely_not_a_registered_kernel", argv,
+                          /*gridX=*/1, /*blockX=*/1));
+}
+
+// Regression: the registry must OWN its keys. A registration ctor runs from JIT'd
+// code whose module memory — including the `xpu.cpu.kname.<name>` string the ctor
+// passes in — is freed when the JIT engine is torn down. If the registry kept the
+// raw caller pointer, a later lookup's strcmp() would dereference that freed key
+// and crash. Here we register a uniquely-named kernel, destroy its JIT, then do a
+// lookup: it must be a clean miss, not a SIGSEGV. (Previously crashed.)
+TEST(XpuCpuDriverTests, registryKeySurvivesCallerTeardown) {
+    Compiler compiler;
+    std::string failure;
+    {
+        auto jit = registerKernel(compiler, kSaxpyTeardownSource,
+                                  "saxpy_teardown_probe", failure);
+        ASSERT_NE(jit, nullptr) << failure;
+    }   // JIT destroyed here — the memory holding the kname key is freed.
+
     CpuDriver d;
     void* argv[] = {};
     EXPECT_FALSE(d.launch("definitely_not_a_registered_kernel", argv,
