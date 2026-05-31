@@ -15,7 +15,7 @@
 #include "cajeta/error/Exception.h"
 #include "cajeta/method/Method.h"
 #include "cajeta/xpu/core/XpuAttributes.h"
-#include "cajeta/xpu/nvidia/NvptxRegistration.h"
+#include "cajeta/xpu/XpuTarget.h"
 
 #include "JitWinSymbols.h"
 #include "JitErrorShim.h"
@@ -294,8 +294,26 @@ std::unique_ptr<CajetaJit> CajetaJit::compile(
                 }
             }
         }
-        cajeta::xpu::nvidia::emitKernelRegistration(
-            kernels, *primary->getLlvmModule());
+        if (!kernels.empty()) {
+            // Default to NVIDIA (the legacy JIT host-launch path); opts can
+            // select CPU to drive the GPU-free fall-to-CPU dispatcher, or any
+            // bundle. The manifest tells the runtime dispatcher which backends
+            // were bundled (cajeta-cpu.md Increment 4).
+            std::vector<cajeta::xpu::Backend> backends = opts.xpuBackends;
+            if (backends.empty()) {
+                backends.push_back(cajeta::xpu::Backend::Nvptx);
+            }
+            cajeta::xpu::emitBackendManifest(backends, *primary->getLlvmModule());
+            for (cajeta::xpu::Backend be : backends) {
+                std::string arch =
+                    be == cajeta::xpu::Backend::Nvptx  ? "sm_89"
+                  : be == cajeta::xpu::Backend::Amdgpu ? "gfx1151"
+                  : be == cajeta::xpu::Backend::Spirv  ? "vulkan1.3"
+                  :                                      "";
+                cajeta::xpu::emitKernelRegistration(
+                    be, kernels, *primary->getLlvmModule(), arch);
+            }
+        }
     }
 
     llvm::Module* llvmModule = primary->getLlvmModule();

@@ -126,3 +126,40 @@ TEST(XpuLaunchBorrowTests, freeWithoutLaunchAccepted) {
     compileForInspection(compiler, src, "test.M");
     EXPECT_EQ(codegenErrorId(compiler), "");
 }
+
+// Letting a launch-borrowed OWNED buffer leave scope before syncing is XPU-K02
+// — the implicit-drop counterpart to freeBeforeSyncRejected. With Buffer<T>'s
+// RAII destructor, the scope-exit drop would free device memory an in-flight
+// kernel still references.
+TEST(XpuLaunchBorrowTests, dropBeforeSyncRejected) {
+    std::string src = std::string(kHeader) +
+        "public class M {\n"
+        "    @Kernel public static void k(Buffer<float32> y, uint32 n) { }\n"
+        "    public static void run(Stream s, uint32 n) {\n"
+        "        Buffer<float32> y = heap Buffer<float32>(n);\n"
+        "        k.launch(s, grid: [1], block: [1])(y, n);\n"
+        "        // no sync — y's drop at scope exit would use-after-free\n"
+        "    }\n"
+        "}\n";
+    Compiler compiler;
+    compileForInspection(compiler, src, "test.M");
+    EXPECT_EQ(codegenErrorId(compiler), "XPU-K02");
+}
+
+// A sync before the owned buffer leaves scope releases the borrow, so the RAII
+// drop is fine — no explicit free() needed.
+TEST(XpuLaunchBorrowTests, dropAfterSyncAccepted) {
+    std::string src = std::string(kHeader) +
+        "public class M {\n"
+        "    @Kernel public static void k(Buffer<float32> y, uint32 n) { }\n"
+        "    public static void run(Stream s, uint32 n) {\n"
+        "        Buffer<float32> y = heap Buffer<float32>(n);\n"
+        "        k.launch(s, grid: [1], block: [1])(y, n);\n"
+        "        s.sync();\n"
+        "        // y dropped here by RAII — OK, borrow released at sync\n"
+        "    }\n"
+        "}\n";
+    Compiler compiler;
+    compileForInspection(compiler, src, "test.M");
+    EXPECT_EQ(codegenErrorId(compiler), "");
+}

@@ -36,4 +36,16 @@ public final class Wave {
      */
     @Native("__cajeta_xpu_wave_ballot_sync")
     public static uint64 ballotSync(boolean predicate);
+
+    /**
+     * Wave-wide reduction: the sum of `value` across all active lanes
+     * of the wave. Every lane receives the same total.
+     *
+     * Maps to a single hardware wave-reduce intrinsic on every backend:
+     *   NVPTX:  llvm.nvvm.redux.sync.add  (requires sm_80+ / Ampere)
+     *   AMDGPU: llvm.amdgcn.wave.reduce.add
+     *   SPIR-V: llvm.spv.wave.reduce.sum  (→ OpGroupNonUniformIAdd Reduce)
+     */
+    @Native("__cajeta_xpu_wave_reduce_sum_u32")
+    public static uint32 reduceSum(uint32 value);
 }

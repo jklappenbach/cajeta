@@ -89,6 +89,7 @@ PRIVATE:            'private';
 PROTECTED:          'protected';
 PUBLIC:             'public';
 RETURN:             'return';
+SHARED:             'shared';
 STACK:              'stack';
 STATIC:             'static';
 STRICTFP:           'strictfp';
