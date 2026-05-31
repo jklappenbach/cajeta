@@ -21,6 +21,8 @@
 #include "cajeta/compile/Compiler.h"
 #include "cajeta/xpu/XpuTarget.h"
 
+#include <cctype>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <random>
@@ -277,4 +279,158 @@ TEST(XpuCpuBarrierExecTests, divergentBarrierFallsBackCleanly) {
     ASSERT_FALSE(ir.empty());
     EXPECT_EQ(ir.find("__cajeta_xpu_cpu_block.divergent"), std::string::npos)
         << "divergent barrier should fall back, not fission\n";
+}
+
+// ----------------------------------------------------------------------------
+// Structural (emit-level) assertions on the fission output.
+//
+// The execution tests above prove the wrapper *behaves* right; these pin the
+// *shape* the plan promised: one counted work-item loop per region, the uniform
+// loop kept as a single outer scalar scaffold (work-item loops nested inside),
+// no addrspace(3) shared global left behind (replaced by a per-block stack
+// buffer), and per-work-item context arrays for values that cross a barrier.
+//
+// Region/loop *counts* are only stable BEFORE LoopVectorize — it rotates and
+// folds the per-region preheaders (region A's `wi.ph` merges into `entry`),
+// so the `CAJETA_XPU_CPU_NO_VECTORIZE` seam captures the wrapper pre-vectorize
+// for the count/nesting checks. A final test confirms the SHIPPED (vectorized)
+// IR still carries the invariants that survive vectorization.
+// ----------------------------------------------------------------------------
+
+namespace {
+
+struct ScopedEnv {
+    std::string key;
+    ScopedEnv(const char* k, const char* v) : key(k) { ::setenv(k, v, 1); }
+    ~ScopedEnv() { ::unsetenv(key.c_str()); }
+};
+
+// The body text of `define ... @<name>(...) { ... }`, or "" if absent.
+std::string functionBody(const std::string& ir, const std::string& name) {
+    auto d = ir.find("define ");
+    while (d != std::string::npos) {
+        auto open = ir.find('(', d);
+        auto nm = ir.rfind('@' + name + '(', open);
+        if (nm != std::string::npos && nm > d && nm < open) {
+            auto brace = ir.find('{', open);
+            auto end = ir.find("\n}", brace);
+            if (brace != std::string::npos && end != std::string::npos)
+                return ir.substr(brace, end - brace + 2);
+        }
+        d = ir.find("\ndefine ", d + 1);
+        if (d != std::string::npos) d += 1;
+    }
+    return "";
+}
+
+// Count basic-block label definitions whose name is `base` + an optional numeric
+// uniquifying suffix (LLVM appends digits on name collisions): wi.ph, wi.ph2, …
+int countLabels(const std::string& body, const std::string& base) {
+    int n = 0;
+    std::istringstream ss(body);
+    std::string line;
+    while (std::getline(ss, line)) {
+        auto c = line.find(':');
+        if (c == std::string::npos) continue;
+        std::string lbl = line.substr(0, c);
+        if (lbl.rfind(base, 0) != 0) continue;
+        bool ok = true;
+        for (char ch : lbl.substr(base.size()))
+            if (!std::isdigit((unsigned char) ch)) { ok = false; break; }
+        if (ok) ++n;
+    }
+    return n;
+}
+
+int countSubstr(const std::string& hay, const std::string& needle) {
+    int n = 0;
+    for (auto p = hay.find(needle); p != std::string::npos;
+         p = hay.find(needle, p + needle.size()))
+        ++n;
+    return n;
+}
+
+// True iff some `wi.ph*` preheader is entered from the uniform loop header
+// (`preds = ... %for.head ...`) — i.e. a work-item loop nests inside it.
+bool hasWorkItemLoopUnderUniformLoop(const std::string& body) {
+    std::istringstream ss(body);
+    std::string line;
+    while (std::getline(ss, line))
+        if (line.rfind("wi.ph", 0) == 0
+            && line.find("%for.head") != std::string::npos)
+            return true;
+    return false;
+}
+
+} // namespace
+
+// One barrier ⇒ exactly two straight-line regions ⇒ two work-item loops, each
+// looping the whole block. No source loop (`for.head`), no shared global; `t`
+// crosses the barrier so it gets a per-work-item context array; one ret.
+TEST(XpuCpuBarrierEmitTests, twoStageWrapperHasTwoWorkItemLoops) {
+    ScopedEnv noVec("CAJETA_XPU_CPU_NO_VECTORIZE", "1");
+    std::string ir = compileToIr(kTwoStageSource, "test.M.twostage");
+    ASSERT_FALSE(ir.empty());
+    std::string body = functionBody(ir, "__cajeta_xpu_cpu_block.twostage");
+    ASSERT_FALSE(body.empty()) << "no fission wrapper emitted";
+
+    // Two regions, each a well-formed counted work-item loop (ph/head/latch).
+    EXPECT_EQ(countLabels(body, "wi.ph"), 2);
+    EXPECT_EQ(countLabels(body, "wi.head"), 2);
+    EXPECT_EQ(countLabels(body, "wi.latch"), 2);
+    EXPECT_EQ(countLabels(body, "for.head"), 0) << "no source loop expected";
+
+    // Barriers consumed; no shared memory; `t` carried across via a ctx array.
+    EXPECT_EQ(countSubstr(body, "call void @__cajeta_xpu_cpu_barrier"), 0);
+    EXPECT_EQ(countSubstr(body, "alloca ["), 0) << "no shared buffer expected";
+    EXPECT_EQ(countSubstr(ir, "addrspace(3) global"), 0);
+    EXPECT_GE(countSubstr(body, "ctx = alloca"), 1) << "t crosses the barrier";
+    EXPECT_EQ(countSubstr(body, "ret void"), 1) << "single exit (wrap.end)";
+}
+
+// The tree reduction: a barrier inside a uniform loop. The s-loop stays ONE
+// outer scalar loop (`for.head` once); the loop-body region is a work-item loop
+// nested inside it; the addrspace(3) shared global becomes a per-block stack
+// buffer; multiple regions, each a well-formed work-item loop.
+TEST(XpuCpuBarrierEmitTests, reductionNestsWorkItemLoopInUniformLoop) {
+    ScopedEnv noVec("CAJETA_XPU_CPU_NO_VECTORIZE", "1");
+    std::string ir = compileToIr(kReduceSource, "test.M.reduce");
+    ASSERT_FALSE(ir.empty());
+    std::string body = functionBody(ir, "__cajeta_xpu_cpu_block.reduce");
+    ASSERT_FALSE(body.empty()) << "no fission wrapper emitted";
+
+    // The uniform loop is preserved as exactly one outer scalar loop, NOT
+    // fissioned into per-region work-item loops, and a work-item loop nests in.
+    EXPECT_EQ(countLabels(body, "for.head"), 1) << "uniform loop kept as outer";
+    EXPECT_TRUE(hasWorkItemLoopUnderUniformLoop(body))
+        << "the loop-body region must be a work-item loop inside for.head";
+
+    // Multiple regions, each a well-formed counted work-item loop.
+    int ph = countLabels(body, "wi.ph");
+    EXPECT_GE(ph, 2);
+    EXPECT_EQ(countLabels(body, "wi.head"), ph);
+    EXPECT_EQ(countLabels(body, "wi.latch"), ph);
+
+    // Per-block shared memory: the addrspace(3) global is gone, replaced by one
+    // [256 x i32] stack buffer; barriers consumed; a ctx array; single exit.
+    EXPECT_EQ(countSubstr(ir, "addrspace(3) global"), 0);
+    EXPECT_EQ(countSubstr(body, "alloca [256 x i32]"), 1) << "per-block buffer";
+    EXPECT_EQ(countSubstr(body, "call void @__cajeta_xpu_cpu_barrier"), 0);
+    EXPECT_GE(countSubstr(body, "ctx = alloca"), 1) << "t crosses a barrier";
+    EXPECT_EQ(countSubstr(body, "ret void"), 1) << "single exit (wrap.end)";
+}
+
+// The SHIPPED IR (default path, post-LoopVectorize) must still carry the
+// invariants that survive vectorization: barriers consumed, no addrspace(3)
+// shared global, exactly one per-block stack buffer, a context array present.
+TEST(XpuCpuBarrierEmitTests, shippedVectorizedWrapperKeepsInvariants) {
+    std::string ir = compileToIr(kReduceSource, "test.M.reduce");
+    ASSERT_FALSE(ir.empty());
+    std::string body = functionBody(ir, "__cajeta_xpu_cpu_block.reduce");
+    ASSERT_FALSE(body.empty()) << "no fission wrapper emitted";
+
+    EXPECT_EQ(countSubstr(body, "call void @__cajeta_xpu_cpu_barrier"), 0);
+    EXPECT_EQ(countSubstr(ir, "addrspace(3) global"), 0);
+    EXPECT_EQ(countSubstr(body, "alloca [256 x i32]"), 1);
+    EXPECT_GE(countSubstr(body, "ctx = alloca"), 1);
 }

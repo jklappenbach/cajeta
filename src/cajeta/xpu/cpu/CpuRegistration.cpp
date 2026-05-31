@@ -37,11 +37,22 @@
 #include "llvm/Transforms/Utils/Cloning.h"
 #include "llvm/Transforms/Utils/ModuleUtils.h"
 
+#include <cstdlib>
+
 namespace cajeta {
 namespace xpu {
 namespace cpu {
 
 namespace {
+
+// Debug seam: when CAJETA_XPU_CPU_NO_VECTORIZE is set in the environment, skip
+// the work-item LoopVectorize pass on the per-block wrapper. Correctness is
+// unaffected (the scalar work-item loops are already complete); this only lets
+// tooling/tests inspect the fission output before loop-rotate/vectorize fold
+// and rename the per-region loop blocks. Off by default.
+bool cpuVectorizeDisabled() {
+    return std::getenv("CAJETA_XPU_CPU_NO_VECTORIZE") != nullptr;
+}
 
 // --- Increment 5C: wave-op SIMD via the Vector Function ABI ----------------
 //
@@ -353,7 +364,8 @@ void forceLoopVectorWidth(llvm::BranchInst* latch, unsigned W) {
                     continue;                     // host-stub fallback
                 }
                 linked->eraseFromParent();        // body cloned into the wrapper
-                vectorizeFunction(*wrapper, hostTm.get());
+                if (!cpuVectorizeDisabled())
+                    vectorizeFunction(*wrapper, hostTm.get());
             } else {
             llvm::BasicBlock* wEntry =
                 llvm::BasicBlock::Create(ctx, "entry", wrapper);
