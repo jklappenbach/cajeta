@@ -4887,6 +4887,49 @@ static void cajeta_xpu_sync_active(void) {
 // ntid.xyz]; argv is the kernelParams array shared across work-items.
 typedef void (*cajeta_cpu_launch_fn)(void** argv, const int32_t* coord);
 
+// One worker's slice of the grid: blocks [cxStart, cxEnd), each blockX threads.
+struct cajeta_cpu_grid_slice {
+    cajeta_cpu_launch_fn fn;
+    void** argv;
+    int32_t blockX;
+    int32_t cxStart;
+    int32_t cxEnd;
+};
+
+// Run a contiguous slice of blocks. Each worker owns its coord[9] (no sharing),
+// so the only cross-thread state is the buffers the kernel writes — and a
+// data-parallel, barrier-free CPU kernel writes disjoint elements, so the
+// fan-out is race-free for any kernel that is correct on a GPU.
+static void cajeta_xpu_cpu_run_slice(const struct cajeta_cpu_grid_slice* s) {
+    int32_t coord[9] = {0, 0, 0, 0, 0, 0, s->blockX, 1, 1};   // ntid=(blockX,1,1)
+    for (int32_t cx = s->cxStart; cx < s->cxEnd; ++cx) {
+        coord[3] = cx;                                        // ctaid.x
+        for (int32_t tx = 0; tx < s->blockX; ++tx) {
+            coord[0] = tx;                                    // tid.x
+            s->fn(s->argv, coord);
+        }
+    }
+}
+
+static void* cajeta_xpu_cpu_worker(void* arg) {
+    cajeta_xpu_cpu_run_slice((const struct cajeta_cpu_grid_slice*) arg);
+    return NULL;
+}
+
+// CPU launch (cajeta-cpu.md Inc 3 + Inc 5A). Resolve the kernel's launcher thunk
+// and run the grid->threads loop, parallelized across cores: the gridX blocks
+// are chunked across min(gridX, cores) worker threads (the calling thread runs
+// the last slice while the others fan out). Below a work-item threshold — or
+// with one core / one block — it runs serially, since thread fan-out costs more
+// than a small launch saves. A workgroup barrier would break this (work-items
+// must rendezvous), but barriers raise XPU-N01 on the CPU backend, so a launched
+// CPU kernel is always barrier-free and embarrassingly parallel. True
+// wave=SIMD-lane vectorization (Inc 5B) layers on top of each work-item call.
+#ifndef CAJETA_XPU_CPU_PARALLEL_THRESHOLD
+#define CAJETA_XPU_CPU_PARALLEL_THRESHOLD 4096   /* work-items */
+#endif
+#define CAJETA_XPU_CPU_MAX_WORKERS 256
+
 static void cajeta_xpu_launch_cpu(const char* name, int32_t gridX, int32_t blockX,
                                   void* argv) {
     void* p = __cajeta_xpu_lookup_cpu_kernel(name);
@@ -4896,13 +4939,53 @@ static void cajeta_xpu_launch_cpu(const char* name, int32_t gridX, int32_t block
         return;
     }
     cajeta_cpu_launch_fn fn = (cajeta_cpu_launch_fn) p;
-    int32_t coord[9] = {0, 0, 0, 0, 0, 0, blockX, 1, 1};   // ntid = (blockX,1,1)
-    for (int32_t cx = 0; cx < gridX; ++cx) {
-        coord[3] = cx;                                      // ctaid.x
-        for (int32_t tx = 0; tx < blockX; ++tx) {
-            coord[0] = tx;                                  // tid.x
-            fn((void**) argv, coord);
+
+    // CAJETA_XPU_CPU_SERIAL forces single-threaded execution — a deterministic
+    // debug/oracle mode and the serial baseline for benchmarking. Read once.
+    static int force_serial = -1;
+    if (force_serial < 0) force_serial = getenv("CAJETA_XPU_CPU_SERIAL") ? 1 : 0;
+
+    int64_t total = (int64_t) (gridX > 0 ? gridX : 0) *
+                    (int64_t) (blockX > 0 ? blockX : 0);
+    long cores = sysconf(_SC_NPROCESSORS_ONLN);
+    if (cores < 1) cores = 1;
+    int32_t nworkers = (int32_t) ((long) gridX < cores ? (long) gridX : cores);
+    if (nworkers > CAJETA_XPU_CPU_MAX_WORKERS) nworkers = CAJETA_XPU_CPU_MAX_WORKERS;
+
+    // Serial path: forced, tiny launch, single core, or a single block.
+    if (force_serial || gridX <= 1 || blockX <= 0 || nworkers <= 1 ||
+        total < CAJETA_XPU_CPU_PARALLEL_THRESHOLD) {
+        struct cajeta_cpu_grid_slice all = {fn, (void**) argv, blockX, 0, gridX};
+        cajeta_xpu_cpu_run_slice(&all);
+        return;
+    }
+
+    // Parallel fan-out: chunk the gridX blocks evenly across `nworkers`.
+    pthread_t threads[CAJETA_XPU_CPU_MAX_WORKERS];
+    struct cajeta_cpu_grid_slice slices[CAJETA_XPU_CPU_MAX_WORKERS];
+    char spawned[CAJETA_XPU_CPU_MAX_WORKERS];
+    int32_t base = gridX / nworkers, rem = gridX % nworkers, cx = 0;
+    for (int32_t i = 0; i < nworkers; ++i) {
+        int32_t count = base + (i < rem ? 1 : 0);
+        slices[i].fn = fn;
+        slices[i].argv = (void**) argv;
+        slices[i].blockX = blockX;
+        slices[i].cxStart = cx;
+        slices[i].cxEnd = cx + count;
+        cx += count;
+        if (i == nworkers - 1) {
+            spawned[i] = 0;   // the calling thread runs the last slice
+        } else if (pthread_create(&threads[i], NULL, cajeta_xpu_cpu_worker,
+                                  &slices[i]) == 0) {
+            spawned[i] = 1;
+        } else {
+            spawned[i] = 0;   // spawn failed — run this slice inline, drop nothing
+            cajeta_xpu_cpu_run_slice(&slices[i]);
         }
+    }
+    cajeta_xpu_cpu_run_slice(&slices[nworkers - 1]);
+    for (int32_t i = 0; i < nworkers; ++i) {
+        if (spawned[i]) pthread_join(threads[i], NULL);
     }
 }
 

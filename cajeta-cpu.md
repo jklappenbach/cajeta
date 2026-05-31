@@ -147,10 +147,19 @@ dispatcher uses must be wired *in C* there:
   falls to the CPU. **All four backends now route through the one dispatcher.**
 
 ### Increment 5 — parallelism: multi-core threading + true wave = SIMD lane
-- **Multi-core threading** (moved here from Inc 3, 2026-05-31): a `parallel_for` chunking
-  the grid across cores (`std::thread`, not the runtime's cooperative fiber carrier),
-  serial fallback. The wall-clock payoff for data-parallel kernels.
-- **True wave = SIMD lane** (SPMD vectorization, ISPC-style): for wave-cooperative
+- **5A — Multi-core threading** ✅ (landed 2026-05-31). The runtime's CPU launch
+  (`cajeta_xpu_launch_cpu`) now fans the gridX blocks across `min(gridX, cores)` **pthread**
+  workers (pthreads, not the cooperative fiber carrier, and not C++ `std::thread` — the
+  launch lives in the C runtime); the calling thread runs the last slice while the others
+  work, then joins. Each worker owns its `coord[9]`, and a launched CPU kernel is always
+  barrier-free (`XPU-N01`) so the grid is embarrassingly parallel — race-free for any kernel
+  correct on a GPU. Serial below a 4096-work-item threshold (fan-out costs more than a small
+  launch saves) and with one core / one block. `CAJETA_XPU_CPU_SERIAL=1` forces
+  single-threaded (deterministic debug/oracle mode + the serial benchmark baseline).
+  **Measured ~8× on 32 logical cores** (a compute-bound 1M×3000-iter kernel: 9.56 s serial →
+  1.21 s parallel, identical result). Tests: `XpuCpuDispatchTests.saxpyLargeGridParallelOnCpu`
+  (a 65536-work-item grid through the dispatcher, result matches serial exactly).
+- **5B — True wave = SIMD lane** (SPMD vectorization, ISPC-style): for wave-cooperative
   kernels, lower the body over `<W x T>` vectors with mask propagation through divergent
   control flow, `Wave.*` → SIMD permute/horizontal ops, `Wave.width()` → W. Lifts wave
   width from 1 to native.
