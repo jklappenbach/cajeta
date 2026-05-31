@@ -6,6 +6,7 @@
 #include "cajeta/compile/CajetaModule.h"
 #include "cajeta/type/CajetaArray.h"
 #include "cajeta/type/CajetaClass.h"
+#include "cajeta/type/CajetaTask.h"
 #include "cajeta/type/CajetaView.h"
 #include "cajeta/type/CajetaFunctionType.h"
 #include "cajeta/method/Method.h"
@@ -1925,6 +1926,31 @@ namespace cajeta {
                         && parameters.empty()) {
                     llvm::Function* fn = module->getRuntimeFunction("__cajeta_currentTimeNanos");
                     return builder->CreateCall(fn, {});
+                }
+                // R9.3 — surface the Task<T>'s done-flag address as a raw
+                // pointer so user-level withTimeout (cajeta.threading.Tasks)
+                // can feed it to taskWaitTimeout. The Task is heap-allocated
+                // and the call arg is the pointer to it; we GEP at the
+                // DONE_FIELD_INDEX defined in CajetaTask.h. The argument
+                // type must resolve to a CajetaTask (Task<T>) — anything
+                // else is a compile error.
+                if (ns == "Cajeta" && methodCallName == "taskDonePointer"
+                        && parameters.size() == 1) {
+                    auto argExpr = dynamic_pointer_cast<Expression>(parameters[0].expression);
+                    if (argExpr && !argExpr->getResolvedType()) {
+                        argExpr->resolveTypes(module);
+                    }
+                    auto argType = argExpr ? argExpr->getResolvedType() : nullptr;
+                    auto task = dynamic_pointer_cast<CajetaTask>(argType);
+                    if (!task) {
+                        throw Exception(
+                            "Cajeta.taskDonePointer requires a Task<T> argument",
+                            "CAJETA_ERROR_TYPE_MISMATCH");
+                    }
+                    llvm::Value* taskPtr = loadValue(0);
+                    return builder->CreateStructGEP(
+                        task->getLlvmType(), taskPtr,
+                        CajetaTask::DONE_FIELD_INDEX, "task_done_ptr");
                 }
                 if (ns == "System" && methodCallName == "exit" && parameters.size() == 1) {
                     llvm::Function* fn = module->getRuntimeFunction("__cajeta_exit");

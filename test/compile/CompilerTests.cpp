@@ -47,7 +47,10 @@ TEST(CompilerTests, canThrowOnInvalidInput) {
 // landed cajeta.threading primitives (Lock, LockGuard, Mutex, RwLock,
 // Semaphore, WriteGuard, Channel) +7 and Atomic{Int32,Int64} +2.
 // 2026-05-31: bumped 105 → 106 for R9.2 (cajeta.time.Duration).
-static constexpr size_t STDLIB_STRUCTURE_COUNT = 106;
+// 2026-05-31: bumped 106 → 108 for R9.3 — cajeta.threading.Tasks pulls
+// in Optional<int32> as a stdlib-side instantiation (heap Optional<int32>
+// in withTimeoutInt32's return), so the structure count goes up by 2.
+static constexpr size_t STDLIB_STRUCTURE_COUNT = 108;
 
 TEST(CompilerTests, canParseOnValidShortPackage) {
     string inputPath = CAJETA_TEST_ROOT + string("/compile/code/src/cajeta/Test.cajeta");
