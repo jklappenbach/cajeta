@@ -2035,6 +2035,22 @@ namespace cajeta {
                             llvm::Type::getInt64Ty(llvmCtx), 1), ptrTy2);
                     return builder->CreateCall(cancelFn, {fiberPtr, sentinel});
                 }
+                // R9.5 — cooperative fiber sleep. Parks the running fiber
+                // on the timer wheel for `nanos` nanoseconds (built atop
+                // __cajeta_task_wait_timeout against a sentinel done flag
+                // that never flips, so the deadline is the only wake).
+                // Used by Channel.select's poll-and-backoff loop and
+                // available to any caller wanting a cooperative sleep
+                // without burning CPU.
+                if (ns == "Cajeta" && methodCallName == "fiberSleepNanos"
+                        && parameters.size() == 1) {
+                    llvm::Function* fn = module->getRuntimeFunction("__cajeta_fiber_sleep_nanos");
+                    llvm::Value* nanos = loadValue(0);
+                    if (nanos->getType() != i64Ty) {
+                        nanos = builder->CreateIntCast(nanos, i64Ty, /*isSigned=*/true);
+                    }
+                    return builder->CreateCall(fn, {nanos});
+                }
                 if (ns == "System" && methodCallName == "exit" && parameters.size() == 1) {
                     llvm::Function* fn = module->getRuntimeFunction("__cajeta_exit");
                     llvm::Value* code = loadValue(0);
