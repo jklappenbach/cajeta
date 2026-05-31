@@ -1072,10 +1072,18 @@ static int __cajeta_reactor_epfd = -1;
 // (broadcast on shutdown).
 //
 // Carrier count is read from $CAJETA_CARRIERS at the first
-// __cajeta_task_run, clamped to [1, CAJETA_MAX_CARRIERS]. Default 1 —
-// same single-carrier behaviour the prior releases had, no opt-in
-// required.
+// __cajeta_task_run, clamped to [1, CAJETA_MAX_CARRIERS]. Default is
+// min(_SC_NPROCESSORS_ONLN, CAJETA_DEFAULT_CARRIERS_CAP) — multi-carrier
+// by default so spawned tasks actually run in parallel. Single-carrier
+// behaviour the prior releases had is opt-in via CAJETA_CARRIERS=1
+// (still the canonical knob for deterministic-order debug runs).
 #define CAJETA_MAX_CARRIERS 16
+// Default-cap so a 64-core box doesn't spin up 16 carriers on a
+// program that has no work for them. Empirically picked at 4 — gives
+// real parallelism for the typical channel/fan-out workloads in tests
+// and stays comfortably inside CAJETA_MAX_CARRIERS' upper bound. Users
+// who want more can set CAJETA_CARRIERS=N explicitly.
+#define CAJETA_DEFAULT_CARRIERS_CAP 4
 
 struct cajeta_carrier {
     pthread_t thread;
@@ -1455,14 +1463,21 @@ void __cajeta_task_run(void* arg, cajeta_task_trampoline_fn trampoline,
     __cajeta_dbg_fiber_register(f);
     if (!__cajeta_task_workers_started) {
         __cajeta_task_workers_started = 1;
-        // Carrier count from $CAJETA_CARRIERS, defaulting to 1, clamped
-        // to [1, CAJETA_MAX_CARRIERS]. Read once at first spawn — the
-        // pool is fixed-size for the lifetime of this scheduler instance.
-        int n = 1;
+        // Carrier count from $CAJETA_CARRIERS if set; otherwise default
+        // to min(_SC_NPROCESSORS_ONLN, CAJETA_DEFAULT_CARRIERS_CAP) so
+        // spawned tasks get real parallelism out of the box. Clamped to
+        // [1, CAJETA_MAX_CARRIERS]. Read once at first spawn — the pool
+        // is fixed-size for the lifetime of this scheduler instance.
+        int n;
         const char* env = getenv("CAJETA_CARRIERS");
         if (env && *env) {
             int parsed = atoi(env);
-            if (parsed >= 1) n = parsed;
+            n = (parsed >= 1) ? parsed : 1;
+        } else {
+            long cores = sysconf(_SC_NPROCESSORS_ONLN);
+            if (cores < 1) cores = 1;
+            n = (int) cores;
+            if (n > CAJETA_DEFAULT_CARRIERS_CAP) n = CAJETA_DEFAULT_CARRIERS_CAP;
         }
         if (n > CAJETA_MAX_CARRIERS) n = CAJETA_MAX_CARRIERS;
         __cajeta_carrier_count = n;
