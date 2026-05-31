@@ -6,7 +6,8 @@ import cajeta.lang.Optional;
  * Bounded MPMC queue — cajeta-docs/stdlib/Thread.md § `Channel<T>`. A
  * fixed-capacity ring buffer guarded by the lock + condition-variable
  * intrinsics (the same primitives `Mutex`/`Semaphore` use). `send` blocks
- * when full; `receive` blocks when empty. `close()` is one-way.
+ * when full; `receive` blocks when empty. `close()` is one-way and
+ * idempotent.
  *
  * `receive()` returns a **stack** `Optional<T>` (no per-item heap
  * allocation — the reason stack allocation was restored for small wrappers
@@ -14,9 +15,13 @@ import cajeta.lang.Optional;
  * after close), empty once the channel is closed AND drained. Sending to a
  * closed channel raises.
  *
+ * Tested across {1P/1C, 2P/2C} fiber configurations with capacity 2
+ * (forces both full- and empty- side blocking). See ChannelTests.cpp.
+ *
  * v1 targets value/primitive `T`. For a heap class `T`, items buffered but
  * never received aren't dropped when the channel is destroyed (the ring
- * buffer array frees, not its elements) — a later refinement.
+ * buffer array frees, not its elements) — a later refinement. Workaround:
+ * drain explicitly before drop (call `receive()` in a loop until empty).
  */
 public class Channel<T> {
     pointer handle;
