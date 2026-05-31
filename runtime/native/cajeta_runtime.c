@@ -4041,6 +4041,93 @@ static int cajeta_xpu_cuda_ready(void) {
     return ok;
 }
 
+// ============================================================================
+// HIP Driver API binding (dlopen'd) — backs the real AMDGPU device path.
+// ============================================================================
+// Mirrors src/cajeta/xpu/amd/HipDriver.cpp in C (the C++ HipDriver is
+// compiler/test-only). HIP exports plain C symbols (no size-versioning). Shares
+// g_xpu_cuda_lock for init/load serialization — only one device backend is
+// active per run, so there is no contention. Device pointers are plain void*.
+struct cajeta_hip_api {
+    int loaded;             // 0 untried, 1 ready, -1 unavailable
+    void* lib;
+    int device;
+    int (*hipInit)(unsigned);
+    int (*hipGetDeviceCount)(int*);
+    int (*hipSetDevice)(int);
+    int (*hipModuleLoadData)(void**, const void*);
+    int (*hipModuleGetFunction)(void**, void*, const char*);
+    int (*hipMalloc)(void**, size_t);
+    int (*hipMemcpyHtoD)(void*, const void*, size_t);
+    int (*hipMemcpyDtoH)(void*, void*, size_t);
+    int (*hipFree)(void*);
+    int (*hipModuleLaunchKernel)(void*, unsigned, unsigned, unsigned,
+                                 unsigned, unsigned, unsigned, unsigned,
+                                 void*, void**, void**);
+    int (*hipDeviceSynchronize)(void);
+};
+static struct cajeta_hip_api g_xpu_hip;
+
+#if !defined(_WIN32)
+// Load libamdhip64, preferring canonical ROCm (/opt/rocm, the
+// update-alternatives target) then $ROCM_PATH over a bare soname; pin the
+// chosen dir's libhsa-runtime with RTLD_GLOBAL first so hip's transitive HSA
+// dependency binds to it by soname (see HipDriver.cpp for the rationale).
+static void* cajeta_xpu_load_hip_from_dir(const char* dir) {
+    char hsa[600], hip[600];
+    snprintf(hsa, sizeof(hsa), "%s/libhsa-runtime64.so.1", dir);
+    snprintf(hip, sizeof(hip), "%s/libamdhip64.so", dir);
+    dlopen(hsa, RTLD_NOW | RTLD_GLOBAL);          // pin canonical HSA (best-effort)
+    return dlopen(hip, RTLD_NOW | RTLD_LOCAL);
+}
+static void* cajeta_xpu_load_hip(void) {
+    void* h = cajeta_xpu_load_hip_from_dir("/opt/rocm/lib");
+    if (h) return h;
+    const char* rp = getenv("ROCM_PATH");
+    if (rp) {
+        char dir[520];
+        snprintf(dir, sizeof(dir), "%s/lib", rp);
+        if ((h = cajeta_xpu_load_hip_from_dir(dir))) return h;
+    }
+    if ((h = dlopen("libamdhip64.so", RTLD_NOW | RTLD_LOCAL))) return h;
+    return dlopen("libamdhip64.so.7", RTLD_NOW | RTLD_LOCAL);
+}
+#endif
+
+// Caller holds g_xpu_cuda_lock. Idempotent via the `loaded` tri-state.
+static int cajeta_xpu_hip_init_locked(void) {
+    if (g_xpu_hip.loaded == 1) return 1;
+    if (g_xpu_hip.loaded == -1) return 0;
+    g_xpu_hip.loaded = -1;
+#if defined(_WIN32)
+    g_xpu_hip.lib = (void*) LoadLibraryA("amdhip64.dll");
+#else
+    g_xpu_hip.lib = cajeta_xpu_load_hip();
+#endif
+    if (!g_xpu_hip.lib) return 0;
+    #define CAJ_HBIND(fp, nm)                                                  \
+        do { *(void**)(&g_xpu_hip.fp) = cajeta_xpu_libsym(g_xpu_hip.lib, nm);  \
+             if (!g_xpu_hip.fp) return 0; } while (0)
+    CAJ_HBIND(hipInit, "hipInit");
+    CAJ_HBIND(hipGetDeviceCount, "hipGetDeviceCount");
+    CAJ_HBIND(hipSetDevice, "hipSetDevice");
+    CAJ_HBIND(hipModuleLoadData, "hipModuleLoadData");
+    CAJ_HBIND(hipModuleGetFunction, "hipModuleGetFunction");
+    CAJ_HBIND(hipMalloc, "hipMalloc");
+    CAJ_HBIND(hipMemcpyHtoD, "hipMemcpyHtoD");
+    CAJ_HBIND(hipMemcpyDtoH, "hipMemcpyDtoH");
+    CAJ_HBIND(hipFree, "hipFree");
+    CAJ_HBIND(hipModuleLaunchKernel, "hipModuleLaunchKernel");
+    CAJ_HBIND(hipDeviceSynchronize, "hipDeviceSynchronize");
+    #undef CAJ_HBIND
+    if (g_xpu_hip.hipInit(0) != 0) return 0;
+    int count = 0;
+    if (g_xpu_hip.hipGetDeviceCount(&count) != 0 || count <= 0) return 0;
+    if (g_xpu_hip.hipSetDevice(g_xpu_hip.device) != 0) return 0;
+    g_xpu_hip.loaded = 1;
+    return 1;
+}
+
 // --- registered kernel modules (cubin images keyed by PTX entry name) -------
 // The device-cubin pass emits a global constructor that calls
 // __cajeta_xpu_register_module once per @Kernel; the launch path loads the
@@ -4075,15 +4162,11 @@ static struct cajeta_xpu_module* cajeta_xpu_find_module(const char* name) {
 void* __cajeta_xpu_stream_current(void) { return NULL; }
 void* __cajeta_xpu_stream_create(void) { return NULL; }
 // Defined with the backend dispatcher below (after the kernel registries).
-static int cajeta_xpu_active_is_cuda(void);
+static void cajeta_xpu_sync_active(void);
 
 void __cajeta_xpu_stream_sync(void* self) {
     (void) self;
-    // Synchronize the active backend. CPU launches are synchronous (the grid
-    // loop has already run), so sync is a no-op there; HIP/Vulkan land in
-    // Inc 4.2/4.3.
-    if (cajeta_xpu_active_is_cuda() && cajeta_xpu_cuda_ready())
-        g_xpu_cuda.cuCtxSynchronize();
+    cajeta_xpu_sync_active();
 }
 void __cajeta_xpu_stream_wait_for(void* self, void* event) {
     (void)self; (void)event;
@@ -4234,17 +4317,16 @@ void __cajeta_xpu_register_backend(int32_t id) {
     pthread_mutex_unlock(&g_xpu_cuda_lock);
 }
 
-// HIP/Vulkan runtime launch land in Increments 4.2/4.3; until then they probe
-// as unavailable, so a hip/vulkan-only bundle on this runtime falls through to
-// the precise diagnostic (or to CPU if bundled).
-static int cajeta_xpu_hip_ready(void)    { return 0; }
-static int cajeta_xpu_vulkan_ready(void) { return 0; }
-
-static int cajeta_xpu_backend_available(int id) {
+// Probe a backend's availability. Caller holds g_xpu_cuda_lock — so this calls
+// the *_init_locked variants directly (NOT the locking *_ready wrappers, which
+// would deadlock under the held lock). Vulkan lands in Increment 4.3; until then
+// it probes unavailable, so a vulkan-only bundle falls through to the precise
+// diagnostic (or to CPU if bundled).
+static int cajeta_xpu_backend_available_locked(int id) {
     switch (id) {
-        case CAJ_XPU_CUDA:   return cajeta_xpu_cuda_ready();
-        case CAJ_XPU_HIP:    return cajeta_xpu_hip_ready();
-        case CAJ_XPU_VULKAN: return cajeta_xpu_vulkan_ready();
+        case CAJ_XPU_CUDA:   return cajeta_xpu_cuda_init_locked();
+        case CAJ_XPU_HIP:    return cajeta_xpu_hip_init_locked();
+        case CAJ_XPU_VULKAN: return 0;   /* Inc 4.3 */
         case CAJ_XPU_CPU:    return 1;
         default:             return 0;
     }
@@ -4257,7 +4339,7 @@ static int cajeta_xpu_select_locked(void) {
     for (int id = 0; id < CAJ_XPU_COUNT; ++id) {
         if (forced != CAJ_XPU_NONE && id != forced) continue;
         if (!(g_xpu_bundled & (1u << id))) continue;     // not bundled in
-        if (cajeta_xpu_backend_available(id)) { g_xpu_active = id; return id; }
+        if (cajeta_xpu_backend_available_locked(id)) { g_xpu_active = id; return id; }
     }
     g_xpu_active = CAJ_XPU_NONE;
     // Precise, once: degradation is a build-time contract (locked decision #3).
@@ -4283,8 +4365,15 @@ static int cajeta_xpu_active_backend(void) {
     return r;
 }
 
-static int cajeta_xpu_active_is_cuda(void) {
-    return cajeta_xpu_active_backend() == CAJ_XPU_CUDA;
+// Synchronize the active backend (called by stream.sync). active_backend() has
+// already initialized the chosen backend, so its fn pointers are valid. CPU is
+// synchronous (nothing to drain); none is a no-op.
+static void cajeta_xpu_sync_active(void) {
+    switch (cajeta_xpu_active_backend()) {
+        case CAJ_XPU_CUDA: g_xpu_cuda.cuCtxSynchronize();   break;
+        case CAJ_XPU_HIP:  g_xpu_hip.hipDeviceSynchronize(); break;
+        default: break;
+    }
 }
 
 // CPU launch: resolve the kernel's registered launcher thunk and run the
@@ -4337,11 +4426,16 @@ int64_t __cajeta_xpu_buffer_alloc(void* self, uint64_t byteCount) {
             if (g_xpu_cuda.cuMemAlloc(&p, (size_t) byteCount) != 0) return 0;
             return (int64_t) p;
         }
+        case CAJ_XPU_HIP: {
+            void* p = NULL;
+            if (g_xpu_hip.hipMalloc(&p, (size_t) byteCount) != 0) return 0;
+            return (int64_t) (intptr_t) p;
+        }
         case CAJ_XPU_CPU: {
             void* p = malloc((size_t) byteCount);   // CPU "device" memory = host
             return (int64_t) (intptr_t) p;
         }
-        default: return 0;   // HIP/Vulkan: Inc 4.2/4.3; none: diagnostic emitted
+        default: return 0;   // Vulkan: Inc 4.3; none: diagnostic emitted
     }
 }
 void __cajeta_xpu_buffer_upload(void* self, int64_t handle, void* host,
@@ -4352,6 +4446,10 @@ void __cajeta_xpu_buffer_upload(void* self, int64_t handle, void* host,
     switch (cajeta_xpu_active_backend()) {
         case CAJ_XPU_CUDA:
             g_xpu_cuda.cuMemcpyHtoD((cajeta_cudeviceptr) handle, data,
+                                    (size_t) byteCount);
+            return;
+        case CAJ_XPU_HIP:
+            g_xpu_hip.hipMemcpyHtoD((void*) (intptr_t) handle, data,
                                     (size_t) byteCount);
             return;
         case CAJ_XPU_CPU:
@@ -4370,6 +4468,10 @@ void __cajeta_xpu_buffer_download(void* self, int64_t handle, void* host,
             g_xpu_cuda.cuMemcpyDtoH(data, (cajeta_cudeviceptr) handle,
                                     (size_t) byteCount);
             return;
+        case CAJ_XPU_HIP:
+            g_xpu_hip.hipMemcpyDtoH(data, (void*) (intptr_t) handle,
+                                    (size_t) byteCount);
+            return;
         case CAJ_XPU_CPU:
             memcpy(data, (const void*) (intptr_t) handle, (size_t) byteCount);
             return;
@@ -4381,6 +4483,7 @@ void __cajeta_xpu_buffer_free(void* self, int64_t handle) {
     if (!handle) return;
     switch (cajeta_xpu_active_backend()) {
         case CAJ_XPU_CUDA: g_xpu_cuda.cuMemFree((cajeta_cudeviceptr) handle); return;
+        case CAJ_XPU_HIP:  g_xpu_hip.hipFree((void*) (intptr_t) handle); return;
         case CAJ_XPU_CPU:  free((void*) (intptr_t) handle); return;
         default: return;
     }
@@ -4426,6 +4529,38 @@ static void cajeta_xpu_launch_cuda(const char* kernelName, int32_t gridX,
                               (void**) argv, /*extra=*/NULL);
 }
 
+// HIP launch: lazily load the hsaco module + resolve the function (reusing the
+// shared module table — only one device backend is active per run), then 1-D
+// launch. Mirrors cajeta_xpu_launch_cuda with hip* entry points.
+static void cajeta_xpu_launch_hip(const char* kernelName, int32_t gridX,
+                                  int32_t blockX, uint32_t sharedBytes,
+                                  void* argv) {
+    pthread_mutex_lock(&g_xpu_cuda_lock);
+    struct cajeta_xpu_module* e = cajeta_xpu_find_module(kernelName);
+    if (e) {
+        if (!e->module) {
+            if (g_xpu_hip.hipModuleLoadData(&e->module, e->image) != 0)
+                e->module = NULL;
+        }
+        if (e->module && !e->function) {
+            if (g_xpu_hip.hipModuleGetFunction(&e->function, e->module,
+                                               kernelName) != 0)
+                e->function = NULL;
+        }
+    }
+    void* fn = e ? e->function : NULL;
+    pthread_mutex_unlock(&g_xpu_cuda_lock);
+    if (!fn) {
+        fprintf(stderr, "cajeta.xpu: no registered kernel '%s' to launch\n",
+                kernelName);
+        return;
+    }
+    g_xpu_hip.hipModuleLaunchKernel(fn, (unsigned) gridX, 1, 1,
+                                    (unsigned) blockX, 1, 1,
+                                    (unsigned) sharedBytes, /*stream=*/NULL,
+                                    (void**) argv, /*extra=*/NULL);
+}
+
 // The host-source `kernel.launch(...)` entry point: dispatch to the active
 // backend (chosen + cached on first device touch).
 void __cajeta_xpu_launch(const char* kernelName, int32_t gridX, int32_t blockX,
@@ -4435,10 +4570,13 @@ void __cajeta_xpu_launch(const char* kernelName, int32_t gridX, int32_t blockX,
         case CAJ_XPU_CUDA:
             cajeta_xpu_launch_cuda(kernelName, gridX, blockX, sharedBytes, argv);
             return;
+        case CAJ_XPU_HIP:
+            cajeta_xpu_launch_hip(kernelName, gridX, blockX, sharedBytes, argv);
+            return;
         case CAJ_XPU_CPU:
             cajeta_xpu_launch_cpu(kernelName, gridX, blockX, argv);
             return;
-        default: return;   // HIP/Vulkan: Inc 4.2/4.3; none: diagnostic emitted
+        default: return;   // Vulkan: Inc 4.3; none: diagnostic emitted
     }
 }
 
