@@ -119,4 +119,55 @@ class CajetaDebugSessionIntegrationTest {
             root.deleteRecursively()
         }
     }
+
+    /**
+     * CP6e end-to-end: parked at the breakpoint, edit a live local through
+     * setVariable. The server writes the fiber's stack slot and returns the
+     * re-rendered value; a fresh loadVariables read must reflect the change.
+     */
+    @Test
+    fun setLocalUpdatesValue() {
+        val binary = CajetaDapLauncher.locateBinary()
+        assumeTrue("cajeta binary not found; set CAJETA_DAP_BIN to run", binary != null)
+        binary!!
+
+        val root = Files.createTempDirectory("cajeta-setvar-it-").toFile()
+        File(root, "demo").apply { mkdirs() }
+        File(File(root, "demo"), "Calc.cajeta").writeText(kProg)
+
+        val process = CajetaDapLauncher(binary.absolutePath, CajetaDapLauncher.defaultDllDir()).start()
+        val session = CajetaDebugSession(DapClient(DapTransport(process.inputStream, process.outputStream)))
+
+        val stopped = CountDownLatch(1)
+        session.onStopped = { stopped.countDown() }
+        session.start()
+
+        try {
+            session.launch(
+                CajetaDebugSession.LaunchParams("demo.Calc.main", root.absolutePath),
+                listOf(CajetaDebugSession.LineBreakpoint("Calc.cajeta", 6)),
+            ).get(15, TimeUnit.SECONDS)
+            assertTrue("breakpoint never hit", stopped.await(30, TimeUnit.SECONDS))
+
+            val st = session.stackTrace().get(10, TimeUnit.SECONDS)
+            val topId = st.at("body").at("stackFrames")[0].at("id").asInt()
+
+            val before = session.loadVariables(topId).get(10, TimeUnit.SECONDS)
+            val a = before.first { it.name == "a" }
+            assertEquals("6", a.value)
+            assertTrue("'a' has no container scope ref", a.containerReference != 0)
+
+            // Edit the live local; server re-renders from the written slot.
+            val rendered = session.setVariable(a.containerReference, "a", "42").get(10, TimeUnit.SECONDS)
+            assertEquals("42", rendered)
+
+            // The change is observable on a fresh read of the locals.
+            val after = session.loadVariables(topId).get(10, TimeUnit.SECONDS)
+            assertEquals("42", after.first { it.name == "a" }.value)
+        } finally {
+            session.disconnect()
+            process.destroyForcibly()
+            root.deleteRecursively()
+        }
+    }
 }
