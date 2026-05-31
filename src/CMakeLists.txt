@@ -404,6 +404,16 @@ set_source_files_properties(${CAJETA_STDLIB_EMBED} PROPERTIES GENERATED TRUE)
 list(APPEND GENERATED_SOURCES ${CAJETA_STDLIB_EMBED})
 # ------------------------------------------------------------------------------
 
+# Isolate the llvm::Error consumers (toString/cantFail/consumeError) used by
+# the in-process JIT host in one TU and compile it -fno-rtti when the host LLVM
+# has RTTI off (ROCm / many upstream builds) — same rationale as
+# test/CMakeLists.txt's handling of JitErrorShim.cpp. No-op when LLVM has RTTI.
+if(DEFINED LLVM_ENABLE_RTTI AND NOT LLVM_ENABLE_RTTI)
+    set_source_files_properties(
+            ${CMAKE_CURRENT_SOURCE_DIR}/cajeta/jit/CajetaJitErrorShim.cpp
+            PROPERTIES COMPILE_OPTIONS "-fno-rtti")
+endif()
+
 add_library(${CMAKE_PROJECT_NAME}_lib STATIC ${SOURCES} ${GENERATED_SOURCES})
 target_link_libraries(${CMAKE_PROJECT_NAME}_lib
         PUBLIC

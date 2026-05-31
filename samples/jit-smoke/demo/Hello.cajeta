@@ -1,0 +1,13 @@
+package demo;
+
+// Minimal dependency-free program for the JIT-host smoke test (CP1 of the
+// debugger plan). `cajeta jit-run samples/jit-smoke demo.Hello.main` compiles
+// this in-memory, JITs it, runs main(), and reports the int32 return value.
+public class Hello {
+
+    public static int32 main() {
+        int32 a = 6;
+        int32 b = 7;
+        return a * b;
+    }
+}
