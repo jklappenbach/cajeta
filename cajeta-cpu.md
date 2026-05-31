@@ -321,3 +321,40 @@ dispatcher uses must be wired *in C* there:
 runs anywhere with no GPU). `./run-xpu.sh amdgpu,cpu` / `vulkan,cpu` target a device with
 CPU fallback; `CAJETA_XPU_BACKEND=cpu ./run-xpu.sh amdgpu,cpu` forces the fall-to-CPU path
 on a box that has the GPU. It sits beside the stdlib/language tour in `samples/Tour/`.
+
+## 5. `Buffer<T>` is RAII (2026-05-31)
+
+The XPU tour exposed that `Buffer<T>` used a manual `allocate()`/`free()` pattern with **no
+destructor** — the drop chain freed the 16-byte handle struct but the device memory leaked
+unless you remembered `free()`, working *against* the language. It also diverged from the
+stdlib's own resource-handle convention (`FileReader`/`File`/`Path`: acquire in the ctor,
+release in `~Dtor()`, idempotent `close()` as an escape hatch). Reworked to match:
+
+- **`heap Buffer<T>(n)`** allocates device memory in the constructor; **`~Buffer()`** frees
+  it via the drop chain at scope exit. `free()`/`allocate()` are now idempotent + null-
+  guarded escape hatches. Move-out (`#buf`) transfers ownership (the source's drop entry is
+  marked inactive, so its destructor no-ops). The tour uses the RAII form — no
+  `allocate()`/`free()` — and runs identically on CPU, AMD (HIP), and Vulkan (RADV).
+- Resize isn't a Buffer concern: GPU buffers are fixed-size; a different size is just a new
+  `heap Buffer<T>(m)` (the old one drops). So in-place re-allocate is a rarely-needed escape
+  hatch, not the model.
+
+**Launch-borrow gate extended (XPU-K02).** A `kernel.launch(...)` borrows each Buffer until
+`Stream.sync()`. The checker already errored on an explicit `free()` before sync; with a
+destructor, an *implicit drop* before sync is the same use-after-free. `Method::destroyScope`
+now also gates it: an owned, launch-borrowed Buffer that leaves scope before a sync is
+XPU-K02. Only owned locals with a live drop entry trip it — borrowed params and `#`-moved
+buffers are skipped, and a sync clears the borrow, so there are no false positives (verified:
+`XpuLaunchBorrowTests.dropBeforeSyncRejected` / `dropAfterSyncAccepted`).
+
+**Two compiler bugs fixed in passing:**
+- **Generic-class destructor names.** `~Buffer()` was rejected because the validator compared
+  the declared name against the *monomorphized* type name (`Buffer<float32>`) rather than the
+  base name. `Buffer<T>` is the first generic stdlib class with a user destructor, so nothing
+  had exercised it. Fix: strip the `<…>` type arguments before comparing
+  (`CajetaLlvmVisitor.h`).
+- **Stale-stdlib gotcha (recorded).** The stdlib `.cajeta` sources are *embedded into the
+  compiler binary at build time* (`cajeta::stdlib::g_files`), so editing
+  `runtime/src/cajeta/**` requires rebuilding the compiler (`cmake --build build`) before the
+  change takes effect — testing against a stale binary mis-resolves new overloads (a 1-arg
+  ctor fell back to the 2-arg one, passing `n` as the device handle → a wild-pointer crash).
