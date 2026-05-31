@@ -4048,8 +4048,9 @@ static int cajeta_xpu_cuda_ready(void) {
 struct cajeta_xpu_module {
     char name[256];
     const void* image;
-    void* module;     // CUmodule, lazily loaded
-    void* function;   // CUfunction, lazily resolved
+    uint64_t len;     // image byte length (SPIR-V needs it; CUDA/HIP ignore it)
+    void* module;     // CUmodule/hipModule, lazily loaded
+    void* function;   // CUfunction/hipFunction, lazily resolved
 };
 #define CAJETA_XPU_MAX_MODULES 128
 static struct cajeta_xpu_module g_xpu_modules[CAJETA_XPU_MAX_MODULES];
@@ -4073,9 +4074,16 @@ static struct cajeta_xpu_module* cajeta_xpu_find_module(const char* name) {
 // context, which also releases the deferred launch borrows on the host side.
 void* __cajeta_xpu_stream_current(void) { return NULL; }
 void* __cajeta_xpu_stream_create(void) { return NULL; }
+// Defined with the backend dispatcher below (after the kernel registries).
+static int cajeta_xpu_active_is_cuda(void);
+
 void __cajeta_xpu_stream_sync(void* self) {
     (void) self;
-    if (cajeta_xpu_cuda_ready()) g_xpu_cuda.cuCtxSynchronize();
+    // Synchronize the active backend. CPU launches are synchronous (the grid
+    // loop has already run), so sync is a no-op there; HIP/Vulkan land in
+    // Inc 4.2/4.3.
+    if (cajeta_xpu_active_is_cuda() && cajeta_xpu_cuda_ready())
+        g_xpu_cuda.cuCtxSynchronize();
 }
 void __cajeta_xpu_stream_wait_for(void* self, void* event) {
     (void)self; (void)event;
@@ -4175,13 +4183,144 @@ void* __cajeta_xpu_lookup_cpu_kernel(const char* name) {
     return 0;
 }
 
-// --- Buffer<T> device memory (CUDA driver-backed) ---------------------------
+// --- Backend dispatcher (cajeta-cpu.md Increment 4) -------------------------
+// Compiled Cajeta programs launch through THIS C runtime only (the C++
+// CudaDriver/HipDriver/VulkanDriver/CpuDriver are compiler/test-only and never
+// linked into a user program). A binary can bundle several backends
+// (--xpu-backend=vulkan,cpu); at the first device touch we pick the
+// highest-priority one that is both BUNDLED (a compile-time manifest of ctors
+// calling __cajeta_xpu_register_backend) and AVAILABLE (a runtime probe),
+// honoring a CAJETA_XPU_BACKEND force-override, then cache it. Every device
+// entry point (buffer_*, launch) routes to that backend. The choice is made
+// ONCE — a GPU present at startup but lost mid-run is a hard error, not a silent
+// CPU re-run (locked decision #2).
+//
+// Priority order: CUDA -> HIP -> Vulkan -> CPU. CPU is always available, the
+// guaranteed terminal of the chain. Backend ids are the priority order.
+enum {
+    CAJ_XPU_CUDA   = 0,
+    CAJ_XPU_HIP    = 1,
+    CAJ_XPU_VULKAN = 2,
+    CAJ_XPU_CPU    = 3,
+    CAJ_XPU_COUNT  = 4,
+    CAJ_XPU_NONE   = -1
+};
+
+static unsigned g_xpu_bundled;        // bit i set iff backend i was bundled
+static int g_xpu_active = -2;         // -2 unselected, -1 none, else a backend id
+
+static const char* cajeta_xpu_backend_name(int id) {
+    switch (id) {
+        case CAJ_XPU_CUDA:   return "cuda";
+        case CAJ_XPU_HIP:    return "hip";
+        case CAJ_XPU_VULKAN: return "vulkan";
+        case CAJ_XPU_CPU:    return "cpu";
+        default:             return "?";
+    }
+}
+
+static int cajeta_xpu_backend_id_by_name(const char* s) {
+    if (!s) return CAJ_XPU_NONE;
+    for (int id = 0; id < CAJ_XPU_COUNT; ++id)
+        if (strcmp(s, cajeta_xpu_backend_name(id)) == 0) return id;
+    return CAJ_XPU_NONE;
+}
+
+// The compiler emits one ctor per bundled backend (Compiler::emitXpuKernels).
+void __cajeta_xpu_register_backend(int32_t id) {
+    if (id < 0 || id >= CAJ_XPU_COUNT) return;
+    pthread_mutex_lock(&g_xpu_cuda_lock);
+    g_xpu_bundled |= (1u << id);
+    pthread_mutex_unlock(&g_xpu_cuda_lock);
+}
+
+// HIP/Vulkan runtime launch land in Increments 4.2/4.3; until then they probe
+// as unavailable, so a hip/vulkan-only bundle on this runtime falls through to
+// the precise diagnostic (or to CPU if bundled).
+static int cajeta_xpu_hip_ready(void)    { return 0; }
+static int cajeta_xpu_vulkan_ready(void) { return 0; }
+
+static int cajeta_xpu_backend_available(int id) {
+    switch (id) {
+        case CAJ_XPU_CUDA:   return cajeta_xpu_cuda_ready();
+        case CAJ_XPU_HIP:    return cajeta_xpu_hip_ready();
+        case CAJ_XPU_VULKAN: return cajeta_xpu_vulkan_ready();
+        case CAJ_XPU_CPU:    return 1;
+        default:             return 0;
+    }
+}
+
+// Caller holds g_xpu_cuda_lock. Picks + caches the active backend.
+static int cajeta_xpu_select_locked(void) {
+    if (g_xpu_active != -2) return g_xpu_active;
+    int forced = cajeta_xpu_backend_id_by_name(getenv("CAJETA_XPU_BACKEND"));
+    for (int id = 0; id < CAJ_XPU_COUNT; ++id) {
+        if (forced != CAJ_XPU_NONE && id != forced) continue;
+        if (!(g_xpu_bundled & (1u << id))) continue;     // not bundled in
+        if (cajeta_xpu_backend_available(id)) { g_xpu_active = id; return id; }
+    }
+    g_xpu_active = CAJ_XPU_NONE;
+    // Precise, once: degradation is a build-time contract (locked decision #3).
+    char set[128]; size_t n = 0; set[0] = '\0';
+    for (int id = 0; id < CAJ_XPU_COUNT; ++id) {
+        if (!(g_xpu_bundled & (1u << id))) continue;
+        const char* nm = cajeta_xpu_backend_name(id);
+        n += (size_t) snprintf(set + n, sizeof(set) - n, "%s%s",
+                               set[0] ? ", " : "", nm);
+        if (n >= sizeof(set)) break;
+    }
+    fprintf(stderr,
+            "cajeta.xpu: no available backend among {%s}; rebuild with `cpu` "
+            "to enable CPU fallback\n", set);
+    return CAJ_XPU_NONE;
+}
+
+static int cajeta_xpu_active_backend(void) {
+    int r;
+    pthread_mutex_lock(&g_xpu_cuda_lock);
+    r = cajeta_xpu_select_locked();
+    pthread_mutex_unlock(&g_xpu_cuda_lock);
+    return r;
+}
+
+static int cajeta_xpu_active_is_cuda(void) {
+    return cajeta_xpu_active_backend() == CAJ_XPU_CUDA;
+}
+
+// CPU launch: resolve the kernel's registered launcher thunk and run the
+// grid->threads loop (the in-C twin of CpuDriver::launch; cajeta-cpu.md Inc 3),
+// 1-D to match the host-source launch boundary. coord = [tid.xyz, ctaid.xyz,
+// ntid.xyz]; argv is the kernelParams array shared across work-items.
+typedef void (*cajeta_cpu_launch_fn)(void** argv, const int32_t* coord);
+
+static void cajeta_xpu_launch_cpu(const char* name, int32_t gridX, int32_t blockX,
+                                  void* argv) {
+    void* p = __cajeta_xpu_lookup_cpu_kernel(name);
+    if (!p) {
+        fprintf(stderr, "cajeta.xpu: no registered CPU kernel '%s' to launch\n",
+                name);
+        return;
+    }
+    cajeta_cpu_launch_fn fn = (cajeta_cpu_launch_fn) p;
+    int32_t coord[9] = {0, 0, 0, 0, 0, 0, blockX, 1, 1};   // ntid = (blockX,1,1)
+    for (int32_t cx = 0; cx < gridX; ++cx) {
+        coord[3] = cx;                                      // ctaid.x
+        for (int32_t tx = 0; tx < blockX; ++tx) {
+            coord[0] = tx;                                  // tid.x
+            fn((void**) argv, coord);
+        }
+    }
+}
+
+// --- Buffer<T> device memory (backend-dispatched) ---------------------------
 // The Buffer<T> stdlib methods (alloc/upload/download/free) are ordinary
 // Cajeta now; they construct the handle via `heap`/`stack` + the generated
 // constructor and forward byte-sized primitives here. The element byte size
 // is supplied by the compiler (Buffer<T>.elementBytes() intrinsic), so these
 // symbols are monomorphism-independent: they speak only int64 handles and
-// byte counts.
+// byte counts. The int64 handle is the active backend's device pointer (CUDA/
+// HIP), buffer-table index (Vulkan), or host block (CPU) — consistent within a
+// run because the backend is fixed at first device touch.
 //
 // `host` is a Cajeta T[] header — { i64 count, [count x T] data } laid out
 // contiguously — so the element bytes begin at offset 8 (matches
@@ -4191,29 +4330,60 @@ void* __cajeta_xpu_lookup_cpu_kernel(const char* name) {
 // the device side is keyed on the int64 handle, so self is ignored.
 int64_t __cajeta_xpu_buffer_alloc(void* self, uint64_t byteCount) {
     (void) self;
-    if (byteCount == 0 || !cajeta_xpu_cuda_ready()) return 0;
-    cajeta_cudeviceptr p = 0;
-    if (g_xpu_cuda.cuMemAlloc(&p, (size_t) byteCount) != 0) return 0;
-    return (int64_t) p;
+    if (byteCount == 0) return 0;
+    switch (cajeta_xpu_active_backend()) {
+        case CAJ_XPU_CUDA: {
+            cajeta_cudeviceptr p = 0;
+            if (g_xpu_cuda.cuMemAlloc(&p, (size_t) byteCount) != 0) return 0;
+            return (int64_t) p;
+        }
+        case CAJ_XPU_CPU: {
+            void* p = malloc((size_t) byteCount);   // CPU "device" memory = host
+            return (int64_t) (intptr_t) p;
+        }
+        default: return 0;   // HIP/Vulkan: Inc 4.2/4.3; none: diagnostic emitted
+    }
 }
 void __cajeta_xpu_buffer_upload(void* self, int64_t handle, void* host,
                                 uint64_t byteCount) {
     (void) self;
-    if (!handle || !host || byteCount == 0 || !cajeta_xpu_cuda_ready()) return;
+    if (!handle || !host || byteCount == 0) return;
     const void* data = (const void*) ((const char*) host + 8);
-    g_xpu_cuda.cuMemcpyHtoD((cajeta_cudeviceptr) handle, data, (size_t) byteCount);
+    switch (cajeta_xpu_active_backend()) {
+        case CAJ_XPU_CUDA:
+            g_xpu_cuda.cuMemcpyHtoD((cajeta_cudeviceptr) handle, data,
+                                    (size_t) byteCount);
+            return;
+        case CAJ_XPU_CPU:
+            memcpy((void*) (intptr_t) handle, data, (size_t) byteCount);
+            return;
+        default: return;
+    }
 }
 void __cajeta_xpu_buffer_download(void* self, int64_t handle, void* host,
                                   uint64_t byteCount) {
     (void) self;
-    if (!handle || !host || byteCount == 0 || !cajeta_xpu_cuda_ready()) return;
+    if (!handle || !host || byteCount == 0) return;
     void* data = (void*) ((char*) host + 8);
-    g_xpu_cuda.cuMemcpyDtoH(data, (cajeta_cudeviceptr) handle, (size_t) byteCount);
+    switch (cajeta_xpu_active_backend()) {
+        case CAJ_XPU_CUDA:
+            g_xpu_cuda.cuMemcpyDtoH(data, (cajeta_cudeviceptr) handle,
+                                    (size_t) byteCount);
+            return;
+        case CAJ_XPU_CPU:
+            memcpy(data, (const void*) (intptr_t) handle, (size_t) byteCount);
+            return;
+        default: return;
+    }
 }
 void __cajeta_xpu_buffer_free(void* self, int64_t handle) {
     (void) self;
-    if (!handle || !cajeta_xpu_cuda_ready()) return;
-    g_xpu_cuda.cuMemFree((cajeta_cudeviceptr) handle);
+    if (!handle) return;
+    switch (cajeta_xpu_active_backend()) {
+        case CAJ_XPU_CUDA: g_xpu_cuda.cuMemFree((cajeta_cudeviceptr) handle); return;
+        case CAJ_XPU_CPU:  free((void*) (intptr_t) handle); return;
+        default: return;
+    }
 }
 
 // --- Launch + module registration -------------------------------------------
@@ -4223,9 +4393,10 @@ void __cajeta_xpu_buffer_free(void* self, int64_t handle) {
 // NVPTX path (cuLaunchKernel via the dlopen'd driver) lands in the host-launch
 // runtime; this is the not-yet-wired no-op so the symbol resolves and host
 // codegen of a launch site links.
-void __cajeta_xpu_launch(const char* kernelName, int32_t gridX, int32_t blockX,
-                         uint32_t sharedBytes, void* argv) {
-    if (!kernelName || !cajeta_xpu_cuda_ready()) return;
+// CUDA launch: lazily load the module + resolve the function, then 1-D launch.
+static void cajeta_xpu_launch_cuda(const char* kernelName, int32_t gridX,
+                                   int32_t blockX, uint32_t sharedBytes,
+                                   void* argv) {
     pthread_mutex_lock(&g_xpu_cuda_lock);
     struct cajeta_xpu_module* e = cajeta_xpu_find_module(kernelName);
     if (e) {
@@ -4255,6 +4426,22 @@ void __cajeta_xpu_launch(const char* kernelName, int32_t gridX, int32_t blockX,
                               (void**) argv, /*extra=*/NULL);
 }
 
+// The host-source `kernel.launch(...)` entry point: dispatch to the active
+// backend (chosen + cached on first device touch).
+void __cajeta_xpu_launch(const char* kernelName, int32_t gridX, int32_t blockX,
+                         uint32_t sharedBytes, void* argv) {
+    if (!kernelName) return;
+    switch (cajeta_xpu_active_backend()) {
+        case CAJ_XPU_CUDA:
+            cajeta_xpu_launch_cuda(kernelName, gridX, blockX, sharedBytes, argv);
+            return;
+        case CAJ_XPU_CPU:
+            cajeta_xpu_launch_cpu(kernelName, gridX, blockX, argv);
+            return;
+        default: return;   // HIP/Vulkan: Inc 4.2/4.3; none: diagnostic emitted
+    }
+}
+
 // Register a kernel's compiled cubin image under its PTX entry name. The
 // device-cubin pass emits a module global constructor that calls this; the
 // launch path (above) loads the CUDA module + resolves the function lazily on
@@ -4262,7 +4449,6 @@ void __cajeta_xpu_launch(const char* kernelName, int32_t gridX, int32_t blockX,
 // stays valid for the process lifetime.
 void __cajeta_xpu_register_module(const char* kernelName, const void* image,
                                   uint64_t len) {
-    (void) len;
     if (!kernelName || !image) return;
     pthread_mutex_lock(&g_xpu_cuda_lock);
     if (!cajeta_xpu_find_module(kernelName)
@@ -4271,6 +4457,7 @@ void __cajeta_xpu_register_module(const char* kernelName, const void* image,
         strncpy(e->name, kernelName, sizeof(e->name) - 1);
         e->name[sizeof(e->name) - 1] = '\0';
         e->image = image;
+        e->len = len;
         e->module = NULL;
         e->function = NULL;
     }

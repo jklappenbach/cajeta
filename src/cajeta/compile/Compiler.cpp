@@ -869,6 +869,14 @@ namespace cajeta {
                 base.resize(base.size() - 3);
             }
 
+            // The bundled-backend manifest the runtime dispatcher reads: one
+            // ctor per selected backend calling __cajeta_xpu_register_backend.
+            // (cajeta-cpu.md Increment 4 — explicit-only bundling.)
+            std::vector<cajeta::xpu::Backend> layerBackends;
+            for (XpuBackend cb : xpuBackends) layerBackends.push_back(toLayer(cb));
+            cajeta::xpu::emitBackendManifest(layerBackends,
+                                             *module->getLlvmModule());
+
             // Each selected backend embeds its registration into this module's
             // host module; with --xpu-emit it also drops an inspection artifact.
             for (XpuBackend cb : xpuBackends) {
