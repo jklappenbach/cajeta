@@ -16,18 +16,24 @@ Tracks the R1–R5 rollout of the async runtime described in `ThreadModel.md`. C
 
 ## Current status
 
-**Phases R1 through R5-D + error-model v1 complete.** Full structured-concurrency story functional end-to-end: stackful fibers, scope joins, cancellation, exception escalation. Error model has stdlib Throwable hierarchy (in `package cajeta.error;`, with `cause` chaining), `throws` clause grammar + advisory lint with try/catch coverage awareness, runtime exception path on `void*`, Task<T> exception slot with await re-raise, and stack-trace capture at throw sites with auto-print on uncaught.
+**Phases R1 through R9 + error-model v1 complete.** Full structured-concurrency
+story functional end-to-end: stackful fibers on a multi-carrier work-stealing
+pool, scope joins, cancellation, exception escalation, atomics, timers, async
+I/O reactor. Error model has stdlib Throwable hierarchy (in `package cajeta.error;`,
+with `cause` chaining), `throws` clause grammar + advisory lint with try/catch
+coverage awareness, runtime exception path on `void*`, Task<T> exception slot
+with await re-raise, and stack-trace capture at throw sites with auto-print on
+uncaught.
 
 > **Scheduler reality (authoritative — this doc is the source of truth).** The
-> executor is a **single carrier OS thread** running all fibers cooperatively.
-> "Complete" above means the R1–R5 *structured-concurrency* rollout is complete on
-> that single-carrier model — it does **not** mean the concurrency runtime is
-> finished. Specifically NOT yet shipped: a **work-stealing multi-carrier pool**
-> (so there is no wall-clock parallelism — `spawn`ed fibers interleave on one
-> thread), a **timer wheel** (`withTimeout`/`withDeadline`), and an **async I/O
-> reactor / netpoller** (so a blocking syscall inside a fiber blocks every fiber).
-> If `ThreadModel.md` or `Features.md` ever read as if those three shipped, they are
-> wrong and this note governs. They are the planned R8/R9 work.
+> executor is a **multi-carrier work-stealing pool** (Chase–Lev deques per
+> carrier). Default carrier count is `min(nproc, 4)`; `CAJETA_CARRIERS=N`
+> overrides for deterministic-order debug runs (set to 1 for the
+> single-carrier model the early releases shipped). Timer wheel ships
+> (`__cajeta_task_wait_timeout` + a sorted-list timer thread), backing
+> `cajeta.time.Duration`, `Tasks.withTimeout<R>`, and `Tasks.withDeadline<R>`.
+> Async I/O reactor ships (Linux epoll), with `Cajeta.io*` intrinsics for
+> non-blocking fd registration / wait. Atomics ship as `cajeta.threading.AtomicInt32/64` (R8.1).
 
 **R5-C / R5-D — shipped (named here precisely, since `Features.md` S-805 long read "designed"):**
 - [x] R5-C cooperative cancellation — `CancellationException extends RecoverableException`; scope sets each child fiber's `cancel_with`; `__cajeta_task_wait` re-raises it on the next park-resume (commit `fa7c7f8`).

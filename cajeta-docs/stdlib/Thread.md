@@ -11,7 +11,7 @@
 ## Non-goals (v1)
 
 - Preemptive cancellation. Cancellation is cooperative — a task observes a cancel signal at its next `await`.
-- Custom executors beyond the built-in scheduler. (Today that scheduler is a single cooperative carrier; a work-stealing pool is planned, not shipped.)
+- Custom executors beyond the built-in scheduler. (The default is a multi-carrier work-stealing pool sized via `CAJETA_CARRIERS`; replacing it wholesale is not in scope.)
 - Distributed actors (RPC across machines).
 - Effect handlers / algebraic effects.
 - Async iteration / streaming (`AsyncIterator` style); covered separately if added.
@@ -35,7 +35,7 @@ Every `async` function has return type `Task<T>`. Awaiting a `Task<T>` either:
 
 `await` is only legal inside `async fn` / inside a `spawn` body. Calling an `async fn` without `await` produces an unstarted `Task<T>` — it does nothing until awaited or `spawn`ed.
 
-Under the hood: each task is a **stackful fiber** — its own heap-allocated stack (~64 KB initial) plus a saved `ucontext`. A single carrier OS thread runs many fibers cooperatively; `await` parks the running fiber and switches back to the carrier, which picks another ready fiber. No `async fn` codegen transformation is required — fibers' suspension lives in the C runtime's context-switch primitive, and from the compiler's perspective an `async fn` is an ordinary function that happens to be invoked through a trampoline.
+Under the hood: each task is a **stackful fiber** — its own heap-allocated stack (~64 KB initial) plus a saved `ucontext`. A pool of carrier OS threads (`CAJETA_CARRIERS=N`, default `min(nproc, 4)`) runs many fibers cooperatively across all carriers; `await` parks the running fiber and switches back to its carrier, which picks another ready fiber or steals one from a peer's deque. No `async fn` codegen transformation is required — fibers' suspension lives in the C runtime's context-switch primitive, and from the compiler's perspective an `async fn` is an ordinary function that happens to be invoked through a trampoline.
 
 This is Java 21's virtual-thread model rather than the stackless state-machine model used by Rust/Swift/C#. We took stackful for two reasons: it ships much faster (no async-fn rewrite pass) and it removes function coloring — any function can call `await`, not just one declared `async`. The per-fiber stack cost is real but matches Java 21's tradeoff; if measurements ever demand it, stackless rewrite remains possible later without changing the surface syntax.
 
@@ -454,7 +454,7 @@ A small C runtime ships in `runtime/native/`, paralleling the existing exception
 - **Mutex / Lock / RwLock primitives** — wrappers over the platform's pthread primitives (`pthread_mutex_t`, `pthread_rwlock_t`). The async-aware suspending behaviour layers a wait queue on top — the OS lock is held only across the actual critical section, not during the user-task's suspension.
 - **Condition variable primitive** — wrapper over `pthread_cond_t` with the same async-aware wait queue.
 - **Fiber primitive** — `__cajeta_task_run(ctx, trampoline)` allocates a stackful fiber (its own ~64 KB stack + `ucontext_t`) and queues it on the ready list. `__cajeta_task_wait(&task->done)` parks the current fiber if called from inside one (cooperative yield to the carrier), or `pthread_cond_wait`s on the global done-condvar if called from the main thread. `__cajeta_task_complete(&task->done)` flips the flag, broadcasts the done-condvar, and moves every parked fiber back to the ready queue so they can recheck their await conditions.
-- **Executor** — N OS-thread carriers, each owning a Chase-Lev work-stealing deque (`cajeta_carrier_deque`): atomic `top` / `bottom` sequence numbers over a fixed-size circular slot array, single-producer / multi-consumer. Owner-side (`push_bottom` / `pop_bottom`) drains LIFO — the cache-warm end. The `steal` operation (FIFO from the deque's perspective) is what peer carriers call when their own deque empties. R8.3 — N defaults to 1 (matching all prior releases' single-carrier semantics) and is set via `$CAJETA_CARRIERS` at the first `__cajeta_task_run`, clamped to `[1, CAJETA_MAX_CARRIERS=16]`. Owner-side pushes still take a per-carrier `deque_mutex` for the cross-thread case (main thread / lock-release / condvar-notify pushing into a foreign deque), preserving Chase-Lev's single-producer contract under the mutex. The pool condvar (`__cajeta_task_queue_cond`) wakes idle carriers when work appears anywhere in the pool. **Known gap:** N>1 has an order-dependent deadlock visible only when a sequence of fiber-spawning tests runs in the same process; the default N=1 ships clean. Multi-carrier soak across the full async/threading suite is a follow-up (see `cajeta_runtime.c` § "R8.3 — multi-carrier pool").
+- **Executor** — N OS-thread carriers, each owning a Chase-Lev work-stealing deque (`cajeta_carrier_deque`): atomic `top` / `bottom` sequence numbers over a fixed-size circular slot array, single-producer / multi-consumer. Owner-side (`push_bottom` / `pop_bottom`) drains LIFO — the cache-warm end. The `steal` operation (FIFO from the deque's perspective) is what peer carriers call when their own deque empties. R8.3 — N defaults to `min(_SC_NPROCESSORS_ONLN, 4)` and is overridden by `$CAJETA_CARRIERS` at the first `__cajeta_task_run`, clamped to `[1, CAJETA_MAX_CARRIERS=16]`. Owner-side pushes still take a per-carrier `deque_mutex` for the cross-thread case (main thread / lock-release / condvar-notify pushing into a foreign deque), preserving Chase-Lev's single-producer contract under the mutex. The pool condvar (`__cajeta_task_queue_cond`) wakes idle carriers when work appears anywhere in the pool. The earlier multi-carrier deadlock is no longer reproducible across the full async/threading battery under N=4.
 - **Token primitive** — atomic flag for cancellation; tasks check on resume. (Not yet implemented; lands with R5.)
 
 The user-facing `cajeta.threading.*` classes wrap these C helpers — the runtime entry points are an implementation detail. Today's intrinsic-level path (`Cajeta.lockNew()` / `Cajeta.lockAcquire(p)` / etc.) is a transitional bootstrap that the future `cajeta.threading.Lock` class will subsume; user code should target the class API, not the intrinsics, once they exist.
@@ -489,17 +489,19 @@ Suspension is delivered by `ucontext.h` (`getcontext` / `makecontext` / `swapcon
 ## Implementation status
 
 Full runtime status lives in `cajeta-docs/stdlib/AsyncStatus.md`. As of
-recent commits, R1 through R5-D plus error-model v1 have shipped:
-stackful fibers, a **single-carrier cooperative scheduler**, explicit
-`scope { }` + implicit function-body scopes with join-on-exit, R5-C
-cooperative cancellation, and R5-D scope exception-escalation.
+recent commits, R1 through R9 plus error-model v1 have shipped:
+stackful fibers on a **multi-carrier work-stealing pool**
+(`CAJETA_CARRIERS=N`, default `min(nproc, 4)`), explicit `scope { }` +
+implicit function-body scopes with join-on-exit, R5-C cooperative
+cancellation, R5-D scope exception-escalation, atomic ints (R8.1),
+Chase–Lev work-stealing deques (R8.2), the multi-carrier pool itself
+(R8.3), a fiber-aware timer (R9.1 — backing `Duration` / `withTimeout` /
+`withDeadline`), and an epoll-based async I/O reactor (R9.4).
 
-**NOT YET shipped** (despite earlier drafts of this section claiming
-otherwise): a work-stealing multi-carrier pool, a timer wheel
-(`withTimeout`/`withDeadline`), and an async I/O reactor / netpoller.
-Today a single carrier OS thread runs all fibers cooperatively, and any
-blocking syscall inside a fiber blocks every fiber. Those three are the
-planned R8/R9 work.
+The user-facing surface also gained spawn-of-lambda — `SpawnExpression`
+accepts a function-typed scope field as the inner call, letting
+stdlib utility methods (like `Tasks.withTimeout`) spawn a callable
+the user passed in. v1 restricts to heap-ownership / primitive return.
 
 ## Pinning tests
 
@@ -507,12 +509,24 @@ planned R8/R9 work.
 | ------- | ----- |
 | `Task<T>` typing | `test/parser/TaskTypingTests.cpp` |
 | `spawn` syntax + drop semantics | `test/parser/SpawnDropTests.cpp`, `test/parser/AsyncSyntaxTests.cpp` |
+| `spawn` of a function-typed local | `test/parser/SpawnLambdaTests.cpp` |
 | `detach` syntax | `test/parser/DetachTests.cpp` |
 | Per-fiber drop chain | `test/parser/PerFiberDropChainTests.cpp` |
 | `Lock` class + intrinsics | `test/parser/LockIntrinsicTests.cpp`, `test/parser/LockClassTests.cpp` |
+| `Mutex` / `RwLock` / `Semaphore` | `test/parser/MutexTests.cpp`, `test/parser/RwLockTests.cpp`, `test/parser/SemaphoreTests.cpp` |
+| `Channel<T>` | `test/parser/ChannelTests.cpp` |
+| Atomics | `test/parser/AtomicTests.cpp` |
+| Timer + `Duration` | `test/parser/TimerTests.cpp`, `test/parser/DurationTests.cpp` |
+| `withTimeout` / `withDeadline` | `test/parser/WithTimeoutTests.cpp`, `test/parser/WithDeadlineTests.cpp` |
+| I/O reactor | `test/parser/IoReactorTests.cpp` |
 
 ## Open items
 
 Surface classes `Fiber` and `Thread` haven't been declared in
 cajeta-source form yet (the runtime is shipped; the wrappers are
 designed). Tracked in `Features.md` as S-804.
+
+V2 candidates listed as known gaps but not yet scheduled: async
+iteration (`for x in asyncIterable`), `Channel.select`, a `runBlocking`
+escape hatch for sync entry points, and `actor`-style sugar over the
+sync primitives.
