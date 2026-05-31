@@ -381,6 +381,14 @@ namespace cajeta {
         static bool nodeHasStackReturn(const AbstractSyntaxNodePtr& node);
         static bool blockHasStackReturn(const BlockPtr& block);
 
+        // [heap-optional-return] lint: warn when a method declared
+        // `#Optional<T>` returns only `heap Optional<...>(...)` values
+        // — the heap allocation is scope-bounded (becomes the return,
+        // never escapes elsewhere) and can usually be a value-return
+        // `stack Optional<...>(...)` via the M3 sret/NRVO ABI. Fires
+        // once per method (statically-deduped) from generateCode.
+        void lintHeapOptionalReturn();
+
         // Push a fresh (empty) drop frame onto the stack. Block::generateCode
         // calls this at its entry; the frame collects every owned local
         // declared inside the block until the matching pop.

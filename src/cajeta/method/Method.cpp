@@ -3,6 +3,8 @@
 //
 
 #include "Method.h"
+#include <functional>
+#include <unordered_set>
 #include "../type/CajetaClass.h"
 #include "../type/CajetaView.h"
 #include "../type/CajetaArray.h"
@@ -147,6 +149,127 @@ namespace cajeta {
             if (nodeHasStackReturn(c)) return true;
         }
         return false;
+    }
+
+    // --- Lint helpers for [heap-optional-return] --------------------------
+    // A return expression matches the "scope-bounded heap C(...)" pattern
+    // when it's a `heap C(...)` (NewExpression with !stackAlloc) whose
+    // constructed type's canonical class name matches the method's declared
+    // return-type class (modulo `#`). The lint targets `#Optional<T>`
+    // returns whose body's every return is `return heap Optional<...>(...)`
+    // — the heap allocation immediately becomes the return value and the
+    // caller's first observable use, so it could safely be a stack
+    // construction returned by value (sret) instead.
+    static std::string trimTemplateArgs(const std::string& canonical) {
+        auto lt = canonical.find('<');
+        if (lt == std::string::npos) return canonical;
+        return canonical.substr(0, lt);
+    }
+    static bool exprIsHeapCtorOfClass(const ExpressionPtr& e,
+            const std::string& targetClassCanonical) {
+        if (!e) return false;
+        auto ne = dynamic_pointer_cast<NewExpression>(e);
+        if (!ne) return false;
+        if (ne->getStackAlloc()) return false;
+        auto rt = ne->getResolvedType();
+        if (!rt || !rt->getQName()) return false;
+        std::string ctorClass = trimTemplateArgs(
+            rt->getQName()->toCanonical());
+        return ctorClass == targetClassCanonical;
+    }
+    // Walk the method body's nested statement containers and visit every
+    // return statement, calling `visit(retExpr)`. Returns false if any
+    // visit returns false. Mirrors blockHasStackReturn's structural walk.
+    static bool methodVisitReturns(const AbstractSyntaxNodePtr& node,
+            const std::function<bool(const ExpressionPtr&)>& visit);
+    static bool methodVisitReturnsBlock(const BlockPtr& block,
+            const std::function<bool(const ExpressionPtr&)>& visit) {
+        if (!block) return true;
+        for (auto& c : block->getChildren()) {
+            if (!methodVisitReturns(c, visit)) return false;
+        }
+        return true;
+    }
+    static bool methodVisitReturns(const AbstractSyntaxNodePtr& node,
+            const std::function<bool(const ExpressionPtr&)>& visit) {
+        if (!node) return true;
+        if (auto ret = dynamic_pointer_cast<ReturnStatement>(node)) {
+            return visit(ret->getExpression());
+        }
+        if (auto lbl = dynamic_pointer_cast<LabelStatement>(node)) {
+            return methodVisitReturnsBlock(lbl->getBlock(), visit);
+        }
+        if (auto sc = dynamic_pointer_cast<ScopeStatement>(node)) {
+            return methodVisitReturnsBlock(sc->getBlock(), visit);
+        }
+        if (auto iff = dynamic_pointer_cast<IfStatement>(node)) {
+            return methodVisitReturns(iff->getThenBranch(), visit)
+                && methodVisitReturns(iff->getElseBranch(), visit);
+        }
+        if (auto wh = dynamic_pointer_cast<WhileStatement>(node)) {
+            return methodVisitReturns(wh->getBody(), visit);
+        }
+        if (auto fr = dynamic_pointer_cast<ForStatement>(node)) {
+            return methodVisitReturns(fr->getBody(), visit);
+        }
+        if (auto efr = dynamic_pointer_cast<EnhancedForStatement>(node)) {
+            return methodVisitReturns(efr->getBody(), visit);
+        }
+        if (auto dod = dynamic_pointer_cast<DoStatement>(node)) {
+            return methodVisitReturns(dod->getBody(), visit);
+        }
+        for (auto& c : node->getChildren()) {
+            if (!methodVisitReturns(c, visit)) return false;
+        }
+        return true;
+    }
+
+    void Method::lintHeapOptionalReturn() {
+        // Gate: declared return must be `#Optional<...>` (heap ownership
+        // transfer of an Optional). `@HeapReturn` is the escape hatch when
+        // a caller really wants the heap allocation (the annotation may
+        // not exist yet; the lookup is a no-op until it does).
+        if (!returnsOwnership) return;
+        auto rtClass = dynamic_pointer_cast<CajetaClass>(returnType);
+        if (!rtClass || !rtClass->getQName()) return;
+        std::string rtCanonical = trimTemplateArgs(
+            rtClass->getQName()->toCanonical());
+        if (rtCanonical != "cajeta.lang.Optional") return;
+        if (findAnnotation("HeapReturn") != nullptr) return;
+        if (!block) return;
+        // Per-method dedupe: with method-level templates the same Method
+        // can be instantiated many times. Key on parent canonical +
+        // method's labeled canonical so each declaration warns once.
+        static std::unordered_set<std::string> warned;
+        // Dedupe by source-canonical (template args trimmed): the same
+        // source-level method warning shouldn't repeat for each
+        // template instantiation (Stream<int32>.next, Stream<int64>.next
+        // all share one declaration site).
+        std::string parentCanonical = parent && parent->getQName()
+            ? trimTemplateArgs(parent->getQName()->toCanonical())
+            : std::string("");
+        std::string key = parentCanonical + "::" + name;
+        if (warned.count(key)) return;
+        int returnCount = 0;
+        bool allHeapOptional = methodVisitReturnsBlock(block,
+            [&](const ExpressionPtr& e) -> bool {
+                returnCount++;
+                return exprIsHeapCtorOfClass(e, "cajeta.lang.Optional");
+            });
+        if (!allHeapOptional || returnCount == 0) return;
+        warned.insert(key);
+        std::cerr << "warning: [heap-optional-return] "
+            << (parentCanonical.empty()
+                ? std::string("") : parentCanonical + ".")
+            << name
+            << " returns #Optional<...> but every return is a "
+            << "scope-bounded `heap Optional<...>(...)`. Consider "
+            << "dropping `#` from the return type and switching to "
+            << "`return stack Optional<...>(...)` — the value lands "
+            << "in the caller's slot by copy (sret), avoiding a heap "
+            << "allocation per call. Suppress with @HeapReturn when "
+            << "the caller really needs heap ownership."
+            << std::endl;
     }
 
     bool Method::returnsStackValue() {
@@ -820,6 +943,12 @@ namespace cajeta {
     }
 
     void Method::generateCode() {
+        // [heap-optional-return] lint fires before the abstract /
+        // method-template early-returns: the body is still walkable on
+        // template declarations and the warning is independent of LLVM
+        // emission. Dedupes internally so a single template doesn't
+        // re-warn per instantiation.
+        lintHeapOptionalReturn();
         // Abstract methods carry no body — dispatch goes to a concrete
         // implementation via the vtable.
         if (abstractFlag) return;
