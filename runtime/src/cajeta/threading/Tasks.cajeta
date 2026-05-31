@@ -6,7 +6,8 @@ import cajeta.time.Duration;
 /**
  * Task-related utilities. v1 surface: `withTimeout(Duration, Task<R>)` —
  * wait on a previously-spawned task with a deadline, reporting completion
- * vs. timeout via `Optional<R>`.
+ * vs. timeout via `Optional<R>`, and signalling cooperative cancellation
+ * to the body on timeout.
  *
  * ## API shape
  *
@@ -23,40 +24,33 @@ import cajeta.time.Duration;
  * the generic form and remains for callers already pinned to it. New
  * code should prefer the templated form.
  *
- * A lambda-taking shape — `withTimeoutInt32(d, () -> compute())` per
- * cajeta-docs/stdlib/Thread.md § withTimeout — is the documented
- * eventual API but blocked on `spawn` supporting function-typed
- * callees. v1 of SpawnExpression only handles bare class-method
- * invocations (cajeta-docs/stdlib/AsyncStatus.md § Plan: Task<T>);
- * spawn-of-lambda lands separately. The Task<int32> form covers the
- * use case in the meantime.
+ * A lambda-taking sibling shape — `withTimeout(d, () -> compute())` per
+ * cajeta-docs/stdlib/Thread.md § withTimeout — works via spawn-of-lambda
+ * (the caller wraps the call in a lambda and spawns it; the timeout
+ * machinery layers on top, same as the pre-spawned-Task form).
  *
- * ## withTimeout semantics (v1 limitations)
+ * ## withTimeout semantics
  *
  * The function waits on the task's done flag with the supplied deadline.
  * The `Optional<R>` return reports whether the body finished inside the
  * deadline — `present` iff done flipped before the deadline expired,
  * `empty` otherwise.
  *
- * **The body is always awaited to completion before withTimeout returns.**
- * v1 does not cancel the body when the deadline expires; the deadline is a
- * *reporting* boundary, not a *termination* boundary. A slow body still
- * runs to natural completion; the only observable effect of an expired
- * deadline is the `empty` return. This matches the runtime primitive
- * (R9.1 — `__cajeta_task_wait_timeout` waits without cancelling) and
- * avoids the two correctness hazards that v1 isn't ready to solve:
+ * On timeout: the body is signalled for cooperative cancellation via
+ * `Cajeta.taskCancel(t)` (R5-C — sets `cancel_with` on the task's fiber).
+ * The body sees the cancellation at its next `await` and the runtime
+ * throws the sentinel inside its frame. withTimeout then awaits the task
+ * in a try/catch — bodies that yield short-circuit via the thrown
+ * cancellation, bodies without yield points still run to natural
+ * completion (no preemption). The exception is consumed inside withTimeout
+ * so the empty Optional is the only observable signal.
  *
- *   - Returning before the spawn's surrounding scope drop would block the
- *     same scope's exit on the still-running task anyway (scope owns the
- *     task's drop and waits for done before freeing).
- *   - Lambda captures pointing into the caller's stack would dangle if
- *     withTimeout returned with the body still running and the caller
- *     popped its frame.
- *
- * Proper early-return-on-timeout requires fiber cancellation wired through
- * the scope's drop chain — tracked as part of the broader scope+cancel
- * work in R5-C / R9.4. Until that lands, callers who need to interrupt a
- * runaway body must use a cooperative cancellation flag inside the body.
+ * The surrounding scope still owns the task; the caller's scope drop
+ * waits on the task's done flag before freeing. For cancellation to
+ * shorten the wall-clock wait, body code must include at least one yield
+ * point (await, channel receive, Lock.acquire, etc.). Pure CPU loops
+ * with no yields are not interruptible in v1 — this matches the runtime
+ * primitive (`__cajeta_task_wait_timeout` waits without preempting).
  */
 public class Tasks {
     // Returns ownership (heap-allocated Optional) — borrow-return on a
@@ -68,7 +62,21 @@ public class Tasks {
         int64 deadline = Cajeta.currentTimeNanos() + d.toNanos();
         pointer done = Cajeta.taskDonePointer(t);
         int32 ok = Cajeta.taskWaitTimeout(done, deadline);
-        int32 val = await t;
+        if (ok != 1) {
+            // Timeout: signal cooperative cancellation. The body sees this
+            // at its next await; bodies without yield points still run to
+            // completion.
+            Cajeta.taskCancel(t);
+        }
+        // Await drains the body to settle. If the body was cancelled, the
+        // await re-raises the sentinel; consume it here so callers only
+        // see the empty Optional. The runtime clears task->exception on
+        // re-raise so the enclosing scope drop doesn't re-propagate.
+        int32 val = 0;
+        try {
+            val = await t;
+        } catch (Exception e) {
+        }
         if (ok == 1) {
             return heap Optional<int32>(true, val);
         }
@@ -79,10 +87,23 @@ public class Tasks {
         int64 deadline = Cajeta.currentTimeNanos() + d.toNanos();
         pointer done = Cajeta.taskDonePointer(t);
         int32 ok = Cajeta.taskWaitTimeout(done, deadline);
-        R val = await t;
         if (ok == 1) {
+            R val = await t;
             return heap Optional<R>(true, val);
         }
-        return heap Optional<R>(false, val);
+        // Timeout — cancel cooperatively and drain. The await may throw
+        // the cancellation sentinel; consume it so callers only see the
+        // empty Optional. The runtime clears task->exception on re-raise
+        // so the enclosing scope drop doesn't re-propagate.
+        Cajeta.taskCancel(t);
+        try {
+            R drained = await t;
+            return heap Optional<R>(false, drained);
+        } catch (Exception e) {
+        }
+        // Body raised after cancel — task->value not safely readable.
+        // `null` codegens as zero for primitive R, null ptr for class R;
+        // the slot is unused on the empty path either way.
+        return heap Optional<R>(false, null);
     }
 }

@@ -32,6 +32,21 @@ int32_t runI32(const std::string& src) {
 // returns Optional.present(value); `run` encodes present-ness as
 // 1000+value (so the empty-vs-present-vs-wrong-value distinction is
 // observable from a single int32 return).
+// Probe: `heap Optional<int32>(false, null)` for primitive R — does the
+// compiler accept `null` in the T-value position when T is primitive?
+TEST(WithTimeoutTests, probeOptionalPrimitiveNull) {
+    auto src =
+        "package test;\n"
+        "import cajeta.lang.Optional;\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Optional<int32> o = heap Optional<int32>(false, null);\n"
+        "        return o.orElse(99);\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 99);
+}
+
 TEST(WithTimeoutTests, fastTaskReturnsPresentValue) {
     auto src =
         "package test;\n"
