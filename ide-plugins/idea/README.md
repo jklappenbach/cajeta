@@ -10,12 +10,16 @@ the v0.1 scope defined in [`Plan.md`](Plan.md):
   Ships in **degraded mode** (regex over stderr) until the
   compiler-side `--lint --diag-format=json --stdin` work lands;
   see Plan.md § Follow-up.
-- **Markdown comments** — comment regions fold to a single-line
-  summary; caret enters → fold expands to raw source; caret
-  leaves → re-collapses. Obsidian live-preview shape, with rich
-  HTML rendering deferred to a follow-up (see
-  `TODO(rendered-markdown-html)` in
-  `markdown/CajetaCommentFoldingBuilder.kt`).
+- **Markdown comments** — comment regions render as rich HTML
+  (full CommonMark + GFM via the bundled `org.jetbrains:markdown`
+  library); caret enters → that comment reverts to raw source for
+  editing; caret leaves → re-renders. Obsidian live-preview shape.
+  Rendering is implemented in `markdown/MarkdownFoldRenderer.kt`
+  (block comments) and `markdown/InlineMarkdownRenderer.kt`
+  (trailing `//`), behind the `markdown/engines/` engine seam.
+  Deferred (cosmetic): a per-comment gutter-icon toggle and a
+  menu toggle-action — a global Settings → Cajeta checkbox covers
+  the same need today.
 
 ## Build
 
