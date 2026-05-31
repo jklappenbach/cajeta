@@ -2195,7 +2195,22 @@ namespace cajeta {
             // static-dispatch path picks up targetClass.
             if (receiver) {
                 if (auto* a = llvm::dyn_cast<llvm::AllocaInst>(receiver)) {
-                    receiver = builder->CreateLoad(a->getAllocatedType(), a);
+                    // Two alloca shapes can show up here:
+                    //   * ptr / primitive slot — a StackField for a class
+                    //     local stores the heap (or sret-slot) pointer in a
+                    //     `ptr`-typed slot; load-through materializes the
+                    //     instance pointer for dispatch.
+                    //   * struct slot — an sret slot from a chained
+                    //     value-returning MCE (e.g. `Duration.ofMillis(3)
+                    //     .toNanos()`). The alloca IS the in-place value's
+                    //     address; load-through would yield the struct
+                    //     value and the downstream vtable load /
+                    //     `this` pass would receive a non-pointer (task
+                    //     #46, M5(b) chained-sret gap). Skip the load —
+                    //     the slot pointer itself is the receiver address.
+                    if (!a->getAllocatedType()->isStructTy()) {
+                        receiver = builder->CreateLoad(a->getAllocatedType(), a);
+                    }
                 } else if (dynamic_pointer_cast<ArrayIndexExpression>(exprChild)) {
                     receiver = builder->CreateLoad(
                         llvm::PointerType::get(*module->getLlvmContext(), 0), receiver);
