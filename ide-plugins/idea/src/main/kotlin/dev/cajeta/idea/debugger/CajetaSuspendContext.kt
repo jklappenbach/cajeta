@@ -4,21 +4,41 @@ import com.intellij.icons.AllIcons
 import com.intellij.ui.ColoredTextContainer
 import com.intellij.ui.SimpleTextAttributes
 import com.intellij.xdebugger.XSourcePosition
+import com.intellij.xdebugger.frame.XCompositeNode
 import com.intellij.xdebugger.frame.XExecutionStack
 import com.intellij.xdebugger.frame.XStackFrame
 import com.intellij.xdebugger.frame.XSuspendContext
+import com.intellij.xdebugger.frame.XValueChildrenList
 
 /**
- * Debugger-UI view of a parked program. CP6c shows the call stack with each
- * frame's source position so the editor parks on the line; per-frame variables
- * (computeChildren) arrive in CP6d.
+ * Debugger-UI view of a parked program. Shows the call stack with each frame's
+ * source position (CP6c) and, when a [session] is wired, the frame's locals in
+ * the Variables view via [computeChildren] (CP6d). The scopes/variables fetch
+ * lives in [CajetaDebugSession.loadVariables]; this frame only renders.
  */
 class CajetaStackFrame(
     val frame: DapStackFrame,
     private val position: XSourcePosition?,
+    private val session: CajetaDebugSession? = null,
 ) : XStackFrame() {
 
     override fun getSourcePosition(): XSourcePosition? = position
+
+    override fun computeChildren(node: XCompositeNode) {
+        val ds = session
+        if (ds == null) {
+            node.addChildren(XValueChildrenList.EMPTY, true)
+            return
+        }
+        ds.loadVariables(frame.id).thenAccept { vars ->
+            val children = XValueChildrenList()
+            for (v in vars) children.add(v.name, CajetaValue(v))
+            node.addChildren(children, true)
+        }.exceptionally {
+            node.setErrorMessage("Failed to load variables: ${it.message}")
+            null
+        }
+    }
 
     /** Stable key so the UI keeps frame selection across steps. */
     override fun getEqualityObject(): Any = "${frame.path}:${frame.line}:${frame.name}"

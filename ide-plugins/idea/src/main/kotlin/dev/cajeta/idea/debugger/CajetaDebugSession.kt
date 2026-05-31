@@ -13,9 +13,9 @@ import java.util.concurrent.CompletableFuture
  * order the cajeta server accepts). The server then JIT-runs the program;
  * `stopped`/`exited`/`terminated`/`output` events fire the callbacks.
  *
- * Stack/scopes/variables mapping and real breakpoint sync arrive in CP6c/d;
- * here [stackTrace] is a raw passthrough and [launch] accepts a static
- * breakpoint list so the skeleton can prove a stop end-to-end.
+ * Stack frames ([stackTrace]/[parseStackFrames]) and per-frame locals
+ * ([loadVariables], scopes -> variables) are decoded here so the platform layer
+ * just renders them; value edit (setVariable) arrives in CP6e.
  */
 class CajetaDebugSession(private val client: DapClient) {
 
@@ -87,6 +87,39 @@ class CajetaDebugSession(private val client: DapClient) {
     /** Raw stackTrace response; structured frames via [parseStackFrames]. */
     fun stackTrace(): CompletableFuture<Json> = client.sendRequest("stackTrace")
 
+    /** DAP `scopes` for a frame; structured via [parseScopes]. */
+    fun scopes(frameId: Int): CompletableFuture<Json> =
+        client.sendRequest("scopes", Json.obj("frameId" to Json.of(frameId)))
+
+    /** DAP `variables` for a scope/var reference; structured via [parseVariables]. */
+    fun variables(variablesReference: Int): CompletableFuture<Json> =
+        client.sendRequest(
+            "variables",
+            Json.obj("variablesReference" to Json.of(variablesReference)),
+        )
+
+    /**
+     * Resolve all locals for a frame: `scopes(frameId)` then `variables(ref)`
+     * for each scope, concatenated in scope order. The cajeta server exposes a
+     * single "Locals" scope today, but this handles any number. The orchestration
+     * lives here (not the platform layer) so it's unit-testable against the fake
+     * server and the real binary; the XStackFrame just renders the result.
+     */
+    fun loadVariables(frameId: Int): CompletableFuture<List<DapVariable>> =
+        scopes(frameId).thenCompose { scopesResponse ->
+            val scopes = parseScopes(scopesResponse)
+            var chain = CompletableFuture.completedFuture(mutableListOf<DapVariable>())
+            for (scope in scopes) {
+                chain = chain.thenCompose { acc ->
+                    variables(scope.variablesReference).thenApply { varsResponse ->
+                        acc.addAll(parseVariables(varsResponse))
+                        acc
+                    }
+                }
+            }
+            chain.thenApply { it.toList() }
+        }
+
     /** DAP `disconnect`, then tear down the client transport. */
     fun disconnect(): CompletableFuture<Void?> =
         client.sendRequest("disconnect")
@@ -133,6 +166,49 @@ class CajetaDebugSession(private val client: DapClient) {
             }
             return out
         }
+
+        /**
+         * Map a DAP `scopes` response body to scope records. variablesReference
+         * is the handle passed to [variables]. Pure — unit-tested.
+         */
+        fun parseScopes(scopesResponse: Json): List<DapScope> {
+            val scopes = scopesResponse.opt("body")?.opt("scopes") ?: return emptyList()
+            val out = mutableListOf<DapScope>()
+            for (i in 0 until scopes.size) {
+                val s = scopes[i]
+                out.add(
+                    DapScope(
+                        name = s.opt("name")?.asString() ?: "<scope>",
+                        variablesReference = s.opt("variablesReference")?.asInt() ?: 0,
+                        expensive = s.opt("expensive")?.asBool() ?: false,
+                    ),
+                )
+            }
+            return out
+        }
+
+        /**
+         * Map a DAP `variables` response body to variable records. A non-zero
+         * variablesReference marks an expandable value (children fetched by a
+         * further [variables] call); the cajeta server emits 0 (leaf) today.
+         * Pure — unit-tested.
+         */
+        fun parseVariables(variablesResponse: Json): List<DapVariable> {
+            val vars = variablesResponse.opt("body")?.opt("variables") ?: return emptyList()
+            val out = mutableListOf<DapVariable>()
+            for (i in 0 until vars.size) {
+                val v = vars[i]
+                out.add(
+                    DapVariable(
+                        name = v.opt("name")?.asString() ?: "<var>",
+                        value = v.opt("value")?.asString() ?: "",
+                        type = v.opt("type")?.asString() ?: "",
+                        variablesReference = v.opt("variablesReference")?.asInt() ?: 0,
+                    ),
+                )
+            }
+            return out
+        }
     }
 }
 
@@ -143,4 +219,19 @@ data class DapStackFrame(
     val path: String,
     val line: Int,
     val column: Int,
+)
+
+/** A DAP scope (e.g. "Locals") with the handle used to fetch its variables. */
+data class DapScope(
+    val name: String,
+    val variablesReference: Int,
+    val expensive: Boolean,
+)
+
+/** A single DAP variable, decoded for the XValue mapping layer. */
+data class DapVariable(
+    val name: String,
+    val value: String,
+    val type: String,
+    val variablesReference: Int,
 )

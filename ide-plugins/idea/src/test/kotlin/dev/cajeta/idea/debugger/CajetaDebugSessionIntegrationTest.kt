@@ -74,4 +74,49 @@ class CajetaDebugSessionIntegrationTest {
             root.deleteRecursively()
         }
     }
+
+    /**
+     * CP6d end-to-end: parked at the breakpoint, loadVariables drives
+     * scopes -> variables against the real server and surfaces the frame's
+     * locals (a == 6, b == 7 at `return a * b;`).
+     */
+    @Test
+    fun loadsLocalsAtBreakpoint() {
+        val binary = CajetaDapLauncher.locateBinary()
+        assumeTrue("cajeta binary not found; set CAJETA_DAP_BIN to run", binary != null)
+        binary!!
+
+        val root = Files.createTempDirectory("cajeta-vars-it-").toFile()
+        File(root, "demo").apply { mkdirs() }
+        File(File(root, "demo"), "Calc.cajeta").writeText(kProg)
+
+        val process = CajetaDapLauncher(binary.absolutePath, CajetaDapLauncher.defaultDllDir()).start()
+        val session = CajetaDebugSession(DapClient(DapTransport(process.inputStream, process.outputStream)))
+
+        val stopped = CountDownLatch(1)
+        session.onStopped = { stopped.countDown() }
+        session.start()
+
+        try {
+            session.launch(
+                CajetaDebugSession.LaunchParams("demo.Calc.main", root.absolutePath),
+                listOf(CajetaDebugSession.LineBreakpoint("Calc.cajeta", 6)),
+            ).get(15, TimeUnit.SECONDS)
+            assertTrue("breakpoint never hit", stopped.await(30, TimeUnit.SECONDS))
+
+            val st = session.stackTrace().get(10, TimeUnit.SECONDS)
+            val topId = st.at("body").at("stackFrames")[0].at("id").asInt()
+
+            val locals = session.loadVariables(topId).get(10, TimeUnit.SECONDS)
+            val byName = locals.associateBy { it.name }
+            assertTrue("locals missing 'a': ${locals.map { it.name }}", byName.containsKey("a"))
+            assertTrue("locals missing 'b': ${locals.map { it.name }}", byName.containsKey("b"))
+            assertEquals("6", byName["a"]!!.value)
+            assertEquals("7", byName["b"]!!.value)
+        } finally {
+            session.disconnect()
+            process.destroyForcibly()
+            root.deleteRecursively()
+        }
+    }
 }
