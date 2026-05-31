@@ -63,6 +63,12 @@
 
         <newProjectWizard.languageGenerator
             implementation="dev.cajeta.idea.wizard.CajetaNewProjectWizard"/>
+
+        <!-- Debugging (Phase 2): run config + program runner driving cajeta dap. -->
+        <configurationType
+            implementation="dev.cajeta.idea.debugger.CajetaConfigurationType"/>
+        <programRunner
+            implementation="dev.cajeta.idea.debugger.CajetaProgramRunner"/>
     </extensions>
 
     <actions>
