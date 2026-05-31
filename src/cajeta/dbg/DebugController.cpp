@@ -41,6 +41,16 @@ namespace cajeta::dbg {
         return current;
     }
 
+    bool DebugController::waitForStop(StopEvent& out,
+                                      std::chrono::milliseconds timeout) {
+        std::unique_lock<std::mutex> lock(mutex);
+        if (!stoppedCv.wait_for(lock, timeout, [this] { return stopped; })) {
+            return false;
+        }
+        out = current;
+        return true;
+    }
+
     void DebugController::resume() {
         std::lock_guard<std::mutex> lock(mutex);
         resumeRequested = true;
