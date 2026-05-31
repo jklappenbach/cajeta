@@ -13,6 +13,19 @@ set(CMAKE_POLICY_DEFAULT_CMP0135 NEW)
 set(CMAKE_CXX_STANDARD 17)
 set(Java_JAVA_EXECUTABLE "java")
 
+# Windows/MSYS2 convenience: glog, LLVM, zstd, antlr4, etc. are mingw-w64
+# packages whose *Config.cmake files live under C:/msys64/mingw64. Without
+# that prefix on CMAKE_PREFIX_PATH, a bare `cmake` from a shell that doesn't
+# have mingw64 on PATH fails at the first find_package (e.g.
+# "Could not find a package configuration file provided by glog"). Seed the
+# prefix here (only when the dir exists, so non-MSYS2 Windows setups and
+# Linux/macOS are unaffected) so configure works regardless of which shell
+# invoked it. An explicit -DCMAKE_PREFIX_PATH or a different MSYS root still
+# wins — we append rather than overwrite.
+if(WIN32 AND EXISTS "C:/msys64/mingw64/lib/cmake")
+    list(APPEND CMAKE_PREFIX_PATH "C:/msys64/mingw64")
+endif()
+
 # Capture the short commit hash for `cajeta --version`. When git isn't
 # available or the tree isn't a checkout (release tarball builds), fall
 # back to "unknown".
