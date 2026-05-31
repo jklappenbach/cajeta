@@ -73,6 +73,9 @@ void DapServer::runToStopOrExit(const Emit& emit) {
         if (session_->controller().waitForStop(ev, milliseconds(50))) {
             currentStop_ = ev;
             haveStop_ = true;
+            // CP5: snapshot the frame chain + locals while the carrier is
+            // parked (the chain is stable until we resume).
+            frames_ = cajeta::dbg::walkFrames(ev.frameTop);
             Json body = Json::object();
             body["reason"] = "breakpoint";
             body["threadId"] = 1;
@@ -84,6 +87,7 @@ void DapServer::runToStopOrExit(const Emit& emit) {
             exitCode_ = session_->join();
             terminated_ = true;
             haveStop_ = false;
+            frames_.clear();
             Json body = Json::object();
             body["exitCode"] = exitCode_;
             emit(makeEvent(seq_++, "exited", body));
@@ -101,6 +105,7 @@ bool DapServer::handle(const Json& request, const Emit& emit) {
     if (command == "initialize") {
         Json caps = Json::object();
         caps["supportsConfigurationDoneRequest"] = true;
+        caps["supportsSetVariable"] = true;
         emit(makeResponse(seq_++, requestSeq, command, true, caps));
         // Tell the client we're ready for breakpoint configuration.
         emit(makeEvent(seq_++, "initialized", Json::object()));
@@ -168,14 +173,116 @@ bool DapServer::handle(const Json& request, const Emit& emit) {
     }
 
     if (command == "stackTrace") {
-        Json body = haveStop_
-            ? stackTraceBody(currentStop_, globalDbgLocTable())
-            : Json::object();
+        Json body = Json::object();
         if (!haveStop_) {
             body["stackFrames"] = Json::array();
             body["totalFrames"] = 0;
+        } else if (frames_.empty()) {
+            // No frame chain (e.g. a debug build without the CP5 frame
+            // codegen) — fall back to the CP4 single-frame stackTrace.
+            body = stackTraceBody(currentStop_, globalDbgLocTable());
+        } else {
+            // CP5 multi-frame: one DAP frame per dbg frame, innermost first.
+            // id = frame index; scopes/variables decode it back.
+            const auto& table = globalDbgLocTable();
+            Json frames = Json::array();
+            for (size_t i = 0; i < frames_.size(); ++i) {
+                const auto& fr = frames_[i];
+                Json frame = Json::object();
+                frame["id"] = static_cast<int>(i);
+                frame["name"] = fr.func.empty() ? std::string("<entry>")
+                                                : fr.func;
+                int line = 0, col = 1;
+                std::string file;
+                if (fr.locId >= 0 &&
+                        static_cast<size_t>(fr.locId) < table.size()) {
+                    const auto& loc = table.at(fr.locId);
+                    line = loc.line;
+                    col = loc.col > 0 ? loc.col : 1;
+                    file = loc.file;
+                }
+                frame["line"] = line;
+                frame["column"] = col;
+                if (!file.empty()) {
+                    Json source = Json::object();
+                    source["name"] =
+                        std::filesystem::path(file).filename().string();
+                    source["path"] = file;
+                    frame["source"] = std::move(source);
+                }
+                frames.push_back(std::move(frame));
+            }
+            body["stackFrames"] = std::move(frames);
+            body["totalFrames"] = static_cast<int>(frames_.size());
         }
         emit(makeResponse(seq_++, requestSeq, command, true, std::move(body)));
+        return true;
+    }
+
+    if (command == "scopes") {
+        // One "Locals" scope per frame. variablesReference = frameId + 1 (0 is
+        // reserved by DAP for "no children").
+        int frameId = args.at("frameId").asInt();
+        Json scopes = Json::array();
+        if (frameId >= 0 && static_cast<size_t>(frameId) < frames_.size()) {
+            Json scope = Json::object();
+            scope["name"] = "Locals";
+            scope["variablesReference"] = frameId + 1;
+            scope["expensive"] = false;
+            scopes.push_back(std::move(scope));
+        }
+        Json body = Json::object();
+        body["scopes"] = std::move(scopes);
+        emit(makeResponse(seq_++, requestSeq, command, true, std::move(body)));
+        return true;
+    }
+
+    if (command == "variables") {
+        int ref = args.at("variablesReference").asInt();
+        int frameIndex = ref - 1;
+        Json vars = Json::array();
+        if (frameIndex >= 0 &&
+                static_cast<size_t>(frameIndex) < frames_.size()) {
+            for (const auto& v : frames_[frameIndex].locals) {
+                Json var = Json::object();
+                var["name"] = v.name;
+                var["value"] = cajeta::dbg::formatValue(v.type, v.addr);
+                var["type"] = v.type;
+                var["variablesReference"] = 0;
+                vars.push_back(std::move(var));
+            }
+        }
+        Json body = Json::object();
+        body["variables"] = std::move(vars);
+        emit(makeResponse(seq_++, requestSeq, command, true, std::move(body)));
+        return true;
+    }
+
+    if (command == "setVariable") {
+        int ref = args.at("variablesReference").asInt();
+        int frameIndex = ref - 1;
+        std::string name = args.at("name").asString();
+        std::string value = args.at("value").asString();
+        bool ok = false;
+        std::string err = "no such variable: " + name;
+        std::string rendered;
+        if (frameIndex >= 0 &&
+                static_cast<size_t>(frameIndex) < frames_.size()) {
+            for (const auto& v : frames_[frameIndex].locals) {
+                if (v.name != name) continue;
+                ok = cajeta::dbg::writeValue(v.type, v.addr, value, &err);
+                if (ok) rendered = cajeta::dbg::formatValue(v.type, v.addr);
+                break;
+            }
+        }
+        if (ok) {
+            Json body = Json::object();
+            body["value"] = rendered;
+            emit(makeResponse(seq_++, requestSeq, command, true,
+                              std::move(body)));
+        } else {
+            emit(makeResponse(seq_++, requestSeq, command, false, Json(err)));
+        }
         return true;
     }
 

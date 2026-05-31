@@ -28,6 +28,7 @@
 #include "cajeta/dap/Json.h"
 #include "cajeta/dbg/DebugController.h"
 #include "cajeta/dbg/DebugLocTable.h"
+#include "cajeta/dbg/DebugVars.h"
 #include "cajeta/jit/CajetaJitHost.h"
 
 namespace cajeta::dap {
@@ -73,6 +74,10 @@ namespace cajeta::dap {
         std::vector<cajeta::jit::Breakpoint> breakpoints_;
         std::unique_ptr<cajeta::jit::JitDebugSession> session_;
         cajeta::dbg::StopEvent currentStop_;   // last stop (for stackTrace)
+        // CP5: frames + locals snapshotted from the dbg chain at the last stop
+        // (innermost first). Valid until the next resume; rebuilt on each stop.
+        // frame N's "Locals" scope uses variablesReference N+1.
+        std::vector<cajeta::dbg::DbgFrameInfo> frames_;
         bool haveStop_ = false;
         bool terminated_ = false;
         int exitCode_ = 0;

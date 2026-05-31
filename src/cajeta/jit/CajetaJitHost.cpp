@@ -336,19 +336,19 @@ void callVoidSymbol(llvm::orc::LLJIT* jit, const char* name) {
 std::mutex g_activeMutex;
 cajeta::dbg::DebugController* g_activeController = nullptr;
 
-void safepointTrampoline(int32_t locId, int fiberId) {
+void safepointTrampoline(int32_t locId, int fiberId, void* frameTop) {
     cajeta::dbg::DebugController* c;
     {
         std::lock_guard<std::mutex> lock(g_activeMutex);
         c = g_activeController;
     }
-    if (c) c->onSafepoint(locId, static_cast<long>(fiberId));
+    if (c) c->onSafepoint(locId, static_cast<long>(fiberId), frameTop);
 }
 
 // Install (or clear, when handler is null) the safepoint handler in the JIT
 // module via its __cajeta_dbg_set_safepoint_handler symbol.
-void installHandler(llvm::orc::LLJIT* jit, void (*handler)(int32_t, int)) {
-    using SetHandlerFn = void (*)(void (*)(int32_t, int));
+void installHandler(llvm::orc::LLJIT* jit, void (*handler)(int32_t, int, void*)) {
+    using SetHandlerFn = void (*)(void (*)(int32_t, int, void*));
     if (auto sym = jit->lookup("__cajeta_dbg_set_safepoint_handler")) {
         if (auto setFn = reinterpret_cast<SetHandlerFn>(sym->getValue())) {
             setFn(handler);

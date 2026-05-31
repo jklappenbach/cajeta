@@ -15,6 +15,7 @@
 #include "../asn/expression/MethodCallExpression.h"
 #include "../type/FormalParameter.h"
 #include "../field/ParameterField.h"
+#include "cajeta/dbg/DebugCodegen.h"
 #include "../util/Printer.h"
 #include "../xpu/core/KernelArgTrait.h"
 #include "../xpu/core/XpuAttributes.h"
@@ -830,6 +831,26 @@ namespace cajeta {
             builder->CreateCall(enterFn, {});
         }
 
+        // Debugger CP5: push a debug frame for this method (no-op unless
+        // --debug-info). Paired with __cajeta_dbg_frame_leave on every return
+        // path (emitScopeExitToWatermark + the synthetic fall-through below).
+        dbg::emitDbgFrameEnter(module, getLlvmSymbolName());
+
+        // Register the parameters as locals in the debug frame. Materializing
+        // their slots here (getOrCreateAllocation) is the same store-arg-to-
+        // alloca the body would do on first use; doing it at entry just makes
+        // every parameter inspectable from the first statement on.
+        if (module->getFlags().debugInfo) {
+            for (auto& parameter : parameterList) {
+                FieldPtr pf = module->getScopeStack().peek()
+                                    ->getField(parameter->getName());
+                if (!pf || !pf->getType()) continue;
+                dbg::emitDbgLocal(module, pf->getName(),
+                                  pf->getType()->toCanonical(),
+                                  pf->getOrCreateAllocation());
+            }
+        }
+
         // @NonNull parameter checks. Fire BEFORE the try frame so a
         // null-arg violation is a precondition failure that escapes
         // any in-method @AfterThrowing handling (matches the spec
@@ -1189,6 +1210,10 @@ namespace cajeta {
                 llvm::Value* mark = builder->CreateLoad(ptrTy, scopeWatermark);
                 builder->CreateCall(exitToFn, {mark});
             }
+            // Debugger CP5: pop this method's debug frame on the fall-through
+            // return path (mirrors the explicit-return path in
+            // emitScopeExitToWatermark). No-op unless --debug-info.
+            dbg::emitDbgFrameLeave(module);
             // Fire scope-end drops before the synthetic return so the chain is
             // unwound the same way an explicit `return` would do it.
             emitOwnerDrops(module);

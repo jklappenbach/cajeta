@@ -165,6 +165,105 @@ TEST(DapServerSession, BreakpointStopsThenStackTraceThenContinue) {
     }
 }
 
+// CP5: at a stop, scopes -> Locals, variables -> a/b with values + types,
+// setVariable mutates a primitive (a := 100), and continue runs to a return
+// computing the new value (100 * 7 = 700).
+TEST(DapServerSession, ScopesVariablesAndSetVariable) {
+    TempProgram p("demo", "Calc.cajeta", kProg);
+    DapServer srv;
+    std::vector<Json> log;
+
+    drive(srv, req(1, "initialize", Json::object()), log);
+    const Json* initResp = findResponse(log, "initialize");
+    ASSERT_NE(initResp, nullptr);
+    EXPECT_TRUE(initResp->at("body").at("supportsSetVariable").asBool());
+
+    Json launchArgs = Json::object();
+    launchArgs["entry-method"] = "demo.Calc.main";
+    launchArgs["sourceRoot"] = p.sourceRoot();
+    drive(srv, req(2, "launch", launchArgs), log);
+
+    // Breakpoint on line 6 (return a * b;) — both a and b are declared by then.
+    Json bpArgs = Json::object();
+    Json src = Json::object();
+    src["path"] = "Calc.cajeta";
+    bpArgs["source"] = src;
+    Json bps = Json::array();
+    Json bp = Json::object();
+    bp["line"] = 6;
+    bps.push_back(bp);
+    bpArgs["breakpoints"] = bps;
+    drive(srv, req(3, "setBreakpoints", bpArgs), log);
+
+    drive(srv, req(4, "configurationDone", Json::object()), log);
+    EXPECT_EQ(countEvent(log, "stopped"), 1);
+
+    // stackTrace -> frame id 0 on line 6.
+    log.clear();
+    drive(srv, req(5, "stackTrace", Json::object()), log);
+    const Json* stResp = findResponse(log, "stackTrace");
+    ASSERT_NE(stResp, nullptr);
+    const Json& frames = stResp->at("body").at("stackFrames");
+    ASSERT_GE(frames.size(), 1u);
+    EXPECT_EQ(frames[0].at("line").asInt(), 6);
+    int frameId = frames[0].at("id").asInt();
+
+    // scopes -> a single "Locals" scope with variablesReference frameId+1.
+    log.clear();
+    Json scopesArgs = Json::object();
+    scopesArgs["frameId"] = frameId;
+    drive(srv, req(6, "scopes", scopesArgs), log);
+    const Json* scResp = findResponse(log, "scopes");
+    ASSERT_NE(scResp, nullptr);
+    const Json& scopes = scResp->at("body").at("scopes");
+    ASSERT_EQ(scopes.size(), 1u);
+    EXPECT_EQ(scopes[0].at("name").asString(), "Locals");
+    int varsRef = scopes[0].at("variablesReference").asInt();
+    EXPECT_EQ(varsRef, frameId + 1);
+
+    // variables -> a == 6, b == 7, both typed int32.
+    log.clear();
+    Json varsArgs = Json::object();
+    varsArgs["variablesReference"] = varsRef;
+    drive(srv, req(7, "variables", varsArgs), log);
+    const Json* vResp = findResponse(log, "variables");
+    ASSERT_NE(vResp, nullptr);
+    const Json& vars = vResp->at("body").at("variables");
+    std::string aVal, bVal, aType;
+    for (size_t i = 0; i < vars.size(); ++i) {
+        const std::string nm = vars[i].at("name").asString();
+        if (nm == "a") { aVal = vars[i].at("value").asString();
+                         aType = vars[i].at("type").asString(); }
+        if (nm == "b") { bVal = vars[i].at("value").asString(); }
+    }
+    EXPECT_EQ(aVal, "6");
+    EXPECT_EQ(bVal, "7");
+    EXPECT_EQ(aType, "int32");
+
+    // setVariable a := 100 -> response echoes the new value.
+    log.clear();
+    Json setArgs = Json::object();
+    setArgs["variablesReference"] = varsRef;
+    setArgs["name"] = "a";
+    setArgs["value"] = "100";
+    drive(srv, req(8, "setVariable", setArgs), log);
+    const Json* setResp = findResponse(log, "setVariable");
+    ASSERT_NE(setResp, nullptr);
+    EXPECT_TRUE(setResp->at("success").asBool());
+    EXPECT_EQ(setResp->at("body").at("value").asString(), "100");
+
+    // continue -> return a * b now computes 100 * 7 = 700.
+    log.clear();
+    drive(srv, req(9, "continue", Json::object()), log);
+    EXPECT_EQ(countEvent(log, "terminated"), 1);
+    for (const auto& m : log) {
+        if (m.at("type").asString() == "event" &&
+            m.at("event").asString() == "exited") {
+            EXPECT_EQ(m.at("body").at("exitCode").asInt(), 700);
+        }
+    }
+}
+
 TEST(DapServerSession, NoBreakpointsRunsToTermination) {
     TempProgram p("demo", "Calc.cajeta", kProg);
     DapServer srv;

@@ -1,0 +1,36 @@
+//
+// Debugger CP5 codegen helpers. When --debug-info is on, these emit the calls
+// that build the per-fiber debug frame chain in the runtime:
+//
+//   __cajeta_dbg_frame_enter(func)        — at each method prologue
+//   __cajeta_dbg_frame_leave()            — on every return path
+//   __cajeta_dbg_local(name, type, slot)  — at each named local/param alloca
+//
+// Each is a no-op unless module->getFlags().debugInfo is set (so the main,
+// non-debug build is untouched) and the builder/runtime function resolve.
+// Centralized here so the scattered emission sites (Method prologue/epilogue,
+// ReturnStatement, LocalVariableDeclaration) stay one-liners — mirrors
+// Block.cpp's emitDebugSafepoint.
+//
+#pragma once
+
+#include <string>
+
+#include "cajeta/compile/CajetaModule.h"
+#include "llvm/IR/Value.h"
+
+namespace cajeta::dbg {
+
+    // Push a debug frame for `func` (the cajeta-mangled enclosing function name).
+    void emitDbgFrameEnter(cajeta::CajetaModulePtr module, const std::string& func);
+
+    // Pop the current debug frame. Call beside the scope/drop teardown on every
+    // return path.
+    void emitDbgFrameLeave(cajeta::CajetaModulePtr module);
+
+    // Register a named local/parameter in the current debug frame. `slot` is the
+    // local's alloca (primitives: holds the value; objects: holds the heap ptr).
+    void emitDbgLocal(cajeta::CajetaModulePtr module, const std::string& name,
+                      const std::string& type, llvm::Value* slot);
+
+} // namespace cajeta::dbg
