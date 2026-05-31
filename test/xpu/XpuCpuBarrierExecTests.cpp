@@ -215,6 +215,118 @@ public class M {
 }
 )CJ";
 
+// Increment 7 — MULTIPLE barriers inside one uniform loop. Ping-pong between two
+// shared tiles: each iteration reads `a` into `b` (a circular neighbour sum),
+// barrier, copies `b` back to `a`, barrier. Two regions per loop body, split by
+// the in-loop barrier; the loop stays the outer scalar scaffold. `run()`
+// computes the same recurrence on the host and compares every lane.
+const char* kPingPongSource = R"CJ(
+package test;
+import cajeta.xpu.core.Buffer;
+import cajeta.xpu.core.Stream;
+import cajeta.xpu.core.Thread;
+import cajeta.xpu.core.Barrier;
+import cajeta.xpu.core.Shared;
+public class M {
+    @Kernel
+    public static void pingpong(Buffer<int32> out, Buffer<int32> in, uint32 k) {
+        Shared<int32> a = shared int32[256];
+        Shared<int32> b = shared int32[256];
+        uint32 t = Thread.x();
+        a[t] = in[t];
+        Barrier.workgroup();
+        for (uint32 i = 0; i < k; i = i + 1) {
+            b[t] = a[t] + a[(t + 1) & 255];
+            Barrier.workgroup();
+            a[t] = b[t];
+            Barrier.workgroup();
+        }
+        out[t] = a[t];
+    }
+    public static int32 run() {
+        uint32 n = 256;
+        uint32 k = 3;
+        int32[] hin = new int32[n];
+        int32[] hout = new int32[n];
+        int32[] ra = new int32[n];
+        int32[] rb = new int32[n];
+        for (uint32 i = 0; i < n; i = i + 1) { hin[i] = (int32) i; hout[i] = 0; ra[i] = (int32) i; }
+        for (uint32 it = 0; it < k; it = it + 1) {
+            for (uint32 i = 0; i < n; i = i + 1) { rb[i] = ra[i] + ra[(i + 1) & 255]; }
+            for (uint32 i = 0; i < n; i = i + 1) { ra[i] = rb[i]; }
+        }
+        Buffer<int32> in = heap Buffer<int32>(n);
+        Buffer<int32> out = heap Buffer<int32>(n);
+        in.upload(hin);
+        out.upload(hout);
+        Stream s = Stream.current();
+        pingpong.launch(s, grid: [1], block: [256])(out, in, k);
+        s.sync();
+        out.download(hout);
+        for (uint32 i = 0; i < n; i = i + 1) {
+            if (hout[i] != ra[i]) { return (int32) (100 + i); }
+        }
+        return 777;
+    }
+}
+)CJ";
+
+// Increment 7 — a per-work-item LOCAL carried across an in-loop barrier. Same
+// recurrence, but the intermediate is a scalar local `x` (not shared memory):
+// `x = a[t]+a[(t+1)&255]` is computed in the loop's first region and READ in the
+// second region after the barrier, so `x` must get a per-work-item context array
+// (written then read within the same iteration). Proves context arrays work for
+// values that cross a barrier *inside* a loop, not just the straight-line case.
+const char* kLocalCarrySource = R"CJ(
+package test;
+import cajeta.xpu.core.Buffer;
+import cajeta.xpu.core.Stream;
+import cajeta.xpu.core.Thread;
+import cajeta.xpu.core.Barrier;
+import cajeta.xpu.core.Shared;
+public class M {
+    @Kernel
+    public static void localcarry(Buffer<int32> out, Buffer<int32> in, uint32 k) {
+        Shared<int32> a = shared int32[256];
+        uint32 t = Thread.x();
+        a[t] = in[t];
+        Barrier.workgroup();
+        for (uint32 i = 0; i < k; i = i + 1) {
+            int32 x = a[t] + a[(t + 1) & 255];
+            Barrier.workgroup();
+            a[t] = x;
+            Barrier.workgroup();
+        }
+        out[t] = a[t];
+    }
+    public static int32 run() {
+        uint32 n = 256;
+        uint32 k = 4;
+        int32[] hin = new int32[n];
+        int32[] hout = new int32[n];
+        int32[] ra = new int32[n];
+        int32[] rb = new int32[n];
+        for (uint32 i = 0; i < n; i = i + 1) { hin[i] = (int32) i; hout[i] = 0; ra[i] = (int32) i; }
+        for (uint32 it = 0; it < k; it = it + 1) {
+            for (uint32 i = 0; i < n; i = i + 1) { rb[i] = ra[i] + ra[(i + 1) & 255]; }
+            for (uint32 i = 0; i < n; i = i + 1) { ra[i] = rb[i]; }
+        }
+        Buffer<int32> in = heap Buffer<int32>(n);
+        Buffer<int32> out = heap Buffer<int32>(n);
+        in.upload(hin);
+        out.upload(hout);
+        Stream s = Stream.current();
+        localcarry.launch(s, grid: [1], block: [256])(out, in, k);
+        s.sync();
+        out.download(hout);
+        for (uint32 i = 0; i < n; i = i + 1) {
+            if (hout[i] != ra[i]) { return (int32) (100 + i); }
+        }
+        return 777;
+    }
+}
+)CJ";
+
 } // namespace
 
 // One barrier, two regions: both halves run for every work-item, with `t`
@@ -279,6 +391,29 @@ TEST(XpuCpuBarrierExecTests, divergentBarrierFallsBackCleanly) {
     ASSERT_FALSE(ir.empty());
     EXPECT_EQ(ir.find("__cajeta_xpu_cpu_block.divergent"), std::string::npos)
         << "divergent barrier should fall back, not fission\n";
+}
+
+// Increment 7: two barriers inside one uniform loop (shared-memory ping-pong).
+// The loop body splits into two work-item-loop regions; the loop stays the outer
+// scalar scaffold. Result matches the host recurrence for every lane.
+TEST(XpuCpuBarrierExecTests, multipleBarriersInOneLoop) {
+    auto jit = CajetaJit::compile(kPingPongSource, "test.M", cpuOptions());
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<int (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    int r = fn();
+    EXPECT_EQ(r, 777) << "fail code " << r << " (100+i: out[i] != reference[i])";
+}
+
+// Increment 7: a per-work-item local carried across an in-loop barrier — proves
+// context arrays work for a value that crosses a barrier *inside* a loop.
+TEST(XpuCpuBarrierExecTests, localCarriedAcrossInLoopBarrier) {
+    auto jit = CajetaJit::compile(kLocalCarrySource, "test.M", cpuOptions());
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<int (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    int r = fn();
+    EXPECT_EQ(r, 777) << "fail code " << r << " (100+i: out[i] != reference[i])";
 }
 
 // ----------------------------------------------------------------------------
@@ -433,4 +568,35 @@ TEST(XpuCpuBarrierEmitTests, shippedVectorizedWrapperKeepsInvariants) {
     EXPECT_EQ(countSubstr(ir, "addrspace(3) global"), 0);
     EXPECT_EQ(countSubstr(body, "alloca [256 x i32]"), 1);
     EXPECT_GE(countSubstr(body, "ctx = alloca"), 1);
+}
+
+// Increment 7: a uniform loop body with TWO barriers splits into >=2 work-item
+// loops nested inside the single outer scalar loop, and a per-work-item local
+// that crosses the in-loop barrier (`x`) is widened to a context array.
+TEST(XpuCpuBarrierEmitTests, multiBarrierLoopBodySplitsAndWidensLocal) {
+    ScopedEnv noVec("CAJETA_XPU_CPU_NO_VECTORIZE", "1");
+    std::string ir = compileToIr(kLocalCarrySource, "test.M.localcarry");
+    ASSERT_FALSE(ir.empty());
+    std::string body = functionBody(ir, "__cajeta_xpu_cpu_block.localcarry");
+    ASSERT_FALSE(body.empty()) << "no fission wrapper emitted";
+
+    // One uniform loop, kept as the outer scalar scaffold.
+    EXPECT_EQ(countLabels(body, "for.head"), 1) << "uniform loop kept as outer";
+
+    // The loop body splits at the in-loop barrier into >=2 work-item loops: one
+    // entered from the loop header, one from after the in-loop barrier.
+    int inLoop = 0;
+    std::istringstream ss(body);
+    std::string line;
+    while (std::getline(ss, line))
+        if (line.rfind("wi.ph", 0) == 0
+            && (line.find("%for.head") != std::string::npos
+                || line.find("%for.body") != std::string::npos))
+            ++inLoop;
+    EXPECT_GE(inLoop, 2) << "loop body must split into >=2 work-item loops";
+
+    // The local `x` crosses the in-loop barrier ⇒ widened to a context array
+    // (the memory-aware taint fixpoint — x derives from t through t's slot).
+    EXPECT_EQ(countSubstr(body, "x.slot.ctx = alloca"), 1) << "x must be widened";
+    EXPECT_EQ(countSubstr(body, "call void @__cajeta_xpu_cpu_barrier"), 0);
 }
