@@ -154,9 +154,29 @@ void __cajeta_poison_buffer(void* ptr) {
 // ============================================================================
 static long __cajeta_dbg_safepoint_total = 0;
 
+// Monotonic fiber-id source (CP3). Defined here so __cajeta_task_run (further
+// down) can bump it at fiber creation; read back via dbg_id on the fiber.
+long __cajeta_dbg_fiber_id_counter = 0;
+
+// CP3: a settable safepoint handler. When the in-process debugger is attached
+// it installs one (via the JIT symbol so the embedded-bitcode copy's pointer
+// is set); the handler decides — based on the host-side armed set — whether to
+// park the calling thread. NULL by default, so a debug-info build with no
+// debugger attached just counts (CP2 behavior). The fiber id is resolved via
+// __cajeta_dbg_current_fiber_id, which is defined later (after the
+// __cajeta_current_fiber TLS); forward-declared here.
+typedef void (*cajeta_dbg_handler_fn)(int32_t loc_id, int fiber_id);
+static cajeta_dbg_handler_fn __cajeta_dbg_handler = NULL;
+int __cajeta_dbg_current_fiber_id(void);
+
+void __cajeta_dbg_set_safepoint_handler(cajeta_dbg_handler_fn fn) {
+    __cajeta_dbg_handler = fn;
+}
+
 void __cajeta_dbg_safepoint(int32_t loc_id) {
-    (void) loc_id;
     __cajeta_dbg_safepoint_total++;
+    cajeta_dbg_handler_fn h = __cajeta_dbg_handler;
+    if (h) h(loc_id, __cajeta_dbg_current_fiber_id());
 }
 
 long __cajeta_dbg_safepoint_count(void) {
@@ -634,6 +654,10 @@ struct cajeta_fiber {
     // first-throw escalation; cleared by the await re-raise path so
     // the same cancel doesn't fire twice on a fiber that survives.
     void* cancel_with;
+    // Debugger CP3: stable per-fiber id for the DAP `threads`/`cajeta:fibers`
+    // view and for stop events. Assigned from a monotonic counter at creation
+    // (fibers get 1,2,3,...; the main thread reports id 0).
+    int dbg_id;
 };
 
 static pthread_mutex_t __cajeta_task_mutex = PTHREAD_MUTEX_INITIALIZER;
@@ -673,6 +697,14 @@ static struct cajeta_scope_frame** __cajeta_scope_top_ptr(void) {
         return &__cajeta_current_fiber->scope_top;
     }
     return &__cajeta_main_scope_top;
+}
+
+// Debugger CP3: id of the fiber running on this carrier thread, or 0 when not
+// in a fiber (the main thread / program entry). Forward-declared up in the
+// debug-safepoint section; defined here where __cajeta_current_fiber is in
+// scope.
+int __cajeta_dbg_current_fiber_id(void) {
+    return __cajeta_current_fiber ? __cajeta_current_fiber->dbg_id : 0;
 }
 
 // Fiber entry trampoline — invoked by makecontext on first resume. Runs
