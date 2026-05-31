@@ -23,6 +23,7 @@ class CajetaDebugSessionTest {
     private lateinit var serverTransport: DapTransport
     private var serverThread: Thread? = null
     private val received = Collections.synchronizedList(mutableListOf<String>())
+    private val lastRequestByCommand = java.util.concurrent.ConcurrentHashMap<String, Json>()
 
     private fun connect() {
         val clientOut = PipedOutputStream()
@@ -60,6 +61,7 @@ class CajetaDebugSessionTest {
                     val req = serverTransport.read() ?: break
                     val command = req.at("command").asString()
                     received.add(command)
+                    lastRequestByCommand[command] = req
                     serverTransport.write(ok(req))
                     onCommand(command, serverTransport)
                     if (command == "disconnect") break
@@ -75,7 +77,7 @@ class CajetaDebugSessionTest {
 
     @After
     fun tearDown() {
-        session.disconnect()
+        if (::session.isInitialized) session.disconnect()
         serverThread?.interrupt()
     }
 
@@ -144,5 +146,53 @@ class CajetaDebugSessionTest {
         assertTrue("no terminated event", terminated.await(5, TimeUnit.SECONDS))
         assertEquals(42, exitCode)
         assertTrue(received.contains("continue"))
+    }
+
+    @Test
+    fun setBreakpointsSendsSourcePathAndLines() {
+        connect()
+        runServer()
+        session.start()
+
+        session.setBreakpoints("Calc.cajeta", listOf(4, 6)).get(5, TimeUnit.SECONDS)
+
+        val req = lastRequestByCommand["setBreakpoints"]!!
+        val args = req.at("arguments")
+        assertEquals("Calc.cajeta", args.at("source").at("path").asString())
+        val bps = args.at("breakpoints")
+        assertEquals(2, bps.size)
+        assertEquals(4, bps[0].at("line").asInt())
+        assertEquals(6, bps[1].at("line").asInt())
+    }
+
+    @Test
+    fun parseStackFramesDecodesFramesFromBody() {
+        val response = Json.obj(
+            "body" to Json.obj(
+                "stackFrames" to Json.arr(
+                    Json.obj(
+                        "id" to Json.of(0),
+                        "name" to Json.of("demo.Calc::main"),
+                        "line" to Json.of(6),
+                        "column" to Json.of(9),
+                        "source" to Json.obj(
+                            "name" to Json.of("Calc.cajeta"),
+                            "path" to Json.of("/tmp/demo/Calc.cajeta"),
+                        ),
+                    ),
+                ),
+            ),
+        )
+        val frames = CajetaDebugSession.parseStackFrames(response)
+        assertEquals(1, frames.size)
+        assertEquals(0, frames[0].id)
+        assertEquals("demo.Calc::main", frames[0].name)
+        assertEquals("/tmp/demo/Calc.cajeta", frames[0].path)
+        assertEquals(6, frames[0].line)
+    }
+
+    @Test
+    fun parseStackFramesEmptyWhenNoBody() {
+        assertTrue(CajetaDebugSession.parseStackFrames(Json.obj()).isEmpty())
     }
 }
