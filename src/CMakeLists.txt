@@ -43,9 +43,19 @@ find_package(OpenSSL REQUIRED)
 # them was pre-defined by us.
 find_package(zstd CONFIG QUIET)
 if(NOT TARGET zstd::libzstd_shared)
+    # MSYS2 ships no zstdConfig.cmake, so find_package(CONFIG) above misses and
+    # we land here. Add the mingw-w64 lib dir as a HINT (Windows, dir-exists
+    # guarded) so a bare `cmake` from a shell without mingw64 on PATH still
+    # finds libzstd.dll.a — matching the clang/xxd HINTS below and the
+    # top-level CMAKE_PREFIX_PATH seed.
+    set(_cajeta_zstd_win_hint "")
+    if(WIN32 AND EXISTS "C:/msys64/mingw64/lib")
+        set(_cajeta_zstd_win_hint "C:/msys64/mingw64/lib")
+    endif()
     find_library(ZSTD_LIBRARY
             NAMES zstd libzstd.so libzstd.so.1 libzstd.dylib libzstd.1.dylib
             HINTS
+                ${_cajeta_zstd_win_hint}
                 /opt/homebrew/opt/zstd/lib
                 /usr/local/opt/zstd/lib
                 $ENV{VCPKG_INSTALLATION_ROOT}/installed/x64-windows/lib
@@ -231,9 +241,25 @@ set(GENERATED_SOURCES
 # without it, plain `clang` may resolve to a different major version than
 # the LLVMConfig.cmake we're already linking against, and the bitcode it
 # emits won't match what the host LLVM expects.
+# Windows/MSYS2: clang + xxd live under the mingw-w64 (and base) prefixes,
+# which aren't on a default shell's PATH. find_program searches PATH + these
+# HINTS/PATHS, so seed the MSYS2 bin dirs (guarded to existing dirs) — same
+# rationale as the CMAKE_PREFIX_PATH seed in the top-level CMakeLists. No effect
+# on Linux/macOS, where /usr/bin etc. already cover it.
+set(CAJETA_MSYS_BIN_HINTS "")
+if(WIN32)
+    foreach(_d "C:/msys64/mingw64/bin" "C:/msys64/usr/bin")
+        if(EXISTS "${_d}")
+            list(APPEND CAJETA_MSYS_BIN_HINTS "${_d}")
+        endif()
+    endforeach()
+endif()
 find_program(CAJETA_CLANG NAMES "clang-${LLVM_VERSION_MAJOR}" clang
+        HINTS ${CAJETA_MSYS_BIN_HINTS}
         PATHS /usr/lib/llvm-${LLVM_VERSION_MAJOR}/bin /usr/bin /usr/local/bin)
-find_program(CAJETA_XXD NAMES xxd PATHS /usr/bin /usr/local/bin)
+find_program(CAJETA_XXD NAMES xxd
+        HINTS ${CAJETA_MSYS_BIN_HINTS}
+        PATHS /usr/bin /usr/local/bin)
 if(NOT CAJETA_CLANG)
     message(FATAL_ERROR "clang not found; needed to compile cajeta runtime to bitcode.")
 endif()
