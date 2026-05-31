@@ -75,3 +75,24 @@ TEST(DurationTests, ofMinutesConvertsToNanos) {
         "}\n";
     EXPECT_EQ(runI64(src), 60000000000LL);
 }
+
+// Chained instance call on an sret factory return — `Duration.ofMillis(3)
+// .toNanos()`. The factory returns its sret slot (an alloca of struct
+// type %Duration); the chained `.toNanos()` then needs to dispatch
+// against that slot pointer directly without re-loading through it.
+// Earlier the MCE chain-receiver branch unconditionally load-through-d
+// any AllocaInst receiver, producing a struct value where a pointer was
+// needed and tripping the LLVM verifier. Fixed by skipping the load
+// when the alloca's allocated type is a struct — the slot pointer is
+// already the value's address.
+TEST(DurationTests, chainedOfMillisToNanos) {
+    auto src =
+        "package test;\n"
+        "import cajeta.time.Duration;\n"
+        "public final class D {\n"
+        "    public static int64 run() {\n"
+        "        return Duration.ofMillis(3).toNanos();\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI64(src), 3000000);
+}
