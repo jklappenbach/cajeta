@@ -4135,8 +4135,12 @@ namespace cajeta {
                     "iface_class_method_fn");
                 callee = fnPtr;
             }
-            if (!methodArgs.empty()) {
-                methodArgs[0] = dataPtr;
+            // Swap iface body for the underlying class instance at the
+            // `this` slot (after the hidden sret pointer when present —
+            // overwriting methodArgs[0] would otherwise clobber the sret
+            // slot and the impl would write its result into garbage).
+            if ((int) methodArgs.size() > sretOffset) {
+                methodArgs[sretOffset] = dataPtr;
             }
         } else if (useVtable && isInterfaceRecv) {
             // Interface receiver via fat pointer body. Load the per-(impl,
@@ -4186,11 +4190,15 @@ namespace cajeta {
                 callee = builder->CreateLoad(ptrTy, methodSlot, "iface_method_fn");
             }
 
-            // Swap the body pointer for the data pointer at arg position
-            // 0 — the implementer's function expects its concrete class
-            // instance as `this`, not the interface body.
-            if (!methodArgs.empty()) {
-                methodArgs[0] = dataPtr;
+            // Swap the body pointer for the data pointer at the `this`
+            // slot — the implementer's function expects its concrete
+            // class instance as `this`, not the interface body. The
+            // `this` slot sits at sretOffset (i.e. position 1 when sret
+            // is in play, else position 0); overwriting methodArgs[0]
+            // unconditionally would clobber the sret slot and the impl
+            // would write its result into garbage.
+            if ((int) methodArgs.size() > sretOffset) {
+                methodArgs[sretOffset] = dataPtr;
             }
         } else if (useVtable) {
             llvm::Function* lookupFn = emitMod->getRuntimeFunction("__cajeta_vtable_lookup");

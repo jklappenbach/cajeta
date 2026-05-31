@@ -166,8 +166,20 @@ namespace cajeta {
         if (dynamic_pointer_cast<CajetaArray>(returnType)) return false;
         if (blockHasStackReturn(block)) {
             returnsStackValueCache = 1;
+            return true;
         }
-        return returnsStackValueCache == 1;
+        // #63: an interface method (abstract, no body) returning a value-shape
+        // class (Optional<T>, etc.) has no body to scan, but the dispatch-site
+        // ABI must match the impl's. Impls of such methods use `return stack
+        // X(...)` (the canonical shape) and compile with sret; the interface
+        // decl's prototype must too, or indirect calls via the vtable
+        // misalign args. Force sret on the interface decl based on the
+        // signature alone.
+        if (parent && parent->isInterface()) {
+            returnsStackValueCache = 1;
+            return true;
+        }
+        return false;
     }
 
     // Emit the body of an @Native-annotated method: a thin wrapper that
@@ -601,7 +613,14 @@ namespace cajeta {
             // implementer (ArrayStream<T>) emits `ret ptr`. The
             // mismatched call signature stores the struct return into
             // a ptr-sized alloca and overflows the stack.
+            // #63: also mirror the sret path. An interface method
+            // returning a value-shape class (e.g. `Optional<T> next()`)
+            // must use the sret ABI on the interface prototype, because
+            // every well-formed impl uses `return stack X(...)` and
+            // compiles with sret — the indirect call via the vtable
+            // would otherwise misalign args (sret slot becomes `this`).
             llvm::Type* llvmRetAbs;
+            llvm::Type* sretStructTyAbs = nullptr;
             {
                 CajetaTypePtr rt = returnType;
                 bool isArrR = rt
@@ -610,9 +629,17 @@ namespace cajeta {
                 bool isClassLikeR = rtClass != nullptr;
                 bool isPrimR = rt && (rt->getTypeFlags() & PRIMITIVE_FLAG);
                 bool isInterfaceR = rtClass && rtClass->isInterface();
+                bool sretReturnAbs = returnsStackValue();
                 bool returnByPointer = isClassLikeR
                     && (isArrR || !isPrimR) && !isInterfaceR;
-                if (returnByPointer) {
+                if (sretReturnAbs) {
+                    sretStructTyAbs = rt ? rt->getLlvmType() : nullptr;
+                    llvmRetAbs = llvm::Type::getVoidTy(
+                        *module->getLlvmContext());
+                    llvmTypes.insert(llvmTypes.begin(),
+                        llvm::PointerType::get(
+                            *module->getLlvmContext(), 0));
+                } else if (returnByPointer) {
                     llvmRetAbs = llvm::PointerType::get(
                         *module->getLlvmContext(), 0);
                 } else {

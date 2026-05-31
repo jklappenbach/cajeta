@@ -9,13 +9,15 @@
 //         opt = iter.next();
 //     }
 //
-// Multi-call iteration is sound when the receiver is the concrete
-// implementer type. Multi-call iteration through an interface-typed
-// receiver (vtable dispatch returning stack `Optional<T>`) hits the
-// M5(b) function-pointer/sret ripple gap; tracked as a separate
-// follow-up — single-call interface dispatch is fine. A
-// `for (T x in iter)` desugaring is the planned v2.1 surface and will
-// pin whichever receiver shape codegen ends up supporting.
+// Both concrete-typed and interface-typed receivers work. Interface
+// dispatch required two coupled fixes (#63): the interface decl's
+// prototype must adopt the sret ABI when its return type is a value-
+// shape class (so the indirect call signature matches the impl), and
+// the dispatch site must swap the iface body for the concrete data
+// pointer at the `this` slot (sretOffset), not blindly at position 0
+// — overwriting position 0 in the sret case clobbers the sret slot
+// and the impl writes its result into garbage. A `for (T x in iter)`
+// desugaring is the planned v2.1 surface.
 //
 
 #include "gtest/gtest.h"
@@ -96,6 +98,51 @@ TEST(AsyncIteratorTests, sumThreeViaConcreteReceiver) {
         "        while (opt.isPresent()) {\n"
         "            sum = sum + opt.get();\n"
         "            opt = iter.next();\n"
+        "        }\n"
+        "        return sum;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 60);
+}
+
+// Same TriIter, but the receiver-typed local is the interface, not
+// the concrete class. Multi-call iface dispatch with stack-Optional
+// return. Pinned as failing — repro for #63.
+TEST(AsyncIteratorTests, sumThreeViaInterfaceLoop) {
+    auto src =
+        "package test;\n"
+        "import cajeta.lang.Optional;\n"
+        "import cajeta.threading.AsyncIterator;\n"
+        "public final class TriIter implements AsyncIterator<int32> {\n"
+        "    int32 i;\n"
+        "    int32[] vals;\n"
+        "    public TriIter() {\n"
+        "        this.i = 0;\n"
+        "        this.vals = new int32[3];\n"
+        "        this.vals[0] = 10;\n"
+        "        this.vals[1] = 20;\n"
+        "        this.vals[2] = 30;\n"
+        "    }\n"
+        "    public Optional<int32> next() {\n"
+        "        if (this.i >= 3) {\n"
+        "            return stack Optional<int32>(false, 0);\n"
+        "        }\n"
+        "        int32 v = this.vals[this.i];\n"
+        "        this.i = this.i + 1;\n"
+        "        return stack Optional<int32>(true, v);\n"
+        "    }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        AsyncIterator<int32> iter = heap TriIter();\n"
+        "        int32 sum = 0;\n"
+        "        Optional<int32> opt = iter.next();\n"
+        "        int32 guard = 0;\n"
+        "        while (opt.isPresent()) {\n"
+        "            sum = sum + opt.get();\n"
+        "            opt = iter.next();\n"
+        "            guard = guard + 1;\n"
+        "            if (guard > 10) { return -999; }\n"
         "        }\n"
         "        return sum;\n"
         "    }\n"
