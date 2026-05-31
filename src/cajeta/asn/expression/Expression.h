@@ -311,6 +311,8 @@ namespace cajeta {
 
         PrefixOp getOp() const { return op; }
 
+        void resolveTypes(CajetaModulePtr module) override;
+
         llvm::Value* generateCode(CajetaModulePtr module) override;
     };
 
