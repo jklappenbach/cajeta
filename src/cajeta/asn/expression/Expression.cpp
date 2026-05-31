@@ -739,6 +739,21 @@ namespace cajeta {
             /*callerModule=*/module);
     }
 
+    void PrefixExpression::resolveTypes(CajetaModulePtr module) {
+        AbstractSyntaxNode::resolveTypes(module);
+        if (children.empty()) return;
+        auto operand = dynamic_pointer_cast<Expression>(children[0]);
+        if (!operand) return;
+        CajetaTypePtr operandType = operand->getResolvedType();
+        if (!operandType) return;
+        // !x → boolean; +/-/~/++/-- preserve the operand's primitive type.
+        if (op == PREFIX_OP_LOGNOT) {
+            resolvedType = CajetaType::of("boolean");
+        } else {
+            resolvedType = operandType;
+        }
+    }
+
     llvm::Value* PrefixExpression::generateCode(CajetaModulePtr module) {
         if (children.empty()) return nullptr;
         auto* builder = module->getBuilder();
