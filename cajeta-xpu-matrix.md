@@ -213,17 +213,19 @@ why.
 
 Wave ops are the archetypal variance-shaped feature and the headline test of the
 seam — and the seam held. `Wave.shuffleSync` (readlane / shuffle-by-index),
-`Wave.ballotSync`, and `Wave.reduceSum` lower through the shared AST walk with only
-four new `LoweringTarget` methods (`waveWidth`/`waveShuffle`/`waveBallot`/
-`waveReduceSum`) forking. Built 2026-05-30; emit-verified on all three backends,
-run on-device on AMD + Vulkan.
+`Wave.ballotSync`, `Wave.reduceSum`, and `Wave.laneId` lower through the shared AST
+walk with only five `LoweringTarget` methods (`waveWidth`/`waveShuffle`/`waveBallot`/
+`waveReduceSum`/`waveLaneId`) forking. Built 2026-05-30; emit-verified on all three
+GPU backends, run on-device on AMD + Vulkan; **wave = SIMD lane on the CPU backend
+(Inc 5C, 2026-05-31)**.
 
-| Feature | Core | NVIDIA | AMD | Vulkan |
-|---------|------|--------|-----|--------|
-| Wave width | `Wave.width()` → i32 | `native` · `read.ptx.sreg.warpsize` (32) | `native` · `amdgcn.wavefrontsize` (32/64) | ⚑ `emit-only: ` `spv.wave.get_lane_count` lowers from IR but LLVM 22's SPIR-V backend **cannot select it** (`Intrinsic selection not implemented`), so `Wave.width()` does not run on-device yet — a backend gap, not an abstraction one. |
-| Shuffle / readlane | `Wave.shuffleSync(v, lane)` | `native` · `nvvm.shfl.sync.idx.i32` | `native` · `amdgcn.readlane` | `native` · `spv.wave.readlane` (→ `OpGroupNonUniformShuffle`) |
-| Ballot | `Wave.ballotSync(pred)` → i64 | `native` · `nvvm.vote.ballot.sync` (i32→i64) | `native` · `amdgcn.ballot.i32` (i32→i64) | `native` · `spv.wave.ballot` (`<4 x i32>`, low 64 → i64) |
-| Reduce (sum) | `Wave.reduceSum(v)` → i32 | `native` · `nvvm.redux.sync.add` (sm_80+) | `native` · `amdgcn.wave.reduce.add` | `native` · `spv.wave.reduce.sum` (→ `OpGroupNonUniformIAdd`) |
+| Feature | Core | NVIDIA | AMD | Vulkan | CPU (Inc 5C) |
+|---------|------|--------|-----|--------|--------------|
+| Wave width | `Wave.width()` → i32 | `native` · `read.ptx.sreg.warpsize` (32) | `native` · `amdgcn.wavefrontsize` (32/64) | ⚑ `emit-only: ` `spv.wave.get_lane_count` lowers from IR but LLVM 22's SPIR-V backend **cannot select it**, so `Wave.width()` does not run on-device yet | the host's native SIMD width W (16 AVX-512 / 8 AVX2); folded to a constant in a vectorized kernel |
+| Lane id | `Wave.laneId()` → i32 | `native` · `read.ptx.sreg.laneid` | `native` · `amdgcn.mbcnt.{lo,hi}` | `native` · `spv.subgroup_local_invocation_id` (validated) | `tid.x % W` |
+| Shuffle / readlane | `Wave.shuffleSync(v, lane)` | `native` · `nvvm.shfl.sync.idx.i32` | `native` · `amdgcn.readlane` | `native` · `spv.wave.readlane` (→ `OpGroupNonUniformShuffle`) | VFABI variant · per-lane gather `val[src[i]]` |
+| Ballot | `Wave.ballotSync(pred)` → i64 | `native` · `nvvm.vote.ballot.sync` (i32→i64) | `native` · `amdgcn.ballot.i32` (i32→i64) | `native` · `spv.wave.ballot` (`<4 x i32>`, low 64 → i64) | VFABI variant · `bitcast <W x i1> → iW` |
+| Reduce (sum) | `Wave.reduceSum(v)` → i32 | `native` · `nvvm.redux.sync.add` (sm_80+) | `native` · `amdgcn.wave.reduce.add` | `native` · `spv.wave.reduce.sum` (→ `OpGroupNonUniformIAdd`) | VFABI variant · `broadcast(vector.reduce.add)`; masked for divergence |
 
 **Reading:** wave ops are native on all three. **The reduce probe overturned its own
 hypothesis.** The guess (recorded here in the prior pass) was that reduce would

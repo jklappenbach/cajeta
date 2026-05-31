@@ -4721,6 +4721,12 @@ void __cajeta_xpu_barrier_wave(void) { /* no-op on CPU emulation */ }
 // default that doesn't make any kernel's wave-uniformity assumption
 // false on this backend.
 uint32_t __cajeta_xpu_wave_width(void) { return 1; }
+// Lane within the wave: 0 on the width-1 emulation (only lane 0 exists). In a
+// vectorized CPU kernel the lowering computes `tid.x % width` inline instead of
+// calling this stub; this is the host @Native / scalar-fallback value.
+uint32_t __cajeta_xpu_wave_lane_id(void) { return 0; }
+// Width-1 emulation: the single lane is always the first.
+bool __cajeta_xpu_wave_is_first_lane(void) { return true; }
 uint32_t __cajeta_xpu_wave_shuffle_sync_u32(uint32_t value, uint32_t srcLane) {
     (void)srcLane; return value;
 }

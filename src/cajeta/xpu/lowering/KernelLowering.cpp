@@ -684,6 +684,16 @@ private:
         } else if (recv == "Wave") {
             const auto& args = mc->getParameters();
             if (name == "width") return target.waveWidth(builder, mod);
+            if (name == "laneId") return target.waveLaneId(builder, mod);
+            if (name == "isFirstLane") {
+                // A width-agnostic cooperation helper, built on laneId(): the
+                // "one lane commits the wave's result" guard. Lowered here
+                // (not a seam point) so every backend gets it for free.
+                llvm::Value* lane = target.waveLaneId(builder, mod);
+                return builder.CreateICmpEQ(
+                    lane, llvm::ConstantInt::get(lane->getType(), 0),
+                    "wave.isfirst");
+            }
             if (name == "shuffleSync") {
                 if (args.size() != 2) unsupported("Wave.shuffleSync arity");
                 llvm::Value* value = lowerExpr(args[0].expression);

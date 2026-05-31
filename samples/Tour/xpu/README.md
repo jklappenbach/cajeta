@@ -18,7 +18,7 @@ samples/Tour/
     ├── README.md
     ├── run-xpu.sh     ← compile + (optionally) run the XPU tour
     └── src/tourxpu/
-        └── XpuTour.cajeta   ← @Kernel SAXPY + vecAdd, dispatched at runtime
+        └── XpuTour.cajeta   ← @Kernel SAXPY + vecAdd + waveReduce, dispatched at runtime
 ```
 
 ## Run it
@@ -32,7 +32,9 @@ The compiler must be built first (`cd <repo> && ./build.sh`). Then:
 ./run-xpu.sh nvptx,cpu       # use the NVIDIA GPU (CUDA), fall to CPU if absent
 ```
 
-Expected output (identical on every backend — the kernels are data-parallel):
+Expected output — the data-parallel results are identical on every backend; the
+**wave width is hardware-specific and queried at runtime**, so the same source
+reports 16 on an AVX-512 CPU, 8 on AVX2, and 32/64 on a GPU:
 
 ```
 === Cajeta XPU tour ===
@@ -40,6 +42,9 @@ Expected output (identical on every backend — the kernels are data-parallel):
   y[0]=1 y[1]=3 y[10]=21 y[255]=511  (expect 1, 3, 21, 511)
 -- vecAdd: c = a + b, a[i]=i, b[i]=2*i --
   c[1]=3 c[10]=30 c[255]=765  (expect 3, 30, 765)
+-- waveReduce: sum across each wave, in[i]=1 --
+  wave width (queried, not hardcoded) = 16        # 64 on an AMD GPU, 32 on NVIDIA
+  every lane of a wave agrees: sums[0]=16 sums[1]=16
 === xpu tour complete ===
 ```
 
@@ -79,13 +84,20 @@ diagnostic instead of crashing (explicit-only bundling is a build-time contract)
 
 ## The kernels
 
-Both kernels in `XpuTour.cajeta` are **data-parallel and barrier-free / wave-free**,
-so they produce identical results on every backend:
+`XpuTour.cajeta` has two data-parallel kernels (identical results everywhere) and
+one wave-cooperative kernel (correct everywhere, at the hardware's wave width):
 
 - `saxpy(y, x, a, n)` — `y[i] = a*x[i] + y[i]`, the canonical accelerator
   "hello world". Uses **`heap Buffer<T>(n)`**.
 - `vecAdd(c, a, b, n)` — `c[i] = a[i] + b[i]`, element-wise. Uses
   **`stack Buffer<T>(n)`**.
+- `waveReduce(sums, in, n)` — `sums[i] =` the sum of `in` across `i`'s **wave**
+  (the warp/wavefront/subgroup on a GPU; the SIMD vector on the CPU — Inc 5C).
+  Written **width-agnostically**: it queries the environment (`Wave.reduceSum`,
+  and `Wave.width()` / `Wave.laneId()` / `Wave.isFirstLane()` are available) and
+  never hardcodes a wave size, so the same source is correct whether the wave is
+  16 (AVX-512), 8 (AVX2), 32 (NVIDIA), or 64 (AMD). With all-ones input each
+  lane's wave-sum *is* the wave width, so the demo prints the width it discovered.
 
 The two demos deliberately use the two `Buffer<T>` forms. `Buffer<T>` is RAII —
 the constructor allocates device memory, `~Buffer()` frees it via the drop chain
@@ -99,8 +111,8 @@ A launch-borrowed buffer that would drop before `Stream.sync()` is a compile
 error (XPU-K02) for either form.
 
 `block = 64` is used because Vulkan bakes its workgroup size into the SPIR-V at 64;
-CUDA / HIP / CPU accept it too. Workgroup barriers and true wave reductions on the
-CPU are later increments, so demos that need them aren't included here yet.
+CUDA / HIP / CPU accept it too. Workgroup barriers on the CPU are a later
+increment, so demos that need them aren't included here yet.
 
 See `cajeta-cpu.md`, `cajeta-xpu.md`, and `cajeta-docs/CajetaXPU.md` for the
 backend/dispatcher design.

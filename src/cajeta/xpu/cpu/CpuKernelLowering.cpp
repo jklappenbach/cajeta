@@ -15,6 +15,7 @@
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/Type.h"
+#include "llvm/Support/ModRef.h"
 
 namespace cajeta {
 namespace xpu {
@@ -95,25 +96,73 @@ public:
     // correct: host pointers are addrspace 0, and the coordinate params live
     // past the materialized param indices, so they never collide.
 
-    // Wave ops, width 1 (one work-item per host invocation): the single-lane
-    // semantics, matching the __cajeta_xpu_wave_* runtime emulation stubs.
+    // Wave ops. Each lowers to a *call* to its `__cajeta_xpu_wave_*` runtime
+    // stub (width-1 scalar semantics: one work-item per host invocation). The
+    // CPU registration pass then attaches a Vector Function ABI variant to each
+    // stub so that when the per-block work-item loop is vectorized to the host's
+    // native width W, LoopVectorize substitutes the SIMD `_vW` (or masked
+    // `_Mv16` for divergent uses) variant — the wave becomes W SIMD lanes
+    // (cajeta-cpu.md Inc 5C). If vectorization does not fire, the scalar call
+    // runs — width-1, always correct. `width()` is the exception: it takes no
+    // argument (a 0-arg VFABI variant is invalid), so registration rewrites it
+    // to the constant W in a vectorized wave kernel.
     llvm::Value* waveWidth(llvm::IRBuilderBase& b, llvm::Module& m) override {
-        return llvm::ConstantInt::get(llvm::Type::getInt32Ty(m.getContext()), 1);
+        llvm::Type* i32 = llvm::Type::getInt32Ty(m.getContext());
+        return pureCall(b, m, "__cajeta_xpu_wave_width", i32, {}, "wave.width");
     }
-    llvm::Value* waveShuffle(llvm::IRBuilderBase&, llvm::Module&,
-                             llvm::Value* value, llvm::Value* /*srcLane*/) override {
-        return value;  // only lane 0 exists; any read returns this lane's value
+    llvm::Value* waveShuffle(llvm::IRBuilderBase& b, llvm::Module& m,
+                             llvm::Value* value, llvm::Value* srcLane) override {
+        llvm::Type* i32 = llvm::Type::getInt32Ty(m.getContext());
+        return pureCall(b, m, "__cajeta_xpu_wave_shuffle_sync_u32", i32,
+                        {value, srcLane}, "wave.shuffle");
     }
     llvm::Value* waveBallot(llvm::IRBuilderBase& b, llvm::Module& m,
                             llvm::Value* pred) override {
-        return b.CreateZExt(pred, llvm::Type::getInt64Ty(m.getContext()));
+        llvm::LLVMContext& ctx = m.getContext();
+        llvm::Type* i1 = llvm::Type::getInt1Ty(ctx);
+        if (!pred->getType()->isIntegerTy(1))      // normalize boolean → i1
+            pred = b.CreateICmpNE(pred,
+                                  llvm::ConstantInt::get(pred->getType(), 0));
+        return pureCall(b, m, "__cajeta_xpu_wave_ballot_sync",
+                        llvm::Type::getInt64Ty(ctx), {pred}, "wave.ballot");
     }
-    llvm::Value* waveReduceSum(llvm::IRBuilderBase&, llvm::Module&,
+    llvm::Value* waveReduceSum(llvm::IRBuilderBase& b, llvm::Module& m,
                                llvm::Value* value) override {
-        return value;  // sum over a single lane
+        llvm::Type* i32 = llvm::Type::getInt32Ty(m.getContext());
+        return pureCall(b, m, "__cajeta_xpu_wave_reduce_sum_u32", i32, {value},
+                        "wave.reducesum");
+    }
+    // Lane within the wave = the block-local work-item index modulo the wave
+    // width. width() is rewritten to the constant W in a vectorized wave kernel,
+    // so this folds to `tid.x % W`; vectorized, the W-aligned vector induction
+    // yields lanes 0..W-1. In a width-1 fallback width() → 1, so laneId → 0.
+    llvm::Value* waveLaneId(llvm::IRBuilderBase& b, llvm::Module& m) override {
+        return b.CreateURem(threadId(b, m, 0), waveWidth(b, m), "wave.laneid");
     }
 
 private:
+    // Emit a call to a pure (memory-none, willreturn, nounwind) runtime wave
+    // stub — the marking LoopVectorize needs to be willing to widen the call
+    // into its VFABI variant.
+    static llvm::Value* pureCall(llvm::IRBuilderBase& b, llvm::Module& m,
+                                 const char* name, llvm::Type* retTy,
+                                 llvm::ArrayRef<llvm::Value*> args,
+                                 const char* twine) {
+        std::vector<llvm::Type*> argTys;
+        argTys.reserve(args.size());
+        for (auto* a : args) argTys.push_back(a->getType());
+        auto* fnTy = llvm::FunctionType::get(retTy, argTys, /*vararg=*/false);
+        llvm::FunctionCallee callee = m.getOrInsertFunction(name, fnTy);
+        if (auto* f = llvm::dyn_cast<llvm::Function>(callee.getCallee())) {
+            f->setDoesNotThrow();
+            f->setWillReturn();
+            f->setMemoryEffects(llvm::MemoryEffects::none());
+        }
+        auto* call = b.CreateCall(callee, args, twine);
+        call->setDoesNotThrow();
+        return call;
+    }
+
     // Read coordinate (group + dim) from the 9 trailing kernel args, laid out
     // [tid.xyz, ctaid.xyz, ntid.xyz]. group ∈ {0,3,6}, dim ∈ {0,1,2}.
     static llvm::Value* coord(llvm::IRBuilderBase& b, unsigned group,
