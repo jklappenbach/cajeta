@@ -1934,6 +1934,48 @@ namespace cajeta {
                 // DONE_FIELD_INDEX defined in CajetaTask.h. The argument
                 // type must resolve to a CajetaTask (Task<T>) — anything
                 // else is a compile error.
+                // R9.4 — I/O reactor surface. ioWait blocks the calling
+                // fiber (or main thread, via direct epoll_wait) until the
+                // requested event bitmask fires on fd. eventfd helpers
+                // and fdClose round out the minimal Linux fd surface used
+                // by R9.4's bring-up tests; they're documented as Linux-
+                // only (the runtime stubs them on macOS / Windows pending
+                // kqueue / IOCP).
+                if (ns == "Cajeta" && methodCallName == "ioWait"
+                        && parameters.size() == 2) {
+                    llvm::Function* fn = module->getRuntimeFunction("__cajeta_io_wait");
+                    llvm::Value* fdv = loadValue(0);
+                    llvm::Value* evv = loadValue(1);
+                    if (fdv->getType() != i32Ty) fdv = builder->CreateIntCast(fdv, i32Ty, true);
+                    if (evv->getType() != i32Ty) evv = builder->CreateIntCast(evv, i32Ty, true);
+                    return builder->CreateCall(fn, {fdv, evv});
+                }
+                if (ns == "Cajeta" && methodCallName == "eventfdCreate"
+                        && parameters.empty()) {
+                    llvm::Function* fn = module->getRuntimeFunction("__cajeta_eventfd_create");
+                    return builder->CreateCall(fn, {});
+                }
+                if (ns == "Cajeta" && methodCallName == "eventfdSignal"
+                        && parameters.size() == 1) {
+                    llvm::Function* fn = module->getRuntimeFunction("__cajeta_eventfd_signal");
+                    llvm::Value* fdv = loadValue(0);
+                    if (fdv->getType() != i32Ty) fdv = builder->CreateIntCast(fdv, i32Ty, true);
+                    return builder->CreateCall(fn, {fdv});
+                }
+                if (ns == "Cajeta" && methodCallName == "eventfdConsume"
+                        && parameters.size() == 1) {
+                    llvm::Function* fn = module->getRuntimeFunction("__cajeta_eventfd_consume");
+                    llvm::Value* fdv = loadValue(0);
+                    if (fdv->getType() != i32Ty) fdv = builder->CreateIntCast(fdv, i32Ty, true);
+                    return builder->CreateCall(fn, {fdv});
+                }
+                if (ns == "Cajeta" && methodCallName == "fdClose"
+                        && parameters.size() == 1) {
+                    llvm::Function* fn = module->getRuntimeFunction("__cajeta_fd_close");
+                    llvm::Value* fdv = loadValue(0);
+                    if (fdv->getType() != i32Ty) fdv = builder->CreateIntCast(fdv, i32Ty, true);
+                    return builder->CreateCall(fn, {fdv});
+                }
                 if (ns == "Cajeta" && methodCallName == "taskDonePointer"
                         && parameters.size() == 1) {
                     auto argExpr = dynamic_pointer_cast<Expression>(parameters[0].expression);
