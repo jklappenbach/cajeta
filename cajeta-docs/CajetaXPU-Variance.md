@@ -9,6 +9,19 @@ phase.
 The rule statement and pointer back to this doc live in
 [`CajetaXPU.md`](CajetaXPU.md) §3.0.
 
+> **A fourth backend — CPU — has since landed on the same seam** (the
+> `LoweringTarget` vtable; see [`cajeta-cpu.md`](../cajeta-cpu.md)). It held the
+> three-column discipline with a single new fork: the **coordinate source**. A
+> CPU has no hardware grid or coordinate intrinsics, so its kernel gains 9
+> trailing `i32` coordinate params and `Thread`/`Workgroup` reads pull from those
+> (the grid→threads model); buffers are flat `addrspace(0)`, the wave is width-1,
+> barriers are deferred (`XPU-N01`). Everything else — the body walk, operators,
+> control flow, `globalId = ctaid*ntid + tid` — stayed Core, confirming the
+> measured surface a third time. The *launch* side added one runtime fork
+> (Vulkan's descriptor-set ABI needs per-kernel parameter metadata to translate
+> the uniform `kernelParams` argv), but that lives in the runtime dispatcher, not
+> on `LoweringTarget`.
+
 ---
 
 ## 1. The three-column check

@@ -133,3 +133,25 @@ defaults in `lowering/{LoweringTarget.h,KernelLowering.cpp}`. Wiring:
 link-time libvulkan dependency — entry points resolve via dlopen +
 `vkGetInstanceProcAddr`/`vkGetDeviceProcAddr`); a box without the Vulkan SDK
 still builds, with `available()` returning false.
+
+## Runtime port (CajetaXPU Increment 4.3 — `cajeta-cpu.md`)
+
+The C++ `VulkanDriver` is **compiler/test-only**; compiled Cajeta programs launch
+through the C runtime (`runtime/native/cajeta_runtime.c`), which is the sole launch
+path. So the descriptor-set compute launch + the host-coherent buffer table were
+**ported into C** there (same `__has_include`/dlopen shape), behind the runtime
+backend dispatcher. The one ABI fork the uniform launch path exposed: Vulkan's
+compute entry takes no params, only descriptor bindings, so the `kernelParams` argv
+(buffer handles + raw scalars) can't be passed through — the rung registers
+**per-kernel parameter metadata** (`__cajeta_xpu_register_kernel_params`) and, at
+launch, binds buffer args to their storage buffers and wraps scalar args in
+**transient single-element SSBOs**. The block dim stays compile-time-fixed
+(`kVulkanLocalSizeX = 64`); the launch dispatches `gridX` work-groups.
+
+Two build findings from the AOT path: a Vulkan kernel must get a **fresh SPIR-V
+`TargetMachine` per kernel** — reusing one corrupts LLVM 22's `SPIRVGlobalRegistry`
+and crashes on the second kernel (`SPIRVEmitIntrinsics::buildAssignPtr`); and the
+AOT `--emit=obj` path needed `TargetOptions::UseInitArray = true` so the
+registration constructors actually run (modern glibc runs `.init_array`, not the
+legacy `.ctors` LLVM emitted by default). Both are fixed. Runnable end-to-end via
+`samples/Tour/xpu/run-xpu.sh vulkan,cpu`.

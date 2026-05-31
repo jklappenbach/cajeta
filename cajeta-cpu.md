@@ -293,3 +293,31 @@ dispatcher uses must be wired *in C* there:
   - Tests: `XpuVulkanDispatchDeviceTests` (RADV) — `--xpu-backend=vulkan` SAXPY runs on the
     GPU through the dispatcher; `vulkan,cpu` + `CAJETA_XPU_BACKEND=cpu` falls to CPU. Full
     Xpu suite: 108 passed, 0 failed.
+- **Two compiler bugs fixed via the AOT tour — 2026-05-31.** Building the first AOT
+  (`--emit=obj`) `@Kernel` program (`samples/Tour/xpu/`, run by `run-xpu.sh`) surfaced two
+  pre-existing compiler defects that the JIT-only test path had masked:
+  - **`UseInitArray` — AOT global constructors never ran.** `Compiler::rebuildTargetMachine`
+    left `TargetOptions::UseInitArray` at its `false` default, so the AsmPrinter emitted the
+    legacy `.ctors` section instead of `.init_array`. Modern glibc startup runs `.init_array`,
+    not `.ctors`, so **every** `--emit=obj/exe` global constructor silently never fired:
+    per-class clinit (non-foldable static initializers), the `UnrecoverableException` vtable
+    marker, the embedded runtime's `__attribute__((constructor))` init — and the XPU
+    kernel/backend registration. Masked because the test suite runs through the JIT (LLJIT's
+    `initialize()` runs `llvm.global_ctors` directly) and AOT programs so far used only lazy
+    runtime init. Fix: `opt.UseInitArray = true` (one line) — what clang/llc set. The CPU
+    tour kernel then runs as a native binary; this also un-breaks AOT static init generally.
+  - **Vulkan multi-kernel SPIR-V codegen crash.** `vulkan::emitKernelRegistration` created one
+    SPIR-V `TargetMachine` and reused it across all kernels' `emitSpirv`. LLVM 22's SPIR-V
+    backend carries codegen state (`SPIRVGlobalRegistry`) on the TargetMachine, so the second
+    kernel crashed in `SPIRVEmitIntrinsics::buildAssignPtr` (a segfault, sometimes an abort —
+    classic state corruption). Never hit before because every prior Vulkan test compiled a
+    single kernel; the two-kernel tour is the first multi-kernel Vulkan module. Fix: a fresh
+    `TargetMachine` per kernel.
+
+## 4. Runnable demo
+
+`samples/Tour/xpu/` is the XPU tour — a portable `@Kernel` SAXPY + vecAdd program with a
+`run-xpu.sh` that compiles for any backend and runs it (default `--xpu-backend=cpu`, so it
+runs anywhere with no GPU). `./run-xpu.sh amdgpu,cpu` / `vulkan,cpu` target a device with
+CPU fallback; `CAJETA_XPU_BACKEND=cpu ./run-xpu.sh amdgpu,cpu` forces the fall-to-CPU path
+on a box that has the GPU. It sits beside the stdlib/language tour in `samples/Tour/`.
