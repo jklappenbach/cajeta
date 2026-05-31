@@ -57,7 +57,7 @@ the body:
 | `globalId` | native or default | shared default `ctaid*ntid + tid` (works verbatim) |
 | `materializeParam` / `bufferElementPtr` | default (arg / GEP) | **default reused** — host pointers are addrspace 0, plain GEP is correct |
 | `decorateKernel` | ptx/amdgpu CC + markers | no-op (default C calling convention, external linkage for JIT/AOT lookup) |
-| `workgroupBarrier` | hardware barrier | **deferred → `XPU-N01`** (a CPU barrier needs work-item loop fission / fibers; barrier-free kernels first, exactly as AMD/Vulkan deferred features) |
+| `workgroupBarrier` | hardware barrier | **work-item loop fission (Inc 6 ✅)** — emits a `@__cajeta_xpu_cpu_barrier()` marker; the registration pass splits the kernel at each barrier into regions, each looped over the block, with per-block shared memory + context arrays. Unsupported shapes → `XPU-N02` host-stub fallback. |
 | `waveWidth`/`Shuffle`/`Ballot`/`ReduceSum` | hardware wave intrinsics | **first cut: width 1** (one work-item per invocation): `width→1`, `shuffle→value`, `ballot→zext(pred)`, `reduceSum→value` — the honest single-lane semantics, matching the existing `__cajeta_xpu_wave_*` runtime stubs. True wave=SIMD-lane is a later increment (§2, Inc 5). |
 
 **What stays shared:** the entire kernel-body AST walk, control flow, the operator set,
@@ -225,9 +225,54 @@ dispatcher uses must be wired *in C* there:
     (`laneId` on real AMD + Vulkan hardware).
 - Probe AMX / SME matmul lowering (CPU matrix engines, runtime-feature-gated).
 
-### Increment 6 — workgroup barriers via work-item loop fission (POCL-style)
-- Lifts the barrier restriction: split the kernel at each barrier, loop over work-items
-  per region. Unblocks shared-memory reductions on CPU.
+### Increment 6 — workgroup barriers via work-item loop fission (POCL-style) ✅ (landed 2026-05-31)
+A `@Kernel` with `Barrier.workgroup()` can't run as one work-item loop: a barrier means
+every work-item of the block must reach it before any proceeds. POCL-style **fission**
+(`xpu/cpu/CpuBarrierFission.cpp`, invoked from `CpuRegistration`) splits the kernel at each
+barrier into **regions** and wraps each in its own loop over the block — and the serialized
+region loops honor the barrier for free, because **a per-block wrapper call runs on exactly
+one pthread** (5A fans *blocks* across threads, never the work-items of one block). This
+finally unblocks shared-memory tree reductions on the CPU. Barriers were `XPU-N01`; the new
+diagnostic for an *unsupported* barrier shape is `XPU-N02`.
+- **The barrier becomes a marker.** `CpuTarget::workgroupBarrier` emits an impure,
+  `noinline`/`noduplicate` `call void @__cajeta_xpu_cpu_barrier()` (instead of throwing) that
+  survives lowering as a region delimiter; the pass erases every call once it has split.
+- **The pass** (operating on the per-work-item kernel cloned into the wrapper):
+  1. `CloneFunctionInto` the kernel body into the wrapper, mapping `tid.x` → a placeholder
+     replaced per region with that region's work-item-loop index, `tid.y/z` → 0 (the launch
+     ABI is 1-D), `ctaid/ntid` → wrapper args. Connect entry→body so `DominatorTree`/`LoopInfo`
+     see the CFG (the load-bearing fix — without the entry terminator, the body is unreachable
+     and *no loops are found*).
+  2. Split each barrier into its own boundary block; build `LoopInfo`.
+  3. **Region formation is a loop-aware structured walk**, not SESE/dominance: a region is a
+     maximal barrier-free run within one loop level; a uniform loop that contains a barrier
+     stays the **outer scalar scaffold** (its header/latch run once per iteration) and its body
+     region is wrapped in a work-item loop **nested inside**. So the tree reduction's
+     `for (s)` loop is preserved and the halve-and-add (region B) loops over the block within it.
+  4. **Context save/restore at the alloca-slot level** (pre-mem2reg, the key simplification —
+     no SSA liveness analysis): a local that is **per-work-item** (a `tid.x`-tainted value is
+     stored to it) **and** lives across a barrier (accessed in >1 region) is widened from `T`
+     to a `[ntid.x × T]` array indexed by the region's work-item index. Block-uniform locals
+     (the loop var `s`, kernel params) stay scalar; region-local temps stay scalar and mem2reg
+     promotes them. The generated work-item loops are clean counted loops, so 5B's
+     `LoopVectorize` still widens them to SIMD.
+  5. **Per-block shared memory.** A `Shared<T>` array lowers to one module-level `addrspace(3)`
+     global — one instance, which would race across the blocks/threads that each call the
+     wrapper. The pass replaces it with a wrapper-local `alloca` (fresh per block call),
+     `addrspacecast` 0→3 (a no-op the CPU backend folds), and deletes the dead global.
+- **Guardrails (`XPU-N02`, checked before any mutation → host-stub fallback, never a
+  miscompile):** a barrier under work-item-divergent control flow (post-dominance check — the
+  barrier must post-dominate its level's entry); a barrier in a loop with a `tid`-dependent
+  trip count; a barrier in a nested loop (one level supported); dynamic-sized shared memory;
+  wave ops + barriers in one kernel (the 5C forced-VF path and fission don't yet compose).
+- **Verified:** `XpuCpuBarrierExecTests` — two straight-line regions run the whole block;
+  per-block shared memory staged + read cross-lane; the **canonical tree reduction**
+  (`in[i]=i`, 256 block ⇒ `out[0]=32640`) with a barrier inside the uniform loop; 32 blocks ×
+  256 across pthread workers with no shared-buffer aliasing; a divergent barrier falls back
+  cleanly. Barrier-free CPU + wave (5C) + GPU suites unchanged.
+- **Out of scope (later):** multiple barriers / multiple regions inside one loop; nested
+  uniform loops with barriers; composing wave ops with barriers; a register accumulator carried
+  per-work-item across the uniform loop (the canonical kernel keeps it in shared memory).
 
 ### Docs
 - This file (the log). The matrix gains a **CPU column** (today: emit + grid→threads

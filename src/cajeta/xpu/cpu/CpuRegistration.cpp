@@ -12,6 +12,7 @@
 #include "CpuRegistration.h"
 #include "CpuKernelLowering.h"
 #include "CpuBackend.h"
+#include "CpuBarrierFission.h"
 #include "cajeta/compile/Optimizer.h"
 
 #include "cajeta/method/Method.h"
@@ -336,6 +337,24 @@ void forceLoopVectorWidth(llvm::BranchInst* latch, unsigned W) {
             llvm::Value* ntidY  = wrapper->getArg(nReal + 4);
             llvm::Value* ntidZ  = wrapper->getArg(nReal + 5);
 
+            // A kernel that calls Barrier.workgroup() can't run as one work-item
+            // loop — it is split at each barrier into regions, each looped over
+            // the block (Inc 6 fission). Disjoint from the 5C wave path. XPU-N02
+            // on an unsupported construct → discard + fall back to the host stub.
+            if (usesBarrier(*linked)) {
+                try {
+                    std::vector<llvm::Value*> ctaidV = {ctaidX, ctaidY, ctaidZ};
+                    std::vector<llvm::Value*> ntidV  = {ntidX,  ntidY,  ntidZ};
+                    fissionBarrierKernel(linked, wrapper, nReal, ctaidV, ntidV,
+                                         hostModule);
+                } catch (cajeta::Exception&) {
+                    wrapper->eraseFromParent();
+                    linked->eraseFromParent();    // has barrier markers; unusable
+                    continue;                     // host-stub fallback
+                }
+                linked->eraseFromParent();        // body cloned into the wrapper
+                vectorizeFunction(*wrapper, hostTm.get());
+            } else {
             llvm::BasicBlock* wEntry =
                 llvm::BasicBlock::Create(ctx, "entry", wrapper);
             llvm::BasicBlock* wHead =
@@ -430,6 +449,7 @@ void forceLoopVectorWidth(llvm::BranchInst* latch, unsigned W) {
                     llvm::InlineFunction(*c, vifi);
                 }
             }
+            }   // end of the barrier-free single-loop wrapper build
 
             // --- Uniform launcher thunk → the per-block wrapper -------------
             // void __cajeta_xpu_cpu_launch.<name>(ptr argv, ptr coord). The
