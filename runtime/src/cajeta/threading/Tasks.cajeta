@@ -14,16 +14,14 @@ import cajeta.time.Duration;
  * top of the existing await machinery:
  *
  *     Task<int32> t = spawn compute();
- *     Optional<int32> r = Tasks.withTimeoutInt32(Duration.ofMillis(50), t);
+ *     Optional<int32> r = Tasks.withTimeout(Duration.ofMillis(50), t);
  *     if (r.isPresent()) { ... use r.get() ... } else { ... handle timeout ... }
  *
- * v1 ships only the int32 specialization (`withTimeoutInt32`). The
- * templated `withTimeout<R>(Duration, Task<R>) -> #Optional<R>` shape is
- * what the API will settle on long-term but tripped a JIT-side crash
- * during templated-method instantiation across stdlib + user modules —
- * tracked as task #47. Per-T specializations (`withTimeoutInt64`, etc.)
- * land when concrete consumers surface a need; the int32 form covers
- * the common signal-flag and counter cases.
+ * Two forms ship: the templated `withTimeout<R>(Duration, Task<R>) ->
+ * #Optional<R>` (the canonical API; R is inferred from the Task<R>
+ * arg) and an `int32` specialization `withTimeoutInt32` that predates
+ * the generic form and remains for callers already pinned to it. New
+ * code should prefer the templated form.
  *
  * A lambda-taking shape — `withTimeoutInt32(d, () -> compute())` per
  * cajeta-docs/stdlib/Thread.md § withTimeout — is the documented
@@ -75,5 +73,16 @@ public class Tasks {
             return heap Optional<int32>(true, val);
         }
         return heap Optional<int32>(false, val);
+    }
+
+    public static #Optional<R> withTimeout<R>(Duration d, Task<R> t) {
+        int64 deadline = Cajeta.currentTimeNanos() + d.toNanos();
+        pointer done = Cajeta.taskDonePointer(t);
+        int32 ok = Cajeta.taskWaitTimeout(done, deadline);
+        R val = await t;
+        if (ok == 1) {
+            return heap Optional<R>(true, val);
+        }
+        return heap Optional<R>(false, val);
     }
 }
