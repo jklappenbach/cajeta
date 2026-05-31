@@ -3381,10 +3381,22 @@ namespace cajeta {
     // invokeMethod path (same dispatch as a regular method call would emit,
     // minus MethodCallExpression's outer-thread arg evaluation).
     //
-    // R3-A still restricts to bare class-method calls — instance-method
-    // calls inside spawn (`spawn obj.method(args)`) are deferred since they
-    // require capturing the receiver too. Pure intrinsics inside spawn are
-    // also out of scope (no useful semantics).
+    // Two inner-call shapes are supported:
+    //   - Bare class-method (`spawn compute(args)`): trampoline routes
+    //     through the enclosing class's invokeMethod.
+    //   - Spawn-of-lambda (`spawn body(args)` where `body` is a function-
+    //     typed scope field — local, parameter, or capture): trampoline
+    //     loads the closure record at fn+captures (L3-3 ABI) and
+    //     indirect-dispatches. Lets `withTimeout(d, () -> compute())`
+    //     work — see cajeta-docs/stdlib/Thread.md § withTimeout, and the
+    //     #-transfer lifetime invariant in cajeta-docs/stdlib/AsyncStatus.md
+    //     § Plan: Task<T>.
+    //   - Instance-method dispatch (`spawn obj.method()`) is still
+    //     deferred — it needs the receiver captured into the ctx struct
+    //     and a dispatch through the class's vtable; not in scope here.
+    //
+    // Pure intrinsics inside spawn are also out of scope (no useful
+    // semantics).
     llvm::Value* SpawnExpression::generateCode(CajetaModulePtr module) {
         if (children.empty()) return nullptr;
         auto inner = dynamic_pointer_cast<Expression>(children[0]);
@@ -3405,6 +3417,43 @@ namespace cajeta {
                 "CAJETA_ERROR_ASYNC_R3A");
         }
 
+        // Detect spawn-of-lambda: methodCallName resolves to a function-
+        // typed scope field (local, parameter, or capture). The body's
+        // trampoline will indirect-call through the closure instead of
+        // invokeMethod. The detection has to run before arg evaluation so
+        // the closure value gets captured at the spawn site (outer thread),
+        // matching the same-thread-side-effects rule the regular spawn
+        // observes for its method-args.
+        CajetaFunctionTypePtr lambdaFnType;
+        FieldPtr lambdaClosureField;
+        if (!module->getScopeStack().isEmpty()) {
+            auto scope = module->getScopeStack().peek();
+            if (scope) {
+                FieldPtr f = scope->getField(innerCall->getMethodCallName());
+                if (f) {
+                    if (auto ft = dynamic_pointer_cast<CajetaFunctionType>(
+                            f->getType())) {
+                        lambdaFnType = ft;
+                        lambdaClosureField = f;
+                    }
+                }
+            }
+        }
+
+        // v1 spawn-of-lambda restriction: only the heap-ownership ABI
+        // (`(P) -> #R`) and primitive-return shapes. The sret form would
+        // need the result slot to outlive the worker's trampoline frame,
+        // which today's Task<T>::value slot layout (which holds either a
+        // primitive or a heap pointer, not a struct) doesn't carry.
+        if (lambdaFnType && lambdaFnType->usesSret()) {
+            throw Exception(
+                "spawn-of-lambda v1 supports only heap-ownership return "
+                "shape ((P) -> #R) or primitive return; sret value-return "
+                "closures would need their result slot to outlive the "
+                "worker frame",
+                "CAJETA_ERROR_ASYNC_SPAWN_LAMBDA_SRET");
+        }
+
         auto* outerBuilder = module->getBuilder();
         auto& llvmCtx = *module->getLlvmContext();
         auto* lmod = module->getLlvmModule();
@@ -3418,6 +3467,24 @@ namespace cajeta {
         // walks the latter.
         vector<llvm::Value*> capturedArgs;
         vector<CajetaTypePtr> capturedArgTypes;
+
+        // Spawn-of-lambda: also capture the closure record ptr from the
+        // lambdaClosureField's slot. This becomes capturedArgs[0]; the
+        // trampoline reads it from ctx[1] (ctx[0] is the task ptr) and
+        // GEPs fn/captures off the closure. CajetaType for the closure
+        // is the function type itself — capturedArgTypes positionally
+        // tracks types but the lambda path doesn't use invokeMethod's
+        // overload resolution, so the stored type is decorative beyond
+        // round-tripping the LLVM ptr.
+        if (lambdaFnType && lambdaClosureField) {
+            llvm::AllocaInst* slot =
+                lambdaClosureField->getOrCreateAllocation();
+            llvm::Value* closurePtr = outerBuilder->CreateLoad(
+                ptrTy, slot, "spawn_closure_ptr");
+            capturedArgs.push_back(closurePtr);
+            capturedArgTypes.push_back(lambdaFnType);
+        }
+
         for (auto& param : innerCall->getParameters()) {
             if (!param.expression->getResolvedType()) {
                 param.expression->resolveTypes(module);
@@ -3534,31 +3601,87 @@ namespace cajeta {
 
         // --- try body: dispatch the inner call + capture result ---
         outerBuilder->SetInsertPoint(trampTryBB);
-        // Load each arg from ctx[i+1] and build the entries the invoke
-        // path expects.
-        vector<ParameterEntry> entries;
-        for (size_t i = 0; i < capturedArgs.size(); ++i) {
-            llvm::Value* slot = outerBuilder->CreateStructGEP(
-                ctxStructTy, ctxParam, (unsigned)(i + 1),
-                string("ctx_arg") + std::to_string(i));
-            llvm::Value* loaded = outerBuilder->CreateLoad(
-                capturedArgs[i]->getType(), slot,
-                string("arg") + std::to_string(i));
-            entries.push_back(ParameterEntry(capturedArgTypes[i],
-                /*label=*/string(), loaded));
+        llvm::Value* innerResult = nullptr;
+        CajetaTypePtr innerType;
+        if (lambdaFnType) {
+            // Spawn-of-lambda: load the closure ptr from ctx[1], GEP
+            // fn+captures (L3-3 closure layout: { ptr fn, ptr captures,
+            // ptr drop_fn }), build the indirect-call arg list, dispatch.
+            // Mirrors MethodCallExpression's function-typed-local
+            // invocation lowering (the `add(3, 4)` case) but inside the
+            // worker frame and reading the closure from ctx instead of
+            // the caller's scope field.
+            llvm::Type* closureTy = llvm::StructType::get(
+                llvmCtx, {ptrTy, ptrTy, ptrTy});
+            llvm::Value* closureSlot = outerBuilder->CreateStructGEP(
+                ctxStructTy, ctxParam, 1, "ctx_closure_slot");
+            llvm::Value* closurePtr = outerBuilder->CreateLoad(
+                ptrTy, closureSlot, "closure_ptr");
+            llvm::Value* fnSlot = outerBuilder->CreateStructGEP(
+                closureTy, closurePtr, 0, "closure.fn");
+            llvm::Value* fnPtr = outerBuilder->CreateLoad(
+                ptrTy, fnSlot, "fn_ptr");
+            llvm::Value* capSlot = outerBuilder->CreateStructGEP(
+                closureTy, closurePtr, 1, "closure.captures");
+            llvm::Value* captures = outerBuilder->CreateLoad(
+                ptrTy, capSlot, "captures_ptr");
+            // Build args: [captures, user_arg0, user_arg1, ...]. The
+            // L3-3 ABI puts captures at position 0 in the closure's
+            // function signature.
+            llvm::FunctionType* sig = lambdaFnType->getLlvmFunctionType();
+            vector<llvm::Value*> indirectArgs;
+            indirectArgs.push_back(captures);
+            // User args live at ctx[2..] (ctx[0] task, ctx[1] closure).
+            for (size_t i = 1; i < capturedArgs.size(); ++i) {
+                llvm::Value* slot = outerBuilder->CreateStructGEP(
+                    ctxStructTy, ctxParam, (unsigned)(i + 1),
+                    string("ctx_arg") + std::to_string(i - 1));
+                llvm::Value* loaded = outerBuilder->CreateLoad(
+                    capturedArgs[i]->getType(), slot,
+                    string("arg") + std::to_string(i - 1));
+                // Width-coerce to match the signature, mirroring the
+                // MCE direct-closure-call path.
+                size_t sigIdx = i;  // 0 is captures, then user args
+                if (sig && sigIdx < sig->getNumParams() && loaded
+                        && loaded->getType() != sig->getParamType(sigIdx)) {
+                    llvm::Type* expected = sig->getParamType(sigIdx);
+                    if (expected->isIntegerTy() && loaded->getType()->isIntegerTy()) {
+                        loaded = outerBuilder->CreateIntCast(loaded, expected, true);
+                    } else if (expected->isFloatingPointTy()
+                            && loaded->getType()->isFloatingPointTy()) {
+                        loaded = outerBuilder->CreateFPCast(loaded, expected);
+                    }
+                }
+                indirectArgs.push_back(loaded);
+            }
+            innerResult = outerBuilder->CreateCall(sig, fnPtr, indirectArgs);
+            innerType = lambdaFnType->getReturnType();
+        } else {
+            // Bare class-method dispatch — the original lowering path.
+            // Load each arg from ctx[i+1] and build the entries
+            // invokeMethod expects.
+            vector<ParameterEntry> entries;
+            for (size_t i = 0; i < capturedArgs.size(); ++i) {
+                llvm::Value* slot = outerBuilder->CreateStructGEP(
+                    ctxStructTy, ctxParam, (unsigned)(i + 1),
+                    string("ctx_arg") + std::to_string(i));
+                llvm::Value* loaded = outerBuilder->CreateLoad(
+                    capturedArgs[i]->getType(), slot,
+                    string("arg") + std::to_string(i));
+                entries.push_back(ParameterEntry(capturedArgTypes[i],
+                    /*label=*/string(), loaded));
+            }
+            string methodNameCopy = innerCall->getMethodCallName();
+            // For static methods, thisValue is nullptr.
+            innerResult = targetClass->invokeMethod(
+                methodNameCopy, entries, /*isConstructor=*/false,
+                /*thisValue=*/nullptr);
+            if (innerResult) innerType = CajetaType::of(innerResult);
         }
-        string methodNameCopy = innerCall->getMethodCallName();
-        // For static methods, thisValue is nullptr.
-        llvm::Value* innerResult = targetClass->invokeMethod(
-            methodNameCopy, entries, /*isConstructor=*/false,
-            /*thisValue=*/nullptr);
         if (!innerResult) {
             outerBuilder->SetInsertPoint(outerInsertBlock);
             return nullptr;
         }
-        // Determine T from the call's result type. invokeMethod hands back
-        // the call instruction — its type is what Task<T>::value must hold.
-        CajetaTypePtr innerType = CajetaType::of(innerResult);
         if (!innerType) {
             outerBuilder->SetInsertPoint(outerInsertBlock);
             return nullptr;
