@@ -10,11 +10,13 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <vector>
 
 #include "llvm/ExecutionEngine/Orc/LLJIT.h"
 #include "llvm/ExecutionEngine/Orc/ThreadSafeModule.h"
 
 #include "cajeta/compile/CompilerMode.h"
+#include "cajeta/xpu/XpuTarget.h"
 
 namespace cajeta {
     class Compiler;
@@ -60,6 +62,11 @@ public:
         // throw records its native stack via backtrace(3)); tests
         // verifying the off path explicitly opt out.
         bool stackTraceCaptureEnabled = true;
+        // XPU device backend(s) to register @Kernels for and bundle in the
+        // runtime manifest. Empty defaults to {Nvptx} (the legacy NVIDIA
+        // host-launch path). The CPU dispatcher tests set {Cpu} to exercise
+        // the GPU-free fall-to-CPU launch through __cajeta_xpu_launch.
+        std::vector<cajeta::xpu::Backend> xpuBackends;
     };
 
     // Compile `source` (a Cajeta compilation unit) into a JIT instance. The class

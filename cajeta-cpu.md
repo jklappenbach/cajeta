@@ -116,8 +116,22 @@ body is untouched. This is the same ~90% core, now spanning four backends.
   auto-vectorize the work-item loop, so threading and SIMD belong together there.
 
 ### Increment 4 — the runtime dispatcher + explicit multi-target bundling
-- Priority probe (`CUDA→HIP→Vulkan→CPU`), startup-availability, cached; the precise
-  "no available backend among {…}" diagnostic; `--xpu-backend=vulkan,cpu` end-to-end.
+The active backend is chosen once at first device touch among the **bundled** set (a
+manifest of `__cajeta_xpu_register_backend` ctors the compiler emits) and the
+**available** set (runtime probes), priority `CUDA→HIP→Vulkan→CPU`, honoring a
+`CAJETA_XPU_BACKEND` force-override, then cached. Every device entry point
+(`__cajeta_xpu_buffer_*`, `__cajeta_xpu_launch`, `stream.sync`) routes to it. Staged,
+because **the C runtime is the sole launch path** (see findings) — every backend the
+dispatcher uses must be wired *in C* there:
+- **4.0 dispatcher core** ✅ + **4.1 CPU rung** ✅ (landed 2026-05-31): manifest, cached
+  selector, env override, precise *"no available backend among {…}; rebuild with `cpu`…"*
+  diagnostic, and the CPU rung (buffer = malloc/memcpy, launch = the launcher-thunk grid
+  loop in C). CUDA (already present) refactored behind the switch. GPU-free end-to-end:
+  a host-source `kernel.launch()` SAXPY built `--xpu-backend=cpu` runs on the CPU.
+- **4.2 HIP rung** ⏭️ — `dlopen` libamdhip64 + the HIP buffer/launch block (API-identical
+  to CUDA). Device-validated on the AMD box.
+- **4.3 Vulkan rung** ⏭️ — the descriptor-set compute launch + buffer memory ported from
+  `VulkanDriver.cpp` into C (the large tail). Device-validated via RADV.
 
 ### Increment 5 — parallelism: multi-core threading + true wave = SIMD lane
 - **Multi-core threading** (moved here from Inc 3, 2026-05-31): a `parallel_for` chunking
@@ -198,3 +212,35 @@ body is untouched. This is the same ~90% core, now spanning four backends.
     registration ctor: it JITs the registration module, maps `__cajeta_xpu_register_cpu_kernel`
     as an absolute symbol, runs `llvm.global_ctors`, and lets the ctor register the thunk
     into the same registry the driver reads back.
+- **Inc 4.0 + 4.1 — landed 2026-05-31.** A compiled @Kernel program runs on the CPU with
+  **no GPU**, through the real host-source launch path — the degrade-to-CPU headline.
+  - **The decisive architectural finding: the C runtime is the SOLE launch path for
+    compiled programs.** `runtime/native/cajeta_runtime.c` is parsed from embedded bitcode
+    and linked into every program (`CajetaModule::linkRuntime`); it self-contains CUDA (its
+    own `dlopen` + `cuLaunchKernel`). The C++ `CudaDriver`/`HipDriver`/`VulkanDriver`/
+    `CpuDriver` classes are **compiler/test-only and never linked into a user program** (the
+    runtime's own comment says as much for CUDA). So the dispatcher — and every backend's
+    launch + device memory it can use — must live **in C, in the runtime**, not in the C++
+    drivers. That is why Inc 4 is staged per-backend and why the C++ `CpuDriver` (Inc 3) is
+    the *test-side twin* of the runtime's in-C CPU launch, exactly as `CudaDriver` mirrors
+    the runtime's in-C CUDA — a deliberately duplicated pattern, not redundancy.
+  - **One cached selector, then per-backend branches.** `cajeta_xpu_active_backend()` picks
+    the highest-priority backend that is both bundled and available (env-forceable), caches
+    it, and every device entry point switches on it. The int64 `Buffer<T>` handle is
+    backend-specific (CUDA/HIP device ptr, Vulkan buffer index, CPU host block) but coherent
+    within a run because the backend is fixed at first device touch (locked decision #2 — a
+    GPU lost mid-run is a hard error, not a silent CPU re-run).
+  - **The manifest closes the registry-ambiguity gap.** The runtime can't tell a cubin from
+    a SPIR-V blob (both register via `__cajeta_xpu_register_module`), so the compiler emits a
+    `__cajeta_xpu_register_backend((int) Backend)` ctor per bundled backend; the
+    `xpu::Backend` enum values were already priority-aligned with the runtime ids
+    (CUDA 0 / HIP 1 / VULKAN 2 / CPU 3), so the id is just the cast. *Limitation, documented:*
+    at most one non-CPU device backend per bundle (mixed `nvptx,amdgpu` would collide
+    one-blob-per-name) — a per-blob backend tag is the follow-up.
+  - Tests: `XpuCpuDispatchTests` (GPU-free) — host-source SAXPY `--xpu-backend=cpu` runs on
+    the CPU (sum 4096); forcing an unbundled backend (`CAJETA_XPU_BACKEND=cuda` with only
+    `cpu` bundled) degrades gracefully (precise diagnostic, no crash, un-launched 2048);
+    `CAJETA_XPU_BACKEND=cpu` force runs. `JitTestHelper` gained an `xpuBackends` option +
+    the manifest emit; the CUDA host-launch path is behavior-preserved (full Xpu suite green).
+  - **Remaining:** 4.2 (HIP) + 4.3 (Vulkan) wire those backends' launch + memory into the C
+    runtime so the GPU rungs of the chain are live, not just CPU + CUDA.
