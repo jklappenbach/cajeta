@@ -548,6 +548,15 @@ identifier
     | PROVIDES
     | WITH
     | TRANSITIVE
+    // `shared` is a contextual keyword: it has special meaning only in the
+    // token-led GPU placement form `SHARED (creator | aggregateInitializer)`
+    // (workgroup-shared memory inside an @Kernel body). Everywhere else it must
+    // remain a plain identifier so pre-existing code with a `shared`
+    // method/field/variable still parses — reserving it outright produced a
+    // parse error ("no viable alternative at input '... shared'") -> malformed
+    // tree -> bad any_cast at AST-build time. (Unlike its placement siblings
+    // HEAP/STACK, which are reserved, `shared` collides with real user code.)
+    | SHARED
     ;
 
 localTypeDeclaration
