@@ -68,3 +68,8 @@ enable_testing()
 
 add_subdirectory(src)
 add_subdirectory(test)
+
+# Debugger / in-process JIT host sub-project test target. Separate executable
+# (cajeta_debug_test), kept out of the main `cajeta_test` battery and the
+# run_tests flow on purpose — its own TDD harness. See debug-tests/CMakeLists.txt.
+add_subdirectory(debug-tests)

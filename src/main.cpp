@@ -8,6 +8,7 @@
 #include "cajeta/compile/CompilerMode.h"
 #include "cajeta/error/Exception.h"
 #include "cajeta/cli/ArchiveCommands.h"
+#include "cajeta/jit/CajetaJitHost.h"
 
 // CAJETA_VERSION and CAJETA_GIT_HASH are stamped at configure time by the
 // top-level CMakeLists.txt. Fall back to a placeholder if a non-CMake build
@@ -146,6 +147,13 @@ int main(int argc, const char* argv[]) {
     // "run", ...) land alongside `archive`.
     if (argc >= 2 && std::string(argv[1]) == "archive") {
         return cajeta::dispatchArchive(argc, argv);
+    }
+
+    // `cajeta jit-run <sourceRoot> <package.Class.method>` — in-process JIT
+    // host (CP1 of the debugger plan; the `cajeta dap` server reuses it). A
+    // developer/diagnostic verb for now.
+    if (argc >= 2 && std::string(argv[1]) == "jit-run") {
+        return cajeta::jit::dispatchJitRun(argc, argv);
     }
 
     // --version / -V short-circuit. Handled before Compiler construction
