@@ -9,13 +9,27 @@
 // CajetaType::getLlvmType() (whose cached llvm::Type* is bound to the
 // host context).
 //
-// Supported subset (enough for SAXPY-class kernels; extended later):
+// Supported subset (general single-kernel compute bodies):
 //   - params: primitives by value, Buffer<T> / T[] as ptr addrspace(1)
 //   - Thread / Workgroup coordinate builtins (-> nvvm sreg reads)
-//   - local `T name = expr;` (single-assignment), if/else, blocks
+//   - Barrier.workgroup() (-> bar.sync)
+//   - mutable locals (entry-block allocas; mem2reg'd before emit), with or
+//     without initializer; scalar + buffer-element assignment and compound
+//     assignment (+=, -=, …)
+//   - if/else, for / while / do-while loops, unlabeled break / continue
 //   - buffer/array index load & store (addrspace(1) GEP)
-//   - integer + float arithmetic and comparisons
-// Unsupported constructs raise cajeta::Exception (errorId XPU-N01).
+//   - workgroup-shared memory via the `shared` placement keyword,
+//     `Shared<T> tile = shared T[size];` -> one addrspace(3) global, indexed
+//     /assigned exactly like a buffer. Constant size -> a per-block internal
+//     [N x T] (static). Runtime size -> an external unsized [0 x T] (dynamic,
+//     sized by the launch's `shared:` byte count; one per kernel).
+//   - full integer + float operator set: +-*/ %, & | ^, << >> (logical/
+//     arithmetic by signedness), short-circuit && ||, comparisons
+//   - unary +/-/~/!, prefix & postfix ++/--, numeric casts
+// Still raised as XPU-N01 (next increment): Wave shuffles/ballots, calls to
+// user @Device helpers, for-each loops, and labeled break/continue. The
+// shared-aliasing borrow rule (overlapping &mut slices, spec §11 case 2) is a
+// separate deferred item.
 //
 
 #pragma once

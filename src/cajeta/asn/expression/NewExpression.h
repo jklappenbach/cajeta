@@ -32,9 +32,22 @@ namespace cajeta {
         // instead of a malloc. `heap ClassName(args)` and bare `new
         // ClassName(args)` keep the default (heap).
         bool stackAlloc = false;
+        // `shared ClassName(args)` / `shared T[N]` — GPU workgroup-shared
+        // placement (NV addrspace 3). Device-only: the NVPTX kernel lowerer
+        // recognizes this on a kernel-local's initializer and emits a per-block
+        // addrspace(3) global; the host generateCode path rejects it.
+        bool sharedAlloc = false;
     public:
         void setStackAlloc(bool v) { stackAlloc = v; }
         bool getStackAlloc() const { return stackAlloc; }
+        void setSharedAlloc(bool v) { sharedAlloc = v; }
+        bool getSharedAlloc() const { return sharedAlloc; }
+
+        // The creator-rest (ClassCreatorRest or ArrayCreatorRest), exposed so
+        // the device lowerer can read a `shared T[N]` array creation's size
+        // operand without going through host codegen.
+        const CreatorRestPtr& getCreatorRest() const { return creatorRest; }
+        const string& getTypeName() const { return typeName; }
 
         NewExpression(antlr4::Token* token) : Expression(token) { }
 

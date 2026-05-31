@@ -18,7 +18,20 @@
 #include "../type/CajetaType.h"
 #include "cajeta/error/CajetaExceptions.h"
 #include "CajetaParserBaseVisitor.h"
+#include "../xpu/core/XpuAttributes.h"
+#include "../xpu/XpuTarget.h"
+#include "../xpu/nvidia/NvptxBackend.h"
+#include "../xpu/nvidia/NvptxKernelLowering.h"
+#include "../xpu/amd/AmdgpuBackend.h"
+#include "../xpu/amd/AmdgpuKernelLowering.h"
+#include "../xpu/vulkan/SpirvBackend.h"
+#include "../xpu/vulkan/SpirvKernelLowering.h"
+#include "../xpu/cpu/CpuBackend.h"
+#include "../xpu/cpu/CpuKernelLowering.h"
+#include "../method/Method.h"
+#include "llvm/IR/Module.h"
 #include <algorithm>
+#include <fstream>
 #include <sys/stat.h>
 
 #ifdef CAJETA_HAS_LLD
@@ -60,6 +73,15 @@ namespace cajeta {
         // carries all of JSON / hashing / parallel-stream / etc.
         opt.FunctionSections = true;
         opt.DataSections     = true;
+        // Emit llvm.global_ctors as `.init_array` (modern ELF), not the legacy
+        // `.ctors` section. TargetOptions defaults UseInitArray to false, which
+        // makes the AsmPrinter emit `.ctors` — a section modern glibc startup
+        // does NOT run, so every AOT global constructor (per-class clinit, the
+        // UnrecoverableException vtable marker, the embedded runtime's
+        // __attribute__((constructor)) init, and the XPU kernel/backend
+        // registration ctors) silently never fired. clang/llc set this; we must
+        // too for the --emit=obj/exe path to honor static initializers.
+        opt.UseInitArray     = true;
         targetMachine = target->createTargetMachine(triple, cpu, features, opt, effectiveRM);
     }
 
@@ -726,6 +748,11 @@ namespace cajeta {
                 if (klass) klass->generateStaticInitializers();
             }
         }
+        // XPU device codegen (--xpu-backend=nvptx): embed each @Kernel's cubin +
+        // registration ctor into its host module, before the host module is
+        // written out below. No-op for the default host-only path.
+        emitXpuKernels(archiveRootPath);
+
         // Binary emit needs a C-ABI `main` to satisfy the loader. Synthesize
         // a shim that forwards to the user's static entry method. Skipped
         // for IR emit; the JIT and IR-archive consumers invoke the entry
@@ -798,6 +825,231 @@ namespace cajeta {
                 dest.flush();
                 objectFiles.push_back(objPath);
                 return;
+            }
+        }
+    }
+
+    // XPU device codegen for the AOT path. Mirrors the JIT helper's kernel
+    // registration (test/jit/JitTestHelper.cpp): for each parsed module, embed
+    // each @Kernel's cubin + a registration ctor into that module's own host
+    // LLVM module — correct for AOT since every module's object links together.
+    // When --xpu-emit is ptx/cubin, also drop a standalone per-kernel artifact
+    // for inspection. Never throws (NvptxRegistration swallows XPU-N01 / absent
+    // ptxas; the artifact path catches the same and skips with a diagnostic).
+    void Compiler::emitXpuKernels(const std::string& archiveRootPath) {
+        if (xpuBackends.empty()) {
+            return;
+        }
+        // Map a compiler-level backend onto the xpu-layer dispatch enum (the
+        // xpu/ code does not depend on compile/) and supply its default arch.
+        // With multiple backends a single --xpu-arch can't serve all, so each
+        // uses its own default; a lone backend still honors --xpu-arch.
+        const bool singleBackend = xpuBackends.size() == 1;
+        auto toLayer = [](XpuBackend cb) -> cajeta::xpu::Backend {
+            switch (cb) {
+                case XpuBackend::Amdgpu: return cajeta::xpu::Backend::Amdgpu;
+                case XpuBackend::Vulkan: return cajeta::xpu::Backend::Spirv;
+                case XpuBackend::Cpu:    return cajeta::xpu::Backend::Cpu;
+                default:                 return cajeta::xpu::Backend::Nvptx;
+            }
+        };
+        auto defaultArch = [](XpuBackend cb) -> std::string {
+            switch (cb) {
+                case XpuBackend::Amdgpu: return "gfx1151";
+                case XpuBackend::Vulkan: return "vulkan1.3";
+                case XpuBackend::Cpu:    return "";
+                default:                 return "sm_89";
+            }
+        };
+        for (auto& module : modules) {
+            std::vector<MethodPtr> kernels;
+            for (auto& method : module->getAllMethods()) {
+                if (method && cajeta::xpu::isKernel(*method)) {
+                    kernels.push_back(method);
+                }
+            }
+            if (kernels.empty()) {
+                continue;
+            }
+            // Per-kernel artifact base: the module's IR output path
+            // (archiveRoot + archivePath, ending .ll) minus the extension.
+            std::string base = module->getArchiveRoot() + module->getArchivePath();
+            if (base.size() >= 3 && base.substr(base.size() - 3) == ".ll") {
+                base.resize(base.size() - 3);
+            }
+
+            // The bundled-backend manifest the runtime dispatcher reads: one
+            // ctor per selected backend calling __cajeta_xpu_register_backend.
+            // (cajeta-cpu.md Increment 4 — explicit-only bundling.)
+            std::vector<cajeta::xpu::Backend> layerBackends;
+            for (XpuBackend cb : xpuBackends) layerBackends.push_back(toLayer(cb));
+            cajeta::xpu::emitBackendManifest(layerBackends,
+                                             *module->getLlvmModule());
+
+            // Each selected backend embeds its registration into this module's
+            // host module; with --xpu-emit it also drops an inspection artifact.
+            for (XpuBackend cb : xpuBackends) {
+                cajeta::xpu::Backend backend = toLayer(cb);
+                std::string arch = singleBackend ? xpuArch : defaultArch(cb);
+                cajeta::xpu::emitKernelRegistration(
+                    backend, kernels, *module->getLlvmModule(), arch);
+
+                if (xpuEmit == XpuEmit::None) {
+                    continue;
+                }
+                std::filesystem::create_directories(
+                    std::filesystem::path(base).parent_path());
+
+                for (auto& kernel : kernels) {
+                try {
+                    std::string stem = base + "." + kernel->getName();
+                    if (backend == cajeta::xpu::Backend::Nvptx) {
+                        if (xpuEmit != XpuEmit::Ptx && xpuEmit != XpuEmit::Cubin) {
+                            cerr << "cajeta: XPU: --xpu-emit=isa/hsaco is amdgpu-"
+                                    "only; ignoring for nvptx" << std::endl;
+                            continue;
+                        }
+                        auto tm = cajeta::xpu::nvidia::createNvptxTargetMachine(arch);
+                        if (!tm) {
+                            cerr << "cajeta: XPU: nvptx target unavailable in this "
+                                    "LLVM build; skipping " << kernel->getName() << std::endl;
+                            continue;
+                        }
+                        llvm::LLVMContext deviceCtx;
+                        llvm::Module deviceModule("xpu_device", deviceCtx);
+                        cajeta::xpu::nvidia::configureDeviceModule(deviceModule, *tm);
+                        cajeta::xpu::nvidia::lowerKernel(kernel, deviceModule);
+                        std::string ptx = cajeta::xpu::nvidia::emitPtx(deviceModule, *tm);
+                        if (ptx.empty()) {
+                            cerr << "cajeta: XPU: PTX emission produced nothing for "
+                                 << kernel->getName() << std::endl;
+                            continue;
+                        }
+                        if (xpuEmit == XpuEmit::Ptx) {
+                            std::ofstream out(stem + ".ptx", std::ios::binary);
+                            out << ptx;
+                        } else {  // XpuEmit::Cubin
+                            std::vector<uint8_t> cubin =
+                                cajeta::xpu::nvidia::assembleCubin(ptx, arch);
+                            if (cubin.empty()) {
+                                cerr << "cajeta: XPU: ptxas unavailable or failed; no "
+                                        "cubin for " << kernel->getName() << std::endl;
+                                continue;
+                            }
+                            std::ofstream out(stem + ".cubin", std::ios::binary);
+                            out.write(reinterpret_cast<const char*>(cubin.data()),
+                                      (std::streamsize) cubin.size());
+                        }
+                    } else if (backend == cajeta::xpu::Backend::Amdgpu) {
+                        if (xpuEmit != XpuEmit::Isa && xpuEmit != XpuEmit::Hsaco) {
+                            cerr << "cajeta: XPU: --xpu-emit=ptx/cubin is nvptx-"
+                                    "only; ignoring for amdgpu" << std::endl;
+                            continue;
+                        }
+                        auto tm = cajeta::xpu::amd::createAmdgpuTargetMachine(arch);
+                        if (!tm) {
+                            cerr << "cajeta: XPU: amdgcn target unavailable in this "
+                                    "LLVM build; skipping " << kernel->getName() << std::endl;
+                            continue;
+                        }
+                        llvm::LLVMContext deviceCtx;
+                        llvm::Module deviceModule("xpu_device", deviceCtx);
+                        cajeta::xpu::amd::configureDeviceModule(deviceModule, *tm);
+                        cajeta::xpu::amd::lowerKernel(kernel, deviceModule);
+                        if (xpuEmit == XpuEmit::Isa) {
+                            std::string isa =
+                                cajeta::xpu::amd::emitIsa(deviceModule, *tm);
+                            if (isa.empty()) {
+                                cerr << "cajeta: XPU: ISA emission produced nothing for "
+                                     << kernel->getName() << std::endl;
+                                continue;
+                            }
+                            std::ofstream out(stem + ".isa", std::ios::binary);
+                            out << isa;
+                        } else {  // XpuEmit::Hsaco
+                            std::vector<uint8_t> hsaco =
+                                cajeta::xpu::amd::assembleHsaco(deviceModule, *tm, arch);
+                            if (hsaco.empty()) {
+                                cerr << "cajeta: XPU: ld.lld unavailable or failed; no "
+                                        "hsaco for " << kernel->getName() << std::endl;
+                                continue;
+                            }
+                            std::ofstream out(stem + ".hsaco", std::ios::binary);
+                            out.write(reinterpret_cast<const char*>(hsaco.data()),
+                                      (std::streamsize) hsaco.size());
+                        }
+                    } else if (backend == cajeta::xpu::Backend::Spirv) {
+                        if (xpuEmit != XpuEmit::Spirv && xpuEmit != XpuEmit::Spvasm) {
+                            cerr << "cajeta: XPU: --xpu-emit=ptx/cubin/isa/hsaco is "
+                                    "not vulkan; use spirv/spvasm" << std::endl;
+                            continue;
+                        }
+                        auto tm = cajeta::xpu::vulkan::createSpirvTargetMachine(arch);
+                        if (!tm) {
+                            cerr << "cajeta: XPU: spirv target unavailable in this "
+                                    "LLVM build; skipping " << kernel->getName() << std::endl;
+                            continue;
+                        }
+                        llvm::LLVMContext deviceCtx;
+                        llvm::Module deviceModule("xpu_device", deviceCtx);
+                        cajeta::xpu::vulkan::configureDeviceModule(deviceModule, *tm);
+                        cajeta::xpu::vulkan::lowerKernel(kernel, deviceModule);
+                        if (xpuEmit == XpuEmit::Spvasm) {
+                            std::string text =
+                                cajeta::xpu::vulkan::emitSpirvText(deviceModule, *tm);
+                            if (text.empty()) {
+                                cerr << "cajeta: XPU: SPIR-V text emission produced "
+                                        "nothing for " << kernel->getName() << std::endl;
+                                continue;
+                            }
+                            std::ofstream out(stem + ".spvasm", std::ios::binary);
+                            out << text;
+                        } else {  // XpuEmit::Spirv
+                            std::vector<uint8_t> spirv =
+                                cajeta::xpu::vulkan::emitSpirv(deviceModule, *tm);
+                            if (spirv.empty()) {
+                                cerr << "cajeta: XPU: SPIR-V emission produced nothing "
+                                        "for " << kernel->getName() << std::endl;
+                                continue;
+                            }
+                            std::ofstream out(stem + ".spv", std::ios::binary);
+                            out.write(reinterpret_cast<const char*>(spirv.data()),
+                                      (std::streamsize) spirv.size());
+                        }
+                    } else {  // cajeta::xpu::Backend::Cpu
+                        if (xpuEmit != XpuEmit::Object) {
+                            cerr << "cajeta: XPU: --xpu-emit for cpu is obj only; "
+                                    "ignoring" << std::endl;
+                            continue;
+                        }
+                        auto tm = cajeta::xpu::cpu::createCpuTargetMachine();
+                        if (!tm) {
+                            cerr << "cajeta: XPU: host target unavailable; skipping "
+                                 << kernel->getName() << std::endl;
+                            continue;
+                        }
+                        llvm::LLVMContext deviceCtx;
+                        llvm::Module deviceModule("xpu_cpu", deviceCtx);
+                        cajeta::xpu::cpu::configureHostModule(deviceModule, *tm);
+                        cajeta::xpu::cpu::lowerKernel(kernel, deviceModule);
+                        std::vector<uint8_t> obj =
+                            cajeta::xpu::cpu::emitObject(deviceModule, *tm);
+                        if (obj.empty()) {
+                            cerr << "cajeta: XPU: object emission produced nothing "
+                                    "for " << kernel->getName() << std::endl;
+                            continue;
+                        }
+                        std::ofstream out(stem + ".o", std::ios::binary);
+                        out.write(reinterpret_cast<const char*>(obj.data()),
+                                  (std::streamsize) obj.size());
+                    }
+                } catch (cajeta::Exception& e) {
+                    // XPU-N01 (unsupported construct) or similar — skip, don't abort.
+                    cerr << "cajeta: XPU: skipping kernel " << kernel->getName()
+                         << " (" << e.getErrorId() << "): " << e.getMessage()
+                         << std::endl;
+                }
+                }
             }
         }
     }

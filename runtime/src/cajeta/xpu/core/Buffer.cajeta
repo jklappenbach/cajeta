@@ -15,18 +15,19 @@ package cajeta.xpu.core;
  *
  * MEMORY MODEL (CajetaXPU.md §3.5/§3.6). A Buffer is a small host-side
  * handle (deviceHandle + elementCount) over device memory that lives in
- * VRAM. The two lifetimes are independent:
+ * VRAM. The device memory is an *owned resource*, tied to the handle's
+ * lifetime via RAII (the same convention as FileReader/File/Path):
  *
- *   - the *handle* (this 24-byte struct) may live on the stack or heap.
- *     `Buffer<T>.alloc(n)` returns a `heap` handle because a factory's
- *     result escapes its frame (a `stack` handle there is a use-after-
- *     return the escape checker rejects). For the common same-scope
- *     pattern, construct `stack Buffer<T>(...)` directly at the use site
- *     — cheaper, and equally safe.
- *   - the *device memory* (deviceHandle) is governed by the launch-borrow
- *     checker regardless of where the handle lives: a launch borrows each
- *     Buffer argument until the next `Stream.sync()`, and `free()` while a
- *     launch still references it is a compile error (XPU-K02).
+ *   - the *handle* (this 16-byte struct) lives on the stack or heap and is
+ *     governed by the drop chain. `heap Buffer<T>(n)` is the common form;
+ *     `Buffer<T>.alloc(n)` returns a `heap` handle for factory-style escape.
+ *   - the *device memory* is acquired by the constructor and released by
+ *     `~Buffer()` at scope exit — forgetting to free() can no longer leak
+ *     VRAM. The launch-borrow checker guards the timing: a launch borrows each
+ *     Buffer argument until the next `Stream.sync()`, and letting a buffer
+ *     reach its drop (or an explicit `free()`) while a launch still references
+ *     it is a compile error (XPU-K02). Move-out (`#buf`) transfers ownership;
+ *     the moved-from handle's destructor no-ops.
  *
  * Element byte size is supplied by the compiler — `elementBytes()` lowers
  * to the target DataLayout size of T — so the runtime primitives speak
@@ -39,6 +40,41 @@ public final class Buffer<T> {
     Buffer(int64 deviceHandle, uint64 elementCount) {
         this.deviceHandle = deviceHandle;
         this.elementCount = elementCount;
+    }
+
+    /**
+     * RAII constructor: allocate device storage for `elementCount` elements.
+     * The constructor acquires the device memory and `~Buffer()` releases it,
+     * so a Buffer cleans up through the drop chain like any other owning handle
+     * (the same shape as FileReader/File/Path). This is the idiomatic form —
+     * prefer it over the 2-arg ctor + `allocate()`:
+     *
+     *     Buffer<float32> x = heap Buffer<float32>(n);   // allocates here
+     *     x.upload(hx);
+     *     kernel.launch(s, ...)(x, ...);
+     *     s.sync();
+     *     x.download(hx);
+     *     // device memory freed automatically when x leaves scope
+     */
+    public Buffer(uint64 elementCount) {
+        this.elementCount = elementCount;
+        this.deviceHandle = this.deviceAlloc(elementCount * elementBytes());
+    }
+
+    /**
+     * Destructor — release the device memory. Runs via the drop chain at scope
+     * exit, so device VRAM is never leaked by forgetting to free(). Null-
+     * guarded and idempotent: a prior explicit free(), or a moved-from handle
+     * (`#buf`), makes this a no-op — the move marks the source's drop entry
+     * inactive, so this never double-frees. A launch-borrowed buffer may not
+     * reach its drop before `Stream.sync()`; doing so is a compile error
+     * (XPU-K02), the same rule that guards an explicit free().
+     */
+    ~Buffer() {
+        if (this.deviceHandle != 0) {
+            this.deviceFree(this.deviceHandle);
+            this.deviceHandle = 0;
+        }
     }
 
     public uint64 length() {
@@ -83,9 +119,8 @@ public final class Buffer<T> {
      * site.
      */
     public static #Buffer<T> alloc(uint64 n) {
-        Buffer<T> buf = heap Buffer<T>(0, n);
-        buf.allocate();
-        return #buf;
+        Buffer<T> buf = heap Buffer<T>(n);   // RAII ctor allocates device memory
+        return #buf;                          // move out: source dtor no-ops
     }
 
     /**
@@ -99,9 +134,11 @@ public final class Buffer<T> {
      * Replaces any previously held handle (call once per buffer).
      */
     public void allocate() {
+        if (this.deviceHandle != 0) {
+            this.deviceFree(this.deviceHandle);   // free before re-alloc; no leak
+        }
         uint64 bytes = this.elementCount * elementBytes();
-        int64 h = this.deviceAlloc(bytes);
-        this.deviceHandle = h;
+        this.deviceHandle = this.deviceAlloc(bytes);
     }
 
     /**
@@ -121,8 +158,16 @@ public final class Buffer<T> {
         this.deviceDownload(h, host, bytes);
     }
 
+    /**
+     * Explicit early release — an idempotent escape hatch (the FileReader
+     * `close()` pattern). Rarely needed now that `~Buffer()` releases at scope
+     * exit; use it to free device memory before the handle's scope ends.
+     * Null-guards + clears the handle so the destructor then no-ops.
+     */
     public void free() {
-        int64 h = this.deviceHandle;
-        this.deviceFree(h);
+        if (this.deviceHandle != 0) {
+            this.deviceFree(this.deviceHandle);
+            this.deviceHandle = 0;
+        }
     }
 }

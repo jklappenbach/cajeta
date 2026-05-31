@@ -1,0 +1,125 @@
+package tourxpu;
+
+import cajeta.xpu.core.Buffer;
+import cajeta.xpu.core.Stream;
+import cajeta.xpu.core.Thread;
+
+// Cajeta XPU tour — portable @Kernel programs run through the runtime
+// backend dispatcher. The SAME source compiles for NVIDIA (NVPTX), AMD
+// (AMDGPU/HIP), Vulkan (SPIR-V), or the CPU; the backend is a build-time
+// `--xpu-backend=` choice and, when several are bundled, the runtime picks the
+// best available at launch (CUDA -> HIP -> Vulkan -> CPU) and falls to the CPU
+// when no accelerator is present.
+//
+// Build + run with samples/Tour/xpu/run-xpu.sh. It defaults to
+// `--xpu-backend=cpu`, so the demos run anywhere with no GPU; pass a backend
+// (e.g. `run-xpu.sh amdgpu,cpu`) to target a device with CPU fallback.
+//
+// Every kernel here is data-parallel and barrier-free / wave-free, so it
+// produces identical results on all backends (workgroup barriers and true wave
+// reductions on the CPU are later increments).
+public final class XpuTour {
+
+    // y[i] = a*x[i] + y[i] — the canonical accelerator "hello world".
+    @Kernel
+    public static void saxpy(Buffer<float32> y, Buffer<float32> x,
+                             float32 a, uint32 n) {
+        uint32 i = Thread.globalIdX();
+        if (i < n) {
+            y[i] = a * x[i] + y[i];
+        }
+    }
+
+    // c[i] = a[i] + b[i] — element-wise vector add.
+    @Kernel
+    public static void vecAdd(Buffer<float32> c, Buffer<float32> a,
+                              Buffer<float32> b, uint32 n) {
+        uint32 i = Thread.globalIdX();
+        if (i < n) {
+            c[i] = a[i] + b[i];
+        }
+    }
+
+    // Entry point. The C `main` shim (synthesized by --emit=obj with this
+    // method as the entry) wires this up as the program's main.
+    public static int32 run() {
+        System.stdout.println("=== Cajeta XPU tour ===");
+        System.stdout.println("  one portable @Kernel source, dispatched to the");
+        System.stdout.println("  bundled+available backend (CPU when no GPU).");
+        runSaxpy();
+        runVecAdd();
+        System.stdout.println("");
+        System.stdout.println("=== xpu tour complete ===");
+        return 0;
+    }
+
+    // block = 64 is portable across every backend (Vulkan bakes its workgroup
+    // size at 64, so the launch block must match it; CUDA/HIP/CPU accept it).
+    static void runSaxpy() {
+        System.stdout.println("");
+        System.stdout.println("-- SAXPY: y = 2*x + y, x[i]=i, y[i]=1 --");
+        uint32 n = 256;
+        float32[] hx = new float32[n];
+        float32[] hy = new float32[n];
+        for (uint32 i = 0; i < n; i = i + 1) {
+            hx[i] = (float32) i;
+            hy[i] = 1.0f;
+        }
+        // `heap` Buffer<T> — RAII: the constructor allocates device memory and
+        // the drop chain frees it at scope exit (no allocate()/free() needed).
+        // The handle itself is heap-allocated; use this form when the handle
+        // must outlive the current frame (returned, stored, moved with `#`).
+        // (runVecAdd below shows the `stack` form for the same-scope case.)
+        Buffer<float32> x = heap Buffer<float32>(n);
+        Buffer<float32> y = heap Buffer<float32>(n);
+        x.upload(hx);
+        y.upload(hy);
+        Stream s = Stream.current();
+        saxpy.launch(s, grid: [(n + 63) / 64], block: [64])(y, x, 2.0f, n);
+        s.sync();
+        y.download(hy);
+        // x, y device memory freed automatically when they leave scope
+        // y[i] = 2*i + 1  ->  y[0]=1, y[1]=3, y[10]=21, y[255]=511
+        System.stdout.println("  y[0]=" + (int32) hy[0]
+                            + " y[1]=" + (int32) hy[1]
+                            + " y[10]=" + (int32) hy[10]
+                            + " y[255]=" + (int32) hy[255]
+                            + "  (expect 1, 3, 21, 511)");
+    }
+
+    static void runVecAdd() {
+        System.stdout.println("");
+        System.stdout.println("-- vecAdd: c = a + b, a[i]=i, b[i]=2*i --");
+        uint32 n = 256;
+        float32[] ha = new float32[n];
+        float32[] hb = new float32[n];
+        float32[] hc = new float32[n];
+        for (uint32 i = 0; i < n; i = i + 1) {
+            ha[i] = (float32) i;
+            hb[i] = (float32) (2 * i);
+            hc[i] = 0.0f;
+        }
+        // `stack` Buffer<T> — same RAII semantics, but the 24-byte handle lives
+        // in this frame (no host-heap allocation for it). The element count only
+        // sizes the *device* allocation, which lives off-stack, so the handle is
+        // fixed-size regardless of `n` — like a std::vector / Rust Vec header on
+        // the stack pointing at off-stack data. Prefer `stack` for the common
+        // same-scope case; the drop chain still frees the device memory at exit.
+        Buffer<float32> a = stack Buffer<float32>(n);
+        Buffer<float32> b = stack Buffer<float32>(n);
+        Buffer<float32> c = stack Buffer<float32>(n);
+        a.upload(ha);
+        b.upload(hb);
+        c.upload(hc);
+        Stream s = Stream.current();
+        vecAdd.launch(s, grid: [(n + 63) / 64], block: [64])(c, a, b, n);
+        s.sync();
+        c.download(hc);
+        // a, b, c freed automatically at scope exit
+        // c[i] = 3*i  ->  c[1]=3, c[10]=30, c[255]=765
+        System.stdout.println("  c[1]=" + (int32) hc[1]
+                            + " c[10]=" + (int32) hc[10]
+                            + " c[255]=" + (int32) hc[255]
+                            + "  (expect 3, 30, 765)");
+    }
+}
