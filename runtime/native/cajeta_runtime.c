@@ -4759,7 +4759,13 @@ void __cajeta_xpu_register_cpu_kernel(const char* name, void* fn) {
         }
     }
     if (g_cpu_kernel_count < CAJETA_XPU_CPU_KERNEL_MAX) {
-        g_cpu_kernels[g_cpu_kernel_count].name = name;
+        // Own the name: a caller may free the string after registering (notably
+        // a JIT'd registration ctor whose module/engine is later torn down — the
+        // kname global lives in JIT memory). Keeping the raw pointer leaves a
+        // dangling key that the next strcmp() here or in lookup dereferences →
+        // crash. strdup so the registry's keys outlive any caller (matching the
+        // env-registry above). Process-lifetime table, never freed.
+        g_cpu_kernels[g_cpu_kernel_count].name = strdup(name);
         g_cpu_kernels[g_cpu_kernel_count].fn = fn;
         ++g_cpu_kernel_count;
     }

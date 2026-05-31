@@ -503,3 +503,26 @@ buffers are skipped, and a sync clears the borrow, so there are no false positiv
   `runtime/src/cajeta/**` requires rebuilding the compiler (`cmake --build build`) before the
   change takes effect — testing against a stale binary mis-resolves new overloads (a 1-arg
   ctor fell back to the 2-arg one, passing `n` as the device handle → a wild-pointer crash).
+
+## 6. Backlog / known issues
+
+Work items not part of the active increment, in priority order. **Resolution policy:** when
+one is fixed, if the fix is a clean, self-contained change, **cherry-pick it onto `main`**;
+otherwise commit it to `cajeta-xpu` and let it ride to `main` with the next branch merge.
+
+_No open items._
+
+### ✅ RESOLVED 2026-05-31 — CPU kernel registry held caller-owned name keys (order-dependent SIGSEGV)
+
+`XpuCpuDriverTests.lookupMissOnUnknownKernel` passed in isolation but **segfaulted** when run
+after the suite's two registration tests (and so in any broad `Xpu*`/full-suite run). Root
+cause: the CPU kernel registry (`__cajeta_xpu_register_cpu_kernel`, `cajeta_runtime.c`) stored
+the kernel name as the **raw `const char*` the caller passed** — for a JIT'd registration ctor
+that key is the `xpu.cpu.kname.<name>` global living in JIT memory, which is freed when the test
+tears down its `LLJIT`. A later lookup's `strcmp()` then dereferenced the dangling key. (In a
+real compiled program the kname globals live for the process, so this only bit the JIT test
+harness — but the registry was wrong to assume caller lifetime.) **Fix:** `strdup` the name on
+registration so the registry owns its keys (matching the env-registry in the same file).
+Regression test `XpuCpuDriverTests.registryKeySurvivesCallerTeardown` registers a uniquely-named
+kernel, tears down its JIT, then looks up — clean miss, no crash (deterministically SIGSEGVs
+against the pre-fix runtime). Full `Xpu*` suite now green with nothing excluded.
