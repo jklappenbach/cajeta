@@ -257,6 +257,11 @@ namespace cajeta {
         CastExpression(CajetaTypePtr destType, antlr4::Token* token)
             : Expression(token), destType(destType) { }
 
+        // The cast's declared target type. Available even before resolveTypes()
+        // runs (the XPU device lowerer walks the kernel AST directly and may
+        // not have populated resolvedType).
+        CajetaTypePtr getDestType() const { return destType; }
+
         void resolveTypes(CajetaModulePtr module) override {
             AbstractSyntaxNode::resolveTypes(module);
             resolvedType = destType;
