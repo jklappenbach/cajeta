@@ -295,6 +295,73 @@ class CajetaDebugSessionTest {
     }
 
     @Test
+    fun setVariableSendsReferenceNameAndValue() {
+        connect()
+        runServer(respondBody = { command, _ ->
+            if (command == "setVariable") Json.obj("value" to Json.of("42")) else Json.obj()
+        })
+        session.start()
+
+        session.setVariable(1, "a", "42").get(5, TimeUnit.SECONDS)
+
+        val req = lastRequestByCommand["setVariable"]!!
+        val args = req.at("arguments")
+        assertEquals(1, args.at("variablesReference").asInt())
+        assertEquals("a", args.at("name").asString())
+        assertEquals("42", args.at("value").asString())
+    }
+
+    @Test
+    fun setVariableReturnsRenderedValue() {
+        connect()
+        runServer(respondBody = { command, _ ->
+            if (command == "setVariable") Json.obj("value" to Json.of("99")) else Json.obj()
+        })
+        session.start()
+
+        val rendered = session.setVariable(1, "a", "99").get(5, TimeUnit.SECONDS)
+        assertEquals("99", rendered)
+    }
+
+    @Test
+    fun loadVariablesTagsContainerReference() {
+        connect()
+        runServer(respondBody = { command, req ->
+            when (command) {
+                "scopes" -> {
+                    val frameId = req.at("arguments").at("frameId").asInt()
+                    Json.obj(
+                        "scopes" to Json.arr(
+                            Json.obj(
+                                "name" to Json.of("Locals"),
+                                "variablesReference" to Json.of(frameId + 1),
+                                "expensive" to Json.of(false),
+                            ),
+                        ),
+                    )
+                }
+                "variables" -> Json.obj(
+                    "variables" to Json.arr(
+                        Json.obj(
+                            "name" to Json.of("a"),
+                            "value" to Json.of("6"),
+                            "type" to Json.of("int"),
+                            "variablesReference" to Json.of(0),
+                        ),
+                    ),
+                )
+                else -> Json.obj()
+            }
+        })
+        session.start()
+
+        val vars = session.loadVariables(0).get(5, TimeUnit.SECONDS)
+        // The scope ref for frame 0 is 1; every leaf must carry it so the UI
+        // can target setVariable at the containing scope.
+        assertEquals(1, vars[0].containerReference)
+    }
+
+    @Test
     fun parseVariablesDecodesVariables() {
         val response = Json.obj(
             "body" to Json.obj(

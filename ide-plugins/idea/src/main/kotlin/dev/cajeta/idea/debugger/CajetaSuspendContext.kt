@@ -32,7 +32,7 @@ class CajetaStackFrame(
         }
         ds.loadVariables(frame.id).thenAccept { vars ->
             val children = XValueChildrenList()
-            for (v in vars) children.add(v.name, CajetaValue(v))
+            for (v in vars) children.add(v.name, CajetaValue(v, ds))
             node.addChildren(children, true)
         }.exceptionally {
             node.setErrorMessage("Failed to load variables: ${it.message}")

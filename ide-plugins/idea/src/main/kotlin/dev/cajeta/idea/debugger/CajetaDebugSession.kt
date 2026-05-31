@@ -73,6 +73,22 @@ class CajetaDebugSession(private val client: DapClient) {
             .thenApply { null }
     }
 
+    /**
+     * Edit a variable in place. [variablesReference] is the containing scope's
+     * ref (frameId+1); the server writes through to the live fiber's stack slot
+     * and returns the re-rendered value, which is what this future resolves to.
+     * Completes exceptionally on a DAP error (e.g. unknown name / bad value).
+     */
+    fun setVariable(variablesReference: Int, name: String, value: String): CompletableFuture<String> =
+        client.sendRequest(
+            "setVariable",
+            Json.obj(
+                "variablesReference" to Json.of(variablesReference),
+                "name" to Json.of(name),
+                "value" to Json.of(value),
+            ),
+        ).thenApply { it.at("body").at("value").asString() }
+
     /** DAP `continue` — resume the parked program. */
     fun resume(): CompletableFuture<Json> = client.sendRequest("continue")
 
@@ -112,7 +128,11 @@ class CajetaDebugSession(private val client: DapClient) {
             for (scope in scopes) {
                 chain = chain.thenCompose { acc ->
                     variables(scope.variablesReference).thenApply { varsResponse ->
-                        acc.addAll(parseVariables(varsResponse))
+                        // Tag each leaf with its containing scope's ref so the
+                        // platform layer can later target setVariable at it.
+                        parseVariables(varsResponse).forEach {
+                            acc.add(it.copy(containerReference = scope.variablesReference))
+                        }
                         acc
                     }
                 }
@@ -234,4 +254,6 @@ data class DapVariable(
     val value: String,
     val type: String,
     val variablesReference: Int,
+    /** The containing scope's variablesReference; target for setVariable. 0 if unknown. */
+    val containerReference: Int = 0,
 )
