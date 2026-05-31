@@ -68,8 +68,12 @@ Expected output (identical on every backend — the kernels are data-parallel):
 
 At first device touch the runtime picks the active backend among the **bundled**
 set (the manifest) ∩ the **available** set (it probes each), caches the choice,
-and routes the whole orchestration — `Buffer.allocate` / `upload` /
-`kernel.launch` / `Stream.sync` / `download` — to it. If nothing is available it
+and routes the whole orchestration — the `Buffer<T>` constructor (allocate) and
+destructor (free), `upload` / `kernel.launch` / `Stream.sync` / `download` — to
+it. `Buffer<T>` is RAII: `heap Buffer<T>(n)` allocates device memory and the drop
+chain frees it at scope exit, so the demos never call `allocate()`/`free()` (a
+launch-borrowed buffer that would drop before `Stream.sync()` is a compile error,
+XPU-K02). If nothing is available it
 prints a precise *"no available backend among {…}; rebuild with `cpu`…"*
 diagnostic instead of crashing (explicit-only bundling is a build-time contract).
 
@@ -79,8 +83,20 @@ Both kernels in `XpuTour.cajeta` are **data-parallel and barrier-free / wave-fre
 so they produce identical results on every backend:
 
 - `saxpy(y, x, a, n)` — `y[i] = a*x[i] + y[i]`, the canonical accelerator
-  "hello world".
-- `vecAdd(c, a, b, n)` — `c[i] = a[i] + b[i]`, element-wise.
+  "hello world". Uses **`heap Buffer<T>(n)`**.
+- `vecAdd(c, a, b, n)` — `c[i] = a[i] + b[i]`, element-wise. Uses
+  **`stack Buffer<T>(n)`**.
+
+The two demos deliberately use the two `Buffer<T>` forms. `Buffer<T>` is RAII —
+the constructor allocates device memory, `~Buffer()` frees it via the drop chain
+at scope exit, and `#buf` transfers ownership. The handle is a fixed 24-byte
+struct `{ptr, deviceHandle, elementCount}`; the element count sizes the *device*
+allocation, which lives off-stack — so `stack Buffer<T>(n)` reserves only the
+handle on the frame (like a `std::vector` / Rust `Vec` header on the stack over
+off-stack data) and is the cheaper, preferred form for the common same-scope
+case. `heap` is for handles that must outlive the frame (returned/stored/moved).
+A launch-borrowed buffer that would drop before `Stream.sync()` is a compile
+error (XPU-K02) for either form.
 
 `block = 64` is used because Vulkan bakes its workgroup size into the SPIR-V at 64;
 CUDA / HIP / CPU accept it too. Workgroup barriers and true wave reductions on the
