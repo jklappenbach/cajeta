@@ -55,12 +55,12 @@ import cajeta.time.Duration;
  * primitive (`__cajeta_task_wait_timeout` waits without preempting).
  */
 public class Tasks {
-    // Returns ownership (heap-allocated Optional) — borrow-return on a
-    // multi-parameter free function is disallowed (CAJETA_ERROR_BORROW_RETURN_MULTI_PARAM),
-    // since neither parameter is a clean borrow root the return value
-    // can be tied to. The heap Optional is then owned by the caller and
-    // drops via the usual class drop chain.
-    public static #Optional<int32> withTimeoutInt32(Duration d, Task<int32> t) {
+    // Returns Optional<int32> by value (M3 sret/NRVO): the Optional is
+    // constructed directly into the caller's slot, avoiding the heap
+    // allocation a `#Optional<int32>` return would have required. The
+    // caller's local declaration (`Optional<int32> r = Tasks.withTimeout...`)
+    // owns the value-form slot under the normal scope-exit drop.
+    public static Optional<int32> withTimeoutInt32(Duration d, Task<int32> t) {
         int64 deadline = Cajeta.currentTimeNanos() + d.toNanos();
         pointer done = Cajeta.taskDonePointer(t);
         int32 ok = Cajeta.taskWaitTimeout(done, deadline);
@@ -80,18 +80,18 @@ public class Tasks {
         } catch (Exception e) {
         }
         if (ok == 1) {
-            return heap Optional<int32>(true, val);
+            return stack Optional<int32>(true, val);
         }
-        return heap Optional<int32>(false, val);
+        return stack Optional<int32>(false, val);
     }
 
-    public static #Optional<R> withTimeout<R>(Duration d, Task<R> t) {
+    public static Optional<R> withTimeout<R>(Duration d, Task<R> t) {
         int64 deadline = Cajeta.currentTimeNanos() + d.toNanos();
         pointer done = Cajeta.taskDonePointer(t);
         int32 ok = Cajeta.taskWaitTimeout(done, deadline);
         if (ok == 1) {
             R val = await t;
-            return heap Optional<R>(true, val);
+            return stack Optional<R>(true, val);
         }
         // Timeout — cancel cooperatively and drain. The await may throw
         // the cancellation sentinel; consume it so callers only see the
@@ -100,13 +100,13 @@ public class Tasks {
         Cajeta.taskCancel(t);
         try {
             R drained = await t;
-            return heap Optional<R>(false, drained);
+            return stack Optional<R>(false, drained);
         } catch (Exception e) {
         }
         // Body raised after cancel — task->value not safely readable.
         // `null` codegens as zero for primitive R, null ptr for class R;
         // the slot is unused on the empty path either way.
-        return heap Optional<R>(false, null);
+        return stack Optional<R>(false, null);
     }
 
     /**
@@ -120,20 +120,20 @@ public class Tasks {
      * sub-operation passes the same absolute instant rather than
      * re-deriving a duration from "remaining budget").
      */
-    public static #Optional<R> withDeadline<R>(int64 deadlineNanos, Task<R> t) {
+    public static Optional<R> withDeadline<R>(int64 deadlineNanos, Task<R> t) {
         pointer done = Cajeta.taskDonePointer(t);
         int32 ok = Cajeta.taskWaitTimeout(done, deadlineNanos);
         if (ok == 1) {
             R val = await t;
-            return heap Optional<R>(true, val);
+            return stack Optional<R>(true, val);
         }
         Cajeta.taskCancel(t);
         try {
             R drained = await t;
-            return heap Optional<R>(false, drained);
+            return stack Optional<R>(false, drained);
         } catch (Exception e) {
         }
-        return heap Optional<R>(false, null);
+        return stack Optional<R>(false, null);
     }
 
     /**
@@ -188,7 +188,7 @@ public class Tasks {
      * "no value" branch is `heap Optional<SelectResult<T>>(false, null)`
      * — SelectResult<T> is a class so `null` is type-natural here.
      */
-    public static #Optional<SelectResult<T>> selectReceive<T>(Channel<T>[] channels) {
+    public static Optional<SelectResult<T>> selectReceive<T>(Channel<T>[] channels) {
         int64 backoff = 100000;
         while (true) {
             boolean any_open = false;
@@ -197,14 +197,14 @@ public class Tasks {
                 Optional<T> r = ch.tryReceive();
                 if (r.isPresent()) {
                     SelectResult<T> sr = heap SelectResult<T>(i, r.get());
-                    return heap Optional<SelectResult<T>>(true, sr);
+                    return stack Optional<SelectResult<T>>(true, sr);
                 }
                 if (!ch.isClosed()) {
                     any_open = true;
                 }
             }
             if (!any_open) {
-                return heap Optional<SelectResult<T>>(false, null);
+                return stack Optional<SelectResult<T>>(false, null);
             }
             Cajeta.fiberSleepNanos(backoff);
             if (backoff < 10000000) {
