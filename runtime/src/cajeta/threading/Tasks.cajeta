@@ -133,4 +133,23 @@ public class Tasks {
         }
         return heap Optional<R>(false, null);
     }
+
+    /**
+     * Sync→async bridge: spawn the user-supplied body on the carrier
+     * pool, block the calling thread until it completes, return the
+     * value. The caller need not already be inside an `async` method
+     * or fiber — the runtime's `__cajeta_task_wait` falls through to a
+     * condvar wait when there's no current fiber, so a plain
+     * non-async `main` can use this to drive async work without itself
+     * having to be `async`.
+     *
+     * v1 surface: primitive / value-return R via the spawn-of-lambda
+     * ABI. Heap-class returns are not yet supported through this entry
+     * point — `() -> #R` callers should keep using the explicit
+     * `await spawn body()` pattern until the heap-form companion ships.
+     */
+    public static R runBlocking<R>(() -> R body) {
+        Task<R> t = spawn body();
+        return await t;
+    }
 }

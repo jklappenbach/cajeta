@@ -32,6 +32,8 @@ uncaught.
 > single-carrier model the early releases shipped). Timer wheel ships
 > (`__cajeta_task_wait_timeout` + a sorted-list timer thread), backing
 > `cajeta.time.Duration`, `Tasks.withTimeout<R>`, and `Tasks.withDeadline<R>`.
+> Sync→async bridge ships as `Tasks.runBlocking<R>(() -> R body) -> R` (R9.5)
+> for non-async entry points that want to drive an async body.
 > Async I/O reactor ships (Linux epoll), with `Cajeta.io*` intrinsics for
 > non-blocking fd registration / wait. Atomics ship as `cajeta.threading.AtomicInt32/64` (R8.1).
 

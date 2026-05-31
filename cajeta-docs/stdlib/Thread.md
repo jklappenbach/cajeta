@@ -480,7 +480,7 @@ Suspension is delivered by `ucontext.h` (`getcontext` / `makecontext` / `swapcon
 - **Actor sugar.** Deferred to v2+; see the dedicated section. The interesting design question is whether the keyword would generate a synthesized `Mutex<state>` wrapper class or take a different lowering (e.g. one OS thread per actor, mailbox queue, dispatcher).
 - **Async iteration.** `for (T x in asyncIterable) { ... }` syntax. Deferred — requires designing `AsyncIterator<T>` and the desugaring rule.
 - **Pinning.** Some runtime objects (e.g. interop with OS callbacks) may need to be pinned to a thread. v1 has no pinning; revisit if FFI threading becomes a concern.
-- **`runBlocking` escape hatch.** Today `await` is illegal outside `async` functions / `spawn` bodies. A Kotlin-style `runBlocking { ... }` for letting non-async code call async is open for v2.
+- **`runBlocking` escape hatch.** ✅ Shipped as `cajeta.threading.Tasks.runBlocking<R>(() -> R body) -> R`. The runtime's `__cajeta_task_wait` falls through to a condvar wait when the caller has no current fiber, so a plain non-async `main` can drive async work via `Tasks.runBlocking(() -> { ...await... })` without itself being `async`. v1 surface covers primitive / value-return R via the spawn-of-lambda ABI; heap-return callers keep using the explicit `await spawn body()` form.
 - **Channel select.** Multiplexed `select { case <- a: ...; case <- b: ... }` syntax — deferred.
 - **Detached task ownership and leaks.** `detach` consumes captures by `#`. The detached task's lifetime is the runtime's lifetime; nothing reclaims its result. Use sparingly.
 
@@ -518,6 +518,7 @@ the user passed in. v1 restricts to heap-ownership / primitive return.
 | Atomics | `test/parser/AtomicTests.cpp` |
 | Timer + `Duration` | `test/parser/TimerTests.cpp`, `test/parser/DurationTests.cpp` |
 | `withTimeout` / `withDeadline` | `test/parser/WithTimeoutTests.cpp`, `test/parser/WithDeadlineTests.cpp` |
+| `runBlocking` | `test/parser/RunBlockingTests.cpp` |
 | I/O reactor | `test/parser/IoReactorTests.cpp` |
 
 ## Open items
@@ -527,6 +528,6 @@ cajeta-source form yet (the runtime is shipped; the wrappers are
 designed). Tracked in `Features.md` as S-804.
 
 V2 candidates listed as known gaps but not yet scheduled: async
-iteration (`for x in asyncIterable`), `Channel.select`, a `runBlocking`
-escape hatch for sync entry points, and `actor`-style sugar over the
-sync primitives.
+iteration (`for x in asyncIterable`), `Channel.select`, and `actor`-style
+sugar over the sync primitives. The `runBlocking` escape hatch has
+shipped (R9.5; see `Tasks.runBlocking`).
