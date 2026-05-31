@@ -1994,6 +1994,47 @@ namespace cajeta {
                         task->getLlvmType(), taskPtr,
                         CajetaTask::DONE_FIELD_INDEX, "task_done_ptr");
                 }
+                // R5-C / R9.3 — cooperative task cancellation. Loads the
+                // task's fiber pointer and signals cancellation via
+                // __cajeta_fiber_cancel with a sentinel (void*)1 throwable.
+                // The body sees the cancellation at its next park/wake
+                // boundary (i.e., next await) — bodies without yield
+                // points run to completion regardless. The trampoline
+                // catches the cancellation throw and stores it on
+                // task->exception; a subsequent `await` will re-raise,
+                // letting callers wrap it in try/catch. Used by
+                // cajeta.threading.Tasks.withTimeout to terminate slow
+                // bodies on deadline rather than letting them run to
+                // natural completion.
+                if (ns == "Cajeta" && methodCallName == "taskCancel"
+                        && parameters.size() == 1) {
+                    auto argExpr = dynamic_pointer_cast<Expression>(parameters[0].expression);
+                    if (argExpr && !argExpr->getResolvedType()) {
+                        argExpr->resolveTypes(module);
+                    }
+                    auto argType = argExpr ? argExpr->getResolvedType() : nullptr;
+                    auto task = dynamic_pointer_cast<CajetaTask>(argType);
+                    if (!task) {
+                        throw Exception(
+                            "Cajeta.taskCancel requires a Task<T> argument",
+                            "CAJETA_ERROR_TYPE_MISMATCH");
+                    }
+                    llvm::Value* taskPtr = loadValue(0);
+                    llvm::Type* ptrTy2 = llvm::PointerType::get(llvmCtx, 0);
+                    llvm::Value* fiberSlot = builder->CreateStructGEP(
+                        task->getLlvmType(), taskPtr,
+                        CajetaTask::FIBER_FIELD_INDEX, "task_fiber_slot");
+                    llvm::Value* fiberPtr = builder->CreateLoad(
+                        ptrTy2, fiberSlot, "task_fiber");
+                    llvm::Function* cancelFn = module->getRuntimeFunction(
+                        "__cajeta_fiber_cancel");
+                    // Sentinel (void*)1 — same shape as `throw 1` produces,
+                    // catches with `catch (Exception e)` reading `(int32) e`.
+                    llvm::Value* sentinel = builder->CreateIntToPtr(
+                        llvm::ConstantInt::get(
+                            llvm::Type::getInt64Ty(llvmCtx), 1), ptrTy2);
+                    return builder->CreateCall(cancelFn, {fiberPtr, sentinel});
+                }
                 if (ns == "System" && methodCallName == "exit" && parameters.size() == 1) {
                     llvm::Function* fn = module->getRuntimeFunction("__cajeta_exit");
                     llvm::Value* code = loadValue(0);
