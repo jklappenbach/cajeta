@@ -39,6 +39,7 @@ namespace xpu {
         Nvptx,     // NVIDIA: AST -> device IR -> PTX -> ptxas -> cubin.
         Amdgpu,    // AMD:    AST -> device IR -> AMDGCN ISA -> lld -> hsaco.
         Spirv,     // Vulkan: AST -> device IR -> SPIR-V (descriptor-set SSBOs).
+        Cpu,       // CPU:    AST -> host IR (grid->threads) -> native object.
     };
 
     // Lowercase backend name for diagnostics / artifact suffixes.
@@ -47,6 +48,7 @@ namespace xpu {
             case Backend::Nvptx:  return "nvptx";
             case Backend::Amdgpu: return "amdgpu";
             case Backend::Spirv:  return "spirv";
+            case Backend::Cpu:    return "cpu";
         }
         return "?";
     }

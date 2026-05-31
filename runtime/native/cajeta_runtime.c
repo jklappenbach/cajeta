@@ -4135,6 +4135,46 @@ uint64_t __cajeta_xpu_wave_ballot_sync(bool predicate) {
 // value is just that value.
 uint32_t __cajeta_xpu_wave_reduce_sum_u32(uint32_t value) { return value; }
 
+// --- CPU backend kernel registry -------------------------------------------
+// The CPU backend (cajeta-cpu.md) lowers each @Kernel to a host function linked
+// into the program. Its registration ctor calls register_cpu_kernel(name, fn)
+// at startup; the runtime dispatcher (Increment 4) resolves a launch to the
+// stored pointer. Keyed by simple kernel name, matching the device backends'
+// name-keyed __cajeta_xpu_register_module. A small fixed table — kernel counts
+// are tiny — with last-writer-wins on a duplicate name.
+#ifndef CAJETA_XPU_CPU_KERNEL_MAX
+#define CAJETA_XPU_CPU_KERNEL_MAX 256
+#endif
+static struct { const char* name; void* fn; } g_cpu_kernels[CAJETA_XPU_CPU_KERNEL_MAX];
+static int g_cpu_kernel_count = 0;
+
+void __cajeta_xpu_register_cpu_kernel(const char* name, void* fn) {
+    if (!name || !fn) return;
+    for (int i = 0; i < g_cpu_kernel_count; ++i) {
+        if (g_cpu_kernels[i].name && strcmp(g_cpu_kernels[i].name, name) == 0) {
+            g_cpu_kernels[i].fn = fn;  // last writer wins
+            return;
+        }
+    }
+    if (g_cpu_kernel_count < CAJETA_XPU_CPU_KERNEL_MAX) {
+        g_cpu_kernels[g_cpu_kernel_count].name = name;
+        g_cpu_kernels[g_cpu_kernel_count].fn = fn;
+        ++g_cpu_kernel_count;
+    }
+}
+
+// Resolve a registered CPU kernel by name (NULL if absent). Used by the
+// dispatcher; exposed now so registration is testable end-to-end.
+void* __cajeta_xpu_lookup_cpu_kernel(const char* name) {
+    if (!name) return 0;
+    for (int i = 0; i < g_cpu_kernel_count; ++i) {
+        if (g_cpu_kernels[i].name && strcmp(g_cpu_kernels[i].name, name) == 0) {
+            return g_cpu_kernels[i].fn;
+        }
+    }
+    return 0;
+}
+
 // --- Buffer<T> device memory (CUDA driver-backed) ---------------------------
 // The Buffer<T> stdlib methods (alloc/upload/download/free) are ordinary
 // Cajeta now; they construct the handle via `heap`/`stack` + the generated
