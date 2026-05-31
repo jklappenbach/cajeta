@@ -53,6 +53,12 @@ namespace cajeta::dbg {
 
     void DebugController::resume() {
         std::lock_guard<std::mutex> lock(mutex);
+        // Clear `stopped` here, under the lock, so a debugger thread that calls
+        // waitForStop() right after resume() does NOT re-observe this same stop
+        // (the parked carrier clears it too when it wakes, but that happens
+        // asynchronously — without clearing here there's a window where the
+        // stale stop is seen again, manifesting as a phantom second `stopped`).
+        stopped = false;
         resumeRequested = true;
         resumeCv.notify_all();
     }

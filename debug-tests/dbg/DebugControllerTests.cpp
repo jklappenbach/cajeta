@@ -60,6 +60,26 @@ TEST(DebugController, ArmedSafepointParksThenResumes) {
     EXPECT_FALSE(c.isStopped());
 }
 
+// Regression: after a stop is observed and resumed, a subsequent waitForStop
+// must NOT re-observe the same (now stale) stop. resume() clears `stopped`
+// under the lock so the debugger thread doesn't see a phantom second stop.
+// (This bug surfaced as a spurious extra `stopped` event on DAP `continue`.)
+TEST(DebugController, ResumeClearsStaleStopForNextWait) {
+    DebugController c;
+    c.arm(7);
+
+    std::thread carrier([&] { c.onSafepoint(7, 42); });
+    (void) c.waitForStop();        // observe the stop
+    c.resume();                    // release + clear stopped
+    carrier.join();
+
+    // No new safepoint will arm/park, so a bounded wait must time out (false),
+    // not return the stale stop.
+    StopEvent ev;
+    EXPECT_FALSE(c.waitForStop(ev, std::chrono::milliseconds(100)));
+    EXPECT_FALSE(c.isStopped());
+}
+
 TEST(DebugController, DisarmedLocPassesThrough) {
     DebugController c;
     c.arm(3);

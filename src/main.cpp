@@ -9,6 +9,7 @@
 #include "cajeta/error/Exception.h"
 #include "cajeta/cli/ArchiveCommands.h"
 #include "cajeta/jit/CajetaJitHost.h"
+#include "cajeta/dap/DapServer.h"
 
 // CAJETA_VERSION and CAJETA_GIT_HASH are stamped at configure time by the
 // top-level CMakeLists.txt. Fall back to a placeholder if a non-CMake build
@@ -154,6 +155,13 @@ int main(int argc, const char* argv[]) {
     // developer/diagnostic verb for now.
     if (argc >= 2 && std::string(argv[1]) == "jit-run") {
         return cajeta::jit::dispatchJitRun(argc, argv);
+    }
+
+    // `cajeta dap` — Debug Adapter Protocol server over stdio (cajeta-docs/
+    // Debugging.md). The IDE plugin spawns this and drives the debug session.
+    if (argc >= 2 && std::string(argv[1]) == "dap") {
+        cajeta::dap::DapServer server;
+        return server.run(std::cin, std::cout);
     }
 
     // --version / -V short-circuit. Handled before Compiler construction
