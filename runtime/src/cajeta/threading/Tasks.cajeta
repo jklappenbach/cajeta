@@ -106,4 +106,31 @@ public class Tasks {
         // the slot is unused on the empty path either way.
         return heap Optional<R>(false, null);
     }
+
+    /**
+     * Absolute-instant sibling of `withTimeout`. Same Optional<R>
+     * reporting contract and same cooperative-cancellation semantics
+     * (R5-C); differs only in how the deadline is expressed:
+     * `withTimeout(d, t)` is `withDeadline(now + d, t)`.
+     *
+     * Useful when a higher-level operation already has a deadline budget
+     * and wants to fan out sub-operations that share it (each
+     * sub-operation passes the same absolute instant rather than
+     * re-deriving a duration from "remaining budget").
+     */
+    public static #Optional<R> withDeadline<R>(int64 deadlineNanos, Task<R> t) {
+        pointer done = Cajeta.taskDonePointer(t);
+        int32 ok = Cajeta.taskWaitTimeout(done, deadlineNanos);
+        if (ok == 1) {
+            R val = await t;
+            return heap Optional<R>(true, val);
+        }
+        Cajeta.taskCancel(t);
+        try {
+            R drained = await t;
+            return heap Optional<R>(false, drained);
+        } catch (Exception e) {
+        }
+        return heap Optional<R>(false, null);
+    }
 }
