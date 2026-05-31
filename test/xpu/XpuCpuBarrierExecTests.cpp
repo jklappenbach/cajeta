@@ -327,6 +327,62 @@ public class M {
 }
 )CJ";
 
+// Increment 7 — a per-work-item REGISTER accumulator carried across a uniform
+// loop's back-edge (the Inc 6 reduction sidesteps this by keeping state in
+// shared memory). `acc` is a scalar local: init to 0 before the loop, += a
+// shared-tile element each iteration, written out after. It lives across the
+// loop barrier AND across iterations, so it must be a context array whose
+// per-work-item slot persists across the outer scalar loop. out[t] = sum over
+// i in [0,k) of tile[(t+i)&255], with tile[j]=in[j]=j.
+const char* kAccumSource = R"CJ(
+package test;
+import cajeta.xpu.core.Buffer;
+import cajeta.xpu.core.Stream;
+import cajeta.xpu.core.Thread;
+import cajeta.xpu.core.Barrier;
+import cajeta.xpu.core.Shared;
+public class M {
+    @Kernel
+    public static void accum(Buffer<int32> out, Buffer<int32> in, uint32 k) {
+        Shared<int32> tile = shared int32[256];
+        uint32 t = Thread.x();
+        int32 acc = 0;
+        tile[t] = in[t];
+        Barrier.workgroup();
+        for (uint32 i = 0; i < k; i = i + 1) {
+            acc = acc + tile[(t + i) & 255];
+            Barrier.workgroup();
+        }
+        out[t] = acc;
+    }
+    public static int32 run() {
+        uint32 n = 256;
+        uint32 k = 5;
+        int32[] hin = new int32[n];
+        int32[] hout = new int32[n];
+        int32[] ref = new int32[n];
+        for (uint32 i = 0; i < n; i = i + 1) { hin[i] = (int32) i; hout[i] = 0; }
+        for (uint32 t = 0; t < n; t = t + 1) {
+            int32 acc = 0;
+            for (uint32 i = 0; i < k; i = i + 1) { acc = acc + hin[(t + i) & 255]; }
+            ref[t] = acc;
+        }
+        Buffer<int32> in = heap Buffer<int32>(n);
+        Buffer<int32> out = heap Buffer<int32>(n);
+        in.upload(hin);
+        out.upload(hout);
+        Stream s = Stream.current();
+        accum.launch(s, grid: [1], block: [256])(out, in, k);
+        s.sync();
+        out.download(hout);
+        for (uint32 i = 0; i < n; i = i + 1) {
+            if (hout[i] != ref[i]) { return (int32) (100 + i); }
+        }
+        return 777;
+    }
+}
+)CJ";
+
 } // namespace
 
 // One barrier, two regions: both halves run for every work-item, with `t`
@@ -409,6 +465,19 @@ TEST(XpuCpuBarrierExecTests, multipleBarriersInOneLoop) {
 // context arrays work for a value that crosses a barrier *inside* a loop.
 TEST(XpuCpuBarrierExecTests, localCarriedAcrossInLoopBarrier) {
     auto jit = CajetaJit::compile(kLocalCarrySource, "test.M", cpuOptions());
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<int (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    int r = fn();
+    EXPECT_EQ(r, 777) << "fail code " << r << " (100+i: out[i] != reference[i])";
+}
+
+// Increment 7: a per-work-item REGISTER accumulator carried across a uniform
+// loop's back-edge. The context array (allocated once in the wrapper entry,
+// indexed by work-item) persists across the outer scalar loop's iterations, so
+// the accumulation carries correctly without shared memory for the accumulator.
+TEST(XpuCpuBarrierExecTests, registerAccumulatorAcrossLoopBackEdge) {
+    auto jit = CajetaJit::compile(kAccumSource, "test.M", cpuOptions());
     ASSERT_NE(jit, nullptr);
     auto fn = jit->lookup<int (*)()>("run");
     ASSERT_NE(fn, nullptr);
