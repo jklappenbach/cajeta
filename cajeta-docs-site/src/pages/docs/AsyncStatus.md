@@ -37,7 +37,10 @@ uncaught.
 > receive ships as `Tasks.selectReceive<T>(Channel<T>[])` returning
 > `Optional<SelectResult<T>>` (R9.6) — Go-style channel select over an
 > array; lowest-index-wins on simultaneous readiness; empty Optional
-> signals all channels closed+drained.
+> signals all channels closed+drained. `cajeta.threading.AsyncIterator<T>`
+> interface ships (R9.7) with the canonical
+> `while ((opt = iter.next()).isPresent()) ...` loop pattern — a
+> `for (T x in iter)` desugaring is the planned v2.1 surface.
 > Async I/O reactor ships (Linux epoll), with `Cajeta.io*` intrinsics for
 > non-blocking fd registration / wait. Atomics ship as `cajeta.threading.AtomicInt32/64` (R8.1).
 
