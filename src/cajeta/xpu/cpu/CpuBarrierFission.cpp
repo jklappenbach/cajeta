@@ -54,17 +54,44 @@ struct RegionJob {
     llvm::Value* iv = nullptr;                  // work-item index in this region
 };
 
-// Transitive value-taint from the work-item index — used to tell per-work-item
+// Per-work-item value set: the least fixpoint over SSA def-use AND memory
+// round-trips through per-work-item alloca slots. Used to tell per-work-item
 // locals (context arrays across a barrier) from block-uniform ones.
+//
+// Pre-mem2reg, a plain def-use walk is not enough: `uint32 t = Thread.x()`
+// stores the work-item index into `t`'s slot, and `int x = a[t] + …` reads it
+// back — the SSA chain is broken by that store/load, so the value derived from
+// `t` (and stored into `x`'s slot) would look block-uniform and `x` would not
+// get a context array. So we also taint every load from any slot that ever
+// receives a tainted value (a per-work-item slot), and re-propagate, to a
+// fixpoint. Over-approximation is safe: a wrongly-widened uniform slot still
+// computes the right value, just with redundant per-lane storage.
 void computeTaint(llvm::Value* seed,
+                  llvm::ArrayRef<llvm::AllocaInst*> slots,
                   llvm::SmallPtrSetImpl<llvm::Value*>& tainted) {
-    llvm::SmallVector<llvm::Value*, 16> work{seed};
-    while (!work.empty()) {
-        llvm::Value* v = work.pop_back_val();
-        if (!tainted.insert(v).second) continue;
-        for (llvm::User* u : v->users())
-            if (auto* i = llvm::dyn_cast<llvm::Instruction>(u))
-                work.push_back(i);
+    llvm::SmallVector<llvm::Value*, 32> work{seed};
+    for (;;) {
+        while (!work.empty()) {                       // SSA def-use propagation
+            llvm::Value* v = work.pop_back_val();
+            if (!tainted.insert(v).second) continue;
+            for (llvm::User* u : v->users())
+                if (auto* i = llvm::dyn_cast<llvm::Instruction>(u))
+                    work.push_back(i);
+        }
+        bool added = false;                           // memory propagation
+        for (llvm::AllocaInst* a : slots) {
+            bool perWorkItem = false;
+            for (llvm::User* u : a->users())
+                if (auto* st = llvm::dyn_cast<llvm::StoreInst>(u))
+                    if (tainted.count(st->getValueOperand())) {
+                        perWorkItem = true; break;
+                    }
+            if (!perWorkItem) continue;
+            for (llvm::User* u : a->users())
+                if (auto* ld = llvm::dyn_cast<llvm::LoadInst>(u))
+                    if (!tainted.count(ld)) { work.push_back(ld); added = true; }
+        }
+        if (!added) break;
     }
 }
 
@@ -124,8 +151,14 @@ void fissionBarrierKernel(llvm::Function* linked, llvm::Function* wrapper,
     // --- 4. Analyses + uniformity guardrails --------------------------------
     llvm::DominatorTree DT(*wrapper);
     llvm::LoopInfo LI(DT);
+    // The kernel's locals (entry-block allocas) — needed both to flow taint
+    // through per-work-item slots (below) and to widen barrier-crossing ones
+    // into context arrays (step 7).
+    llvm::SmallVector<llvm::AllocaInst*, 8> allocas;
+    for (auto& in : *bodyEntry)
+        if (auto* a = llvm::dyn_cast<llvm::AllocaInst>(&in)) allocas.push_back(a);
     llvm::SmallPtrSet<llvm::Value*, 32> tainted;
-    computeTaint(placeholder, tainted);
+    computeTaint(placeholder, allocas, tainted);
 
     auto loopHasBarrier = [&](llvm::Loop* L) {
         for (llvm::BasicBlock* b : boundarySet)
@@ -295,9 +328,7 @@ void fissionBarrierKernel(llvm::Function* linked, llvm::Function* wrapper,
     };
 
     // --- 7. Context arrays for tid-tainted locals live across a barrier -----
-    llvm::SmallVector<llvm::AllocaInst*, 8> allocas;
-    for (auto& in : *bodyEntry)
-        if (auto* a = llvm::dyn_cast<llvm::AllocaInst>(&in)) allocas.push_back(a);
+    // (`allocas` gathered in step 4, before the taint fixpoint.)
     llvm::DenseMap<llvm::AllocaInst*, llvm::AllocaInst*> ctxArray;
     for (llvm::AllocaInst* a : allocas) {
         bool perWorkItem = false;

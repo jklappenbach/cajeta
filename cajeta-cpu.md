@@ -270,9 +270,40 @@ diagnostic for an *unsupported* barrier shape is `XPU-N02`.
   (`in[i]=i`, 256 block ⇒ `out[0]=32640`) with a barrier inside the uniform loop; 32 blocks ×
   256 across pthread workers with no shared-buffer aliasing; a divergent barrier falls back
   cleanly. Barrier-free CPU + wave (5C) + GPU suites unchanged.
-- **Out of scope (later):** multiple barriers / multiple regions inside one loop; nested
-  uniform loops with barriers; composing wave ops with barriers; a register accumulator carried
-  per-work-item across the uniform loop (the canonical kernel keeps it in shared memory).
+- **Out of scope (later):** ~~multiple barriers / multiple regions inside one loop~~ (Inc 7 ✅);
+  nested uniform loops with barriers; composing wave ops with barriers; a register accumulator
+  carried per-work-item across the uniform loop (the canonical kernel keeps it in shared memory).
+
+### Increment 7 — multiple barriers / regions inside one uniform loop ✅ (landed 2026-05-31)
+Lifts the first Inc 6 scope cut: a uniform loop body may now contain **more than one barrier**,
+splitting it into N work-item-loop regions (e.g. a ping-pong stencil `read; barrier; write;
+barrier` per iteration). The region walk already iterated multiple barriers — the loop body's
+`while (cur)` in the structured walk closes a region at each barrier and continues — so the
+*structure* was right; the gap was **correctness of context arrays for a per-work-item local
+that crosses an in-loop barrier**.
+- **The bug.** Fission widens a per-work-item local that lives across a barrier into a
+  `[ntid.x × T]` context array, deciding "per-work-item" by tainting transitively from the
+  work-item-index placeholder. But the taint walked **SSA def-use only**, and Cajeta lowers
+  `uint32 t = Thread.x()` as a *store to `t`'s slot* followed by a *load* at each use — so the
+  SSA chain breaks at the slot. A local like `int x = a[t] + a[(t+1)&255]` is therefore stored
+  from a value the taint never reached; `x`'s slot stayed a **single scalar** shared by every
+  work-item, so the last lane's `x` clobbered all others (lane 0 read the wrong value). The
+  Inc 6 reduction never hit this — its only barrier-crossing per-work-item value was `t` itself
+  (directly tainted), everything else lived in shared memory.
+- **The fix** (`CpuBarrierFission.cpp`, `computeTaint`): make taint a **fixpoint over SSA
+  def-use *and* memory round-trips** — a load from any alloca slot that ever receives a tainted
+  value is itself per-work-item; re-propagate until stable. Over-approximation is safe (a
+  wrongly-widened uniform slot just gets redundant per-lane storage, same result). Now `x`'s
+  slot is recognized as per-work-item and widened to `x.slot.ctx`.
+- **Verified:** `XpuCpuBarrierExecTests.multipleBarriersInOneLoop` (shared-memory ping-pong,
+  two barriers per iteration, matches the host recurrence for every lane) and
+  `localCarriedAcrossInLoopBarrier` (the local-across-an-in-loop-barrier case — the regression
+  that exposed the taint gap); `XpuCpuBarrierEmitTests.multiBarrierLoopBodySplitsAndWidensLocal`
+  (the loop body splits into ≥2 work-item loops nested in the single outer scalar loop; `x` is
+  widened to a context array). The Inc 6 single-barrier reduction + all prior CPU/wave/GPU
+  suites unchanged.
+- **Still out of scope:** nested uniform loops with barriers; wave ops + barriers in one kernel;
+  a register accumulator carried per-work-item across a uniform loop's back-edge.
 
 ### Docs
 - This file (the log). The matrix gains a **CPU column** (today: emit + grid→threads
