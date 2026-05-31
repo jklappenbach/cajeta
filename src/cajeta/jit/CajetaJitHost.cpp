@@ -21,6 +21,7 @@
 
 #include "cajeta/compile/Compiler.h"
 #include "cajeta/compile/CajetaModule.h"
+#include "cajeta/dbg/DebugLocTable.h"
 #include "cajeta/error/Exception.h"
 #include "cajeta/method/Method.h"
 
@@ -30,6 +31,7 @@
 #include "llvm/ExecutionEngine/Orc/ExecutionUtils.h"
 #include "llvm/ExecutionEngine/Orc/LLJIT.h"
 #include "llvm/ExecutionEngine/Orc/ThreadSafeModule.h"
+#include "llvm/IR/InstrTypes.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/Verifier.h"
 #include "llvm/Linker/Linker.h"
@@ -82,6 +84,22 @@ std::string findEntryMangled(llvm::Module* mod, const std::string& dottedEntry) 
     return "";
 }
 
+// Count call sites to @__cajeta_dbg_safepoint inside one function (CP2: one
+// per statement). Static — reads the IR, independent of execution.
+int countSafepointCalls(llvm::Function* fn) {
+    if (!fn) return 0;
+    int n = 0;
+    for (auto& bb : *fn) {
+        for (auto& inst : bb) {
+            if (auto* call = llvm::dyn_cast<llvm::CallBase>(&inst)) {
+                llvm::Function* callee = call->getCalledFunction();
+                if (callee && callee->getName() == "__cajeta_dbg_safepoint") n++;
+            }
+        }
+    }
+    return n;
+}
+
 } // namespace
 
 std::string entryTargetFromDotted(const std::string& dotted) {
@@ -91,7 +109,7 @@ std::string entryTargetFromDotted(const std::string& dotted) {
     return dotted.substr(0, lastDot) + "::" + dotted.substr(lastDot + 1);
 }
 
-int runJit(const JitRunOptions& opts) {
+int runJit(const JitRunOptions& opts, JitRunResult* result) {
     ensureJitInitialized();
 
     namespace fs = std::filesystem;
@@ -111,6 +129,10 @@ int runJit(const JitRunOptions& opts) {
 
     auto compiler = std::make_unique<Compiler>();
     compiler->setMode(CompilerMode::Debug);
+    // Debugger CP2: opt into statement-boundary safepoint emission. Reset the
+    // global loc table so this compile's loc_ids start at 0.
+    compiler->getMutableFlags().debugInfo = opts.debugInfo;
+    if (opts.debugInfo) cajeta::dbg::globalDbgLocTable().clear();
 
     fs::path archiveRoot = fs::temp_directory_path()
                          / ("cajeta_jitrun_" + sourceRoot.filename().string());
@@ -183,6 +205,11 @@ int runJit(const JitRunOptions& opts) {
         std::cerr << "cajeta jit-run: could not find static no-arg entry `"
                   << opts.entryMethod << "` (package.Class.method)\n";
         return 1;
+    }
+
+    if (result) {
+        result->entrySafepointsEmitted =
+            countSafepointCalls(llvmModule->getFunction(entryName));
     }
 
     if (std::getenv("CAJETA_DUMP_IR")) llvmModule->print(llvm::errs(), nullptr);
@@ -285,6 +312,16 @@ int runJit(const JitRunOptions& opts) {
     // void entries just run for their side effects.
     llvm::Function* entryLlvm = llvmModule->getFunction(entryName);
     bool returnsInt32 = entryLlvm && entryLlvm->getReturnType()->isIntegerTy(32);
+
+    // CP2: reset the JIT module's safepoint counter immediately before the
+    // entry runs, so safepointsExecuted measures only the entry's execution —
+    // not the global ctors run by jit->initialize() above.
+    if (auto rs = jit->lookup("__cajeta_dbg_reset_safepoint_count")) {
+        if (auto f = reinterpret_cast<void(*)()>(rs->getValue())) f();
+    } else {
+        cajeta::jit::consumeError(rs.takeError());
+    }
+
     int rc = 0;
     if (returnsInt32) {
         auto fn = reinterpret_cast<int(*)()>(entrySym->getValue());
@@ -296,6 +333,15 @@ int runJit(const JitRunOptions& opts) {
         fn();
         std::cerr << "[jit-run] entry " << opts.entryMethod
                   << " completed (void)\n";
+    }
+
+    if (result) {
+        if (auto cs = jit->lookup("__cajeta_dbg_safepoint_count")) {
+            auto f = reinterpret_cast<long(*)()>(cs->getValue());
+            result->safepointsExecuted = f ? f() : 0;
+        } else {
+            cajeta::jit::consumeError(cs.takeError());
+        }
     }
 
     // Join any carrier thread cleanly before tearing down the JIT module (the
@@ -310,16 +356,28 @@ int runJit(const JitRunOptions& opts) {
 }
 
 int dispatchJitRun(int argc, const char* argv[]) {
-    // argv: cajeta jit-run <sourceRoot> <entryMethod> [programArgs...]
-    if (argc < 4) {
-        std::cerr << "usage: cajeta jit-run <sourceRoot> <package.Class.method>"
-                     " [args...]\n";
+    // argv: cajeta jit-run [-g|--debug-info] <sourceRoot> <entryMethod> [args...]
+    JitRunOptions opts;
+    std::vector<std::string> positional;
+    for (int i = 2; i < argc; ++i) {
+        std::string a = argv[i];
+        if (a == "-g" || a == "--debug-info" || a == "--debug-info=on") {
+            opts.debugInfo = true;
+        } else if (a == "--debug-info=off") {
+            opts.debugInfo = false;
+        } else {
+            positional.push_back(a);
+        }
+    }
+    if (positional.size() < 2) {
+        std::cerr << "usage: cajeta jit-run [-g] <sourceRoot>"
+                     " <package.Class.method> [args...]\n";
         return 2;
     }
-    JitRunOptions opts;
-    opts.sourceRoot = argv[2];
-    opts.entryMethod = argv[3];
-    for (int i = 4; i < argc; ++i) opts.programArgs.emplace_back(argv[i]);
+    opts.sourceRoot = positional[0];
+    opts.entryMethod = positional[1];
+    for (size_t i = 2; i < positional.size(); ++i)
+        opts.programArgs.push_back(positional[i]);
     return runJit(opts);
 }
 

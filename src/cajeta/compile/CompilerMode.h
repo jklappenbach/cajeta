@@ -78,6 +78,14 @@ namespace cajeta {
         // ----- profiling -----
         bool            profileCounters     = false;  // PGO-collection instrumentation
 
+        // ----- debugging -----
+        // Emit __cajeta_dbg_safepoint(loc_id) at each statement boundary so the
+        // in-process debugger (`cajeta dap`) can park the executing fiber at a
+        // breakpoint. Opt-in via --debug-info / -g; OFF for every mode by
+        // default (it changes codegen and only matters under a debugger), so
+        // ordinary builds and the existing test suite are unaffected.
+        bool            debugInfo           = false;
+
         // Compute the default flag set for a given mode. CLI per-feature
         // flags override after this expansion.
         static CompilerFlags defaultsForMode(CompilerMode mode) {

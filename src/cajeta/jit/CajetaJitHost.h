@@ -31,9 +31,22 @@ namespace cajeta::jit {
         bool debugInfo = false;
     };
 
+    // Optional diagnostics filled by runJit when a non-null result is passed.
+    // Used by the debugger TDD harness to verify safepoint emission/execution.
+    struct JitRunResult {
+        // __cajeta_dbg_safepoint call sites emitted INSIDE the entry function
+        // (static count from the IR — deterministic, one per statement).
+        int entrySafepointsEmitted = 0;
+        // __cajeta_dbg_safepoint calls EXECUTED during the entry's run (the JIT
+        // module's counter, reset immediately before invoking the entry so it
+        // measures only the entry's execution, not global ctors).
+        long safepointsExecuted = 0;
+    };
+
     // Compile + JIT + run. Returns the process-style exit code (0 on success,
     // non-zero on a compile/JIT/lookup failure). Diagnostics go to stderr.
-    int runJit(const JitRunOptions& opts);
+    // When `result` is non-null it is populated (see JitRunResult).
+    int runJit(const JitRunOptions& opts, JitRunResult* result = nullptr);
 
     // Convert a dotted `package.Class.method` entry into the cajeta-mangled
     // function-name prefix `package.Class::method` (the IR appends the

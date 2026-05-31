@@ -143,6 +143,31 @@ void __cajeta_poison_buffer(void* ptr) {
 }
 
 // ============================================================================
+// Debug safepoints (debugger CP2+). When the compiler is run with
+// --debug-info, statement-boundary codegen emits a call to
+// __cajeta_dbg_safepoint(loc_id) before each statement. For CP2 this just
+// counts hits so the TDD harness can verify emission/execution; CP3 adds
+// breakpoint-arming + fiber park. As with the poison-free flag, the
+// embedded-bitcode copy (called by JIT'd user code) and the native-object
+// copy (callable from host C++ in tests) each keep their own static counter
+// — read whichever copy you exercised.
+// ============================================================================
+static long __cajeta_dbg_safepoint_total = 0;
+
+void __cajeta_dbg_safepoint(int32_t loc_id) {
+    (void) loc_id;
+    __cajeta_dbg_safepoint_total++;
+}
+
+long __cajeta_dbg_safepoint_count(void) {
+    return __cajeta_dbg_safepoint_total;
+}
+
+void __cajeta_dbg_reset_safepoint_count(void) {
+    __cajeta_dbg_safepoint_total = 0;
+}
+
+// ============================================================================
 // Live-allocation set (FieldOwnership.md § Solution B).
 //
 // The auto field-drop scheme is "try to drop all fields; if the address is
