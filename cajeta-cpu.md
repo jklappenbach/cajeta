@@ -128,10 +128,18 @@ dispatcher uses must be wired *in C* there:
   diagnostic, and the CPU rung (buffer = malloc/memcpy, launch = the launcher-thunk grid
   loop in C). CUDA (already present) refactored behind the switch. GPU-free end-to-end:
   a host-source `kernel.launch()` SAXPY built `--xpu-backend=cpu` runs on the CPU.
-- **4.2 HIP rung** ⏭️ — `dlopen` libamdhip64 + the HIP buffer/launch block (API-identical
-  to CUDA). Device-validated on the AMD box.
-- **4.3 Vulkan rung** ⏭️ — the descriptor-set compute launch + buffer memory ported from
-  `VulkanDriver.cpp` into C (the large tail). Device-validated via RADV.
+- **4.2 HIP rung** ✅ (landed 2026-05-31) — `dlopen` libamdhip64 + the HIP buffer/launch
+  block (API-identical to CUDA, shares the module table since one device backend is active
+  per run). **Device-validated on the AMD Strix Halo**: a host-source SAXPY built
+  `--xpu-backend=amdgpu` runs on the GPU via HIP, and `--xpu-backend=amdgpu,cpu` with
+  `CAJETA_XPU_BACKEND=cpu` falls to the CPU even with the GPU present — real-hardware
+  degrade-to-CPU.
+- **4.3 Vulkan rung** ⏭️ — larger than first scoped: porting `VulkanDriver.cpp` to C is
+  mechanical, but Vulkan has **no pointer-arg ABI**, so the uniform `argv` the dispatcher
+  receives (CUDA/HIP `kernelParams` shape) does not map to the descriptor-set model where
+  *every* param including scalars must be a bound storage buffer. Wiring Vulkan into
+  `__cajeta_xpu_launch` therefore needs (1) per-kernel parameter metadata and (2) an
+  argv→descriptor-set translation (scalars → transient SSBOs) on top of the driver port.
 
 ### Increment 5 — parallelism: multi-core threading + true wave = SIMD lane
 - **Multi-core threading** (moved here from Inc 3, 2026-05-31): a `parallel_for` chunking
@@ -244,3 +252,22 @@ dispatcher uses must be wired *in C* there:
     the manifest emit; the CUDA host-launch path is behavior-preserved (full Xpu suite green).
   - **Remaining:** 4.2 (HIP) + 4.3 (Vulkan) wire those backends' launch + memory into the C
     runtime so the GPU rungs of the chain are live, not just CPU + CUDA.
+- **Inc 4.2 — landed 2026-05-31.** The HIP rung in the C runtime (mirrors the CUDA block —
+  `dlopen` libamdhip64 with the canonical-ROCm path resolution, `hipMalloc`/`hipMemcpyHtoD`/
+  `hipModuleLoadData`/`hipModuleLaunchKernel`/`hipDeviceSynchronize`), sharing the module
+  table (one device backend active per run). **Device-validated on the AMD box** via the
+  dispatcher: `--xpu-backend=amdgpu` host-source SAXPY runs on the GPU; `amdgpu,cpu` +
+  `CAJETA_XPU_BACKEND=cpu` falls to CPU with the GPU present. Fixed a latent deadlock the
+  4.0 refactor introduced — `active_backend()` holds `g_xpu_cuda_lock` while selecting, so
+  the availability probes must call the `*_init_locked` variants, not the locking
+  `*_ready` wrappers (it never fired before because no CUDA/HIP bundle had run the selector
+  under the lock; the HIP device test is the first to exercise it).
+- **Inc 4.3 (Vulkan) — scope finding.** The uniform launch ABI doesn't reach Vulkan for
+  free: `__cajeta_xpu_launch` gets a CUDA/HIP `kernelParams` argv (buffer handles + raw
+  scalar values), but Vulkan's compute entry is `void main()` with descriptor-bound storage
+  buffers and **no params** — scalars included must become single-element SSBOs (the
+  existing Vulkan device tests do this by hand). So the rung needs per-kernel parameter
+  metadata (which args are buffers vs scalars, and scalar byte sizes) registered alongside
+  the SPIR-V blob, plus an argv→descriptor-set translation (map buffer handles to VkBuffers;
+  upload scalars into transient SSBOs) — on top of porting `VulkanDriver.cpp` to C. Larger
+  than a driver port; see the live plan.
