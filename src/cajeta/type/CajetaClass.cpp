@@ -3315,12 +3315,39 @@ namespace cajeta {
     // Non-class types (primitives, arrays, etc.) only match by exact
     // canonical-name equality — no upcast walk. Class types try identity
     // first, then BFS up `superClasses`.
-    static int subtypeDistance(CajetaTypePtr declaredType, CajetaTypePtr argType) {
+    static int subtypeDistance(CajetaTypePtr declaredType, CajetaTypePtr argType,
+                               bool relaxNullToRef = false) {
         if (!declaredType || !argType) return -1;
         if (declaredType->getQName() && argType->getQName()
                 && declaredType->getQName()->toCanonical()
                     == argType->getQName()->toCanonical()) {
             return 0;
+        }
+        // Null-literal arg (`null` resolves to the primitive `pointer`
+        // canonical, see LiteralExpression.cpp:28) is the canonical "no
+        // reference" value. For CONSTRUCTORS we let it match any
+        // reference-typed formal so a call like
+        // `heap Optional<Foo>(false, null)` resolves to the existing
+        // ctor instead of silently dropping (pre-fix the malloc+memset
+        // happened to look like `{present=false,value=null}` by
+        // coincidence, but no ctor ran). Gated to constructors because
+        // the broader resolution path needs strict rejection to stay
+        // sound — e.g. `String s == null` must stay as a direct ptr
+        // icmp instead of resolving up to `Object::operator==(Object,
+        // Object)`, whose body dereferences the receiver via vtable
+        // lookup and SIGSEGVs on null. High distance so any non-null
+        // candidate beats this.
+        if (relaxNullToRef && argType->getQName()
+                && argType->getQName()->toCanonical() == "pointer") {
+            // Any non-primitive declared formal accepts `null`. Covers
+            // classes, interfaces, function types, and unbound type
+            // parameters (wildcard `?`) which arise when the ctor was
+            // registered on a template's open form (e.g. Optional<?>'s
+            // `value:?` formal during stream-pipeline lowering).
+            bool declIsPrimitive =
+                (declaredType->getTypeFlags() & PRIMITIVE_FLAG) != 0;
+            if (declIsPrimitive) return -1;
+            return 1000;
         }
         auto argClass = dynamic_pointer_cast<CajetaClass>(argType);
         auto declaredClass = dynamic_pointer_cast<CajetaClass>(declaredType);
@@ -3378,7 +3405,8 @@ namespace cajeta {
     static MethodPtr findSubtypeMatch(
             const map<string, map<string, MethodPtr>>& genericMap,
             const string& methodName,
-            const vector<ParameterEntry>& parameters) {
+            const vector<ParameterEntry>& parameters,
+            bool relaxNullToRef = false) {
         MethodPtr best;
         int bestScore = std::numeric_limits<int>::max();
         const size_t argCount = parameters.size();
@@ -3411,7 +3439,8 @@ namespace cajeta {
                 for (size_t i = 0; i < argCount; ++i) {
                     int dist = subtypeDistance(
                         ordered[i + paramOffset]->getType(),
-                        parameters[i].type);
+                        parameters[i].type,
+                        relaxNullToRef);
                     if (dist < 0) { ok = false; break; }
                     score += dist;
                 }
@@ -3734,7 +3763,8 @@ namespace cajeta {
         // *current* class; the parent walk below picks up inherited
         // methods via recursion, which itself triggers this fallback at
         // each level.
-        if (MethodPtr m = findSubtypeMatch(*genericMap, methodName, parameters)) {
+        if (MethodPtr m = findSubtypeMatch(*genericMap, methodName, parameters,
+                /*relaxNullToRef=*/isConstructor)) {
             return m;
         }
 
