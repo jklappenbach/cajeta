@@ -263,8 +263,8 @@ diagnostic for an *unsupported* barrier shape is `XPU-N02`.
 - **Guardrails (`XPU-N02`, checked before any mutation → host-stub fallback, never a
   miscompile):** a barrier under work-item-divergent control flow (post-dominance check — the
   barrier must post-dominate its level's entry); a barrier in a loop with a `tid`-dependent
-  trip count; a barrier in a nested loop (one level supported); dynamic-sized shared memory;
-  wave ops + barriers in one kernel (the 5C forced-VF path and fission don't yet compose).
+  trip count; a barrier in a nested loop (one level — *lifted in Inc 8*); dynamic-sized shared
+  memory; wave ops + barriers in one kernel (the 5C forced-VF path and fission don't yet compose).
 - **Verified:** `XpuCpuBarrierExecTests` — two straight-line regions run the whole block;
   per-block shared memory staged + read cross-lane; the **canonical tree reduction**
   (`in[i]=i`, 256 block ⇒ `out[0]=32640`) with a barrier inside the uniform loop; 32 blocks ×
@@ -311,7 +311,35 @@ that crosses an in-loop barrier**.
   (the loop body splits into ≥2 work-item loops nested in the single outer scalar loop; `x` is
   widened to a context array). The Inc 6 single-barrier reduction + all prior CPU/wave/GPU
   suites unchanged.
-- **Still out of scope:** nested uniform loops with barriers; wave ops + barriers in one kernel.
+- **Still out of scope (after Inc 7):** ~~nested uniform loops with barriers~~ (Inc 8 ✅);
+  wave ops + barriers in one kernel.
+
+### Increment 8 — nested uniform loops with barriers ✅ (landed 2026-05-31)
+Lifts the one-level restriction: a barrier may sit inside a loop **nested inside another loop**
+(e.g. a tiled/blocked iteration). The region walk was already recursive — it recurses into each
+barrier-containing subloop (`walk(inLoopSucc(L), L, …)`), and `loopHasBarrier` is transitive, so
+the outer loop is detected as a barrier-subloop at the top level and the inner one within it.
+Each loop that (transitively) contains a barrier stays an **outer scalar scaffold**, nested one
+inside the next, with the innermost body's regions wrapped in work-item loops nested as deep as
+the loop nest. Context arrays (allocated once in the wrapper entry, indexed by work-item) and
+per-block shared memory already persist across every level, so the cross-iteration / cross-level
+carry needs no extra machinery.
+- **The change** was small: drop the `if (L->getLoopDepth() > 1) unsupported(…)` guardrail, plus
+  one defensive check in the walk — if a level starts *directly* on a nested barrier-loop header
+  (no separating preheader region) enter it as a subloop rather than letting `collect` flatten it
+  (Cajeta's structured loops always have that preheader, so this is belt-and-suspenders for the
+  never-miscompile contract). Every other guardrail is unchanged and still per-loop.
+- **Guardrails intact:** a barrier in a nested loop with a **work-item-dependent trip count** is
+  still rejected (`XPU-N02` → host stub), since different work-items would execute different
+  barrier counts (GPU-undefined deadlock); likewise a barrier under divergent control flow.
+- **Verified:** `XpuCpuBarrierExecTests.nestedUniformLoopsWithBarrier` (a barrier in a
+  doubly-nested loop; both loops stay scalar scaffolds, two `for.head`),
+  `nestedLoopsWithOuterLevelRegions` (an outer loop holding a direct barrier-region *and* a nested
+  barrier-loop — the `region·barrier·region·barrier·subloop` sequence at one level), and the
+  guardrail `nestedTidDependentTripCountFallsBack` (a tid-dependent inner trip count falls back,
+  not miscompiles). All prior suites unchanged.
+- **Still out of scope:** composing wave ops with barriers in one kernel (the 5C forced-VF /
+  variant path and fission remain disjoint).
 
 ### Docs
 - This file (the log). The matrix gains a **CPU column** (today: emit + grid→threads

@@ -22,7 +22,7 @@ Vulkan/SPIR-V column.
 > host SIMD vector (Inc 5C), and workgroup barriers run via work-item loop
 > fission (Inc 6 — split the kernel at each barrier, loop each region over the
 > block; per-block shared memory + context arrays; Inc 7 — multiple barriers per
-> uniform loop). The body walk is the same ~90%
+> uniform loop; Inc 8 — nested uniform loops with barriers). The body walk is the same ~90%
 > Core. Separately, the **runtime dispatcher** (in the C runtime, the sole launch
 > path for compiled programs) selects among bundled+available backends at startup
 > (`CUDA → HIP → Vulkan → CPU`) and routes launch + `Buffer<T>` device memory to
