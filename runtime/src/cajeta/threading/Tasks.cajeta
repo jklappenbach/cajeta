@@ -1,0 +1,79 @@
+package cajeta.threading;
+
+import cajeta.lang.Optional;
+import cajeta.time.Duration;
+
+/**
+ * Task-related utilities. v1 surface: `withTimeout(Duration, Task<R>)` —
+ * wait on a previously-spawned task with a deadline, reporting completion
+ * vs. timeout via `Optional<R>`.
+ *
+ * ## API shape
+ *
+ * The user spawns the task explicitly; withTimeout layers the timeout on
+ * top of the existing await machinery:
+ *
+ *     Task<int32> t = spawn compute();
+ *     Optional<int32> r = Tasks.withTimeoutInt32(Duration.ofMillis(50), t);
+ *     if (r.isPresent()) { ... use r.get() ... } else { ... handle timeout ... }
+ *
+ * v1 ships only the int32 specialization (`withTimeoutInt32`). The
+ * templated `withTimeout<R>(Duration, Task<R>) -> #Optional<R>` shape is
+ * what the API will settle on long-term but tripped a JIT-side crash
+ * during templated-method instantiation across stdlib + user modules —
+ * tracked as task #47. Per-T specializations (`withTimeoutInt64`, etc.)
+ * land when concrete consumers surface a need; the int32 form covers
+ * the common signal-flag and counter cases.
+ *
+ * A lambda-taking shape — `withTimeoutInt32(d, () -> compute())` per
+ * cajeta-docs/stdlib/Thread.md § withTimeout — is the documented
+ * eventual API but blocked on `spawn` supporting function-typed
+ * callees. v1 of SpawnExpression only handles bare class-method
+ * invocations (cajeta-docs/stdlib/AsyncStatus.md § Plan: Task<T>);
+ * spawn-of-lambda lands separately. The Task<int32> form covers the
+ * use case in the meantime.
+ *
+ * ## withTimeout semantics (v1 limitations)
+ *
+ * The function waits on the task's done flag with the supplied deadline.
+ * The `Optional<R>` return reports whether the body finished inside the
+ * deadline — `present` iff done flipped before the deadline expired,
+ * `empty` otherwise.
+ *
+ * **The body is always awaited to completion before withTimeout returns.**
+ * v1 does not cancel the body when the deadline expires; the deadline is a
+ * *reporting* boundary, not a *termination* boundary. A slow body still
+ * runs to natural completion; the only observable effect of an expired
+ * deadline is the `empty` return. This matches the runtime primitive
+ * (R9.1 — `__cajeta_task_wait_timeout` waits without cancelling) and
+ * avoids the two correctness hazards that v1 isn't ready to solve:
+ *
+ *   - Returning before the spawn's surrounding scope drop would block the
+ *     same scope's exit on the still-running task anyway (scope owns the
+ *     task's drop and waits for done before freeing).
+ *   - Lambda captures pointing into the caller's stack would dangle if
+ *     withTimeout returned with the body still running and the caller
+ *     popped its frame.
+ *
+ * Proper early-return-on-timeout requires fiber cancellation wired through
+ * the scope's drop chain — tracked as part of the broader scope+cancel
+ * work in R5-C / R9.4. Until that lands, callers who need to interrupt a
+ * runaway body must use a cooperative cancellation flag inside the body.
+ */
+public class Tasks {
+    // Returns ownership (heap-allocated Optional) — borrow-return on a
+    // multi-parameter free function is disallowed (CAJETA_ERROR_BORROW_RETURN_MULTI_PARAM),
+    // since neither parameter is a clean borrow root the return value
+    // can be tied to. The heap Optional is then owned by the caller and
+    // drops via the usual class drop chain.
+    public static #Optional<int32> withTimeoutInt32(Duration d, Task<int32> t) {
+        int64 deadline = Cajeta.currentTimeNanos() + d.toNanos();
+        pointer done = Cajeta.taskDonePointer(t);
+        int32 ok = Cajeta.taskWaitTimeout(done, deadline);
+        int32 val = await t;
+        if (ok == 1) {
+            return heap Optional<int32>(true, val);
+        }
+        return heap Optional<int32>(false, val);
+    }
+}
