@@ -150,6 +150,13 @@ namespace xpu {
         virtual llvm::Value* waveReduceSum(llvm::IRBuilderBase& b,
                                            llvm::Module& m,
                                            llvm::Value* value) = 0;
+
+        // The calling work-item's lane index within its wave: i32 in
+        // [0, waveWidth). The other half of "interrogate your environment"
+        // (with waveWidth) for width-agnostic kernels. NVPTX laneid sreg; AMDGPU
+        // mbcnt; Vulkan SubgroupLocalInvocationId; CPU tid.x % width.
+        virtual llvm::Value* waveLaneId(llvm::IRBuilderBase& b,
+                                        llvm::Module& m) = 0;
     };
 
 } // namespace xpu

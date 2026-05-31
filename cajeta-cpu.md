@@ -186,15 +186,43 @@ dispatcher uses must be wired *in C* there:
     `<16 x float>` confirmed in the IR. Tests: `XpuCpuAotCliTests.cpuBackendVectorizesBlockWrapper`
     (divergence-free kernel → SIMD ops in the wrapper, host-robust) + the dispatch/driver
     suite on the vectorized kernel.
-- **Next — wave-op SIMD via the LLVM Vector Function ABI** (not a from-scratch vectorizer):
-  pure pass-registration can't vectorize wave ops (cross-lane deps make LoopVectorize bail),
-  but declaring each `Wave.*` as a scalar call with a hand-written SIMD **vector variant**
-  (`reduceSum`→horizontal-add-broadcast, `shuffle`→permute, `ballot`→movemask) lets
-  LoopVectorize substitute it when vectorizing the work-item loop at a **forced VF**
-  (`llvm.loop.vectorize.width`, so `Wave.width()` is known); masked variants handle
-  divergence. We write only the small per-op variants. The boundary to pin down first (so it
-  "doesn't degrade"): masked-variant semantics under divergence (active-lane-only reduce/
-  ballot). Its own increment after that study.
+- **5C — wave-op SIMD via the LLVM Vector Function ABI** ✅ (landed 2026-05-31). Wave ops are
+  cross-lane, so `LoopVectorize` bails on them (5B left them width-1). 5C makes the wave = the
+  SIMD vector: each `Wave.*` lowers to a **scalar call** to its `__cajeta_xpu_wave_*` stub, and
+  the CPU registration pass gives that stub a **Vector Function ABI variant** — a small SIMD
+  function LLVM 22's `VFDatabase` reads off the `vector-function-abi-variant` attribute and
+  `LoopVectorize` *substitutes* when it widens the per-block work-item loop. We write no
+  vectorizer — only the per-op variant bodies (synthesized in IR, so they legalize to real SIMD
+  on any host):
+  - `reduceSum` → `broadcast(llvm.vector.reduce.add(v))`; `ballotSync` →
+    `broadcast(zext(bitcast <W x i1> → iW))`; `shuffleSync` → a per-lane gather `val[src[i]]`.
+  - **Non-degrading by construction.** The op is a scalar call with a variant *attribute*;
+    if vectorization fires it uses the variant (wave = W), if not the scalar width-1 stub runs
+    — always correct, never silently wrong. The mangled name uses the target-independent
+    `_LLVM_` ISA token (LoopVectorize matches on VF + parameter shape, not ISA).
+  - **Wave width W = the host's native SIMD width** (16 on AVX-512, 8 on AVX2), read from the
+    host TTI (`getRegisterBitWidth(FixedWidthVector)/32`). The work-item loop is *forced* to
+    that VF (`llvm.loop.vectorize.width` + `.enable`) so the loop VF equals the variant VF.
+  - **Divergence → masked variants.** The idiomatic `if (i < n) { …reduceSum… }` predicates the
+    block; LoopVectorize then uses the **masked** variant (`_Mv16(<W x …>, <W x i1> mask)`),
+    passing the active-lane predicate — GPU active-mask semantics (reduce/ballot over active
+    lanes only). Tail handling is the kernel author's job (block a multiple of W, as on GPU);
+    tail-folding the whole loop was rejected — it scalarizes the loads (slow) where the common
+    full-block path stays clean wide loads.
+  - **`Wave.width()` and `Wave.laneId()` — the queryable environment.** `width()` takes no
+    argument, so it cannot carry a VFABI variant (a 0-param variant is rejected by the
+    verifier); instead it is **rewritten to the constant W** in a vectorized wave kernel (W is
+    the architectural width, constant across active and inactive lanes, like a warp size).
+    `laneId()` (new across the seam + all four backends — NVPTX `%laneid`, AMDGPU `mbcnt`,
+    SPIR-V `SubgroupLocalInvocationId`, CPU `tid.x % W`) gives the lane index; `isFirstLane()`
+    (= `laneId() == 0`, lowered for every backend) is the width-agnostic cooperation guard.
+    **The rule: never hardcode the wave width — query `Wave.width()` / `laneId()`.** No width
+    constant is exposed; the same wave-cooperative source is correct on NVIDIA (32), AMD
+    (32/64), Vulkan (runtime), and CPU (16/8).
+  - Tests: `XpuCpuWaveSimdTests` (reduceSum/divergent-masked/ballot/shuffle/width/laneId/
+    isFirstLane, each width-agnostic — probes the real W then verifies against it);
+    `XpuWaveEmitTests` (per-backend `laneId` intrinsics + spirv-val); `XpuWaveDeviceTests`
+    (`laneId` on real AMD + Vulkan hardware).
 - Probe AMX / SME matmul lowering (CPU matrix engines, runtime-feature-gated).
 
 ### Increment 6 — workgroup barriers via work-item loop fission (POCL-style)

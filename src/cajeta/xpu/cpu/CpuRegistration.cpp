@@ -18,13 +18,18 @@
 #include "cajeta/xpu/core/XpuAttributes.h"
 #include "cajeta/error/Exception.h"
 
+#include "llvm/Analysis/TargetTransformInfo.h"
 #include "llvm/IR/Attributes.h"
 #include "llvm/IR/BasicBlock.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/DerivedTypes.h"
 #include "llvm/IR/Function.h"
+#include "llvm/IR/Instructions.h"
+#include "llvm/IR/Intrinsics.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/LLVMContext.h"
+#include "llvm/IR/MDBuilder.h"
+#include "llvm/IR/Metadata.h"
 #include "llvm/IR/Module.h"
 #include "llvm/Linker/Linker.h"
 #include "llvm/Target/TargetMachine.h"
@@ -34,6 +39,218 @@
 namespace cajeta {
 namespace xpu {
 namespace cpu {
+
+namespace {
+
+// --- Increment 5C: wave-op SIMD via the Vector Function ABI ----------------
+//
+// A wave op lowers (in CpuKernelLowering) to a scalar call to its
+// `__cajeta_xpu_wave_*` stub. These helpers give that scalar call a SIMD
+// *vector variant* and force the per-block work-item loop to vectorize at the
+// host's native vector width W, so LoopVectorize substitutes the variant and
+// the wave runs as W SIMD lanes. If W < 2 or the host TM is absent, nothing is
+// attached and the scalar (width-1) call runs — always correct.
+
+// The host's native i32 fixed-vector width (16 on AVX-512, 8 on AVX2, 4 on
+// SSE2). 0 if no TM. This is the wave width on the CPU backend.
+unsigned cpuVectorWidthI32(llvm::TargetMachine* tm, llvm::Function& f) {
+    if (!tm) return 0;
+    llvm::TargetTransformInfo tti = tm->getTargetTransformInfo(f);
+    llvm::TypeSize bits =
+        tti.getRegisterBitWidth(llvm::TargetTransformInfo::RGK_FixedWidthVector);
+    if (bits.isScalable() || bits.getFixedValue() < 32) return 0;
+    return (unsigned) (bits.getFixedValue() / 32);
+}
+
+// True iff `f` calls the named runtime wave stub.
+bool callsRuntimeFn(llvm::Function& f, llvm::StringRef name) {
+    for (auto& bb : f)
+        for (auto& in : bb)
+            if (auto* call = llvm::dyn_cast<llvm::CallInst>(&in))
+                if (auto* cf = call->getCalledFunction())
+                    if (cf->getName() == name) return true;
+    return false;
+}
+
+// Create an empty `internal alwaysinline memory(none)` variant function with
+// the given name + signature; the caller fills the body. alwaysinline so
+// release builds fold it into the vectorized loop.
+llvm::Function* makeVariantShell(llvm::Module& m, const std::string& name,
+                                 llvm::FunctionType* fnTy) {
+    if (auto* existing = m.getFunction(name)) return existing;
+    auto* fn = llvm::Function::Create(
+        fnTy, llvm::GlobalValue::InternalLinkage, name, &m);
+    fn->addFnAttr(llvm::Attribute::AlwaysInline);
+    fn->setDoesNotThrow();
+    fn->setWillReturn();
+    fn->setMemoryEffects(llvm::MemoryEffects::none());
+    return fn;
+}
+
+// One wave op's width-W SIMD variants. The scalar stub gets a
+// `vector-function-abi-variant` attribute naming both an unmasked (`_vW`) and a
+// masked (`_Mv16`) variant. LoopVectorize uses the unmasked one in uniform code
+// and the masked one when the call is in divergent (if-guarded) control flow,
+// passing the active-lane predicate as the trailing mask argument — matching
+// GPU active-mask semantics.
+//
+// The variant bodies are synthesized in IR from portable vector ops
+// (reduce/select/bitcast/gather), so they legalize to real SIMD on any host.
+void attachWaveVariants(llvm::Module& m, llvm::StringRef scalarName,
+                        unsigned W) {
+    llvm::Function* scalar = m.getFunction(scalarName);
+    if (!scalar) return;
+    llvm::LLVMContext& ctx = m.getContext();
+    llvm::Type* i32 = llvm::Type::getInt32Ty(ctx);
+    llvm::Type* i64 = llvm::Type::getInt64Ty(ctx);
+    llvm::Type* i1 = llvm::Type::getInt1Ty(ctx);
+    auto* maskTy = llvm::FixedVectorType::get(i1, W);
+    const std::string sw = std::to_string(W);
+
+    // The VFABI parameter-token string (one char per scalar parameter); built
+    // alongside each op. `_ZGV_LLVM_N<W><tokens>_<scalar>(<unmasked>)` and the
+    // `M` (masked) form which appends the predicate.
+    std::string tokens;
+    llvm::Function* unmasked = nullptr;
+    llvm::Function* masked = nullptr;
+
+    if (scalarName == "__cajeta_xpu_wave_reduce_sum_u32") {
+        tokens = "v";
+        auto* vTy = llvm::FixedVectorType::get(i32, W);
+        // <W x i32> v(<W x i32> x) = broadcast(reduce.add(x))
+        unmasked = makeVariantShell(m, scalarName.str() + "_v" + sw,
+                                    llvm::FunctionType::get(vTy, {vTy}, false));
+        {
+            llvm::IRBuilder<> b(llvm::BasicBlock::Create(ctx, "entry", unmasked));
+            llvm::Value* s = b.CreateAddReduce(unmasked->getArg(0));
+            b.CreateRet(b.CreateVectorSplat(W, s));
+        }
+        // <W x i32> Mv(<W x i32> x, <W x i1> m) = broadcast(reduce.add(m?x:0))
+        masked = makeVariantShell(m, scalarName.str() + "_Mv" + sw,
+                                  llvm::FunctionType::get(vTy, {vTy, maskTy}, false));
+        {
+            llvm::IRBuilder<> b(llvm::BasicBlock::Create(ctx, "entry", masked));
+            llvm::Value* sel = b.CreateSelect(masked->getArg(1), masked->getArg(0),
+                                              llvm::Constant::getNullValue(vTy));
+            llvm::Value* s = b.CreateAddReduce(sel);
+            b.CreateRet(b.CreateVectorSplat(W, s));
+        }
+    } else if (scalarName == "__cajeta_xpu_wave_ballot_sync") {
+        tokens = "v";
+        auto* pTy = llvm::FixedVectorType::get(i1, W);     // per-lane predicate
+        auto* rTy = llvm::FixedVectorType::get(i64, W);    // broadcast mask
+        auto* iW = llvm::Type::getIntNTy(ctx, W);
+        // <W x i64> v(<W x i1> p) = broadcast(zext(bitcast<W x i1>->iW))
+        unmasked = makeVariantShell(m, scalarName.str() + "_v" + sw,
+                                    llvm::FunctionType::get(rTy, {pTy}, false));
+        {
+            llvm::IRBuilder<> b(llvm::BasicBlock::Create(ctx, "entry", unmasked));
+            llvm::Value* bits = b.CreateBitCast(unmasked->getArg(0), iW);
+            llvm::Value* z = b.CreateZExt(bits, i64);
+            b.CreateRet(b.CreateVectorSplat(W, z));
+        }
+        // masked: ballot over active lanes only → bitcast(p & m)
+        masked = makeVariantShell(m, scalarName.str() + "_Mv" + sw,
+                                  llvm::FunctionType::get(rTy, {pTy, maskTy}, false));
+        {
+            llvm::IRBuilder<> b(llvm::BasicBlock::Create(ctx, "entry", masked));
+            llvm::Value* act = b.CreateAnd(masked->getArg(0), masked->getArg(1));
+            llvm::Value* bits = b.CreateBitCast(act, iW);
+            llvm::Value* z = b.CreateZExt(bits, i64);
+            b.CreateRet(b.CreateVectorSplat(W, z));
+        }
+    } else if (scalarName == "__cajeta_xpu_wave_shuffle_sync_u32") {
+        tokens = "vv";
+        auto* vTy = llvm::FixedVectorType::get(i32, W);
+        // <W x i32> v(<W x i32> val, <W x i32> src): result[i] = val[src[i]] —
+        // a per-lane dynamic gather within the wave, unrolled W times.
+        auto build = [&](llvm::Function* fn) {
+            llvm::IRBuilder<> b(llvm::BasicBlock::Create(ctx, "entry", fn));
+            llvm::Value* val = fn->getArg(0);
+            llvm::Value* src = fn->getArg(1);
+            llvm::Value* res = llvm::PoisonValue::get(vTy);
+            for (unsigned i = 0; i < W; ++i) {
+                llvm::Value* lane =
+                    b.CreateExtractElement(src, b.getInt32(i));   // i32 src lane
+                llvm::Value* picked = b.CreateExtractElement(val, lane);
+                res = b.CreateInsertElement(res, picked, b.getInt32(i));
+            }
+            b.CreateRet(res);
+        };
+        unmasked = makeVariantShell(m, scalarName.str() + "_v" + sw,
+                                    llvm::FunctionType::get(vTy, {vTy, vTy}, false));
+        build(unmasked);
+        // masked: same gather; LoopVectorize blends inactive result lanes back
+        // to their pre-call value, so the mask need not change the computation.
+        masked = makeVariantShell(
+            m, scalarName.str() + "_Mv" + sw,
+            llvm::FunctionType::get(vTy, {vTy, vTy, maskTy}, false));
+        {
+            llvm::IRBuilder<> b(llvm::BasicBlock::Create(ctx, "entry", masked));
+            llvm::Value* val = masked->getArg(0);
+            llvm::Value* src = masked->getArg(1);
+            llvm::Value* res = llvm::PoisonValue::get(vTy);
+            for (unsigned i = 0; i < W; ++i) {
+                llvm::Value* lane = b.CreateExtractElement(src, b.getInt32(i));
+                llvm::Value* picked = b.CreateExtractElement(val, lane);
+                res = b.CreateInsertElement(res, picked, b.getInt32(i));
+            }
+            b.CreateRet(res);
+        }
+    } else {
+        return;
+    }
+
+    const std::string base = "_ZGV_LLVM_N" + sw + tokens + "_" + scalarName.str();
+    const std::string mbase = "_ZGV_LLVM_M" + sw + tokens + "_" + scalarName.str();
+    const std::string attr =
+        base + "(" + unmasked->getName().str() + ")," +
+        mbase + "(" + masked->getName().str() + ")";
+    scalar->addFnAttr("vector-function-abi-variant", attr);
+}
+
+// `width()` takes no argument, so it cannot carry a VFABI variant (a 0-param
+// variant is rejected by the verifier). In a vectorized wave kernel the wave
+// width IS W (the architectural width, like a GPU warp size — constant across
+// active and inactive lanes), so rewrite each `__cajeta_xpu_wave_width()` call
+// to the constant W. Returns the number rewritten.
+unsigned rewriteWaveWidth(llvm::Function& f, unsigned W) {
+    llvm::SmallVector<llvm::CallInst*, 4> calls;
+    for (auto& bb : f)
+        for (auto& in : bb)
+            if (auto* c = llvm::dyn_cast<llvm::CallInst>(&in))
+                if (auto* cf = c->getCalledFunction())
+                    if (cf->getName() == "__cajeta_xpu_wave_width")
+                        calls.push_back(c);
+    llvm::Value* wConst =
+        llvm::ConstantInt::get(llvm::Type::getInt32Ty(f.getContext()), W);
+    for (auto* c : calls) {
+        c->replaceAllUsesWith(wConst);
+        c->eraseFromParent();
+    }
+    return calls.size();
+}
+
+// Force `latch` (a work-item loop's back-edge branch) to vectorize at width W
+// via self-referential `!llvm.loop` metadata — so the forced VF equals the
+// variant's VF and LoopVectorize substitutes it.
+void forceLoopVectorWidth(llvm::BranchInst* latch, unsigned W) {
+    llvm::LLVMContext& ctx = latch->getContext();
+    llvm::Type* i32 = llvm::Type::getInt32Ty(ctx);
+    auto md = [&](const char* key, llvm::Constant* val) {
+        return llvm::MDNode::get(ctx, {llvm::MDString::get(ctx, key),
+                                       llvm::ConstantAsMetadata::get(val)});
+    };
+    llvm::SmallVector<llvm::Metadata*, 4> ops;
+    ops.push_back(nullptr);  // self-reference, patched below
+    ops.push_back(md("llvm.loop.vectorize.width", llvm::ConstantInt::get(i32, W)));
+    ops.push_back(md("llvm.loop.vectorize.enable", llvm::ConstantInt::getTrue(ctx)));
+    llvm::MDNode* loopId = llvm::MDNode::getDistinct(ctx, ops);
+    loopId->replaceOperandWith(0, loopId);
+    latch->setMetadata("llvm.loop", loopId);
+}
+
+} // namespace
 
     int emitKernelRegistration(const std::vector<MethodPtr>& kernels,
                                llvm::Module& hostModule,
@@ -150,17 +367,69 @@ namespace cpu {
             llvm::Value* tidNext =
                 b.CreateAdd(tid, llvm::ConstantInt::get(i32, 1), "tid.next");
             tid->addIncoming(tidNext, wBody);
-            b.CreateBr(wHead);
+            llvm::BranchInst* latchBr = b.CreateBr(wHead);   // loop back-edge
 
             b.SetInsertPoint(wExit);
             b.CreateRetVoid();
+
+            // --- Wave-op SIMD setup (Inc 5C) -------------------------------
+            // If the kernel uses wave ops, give each its VFABI vector variants
+            // (unmasked + masked) and force the work-item loop to vectorize at
+            // the host's native width W (the CPU wave width) so LoopVectorize
+            // substitutes the SIMD variant — the wave becomes W SIMD lanes.
+            // Attribute + variant + loop-width metadata go in BEFORE inlining;
+            // the loop metadata rides along when InlineFunction moves the latch.
+            static const char* const kWaveOps[] = {
+                "__cajeta_xpu_wave_reduce_sum_u32",
+                "__cajeta_xpu_wave_ballot_sync",
+                "__cajeta_xpu_wave_shuffle_sync_u32",
+            };
+            const unsigned waveW = cpuVectorWidthI32(hostTm.get(), *wrapper);
+            bool waveKernel = false;
+            if (waveW >= 2) {
+                for (const char* op : kWaveOps)
+                    if (callsRuntimeFn(*linked, op)) {
+                        attachWaveVariants(hostModule, op, waveW);
+                        waveKernel = true;
+                    }
+                // `width()` has no variant — it is rewritten to the constant W
+                // after inlining (below). Its presence alone makes a wave kernel.
+                if (callsRuntimeFn(*linked, "__cajeta_xpu_wave_width"))
+                    waveKernel = true;
+                if (waveKernel) forceLoopVectorWidth(latchBr, waveW);
+            }
 
             // Inline the per-work-item kernel into the loop body, then vectorize
             // the loop (mem2reg + LoopVectorize). This is what turns the CPU
             // backend's wave from width-1 to native SIMD width.
             llvm::InlineFunctionInfo ifi;
             llvm::InlineFunction(*kcall, ifi);
+
+            // The wave width is W in a vectorized wave kernel (architectural,
+            // like a warp size) — rewrite width() calls to the constant before
+            // vectorizing so the value is uniform and folds cleanly.
+            if (waveKernel) rewriteWaveWidth(*wrapper, waveW);
+
             vectorizeFunction(*wrapper, hostTm.get());
+
+            // Fold the now-substituted `_vW`/`_Mv16` wave variant calls into the
+            // loop (they are alwaysinline, but no inliner runs at -O0) so codegen
+            // emits the reduce/gather/ballot SIMD directly rather than a
+            // per-iteration call.
+            if (waveKernel) {
+                llvm::SmallVector<llvm::CallInst*, 16> vcalls;
+                for (auto& bb : *wrapper)
+                    for (auto& in : bb)
+                        if (auto* c = llvm::dyn_cast<llvm::CallInst>(&in))
+                            if (auto* cf = c->getCalledFunction())
+                                if (cf->hasFnAttribute(llvm::Attribute::AlwaysInline)
+                                    && cf->getName().contains("__cajeta_xpu_wave_"))
+                                    vcalls.push_back(c);
+                for (auto* c : vcalls) {
+                    llvm::InlineFunctionInfo vifi;
+                    llvm::InlineFunction(*c, vifi);
+                }
+            }
 
             // --- Uniform launcher thunk → the per-block wrapper -------------
             // void __cajeta_xpu_cpu_launch.<name>(ptr argv, ptr coord). The

@@ -3,6 +3,7 @@ package tourxpu;
 import cajeta.xpu.core.Buffer;
 import cajeta.xpu.core.Stream;
 import cajeta.xpu.core.Thread;
+import cajeta.xpu.core.Wave;
 
 // Cajeta XPU tour — portable @Kernel programs run through the runtime
 // backend dispatcher. The SAME source compiles for NVIDIA (NVPTX), AMD
@@ -15,9 +16,14 @@ import cajeta.xpu.core.Thread;
 // `--xpu-backend=cpu`, so the demos run anywhere with no GPU; pass a backend
 // (e.g. `run-xpu.sh amdgpu,cpu`) to target a device with CPU fallback.
 //
-// Every kernel here is data-parallel and barrier-free / wave-free, so it
-// produces identical results on all backends (workgroup barriers and true wave
-// reductions on the CPU are later increments).
+// The data-parallel kernels (saxpy, vecAdd) are barrier-free and produce
+// identical results on every backend. The wave demo (waveReduce) is
+// wave-cooperative: on a GPU the wave is the hardware warp/wavefront/subgroup
+// (32 or 64); on the CPU it is the host SIMD vector (16 on AVX-512, 8 on AVX2 —
+// Inc 5C). It is written width-agnostically — it never hardcodes the wave size,
+// it *queries* it — so the same source is correct at every width.
+//
+// (Workgroup barriers on the CPU remain a later increment.)
 public final class XpuTour {
 
     // y[i] = a*x[i] + y[i] — the canonical accelerator "hello world".
@@ -40,6 +46,20 @@ public final class XpuTour {
         }
     }
 
+    // waveReduce: out[i] = sum of in over i's wave. A wave-cooperative kernel —
+    // the wave is the warp on a GPU, the SIMD vector on the CPU. Width-agnostic:
+    // it queries the environment (Wave.reduceSum / width() / laneId()) rather
+    // than assuming any particular wave size.
+    @Kernel
+    public static void waveReduce(Buffer<uint32> sums, Buffer<uint32> in,
+                                  uint32 n) {
+        uint32 i = Thread.globalIdX();
+        if (i < n) {
+            // The wave-wide sum of in[]; every lane of the wave receives it.
+            sums[i] = Wave.reduceSum(in[i]);
+        }
+    }
+
     // Entry point. The C `main` shim (synthesized by --emit=obj with this
     // method as the entry) wires this up as the program's main.
     public static int32 run() {
@@ -48,6 +68,7 @@ public final class XpuTour {
         System.stdout.println("  bundled+available backend (CPU when no GPU).");
         runSaxpy();
         runVecAdd();
+        runWave();
         System.stdout.println("");
         System.stdout.println("=== xpu tour complete ===");
         return 0;
@@ -121,5 +142,29 @@ public final class XpuTour {
                             + " c[10]=" + (int32) hc[10]
                             + " c[255]=" + (int32) hc[255]
                             + "  (expect 3, 30, 765)");
+    }
+
+    static void runWave() {
+        System.stdout.println("");
+        System.stdout.println("-- waveReduce: sum across each wave, in[i]=1 --");
+        uint32 n = 256;
+        uint32[] hin = new uint32[n];
+        uint32[] hsums = new uint32[n];
+        for (uint32 i = 0; i < n; i = i + 1) { hin[i] = 1; hsums[i] = 0; }
+        Buffer<uint32> in = stack Buffer<uint32>(n);
+        Buffer<uint32> sums = stack Buffer<uint32>(n);
+        in.upload(hin);
+        sums.upload(hsums);
+        Stream s = Stream.current();
+        waveReduce.launch(s, grid: [(n + 63) / 64], block: [64])(sums, in, n);
+        s.sync();
+        sums.download(hsums);
+        // With all-ones input, each lane's wave-sum == the number of lanes in
+        // the wave = the wave width. So sums[0] REPORTS the width — discovered
+        // at runtime, never hardcoded (16/8 on a CPU, 32/64 on a GPU).
+        System.stdout.println("  wave width (queried, not hardcoded) = "
+                            + (int32) hsums[0]);
+        System.stdout.println("  every lane of a wave agrees: sums[0]="
+                            + (int32) hsums[0] + " sums[1]=" + (int32) hsums[1]);
     }
 }

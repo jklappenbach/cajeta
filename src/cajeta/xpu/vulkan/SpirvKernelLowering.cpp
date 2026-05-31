@@ -192,6 +192,13 @@ public:
             {llvm::Type::getInt32Ty(m.getContext())});
         return b.CreateCall(f, {value}, "wavered");
     }
+    llvm::Value* waveLaneId(llvm::IRBuilderBase& b, llvm::Module& m) override {
+        // SubgroupLocalInvocationId — this invocation's index within the
+        // subgroup (→ OpLoad of the builtin).
+        llvm::Function* f = llvm::Intrinsic::getOrInsertDeclaration(
+            &m, llvm::Intrinsic::spv_subgroup_local_invocation_id);
+        return b.CreateCall(f, {}, "laneid");
+    }
 
 private:
     static llvm::Value* readCoord(llvm::IRBuilderBase& b, llvm::Module& m,

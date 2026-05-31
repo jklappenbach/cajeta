@@ -114,6 +114,9 @@ public:
         return b.CreateCall(f, {value, llvm::ConstantInt::get(i32, 0xFFFFFFFFu)},
                             "redux");
     }
+    llvm::Value* waveLaneId(llvm::IRBuilderBase& b, llvm::Module& m) override {
+        return readSreg(b, m, llvm::Intrinsic::nvvm_read_ptx_sreg_laneid);
+    }
 
 private:
     static llvm::Value* readSreg(llvm::IRBuilderBase& b, llvm::Module& m,

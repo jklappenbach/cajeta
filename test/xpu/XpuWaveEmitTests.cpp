@@ -82,6 +82,22 @@ const char* kReduceSource =
     "    }\n"
     "}\n";
 
+// out[t] = Wave.laneId() — the lane index within the wave (Inc 5C). Each
+// backend reads its native lane-id source: NVPTX %laneid, AMDGPU mbcnt, SPIR-V
+// SubgroupLocalInvocationId.
+const char* kLaneSource =
+    "package test;\n"
+    "import cajeta.xpu.core.Buffer;\n"
+    "import cajeta.xpu.core.Thread;\n"
+    "import cajeta.xpu.core.Wave;\n"
+    "public class M {\n"
+    "    @Kernel\n"
+    "    public static void wavelane(Buffer<uint32> out) {\n"
+    "        uint32 t = Thread.x();\n"
+    "        out[t] = Wave.laneId();\n"
+    "    }\n"
+    "}\n";
+
 CajetaModulePtr compileForInspection(Compiler& compiler,
                                      const std::string& source) {
     static std::mt19937_64 rng(std::random_device{}());
@@ -120,6 +136,11 @@ cajeta::MethodPtr compileWaveKernel(Compiler& compiler) {
 cajeta::MethodPtr compileReduceKernel(Compiler& compiler) {
     auto module = compileForInspection(compiler, kReduceSource);
     return findMethod(module->getStructures()["test.M"], "wavereduce");
+}
+
+cajeta::MethodPtr compileLaneKernel(Compiler& compiler) {
+    auto module = compileForInspection(compiler, kLaneSource);
+    return findMethod(module->getStructures()["test.M"], "wavelane");
 }
 
 } // namespace
@@ -265,4 +286,71 @@ TEST(XpuWaveEmitTests, spirvLowersReduceToSubgroupSumAndValidates) {
     int rc = llvm::sys::ExecuteAndWait(*tool, args);
     std::filesystem::remove(path);
     EXPECT_EQ(rc, 0) << "spirv-val rejected the wave-reduce module";
+}
+
+// laneId() lowers to each backend's native lane-index source (Inc 5C).
+TEST(XpuWaveEmitTests, nvptxLowersLaneIdToSreg) {
+    Compiler compiler;
+    auto k = compileLaneKernel(compiler);
+    ASSERT_NE(k, nullptr);
+    auto tm = cajeta::xpu::nvidia::createNvptxTargetMachine("sm_89");
+    ASSERT_NE(tm, nullptr);
+    llvm::LLVMContext ctx;
+    llvm::Module m("xpu_lane_nvptx", ctx);
+    cajeta::xpu::nvidia::configureDeviceModule(m, *tm);
+    ASSERT_NE(cajeta::xpu::nvidia::lowerKernel(k, m), nullptr);
+    std::string ir = printModule(m);
+    EXPECT_NE(ir.find("llvm.nvvm.read.ptx.sreg.laneid"), std::string::npos) << ir;
+}
+
+TEST(XpuWaveEmitTests, amdgpuLowersLaneIdToMbcnt) {
+    Compiler compiler;
+    auto k = compileLaneKernel(compiler);
+    ASSERT_NE(k, nullptr);
+    auto tm = cajeta::xpu::amd::createAmdgpuTargetMachine("gfx1151");
+    ASSERT_NE(tm, nullptr);
+    llvm::LLVMContext ctx;
+    llvm::Module m("xpu_lane_amdgpu", ctx);
+    cajeta::xpu::amd::configureDeviceModule(m, *tm);
+    ASSERT_NE(cajeta::xpu::amd::lowerKernel(k, m), nullptr);
+    std::string ir = printModule(m);
+    EXPECT_NE(ir.find("llvm.amdgcn.mbcnt.lo"), std::string::npos) << ir;
+    EXPECT_NE(ir.find("llvm.amdgcn.mbcnt.hi"), std::string::npos) << ir;
+}
+
+TEST(XpuWaveEmitTests, spirvLowersLaneIdToSubgroupInvocationAndValidates) {
+    Compiler compiler;
+    auto k = compileLaneKernel(compiler);
+    ASSERT_NE(k, nullptr);
+    auto tm = cajeta::xpu::vulkan::createSpirvTargetMachine("vulkan1.3");
+    ASSERT_NE(tm, nullptr);
+
+    llvm::LLVMContext irCtx;
+    llvm::Module irMod("xpu_lane_spirv_ir", irCtx);
+    cajeta::xpu::vulkan::configureDeviceModule(irMod, *tm);
+    ASSERT_NE(cajeta::xpu::vulkan::lowerKernel(k, irMod), nullptr);
+    std::string ir = printModule(irMod);
+    EXPECT_NE(ir.find("llvm.spv.subgroup.local.invocation.id"),
+              std::string::npos) << ir;
+
+    llvm::LLVMContext binCtx;
+    llvm::Module binMod("xpu_lane_spirv_bin", binCtx);
+    cajeta::xpu::vulkan::configureDeviceModule(binMod, *tm);
+    cajeta::xpu::vulkan::lowerKernel(k, binMod);
+    std::vector<uint8_t> spirv = cajeta::xpu::vulkan::emitSpirv(binMod, *tm);
+    ASSERT_FALSE(spirv.empty());
+
+    auto tool = llvm::sys::findProgramByName("spirv-val");
+    if (!tool) { GTEST_SUCCEED() << "spirv-val absent; skipped validation"; return; }
+    static std::mt19937_64 rng(std::random_device{}());
+    auto path = std::filesystem::temp_directory_path()
+              / ("cajeta_lane_" + std::to_string(rng()) + ".spv");
+    { std::ofstream o(path, std::ios::binary);
+      o.write(reinterpret_cast<const char*>(spirv.data()),
+              (std::streamsize) spirv.size()); }
+    llvm::StringRef env = "--target-env", ver = "vulkan1.3", file = path.c_str();
+    llvm::SmallVector<llvm::StringRef, 4> args = {*tool, env, ver, file};
+    int rc = llvm::sys::ExecuteAndWait(*tool, args);
+    std::filesystem::remove(path);
+    EXPECT_EQ(rc, 0) << "spirv-val rejected the lane-id module";
 }
