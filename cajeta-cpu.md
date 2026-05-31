@@ -97,19 +97,36 @@ body is untouched. This is the same ~90% core, now spanning four backends.
   both** a SPIR-V blob registration *and* a CPU host-kernel registration in one module;
   `--xpu-emit=obj` drops a valid ELF object.
 
-### Increment 3 — threaded host driver + on-CPU SAXPY (Tier-1, the "vectorized" payoff)
-- `src/cajeta/xpu/cpu/CpuDriver.{h,cpp}` — `available()` ≡ true; a `parallel_for` over
-  the grid that calls the kernel per work-item, the work-item loop **loop-vectorized**
-  by LLVM (real SIMD for data-parallel kernels). On-CPU SAXPY + shared-free reductions.
+### Increment 3 — generic `CpuDriver` + the launch ABI (Tier-1, serial) ✅ landed 2026-05-31
+- `src/cajeta/xpu/cpu/CpuDriver.{h,cpp}` — `available()` ≡ true (the guaranteed
+  terminal of the priority chain); `launch(name, argv, gridX, blockX, …)` resolves the
+  kernel's registered launcher thunk by name and runs the grid→threads loop, calling the
+  thunk per work-item with the kernelParams `argv` (shared) + that work-item's `i32[9]`
+  coordinate vector. Buffers ARE host pointers (no alloc/transfer). On-CPU SAXPY green.
+- **The launch ABI is the measured CPU launch fork.** A CPU kernel can't be called from a
+  bare `void*`, so registration emits a uniform **launcher thunk**
+  `__cajeta_xpu_cpu_launch.<name>(void** argv, const i32* coord)` — the CPU's
+  `kernelParams` ABI, mirroring `cuLaunch`/`hipModuleLaunch` (`argv[i] → &arg_i`).
+  It's reconstructed from the kernel's `FunctionType` alone (the last `kNumCoordParams`
+  i32s are coordinates; pointer params ⇒ buffer ptr, value params ⇒ scalar), so nothing
+  new threads through the seam. The thunk pointer is what `__cajeta_xpu_register_cpu_kernel`
+  registers, giving the driver/dispatcher one signature for every kernel.
+- **Serial.** *All* parallelism — multi-core threading **and** true wave=SIMD-lane — is
+  Increment 5 (decision 2026-05-31): through an opaque function-pointer call LLVM cannot
+  auto-vectorize the work-item loop, so threading and SIMD belong together there.
 
 ### Increment 4 — the runtime dispatcher + explicit multi-target bundling
 - Priority probe (`CUDA→HIP→Vulkan→CPU`), startup-availability, cached; the precise
   "no available backend among {…}" diagnostic; `--xpu-backend=vulkan,cpu` end-to-end.
 
-### Increment 5 — true wave = SIMD lane (SPMD vectorization, ISPC-style)
-- For wave-cooperative kernels: lower the body over `<W x T>` vectors with mask
-  propagation through divergent control flow, `Wave.*` → SIMD permute/horizontal ops,
-  `Wave.width()` → W. The harder vectorization; lifts wave width from 1 to native.
+### Increment 5 — parallelism: multi-core threading + true wave = SIMD lane
+- **Multi-core threading** (moved here from Inc 3, 2026-05-31): a `parallel_for` chunking
+  the grid across cores (`std::thread`, not the runtime's cooperative fiber carrier),
+  serial fallback. The wall-clock payoff for data-parallel kernels.
+- **True wave = SIMD lane** (SPMD vectorization, ISPC-style): for wave-cooperative
+  kernels, lower the body over `<W x T>` vectors with mask propagation through divergent
+  control flow, `Wave.*` → SIMD permute/horizontal ops, `Wave.width()` → W. Lifts wave
+  width from 1 to native.
 - Probe AMX / SME matmul lowering here (CPU matrix engines, runtime-feature-gated).
 
 ### Increment 6 — workgroup barriers via work-item loop fission (POCL-style)
@@ -157,3 +174,27 @@ body is untouched. This is the same ~90% core, now spanning four backends.
   - The `emitXpuKernels` artifact/registration loop now iterates selected backends;
     single-backend behavior (and `--xpu-arch`) is preserved, multi-backend uses
     per-backend default arches.
+- **Inc 3 — landed 2026-05-31.** `CpuDriver` launches a registered kernel **by name**
+  over a grid, serial. A portable SAXPY (`Buffer<float32>` + `Thread.globalIdX()`) lowers,
+  registers, and runs correctly on the CPU end-to-end through the runtime registry.
+  - **The launcher-thunk is the measured CPU launch fork.** GPU drivers hand a flat
+    `void** kernelParams` to `cuLaunchKernel`/`hipModuleLaunchKernel`, which the hardware
+    ABI unpacks. The CPU has no such ABI — calling host code needs a concrete C signature
+    — so registration emits a per-kernel **uniform unpacker**
+    `__cajeta_xpu_cpu_launch.<name>(void** argv, const i32* coord)` and registers *it*.
+    The driver then drives one signature for every kernel. The unpacker reconstructs from
+    the kernel's `FunctionType` alone — no `KernelParam` list threaded through — so the
+    seam stayed put: the coordinate *source* (Inc 1) and the *registration shape* (Inc 2)
+    are still the only CPU forks; the launch fork lives entirely in the registration pass
+    + the trivial driver, not on `LoweringTarget`.
+  - **`argv` mirrors the CUDA/HIP `kernelParams` convention exactly** (`argv[i] → &arg_i`),
+    so host-side launch ergonomics match the GPU device tests minus the device.
+  - Serial; threading + SIMD are Inc 5 (the honest split — an opaque function-pointer call
+    isn't auto-vectorizable, so "vectorized payoff" was never reachable in Inc 3 anyway).
+  - Tests: `XpuCpuDriverTests` (by-name launch + correct SAXPY over a grid; a second
+    param shape — `+uint32 n` with an `if (i<n)` guard — proving the FunctionType-driven
+    unpacker is general; a lookup-miss returning false) + an extended `XpuCpuAotCliTests`
+    asserting the thunk is emitted and registered. The driver test exercises the **real**
+    registration ctor: it JITs the registration module, maps `__cajeta_xpu_register_cpu_kernel`
+    as an absolute symbol, runs `llvm.global_ctors`, and lets the ctor register the thunk
+    into the same registry the driver reads back.

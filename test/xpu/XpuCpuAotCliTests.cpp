@@ -84,8 +84,10 @@ TEST(XpuCpuAotCliTests, cpuBackendEmitsHostKernelAndRegistration) {
     auto llPath = findArtifact(build, ".ll");
     ASSERT_FALSE(llPath.empty()) << "no .ll written under " << build;
     std::string ir = readFile(llPath);
-    // The host kernel function (decorated) + the CPU registration call + a ctor.
+    // The host kernel function (decorated) + the uniform launcher thunk + the
+    // CPU registration call + a ctor.
     EXPECT_NE(ir.find("__cajeta_xpu_cpu.saxpy"), std::string::npos) << ir;
+    EXPECT_NE(ir.find("__cajeta_xpu_cpu_launch.saxpy"), std::string::npos) << ir;
     EXPECT_NE(ir.find("__cajeta_xpu_register_cpu_kernel"), std::string::npos) << ir;
     EXPECT_NE(ir.find("llvm.global_ctors"), std::string::npos) << ir;
     // No device-blob registration on the pure-CPU path.

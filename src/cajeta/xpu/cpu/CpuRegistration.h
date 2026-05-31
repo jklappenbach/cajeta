@@ -4,10 +4,13 @@
 //
 // Unlike the GPU registrations (Nvptx/Amdgpu/Vulkan), there is no device binary
 // to embed: a CPU kernel *is* host code. So this lowers the kernel into the host
-// module under a decorated symbol (__cajeta_xpu_cpu.<name>) and emits a global
-// ctor calling __cajeta_xpu_register_cpu_kernel(entryName, fnptr) — the CPU
-// analog of the neutral __cajeta_xpu_register_module(name, bytes, len). The
-// runtime dispatcher (Increment 4) resolves a launch to this pointer.
+// module under a decorated symbol (__cajeta_xpu_cpu.<name>), emits a uniform
+// launcher thunk (__cajeta_xpu_cpu_launch.<name>) that unpacks the kernelParams
+// argv + the per-work-item coordinate vector and calls the kernel, and emits a
+// global ctor calling __cajeta_xpu_register_cpu_kernel(entryName, &launchThunk)
+// — the CPU analog of the neutral __cajeta_xpu_register_module(name, bytes, len).
+// CpuDriver / the runtime dispatcher (Increment 4) resolves a launch to the thunk
+// pointer and drives it over the grid.
 //
 // Kernels whose body uses an unsupported construct (XPU-N01, e.g. a workgroup
 // barrier) are skipped — never throws on a per-kernel basis.
