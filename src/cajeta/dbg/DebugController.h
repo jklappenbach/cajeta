@@ -17,6 +17,7 @@
 //
 #pragma once
 
+#include <chrono>
 #include <condition_variable>
 #include <cstdint>
 #include <mutex>
@@ -45,6 +46,10 @@ namespace cajeta::dbg {
         // --- debugger thread ---
         // Block until a safepoint parks, then return what stopped.
         StopEvent waitForStop();
+        // Bounded wait: fill `out` and return true if a safepoint parks within
+        // `timeout`, else return false. Lets callers (and tests) avoid hanging
+        // when nothing ever stops.
+        bool waitForStop(StopEvent& out, std::chrono::milliseconds timeout);
         // Release the parked safepoint so the carrier thread continues.
         void resume();
 

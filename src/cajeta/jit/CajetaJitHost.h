@@ -11,8 +11,11 @@
 //
 #pragma once
 
+#include <memory>
 #include <string>
 #include <vector>
+
+#include "cajeta/dbg/DebugController.h"
 
 namespace cajeta::jit {
 
@@ -58,5 +61,51 @@ namespace cajeta::jit {
     // A developer/diagnostic verb that exercises the JIT host headlessly; the
     // full `cajeta dap` server (later) reuses runJit().
     int dispatchJitRun(int argc, const char* argv[]);
+
+    // --- Debug sessions (CP3) ---------------------------------------------
+    // A source-line breakpoint, matched against emitted safepoints by file
+    // BASENAME + line (so an absolute compiled path matches a bare file name).
+    struct Breakpoint {
+        std::string file;   // e.g. "Calc.cajeta"
+        int line = 0;
+    };
+
+    // A running debug session: the program is compiled with --debug-info,
+    // breakpoints are armed, and the entry runs on a BACKGROUND thread wired to
+    // an in-process DebugController. The caller (the DAP server, or a test)
+    // drives controller().waitForStop()/resume() from another thread, then
+    // join()s for the exit code. The session keeps the Compiler + LLJIT alive
+    // for the program's lifetime. CP4's `cajeta dap` server is built on this.
+    class JitDebugSession {
+    public:
+        struct Impl;
+        explicit JitDebugSession(std::unique_ptr<Impl> impl);
+        ~JitDebugSession();
+        JitDebugSession(const JitDebugSession&) = delete;
+        JitDebugSession& operator=(const JitDebugSession&) = delete;
+
+        // The controller driving stop/resume. Stable address for the program's
+        // lifetime. Arm/disarm + waitForStop/resume go through here.
+        cajeta::dbg::DebugController& controller();
+
+        // True once the program thread has finished.
+        bool isFinished() const;
+
+        // Join the program thread and return its exit code (an int32 entry's
+        // return value, or 0 for a void entry). Idempotent.
+        int join();
+
+    private:
+        std::unique_ptr<Impl> impl_;
+    };
+
+    // Start a debug session. Compiles `opts.sourceRoot` (debug-info forced on),
+    // arms `breakpoints`, installs the safepoint handler, and launches the
+    // entry on a background thread. Returns null on a compile/JIT failure (with
+    // a message in *error when non-null).
+    std::unique_ptr<JitDebugSession> startDebugSession(
+        const JitRunOptions& opts,
+        const std::vector<Breakpoint>& breakpoints,
+        std::string* error = nullptr);
 
 } // namespace cajeta::jit
