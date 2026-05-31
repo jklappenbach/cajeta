@@ -1,6 +1,7 @@
 package cajeta.lang.stream;
 
 import cajeta.error.Exception;
+import cajeta.threading.AtomicInt32;
 
 /**
  * Fork/join orchestrator for parallel stream terminals.
@@ -202,8 +203,7 @@ public class ParallelDriver {
             shareCount = shareCount + 1;
             si = si + 1;
         }
-        boolean[] hit = new boolean[1];
-        hit[0] = false;
+        AtomicInt32 hit = heap AtomicInt32(0);
         scope {
             int32 wi = 0;
             while (wi < shareCount) {
@@ -211,7 +211,7 @@ public class ParallelDriver {
                 wi = wi + 1;
             }
         }
-        if (hit[0]) {
+        if (hit.load() != 0) {
             return true;
         }
         Optional<T> o = source.next();
@@ -255,8 +255,7 @@ public class ParallelDriver {
             shareCount = shareCount + 1;
             si = si + 1;
         }
-        boolean[] fail = new boolean[1];
-        fail[0] = false;
+        AtomicInt32 fail = heap AtomicInt32(0);
         scope {
             int32 wi = 0;
             while (wi < shareCount) {
@@ -264,7 +263,7 @@ public class ParallelDriver {
                 wi = wi + 1;
             }
         }
-        if (fail[0]) {
+        if (fail.load() != 0) {
             return false;
         }
         Optional<T> o = source.next();
@@ -307,8 +306,7 @@ public class ParallelDriver {
             shareCount = shareCount + 1;
             si = si + 1;
         }
-        boolean[] hit = new boolean[1];
-        hit[0] = false;
+        AtomicInt32 hit = heap AtomicInt32(0);
         scope {
             int32 wi = 0;
             while (wi < shareCount) {
@@ -316,7 +314,7 @@ public class ParallelDriver {
                 wi = wi + 1;
             }
         }
-        if (hit[0]) {
+        if (hit.load() != 0) {
             return false;
         }
         Optional<T> o = source.next();
@@ -334,16 +332,21 @@ public class ParallelDriver {
      * the cooperative `hit` flag is set by a sibling, or this worker
      * finds an element satisfying `predicate` (and sets `hit` for
      * siblings). Returns 0 unconditionally — the meaningful output
-     * is the hit[0] write.
+     * is the hit.store(1) write.
+     *
+     * R8.3 audit: `hit` is an AtomicInt32 (was `boolean[1]`) so the
+     * cross-carrier reads/writes don't tear under multi-worker
+     * scheduling. The one-shot 0→1 transition is the only contended
+     * write; load() per-iteration is the cooperative bail check.
      */
-    public static async int32 findHitWorker<T>(Stream<T> share, (T) -> boolean predicate, boolean[] hit) {
+    public static async int32 findHitWorker<T>(Stream<T> share, (T) -> boolean predicate, AtomicInt32 hit) {
         Optional<T> o = share.next();
         while (o.isPresent()) {
-            if (hit[0]) {
+            if (hit.load() != 0) {
                 return 0;
             }
             if (predicate(o.get())) {
-                hit[0] = true;
+                hit.store(1);
                 return 0;
             }
             o = share.next();
@@ -355,15 +358,18 @@ public class ParallelDriver {
      * Worker for allMatch. Drains `share` until either the
      * cooperative `fail` flag is set by a sibling, or this worker
      * finds an element failing `predicate` (and sets `fail`).
+     *
+     * R8.3 audit: `fail` is an AtomicInt32 (was `boolean[1]`); same
+     * rationale as findHitWorker.
      */
-    public static async int32 findFailWorker<T>(Stream<T> share, (T) -> boolean predicate, boolean[] fail) {
+    public static async int32 findFailWorker<T>(Stream<T> share, (T) -> boolean predicate, AtomicInt32 fail) {
         Optional<T> o = share.next();
         while (o.isPresent()) {
-            if (fail[0]) {
+            if (fail.load() != 0) {
                 return 0;
             }
             if (!predicate(o.get())) {
-                fail[0] = true;
+                fail.store(1);
                 return 0;
             }
             o = share.next();
@@ -713,8 +719,7 @@ public class ParallelDriver {
             shareCount = shareCount + 1;
             si = si + 1;
         }
-        boolean[] hit = new boolean[1];
-        hit[0] = false;
+        AtomicInt32 hit = heap AtomicInt32(0);
         scope {
             int32 wi = 0;
             while (wi < shareCount) {
@@ -722,7 +727,7 @@ public class ParallelDriver {
                 wi = wi + 1;
             }
         }
-        if (hit[0]) {
+        if (hit.load() != 0) {
             return true;
         }
         Optional<T> ot = head.next();
@@ -779,8 +784,7 @@ public class ParallelDriver {
             shareCount = shareCount + 1;
             si = si + 1;
         }
-        boolean[] fail = new boolean[1];
-        fail[0] = false;
+        AtomicInt32 fail = heap AtomicInt32(0);
         scope {
             int32 wi = 0;
             while (wi < shareCount) {
@@ -788,7 +792,7 @@ public class ParallelDriver {
                 wi = wi + 1;
             }
         }
-        if (fail[0]) {
+        if (fail.load() != 0) {
             return false;
         }
         Optional<T> ot = head.next();
@@ -844,8 +848,7 @@ public class ParallelDriver {
             shareCount = shareCount + 1;
             si = si + 1;
         }
-        boolean[] hit = new boolean[1];
-        hit[0] = false;
+        AtomicInt32 hit = heap AtomicInt32(0);
         scope {
             int32 wi = 0;
             while (wi < shareCount) {
@@ -853,7 +856,7 @@ public class ParallelDriver {
                 wi = wi + 1;
             }
         }
-        if (hit[0]) {
+        if (hit.load() != 0) {
             return false;
         }
         Optional<T> ot = head.next();
@@ -874,7 +877,7 @@ public class ParallelDriver {
      * semantically to findAny — encounter order across split workers
      * isn't preserved, so the "first" in the sequential sense isn't
      * meaningful. Worker writes its hit element into the shared
-     * `result` slot and flips `hit[0]` — siblings observe and bail.
+     * `result` slot and flips `result[0]` non-null — siblings observe and bail.
      *
      * Same chain-walking shape as anyMatchParallelChain: walk
      * unwrap, reject stateful, rebuild each share via
