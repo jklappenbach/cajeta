@@ -18,8 +18,10 @@ Vulkan/SPIR-V column.
 > the CPU is a different shape — it has no hardware grid or coordinate
 > intrinsics, so its sole seam fork is the *coordinate source* (the kernel gains
 > 9 trailing `i32` coordinate params; `Thread`/`Workgroup` reads pull from those
-> — the grid→threads model), buffers are flat `addrspace(0)`, the wave is
-> width-1, and barriers are deferred (`XPU-N01`). The body walk is the same ~90%
+> — the grid→threads model), buffers are flat `addrspace(0)`, the wave is the
+> host SIMD vector (Inc 5C), and workgroup barriers run via work-item loop
+> fission (Inc 6 — split the kernel at each barrier, loop each region over the
+> block; per-block shared memory + context arrays). The body walk is the same ~90%
 > Core. Separately, the **runtime dispatcher** (in the C runtime, the sole launch
 > path for compiled programs) selects among bundled+available backends at startup
 > (`CUDA → HIP → Vulkan → CPU`) and routes launch + `Buffer<T>` device memory to

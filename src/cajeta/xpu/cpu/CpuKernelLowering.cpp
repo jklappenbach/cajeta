@@ -47,14 +47,24 @@ public:
     }
     // globalId uses the shared default: ctaid*ntid + tid.
 
-    void workgroupBarrier(llvm::IRBuilderBase&, llvm::Module&) override {
-        // A CPU workgroup barrier needs work-item loop fission (split the
-        // kernel at the barrier and loop each region over the block) — a later
-        // increment (cajeta-cpu.md Inc 6). Barrier-free kernels first.
-        throw cajeta::Exception(
-            "XPU kernel lowering: unsupported construct — workgroup barrier on "
-            "the CPU backend (work-item fission not yet implemented)",
-            "XPU-N01");
+    void workgroupBarrier(llvm::IRBuilderBase& b, llvm::Module& m) override {
+        // A CPU workgroup barrier is realized by work-item loop fission in the
+        // registration pass (cajeta-cpu.md Inc 6): this marker call delimits the
+        // regions the fission pass splits the work-item loop at. It is left
+        // impure (default memory effects), noinline, and noduplicate so the
+        // optimizer neither deletes nor clones/moves it before fission runs; the
+        // pass erases every call once it has split the regions.
+        llvm::LLVMContext& ctx = m.getContext();
+        auto* fnTy = llvm::FunctionType::get(llvm::Type::getVoidTy(ctx),
+                                             /*vararg=*/false);
+        llvm::FunctionCallee callee =
+            m.getOrInsertFunction("__cajeta_xpu_cpu_barrier", fnTy);
+        if (auto* f = llvm::dyn_cast<llvm::Function>(callee.getCallee())) {
+            f->addFnAttr(llvm::Attribute::NoInline);
+            f->addFnAttr(llvm::Attribute::NoDuplicate);
+            f->setDoesNotThrow();
+        }
+        b.CreateCall(callee, {});
     }
 
     void decorateKernel(llvm::Function*, llvm::Module&) override {

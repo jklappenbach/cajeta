@@ -4926,10 +4926,12 @@ static void* cajeta_xpu_cpu_worker(void* arg) {
 // are chunked across min(gridX, cores) worker threads (the calling thread runs
 // the last slice while the others fan out). Below a work-item threshold — or
 // with one core / one block — it runs serially, since thread fan-out costs more
-// than a small launch saves. A workgroup barrier would break this (work-items
-// must rendezvous), but barriers raise XPU-N01 on the CPU backend, so a launched
-// CPU kernel is always barrier-free and embarrassingly parallel. True
-// wave=SIMD-lane vectorization (Inc 5B) layers on top of each work-item call.
+// than a small launch saves. Workgroup barriers are safe here even though they
+// make work-items rendezvous: fission (Inc 6) realizes a barrier *within* a
+// single per-block wrapper call, and each wrapper call runs on one worker — so
+// the grid of blocks stays embarrassingly parallel (work-items of a block never
+// split across threads). True wave=SIMD-lane vectorization (Inc 5B) layers on
+// top of each work-item call.
 #ifndef CAJETA_XPU_CPU_PARALLEL_THRESHOLD
 #define CAJETA_XPU_CPU_PARALLEL_THRESHOLD 4096   /* work-items */
 #endif
