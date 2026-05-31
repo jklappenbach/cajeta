@@ -30,9 +30,10 @@ class CajetaDebugProcess(
     private val editorsProvider = CajetaDebuggerEditorsProvider()
 
     private val breakpointRegistry = BreakpointRegistry()
-    private val breakpointHandler = CajetaBreakpointHandler(breakpointRegistry) { file, lines ->
+    private val breakpointHandler = CajetaBreakpointHandler(breakpointRegistry) { file ->
         // Live updates only after the handshake; the initial set seeds launch.
-        if (launched) dapSession?.setBreakpoints(file, lines)
+        // Push the file's breakpoints with their conditions (CP6f).
+        if (launched) dapSession?.setBreakpoints(file, breakpointRegistry.breakpointsFor(file))
     }
 
     private var process: Process? = null
@@ -75,9 +76,9 @@ class CajetaDebugProcess(
             ds.start()
 
             // Seed the launch handshake from whatever breakpoints the platform
-            // registered before/at session start.
-            val initialBreakpoints = breakpointRegistry.snapshot()
-                .flatMap { (file, lines) -> lines.map { CajetaDebugSession.LineBreakpoint(file, it) } }
+            // registered before/at session start (with conditions, CP6f).
+            val initialBreakpoints = breakpointRegistry.snapshotBreakpoints()
+                .flatMap { (_, bps) -> bps }
 
             ds.launch(
                 CajetaDebugSession.LaunchParams(
@@ -89,7 +90,9 @@ class CajetaDebugProcess(
             ).thenRun {
                 launched = true
                 // Reconcile any breakpoints registered during the handshake.
-                breakpointRegistry.snapshot().forEach { (file, lines) -> ds.setBreakpoints(file, lines) }
+                breakpointRegistry.snapshotBreakpoints().forEach { (file, bps) ->
+                    ds.setBreakpoints(file, bps)
+                }
             }.exceptionally { e ->
                 log.warn("cajeta dap launch failed", e)
                 processHandler.emitOutput("launch failed: ${e.message}\n")

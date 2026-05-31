@@ -42,4 +42,35 @@ class BreakpointRegistryTest {
         assertTrue(r.remove("Nope.cajeta", 3).isEmpty())
         assertTrue(r.linesFor("Nope.cajeta").isEmpty())
     }
+
+    @Test
+    fun carriesConditionPerLine() {
+        val r = BreakpointRegistry()
+        r.add("Calc.cajeta", 6, "a == 6")
+        r.add("Calc.cajeta", 4) // unconditional
+        val bps = r.breakpointsFor("Calc.cajeta")
+        assertEquals(listOf(4, 6), bps.map { it.line })       // still sorted
+        assertEquals("", bps.first { it.line == 4 }.condition)
+        assertEquals("a == 6", bps.first { it.line == 6 }.condition)
+    }
+
+    @Test
+    fun reAddingALineUpdatesItsCondition() {
+        val r = BreakpointRegistry()
+        r.add("Calc.cajeta", 6, "a == 1")
+        r.add("Calc.cajeta", 6, "a == 2") // same line, new condition
+        val bps = r.breakpointsFor("Calc.cajeta")
+        assertEquals(1, bps.size)
+        assertEquals("a == 2", bps[0].condition)
+    }
+
+    @Test
+    fun snapshotBreakpointsIsPerFileWithConditions() {
+        val r = BreakpointRegistry()
+        r.add("A.cajeta", 1, "x > 0")
+        r.add("B.cajeta", 2)
+        val snap = r.snapshotBreakpoints()
+        assertEquals("x > 0", snap.getValue("A.cajeta").single().condition)
+        assertEquals("", snap.getValue("B.cajeta").single().condition)
+    }
 }

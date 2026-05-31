@@ -25,7 +25,10 @@ class CajetaDebugSession(private val client: DapClient) {
         val stopOnEntry: Boolean = false,
     )
 
-    data class LineBreakpoint(val file: String, val line: Int)
+    /** A line breakpoint, optionally conditional (CP6f). A blank condition is
+     *  unconditional. The condition grammar the server supports is constrained:
+     *  `<localName> <op> <literal>`, op ∈ { ==, !=, <, <=, >, >= }. */
+    data class LineBreakpoint(val file: String, val line: Int, val condition: String = "")
 
     /** Raw `stopped` event body (reason, threadId). Stack mapping is CP6d. */
     @Volatile var onStopped: ((Json) -> Unit)? = null
@@ -63,9 +66,9 @@ class CajetaDebugSession(private val client: DapClient) {
         ).thenCompose {
             client.sendRequest("launch", launchArgs(params))
         }
-        for ((file, lines) in breakpoints.groupBy { it.file }) {
+        for ((file, fileBreakpoints) in breakpoints.groupBy { it.file }) {
             chain = chain.thenCompose {
-                client.sendRequest("setBreakpoints", breakpointArgs(file, lines.map { it.line }))
+                client.sendRequest("setBreakpoints", breakpointArgs(file, fileBreakpoints))
             }
         }
         return chain
@@ -95,10 +98,17 @@ class CajetaDebugSession(private val client: DapClient) {
     /**
      * Replace the breakpoints for one source file (DAP setBreakpoints is
      * whole-file-replace). Used for live add/remove once the session is running;
-     * the initial set goes through [launch].
+     * the initial set goes through [launch]. This unconditional overload takes
+     * bare lines; the [LineBreakpoint] overload carries per-line conditions.
      */
     fun setBreakpoints(file: String, lines: List<Int>): CompletableFuture<Json> =
-        client.sendRequest("setBreakpoints", breakpointArgs(file, lines))
+        setBreakpoints(file, lines.map { LineBreakpoint(file, it) })
+
+    /** Conditional variant of [setBreakpoints]: replace [file]'s breakpoints,
+     *  each optionally carrying a condition (CP6f). */
+    @JvmName("setBreakpointsConditional")
+    fun setBreakpoints(file: String, breakpoints: List<LineBreakpoint>): CompletableFuture<Json> =
+        client.sendRequest("setBreakpoints", breakpointArgs(file, breakpoints))
 
     /** Raw stackTrace response; structured frames via [parseStackFrames]. */
     fun stackTrace(): CompletableFuture<Json> = client.sendRequest("stackTrace")
@@ -152,9 +162,15 @@ class CajetaDebugSession(private val client: DapClient) {
         "stopOnEntry" to Json.of(p.stopOnEntry),
     )
 
-    private fun breakpointArgs(file: String, lines: List<Int>): Json {
+    private fun breakpointArgs(file: String, breakpoints: List<LineBreakpoint>): Json {
         val bps = Json.arr()
-        for (line in lines) bps.add(Json.obj("line" to Json.of(line)))
+        for (bp in breakpoints) {
+            val entry = Json.obj("line" to Json.of(bp.line))
+            // Only emit a condition when present (whole-file-replace clears the
+            // server-side condition for any line sent without one).
+            if (bp.condition.isNotBlank()) entry["condition"] = Json.of(bp.condition)
+            bps.add(entry)
+        }
         return Json.obj(
             "source" to Json.obj("path" to Json.of(file)),
             "breakpoints" to bps,
