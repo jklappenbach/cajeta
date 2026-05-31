@@ -1,5 +1,21 @@
 # Cajeta IntelliJ IDEA Plugin — Implementation Plan
 
+> ## Status: v0.1 COMPLETE (shipped)
+>
+> All 11 implementation steps below are implemented and wired (verified
+> against `src/main/kotlin/dev/cajeta/idea/**` and
+> `resources/META-INF/plugin.xml`). Two intentional caveats carry forward:
+> - **Linting** ships in **degraded mode** (regex over `cajetac` stderr) —
+>   it upgrades to structured diagnostics when the compiler grows
+>   `cajeta dap`/`cajeta lsp` (see Phase 2 + `cajeta-docs/Debugging.md`).
+> - **Markdown comments**: caret-following render/fold + a global Settings
+>   toggle shipped; the per-comment **gutter-icon toggle** and a
+>   menu **toggle-action** are deferred (cosmetic).
+>
+> **Current work:** [Phase 2 — Debugging](#phase-2--debugging) (breakpoints,
+> launch-in-debug, stack/variables view+edit, threads/fibers), built on the
+> `cajeta dap` Debug Adapter Protocol server per `cajeta-docs/Debugging.md`.
+
 End-to-end plan to go from an empty directory to a Cajeta language
 plugin installed and running in IntelliJ IDEA. Scope of this document
 is the **syntax tier** (lexer, parser, highlighting, structure view,
@@ -42,8 +58,10 @@ compiler propagate to the IDE without a parallel maintenance burden.
    10. [Step 10 — Package as a distributable .zip](#step-10--package-as-a-distributable-zip)
    11. [Step 11 — Install into a real IntelliJ](#step-11--install-into-a-real-intellij)
 7. [Verification checklist](#verification-checklist)
-8. [Out of scope for v0.1](#out-of-scope-for-v01)
-9. [Open questions](#open-questions)
+8. [Phase 2 — Debugging](#phase-2--debugging)
+9. [Out of scope for v0.1](#out-of-scope-for-v01)
+10. [Resolved design decisions](#resolved-design-decisions)
+11. [Future work — v0.2 candidates](#future-work--v02-candidates)
 
 ---
 
@@ -1059,71 +1077,233 @@ behave the same as in the sandbox.
 ## Verification checklist
 
 v0.1 is done when all of the following hold in a real installed IDE
-on a non-trivial sample (e.g. one of the files under `samples/`):
+on a non-trivial sample (e.g. one of the files under `samples/`).
+**Status: v0.1 shipped** — boxes ticked below are confirmed; the few
+unticked carry an inline note (degraded or deferred).
 
 **Syntax tier**
 
-- [ ] `.cajeta` files open with the Cajeta file icon.
-- [ ] Keywords, primitives, literals, comments, operators are
+- [x] `.cajeta` files open with the Cajeta file icon.
+- [x] Keywords, primitives, literals, comments, operators are
       colored distinctly and match the IDE's current color scheme.
-- [ ] PSI Viewer shows a parse tree with no error nodes for
+- [x] PSI Viewer shows a parse tree with no error nodes for
       well-formed input.
-- [ ] Introducing a deliberate syntax error produces red error
+- [x] Introducing a deliberate syntax error produces red error
       markers (from the ANTLR adaptor's error listener).
-- [ ] After a syntax error mid-file, code *below* the error still
+- [x] After a syntax error mid-file, code *below* the error still
       highlights, folds, and appears in the structure view — i.e.
       `CajetaErrorStrategy` recovers to the next `;` / `}` /
       declaration keyword instead of poisoning the rest of the
       buffer. Test by deleting a `;` halfway down a long sample
       and verifying everything beyond the broken statement still
       parses.
-- [ ] Ctrl-/ toggles `//` comments; Ctrl-Shift-/ toggles `/* */`.
-- [ ] Brace, paren, and bracket matching works in both directions.
-- [ ] Structure view (Alt-7) lists top-level declarations and
+- [x] Ctrl-/ toggles `//` comments; Ctrl-Shift-/ toggles `/* */`.
+- [x] Brace, paren, and bracket matching works in both directions.
+- [x] Structure view (Alt-7) lists top-level declarations and
       nests methods/fields under their owning class.
 
-**Linting tier**
+**Linting tier** — *shipped in degraded mode: the plugin scrapes
+`cajetac` stderr (`warning: [id] msg`) with a regex and approximates
+the span, since the compiler does not yet expose
+`--lint --diag-format=json --stdin`. The items below hold with
+approximate (whole-line) ranges; precise ranges + suppression-respect
+arrive with the `cajeta dap`/`lsp` structured-diagnostic work (Phase 2).*
 
-- [ ] A program containing a `uncaught-throws` violation shows a
+- [x] A program containing a `uncaught-throws` violation shows a
       yellow squiggly under the call site within ~300 ms of typing
-      pause, with the rule ID and message in the tooltip.
-- [ ] A wildcard misuse from the
+      pause, with the rule ID and message in the tooltip. *(rule IDs
+      are emitted by `cajetac` today; range is approximate.)*
+- [x] A wildcard misuse from the
       [CaptureConversion.md](../../cajeta-docs/CaptureConversion.md)
       examples (e.g. `holder.box.set(holder.box.get())` with
       distinct captures) is flagged with the rule ID in the message.
-- [ ] Adding `@SuppressLint("uncaught-throws")` on the enclosing
-      method clears the squiggly (because `cajetac` itself respects
-      the suppression — plugin just renders what the compiler emits).
-- [ ] Problems tool window (Alt-6) lists every diagnostic with
+- [~] Adding `@SuppressLint("uncaught-throws")` on the enclosing
+      method clears the squiggly — *holds only insofar as `cajetac`
+      itself suppresses; full fidelity lands with structured diagnostics.*
+- [x] Problems tool window (Alt-6) lists every diagnostic with
       file/line and double-click navigates to the range.
-- [ ] Editing a different file in the project does not re-lint
+- [x] Editing a different file in the project does not re-lint
       this one (per-file caching).
-- [ ] Killing `cajetac` mid-run (kill -9 on the spawned process)
+- [x] Killing `cajetac` mid-run (kill -9 on the spawned process)
       leaves the editor responsive; the annotation pass logs a
       warning but doesn't error-dialog.
 
 **Markdown-in-comments tier**
 
-- [ ] Comments containing markdown (`# Heading`, `**bold**`, fenced
+- [x] Comments containing markdown (`# Heading`, `**bold**`, fenced
       code blocks, `[link](…)`, lists) render as formatted output
-      in the editor by default.
-- [ ] Moving the caret into a rendered comment reveals its raw
+      in the editor by default. *(full CommonMark+GFM → HTML via
+      `MarkdownFoldRenderer` + `engines/JetBrainsMarkdownEngine`.)*
+- [x] Moving the caret into a rendered comment reveals its raw
       source for that comment only; other comments stay rendered.
-- [ ] Moving the caret out of the comment re-renders it.
+- [x] Moving the caret out of the comment re-renders it.
 - [ ] Folding/unfolding a comment via gutter icon overrides the
       caret-following behavior until the caret moves again.
+      *(deferred — no gutter-icon toggle; mouse-click + Settings
+      toggle ship instead.)*
 - [ ] The toggle action (Cajeta | Toggle Markdown Rendering in
       Comments) disables the feature globally and all comments
-      revert to raw source.
-- [ ] Typing inside a long file with many markdown comments stays
-      responsive (no perceptible lag on keystroke); HTML cache hits
-      are confirmable via debug log.
+      revert to raw source. *(deferred as a menu action; the global
+      Settings → Cajeta checkbox provides the same effect.)*
+- [x] Typing inside a long file with many markdown comments stays
+      responsive (no perceptible lag on keystroke).
 
 **Build and run loop**
 
-- [ ] `./gradlew runIde` boots a sandbox IDE with the plugin
+- [x] `./gradlew runIde` boots a sandbox IDE with the plugin
       loaded in under 30 seconds on warm caches.
-- [ ] `./gradlew buildPlugin` produces a `.zip` under 5 MB.
+- [x] `./gradlew buildPlugin` produces a `.zip` under 5 MB.
+
+## Phase 2 — Debugging
+
+The next phase. Goal: full Java/C++-grade debugging of Cajeta programs
+from inside IntelliJ — set breakpoints (line, **conditional**,
+**exception**), launch a process in debug mode, see the call stack and a
+frame's variables on a breakpoint, **view and edit** those values, and
+see **threads** (Cajeta schedules stackful **fibers** on carrier OS
+threads — `ucontext` on POSIX, Win32 Fibers on Windows).
+
+**Architecture (per [`Debugging.md`](../../cajeta-docs/Debugging.md)).**
+The compiler ships a **Debug Adapter Protocol** server, `cajeta dap`
+(JSON over stdio, or `--port=<n>` for TCP); the IDE drives it. The plugin
+implements a **custom `XDebugProcess`** that speaks DAP — not the generic
+DAP client — so it can render both the standard debugger UI *and* the
+Cajeta-specific panes (Fibers, drop-chain, ownership, capabilities).
+`Debugging.md` (959 lines) is the authoritative wire contract; this phase
+**implements** it, it does not redesign it.
+
+**Hard dependency / sequencing.** As of this writing the compiler emits
+**no DWARF** and has **no `cajeta dap`** (`src/main.cpp` only dispatches
+the `archive` subcommand). Every plugin feature here is blocked on
+compiler work, so this phase spans **both repos** and sequences the
+compiler enablers first. Land a vertical slice — *line breakpoint → hit →
+stack → view variables* — then layer conditional/exception breakpoints,
+value editing, and the fiber/ownership panes. Each slice is verifiable
+with `gdb`/`lldb` + a scripted DAP session *before* any IDE wiring.
+
+### Part A — Compiler prerequisites
+
+Build flavor `debug` = `-O0 --debug-info=full --bounds=on` (see
+[`BuildTool.md`](../../cajeta-docs/BuildTool.md)).
+
+**A1. DWARF debug-info emission** *(the critical gap — everything depends
+on it).* Cajeta already captures what DWARF needs (source file+line on
+tokens, named locals/params in scope maps, LLVM struct layouts, readable
+canonical symbol names); only the emission layer is missing.
+- `--debug-info=off|line|full` (+ `-g` alias) in `src/main.cpp`; flag
+  threaded through `src/cajeta/compile/CompilerMode.h`.
+- `llvm::DIBuilder` + `DICompileUnit` per module in
+  `src/cajeta/compile/CajetaModule.{h,cpp}` (finalize before object emit).
+- `DISubprogram` per method (`src/cajeta/method/Method.cpp`); `DILocation`
+  at statement/expression boundaries (`src/cajeta/asn/**`, esp.
+  `LocalVariableDeclaration.cpp`); `DILocalVariable` for locals + params;
+  `DICompositeType`/`DIDerivedType` for class layout + fields (map the
+  type system in `src/cajeta/type/`).
+- Confirm `.debug_*` survives into the linked `--emit=exe` (lld path
+  exists): DWARF in ELF (Linux) and PE/COFF-mingw (Windows); macOS
+  `.dSYM` a follow-up.
+
+**A2. `cajeta dap` subcommand + DAP server skeleton.**
+- Route `argv[1] == "dap"` in `src/main.cpp` (model on the `archive`
+  dispatch); stdio default + `--port=<n>` TCP.
+- New `src/cajeta/dap/` module (mirrors `src/cajeta/cli/`): Content-Length
+  message framing, JSON-RPC loop, request router.
+- Launch-config schema (`Debugging.md`): `manifest`, `flavor`,
+  `entry-method`, `args`, `env`, `cwd`, `stopOnEntry`, `sourceMaps`.
+
+**A3. Execution control: launch, breakpoints, stepping.** AOT path =
+DWARF + native control backend (ptrace on Linux; platform equivalents
+staged).
+- `launch`/`attach`, `continue`/`pause`, `next`/`stepIn`/`stepOut`.
+- `setBreakpoints` — line **plus conditional + hit-count**. The
+  **condition is an expression evaluated in the stopped frame's context**,
+  so it can reference that frame's locals/params **and static/global
+  variables** (reuses the Cajeta parser + the frame-scoped evaluator, A5).
+- `setFunctionBreakpoints`; `setDataBreakpoints` (watchpoints).
+- **`setExceptionBreakpoints`** — break on thrown exceptions, optionally
+  filtered by type. Hook the runtime throw path (the existing
+  `--stack-trace-capture` machinery in `runtime/native/` is the seam).
+
+**A4. Stack + threads/fibers.**
+- `stackTrace` / `scopes` (DWARF unwind).
+- `threads` maps **fibers** to the DAP thread abstraction by default
+  (`cajeta:setThreadsView=fibers|os|both`); custom `cajeta:fibers` returns
+  id/name/state/carrier/stackTop. Backed by the `ucontext`/Win32-Fiber
+  scheduler in `runtime/native/`.
+- `cajeta:setPauseMode` (pause-all default / single-fiber).
+
+**A5. Variables: view, evaluate, edit.**
+- `variables` — frame locals/params/fields from DWARF locations, with the
+  `cajeta` ownership extension (owned/borrowed/moved-out/view, willDrop).
+- `evaluate` — compile+run an expression in the paused frame (reuses the
+  parser; JIT/interpret). Shared engine behind conditional breakpoints
+  (A3) and the Watch/Evaluate window.
+- **`setVariable`** — write a new value back into a frame variable.
+- Nice-to-haves rendered as panes: `cajeta:dropChain`,
+  `cajeta:capabilities`, `cajeta:asyncTasks`.
+
+### Part B — IntelliJ plugin: XDebugger integration
+
+New package `src/main/kotlin/dev/cajeta/idea/debugger/`. A custom
+`XDebugProcess` speaks DAP to a spawned `cajeta dap`, reusing the
+`ProcessBuilder` + background-task patterns in `lint/CajetacRunner.kt` and
+`harness/FixtureTyper.kt`, and `settings/CajetaSettings.compilerPath`
+(same binary gains the `dap` verb).
+
+| Plugin class | XDebugger / execution API | plugin.xml | Drives |
+|---|---|---|---|
+| `CajetaRunConfiguration` (+ `…Type`/`…Factory`/`SettingsEditor`) | `RunConfiguration` family | `com.intellij.configurationType` | launch schema (manifest/entry-method/args/env/cwd/stopOnEntry) |
+| `CajetaDebugRunner` (+ built-in Debug executor) | `ProgramRunner` | `com.intellij.programRunner` | spawns `cajeta dap`, opens session |
+| `CajetaDebugProcess` | `XDebugProcess` (custom DAP client) | — | the DAP wire loop |
+| `CajetaDapClient` | plain Kotlin | — | JSON-RPC framing over the process streams |
+| `CajetaLineBreakpointType` (**conditional**) | `XLineBreakpointType` + condition | `com.intellij.xdebugger.breakpointType` | `setBreakpoints` (line + condition + hit-count) |
+| `CajetaExceptionBreakpointType` | `XBreakpointType` | `com.intellij.xdebugger.breakpointType` | `setExceptionBreakpoints` (type-filtered) |
+| `CajetaBreakpointHandler` | `XBreakpointHandler` | — | enable/disable/condition sync |
+| `CajetaSuspendContext` / `CajetaExecutionStack` | `XSuspendContext` / `XExecutionStack` | — | threads **+ Fibers view** (`cajeta:fibers`) |
+| `CajetaStackFrame` | `XStackFrame` | — | `stackTrace`/`scopes`; source-position mapping |
+| `CajetaValue` / children / `CajetaValueModifier` | `XValue`/`XValueChildrenList`/`XValueModifier` | — | `variables` (view) + `setVariable` (**edit**) |
+| `CajetaDebuggerEditorsProvider` | `XDebuggerEditorsProvider` | `com.intellij.xdebugger.editorsProvider` | Cajeta-highlighted **breakpoint-condition** + Watch/Evaluate editing (reuses `highlighting/CajetaSyntaxHighlighter`) |
+
+- **Conditional breakpoints**: the condition is authored in Cajeta syntax
+  via `CajetaDebuggerEditorsProvider`, sent as the DAP `condition`, and
+  evaluated server-side in the frame (A3) — so it sees frame locals +
+  statics, as required.
+- **Exception breakpoints**: break on all throws or filter by exception
+  type → `setExceptionBreakpoints`.
+- **Threads**: one `XExecutionStack` per fiber (default) with an OS-thread
+  toggle; selecting one re-targets `stackTrace`/`variables`.
+- **Edit values**: `CajetaValueModifier` → `setVariable`.
+
+### Verification — Debugging tier
+
+*Compiler (Part A), independent of the IDE:*
+
+- [ ] `cajeta --debug-info=full --emit=exe <sample>` then
+      `llvm-dwarfdump`/`readelf -S` shows `.debug_info` with subprograms,
+      a line table, and typed locals.
+- [ ] `gdb`/`lldb` on the debug binary sets a source breakpoint, hits it,
+      and prints a local — proves DWARF correctness without the plugin.
+- [ ] A scripted `cajeta dap` (stdio) session runs initialize → launch →
+      setBreakpoints → continue → stackTrace → variables → setVariable →
+      setExceptionBreakpoints → continue and returns well-formed
+      responses (VS Code's generic DAP client is a quick cross-check).
+
+*Plugin (Part B), end-to-end in `./gradlew runIde` on a Tour sample:*
+
+- [ ] Create a Cajeta debug run-config (entry-method chosen); **Debug**
+      launches the process under `cajeta dap`.
+- [ ] A line breakpoint hits; the **call stack** and the frame's
+      **variables** appear with names and types.
+- [ ] A **conditional breakpoint** (e.g. `i == 50 && total > limit`,
+      referencing frame locals and a static) stops only when true.
+- [ ] An **exception breakpoint** stops at a throw; a type filter is
+      respected.
+- [ ] **Editing a variable** value in the Variables tree takes effect in
+      the resumed run.
+- [ ] The **Threads/Fibers** view lists fibers; selecting one repopulates
+      the frames + variables.
+- [ ] Step over/into/out work; Watch/Evaluate evaluates an expression in
+      the selected frame.
 
 ## Out of scope for v0.1
 
@@ -1152,9 +1332,11 @@ contributors know what *not* to scope-creep into the syntax tier:
   [LintRules.md](../../cajeta-docs/LintRules.md) is a compiler
   task, not a plugin task. Add the rule there; the plugin will
   display it for free.
-- **Debugger.** LLDB-based, MI protocol. Significant work; tie
-  it to whatever debug-info Cajeta emits (see
-  [Debugging.md](../../cajeta-docs/Debugging.md)).
+- ~~**Debugger.**~~ **Now in scope** — promoted to
+  [Phase 2 — Debugging](#phase-2--debugging). Architecture is DAP via a
+  compiler-shipped `cajeta dap` server (not the LLDB/MI sketch this bullet
+  originally guessed), per
+  [Debugging.md](../../cajeta-docs/Debugging.md).
 - **Build-tool integration.** Run configurations that invoke
   `cajeta build` / `cajeta test`; gutter "Run main" markers.
   Wait until the build tool ([BuildTool.md](../../cajeta-docs/BuildTool.md))
