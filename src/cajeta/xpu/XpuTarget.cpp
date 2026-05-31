@@ -7,6 +7,7 @@
 #include "nvidia/NvptxRegistration.h"
 #include "amd/AmdgpuRegistration.h"
 #include "vulkan/VulkanRegistration.h"
+#include "cpu/CpuRegistration.h"
 
 namespace cajeta {
 namespace xpu {
@@ -22,6 +23,8 @@ namespace xpu {
                 return amd::emitKernelRegistration(kernels, hostModule, arch);
             case Backend::Spirv:
                 return vulkan::emitKernelRegistration(kernels, hostModule, arch);
+            case Backend::Cpu:
+                return cpu::emitKernelRegistration(kernels, hostModule, arch);
         }
         return 0;
     }
