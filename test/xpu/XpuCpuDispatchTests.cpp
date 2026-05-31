@@ -73,6 +73,45 @@ const char* kSaxpyHostSource =
     "    }\n"
     "}\n";
 
+// A grid large enough (65536 work-items > the runtime's parallel threshold) to
+// exercise the multi-core fan-out path (Inc 5A). RAII Buffers. y[i] = 2*1 + 2 = 4
+// -> sum = 4 * 65536 = 262144.
+const char* kSaxpyLargeSource =
+    "package test;\n"
+    "import cajeta.xpu.core.Buffer;\n"
+    "import cajeta.xpu.core.Stream;\n"
+    "import cajeta.xpu.core.Thread;\n"
+    "public class Saxpy {\n"
+    "    @Kernel\n"
+    "    public static void saxpy(Buffer<float32> y, Buffer<float32> x,\n"
+    "                             float32 a, uint32 n) {\n"
+    "        uint32 i = Thread.globalIdX();\n"
+    "        if (i < n) { y[i] = a * x[i] + y[i]; }\n"
+    "    }\n"
+    "    public static float32 run() {\n"
+    "        uint32 n = 65536;\n"
+    "        float32[] hx = new float32[n];\n"
+    "        float32[] hy = new float32[n];\n"
+    "        for (uint32 i = 0; i < n; i = i + 1) {\n"
+    "            hx[i] = 1.0f;\n"
+    "            hy[i] = 2.0f;\n"
+    "        }\n"
+    "        Buffer<float32> x = heap Buffer<float32>(n);\n"
+    "        Buffer<float32> y = heap Buffer<float32>(n);\n"
+    "        x.upload(hx);\n"
+    "        y.upload(hy);\n"
+    "        Stream s = Stream.current();\n"
+    "        saxpy.launch(s, grid: [(n + 63) / 64], block: [64])(y, x, 2.0f, n);\n"
+    "        s.sync();\n"
+    "        y.download(hy);\n"
+    "        float32 sum = 0.0f;\n"
+    "        for (uint32 i = 0; i < n; i = i + 1) {\n"
+    "            sum = sum + hy[i];\n"
+    "        }\n"
+    "        return sum;\n"
+    "    }\n"
+    "}\n";
+
 CajetaJit::Options cpuOptions() {
     CajetaJit::Options o;
     o.xpuBackends = {cajeta::xpu::Backend::Cpu};
@@ -80,6 +119,16 @@ CajetaJit::Options cpuOptions() {
 }
 
 } // namespace
+
+// A large grid drives the runtime's multi-core fan-out (Inc 5A); the result must
+// match the serial computation exactly — every work-item ran once, none twice.
+TEST(XpuCpuDispatchTests, saxpyLargeGridParallelOnCpu) {
+    auto jit = CajetaJit::compile(kSaxpyLargeSource, "test.Saxpy", cpuOptions());
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<float (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    EXPECT_FLOAT_EQ(fn(), 262144.0f);   // 4 * 65536
+}
 
 // The headline: a host-source @Kernel program compiled --xpu-backend=cpu runs on
 // the CPU with no GPU, through the real dispatcher + launcher-thunk grid loop.
