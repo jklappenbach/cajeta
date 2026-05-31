@@ -368,6 +368,10 @@ set(CAJETA_STDLIB_DIRS
         ${CAJETA_STDLIB_ROOT}/cajeta/lang
         ${CAJETA_STDLIB_ROOT}/cajeta/lang/stream
         ${CAJETA_STDLIB_ROOT}/cajeta/error
+        # cajeta/time before cajeta/threading: R9.3's withTimeout (a stdlib
+        # function in cajeta.threading) takes a Duration parameter, so the
+        # Duration class has to be loadable when threading parses.
+        ${CAJETA_STDLIB_ROOT}/cajeta/time
         # Threading sync primitives (Lock/LockGuard today; Mutex/RwLock/
         # ConditionVariable/Channel/Semaphore land in later R7 sub-phases).
         # After cajeta/lang (needs Object) and cajeta/error (future
