@@ -76,7 +76,15 @@ class CajetaDebugSession(private val client: DapClient) {
     /** DAP `continue` — resume the parked program. */
     fun resume(): CompletableFuture<Json> = client.sendRequest("continue")
 
-    /** Raw stackTrace response; structured mapping to XStackFrame is CP6d. */
+    /**
+     * Replace the breakpoints for one source file (DAP setBreakpoints is
+     * whole-file-replace). Used for live add/remove once the session is running;
+     * the initial set goes through [launch].
+     */
+    fun setBreakpoints(file: String, lines: List<Int>): CompletableFuture<Json> =
+        client.sendRequest("setBreakpoints", breakpointArgs(file, lines))
+
+    /** Raw stackTrace response; structured frames via [parseStackFrames]. */
     fun stackTrace(): CompletableFuture<Json> = client.sendRequest("stackTrace")
 
     /** DAP `disconnect`, then tear down the client transport. */
@@ -99,4 +107,40 @@ class CajetaDebugSession(private val client: DapClient) {
             "breakpoints" to bps,
         )
     }
+
+    companion object {
+        /**
+         * Map a DAP stackTrace response body to flat frame records. Lines are
+         * 1-based as DAP delivers them; path is the source's absolute path
+         * (falling back to its name). Pure — unit-tested without a process.
+         */
+        fun parseStackFrames(stackTraceResponse: Json): List<DapStackFrame> {
+            val frames = stackTraceResponse.opt("body")?.opt("stackFrames") ?: return emptyList()
+            val out = mutableListOf<DapStackFrame>()
+            for (i in 0 until frames.size) {
+                val f = frames[i]
+                val source = f.opt("source")
+                out.add(
+                    DapStackFrame(
+                        id = f.opt("id")?.asInt() ?: i,
+                        name = f.opt("name")?.asString() ?: "<frame>",
+                        path = source?.opt("path")?.asString()
+                            ?: source?.opt("name")?.asString() ?: "",
+                        line = f.opt("line")?.asInt() ?: 0,
+                        column = f.opt("column")?.asInt() ?: 1,
+                    ),
+                )
+            }
+            return out
+        }
+    }
 }
+
+/** A single DAP stack frame, decoded for the XStackFrame mapping layer. */
+data class DapStackFrame(
+    val id: Int,
+    val name: String,
+    val path: String,
+    val line: Int,
+    val column: Int,
+)
