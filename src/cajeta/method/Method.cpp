@@ -809,7 +809,14 @@ namespace cajeta {
                 returnIsReferenceTyped = true;
             }
         }
-        if (staticMethod && !returnsOwnership
+        // sret value-returning methods aren't borrow-returning — the result
+        // is constructed directly into the caller's slot by copy (M3
+        // NRVO), so there's no parameter lifetime to inherit. Exempt them
+        // from the multi-parameter borrow-return check (otherwise e.g.
+        // `Tasks.withTimeout(Duration, Task<R>) -> Optional<R>` is
+        // wrongly rejected even though every return is `return stack
+        // Optional<R>(...)`).
+        if (staticMethod && !returnsOwnership && !returnsStackValue()
                 && returnIsReferenceTyped
                 && parameterList.size() > 1) {
             char buf[256];
