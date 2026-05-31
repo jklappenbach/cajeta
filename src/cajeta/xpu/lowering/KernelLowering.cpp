@@ -543,9 +543,14 @@ private:
         }
         if (auto cast = std::dynamic_pointer_cast<CastExpression>(expr)) {
             llvm::Value* v = lowerExpr(exprChild(cast, 0));
-            llvm::Type* dst = deviceScalarType(cast->getResolvedType(), ctx);
+            // Prefer the declared target type; resolvedType may be unset since
+            // the device lowerer walks the kernel AST without running
+            // resolveTypes (the host stub body is what gets resolved).
+            CajetaTypePtr ct = cast->getResolvedType();
+            if (!ct) ct = cast->getDestType();
+            llvm::Type* dst = deviceScalarType(ct, ctx);
             if (!dst) unsupported("cast to non-scalar type");
-            return castNumeric(v, dst, typeIsSigned(cast->getResolvedType()),
+            return castNumeric(v, dst, typeIsSigned(ct),
                                exprSigned(exprChild(cast, 0)));
         }
         unsupported("expression form in kernel body");

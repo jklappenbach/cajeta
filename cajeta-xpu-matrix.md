@@ -192,23 +192,30 @@ why.
 
 ---
 
-## 8. Wave / subgroup ops (the later `@Wave` feature — not yet built on any backend)
+## 8. Wave / subgroup ops (the `@Wave` feature — readlane + ballot built & measured)
 
-Deferred on NVIDIA too; listed here because wave ops are the archetypal
-"hardware on one vendor, software-equivalent on another" feature and the cleanest
-*future* stress test of the seam.
+Wave ops are the archetypal variance-shaped feature and the headline test of the
+seam — and the seam held. `Wave.shuffleSync` (readlane / shuffle-by-index) and
+`Wave.ballotSync` lower through the shared AST walk with only three new
+`LoweringTarget` methods (`waveWidth`/`waveShuffle`/`waveBallot`) forking. Built
+2026-05-30; emit-verified on all three backends, run on-device on AMD + Vulkan.
 
 | Feature | Core | NVIDIA | AMD | Vulkan |
 |---------|------|--------|-----|--------|
-| Wave width | `@Wave(width: N)` | 32 (warp) | 64 (wavefront) — *trait-gated* | implementation-defined; query `VkPhysicalDeviceSubgroupProperties` |
-| Shuffle / permute | — | `native` · `llvm.nvvm.shfl.sync.*` (hw) | `native` · `llvm.amdgcn.ds.bpermute` / `ds.swizzle` (hw) | `native` · `VK_KHR_shader_subgroup` (`OpGroupNonUniformShuffle`, hw) |
-| Ballot / reduce / scan | — | `native` (hw) | `native` (hw) | `native` · subgroup arithmetic/ballot ops (hw) |
+| Wave width | `Wave.width()` → i32 | `native` · `read.ptx.sreg.warpsize` (32) | `native` · `amdgcn.wavefrontsize` (32/64) | `native` · `spv.wave.get_lane_count` (queried) |
+| Shuffle / readlane | `Wave.shuffleSync(v, lane)` | `native` · `nvvm.shfl.sync.idx.i32` | `native` · `amdgcn.readlane` | `native` · `spv.wave.readlane` (→ `OpGroupNonUniformShuffle`) |
+| Ballot | `Wave.ballotSync(pred)` → i64 | `native` · `nvvm.vote.ballot.sync` (i32→i64) | `native` · `amdgcn.ballot.i32` (i32→i64) | `native` · `spv.wave.ballot` (`<4 x i32>`, low 64 → i64) |
+| Reduce / scan | — | `redux.sync` (sm_80+) or shuffle-sequence | DPP / shuffle-sequence | `native` · `spv.wave.reduce_*` *(single intrinsic)* | 
 
-**Reading:** wave ops are native on all three at the hardware level — the
-divergence is *width* (32 vs 64 vs queried), which is exactly why the design
-guardrail is to **trait-gate** wave width rather than assume 32. Build them only
-once the seam exists (it does); they are the first variance-*shaped* feature that
-will exercise it.
+**Reading:** wave ops are native on all three — width is the only real divergence
+(32 / 32-or-64 / queried), each surfaced by `waveWidth`. Two measured nuances:
+**ballot shape forks** (NV i32, AMD i32 wave32, Vulkan `<4 x i32>` 128-bit — the
+Core API normalizes to i64); and **reduce inverts the usual comprehensiveness**
+— it's a *single* intrinsic on Vulkan but a shuffle/DPP sequence on NV/AMD (the
+opposite of the "NVIDIA most comprehensive" pattern). The first cut ships
+readlane + ballot; reduce is the natural next increment. Tests:
+`XpuWaveEmitTests` (3 backends + `spirv-val`), `XpuWaveDeviceTests` (AMD + Vulkan
+on-device).
 
 ---
 
