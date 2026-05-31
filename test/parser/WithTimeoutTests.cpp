@@ -53,6 +53,57 @@ TEST(WithTimeoutTests, fastTaskReturnsPresentValue) {
     EXPECT_EQ(runI32(src), 1007);
 }
 
+// Local-module regression for #47: a user-declared templated method
+// whose method-level T is reachable only through a Task<R> formal.
+// Before the fix Task<R> didn't expose its element type via the
+// standard CajetaClass typeArguments interface, so the unifier's
+// recursive walk into class-template formals never bound R and the
+// MCE silently lowered to null. Self-contained (no stdlib types),
+// pinning that the fix works in the local-module case too.
+TEST(WithTimeoutTests, localTemplatedTaskParamInferred) {
+    auto src =
+        "package test;\n"
+        "public final class D {\n"
+        "    public static async int32 compute() { return 9; }\n"
+        "    public static int32 unwrapSize<R>(Task<R> t) {\n"
+        "        return 7;\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        Task<int32> t = spawn compute();\n"
+        "        return D.unwrapSize(t);\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 7);
+}
+
+// Generic form — Tasks.withTimeout<R> with R inferred from Task<int32>.
+// Pins that a templated stdlib method whose method-level T is reachable
+// only through a Task<R> formal binds correctly via implicit inference.
+// Task is the compiler-synthesized class; its element-type slot has to
+// be exposed via the standard CajetaClass typeArguments so the
+// unifier's recursive walk fires (task #47). Before the fix the call
+// dispatched against the wrong vtable and SIGSEGV'd at run.
+TEST(WithTimeoutTests, genericFormInt32) {
+    auto src =
+        "package test;\n"
+        "import cajeta.lang.Optional;\n"
+        "import cajeta.time.Duration;\n"
+        "import cajeta.threading.Tasks;\n"
+        "public final class D {\n"
+        "    public static async int32 compute() { return 9; }\n"
+        "    public static int32 run() {\n"
+        "        Duration d = Duration.ofSeconds(60);\n"
+        "        Task<int32> t = spawn compute();\n"
+        "        Optional<int32> r = Tasks.withTimeout(d, t);\n"
+        "        if (r.isPresent()) {\n"
+        "            return 1000 + r.get();\n"
+        "        }\n"
+        "        return 0;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 1009);
+}
+
 // Body burns enough CPU to exceed a 1-nanosecond deadline. Because v1
 // awaits the body regardless, withTimeout still waits for the loop to
 // finish — but reports Optional.empty since the deadline expired
