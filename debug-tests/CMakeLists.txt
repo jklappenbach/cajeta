@@ -19,10 +19,13 @@ file(GLOB_RECURSE DEBUG_TEST_SOURCES CONFIGURE_DEPENDS LIST_DIRECTORIES false
 
 add_executable(${BINARY} ${DEBUG_TEST_SOURCES})
 
+# Own main() (debug-tests/main.cpp) instead of GTest::gtest_main — it _exit()s
+# with the gtest status to skip a fragile LLVM/runtime static-destructor
+# teardown after many in-process JIT runs (which can exit non-zero after every
+# test has passed). See debug-tests/main.cpp.
 target_link_libraries(${BINARY} PRIVATE
         ${CMAKE_PROJECT_NAME}_lib
-        GTest::gtest
-        GTest::gtest_main)
+        GTest::gtest)
 
 target_include_directories(${BINARY} PRIVATE ${PROJECT_SOURCE_DIR}/src)
 
