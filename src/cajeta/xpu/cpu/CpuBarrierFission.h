@@ -28,6 +28,7 @@ namespace llvm {
     class Function;
     class Module;
     class Value;
+    class BranchInst;
 }
 
 namespace cajeta {
@@ -40,12 +41,17 @@ namespace cpu {
     // Build `wrapper`'s body from the per-work-item kernel `linked` by work-item
     // loop fission. `nReal` is the count of real (non-coordinate) params shared
     // by both; `ctaid`/`ntid` are the wrapper's 3 block-coordinate args each.
+    // If `workItemLatches` is non-null, the back-edge branch of every generated
+    // region work-item loop is appended to it — the caller forces VF=W on them to
+    // vectorize wave ops inside a fissioned kernel (wave + barrier composition).
     // Throws cajeta::Exception("XPU-N02") on an unsupported construct.
     void fissionBarrierKernel(llvm::Function* linked, llvm::Function* wrapper,
                               unsigned nReal,
                               const std::vector<llvm::Value*>& ctaid,
                               const std::vector<llvm::Value*>& ntid,
-                              llvm::Module& hostModule);
+                              llvm::Module& hostModule,
+                              std::vector<llvm::BranchInst*>* workItemLatches
+                                  = nullptr);
 
 } // namespace cpu
 } // namespace xpu

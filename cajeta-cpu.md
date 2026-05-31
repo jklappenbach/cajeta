@@ -264,7 +264,8 @@ diagnostic for an *unsupported* barrier shape is `XPU-N02`.
   miscompile):** a barrier under work-item-divergent control flow (post-dominance check — the
   barrier must post-dominate its level's entry); a barrier in a loop with a `tid`-dependent
   trip count; a barrier in a nested loop (one level — *lifted in Inc 8*); dynamic-sized shared
-  memory; wave ops + barriers in one kernel (the 5C forced-VF path and fission don't yet compose).
+  memory; wave ops + barriers in one kernel (the 5C forced-VF path and fission — *composed in
+  Inc 9*).
 - **Verified:** `XpuCpuBarrierExecTests` — two straight-line regions run the whole block;
   per-block shared memory staged + read cross-lane; the **canonical tree reduction**
   (`in[i]=i`, 256 block ⇒ `out[0]=32640`) with a barrier inside the uniform loop; 32 blocks ×
@@ -338,8 +339,36 @@ carry needs no extra machinery.
   barrier-loop — the `region·barrier·region·barrier·subloop` sequence at one level), and the
   guardrail `nestedTidDependentTripCountFallsBack` (a tid-dependent inner trip count falls back,
   not miscompiles). All prior suites unchanged.
-- **Still out of scope:** composing wave ops with barriers in one kernel (the 5C forced-VF /
-  variant path and fission remain disjoint).
+- **Still out of scope (after Inc 8):** ~~composing wave ops with barriers~~ (Inc 9 ✅).
+
+### Increment 9 — wave ops + barriers composed in one kernel ✅ (landed 2026-05-31)
+Lifts the last barrier scope cut: a kernel may use `Wave.*` (5C) **and** `Barrier.workgroup()`
+(Inc 6) together — the canonical **two-level reduction** (intra-wave SIMD reduce → shared-memory
+staging → barrier → cross-wave combine) now runs on the CPU. The two mechanisms were kept
+disjoint because 5C forces a vector width and attaches VFABI variants to the *one* work-item
+loop, while fission produces *many*. The insight: each fission region is itself a clean counted
+work-item loop, so the 5C machinery applies **per region** unchanged.
+- **The composition.** `fissionBarrierKernel` now reports the back-edge branch of every region
+  work-item loop (`workItemLatches`). The registration pass, after fission, runs the same 5C
+  setup it uses for a barrier-free wave kernel — attach the SIMD variants (`setupWaveVariants`),
+  rewrite `width()` to the constant W, and `forceLoopVectorWidth(W)` on **each** region latch —
+  then vectorizes and folds the substituted variants (`foldWaveVariants`). A wave op inside a
+  region becomes W SIMD lanes; the barriers still delimit regions. The 5C variant/fold code was
+  extracted into shared helpers so both paths use one implementation. The fission `XPU-N02`
+  guardrail that rejected wave+barrier is removed.
+- **Semantics.** On the CPU the wave = the W SIMD lanes of one vectorized iteration; a fission
+  region loop vectorized at W partitions work-items [0,W),[W,2W),… — the *same* partition in
+  every region, so wave membership is consistent across barriers. Forcing VF=W on every region
+  loop is safe (the block width is uniform); only wave-bearing regions carry the inherited 5C
+  assumption that the block size is a multiple of W (a partial tail wave would run the scalar
+  width-1 stub in the loop's scalar epilogue — same limitation as the barrier-free 5C path).
+- **Verified:** `XpuCpuBarrierExecTests.waveReduceWithBarrierBlockSum` (two-level block reduction,
+  `out[0]=32640` — width-independent, and distinguishes a real wave reduce from the width-1 stub,
+  which would give 1920) and `waveReduceWithBarrierMembership` (`in[t]=1 ⇒ out[t]==W` for every
+  lane against a probed width — per-wave membership, not just an associative total). All 5C wave,
+  barrier, and GPU suites unchanged.
+- **Barrier fission scope cuts are now fully lifted** — multiple barriers per loop (Inc 7),
+  register accumulator across the back-edge (Inc 7), nested loops (Inc 8), wave + barrier (Inc 9).
 
 ### Docs
 - This file (the log). The matrix gains a **CPU column** (today: emit + grid→threads

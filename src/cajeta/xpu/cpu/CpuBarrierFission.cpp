@@ -103,7 +103,8 @@ void fissionBarrierKernel(llvm::Function* linked, llvm::Function* wrapper,
                           unsigned nReal,
                           const std::vector<llvm::Value*>& ctaid,
                           const std::vector<llvm::Value*>& ntid,
-                          llvm::Module& hostModule) {
+                          llvm::Module& hostModule,
+                          std::vector<llvm::BranchInst*>* workItemLatches) {
     llvm::LLVMContext& ctx = wrapper->getContext();
     llvm::Type* i32 = llvm::Type::getInt32Ty(ctx);
     llvm::Value* ntidX = ntid[0];
@@ -198,15 +199,10 @@ void fissionBarrierKernel(llvm::Function* linked, llvm::Function* wrapper,
             unsupported("a barrier under work-item-divergent control flow "
                         "(all work-items must reach every barrier)");
     }
-    // Wave ops and barriers don't yet compose (the 5C forced-VF/variant path and
-    // fission are separate). Keep them disjoint.
-    for (auto& bb : *wrapper)
-        for (auto& in : bb)
-            if (auto* c = llvm::dyn_cast<llvm::CallInst>(&in))
-                if (auto* cf = c->getCalledFunction())
-                    if (cf->getName().starts_with("__cajeta_xpu_wave_"))
-                        unsupported("wave ops together with a barrier in one "
-                                    "kernel");
+    // Wave ops compose with barriers: fission produces clean counted work-item
+    // loops, and the caller forces VF=W + attaches the wave SIMD variants on each
+    // (`workItemLatches`), so a wave op inside a region becomes W SIMD lanes while
+    // the barriers delimit regions (Inc 9). Nothing to reject here.
 
     // --- 5. Per-block shared memory -----------------------------------------
     // A `Shared<T>` array lowers to one module-level addrspace(3) global — one
@@ -395,7 +391,8 @@ void fissionBarrierKernel(llvm::Function* linked, llvm::Function* wrapper,
         llvm::IRBuilder<> lb(latch);
         tid->addIncoming(
             lb.CreateAdd(tid, llvm::ConstantInt::get(i32, 1), "wi.next"), latch);
-        lb.CreateBr(head);
+        auto* latchBr = lb.CreateBr(head);
+        if (workItemLatches) workItemLatches->push_back(latchBr);
 
         // region exit edge(s) (to doneTarget, or a ret) → latch
         for (llvm::BasicBlock* bb : J.blocks) {
