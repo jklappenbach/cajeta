@@ -1043,6 +1043,18 @@ static pthread_t __cajeta_timer_thread;
 static int __cajeta_timer_started = 0;
 static int __cajeta_timer_shutdown_requested = 0;
 
+// R9.4 reactor state (declared above task_shutdown for the same reason as
+// the timer state). The waiter struct + reactor loop body live below
+// alongside __cajeta_io_wait.
+struct cajeta_io_waiter;
+static struct cajeta_io_waiter* __cajeta_reactor_waiters = NULL;
+static pthread_t __cajeta_reactor_thread;
+static int __cajeta_reactor_started = 0;
+static int __cajeta_reactor_shutdown_requested = 0;
+#if defined(__linux__)
+static int __cajeta_reactor_epfd = -1;
+#endif
+
 // R8.3 — multi-carrier pool, flag-gated N=1.
 //
 // Each carrier owns one Chase-Lev deque + a deque_mutex that protects
@@ -1358,12 +1370,23 @@ void __cajeta_task_shutdown(void) {
         __cajeta_timer_shutdown_requested = 1;
         pthread_cond_signal(&__cajeta_timer_cond);
     }
+    // R9.4 — same for the I/O reactor. It uses epoll_wait with a 1s
+    // poll timeout, so the shutdown flag is observed within ~1s without
+    // any explicit wake. Closing the epfd from outside would race the
+    // reactor's epoll_wait return, so we let the poll timeout do it.
+    int reactor_was_started = __cajeta_reactor_started;
+    if (reactor_was_started) {
+        __cajeta_reactor_shutdown_requested = 1;
+    }
     pthread_mutex_unlock(&__cajeta_task_mutex);
     for (int i = 0; i < n; ++i) {
         pthread_join(__cajeta_carriers[i].thread, NULL);
     }
     if (timer_was_started) {
         pthread_join(__cajeta_timer_thread, NULL);
+    }
+    if (reactor_was_started) {
+        pthread_join(__cajeta_reactor_thread, NULL);
     }
     // Reset state so a subsequent __cajeta_task_run (e.g. the next test's
     // first spawn) starts a fresh pool with clean queues. The deque per
@@ -1380,6 +1403,17 @@ void __cajeta_task_shutdown(void) {
         __cajeta_timer_started = 0;
         __cajeta_timer_shutdown_requested = 0;
         __cajeta_timer_head = NULL;
+    }
+    if (reactor_was_started) {
+        __cajeta_reactor_started = 0;
+        __cajeta_reactor_shutdown_requested = 0;
+        __cajeta_reactor_waiters = NULL;
+#if defined(__linux__)
+        if (__cajeta_reactor_epfd >= 0) {
+            close(__cajeta_reactor_epfd);
+            __cajeta_reactor_epfd = -1;
+        }
+#endif
     }
     pthread_mutex_unlock(&__cajeta_task_mutex);
 }
@@ -1746,6 +1780,229 @@ int32_t __cajeta_task_wait_timeout(int32_t* done_addr, int64_t deadline_ns) {
 int64_t __cajeta_currentTimeNanos(void) {
     return __cajeta_now_ns();
 }
+
+// --- R9.4 — I/O reactor / netpoller -----------------------------------------
+//
+// Goal: park a fiber on file-descriptor readiness without freezing the
+// carrier OS thread. The intrinsic __cajeta_io_wait(fd, events_mask) blocks
+// the calling fiber until any of the requested events fires on `fd`, then
+// returns 1; non-fiber callers fall through to a direct blocking
+// epoll_wait so the surface API is uniform across both contexts.
+//
+// Mechanism: a single epoll fd owned by a dedicated reactor thread.
+// __cajeta_io_wait registers (fd, requested events, current fiber) with
+// the reactor and parks. The reactor's epoll_wait loop wakes, finds the
+// matching waiter(s), detaches each fiber from __cajeta_parked_head, and
+// republishes via __cajeta_publish_ready. EPOLLONESHOT ensures each fd
+// auto-cleans from epoll after firing; the per-call waiter struct lives
+// on the heap (single per fiber, multiple fibers may wait on different
+// fds) and is freed by the wake path.
+//
+// v1 limitations:
+//   - Linux only. macOS (kqueue) and Windows (IOCP) are stubbed; the
+//     intrinsic returns -1 there.
+//   - Each io_wait call sets up its own epoll registration; long-lived
+//     persistent registrations (the standard netpoller pattern for high
+//     fd counts) come when a real consumer surfaces.
+//   - No deadline parameter v1. Deadlines compose with the R9.1 timer —
+//     a withIoTimeout(d, fd, events) helper at the cajeta level can layer
+//     both. Deferred until a use case lands.
+//   - One waiter per fd in v1. Two fibers waiting on the same fd would
+//     have only one notified (whichever the epoll_ctl_add saw second
+//     would EEXIST and we degrade to MOD). Real netpoller semantics
+//     (separate read/write waiter queues per fd) lands later.
+
+#if defined(__linux__)
+#  include <sys/epoll.h>
+#  include <sys/eventfd.h>
+#endif
+
+#define CAJETA_IO_READ  1
+#define CAJETA_IO_WRITE 2
+
+struct cajeta_io_waiter {
+    int fd;
+    int events;
+    struct cajeta_fiber* fiber;
+    struct cajeta_io_waiter* next;
+};
+
+#if defined(__linux__)
+
+static int __cajeta_io_events_to_epoll(int events) {
+    int e = 0;
+    if (events & CAJETA_IO_READ)  e |= EPOLLIN;
+    if (events & CAJETA_IO_WRITE) e |= EPOLLOUT;
+    return e | EPOLLONESHOT;
+}
+
+// Reactor thread main loop. Polls epoll_wait with a 1-second timeout so
+// the shutdown flag is observed even when no I/O is in flight. On each
+// ready event, walks the waiter list under task_mutex, detaches matched
+// fibers from __cajeta_parked_head, and publishes them.
+static void* __cajeta_reactor_loop(void* arg) {
+    (void) arg;
+    for (;;) {
+        if (__cajeta_reactor_shutdown_requested) return NULL;
+        struct epoll_event ep[64];
+        int n = epoll_wait(__cajeta_reactor_epfd, ep, 64, 1000);
+        if (n < 0) {
+            if (errno == EINTR) continue;
+            return NULL;
+        }
+        if (n == 0) continue;
+        struct cajeta_fiber* to_publish = NULL;
+        pthread_mutex_lock(&__cajeta_task_mutex);
+        for (int i = 0; i < n; ++i) {
+            int fd = ep[i].data.fd;
+            struct cajeta_io_waiter** p = &__cajeta_reactor_waiters;
+            while (*p) {
+                if ((*p)->fd == fd) {
+                    struct cajeta_io_waiter* w = *p;
+                    *p = w->next;
+                    // The fd auto-removed itself from epoll via
+                    // EPOLLONESHOT; just need to detach + publish the
+                    // fiber.
+                    if (__cajeta_parked_remove_locked(w->fiber)) {
+                        w->fiber->next = to_publish;
+                        to_publish = w->fiber;
+                    }
+                    free(w);
+                } else {
+                    p = &(*p)->next;
+                }
+            }
+        }
+        pthread_mutex_unlock(&__cajeta_task_mutex);
+        while (to_publish) {
+            struct cajeta_fiber* next = to_publish->next;
+            __cajeta_publish_ready(to_publish);
+            to_publish = next;
+        }
+    }
+}
+
+// Lazy-start the reactor on first registration. Caller holds task_mutex.
+static void __cajeta_reactor_ensure_started_locked(void) {
+    if (__cajeta_reactor_started) return;
+    __cajeta_reactor_epfd = epoll_create1(EPOLL_CLOEXEC);
+    if (__cajeta_reactor_epfd < 0) {
+        fprintf(stderr, "cajeta: epoll_create1 failed: %d\n", errno);
+        return;
+    }
+    __cajeta_reactor_started = 1;
+    pthread_create(&__cajeta_reactor_thread, NULL,
+                    __cajeta_reactor_loop, NULL);
+}
+
+// Cancel a waiter (clear the registration) on the error/cleanup path.
+// Caller holds task_mutex; entry must NOT have been published yet.
+static void __cajeta_reactor_cancel_locked(struct cajeta_io_waiter* w) {
+    struct cajeta_io_waiter** p = &__cajeta_reactor_waiters;
+    while (*p) {
+        if (*p == w) { *p = w->next; break; }
+        p = &(*p)->next;
+    }
+    epoll_ctl(__cajeta_reactor_epfd, EPOLL_CTL_DEL, w->fd, NULL);
+}
+
+int32_t __cajeta_io_wait(int32_t fd, int32_t events) {
+    if (!__cajeta_current_fiber) {
+        // Non-fiber caller: skip the reactor and just do a direct
+        // blocking epoll_wait. Same observable surface — 1 on ready,
+        // 0/-1 on error — without paying for reactor lazy-start.
+        int epfd = epoll_create1(EPOLL_CLOEXEC);
+        if (epfd < 0) return -1;
+        struct epoll_event ep;
+        ep.events = __cajeta_io_events_to_epoll(events);
+        ep.data.fd = fd;
+        if (epoll_ctl(epfd, EPOLL_CTL_ADD, fd, &ep) < 0) {
+            close(epfd);
+            return -1;
+        }
+        struct epoll_event got;
+        int n;
+        do {
+            n = epoll_wait(epfd, &got, 1, -1);
+        } while (n < 0 && errno == EINTR);
+        close(epfd);
+        return (n > 0) ? 1 : 0;
+    }
+    pthread_mutex_lock(&__cajeta_task_mutex);
+    __cajeta_reactor_ensure_started_locked();
+    if (!__cajeta_reactor_started) {
+        pthread_mutex_unlock(&__cajeta_task_mutex);
+        return -1;
+    }
+    struct cajeta_io_waiter* w = malloc(sizeof(*w));
+    if (!w) {
+        pthread_mutex_unlock(&__cajeta_task_mutex);
+        return -1;
+    }
+    w->fd = fd;
+    w->events = events;
+    w->fiber = __cajeta_current_fiber;
+    w->next = __cajeta_reactor_waiters;
+    __cajeta_reactor_waiters = w;
+    struct epoll_event ep;
+    ep.events = __cajeta_io_events_to_epoll(events);
+    ep.data.fd = fd;
+    int rc = epoll_ctl(__cajeta_reactor_epfd, EPOLL_CTL_ADD, fd, &ep);
+    if (rc < 0 && errno == EEXIST) {
+        rc = epoll_ctl(__cajeta_reactor_epfd, EPOLL_CTL_MOD, fd, &ep);
+    }
+    if (rc < 0) {
+        __cajeta_reactor_cancel_locked(w);
+        free(w);
+        pthread_mutex_unlock(&__cajeta_task_mutex);
+        return -1;
+    }
+    pthread_mutex_unlock(&__cajeta_task_mutex);
+    __cajeta_fiber_park();
+    return 1;
+}
+
+// Linux eventfd surface, exposed for test bring-up and for cooperative
+// cross-fiber signalling. eventfd is a counter the kernel guarantees is
+// edge-sensitive on writes — perfect for the "one-shot ready" pattern
+// the I/O reactor needs to verify end-to-end.
+int32_t __cajeta_eventfd_create(void) {
+    int fd = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
+    return (fd < 0) ? -1 : (int32_t) fd;
+}
+
+int32_t __cajeta_eventfd_signal(int32_t fd) {
+    uint64_t one = 1;
+    ssize_t n = write(fd, &one, sizeof(one));
+    return (n == (ssize_t) sizeof(one)) ? 0 : -1;
+}
+
+int64_t __cajeta_eventfd_consume(int32_t fd) {
+    uint64_t buf = 0;
+    ssize_t n = read(fd, &buf, sizeof(buf));
+    return (n == (ssize_t) sizeof(buf)) ? (int64_t) buf : -1;
+}
+
+int32_t __cajeta_fd_close(int32_t fd) {
+    return close(fd);
+}
+
+#else /* !__linux__ */
+
+int32_t __cajeta_io_wait(int32_t fd, int32_t events) {
+    (void) fd; (void) events;
+    fprintf(stderr, "cajeta: __cajeta_io_wait not yet implemented on this platform\n");
+    return -1;
+}
+int32_t __cajeta_eventfd_create(void) {
+    fprintf(stderr, "cajeta: __cajeta_eventfd_create requires Linux\n");
+    return -1;
+}
+int32_t __cajeta_eventfd_signal(int32_t fd) { (void) fd; return -1; }
+int64_t __cajeta_eventfd_consume(int32_t fd) { (void) fd; return -1; }
+int32_t __cajeta_fd_close(int32_t fd) { (void) fd; return -1; }
+
+#endif /* __linux__ */
 
 // --- Threading: scope frames (R5-A) ---------------------------------------
 //
