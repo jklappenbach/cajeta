@@ -1,0 +1,26 @@
+package cajeta.threading;
+
+/**
+ * Outcome of a `Tasks.selectReceive` multiplexed receive.
+ *
+ *   - `index` is the zero-based position of the channel that produced
+ *     `value`, or `-1` when every channel handed to selectReceive was
+ *     closed AND drained.
+ *   - `value` carries the dequeued item when `index >= 0`; on the
+ *     terminal `-1` reply the value field is unused (codegens as 0 for
+ *     primitive T, null for class T — matches the same shape Channel.receive
+ *     uses for its empty Optional).
+ *
+ * Heap-allocated (the standard return form for utility-class results —
+ * `Tasks.selectReceive` returns `#SelectResult<T>`); callers consume
+ * via field access and let the surrounding scope's drop chain reclaim it.
+ */
+public class SelectResult<T> {
+    public int32 index;
+    public T value;
+
+    public SelectResult(int32 index, T value) {
+        this.index = index;
+        this.value = value;
+    }
+}

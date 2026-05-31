@@ -102,4 +102,42 @@ public class Channel<T> {
         Cajeta.condvarNotifyAll(this.cond);
         Cajeta.lockRelease(this.handle);
     }
+
+    /**
+     * Non-blocking dequeue. Returns the next item if one is currently
+     * buffered; otherwise returns an empty `Optional<T>` without parking
+     * — even if the channel is still open. Distinguish "transiently
+     * empty" from "closed and drained" externally via `isClosed()`.
+     *
+     * Building block for `Tasks.selectReceive` (Channel.select v1): the
+     * select loop polls many channels each pass without blocking on any
+     * one of them.
+     */
+    public Optional<T> tryReceive() {
+        Cajeta.lockAcquire(this.handle);
+        if (this.size == 0) {
+            T none = this.buf[this.head];
+            Cajeta.lockRelease(this.handle);
+            return stack Optional<T>(false, none);
+        }
+        T item = this.buf[this.head];
+        this.head = (this.head + 1) % this.capacity;
+        this.size = this.size - 1;
+        Cajeta.condvarNotifyAll(this.cond);
+        Cajeta.lockRelease(this.handle);
+        return stack Optional<T>(true, item);
+    }
+
+    /**
+     * Snapshot of the closed bit. A `true` return does NOT imply the
+     * buffer is drained — callers selecting across channels combine
+     * `isClosed()` with a prior `tryReceive()` that returned empty to
+     * detect terminal "closed and drained" per channel.
+     */
+    public boolean isClosed() {
+        Cajeta.lockAcquire(this.handle);
+        boolean c = this.closed;
+        Cajeta.lockRelease(this.handle);
+        return c;
+    }
 }

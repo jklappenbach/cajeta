@@ -1,6 +1,8 @@
 package cajeta.threading;
 
 import cajeta.lang.Optional;
+import cajeta.threading.Channel;
+import cajeta.threading.SelectResult;
 import cajeta.time.Duration;
 
 /**
@@ -151,5 +153,63 @@ public class Tasks {
     public static R runBlocking<R>(() -> R body) {
         Task<R> t = spawn body();
         return await t;
+    }
+
+    /**
+     * Multiplexed receive across an array of channels — Go's
+     * `select { case <- a: ...; case <- b: ... }` in a stdlib API
+     * shape. Returns an `Optional<SelectResult<T>>`:
+     *
+     *   - present — wraps a `SelectResult<T>` with `index` set to the
+     *     zero-based position of the channel that produced `value`.
+     *     If multiple channels are ready in the same pass the lowest
+     *     index wins (deterministic for v1; a future fairness pass
+     *     can rotate the start).
+     *   - empty — every channel was closed AND drained.
+     *
+     * v1 implementation: poll-and-backoff over `tryReceive()` /
+     * `isClosed()`. Each pass tries every channel non-blocking; if all
+     * empty and at least one is still open, the fiber sleeps via
+     * `Cajeta.fiberSleepNanos` with exponential backoff (100us → 10ms
+     * cap) before re-polling. The carrier is never held — sleeping
+     * parks on the timer wheel, freeing the carrier to run other fibers.
+     *
+     * The backoff trades latency for CPU: a quiescent select wakes ~100
+     * times/second under the cap, not thousands. Future versions can
+     * register a per-channel waiter list and park on any of them
+     * (one wake per send), eliminating the polling overhead entirely —
+     * the API contract above stays unchanged.
+     *
+     * The Optional-of-SelectResult shape (rather than a SelectResult
+     * with a sentinel `index == -1`) sidesteps a pre-existing codegen
+     * quirk where `heap T<int32>(literal, null)` mis-positions the
+     * primitive arg when T's second constructor parameter is primitive
+     * and the user passes `null`. Wrapping in `Optional` means the
+     * "no value" branch is `heap Optional<SelectResult<T>>(false, null)`
+     * — SelectResult<T> is a class so `null` is type-natural here.
+     */
+    public static #Optional<SelectResult<T>> selectReceive<T>(Channel<T>[] channels) {
+        int64 backoff = 100000;
+        while (true) {
+            boolean any_open = false;
+            for (int32 i = 0; i < channels.count(); i = i + 1) {
+                Channel<T> ch = channels[i];
+                Optional<T> r = ch.tryReceive();
+                if (r.isPresent()) {
+                    SelectResult<T> sr = heap SelectResult<T>(i, r.get());
+                    return heap Optional<SelectResult<T>>(true, sr);
+                }
+                if (!ch.isClosed()) {
+                    any_open = true;
+                }
+            }
+            if (!any_open) {
+                return heap Optional<SelectResult<T>>(false, null);
+            }
+            Cajeta.fiberSleepNanos(backoff);
+            if (backoff < 10000000) {
+                backoff = backoff * 2;
+            }
+        }
     }
 }

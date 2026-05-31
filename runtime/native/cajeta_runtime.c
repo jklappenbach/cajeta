@@ -1796,6 +1796,20 @@ int64_t __cajeta_currentTimeNanos(void) {
     return __cajeta_now_ns();
 }
 
+// R9.5 — fiber-aware sleep. Park the running fiber on the timer wheel for
+// up to `nanos` nanoseconds. Built on top of __cajeta_task_wait_timeout
+// by feeding it a sentinel done_addr that never flips — the wait then
+// always resolves via the deadline. From the main thread / non-fiber
+// caller, cond_timedwait on the same condvar (same fallback the timeout
+// path takes). Used by Channel.select's polling backoff; available to
+// other callers wanting a cooperative sleep.
+void __cajeta_fiber_sleep_nanos(int64_t nanos) {
+    if (nanos <= 0) return;
+    int32_t never = 0;
+    int64_t deadline = __cajeta_now_ns() + nanos;
+    (void) __cajeta_task_wait_timeout(&never, deadline);
+}
+
 // --- R9.4 — I/O reactor / netpoller -----------------------------------------
 //
 // Goal: park a fiber on file-descriptor readiness without freezing the
