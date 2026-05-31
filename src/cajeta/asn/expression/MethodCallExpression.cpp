@@ -1905,6 +1905,27 @@ namespace cajeta {
                         llvm::AtomicOrdering::Acquire,
                         llvm::AtomicOrdering::Acquire);
                 }
+                // R9.1 — cooperative timeout. taskWaitTimeout(done_addr,
+                // deadline_ns) returns 1 if *done_addr flipped before the
+                // deadline, 0 if the deadline expired first. deadline_ns
+                // is a CLOCK_MONOTONIC absolute timestamp; compute one via
+                // currentTimeNanos() + a duration in nanos. See R9 plan
+                // and Thread.md § withTimeout for the eventual stdlib API.
+                if (ns == "Cajeta" && methodCallName == "taskWaitTimeout"
+                        && parameters.size() == 2) {
+                    llvm::Function* fn = module->getRuntimeFunction("__cajeta_task_wait_timeout");
+                    llvm::Value* doneAddr = loadValue(0);
+                    llvm::Value* deadline = loadValue(1);
+                    if (deadline->getType() != i64Ty) {
+                        deadline = builder->CreateIntCast(deadline, i64Ty, /*isSigned=*/true);
+                    }
+                    return builder->CreateCall(fn, {doneAddr, deadline});
+                }
+                if (ns == "Cajeta" && methodCallName == "currentTimeNanos"
+                        && parameters.empty()) {
+                    llvm::Function* fn = module->getRuntimeFunction("__cajeta_currentTimeNanos");
+                    return builder->CreateCall(fn, {});
+                }
                 if (ns == "System" && methodCallName == "exit" && parameters.size() == 1) {
                     llvm::Function* fn = module->getRuntimeFunction("__cajeta_exit");
                     llvm::Value* code = loadValue(0);

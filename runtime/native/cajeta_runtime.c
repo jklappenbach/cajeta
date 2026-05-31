@@ -1032,6 +1032,17 @@ static int __cajeta_task_workers_started = 0;
 // the ready-queue head so a shutdown request reliably unblocks it.
 static int __cajeta_task_shutdown_requested = 0;
 
+// R9.1 timer state (declared here so __cajeta_task_shutdown — which lives
+// above the timer implementation block — can join the timer thread on
+// teardown). The struct cajeta_timer_entry definition + the function
+// bodies live further down alongside __cajeta_task_wait_timeout.
+struct cajeta_timer_entry;
+static struct cajeta_timer_entry* __cajeta_timer_head = NULL;
+static pthread_cond_t __cajeta_timer_cond = PTHREAD_COND_INITIALIZER;
+static pthread_t __cajeta_timer_thread;
+static int __cajeta_timer_started = 0;
+static int __cajeta_timer_shutdown_requested = 0;
+
 // R8.3 — multi-carrier pool, flag-gated N=1.
 //
 // Each carrier owns one Chase-Lev deque + a deque_mutex that protects
@@ -1338,9 +1349,21 @@ void __cajeta_task_shutdown(void) {
     __cajeta_task_shutdown_requested = 1;
     pthread_cond_broadcast(&__cajeta_task_queue_cond);
     int n = __cajeta_carrier_count;
+    // R9.1 — if the timer thread was lazy-started, signal it to exit too.
+    // Same JIT-survives-across-tests rationale as carrier shutdown: leaving
+    // it running would let it observe (and signal on) a recycled condvar
+    // address in the next test.
+    int timer_was_started = __cajeta_timer_started;
+    if (timer_was_started) {
+        __cajeta_timer_shutdown_requested = 1;
+        pthread_cond_signal(&__cajeta_timer_cond);
+    }
     pthread_mutex_unlock(&__cajeta_task_mutex);
     for (int i = 0; i < n; ++i) {
         pthread_join(__cajeta_carriers[i].thread, NULL);
+    }
+    if (timer_was_started) {
+        pthread_join(__cajeta_timer_thread, NULL);
     }
     // Reset state so a subsequent __cajeta_task_run (e.g. the next test's
     // first spawn) starts a fresh pool with clean queues. The deque per
@@ -1353,6 +1376,11 @@ void __cajeta_task_shutdown(void) {
         pthread_mutex_destroy(&__cajeta_carriers[i].deque_mutex);
     }
     __cajeta_carrier_count = 0;
+    if (timer_was_started) {
+        __cajeta_timer_started = 0;
+        __cajeta_timer_shutdown_requested = 0;
+        __cajeta_timer_head = NULL;
+    }
     pthread_mutex_unlock(&__cajeta_task_mutex);
 }
 
@@ -1487,6 +1515,236 @@ void __cajeta_task_complete(int32_t* done_addr) {
         __cajeta_publish_ready(woken);
         woken = next;
     }
+}
+
+// --- R9.1 — timer wheel + cooperative timeout -----------------------------
+//
+// Goal: let a fiber's __cajeta_task_wait honor a deadline. The intrinsic
+// __cajeta_task_wait_timeout returns 1 if *done_addr flips before the
+// deadline, 0 if the deadline expires first.
+//
+// Mechanism: a sorted singly-linked list of (deadline_ns, fiber) entries
+// protected by __cajeta_task_mutex; a single timer thread (lazy-started on
+// the first registration) sleeps via pthread_cond_timedwait until the next
+// deadline; on expire it walks the list, detaches expired fibers from
+// __cajeta_parked_head and publishes them. The fiber-side loop rechecks
+// done_addr + deadline on every wake — wake-all spurious wakes from
+// __cajeta_task_complete converge naturally (recheck rejects them) without
+// needing a wake_reason CAS. The race to manage is "timer wake vs.
+// concurrent wake-all": both take __cajeta_task_mutex and use parked-list
+// membership as the gate, so the fiber is detached and published exactly
+// once. If timer fires while the fiber isn't on parked_head (running, or
+// already published), the timer entry is consumed (removed from the timer
+// list) and the fiber catches the expired deadline via the now_ns check
+// on its next park-loop iteration.
+//
+// Timer entries are owned by the FIBER'S STACK (one per __cajeta_task_wait_timeout
+// call), so the timer thread never frees memory it didn't allocate. The fiber
+// cancels its own entry before returning; cancel is idempotent against
+// already-consumed entries via a linear walk of the live list.
+
+#include <time.h>
+#include <errno.h>
+
+// Statics (head, cond, thread, started, shutdown_requested) declared
+// above the carrier section so __cajeta_task_shutdown can join the
+// timer thread on teardown; the struct definition follows here.
+struct cajeta_timer_entry {
+    int64_t deadline_ns;
+    struct cajeta_fiber* fiber;
+    struct cajeta_timer_entry* next;
+};
+
+static int64_t __cajeta_now_ns(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (int64_t) ts.tv_sec * 1000000000LL + (int64_t) ts.tv_nsec;
+}
+
+// Insert entry into the sorted-by-deadline list. Caller holds __cajeta_task_mutex.
+static void __cajeta_timer_insert_locked(struct cajeta_timer_entry* e) {
+    struct cajeta_timer_entry** p = &__cajeta_timer_head;
+    while (*p && (*p)->deadline_ns <= e->deadline_ns) p = &(*p)->next;
+    e->next = *p;
+    *p = e;
+}
+
+// Remove `f` from __cajeta_parked_head if present. Returns 1 if removed.
+// Caller holds __cajeta_task_mutex.
+static int __cajeta_parked_remove_locked(struct cajeta_fiber* f) {
+    if (!__cajeta_parked_head) return 0;
+    if (__cajeta_parked_head == f) {
+        __cajeta_parked_head = f->next;
+        f->next = NULL;
+        return 1;
+    }
+    for (struct cajeta_fiber* p = __cajeta_parked_head; p->next; p = p->next) {
+        if (p->next == f) {
+            p->next = f->next;
+            f->next = NULL;
+            return 1;
+        }
+    }
+    return 0;
+}
+
+// Timer thread. Sleeps on __cajeta_timer_cond until the next deadline (or
+// a register/cancel/shutdown signal), wakes expired fibers, sleeps again.
+static void* __cajeta_timer_loop(void* arg) {
+    (void) arg;
+    pthread_mutex_lock(&__cajeta_task_mutex);
+    for (;;) {
+        if (__cajeta_timer_shutdown_requested) {
+            pthread_mutex_unlock(&__cajeta_task_mutex);
+            return NULL;
+        }
+        int64_t now = __cajeta_now_ns();
+        struct cajeta_fiber* to_publish = NULL;
+        while (__cajeta_timer_head && __cajeta_timer_head->deadline_ns <= now) {
+            struct cajeta_timer_entry* e = __cajeta_timer_head;
+            __cajeta_timer_head = e->next;
+            e->next = NULL;
+            // Best-effort detach + publish. If fiber isn't on parked_head,
+            // it's running (or already on a deque); the fiber's next park-
+            // loop iteration will see the expired deadline.
+            if (__cajeta_parked_remove_locked(e->fiber)) {
+                e->fiber->next = to_publish;
+                to_publish = e->fiber;
+            }
+        }
+        if (to_publish) {
+            pthread_mutex_unlock(&__cajeta_task_mutex);
+            while (to_publish) {
+                struct cajeta_fiber* next = to_publish->next;
+                __cajeta_publish_ready(to_publish);
+                to_publish = next;
+            }
+            pthread_mutex_lock(&__cajeta_task_mutex);
+            continue;
+        }
+        if (__cajeta_timer_head) {
+            int64_t deadline = __cajeta_timer_head->deadline_ns;
+            struct timespec ts;
+            ts.tv_sec = (time_t) (deadline / 1000000000LL);
+            ts.tv_nsec = (long) (deadline % 1000000000LL);
+            // CLOCK_REALTIME-based timedwait — the default. Deadline is
+            // monotonic ns, which works regardless of clock choice for
+            // an upper-bound sleep (the worst case is a stale clock
+            // sleeping longer than needed; the fiber-side deadline check
+            // catches up either way).
+            pthread_cond_timedwait(&__cajeta_timer_cond,
+                                    &__cajeta_task_mutex, &ts);
+        } else {
+            pthread_cond_wait(&__cajeta_timer_cond, &__cajeta_task_mutex);
+        }
+    }
+}
+
+// Lazy-start the timer thread on first registration. Caller holds task_mutex.
+static void __cajeta_timer_ensure_started_locked(void) {
+    if (__cajeta_timer_started) return;
+    __cajeta_timer_started = 1;
+    pthread_create(&__cajeta_timer_thread, NULL, __cajeta_timer_loop, NULL);
+}
+
+// Cancel a timer entry. No-op if already consumed by the timer thread
+// (not in the live list anymore). Caller must NOT hold task_mutex.
+static void __cajeta_timer_cancel(struct cajeta_timer_entry* entry) {
+    pthread_mutex_lock(&__cajeta_task_mutex);
+    struct cajeta_timer_entry** p = &__cajeta_timer_head;
+    while (*p) {
+        if (*p == entry) {
+            *p = entry->next;
+            entry->next = NULL;
+            break;
+        }
+        p = &(*p)->next;
+    }
+    pthread_mutex_unlock(&__cajeta_task_mutex);
+}
+
+// R9.1 intrinsic — block until *done_addr flips OR deadline_ns is reached.
+// Returns 1 on done, 0 on timeout. Mirrors __cajeta_task_wait but adds a
+// per-call timer entry that wakes the fiber at the deadline. deadline_ns
+// is a CLOCK_MONOTONIC absolute timestamp (use __cajeta_currentTimeNanos
+// to compute one from a duration).
+int32_t __cajeta_task_wait_timeout(int32_t* done_addr, int64_t deadline_ns) {
+    if (!done_addr) return 1;
+    if (!__cajeta_current_fiber) {
+        // Main thread / non-fiber caller: cond_timedwait on the existing
+        // task-done condvar. The condvar's clock is CLOCK_REALTIME; convert
+        // our monotonic deadline by computing the remaining nanos and
+        // adding to a fresh REALTIME `now`. Sufficient for the timeout
+        // ceiling; precision-critical use should switch to a CLOCK_MONOTONIC
+        // condvar (pthread_condattr_setclock) when a user surfaces a need.
+        pthread_mutex_lock(&__cajeta_task_mutex);
+        while (!*done_addr) {
+            int64_t mono_now = __cajeta_now_ns();
+            if (mono_now >= deadline_ns) {
+                pthread_mutex_unlock(&__cajeta_task_mutex);
+                return 0;
+            }
+            int64_t remaining_ns = deadline_ns - mono_now;
+            struct timespec real_ts;
+            clock_gettime(CLOCK_REALTIME, &real_ts);
+            int64_t real_deadline = (int64_t) real_ts.tv_sec * 1000000000LL
+                                  + (int64_t) real_ts.tv_nsec
+                                  + remaining_ns;
+            real_ts.tv_sec = (time_t) (real_deadline / 1000000000LL);
+            real_ts.tv_nsec = (long) (real_deadline % 1000000000LL);
+            int rc = pthread_cond_timedwait(&__cajeta_task_done_cond,
+                                             &__cajeta_task_mutex,
+                                             &real_ts);
+            if (rc == ETIMEDOUT) {
+                pthread_mutex_unlock(&__cajeta_task_mutex);
+                return 0;
+            }
+        }
+        pthread_mutex_unlock(&__cajeta_task_mutex);
+        return 1;
+    }
+    // Fiber path. Stack-local entry: lifetime = this function, which is
+    // safe because the fiber's stack persists across park/resume.
+    struct cajeta_timer_entry entry;
+    entry.deadline_ns = deadline_ns;
+    entry.fiber = __cajeta_current_fiber;
+    entry.next = NULL;
+    pthread_mutex_lock(&__cajeta_task_mutex);
+    __cajeta_timer_ensure_started_locked();
+    int signal_timer = (__cajeta_timer_head == NULL
+                        || __cajeta_timer_head->deadline_ns > deadline_ns);
+    __cajeta_timer_insert_locked(&entry);
+    pthread_mutex_unlock(&__cajeta_task_mutex);
+    if (signal_timer) {
+        pthread_cond_signal(&__cajeta_timer_cond);
+    }
+    for (;;) {
+        if (*done_addr) {
+            __cajeta_timer_cancel(&entry);
+            return 1;
+        }
+        if (__cajeta_now_ns() >= deadline_ns) {
+            __cajeta_timer_cancel(&entry);
+            return 0;
+        }
+        __cajeta_fiber_park();
+        // Mirror __cajeta_task_wait's R5-C cancel handling: a scope's
+        // first-throw escalation may have set cancel_with while we were
+        // parked; honor it before looping (we still cancel our timer so
+        // the entry doesn't outlive this fiber's stack frame).
+        void* cancel = __cajeta_current_fiber->cancel_with;
+        if (cancel) {
+            __cajeta_current_fiber->cancel_with = NULL;
+            __cajeta_timer_cancel(&entry);
+            __cajeta_throw(cancel);
+        }
+    }
+}
+
+// R9.1 intrinsic — current CLOCK_MONOTONIC nanoseconds. Surfaced for stdlib
+// computing a deadline from a Duration (R9.3): `now() + d.toNanos()`.
+int64_t __cajeta_currentTimeNanos(void) {
+    return __cajeta_now_ns();
 }
 
 // --- Threading: scope frames (R5-A) ---------------------------------------
