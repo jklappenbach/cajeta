@@ -262,6 +262,46 @@ void forceLoopVectorWidth(llvm::BranchInst* latch, unsigned W) {
     latch->setMetadata("llvm.loop", loopId);
 }
 
+// The wave-op runtime stubs that carry a SIMD VFABI variant. `width()` is handled
+// separately (rewritten to the constant W), and lane_id/is_first_lane lower inline.
+static const char* const kWaveOps[] = {
+    "__cajeta_xpu_wave_reduce_sum_u32",
+    "__cajeta_xpu_wave_ballot_sync",
+    "__cajeta_xpu_wave_shuffle_sync_u32",
+};
+
+// Attach SIMD variants for every wave op `f` uses and (if any, or `width()` is
+// used) report it a wave kernel. Shared by the single-loop (5C) and barrier
+// (fission) paths.
+bool setupWaveVariants(llvm::Function& f, llvm::Module& m, unsigned waveW) {
+    bool waveKernel = false;
+    for (const char* op : kWaveOps)
+        if (callsRuntimeFn(f, op)) {
+            attachWaveVariants(m, op, waveW);
+            waveKernel = true;
+        }
+    if (callsRuntimeFn(f, "__cajeta_xpu_wave_width")) waveKernel = true;
+    return waveKernel;
+}
+
+// Fold the LoopVectorize-substituted wave variant calls (alwaysinline) into the
+// loop so codegen emits the reduce/gather/ballot SIMD directly rather than a
+// per-iteration call (no inliner runs at -O0).
+void foldWaveVariants(llvm::Function& f) {
+    llvm::SmallVector<llvm::CallInst*, 16> vcalls;
+    for (auto& bb : f)
+        for (auto& in : bb)
+            if (auto* c = llvm::dyn_cast<llvm::CallInst>(&in))
+                if (auto* cf = c->getCalledFunction())
+                    if (cf->hasFnAttribute(llvm::Attribute::AlwaysInline)
+                        && cf->getName().contains("__cajeta_xpu_wave_"))
+                        vcalls.push_back(c);
+    for (auto* c : vcalls) {
+        llvm::InlineFunctionInfo vifi;
+        llvm::InlineFunction(*c, vifi);
+    }
+}
+
 } // namespace
 
     int emitKernelRegistration(const std::vector<MethodPtr>& kernels,
@@ -350,22 +390,42 @@ void forceLoopVectorWidth(llvm::BranchInst* latch, unsigned W) {
 
             // A kernel that calls Barrier.workgroup() can't run as one work-item
             // loop — it is split at each barrier into regions, each looped over
-            // the block (Inc 6 fission). Disjoint from the 5C wave path. XPU-N02
-            // on an unsupported construct → discard + fall back to the host stub.
+            // the block (Inc 6 fission). XPU-N02 on an unsupported construct →
+            // discard + fall back to the host stub.
             if (usesBarrier(*linked)) {
+                std::vector<llvm::BranchInst*> wiLatches;
                 try {
                     std::vector<llvm::Value*> ctaidV = {ctaidX, ctaidY, ctaidZ};
                     std::vector<llvm::Value*> ntidV  = {ntidX,  ntidY,  ntidZ};
                     fissionBarrierKernel(linked, wrapper, nReal, ctaidV, ntidV,
-                                         hostModule);
+                                         hostModule, &wiLatches);
                 } catch (cajeta::Exception&) {
                     wrapper->eraseFromParent();
                     linked->eraseFromParent();    // has barrier markers; unusable
                     continue;                     // host-stub fallback
                 }
                 linked->eraseFromParent();        // body cloned into the wrapper
+
+                // Wave + barrier composition (Inc 9): each fission region is a
+                // clean counted work-item loop, so vectorize them at width W with
+                // the wave SIMD variants exactly as the 5C single-loop path does —
+                // a wave op inside a region becomes W SIMD lanes, the barriers
+                // delimit regions. Forcing VF=W on every region loop is safe (the
+                // block width is uniform across regions); only wave-bearing
+                // regions carry the wave-width-divides-block assumption (as in 5C).
+                const unsigned waveW = cpuVectorWidthI32(hostTm.get(), *wrapper);
+                bool waveKernel = false;
+                if (waveW >= 2) {
+                    waveKernel = setupWaveVariants(*wrapper, hostModule, waveW);
+                    if (waveKernel) {
+                        rewriteWaveWidth(*wrapper, waveW);
+                        for (llvm::BranchInst* latch : wiLatches)
+                            forceLoopVectorWidth(latch, waveW);
+                    }
+                }
                 if (!cpuVectorizeDisabled())
                     vectorizeFunction(*wrapper, hostTm.get());
+                if (waveKernel) foldWaveVariants(*wrapper);
             } else {
             llvm::BasicBlock* wEntry =
                 llvm::BasicBlock::Create(ctx, "entry", wrapper);
@@ -410,23 +470,10 @@ void forceLoopVectorWidth(llvm::BranchInst* latch, unsigned W) {
             // substitutes the SIMD variant — the wave becomes W SIMD lanes.
             // Attribute + variant + loop-width metadata go in BEFORE inlining;
             // the loop metadata rides along when InlineFunction moves the latch.
-            static const char* const kWaveOps[] = {
-                "__cajeta_xpu_wave_reduce_sum_u32",
-                "__cajeta_xpu_wave_ballot_sync",
-                "__cajeta_xpu_wave_shuffle_sync_u32",
-            };
             const unsigned waveW = cpuVectorWidthI32(hostTm.get(), *wrapper);
             bool waveKernel = false;
             if (waveW >= 2) {
-                for (const char* op : kWaveOps)
-                    if (callsRuntimeFn(*linked, op)) {
-                        attachWaveVariants(hostModule, op, waveW);
-                        waveKernel = true;
-                    }
-                // `width()` has no variant — it is rewritten to the constant W
-                // after inlining (below). Its presence alone makes a wave kernel.
-                if (callsRuntimeFn(*linked, "__cajeta_xpu_wave_width"))
-                    waveKernel = true;
+                waveKernel = setupWaveVariants(*linked, hostModule, waveW);
                 if (waveKernel) forceLoopVectorWidth(latchBr, waveW);
             }
 
@@ -447,20 +494,7 @@ void forceLoopVectorWidth(llvm::BranchInst* latch, unsigned W) {
             // loop (they are alwaysinline, but no inliner runs at -O0) so codegen
             // emits the reduce/gather/ballot SIMD directly rather than a
             // per-iteration call.
-            if (waveKernel) {
-                llvm::SmallVector<llvm::CallInst*, 16> vcalls;
-                for (auto& bb : *wrapper)
-                    for (auto& in : bb)
-                        if (auto* c = llvm::dyn_cast<llvm::CallInst>(&in))
-                            if (auto* cf = c->getCalledFunction())
-                                if (cf->hasFnAttribute(llvm::Attribute::AlwaysInline)
-                                    && cf->getName().contains("__cajeta_xpu_wave_"))
-                                    vcalls.push_back(c);
-                for (auto* c : vcalls) {
-                    llvm::InlineFunctionInfo vifi;
-                    llvm::InlineFunction(*c, vifi);
-                }
-            }
+            if (waveKernel) foldWaveVariants(*wrapper);
             }   // end of the barrier-free single-loop wrapper build
 
             // --- Uniform launcher thunk → the per-block wrapper -------------

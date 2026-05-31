@@ -509,6 +509,117 @@ public class M {
 }
 )CJ";
 
+// Increment 9 — wave ops + a barrier composed in one kernel: the canonical
+// two-level block reduction. Each work-item's value is summed within its wave
+// (Wave.reduceSum → W SIMD lanes), the wave leaders stage their partial into
+// shared memory, a barrier, then lane 0 sums the per-wave partials. The block
+// total is INDEPENDENT of the wave width W, so the expected result is just
+// sum(0..255) = 32640 regardless of whether the host wave is 16/8/4 wide —
+// encoding "query the width, never hardcode" while proving wave SIMD and the
+// barrier coexist (the wave op vectorizes each fission region at W).
+const char* kBlockReduceSource = R"CJ(
+package test;
+import cajeta.xpu.core.Buffer;
+import cajeta.xpu.core.Stream;
+import cajeta.xpu.core.Thread;
+import cajeta.xpu.core.Wave;
+import cajeta.xpu.core.Barrier;
+import cajeta.xpu.core.Shared;
+public class M {
+    @Kernel
+    public static void blockReduce(Buffer<int32> out, Buffer<int32> in) {
+        Shared<int32> partials = shared int32[256];
+        uint32 t = Thread.x();
+        int32 wsum = Wave.reduceSum(in[t]);
+        uint32 w = Wave.width();
+        if (t % w == 0) { partials[t / w] = wsum; }
+        Barrier.workgroup();
+        if (t == 0) {
+            int32 total = 0;
+            uint32 nwaves = 256 / w;
+            for (uint32 i = 0; i < nwaves; i = i + 1) { total = total + partials[i]; }
+            out[0] = total;
+        }
+    }
+    public static int32 run() {
+        uint32 n = 256;
+        int32[] hin = new int32[n];
+        int32[] hout = new int32[1];
+        for (uint32 i = 0; i < n; i = i + 1) { hin[i] = (int32) i; }
+        hout[0] = 0;
+        Buffer<int32> in = heap Buffer<int32>(n);
+        Buffer<int32> out = heap Buffer<int32>(1);
+        in.upload(hin);
+        out.upload(hout);
+        Stream s = Stream.current();
+        blockReduce.launch(s, grid: [1], block: [256])(out, in);
+        s.sync();
+        out.download(hout);
+        return hout[0];
+    }
+}
+)CJ";
+
+// Increment 9 — width-agnostic membership check that wave VALUES (not just an
+// associative total) compose with a barrier. With in[t] = 1, a wave reduce sums
+// W ones, so every lane gets exactly W; staged through shared + a barrier, out[t]
+// must equal the probed wave width for all t (full waves, block 256 ÷ W). `run()`
+// first launches a width probe to learn W, then checks every lane — so it holds
+// at 16/8/4 without hardcoding.
+const char* kWaveBarMembershipSource = R"CJ(
+package test;
+import cajeta.xpu.core.Buffer;
+import cajeta.xpu.core.Stream;
+import cajeta.xpu.core.Thread;
+import cajeta.xpu.core.Wave;
+import cajeta.xpu.core.Barrier;
+import cajeta.xpu.core.Shared;
+public class M {
+    @Kernel
+    public static void widthk(Buffer<uint32> out) {
+        uint32 t = Thread.globalIdX();
+        out[t] = Wave.width();
+    }
+    @Kernel
+    public static void wavebar(Buffer<int32> out, Buffer<int32> in) {
+        Shared<int32> tile = shared int32[256];
+        uint32 t = Thread.x();
+        int32 s = Wave.reduceSum(in[t]);
+        tile[t] = s;
+        Barrier.workgroup();
+        out[t] = tile[t];
+    }
+    public static int32 run() {
+        uint32 n = 256;
+        uint32[] hw = new uint32[n];
+        for (uint32 i = 0; i < n; i = i + 1) { hw[i] = 0; }
+        Buffer<uint32> wbuf = heap Buffer<uint32>(n);
+        wbuf.upload(hw);
+        Stream s = Stream.current();
+        widthk.launch(s, grid: [1], block: [256])(wbuf);
+        s.sync();
+        wbuf.download(hw);
+        int32 W = (int32) hw[0];
+        if (W < 1) { return -1; }
+
+        int32[] hin = new int32[n];
+        int32[] hout = new int32[n];
+        for (uint32 i = 0; i < n; i = i + 1) { hin[i] = 1; hout[i] = 0; }
+        Buffer<int32> in = heap Buffer<int32>(n);
+        Buffer<int32> out = heap Buffer<int32>(n);
+        in.upload(hin);
+        out.upload(hout);
+        wavebar.launch(s, grid: [1], block: [256])(out, in);
+        s.sync();
+        out.download(hout);
+        for (uint32 i = 0; i < n; i = i + 1) {
+            if (hout[i] != W) { return (int32) (1000 + i); }
+        }
+        return W;
+    }
+}
+)CJ";
+
 } // namespace
 
 // One barrier, two regions: both halves run for every work-item, with `t`
@@ -667,6 +778,28 @@ TEST(XpuCpuBarrierExecTests, nestedLoopsWithOuterLevelRegions) {
     ASSERT_NE(fn, nullptr);
     int r = fn();
     EXPECT_EQ(r, 777) << "fail code " << r << " (100+i: out[i] != reference[i])";
+}
+
+// Increment 9: wave ops + a barrier composed — the two-level block reduction.
+// out[0] = sum(0..255) = 32640, independent of the runtime wave width.
+TEST(XpuCpuBarrierExecTests, waveReduceWithBarrierBlockSum) {
+    auto jit = CajetaJit::compile(kBlockReduceSource, "test.M", cpuOptions());
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<int (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    EXPECT_EQ(fn(), 32640);
+}
+
+// Increment 9: wave VALUES compose with a barrier — in[t]=1 ⇒ out[t]==W (the
+// probed wave width) for every lane, proving per-wave membership survives
+// fission, not just an associative total. Returns W (>=2 on a SIMD host).
+TEST(XpuCpuBarrierExecTests, waveReduceWithBarrierMembership) {
+    auto jit = CajetaJit::compile(kWaveBarMembershipSource, "test.M", cpuOptions());
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<int (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    int r = fn();
+    EXPECT_GE(r, 2) << "fail code " << r << " (1000+i: out[i] != W; -1: bad probe)";
 }
 
 // ----------------------------------------------------------------------------
