@@ -54,7 +54,10 @@ class CajetaDebugSessionTest {
      * Fake server on a single reader thread: ack every request (recording its
      * command), then run a per-command hook that may emit scripted events.
      */
-    private fun runServer(onCommand: (String, DapTransport) -> Unit = { _, _ -> }) {
+    private fun runServer(
+        respondBody: (String, Json) -> Json = { _, _ -> Json.obj() },
+        onCommand: (String, DapTransport) -> Unit = { _, _ -> },
+    ) {
         val t = Thread({
             try {
                 while (true) {
@@ -62,7 +65,7 @@ class CajetaDebugSessionTest {
                     val command = req.at("command").asString()
                     received.add(command)
                     lastRequestByCommand[command] = req
-                    serverTransport.write(ok(req))
+                    serverTransport.write(ok(req, respondBody(command, req)))
                     onCommand(command, serverTransport)
                     if (command == "disconnect") break
                 }
@@ -194,5 +197,122 @@ class CajetaDebugSessionTest {
     @Test
     fun parseStackFramesEmptyWhenNoBody() {
         assertTrue(CajetaDebugSession.parseStackFrames(Json.obj()).isEmpty())
+    }
+
+    @Test
+    fun scopesSendsFrameId() {
+        connect()
+        runServer()
+        session.start()
+
+        session.scopes(2).get(5, TimeUnit.SECONDS)
+
+        val req = lastRequestByCommand["scopes"]!!
+        assertEquals(2, req.at("arguments").at("frameId").asInt())
+    }
+
+    @Test
+    fun variablesSendsReference() {
+        connect()
+        runServer()
+        session.start()
+
+        session.variables(3).get(5, TimeUnit.SECONDS)
+
+        val req = lastRequestByCommand["variables"]!!
+        assertEquals(3, req.at("arguments").at("variablesReference").asInt())
+    }
+
+    @Test
+    fun loadVariablesChainsScopesThenVariables() {
+        connect()
+        // Server contract: scopes(frameId) -> Locals with ref=frameId+1;
+        // variables(ref) -> that frame's locals. The body is supplied as the
+        // request's response (not a separate event), mirroring the real server.
+        runServer(respondBody = { command, req ->
+            when (command) {
+                "scopes" -> {
+                    val frameId = req.at("arguments").at("frameId").asInt()
+                    Json.obj(
+                        "scopes" to Json.arr(
+                            Json.obj(
+                                "name" to Json.of("Locals"),
+                                "variablesReference" to Json.of(frameId + 1),
+                                "expensive" to Json.of(false),
+                            ),
+                        ),
+                    )
+                }
+                "variables" -> Json.obj(
+                    "variables" to Json.arr(
+                        Json.obj(
+                            "name" to Json.of("n"),
+                            "value" to Json.of("7"),
+                            "type" to Json.of("int"),
+                            "variablesReference" to Json.of(0),
+                        ),
+                        Json.obj(
+                            "name" to Json.of("acc"),
+                            "value" to Json.of("13"),
+                            "type" to Json.of("int"),
+                            "variablesReference" to Json.of(0),
+                        ),
+                    ),
+                )
+                else -> Json.obj()
+            }
+        })
+        session.start()
+
+        val vars = session.loadVariables(0).get(5, TimeUnit.SECONDS)
+
+        // scopes(0) must precede variables(1) and the ref must be frameId+1.
+        assertEquals(1, lastRequestByCommand["variables"]!!.at("arguments").at("variablesReference").asInt())
+        assertEquals(listOf("n", "acc"), vars.map { it.name })
+        assertEquals("7", vars[0].value)
+        assertEquals("int", vars[0].type)
+        assertTrue("leaf has no children", vars.all { it.variablesReference == 0 })
+    }
+
+    @Test
+    fun parseScopesDecodesScopes() {
+        val response = Json.obj(
+            "body" to Json.obj(
+                "scopes" to Json.arr(
+                    Json.obj(
+                        "name" to Json.of("Locals"),
+                        "variablesReference" to Json.of(1),
+                        "expensive" to Json.of(false),
+                    ),
+                ),
+            ),
+        )
+        val scopes = CajetaDebugSession.parseScopes(response)
+        assertEquals(1, scopes.size)
+        assertEquals("Locals", scopes[0].name)
+        assertEquals(1, scopes[0].variablesReference)
+        assertEquals(false, scopes[0].expensive)
+    }
+
+    @Test
+    fun parseVariablesDecodesVariables() {
+        val response = Json.obj(
+            "body" to Json.obj(
+                "variables" to Json.arr(
+                    Json.obj(
+                        "name" to Json.of("acc"),
+                        "value" to Json.of("13"),
+                        "type" to Json.of("int"),
+                        "variablesReference" to Json.of(0),
+                    ),
+                ),
+            ),
+        )
+        val vars = CajetaDebugSession.parseVariables(response)
+        assertEquals(1, vars.size)
+        assertEquals("acc", vars[0].name)
+        assertEquals("13", vars[0].value)
+        assertEquals("int", vars[0].type)
+        assertEquals(0, vars[0].variablesReference)
     }
 }

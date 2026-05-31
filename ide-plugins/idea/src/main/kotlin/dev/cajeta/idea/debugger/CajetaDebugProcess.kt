@@ -14,10 +14,11 @@ import dev.cajeta.idea.settings.CajetaSettings
 import java.io.File
 
 /**
- * The XDebugProcess (CP6c): launches `cajeta dap`, syncs IDE line breakpoints
- * into the session, drives the launch handshake, and on a `stopped` event
- * pulls the stack and parks the editor via positionReached. Variables view
- * (computeChildren) and value edit land in CP6d/e.
+ * The XDebugProcess: launches `cajeta dap`, syncs IDE line breakpoints into the
+ * session, drives the launch handshake, and on a `stopped` event pulls the
+ * stack and parks the editor via positionReached. Each frame is wired with the
+ * session so the Variables view can fetch its locals (CP6d, via
+ * CajetaStackFrame.computeChildren). Value edit lands in CP6e.
  */
 class CajetaDebugProcess(
     xSession: XDebugSession,
@@ -106,7 +107,7 @@ class CajetaDebugProcess(
     private fun onStopped(ds: CajetaDebugSession) {
         ds.stackTrace().thenAccept { response ->
             val frames = CajetaDebugSession.parseStackFrames(response)
-                .map { CajetaStackFrame(it, resolvePosition(it)) }
+                .map { CajetaStackFrame(it, resolvePosition(it), ds) }
             val context = CajetaSuspendContext(CajetaExecutionStack(frames))
             session.positionReached(context)
         }.exceptionally { e ->
