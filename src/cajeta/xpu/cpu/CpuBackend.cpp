@@ -10,10 +10,14 @@
 #include "llvm/Support/CodeGen.h"
 #include "llvm/Support/TargetSelect.h"
 #include "llvm/Support/raw_ostream.h"
+#include "llvm/ADT/StringMap.h"
 #include "llvm/Target/TargetMachine.h"
 #include "llvm/Target/TargetOptions.h"
 #include "llvm/TargetParser/Host.h"
+#include "llvm/TargetParser/SubtargetFeature.h"
 #include "llvm/TargetParser/Triple.h"
+
+#include <string>
 
 namespace cajeta {
 namespace xpu {
@@ -44,9 +48,22 @@ std::unique_ptr<llvm::TargetMachine> createCpuTargetMachine() {
                      << "\n";
         return nullptr;
     }
+    // Target the HOST CPU + its native features (AVX2/AVX-512/FMA/...), so
+    // TargetTransformInfo lets LoopVectorize cost-model real SIMD for the CPU
+    // backend's per-block kernel wrapper (Inc 5B) and codegen emits matching
+    // vector instructions. Tradeoff: AOT objects are tuned to this machine —
+    // a `--cpu-arch` baseline knob for portable binaries is a later refinement.
+    std::string cpu = std::string(llvm::sys::getHostCPUName());
+    std::string features;
+    {
+        llvm::SubtargetFeatures sf;
+        for (const auto& f : llvm::sys::getHostCPUFeatures())
+            sf.AddFeature(f.first(), f.second);
+        features = sf.getString();
+    }
     llvm::TargetOptions opt;
     llvm::TargetMachine* tm = target->createTargetMachine(
-        triple, /*CPU=*/"", /*Features=*/"", opt, /*RM=*/llvm::Reloc::PIC_);
+        triple, cpu, features, opt, /*RM=*/llvm::Reloc::PIC_);
     return std::unique_ptr<llvm::TargetMachine>(tm);
 }
 

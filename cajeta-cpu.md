@@ -159,11 +159,43 @@ dispatcher uses must be wired *in C* there:
   **Measured ~8× on 32 logical cores** (a compute-bound 1M×3000-iter kernel: 9.56 s serial →
   1.21 s parallel, identical result). Tests: `XpuCpuDispatchTests.saxpyLargeGridParallelOnCpu`
   (a 65536-work-item grid through the dispatcher, result matches serial exactly).
-- **5B — True wave = SIMD lane** (SPMD vectorization, ISPC-style): for wave-cooperative
-  kernels, lower the body over `<W x T>` vectors with mask propagation through divergent
-  control flow, `Wave.*` → SIMD permute/horizontal ops, `Wave.width()` → W. Lifts wave
-  width from 1 to native.
-- Probe AMX / SME matmul lowering here (CPU matrix engines, runtime-feature-gated).
+- **5B — SIMD via loop-vectorization (POCL model)** ✅ (landed 2026-05-31). Rather than a
+  from-scratch whole-function vectorizer, the kernel body is wrapped in a per-**block**
+  work-item loop and handed to LLVM's mature, divergence-aware `LoopVectorize` — the model
+  OpenCL CPU drivers use. The per-work-item kernel (`__cajeta_xpu_cpu.<name>`, the shared
+  lowerer unchanged) is marked `alwaysinline`; a per-block wrapper
+  `__cajeta_xpu_cpu_block.<name>(real params…, ctaid.{x,y,z}, ntid.{x,y,z})` loops `tid.x`
+  over `[0, ntid.x)` calling it; the kernel is inlined into the loop and a focused
+  pass pipeline (mem2reg → loop-rotate → LoopVectorize → SLP → instcombine → simplifycfg,
+  `compile/Optimizer.cpp`) vectorizes it. The launch ABI shifts to **per-block** (the thunk
+  + `cajeta_xpu_launch_cpu` + `CpuDriver` call once per block; the wrapper owns the
+  work-item loop), composing with the 5A pthread fan-out (threads run block ranges, each
+  block is a vectorized loop).
+  - **The host TargetMachine now targets the native CPU + features** (`getHostCPUName` +
+    `getHostCPUFeatures`) so TTI exposes AVX2/AVX-512 — without it LoopVectorize leaves the
+    masked store scalar. Tradeoff: AOT objects are tuned to this machine (a `--cpu-arch`
+    baseline knob for portable binaries is a later refinement).
+  - **A general optimization pipeline landed too**: cajeta ran *zero* IR optimization on
+    user code; `--opt=O0|O1|O2|O3` (default O0; `--release`→O2, `--fast`→O3) runs the full
+    per-module pipeline in `emitForModule`. Kernel vectorization is independent of `--opt`
+    (always on). The JIT test path stays unoptimized, so existing JIT correctness tests are
+    unaffected — but the dispatch/driver tests now run the *vectorized* kernel, validating
+    its correctness.
+  - **Measured:** a compute-bound 1M×3000-iter kernel went 9.56 s (scalar serial) → 3.65 s
+    (SIMD serial) → **0.138 s (SIMD + 32-thread parallel) — ~69× total**, AVX-512
+    `<16 x float>` confirmed in the IR. Tests: `XpuCpuAotCliTests.cpuBackendVectorizesBlockWrapper`
+    (divergence-free kernel → SIMD ops in the wrapper, host-robust) + the dispatch/driver
+    suite on the vectorized kernel.
+- **Next — wave-op SIMD via the LLVM Vector Function ABI** (not a from-scratch vectorizer):
+  pure pass-registration can't vectorize wave ops (cross-lane deps make LoopVectorize bail),
+  but declaring each `Wave.*` as a scalar call with a hand-written SIMD **vector variant**
+  (`reduceSum`→horizontal-add-broadcast, `shuffle`→permute, `ballot`→movemask) lets
+  LoopVectorize substitute it when vectorizing the work-item loop at a **forced VF**
+  (`llvm.loop.vectorize.width`, so `Wave.width()` is known); masked variants handle
+  divergence. We write only the small per-op variants. The boundary to pin down first (so it
+  "doesn't degrade"): masked-variant semantics under divergence (active-lane-only reduce/
+  ballot). Its own increment after that study.
+- Probe AMX / SME matmul lowering (CPU matrix engines, runtime-feature-gated).
 
 ### Increment 6 — workgroup barriers via work-item loop fission (POCL-style)
 - Lifts the barrier restriction: split the kernel at each barrier, loop over work-items

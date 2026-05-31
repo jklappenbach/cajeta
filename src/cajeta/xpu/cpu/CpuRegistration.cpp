@@ -11,11 +11,14 @@
 
 #include "CpuRegistration.h"
 #include "CpuKernelLowering.h"
+#include "CpuBackend.h"
+#include "cajeta/compile/Optimizer.h"
 
 #include "cajeta/method/Method.h"
 #include "cajeta/xpu/core/XpuAttributes.h"
 #include "cajeta/error/Exception.h"
 
+#include "llvm/IR/Attributes.h"
 #include "llvm/IR/BasicBlock.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/DerivedTypes.h"
@@ -24,6 +27,8 @@
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/Module.h"
 #include "llvm/Linker/Linker.h"
+#include "llvm/Target/TargetMachine.h"
+#include "llvm/Transforms/Utils/Cloning.h"
 #include "llvm/Transforms/Utils/ModuleUtils.h"
 
 namespace cajeta {
@@ -45,6 +50,15 @@ namespace cpu {
             llvm::FunctionType::get(voidTy, {ptrTy, ptrTy}, false);
         llvm::FunctionCallee regFn = hostModule.getOrInsertFunction(
             "__cajeta_xpu_register_cpu_kernel", regTy);
+
+        // Host TargetMachine — supplies TargetTransformInfo so LoopVectorize can
+        // cost-model the per-block wrapper's work-item loop (Inc 5B). One TM for
+        // all kernels; null is tolerated (vectorization just won't fire).
+        std::unique_ptr<llvm::TargetMachine> hostTm = createCpuTargetMachine();
+
+        // The per-block wrapper takes 6 coordinate params (ctaid.{x,y,z},
+        // ntid.{x,y,z}); the 3 tid coords become its internal work-item loop var.
+        const unsigned kNumBlockCoordParams = 6;
 
         int emitted = 0;
         for (auto& method : kernels) {
@@ -72,18 +86,89 @@ namespace cpu {
             }
             llvm::Function* linked = hostModule.getFunction(sym);
             if (!linked) continue;
+            linked->addFnAttr(llvm::Attribute::AlwaysInline);   // inline into loop
 
-            // Uniform launcher thunk — the CPU's kernelParams ABI, mirroring
-            // cuLaunch/hipModuleLaunch: argv[i] points to the i-th argument's
-            // value; coord is the per-work-item i32[9] (tid/ctaid/ntid xyz). The
-            // thunk unpacks argv + coord and calls the real kernel, giving the
-            // driver/dispatcher one signature it can call for any kernel. Built
-            // from the kernel's FunctionType alone: the last kNumCoordParams i32s
-            // are coordinates; the rest are real params (pointer ⇒ buffer ptr,
-            // value ⇒ scalar), so no KernelParam list is threaded through.
-            //   void __cajeta_xpu_cpu_launch.<name>(ptr argv, ptr coord)
             llvm::Type* i32 = llvm::Type::getInt32Ty(ctx);
             llvm::Type* i64 = llvm::Type::getInt64Ty(ctx);
+            llvm::FunctionType* kfnTy = linked->getFunctionType();
+            const unsigned total = kfnTy->getNumParams();
+            const unsigned nReal = total - kNumCoordParams;     // buffers + scalars
+
+            // --- Per-block wrapper (POCL model, Inc 5B) ---------------------
+            // void __cajeta_xpu_cpu_block.<name>(real params...,
+            //        i32 ctaid.x, ctaid.y, ctaid.z, ntid.x, ntid.y, ntid.z)
+            // Loops the work-item index tid.x over [0, ntid.x) calling the
+            // per-work-item kernel; the kernel is then inlined and the loop is
+            // handed to LoopVectorize → SIMD. 1-D over tid.x (the launch ABI is
+            // 1-D: ntid.y/z == 1); tid.y/z are 0.
+            std::vector<llvm::Type*> wtys;
+            wtys.reserve(nReal + kNumBlockCoordParams);
+            for (unsigned i = 0; i < nReal; ++i)
+                wtys.push_back(kfnTy->getParamType(i));
+            for (unsigned i = 0; i < kNumBlockCoordParams; ++i)
+                wtys.push_back(i32);
+            llvm::Function* wrapper = llvm::Function::Create(
+                llvm::FunctionType::get(voidTy, wtys, false),
+                llvm::GlobalValue::ExternalLinkage,
+                "__cajeta_xpu_cpu_block." + entryName, hostModule);
+
+            llvm::Value* ctaidX = wrapper->getArg(nReal + 0);
+            llvm::Value* ctaidY = wrapper->getArg(nReal + 1);
+            llvm::Value* ctaidZ = wrapper->getArg(nReal + 2);
+            llvm::Value* ntidX  = wrapper->getArg(nReal + 3);
+            llvm::Value* ntidY  = wrapper->getArg(nReal + 4);
+            llvm::Value* ntidZ  = wrapper->getArg(nReal + 5);
+
+            llvm::BasicBlock* wEntry =
+                llvm::BasicBlock::Create(ctx, "entry", wrapper);
+            llvm::BasicBlock* wHead =
+                llvm::BasicBlock::Create(ctx, "wi.head", wrapper);
+            llvm::BasicBlock* wBody =
+                llvm::BasicBlock::Create(ctx, "wi.body", wrapper);
+            llvm::BasicBlock* wExit =
+                llvm::BasicBlock::Create(ctx, "wi.exit", wrapper);
+
+            b.SetInsertPoint(wEntry);
+            b.CreateBr(wHead);
+
+            b.SetInsertPoint(wHead);
+            llvm::PHINode* tid = b.CreatePHI(i32, 2, "tid.x");
+            tid->addIncoming(llvm::ConstantInt::get(i32, 0), wEntry);
+            b.CreateCondBr(b.CreateICmpSLT(tid, ntidX, "wi.cond"), wBody, wExit);
+
+            b.SetInsertPoint(wBody);
+            llvm::Value* zero = llvm::ConstantInt::get(i32, 0);
+            std::vector<llvm::Value*> kArgs;
+            kArgs.reserve(total);
+            for (unsigned i = 0; i < nReal; ++i) kArgs.push_back(wrapper->getArg(i));
+            kArgs.push_back(tid);                     // tid.x
+            kArgs.push_back(zero);                    // tid.y
+            kArgs.push_back(zero);                    // tid.z
+            kArgs.push_back(ctaidX); kArgs.push_back(ctaidY); kArgs.push_back(ctaidZ);
+            kArgs.push_back(ntidX);  kArgs.push_back(ntidY);  kArgs.push_back(ntidZ);
+            llvm::CallInst* kcall = b.CreateCall(linked, kArgs);
+            llvm::Value* tidNext =
+                b.CreateAdd(tid, llvm::ConstantInt::get(i32, 1), "tid.next");
+            tid->addIncoming(tidNext, wBody);
+            b.CreateBr(wHead);
+
+            b.SetInsertPoint(wExit);
+            b.CreateRetVoid();
+
+            // Inline the per-work-item kernel into the loop body, then vectorize
+            // the loop (mem2reg + LoopVectorize). This is what turns the CPU
+            // backend's wave from width-1 to native SIMD width.
+            llvm::InlineFunctionInfo ifi;
+            llvm::InlineFunction(*kcall, ifi);
+            vectorizeFunction(*wrapper, hostTm.get());
+
+            // --- Uniform launcher thunk → the per-block wrapper -------------
+            // void __cajeta_xpu_cpu_launch.<name>(ptr argv, ptr coord). The
+            // runtime calls it ONCE PER BLOCK; coord still carries 9 i32s, but
+            // the wrapper consumes only ctaid.{x,y,z} (coord[3..5]) and
+            // ntid.{x,y,z} (coord[6..8]) — the work-item loop lives in the
+            // wrapper. argv[i] points to the i-th real argument's value (the
+            // cuLaunch/hipModuleLaunch kernelParams convention).
             llvm::FunctionType* thunkTy =
                 llvm::FunctionType::get(voidTy, {ptrTy, ptrTy}, false);
             llvm::Function* thunk = llvm::Function::Create(
@@ -96,27 +181,20 @@ namespace cpu {
 
             llvm::BasicBlock* tb = llvm::BasicBlock::Create(ctx, "entry", thunk);
             b.SetInsertPoint(tb);
-
-            llvm::FunctionType* kfnTy = linked->getFunctionType();
-            const unsigned total = kfnTy->getNumParams();
-            const unsigned nReal = total - kNumCoordParams;
             std::vector<llvm::Value*> callArgs;
-            callArgs.reserve(total);
-            // Real params: arg_i = *(paramType_i*)(argv[i]).
+            callArgs.reserve(nReal + kNumBlockCoordParams);
             for (unsigned i = 0; i < nReal; ++i) {
                 llvm::Value* slotPtr = b.CreateInBoundsGEP(
                     ptrTy, argvArg, llvm::ConstantInt::get(i64, i), "argv.slot");
                 llvm::Value* slot = b.CreateLoad(ptrTy, slotPtr, "argv.ptr");
-                callArgs.push_back(
-                    b.CreateLoad(kfnTy->getParamType(i), slot, "arg"));
+                callArgs.push_back(b.CreateLoad(kfnTy->getParamType(i), slot, "arg"));
             }
-            // Coordinates: arg_{nReal+j} = coord[j].
-            for (unsigned j = 0; j < kNumCoordParams; ++j) {
+            for (unsigned j = 3; j < kNumCoordParams; ++j) {   // ctaid+ntid xyz
                 llvm::Value* cPtr = b.CreateInBoundsGEP(
                     i32, coordArg, llvm::ConstantInt::get(i64, j), "coord.slot");
                 callArgs.push_back(b.CreateLoad(i32, cPtr, "coord.val"));
             }
-            b.CreateCall(linked, callArgs);
+            b.CreateCall(wrapper, callArgs);
             b.CreateRetVoid();
 
             // ctor: __cajeta_xpu_register_cpu_kernel(entryName, &launchThunk)
