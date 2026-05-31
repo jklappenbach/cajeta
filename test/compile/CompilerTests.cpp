@@ -46,7 +46,8 @@ TEST(CompilerTests, canThrowOnInvalidInput) {
 // 2026-05-31: bumped 96 → 105 after stack-borrowing's R7 + R8.1a work
 // landed cajeta.threading primitives (Lock, LockGuard, Mutex, RwLock,
 // Semaphore, WriteGuard, Channel) +7 and Atomic{Int32,Int64} +2.
-static constexpr size_t STDLIB_STRUCTURE_COUNT = 105;
+// 2026-05-31: bumped 105 → 106 for R9.2 (cajeta.time.Duration).
+static constexpr size_t STDLIB_STRUCTURE_COUNT = 106;
 
 TEST(CompilerTests, canParseOnValidShortPackage) {
     string inputPath = CAJETA_TEST_ROOT + string("/compile/code/src/cajeta/Test.cajeta");
