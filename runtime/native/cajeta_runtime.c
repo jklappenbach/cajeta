@@ -4131,6 +4131,9 @@ uint32_t __cajeta_xpu_wave_shuffle_sync_u32(uint32_t value, uint32_t srcLane) {
 uint64_t __cajeta_xpu_wave_ballot_sync(bool predicate) {
     return predicate ? 1ULL : 0ULL;
 }
+// Single-lane wave (width=1) on CPU emulation: the wave-wide sum of one lane's
+// value is just that value.
+uint32_t __cajeta_xpu_wave_reduce_sum_u32(uint32_t value) { return value; }
 
 // --- Buffer<T> device memory (CUDA driver-backed) ---------------------------
 // The Buffer<T> stdlib methods (alloc/upload/download/free) are ordinary

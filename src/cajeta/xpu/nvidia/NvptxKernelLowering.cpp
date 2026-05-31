@@ -105,6 +105,15 @@ public:
                 pred}, "ballot");
         return b.CreateZExt(bits, llvm::Type::getInt64Ty(ctx));
     }
+    llvm::Value* waveReduceSum(llvm::IRBuilderBase& b, llvm::Module& m,
+                               llvm::Value* value) override {
+        // redux.sync.add.s32: full-warp membermask. Requires sm_80+ (Ampere).
+        llvm::Type* i32 = llvm::Type::getInt32Ty(m.getContext());
+        llvm::Function* f = llvm::Intrinsic::getOrInsertDeclaration(
+            &m, llvm::Intrinsic::nvvm_redux_sync_add);
+        return b.CreateCall(f, {value, llvm::ConstantInt::get(i32, 0xFFFFFFFFu)},
+                            "redux");
+    }
 
 private:
     static llvm::Value* readSreg(llvm::IRBuilderBase& b, llvm::Module& m,

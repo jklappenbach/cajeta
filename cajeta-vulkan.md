@@ -60,6 +60,7 @@ joined `LoweringTarget`, all with NVPTX/AMDGPU-preserving defaults:
 | `globalId` | computed default | `llvm.spv.thread.id` (native GlobalInvocationId) |
 | `workgroupBarrier` | barrier.cta.sync / s.barrier+fences | `llvm.spv.group.memory.barrier.with.group.sync` (caveat §4) |
 | `decorateKernel` | ptx CC + nvvm.annotations / amdgpu CC | no-op (markers set in `createKernel`) |
+| `waveWidth` / `waveShuffle` / `waveBallot` / `waveReduceSum` | nvvm / amdgcn wave intrinsics | `llvm.spv.wave.{get_lane_count, readlane, ballot, reduce.sum}` (caveat §4) |
 
 **What stayed shared:** the entire kernel-body AST walk, control flow, the
 operator set, the mutable scalar-slot model, and `addrspace(3)` shared memory
@@ -104,6 +105,19 @@ skips cleanly when no Vulkan device is present.
 - **Dynamic shared memory deferred.** Vulkan sizes workgroup arrays at pipeline
   creation (spec-constant length), not per-dispatch — so dynamic LDS would be a
   pipeline-cache key, not a launch scalar. Static shared is the measured proof.
+- **`@Wave` ops — `reduce` overturned the matrix's guess.** `Wave.shuffleSync` /
+  `ballotSync` / `reduceSum` lower to `spv.wave.readlane` / `spv.wave.ballot`
+  (`<4 x i32>` → i64) / `spv.wave.reduce.sum` (→ `OpGroupNonUniformIAdd`). The matrix
+  had predicted reduce would be richer on Vulkan than on NV/AMD; in fact all three
+  expose one native wave-reduce intrinsic, so it maps 1:1 like shuffle/ballot.
+  Emit-verified + `spirv-val`-clean, and `reduceSum` runs on-device on RADV
+  (`XpuWaveDeviceTests.vulkanReduceSumRunsOnDevice`, width-agnostic: sum of 1s over a
+  full subgroup == subgroup size ∈ {32, 64}).
+- **`Wave.width()` is emit-only on Vulkan.** `spv.wave.get_lane_count` lowers from IR
+  but LLVM 22's SPIR-V backend cannot *select* it (`Intrinsic selection not
+  implemented`) — so `Wave.width()` crashes on-device and isn't exercised in the
+  device tests (which derive width-agnostic invariants instead). A backend gap to
+  revisit when LLVM gains the lowering; not an abstraction-layer problem.
 
 ## 5. Files
 

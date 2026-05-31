@@ -184,6 +184,14 @@ public:
             b.CreateExtractElement(vec, uint64_t(1)), i64);
         return b.CreateOr(lo, b.CreateShl(hi, llvm::ConstantInt::get(i64, 32)));
     }
+    llvm::Value* waveReduceSum(llvm::IRBuilderBase& b, llvm::Module& m,
+                               llvm::Value* value) override {
+        // spv.wave.reduce.sum → OpGroupNonUniformIAdd with the Reduce operation.
+        llvm::Function* f = llvm::Intrinsic::getOrInsertDeclaration(
+            &m, llvm::Intrinsic::spv_wave_reduce_sum,
+            {llvm::Type::getInt32Ty(m.getContext())});
+        return b.CreateCall(f, {value}, "wavered");
+    }
 
 private:
     static llvm::Value* readCoord(llvm::IRBuilderBase& b, llvm::Module& m,

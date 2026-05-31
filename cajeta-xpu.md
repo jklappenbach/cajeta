@@ -267,6 +267,19 @@ flow, operators, coordinate reads, shared memory, and the entire frontend +
 name-keyed registration still hold across all three. The full per-feature
 breakdown is [`cajeta-xpu-matrix.md`](cajeta-xpu-matrix.md).
 
+- **`@Wave` extends cleanly to all three — and `reduce` overturned its own guess.**
+  `Wave.shuffleSync` / `ballotSync` / `reduceSum` add four pure-virtual leaf hooks
+  (`waveWidth`/`waveShuffle`/`waveBallot`/`waveReduceSum`) and nothing else. The matrix
+  had predicted reduce would *invert* comprehensiveness (one native op on Vulkan vs. a
+  shuffle/DPP sequence on NV/AMD); the build showed all three expose a single hardware
+  wave-reduce intrinsic (`spv.wave.reduce.sum` / `amdgcn.wave.reduce.add` /
+  `nvvm.redux.sync.add` — the last gated on sm_80+), so reduce maps 1:1 like
+  shuffle/ballot. Running it on-device surfaced two things only execution shows: AMDGPU
+  folds a *uniform-constant* reduce operand back to the operand (needs a divergent
+  operand to actually sum), and LLVM 22's SPIR-V backend cannot *select*
+  `spv.wave.get_lane_count`, so `Wave.width()` is emit-only on Vulkan today. Both are
+  recorded in the matrix, not papered over.
+
 ### AMD on-device increments (cajeta-amd.md) — all landed
 
 | Increment | What landed | Tests |
