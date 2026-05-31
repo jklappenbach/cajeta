@@ -269,5 +269,26 @@ public class AsyncDemo extends DemoClass {
                 System.stdout.println("  withTimeout(1ns, slow)         = (timeout)");
             }
         }
+
+        // 13. Channel.select — multiplex over multiple Channel<T>. Two
+        // channels pre-loaded; selectReceive returns lowest-index ready.
+        Channel<int32> selA = new Channel<int32>(2);
+        Channel<int32> selB = new Channel<int32>(2);
+        selA.send(7);
+        selB.send(99);
+        Channel<int32>[] chs = new Channel<int32>[2];
+        chs[0] = selA;
+        chs[1] = selB;
+        Optional<cajeta.threading.SelectResult<int32>> sel =
+            Tasks.selectReceive<int32>(chs);
+        selA.close();
+        selB.close();
+        if (sel.isPresent()) {
+            cajeta.threading.SelectResult<int32> srRes = sel.get();
+            System.stdout.println("  selectReceive(2 chs) idx/value  = "
+                + srRes.index + "/" + srRes.value);
+        } else {
+            System.stdout.println("  selectReceive(2 chs)            = (empty)");
+        }
     }
 }
