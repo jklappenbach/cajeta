@@ -14,6 +14,7 @@
 #include "SpirvBackend.h"
 #include "SpirvKernelLowering.h"
 
+#include "../lowering/KernelLowering.h"
 #include "cajeta/method/Method.h"
 #include "cajeta/xpu/core/XpuAttributes.h"
 #include "cajeta/error/Exception.h"
@@ -43,6 +44,7 @@ namespace vulkan {
         if (!tm) return 0;
 
         llvm::LLVMContext& ctx = hostModule.getContext();
+        llvm::Type* i32Ty = llvm::Type::getInt32Ty(ctx);
         llvm::Type* i64Ty = llvm::Type::getInt64Ty(ctx);
         llvm::Type* voidTy = llvm::Type::getVoidTy(ctx);
         llvm::PointerType* ptrTy = llvm::PointerType::get(ctx, 0);
@@ -53,6 +55,15 @@ namespace vulkan {
             llvm::FunctionType::get(voidTy, {ptrTy, ptrTy, i64Ty}, false);
         llvm::FunctionCallee regFn =
             hostModule.getOrInsertFunction("__cajeta_xpu_register_module", regTy);
+
+        // void __cajeta_xpu_register_kernel_params(i8* name, i32 count,
+        //                                          i8* isBuffer, i32* byteSize)
+        // The Vulkan rung of the runtime dispatcher needs this to turn the
+        // uniform kernelParams argv into descriptor bindings (scalars -> SSBOs).
+        llvm::FunctionType* kpTy = llvm::FunctionType::get(
+            voidTy, {ptrTy, i32Ty, ptrTy, ptrTy}, false);
+        llvm::FunctionCallee kpFn = hostModule.getOrInsertFunction(
+            "__cajeta_xpu_register_kernel_params", kpTy);
 
         int emitted = 0;
         for (auto& method : kernels) {
@@ -98,6 +109,38 @@ namespace vulkan {
                 b.CreateGlobalString(entryName, "xpu.kname." + entryName);
             b.CreateCall(regFn, {nameStr, spvGV,
                                  llvm::ConstantInt::get(i64Ty, spirv.size())});
+
+            // Per-kernel parameter metadata: which args are buffers vs scalars,
+            // and the scalar byte sizes — so the runtime can bind buffers and
+            // wrap scalars in single-element SSBOs at launch.
+            std::vector<KernelParamInfo> info =
+                collectKernelParamInfo(method, ctx);
+            if (!info.empty()) {
+                std::vector<uint8_t> isBuf;
+                std::vector<uint32_t> sizes;
+                isBuf.reserve(info.size());
+                sizes.reserve(info.size());
+                for (auto& pi : info) {
+                    isBuf.push_back(pi.isBuffer ? 1 : 0);
+                    sizes.push_back(pi.byteSize);
+                }
+                llvm::Constant* isBufInit = llvm::ConstantDataArray::get(
+                    ctx, llvm::ArrayRef<uint8_t>(isBuf.data(), isBuf.size()));
+                auto* isBufGV = new llvm::GlobalVariable(
+                    hostModule, isBufInit->getType(), /*isConstant=*/true,
+                    llvm::GlobalValue::PrivateLinkage, isBufInit,
+                    "xpu.kpbuf." + entryName);
+                llvm::Constant* szInit = llvm::ConstantDataArray::get(
+                    ctx, llvm::ArrayRef<uint32_t>(sizes.data(), sizes.size()));
+                auto* szGV = new llvm::GlobalVariable(
+                    hostModule, szInit->getType(), /*isConstant=*/true,
+                    llvm::GlobalValue::PrivateLinkage, szInit,
+                    "xpu.kpsz." + entryName);
+                b.CreateCall(kpFn, {nameStr,
+                                    llvm::ConstantInt::get(i32Ty,
+                                                           (uint32_t) info.size()),
+                                    isBufGV, szGV});
+            }
             b.CreateRetVoid();
 
             // Run at module-init time (LLJIT: jit->initialize; native: startup).

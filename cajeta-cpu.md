@@ -134,12 +134,17 @@ dispatcher uses must be wired *in C* there:
   `--xpu-backend=amdgpu` runs on the GPU via HIP, and `--xpu-backend=amdgpu,cpu` with
   `CAJETA_XPU_BACKEND=cpu` falls to the CPU even with the GPU present — real-hardware
   degrade-to-CPU.
-- **4.3 Vulkan rung** ⏭️ — larger than first scoped: porting `VulkanDriver.cpp` to C is
-  mechanical, but Vulkan has **no pointer-arg ABI**, so the uniform `argv` the dispatcher
-  receives (CUDA/HIP `kernelParams` shape) does not map to the descriptor-set model where
-  *every* param including scalars must be a bound storage buffer. Wiring Vulkan into
-  `__cajeta_xpu_launch` therefore needs (1) per-kernel parameter metadata and (2) an
-  argv→descriptor-set translation (scalars → transient SSBOs) on top of the driver port.
+- **4.3 Vulkan rung** ✅ (landed 2026-05-31) — `VulkanDriver.cpp` ported to C (instance/
+  device/compute-queue/cmd-pool bring-up, host-coherent buffer table, descriptor-set
+  compute launch), guarded by `__has_include(<vulkan/vulkan.h>)` and `dlopen`-resolved (no
+  link dependency). The launch-ABI fork is handled by **per-kernel parameter metadata**
+  (`__cajeta_xpu_register_kernel_params`, emitted by the Vulkan registration from
+  `collectKernelParamInfo`) + an **argv→descriptor-set translation**: buffer args bind to
+  their storage buffers, scalar args are copied into transient single-element SSBOs (freed
+  after the dispatch). Local size is baked into the SPIR-V (`kVulkanLocalSizeX = 64`), so
+  the launch dispatches `gridX` work-groups. **Device-validated on RADV**: host-source
+  SAXPY `--xpu-backend=vulkan` runs on the GPU; `vulkan,cpu` + `CAJETA_XPU_BACKEND=cpu`
+  falls to the CPU. **All four backends now route through the one dispatcher.**
 
 ### Increment 5 — parallelism: multi-core threading + true wave = SIMD lane
 - **Multi-core threading** (moved here from Inc 3, 2026-05-31): a `parallel_for` chunking
@@ -262,12 +267,29 @@ dispatcher uses must be wired *in C* there:
   the availability probes must call the `*_init_locked` variants, not the locking
   `*_ready` wrappers (it never fired before because no CUDA/HIP bundle had run the selector
   under the lock; the HIP device test is the first to exercise it).
-- **Inc 4.3 (Vulkan) — scope finding.** The uniform launch ABI doesn't reach Vulkan for
-  free: `__cajeta_xpu_launch` gets a CUDA/HIP `kernelParams` argv (buffer handles + raw
-  scalar values), but Vulkan's compute entry is `void main()` with descriptor-bound storage
-  buffers and **no params** — scalars included must become single-element SSBOs (the
-  existing Vulkan device tests do this by hand). So the rung needs per-kernel parameter
-  metadata (which args are buffers vs scalars, and scalar byte sizes) registered alongside
-  the SPIR-V blob, plus an argv→descriptor-set translation (map buffer handles to VkBuffers;
-  upload scalars into transient SSBOs) — on top of porting `VulkanDriver.cpp` to C. Larger
-  than a driver port; see the live plan.
+- **Inc 4.3 — landed 2026-05-31.** The Vulkan rung in the C runtime; **all four backends
+  now route through the one dispatcher**, device-validated on AMD (HIP + Vulkan) and the CPU
+  (GPU-free), CUDA behavior-preserved.
+  - **The uniform launch ABI doesn't reach Vulkan for free** — the scope finding that shaped
+    the work: `__cajeta_xpu_launch` gets a CUDA/HIP `kernelParams` argv (buffer handles + raw
+    scalar values), but Vulkan's compute entry is `void main()` with descriptor-bound storage
+    buffers and **no params** — scalars included must become single-element SSBOs. So beyond
+    porting `VulkanDriver.cpp` to C, the rung needed **(1) per-kernel parameter metadata**
+    (`__cajeta_xpu_register_kernel_params(name, count, isBuffer[], byteSize[])`, emitted by
+    the Vulkan registration ctor from the shared `collectKernelParamInfo`) and **(2) an
+    argv→descriptor-set translation** in the launch: buffer args bind their storage buffers,
+    scalar args are copied into transient SSBOs (allocated, bound, freed per dispatch).
+  - **The Vulkan buffer handle is a table index, not a pointer** — `Buffer<T>.deviceHandle`
+    on Vulkan is a 1-based slot in the runtime's `VkBuffer`/`VkDeviceMemory`/mapped table;
+    upload/download memcpy through the host-coherent mapping. The per-run-fixed backend keeps
+    the handle's meaning consistent (decision #2).
+  - **Baked local size** (`kVulkanLocalSizeX = 64`) is the one launch asymmetry — Vulkan
+    fixes the workgroup size at SPIR-V compile time, so the launch dispatches `gridX`
+    work-groups and the host-source block must match the bake (the device test uses
+    `block:[64]`, `grid:[16]` for n=1024). CUDA/HIP take block dim per-launch; Vulkan can't.
+  - The port is `dlopen`-resolved + `__has_include`-guarded, so a box without a Vulkan SDK
+    header at runtime-build time compiles it out (Vulkan probes unavailable) — same graceful
+    shape as the absent-GPU paths.
+  - Tests: `XpuVulkanDispatchDeviceTests` (RADV) — `--xpu-backend=vulkan` SAXPY runs on the
+    GPU through the dispatcher; `vulkan,cpu` + `CAJETA_XPU_BACKEND=cpu` falls to CPU. Full
+    Xpu suite: 108 passed, 0 failed.
