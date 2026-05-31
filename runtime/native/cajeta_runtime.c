@@ -158,6 +158,80 @@ static long __cajeta_dbg_safepoint_total = 0;
 // down) can bump it at fiber creation; read back via dbg_id on the fiber.
 long __cajeta_dbg_fiber_id_counter = 0;
 
+// ── Debugger CP6f-2: live-fiber registry ──────────────────────────────────
+// A snapshot of currently-live fibers so the DAP `threads`/fibers view can
+// enumerate them: a fiber registers at __cajeta_task_run and unregisters when
+// the carrier frees it (state == DONE). Stores opaque fiber handles; the
+// per-fiber accessors further down cast them back to struct cajeta_fiber* so
+// the host's native runtime copy can read a fiber the JIT copy registered.
+//
+// Guarded by its own mutex with a strict one-way nesting: the spawn path locks
+// task→reg, while the carrier-free and host-enumeration paths lock reg only —
+// nothing ever locks reg then task, so there's no deadlock against the task
+// mutex. Enumeration happens on the debugger thread while a breakpoint is
+// parked (the carrier holds no reg lock then), so it never blocks the program.
+static pthread_mutex_t __cajeta_dbg_fiber_reg_mutex = PTHREAD_MUTEX_INITIALIZER;
+static void** __cajeta_dbg_fiber_reg = NULL;
+static int __cajeta_dbg_fiber_reg_count = 0;
+static int __cajeta_dbg_fiber_reg_cap = 0;
+
+void __cajeta_dbg_fiber_register(void* fiber) {
+    if (!fiber) return;
+    pthread_mutex_lock(&__cajeta_dbg_fiber_reg_mutex);
+    if (__cajeta_dbg_fiber_reg_count == __cajeta_dbg_fiber_reg_cap) {
+        int cap = __cajeta_dbg_fiber_reg_cap ? __cajeta_dbg_fiber_reg_cap * 2 : 16;
+        void** grown = realloc(__cajeta_dbg_fiber_reg, (size_t) cap * sizeof(void*));
+        if (!grown) { pthread_mutex_unlock(&__cajeta_dbg_fiber_reg_mutex); return; }
+        __cajeta_dbg_fiber_reg = grown;
+        __cajeta_dbg_fiber_reg_cap = cap;
+    }
+    __cajeta_dbg_fiber_reg[__cajeta_dbg_fiber_reg_count++] = fiber;
+    pthread_mutex_unlock(&__cajeta_dbg_fiber_reg_mutex);
+}
+
+void __cajeta_dbg_fiber_unregister(void* fiber) {
+    if (!fiber) return;
+    pthread_mutex_lock(&__cajeta_dbg_fiber_reg_mutex);
+    for (int i = 0; i < __cajeta_dbg_fiber_reg_count; i++) {
+        if (__cajeta_dbg_fiber_reg[i] != fiber) continue;
+        // Order-preserving removal: shift the tail down so the view stays in
+        // stable spawn order across stops (no swap-with-last hole).
+        for (int j = i + 1; j < __cajeta_dbg_fiber_reg_count; j++) {
+            __cajeta_dbg_fiber_reg[j - 1] = __cajeta_dbg_fiber_reg[j];
+        }
+        __cajeta_dbg_fiber_reg_count--;
+        break;
+    }
+    pthread_mutex_unlock(&__cajeta_dbg_fiber_reg_mutex);
+}
+
+// Number of live fibers (debugger thread reads this while the program is
+// parked). Excludes the program/main thread, which the DAP layer reports as a
+// synthetic id-0 thread.
+int __cajeta_dbg_fiber_count(void) {
+    pthread_mutex_lock(&__cajeta_dbg_fiber_reg_mutex);
+    int n = __cajeta_dbg_fiber_reg_count;
+    pthread_mutex_unlock(&__cajeta_dbg_fiber_reg_mutex);
+    return n;
+}
+
+// The index-th live fiber handle (spawn order), or NULL if out of range.
+void* __cajeta_dbg_fiber_at(int index) {
+    pthread_mutex_lock(&__cajeta_dbg_fiber_reg_mutex);
+    void* f = (index >= 0 && index < __cajeta_dbg_fiber_reg_count)
+                  ? __cajeta_dbg_fiber_reg[index]
+                  : NULL;
+    pthread_mutex_unlock(&__cajeta_dbg_fiber_reg_mutex);
+    return f;
+}
+
+// Test-only: drop all registry entries (does NOT free the fibers themselves).
+void __cajeta_dbg_fiber_reg_reset(void) {
+    pthread_mutex_lock(&__cajeta_dbg_fiber_reg_mutex);
+    __cajeta_dbg_fiber_reg_count = 0;
+    pthread_mutex_unlock(&__cajeta_dbg_fiber_reg_mutex);
+}
+
 // CP3: a settable safepoint handler. When the in-process debugger is attached
 // it installs one (via the JIT symbol so the embedded-bitcode copy's pointer
 // is set); the handler decides — based on the host-side armed set — whether to
@@ -839,6 +913,25 @@ int __cajeta_dbg_current_fiber_id(void) {
     return __cajeta_current_fiber ? __cajeta_current_fiber->dbg_id : 0;
 }
 
+// Debugger CP6f-2: stateless per-fiber accessors. Like the frame-chain
+// accessors above, these cast an opaque handle (from __cajeta_dbg_fiber_at)
+// back to the fiber struct so the host's NATIVE runtime copy can read a fiber
+// the JIT copy registered (both copies lay the struct out identically).
+// dbg_id is the stable per-fiber id; frame_top is the head of that fiber's
+// debug frame chain (feed it to DebugVars::walkFrames); state is the
+// cajeta_fiber_state enum value.
+long __cajeta_dbg_fiber_id_of(void* fiber) {
+    return fiber ? (long) ((struct cajeta_fiber*) fiber)->dbg_id : 0;
+}
+
+void* __cajeta_dbg_fiber_frame_top(void* fiber) {
+    return fiber ? ((struct cajeta_fiber*) fiber)->dbg_top : NULL;
+}
+
+int __cajeta_dbg_fiber_state(void* fiber) {
+    return fiber ? (int) ((struct cajeta_fiber*) fiber)->state : -1;
+}
+
 // Fiber entry trampoline — invoked by makecontext on first resume. Runs
 // the user trampoline (which calls the async fn + signals done) and then
 // falls through to uc_link, which returns to the carrier.
@@ -924,6 +1017,9 @@ static void* __cajeta_carrier_loop(void* arg) {
         __cajeta_swapcontext(&__cajeta_carrier_ctx, &f->ctx);
         __cajeta_current_fiber = NULL;
         if (f->state == CAJETA_FIBER_DONE) {
+            // Debugger CP6f-2: drop from the live-fiber registry before freeing
+            // so the fibers view never hands the host a dangling handle.
+            __cajeta_dbg_fiber_unregister(f);
             free(f->stack);
             free(f);
         }
@@ -987,6 +1083,13 @@ void __cajeta_task_run(void* arg, cajeta_task_trampoline_fn trampoline,
     if (fiber_slot) *fiber_slot = f;
 
     pthread_mutex_lock(&__cajeta_task_mutex);
+    // Debugger CP3/CP6f-2: assign a stable id (fibers get 1,2,3,...; the
+    // program/main thread reports id 0) and add to the live-fiber registry so
+    // the DAP fibers view can enumerate it. (CP3 declared dbg_id but never
+    // assigned it, so every fiber reported 0 — fixed here.) register() locks
+    // the reg mutex INSIDE the task mutex; nothing locks the other order.
+    f->dbg_id = (int) ++__cajeta_dbg_fiber_id_counter;
+    __cajeta_dbg_fiber_register(f);
     if (!__cajeta_task_workers_started) {
         __cajeta_task_workers_started = 1;
         pthread_create(&__cajeta_task_worker, NULL,
