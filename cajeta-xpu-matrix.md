@@ -192,30 +192,41 @@ why.
 
 ---
 
-## 8. Wave / subgroup ops (the `@Wave` feature — readlane + ballot built & measured)
+## 8. Wave / subgroup ops (the `@Wave` feature — readlane + ballot + reduce built & measured)
 
 Wave ops are the archetypal variance-shaped feature and the headline test of the
-seam — and the seam held. `Wave.shuffleSync` (readlane / shuffle-by-index) and
-`Wave.ballotSync` lower through the shared AST walk with only three new
-`LoweringTarget` methods (`waveWidth`/`waveShuffle`/`waveBallot`) forking. Built
-2026-05-30; emit-verified on all three backends, run on-device on AMD + Vulkan.
+seam — and the seam held. `Wave.shuffleSync` (readlane / shuffle-by-index),
+`Wave.ballotSync`, and `Wave.reduceSum` lower through the shared AST walk with only
+four new `LoweringTarget` methods (`waveWidth`/`waveShuffle`/`waveBallot`/
+`waveReduceSum`) forking. Built 2026-05-30; emit-verified on all three backends,
+run on-device on AMD + Vulkan.
 
 | Feature | Core | NVIDIA | AMD | Vulkan |
 |---------|------|--------|-----|--------|
-| Wave width | `Wave.width()` → i32 | `native` · `read.ptx.sreg.warpsize` (32) | `native` · `amdgcn.wavefrontsize` (32/64) | `native` · `spv.wave.get_lane_count` (queried) |
+| Wave width | `Wave.width()` → i32 | `native` · `read.ptx.sreg.warpsize` (32) | `native` · `amdgcn.wavefrontsize` (32/64) | ⚑ `emit-only: ` `spv.wave.get_lane_count` lowers from IR but LLVM 22's SPIR-V backend **cannot select it** (`Intrinsic selection not implemented`), so `Wave.width()` does not run on-device yet — a backend gap, not an abstraction one. |
 | Shuffle / readlane | `Wave.shuffleSync(v, lane)` | `native` · `nvvm.shfl.sync.idx.i32` | `native` · `amdgcn.readlane` | `native` · `spv.wave.readlane` (→ `OpGroupNonUniformShuffle`) |
 | Ballot | `Wave.ballotSync(pred)` → i64 | `native` · `nvvm.vote.ballot.sync` (i32→i64) | `native` · `amdgcn.ballot.i32` (i32→i64) | `native` · `spv.wave.ballot` (`<4 x i32>`, low 64 → i64) |
-| Reduce / scan | — | `redux.sync` (sm_80+) or shuffle-sequence | DPP / shuffle-sequence | `native` · `spv.wave.reduce_*` *(single intrinsic)* | 
+| Reduce (sum) | `Wave.reduceSum(v)` → i32 | `native` · `nvvm.redux.sync.add` (sm_80+) | `native` · `amdgcn.wave.reduce.add` | `native` · `spv.wave.reduce.sum` (→ `OpGroupNonUniformIAdd`) |
 
-**Reading:** wave ops are native on all three — width is the only real divergence
-(32 / 32-or-64 / queried), each surfaced by `waveWidth`. Two measured nuances:
-**ballot shape forks** (NV i32, AMD i32 wave32, Vulkan `<4 x i32>` 128-bit — the
-Core API normalizes to i64); and **reduce inverts the usual comprehensiveness**
-— it's a *single* intrinsic on Vulkan but a shuffle/DPP sequence on NV/AMD (the
-opposite of the "NVIDIA most comprehensive" pattern). The first cut ships
-readlane + ballot; reduce is the natural next increment. Tests:
-`XpuWaveEmitTests` (3 backends + `spirv-val`), `XpuWaveDeviceTests` (AMD + Vulkan
-on-device).
+**Reading:** wave ops are native on all three. **The reduce probe overturned its own
+hypothesis.** The guess (recorded here in the prior pass) was that reduce would
+*invert* comprehensiveness — one native intrinsic on Vulkan vs. a shuffle/DPP
+butterfly sequence on NV/AMD. The build showed the opposite: **all three expose a
+single hardware wave-reduce intrinsic in LLVM 22**, so reduce maps as cleanly as
+shuffle/ballot (`waveReduceSum` is a one-liner per backend). The real asymmetries are
+narrower and were only visible by running it:
+- **NVPTX `redux.sync` is gated on sm_80+** (Ampere); below that a butterfly-shuffle
+  fallback would be needed (out of scope — the emit test targets `sm_89`).
+- **AMDGPU folds a *uniform-constant* operand** to `wave.reduce.add` back to the
+  operand instead of summing it (`reduceSum(1)` returned 1 on-device); a *divergent*
+  operand takes the real reduction path. The device test feeds a buffer of 1s so the
+  reduction actually runs.
+- **Ballot shape still forks** (NV i32, AMD i32 wave32, Vulkan `<4 x i32>` 128-bit —
+  the Core API normalizes to i64).
+
+Tests: `XpuWaveEmitTests` (3 backends + `spirv-val`, shuffle/ballot/reduce),
+`XpuWaveDeviceTests` (shuffle/ballot/reduce on-device on AMD + Vulkan; the reduce
+check is width-agnostic — sum of 1s over a full wave == wave width ∈ {32, 64}).
 
 ---
 

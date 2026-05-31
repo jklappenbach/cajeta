@@ -140,6 +140,16 @@ namespace xpu {
         // true. Backends whose native ballot is narrower (i32) zero-extend.
         virtual llvm::Value* waveBallot(llvm::IRBuilderBase& b, llvm::Module& m,
                                         llvm::Value* pred) = 0;
+
+        // Wave-wide reduction (sum) over i32 across active lanes; returns i32.
+        // The "comprehensiveness-inversion" probe found this maps 1:1 like
+        // shuffle/ballot — a single hardware intrinsic on all three backends
+        // (the guessed shuffle/DPP-sequence fork did not materialize). NVPTX's
+        // redux.sync is gated on sm_80+; below that a butterfly-shuffle fallback
+        // would be needed (out of scope).
+        virtual llvm::Value* waveReduceSum(llvm::IRBuilderBase& b,
+                                           llvm::Module& m,
+                                           llvm::Value* value) = 0;
     };
 
 } // namespace xpu

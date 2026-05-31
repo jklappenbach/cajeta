@@ -695,6 +695,11 @@ private:
                 llvm::Value* pred = toI1(lowerExpr(args[0].expression));
                 return target.waveBallot(builder, mod, pred);
             }
+            if (name == "reduceSum") {
+                if (args.size() != 1) unsupported("Wave.reduceSum arity");
+                return target.waveReduceSum(builder, mod,
+                                            lowerExpr(args[0].expression));
+            }
         }
         unsupported("device builtin '" + recv + "." + name + "()'");
     }

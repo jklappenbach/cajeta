@@ -107,6 +107,14 @@ public:
         llvm::Value* bits = b.CreateCall(f, {pred}, "ballot");
         return b.CreateZExt(bits, llvm::Type::getInt64Ty(ctx));
     }
+    llvm::Value* waveReduceSum(llvm::IRBuilderBase& b, llvm::Module& m,
+                               llvm::Value* value) override {
+        // wave.reduce.add over i32; strategy operand 0 = default lowering.
+        llvm::Type* i32 = llvm::Type::getInt32Ty(m.getContext());
+        llvm::Function* f = llvm::Intrinsic::getOrInsertDeclaration(
+            &m, llvm::Intrinsic::amdgcn_wave_reduce_add, {i32});
+        return b.CreateCall(f, {value, llvm::ConstantInt::get(i32, 0)}, "wavered");
+    }
 
 private:
     static llvm::Value* readId(llvm::IRBuilderBase& b, llvm::Module& m,

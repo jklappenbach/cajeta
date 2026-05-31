@@ -65,6 +65,23 @@ const char* kWaveSource =
     "    }\n"
     "}\n";
 
+// out[t] = Wave.reduceSum(1) — a wave-wide sum, the "comprehensiveness-
+// inversion" probe. The guess was that reduce would be one native intrinsic on
+// Vulkan but a shuffle/DPP butterfly sequence on NV/AMD; the build showed all
+// three expose a single hardware wave-reduce intrinsic (NVPTX's gated sm_80+).
+const char* kReduceSource =
+    "package test;\n"
+    "import cajeta.xpu.core.Buffer;\n"
+    "import cajeta.xpu.core.Thread;\n"
+    "import cajeta.xpu.core.Wave;\n"
+    "public class M {\n"
+    "    @Kernel\n"
+    "    public static void wavereduce(Buffer<uint32> out) {\n"
+    "        uint32 t = Thread.x();\n"
+    "        out[t] = Wave.reduceSum(1);\n"
+    "    }\n"
+    "}\n";
+
 CajetaModulePtr compileForInspection(Compiler& compiler,
                                      const std::string& source) {
     static std::mt19937_64 rng(std::random_device{}());
@@ -98,6 +115,11 @@ std::string printModule(llvm::Module& m) {
 cajeta::MethodPtr compileWaveKernel(Compiler& compiler) {
     auto module = compileForInspection(compiler, kWaveSource);
     return findMethod(module->getStructures()["test.M"], "wavetest");
+}
+
+cajeta::MethodPtr compileReduceKernel(Compiler& compiler) {
+    auto module = compileForInspection(compiler, kReduceSource);
+    return findMethod(module->getStructures()["test.M"], "wavereduce");
 }
 
 } // namespace
@@ -174,4 +196,73 @@ TEST(XpuWaveEmitTests, spirvLowersSubgroupOpsAndValidates) {
     int rc = llvm::sys::ExecuteAndWait(*tool, args);
     std::filesystem::remove(path);
     EXPECT_EQ(rc, 0) << "spirv-val rejected the wave-ops module";
+}
+
+// --- Wave.reduce: a single hardware wave-reduce intrinsic on all three ------
+// The guessed comprehensiveness inversion (1 intrinsic on Vulkan vs. a
+// shuffle/DPP sequence on NV/AMD) did not hold — each backend lowers to one
+// native reduce. NVPTX's redux.sync needs sm_80+ (the test targets sm_89).
+
+TEST(XpuWaveEmitTests, nvptxLowersReduceToReduxSync) {
+    Compiler compiler;
+    auto k = compileReduceKernel(compiler);
+    ASSERT_NE(k, nullptr);
+    auto tm = cajeta::xpu::nvidia::createNvptxTargetMachine("sm_89");
+    ASSERT_NE(tm, nullptr);
+    llvm::LLVMContext ctx;
+    llvm::Module m("xpu_reduce_nvptx", ctx);
+    cajeta::xpu::nvidia::configureDeviceModule(m, *tm);
+    ASSERT_NE(cajeta::xpu::nvidia::lowerKernel(k, m), nullptr);
+    std::string ir = printModule(m);
+    EXPECT_NE(ir.find("llvm.nvvm.redux.sync.add"), std::string::npos) << ir;
+}
+
+TEST(XpuWaveEmitTests, amdgpuLowersReduceToWaveReduce) {
+    Compiler compiler;
+    auto k = compileReduceKernel(compiler);
+    ASSERT_NE(k, nullptr);
+    auto tm = cajeta::xpu::amd::createAmdgpuTargetMachine("gfx1151");
+    ASSERT_NE(tm, nullptr);
+    llvm::LLVMContext ctx;
+    llvm::Module m("xpu_reduce_amdgpu", ctx);
+    cajeta::xpu::amd::configureDeviceModule(m, *tm);
+    ASSERT_NE(cajeta::xpu::amd::lowerKernel(k, m), nullptr);
+    std::string ir = printModule(m);
+    EXPECT_NE(ir.find("llvm.amdgcn.wave.reduce.add"), std::string::npos) << ir;
+}
+
+TEST(XpuWaveEmitTests, spirvLowersReduceToSubgroupSumAndValidates) {
+    Compiler compiler;
+    auto k = compileReduceKernel(compiler);
+    ASSERT_NE(k, nullptr);
+    auto tm = cajeta::xpu::vulkan::createSpirvTargetMachine("vulkan1.3");
+    ASSERT_NE(tm, nullptr);
+
+    llvm::LLVMContext irCtx;
+    llvm::Module irMod("xpu_reduce_spirv_ir", irCtx);
+    cajeta::xpu::vulkan::configureDeviceModule(irMod, *tm);
+    ASSERT_NE(cajeta::xpu::vulkan::lowerKernel(k, irMod), nullptr);
+    std::string ir = printModule(irMod);
+    EXPECT_NE(ir.find("llvm.spv.wave.reduce.sum"), std::string::npos) << ir;
+
+    llvm::LLVMContext binCtx;
+    llvm::Module binMod("xpu_reduce_spirv_bin", binCtx);
+    cajeta::xpu::vulkan::configureDeviceModule(binMod, *tm);
+    cajeta::xpu::vulkan::lowerKernel(k, binMod);
+    std::vector<uint8_t> spirv = cajeta::xpu::vulkan::emitSpirv(binMod, *tm);
+    ASSERT_FALSE(spirv.empty());
+
+    auto tool = llvm::sys::findProgramByName("spirv-val");
+    if (!tool) { GTEST_SUCCEED() << "spirv-val absent; skipped validation"; return; }
+    static std::mt19937_64 rng(std::random_device{}());
+    auto path = std::filesystem::temp_directory_path()
+              / ("cajeta_reduce_" + std::to_string(rng()) + ".spv");
+    { std::ofstream o(path, std::ios::binary);
+      o.write(reinterpret_cast<const char*>(spirv.data()),
+              (std::streamsize) spirv.size()); }
+    llvm::StringRef env = "--target-env", ver = "vulkan1.3", file = path.c_str();
+    llvm::SmallVector<llvm::StringRef, 4> args = {*tool, env, ver, file};
+    int rc = llvm::sys::ExecuteAndWait(*tool, args);
+    std::filesystem::remove(path);
+    EXPECT_EQ(rc, 0) << "spirv-val rejected the wave-reduce module";
 }
