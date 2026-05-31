@@ -165,7 +165,118 @@ long __cajeta_dbg_fiber_id_counter = 0;
 // debugger attached just counts (CP2 behavior). The fiber id is resolved via
 // __cajeta_dbg_current_fiber_id, which is defined later (after the
 // __cajeta_current_fiber TLS); forward-declared here.
-typedef void (*cajeta_dbg_handler_fn)(int32_t loc_id, int fiber_id);
+// CP5: per-fiber debug frame chain. When --debug-info is on, codegen emits a
+// __cajeta_dbg_frame_enter at each method prologue, __cajeta_dbg_frame_leave on
+// every return path, and __cajeta_dbg_local at each named local/parameter
+// alloca. The chain (one node per live call frame, innermost at the head)
+// lets the debugger walk the stack and read locals when a safepoint parks.
+//
+// Like scope_top/drop_top, the head lives per-fiber (a single __thread would
+// alias across fiber switches on the same carrier); the selector
+// __cajeta_dbg_top_ptr (defined near __cajeta_scope_top_ptr) picks the running
+// fiber's slot or the main/program-thread TLS. The `name`/`type` strings are
+// codegen-emitted constants (valid for the program's lifetime); `addr` is the
+// local's slot alloca. CAVEAT: frame_leave fires only on normal return paths,
+// not exception unwinding — a throw across a debug frame leaks its node (the
+// breakpoint-inspect flow doesn't throw; revisit if stepping through throws).
+#define CAJETA_DBG_MAX_LOCALS 64
+struct cajeta_dbg_local {
+    const char* name;
+    const char* type;   // cajeta canonical type name (e.g. "int32", "demo.Foo")
+    void* addr;          // the local's slot (primitives: holds the value;
+                         // objects: holds the heap pointer)
+};
+struct cajeta_dbg_frame {
+    const char* func;          // cajeta-mangled enclosing function name
+    int32_t current_loc;       // loc_id of the last safepoint hit in this frame
+    int nlocals;
+    struct cajeta_dbg_local locals[CAJETA_DBG_MAX_LOCALS];
+    struct cajeta_dbg_frame* prev;
+};
+
+// Selector for the current dbg frame chain head — mirrors __cajeta_scope_top_ptr
+// (fiber vs main TLS). Defined further down where __cajeta_current_fiber is in
+// scope; forward-declared here so the enter/leave/local helpers can use it.
+struct cajeta_dbg_frame** __cajeta_dbg_top_ptr(void);
+
+void __cajeta_dbg_frame_enter(const char* func) {
+    struct cajeta_dbg_frame* f = malloc(sizeof(*f));
+    if (!f) {
+        fprintf(stderr, "cajeta: __cajeta_dbg_frame_enter malloc failed\n");
+        abort();
+    }
+    f->func = func;
+    f->current_loc = -1;
+    f->nlocals = 0;
+    struct cajeta_dbg_frame** top = __cajeta_dbg_top_ptr();
+    f->prev = *top;
+    *top = f;
+}
+
+void __cajeta_dbg_frame_leave(void) {
+    struct cajeta_dbg_frame** top = __cajeta_dbg_top_ptr();
+    struct cajeta_dbg_frame* f = *top;
+    if (!f) return;
+    *top = f->prev;
+    free(f);
+}
+
+void __cajeta_dbg_local(const char* name, const char* type, void* addr) {
+    struct cajeta_dbg_frame** top = __cajeta_dbg_top_ptr();
+    struct cajeta_dbg_frame* f = *top;
+    if (!f || f->nlocals >= CAJETA_DBG_MAX_LOCALS) return;
+    f->locals[f->nlocals].name = name;
+    f->locals[f->nlocals].type = type;
+    f->locals[f->nlocals].addr = addr;
+    f->nlocals++;
+}
+
+// Stateless host-side accessors. The frame chain is built by the embedded
+// bitcode copy of this runtime (JIT'd code calls frame_enter/local); the host
+// reads it through the NATIVE copy. Pure pointer arithmetic on a passed-in
+// void* means both copies resolve a chain node identically, so the host can
+// dereference a pointer the JIT side produced. Used by DebugVars::walkFrames.
+int __cajeta_dbg_frame_depth(void* top) {
+    int n = 0;
+    for (struct cajeta_dbg_frame* f = top; f; f = f->prev) n++;
+    return n;
+}
+void* __cajeta_dbg_frame_prev(void* frame) {
+    return frame ? ((struct cajeta_dbg_frame*) frame)->prev : NULL;
+}
+const char* __cajeta_dbg_frame_func(void* frame) {
+    return frame ? ((struct cajeta_dbg_frame*) frame)->func : NULL;
+}
+int32_t __cajeta_dbg_frame_loc(void* frame) {
+    return frame ? ((struct cajeta_dbg_frame*) frame)->current_loc : -1;
+}
+int __cajeta_dbg_frame_nlocals(void* frame) {
+    return frame ? ((struct cajeta_dbg_frame*) frame)->nlocals : 0;
+}
+const char* __cajeta_dbg_local_name(void* frame, int i) {
+    if (!frame) return NULL;
+    struct cajeta_dbg_frame* f = frame;
+    if (i < 0 || i >= f->nlocals) return NULL;
+    return f->locals[i].name;
+}
+const char* __cajeta_dbg_local_type(void* frame, int i) {
+    if (!frame) return NULL;
+    struct cajeta_dbg_frame* f = frame;
+    if (i < 0 || i >= f->nlocals) return NULL;
+    return f->locals[i].type;
+}
+void* __cajeta_dbg_local_addr(void* frame, int i) {
+    if (!frame) return NULL;
+    struct cajeta_dbg_frame* f = frame;
+    if (i < 0 || i >= f->nlocals) return NULL;
+    return f->locals[i].addr;
+}
+
+// CP5: the handler now also receives the current dbg frame-chain head so the
+// host can walk frames + read locals without a TLS lookup (the chain lives in
+// the bitcode copy's TLS, unreachable from the host's native copy).
+typedef void (*cajeta_dbg_handler_fn)(int32_t loc_id, int fiber_id,
+                                      void* frame_top);
 static cajeta_dbg_handler_fn __cajeta_dbg_handler = NULL;
 int __cajeta_dbg_current_fiber_id(void);
 
@@ -175,8 +286,12 @@ void __cajeta_dbg_set_safepoint_handler(cajeta_dbg_handler_fn fn) {
 
 void __cajeta_dbg_safepoint(int32_t loc_id) {
     __cajeta_dbg_safepoint_total++;
+    // Record the line we're at in the innermost frame so a multi-frame
+    // stackTrace shows each frame at its current/call statement.
+    struct cajeta_dbg_frame* top = *__cajeta_dbg_top_ptr();
+    if (top) top->current_loc = loc_id;
     cajeta_dbg_handler_fn h = __cajeta_dbg_handler;
-    if (h) h(loc_id, __cajeta_dbg_current_fiber_id());
+    if (h) h(loc_id, __cajeta_dbg_current_fiber_id(), top);
 }
 
 long __cajeta_dbg_safepoint_count(void) {
@@ -658,6 +773,10 @@ struct cajeta_fiber {
     // view and for stop events. Assigned from a monotonic counter at creation
     // (fibers get 1,2,3,...; the main thread reports id 0).
     int dbg_id;
+    // Debugger CP5: per-fiber debug frame-chain head (locals capture).
+    // Same aliasing rationale as scope_top/drop_top; selected by
+    // __cajeta_dbg_top_ptr based on fiber-vs-main context.
+    struct cajeta_dbg_frame* dbg_top;
 };
 
 static pthread_mutex_t __cajeta_task_mutex = PTHREAD_MUTEX_INITIALIZER;
@@ -688,6 +807,10 @@ static __thread ucontext_t __cajeta_carrier_ctx;
 // right one based on current context.
 static __thread struct cajeta_scope_frame* __cajeta_main_scope_top = NULL;
 
+// Debugger CP5: main/program-thread slot for the dbg frame chain (the JIT
+// entry runs on a plain bg thread, not a carrier fiber, so it uses this).
+static __thread struct cajeta_dbg_frame* __cajeta_main_dbg_top = NULL;
+
 // Returns a pointer to the current scope_top slot — either the running
 // fiber's slot or the main thread's TLS slot. Callers read or write
 // through this pointer, so push/pop works uniformly regardless of
@@ -697,6 +820,15 @@ static struct cajeta_scope_frame** __cajeta_scope_top_ptr(void) {
         return &__cajeta_current_fiber->scope_top;
     }
     return &__cajeta_main_scope_top;
+}
+
+// Debugger CP5: selector for the dbg frame-chain head, mirroring
+// __cajeta_scope_top_ptr. Forward-declared up in the safepoint section.
+struct cajeta_dbg_frame** __cajeta_dbg_top_ptr(void) {
+    if (__cajeta_current_fiber) {
+        return &__cajeta_current_fiber->dbg_top;
+    }
+    return &__cajeta_main_dbg_top;
 }
 
 // Debugger CP3: id of the fiber running on this carrier thread, or 0 when not
@@ -851,6 +983,7 @@ void __cajeta_task_run(void* arg, cajeta_task_trampoline_fn trampoline,
     f->drop_top = NULL;
     f->exc_top = NULL;
     f->cancel_with = NULL;
+    f->dbg_top = NULL;
     if (fiber_slot) *fiber_slot = f;
 
     pthread_mutex_lock(&__cajeta_task_mutex);

@@ -12,6 +12,7 @@
 #include "cajeta/jit/CajetaJitHost.h"
 #include "cajeta/dbg/DebugController.h"
 #include "cajeta/dbg/DebugLocTable.h"
+#include "cajeta/dbg/DebugVars.h"
 #include "../TempProgram.h"
 
 using cajeta::jit::Breakpoint;
@@ -77,6 +78,44 @@ TEST(DebugSession, NoBreakpointsRunsToCompletion) {
     StopEvent ev;
     EXPECT_FALSE(session->controller().waitForStop(ev, std::chrono::milliseconds(500)));
 
+    int rc = session->join();
+    EXPECT_EQ(rc, 42);
+}
+
+// CP5 end-to-end: at the breakpoint the dbg frame chain exposes the in-scope
+// local `a` (declared on line 4) with its value 6. The safepoint on line 6
+// fires after both declarations have executed, so `a` and `b` are registered.
+TEST(DebugSession, FrameChainExposesLocals) {
+    TempProgram p("demo", "Calc.cajeta", kProg);
+    JitRunOptions opts;
+    opts.sourceRoot = p.sourceRoot();
+    opts.entryMethod = "demo.Calc.main";
+
+    std::vector<Breakpoint> bps{ Breakpoint{"Calc.cajeta", 6} };
+    std::string err;
+    auto session = startDebugSession(opts, bps, &err);
+    ASSERT_NE(session, nullptr) << err;
+
+    StopEvent ev;
+    ASSERT_TRUE(session->controller().waitForStop(ev, std::chrono::seconds(30)))
+        << "program never hit the breakpoint";
+    ASSERT_NE(ev.frameTop, nullptr) << "no frame chain at stop";
+
+    auto frames = cajeta::dbg::walkFrames(ev.frameTop);
+    ASSERT_FALSE(frames.empty());
+    const auto& top = frames[0];
+
+    // Find locals a and b.
+    std::string aVal, bVal;
+    for (const auto& v : top.locals) {
+        std::string rendered = cajeta::dbg::formatValue(v.type, v.addr);
+        if (v.name == "a") aVal = rendered;
+        if (v.name == "b") bVal = rendered;
+    }
+    EXPECT_EQ(aVal, "6");
+    EXPECT_EQ(bVal, "7");
+
+    session->controller().resume();
     int rc = session->join();
     EXPECT_EQ(rc, 42);
 }

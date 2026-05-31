@@ -10,6 +10,7 @@
 #include "expression/NewExpression.h"
 #include "expression/AggregateInitializerExpression.h"
 #include "../compile/CajetaModule.h"
+#include "cajeta/dbg/DebugCodegen.h"
 #include "../field/HeapField.h"
 #include "../field/StackField.h"
 #include "../field/ParameterField.h"
@@ -1119,6 +1120,11 @@ namespace cajeta {
     // early return from inside an explicit `scope { }` still joins all
     // pending child tasks before the ret instruction.
     static void emitScopeExitToWatermark(CajetaModulePtr module) {
+        // Debugger CP5: pop this method's debug frame on the return path. Done
+        // first (independent of the watermark below) so it fires on every
+        // explicit-return chokepoint that funnels through here. No-op unless
+        // --debug-info.
+        dbg::emitDbgFrameLeave(module);
         auto m = module->getCurrentMethod();
         if (!m) return;
         llvm::AllocaInst* mark = m->getScopeWatermark();

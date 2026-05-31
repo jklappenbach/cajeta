@@ -28,6 +28,11 @@ namespace cajeta::dbg {
     struct StopEvent {
         int32_t locId = -1;
         long fiberId = 0;
+        // CP5: the dbg frame-chain head captured at the safepoint. Opaque to
+        // the controller; DebugVars::walkFrames dereferences it (via the
+        // runtime's stateless accessors) to produce frames + locals. Valid
+        // only while the carrier is parked (until the matching resume()).
+        void* frameTop = nullptr;
     };
 
     class DebugController {
@@ -42,6 +47,9 @@ namespace cajeta::dbg {
         // At a statement safepoint. If locId is armed, record the stop, wake
         // any waitForStop(), and block until resume(). No-op if not armed.
         void onSafepoint(int32_t locId, long fiberId);
+        // CP5 overload carrying the dbg frame-chain head (for locals/scopes).
+        // The 2-arg form delegates here with frameTop=nullptr.
+        void onSafepoint(int32_t locId, long fiberId, void* frameTop);
 
         // --- debugger thread ---
         // Block until a safepoint parks, then return what stopped.

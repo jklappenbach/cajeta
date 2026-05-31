@@ -23,13 +23,18 @@ namespace cajeta::dbg {
     }
 
     void DebugController::onSafepoint(int32_t locId, long fiberId) {
+        onSafepoint(locId, fiberId, nullptr);
+    }
+
+    void DebugController::onSafepoint(int32_t locId, long fiberId,
+                                     void* frameTop) {
         std::unique_lock<std::mutex> lock(mutex);
         if (armed.count(locId) == 0) return;
 
         // Park: publish the stop, wake the debugger thread, wait for resume.
         stopped = true;
         resumeRequested = false;
-        current = StopEvent{locId, fiberId};
+        current = StopEvent{locId, fiberId, frameTop};
         stoppedCv.notify_all();
         resumeCv.wait(lock, [this] { return resumeRequested; });
         stopped = false;

@@ -10,7 +10,9 @@
 #include <cstdint>
 
 extern "C" {
-    typedef void (*cajeta_dbg_handler_fn)(int32_t loc_id, int fiber_id);
+    // CP5: the handler gained a frame_top (void*) parameter.
+    typedef void (*cajeta_dbg_handler_fn)(int32_t loc_id, int fiber_id,
+                                          void* frame_top);
     void __cajeta_dbg_set_safepoint_handler(cajeta_dbg_handler_fn fn);
     void __cajeta_dbg_safepoint(int32_t loc_id);
     int  __cajeta_dbg_current_fiber_id(void);
@@ -24,7 +26,9 @@ namespace {
     int g_lastFiber = -1;
 }
 
-extern "C" void cajeta_test_dbg_handler(int32_t loc_id, int fiber_id) {
+extern "C" void cajeta_test_dbg_handler(int32_t loc_id, int fiber_id,
+                                        void* frame_top) {
+    (void) frame_top;
     g_calls++;
     g_lastLoc = loc_id;
     g_lastFiber = fiber_id;

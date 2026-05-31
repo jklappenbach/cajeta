@@ -5,6 +5,7 @@
 #include "LocalVariableDeclaration.h"
 #include "VariableDeclarator.h"
 #include "../compile/CajetaModule.h"
+#include "cajeta/dbg/DebugCodegen.h"
 #include "../field/HeapField.h"
 #include "../field/StackField.h"
 #include "../type/CajetaArray.h"
@@ -190,6 +191,16 @@ namespace cajeta {
             }
             module->getScopeStack().peek()->putField(field);
             field->getOrCreateAllocation();
+
+            // Debugger CP5: register this local in the current debug frame so
+            // it shows up in DAP `variables`. No-op unless --debug-info. The
+            // slot holds the value for primitives, the heap pointer for
+            // objects; DebugVars reads it by type.
+            if (type) {
+                dbg::emitDbgLocal(module, field->getName(),
+                                  type->toCanonical(),
+                                  field->getOrCreateAllocation());
+            }
 
             // Polymorphic-MI upcast adjustment. After HeapField stored
             // the RHS pointer into the slot, check whether the static
