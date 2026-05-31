@@ -295,15 +295,23 @@ that crosses an in-loop barrier**.
   value is itself per-work-item; re-propagate until stable. Over-approximation is safe (a
   wrongly-widened uniform slot just gets redundant per-lane storage, same result). Now `x`'s
   slot is recognized as per-work-item and widened to `x.slot.ctx`.
+- **Register accumulator across the loop back-edge — covered by the same fix.** A per-work-item
+  scalar carried across a uniform loop's iterations (`int acc = 0; for (…) { acc += tile[…];
+  barrier; }`) was a separate Inc 6 scope cut, but it has the *same* root cause — `acc` derives
+  from `t` through `t`'s slot, so pre-fix it wasn't tainted and stayed a single shared scalar.
+  The memory-aware taint widens `acc` to `acc.slot.ctx`, and because a context array is allocated
+  once in the wrapper entry and indexed by work-item, it **persists across the outer scalar
+  loop's iterations** for free — the accumulation carries correctly with no shared memory for the
+  accumulator. So this cut is lifted too.
 - **Verified:** `XpuCpuBarrierExecTests.multipleBarriersInOneLoop` (shared-memory ping-pong,
-  two barriers per iteration, matches the host recurrence for every lane) and
+  two barriers per iteration, matches the host recurrence for every lane),
   `localCarriedAcrossInLoopBarrier` (the local-across-an-in-loop-barrier case — the regression
-  that exposed the taint gap); `XpuCpuBarrierEmitTests.multiBarrierLoopBodySplitsAndWidensLocal`
+  that exposed the taint gap), and `registerAccumulatorAcrossLoopBackEdge` (a per-work-item
+  register accumulator carried across iterations); `XpuCpuBarrierEmitTests.multiBarrierLoopBodySplitsAndWidensLocal`
   (the loop body splits into ≥2 work-item loops nested in the single outer scalar loop; `x` is
   widened to a context array). The Inc 6 single-barrier reduction + all prior CPU/wave/GPU
   suites unchanged.
-- **Still out of scope:** nested uniform loops with barriers; wave ops + barriers in one kernel;
-  a register accumulator carried per-work-item across a uniform loop's back-edge.
+- **Still out of scope:** nested uniform loops with barriers; wave ops + barriers in one kernel.
 
 ### Docs
 - This file (the log). The matrix gains a **CPU column** (today: emit + grid→threads
