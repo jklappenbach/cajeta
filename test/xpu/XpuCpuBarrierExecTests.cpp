@@ -383,6 +383,132 @@ public class M {
 }
 )CJ";
 
+// Increment 8 — a barrier inside a loop NESTED in another loop (the one-level
+// restriction lifted). Same circular-neighbour-sum recurrence as localcarry,
+// applied ki*kj times via a doubly-nested loop with the in-loop barrier in the
+// INNER loop. Both loops stay outer scalar scaffolds; the inner body's two
+// regions are work-item loops nested two deep. The register temp `v` crosses the
+// inner barrier (context array). out matches the host recurrence applied ki*kj
+// times for every lane.
+const char* kNestedSource = R"CJ(
+package test;
+import cajeta.xpu.core.Buffer;
+import cajeta.xpu.core.Stream;
+import cajeta.xpu.core.Thread;
+import cajeta.xpu.core.Barrier;
+import cajeta.xpu.core.Shared;
+public class M {
+    @Kernel
+    public static void nested(Buffer<int32> out, Buffer<int32> in,
+                              uint32 ki, uint32 kj) {
+        Shared<int32> tile = shared int32[256];
+        uint32 t = Thread.x();
+        tile[t] = in[t];
+        Barrier.workgroup();
+        for (uint32 i = 0; i < ki; i = i + 1) {
+            for (uint32 j = 0; j < kj; j = j + 1) {
+                int32 v = tile[t] + tile[(t + 1) & 255];
+                Barrier.workgroup();
+                tile[t] = v;
+                Barrier.workgroup();
+            }
+        }
+        out[t] = tile[t];
+    }
+    public static int32 run() {
+        uint32 n = 256;
+        uint32 ki = 2;
+        uint32 kj = 3;
+        int32[] hin = new int32[n];
+        int32[] hout = new int32[n];
+        int32[] ra = new int32[n];
+        int32[] rb = new int32[n];
+        for (uint32 i = 0; i < n; i = i + 1) { hin[i] = (int32) i; hout[i] = 0; ra[i] = (int32) i; }
+        for (uint32 it = 0; it < ki * kj; it = it + 1) {
+            for (uint32 i = 0; i < n; i = i + 1) { rb[i] = ra[i] + ra[(i + 1) & 255]; }
+            for (uint32 i = 0; i < n; i = i + 1) { ra[i] = rb[i]; }
+        }
+        Buffer<int32> in = heap Buffer<int32>(n);
+        Buffer<int32> out = heap Buffer<int32>(n);
+        in.upload(hin);
+        out.upload(hout);
+        Stream s = Stream.current();
+        nested.launch(s, grid: [1], block: [256])(out, in, ki, kj);
+        s.sync();
+        out.download(hout);
+        for (uint32 i = 0; i < n; i = i + 1) {
+            if (hout[i] != ra[i]) { return (int32) (100 + i); }
+        }
+        return 777;
+    }
+}
+)CJ";
+
+// Increment 8 — an outer loop holding BOTH a direct barrier-region AND a nested
+// barrier-loop: each outer iteration applies the recurrence once at the outer
+// level (read; barrier; write; barrier) then kj more times in the inner loop, so
+// the outer loop level is a sequence `region · barrier · region · barrier ·
+// subloop`. Stresses the walk handling direct regions and a subloop at one level.
+// Recurrence R(tile)[t] = tile[t] + tile[(t+1)&255] applied ki*(kj+1) times.
+const char* kNested2Source = R"CJ(
+package test;
+import cajeta.xpu.core.Buffer;
+import cajeta.xpu.core.Stream;
+import cajeta.xpu.core.Thread;
+import cajeta.xpu.core.Barrier;
+import cajeta.xpu.core.Shared;
+public class M {
+    @Kernel
+    public static void nested2(Buffer<int32> out, Buffer<int32> in,
+                               uint32 ki, uint32 kj) {
+        Shared<int32> tile = shared int32[256];
+        uint32 t = Thread.x();
+        tile[t] = in[t];
+        Barrier.workgroup();
+        for (uint32 i = 0; i < ki; i = i + 1) {
+            int32 pre = tile[(t + 1) & 255];
+            Barrier.workgroup();
+            tile[t] = tile[t] + pre;
+            Barrier.workgroup();
+            for (uint32 j = 0; j < kj; j = j + 1) {
+                int32 v = tile[t] + tile[(t + 1) & 255];
+                Barrier.workgroup();
+                tile[t] = v;
+                Barrier.workgroup();
+            }
+        }
+        out[t] = tile[t];
+    }
+    public static int32 run() {
+        uint32 n = 256;
+        uint32 ki = 2;
+        uint32 kj = 2;
+        int32[] hin = new int32[n];
+        int32[] hout = new int32[n];
+        int32[] ra = new int32[n];
+        int32[] rb = new int32[n];
+        for (uint32 i = 0; i < n; i = i + 1) { hin[i] = (int32) i; hout[i] = 0; ra[i] = (int32) i; }
+        uint32 reps = ki * (kj + 1);
+        for (uint32 it = 0; it < reps; it = it + 1) {
+            for (uint32 i = 0; i < n; i = i + 1) { rb[i] = ra[i] + ra[(i + 1) & 255]; }
+            for (uint32 i = 0; i < n; i = i + 1) { ra[i] = rb[i]; }
+        }
+        Buffer<int32> in = heap Buffer<int32>(n);
+        Buffer<int32> out = heap Buffer<int32>(n);
+        in.upload(hin);
+        out.upload(hout);
+        Stream s = Stream.current();
+        nested2.launch(s, grid: [1], block: [256])(out, in, ki, kj);
+        s.sync();
+        out.download(hout);
+        for (uint32 i = 0; i < n; i = i + 1) {
+            if (hout[i] != ra[i]) { return (int32) (100 + i); }
+        }
+        return 777;
+    }
+}
+)CJ";
+
 } // namespace
 
 // One barrier, two regions: both halves run for every work-item, with `t`
@@ -449,6 +575,40 @@ TEST(XpuCpuBarrierExecTests, divergentBarrierFallsBackCleanly) {
         << "divergent barrier should fall back, not fission\n";
 }
 
+// Guardrail (Increment 8): nesting is supported, but a barrier in a loop whose
+// trip count is work-item-dependent is GPU-undefined (work-items would hit
+// different barrier counts → deadlock). Even nested, it must fall back cleanly —
+// removing the one-level cap must not open a miscompile hole here.
+TEST(XpuCpuBarrierExecTests, nestedTidDependentTripCountFallsBack) {
+    const char* src =
+        "package test;\n"
+        "import cajeta.xpu.core.Buffer;\n"
+        "import cajeta.xpu.core.Thread;\n"
+        "import cajeta.xpu.core.Barrier;\n"
+        "import cajeta.xpu.core.Shared;\n"
+        "public class M {\n"
+        "    @Kernel\n"
+        "    public static void nesttid(Buffer<int32> out, Buffer<int32> in,\n"
+        "                               uint32 ki) {\n"
+        "        Shared<int32> tile = shared int32[256];\n"
+        "        uint32 t = Thread.x();\n"
+        "        tile[t] = in[t];\n"
+        "        Barrier.workgroup();\n"
+        "        for (uint32 i = 0; i < ki; i = i + 1) {\n"
+        "            for (uint32 j = 0; j < t; j = j + 1) {\n"
+        "                tile[t] = tile[t] + 1;\n"
+        "                Barrier.workgroup();\n"
+        "            }\n"
+        "        }\n"
+        "        out[t] = tile[t];\n"
+        "    }\n"
+        "}\n";
+    std::string ir = compileToIr(src, "test.M.nesttid");
+    ASSERT_FALSE(ir.empty());
+    EXPECT_EQ(ir.find("__cajeta_xpu_cpu_block.nesttid"), std::string::npos)
+        << "tid-dependent inner trip count must fall back, not fission\n";
+}
+
 // Increment 7: two barriers inside one uniform loop (shared-memory ping-pong).
 // The loop body splits into two work-item-loop regions; the loop stays the outer
 // scalar scaffold. Result matches the host recurrence for every lane.
@@ -478,6 +638,30 @@ TEST(XpuCpuBarrierExecTests, localCarriedAcrossInLoopBarrier) {
 // the accumulation carries correctly without shared memory for the accumulator.
 TEST(XpuCpuBarrierExecTests, registerAccumulatorAcrossLoopBackEdge) {
     auto jit = CajetaJit::compile(kAccumSource, "test.M", cpuOptions());
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<int (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    int r = fn();
+    EXPECT_EQ(r, 777) << "fail code " << r << " (100+i: out[i] != reference[i])";
+}
+
+// Increment 8: a barrier inside a loop NESTED in another loop. Both loops stay
+// outer scalar scaffolds; the inner body's regions are work-item loops nested
+// two deep. Matches the host recurrence applied ki*kj times for every lane.
+TEST(XpuCpuBarrierExecTests, nestedUniformLoopsWithBarrier) {
+    auto jit = CajetaJit::compile(kNestedSource, "test.M", cpuOptions());
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<int (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    int r = fn();
+    EXPECT_EQ(r, 777) << "fail code " << r << " (100+i: out[i] != reference[i])";
+}
+
+// Increment 8: an outer loop with a direct barrier-region AND a nested
+// barrier-loop at the same level — the sequence region·barrier·region·barrier·
+// subloop inside one uniform loop.
+TEST(XpuCpuBarrierExecTests, nestedLoopsWithOuterLevelRegions) {
+    auto jit = CajetaJit::compile(kNested2Source, "test.M", cpuOptions());
     ASSERT_NE(jit, nullptr);
     auto fn = jit->lookup<int (*)()>("run");
     ASSERT_NE(fn, nullptr);

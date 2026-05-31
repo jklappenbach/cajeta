@@ -173,8 +173,6 @@ void fissionBarrierKernel(llvm::Function* linked, llvm::Function* wrapper,
     for (llvm::Loop* top : LI) {
         for (llvm::Loop* L : llvm::depth_first(top)) {
             if (!loopHasBarrier(L)) continue;
-            if (L->getLoopDepth() > 1)
-                unsupported("a barrier in a nested loop (one level supported)");
             if (!L->getLoopLatch() || !L->getExitBlock())
                 unsupported("a barrier in a loop without a single latch/exit");
             llvm::SmallVector<llvm::BasicBlock*, 4> exiting;
@@ -292,6 +290,18 @@ void fissionBarrierKernel(llvm::Function* linked, llvm::Function* wrapper,
         llvm::BasicBlock* cur = start;
         llvm::BasicBlock* pred = predBlock;
         while (cur) {
+            // Sitting directly on a barrier-subloop header (a nested loop with no
+            // separating preheader region): enter it as a subloop rather than
+            // letting `collect` walk through and flatten it. Cajeta's structured
+            // loops have a preheader so this is defensive, but it keeps the walk
+            // from misregioning any nested shape (never miscompile).
+            if (llvm::Loop* cl = LI.getLoopFor(cur))
+                if (cl != encLoop && cl->getHeader() == cur && loopHasBarrier(cl)) {
+                    walk(inLoopSucc(cl), cl, cur);
+                    pred = cur;
+                    cur = cl->getExitBlock();
+                    continue;
+                }
             Collected R = collect(cur, encLoop);
             llvm::BasicBlock* done = nullptr;
             if (R.barrier) done = R.barrier;
