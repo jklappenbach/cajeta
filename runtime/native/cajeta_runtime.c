@@ -4128,6 +4128,511 @@ static int cajeta_xpu_hip_init_locked(void) {
     return 1;
 }
 
+// --- per-kernel parameter metadata (the Vulkan launch translation) ----------
+// The compiler registers, per Vulkan-bundled @Kernel, which args are buffers vs
+// scalars and the scalar byte sizes. The Vulkan launch path uses it to turn the
+// uniform kernelParams argv into descriptor bindings: buffers map to existing
+// storage buffers; scalars are copied into transient single-element SSBOs. The
+// pointers are program constant data (valid for the process lifetime).
+struct cajeta_kparams {
+    char name[256];
+    int count;
+    const uint8_t* isBuffer;
+    const uint32_t* byteSize;
+};
+#define CAJETA_XPU_MAX_KPARAMS 128
+static struct cajeta_kparams g_xpu_kparams[CAJETA_XPU_MAX_KPARAMS];
+static int g_xpu_kparam_count;
+
+void __cajeta_xpu_register_kernel_params(const char* name, int32_t count,
+                                         const uint8_t* isBuffer,
+                                         const uint32_t* byteSize) {
+    if (!name) return;
+    pthread_mutex_lock(&g_xpu_cuda_lock);
+    if (g_xpu_kparam_count < CAJETA_XPU_MAX_KPARAMS) {
+        struct cajeta_kparams* e = &g_xpu_kparams[g_xpu_kparam_count++];
+        strncpy(e->name, name, sizeof(e->name) - 1);
+        e->name[sizeof(e->name) - 1] = '\0';
+        e->count = count;
+        e->isBuffer = isBuffer;
+        e->byteSize = byteSize;
+    }
+    pthread_mutex_unlock(&g_xpu_cuda_lock);
+}
+
+static struct cajeta_kparams* cajeta_xpu_find_kparams(const char* name) {
+    for (int i = 0; i < g_xpu_kparam_count; ++i)
+        if (strncmp(g_xpu_kparams[i].name, name,
+                    sizeof(g_xpu_kparams[i].name)) == 0)
+            return &g_xpu_kparams[i];
+    return NULL;
+}
+
+// ============================================================================
+// Vulkan compute binding (dlopen'd) — backs the real SPIR-V device path.
+// ============================================================================
+// Mirrors src/cajeta/xpu/vulkan/VulkanDriver.cpp in C. Compiled in only when a
+// Vulkan SDK header is present at runtime-build time; otherwise the entry points
+// are no-ops and Vulkan probes unavailable. All Vulkan functions are resolved at
+// runtime via vkGetInstanceProcAddr/vkGetDeviceProcAddr (no link dependency).
+#if defined(__has_include)
+#  if __has_include(<vulkan/vulkan.h>)
+#    define CAJETA_RT_HAS_VULKAN 1
+#  endif
+#endif
+
+#if defined(CAJETA_RT_HAS_VULKAN) && !defined(_WIN32)
+#include <vulkan/vulkan.h>
+
+struct cajeta_vk {
+    int loaded;                  // 0 untried, 1 ready, -1 unavailable
+    void* lib;
+    PFN_vkGetInstanceProcAddr getInstanceProcAddr;
+    PFN_vkGetDeviceProcAddr getDeviceProcAddr;
+    VkInstance instance;
+    VkPhysicalDevice phys;
+    VkDevice device;
+    VkQueue queue;
+    uint32_t queueFamily;
+    VkCommandPool cmdPool;
+    VkPhysicalDeviceMemoryProperties memProps;
+    PFN_vkCreateInstance vkCreateInstance;
+    PFN_vkDestroyInstance vkDestroyInstance;
+    PFN_vkEnumeratePhysicalDevices vkEnumeratePhysicalDevices;
+    PFN_vkGetPhysicalDeviceQueueFamilyProperties vkGetPhysicalDeviceQueueFamilyProperties;
+    PFN_vkGetPhysicalDeviceMemoryProperties vkGetPhysicalDeviceMemoryProperties;
+    PFN_vkCreateDevice vkCreateDevice;
+    PFN_vkDestroyDevice vkDestroyDevice;
+    PFN_vkGetDeviceQueue vkGetDeviceQueue;
+    PFN_vkCreateBuffer vkCreateBuffer;
+    PFN_vkDestroyBuffer vkDestroyBuffer;
+    PFN_vkGetBufferMemoryRequirements vkGetBufferMemoryRequirements;
+    PFN_vkAllocateMemory vkAllocateMemory;
+    PFN_vkFreeMemory vkFreeMemory;
+    PFN_vkBindBufferMemory vkBindBufferMemory;
+    PFN_vkMapMemory vkMapMemory;
+    PFN_vkUnmapMemory vkUnmapMemory;
+    PFN_vkCreateShaderModule vkCreateShaderModule;
+    PFN_vkDestroyShaderModule vkDestroyShaderModule;
+    PFN_vkCreateDescriptorSetLayout vkCreateDescriptorSetLayout;
+    PFN_vkDestroyDescriptorSetLayout vkDestroyDescriptorSetLayout;
+    PFN_vkCreatePipelineLayout vkCreatePipelineLayout;
+    PFN_vkDestroyPipelineLayout vkDestroyPipelineLayout;
+    PFN_vkCreateComputePipelines vkCreateComputePipelines;
+    PFN_vkDestroyPipeline vkDestroyPipeline;
+    PFN_vkCreateDescriptorPool vkCreateDescriptorPool;
+    PFN_vkDestroyDescriptorPool vkDestroyDescriptorPool;
+    PFN_vkAllocateDescriptorSets vkAllocateDescriptorSets;
+    PFN_vkUpdateDescriptorSets vkUpdateDescriptorSets;
+    PFN_vkCreateCommandPool vkCreateCommandPool;
+    PFN_vkDestroyCommandPool vkDestroyCommandPool;
+    PFN_vkAllocateCommandBuffers vkAllocateCommandBuffers;
+    PFN_vkFreeCommandBuffers vkFreeCommandBuffers;
+    PFN_vkBeginCommandBuffer vkBeginCommandBuffer;
+    PFN_vkEndCommandBuffer vkEndCommandBuffer;
+    PFN_vkCmdBindPipeline vkCmdBindPipeline;
+    PFN_vkCmdBindDescriptorSets vkCmdBindDescriptorSets;
+    PFN_vkCmdDispatch vkCmdDispatch;
+    PFN_vkQueueSubmit vkQueueSubmit;
+    PFN_vkQueueWaitIdle vkQueueWaitIdle;
+};
+static struct cajeta_vk g_xpu_vk;
+
+struct cajeta_vk_buf {
+    VkBuffer buffer;
+    VkDeviceMemory memory;
+    void* mapped;
+    VkDeviceSize size;
+    int live;
+};
+#define CAJETA_VK_MAX_BUFFERS 4096
+static struct cajeta_vk_buf g_vk_bufs[CAJETA_VK_MAX_BUFFERS];
+static int g_vk_buf_count;
+
+static int cajeta_xpu_vk_find_memory_type(uint32_t typeBits,
+                                          VkMemoryPropertyFlags want) {
+    for (uint32_t i = 0; i < g_xpu_vk.memProps.memoryTypeCount; ++i) {
+        if ((typeBits & (1u << i)) &&
+            (g_xpu_vk.memProps.memoryTypes[i].propertyFlags & want) == want)
+            return (int) i;
+    }
+    return -1;
+}
+
+// Caller holds g_xpu_cuda_lock. Bring up instance/device/queue/cmdpool.
+static int cajeta_xpu_vulkan_init_locked(void) {
+    if (g_xpu_vk.loaded == 1) return 1;
+    if (g_xpu_vk.loaded == -1) return 0;
+    g_xpu_vk.loaded = -1;
+
+    const char* libnames[2] = {"libvulkan.so.1", "libvulkan.so"};
+    for (int i = 0; i < 2 && !g_xpu_vk.lib; ++i)
+        g_xpu_vk.lib = dlopen(libnames[i], RTLD_NOW | RTLD_LOCAL);
+    if (!g_xpu_vk.lib) return 0;
+    g_xpu_vk.getInstanceProcAddr =
+        (PFN_vkGetInstanceProcAddr) dlsym(g_xpu_vk.lib, "vkGetInstanceProcAddr");
+    if (!g_xpu_vk.getInstanceProcAddr) return 0;
+
+    g_xpu_vk.vkCreateInstance = (PFN_vkCreateInstance)
+        g_xpu_vk.getInstanceProcAddr(VK_NULL_HANDLE, "vkCreateInstance");
+    if (!g_xpu_vk.vkCreateInstance) return 0;
+
+    VkApplicationInfo app;
+    memset(&app, 0, sizeof(app));
+    app.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
+    app.pApplicationName = "cajeta-xpu";
+    app.apiVersion = VK_API_VERSION_1_3;
+    VkInstanceCreateInfo ici;
+    memset(&ici, 0, sizeof(ici));
+    ici.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
+    ici.pApplicationInfo = &app;
+    if (g_xpu_vk.vkCreateInstance(&ici, NULL, &g_xpu_vk.instance) != VK_SUCCESS)
+        return 0;
+
+    #define CAJ_VKI(nm) g_xpu_vk.nm = (PFN_##nm)                               \
+        g_xpu_vk.getInstanceProcAddr(g_xpu_vk.instance, #nm)
+    CAJ_VKI(vkDestroyInstance);
+    CAJ_VKI(vkEnumeratePhysicalDevices);
+    CAJ_VKI(vkGetPhysicalDeviceQueueFamilyProperties);
+    CAJ_VKI(vkGetPhysicalDeviceMemoryProperties);
+    CAJ_VKI(vkCreateDevice);
+    CAJ_VKI(vkDestroyDevice);
+    #undef CAJ_VKI
+    g_xpu_vk.getDeviceProcAddr = (PFN_vkGetDeviceProcAddr)
+        g_xpu_vk.getInstanceProcAddr(g_xpu_vk.instance, "vkGetDeviceProcAddr");
+    if (!g_xpu_vk.vkEnumeratePhysicalDevices || !g_xpu_vk.vkCreateDevice ||
+        !g_xpu_vk.getDeviceProcAddr)
+        return 0;
+
+    uint32_t count = 0;
+    g_xpu_vk.vkEnumeratePhysicalDevices(g_xpu_vk.instance, &count, NULL);
+    if (count == 0) return 0;
+    if (count > 16) count = 16;
+    VkPhysicalDevice devs[16];
+    g_xpu_vk.vkEnumeratePhysicalDevices(g_xpu_vk.instance, &count, devs);
+
+    int found = 0;
+    for (uint32_t di = 0; di < count && !found; ++di) {
+        uint32_t qn = 0;
+        g_xpu_vk.vkGetPhysicalDeviceQueueFamilyProperties(devs[di], &qn, NULL);
+        if (qn > 32) qn = 32;
+        VkQueueFamilyProperties qp[32];
+        g_xpu_vk.vkGetPhysicalDeviceQueueFamilyProperties(devs[di], &qn, qp);
+        for (uint32_t qi = 0; qi < qn; ++qi) {
+            if (qp[qi].queueFlags & VK_QUEUE_COMPUTE_BIT) {
+                g_xpu_vk.phys = devs[di];
+                g_xpu_vk.queueFamily = qi;
+                found = 1;
+                break;
+            }
+        }
+    }
+    if (!found) return 0;
+    g_xpu_vk.vkGetPhysicalDeviceMemoryProperties(g_xpu_vk.phys,
+                                                 &g_xpu_vk.memProps);
+
+    float prio = 1.0f;
+    VkDeviceQueueCreateInfo qci;
+    memset(&qci, 0, sizeof(qci));
+    qci.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
+    qci.queueFamilyIndex = g_xpu_vk.queueFamily;
+    qci.queueCount = 1;
+    qci.pQueuePriorities = &prio;
+    VkDeviceCreateInfo dci;
+    memset(&dci, 0, sizeof(dci));
+    dci.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
+    dci.queueCreateInfoCount = 1;
+    dci.pQueueCreateInfos = &qci;
+    if (g_xpu_vk.vkCreateDevice(g_xpu_vk.phys, &dci, NULL, &g_xpu_vk.device)
+            != VK_SUCCESS)
+        return 0;
+
+    #define CAJ_VKD(nm) g_xpu_vk.nm = (PFN_##nm)                               \
+        g_xpu_vk.getDeviceProcAddr(g_xpu_vk.device, #nm)
+    CAJ_VKD(vkGetDeviceQueue);
+    CAJ_VKD(vkCreateBuffer);
+    CAJ_VKD(vkDestroyBuffer);
+    CAJ_VKD(vkGetBufferMemoryRequirements);
+    CAJ_VKD(vkAllocateMemory);
+    CAJ_VKD(vkFreeMemory);
+    CAJ_VKD(vkBindBufferMemory);
+    CAJ_VKD(vkMapMemory);
+    CAJ_VKD(vkUnmapMemory);
+    CAJ_VKD(vkCreateShaderModule);
+    CAJ_VKD(vkDestroyShaderModule);
+    CAJ_VKD(vkCreateDescriptorSetLayout);
+    CAJ_VKD(vkDestroyDescriptorSetLayout);
+    CAJ_VKD(vkCreatePipelineLayout);
+    CAJ_VKD(vkDestroyPipelineLayout);
+    CAJ_VKD(vkCreateComputePipelines);
+    CAJ_VKD(vkDestroyPipeline);
+    CAJ_VKD(vkCreateDescriptorPool);
+    CAJ_VKD(vkDestroyDescriptorPool);
+    CAJ_VKD(vkAllocateDescriptorSets);
+    CAJ_VKD(vkUpdateDescriptorSets);
+    CAJ_VKD(vkCreateCommandPool);
+    CAJ_VKD(vkDestroyCommandPool);
+    CAJ_VKD(vkAllocateCommandBuffers);
+    CAJ_VKD(vkFreeCommandBuffers);
+    CAJ_VKD(vkBeginCommandBuffer);
+    CAJ_VKD(vkEndCommandBuffer);
+    CAJ_VKD(vkCmdBindPipeline);
+    CAJ_VKD(vkCmdBindDescriptorSets);
+    CAJ_VKD(vkCmdDispatch);
+    CAJ_VKD(vkQueueSubmit);
+    CAJ_VKD(vkQueueWaitIdle);
+    #undef CAJ_VKD
+
+    g_xpu_vk.vkGetDeviceQueue(g_xpu_vk.device, g_xpu_vk.queueFamily, 0,
+                              &g_xpu_vk.queue);
+    VkCommandPoolCreateInfo cpci;
+    memset(&cpci, 0, sizeof(cpci));
+    cpci.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+    cpci.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+    cpci.queueFamilyIndex = g_xpu_vk.queueFamily;
+    if (g_xpu_vk.vkCreateCommandPool(g_xpu_vk.device, &cpci, NULL,
+                                     &g_xpu_vk.cmdPool) != VK_SUCCESS)
+        return 0;
+    g_xpu_vk.loaded = 1;
+    return 1;
+}
+
+// Allocate a host-visible/coherent storage buffer; return a 1-based table
+// handle (0 on failure). Reuses a dead slot if one is free.
+static int64_t cajeta_xpu_vk_alloc(uint64_t bytes) {
+    if (bytes == 0) return 0;
+    VkBufferCreateInfo bci;
+    memset(&bci, 0, sizeof(bci));
+    bci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    bci.size = bytes;
+    bci.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
+                VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+    bci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    VkBuffer buf = VK_NULL_HANDLE;
+    if (g_xpu_vk.vkCreateBuffer(g_xpu_vk.device, &bci, NULL, &buf) != VK_SUCCESS)
+        return 0;
+    VkMemoryRequirements req;
+    memset(&req, 0, sizeof(req));
+    g_xpu_vk.vkGetBufferMemoryRequirements(g_xpu_vk.device, buf, &req);
+    int mt = cajeta_xpu_vk_find_memory_type(
+        req.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                                VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    if (mt < 0) { g_xpu_vk.vkDestroyBuffer(g_xpu_vk.device, buf, NULL); return 0; }
+    VkMemoryAllocateInfo mai;
+    memset(&mai, 0, sizeof(mai));
+    mai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    mai.allocationSize = req.size;
+    mai.memoryTypeIndex = (uint32_t) mt;
+    VkDeviceMemory mem = VK_NULL_HANDLE;
+    if (g_xpu_vk.vkAllocateMemory(g_xpu_vk.device, &mai, NULL, &mem)
+            != VK_SUCCESS) {
+        g_xpu_vk.vkDestroyBuffer(g_xpu_vk.device, buf, NULL);
+        return 0;
+    }
+    g_xpu_vk.vkBindBufferMemory(g_xpu_vk.device, buf, mem, 0);
+    void* mapped = NULL;
+    if (g_xpu_vk.vkMapMemory(g_xpu_vk.device, mem, 0, VK_WHOLE_SIZE, 0, &mapped)
+            != VK_SUCCESS) {
+        g_xpu_vk.vkFreeMemory(g_xpu_vk.device, mem, NULL);
+        g_xpu_vk.vkDestroyBuffer(g_xpu_vk.device, buf, NULL);
+        return 0;
+    }
+    int slot = -1;
+    for (int i = 0; i < g_vk_buf_count; ++i)
+        if (!g_vk_bufs[i].live) { slot = i; break; }
+    if (slot < 0) {
+        if (g_vk_buf_count >= CAJETA_VK_MAX_BUFFERS) {
+            g_xpu_vk.vkUnmapMemory(g_xpu_vk.device, mem);
+            g_xpu_vk.vkFreeMemory(g_xpu_vk.device, mem, NULL);
+            g_xpu_vk.vkDestroyBuffer(g_xpu_vk.device, buf, NULL);
+            return 0;
+        }
+        slot = g_vk_buf_count++;
+    }
+    g_vk_bufs[slot].buffer = buf;
+    g_vk_bufs[slot].memory = mem;
+    g_vk_bufs[slot].mapped = mapped;
+    g_vk_bufs[slot].size = bytes;
+    g_vk_bufs[slot].live = 1;
+    return (int64_t) (slot + 1);
+}
+
+static struct cajeta_vk_buf* cajeta_xpu_vk_rec(int64_t handle) {
+    if (handle <= 0 || handle > g_vk_buf_count) return NULL;
+    struct cajeta_vk_buf* r = &g_vk_bufs[handle - 1];
+    return r->live ? r : NULL;
+}
+static void* cajeta_xpu_vk_mapped(int64_t handle) {
+    struct cajeta_vk_buf* r = cajeta_xpu_vk_rec(handle);
+    return r ? r->mapped : NULL;
+}
+static void cajeta_xpu_vk_free(int64_t handle) {
+    struct cajeta_vk_buf* r = cajeta_xpu_vk_rec(handle);
+    if (!r) return;
+    if (r->mapped) g_xpu_vk.vkUnmapMemory(g_xpu_vk.device, r->memory);
+    if (r->buffer) g_xpu_vk.vkDestroyBuffer(g_xpu_vk.device, r->buffer, NULL);
+    if (r->memory) g_xpu_vk.vkFreeMemory(g_xpu_vk.device, r->memory, NULL);
+    r->live = 0; r->mapped = NULL; r->buffer = VK_NULL_HANDLE;
+    r->memory = VK_NULL_HANDLE;
+}
+
+// One dispatch: shader module + descriptor set (binding i = bindings[i]) +
+// pipeline + command buffer + submit + wait. `bindings` are 1-based table
+// handles, in kernel-parameter order. Mirrors VulkanDriver::launch.
+static int cajeta_xpu_vk_launch(const void* spirv, uint64_t len,
+                                const char* entry, const int64_t* bindings,
+                                int n, unsigned groups) {
+    if (!spirv || len < 4 || n <= 0) return 0;
+    VkShaderModule module = VK_NULL_HANDLE;
+    VkDescriptorSetLayout setLayout = VK_NULL_HANDLE;
+    VkPipelineLayout pipeLayout = VK_NULL_HANDLE;
+    VkPipeline pipeline = VK_NULL_HANDLE;
+    VkDescriptorPool descPool = VK_NULL_HANDLE;
+    VkCommandBuffer cmd = VK_NULL_HANDLE;
+    int ok = 0;
+
+    VkShaderModuleCreateInfo smci;
+    memset(&smci, 0, sizeof(smci));
+    smci.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+    smci.codeSize = (size_t) len;
+    smci.pCode = (const uint32_t*) spirv;
+    if (g_xpu_vk.vkCreateShaderModule(g_xpu_vk.device, &smci, NULL, &module)
+            != VK_SUCCESS) goto done;
+
+    VkDescriptorSetLayoutBinding binds[64];
+    if (n > 64) goto done;
+    memset(binds, 0, sizeof(binds[0]) * n);
+    for (int i = 0; i < n; ++i) {
+        binds[i].binding = (uint32_t) i;
+        binds[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        binds[i].descriptorCount = 1;
+        binds[i].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    }
+    VkDescriptorSetLayoutCreateInfo slci;
+    memset(&slci, 0, sizeof(slci));
+    slci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    slci.bindingCount = (uint32_t) n;
+    slci.pBindings = binds;
+    if (g_xpu_vk.vkCreateDescriptorSetLayout(g_xpu_vk.device, &slci, NULL,
+                                             &setLayout) != VK_SUCCESS) goto done;
+
+    VkPipelineLayoutCreateInfo plci;
+    memset(&plci, 0, sizeof(plci));
+    plci.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    plci.setLayoutCount = 1;
+    plci.pSetLayouts = &setLayout;
+    if (g_xpu_vk.vkCreatePipelineLayout(g_xpu_vk.device, &plci, NULL,
+                                        &pipeLayout) != VK_SUCCESS) goto done;
+
+    VkComputePipelineCreateInfo cpci;
+    memset(&cpci, 0, sizeof(cpci));
+    cpci.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+    cpci.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    cpci.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+    cpci.stage.module = module;
+    cpci.stage.pName = entry;
+    cpci.layout = pipeLayout;
+    if (g_xpu_vk.vkCreateComputePipelines(g_xpu_vk.device, VK_NULL_HANDLE, 1,
+                                          &cpci, NULL, &pipeline) != VK_SUCCESS)
+        goto done;
+
+    VkDescriptorPoolSize poolSize;
+    poolSize.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    poolSize.descriptorCount = (uint32_t) n;
+    VkDescriptorPoolCreateInfo dpci;
+    memset(&dpci, 0, sizeof(dpci));
+    dpci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+    dpci.maxSets = 1;
+    dpci.poolSizeCount = 1;
+    dpci.pPoolSizes = &poolSize;
+    if (g_xpu_vk.vkCreateDescriptorPool(g_xpu_vk.device, &dpci, NULL, &descPool)
+            != VK_SUCCESS) goto done;
+
+    VkDescriptorSetAllocateInfo dsai;
+    memset(&dsai, 0, sizeof(dsai));
+    dsai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    dsai.descriptorPool = descPool;
+    dsai.descriptorSetCount = 1;
+    dsai.pSetLayouts = &setLayout;
+    VkDescriptorSet descSet = VK_NULL_HANDLE;
+    if (g_xpu_vk.vkAllocateDescriptorSets(g_xpu_vk.device, &dsai, &descSet)
+            != VK_SUCCESS) goto done;
+
+    VkDescriptorBufferInfo bufInfos[64];
+    VkWriteDescriptorSet writes[64];
+    memset(writes, 0, sizeof(writes[0]) * n);
+    for (int i = 0; i < n; ++i) {
+        struct cajeta_vk_buf* r = cajeta_xpu_vk_rec(bindings[i]);
+        if (!r) goto done;
+        bufInfos[i].buffer = r->buffer;
+        bufInfos[i].offset = 0;
+        bufInfos[i].range = VK_WHOLE_SIZE;
+        writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[i].dstSet = descSet;
+        writes[i].dstBinding = (uint32_t) i;
+        writes[i].descriptorCount = 1;
+        writes[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        writes[i].pBufferInfo = &bufInfos[i];
+    }
+    g_xpu_vk.vkUpdateDescriptorSets(g_xpu_vk.device, (uint32_t) n, writes, 0,
+                                    NULL);
+
+    VkCommandBufferAllocateInfo cbai;
+    memset(&cbai, 0, sizeof(cbai));
+    cbai.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    cbai.commandPool = g_xpu_vk.cmdPool;
+    cbai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    cbai.commandBufferCount = 1;
+    if (g_xpu_vk.vkAllocateCommandBuffers(g_xpu_vk.device, &cbai, &cmd)
+            != VK_SUCCESS) goto done;
+
+    VkCommandBufferBeginInfo cbbi;
+    memset(&cbbi, 0, sizeof(cbbi));
+    cbbi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    cbbi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    g_xpu_vk.vkBeginCommandBuffer(cmd, &cbbi);
+    g_xpu_vk.vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
+    g_xpu_vk.vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
+                                     pipeLayout, 0, 1, &descSet, 0, NULL);
+    g_xpu_vk.vkCmdDispatch(cmd, groups, 1, 1);
+    g_xpu_vk.vkEndCommandBuffer(cmd);
+
+    VkSubmitInfo si;
+    memset(&si, 0, sizeof(si));
+    si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    si.commandBufferCount = 1;
+    si.pCommandBuffers = &cmd;
+    if (g_xpu_vk.vkQueueSubmit(g_xpu_vk.queue, 1, &si, VK_NULL_HANDLE)
+            != VK_SUCCESS) goto done;
+    if (g_xpu_vk.vkQueueWaitIdle(g_xpu_vk.queue) != VK_SUCCESS) goto done;
+    ok = 1;
+
+done:
+    if (cmd) g_xpu_vk.vkFreeCommandBuffers(g_xpu_vk.device, g_xpu_vk.cmdPool, 1,
+                                           &cmd);
+    if (descPool) g_xpu_vk.vkDestroyDescriptorPool(g_xpu_vk.device, descPool,
+                                                   NULL);
+    if (pipeline) g_xpu_vk.vkDestroyPipeline(g_xpu_vk.device, pipeline, NULL);
+    if (pipeLayout) g_xpu_vk.vkDestroyPipelineLayout(g_xpu_vk.device, pipeLayout,
+                                                     NULL);
+    if (setLayout) g_xpu_vk.vkDestroyDescriptorSetLayout(g_xpu_vk.device,
+                                                         setLayout, NULL);
+    if (module) g_xpu_vk.vkDestroyShaderModule(g_xpu_vk.device, module, NULL);
+    return ok;
+}
+
+#else  // no Vulkan SDK header at runtime-build time — Vulkan unavailable.
+static int cajeta_xpu_vulkan_init_locked(void) { return 0; }
+static int64_t cajeta_xpu_vk_alloc(uint64_t b) { (void) b; return 0; }
+static void* cajeta_xpu_vk_mapped(int64_t h) { (void) h; return NULL; }
+static void cajeta_xpu_vk_free(int64_t h) { (void) h; }
+static int cajeta_xpu_vk_launch(const void* s, uint64_t l, const char* e,
+                                const int64_t* b, int n, unsigned g) {
+    (void) s; (void) l; (void) e; (void) b; (void) n; (void) g; return 0;
+}
+#endif  // CAJETA_RT_HAS_VULKAN
+
 // --- registered kernel modules (cubin images keyed by PTX entry name) -------
 // The device-cubin pass emits a global constructor that calls
 // __cajeta_xpu_register_module once per @Kernel; the launch path loads the
@@ -4326,7 +4831,7 @@ static int cajeta_xpu_backend_available_locked(int id) {
     switch (id) {
         case CAJ_XPU_CUDA:   return cajeta_xpu_cuda_init_locked();
         case CAJ_XPU_HIP:    return cajeta_xpu_hip_init_locked();
-        case CAJ_XPU_VULKAN: return 0;   /* Inc 4.3 */
+        case CAJ_XPU_VULKAN: return cajeta_xpu_vulkan_init_locked();
         case CAJ_XPU_CPU:    return 1;
         default:             return 0;
     }
@@ -4431,11 +4936,13 @@ int64_t __cajeta_xpu_buffer_alloc(void* self, uint64_t byteCount) {
             if (g_xpu_hip.hipMalloc(&p, (size_t) byteCount) != 0) return 0;
             return (int64_t) (intptr_t) p;
         }
+        case CAJ_XPU_VULKAN:
+            return cajeta_xpu_vk_alloc(byteCount);   // handle = buffer-table index
         case CAJ_XPU_CPU: {
             void* p = malloc((size_t) byteCount);   // CPU "device" memory = host
             return (int64_t) (intptr_t) p;
         }
-        default: return 0;   // Vulkan: Inc 4.3; none: diagnostic emitted
+        default: return 0;   // none: diagnostic emitted
     }
 }
 void __cajeta_xpu_buffer_upload(void* self, int64_t handle, void* host,
@@ -4452,6 +4959,11 @@ void __cajeta_xpu_buffer_upload(void* self, int64_t handle, void* host,
             g_xpu_hip.hipMemcpyHtoD((void*) (intptr_t) handle, data,
                                     (size_t) byteCount);
             return;
+        case CAJ_XPU_VULKAN: {
+            void* m = cajeta_xpu_vk_mapped(handle);   // host-coherent mapping
+            if (m) memcpy(m, data, (size_t) byteCount);
+            return;
+        }
         case CAJ_XPU_CPU:
             memcpy((void*) (intptr_t) handle, data, (size_t) byteCount);
             return;
@@ -4472,6 +4984,11 @@ void __cajeta_xpu_buffer_download(void* self, int64_t handle, void* host,
             g_xpu_hip.hipMemcpyDtoH(data, (void*) (intptr_t) handle,
                                     (size_t) byteCount);
             return;
+        case CAJ_XPU_VULKAN: {
+            void* m = cajeta_xpu_vk_mapped(handle);
+            if (m) memcpy(data, m, (size_t) byteCount);
+            return;
+        }
         case CAJ_XPU_CPU:
             memcpy(data, (const void*) (intptr_t) handle, (size_t) byteCount);
             return;
@@ -4482,9 +4999,10 @@ void __cajeta_xpu_buffer_free(void* self, int64_t handle) {
     (void) self;
     if (!handle) return;
     switch (cajeta_xpu_active_backend()) {
-        case CAJ_XPU_CUDA: g_xpu_cuda.cuMemFree((cajeta_cudeviceptr) handle); return;
-        case CAJ_XPU_HIP:  g_xpu_hip.hipFree((void*) (intptr_t) handle); return;
-        case CAJ_XPU_CPU:  free((void*) (intptr_t) handle); return;
+        case CAJ_XPU_CUDA:   g_xpu_cuda.cuMemFree((cajeta_cudeviceptr) handle); return;
+        case CAJ_XPU_HIP:    g_xpu_hip.hipFree((void*) (intptr_t) handle); return;
+        case CAJ_XPU_VULKAN: cajeta_xpu_vk_free(handle); return;
+        case CAJ_XPU_CPU:    free((void*) (intptr_t) handle); return;
         default: return;
     }
 }
@@ -4561,6 +5079,58 @@ static void cajeta_xpu_launch_hip(const char* kernelName, int32_t gridX,
                                     (void**) argv, /*extra=*/NULL);
 }
 
+// Vulkan launch: translate the uniform kernelParams argv into descriptor
+// bindings using the per-kernel param metadata — buffer args map to their
+// existing storage buffers (argv slot holds the buffer-table handle), scalar
+// args are copied into transient single-element SSBOs (freed after) — then
+// dispatch gridX work-groups (the local size is baked into the SPIR-V). This is
+// the one backend whose launch ABI forks from the pointer-arg kernelParams
+// model: Vulkan's compute entry has no params, only descriptor bindings.
+static void cajeta_xpu_launch_vulkan(const char* kernelName, int32_t gridX,
+                                     void* argvv) {
+    void** argv = (void**) argvv;
+    pthread_mutex_lock(&g_xpu_cuda_lock);
+    struct cajeta_xpu_module* e = cajeta_xpu_find_module(kernelName);
+    const void* spirv = e ? e->image : NULL;
+    uint64_t len = e ? e->len : 0;
+    pthread_mutex_unlock(&g_xpu_cuda_lock);
+    if (!spirv || len < 4) {
+        fprintf(stderr,
+                "cajeta.xpu: no registered SPIR-V kernel '%s' to launch\n",
+                kernelName);
+        return;
+    }
+    struct cajeta_kparams* kp = cajeta_xpu_find_kparams(kernelName);
+    if (!kp || kp->count <= 0 || kp->count > 64) {
+        fprintf(stderr,
+                "cajeta.xpu: missing/invalid parameter metadata for Vulkan "
+                "kernel '%s'\n", kernelName);
+        return;
+    }
+    const int n = kp->count;
+    int64_t bindings[64];
+    int64_t transient[64];
+    int ntrans = 0;
+    int built = 1;
+    for (int i = 0; i < n; ++i) {
+        if (kp->isBuffer[i]) {
+            bindings[i] = *(int64_t*) argv[i];    // existing storage buffer
+        } else {
+            uint32_t sz = kp->byteSize[i] ? kp->byteSize[i] : 4u;
+            int64_t h = cajeta_xpu_vk_alloc(sz);  // transient scalar SSBO
+            if (!h) { built = 0; break; }
+            void* m = cajeta_xpu_vk_mapped(h);
+            if (m) memcpy(m, argv[i], sz);
+            bindings[i] = h;
+            transient[ntrans++] = h;
+        }
+    }
+    if (built)
+        cajeta_xpu_vk_launch(spirv, len, kernelName, bindings, n,
+                             (unsigned) gridX);
+    for (int i = 0; i < ntrans; ++i) cajeta_xpu_vk_free(transient[i]);
+}
+
 // The host-source `kernel.launch(...)` entry point: dispatch to the active
 // backend (chosen + cached on first device touch).
 void __cajeta_xpu_launch(const char* kernelName, int32_t gridX, int32_t blockX,
@@ -4573,10 +5143,13 @@ void __cajeta_xpu_launch(const char* kernelName, int32_t gridX, int32_t blockX,
         case CAJ_XPU_HIP:
             cajeta_xpu_launch_hip(kernelName, gridX, blockX, sharedBytes, argv);
             return;
+        case CAJ_XPU_VULKAN:
+            cajeta_xpu_launch_vulkan(kernelName, gridX, argv);
+            return;
         case CAJ_XPU_CPU:
             cajeta_xpu_launch_cpu(kernelName, gridX, blockX, argv);
             return;
-        default: return;   // Vulkan: Inc 4.3; none: diagnostic emitted
+        default: return;   // none: diagnostic emitted
     }
 }
 

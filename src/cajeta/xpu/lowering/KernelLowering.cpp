@@ -881,15 +881,12 @@ llvm::Value* LoweringTarget::bufferElementPtr(llvm::IRBuilderBase& b,
     return b.CreateGEP(elemTy, base, {index}, "idx");
 }
 
-llvm::Function* lowerKernel(const MethodPtr& method, llvm::Module& deviceModule,
-                            LoweringTarget& target) {
-    if (!method) unsupported("null kernel method");
-    llvm::LLVMContext& ctx = deviceModule.getContext();
-
-    // Admit the kernel parameters: Buffer<T>/arrays carry an element type,
-    // primitives a scalar type. This classification is backend-neutral; HOW
-    // the params become a signature is the backend's call (target.createKernel
-    // / materializeParam) — the Vulkan fork.
+// Admit the kernel parameters: Buffer<T>/arrays carry an element type,
+// primitives a scalar type. This classification is backend-neutral; HOW the
+// params become a signature is the backend's call (target.createKernel /
+// materializeParam) — the Vulkan fork.
+static std::vector<LoweringTarget::KernelParam> collectParams(
+        const MethodPtr& method, llvm::LLVMContext& ctx) {
     std::vector<LoweringTarget::KernelParam> params;
     for (auto& p : method->getParameterList()) {
         if (!p) continue;
@@ -914,6 +911,28 @@ llvm::Function* lowerKernel(const MethodPtr& method, llvm::Module& deviceModule,
                               typeIsSigned(t)});
         }
     }
+    return params;
+}
+
+std::vector<KernelParamInfo> collectKernelParamInfo(const MethodPtr& method,
+                                                    llvm::LLVMContext& ctx) {
+    std::vector<KernelParamInfo> info;
+    if (!method) return info;
+    for (auto& p : collectParams(method, ctx)) {
+        unsigned bytes = 0;
+        if (!p.isBuffer && p.type)
+            bytes = (p.type->getScalarSizeInBits() + 7u) / 8u;
+        info.push_back({p.isBuffer, bytes});
+    }
+    return info;
+}
+
+llvm::Function* lowerKernel(const MethodPtr& method, llvm::Module& deviceModule,
+                            LoweringTarget& target) {
+    if (!method) unsupported("null kernel method");
+    llvm::LLVMContext& ctx = deviceModule.getContext();
+
+    std::vector<LoweringTarget::KernelParam> params = collectParams(method, ctx);
 
     llvm::Function* fn =
         target.createKernel(deviceModule, method->getName(), params);
