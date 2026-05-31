@@ -73,6 +73,15 @@ namespace cajeta {
         // carries all of JSON / hashing / parallel-stream / etc.
         opt.FunctionSections = true;
         opt.DataSections     = true;
+        // Emit llvm.global_ctors as `.init_array` (modern ELF), not the legacy
+        // `.ctors` section. TargetOptions defaults UseInitArray to false, which
+        // makes the AsmPrinter emit `.ctors` — a section modern glibc startup
+        // does NOT run, so every AOT global constructor (per-class clinit, the
+        // UnrecoverableException vtable marker, the embedded runtime's
+        // __attribute__((constructor)) init, and the XPU kernel/backend
+        // registration ctors) silently never fired. clang/llc set this; we must
+        // too for the --emit=obj/exe path to honor static initializers.
+        opt.UseInitArray     = true;
         targetMachine = target->createTargetMachine(triple, cpu, features, opt, effectiveRM);
     }
 

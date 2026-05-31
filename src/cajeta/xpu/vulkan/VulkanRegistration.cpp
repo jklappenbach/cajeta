@@ -38,10 +38,13 @@ namespace vulkan {
                                const std::string& arch) {
         if (kernels.empty()) return 0;
 
-        // One SPIR-V TargetMachine for all kernels. If the spirv target isn't
-        // in this LLVM build there's nothing to emit.
-        auto tm = createSpirvTargetMachine(arch);
-        if (!tm) return 0;
+        // A FRESH SPIR-V TargetMachine per kernel (created in the loop below):
+        // LLVM's SPIR-V backend carries codegen state (SPIRVGlobalRegistry) on
+        // the TargetMachine, and reusing one TM across multiple kernels'
+        // emitSpirv corrupts it — a crash in SPIRVEmitIntrinsics on the second
+        // kernel. This probe just confirms the spirv target is in this LLVM
+        // build; if not, there's nothing to emit.
+        if (!createSpirvTargetMachine(arch)) return 0;
 
         llvm::LLVMContext& ctx = hostModule.getContext();
         llvm::Type* i32Ty = llvm::Type::getInt32Ty(ctx);
@@ -70,9 +73,12 @@ namespace vulkan {
             if (!method || !isKernel(*method)) continue;
             const std::string entryName = method->getName();
 
-            // Lower this kernel into a fresh device module + emit SPIR-V. The
-            // device lowerer builds types in its own context, so this never
-            // touches the host module until we have bytes.
+            // Lower this kernel into a fresh device module + emit SPIR-V, with
+            // its own TargetMachine (see above). The device lowerer builds types
+            // in its own context, so this never touches the host module until we
+            // have bytes.
+            auto tm = createSpirvTargetMachine(arch);
+            if (!tm) continue;
             llvm::LLVMContext devCtx;
             llvm::Module devMod("xpu.dev." + entryName, devCtx);
             configureDeviceModule(devMod, *tm);

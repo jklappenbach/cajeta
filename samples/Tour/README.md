@@ -2,11 +2,21 @@
 
 A walkthrough of every load-bearing language feature, one class per feature. Each demo class extends `DemoClass` and overrides `execute()`; `Tour.run()` puts one instance of each demo into an array and walks the array calling `execute()` — so adding a feature means dropping a new `.cajeta` file alongside the others and bumping the `demos[]` initializer in `Tour.cajeta`.
 
+> This folder (`src/tour/`) is the **stdlib / language-feature** tour. The
+> **XPU tour** — portable `@Kernel` programs run through the runtime backend
+> dispatcher (GPU or CPU fallback) — lives in its own subfolder
+> [`xpu/`](xpu/README.md), because XPU programs need the `--xpu-backend` flag
+> and a device-or-CPU-fallback to run. Build + run it with `xpu/run-xpu.sh`.
+
 ```
 samples/Tour/
-├── README.md             ← you are here
+├── README.md             ← you are here (stdlib / language tour)
 ├── build-bin.sh          ← compile + link to a native binary (build/tour)
 ├── build-uber.sh         ← compile to a runnable .cja archive (build/uber/Tour.cja)
+├── xpu/                  ← the XPU tour (@Kernel + the runtime dispatcher)
+│   ├── README.md
+│   ├── run-xpu.sh        ← compile + run for any backend (default cpu)
+│   └── src/tourxpu/XpuTour.cajeta
 └── src/tour/
     ├── Tour.cajeta              ← entry point — builds the demos[] array
     ├── DemoClass.cajeta         ← base class with virtual execute()

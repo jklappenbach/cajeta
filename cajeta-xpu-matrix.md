@@ -12,6 +12,23 @@ This is a companion to the "NVIDIA∩AMD overlap reckoning" in
 [`cajeta-amd.md`](cajeta-amd.md). It extends that two-backend reckoning with the
 Vulkan/SPIR-V column.
 
+> **A fourth backend — CPU — and a runtime dispatcher now exist** (see
+> [`cajeta-cpu.md`](cajeta-cpu.md)). The CPU is deliberately *not* given a
+> column here: the three columns below measure the **GPU** variance surface, and
+> the CPU is a different shape — it has no hardware grid or coordinate
+> intrinsics, so its sole seam fork is the *coordinate source* (the kernel gains
+> 9 trailing `i32` coordinate params; `Thread`/`Workgroup` reads pull from those
+> — the grid→threads model), buffers are flat `addrspace(0)`, the wave is
+> width-1, and barriers are deferred (`XPU-N01`). The body walk is the same ~90%
+> Core. Separately, the **runtime dispatcher** (in the C runtime, the sole launch
+> path for compiled programs) selects among bundled+available backends at startup
+> (`CUDA → HIP → Vulkan → CPU`) and routes launch + `Buffer<T>` device memory to
+> the winner — so "run anywhere, degrade to CPU" is ordinary dispatch reaching
+> its guaranteed terminal. The one launch-ABI asymmetry it exposed is Vulkan's:
+> the uniform `kernelParams` argv (buffer handles + raw scalars) doesn't map to
+> Vulkan's descriptor-set model, so scalars are wrapped in transient SSBOs from
+> per-kernel parameter metadata (rows in §2 already note the descriptor-set fork).
+
 ---
 
 ## Provenance & how to read this
