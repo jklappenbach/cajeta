@@ -5,9 +5,13 @@
 #include "cajeta/buildtool/JsonC.h"
 #include "cajeta/buildtool/Lockfile.h"
 #include "cajeta/buildtool/Manifest.h"
+#include "cajeta/buildtool/ManifestEditor.h"
 #include "cajeta/buildtool/Properties.h"
 #include "cajeta/buildtool/Task.h"
 #include "cajeta/buildtool/TaskRunner.h"
+
+#include <fstream>
+#include <sstream>
 
 #include <llvm/Support/Error.h>
 #include <llvm/Support/MemoryBuffer.h>
@@ -305,6 +309,162 @@ namespace cajeta::buildtool {
             return 0;
         }
 
+        // Common helpers for `cajeta add` / `cajeta remove`: read +
+        // write the manifest file as bytes, no JSONC normalization
+        // (those operations want comment + format preservation).
+        bool readFileBytes(const std::string& path, std::string& out) {
+            std::ifstream in(path, std::ios::binary);
+            if (!in) return false;
+            std::ostringstream buf;
+            buf << in.rdbuf();
+            out = buf.str();
+            return true;
+        }
+
+        bool writeFileBytes(const std::string& path, const std::string& bytes) {
+            std::ofstream out(path, std::ios::binary | std::ios::trunc);
+            if (!out) return false;
+            out.write(bytes.data(),
+                      static_cast<std::streamsize>(bytes.size()));
+            return static_cast<bool>(out);
+        }
+
+        // `cajeta add <name>[@<version>] [--manifest=<path>]`
+        // Inserts (or replaces) the entry in settings.dependencies.
+        // Default constraint when `@version` is omitted: "*".
+        int addCommand(int argc, const char* argv[]) {
+            std::string manifestPath = "./cajeta.json";
+            std::string spec;
+            for (int i = 2; i < argc; ++i) {
+                std::string_view arg = argv[i];
+                std::string value;
+                if (match(arg, "manifest", value)) {
+                    manifestPath = value;
+                } else if (arg == "--help" || arg == "-h") {
+                    std::cout
+                        << "Usage: cajeta add <name>[@<version>] "
+                        << "[--manifest=<path>]\n"
+                        << "\n"
+                        << "Add a dependency to settings.dependencies. "
+                        << "Default constraint when version is omitted: *.\n";
+                    return 0;
+                } else if (!arg.empty() && arg[0] == '-') {
+                    std::cerr << "cajeta add: unknown argument '"
+                              << arg << "'\n";
+                    return 1;
+                } else if (spec.empty()) {
+                    spec = std::string(arg);
+                } else {
+                    std::cerr << "cajeta add: unexpected positional "
+                                 "argument '" << arg << "'\n";
+                    return 1;
+                }
+            }
+            if (spec.empty()) {
+                std::cerr << "cajeta add: missing required dependency "
+                             "name (use `cajeta add <name>[@<version>]`)\n";
+                return 1;
+            }
+
+            // Split spec at the first '@'. Everything to the right
+            // is the constraint; default to '*' when absent.
+            std::string name = spec;
+            std::string constraint = "*";
+            auto at = spec.find('@');
+            if (at != std::string::npos) {
+                name = spec.substr(0, at);
+                constraint = spec.substr(at + 1);
+                if (constraint.empty()) constraint = "*";
+            }
+            if (name.empty()) {
+                std::cerr << "cajeta add: dependency name is empty\n";
+                return 1;
+            }
+
+            std::string src;
+            if (!readFileBytes(manifestPath, src)) {
+                std::cerr << "cajeta add: cannot read manifest '"
+                          << manifestPath << "'\n";
+                return 1;
+            }
+            auto out = addDependencyToManifest(src, name, constraint);
+            if (!out) {
+                std::string msg;
+                llvm::raw_string_ostream os(msg);
+                os << out.takeError();
+                std::cerr << "cajeta add: " << msg << "\n";
+                return 1;
+            }
+            if (!writeFileBytes(manifestPath, *out)) {
+                std::cerr << "cajeta add: cannot write manifest '"
+                          << manifestPath << "'\n";
+                return 1;
+            }
+            std::cout << "added " << name << " (" << constraint
+                      << ") to " << manifestPath << "\n";
+            return 0;
+        }
+
+        // `cajeta remove <name> [--manifest=<path>]`
+        // Removes the entry from settings.dependencies. Errors when
+        // the dep isn't declared.
+        int removeCommand(int argc, const char* argv[]) {
+            std::string manifestPath = "./cajeta.json";
+            std::string name;
+            for (int i = 2; i < argc; ++i) {
+                std::string_view arg = argv[i];
+                std::string value;
+                if (match(arg, "manifest", value)) {
+                    manifestPath = value;
+                } else if (arg == "--help" || arg == "-h") {
+                    std::cout
+                        << "Usage: cajeta remove <name> "
+                        << "[--manifest=<path>]\n"
+                        << "\n"
+                        << "Remove a dependency from "
+                        << "settings.dependencies.\n";
+                    return 0;
+                } else if (!arg.empty() && arg[0] == '-') {
+                    std::cerr << "cajeta remove: unknown argument '"
+                              << arg << "'\n";
+                    return 1;
+                } else if (name.empty()) {
+                    name = std::string(arg);
+                } else {
+                    std::cerr << "cajeta remove: unexpected positional "
+                                 "argument '" << arg << "'\n";
+                    return 1;
+                }
+            }
+            if (name.empty()) {
+                std::cerr << "cajeta remove: missing required "
+                             "dependency name\n";
+                return 1;
+            }
+            std::string src;
+            if (!readFileBytes(manifestPath, src)) {
+                std::cerr << "cajeta remove: cannot read manifest '"
+                          << manifestPath << "'\n";
+                return 1;
+            }
+            auto out = removeDependencyFromManifest(src, name);
+            if (!out) {
+                std::string msg;
+                llvm::raw_string_ostream os(msg);
+                os << out.takeError();
+                std::cerr << "cajeta remove: " << msg << "\n";
+                return 1;
+            }
+            if (!writeFileBytes(manifestPath, *out)) {
+                std::cerr << "cajeta remove: cannot write manifest '"
+                          << manifestPath << "'\n";
+                return 1;
+            }
+            std::cout << "removed " << name << " from " << manifestPath
+                      << "\n";
+            return 0;
+        }
+
     } // namespace
 
     namespace {
@@ -566,7 +726,8 @@ namespace cajeta::buildtool {
             std::string_view cmd = argv[1];
             // Built-in subcommands handled elsewhere.
             if (cmd == "info" || cmd == "tasks" || cmd == "task" ||
-                cmd == "init" || cmd == "archive") {
+                cmd == "init" || cmd == "archive" ||
+                cmd == "add"  || cmd == "remove") {
                 return false;
             }
             // Anything starting with `-` is a flag for the existing
@@ -607,6 +768,14 @@ namespace cajeta::buildtool {
         }
         if (cmd == "init") {
             *exitCodeOut = initCommand(argc, argv);
+            return true;
+        }
+        if (cmd == "add") {
+            *exitCodeOut = addCommand(argc, argv);
+            return true;
+        }
+        if (cmd == "remove") {
+            *exitCodeOut = removeCommand(argc, argv);
             return true;
         }
         if (looksLikeTaskInvocation(argc, argv)) {

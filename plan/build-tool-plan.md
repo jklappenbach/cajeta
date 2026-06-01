@@ -467,8 +467,8 @@ work.
 - [x] Override: version range constraint.
 - [x] Major-version-downgrade guard (with
       `allow-major-downgrade` escape).
-- [ ] `cajeta add <dep>` subcommand.
-- [ ] `cajeta remove <dep>` subcommand.
+- [x] `cajeta add <dep>` subcommand.
+- [x] `cajeta remove <dep>` subcommand.
 - [ ] `cajeta upgrade [dep]` subcommand with capability-change
       prompt.
 - [ ] `cajeta info --resolve-time` for diagnosing pathological
