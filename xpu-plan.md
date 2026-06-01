@@ -44,7 +44,7 @@ fix the regression first). Don't build new Vulkan capability on a red base.
 | 4 | **Multi-arch bundling (fatbin)** | deployment | medium | ◐ AMD done + verified on-device; NVIDIA untestable here (no ptxas/fatbinary) |
 | 5 | **Vulkan dynamic shared memory** | vulkan | medium | ✅ done (verified on-device) |
 | 6 | **`for-each` parallel loops** | capability | medium | ✅ done (grid-stride; NVPTX/AMD/SPIR-V + frontend verified on AMD & Vulkan; CPU coord-ABI extended, verified) |
-| 7 | **POD structs as kernel args** | capability | small-medium | ☐ not started |
+| 7 | **POD structs as kernel args** | capability | small-medium | ✅ done (by-value, all 4 backends; verified on AMD & Vulkan) |
 | 8 | **Texture / Sampler types** | capability | large | ☐ not started |
 | 9 | **`Wave.width()` on-device (Vulkan)** | vulkan | blocked | ⛔ external (LLVM 22 SPIR-V can't select `spv.wave.get_lane_count`) |
 
@@ -461,6 +461,48 @@ coord-count comments in `XpuCpuEmitTests` updated to 12. Full CPU suite green (4
 **Today:** kernel args need explicit `implements KernelArg`. **Goal:** accept
 plain POD structs by value as kernel arguments (layout-compatible marshalling
 through the `kernelParams` ABI).
+
+**✅ DONE + verified on-device (2026-06-01).** A plain `class P { <all-primitive
+fields> }` — no inheritance, no marker interface — is now admissible by value as
+an `@Kernel` arg; the kernel reads its fields with `p.field`.
+
+- **Admit (front-end):** `isKernelArgAdmissible` gains an `isPodStruct` branch
+  (`KernelArgTrait.cpp`) — a non-interface, non-`Buffer`, **no-inherited-fields**
+  class with ≥1 field, all of whose instance fields are primitives. Non-POD
+  classes (non-primitive/inherited fields) still need the explicit
+  `implements KernelArg` opt-in, so `XPU-K01` is unchanged for them. Exported as
+  `isPodStructType` so the launch-site marshaller shares the exact predicate.
+- **Marshal (launch site, `CallExpression.cpp`):** the host class carries a
+  vtable pointer at LLVM slot 0; that word is **stripped**. Each field is copied
+  out of the host instance (`StructGEP` at its host index) into a packed,
+  declaration-order buffer — the exact shape the device reads. (Field-by-field,
+  so no host-vs-device padding assumption.) `argv[i]` points at that buffer.
+- **Lower (device, `KernelLowering.cpp`):** `collectParams` classifies a struct
+  param to a vtable-stripped device `StructType` of its primitive fields
+  (`deviceStructInfo`); it rides the existing by-value (non-buffer) path —
+  `createKernel` emits it as an aggregate kernel param, `collectKernelParamInfo`
+  reports its alloc-size for the Vulkan SSBO wrap. Field reads are an
+  **`extractvalue`** from the materialized SSA aggregate — crucially **no alloca
+  round-trip**: an aggregate store to a Function-storage pointer is rejected by
+  the SPIR-V backend (`spirv-val`: *"not a logical pointer"*), so the struct is
+  kept as an SSA value and `OpCompositeExtract` reads each field. Struct params
+  are **read-only** in v1 (`name.field = …` → clean `XPU-N01`).
+- **Per backend:** NVPTX/AMDGPU take the struct by value in `kernelParams`
+  (native); CPU's launcher-thunk loads the aggregate from `argv[i]`; Vulkan wraps
+  it in a single descriptor-bound storage buffer (the scalar-SSBO mechanism with
+  element type = the struct) and reads fields via `OpCompositeExtract`.
+- **Tests:** `XpuKernelArgTests.{podStructAdmissible,nonPodUserTypeRejected}`
+  (front-end), `XpuCpuDispatchTests.podStructArgOnCpu` (runnable),
+  `Xpu{Nvptx,Amdgpu}LoopEmitTests.lowersPodStructArg` +
+  `XpuVulkanEmitTests.lowersPodStructArgToSpirv` (emit + `spirv-val`), and on
+  real hardware `XpuHipDispatchDeviceTests.podStructArgRoutesToHipOnDevice`
+  (gfx1151) + `XpuVulkanDispatchDeviceTests.podStructArgOnDevice` (RADV) —
+  `out[i] = i*scale + bias`, scale=2/bias=1/n=256 ⇒ Σ(2i+1) = 65536.
+- **v1 limits:** all-primitive fields only (no nested structs / arrays / Buffer
+  fields), no inheritance, read-only in the kernel. 4-byte and 8-byte primitive
+  fields are layout-compatible across host + all device targets (natural
+  alignment); sub-word fields are untested. Follow-ups: writable struct params;
+  nested-POD fields.
 
 ---
 

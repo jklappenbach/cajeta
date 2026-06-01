@@ -46,6 +46,28 @@ bool implementsKernelArg(const std::shared_ptr<CajetaClass>& klass) {
     return false;
 }
 
+// A plain POD struct admissible by value (Item 7): a non-interface,
+// non-Buffer class with no inherited fields (so every instance field is
+// in its own propertyList) and at least one field, all of whose
+// non-static instance fields are primitives. Inheritance, non-primitive
+// fields, and nested structs are out of scope for v1 — they keep needing
+// an explicit `implements KernelArg`. The vtable word those classes carry
+// is stripped during marshalling, so it does not affect admissibility.
+bool isPodStruct(const std::shared_ptr<CajetaClass>& klass) {
+    if (!klass) return false;
+    if (klass->isInterface()) return false;
+    if (isBufferInstantiation(klass->toCanonical())) return false;
+    if (klass->countInheritedFields() != 0) return false;  // no inheritance v1
+    bool sawField = false;
+    for (auto& prop : klass->getPropertyList()) {
+        if (!prop || prop->isStatic()) continue;
+        sawField = true;
+        auto ft = prop->getType();
+        if (!ft || !(ft->getTypeFlags() & PRIMITIVE_FLAG)) return false;
+    }
+    return sawField;
+}
+
 } // namespace
 
 bool isKernelArgAdmissible(const CajetaTypePtr& type) {
@@ -65,16 +87,21 @@ bool isKernelArgAdmissible(const CajetaTypePtr& type) {
         return isKernelArgAdmissible(array->getElementType());
     }
 
-    // Class/interface references — admit Buffer<T> by name prefix, and
-    // user-defined classes/interfaces that implement the KernelArg
-    // marker interface.
+    // Class/interface references — admit Buffer<T> by name prefix,
+    // plain POD structs by value (Item 7), and user-defined
+    // classes/interfaces that implement the KernelArg marker interface.
     auto klass = std::dynamic_pointer_cast<CajetaClass>(type);
     if (klass) {
         if (isBufferInstantiation(type->toCanonical())) return true;
+        if (isPodStruct(klass)) return true;
         if (implementsKernelArg(klass)) return true;
     }
 
     return false;
+}
+
+bool isPodStructType(const CajetaTypePtr& type) {
+    return isPodStruct(std::dynamic_pointer_cast<CajetaClass>(type));
 }
 
 void validateKernelParams(const MethodPtr& method) {
@@ -98,8 +125,9 @@ void validateKernelParams(const MethodPtr& method) {
                 << (t ? t->toCanonical() : std::string("<unknown>"))
                 << "' which is not admissible as a kernel argument. "
                 << "Admissible types: primitives, "
-                << "cajeta.xpu.core.Buffer<T>, or any type that "
-                << "implements cajeta.xpu.core.KernelArg.";
+                << "cajeta.xpu.core.Buffer<T>, POD structs (a class with "
+                << "only primitive fields and no inheritance), or any type "
+                << "that implements cajeta.xpu.core.KernelArg.";
             throw cajeta::Exception(msg.str(), "XPU-K01");
         }
     }

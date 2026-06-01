@@ -6,6 +6,8 @@
 //
 //   - primitives (anything with PRIMITIVE_FLAG)
 //   - cajeta.xpu.core.Buffer<T> (any T)
+//   - POD structs by value (a class with only primitive fields and no
+//     inheritance) — admitted without a marker interface (Item 7)
 //   - user types declared `implements KernelArg`
 //
 // The validation runs at the start of Method::generateCode for any
@@ -135,13 +137,37 @@ TEST(XpuKernelArgTests, userTypeImplementingKernelArgAdmissible) {
     EXPECT_NO_THROW(compileAndCodegen(compiler, src, "test.K"));
 }
 
-// User class NOT implementing KernelArg is rejected with XPU-K01.
-TEST(XpuKernelArgTests, plainUserTypeRejected) {
+// A plain POD struct (all-primitive fields, no inheritance, no marker
+// interface) is admissible by value as a kernel arg (Item 7).
+TEST(XpuKernelArgTests, podStructAdmissible) {
     auto src =
         "package test;\n"
+        "public class Params {\n"
+        "    float32 scale;\n"
+        "    int32 bias;\n"
+        "    public Params(float32 scale, int32 bias)"
+        " { this.scale = scale; this.bias = bias; }\n"
+        "}\n"
+        "public class K {\n"
+        "    @Kernel\n"
+        "    public static void run(Params p) { }\n"
+        "}\n";
+    Compiler compiler;
+    EXPECT_NO_THROW(compileAndCodegen(compiler, src, "test.K"));
+}
+
+// A NON-POD class (it has a class-typed, non-primitive field) without the
+// KernelArg marker is still rejected with XPU-K01.
+TEST(XpuKernelArgTests, nonPodUserTypeRejected) {
+    auto src =
+        "package test;\n"
+        "public class Inner {\n"
+        "    int32 x;\n"
+        "    public Inner(int32 x) { this.x = x; }\n"
+        "}\n"
         "public class NotKernelArg {\n"
-        "    int32 a;\n"
-        "    public NotKernelArg(int32 a) { this.a = a; }\n"
+        "    Inner inner;\n"
+        "    public NotKernelArg(Inner inner) { this.inner = inner; }\n"
         "}\n"
         "public class K {\n"
         "    @Kernel\n"
@@ -163,9 +189,13 @@ TEST(XpuKernelArgTests, plainUserTypeRejected) {
 TEST(XpuKernelArgTests, nonKernelMethodNotValidated) {
     auto src =
         "package test;\n"
+        "public class Inner {\n"
+        "    int32 x;\n"
+        "    public Inner(int32 x) { this.x = x; }\n"
+        "}\n"
         "public class NotKernelArg {\n"
-        "    int32 a;\n"
-        "    public NotKernelArg(int32 a) { this.a = a; }\n"
+        "    Inner inner;\n"
+        "    public NotKernelArg(Inner inner) { this.inner = inner; }\n"
         "}\n"
         "public class K {\n"
         "    public static void notAKernel(NotKernelArg p) { }\n"

@@ -8,12 +8,17 @@
 // v1 admits:
 //   - primitives (anything with PRIMITIVE_FLAG)
 //   - Buffer<T> (any T) — matched by canonical-name prefix
+//   - POD structs by value — a plain `class X { <all-primitive fields> }`
+//     with no inheritance and no marker interface (Item 7). Marshalled
+//     field-by-field through the kernelParams ABI (the vtable word is
+//     stripped); the kernel body reads fields via `x.field`.
 //   - user types declared `class X implements KernelArg` (the marker
-//     interface from runtime/src/cajeta/xpu/core/KernelArg.cajeta)
+//     interface from runtime/src/cajeta/xpu/core/KernelArg.cajeta) — still
+//     admitted even when not a pure POD (the explicit opt-in)
 //
 // v1 does NOT yet admit:
-//   - POD structs without an explicit `implements KernelArg`
-//     (structural-trait check lands when the broader trait system does)
+//   - non-POD structs (non-primitive fields / inherited fields) without an
+//     explicit `implements KernelArg`
 //   - Texture<Format,Dim> / Sampler — types not yet declared
 //   - @PushConstant structs — Vulkan-only, deferred to phase 5
 //
@@ -43,6 +48,13 @@ namespace xpu {
 
     // Is `type` admissible as a parameter to an @Kernel method?
     bool isKernelArgAdmissible(const CajetaTypePtr& type);
+
+    // Is `type` a plain POD struct admissible by value as a kernel arg —
+    // a non-interface, non-Buffer class with no inherited fields and at
+    // least one field, all of whose instance fields are primitives? Shared
+    // by the admissibility check and the launch-site marshaller so both
+    // agree on exactly which arguments take the by-value struct path.
+    bool isPodStructType(const CajetaTypePtr& type);
 
     // Validate every parameter of `method`. Throws cajeta::Exception
     // (errorId "XPU-K01") with a clear diagnostic on the first non-

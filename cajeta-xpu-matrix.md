@@ -132,6 +132,7 @@ bring-up turns on.
 |---------|------|--------|-----|--------|
 | `Buffer<T>` arg as raw device pointer | `addrspace(1) T*` function param | `native` · pointer in `kernelParams[i]` | `native` · pointer in `kernelParams[i]` | `abstraction: ` **descriptor-set SSBO** — each `Buffer<T>` is an `OpVariable StorageBuffer` (set 0, binding = arg index) accessed via `llvm.spv.resource.handlefrombinding` → `getpointer`. (BDA was the intended path but is **not possible** — see the row below.) |
 | Scalar arg by value | scalar function param | `native` | `native` | `abstraction: ` carried as a **single-element SSBO** at its own binding (first measured cut). A push-constant block (`llvm.spv.pushconstant.getpointer`) is the natural refinement. |
+| POD struct arg by value | aggregate function param; marshalled vtable-stripped field-by-field through `kernelParams` (Item 7) | `native` (by-value kernarg) | `native` (by-value kernarg) | `abstraction: ` carried as a **single descriptor-SSBO** whose element type IS the struct; fields read via `OpCompositeExtract` off the loaded SSA aggregate (no alloca — an aggregate store to Function storage is `spirv-val`-invalid). Read-only, all-primitive fields, no inheritance in v1. |
 | Why not Buffer Device Address | — | — | — | `not possible: ` LLVM 22's SPIR-V backend exposes **no PhysicalStorageBuffer/BDA intrinsic** — the `PhysicalStorageBuffer64EXT` strings are capability enum names only. So raw-pointer kernel args can't be reconstituted from IR; descriptor sets are the only model. |
 | Where the fork lands on the seam | param-materialization + buffer-access hooks (default preserves NV/AMD) | default | default | `forks: ` **both** the kernel signature (`void main()`, no params; `createKernel` + `materializeParam` hooks) **and** the body's buffer element access (`bufferElementPtr` → `getpointer` instead of GEP). Bigger than AMD: the body walk forks, not just the prologue. |
 
@@ -279,7 +280,7 @@ These are backend-neutral gaps from `cajeta-xpu.md`, unaffected by the Vulkan co
 | Multi-arch bundling (fatbin) | **AMD ✅** — `--xpu-arch=gfx1100,gfx1151` → `clang-offload-bundle` via `assembleHsacoBundle`, `hipModuleLoadData` selects the device arch (verified on-device). NVIDIA fatbin parallel deferred (no `ptxas`/`fatbinary` on this box). |
 | Texture / Sampler types | deferred |
 | `@PushConstant` (Vulkan-only surface) | deferred — note: BDA already *uses* a push-constant block internally (§3), so the plumbing arrives early on Vulkan |
-| POD structs as kernel args without explicit `implements KernelArg` | deferred |
+| POD structs as kernel args without explicit `implements KernelArg` | ✅ done — a plain `class { <primitive fields> }` (no inheritance, no marker) is admitted by value (`isPodStruct`); marshalled vtable-stripped field-by-field through `kernelParams`; the kernel reads fields with `p.field` (an `extractvalue` / `OpCompositeExtract` off the SSA aggregate — **no alloca**, so SPIR-V logical addressing stays valid). NVPTX/AMDGPU by-value kernarg, CPU thunk aggregate load, Vulkan single descriptor-SSBO. Verified on AMD (gfx1151) + Vulkan (RADV). Read-only, all-primitive fields, no inheritance in v1. |
 
 ---
 

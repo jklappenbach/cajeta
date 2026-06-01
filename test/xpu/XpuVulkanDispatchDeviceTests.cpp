@@ -281,6 +281,59 @@ TEST(XpuVulkanDispatchDeviceTests, deviceBufferParamHelperOnDevice) {
     EXPECT_FLOAT_EQ(fn(), 97920.0f);   // sum 3i over [0,256)
 }
 
+// Item 7: a POD struct passed BY VALUE as a kernel arg, on the real Vulkan device
+// (Strix Halo via RADV). On SPIR-V the struct rides its own descriptor-bound
+// storage buffer (the scalar-SSBO mechanism, element type = the struct); the
+// kernel reads p.scale/p.bias via OpCompositeExtract to compute
+// out[i] = i*scale+bias. scale=2, bias=1, n=256 ⇒ Σ(2i+1) = 65536.
+TEST(XpuVulkanDispatchDeviceTests, podStructArgOnDevice) {
+    if (!VulkanDriver::available()) {
+        GTEST_SKIP() << "no Vulkan device/driver available";
+    }
+    const char* src =
+        "package test;\n"
+        "import cajeta.xpu.core.Buffer;\n"
+        "import cajeta.xpu.core.Stream;\n"
+        "import cajeta.xpu.core.Thread;\n"
+        "public class Params {\n"
+        "    float32 scale;\n"
+        "    float32 bias;\n"
+        "    public Params(float32 scale, float32 bias)"
+        " { this.scale = scale; this.bias = bias; }\n"
+        "}\n"
+        "public class PodArg {\n"
+        "    @Kernel\n"
+        "    public static void k(Buffer<float32> out, Params p) {\n"
+        "        uint32 i = Thread.globalIdX();\n"
+        "        out[i] = (float32)i * p.scale + p.bias;\n"
+        "    }\n"
+        "    public static float32 run() {\n"
+        "        uint32 n = 256;\n"
+        "        float32[] hy = new float32[n];\n"
+        "        for (uint32 i = 0; i < n; i = i + 1) { hy[i] = 0.0f; }\n"
+        "        Buffer<float32> y = heap Buffer<float32>(0, n);\n"
+        "        y.allocate();\n"
+        "        y.upload(hy);\n"
+        "        Params p = heap Params(2.0f, 1.0f);\n"
+        "        Stream s = Stream.current();\n"
+        "        k.launch(s, grid: [4], block: [64])(y, p);\n"
+        "        s.sync();\n"
+        "        y.download(hy);\n"
+        "        y.free();\n"
+        "        float32 sum = 0.0f;\n"
+        "        for (uint32 i = 0; i < n; i = i + 1) { sum = sum + hy[i]; }\n"
+        "        return sum;\n"
+        "    }\n"
+        "}\n";
+    CajetaJit::Options o;
+    o.xpuBackends = {cajeta::xpu::Backend::Spirv};
+    auto jit = CajetaJit::compile(src, "test.PodArg", o);
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<float (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    EXPECT_FLOAT_EQ(fn(), 65536.0f);   // Σ(2i+1) over [0,256)
+}
+
 // Bundle vulkan + cpu; CAJETA_XPU_BACKEND=cpu forces the fall to the CPU even
 // with the Vulkan device present — the canonical degrade-to-CPU bundle.
 TEST(XpuVulkanDispatchDeviceTests, bundledVulkanCpuForcedToCpu) {

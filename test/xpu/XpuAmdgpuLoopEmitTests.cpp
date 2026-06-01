@@ -185,3 +185,48 @@ TEST(XpuAmdgpuLoopEmitTests, lowersStridedSumLoop) {
     EXPECT_NE(isa.find("global_store"), std::string::npos) << isa;
     EXPECT_NE(isa.find("s_endpgm"), std::string::npos) << isa;
 }
+
+// Item 7: a POD struct passed by value as a kernel arg lowers to AMDGPU. The
+// kernel takes `Params { int32 mul; int32 add; }` by value (an aggregate kernarg)
+// and reads its fields to compute out[i] = i*mul + add.
+TEST(XpuAmdgpuLoopEmitTests, lowersPodStructArg) {
+    auto src =
+        "package test;\n"
+        "import cajeta.xpu.core.Buffer;\n"
+        "import cajeta.xpu.core.Thread;\n"
+        "public class Params {\n"
+        "    int32 mul;\n"
+        "    int32 add;\n"
+        "    public Params(int32 mul, int32 add)"
+        " { this.mul = mul; this.add = add; }\n"
+        "}\n"
+        "public class M {\n"
+        "    @Kernel\n"
+        "    public static void k(Buffer<int32> out, Params p) {\n"
+        "        uint32 i = Thread.globalIdX();\n"
+        "        out[i] = (int32)i * p.mul + p.add;\n"
+        "    }\n"
+        "}\n";
+    Compiler compiler;
+    auto module = compileForInspection(compiler, src, "test.M");
+    auto k = findMethod(module->getStructures()["test.M"], "k");
+    ASSERT_NE(k, nullptr);
+
+    auto tm = createAmdgpuTargetMachine("gfx1151");
+    ASSERT_NE(tm, nullptr);
+    llvm::LLVMContext deviceCtx;
+    llvm::Module deviceModule("xpu_podstruct_amdgpu", deviceCtx);
+    configureDeviceModule(deviceModule, *tm);
+    llvm::Function* fn = lowerKernel(k, deviceModule);
+    ASSERT_NE(fn, nullptr);
+    // Two kernel params: the out buffer + the struct by value.
+    EXPECT_EQ(fn->arg_size(), 2u);
+    EXPECT_EQ(fn->getCallingConv(), llvm::CallingConv::AMDGPU_KERNEL);
+
+    std::string isa = emitIsa(deviceModule, *tm);
+    ASSERT_FALSE(isa.empty());
+    EXPECT_NE(isa.find(".amdhsa_kernel k"), std::string::npos) << isa;
+    EXPECT_NE(isa.find("global_store"), std::string::npos) << isa;
+    EXPECT_NE(isa.find("s_endpgm"), std::string::npos) << isa;
+    EXPECT_NE(isa.find("gfx1151"), std::string::npos) << isa;
+}
