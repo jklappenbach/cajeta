@@ -1,0 +1,230 @@
+#include "cajeta/buildtool/Manifest.h"
+
+#include "cajeta/buildtool/JsonC.h"
+
+#include <llvm/Support/Error.h>
+#include <llvm/Support/JSON.h>
+#include <llvm/Support/MemoryBuffer.h>
+#include <llvm/Support/raw_ostream.h>
+
+#include <set>
+#include <string>
+
+namespace cajeta::buildtool {
+
+    namespace {
+
+        // The six valid top-level blocks in a manifest, per
+        // BuildTool.md "Manifest — cajeta.json".
+        const std::set<std::string> kTopLevelBlocks = {
+            "details", "properties", "settings",
+            "actions", "plugins", "tasks",
+        };
+
+        // Fields recognized inside the `details` block. Phase 0 is
+        // strict here: an unknown field is a load error, because the
+        // identity block's schema should be stable. Other blocks
+        // tolerate unknown fields during Phase 0 (modeled raw).
+        const std::set<std::string> kDetailsFields = {
+            "name", "version", "description", "license",
+            "authors", "repository-url", "cajeta-lang-version",
+        };
+
+        // Build a citation-style error. `where` is a human-readable
+        // location prefix (file/source label); `msg` is the actual
+        // explanation. Returned as an llvm::Error suitable for
+        // propagation through Expected<>.
+        llvm::Error cite(const std::string& where, const std::string& msg) {
+            return llvm::createStringError(
+                llvm::inconvertibleErrorCode(),
+                where + ": " + msg);
+        }
+
+        // Type predicates: the spec rejects null where a value is
+        // expected, and requires the block-typed values to actually be
+        // objects (not arrays, strings, etc.).
+        llvm::Error requireString(const std::string& where,
+                                  const std::string& field,
+                                  const llvm::json::Value* v,
+                                  std::string& out) {
+            if (!v) {
+                return cite(where, "missing required field '" + field + "'");
+            }
+            auto s = v->getAsString();
+            if (!s) {
+                return cite(where, "field '" + field + "' must be a string");
+            }
+            out = s->str();
+            return llvm::Error::success();
+        }
+
+        llvm::Error requireObject(const std::string& where,
+                                  const std::string& block,
+                                  const llvm::json::Value* v,
+                                  llvm::json::Object& out) {
+            if (!v) {
+                // Missing optional blocks are allowed; caller decides
+                // whether to call this. When the block is missing
+                // entirely we leave `out` as the empty default.
+                return llvm::Error::success();
+            }
+            const auto* o = v->getAsObject();
+            if (!o) {
+                return cite(where, "'" + block + "' must be an object");
+            }
+            out = *o;
+            return llvm::Error::success();
+        }
+
+        // Load the `details` block. Required block; the manifest is
+        // ill-formed without it.
+        llvm::Error loadDetails(const std::string& where,
+                                const llvm::json::Object& root,
+                                ManifestDetails& out) {
+            const auto* detailsV = root.get("details");
+            if (!detailsV) {
+                return cite(where, "missing required top-level block 'details'");
+            }
+            const auto* d = detailsV->getAsObject();
+            if (!d) {
+                return cite(where, "'details' must be an object");
+            }
+
+            // Reject unknown details fields — keeps the identity schema
+            // pinned.
+            for (const auto& kv : *d) {
+                if (!kDetailsFields.count(kv.first.str())) {
+                    return cite(where,
+                        "unknown field in 'details': '" + kv.first.str() +
+                        "' (allowed: name, version, description, license, "
+                        "authors, repository-url, cajeta-lang-version)");
+                }
+            }
+
+            if (auto e = requireString(
+                    where + ".details", "name", d->get("name"), out.name)) {
+                return e;
+            }
+            if (auto e = requireString(
+                    where + ".details", "version", d->get("version"), out.version)) {
+                return e;
+            }
+
+            // Optional string fields.
+            auto getOptionalString = [&](const char* field,
+                                         std::optional<std::string>& dst) -> llvm::Error {
+                const auto* v = d->get(field);
+                if (!v) return llvm::Error::success();
+                auto s = v->getAsString();
+                if (!s) {
+                    return cite(where + ".details",
+                        std::string("field '") + field + "' must be a string");
+                }
+                dst = s->str();
+                return llvm::Error::success();
+            };
+            if (auto e = getOptionalString("description", out.description)) return e;
+            if (auto e = getOptionalString("license", out.license)) return e;
+            if (auto e = getOptionalString("repository-url", out.repositoryUrl)) return e;
+            if (auto e = getOptionalString("cajeta-lang-version", out.cajetaLangVersion)) return e;
+
+            // Authors array — optional, each entry must be a string.
+            if (const auto* a = d->get("authors")) {
+                const auto* arr = a->getAsArray();
+                if (!arr) {
+                    return cite(where + ".details", "'authors' must be an array");
+                }
+                for (size_t i = 0; i < arr->size(); ++i) {
+                    auto s = (*arr)[i].getAsString();
+                    if (!s) {
+                        return cite(where + ".details",
+                            "'authors[" + std::to_string(i) + "]' must be a string");
+                    }
+                    out.authors.push_back(s->str());
+                }
+            }
+
+            return llvm::Error::success();
+        }
+
+    } // namespace
+
+    std::string ManifestDetails::group() const {
+        auto dot = name.rfind('.');
+        if (dot == std::string::npos) return "";
+        return name.substr(0, dot);
+    }
+
+    std::string ManifestDetails::library() const {
+        auto dot = name.rfind('.');
+        if (dot == std::string::npos) return name;
+        return name.substr(dot + 1);
+    }
+
+    llvm::Expected<Manifest> loadManifestString(const std::string& source,
+                                                const std::string& sourceLabel) {
+        auto val = parseJsonC(source);
+        if (!val) {
+            std::string msg;
+            llvm::raw_string_ostream os(msg);
+            os << "in '" << sourceLabel << "': " << val.takeError();
+            return llvm::createStringError(llvm::inconvertibleErrorCode(), msg);
+        }
+
+        const auto* root = val->getAsObject();
+        if (!root) {
+            return cite(sourceLabel, "manifest root must be a JSON object");
+        }
+
+        // Reject unknown top-level blocks. This catches typos
+        // (e.g. "settigns" for "settings") early rather than letting
+        // the field silently disappear.
+        for (const auto& kv : *root) {
+            if (!kTopLevelBlocks.count(kv.first.str())) {
+                return cite(sourceLabel,
+                    "unknown top-level block '" + kv.first.str() +
+                    "' (allowed: details, properties, settings, actions, "
+                    "plugins, tasks)");
+            }
+        }
+
+        Manifest m;
+        m.sourcePath = sourceLabel;
+
+        if (auto e = loadDetails(sourceLabel, *root, m.details)) {
+            return std::move(e);
+        }
+
+        // Other blocks: store raw and let later phases type them.
+        // Validate they're objects when present.
+        if (auto e = requireObject(
+                sourceLabel, "properties",
+                root->get("properties"), m.propertiesRaw)) return std::move(e);
+        if (auto e = requireObject(
+                sourceLabel, "settings",
+                root->get("settings"), m.settingsRaw)) return std::move(e);
+        if (auto e = requireObject(
+                sourceLabel, "actions",
+                root->get("actions"), m.actionsRaw)) return std::move(e);
+        if (auto e = requireObject(
+                sourceLabel, "plugins",
+                root->get("plugins"), m.pluginsRaw)) return std::move(e);
+        if (auto e = requireObject(
+                sourceLabel, "tasks",
+                root->get("tasks"), m.tasksRaw)) return std::move(e);
+
+        return m;
+    }
+
+    llvm::Expected<Manifest> loadManifestFile(const std::string& path) {
+        auto buf = llvm::MemoryBuffer::getFile(path);
+        if (!buf) {
+            return llvm::createStringError(
+                buf.getError(),
+                "cannot open manifest file '" + path + "': " +
+                buf.getError().message());
+        }
+        return loadManifestString((*buf)->getBuffer().str(), path);
+    }
+
+} // namespace cajeta::buildtool
