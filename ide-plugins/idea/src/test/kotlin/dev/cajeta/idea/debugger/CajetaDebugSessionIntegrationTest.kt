@@ -206,22 +206,24 @@ class CajetaDebugSessionIntegrationTest {
      * the program should park at the throw with reason "exception" before the
      * catch runs; resume lets it be caught and exit 42.
      *
-     * IGNORED — known subprocess-only hang (CP6f-3b). The identical scenario
-     * PASSES in-process (debug-tests `DapServerSession.ExceptionBreakpointStops
-     * AtThrow`), proving the DAP server + runtime exception hook + DebugController
-     * are correct, and the plugin wire is unit-tested
-     * (CajetaDebugSessionTest.setExceptionBreakpoints*). But when the SAME armed
-     * scenario runs against a spawned `cajeta dap` process, the JIT'd program
-     * neither parks (the exception trampoline never fires) nor terminates — it
-     * hangs. Diagnostics confirmed: setExceptionBreakpoints arms the controller
-     * (armed=1) and configurationDone passes it into startDebugSession, but the
-     * JIT'd `__cajeta_throw` in the subprocess does not reach the installed
-     * exception trampoline (it does in-process). Root cause is a subprocess-only
-     * JIT/threading divergence in the throw path under `cajeta dap`, tracked
-     * separately; un-ignore once fixed. The non-armed counterpart (a caught
-     * throw running straight through) is unaffected and covered by the C++ test.
+     * IGNORED — pre-existing `cajeta dap` THROW hang, NOT an exception-breakpoint
+     * bug. CP6f-3c investigation finding: ANY thrown exception (armed OR unarmed
+     * — verified by temporarily flipping exceptionBreakpoints=false: an unarmed
+     * caught throw also never terminates) hangs a program run under a SPAWNED
+     * `cajeta dap` process. The program thread never finishes — `runToStopOrExit`
+     * enters and spins, `isFinished()` never flips, and the exception trampoline
+     * never fires. The IDENTICAL armed scenario PASSES in-process (debug-tests
+     * `DapServerSession.ExceptionBreakpointStopsAtThrow`, ~4.8s), so the DAP
+     * server + runtime exception hook + DebugController are correct, and the
+     * plugin wire is unit-tested (CajetaDebugSessionTest.setExceptionBreakpoints*).
+     * Ruled out: stale binary, missing/DCE'd symbol, static-vs-external global,
+     * arm-after-start race, and backtrace/stack-trace-capture (disabling it in
+     * the debug session didn't help). Root cause is a subprocess-only
+     * JIT/throw/threading defect in `cajeta dap` itself — independent of the
+     * debugger feature work — needing dedicated investigation. Un-ignore once
+     * the subprocess throw path is fixed.
      */
-    @Ignore("CP6f-3b: subprocess-only exception-throw hang; in-process C++ + plugin-unit coverage proves the feature")
+    @Ignore("Pre-existing cajeta dap subprocess THROW hang (CP6f-3c); not an exception-bp bug — in-process C++ proves the feature")
     @Test
     fun exceptionBreakpointStopsAtThrow() {
         val binary = CajetaDapLauncher.locateBinary()
