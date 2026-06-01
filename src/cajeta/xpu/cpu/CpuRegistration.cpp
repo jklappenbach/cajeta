@@ -396,7 +396,13 @@ void foldWaveVariants(llvm::Function& f) {
             // loop — it is split at each barrier into regions, each looped over
             // the block (Inc 6 fission). XPU-N02 on an unsupported construct →
             // discard + fall back to the host stub.
-            if (usesBarrier(*linked)) {
+            // The non-barrier wrapper runs a 3-D work-item loop nest, so it
+            // handles a multi-dim block. Barrier (fission) kernels are still 1-D
+            // (their work-item loops iterate tid.x only) until 2D/3D stage 4, so
+            // they are marked "no 3-D block" and the runtime rejects a multi-dim
+            // block launch of them with a diagnostic rather than miscompiling.
+            const bool isBarrierKernel = usesBarrier(*linked);
+            if (isBarrierKernel) {
                 std::vector<llvm::BranchInst*> wiLatches;
                 try {
                     std::vector<llvm::Value*> ctaidV = {ctaidX, ctaidY, ctaidZ};
@@ -431,38 +437,69 @@ void foldWaveVariants(llvm::Function& f) {
                     vectorizeFunction(*wrapper, hostTm.get());
                 if (waveKernel) foldWaveVariants(*wrapper);
             } else {
+            // 3-D work-item loop nest over (tid.z, tid.y, tid.x). The innermost
+            // tid.x loop is the vectorizable/wave loop — so a 1-D block
+            // (ntid.y/z == 1) runs identically to before (the z/y loops are
+            // single-trip), and a 2-D/3-D block runs the whole nest (2D/3D launch
+            // stage 3). The kernel is called once per work-item with its full 3-D
+            // tid coordinate.
             llvm::BasicBlock* wEntry =
                 llvm::BasicBlock::Create(ctx, "entry", wrapper);
+            llvm::BasicBlock* zHead =
+                llvm::BasicBlock::Create(ctx, "wi.z.head", wrapper);
+            llvm::BasicBlock* yHead =
+                llvm::BasicBlock::Create(ctx, "wi.y.head", wrapper);
             llvm::BasicBlock* wHead =
                 llvm::BasicBlock::Create(ctx, "wi.head", wrapper);
             llvm::BasicBlock* wBody =
                 llvm::BasicBlock::Create(ctx, "wi.body", wrapper);
+            llvm::BasicBlock* yLatch =
+                llvm::BasicBlock::Create(ctx, "wi.y.latch", wrapper);
+            llvm::BasicBlock* zLatch =
+                llvm::BasicBlock::Create(ctx, "wi.z.latch", wrapper);
             llvm::BasicBlock* wExit =
                 llvm::BasicBlock::Create(ctx, "wi.exit", wrapper);
+            llvm::Constant* zero = llvm::ConstantInt::get(i32, 0);
+            llvm::Constant* one  = llvm::ConstantInt::get(i32, 1);
 
             b.SetInsertPoint(wEntry);
-            b.CreateBr(wHead);
+            b.CreateBr(zHead);
+
+            b.SetInsertPoint(zHead);
+            llvm::PHINode* tz = b.CreatePHI(i32, 2, "tid.z");
+            tz->addIncoming(zero, wEntry);
+            b.CreateCondBr(b.CreateICmpSLT(tz, ntidZ, "wi.z.cond"), yHead, wExit);
+
+            b.SetInsertPoint(yHead);
+            llvm::PHINode* ty = b.CreatePHI(i32, 2, "tid.y");
+            ty->addIncoming(zero, zHead);
+            b.CreateCondBr(b.CreateICmpSLT(ty, ntidY, "wi.y.cond"), wHead, zLatch);
 
             b.SetInsertPoint(wHead);
             llvm::PHINode* tid = b.CreatePHI(i32, 2, "tid.x");
-            tid->addIncoming(llvm::ConstantInt::get(i32, 0), wEntry);
-            b.CreateCondBr(b.CreateICmpSLT(tid, ntidX, "wi.cond"), wBody, wExit);
+            tid->addIncoming(zero, yHead);
+            b.CreateCondBr(b.CreateICmpSLT(tid, ntidX, "wi.cond"), wBody, yLatch);
 
             b.SetInsertPoint(wBody);
-            llvm::Value* zero = llvm::ConstantInt::get(i32, 0);
             std::vector<llvm::Value*> kArgs;
             kArgs.reserve(total);
             for (unsigned i = 0; i < nReal; ++i) kArgs.push_back(wrapper->getArg(i));
             kArgs.push_back(tid);                     // tid.x
-            kArgs.push_back(zero);                    // tid.y
-            kArgs.push_back(zero);                    // tid.z
+            kArgs.push_back(ty);                      // tid.y
+            kArgs.push_back(tz);                      // tid.z
             kArgs.push_back(ctaidX); kArgs.push_back(ctaidY); kArgs.push_back(ctaidZ);
             kArgs.push_back(ntidX);  kArgs.push_back(ntidY);  kArgs.push_back(ntidZ);
             llvm::CallInst* kcall = b.CreateCall(linked, kArgs);
-            llvm::Value* tidNext =
-                b.CreateAdd(tid, llvm::ConstantInt::get(i32, 1), "tid.next");
-            tid->addIncoming(tidNext, wBody);
-            llvm::BranchInst* latchBr = b.CreateBr(wHead);   // loop back-edge
+            tid->addIncoming(b.CreateAdd(tid, one, "tid.next"), wBody);
+            llvm::BranchInst* latchBr = b.CreateBr(wHead);   // inner (x) back-edge
+
+            b.SetInsertPoint(yLatch);
+            ty->addIncoming(b.CreateAdd(ty, one, "tid.y.next"), yLatch);
+            b.CreateBr(yHead);
+
+            b.SetInsertPoint(zLatch);
+            tz->addIncoming(b.CreateAdd(tz, one, "tid.z.next"), zLatch);
+            b.CreateBr(zHead);
 
             b.SetInsertPoint(wExit);
             b.CreateRetVoid();
@@ -552,6 +589,14 @@ void foldWaveVariants(llvm::Function& f) {
             llvm::Value* nameStr =
                 b.CreateGlobalString(entryName, "xpu.cpu.kname." + entryName);
             b.CreateCall(regFn, {nameStr, thunk});
+            // Barrier kernels are 1-D-block-only (fission); mark them so the
+            // runtime guards a multi-dim-block launch.
+            if (isBarrierKernel) {
+                llvm::FunctionCallee no3dFn = hostModule.getOrInsertFunction(
+                    "__cajeta_xpu_cpu_kernel_no_3d_block",
+                    llvm::FunctionType::get(voidTy, {ptrTy}, false));
+                b.CreateCall(no3dFn, {nameStr});
+            }
             b.CreateRetVoid();
 
             llvm::appendToGlobalCtors(hostModule, ctor, /*priority=*/65535);

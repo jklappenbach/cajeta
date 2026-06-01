@@ -154,6 +154,45 @@ const char* kGrid2dSource =
     "    }\n"
     "}\n";
 
+// 2-D launch BLOCK (2D/3D launch, stage 3): a single block of 4×3 work-items.
+// Each work-item writes its own (tx,ty), so a correct result proves the CPU
+// per-block wrapper runs the full 3-D work-item loop nest (tid.x AND tid.y), not
+// just tid.x. out[ty*4+tx] = ty*100+tx.
+const char* kBlock2dSource =
+    "package test;\n"
+    "import cajeta.xpu.core.Buffer;\n"
+    "import cajeta.xpu.core.Stream;\n"
+    "import cajeta.xpu.core.Thread;\n"
+    "public class Block2d {\n"
+    "    @Kernel\n"
+    "    public static void block2d(Buffer<int32> out, uint32 w) {\n"
+    "        uint32 tx = Thread.x();\n"
+    "        uint32 ty = Thread.y();\n"
+    "        out[ty * w + tx] = (int32)(ty * 100 + tx);\n"
+    "    }\n"
+    "    public static int32 run() {\n"
+    "        uint32 w = 4;\n"
+    "        uint32 h = 3;\n"
+    "        uint32 n = w * h;\n"
+    "        int32[] hout = new int32[n];\n"
+    "        for (uint32 i = 0; i < n; i = i + 1) { hout[i] = -1; }\n"
+    "        Buffer<int32> out = heap Buffer<int32>(n);\n"
+    "        out.upload(hout);\n"
+    "        Stream s = Stream.current();\n"
+    "        block2d.launch(s, grid: [1], block: [4, 3])(out, w);\n"
+    "        s.sync();\n"
+    "        out.download(hout);\n"
+    "        for (uint32 ty = 0; ty < h; ty = ty + 1) {\n"
+    "            for (uint32 tx = 0; tx < w; tx = tx + 1) {\n"
+    "                if (hout[ty * w + tx] != (int32)(ty * 100 + tx)) {\n"
+    "                    return (int32)(100 + ty * w + tx);\n"
+    "                }\n"
+    "            }\n"
+    "        }\n"
+    "        return 777;\n"
+    "    }\n"
+    "}\n";
+
 } // namespace
 
 // A large grid drives the runtime's multi-core fan-out (Inc 5A); the result must
@@ -180,6 +219,16 @@ TEST(XpuCpuDispatchTests, saxpyHostSourceRunsOnCpu) {
 // both reach the kernel via the runtime's linearized-block decode.
 TEST(XpuCpuDispatchTests, multiDimGridOnCpu) {
     auto jit = CajetaJit::compile(kGrid2dSource, "test.Grid2d", cpuOptions());
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<int (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    EXPECT_EQ(fn(), 777);
+}
+
+// 2D/3D launch (stage 3): a multi-dim BLOCK runs on CPU via the wrapper's 3-D
+// work-item loop nest — tid.x and tid.y both drive the kernel.
+TEST(XpuCpuDispatchTests, multiDimBlockOnCpu) {
+    auto jit = CajetaJit::compile(kBlock2dSource, "test.Block2d", cpuOptions());
     ASSERT_NE(jit, nullptr);
     auto fn = jit->lookup<int (*)()>("run");
     ASSERT_NE(fn, nullptr);

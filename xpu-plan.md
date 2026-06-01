@@ -102,8 +102,14 @@ stencils) need this.
   blocks (ctaid.xyz via a linearized-block decode). A multi-dim **block** on CPU
   (ntid.y/z > 1) gets a clean diagnostic + no-run (no silent miscompile) until stage 3.
   Test `XpuCpuDispatchTests.multiDimGridOnCpu` (4×3 grid). Full Xpu* green (138/7-skip/0).
-- ☐ **Stage 3** — CPU per-block wrapper 3-D work-item loop nest (lifts the block guard).
-- ☐ **Stage 4** — CPU barrier fission over a linearized work-item index.
+- ✅ **Stage 3** — the CPU non-barrier per-block wrapper is a 3-D work-item loop nest
+  (tid.z/y/x); the inner tid.x loop stays the vectorizable/wave loop, so 1-D is
+  unchanged. A multi-dim BLOCK now runs on CPU. The block guard is now per-kernel:
+  barrier (fission) kernels are marked `no3d` at registration (still 1-D), so a
+  multi-dim-block launch of them gets a diagnostic, not a miscompile; non-barrier
+  kernels run the nest. Test `multiDimBlockOnCpu` (4×3 block).
+- ☐ **Stage 4** — CPU barrier fission over a 3-D/linearized work-item index (lifts the
+  `no3d` mark on barrier kernels).
 
 ---
 
