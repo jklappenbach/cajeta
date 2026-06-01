@@ -1,5 +1,6 @@
 #include "cajeta/buildtool/Resolver.h"
 
+#include "cajeta/buildtool/Melt.h"
 #include "cajeta/buildtool/repo/GitRepository.h"
 #include "cajeta/buildtool/repo/TimingRepository.h"
 
@@ -844,16 +845,12 @@ namespace cajeta::buildtool {
 
         auto deps = parseDependencies(m);
         if (!deps) { closeTotal(); return deps.takeError(); }
-        if (deps->empty()) {
-            closeTotal();
-            return std::vector<ResolvedDependency>{};  // no deps → no work
-        }
 
         auto repoSpecs = parseRepositories(m);
         if (!repoSpecs) { closeTotal(); return repoSpecs.takeError(); }
         // Deps are declared but no repos to fetch them from → hard error
         // with a pointer at the user-fixable cause.
-        if (repoSpecs->empty()) {
+        if (!deps->empty() && repoSpecs->empty()) {
             closeTotal();
             return err("settings.dependencies declares " +
                        std::to_string(deps->size()) +
@@ -871,6 +868,42 @@ namespace cajeta::buildtool {
         auto repos = buildRepositories(*repoSpecs, downloadStage);
         if (!repos) { closeTotal(); return repos.takeError(); }
 
+        // Phase 6c: resolve declared melts BEFORE looking at deps so
+        // we can substitute `"*"` constraints and append melt-provided
+        // repositories. The melt walk is post-order with cycle
+        // detection (see Melt.cpp::expandMelt).
+        ArtifactCache cache(projectRoot, homeOverride);
+        auto melts = resolveMelts(m, *repos, cache);
+        if (!melts) { closeTotal(); return melts.takeError(); }
+
+        if (!melts->repositories.empty()) {
+            // Append melt-provided repos and rebuild drivers. The
+            // priority field is preserved; stable_sort keeps
+            // declaration order among ties.
+            auto specs = *repoSpecs;
+            for (const auto& r : melts->repositories) specs.push_back(r);
+            std::stable_sort(specs.begin(), specs.end(),
+                [](const RepositorySpec& a, const RepositorySpec& b) {
+                    return a.priority > b.priority;
+                });
+            auto rebuilt = buildRepositories(specs, downloadStage);
+            if (!rebuilt) { closeTotal(); return rebuilt.takeError(); }
+            *repos = std::move(*rebuilt);
+        }
+
+        // Substitute `"*"` deps using the melt constraint table.
+        // Anything left with `"*"` at the end is a hard error per spec.
+        std::map<std::string, std::string> meltProvidedBy;
+        if (auto e = applyMeltLookups(*deps, *melts, meltProvidedBy)) {
+            closeTotal();
+            return std::move(e);
+        }
+
+        if (deps->empty()) {
+            closeTotal();
+            return std::vector<ResolvedDependency>{};  // no deps → no work
+        }
+
         auto overrides = parseOverrides(m);
         if (!overrides) { closeTotal(); return overrides.takeError(); }
 
@@ -880,7 +913,6 @@ namespace cajeta::buildtool {
         std::vector<RepositoryPtr> repoList =
             wrapWithTimings(*repos, timings);
 
-        ArtifactCache cache(projectRoot, homeOverride);
         auto result = resolveMvs(
             *deps, repoList, cache, *overrides, timings, downloadStage);
         if (result && timings) {

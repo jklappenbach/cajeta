@@ -14,8 +14,10 @@
 
 #pragma once
 
+#include "cajeta/buildtool/ArtifactCache.h"
 #include "cajeta/buildtool/Dependency.h"
 #include "cajeta/buildtool/Manifest.h"
+#include "cajeta/buildtool/Repository.h"
 
 #include <llvm/Support/Error.h>
 #include <llvm/Support/JSON.h>
@@ -85,5 +87,79 @@ namespace cajeta::buildtool {
     // Parse a single `name@version` reference string. Useful for
     // CLI flag parsing (`cajeta upgrade --melt name@version`).
     llvm::Expected<MeltImport> parseMeltImport(const std::string& s);
+
+    // ─── Cross-package melt resolution ───────────────────────────
+
+    // The outcome of expanding the consumer manifest's `settings.melts`
+    // through the repository machinery (including post-order
+    // transitive expansion). Aggregates each exported surface plus
+    // the audit trail (which melt supplied which constraint).
+    struct MeltResolution {
+        // One resolved melt — the artifact, who supplied it, and
+        // its direct transitive declarations.
+        struct Resolved {
+            std::string name;
+            std::string version;
+            std::string resolvedFromRepo;
+            std::string sha256;
+            std::string artifactPath;
+            std::vector<MeltImport> transitiveMelts;
+        };
+        // Post-order over all imports, declaration-order across.
+        // The lockfile records this list verbatim.
+        std::vector<Resolved> resolvedMelts;
+
+        // Per-dep constraint table. Keyed by dep name. Last write
+        // wins on conflict — driven by the post-order traversal +
+        // declaration order at the consumer.
+        std::map<std::string, std::string> depConstraints;
+        // Per-dep audit: "<melt-name>@<melt-version>" that supplied
+        // the constraint above. Used by the lockfile's `provided-by`
+        // field.
+        std::map<std::string, std::string> depProvidedBy;
+
+        // Merged properties. Consumer-side shadowing is applied by
+        // the properties layer; this struct just holds the union.
+        std::map<std::string, std::string> properties;
+        std::map<std::string, std::string> propertyProvidedBy;
+
+        // Merged action presets. Raw — consumer's same-named
+        // entries shadow these at the actions-resolution layer.
+        llvm::json::Object actionsRaw;
+
+        // Repositories contributed by all imported melts (post-order).
+        // The caller appends these to the consumer's repository list
+        // and re-sorts by priority.
+        std::vector<RepositorySpec> repositories;
+    };
+
+    // Resolve every melt declared in the consumer manifest's
+    // `settings.melts`. Each import is fetched through the
+    // repository machinery; the melt's own `melt.melts` are
+    // expanded post-order with cycle detection (a melt that
+    // transitively imports itself fails with a cycle citation).
+    //
+    // Returns an empty MeltResolution when `settings.melts` is
+    // absent. The caller uses the returned `depConstraints` to
+    // substitute `"*"` version sentinels and appends `repositories`
+    // to the resolution list before running MVS.
+    llvm::Expected<MeltResolution> resolveMelts(
+        const Manifest& m,
+        const std::vector<RepositoryPtr>& repos,
+        ArtifactCache& cache);
+
+    // Walk `deps` in-place: every entry whose versionConstraint is
+    // `"*"` has its constraint substituted from
+    // `melts.depConstraints`. An entry that names a dep no imported
+    // melt curates is a hard error (per spec — `"*"` requires a
+    // melt-provided pin).
+    //
+    // Each substitution is recorded in `providedByOut` (dep name →
+    // "melt-name@melt-version"), letting downstream callers
+    // populate the lockfile's `provided-by` field.
+    llvm::Error applyMeltLookups(
+        std::vector<DependencySpec>& deps,
+        const MeltResolution& melts,
+        std::map<std::string, std::string>& providedByOut);
 
 } // namespace cajeta::buildtool

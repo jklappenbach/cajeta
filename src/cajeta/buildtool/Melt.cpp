@@ -113,6 +113,187 @@ namespace cajeta::buildtool {
 
     } // namespace
 
+    namespace {
+
+        // Expand one melt import: fetch its artifact through the
+        // priority-ordered repos, read its manifest sidecar, verify
+        // it really is a melt-shaped manifest, parse its typed
+        // `melt` block, then recurse post-order into its
+        // `melt.melts`. The `visiting` set is the stack of melts
+        // currently being expanded — used for cycle detection.
+        //
+        // Aggregates contributions in declaration order into `out`.
+        // Post-order means a melt that imports B sees B's
+        // contributions FIRST, then layers its own on top — so the
+        // outer melt's constraints win on conflict (matching the
+        // spec's "later overrides earlier" semantics).
+        llvm::Error expandMelt(
+            const MeltImport& imp,
+            const std::vector<RepositoryPtr>& repos,
+            ArtifactCache& cache,
+            std::set<std::string>& visiting,
+            std::set<std::string>& alreadyResolved,
+            std::vector<std::string>& cyclePath,
+            MeltResolution& out) {
+
+            std::string key = imp.name + "@" + imp.version;
+            if (visiting.count(imp.name)) {
+                cyclePath.push_back(imp.name);
+                std::string chain;
+                for (size_t i = 0; i < cyclePath.size(); ++i) {
+                    if (i) chain += " -> ";
+                    chain += cyclePath[i];
+                }
+                return err("melt cycle detected: " + chain);
+            }
+            // Same exact pin already resolved → no-op (a melt that
+            // appears twice in the resolved graph just shares its
+            // contributions; the constraint-table merge is idempotent).
+            if (alreadyResolved.count(key)) {
+                return llvm::Error::success();
+            }
+
+            // Walk the repository list to find the pinned version.
+            MeltResolution::Resolved resolved;
+            resolved.name = imp.name;
+            resolved.version = imp.version;
+            std::string manifestJson;
+            bool found = false;
+            for (const auto& repo : repos) {
+                auto versions = repo->listVersions(imp.name);
+                if (!versions) return versions.takeError();
+                bool has = false;
+                for (const auto& v : *versions) {
+                    if (v == imp.version) { has = true; break; }
+                }
+                if (!has) continue;
+
+                auto path = repo->fetch(imp.name, imp.version);
+                if (!path) return path.takeError();
+                auto cached = cache.insert(*path);
+                if (!cached) return cached.takeError();
+                auto sidecar = repo->fetchManifestJson(imp.name, imp.version);
+                if (!sidecar) return sidecar.takeError();
+                if (!sidecar->has_value()) {
+                    return err("melt '" + key + "': repository '" +
+                               repo->name() + "' has the artifact "
+                               "but no manifest sidecar — melts must "
+                               "publish their cajeta.json as a sidecar");
+                }
+                resolved.resolvedFromRepo = repo->name();
+                resolved.artifactPath = *cached;
+                resolved.sha256 = ArtifactCache::sha256OfFile(*cached);
+                manifestJson = **sidecar;
+                found = true;
+                break;
+            }
+            if (!found) {
+                std::string repoList;
+                for (const auto& r : repos) {
+                    if (!repoList.empty()) repoList += ", ";
+                    repoList += r->name();
+                }
+                return err("melt '" + key + "' not found in any "
+                           "repository (tried: " +
+                           (repoList.empty() ? "<none>" : repoList) + ")");
+            }
+
+            auto meltManifest = loadManifestString(manifestJson, key);
+            if (!meltManifest) return meltManifest.takeError();
+            if (!meltManifest->hasMelt) {
+                return err("'" + key + "' resolved successfully but its "
+                           "manifest declares no 'melt' block — only "
+                           "melt-shaped packages can be imported via "
+                           "settings.melts");
+            }
+            auto typed = parseMelt(*meltManifest);
+            if (!typed) return typed.takeError();
+
+            // Stash transitive list before recursing — needed for the
+            // lockfile entry whether or not recursion succeeds.
+            resolved.transitiveMelts = typed->melts;
+
+            // Recurse post-order: process this melt's `melts` first,
+            // then apply this melt's own contributions.
+            visiting.insert(imp.name);
+            cyclePath.push_back(imp.name);
+            for (const auto& child : typed->melts) {
+                if (auto e = expandMelt(
+                        child, repos, cache, visiting,
+                        alreadyResolved, cyclePath, out)) {
+                    return e;
+                }
+            }
+            visiting.erase(imp.name);
+            cyclePath.pop_back();
+
+            // Apply this melt's contributions (later writes win).
+            for (const auto& [name, constraint] : typed->dependencies) {
+                out.depConstraints[name] = constraint;
+                out.depProvidedBy[name] = key;
+            }
+            for (const auto& [name, value] : typed->properties) {
+                out.properties[name] = value;
+                out.propertyProvidedBy[name] = key;
+            }
+            for (const auto& kv : typed->actionsRaw) {
+                out.actionsRaw[kv.first] = kv.second;
+            }
+            for (const auto& r : typed->repositories) {
+                out.repositories.push_back(r);
+            }
+
+            alreadyResolved.insert(key);
+            out.resolvedMelts.push_back(std::move(resolved));
+            return llvm::Error::success();
+        }
+
+    } // namespace
+
+    llvm::Expected<MeltResolution> resolveMelts(
+        const Manifest& m,
+        const std::vector<RepositoryPtr>& repos,
+        ArtifactCache& cache) {
+        MeltResolution out;
+        auto imports = parseSettingsMelts(m);
+        if (!imports) return imports.takeError();
+        if (imports->empty()) return out;
+
+        std::set<std::string> visiting;
+        std::set<std::string> alreadyResolved;
+        std::vector<std::string> cyclePath;
+        for (const auto& imp : *imports) {
+            if (auto e = expandMelt(
+                    imp, repos, cache, visiting,
+                    alreadyResolved, cyclePath, out)) {
+                return std::move(e);
+            }
+        }
+        return out;
+    }
+
+    llvm::Error applyMeltLookups(
+        std::vector<DependencySpec>& deps,
+        const MeltResolution& melts,
+        std::map<std::string, std::string>& providedByOut) {
+        for (auto& dep : deps) {
+            if (dep.versionConstraint != "*") continue;
+            auto it = melts.depConstraints.find(dep.name);
+            if (it == melts.depConstraints.end()) {
+                return err("dependency '" + dep.name +
+                           "' declared as '*' but no imported melt "
+                           "curates it — supply an explicit version "
+                           "or import a melt that pins it");
+            }
+            dep.versionConstraint = it->second;
+            auto byIt = melts.depProvidedBy.find(dep.name);
+            if (byIt != melts.depProvidedBy.end()) {
+                providedByOut[dep.name] = byIt->second;
+            }
+        }
+        return llvm::Error::success();
+    }
+
     llvm::Expected<Melt> parseMelt(const Manifest& m) {
         Melt out;
         if (!m.hasMelt) return out;
