@@ -23,6 +23,10 @@ add_definitions(-DANTLR4CPP_STATIC)
 
 find_package(glog 0.6.0 REQUIRED)
 find_package(GTest REQUIRED)
+# zlib backs the embedded-IDE-plugin extraction (`cajeta ide install`): the
+# plugin distribution zip's DEFLATE entries are raw-inflated via zlib. Linked
+# unconditionally (the lld branch below also uses it, but that path is optional).
+find_package(ZLIB REQUIRED)
 # libcrypto from OpenSSL backs `cajeta archive sign` / `verify-sig`
 # (ed25519 detached signatures + PEM key parsing). See
 # cajeta-docs/ArchiveManagement.md §8.
@@ -430,6 +434,44 @@ set_source_files_properties(${CAJETA_STDLIB_EMBED} PROPERTIES GENERATED TRUE)
 list(APPEND GENERATED_SOURCES ${CAJETA_STDLIB_EMBED})
 # ------------------------------------------------------------------------------
 
+# --- Embedded IntelliJ IDEA plugin (plan §7) ---------------------------------
+# Embed the plugin distribution zip into the compiler binary via xxd -i (same
+# mechanism as the runtime bitcode), so `cajeta ide install` can extract it
+# into the IDE plugins dir from any distribution form (D8). The Gradle build
+# (release.yml §10) drops Cajeta-<ver>.zip under build/distributions/ before
+# this configure runs. When no zip is present (a configure before the plugin
+# build, e.g. a fresh dev tree), embed a zero-length stub so the build still
+# links; `cajeta ide install` then reports no bundled plugin.
+set(CAJETA_PLUGIN_EMBED ${CMAKE_CURRENT_BINARY_DIR}/cajeta_plugin_embedded.cpp)
+file(GLOB CAJETA_PLUGIN_ZIPS CONFIGURE_DEPENDS
+     ${PROJECT_SOURCE_DIR}/ide-plugins/idea/build/distributions/*.zip)
+if(CAJETA_PLUGIN_ZIPS)
+    list(GET CAJETA_PLUGIN_ZIPS 0 CAJETA_PLUGIN_ZIP)
+    # xxd derives the C symbol from the input filename, so copy to a stable
+    # name (cajeta_plugin.zip) first → symbols cajeta_plugin_zip[/ _len].
+    add_custom_command(
+        OUTPUT ${CAJETA_PLUGIN_EMBED}
+        COMMAND ${CMAKE_COMMAND} -E copy ${CAJETA_PLUGIN_ZIP}
+                ${CMAKE_CURRENT_BINARY_DIR}/cajeta_plugin.zip
+        COMMAND ${CAJETA_XXD} -i cajeta_plugin.zip ${CAJETA_PLUGIN_EMBED}
+        WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+        DEPENDS ${CAJETA_PLUGIN_ZIP}
+        COMMENT "Embedding IDE plugin ${CAJETA_PLUGIN_ZIP}")
+    message(STATUS "Embedding IDE plugin: ${CAJETA_PLUGIN_ZIP}")
+else()
+    # Zero-length stub matching the xxd symbol names. Written at configure time
+    # (no command) so the source always exists; CONFIGURE_DEPENDS on the glob
+    # re-runs cmake and flips to the xxd path once a zip appears.
+    file(WRITE ${CAJETA_PLUGIN_EMBED}
+        "// AUTO-GENERATED stub: no IDE plugin zip available at build time.\n"
+        "unsigned char cajeta_plugin_zip[1] = { 0 };\n"
+        "unsigned int cajeta_plugin_zip_len = 0;\n")
+    message(STATUS "No IDE plugin zip under ide-plugins/idea/build/distributions/; embedding stub")
+endif()
+set_source_files_properties(${CAJETA_PLUGIN_EMBED} PROPERTIES GENERATED TRUE)
+list(APPEND GENERATED_SOURCES ${CAJETA_PLUGIN_EMBED})
+# ------------------------------------------------------------------------------
+
 # Isolate the llvm::Error consumers (toString/cantFail/consumeError) used by
 # the in-process JIT host in one TU and compile it -fno-rtti when the host LLVM
 # has RTTI off (ROCm / many upstream builds) — same rationale as
@@ -455,6 +497,7 @@ target_link_libraries(${CMAKE_PROJECT_NAME}_lib
         ${LLVM_LIBS}
         glog::glog
         zstd
+        ZLIB::ZLIB
         OpenSSL::Crypto)
 # The native runtime (cajeta_runtime.c, embedded in this lib) uses
 # BCryptGenRandom for its RNG on Windows — link the bcrypt system lib.

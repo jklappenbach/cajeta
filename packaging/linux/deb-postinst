@@ -1,0 +1,10 @@
+#!/bin/sh
+# Debian maintainer postinst (plan/installer-plan.md §4 / D8).
+# On a fresh configure, point the user at the bundled IDEA plugin installer.
+# (We deliberately don't auto-run it — apt runs as root, and the plugin must
+# land in the invoking user's JetBrains dir.)
+set -e
+if [ "$1" = "configure" ]; then
+    echo "cajeta: installed. To add the IntelliJ IDEA plugin, run:  cajeta ide install"
+fi
+exit 0

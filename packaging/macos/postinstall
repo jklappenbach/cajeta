@@ -1,0 +1,27 @@
+#!/bin/sh
+# macOS .pkg postinstall (plan/installer-plan.md §6 / D8).
+#
+# Best-effort install of the bundled IntelliJ IDEA plugin. The script runs as
+# root during package install, but a plugin must land in the *logged-in user's*
+# JetBrains directory — not root's — so it resolves the console user and runs
+# `cajeta ide install` as them. Always exits 0: a missing IDEA (or any plugin
+# hiccup) must never fail the compiler install itself.
+set -e
+
+# Resolve the cajeta binary (productbuild installs to /usr/local; fall back to
+# whatever is on PATH).
+CAJETA_BIN="/usr/local/bin/cajeta"
+if [ ! -x "$CAJETA_BIN" ]; then
+    CAJETA_BIN="$(command -v cajeta 2>/dev/null || true)"
+fi
+
+# The interactive user (the installer process itself runs as root).
+CONSOLE_USER="$(stat -f%Su /dev/console 2>/dev/null || true)"
+
+if [ -n "$CAJETA_BIN" ] && [ -n "$CONSOLE_USER" ] && [ "$CONSOLE_USER" != "root" ]; then
+    echo "cajeta: installing bundled IntelliJ IDEA plugin for $CONSOLE_USER ..."
+    sudo -u "$CONSOLE_USER" "$CAJETA_BIN" ide install || \
+        echo "cajeta: plugin install skipped (no IDEA detected, or it failed); run 'cajeta ide install' manually."
+fi
+
+exit 0

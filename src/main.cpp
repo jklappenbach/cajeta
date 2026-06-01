@@ -8,6 +8,7 @@
 #include "cajeta/compile/CompilerMode.h"
 #include "cajeta/error/Exception.h"
 #include "cajeta/cli/ArchiveCommands.h"
+#include "cajeta/cli/IdeCommands.h"
 #include "cajeta/jit/CajetaJitHost.h"
 #include "cajeta/dap/DapServer.h"
 
@@ -46,6 +47,14 @@ void printVersion(bool verbose) {
 void printUsage(const char* progname) {
     std::cerr << "Usage: " << progname
               << " [options] <entry-method> <source-root-path> <archive-root-path>\n"
+              << "       " << progname << " <subcommand> [args...]\n"
+              << "\n"
+              << "Subcommands:\n"
+              << "  archive <cmd>      Create / inspect / sign .cja archives (archive --help).\n"
+              << "  ide <cmd>          Manage the bundled IntelliJ IDEA plugin\n"
+              << "                     (ide install | uninstall | list).\n"
+              << "  jit-run <root> <package.Class.method>   Compile + run an entry point via the JIT.\n"
+              << "  dap                Debug Adapter Protocol server over stdio (for IDE debugging).\n"
               << "\n"
               << "Mode (cajeta-docs/CompilerModes.md):\n"
               << "  --mode=debug|debug-release|release|fast|minimal\n"
@@ -166,6 +175,12 @@ int main(int argc, const char* argv[]) {
     if (argc >= 2 && std::string(argv[1]) == "dap") {
         cajeta::dap::DapServer server;
         return server.run(std::cin, std::cout);
+    }
+
+    // `cajeta ide <install|uninstall|list>` — manage the bundled IntelliJ IDEA
+    // plugin embedded in this binary (cross-platform install path, D8).
+    if (argc >= 2 && std::string(argv[1]) == "ide") {
+        return cajeta::dispatchIde(argc, argv);
     }
 
     // --version / -V short-circuit. Handled before Compiler construction
