@@ -952,7 +952,13 @@ namespace cajeta {
                                     "only; ignoring for amdgpu" << std::endl;
                             continue;
                         }
-                        auto tm = cajeta::xpu::amd::createAmdgpuTargetMachine(arch);
+                        // `arch` may be a comma-separated list → a multi-arch
+                        // bundle for --xpu-emit=hsaco; the config TM uses the first.
+                        std::vector<std::string> archList =
+                            cajeta::xpu::amd::splitArchList(arch);
+                        if (archList.empty()) continue;
+                        auto tm = cajeta::xpu::amd::createAmdgpuTargetMachine(
+                            archList[0]);
                         if (!tm) {
                             cerr << "cajeta: XPU: amdgcn target unavailable in this "
                                     "LLVM build; skipping " << kernel->getName() << std::endl;
@@ -974,7 +980,8 @@ namespace cajeta {
                             out << isa;
                         } else {  // XpuEmit::Hsaco
                             std::vector<uint8_t> hsaco =
-                                cajeta::xpu::amd::assembleHsaco(deviceModule, *tm, arch);
+                                cajeta::xpu::amd::assembleHsacoBundle(deviceModule,
+                                                                     archList);
                             if (hsaco.empty()) {
                                 cerr << "cajeta: XPU: ld.lld unavailable or failed; no "
                                         "hsaco for " << kernel->getName() << std::endl;

@@ -20,6 +20,7 @@
 #include "llvm/Target/TargetMachine.h"
 #include "llvm/Target/TargetOptions.h"
 #include "llvm/TargetParser/Triple.h"
+#include "llvm/Transforms/Utils/Cloning.h"
 
 #include <cstdlib>
 #include <mutex>
@@ -206,6 +207,101 @@ std::vector<uint8_t> assembleHsaco(llvm::Module& deviceModule,
     }
     llvm::StringRef bytes = (*buf)->getBuffer();
     return std::vector<uint8_t>(bytes.bytes_begin(), bytes.bytes_end());
+}
+
+std::vector<std::string> splitArchList(const std::string& arch) {
+    std::vector<std::string> out;
+    for (size_t s = 0; s <= arch.size();) {
+        size_t c = arch.find(',', s);
+        std::string a = arch.substr(s, c == std::string::npos ? c : c - s);
+        while (!a.empty() && a.front() == ' ') a.erase(a.begin());
+        while (!a.empty() && a.back() == ' ') a.pop_back();
+        if (!a.empty()) out.push_back(a);
+        if (c == std::string::npos) break;
+        s = c + 1;
+    }
+    return out;
+}
+
+std::vector<uint8_t> assembleHsacoBundle(
+        llvm::Module& deviceModule, const std::vector<std::string>& arches) {
+    if (arches.empty()) return {};
+    if (arches.size() == 1) {
+        auto tm = createAmdgpuTargetMachine(arches[0]);
+        return tm ? assembleHsaco(deviceModule, *tm, arches[0])
+                  : std::vector<uint8_t>{};
+    }
+    auto bundler = llvm::sys::findProgramByName("clang-offload-bundler");
+    if (!bundler) {
+        llvm::errs() << "cajeta.xpu.amd: clang-offload-bundler not found "
+                        "(needed for multi-arch); set ROCM_PATH or PATH\n";
+        return {};
+    }
+
+    // Per-arch hsaco temp files + a 1-byte dummy host input (HIP fatbins lead
+    // with the host bundle). Clean them all up at return.
+    std::vector<std::string> tmpFiles;
+    auto cleanup = [&]() { for (auto& f : tmpFiles) llvm::sys::fs::remove(f); };
+    auto writeTemp = [&](const char* ext, const uint8_t* data, size_t len,
+                         std::string& out) -> bool {
+        llvm::SmallString<128> p;
+        if (llvm::sys::fs::createTemporaryFile("cajeta_xpu_mar", ext, p))
+            return false;
+        out = std::string(p);
+        tmpFiles.push_back(out);
+        std::error_code ec;
+        llvm::raw_fd_ostream o(out, ec, llvm::sys::fs::OF_None);
+        if (ec) return false;
+        o.write(reinterpret_cast<const char*>(data), (size_t) len);
+        return true;
+    };
+
+    std::string hostFile;
+    const uint8_t one = 0;
+    if (!writeTemp("o", &one, 1, hostFile)) { cleanup(); return {}; }
+
+    std::string targets = "host-x86_64-unknown-linux-gnu";
+    std::vector<std::string> inputFlags = {"-input=" + hostFile};
+    for (const std::string& arch : arches) {
+        auto tm = createAmdgpuTargetMachine(arch);
+        if (!tm) { cleanup(); return {}; }
+        auto clone = llvm::CloneModule(deviceModule);   // assembleHsaco mutates
+        std::vector<uint8_t> hsaco = assembleHsaco(*clone, *tm, arch);
+        if (hsaco.empty()) { cleanup(); return {}; }
+        std::string f;
+        if (!writeTemp("hsaco", hsaco.data(), hsaco.size(), f)) {
+            cleanup(); return {};
+        }
+        targets += ",hipv4-amdgcn-amd-amdhsa--" + arch;
+        inputFlags.push_back("-input=" + f);
+    }
+
+    std::string bundleFile;
+    if (!writeTemp("hipfb", &one, 0, bundleFile)) { cleanup(); return {}; }
+
+    std::string typeFlag = "-type=o", targetsFlag = "-targets=" + targets,
+                outFlag = "-output=" + bundleFile;
+    llvm::SmallVector<llvm::StringRef, 16> args = {*bundler, typeFlag, targetsFlag};
+    for (auto& in : inputFlags) args.push_back(in);
+    args.push_back(outFlag);
+    std::string errMsg;
+    int rc = llvm::sys::ExecuteAndWait(*bundler, args, /*Env=*/std::nullopt,
+                                       /*Redirects=*/{}, /*SecondsToWait=*/0,
+                                       /*MemoryLimit=*/0, &errMsg);
+    if (rc != 0) {
+        llvm::errs() << "cajeta.xpu.amd: clang-offload-bundler failed (rc=" << rc
+                     << ") " << errMsg << "\n";
+        cleanup();
+        return {};
+    }
+    auto buf = llvm::MemoryBuffer::getFile(bundleFile, /*IsText=*/false);
+    std::vector<uint8_t> bundle;
+    if (buf) {
+        llvm::StringRef b = (*buf)->getBuffer();
+        bundle.assign(b.bytes_begin(), b.bytes_end());
+    }
+    cleanup();
+    return bundle;
 }
 
 } // namespace amd

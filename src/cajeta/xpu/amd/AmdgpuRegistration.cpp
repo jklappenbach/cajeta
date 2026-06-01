@@ -37,10 +37,13 @@ namespace amd {
                                const std::string& arch) {
         if (kernels.empty()) return 0;
 
-        // One AMDGPU TargetMachine for all kernels (arch-, not kernel-,
-        // specific). If the amdgcn target isn't in this LLVM build there's
-        // nothing to emit.
-        auto tm = createAmdgpuTargetMachine(arch);
+        // `arch` may be a comma-separated list ("gfx1100,gfx1151") → a multi-arch
+        // bundle. One AMDGPU TargetMachine (from the first arch; the datalayout is
+        // arch-neutral) configures the device modules; assembleHsacoBundle builds
+        // a per-arch hsaco for each and bundles them.
+        std::vector<std::string> archList = splitArchList(arch);
+        if (archList.empty()) return 0;
+        auto tm = createAmdgpuTargetMachine(archList[0]);
         if (!tm) return 0;
 
         llvm::LLVMContext& ctx = hostModule.getContext();
@@ -76,8 +79,8 @@ namespace amd {
             }
             if (!kfn) continue;
 
-            std::vector<uint8_t> hsaco = assembleHsaco(devMod, *tm, arch);
-            if (hsaco.empty()) continue;  // lld missing or errored
+            std::vector<uint8_t> hsaco = assembleHsacoBundle(devMod, archList);
+            if (hsaco.empty()) continue;  // lld/bundler missing or errored
 
             // Embed the hsaco as a private host-module constant.
             llvm::Constant* dataInit = llvm::ConstantDataArray::get(

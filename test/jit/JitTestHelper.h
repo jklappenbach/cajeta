@@ -67,6 +67,9 @@ public:
         // host-launch path). The CPU dispatcher tests set {Cpu} to exercise
         // the GPU-free fall-to-CPU launch through __cajeta_xpu_launch.
         std::vector<cajeta::xpu::Backend> xpuBackends;
+        // Override the per-backend default device arch. May be a comma-separated
+        // list ("gfx1100,gfx1151") to build a multi-arch bundle. Empty = default.
+        std::string xpuArch;
     };
 
     // Compile `source` (a Cajeta compilation unit) into a JIT instance. The class

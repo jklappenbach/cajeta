@@ -276,7 +276,7 @@ These are backend-neutral gaps from `cajeta-xpu.md`, unaffected by the Vulkan co
 | for-each parallel loops | deferred (XPU-N01) |
 | Labeled `break` / `continue` | deferred (XPU-N01) |
 | 2D/3D launch | ✅ done — 3-D launch ABI; CUDA/HIP 3-D grid+block; Vulkan 3-D grid (baked block, §4); CPU 3-D grid + block + barrier fission |
-| Multi-arch bundling (fatbin) | deferred — single arch per emit |
+| Multi-arch bundling (fatbin) | **AMD ✅** — `--xpu-arch=gfx1100,gfx1151` → `clang-offload-bundle` via `assembleHsacoBundle`, `hipModuleLoadData` selects the device arch (verified on-device). NVIDIA fatbin parallel deferred (no `ptxas`/`fatbinary` on this box). |
 | Texture / Sampler types | deferred |
 | `@PushConstant` (Vulkan-only surface) | deferred — note: BDA already *uses* a push-constant block internally (§3), so the plumbing arrives early on Vulkan |
 | POD structs as kernel args without explicit `implements KernelArg` | deferred |
