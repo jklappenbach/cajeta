@@ -1,0 +1,129 @@
+package cajeta.lint.security;
+
+import cajeta.buildtool.plugin.ActionContext;
+import cajeta.buildtool.plugin.Json;
+import cajeta.buildtool.plugin.JsonArray;
+import cajeta.buildtool.plugin.JsonObject;
+import cajeta.buildtool.plugin.JsonValueKind;
+import cajeta.collection.ArrayList;
+import cajeta.coverage.Glob;
+
+/**
+ * Parses + matches the banned-imports list.
+ *
+ * On-disk shape (per BuildTool.md "Plugin declaration"):
+ *
+ *   { "pattern": "<glob>", "reason": "<text>" }
+ *
+ * Back-compat: bare string entries (`"unsafe.legacy"`) parse as
+ * `{ pattern: "<as-given>", reason: "" }` and emit one warning per
+ * parse pointing at the typed shape — same posture as the coverage
+ * plugin's back-compat handling.
+ *
+ * Match dialect: dotted-name globs via `cajeta.coverage.Glob`
+ * (separator `.`). Importing Glob from the coverage plugin is a
+ * deliberate cross-plugin dependency — both first-party, both ship
+ * together; promoting Glob into a shared `cajeta.buildtool.glob`
+ * lands once a third plugin needs it.
+ */
+public class BannedImports {
+
+    ArrayList<BannedImportEntry> entries;
+
+    public BannedImports(ArrayList<BannedImportEntry> entries) {
+        this.entries = entries;
+    }
+
+    public int32 count() { return this.entries.count(); }
+
+    /**
+     * Returns the entry that matches `importPath`, or empty when
+     * nothing in the list matches. First-match-wins so authoring
+     * a more-specific rule above a broader catch-all works.
+     */
+    public Optional<BannedImportEntry> match(String importPath) {
+        int32 i = 0;
+        while (i < this.entries.count()) {
+            BannedImportEntry e = this.entries.get(i);
+            if (Glob.matches(e.pattern(), importPath, '.')) {
+                return stack Optional<BannedImportEntry>(true, e);
+            }
+            i = i + 1;
+        }
+        return stack Optional<BannedImportEntry>(false, #null);
+    }
+
+    /**
+     * Parse the array. `ctx` is used for warning emission on the
+     * back-compat path. Bad entries throw `LintConfigException`
+     * citing the offending index.
+     */
+    public static BannedImports parse(
+        ActionContext ctx, JsonArray arr) {
+        ArrayList<BannedImportEntry> out =
+            #new ArrayList<BannedImportEntry>();
+        if (arr == null) {
+            return #new BannedImports(out);
+        }
+        int32 legacyCount = 0;
+        int32 i = 0;
+        while (i < arr.count()) {
+            Json v = arr.get(i);
+            if (v.kind() == JsonValueKind.OBJECT) {
+                out.add(#parseTypedEntry(v.asObject(), i));
+            } else if (v.kind() == JsonValueKind.STRING) {
+                String pat = v.asString();
+                if (pat.count() == 0) {
+                    throw stack LintConfigException(
+                        "banned-imports[" + String.valueOf(i) +
+                        "]: empty string entry");
+                }
+                out.add(#new BannedImportEntry(pat, ""));
+                legacyCount = legacyCount + 1;
+            } else {
+                throw stack LintConfigException(
+                    "banned-imports[" + String.valueOf(i) +
+                    "]: entry must be an object or string; got " +
+                    v.kind().toName());
+            }
+            i = i + 1;
+        }
+        if (legacyCount > 0) {
+            ctx.warn(
+                "cajeta.lint.security: " + String.valueOf(legacyCount) +
+                " legacy string-form banned-imports — migrate to " +
+                "typed form { \"pattern\": \"...\", \"reason\": \"...\" } " +
+                "so the reason shows up on lint findings");
+        }
+        return #new BannedImports(out);
+    }
+
+    static BannedImportEntry parseTypedEntry(JsonObject obj, int32 idx) {
+        Optional<Json> patV = obj.getOptional("pattern");
+        if (patV.isEmpty() || patV.get().kind() != JsonValueKind.STRING) {
+            throw stack LintConfigException(
+                "banned-imports[" + String.valueOf(idx) +
+                "]: 'pattern' (string) is required");
+        }
+        Optional<Json> reasonV = obj.getOptional("reason");
+        if (reasonV.isEmpty() || reasonV.get().kind() != JsonValueKind.STRING) {
+            throw stack LintConfigException(
+                "banned-imports[" + String.valueOf(idx) +
+                "]: 'reason' (string) is required");
+        }
+        String pattern = patV.get().asString();
+        String reason  = reasonV.get().asString();
+        if (pattern.count() == 0) {
+            throw stack LintConfigException(
+                "banned-imports[" + String.valueOf(idx) +
+                "]: pattern must be non-empty");
+        }
+        if (reason.trim().count() == 0) {
+            throw stack LintConfigException(
+                "banned-imports[" + String.valueOf(idx) +
+                "]: reason must be non-empty (it surfaces in every " +
+                "finding the rule emits)");
+        }
+        return #new BannedImportEntry(pattern, reason);
+    }
+}
