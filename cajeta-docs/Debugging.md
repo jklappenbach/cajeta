@@ -345,8 +345,9 @@ what will fire when the function returns or scope exits.
 
 ### Ownership annotations in variables
 
-The standard DAP `variables` response gets an extension field
-per variable:
+The standard DAP `variables` response gets a namespaced `cajeta`
+extension field per variable carrying three orthogonal memory
+facets (CP7-1d; see `ide-plugins/idea/ide-plugin-debug-fr-1.md`):
 
 ```jsonc
 {
@@ -355,14 +356,32 @@ per variable:
     "type":      "byte[]",
     "variablesReference": 17,
     "cajeta": {
-        "ownership": "owned" | "borrowed" | "moved-out" | "view",
-        "moveSource": null,         // for "view": where it borrows from
-        "willDrop":   true
-    }
+        // where the value lives
+        "alloc":     "stack" | "heap" | "shared" | "unknown",
+        // who is responsible for it
+        "ownership": "owner" | "borrow" | "moved"  | "unknown",
+        // lifetime state at this stop
+        "lifetime":  "live"  | "moved-out" | "about-to-drop" | "unknown"
+    },
+    // standard DAP hint: a moved-out (consumed) binding is read-only
+    "presentationHint": { "attributes": ["readOnly"] }
 }
 ```
 
-The IDE plugin can render an icon or color per ownership state.
+The three axes are independent (a value can be heap + owner +
+about-to-drop, or heap + borrow + live). Each tag is always
+present — `"unknown"` is emitted explicitly rather than omitted so
+the plugin renders a neutral state instead of guessing. The tags
+are the authoritative, color-independent carrier; the plugin maps
+them to icon + color + treatment. `presentationHint.attributes`
+gets `"readOnly"` for a moved-out binding so a generic DAP client
+also blocks editing a consumed value.
+
+The facets originate in the compiler (`dbg::MemoryFacets`),
+travel through the runtime debug frame chain (`__cajeta_dbg_local`
+carries the alloc/ownership bytes + the owner's drop-entry
+pointer), and `lifetime` is derived host-side at the stop from the
+drop entry's live `active` flag.
 
 ### Async task tree
 
