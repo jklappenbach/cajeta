@@ -293,6 +293,8 @@ class CajetaDebugSession(private val client: DapClient) {
                         value = v.opt("value")?.asString() ?: "",
                         type = v.opt("type")?.asString() ?: "",
                         variablesReference = v.opt("variablesReference")?.asInt() ?: 0,
+                        // CP7-2: decode the namespaced memory facets (absent => UNKNOWN).
+                        facets = MemoryFacets.parse(v.opt("cajeta")),
                     ),
                 )
             }
@@ -328,4 +330,6 @@ data class DapVariable(
     val variablesReference: Int,
     /** The containing scope's variablesReference; target for setVariable. 0 if unknown. */
     val containerReference: Int = 0,
+    /** CP7-2 memory facets from the `cajeta` extension; UNKNOWN when absent. */
+    val facets: MemoryFacets = MemoryFacets.UNKNOWN,
 )
