@@ -125,6 +125,16 @@ namespace xpu {
             llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* base,
             llvm::Type* elemTy, llvm::Value* index);
 
+        // The LLVM type of a Buffer<T> when passed BY VALUE as a @Device helper
+        // argument — i.e. the type of the buffer base held in bufferBases. A
+        // kernel buffer param arrives via the backend's mechanism (a pointer arg
+        // on NVPTX/AMDGPU/CPU, a descriptor handle on Vulkan), but a helper takes
+        // that already-materialized base as a plain function argument, so its
+        // param type must match. Default: ptr addrspace(1) (NVPTX/AMDGPU global).
+        // CPU overrides to a flat addrspace(0) pointer; Vulkan to the
+        // storage-buffer handle (spirv.VulkanBuffer) it keeps in bufferBases.
+        virtual llvm::Type* bufferParamType(llvm::Module& m, llvm::Type* elemTy);
+
         // --- wave / subgroup ops (the @Wave variance-shaped feature) ---------
         //
         // All three backends have hardware wave ops, but they diverge in

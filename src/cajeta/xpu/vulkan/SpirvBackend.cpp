@@ -7,6 +7,9 @@
 #include "llvm/ADT/SmallString.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/LegacyPassManager.h"
+#include "llvm/IR/PassManager.h"
+#include "llvm/Passes/PassBuilder.h"
+#include "llvm/Transforms/IPO/AlwaysInliner.h"
 #include "llvm/MC/TargetRegistry.h"
 #include "llvm/Support/CodeGen.h"
 #include "llvm/Support/raw_ostream.h"
@@ -43,6 +46,29 @@ void ensureTargetsInitialized() {
 // set kernels we emit. Returns false (and logs) on failure.
 bool emitToBuffer(llvm::Module& m, llvm::TargetMachine& tm,
                   llvm::CodeGenFileType type, llvm::SmallVectorImpl<char>& out) {
+    // Inline every @Device helper (alwaysinline, internal) into its kernel
+    // before codegen. On NVPTX/AMDGPU a buffer arg is an addrspace(1) pointer
+    // that survives a call, but on SPIR-V a Buffer<T> is a descriptor HANDLE
+    // (spirv.VulkanBuffer) — and the in-tree SPIR-V instruction selector traces
+    // a load/store's handle back to its handlefrombinding WITHIN one function;
+    // a handle passed across a call boundary crashes selectStore. Folding the
+    // helper in (its whole reason for being alwaysinline) keeps every buffer
+    // access in the kernel where the handle is bound. Idempotent + no-op for
+    // helper-free kernels.
+    llvm::PassBuilder pb;
+    llvm::LoopAnalysisManager lam;
+    llvm::FunctionAnalysisManager fam;
+    llvm::CGSCCAnalysisManager cgam;
+    llvm::ModuleAnalysisManager mam;
+    pb.registerModuleAnalyses(mam);
+    pb.registerCGSCCAnalyses(cgam);
+    pb.registerFunctionAnalyses(fam);
+    pb.registerLoopAnalyses(lam);
+    pb.crossRegisterProxies(lam, fam, cgam, mam);
+    llvm::ModulePassManager mpm;
+    mpm.addPass(llvm::AlwaysInlinerPass());
+    mpm.run(m, mam);
+
     llvm::raw_svector_ostream os(out);
     llvm::legacy::PassManager pm;
     if (tm.addPassesToEmitFile(pm, os, /*DwoOut=*/nullptr, type)) {

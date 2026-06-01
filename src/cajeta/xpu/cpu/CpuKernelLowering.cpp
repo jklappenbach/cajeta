@@ -119,6 +119,12 @@ public:
     // correct: host pointers are addrspace 0, and the coordinate params live
     // past the materialized param indices, so they never collide.
 
+    // A @Device helper's Buffer<T> param is a flat (addrspace 0) host pointer —
+    // matching the buffer base createKernel hands the kernel (Item 2).
+    llvm::Type* bufferParamType(llvm::Module& m, llvm::Type* /*elemTy*/) override {
+        return llvm::PointerType::get(m.getContext(), 0);
+    }
+
     // Wave ops. Each lowers to a *call* to its `__cajeta_xpu_wave_*` runtime
     // stub (width-1 scalar semantics: one work-item per host invocation). The
     // CPU registration pass then attaches a Vector Function ABI variant to each
