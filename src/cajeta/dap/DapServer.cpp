@@ -83,7 +83,8 @@ void DapServer::runToStopOrExit(const Emit& emit) {
             }
             currentStop_ = ev;
             haveStop_ = true;
-            frames_ = std::move(frames);
+            // CP6f-2b-ii: build the cross-thread frame table for this stop.
+            rebuildFrameTable(std::move(frames));
             Json body = Json::object();
             body["reason"] = "breakpoint";
             // CP6f-2b: the real stopped fiber id (0 = entry/main thread, >=1 a
@@ -97,7 +98,8 @@ void DapServer::runToStopOrExit(const Emit& emit) {
             exitCode_ = session_->join();
             terminated_ = true;
             haveStop_ = false;
-            frames_.clear();
+            frameTable_.clear();
+            varRefToFrame_.clear();
             Json body = Json::object();
             body["exitCode"] = exitCode_;
             emit(makeEvent(seq_++, "exited", body));
@@ -124,6 +126,40 @@ bool DapServer::shouldStopAt(const StopEvent& stop,
     std::string err;
     return cajeta::dbg::evaluateCondition(it->second, frames.front().locals,
                                           &err);
+}
+
+void DapServer::rebuildFrameTable(
+        std::vector<cajeta::dbg::DbgFrameInfo> stoppedFrames) {
+    frameTable_.clear();
+    varRefToFrame_.clear();
+    nextVarRef_ = 1;
+    const int stoppedTid = static_cast<int>(currentStop_.fiberId);
+
+    if (!stoppedFrames.empty()) {
+        for (auto& fr : stoppedFrames)
+            frameTable_.push_back(FrameEntry{stoppedTid, std::move(fr)});
+    } else if (currentStop_.locId >= 0) {
+        // CP4 fallback: no frame chain (a debug build without the CP5 frame
+        // codegen). Synthesize a single frame for the stopped thread from the
+        // loc table so stackTrace still shows where we are.
+        const auto& table = globalDbgLocTable();
+        cajeta::dbg::DbgFrameInfo fr;
+        if (static_cast<size_t>(currentStop_.locId) < table.size())
+            fr.func = table.at(currentStop_.locId).function;
+        fr.locId = currentStop_.locId;
+        frameTable_.push_back(FrameEntry{stoppedTid, std::move(fr)});
+    }
+
+    // Every other live fiber's chain. The carrier is parked at the stopped
+    // safepoint, so these chains are stable to walk (CP6f-2b). The stopped
+    // fiber is already in the registry; skip it to avoid a duplicate.
+    if (session_) {
+        for (const auto& f : session_->liveFibers()) {
+            if (f.id == stoppedTid) continue;
+            for (auto& fr : cajeta::dbg::walkFrames(f.frameTop))
+                frameTable_.push_back(FrameEntry{f.id, std::move(fr)});
+        }
+    }
 }
 
 bool DapServer::handle(const Json& request, const Emit& emit) {
@@ -219,23 +255,22 @@ bool DapServer::handle(const Json& request, const Emit& emit) {
     }
 
     if (command == "stackTrace") {
-        Json body = Json::object();
-        if (!haveStop_) {
-            body["stackFrames"] = Json::array();
-            body["totalFrames"] = 0;
-        } else if (frames_.empty()) {
-            // No frame chain (e.g. a debug build without the CP5 frame
-            // codegen) — fall back to the CP4 single-frame stackTrace.
-            body = stackTraceBody(currentStop_, globalDbgLocTable());
-        } else {
-            // CP5 multi-frame: one DAP frame per dbg frame, innermost first.
-            // id = frame index; scopes/variables decode it back.
-            const auto& table = globalDbgLocTable();
-            Json frames = Json::array();
-            for (size_t i = 0; i < frames_.size(); ++i) {
-                const auto& fr = frames_[i];
+        // CP6f-2b-ii: return the slice of the per-stop frame table belonging to
+        // the requested thread. frameId is the GLOBAL monotonic index into the
+        // table (stable for this stop, spanning all threads). A missing threadId
+        // defaults to the stopped thread (the existing single-thread tests pass
+        // none; the stopped thread there is id 0).
+        const int stoppedTid = static_cast<int>(currentStop_.fiberId);
+        const int threadId =
+            args.has("threadId") ? args.at("threadId").asInt() : stoppedTid;
+        const auto& table = globalDbgLocTable();
+        Json frames = Json::array();
+        if (haveStop_) {
+            for (size_t i = 0; i < frameTable_.size(); ++i) {
+                if (frameTable_[i].threadId != threadId) continue;
+                const auto& fr = frameTable_[i].info;
                 Json frame = Json::object();
-                frame["id"] = static_cast<int>(i);
+                frame["id"] = static_cast<int>(i);   // global, monotonic
                 frame["name"] = fr.func.empty() ? std::string("<entry>")
                                                 : fr.func;
                 int line = 0, col = 1;
@@ -258,22 +293,28 @@ bool DapServer::handle(const Json& request, const Emit& emit) {
                 }
                 frames.push_back(std::move(frame));
             }
-            body["stackFrames"] = std::move(frames);
-            body["totalFrames"] = static_cast<int>(frames_.size());
         }
+        Json body = Json::object();
+        const int total = static_cast<int>(frames.size());
+        body["stackFrames"] = std::move(frames);
+        body["totalFrames"] = total;
         emit(makeResponse(seq_++, requestSeq, command, true, std::move(body)));
         return true;
     }
 
     if (command == "scopes") {
-        // One "Locals" scope per frame. variablesReference = frameId + 1 (0 is
-        // reserved by DAP for "no children").
+        // One "Locals" scope per frame. frameId is a global frameTable_ index;
+        // we mint an opaque variablesReference handle (>=1) for it. The client
+        // round-trips that handle to `variables`/`setVariable` — no arithmetic
+        // relationship to frameId.
         int frameId = args.at("frameId").asInt();
         Json scopes = Json::array();
-        if (frameId >= 0 && static_cast<size_t>(frameId) < frames_.size()) {
+        if (frameId >= 0 && static_cast<size_t>(frameId) < frameTable_.size()) {
+            int ref = nextVarRef_++;
+            varRefToFrame_[ref] = frameId;
             Json scope = Json::object();
             scope["name"] = "Locals";
-            scope["variablesReference"] = frameId + 1;
+            scope["variablesReference"] = ref;
             scope["expensive"] = false;
             scopes.push_back(std::move(scope));
         }
@@ -285,11 +326,11 @@ bool DapServer::handle(const Json& request, const Emit& emit) {
 
     if (command == "variables") {
         int ref = args.at("variablesReference").asInt();
-        int frameIndex = ref - 1;
         Json vars = Json::array();
-        if (frameIndex >= 0 &&
-                static_cast<size_t>(frameIndex) < frames_.size()) {
-            for (const auto& v : frames_[frameIndex].locals) {
+        auto it = varRefToFrame_.find(ref);
+        if (it != varRefToFrame_.end() &&
+                static_cast<size_t>(it->second) < frameTable_.size()) {
+            for (const auto& v : frameTable_[it->second].info.locals) {
                 Json var = Json::object();
                 var["name"] = v.name;
                 var["value"] = cajeta::dbg::formatValue(v.type, v.addr);
@@ -306,15 +347,15 @@ bool DapServer::handle(const Json& request, const Emit& emit) {
 
     if (command == "setVariable") {
         int ref = args.at("variablesReference").asInt();
-        int frameIndex = ref - 1;
         std::string name = args.at("name").asString();
         std::string value = args.at("value").asString();
         bool ok = false;
         std::string err = "no such variable: " + name;
         std::string rendered;
-        if (frameIndex >= 0 &&
-                static_cast<size_t>(frameIndex) < frames_.size()) {
-            for (const auto& v : frames_[frameIndex].locals) {
+        auto it = varRefToFrame_.find(ref);
+        if (it != varRefToFrame_.end() &&
+                static_cast<size_t>(it->second) < frameTable_.size()) {
+            for (const auto& v : frameTable_[it->second].info.locals) {
                 if (v.name != name) continue;
                 ok = cajeta::dbg::writeValue(v.type, v.addr, value, &err);
                 if (ok) rendered = cajeta::dbg::formatValue(v.type, v.addr);
