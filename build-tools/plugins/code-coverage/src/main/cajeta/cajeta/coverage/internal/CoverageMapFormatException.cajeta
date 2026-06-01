@@ -1,0 +1,16 @@
+package cajeta.coverage.internal;
+
+/**
+ * Raised when a coverage-map sidecar's bytes don't match the format
+ * the reader expects — bad magic, unsupported version, or a stored
+ * hit-count that disagrees with the reconstructed bitset.
+ *
+ * Distinct from `IoException` so the reporting action can surface a
+ * dedicated "your coverage data is from a different cajeta-coverage
+ * version" message instead of a generic "I/O error".
+ */
+public class CoverageMapFormatException extends Exception {
+    public CoverageMapFormatException(String message) {
+        super(message);
+    }
+}

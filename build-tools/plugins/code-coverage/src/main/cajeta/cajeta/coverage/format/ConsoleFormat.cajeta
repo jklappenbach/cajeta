@@ -1,0 +1,46 @@
+package cajeta.coverage.format;
+
+import cajeta.collection.ArrayList;
+import cajeta.coverage.CoverageMap;
+import cajeta.coverage.internal.BottomN;
+import cajeta.coverage.internal.FloatFormat;
+
+/**
+ * Terminal-friendly summary printed at the end of `cajeta test`:
+ *
+ *   coverage: 83.5%  (files: 42, grain: line)
+ *   files needing attention:
+ *      54.0%  src/parser/Lexer.cajeta            (27/50)
+ *      61.2%  src/codec/JsonReader.cajeta        (49/80)
+ *      ...
+ *
+ * No color, no ANSI. The build tool's output stream is the channel
+ * for terminal styling — emitting raw ANSI here would corrupt CI
+ * log captures. The host tool can color-wrap on the way out.
+ */
+public class ConsoleFormat {
+
+    public static String render(CoverageMap map, int32 bottomN) {
+        StringBuilder b = stack StringBuilder();
+        b.append("coverage: ");
+        b.append(FloatFormat.oneDecimal(map.overallPercent()));
+        b.append("%  (files: ");
+        b.append(String.valueOf(map.count()));
+        b.append(", grain: ");
+        b.append(map.grain().toName());
+        b.append(")\n");
+
+        ArrayList<CoverageMap.FileEntry> bottom = BottomN.select(map, bottomN);
+        // Skip the section entirely if nothing's below 100% — the
+        // happy case shouldn't be cluttered with an empty header.
+        if (bottom.count() == 0) {
+            return b.toString();
+        }
+        if (bottom.get(0).percent() >= 100.0) {
+            return b.toString();
+        }
+        b.append("files needing attention:\n");
+        b.append(BottomN.cite(bottom));
+        return b.toString();
+    }
+}

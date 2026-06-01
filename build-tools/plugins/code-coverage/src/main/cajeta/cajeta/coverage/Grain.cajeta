@@ -1,0 +1,50 @@
+package cajeta.coverage;
+
+/**
+ * Coverage granularity. Picked by `plugins.cajeta.coverage.config.grain`.
+ *
+ * - LINE   — was each statement executed at least once?
+ *            Default; fastest, lowest probe overhead, easiest to read.
+ * - BRANCH — for each if/else/switch arm, was each taken?
+ *            Catches "the condition was always true in tests."
+ * - REGION — for each basic block as the compiler sees it, was it
+ *            entered? Catches dead-code patterns line/branch miss.
+ *
+ * Stored as a tag enum (the cajeta enum lowering — see
+ * `cajeta-docs/stdlib/Enums.md`) so it compares as an int32 at probe
+ * lookup time without string interning.
+ */
+public enum Grain {
+    LINE,
+    BRANCH,
+    REGION;
+
+    /**
+     * Parse the user-visible string from the manifest config. Returns
+     * `Optional.empty()` when the string isn't one of the three known
+     * values — callers convert that to a configuration error pointing
+     * at the offending field.
+     */
+    public static Optional<Grain> parse(String s) {
+        if (s == "line") {
+            return stack Optional<Grain>(true, Grain.LINE);
+        }
+        if (s == "branch") {
+            return stack Optional<Grain>(true, Grain.BRANCH);
+        }
+        if (s == "region") {
+            return stack Optional<Grain>(true, Grain.REGION);
+        }
+        return stack Optional<Grain>(false, Grain.LINE);
+    }
+
+    /**
+     * Round-trip: enum back to manifest string. Used when surfacing
+     * the resolved grain in reports.
+     */
+    public String toName() {
+        if (this == Grain.LINE)   { return "line";   }
+        if (this == Grain.BRANCH) { return "branch"; }
+        return "region";
+    }
+}
