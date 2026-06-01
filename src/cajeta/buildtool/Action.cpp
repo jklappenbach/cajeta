@@ -132,15 +132,29 @@ namespace cajeta::buildtool {
     // ──── Action registry ────────────────────────────────────────────
 
     // Forward decls for action implementations registered below.
-    class ExecAction;
     std::unique_ptr<Action> makeExecAction();
+    std::unique_ptr<Action> makeCopyAction();
+    std::unique_ptr<Action> makeDeleteAction();
+    std::unique_ptr<Action> makeMkdirAction();
+    std::unique_ptr<Action> makeSignAction();
+    std::unique_ptr<Action> makeVerifySigAction();
+    std::unique_ptr<Action> makeVersionAction();
+    std::unique_ptr<Action> makeDownloadAction();
 
     ActionRegistry::ActionRegistry() {
-        // Phase 3a: register `exec`. Subsequent phases add more.
         auto reg = [&](std::unique_ptr<Action> a) {
             actions_[a->name()] = std::move(a);
         };
+        // Phase 3a: composition / control escape hatch.
         reg(makeExecAction());
+        // Phase 4: filesystem + crypto + version + download.
+        reg(makeCopyAction());
+        reg(makeDeleteAction());
+        reg(makeMkdirAction());
+        reg(makeSignAction());
+        reg(makeVerifySigAction());
+        reg(makeVersionAction());
+        reg(makeDownloadAction());
     }
 
     const Action* ActionRegistry::get(const std::string& name) const {
