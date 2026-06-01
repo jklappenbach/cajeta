@@ -83,7 +83,7 @@ namespace cajeta::buildtool {
     // Recognized types:
     //   - filesystem (Phase 6a)
     //   - http        (Phase 6b)
-    // `git` parses but errors here pending the Phase 6c driver.
+    //   - git         (Phase 6c)
     // `maven-compat` parses but is deferred — Maven-Central-as-
     // primary-host is a JVM pattern that doesn't fit cajeta;
     // enterprise users can point the native HTTP driver at

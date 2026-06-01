@@ -1,6 +1,7 @@
 #include "cajeta/buildtool/Repository.h"
 
 #include "cajeta/buildtool/repo/FilesystemRepository.h"
+#include "cajeta/buildtool/repo/GitRepository.h"
 #include "cajeta/buildtool/repo/HttpRepository.h"
 
 #include <llvm/Support/Error.h>
@@ -41,9 +42,15 @@ namespace cajeta::buildtool {
                            "cajeta consumers can use the native HTTP "
                            "driver against Nexus/Artifactory instead).");
             } else if (spec.type == "git") {
-                return err("repository '" + spec.name +
-                           "' uses type='git' — Git driver lands "
-                           "in Phase 6c.");
+                if (downloadStageDir.empty()) {
+                    return err("repository '" + spec.name +
+                               "': Git driver requires a download-stage "
+                               "directory (caller must pass one — "
+                               "see buildRepositories docs)");
+                }
+                out.push_back(std::make_shared<GitRepository>(
+                    spec.name, spec.url, spec.gitRef, spec.gitSubdir,
+                    downloadStageDir));
             } else {
                 return err("repository '" + spec.name +
                            "': unknown type '" + spec.type + "'");

@@ -58,6 +58,15 @@ namespace cajeta::buildtool {
             if (auto v = obj->getInteger("priority")) {
                 r.priority = static_cast<int>(*v);
             }
+            // Git-specific fields. We accept `tag`, `branch`, and
+            // `rev` as ref shapes (spec form) — internally they all
+            // collapse to a single literal `gitRef` since `git
+            // checkout` doesn't distinguish at the call site.
+            if (auto v = obj->getString("ref"))    r.gitRef = v->str();
+            if (auto v = obj->getString("tag"))    r.gitRef = v->str();
+            if (auto v = obj->getString("branch")) r.gitRef = v->str();
+            if (auto v = obj->getString("rev"))    r.gitRef = v->str();
+            if (auto v = obj->getString("subdir")) r.gitSubdir = v->str();
 
             // Validate the type / fields combination.
             if (r.type == "filesystem" && r.path.empty()) {
@@ -68,6 +77,17 @@ namespace cajeta::buildtool {
                 r.url.empty()) {
                 return err("settings.repositories." + r.name +
                            ": type='" + r.type + "' requires 'url'");
+            }
+            if (r.type == "git") {
+                if (r.url.empty()) {
+                    return err("settings.repositories." + r.name +
+                               ": type='git' requires 'url' (clone URL)");
+                }
+                if (r.gitRef.empty()) {
+                    return err("settings.repositories." + r.name +
+                               ": type='git' requires one of 'ref' / "
+                               "'tag' / 'branch' / 'rev'");
+                }
             }
 
             // Optional auth block — only meaningful for http /
