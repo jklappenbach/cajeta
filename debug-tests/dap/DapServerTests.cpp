@@ -328,6 +328,75 @@ TEST(DapServerSession, ConditionalBreakpointStopsOnlyWhenConditionHolds) {
     }
 }
 
+// CP6f-2b: a spawn program parks inside a fiber; `threads` lists main (id 0)
+// plus the spawned fiber, and the `stopped` event carries the fiber's id.
+TEST(DapServerSession, ThreadsListsSpawnedFiberAndStoppedThreadId) {
+    static const char* kSpawnProg =
+        "package demo;\n"
+        "public class Calc {\n"
+        "    public static async int32 worker(int32 x) {\n"
+        "        int32 y = x + 1;\n"     // line 4 — breakpoint inside the fiber
+        "        return y;\n"            // line 5
+        "    }\n"
+        "    public static int32 main() {\n"
+        "        int32 r = await spawn worker(41);\n"  // line 8
+        "        return r;\n"            // line 9
+        "    }\n"
+        "}\n";
+    TempProgram p("demo", "Calc.cajeta", kSpawnProg);
+    DapServer srv;
+    std::vector<Json> log;
+
+    drive(srv, req(1, "initialize", Json::object()), log);
+    Json launchArgs = Json::object();
+    launchArgs["entry-method"] = "demo.Calc.main";
+    launchArgs["sourceRoot"] = p.sourceRoot();
+    drive(srv, req(2, "launch", launchArgs), log);
+
+    Json bpArgs = Json::object();
+    Json src = Json::object(); src["path"] = "Calc.cajeta";
+    bpArgs["source"] = src;
+    Json bps = Json::array();
+    Json bp = Json::object(); bp["line"] = 4;
+    bps.push_back(bp);
+    bpArgs["breakpoints"] = bps;
+    drive(srv, req(3, "setBreakpoints", bpArgs), log);
+
+    drive(srv, req(4, "configurationDone", Json::object()), log);
+    ASSERT_EQ(countEvent(log, "stopped"), 1);
+    // The stopped event names the spawned fiber (id >= 1), not main.
+    int stoppedTid = -1;
+    for (const auto& m : log) {
+        if (m.at("type").asString() == "event" &&
+            m.at("event").asString() == "stopped") {
+            stoppedTid = m.at("body").at("threadId").asInt();
+        }
+    }
+    EXPECT_GE(stoppedTid, 1);
+
+    // threads: main (id 0) + the live spawned fiber (the stopped tid).
+    log.clear();
+    drive(srv, req(5, "threads", Json::object()), log);
+    const Json* thResp = findResponse(log, "threads");
+    ASSERT_NE(thResp, nullptr);
+    const Json& threads = thResp->at("body").at("threads");
+    ASSERT_GE(threads.size(), 2u) << "expected main + at least one fiber";
+    bool sawMain = false, sawStopped = false;
+    for (size_t i = 0; i < threads.size(); ++i) {
+        int id = threads[i].at("id").asInt();
+        if (id == 0) sawMain = true;
+        if (id == stoppedTid) sawStopped = true;
+    }
+    EXPECT_TRUE(sawMain) << "main thread (id 0) missing";
+    EXPECT_TRUE(sawStopped) << "stopped fiber id missing from threads";
+
+    // Resume to termination so the parked carrier unblocks before the DapServer
+    // dtor join()s it (else deadlock). 41 + 1 = 42.
+    log.clear();
+    drive(srv, req(6, "continue", Json::object()), log);
+    EXPECT_EQ(countEvent(log, "terminated"), 1);
+}
+
 TEST(DapServerSession, NoBreakpointsRunsToTermination) {
     TempProgram p("demo", "Calc.cajeta", kProg);
     DapServer srv;
