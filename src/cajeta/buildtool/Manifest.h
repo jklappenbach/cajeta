@@ -70,6 +70,21 @@ namespace cajeta::buildtool {
         llvm::json::Object actionsRaw;
         llvm::json::Object pluginsRaw;
         llvm::json::Object tasksRaw;
+        // `melt` block — present only in melt packages (manifests
+        // whose purpose is to export curated configuration). Mutually
+        // exclusive with `tasks` and `workspace`. See cajeta/buildtool/
+        // Melt.h for the typed model.
+        llvm::json::Object meltRaw;
+        // `workspace` block — present only in workspace-root manifests
+        // (the monorepo coordination layer, Phase 12). Parses through
+        // raw today; typed model lands when Phase 12 ships.
+        llvm::json::Object workspaceRaw;
+
+        // True iff the `melt` block was present at load time. Used to
+        // distinguish "no melt declared" from "declared but empty".
+        bool hasMelt = false;
+        // True iff the `workspace` block was present at load time.
+        bool hasWorkspace = false;
 
         // Absolute path the manifest was loaded from. Empty when the
         // manifest was loaded from an in-memory string.

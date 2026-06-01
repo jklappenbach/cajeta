@@ -217,6 +217,38 @@ namespace cajeta::buildtool {
         if (auto e = requireObject(
                 sourceLabel, "tasks",
                 root->get("tasks"), m.tasksRaw)) return std::move(e);
+        if (root->get("melt")) {
+            m.hasMelt = true;
+            if (auto e = requireObject(
+                    sourceLabel, "melt",
+                    root->get("melt"), m.meltRaw)) return std::move(e);
+        }
+        if (root->get("workspace")) {
+            m.hasWorkspace = true;
+            if (auto e = requireObject(
+                    sourceLabel, "workspace",
+                    root->get("workspace"), m.workspaceRaw)) return std::move(e);
+        }
+
+        // Melt mutual exclusion. A melt package's purpose is to export
+        // curated configuration — it has no source, no tasks, and
+        // can't simultaneously be a workspace root. Per BuildTool.md
+        // "Anatomy of a melt package" + Phase 6c plan: reject these
+        // combinations early so consumers can't accidentally publish
+        // a hybrid.
+        if (m.hasMelt) {
+            if (!m.tasksRaw.empty()) {
+                return cite(sourceLabel,
+                    "manifest declares both 'melt' and 'tasks' — a "
+                    "melt package exports configuration only and "
+                    "cannot define tasks");
+            }
+            if (m.hasWorkspace) {
+                return cite(sourceLabel,
+                    "manifest declares both 'melt' and 'workspace' "
+                    "— these are mutually exclusive");
+            }
+        }
 
         return m;
     }
