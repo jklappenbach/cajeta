@@ -170,4 +170,70 @@ class CajetaDebugSessionIntegrationTest {
             root.deleteRecursively()
         }
     }
+
+    private val kSpawnProg = """
+        package demo;
+        public class Calc {
+            public static async int32 worker(int32 x) {
+                int32 y = x + 1;
+                return y;
+            }
+            public static int32 main() {
+                int32 r = await spawn worker(41);
+                return r;
+            }
+        }
+    """.trimIndent() + "\n"
+
+    /**
+     * CP6f-2c end-to-end: parked inside a spawned fiber, `threads` lists the
+     * entry thread (id 0) plus the live fiber, and a per-thread
+     * `stackTrace(fiberId)` walks that fiber's frames (worker, with x == 41).
+     * This is the data the IntelliJ thread dropdown renders.
+     */
+    @Test
+    fun threadsAndPerThreadStackTraceForSpawnedFiber() {
+        val binary = CajetaDapLauncher.locateBinary()
+        assumeTrue("cajeta binary not found; set CAJETA_DAP_BIN to run", binary != null)
+        binary!!
+
+        val root = Files.createTempDirectory("cajeta-fibers-it-").toFile()
+        File(root, "demo").apply { mkdirs() }
+        File(File(root, "demo"), "Calc.cajeta").writeText(kSpawnProg)
+
+        val process = CajetaDapLauncher(binary.absolutePath, CajetaDapLauncher.defaultDllDir()).start()
+        val session = CajetaDebugSession(DapClient(DapTransport(process.inputStream, process.outputStream)))
+
+        val stopped = CountDownLatch(1)
+        var stoppedTid = -1
+        session.onStopped = { body -> stoppedTid = body.opt("threadId")?.asInt() ?: 0; stopped.countDown() }
+        session.start()
+
+        try {
+            session.launch(
+                CajetaDebugSession.LaunchParams("demo.Calc.main", root.absolutePath),
+                listOf(CajetaDebugSession.LineBreakpoint("Calc.cajeta", 4)), // inside worker
+            ).get(15, TimeUnit.SECONDS)
+            assertTrue("breakpoint never hit", stopped.await(30, TimeUnit.SECONDS))
+            assertTrue("expected a spawned fiber (id >= 1), got $stoppedTid", stoppedTid >= 1)
+
+            // threads -> entry thread (0) + the live fiber (the stopped tid).
+            val threads = CajetaDebugSession.parseThreads(session.threads().get(10, TimeUnit.SECONDS))
+            assertTrue("expected >= 2 threads, got ${threads.map { it.id }}", threads.size >= 2)
+            assertTrue("main (id 0) missing", threads.any { it.id == 0 })
+            assertTrue("stopped fiber $stoppedTid missing", threads.any { it.id == stoppedTid })
+
+            // Per-thread stackTrace for the stopped fiber -> worker frame, x==41.
+            val st = session.stackTrace(stoppedTid).get(10, TimeUnit.SECONDS)
+            val frames = CajetaDebugSession.parseStackFrames(st)
+            assertTrue("fiber has no frames", frames.isNotEmpty())
+            assertEquals(4, frames[0].line)
+            val locals = session.loadVariables(frames[0].id).get(10, TimeUnit.SECONDS)
+            assertEquals("41", locals.first { it.name == "x" }.value)
+        } finally {
+            session.disconnect()
+            process.destroyForcibly()
+            root.deleteRecursively()
+        }
+    }
 }

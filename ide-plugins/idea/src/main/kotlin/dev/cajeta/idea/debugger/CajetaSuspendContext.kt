@@ -54,23 +54,63 @@ class CajetaStackFrame(
     }
 }
 
-class CajetaExecutionStack(private val frames: List<CajetaStackFrame>) :
-    XExecutionStack("Main") {
+/**
+ * One thread/fiber's call stack in the IntelliJ thread dropdown (CP6f-2c).
+ *
+ * IntelliJ calls [getTopFrame] synchronously when it builds the dropdown, so a
+ * stack's frames must be available without blocking. The **stopped** thread is
+ * therefore constructed with its frames already in hand ([preloaded]); every
+ * other thread is lazy — it fetches `stackTrace(threadId)` only when the user
+ * selects it, in [computeStackFrames] (which IntelliJ already calls off the EDT
+ * via a callback). A lazy stack reports no top frame until expanded, which is
+ * the platform's expected "not yet computed" state.
+ */
+class CajetaExecutionStack(
+    val threadId: Int,
+    displayName: String,
+    private val session: CajetaDebugSession?,
+    private val resolvePosition: (DapStackFrame) -> XSourcePosition?,
+    private val preloaded: List<CajetaStackFrame>? = null,
+) : XExecutionStack(displayName) {
 
-    override fun getTopFrame(): XStackFrame? = frames.firstOrNull()
+    override fun getTopFrame(): XStackFrame? = preloaded?.firstOrNull()
 
     override fun computeStackFrames(firstFrameIndex: Int, container: XStackFrameContainer) {
-        if (firstFrameIndex < frames.size) {
-            container.addStackFrames(frames.subList(firstFrameIndex, frames.size), true)
-        } else {
+        // The stopped thread already has its frames; serve them synchronously.
+        preloaded?.let {
+            container.addStackFrames(it.drop(firstFrameIndex), true)
+            return
+        }
+        val ds = session
+        if (ds == null) {
             container.addStackFrames(emptyList(), true)
+            return
+        }
+        // Lazy: fetch this thread's frames on demand. Frame ids are global
+        // (server keys the per-stop frame table by threadId), so scopes/
+        // variables on these frames round-trip exactly like the stopped thread.
+        ds.stackTrace(threadId).thenAccept { response ->
+            val frames = CajetaDebugSession.parseStackFrames(response)
+                .map { CajetaStackFrame(it, resolvePosition(it), ds) }
+            container.addStackFrames(frames.drop(firstFrameIndex), true)
+        }.exceptionally { e ->
+            container.errorOccurred("Failed to load frames for thread $threadId: ${e.message}")
+            null
         }
     }
 }
 
-class CajetaSuspendContext(private val stack: CajetaExecutionStack) : XSuspendContext() {
+/**
+ * The set of all thread/fiber stacks at a stop (CP6f-2c). [active] is the
+ * stopped thread (shown first in the dropdown); [all] holds every thread,
+ * active included, in the order the server reported them.
+ */
+class CajetaSuspendContext(
+    private val active: CajetaExecutionStack,
+    private val all: List<CajetaExecutionStack>,
+) : XSuspendContext() {
 
-    override fun getActiveExecutionStack(): XExecutionStack = stack
+    override fun getActiveExecutionStack(): XExecutionStack = active
 
-    override fun getExecutionStacks(): Array<XExecutionStack> = arrayOf(stack)
+    override fun getExecutionStacks(): Array<XExecutionStack> = all.toTypedArray()
 }

@@ -71,7 +71,7 @@ class CajetaDebugProcess(
             ds.onTerminated = { processHandler.reportTerminated(0) }
             ds.onOutput = { text -> processHandler.emitOutput(text) }
             ds.onClosed = { processHandler.reportTerminated(0) }
-            ds.onStopped = { _ -> onStopped(ds) }
+            ds.onStopped = { body -> onStopped(ds, body.opt("threadId")?.asInt() ?: 0) }
 
             ds.start()
 
@@ -107,16 +107,54 @@ class CajetaDebugProcess(
         processHandler.startNotify()
     }
 
-    private fun onStopped(ds: CajetaDebugSession) {
-        ds.stackTrace().thenAccept { response ->
-            val frames = CajetaDebugSession.parseStackFrames(response)
-                .map { CajetaStackFrame(it, resolvePosition(it), ds) }
-            val context = CajetaSuspendContext(CajetaExecutionStack(frames))
+    /**
+     * On a stop, build one execution stack per live thread/fiber for the
+     * IntelliJ thread dropdown (CP6f-2c). The stopped thread's frames are
+     * fetched up front so its stack is the active one and renders immediately;
+     * every other thread becomes a lazy stack that fetches its own frames when
+     * the user selects it. Falls back to a single stopped-thread stack if the
+     * `threads` request fails.
+     */
+    private fun onStopped(ds: CajetaDebugSession, stoppedThreadId: Int) {
+        ds.threads().thenCompose { threadsResponse ->
+            val threads = CajetaDebugSession.parseThreads(threadsResponse)
+            // Preload the stopped thread's frames (active stack must answer
+            // getTopFrame synchronously); other stacks stay lazy.
+            ds.stackTrace(stoppedThreadId).thenApply { stResponse ->
+                val stoppedFrames = CajetaDebugSession.parseStackFrames(stResponse)
+                    .map { CajetaStackFrame(it, resolvePosition(it), ds) }
+                buildContext(ds, threads, stoppedThreadId, stoppedFrames)
+            }
+        }.thenAccept { context ->
             session.positionReached(context)
         }.exceptionally { e ->
-            log.warn("stackTrace after stop failed", e)
+            log.warn("building suspend context after stop failed", e)
             null
         }
+    }
+
+    private fun buildContext(
+        ds: CajetaDebugSession,
+        threads: List<DapThread>,
+        stoppedThreadId: Int,
+        stoppedFrames: List<CajetaStackFrame>,
+    ): CajetaSuspendContext {
+        // Ensure the stopped thread is present (older adapter may report no
+        // threads, or omit it); synthesize it if missing so there's always an
+        // active stack to preload.
+        val effective = threads.toMutableList()
+        if (effective.none { it.id == stoppedThreadId }) {
+            effective.add(0, DapThread(stoppedThreadId, "main"))
+        }
+        val stacks = effective.map { t ->
+            if (t.id == stoppedThreadId) {
+                CajetaExecutionStack(t.id, t.name, ds, ::resolvePosition, preloaded = stoppedFrames)
+            } else {
+                CajetaExecutionStack(t.id, t.name, ds, ::resolvePosition)
+            }
+        }
+        val active = stacks.first { it.threadId == stoppedThreadId }
+        return CajetaSuspendContext(active, stacks)
     }
 
     private fun resolvePosition(frame: DapStackFrame): XSourcePosition? {
