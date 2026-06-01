@@ -33,6 +33,7 @@ using cajeta::buildtool::RepositorySpec;
 using cajeta::buildtool::resolveDirect;
 using cajeta::buildtool::ResolvedDependency;
 using cajeta::buildtool::resolveMvs;
+using cajeta::buildtool::resolveProjectDependencies;
 using cajeta::buildtool::versionSatisfies;
 
 namespace {
@@ -1119,6 +1120,129 @@ TEST(DependencyTests, mvsRejectsPathOverrideAsPhase6c) {
     EXPECT_NE(msg.find("px.bar"), std::string::npos);
 
     std::filesystem::remove_all(root);
+    std::filesystem::remove_all(projectDir);
+    std::filesystem::remove_all(homeDir);
+}
+
+// ─── resolveProjectDependencies (manifest → resolved set) ─────────────
+
+TEST(DependencyTests, projectResolutionEmptyWhenNoDepsDeclared) {
+    auto m = mustLoad(R"({
+        "details": { "name": "a.b", "version": "0.1" }
+    })");
+    auto projectDir = makeTempDir("proj-empty-proj");
+    auto homeDir    = makeTempDir("proj-empty-home");
+    auto resolved = resolveProjectDependencies(
+        m, projectDir.string(), homeDir.string());
+    ASSERT_TRUE((bool)resolved) << errorText(resolved.takeError());
+    EXPECT_TRUE(resolved->empty());
+    std::filesystem::remove_all(projectDir);
+    std::filesystem::remove_all(homeDir);
+}
+
+TEST(DependencyTests, projectResolutionEndToEnd) {
+    auto repoRoot = makeFsRepo({
+        {"p.foo", "1.0.0", "foo"},
+        {"p.bar", "1.5.0", "bar"},
+    });
+    writeSidecarManifest(repoRoot, "p.foo", "1.0.0", {{"p.bar", "1.*"}});
+    writeSidecarManifest(repoRoot, "p.bar", "1.5.0", {});
+
+    // Manifest declares a single direct dep + the fs repo.
+    std::ostringstream js;
+    js << R"({
+        "details": { "name": "consumer", "version": "0.1.0" },
+        "settings": {
+            "repositories": [
+                { "name": "test", "type": "filesystem",
+                  "path": ")" << repoRoot.string() << R"(" }
+            ],
+            "dependencies": {
+                "p.foo": "1.0.0"
+            }
+        }
+    })";
+    auto m = mustLoad(js.str());
+
+    auto projectDir = makeTempDir("proj-e2e-proj");
+    auto homeDir    = makeTempDir("proj-e2e-home");
+    auto resolved = resolveProjectDependencies(
+        m, projectDir.string(), homeDir.string());
+    ASSERT_TRUE((bool)resolved) << errorText(resolved.takeError());
+    ASSERT_EQ(resolved->size(), 2u);
+    EXPECT_EQ((*resolved)[0].name, "p.foo");
+    EXPECT_EQ((*resolved)[0].version, "1.0.0");
+    EXPECT_EQ((*resolved)[1].name, "p.bar");
+    EXPECT_EQ((*resolved)[1].version, "1.5.0");
+    // Cached paths actually exist.
+    EXPECT_TRUE(std::filesystem::exists((*resolved)[0].artifactPath));
+    EXPECT_TRUE(std::filesystem::exists((*resolved)[1].artifactPath));
+
+    std::filesystem::remove_all(repoRoot);
+    std::filesystem::remove_all(projectDir);
+    std::filesystem::remove_all(homeDir);
+}
+
+TEST(DependencyTests, projectResolutionErrorsWhenDepsDeclaredButNoRepos) {
+    auto m = mustLoad(R"({
+        "details": { "name": "a.b", "version": "0.1" },
+        "settings": {
+            "dependencies": { "missing": "1.0.0" }
+        }
+    })");
+    auto projectDir = makeTempDir("proj-norepo-proj");
+    auto homeDir    = makeTempDir("proj-norepo-home");
+    auto resolved = resolveProjectDependencies(
+        m, projectDir.string(), homeDir.string());
+    ASSERT_FALSE((bool)resolved);
+    auto msg = errorText(resolved.takeError());
+    EXPECT_NE(msg.find("repositories"), std::string::npos)
+        << "expected guidance toward settings.repositories, got: " << msg;
+    std::filesystem::remove_all(projectDir);
+    std::filesystem::remove_all(homeDir);
+}
+
+TEST(DependencyTests, projectResolutionAppliesOverrides) {
+    // Verify the top-level helper actually plumbs overrides through
+    // to resolveMvs.
+    auto repoRoot = makeFsRepo({
+        {"o4.foo", "1.0.0", "foo"},
+        {"o4.bar", "1.0.0", "b1"},
+        {"o4.bar", "1.5.0", "b2"},
+    });
+    writeSidecarManifest(repoRoot, "o4.foo", "1.0.0", {{"o4.bar", ">=1.0.0"}});
+    writeSidecarManifest(repoRoot, "o4.bar", "1.0.0", {});
+    writeSidecarManifest(repoRoot, "o4.bar", "1.5.0", {});
+
+    std::ostringstream js;
+    js << R"({
+        "details": { "name": "consumer", "version": "0.1.0" },
+        "settings": {
+            "repositories": [
+                { "name": "test", "type": "filesystem",
+                  "path": ")" << repoRoot.string() << R"(" }
+            ],
+            "dependencies": { "o4.foo": "1.0.0" },
+            "overrides":    { "o4.bar": "1.5.0" }
+        }
+    })";
+    auto m = mustLoad(js.str());
+
+    auto projectDir = makeTempDir("proj-ov-proj");
+    auto homeDir    = makeTempDir("proj-ov-home");
+    auto resolved = resolveProjectDependencies(
+        m, projectDir.string(), homeDir.string());
+    ASSERT_TRUE((bool)resolved) << errorText(resolved.takeError());
+
+    std::string barVersion;
+    for (const auto& r : *resolved) {
+        if (r.name == "o4.bar") barVersion = r.version;
+    }
+    // Without the override, MVS would have picked 1.0.0 (lowest).
+    // The override forces 1.5.0.
+    EXPECT_EQ(barVersion, "1.5.0");
+
+    std::filesystem::remove_all(repoRoot);
     std::filesystem::remove_all(projectDir);
     std::filesystem::remove_all(homeDir);
 }

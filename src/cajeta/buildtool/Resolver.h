@@ -18,6 +18,7 @@
 
 #include <llvm/Support/Error.h>
 
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -101,5 +102,24 @@ namespace cajeta::buildtool {
     // non-numeric prerelease tags compared lexicographically.
     // Exposed for unit tests.
     int compareVersions(const std::string& a, const std::string& b);
+
+    // Top-level orchestration helper: pulls `settings.repositories`,
+    // `settings.dependencies`, and `settings.overrides` from the
+    // manifest; builds the repository drivers; constructs an
+    // ArtifactCache rooted at `projectRoot`; runs `resolveMvs`.
+    //
+    // Returns an empty vector when no dependencies are declared
+    // (so BuildAction can skip the `--classpath` step entirely
+    // for projects without external deps).
+    //
+    // `projectRoot` is where the local artifact cache lives
+    // (`<projectRoot>/.cajeta/cache/artifacts/<sha256>.cja`).
+    // `homeOverride` lets tests pin the workstation cache root
+    // away from $HOME; production callers leave it unset.
+    llvm::Expected<std::vector<ResolvedDependency>>
+    resolveProjectDependencies(
+        const Manifest& m,
+        const std::string& projectRoot,
+        std::optional<std::string> homeOverride = std::nullopt);
 
 } // namespace cajeta::buildtool
