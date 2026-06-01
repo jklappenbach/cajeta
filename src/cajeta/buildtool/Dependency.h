@@ -44,16 +44,21 @@ namespace cajeta::buildtool {
     };
 
     // A repository entry from `settings.repositories`. Phase 6a
-    // recognizes the `filesystem` type; Phase 6b adds HTTP. Git +
-    // Maven-compat parse but their drivers land in 6c / Phase 6b
-    // (Maven-compat) respectively.
+    // recognizes the `filesystem` type; Phase 6b adds HTTP; Phase
+    // 6c adds Git. Maven-compat parses but its driver is deferred.
     struct RepositorySpec {
         std::string name;
         std::string type;        // "filesystem" | "http" | "git" | "maven-compat"
-        std::string url;         // for http / maven-compat
+        std::string url;         // clone URL (git) / base URL (http / maven-compat)
         std::string path;        // for filesystem
         int priority = 0;        // higher wins on resolution
         RepositoryAuth auth;     // bearer / mtls (HTTP only)
+        // Git-specific. `gitRef` is checked out literally (tag, branch,
+        // or commit hash). `gitSubdir` is the path within the checkout
+        // where the dep's cajeta.json lives — empty means the repo
+        // root.
+        std::string gitRef;
+        std::string gitSubdir;
     };
 
     // One declared dependency from `settings.dependencies`. Phase 6a

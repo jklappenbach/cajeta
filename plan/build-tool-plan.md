@@ -485,8 +485,10 @@ work.
 
 ### Deliverables — Phase 6c (Git + melts)
 
-- [ ] Git repository driver — clone-and-build at
-      branch/tag/rev.
+- [x] Git repository driver — clone-and-build at
+      branch/tag/rev. _v1: locates a pre-built `.cja` under the
+      checkout's `build/archive/`; recursive `cajeta build` of
+      the cloned source is a future enhancement._
 - [ ] Override: local path replacement.
 - [ ] Override: Git replacement.
 - [ ] `melt` top-level manifest block recognized.
