@@ -9,9 +9,12 @@
 #include "cajeta/buildtool/Properties.h"
 #include "cajeta/buildtool/Task.h"
 #include "cajeta/buildtool/TaskRunner.h"
+#include "cajeta/buildtool/Upgrader.h"
 
+#include <filesystem>
 #include <fstream>
 #include <sstream>
+#include <unistd.h>
 
 #include <llvm/Support/Error.h>
 #include <llvm/Support/MemoryBuffer.h>
@@ -465,6 +468,192 @@ namespace cajeta::buildtool {
             return 0;
         }
 
+        // `cajeta upgrade [<name>[@<version>]]... [options]`
+        //
+        // Re-resolves each named dep (or every dep when no names
+        // given) to the highest version in the configured repos and
+        // rewrites its constraint in the manifest to an exact pin.
+        // When the upgrade would add capabilities the consumer hasn't
+        // declared, prompts y/N before writing.
+        //
+        // --dry-run         Print the plan, don't write.
+        // --yes / -y        Skip the prompt (write even when caps grow).
+        // --manifest=<p>    Manifest file (default: ./cajeta.json).
+        int upgradeCommand(int argc, const char* argv[]) {
+            std::string manifestPath = "./cajeta.json";
+            bool dryRun = false;
+            bool assumeYes = false;
+            std::vector<std::string> names;
+            std::map<std::string, std::string> explicitVersions;
+
+            for (int i = 2; i < argc; ++i) {
+                std::string_view arg = argv[i];
+                std::string value;
+                if (match(arg, "manifest", value)) {
+                    manifestPath = value;
+                } else if (arg == "--dry-run") {
+                    dryRun = true;
+                } else if (arg == "--yes" || arg == "-y") {
+                    assumeYes = true;
+                } else if (arg == "--help" || arg == "-h") {
+                    std::cout
+                        << "Usage: cajeta upgrade [<name>[@<version>]...] "
+                        << "[options]\n"
+                        << "\n"
+                        << "Upgrade declared dependencies to their "
+                        << "highest available version (or to the "
+                        << "explicit version when given). With no "
+                        << "names, upgrades every direct dep.\n"
+                        << "\n"
+                        << "  --dry-run            Print the plan; "
+                        << "don't write.\n"
+                        << "  --yes / -y           Skip the prompt "
+                        << "when capabilities change.\n"
+                        << "  --manifest=<path>    Manifest file "
+                        << "(default: ./cajeta.json).\n";
+                    return 0;
+                } else if (!arg.empty() && arg[0] == '-') {
+                    std::cerr << "cajeta upgrade: unknown argument '"
+                              << arg << "'\n";
+                    return 1;
+                } else {
+                    // Positional: <name> or <name>@<version>
+                    std::string spec(arg);
+                    std::string n = spec;
+                    auto at = spec.find('@');
+                    if (at != std::string::npos) {
+                        n = spec.substr(0, at);
+                        std::string v = spec.substr(at + 1);
+                        if (n.empty() || v.empty()) {
+                            std::cerr << "cajeta upgrade: malformed "
+                                         "spec '" << spec
+                                      << "' (expected name@version)\n";
+                            return 1;
+                        }
+                        explicitVersions[n] = v;
+                    }
+                    names.push_back(n);
+                }
+            }
+
+            // Load + parse the manifest (also gives us the source
+            // bytes for the rewrite step).
+            auto manifest = loadManifestFile(manifestPath);
+            if (!manifest) {
+                std::string msg;
+                llvm::raw_string_ostream os(msg);
+                os << manifest.takeError();
+                std::cerr << "cajeta upgrade: " << msg << "\n";
+                return 1;
+            }
+            std::string manifestSrc;
+            if (!readFileBytes(manifestPath, manifestSrc)) {
+                std::cerr << "cajeta upgrade: cannot read manifest '"
+                          << manifestPath << "'\n";
+                return 1;
+            }
+            std::string projectRoot =
+                std::filesystem::path(manifestPath)
+                    .parent_path().string();
+            if (projectRoot.empty()) projectRoot = ".";
+
+            auto plan = planUpgrade(
+                *manifest, projectRoot, names, explicitVersions);
+            if (!plan) {
+                std::string msg;
+                llvm::raw_string_ostream os(msg);
+                os << plan.takeError();
+                std::cerr << "cajeta upgrade: " << msg << "\n";
+                return 1;
+            }
+
+            // Print the plan.
+            int changedCount = 0;
+            for (const auto& e : plan->entries) {
+                if (e.changed) {
+                    ++changedCount;
+                    std::cout << "  " << e.name << ": "
+                              << (e.oldVersion.empty()
+                                      ? e.oldConstraint
+                                      : e.oldVersion)
+                              << " -> " << e.newVersion
+                              << " (from " << e.resolvedFromRepo << ")";
+                    if (!e.capDelta.empty()) {
+                        std::cout << "  [capabilities changed]";
+                    }
+                    std::cout << "\n";
+                    if (!e.capDelta.added.empty()) {
+                        std::cout << "      + caps:";
+                        for (const auto& c : e.capDelta.added) {
+                            std::cout << " " << c;
+                        }
+                        std::cout << "\n";
+                    }
+                    if (!e.capDelta.removed.empty()) {
+                        std::cout << "      - caps:";
+                        for (const auto& c : e.capDelta.removed) {
+                            std::cout << " " << c;
+                        }
+                        std::cout << "\n";
+                    }
+                } else {
+                    std::cout << "  " << e.name << ": already at "
+                              << e.newVersion << " — no change\n";
+                }
+            }
+
+            if (changedCount == 0) {
+                std::cout << "nothing to upgrade.\n";
+                return 0;
+            }
+
+            if (dryRun) {
+                std::cout << "(dry-run; manifest not modified)\n";
+                return 0;
+            }
+
+            // Capability-change prompt. Skip when --yes, or when
+            // stdin isn't a TTY (caller is a script — we error out
+            // with a hint instead of silently applying).
+            if (plan->anyCapabilityChange() && !assumeYes) {
+                bool isTty = isatty(STDIN_FILENO) != 0;
+                if (!isTty) {
+                    std::cerr << "cajeta upgrade: upgrade adds new "
+                                 "capabilities; rerun with --yes to "
+                                 "confirm in a non-interactive "
+                                 "session.\n";
+                    return 1;
+                }
+                std::cout << "\nApply these upgrades (new "
+                             "capabilities will be granted)? [y/N] ";
+                std::cout.flush();
+                std::string answer;
+                if (!std::getline(std::cin, answer) ||
+                    (answer != "y" && answer != "Y" &&
+                     answer != "yes" && answer != "YES")) {
+                    std::cout << "aborted.\n";
+                    return 1;
+                }
+            }
+
+            auto rewritten = applyUpgradePlan(manifestSrc, *plan);
+            if (!rewritten) {
+                std::string msg;
+                llvm::raw_string_ostream os(msg);
+                os << rewritten.takeError();
+                std::cerr << "cajeta upgrade: " << msg << "\n";
+                return 1;
+            }
+            if (!writeFileBytes(manifestPath, *rewritten)) {
+                std::cerr << "cajeta upgrade: cannot write manifest '"
+                          << manifestPath << "'\n";
+                return 1;
+            }
+            std::cout << "upgraded " << changedCount
+                      << " dependency(ies) in " << manifestPath << "\n";
+            return 0;
+        }
+
     } // namespace
 
     namespace {
@@ -727,7 +916,8 @@ namespace cajeta::buildtool {
             // Built-in subcommands handled elsewhere.
             if (cmd == "info" || cmd == "tasks" || cmd == "task" ||
                 cmd == "init" || cmd == "archive" ||
-                cmd == "add"  || cmd == "remove") {
+                cmd == "add"  || cmd == "remove" ||
+                cmd == "upgrade") {
                 return false;
             }
             // Anything starting with `-` is a flag for the existing
@@ -776,6 +966,10 @@ namespace cajeta::buildtool {
         }
         if (cmd == "remove") {
             *exitCodeOut = removeCommand(argc, argv);
+            return true;
+        }
+        if (cmd == "upgrade") {
+            *exitCodeOut = upgradeCommand(argc, argv);
             return true;
         }
         if (looksLikeTaskInvocation(argc, argv)) {
