@@ -1,5 +1,6 @@
 #include "cajeta/buildtool/Resolver.h"
 
+#include "cajeta/buildtool/repo/GitRepository.h"
 #include "cajeta/buildtool/repo/TimingRepository.h"
 
 #include <llvm/Support/Error.h>
@@ -363,6 +364,12 @@ namespace cajeta::buildtool {
             // repository. Version + artifact + sidecar come from the
             // directory's own cajeta.json + build/archive layout.
             std::optional<std::string> overridePath;
+            // Phase 6c: git replacement override. Same semantics as
+            // overridePath, but the package source is a git URL +
+            // ref pair — the resolver synthesizes a GitRepository on
+            // demand to clone + checkout into the stage dir.
+            std::optional<std::string> overrideGitUrl;
+            std::optional<std::string> overrideGitRef;
 
             std::string version;
             std::string resolvedFromRepo;
@@ -488,6 +495,50 @@ namespace cajeta::buildtool {
             return out;
         }
 
+        // Synthesize a pick from a git-replacement override. Builds
+        // an ephemeral GitRepository (clones lazily into the stage
+        // dir), reads the dep's cajeta.json from the checked-out
+        // tree, and serves the pre-built `.cja` via the same
+        // contract as repo-served picks.
+        llvm::Expected<MvsPick> pickFromGitOverride(
+            const std::string& name,
+            const std::string& url,
+            const std::string& ref,
+            const std::string& stageDir,
+            ArtifactCache& cache) {
+            if (stageDir.empty()) {
+                return err("override for '" + name +
+                           "': git replacement requires a stage "
+                           "directory; resolveMvs's caller must pass "
+                           "one (resolveProjectDependencies does)");
+            }
+            GitRepository repo("<git-override:" + name + ">",
+                               url, ref, /*subdir=*/"", stageDir);
+            auto versions = repo.listVersions(name);
+            if (!versions) return versions.takeError();
+            if (versions->empty()) {
+                return err("override for '" + name +
+                           "': git checkout at '" + url + "@" + ref +
+                           "' declares a different package");
+            }
+            const std::string& v = (*versions)[0];
+
+            auto path = repo.fetch(name, v);
+            if (!path) return path.takeError();
+            auto cached = cache.insert(*path);
+            if (!cached) return cached.takeError();
+            auto sidecar = repo.fetchManifestJson(name, v);
+            if (!sidecar) return sidecar.takeError();
+
+            MvsPick out;
+            out.version = v;
+            out.resolvedFromRepo = "<git-override>";
+            out.artifactPath = *cached;
+            out.sha256 = ArtifactCache::sha256OfFile(*cached);
+            if (sidecar->has_value()) out.manifestJson = **sidecar;
+            return out;
+        }
+
         llvm::Expected<MvsPick> pickLowestForAll(
             const std::string& name,
             const std::vector<std::string>& constraints,
@@ -539,18 +590,23 @@ namespace cajeta::buildtool {
         const std::vector<RepositoryPtr>& repos,
         ArtifactCache& cache,
         const std::vector<OverrideSpec>& overrides,
-        ResolverTimings* timings) {
+        ResolverTimings* timings,
+        const std::string& gitOverrideStageDir) {
 
         // Pre-flight: split overrides into version / path / git forms.
-        // Path overrides land here in Phase 6c; git overrides still
-        // defer to the next slice.
+        // Path and git overrides both land in Phase 6c.
         std::unordered_map<std::string, const OverrideSpec*> overrideMap;
         std::unordered_map<std::string, const OverrideSpec*> pathOverrideMap;
+        std::unordered_map<std::string, const OverrideSpec*> gitOverrideMap;
         for (const auto& o : overrides) {
             if (o.git) {
-                return err("settings.overrides." + o.name +
-                           ": git replacement requires Phase 6c "
-                           "(next slice)");
+                if (!o.rev) {
+                    return err("settings.overrides." + o.name +
+                               ": git replacement requires 'rev' "
+                               "(branch/tag/commit)");
+                }
+                gitOverrideMap[o.name] = &o;
+                continue;
             }
             if (o.path) {
                 pathOverrideMap[o.name] = &o;
@@ -592,6 +648,13 @@ namespace cajeta::buildtool {
                     s.overridePath = *itp->second->path;
                     s.overrideAllowsMajorDowngrade =
                         itp->second->allowMajorDowngrade;
+                }
+                auto itg = gitOverrideMap.find(name);
+                if (itg != gitOverrideMap.end()) {
+                    s.overrideGitUrl = *itg->second->git;
+                    s.overrideGitRef = *itg->second->rev;
+                    s.overrideAllowsMajorDowngrade =
+                        itg->second->allowMajorDowngrade;
                 }
             }
 
@@ -649,6 +712,10 @@ namespace cajeta::buildtool {
                     MvsPick{});
                 if (s.overridePath && !s.directRoot) {
                     pick = pickFromPathOverride(name, *s.overridePath, cache);
+                } else if (s.overrideGitUrl && !s.directRoot) {
+                    pick = pickFromGitOverride(
+                        name, *s.overrideGitUrl, *s.overrideGitRef,
+                        gitOverrideStageDir, cache);
                 } else {
                     pick = pickLowestForAll(
                         name, effectiveConstraints(s), s.fromRepo,
@@ -712,7 +779,8 @@ namespace cajeta::buildtool {
         // unless allow-major-downgrade is set.
         for (const auto& name : insertionOrder) {
             const auto& s = state[name];
-            bool overridden = (s.overrideConstraint || s.overridePath) &&
+            bool overridden = (s.overrideConstraint || s.overridePath ||
+                               s.overrideGitUrl) &&
                               !s.directRoot;
             if (!overridden) continue;
             if (s.constraints.empty()) continue;  // override unused — nothing to compare
@@ -814,7 +882,7 @@ namespace cajeta::buildtool {
 
         ArtifactCache cache(projectRoot, homeOverride);
         auto result = resolveMvs(
-            *deps, repoList, cache, *overrides, timings);
+            *deps, repoList, cache, *overrides, timings, downloadStage);
         if (result && timings) {
             timings->depsResolved = static_cast<int>(result->size());
         }

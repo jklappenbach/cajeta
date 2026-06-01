@@ -490,7 +490,7 @@ work.
       checkout's `build/archive/`; recursive `cajeta build` of
       the cloned source is a future enhancement._
 - [x] Override: local path replacement.
-- [ ] Override: Git replacement.
+- [x] Override: Git replacement.
 - [ ] `melt` top-level manifest block recognized.
 - [ ] `settings.melts` array parsed.
 - [ ] Melt-provided dependency constraint table built in

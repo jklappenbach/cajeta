@@ -1095,9 +1095,11 @@ TEST(DependencyTests, mvsOverrideRangeNarrowsResolution) {
     std::filesystem::remove_all(homeDir);
 }
 
-// Path overrides ship in Phase 6c (see PathOverrideTests.cpp).
-// Git overrides still defer to the next slice.
-TEST(DependencyTests, mvsRejectsGitOverrideAsPhase6c) {
+// Path + git overrides ship in Phase 6c (see PathOverrideTests.cpp +
+// GitOverrideTests.cpp for full coverage). The boundary case worth
+// keeping here: a git override missing its 'rev' field errors at
+// the pre-flight rather than crashing later.
+TEST(DependencyTests, mvsRejectsGitOverrideMissingRev) {
     auto root = makeFsRepo({{"px.bar", "1.0.0", "x"}});
     writeSidecarManifest(root, "px.bar", "1.0.0", {});
     auto projectDir = makeTempDir("ov-git-proj");
@@ -1112,15 +1114,15 @@ TEST(DependencyTests, mvsRejectsGitOverrideAsPhase6c) {
     std::vector<OverrideSpec> overrides;
     OverrideSpec ov; ov.name = "px.bar";
     ov.git = "https://example.com/x";
-    ov.rev = "abc1234";
+    // No rev set — must be rejected.
     overrides.push_back(ov);
 
     ArtifactCache cache(projectDir.string(), homeDir.string());
     auto resolved = resolveMvs(deps, repos, cache, overrides);
     ASSERT_FALSE((bool)resolved);
-    auto msg = errorText(resolved.takeError());
-    EXPECT_NE(msg.find("Phase 6c"), std::string::npos);
-    EXPECT_NE(msg.find("px.bar"), std::string::npos);
+    EXPECT_NE(errorText(resolved.takeError()).find(
+                  "requires 'rev'"),
+              std::string::npos);
 
     std::filesystem::remove_all(root);
     std::filesystem::remove_all(projectDir);
