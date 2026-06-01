@@ -241,11 +241,84 @@ namespace cajeta::buildtool {
             if (!props) return props.takeError();
             auto tasks = parseTasks(*manifest);
             if (!tasks) return tasks.takeError();
+            // Cycle / undefined-dep validation up front. Catches
+            // structural errors before any task starts running.
+            if (auto e = validateTaskGraph(*tasks)) return std::move(e);
             LoadedProject p;
             p.manifest = std::move(*manifest);
             p.props = std::move(*props);
             p.tasks = std::move(*tasks);
             return p;
+        }
+
+        // `cajeta task <name> --show` — print the resolved action
+        // sequence for a task without running it.
+        int taskShowCommand(int argc, const char* argv[]) {
+            if (argc < 3) {
+                std::cerr << "Usage: cajeta task <name> --show [--manifest=<path>]\n";
+                return 1;
+            }
+            std::string taskName = argv[2];
+            std::string manifestPath = "./cajeta.json";
+            PropertyOverrides overrides;
+            loadEnvOverrides(overrides);
+            TaskInvocationParams cliParams;
+            bool wantShow = false;
+
+            for (int i = 3; i < argc; ++i) {
+                std::string_view arg = argv[i];
+                std::string value;
+                if (arg == "--show") {
+                    wantShow = true;
+                } else if (match(arg, "manifest", value)) {
+                    manifestPath = std::move(value);
+                } else if (arg == "-p" && i + 1 < argc) {
+                    auto parsed = parseCliOverride(argv[++i]);
+                    if (!parsed) {
+                        std::string msg;
+                        llvm::raw_string_ostream os(msg);
+                        os << parsed.takeError();
+                        std::cerr << "cajeta task " << taskName << ": "
+                                  << msg << "\n";
+                        return 1;
+                    }
+                    cliParams.values[parsed->first] = parsed->second;
+                } else if (arg == "--help" || arg == "-h") {
+                    std::cout << "Usage: cajeta task <name> --show "
+                                 "[--manifest=<path>] [-p NAME=VALUE]\n"
+                              << "Print the resolved action sequence "
+                                 "for a task without running it.\n";
+                    return 0;
+                } else {
+                    std::cerr << "cajeta task " << taskName
+                              << ": unknown argument '" << arg << "'\n";
+                    return 1;
+                }
+            }
+
+            if (!wantShow) {
+                std::cerr << "cajeta task: --show is required (no other "
+                             "task subcommands today)\n";
+                return 1;
+            }
+
+            auto project = loadProject(manifestPath, overrides);
+            if (!project) {
+                std::string msg;
+                llvm::raw_string_ostream os(msg);
+                os << project.takeError();
+                std::cerr << "cajeta task " << taskName << ": " << msg << "\n";
+                return 1;
+            }
+            if (auto e = showTask(project->tasks, taskName, cliParams,
+                                  project->props, std::cout)) {
+                std::string msg;
+                llvm::raw_string_ostream os(msg);
+                os << e;
+                std::cerr << "cajeta task " << taskName << ": " << msg << "\n";
+                return 1;
+            }
+            return 0;
         }
 
         // `cajeta tasks` — list task names + descriptions.
@@ -406,7 +479,8 @@ namespace cajeta::buildtool {
             if (argc < 2) return false;
             std::string_view cmd = argv[1];
             // Built-in subcommands handled elsewhere.
-            if (cmd == "info" || cmd == "tasks" || cmd == "archive") {
+            if (cmd == "info" || cmd == "tasks" || cmd == "task" ||
+                cmd == "archive") {
                 return false;
             }
             // Anything starting with `-` is a flag for the existing
@@ -439,6 +513,10 @@ namespace cajeta::buildtool {
         }
         if (cmd == "tasks") {
             *exitCodeOut = tasksCommand(argc, argv);
+            return true;
+        }
+        if (cmd == "task") {
+            *exitCodeOut = taskShowCommand(argc, argv);
             return true;
         }
         if (looksLikeTaskInvocation(argc, argv)) {

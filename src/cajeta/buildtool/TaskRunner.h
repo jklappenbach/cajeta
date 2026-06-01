@@ -17,6 +17,7 @@
 #include <llvm/Support/Error.h>
 
 #include <map>
+#include <ostream>
 #include <string>
 
 namespace cajeta::buildtool {
@@ -29,9 +30,7 @@ namespace cajeta::buildtool {
 
     // Execute one task end-to-end.
     //
-    // - `tasks` is the full task table (for run-task resolution in
-    //   Phase 3b; Phase 3a errors if any task has depends-on or
-    //   run-task entries since they aren't supported yet).
+    // - `tasks` is the full task table.
     // - `taskName` selects which task to run.
     // - `cliParams` carries CLI-supplied `-p name=value` bindings.
     // - `props` is the resolved property table from
@@ -40,11 +39,29 @@ namespace cajeta::buildtool {
     //
     // Returns the task's resolved `outputs` block (with
     // substitutions applied) on success.
+    //
+    // Honors `depends-on` by transitively executing each prerequisite
+    // before this task (each runs at most once per invocation).
+    // Validates the task graph for cycles at entry — running a task
+    // whose graph has a cycle errors before any action fires.
     llvm::Expected<std::map<std::string, std::string>> runTask(
         const std::map<std::string, Task>& tasks,
         const std::string& taskName,
         const TaskInvocationParams& cliParams,
         const ResolvedProperties& props,
         const ActionRegistry& registry);
+
+    // Print the resolved action sequence for a task without actually
+    // running it. Used by `cajeta task <name> --show`. Substitutes
+    // every ${...} reference it can given the task's params (which
+    // get their declared defaults) plus the manifest properties;
+    // unresolvable references print as `${name}` literal so the
+    // reader can still see what the task wanted.
+    llvm::Error showTask(
+        const std::map<std::string, Task>& tasks,
+        const std::string& taskName,
+        const TaskInvocationParams& cliParams,
+        const ResolvedProperties& props,
+        std::ostream& out);
 
 } // namespace cajeta::buildtool

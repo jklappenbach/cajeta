@@ -51,6 +51,20 @@ namespace cajeta::buildtool {
             const std::string& s,
             const std::string& whereContext) const;
 
+        // Take a snapshot of the current context. Mutations on the
+        // snapshot do not propagate to the original; the snapshot
+        // sees a frozen view of params + already-published outputs.
+        // Used to give parallel-group children isolated contexts that
+        // merge back into the parent after they all complete.
+        TaskContext snapshot() const;
+
+        // Merge another context's published action outputs into this
+        // one (parallel-group join). Caller is responsible for
+        // ordering merges so the final state is deterministic — by
+        // convention, this is "merge children in declaration order
+        // after all children join."
+        void mergeOutputs(const TaskContext& other);
+
     private:
         const ResolvedProperties& props_;
         std::map<std::string, std::string> params_;

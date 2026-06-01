@@ -12,7 +12,9 @@
 #include <llvm/Support/Error.h>
 
 #include <cstdlib>
+#include <filesystem>
 #include <string>
+#include <unistd.h>
 
 using cajeta::buildtool::ActionRegistry;
 using cajeta::buildtool::loadManifestString;
@@ -282,18 +284,196 @@ TEST(TaskRunnerTests, errorsWhenExecChildExitsNonZero) {
     EXPECT_NE(msg.find("exited"), std::string::npos);
 }
 
-TEST(TaskRunnerTests, errorsOnDependsOnAtPhase3a) {
-    auto l = mustLoad(R"({
+// ─── Phase 3b — depends-on / parallel / run-task / when-skip-when ───
+
+TEST(TaskRunnerTests, dependsOnRunsDepFirst) {
+    // Write a marker file from `build`; verify `test` sees it.
+    auto tmpA = std::filesystem::temp_directory_path() /
+                ("phase3b-dep-" + std::to_string(::getpid()) + "-marker");
+    std::filesystem::remove(tmpA);
+
+    auto l = mustLoad(std::string(R"({
         "details": { "name": "a.b", "version": "0.1" },
         "tasks": {
-            "build": { "actions": [{ "action": "exec", "command": "true" }] },
-            "test":  { "depends-on": ["build"],
-                       "actions": [{ "action": "exec", "command": "true" }] }
+            "build": {
+                "actions": [
+                    { "action": "exec", "command": "touch",
+                      "args": [")") + tmpA.string() + R"("] }
+                ]
+            },
+            "test":  {
+                "depends-on": ["build"],
+                "actions": [
+                    { "action": "exec", "command": "test",
+                      "args": ["-f", ")" + tmpA.string() + R"("] }
+                ]
+            }
         }
     })");
     ActionRegistry registry;
     auto outputs = runTask(l.tasks, "test", {}, l.props, registry);
+    EXPECT_TRUE((bool)outputs) << errorText(outputs.takeError());
+    std::filesystem::remove(tmpA);
+}
+
+TEST(TaskRunnerTests, parallelChildrenRunAndMergeOutputs) {
+    auto l = mustLoad(R"({
+        "details": { "name": "a.b", "version": "0.1" },
+        "tasks": {
+            "t": {
+                "actions": [
+                    { "parallel": [
+                        { "action": "exec", "command": "echo",
+                          "args": ["left"],  "id": "L" },
+                        { "action": "exec", "command": "echo",
+                          "args": ["right"], "id": "R" }
+                    ]},
+                    { "action": "exec", "command": "test",
+                      "args": ["${L.stdout}", "=", "left\n"] },
+                    { "action": "exec", "command": "test",
+                      "args": ["${R.stdout}", "=", "right\n"] }
+                ]
+            }
+        }
+    })");
+    ActionRegistry registry;
+    auto outputs = runTask(l.tasks, "t", {}, l.props, registry);
+    EXPECT_TRUE((bool)outputs) << errorText(outputs.takeError());
+}
+
+TEST(TaskRunnerTests, runTaskThreadsOutputsThroughId) {
+    auto l = mustLoad(R"({
+        "details": { "name": "a.b", "version": "0.1" },
+        "tasks": {
+            "producer": {
+                "actions": [
+                    { "action": "exec", "command": "echo",
+                      "args": ["produced"], "id": "p" }
+                ],
+                "outputs": { "value": "${p.stdout}" }
+            },
+            "consumer": {
+                "actions": [
+                    { "run-task": "producer", "id": "src" },
+                    { "action": "exec", "command": "test",
+                      "args": ["${src.value}", "=", "produced\n"] }
+                ]
+            }
+        }
+    })");
+    ActionRegistry registry;
+    auto outputs = runTask(l.tasks, "consumer", {}, l.props, registry);
+    EXPECT_TRUE((bool)outputs) << errorText(outputs.takeError());
+}
+
+TEST(TaskRunnerTests, runTaskPassesParamsToCallee) {
+    auto l = mustLoad(R"({
+        "details": { "name": "a.b", "version": "0.1" },
+        "tasks": {
+            "greet": {
+                "params": { "name": { "type": "string", "required": true } },
+                "actions": [
+                    { "action": "exec", "command": "echo",
+                      "args": ["hello, ${params.name}"], "id": "g" }
+                ],
+                "outputs": { "msg": "${g.stdout}" }
+            },
+            "caller": {
+                "actions": [
+                    { "run-task": "greet",
+                      "params": { "name": "world" }, "id": "out" },
+                    { "action": "exec", "command": "test",
+                      "args": ["${out.msg}", "=", "hello, world\n"] }
+                ]
+            }
+        }
+    })");
+    ActionRegistry registry;
+    auto outputs = runTask(l.tasks, "caller", {}, l.props, registry);
+    EXPECT_TRUE((bool)outputs) << errorText(outputs.takeError());
+}
+
+TEST(TaskRunnerTests, whenSkipsActionWhenFalsy) {
+    // skip-when truthy → action skipped → no error from the
+    // non-existent command.
+    auto l = mustLoad(R"({
+        "details": { "name": "a.b", "version": "0.1" },
+        "tasks": {
+            "t": {
+                "params": { "skip": { "type": "bool", "default": true } },
+                "actions": [
+                    { "action": "exec", "command": "/no/such/command/exists",
+                      "skip-when": "${params.skip}" }
+                ]
+            }
+        }
+    })");
+    ActionRegistry registry;
+    auto outputs = runTask(l.tasks, "t", {}, l.props, registry);
+    EXPECT_TRUE((bool)outputs) << errorText(outputs.takeError());
+}
+
+TEST(TaskRunnerTests, whenRunsActionWhenTruthy) {
+    auto l = mustLoad(R"({
+        "details": { "name": "a.b", "version": "0.1" },
+        "tasks": {
+            "t": {
+                "params": { "enabled": { "type": "bool", "default": true } },
+                "actions": [
+                    { "action": "exec", "command": "true",
+                      "when": "${params.enabled}" }
+                ]
+            }
+        }
+    })");
+    ActionRegistry registry;
+    auto outputs = runTask(l.tasks, "t", {}, l.props, registry);
+    EXPECT_TRUE((bool)outputs);
+}
+
+TEST(TaskRunnerTests, whenSkipsActionWhenFalsyExplicit) {
+    auto l = mustLoad(R"({
+        "details": { "name": "a.b", "version": "0.1" },
+        "tasks": {
+            "t": {
+                "params": { "enabled": { "type": "bool", "default": false } },
+                "actions": [
+                    { "action": "exec", "command": "/no/such/command",
+                      "when": "${params.enabled}" }
+                ]
+            }
+        }
+    })");
+    ActionRegistry registry;
+    auto outputs = runTask(l.tasks, "t", {}, l.props, registry);
+    EXPECT_TRUE((bool)outputs);
+}
+
+TEST(TaskRunnerTests, errorsOnCyclicDependsOn) {
+    auto l = mustLoad(R"({
+        "details": { "name": "a.b", "version": "0.1" },
+        "tasks": {
+            "a": { "depends-on": ["b"], "actions": [{"action":"exec","command":"true"}] },
+            "b": { "depends-on": ["a"], "actions": [{"action":"exec","command":"true"}] }
+        }
+    })");
+    ActionRegistry registry;
+    auto outputs = runTask(l.tasks, "a", {}, l.props, registry);
     ASSERT_FALSE((bool)outputs);
     auto msg = errorText(outputs.takeError());
-    EXPECT_NE(msg.find("Phase 3b"), std::string::npos);
+    EXPECT_NE(msg.find("cyclic depends-on"), std::string::npos);
+}
+
+TEST(TaskRunnerTests, errorsOnRunTaskTargetUnknown) {
+    auto l = mustLoad(R"({
+        "details": { "name": "a.b", "version": "0.1" },
+        "tasks": {
+            "t": { "actions": [{ "run-task": "ghost" }] }
+        }
+    })");
+    ActionRegistry registry;
+    auto outputs = runTask(l.tasks, "t", {}, l.props, registry);
+    ASSERT_FALSE((bool)outputs);
+    auto msg = errorText(outputs.takeError());
+    EXPECT_NE(msg.find("unknown task 'ghost'"), std::string::npos);
 }
