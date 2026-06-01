@@ -259,6 +259,15 @@ struct cajeta_dbg_local {
     const char* type;   // cajeta canonical type name (e.g. "int32", "demo.Foo")
     void* addr;          // the local's slot (primitives: holds the value;
                          // objects: holds the heap pointer)
+    // CP7-1b: memory facets for ownership/allocation visualization. Two
+    // orthogonal bytes mirroring cajeta::dbg::AllocClass / OwnershipRole
+    // (see src/cajeta/dbg/MemoryFacets.h): alloc = where the value lives
+    // (0 unknown / 1 stack / 2 heap / 3 shared), ownership = who is
+    // responsible (0 unknown / 1 owner / 2 borrow / 3 moved-out). Carried
+    // here as plain bytes so this C ABI stays decoupled from the C++ enum;
+    // the host reads them back through the accessors below and maps them.
+    uint8_t alloc;
+    uint8_t ownership;
 };
 struct cajeta_dbg_frame {
     const char* func;          // cajeta-mangled enclosing function name
@@ -295,13 +304,16 @@ void __cajeta_dbg_frame_leave(void) {
     free(f);
 }
 
-void __cajeta_dbg_local(const char* name, const char* type, void* addr) {
+void __cajeta_dbg_local(const char* name, const char* type, void* addr,
+                        uint8_t alloc, uint8_t ownership) {
     struct cajeta_dbg_frame** top = __cajeta_dbg_top_ptr();
     struct cajeta_dbg_frame* f = *top;
     if (!f || f->nlocals >= CAJETA_DBG_MAX_LOCALS) return;
     f->locals[f->nlocals].name = name;
     f->locals[f->nlocals].type = type;
     f->locals[f->nlocals].addr = addr;
+    f->locals[f->nlocals].alloc = alloc;
+    f->locals[f->nlocals].ownership = ownership;
     f->nlocals++;
 }
 
@@ -344,6 +356,20 @@ void* __cajeta_dbg_local_addr(void* frame, int i) {
     struct cajeta_dbg_frame* f = frame;
     if (i < 0 || i >= f->nlocals) return NULL;
     return f->locals[i].addr;
+}
+// CP7-1b: the two memory facets. Out-of-range reads back 0 (== Unknown), the
+// same neutral fallback codegen uses when a facet isn't statically known.
+uint8_t __cajeta_dbg_local_alloc(void* frame, int i) {
+    if (!frame) return 0;
+    struct cajeta_dbg_frame* f = frame;
+    if (i < 0 || i >= f->nlocals) return 0;
+    return f->locals[i].alloc;
+}
+uint8_t __cajeta_dbg_local_ownership(void* frame, int i) {
+    if (!frame) return 0;
+    struct cajeta_dbg_frame* f = frame;
+    if (i < 0 || i >= f->nlocals) return 0;
+    return f->locals[i].ownership;
 }
 
 // CP5: the handler now also receives the current dbg frame-chain head so the

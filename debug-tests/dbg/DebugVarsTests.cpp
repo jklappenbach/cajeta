@@ -25,7 +25,9 @@ using cajeta::dbg::DbgVar;
 extern "C" {
     void __cajeta_dbg_frame_enter(const char* func);
     void __cajeta_dbg_frame_leave(void);
-    void __cajeta_dbg_local(const char* name, const char* type, void* addr);
+    // CP7-1b: the two trailing bytes are alloc class + ownership role.
+    void __cajeta_dbg_local(const char* name, const char* type, void* addr,
+                            uint8_t alloc, uint8_t ownership);
     void** __cajeta_dbg_top_ptr(void);
 }
 
@@ -156,8 +158,8 @@ TEST(DebugVarsChain, SingleFrameLocals) {
 
     __cajeta_dbg_frame_enter("demo.Calc::main");
     int32_t a = 6, b = 7;
-    __cajeta_dbg_local("a", "int32", &a);
-    __cajeta_dbg_local("b", "int32", &b);
+    __cajeta_dbg_local("a", "int32", &a, 0, 0);
+    __cajeta_dbg_local("b", "int32", &b, 0, 0);
 
     std::vector<DbgFrameInfo> frames = walkFrames(*__cajeta_dbg_top_ptr());
     ASSERT_EQ(frames.size(), 1u);
@@ -177,10 +179,10 @@ TEST(DebugVarsChain, NestedFramesInnermostFirst) {
 
     __cajeta_dbg_frame_enter("demo.A::outer");
     int32_t x = 1;
-    __cajeta_dbg_local("x", "int32", &x);
+    __cajeta_dbg_local("x", "int32", &x, 0, 0);
     __cajeta_dbg_frame_enter("demo.A::inner");
     int32_t y = 2;
-    __cajeta_dbg_local("y", "int32", &y);
+    __cajeta_dbg_local("y", "int32", &y, 0, 0);
 
     std::vector<DbgFrameInfo> frames = walkFrames(*__cajeta_dbg_top_ptr());
     ASSERT_EQ(frames.size(), 2u);

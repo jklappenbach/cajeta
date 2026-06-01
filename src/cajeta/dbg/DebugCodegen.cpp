@@ -35,15 +35,20 @@ namespace cajeta::dbg {
     }
 
     void emitDbgLocal(cajeta::CajetaModulePtr module, const std::string& name,
-                      const std::string& type, llvm::Value* slot) {
+                      const std::string& type, llvm::Value* slot,
+                      MemoryFacets facets) {
         llvm::IRBuilder<>* builder = emitGuard(module);
         if (!builder || !slot) return;
         llvm::Function* fn = module->getRuntimeFunction("__cajeta_dbg_local");
         if (!fn) return;
         llvm::Value* nameC = builder->CreateGlobalStringPtr(name);
         llvm::Value* typeC = builder->CreateGlobalStringPtr(type);
+        // The facet enums travel as two i8s, matching __cajeta_dbg_local's
+        // (name, type, addr, alloc, ownership) ABI in cajeta_runtime.c.
+        llvm::Value* allocC = builder->getInt8(static_cast<uint8_t>(facets.alloc));
+        llvm::Value* ownC   = builder->getInt8(static_cast<uint8_t>(facets.ownership));
         // Opaque pointers: the alloca is already a ptr; no bitcast needed.
-        builder->CreateCall(fn, {nameC, typeC, slot});
+        builder->CreateCall(fn, {nameC, typeC, slot, allocC, ownC});
     }
 
 } // namespace cajeta::dbg

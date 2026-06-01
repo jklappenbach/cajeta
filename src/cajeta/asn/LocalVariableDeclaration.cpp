@@ -192,15 +192,12 @@ namespace cajeta {
             module->getScopeStack().peek()->putField(field);
             field->getOrCreateAllocation();
 
-            // Debugger CP5: register this local in the current debug frame so
-            // it shows up in DAP `variables`. No-op unless --debug-info. The
-            // slot holds the value for primitives, the heap pointer for
-            // objects; DebugVars reads it by type.
-            if (type) {
-                dbg::emitDbgLocal(module, field->getName(),
-                                  type->toCanonical(),
-                                  field->getOrCreateAllocation());
-            }
+            // Debugger CP5/CP7-1b: this local is registered in the current
+            // debug frame at the END of this method (see emitDbgLocal below),
+            // NOT here. The ownership facet is sourced from field->getDropEntry(),
+            // and the drop-chain wiring (emitDropEntryFor / setIsOwningView)
+            // that sets it runs later in this same method — registering here
+            // would always read a null drop entry and mislabel every owner.
 
             // Polymorphic-MI upcast adjustment. After HeapField stored
             // the RHS pointer into the slot, check whether the static
@@ -904,6 +901,26 @@ namespace cajeta {
             // bare return statements.
             if (klass && klass->isInterface()) {
                 emitDropEntryFor(module, field, "__cajeta_iface_drop", getSourceLine());
+            }
+
+            // Debugger CP5/CP7-1b: register this local in the current debug
+            // frame so it shows up in DAP `variables`. No-op unless --debug-info.
+            // Emitted HERE, after all drop-chain wiring above, so the ownership
+            // facet sees the final drop entry (an owner local — including an
+            // owning View — has a non-null drop entry by now; a borrow does
+            // not). alloc class comes from the StackField/HeapField choice
+            // (primitive inline value vs heap pointer). `shared`/`transferred`
+            // stay deferred (CP7 defers XPU placement + move tracking).
+            if (type) {
+                dbg::FieldFacetInputs facetIn;
+                facetIn.isStackField = dynamic_pointer_cast<StackField>(field) != nullptr;
+                facetIn.isHeapField  = dynamic_pointer_cast<HeapField>(field) != nullptr;
+                facetIn.isReference  = field->isReference();
+                facetIn.ownsDrop     = field->getDropEntry() != nullptr;
+                dbg::emitDbgLocal(module, field->getName(),
+                                  type->toCanonical(),
+                                  field->getOrCreateAllocation(),
+                                  dbg::classifyField(facetIn));
             }
         }
 

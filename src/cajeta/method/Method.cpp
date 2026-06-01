@@ -845,9 +845,26 @@ namespace cajeta {
                 FieldPtr pf = module->getScopeStack().peek()
                                     ->getField(parameter->getName());
                 if (!pf || !pf->getType()) continue;
+                // CP7-1b memory facets. alloc: primitives live inline in the
+                // slot (Stack), class/array/view params hold a pointer (Heap),
+                // matching ParameterField::getOrCreateAllocation. ownership: a
+                // `#`-transferred param takes ownership (Owner); any other
+                // non-primitive param is a borrow the caller still owns; a
+                // primitive is a plain value (Unknown role). `shared` is
+                // deferred (XPU placement, not a parameter form).
+                CajetaTypePtr pt = pf->getType();
+                bool isArr  = dynamic_pointer_cast<CajetaArray>(pt) != nullptr;
+                bool isPrim = (pt->getTypeFlags() & PRIMITIVE_FLAG) && !isArr;
+                dbg::FieldFacetInputs facetIn;
+                facetIn.isStackField = isPrim;
+                facetIn.isHeapField  = !isPrim;
+                facetIn.ownsDrop     = parameter->isTransferred()
+                                       || pf->getDropEntry() != nullptr;
+                facetIn.isReference  = !isPrim && !parameter->isTransferred();
                 dbg::emitDbgLocal(module, pf->getName(),
-                                  pf->getType()->toCanonical(),
-                                  pf->getOrCreateAllocation());
+                                  pt->toCanonical(),
+                                  pf->getOrCreateAllocation(),
+                                  dbg::classifyField(facetIn));
             }
         }
 
