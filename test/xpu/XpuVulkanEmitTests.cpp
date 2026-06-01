@@ -151,15 +151,18 @@ TEST(XpuVulkanEmitTests, lowersSaxpyToSpirv) {
     auto saxpy = findMethod(klass, "saxpy");
     ASSERT_NE(saxpy, nullptr);
 
-    auto tm = createSpirvTargetMachine("vulkan1.3");
-    ASSERT_NE(tm, nullptr);
-
     // NOTE: SPIR-V emission MUTATES the device module in place (the structurizer
     // rewrites the CFG into structured form), so each artifact lowers into its
-    // own fresh module — never emit twice from one module.
+    // own fresh module — never emit twice from one module. AND a fresh
+    // TargetMachine per artifact: LLVM's SPIR-V backend accumulates codegen state
+    // (SPIRVGlobalRegistry) on the TM, so reusing one TM across two emits corrupts
+    // it (the production VulkanRegistration path uses a fresh TM per kernel for
+    // exactly this reason).
+    auto tmIr = createSpirvTargetMachine("vulkan1.3");
+    ASSERT_NE(tmIr, nullptr);
     llvm::LLVMContext irCtx;
     llvm::Module irModule("xpu_saxpy_vulkan_ir", irCtx);
-    configureDeviceModule(irModule, *tm);
+    configureDeviceModule(irModule, *tmIr);
     llvm::Function* fn = lowerKernel(saxpy, irModule);
     ASSERT_NE(fn, nullptr);
     // Seam: the Vulkan compute entry takes NO parameters (args arrive via
@@ -176,11 +179,13 @@ TEST(XpuVulkanEmitTests, lowersSaxpyToSpirv) {
               std::string::npos) << ir;
     EXPECT_NE(ir.find("llvm.spv.resource.getpointer"), std::string::npos) << ir;
 
+    auto tmText = createSpirvTargetMachine("vulkan1.3");
+    ASSERT_NE(tmText, nullptr);
     llvm::LLVMContext textCtx;
     llvm::Module textModule("xpu_saxpy_vulkan_text", textCtx);
-    configureDeviceModule(textModule, *tm);
+    configureDeviceModule(textModule, *tmText);
     lowerKernel(saxpy, textModule);
-    std::string text = emitSpirvText(textModule, *tm);
+    std::string text = emitSpirvText(textModule, *tmText);
     ASSERT_FALSE(text.empty()) << "SPIR-V text emission produced nothing";
     EXPECT_NE(text.find("OpCapability Shader"), std::string::npos) << text;
     EXPECT_NE(text.find("OpEntryPoint GLCompute"), std::string::npos) << text;
@@ -188,11 +193,13 @@ TEST(XpuVulkanEmitTests, lowersSaxpyToSpirv) {
     EXPECT_NE(text.find("DescriptorSet"), std::string::npos) << text;
     EXPECT_NE(text.find("Binding"), std::string::npos) << text;
 
+    auto tmBin = createSpirvTargetMachine("vulkan1.3");
+    ASSERT_NE(tmBin, nullptr);
     llvm::LLVMContext binCtx;
     llvm::Module binModule("xpu_saxpy_vulkan_bin", binCtx);
-    configureDeviceModule(binModule, *tm);
+    configureDeviceModule(binModule, *tmBin);
     lowerKernel(saxpy, binModule);
-    std::vector<uint8_t> spirv = emitSpirv(binModule, *tm);
+    std::vector<uint8_t> spirv = emitSpirv(binModule, *tmBin);
     ASSERT_FALSE(spirv.empty()) << "SPIR-V binary emission produced nothing";
     // SPIR-V magic number 0x07230203 (little-endian first word).
     ASSERT_GE(spirv.size(), 4u);
@@ -232,25 +239,28 @@ TEST(XpuVulkanEmitTests, lowersStridedSumLoop) {
     auto strideSum = findMethod(module->getStructures()["test.M"], "strideSum");
     ASSERT_NE(strideSum, nullptr);
 
-    auto tm = createSpirvTargetMachine("vulkan1.3");
-    ASSERT_NE(tm, nullptr);
-
-    // Fresh module per artifact (SPIR-V emission mutates the module).
+    // Fresh module AND fresh TargetMachine per artifact: emission mutates the
+    // module, and the SPIR-V backend accumulates SPIRVGlobalRegistry state on the
+    // TM, so reusing one TM across two emits corrupts it (see lowersSaxpyToSpirv).
+    auto tmText = createSpirvTargetMachine("vulkan1.3");
+    ASSERT_NE(tmText, nullptr);
     llvm::LLVMContext textCtx;
     llvm::Module textModule("xpu_stridesum_vulkan_text", textCtx);
-    configureDeviceModule(textModule, *tm);
+    configureDeviceModule(textModule, *tmText);
     llvm::Function* fn = lowerKernel(strideSum, textModule);
     ASSERT_NE(fn, nullptr);
     EXPECT_EQ(fn->arg_size(), 0u);
-    std::string text = emitSpirvText(textModule, *tm);
+    std::string text = emitSpirvText(textModule, *tmText);
     ASSERT_FALSE(text.empty());
     EXPECT_NE(text.find("OpEntryPoint GLCompute"), std::string::npos) << text;
 
+    auto tmBin = createSpirvTargetMachine("vulkan1.3");
+    ASSERT_NE(tmBin, nullptr);
     llvm::LLVMContext binCtx;
     llvm::Module binModule("xpu_stridesum_vulkan_bin", binCtx);
-    configureDeviceModule(binModule, *tm);
+    configureDeviceModule(binModule, *tmBin);
     lowerKernel(strideSum, binModule);
-    std::vector<uint8_t> spirv = emitSpirv(binModule, *tm);
+    std::vector<uint8_t> spirv = emitSpirv(binModule, *tmBin);
     ASSERT_FALSE(spirv.empty());
     if (auto valid = validateSpirv(spirv)) {
         EXPECT_TRUE(*valid) << "spirv-val rejected the strided-sum module";
