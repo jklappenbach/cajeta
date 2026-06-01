@@ -28,6 +28,12 @@ find_package(GTest REQUIRED)
 # cajeta-docs/ArchiveManagement.md §8.
 find_package(OpenSSL REQUIRED)
 
+# libcurl powers the HTTP repository driver (Phase 6b: bearer + mTLS
+# auth, GETs against the v1 registry REST API). Linked PUBLIC so the
+# header surface is reachable from test code that exercises the
+# in-process HTTP fixture server.
+find_package(CURL REQUIRED)
+
 # LLVM (since 18) expects an IMPORTED target zstd::libzstd_shared.
 # Prefer the proper find_package(zstd CONFIG) path — MSYS2 (mingw-w64),
 # vcpkg, and most modern distros ship zstdConfig.cmake. Falls back to
@@ -537,7 +543,8 @@ target_link_libraries(${CMAKE_PROJECT_NAME}_lib
         ${LLVM_LIBS}
         glog::glog
         zstd
-        OpenSSL::Crypto)
+        OpenSSL::Crypto
+        CURL::libcurl)
 # The native runtime (cajeta_runtime.c, embedded in this lib) uses
 # BCryptGenRandom for its RNG on Windows — link the bcrypt system lib.
 # Only the test binary actually pulls the native runtime object; on

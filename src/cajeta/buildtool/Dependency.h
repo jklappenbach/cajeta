@@ -20,18 +20,40 @@
 
 namespace cajeta::buildtool {
 
+    // Authentication block on `settings.repositories[*].auth`.
+    // Spec (BuildTool.md "HTTP repository / Auth"):
+    //
+    //   { "type": "bearer", "token-env": "NEXUS_TOKEN" }
+    //   { "type": "bearer", "token": "literal-token" }      // discouraged
+    //   { "type": "mtls",
+    //     "client-cert": "/path/to/cert.pem",
+    //     "client-key":  "/path/to/key.pem",
+    //     "ca-cert":     "/path/to/server-ca.pem" }          // optional
+    //
+    // Phase 6b implements both; `client-key-passphrase-env` and other
+    // refinements land in later slices.
+    struct RepositoryAuth {
+        std::string type;                          // "bearer" | "mtls" | ""
+        // Bearer:
+        std::string tokenEnv;                      // env var name
+        std::string tokenLiteral;                  // discouraged but supported
+        // mTLS:
+        std::string clientCertPath;
+        std::string clientKeyPath;
+        std::string caCertPath;                    // optional (server CA pin)
+    };
+
     // A repository entry from `settings.repositories`. Phase 6a
-    // recognizes the `filesystem` type; other types parse to
-    // RepositorySpec but the corresponding driver lands later.
+    // recognizes the `filesystem` type; Phase 6b adds HTTP. Git +
+    // Maven-compat parse but their drivers land in 6c / Phase 6b
+    // (Maven-compat) respectively.
     struct RepositorySpec {
         std::string name;
         std::string type;        // "filesystem" | "http" | "git" | "maven-compat"
         std::string url;         // for http / maven-compat
         std::string path;        // for filesystem
         int priority = 0;        // higher wins on resolution
-
-        // Auth + advanced fields land with their respective drivers
-        // in 6b / 6c.
+        RepositoryAuth auth;     // bearer / mtls (HTTP only)
     };
 
     // One declared dependency from `settings.dependencies`. Phase 6a
