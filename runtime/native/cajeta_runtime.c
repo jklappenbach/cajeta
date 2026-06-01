@@ -4933,18 +4933,21 @@ struct cajeta_cpu_grid_slice {
     int32_t gx, gy, gz;   // grid dims (in blocks) → for decoding ctaid.xyz
     int32_t bStart;       // linear block index range [bStart, bEnd)
     int32_t bEnd;
-    int32_t dynShared;    // dynamic shared-memory byte count (coord[9])
+    int32_t dynShared;    // dynamic shared-memory byte count (coord[12])
 };
 
 // Run a contiguous slice of blocks. The launcher thunk is the per-BLOCK wrapper
 // (Inc 5B): it loops the block's work-items internally (vectorized), so we call
-// it ONCE PER BLOCK, setting ctaid.xyz + ntid.xyz. coord = [tid.xyz (the
-// wrapper's loop var), ctaid.xyz, ntid.xyz, dynShared]. Each worker owns its
+// it ONCE PER BLOCK, setting ctaid.xyz + ntid.xyz + nctaid.xyz. coord =
+// [tid.xyz (the wrapper's loop var), ctaid.xyz, ntid.xyz, nctaid.xyz, dynShared].
+// nctaid (grid block-count = gx,gy,gz) lets the kernel compute the grid-stride
+// for-each stride gridSize = nctaid·ntid (Item 6 Stage 2). Each worker owns its
 // coord (no sharing); a data-parallel CPU kernel writes disjoint elements, so
 // the fan-out is race-free for any kernel correct on a GPU. The 3-D grid is
 // linearized (x fastest) and decoded back to ctaid.xyz per block.
 static void cajeta_xpu_cpu_run_slice(const struct cajeta_cpu_grid_slice* s) {
-    int32_t coord[10] = {0, 0, 0, 0, 0, 0, s->bx, s->by, s->bz, s->dynShared};
+    int32_t coord[13] = {0, 0, 0, 0, 0, 0, s->bx, s->by, s->bz,
+                         s->gx, s->gy, s->gz, s->dynShared};
     int32_t gxy = s->gx * s->gy;
     for (int32_t lin = s->bStart; lin < s->bEnd; ++lin) {
         coord[3] = lin % s->gx;            // ctaid.x

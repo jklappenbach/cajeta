@@ -193,6 +193,48 @@ const char* kBlock2dSource =
     "    }\n"
     "}\n";
 
+// Item 6 Stage 2 — a grid-stride for-each kernel runs on CPU. The crux: count
+// (1024) is far larger than the grid's total work-items gridSize = nctaid·ntid =
+// 2·64 = 128, so every work-item must process 8 elements via the stride. That is
+// only correct if gridSize() returns nctaid·ntid (the grid block-count threaded
+// through the coord ABI), not just ntid — a stride of 64 would skip/overlap and
+// leave most of `out` unwritten. in[i]=i, out[i]=v=in[i]; verifying out[i]==i for
+// ALL i proves full coverage with the right per-element index.
+const char* kGridStrideForEachSource =
+    "package test;\n"
+    "import cajeta.xpu.core.Buffer;\n"
+    "import cajeta.xpu.core.Stream;\n"
+    "public class GridStride {\n"
+    "    @Kernel\n"
+    "    public static void copy(Buffer<float32> out, Buffer<float32> in,\n"
+    "                            uint32 n) {\n"
+    "        for (uint32 i, float32 v : in.range(n)) {\n"
+    "            out[i] = v;\n"
+    "        }\n"
+    "    }\n"
+    "    public static int32 run() {\n"
+    "        uint32 n = 1024;\n"
+    "        float32[] hin = new float32[n];\n"
+    "        float32[] hout = new float32[n];\n"
+    "        for (uint32 i = 0; i < n; i = i + 1) {\n"
+    "            hin[i] = (float32)i;\n"
+    "            hout[i] = -1.0f;\n"
+    "        }\n"
+    "        Buffer<float32> in = heap Buffer<float32>(n);\n"
+    "        Buffer<float32> out = heap Buffer<float32>(n);\n"
+    "        in.upload(hin);\n"
+    "        out.upload(hout);\n"
+    "        Stream s = Stream.current();\n"
+    "        copy.launch(s, grid: [2], block: [64])(out, in, n);\n"
+    "        s.sync();\n"
+    "        out.download(hout);\n"
+    "        for (uint32 i = 0; i < n; i = i + 1) {\n"
+    "            if (hout[i] != (float32)i) { return (int32)i; }\n"
+    "        }\n"
+    "        return 777;\n"
+    "    }\n"
+    "}\n";
+
 // Item 2 — a kernel calling a user-defined @Device helper (scalar arg + scalar
 // return). The helper is lowered to a device function and inlined; out[i] = i*i.
 const char* kDeviceHelperSource =
@@ -299,6 +341,19 @@ TEST(XpuCpuDispatchTests, multiDimBlockOnCpu) {
     auto fn = jit->lookup<int (*)()>("run");
     ASSERT_NE(fn, nullptr);
     EXPECT_EQ(fn(), 777);
+}
+
+// Item 6 Stage 2: a grid-stride for-each kernel runs on CPU. count > gridSize, so
+// the stride (gridSize = nctaid·ntid, threaded through the CPU coord ABI) carries
+// each work-item across multiple elements — full coverage proves it's correct.
+TEST(XpuCpuDispatchTests, gridStrideForEachOnCpu) {
+    auto jit = CajetaJit::compile(kGridStrideForEachSource, "test.GridStride",
+                                  cpuOptions());
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<int (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    int r = fn();
+    EXPECT_EQ(r, 777) << "fail index " << r << " (out[i] != i: stride miscovered)";
 }
 
 // Item 2: a kernel calling a user-defined @Device helper runs on CPU.

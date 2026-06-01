@@ -4,7 +4,7 @@
 //
 // The SAME portable GPU-style kernel (Buffer<T> + Thread.globalIdX()) that
 // targets NVPTX/AMDGPU/SPIR-V lowers through the shared AST walk for the CPU,
-// with only the CpuTarget forking: the kernel gains 9 trailing i32 coordinate
+// with only the CpuTarget forking: the kernel gains 12 trailing i32 coordinate
 // params (the grid→threads model), coordinate reads come from those args (no
 // hardware intrinsics), buffers are flat addrspace(0) pointers. GPU-free.
 //
@@ -85,7 +85,7 @@ std::string printModule(llvm::Module& m) {
 } // namespace
 
 // The CpuTarget lowers the portable kernel to a host function: addrspace-0
-// buffers, the 9 trailing coordinate params, coordinate reads from args, no
+// buffers, the 12 trailing coordinate params, coordinate reads from args, no
 // device intrinsics.
 TEST(XpuCpuEmitTests, lowersPortableKernelToGridThreadsHostFunction) {
     Compiler compiler;
@@ -102,11 +102,11 @@ TEST(XpuCpuEmitTests, lowersPortableKernelToGridThreadsHostFunction) {
     llvm::Function* fn = cajeta::xpu::cpu::lowerKernel(k, host);
     ASSERT_NE(fn, nullptr);
 
-    // Signature: 2 buffers + 1 scalar + 9 coordinate params = 12 args.
+    // Signature: 2 buffers + 1 scalar + 12 coordinate params = 15 args.
     const unsigned kKernelParams = 3;
     ASSERT_EQ(fn->arg_size(),
               kKernelParams + cajeta::xpu::cpu::kNumCoordParams);
-    // The trailing 9 are i32 coordinates.
+    // The trailing 12 are i32 coordinates.
     for (unsigned c = 0; c < cajeta::xpu::cpu::kNumCoordParams; ++c) {
         auto* arg = fn->getArg(kKernelParams + c);
         EXPECT_TRUE(arg->getType()->isIntegerTy(32))
