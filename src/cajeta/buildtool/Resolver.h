@@ -109,7 +109,13 @@ namespace cajeta::buildtool {
         const std::vector<RepositoryPtr>& repos,
         ArtifactCache& cache,
         const std::vector<OverrideSpec>& overrides = {},
-        ResolverTimings* timings = nullptr);
+        ResolverTimings* timings = nullptr,
+        // Stage directory for git-replacement overrides (Phase 6c).
+        // The resolver clones each git override into this directory
+        // on demand. Empty when no git overrides are declared (the
+        // pick step errors clearly if one is encountered with an
+        // empty stage dir).
+        const std::string& gitOverrideStageDir = "");
 
     // Compare just the major-version component of two semver
     // strings. Returns <0 if a's major is lower, 0 if equal, >0
