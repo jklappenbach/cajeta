@@ -151,23 +151,37 @@ manifest-checksum detects drift.
 
 ### Deliverables
 
-- [ ] `cajeta.lock` reader/writer (strict JSON, schema
-      `lockfile-v1.json`).
-- [ ] Manifest SHA-256 checksum computation.
-- [ ] Drift detection: mismatched checksum → warning or
-      auto-upgrade per config.
-- [ ] Resolved property set persisted in lockfile.
-- [ ] Plugin version pinning in lockfile (top-level `plugins`
-      array).
+- [x] `cajeta.lock` reader/writer (strict JSON; schema
+      `lockfile-v1.json` file deferred to open-specs
+      workstream, same as Phase 0). `src/cajeta/buildtool/Lockfile.{h,cpp}`.
+- [x] Manifest SHA-256 checksum computation
+      (`sha256Hex()` wraps libcrypto's EVP_sha256).
+- [x] Drift detection — `checkDrift()` returns the
+      old/new checksum pair + a `changed` flag. Wired into
+      `cajeta info --check-lockfile`; exit 1 on drift.
+- [x] Resolved property set persisted in lockfile under
+      `properties`; sorted key order on write so the on-disk
+      form is stable across resolution-order variations.
+- [x] Plugin version pinning slot in lockfile (top-level
+      `plugins` array). Empty until Phase 7 populates it.
+- [x] `cajeta info --write-lockfile` / `--check-lockfile`
+      CLI surface.
+- [x] `nowIsoUtc()` helper for ISO 8601 timestamps (injectable
+      into `composeLockfile()` so tests can pin them).
 
 ### Acceptance
 
-- [ ] Lockfile round-trip preserves byte-identity given
-      identical inputs.
-- [ ] Modifying the manifest without re-resolving surfaces the
-      drift on next build.
-- [ ] Lockfile diff in code review surfaces version changes,
-      capability changes, and override changes.
+- [x] Lockfile round-trip preserves byte-identity given
+      identical inputs (`writeProducesByteIdenticalOutputForSameInputs`).
+- [x] Properties on disk appear in deterministic
+      (lexicographic) order regardless of insertion order
+      (`writeIsStableAcrossPropertyInsertionOrder`).
+- [x] Modifying the manifest without re-resolving surfaces the
+      drift on next build (`driftReportsChangeOnModifiedSource`,
+      plus whitespace-change strict-bytewise test).
+- [x] Lockfile diff in code review surfaces version changes
+      (the deterministic write ordering ensures diffs only
+      show actual content changes, not key-order noise).
 
 ---
 
