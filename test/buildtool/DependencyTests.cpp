@@ -96,6 +96,56 @@ TEST(DependencyTests, versionSatisfiesExact) {
     EXPECT_FALSE(versionSatisfies("1.2.3-rc1", "1.2.3"));  // core comparison
 }
 
+TEST(DependencyTests, versionSatisfiesRangeOperators) {
+    EXPECT_TRUE(versionSatisfies("1.2.0", ">=1.2.0"));
+    EXPECT_TRUE(versionSatisfies("1.2.1", ">=1.2.0"));
+    EXPECT_FALSE(versionSatisfies("1.1.9", ">=1.2.0"));
+
+    EXPECT_FALSE(versionSatisfies("2.0.0", "<2.0.0"));
+    EXPECT_TRUE(versionSatisfies("1.99.99", "<2.0.0"));
+
+    EXPECT_FALSE(versionSatisfies("1.2.0", ">1.2.0"));
+    EXPECT_TRUE(versionSatisfies("1.2.1", ">1.2.0"));
+
+    EXPECT_TRUE(versionSatisfies("1.2.0", "<=1.2.0"));
+    EXPECT_TRUE(versionSatisfies("1.1.9", "<=1.2.0"));
+    EXPECT_FALSE(versionSatisfies("1.2.1", "<=1.2.0"));
+
+    // Explicit `=` form is equivalent to the bare-exact form.
+    EXPECT_TRUE(versionSatisfies("1.2.3", "=1.2.3"));
+    EXPECT_FALSE(versionSatisfies("1.2.4", "=1.2.3"));
+}
+
+TEST(DependencyTests, versionSatisfiesAndCombinations) {
+    EXPECT_TRUE(versionSatisfies("1.5.0",  ">=1.2.0,<2.0.0"));
+    EXPECT_TRUE(versionSatisfies("1.2.0",  ">=1.2.0,<2.0.0"));
+    EXPECT_FALSE(versionSatisfies("2.0.0", ">=1.2.0,<2.0.0"));
+    EXPECT_FALSE(versionSatisfies("1.1.0", ">=1.2.0,<2.0.0"));
+
+    // Whitespace around commas and operators tolerated.
+    EXPECT_TRUE(versionSatisfies("1.5.0", " >= 1.2.0 , < 2.0.0 "));
+
+    // Wildcard composed with a lower bound.
+    EXPECT_TRUE(versionSatisfies("1.2.7", ">=1.2.5,1.2.*"));
+    EXPECT_FALSE(versionSatisfies("1.2.4", ">=1.2.5,1.2.*"));
+    EXPECT_FALSE(versionSatisfies("1.3.0", ">=1.2.5,1.2.*"));
+}
+
+TEST(DependencyTests, versionSatisfiesNumericCompareInRanges) {
+    // `1.0.10 >= 1.0.9` must be true — numeric, not lexical
+    // (matches the compareVersions guarantee).
+    EXPECT_TRUE(versionSatisfies("1.0.10", ">=1.0.9"));
+    EXPECT_FALSE(versionSatisfies("1.0.9", ">1.0.9"));
+}
+
+TEST(DependencyTests, versionSatisfiesRejectsMalformed) {
+    // Empty atom (trailing comma, double comma) — unsatisfiable.
+    EXPECT_FALSE(versionSatisfies("1.2.3", ">=1.0,"));
+    EXPECT_FALSE(versionSatisfies("1.2.3", ">=1.0,,<2.0"));
+    // Operator with no version.
+    EXPECT_FALSE(versionSatisfies("1.2.3", ">="));
+}
+
 TEST(DependencyTests, compareVersionsOrders) {
     EXPECT_LT(compareVersions("1.0.0", "1.0.1"), 0);
     EXPECT_LT(compareVersions("1.0.9", "1.0.10"), 0);  // numeric, not lexical

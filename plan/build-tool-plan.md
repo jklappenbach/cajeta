@@ -458,7 +458,7 @@ work.
       `cajeta.json`, recurse).
 - [ ] MVS constraint solver — choose lowest version satisfying
       ALL constraints across the graph.
-- [ ] Range operators in version constraints (`>=1.2.0`,
+- [x] Range operators in version constraints (`>=1.2.0`,
       `<2.0.0`, comma-separated combinations).
 - [ ] Transitive override mechanism from `settings.overrides`.
 - [ ] Override: pin to version.

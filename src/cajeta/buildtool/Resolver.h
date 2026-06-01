@@ -28,13 +28,15 @@ namespace cajeta::buildtool {
     // and a cache instance. Returns one ResolvedDependency per
     // dep in declaration order.
     //
-    // Phase 6a constraint matching:
-    //   - Exact "1.2.3"            → must equal
-    //   - Wildcard "1.2.*"         → matches "1.2.<anything>"
-    //   - Constraint "*"           → any version (highest available)
+    // Constraint matching (Phase 6a + 6b):
+    //   - Exact      "1.2.3"             release-only equality
+    //   - Wildcard   "1.2.*", "1.*", "*" prefix-of-segments match
+    //   - Range      ">=1.2.0", "<2.0.0", ">1.0", "<=3", "=1.2.3"
+    //   - AND-combo  ">=1.2.0,<2.0.0"     comma-separated, all must hold
     //
-    // Range operators (`>=`, `<`, `,`) land in 6b along with the
-    // full MVS solver.
+    // The MVS solver (also 6b) layers on top: gather constraints
+    // across the dependency graph, then pick the lowest version
+    // satisfying every gathered constraint.
     llvm::Expected<std::vector<ResolvedDependency>> resolveDirect(
         const std::vector<DependencySpec>& deps,
         const std::vector<RepositoryPtr>& repos,
