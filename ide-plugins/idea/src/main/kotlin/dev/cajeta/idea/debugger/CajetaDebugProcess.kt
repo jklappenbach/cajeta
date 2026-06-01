@@ -41,8 +41,10 @@ class CajetaDebugProcess(
         if (launched) dapSession?.setExceptionBreakpoints(armed)
     }
 
-    // CP7-3: gutter glyphs summarizing the active bindings' memory facets.
+    // CP7-3/4: gutter glyphs + inline hints summarizing the active bindings'
+    // memory facets at a stop. Both sourced from the same loadVariables.
     private val gutter = FacetGutterManager(xSession.project)
+    private val inlay = FacetInlayManager(xSession.project)
 
     private var process: Process? = null
     private var dapSession: CajetaDebugSession? = null
@@ -76,10 +78,10 @@ class CajetaDebugProcess(
             dapSession = ds
 
             processHandler.onDestroy = { ds.disconnect() }
-            ds.onExited = { code -> gutter.clear(); processHandler.reportTerminated(code) }
-            ds.onTerminated = { gutter.clear(); processHandler.reportTerminated(0) }
+            ds.onExited = { code -> clearDecorations(); processHandler.reportTerminated(code) }
+            ds.onTerminated = { clearDecorations(); processHandler.reportTerminated(0) }
             ds.onOutput = { text -> processHandler.emitOutput(text) }
-            ds.onClosed = { gutter.clear(); processHandler.reportTerminated(0) }
+            ds.onClosed = { clearDecorations(); processHandler.reportTerminated(0) }
             ds.onStopped = { body -> onStopped(ds, body.opt("threadId")?.asInt() ?: 0) }
 
             ds.start()
@@ -139,9 +141,9 @@ class CajetaDebugProcess(
             }
         }.thenAccept { (context, stoppedFrames) ->
             session.positionReached(context)
-            // CP7-3: decorate the gutter at the stopped top frame's line using
-            // the same locals the Variables view loads (FR-6.5).
-            updateGutter(ds, stoppedFrames)
+            // CP7-3/4: decorate the gutter + inline at the stopped top frame's
+            // line using the same locals the Variables view loads (FR-6.5).
+            updateDecorations(ds, stoppedFrames)
         }.exceptionally { e ->
             log.warn("building suspend context after stop failed", e)
             null
@@ -149,23 +151,29 @@ class CajetaDebugProcess(
     }
 
     /**
-     * Refresh the gutter glyph for the stopped top frame. Fetches that frame's
-     * locals via the same loadVariables path the Variables view uses; clears
-     * the gutter if there's no source position to anchor to.
+     * Refresh the gutter glyph + inline hint for the stopped top frame. Fetches
+     * that frame's locals via the same loadVariables path the Variables view
+     * uses; clears the decorations if there's no source position to anchor to.
      */
-    private fun updateGutter(ds: CajetaDebugSession, stoppedFrames: List<CajetaStackFrame>) {
+    private fun updateDecorations(ds: CajetaDebugSession, stoppedFrames: List<CajetaStackFrame>) {
         val top = stoppedFrames.firstOrNull()
         val pos = top?.sourcePosition
         if (top == null || pos == null) {
-            gutter.clear()
+            clearDecorations()
             return
         }
         ds.loadVariables(top.frame.id).thenAccept { vars ->
             gutter.showAt(pos, vars)
+            inlay.showAt(pos, vars)
         }.exceptionally {
-            gutter.clear()
+            clearDecorations()
             null
         }
+    }
+
+    private fun clearDecorations() {
+        gutter.clear()
+        inlay.clear()
     }
 
     private fun buildContext(
@@ -200,18 +208,18 @@ class CajetaDebugProcess(
     }
 
     override fun resume(context: XSuspendContext?) {
-        gutter.clear()   // CP7-3: stale facets vanish the moment we leave the stop.
+        clearDecorations()   // CP7-3/4: stale facets vanish the moment we leave the stop.
         dapSession?.resume()
     }
 
     override fun startStepOver(context: XSuspendContext?) {
         // Real stepping is CP6e; for now resume to the next breakpoint.
-        gutter.clear()
+        clearDecorations()
         dapSession?.resume()
     }
 
     override fun stop() {
-        gutter.clear()
+        clearDecorations()
         dapSession?.disconnect()
         process?.destroyForcibly()
     }

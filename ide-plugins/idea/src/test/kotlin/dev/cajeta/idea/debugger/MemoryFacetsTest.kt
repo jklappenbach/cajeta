@@ -203,6 +203,36 @@ class MemoryFacetsTest {
         assertFalse(s.tooltip.contains("\nu"))
     }
 
+    // ---- inline hint (CP7-4) ----
+
+    @Test
+    fun inlineHintNullWhenNothingKnown() {
+        assertEquals(null, inlineHint(emptyList()))
+        assertEquals(null, inlineHint(listOf(varWith("x", MemoryFacets.UNKNOWN))))
+    }
+
+    @Test
+    fun inlineHintListsKnownBindingsWithTags() {
+        val vars = listOf(
+            varWith("o", MemoryFacets(AllocClass.HEAP, OwnershipRole.OWNER, LifetimeState.ABOUT_TO_DROP)),
+            varWith("b", MemoryFacets(AllocClass.STACK, OwnershipRole.BORROW, LifetimeState.LIVE)),
+        )
+        val hint = inlineHint(vars)!!
+        assertTrue(hint.contains("o: owner · heap · about-to-drop"))
+        assertTrue(hint.contains("b: borrow · stack"))
+    }
+
+    @Test
+    fun inlineHintSkipsUnknownBindings() {
+        val vars = listOf(
+            varWith("u", MemoryFacets.UNKNOWN),
+            varWith("o", MemoryFacets(AllocClass.HEAP, OwnershipRole.OWNER, LifetimeState.LIVE)),
+        )
+        val hint = inlineHint(vars)!!
+        assertTrue(hint.contains("o: owner · heap"))
+        assertFalse(hint.contains("u"))
+    }
+
     @Test
     fun parseVariablesWithoutCajetaIsUnknown() {
         val response = Json.obj(
