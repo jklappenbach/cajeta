@@ -190,32 +190,67 @@ manifest-checksum detects drift.
 **Goal:** `cajeta <task>` runs a task that calls the `exec`
 action. End-to-end the simplest possible task works.
 
-### Deliverables
+### Deliverables — Phase 3a (linear executor)
+
+- [x] Task model + parsing (`src/cajeta/buildtool/Task.{h,cpp}`).
+- [x] Action infrastructure: `Action` interface,
+      `ActionRegistry`, `TaskContext`
+      (`src/cajeta/buildtool/Action.{h,cpp}`).
+- [x] `exec` action implementation
+      (`src/cajeta/buildtool/actions/ExecAction.cpp`); fork +
+      exec + waitpid; stdout/stderr captured AND forwarded to
+      the parent's streams; `working-dir` + `env` honored.
+- [x] Task runner — linear execution
+      (`src/cajeta/buildtool/TaskRunner.{h,cpp}`); param
+      binding (CLI > default > required-or-error); output
+      threading via `${id.field}`.
+- [x] Substitution lookup tier: task-context lookup checks
+      `${params.<name>}`, `${<id>.<field>}`, then falls back to
+      manifest properties.
+- [x] Duplicate-id rejection at task entry (two actions
+      publishing the same id is a hard error).
+- [x] `cajeta tasks` subcommand — list names + descriptions.
+- [x] `cajeta <task>` dispatch — manifest-aware: looks up
+      task in `./cajeta.json`; falls through to the compiler
+      for non-task args.
+- [x] CLI: `-P NAME=VALUE` property override, `-p NAME=VALUE`
+      task-param binding, `--flavor=X`, `--profile=X`,
+      `--manifest=<path>`.
+- [x] Task `outputs` block resolves at task exit.
+
+### Deliverables — Phase 3b (composition + DAG)
 
 - [ ] Task DAG builder from `tasks.*.depends-on` references.
 - [ ] Task-DAG cycle detection at load time.
-- [ ] Action invocation infrastructure: param binding,
-      type-check against action schema.
-- [ ] Sandbox harness (placeholder; full sandbox in Phase 11).
-- [ ] `exec` action implementation.
-- [ ] `parallel` composition wrapper.
-- [ ] `run-task` composition wrapper.
-- [ ] Output threading via `${id.field}` substitution.
-- [ ] `cajeta task <name> --show` prints the resolved action
-      sequence with substitutions applied.
-- [ ] `cajeta tasks` lists task names + descriptions from the
-      manifest.
+- [ ] `parallel` composition wrapper — concurrent children.
+- [ ] `run-task` composition wrapper — inline task invocation.
 - [ ] `when` / `skip-when` action-level conditional skipping.
+- [ ] `cajeta task <name> --show` prints the resolved action
+      sequence with substitutions applied (without running it).
+- [ ] Reference to an undefined `${id.field}` (when the id
+      doesn't appear elsewhere in the task) fails at load
+      time with a citation.
 
 ### Acceptance
 
-- [ ] A task containing only `exec` calls runs end-to-end.
-- [ ] Parallel children run concurrently and merge outputs.
+- [x] A task containing only `exec` calls runs end-to-end
+      (Phase 3a — verified by 12 TaskRunnerTests).
+- [x] `cajeta tasks` lists task names with descriptions.
+- [x] `cajeta <task>` runs the named task; `-p NAME=VALUE`
+      binds task params; `-P NAME=VALUE` overrides properties.
+- [x] Output threading works: `${id.stdout}` from one action
+      flows into a later action's params.
+- [x] An action referencing a missing property fails with a
+      citation naming the action.
+- [x] An unknown task name errors clearly.
+- [x] Duplicate `id` across actions in one task errors at
+      task load.
+- [ ] Parallel children run concurrently and merge outputs
+      (Phase 3b).
 - [ ] `run-task` composes one task's outputs into another's
-      input chain.
-- [ ] A reference to an undefined `${id.field}` fails at load
-      time with a citation.
-- [ ] A cycle in the implicit action graph fails at load time.
+      input chain (Phase 3b).
+- [ ] A cycle in the depends-on graph fails at load time
+      (Phase 3b).
 
 ---
 

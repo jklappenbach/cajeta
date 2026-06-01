@@ -1,0 +1,50 @@
+// Cajeta build-tool task execution.
+//
+// Phase 3a: linear executor. Walks a task's `actions` array in
+// order, substitutes params, invokes each action, threads outputs
+// through `${id.field}`. Aborts on the first action failure
+// (until `--continue-on-error` lands in Phase 3b).
+//
+// Phase 3b extends to: depends-on DAG traversal, parallel groups,
+// run-task composition, cycle detection, when/skip-when gating.
+
+#pragma once
+
+#include "cajeta/buildtool/Action.h"
+#include "cajeta/buildtool/Properties.h"
+#include "cajeta/buildtool/Task.h"
+
+#include <llvm/Support/Error.h>
+
+#include <map>
+#include <string>
+
+namespace cajeta::buildtool {
+
+    // CLI-supplied param bindings for the invoked task. Keyed by
+    // param name as declared in the task's `params` block.
+    struct TaskInvocationParams {
+        std::map<std::string, std::string> values;
+    };
+
+    // Execute one task end-to-end.
+    //
+    // - `tasks` is the full task table (for run-task resolution in
+    //   Phase 3b; Phase 3a errors if any task has depends-on or
+    //   run-task entries since they aren't supported yet).
+    // - `taskName` selects which task to run.
+    // - `cliParams` carries CLI-supplied `-p name=value` bindings.
+    // - `props` is the resolved property table from
+    //   `resolveProperties()`.
+    // - `registry` provides the action implementations.
+    //
+    // Returns the task's resolved `outputs` block (with
+    // substitutions applied) on success.
+    llvm::Expected<std::map<std::string, std::string>> runTask(
+        const std::map<std::string, Task>& tasks,
+        const std::string& taskName,
+        const TaskInvocationParams& cliParams,
+        const ResolvedProperties& props,
+        const ActionRegistry& registry);
+
+} // namespace cajeta::buildtool

@@ -1,8 +1,12 @@
 #include "cajeta/buildtool/BuildToolCommands.h"
 
+#include "cajeta/buildtool/Action.h"
+#include "cajeta/buildtool/JsonC.h"
 #include "cajeta/buildtool/Lockfile.h"
 #include "cajeta/buildtool/Manifest.h"
 #include "cajeta/buildtool/Properties.h"
+#include "cajeta/buildtool/Task.h"
+#include "cajeta/buildtool/TaskRunner.h"
 
 #include <llvm/Support/Error.h>
 #include <llvm/Support/MemoryBuffer.h>
@@ -10,8 +14,10 @@
 
 #include <cstring>
 #include <iostream>
+#include <map>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace cajeta::buildtool {
 
@@ -216,12 +222,227 @@ namespace cajeta::buildtool {
 
     } // namespace
 
+    namespace {
+
+        // Load manifest + resolve properties + parse tasks. Common
+        // prologue for the task-related subcommands.
+        struct LoadedProject {
+            Manifest manifest;
+            ResolvedProperties props;
+            std::map<std::string, Task> tasks;
+        };
+
+        llvm::Expected<LoadedProject> loadProject(
+            const std::string& manifestPath,
+            const PropertyOverrides& overrides) {
+            auto manifest = loadManifestFile(manifestPath);
+            if (!manifest) return manifest.takeError();
+            auto props = resolveProperties(*manifest, overrides);
+            if (!props) return props.takeError();
+            auto tasks = parseTasks(*manifest);
+            if (!tasks) return tasks.takeError();
+            LoadedProject p;
+            p.manifest = std::move(*manifest);
+            p.props = std::move(*props);
+            p.tasks = std::move(*tasks);
+            return p;
+        }
+
+        // `cajeta tasks` — list task names + descriptions.
+        int tasksCommand(int argc, const char* argv[]) {
+            std::string manifestPath = "./cajeta.json";
+            PropertyOverrides overrides;
+            loadEnvOverrides(overrides);
+
+            for (int i = 2; i < argc; ++i) {
+                std::string_view arg = argv[i];
+                std::string value;
+                if (match(arg, "manifest", value)) {
+                    manifestPath = std::move(value);
+                } else if (arg == "--help" || arg == "-h") {
+                    std::cout << "Usage: cajeta tasks [--manifest=<path>]\n"
+                              << "List tasks defined in the manifest.\n";
+                    return 0;
+                } else {
+                    std::cerr << "cajeta tasks: unknown argument '"
+                              << arg << "'\n";
+                    return 1;
+                }
+            }
+
+            auto project = loadProject(manifestPath, overrides);
+            if (!project) {
+                std::string msg;
+                llvm::raw_string_ostream os(msg);
+                os << project.takeError();
+                std::cerr << "cajeta tasks: " << msg << "\n";
+                return 1;
+            }
+            if (project->tasks.empty()) {
+                std::cout << "(no tasks defined in " << manifestPath << ")\n";
+                return 0;
+            }
+            // Compute column width for nice alignment.
+            size_t nameWidth = 0;
+            for (const auto& kv : project->tasks) {
+                if (kv.first.size() > nameWidth) nameWidth = kv.first.size();
+            }
+            for (const auto& kv : project->tasks) {
+                std::cout << "  " << kv.first;
+                for (size_t i = kv.first.size(); i < nameWidth + 2; ++i) {
+                    std::cout << ' ';
+                }
+                if (kv.second.description) {
+                    std::cout << *kv.second.description;
+                }
+                std::cout << "\n";
+            }
+            return 0;
+        }
+
+        // Dispatch a named task. Parses CLI args into property /
+        // task-param overrides, then invokes the runner.
+        int runTaskCommand(int argc, const char* argv[]) {
+            std::string manifestPath = "./cajeta.json";
+            std::string taskName = argv[1];
+            PropertyOverrides overrides;
+            loadEnvOverrides(overrides);
+            TaskInvocationParams cliParams;
+
+            for (int i = 2; i < argc; ++i) {
+                std::string_view arg = argv[i];
+                std::string value;
+                if (match(arg, "manifest", value)) {
+                    manifestPath = std::move(value);
+                } else if (arg == "-P" && i + 1 < argc) {
+                    auto parsed = parseCliOverride(argv[++i]);
+                    if (!parsed) {
+                        std::string msg;
+                        llvm::raw_string_ostream os(msg);
+                        os << parsed.takeError();
+                        std::cerr << "cajeta " << taskName << ": " << msg << "\n";
+                        return 1;
+                    }
+                    overrides.cli[parsed->first] = parsed->second;
+                } else if (match(arg, "property", value)) {
+                    auto parsed = parseCliOverride(value);
+                    if (!parsed) {
+                        std::string msg;
+                        llvm::raw_string_ostream os(msg);
+                        os << parsed.takeError();
+                        std::cerr << "cajeta " << taskName << ": " << msg << "\n";
+                        return 1;
+                    }
+                    overrides.cli[parsed->first] = parsed->second;
+                } else if (arg == "-p" && i + 1 < argc) {
+                    auto parsed = parseCliOverride(argv[++i]);
+                    if (!parsed) {
+                        std::string msg;
+                        llvm::raw_string_ostream os(msg);
+                        os << parsed.takeError();
+                        std::cerr << "cajeta " << taskName << ": " << msg << "\n";
+                        return 1;
+                    }
+                    cliParams.values[parsed->first] = parsed->second;
+                } else if (match(arg, "param", value)) {
+                    auto parsed = parseCliOverride(value);
+                    if (!parsed) {
+                        std::string msg;
+                        llvm::raw_string_ostream os(msg);
+                        os << parsed.takeError();
+                        std::cerr << "cajeta " << taskName << ": " << msg << "\n";
+                        return 1;
+                    }
+                    cliParams.values[parsed->first] = parsed->second;
+                } else if (match(arg, "flavor", value)) {
+                    overrides.flavor = value;
+                } else if (match(arg, "profile", value)) {
+                    overrides.profile = value;
+                } else {
+                    std::cerr << "cajeta " << taskName
+                              << ": unknown argument '" << arg << "'\n";
+                    return 1;
+                }
+            }
+
+            auto project = loadProject(manifestPath, overrides);
+            if (!project) {
+                std::string msg;
+                llvm::raw_string_ostream os(msg);
+                os << project.takeError();
+                std::cerr << "cajeta " << taskName << ": " << msg << "\n";
+                return 1;
+            }
+
+            ActionRegistry registry;
+            auto outputs = runTask(
+                project->tasks, taskName, cliParams,
+                project->props, registry);
+            if (!outputs) {
+                std::string msg;
+                llvm::raw_string_ostream os(msg);
+                os << outputs.takeError();
+                std::cerr << "cajeta " << taskName << ": " << msg << "\n";
+                return 1;
+            }
+
+            // Print the task's outputs (when non-empty). Useful for
+            // scripting; quiet by default for tasks that have no
+            // declared outputs.
+            if (!outputs->empty()) {
+                std::cout << "\nTask '" << taskName << "' outputs:\n";
+                for (const auto& kv : *outputs) {
+                    std::cout << "  " << kv.first << " = " << kv.second << "\n";
+                }
+            }
+            return 0;
+        }
+
+        // Decide whether `argv[1]` is a task invocation. Returns
+        // false (so the compiler-side fallthrough runs) when there's
+        // no manifest or no matching task — that way `cajeta archive`
+        // etc. still work outside a project.
+        bool looksLikeTaskInvocation(int argc, const char* argv[]) {
+            if (argc < 2) return false;
+            std::string_view cmd = argv[1];
+            // Built-in subcommands handled elsewhere.
+            if (cmd == "info" || cmd == "tasks" || cmd == "archive") {
+                return false;
+            }
+            // Anything starting with `-` is a flag for the existing
+            // compiler invocation, not a task name.
+            if (!cmd.empty() && cmd[0] == '-') return false;
+            // Look for a manifest in the current directory; only
+            // claim to handle the task if we find one.
+            llvm::Expected<llvm::json::Value> probe =
+                parseJsonCFile("./cajeta.json");
+            if (!probe) {
+                llvm::consumeError(probe.takeError());
+                return false;
+            }
+            const auto* root = probe->getAsObject();
+            if (!root) return false;
+            const auto* tasksBlock = root->getObject("tasks");
+            if (!tasksBlock) return false;
+            return tasksBlock->get(std::string(cmd)) != nullptr;
+        }
+
+    } // namespace
+
     bool dispatchBuildTool(int argc, const char* argv[], int* exitCodeOut) {
         if (argc < 2) return false;
         std::string_view cmd = argv[1];
 
         if (cmd == "info") {
             *exitCodeOut = infoCommand(argc, argv);
+            return true;
+        }
+        if (cmd == "tasks") {
+            *exitCodeOut = tasksCommand(argc, argv);
+            return true;
+        }
+        if (looksLikeTaskInvocation(argc, argv)) {
+            *exitCodeOut = runTaskCommand(argc, argv);
             return true;
         }
 
