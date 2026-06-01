@@ -2320,12 +2320,87 @@ for downstream actions to consume via
 
 | Action     | Required                          | Optional                                                              | Outputs                                                |
 |------------|-----------------------------------|-----------------------------------------------------------------------|--------------------------------------------------------|
-| `build`    | —                                 | `flavor`, `target`, `modules`, `incremental` (default `true`)          | `path` (built `.cja`), `sha256`, `size`               |
+| `build`    | —                                 | `flavor`, `target`, `modules`, `incremental` (default `true`), `profile`, `entry-method`, `binary`, `output-path`, `emit` (`exploded-ir` / `archived-ir` / `executable`) | `path`, `sha256`, `size`, `format`            |
 | `clean`    | —                                 | `paths` (default: `build/` + `.cajeta/work/`), `deep` (also wipes cache) | —                                                    |
 | `test`     | —                                 | `filter`, `parallel`, `coverage`, `report`                              | `passed`, `failed`, `crashed`, `report-path`         |
 | `lint`     | —                                 | `plugins` (subset), `fail-on-severity`, `format`, `output`              | `findings`, `report-path`                            |
 | `doc`      | —                                 | `output` (default: `build/docs/`)                                       | `output-path`                                        |
 | `fmt`      | —                                 | `check-only`                                                            | `changed-count`                                      |
+
+##### The `build` action in detail
+
+`build` produces one of three first-class compile artifacts,
+selected by `emit`:
+
+| `emit` value | What it is | Default output location |
+|---|---|---|
+| `exploded-ir`  | Per-source `.bc` (LLVM bitcode) tree | `build/ir/<package>/<class>.bc` |
+| `archived-ir`  | Single `.cja` archive (IR + manifest + resources) | `build/archive/<details.name>-<version>.cja` |
+| `executable`   | Fully-linked native binary; requires an entry method | `build/exe/<details.name>` (`.exe` on Windows) |
+
+Default `emit` selection (when not explicit):
+
+- An entry method is configured (`entry-method` param, `binary`
+  resolved against `settings.build.binaries`, or a fallback to
+  `settings.build.entry-method`) → default is `executable`.
+- No entry method configured → default is `archived-ir`
+  (library).
+
+`exploded-ir` is always explicit — it's a tooling/inspection
+output, not a "deliverable."
+
+**Entry-method resolution (when emit is `executable` or an
+executable `archived-ir`):**
+
+1. `entry-method` param on the action — direct override
+   (e.g. `"entry-method": "com.example.cli.Main::main"`).
+2. `binary` param on the action — name lookup in
+   `settings.build.binaries`
+   (e.g. `"binary": "cli"`).
+3. `settings.build.entry-method` — the manifest default.
+4. None of the above + `emit: "executable"` → hard error
+   ("can't link an executable without a main"). With
+   `emit: "archived-ir"` and no entry method, the archive is a
+   library.
+
+**Multiple binaries from one source tree** — use
+`settings.build.binaries` to register named binaries with their
+entry methods; tasks reference by name:
+
+```jsonc
+"settings": {
+    "build": {
+        "binaries": {
+            "server":  { "entry-method": "com.example.api.server.Main::main",
+                         "description":  "Production HTTP server" },
+            "migrate": { "entry-method": "com.example.api.migrate.Main::main",
+                         "description":  "Database migration runner" },
+            "diag":    { "entry-method": "com.example.api.diag.Main::main",
+                         "description":  "On-call diagnostic tool" }
+        }
+    }
+}
+```
+
+```jsonc
+{ "action": "build", "binary": "server",  "profile": "release", "id": "art" }
+{ "action": "build", "binary": "migrate", "profile": "release", "id": "mig" }
+```
+
+Three binaries from one source tree, three independent `.cja`
+or native exe outputs.
+
+**Outputs by `emit` type:**
+
+| `emit` | `path` points at | `format` value |
+|---|---|---|
+| `exploded-ir`  | Directory containing the IR tree | `"exploded-ir"` |
+| `archived-ir`  | The `.cja` file | `"archived-ir"` |
+| `executable`   | The native executable | `"elf"` / `"macho"` / `"pe"` |
+
+For `archived-ir`, the entry-method (if any) is recorded as
+metadata on the archive's manifest section; consumers (the
+launcher, `cajeta run`) read it from there.
 
 #### Filesystem
 
@@ -2342,6 +2417,162 @@ for downstream actions to consume via
 | `sign`       | `input`, (`key-env` or `key-path`), `key-id`        | —                                   | `path` (.sig file), `sha256` |
 | `verify-sig` | `input`, (`pubkey-env` or `pubkey-path`)            | `sig` (default `<input>.sig`)        | `valid` (bool)       |
 | `version`    | (one of) `bump: major\|minor\|patch`, `set: <semver>` | `write-to` (default `cajeta.json`) | `version`, `previous` |
+
+#### Packaging
+
+`package` is the universal "transform a `build` output into a
+different format" verb. The `build` action produces one of three
+first-class compile artifacts (exploded-ir, archived-ir,
+executable); `package` repackages those into formats consumers
+or distribution systems expect. Format catalog organized by
+input type:
+
+##### Inputs: IR (`exploded-ir` or `archived-ir`)
+
+| `format` | Output |
+|---|---|
+| `obj-tree`   | Per-source `.o` (native object) tree |
+| `uber-ir`    | Single linked `.bc` (LLVM bitcode), all source IR merged |
+| `static-lib` | Native `.a` archive |
+| `shared-lib` | Native `.so` (Linux) / `.dylib` (macOS) / `.dll` (Windows) |
+
+##### Input: `archived-ir` (.cja)
+
+| `format` | Output |
+|---|---|
+| `uber-archive` | Single `.cja` carrying this project AND all resolved transitive deps |
+
+##### Inputs: `executable` (native binary) — the installer family
+
+| `format` | Output | Platform |
+|---|---|---|
+| `tarball`     | `.tar.zst` (or `.tar.gz` if requested) | any |
+| `zip`         | `.zip`                                  | any |
+| `deb`         | Debian `.deb` package                   | Linux (Debian-family) |
+| `rpm`         | RPM `.rpm` package                      | Linux (RHEL-family) |
+| `msi`         | Windows `.msi` installer                | Windows |
+| `app-bundle`  | macOS `.app` bundle                     | macOS |
+| `pkg`         | macOS `.pkg` installer                  | macOS |
+| `dmg`         | macOS `.dmg` disk image                 | macOS |
+| `appimage`    | Linux `.AppImage`                        | Linux |
+| `flatpak`     | Linux `.flatpak`                         | Linux |
+| `snap`        | Linux `.snap`                            | Linux |
+| `container`   | OCI container image                      | cross-platform |
+
+##### v1 scope vs. deferred
+
+Many installer formats require platform-specific tooling
+(`dpkg-deb`, `rpmbuild`, `candle/light` for MSI,
+`productbuild` for `pkg`, etc.). v1 ships:
+
+- **Always (v1):** `obj-tree`, `uber-ir`, `uber-archive`,
+  `static-lib`, `shared-lib`, `tarball`, `zip`, `container`.
+- **Deferred to v1.x:** `deb`, `rpm`, `app-bundle`, `pkg`,
+  `dmg`, `msi`.
+- **Post-v1:** `appimage`, `flatpak`, `snap`, mobile formats.
+
+Each deferred format is a self-contained slice; landing one
+doesn't gate any other phase.
+
+##### `package` contract
+
+| Action    | Required        | Optional                                                       | Outputs |
+|-----------|-----------------|----------------------------------------------------------------|---------|
+| `package` | `input`, `format` | `spec` (metadata file), `output-path`, plus format-specific params | `path`, `format`, `sha256`, `size`, (`manifest`, `registry-url` for `container`) |
+
+Metadata for installer formats supplied two ways: inline params,
+or a spec file referenced via `spec`. Use whichever reads better
+at the call site.
+
+**Inline metadata example (`deb`):**
+
+```jsonc
+{ "action": "package",
+  "input":  "${exe.path}",
+  "format": "deb",
+  "package-name": "my-service",
+  "section":      "utils",
+  "maintainer":   "Alice <alice@example.com>",
+  "description":  "Order processing service",
+  "depends":      ["libc6", "libssl3"] }
+```
+
+**Spec-file metadata example:**
+
+```jsonc
+{ "action": "package",
+  "input":  "${exe.path}",
+  "format": "deb",
+  "spec":   "packaging/debian.json" }
+```
+
+**Container example:**
+
+```jsonc
+{ "action": "package",
+  "input":  "${exe.path}",
+  "format": "container",
+  "base":   "debian:bookworm-slim",
+  "tag":    "my-org/my-service:${details.version}",
+  "expose": [8080],
+  "env":    { "LOG_LEVEL": "info" },
+  "labels": { "git-commit": "${env.GITHUB_SHA}" } }
+```
+
+##### Input/format validation
+
+Validation runs at manifest-load when possible: `format:
+"obj-tree"` requires an IR input (`exploded-ir` directory or
+`archived-ir` `.cja`); `format: "deb"` requires an `executable`
+input. Mismatch is a hard error with a citation naming the
+expected vs. actual input shape.
+
+##### Worked pipeline — full release flow
+
+```jsonc
+"release": {
+    "depends-on": ["test", "integration"],
+    "actions": [
+        // 1. Build the native binary.
+        { "action": "build", "binary": "server",
+          "emit":   "executable",
+          "profile": "release", "id": "exe" },
+
+        // 2. Sign it.
+        { "action": "sign", "input": "${exe.path}",
+          "key-env": "CAJETA_RELEASE_KEY",
+          "key-id":  "${details.name}",
+          "id":      "sig" },
+
+        // 3. Repackage for the platforms we ship to (in parallel).
+        { "parallel": [
+            { "action": "package", "input": "${exe.path}", "format": "deb",
+              "spec": "packaging/debian.json", "id": "deb-pkg" },
+            { "action": "package", "input": "${exe.path}", "format": "container",
+              "base":  "debian:bookworm-slim",
+              "tag":   "my-org/server:${details.version}",
+              "id":    "img" },
+            { "action": "package", "input": "${exe.path}", "format": "tarball",
+              "id":    "tgz" }
+        ]},
+
+        // 4. Upload each artifact to its destination.
+        { "parallel": [
+            { "action": "upload", "target": "s3",
+              "input":  "${deb-pkg.path}", "bucket": "my-org-releases" },
+            { "action": "upload", "target": "http",
+              "input":  "${img.path}",
+              "url":    "https://registry.internal/v2/server/manifests/${details.version}",
+              "method": "PUT" },
+            { "action": "upload", "target": "s3",
+              "input":  "${tgz.path}", "bucket": "my-org-releases" }
+        ]}
+    ]
+}
+```
+
+Same `package` action wearing three different format hats, all
+consuming the one executable the build produced.
 
 #### Distribution
 
