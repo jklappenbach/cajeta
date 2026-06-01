@@ -44,4 +44,17 @@ namespace cajeta::buildtool {
         const std::string& source,
         const std::string& name);
 
+    // Rewrite a `settings.melts[]` entry of the form
+    // `"<name>@<oldVersion>"` to `"<name>@<newVersion>"`. The melt
+    // name + old version must currently appear in the array (the
+    // function errors otherwise so callers can surface a clear "no
+    // such melt to upgrade" message). The melt's position in the
+    // array, comments around the array, and unrelated formatting
+    // are preserved verbatim.
+    llvm::Expected<std::string> setMeltImportInManifest(
+        const std::string& source,
+        const std::string& name,
+        const std::string& oldVersion,
+        const std::string& newVersion);
+
 } // namespace cajeta::buildtool

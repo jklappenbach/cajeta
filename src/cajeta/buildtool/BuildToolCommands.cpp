@@ -608,6 +608,7 @@ namespace cajeta::buildtool {
             std::string manifestPath = "./cajeta.json";
             bool dryRun = false;
             bool assumeYes = false;
+            bool meltMode = false;
             std::vector<std::string> names;
             std::map<std::string, std::string> explicitVersions;
 
@@ -620,16 +621,23 @@ namespace cajeta::buildtool {
                     dryRun = true;
                 } else if (arg == "--yes" || arg == "-y") {
                     assumeYes = true;
+                } else if (arg == "--melt") {
+                    meltMode = true;
                 } else if (arg == "--help" || arg == "-h") {
                     std::cout
                         << "Usage: cajeta upgrade [<name>[@<version>]...] "
                         << "[options]\n"
+                        << "       cajeta upgrade --melt [<name>[@<version>]...] "
+                        << "[options]\n"
                         << "\n"
-                        << "Upgrade declared dependencies to their "
-                        << "highest available version (or to the "
-                        << "explicit version when given). With no "
-                        << "names, upgrades every direct dep.\n"
+                        << "Upgrade declared dependencies (or melts, with "
+                        << "--melt) to their highest available version "
+                        << "(or to the explicit version when given). "
+                        << "With no names, upgrades every direct dep "
+                        << "/ every imported melt.\n"
                         << "\n"
+                        << "  --melt               Upgrade entries in "
+                        << "settings.melts instead of settings.dependencies.\n"
                         << "  --dry-run            Print the plan; "
                         << "don't write.\n"
                         << "  --yes / -y           Skip the prompt "
@@ -681,6 +689,72 @@ namespace cajeta::buildtool {
                 std::filesystem::path(manifestPath)
                     .parent_path().string();
             if (projectRoot.empty()) projectRoot = ".";
+
+            if (meltMode) {
+                auto plan = planMeltUpgrade(
+                    *manifest, projectRoot, names, explicitVersions);
+                if (!plan) {
+                    std::string msg;
+                    llvm::raw_string_ostream os(msg);
+                    os << plan.takeError();
+                    std::cerr << "cajeta upgrade: " << msg << "\n";
+                    return 1;
+                }
+                int changedCount = 0;
+                for (const auto& e : plan->entries) {
+                    if (e.changed) {
+                        ++changedCount;
+                        std::cout << "  melt " << e.name << ": "
+                                  << e.oldVersion << " -> "
+                                  << e.newVersion << " (from "
+                                  << e.resolvedFromRepo << ")";
+                        if (!e.depDelta.empty()) {
+                            std::cout << "  [curated deps changed]";
+                        }
+                        std::cout << "\n";
+                        for (const auto& [n, c] : e.depDelta.added) {
+                            std::cout << "      + " << n
+                                      << " (" << c << ")\n";
+                        }
+                        for (const auto& [n, oldC, newC] :
+                                 e.depDelta.changed) {
+                            std::cout << "      ~ " << n << " "
+                                      << oldC << " -> " << newC << "\n";
+                        }
+                        for (const auto& n : e.depDelta.removed) {
+                            std::cout << "      - " << n << "\n";
+                        }
+                    } else {
+                        std::cout << "  melt " << e.name
+                                  << ": already at " << e.newVersion
+                                  << " — no change\n";
+                    }
+                }
+                if (changedCount == 0) {
+                    std::cout << "nothing to upgrade.\n";
+                    return 0;
+                }
+                if (dryRun) {
+                    std::cout << "(dry-run; manifest not modified)\n";
+                    return 0;
+                }
+                auto rewritten = applyMeltUpgradePlan(manifestSrc, *plan);
+                if (!rewritten) {
+                    std::string msg;
+                    llvm::raw_string_ostream os(msg);
+                    os << rewritten.takeError();
+                    std::cerr << "cajeta upgrade: " << msg << "\n";
+                    return 1;
+                }
+                if (!writeFileBytes(manifestPath, *rewritten)) {
+                    std::cerr << "cajeta upgrade: cannot write manifest '"
+                              << manifestPath << "'\n";
+                    return 1;
+                }
+                std::cout << "upgraded " << changedCount
+                          << " melt(s) in " << manifestPath << "\n";
+                return 0;
+            }
 
             auto plan = planUpgrade(
                 *manifest, projectRoot, names, explicitVersions);

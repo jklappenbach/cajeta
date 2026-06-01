@@ -93,4 +93,64 @@ namespace cajeta::buildtool {
         const std::string& manifestSource,
         const UpgradePlan& plan);
 
+    // ─── Melt upgrades ──────────────────────────────────────────
+
+    // Diff between the old melt's `melt.dependencies` table and the
+    // new melt's. Surfaces in the upgrade-plan output so users see
+    // why a melt bump matters (which versions move + which deps
+    // arrive/leave the curated set).
+    struct MeltDependencyDelta {
+        // Newly curated deps (name → constraint).
+        std::vector<std::pair<std::string, std::string>> added;
+        // Deps the new melt no longer curates (name only).
+        std::vector<std::string> removed;
+        // Constraint moved (name, old, new).
+        std::vector<std::tuple<std::string, std::string, std::string>>
+            changed;
+        bool empty() const {
+            return added.empty() && removed.empty() && changed.empty();
+        }
+    };
+
+    // One row of a melt-upgrade plan. `changed` is false when the
+    // pinned version already equals the candidate (the row is still
+    // surfaced so the CLI can report "already at X").
+    struct MeltUpgradeEntry {
+        std::string name;
+        std::string oldVersion;
+        std::string newVersion;
+        std::string resolvedFromRepo;
+        MeltDependencyDelta depDelta;
+        bool changed = false;
+    };
+
+    struct MeltUpgradePlan {
+        std::vector<MeltUpgradeEntry> entries;
+        bool anyChange() const;
+    };
+
+    // Compute a melt-upgrade plan without writing anything.
+    //
+    // `targetNames` selects which melts to consider:
+    //   - empty     → every melt in `settings.melts`
+    //   - non-empty → only those (error if any name is missing)
+    //
+    // `explicitVersions` lets callers pin a melt to a specific
+    // version (the `<name>@<version>` CLI form) instead of picking
+    // the highest-in-repos.
+    llvm::Expected<MeltUpgradePlan> planMeltUpgrade(
+        const Manifest& m,
+        const std::string& projectRoot,
+        const std::vector<std::string>& targetNames,
+        const std::map<std::string, std::string>& explicitVersions = {},
+        std::optional<std::string> homeOverride = std::nullopt);
+
+    // Apply the melt-upgrade plan to the manifest source bytes:
+    // rewrite each changed entry's `"name@oldVersion"` string in
+    // `settings.melts` to `"name@newVersion"`. Unchanged entries
+    // are skipped. Returns the rewritten source.
+    llvm::Expected<std::string> applyMeltUpgradePlan(
+        const std::string& manifestSource,
+        const MeltUpgradePlan& plan);
+
 } // namespace cajeta::buildtool
