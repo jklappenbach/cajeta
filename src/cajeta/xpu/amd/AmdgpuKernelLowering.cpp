@@ -7,6 +7,8 @@
 #include "../lowering/KernelLowering.h"
 #include "../lowering/LoweringTarget.h"
 
+#include "llvm/IR/Constants.h"
+#include "llvm/IR/DerivedTypes.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/Intrinsics.h"
@@ -98,6 +100,48 @@ public:
     // analogue to nvvm.annotations.
     void decorateKernel(llvm::Function* fn, llvm::Module& /*m*/) override {
         fn->setCallingConv(llvm::CallingConv::AMDGPU_KERNEL);
+    }
+
+    // A Texture2D kernel param is a pointer to the HIP texture object, in the
+    // constant address space (4) — the kernarg holds the 64-bit object address,
+    // read through the scalar cache, exactly as HIP's tex2D casts it. The object
+    // is { image SRD (12 dwords) | sampler SRD (8 dwords) }; sampleTexture reads
+    // both. (Item 8 Stage C.)
+    llvm::Type* textureParamType(llvm::Module& m) override {
+        return llvm::PointerType::get(m.getContext(), 4);
+    }
+
+    // tex.sample(sampler, u, v) → __ockl_image_sample_2D (ROCm device library,
+    // linked in by AmdgpuBackend when this symbol is referenced). It takes the
+    // image object ptr (= texHandle) and the sampler object ptr (= texHandle +
+    // HIP_SAMPLER_OBJECT_OFFSET_DWORD·4 = +48 bytes) — both addrspace(4) — plus
+    // the normalized <u, v>; it converts coords to unnormalized + emits
+    // image_sample_lz internally (handling the gfx ISA variants). Returns the
+    // <4 x float> gather; v1 takes the R channel. The separate Sampler kernel
+    // arg (samplerHandle) is unused on AMD — its modes are baked into the texture
+    // object at hipCreateTextureObject time, so the sampler SRD rides the object.
+    llvm::Value* sampleTexture(llvm::IRBuilderBase& b, llvm::Module& m,
+                               llvm::Value* texHandle,
+                               llvm::Value* /*samplerHandle*/, llvm::Value* u,
+                               llvm::Value* v) override {
+        llvm::LLVMContext& ctx = m.getContext();
+        llvm::Type* f32 = llvm::Type::getFloatTy(ctx);
+        llvm::Type* i8 = llvm::Type::getInt8Ty(ctx);
+        auto* p4 = llvm::PointerType::get(ctx, 4);
+        auto* v2f = llvm::FixedVectorType::get(f32, 2);
+        auto* v4f = llvm::FixedVectorType::get(f32, 4);
+        // sampler object sits HIP_SAMPLER_OBJECT_OFFSET_DWORD (12) dwords in.
+        llvm::Value* sampPtr =
+            b.CreateConstGEP1_32(i8, texHandle, 48, "tex.samp.obj");
+        llvm::Value* coord = llvm::PoisonValue::get(v2f);
+        coord = b.CreateInsertElement(coord, u, uint64_t(0));
+        coord = b.CreateInsertElement(coord, v, uint64_t(1), "tex.coord");
+        auto* fnTy = llvm::FunctionType::get(v4f, {p4, p4, v2f}, false);
+        llvm::FunctionCallee s =
+            m.getOrInsertFunction("__ockl_image_sample_2D", fnTy);
+        llvm::Value* rgba = b.CreateCall(s, {texHandle, sampPtr, coord},
+                                         "tex.sample.rgba");
+        return b.CreateExtractElement(rgba, uint64_t(0), "tex.sample");
     }
 
     // Wave ops. Wavefront size is target-/feature-dependent (32 or 64 on

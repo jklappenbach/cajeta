@@ -14,6 +14,7 @@
 #include "AmdgpuBackend.h"
 #include "AmdgpuKernelLowering.h"
 
+#include "../lowering/KernelLowering.h"
 #include "cajeta/method/Method.h"
 #include "cajeta/xpu/core/XpuAttributes.h"
 #include "cajeta/error/Exception.h"
@@ -47,6 +48,7 @@ namespace amd {
         if (!tm) return 0;
 
         llvm::LLVMContext& ctx = hostModule.getContext();
+        llvm::Type* i32Ty = llvm::Type::getInt32Ty(ctx);
         llvm::Type* i64Ty = llvm::Type::getInt64Ty(ctx);
         llvm::Type* voidTy = llvm::Type::getVoidTy(ctx);
         llvm::PointerType* ptrTy = llvm::PointerType::get(ctx, 0);
@@ -57,6 +59,15 @@ namespace amd {
             llvm::FunctionType::get(voidTy, {ptrTy, ptrTy, i64Ty}, false);
         llvm::FunctionCallee regFn =
             hostModule.getOrInsertFunction("__cajeta_xpu_register_module", regTy);
+
+        // void __cajeta_xpu_register_kernel_params(i8* name, i32 count,
+        //                                          i8* kind, i32* byteSize)
+        // The HIP launch path reads this to find Texture2D params (Item 8 Stage
+        // C): a texture arg is translated into a hipTextureObject at launch.
+        llvm::FunctionType* kpTy = llvm::FunctionType::get(
+            voidTy, {ptrTy, i32Ty, ptrTy, ptrTy}, false);
+        llvm::FunctionCallee kpFn = hostModule.getOrInsertFunction(
+            "__cajeta_xpu_register_kernel_params", kpTy);
 
         int emitted = 0;
         for (auto& method : kernels) {
@@ -102,6 +113,37 @@ namespace amd {
                 b.CreateGlobalString(entryName, "xpu.kname." + entryName);
             b.CreateCall(regFn, {nameStr, hsacoGV,
                                  llvm::ConstantInt::get(i64Ty, hsaco.size())});
+
+            // Per-kernel parameter kinds (scalar/buffer/texture/sampler) so the
+            // HIP launch path can translate Texture2D args into texture objects.
+            std::vector<KernelParamInfo> info =
+                collectKernelParamInfo(method, ctx);
+            if (!info.empty()) {
+                std::vector<uint8_t> kinds;
+                std::vector<uint32_t> sizes;
+                kinds.reserve(info.size());
+                sizes.reserve(info.size());
+                for (auto& pi : info) {
+                    kinds.push_back(pi.kind);
+                    sizes.push_back(pi.byteSize);
+                }
+                llvm::Constant* kindInit = llvm::ConstantDataArray::get(
+                    ctx, llvm::ArrayRef<uint8_t>(kinds.data(), kinds.size()));
+                auto* kindGV = new llvm::GlobalVariable(
+                    hostModule, kindInit->getType(), /*isConstant=*/true,
+                    llvm::GlobalValue::PrivateLinkage, kindInit,
+                    "xpu.kpkind." + entryName);
+                llvm::Constant* szInit = llvm::ConstantDataArray::get(
+                    ctx, llvm::ArrayRef<uint32_t>(sizes.data(), sizes.size()));
+                auto* szGV = new llvm::GlobalVariable(
+                    hostModule, szInit->getType(), /*isConstant=*/true,
+                    llvm::GlobalValue::PrivateLinkage, szInit,
+                    "xpu.kpsz." + entryName);
+                b.CreateCall(kpFn, {nameStr,
+                                    llvm::ConstantInt::get(i32Ty,
+                                                           (uint32_t) info.size()),
+                                    kindGV, szGV});
+            }
             b.CreateRetVoid();
 
             // Run at module-init time (LLJIT: jit->initialize; native: startup).

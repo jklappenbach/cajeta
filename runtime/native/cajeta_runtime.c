@@ -4049,6 +4049,44 @@ static int cajeta_xpu_cuda_ready(void) {
 // compiler/test-only). HIP exports plain C symbols (no size-versioning). Shares
 // g_xpu_cuda_lock for init/load serialization — only one device backend is
 // active per run, so there is no contention. Device pointers are plain void*.
+// --- HIP texture object ABI mirror (Item 8 Stage C) -------------------------
+// The runtime resolves all HIP entry points by dlsym and never includes the
+// ROCm headers (they're not on the default include path and carry C++), so the
+// few structs hipCreateTextureObject needs are mirrored here with byte-exact
+// layout. Enum values match driver_types.h / texture_types.h.
+enum { CAJ_HIP_CHANNEL_FLOAT = 2 };     // hipChannelFormatKindFloat
+enum { CAJ_HIP_RES_ARRAY = 0 };         // hipResourceTypeArray
+enum { CAJ_HIP_ADDR_WRAP = 0, CAJ_HIP_ADDR_CLAMP = 1 };  // hipTextureAddressMode
+enum { CAJ_HIP_FILTER_POINT = 0, CAJ_HIP_FILTER_LINEAR = 1 };  // filter mode
+enum { CAJ_HIP_READ_ELEMENT = 0 };      // hipReadModeElementType
+enum { CAJ_HIP_MEMCPY_HTOD = 1 };       // hipMemcpyHostToDevice
+
+struct caj_hip_channel_format_desc { int x, y, z, w; int f; };
+struct caj_hip_resource_desc {
+    int resType;
+    union {
+        struct { void* array; } array;
+        struct { void* mipmap; } mipmap;
+        struct { void* devPtr; struct caj_hip_channel_format_desc desc;
+                 size_t sizeInBytes; } linear;
+        struct { void* devPtr; struct caj_hip_channel_format_desc desc;
+                 size_t width, height, pitchInBytes; } pitch2D;
+    } res;
+};
+struct caj_hip_texture_desc {
+    int addressMode[3];
+    int filterMode;
+    int readMode;
+    int sRGB;
+    float borderColor[4];
+    int normalizedCoords;
+    unsigned int maxAnisotropy;
+    int mipmapFilterMode;
+    float mipmapLevelBias;
+    float minMipmapLevelClamp;
+    float maxMipmapLevelClamp;
+};
+
 struct cajeta_hip_api {
     int loaded;             // 0 untried, 1 ready, -1 unavailable
     void* lib;
@@ -4066,8 +4104,22 @@ struct cajeta_hip_api {
                                  unsigned, unsigned, unsigned, unsigned,
                                  void*, void**, void**);
     int (*hipDeviceSynchronize)(void);
+    // Texture object path (Item 8 Stage C); optional — absent on very old HIP,
+    // in which case texture sampling on AMD is simply unavailable.
+    int (*hipMallocArray)(void**, const void*, size_t, size_t, unsigned);
+    int (*hipFreeArray)(void*);
+    int (*hipMemcpy2DToArray)(void*, size_t, size_t, const void*, size_t,
+                              size_t, size_t, int);
+    int (*hipCreateTextureObject)(void**, const void*, const void*,
+                                  const void*);
+    int (*hipDestroyTextureObject)(void*);
 };
 static struct cajeta_hip_api g_xpu_hip;
+
+// HIP texture record: a Texture2D's device handle on AMD is a 1-based-... no, a
+// pointer to one of these (the hipArray + dims). The hipTextureObject is built
+// per launch from this array + the paired Sampler's modes.
+struct cajeta_hip_tex { void* array; uint32_t w, h; };
 
 #if !defined(_WIN32)
 // Load libamdhip64, preferring canonical ROCm (/opt/rocm, the
@@ -4121,6 +4173,16 @@ static int cajeta_xpu_hip_init_locked(void) {
     CAJ_HBIND(hipModuleLaunchKernel, "hipModuleLaunchKernel");
     CAJ_HBIND(hipDeviceSynchronize, "hipDeviceSynchronize");
     #undef CAJ_HBIND
+    // Texture object path (Item 8 Stage C) — optional; a missing entry just
+    // disables AMD texture sampling, it doesn't fail the whole HIP backend.
+    #define CAJ_HBIND_OPT(fp, nm)                                              \
+        *(void**) (&g_xpu_hip.fp) = cajeta_xpu_libsym(g_xpu_hip.lib, nm)
+    CAJ_HBIND_OPT(hipMallocArray, "hipMallocArray");
+    CAJ_HBIND_OPT(hipFreeArray, "hipFreeArray");
+    CAJ_HBIND_OPT(hipMemcpy2DToArray, "hipMemcpy2DToArray");
+    CAJ_HBIND_OPT(hipCreateTextureObject, "hipCreateTextureObject");
+    CAJ_HBIND_OPT(hipDestroyTextureObject, "hipDestroyTextureObject");
+    #undef CAJ_HBIND_OPT
     if (g_xpu_hip.hipInit(0) != 0) return 0;
     int count = 0;
     if (g_xpu_hip.hipGetDeviceCount(&count) != 0 || count <= 0) return 0;
@@ -4135,10 +4197,18 @@ static int cajeta_xpu_hip_init_locked(void) {
 // uniform kernelParams argv into descriptor bindings: buffers map to existing
 // storage buffers; scalars are copied into transient single-element SSBOs. The
 // pointers are program constant data (valid for the process lifetime).
+// Per-param kind in the launch metadata (matches xpu::KernelParamInfo::kind):
+// 0 = scalar (by-value primitive/POD → single-element SSBO), 1 = buffer,
+// 2 = texture (Texture2D → sampled image), 3 = sampler (Item 8 Stage B).
+#define CAJETA_KP_SCALAR  0
+#define CAJETA_KP_BUFFER  1
+#define CAJETA_KP_TEXTURE 2
+#define CAJETA_KP_SAMPLER 3
+
 struct cajeta_kparams {
     char name[256];
     int count;
-    const uint8_t* isBuffer;
+    const uint8_t* kind;
     const uint32_t* byteSize;
 };
 #define CAJETA_XPU_MAX_KPARAMS 128
@@ -4146,7 +4216,7 @@ static struct cajeta_kparams g_xpu_kparams[CAJETA_XPU_MAX_KPARAMS];
 static int g_xpu_kparam_count;
 
 void __cajeta_xpu_register_kernel_params(const char* name, int32_t count,
-                                         const uint8_t* isBuffer,
+                                         const uint8_t* kind,
                                          const uint32_t* byteSize) {
     if (!name) return;
     pthread_mutex_lock(&g_xpu_cuda_lock);
@@ -4155,7 +4225,7 @@ void __cajeta_xpu_register_kernel_params(const char* name, int32_t count,
         strncpy(e->name, name, sizeof(e->name) - 1);
         e->name[sizeof(e->name) - 1] = '\0';
         e->count = count;
-        e->isBuffer = isBuffer;
+        e->kind = kind;
         e->byteSize = byteSize;
     }
     pthread_mutex_unlock(&g_xpu_cuda_lock);
@@ -4213,6 +4283,17 @@ struct cajeta_vk {
     PFN_vkBindBufferMemory vkBindBufferMemory;
     PFN_vkMapMemory vkMapMemory;
     PFN_vkUnmapMemory vkUnmapMemory;
+    // Image + sampler path (Item 8 Stage B: Texture2D / Sampler).
+    PFN_vkCreateImage vkCreateImage;
+    PFN_vkDestroyImage vkDestroyImage;
+    PFN_vkGetImageMemoryRequirements vkGetImageMemoryRequirements;
+    PFN_vkBindImageMemory vkBindImageMemory;
+    PFN_vkCreateImageView vkCreateImageView;
+    PFN_vkDestroyImageView vkDestroyImageView;
+    PFN_vkCreateSampler vkCreateSampler;
+    PFN_vkDestroySampler vkDestroySampler;
+    PFN_vkCmdCopyBufferToImage vkCmdCopyBufferToImage;
+    PFN_vkCmdPipelineBarrier vkCmdPipelineBarrier;
     PFN_vkCreateShaderModule vkCreateShaderModule;
     PFN_vkDestroyShaderModule vkDestroyShaderModule;
     PFN_vkCreateDescriptorSetLayout vkCreateDescriptorSetLayout;
@@ -4359,6 +4440,16 @@ static int cajeta_xpu_vulkan_init_locked(void) {
     CAJ_VKD(vkBindBufferMemory);
     CAJ_VKD(vkMapMemory);
     CAJ_VKD(vkUnmapMemory);
+    CAJ_VKD(vkCreateImage);
+    CAJ_VKD(vkDestroyImage);
+    CAJ_VKD(vkGetImageMemoryRequirements);
+    CAJ_VKD(vkBindImageMemory);
+    CAJ_VKD(vkCreateImageView);
+    CAJ_VKD(vkDestroyImageView);
+    CAJ_VKD(vkCreateSampler);
+    CAJ_VKD(vkDestroySampler);
+    CAJ_VKD(vkCmdCopyBufferToImage);
+    CAJ_VKD(vkCmdPipelineBarrier);
     CAJ_VKD(vkCreateShaderModule);
     CAJ_VKD(vkDestroyShaderModule);
     CAJ_VKD(vkCreateDescriptorSetLayout);
@@ -4478,12 +4569,242 @@ static void cajeta_xpu_vk_free(int64_t handle) {
     r->memory = VK_NULL_HANDLE;
 }
 
+// --- Vulkan sampled-image (Texture2D) table (Item 8 Stage B) ----------------
+// A Texture2D's device handle on Vulkan is a 1-based index into this table. The
+// image is R32_SFLOAT (single-channel float, matching the scalar texel), OPTIMAL
+// tiled + device-local, used as SAMPLED_IMAGE. Texels are staged through a
+// host-visible buffer + copy with layout transitions on upload.
+struct cajeta_vk_tex {
+    VkImage image;
+    VkDeviceMemory memory;
+    VkImageView view;
+    uint32_t w, h;
+    int live;
+};
+#define CAJETA_VK_MAX_TEXTURES 256
+static struct cajeta_vk_tex g_vk_texs[CAJETA_VK_MAX_TEXTURES];
+static int g_vk_tex_count;
+
+static struct cajeta_vk_tex* cajeta_xpu_vk_tex_rec(int64_t handle) {
+    if (handle <= 0 || handle > g_vk_tex_count) return NULL;
+    struct cajeta_vk_tex* t = &g_vk_texs[handle - 1];
+    return t->live ? t : NULL;
+}
+
+// Create a 2-D R32_SFLOAT sampled image + view; return a 1-based table handle
+// (0 on failure). Contents are undefined until cajeta_xpu_vk_tex_upload.
+static int64_t cajeta_xpu_vk_tex_alloc(uint32_t w, uint32_t h) {
+    if (w == 0 || h == 0) return 0;
+    VkImageCreateInfo ici;
+    memset(&ici, 0, sizeof(ici));
+    ici.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+    ici.imageType = VK_IMAGE_TYPE_2D;
+    ici.format = VK_FORMAT_R32_SFLOAT;
+    ici.extent.width = w; ici.extent.height = h; ici.extent.depth = 1;
+    ici.mipLevels = 1; ici.arrayLayers = 1;
+    ici.samples = VK_SAMPLE_COUNT_1_BIT;
+    ici.tiling = VK_IMAGE_TILING_OPTIMAL;
+    ici.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    ici.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    ici.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    VkImage img = VK_NULL_HANDLE;
+    if (g_xpu_vk.vkCreateImage(g_xpu_vk.device, &ici, NULL, &img) != VK_SUCCESS)
+        return 0;
+    VkMemoryRequirements req;
+    memset(&req, 0, sizeof(req));
+    g_xpu_vk.vkGetImageMemoryRequirements(g_xpu_vk.device, img, &req);
+    int mt = cajeta_xpu_vk_find_memory_type(req.memoryTypeBits,
+                                            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    if (mt < 0)   // no device-local: any type works (host-visible is acceptable)
+        mt = cajeta_xpu_vk_find_memory_type(req.memoryTypeBits, 0);
+    if (mt < 0) { g_xpu_vk.vkDestroyImage(g_xpu_vk.device, img, NULL); return 0; }
+    VkMemoryAllocateInfo mai;
+    memset(&mai, 0, sizeof(mai));
+    mai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    mai.allocationSize = req.size;
+    mai.memoryTypeIndex = (uint32_t) mt;
+    VkDeviceMemory mem = VK_NULL_HANDLE;
+    if (g_xpu_vk.vkAllocateMemory(g_xpu_vk.device, &mai, NULL, &mem)
+            != VK_SUCCESS) {
+        g_xpu_vk.vkDestroyImage(g_xpu_vk.device, img, NULL); return 0;
+    }
+    g_xpu_vk.vkBindImageMemory(g_xpu_vk.device, img, mem, 0);
+    VkImageViewCreateInfo vci;
+    memset(&vci, 0, sizeof(vci));
+    vci.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+    vci.image = img;
+    vci.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    vci.format = VK_FORMAT_R32_SFLOAT;
+    vci.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    vci.subresourceRange.levelCount = 1;
+    vci.subresourceRange.layerCount = 1;
+    VkImageView view = VK_NULL_HANDLE;
+    if (g_xpu_vk.vkCreateImageView(g_xpu_vk.device, &vci, NULL, &view)
+            != VK_SUCCESS) {
+        g_xpu_vk.vkFreeMemory(g_xpu_vk.device, mem, NULL);
+        g_xpu_vk.vkDestroyImage(g_xpu_vk.device, img, NULL);
+        return 0;
+    }
+    int slot = -1;
+    for (int i = 0; i < g_vk_tex_count; ++i)
+        if (!g_vk_texs[i].live) { slot = i; break; }
+    if (slot < 0) {
+        if (g_vk_tex_count >= CAJETA_VK_MAX_TEXTURES) {
+            g_xpu_vk.vkDestroyImageView(g_xpu_vk.device, view, NULL);
+            g_xpu_vk.vkFreeMemory(g_xpu_vk.device, mem, NULL);
+            g_xpu_vk.vkDestroyImage(g_xpu_vk.device, img, NULL);
+            return 0;
+        }
+        slot = g_vk_tex_count++;
+    }
+    g_vk_texs[slot].image = img;
+    g_vk_texs[slot].memory = mem;
+    g_vk_texs[slot].view = view;
+    g_vk_texs[slot].w = w; g_vk_texs[slot].h = h;
+    g_vk_texs[slot].live = 1;
+    return (int64_t) (slot + 1);
+}
+
+// Stage `data` (w*h row-major float32 texels) into the image, leaving it in
+// SHADER_READ_ONLY_OPTIMAL ready to sample. Uses a transient host-visible
+// staging buffer + a one-time command buffer (barrier / copy / barrier).
+static void cajeta_xpu_vk_tex_upload(int64_t handle, const void* data,
+                                     uint32_t w, uint32_t h) {
+    struct cajeta_vk_tex* t = cajeta_xpu_vk_tex_rec(handle);
+    if (!t || !data || w != t->w || h != t->h) return;
+    uint64_t bytes = (uint64_t) w * h * sizeof(float);
+    int64_t staging = cajeta_xpu_vk_alloc(bytes);   // host-visible+coherent
+    if (!staging) return;
+    void* m = cajeta_xpu_vk_mapped(staging);
+    if (m) memcpy(m, data, (size_t) bytes);
+    struct cajeta_vk_buf* sb = cajeta_xpu_vk_rec(staging);
+
+    VkCommandBufferAllocateInfo cbai;
+    memset(&cbai, 0, sizeof(cbai));
+    cbai.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    cbai.commandPool = g_xpu_vk.cmdPool;
+    cbai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    cbai.commandBufferCount = 1;
+    VkCommandBuffer cmd = VK_NULL_HANDLE;
+    if (g_xpu_vk.vkAllocateCommandBuffers(g_xpu_vk.device, &cbai, &cmd)
+            == VK_SUCCESS && sb) {
+        VkCommandBufferBeginInfo cbbi;
+        memset(&cbbi, 0, sizeof(cbbi));
+        cbbi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+        cbbi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+        g_xpu_vk.vkBeginCommandBuffer(cmd, &cbbi);
+
+        VkImageMemoryBarrier toDst;
+        memset(&toDst, 0, sizeof(toDst));
+        toDst.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        toDst.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        toDst.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        toDst.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        toDst.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        toDst.image = t->image;
+        toDst.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        toDst.subresourceRange.levelCount = 1;
+        toDst.subresourceRange.layerCount = 1;
+        toDst.srcAccessMask = 0;
+        toDst.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        g_xpu_vk.vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                                      VK_PIPELINE_STAGE_TRANSFER_BIT, 0,
+                                      0, NULL, 0, NULL, 1, &toDst);
+
+        VkBufferImageCopy region;
+        memset(&region, 0, sizeof(region));
+        region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        region.imageSubresource.layerCount = 1;
+        region.imageExtent.width = w;
+        region.imageExtent.height = h;
+        region.imageExtent.depth = 1;
+        g_xpu_vk.vkCmdCopyBufferToImage(cmd, sb->buffer, t->image,
+                                        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                        1, &region);
+
+        VkImageMemoryBarrier toRead = toDst;
+        toRead.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        toRead.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        toRead.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        toRead.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        g_xpu_vk.vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                                      VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0,
+                                      0, NULL, 0, NULL, 1, &toRead);
+
+        g_xpu_vk.vkEndCommandBuffer(cmd);
+        VkSubmitInfo si;
+        memset(&si, 0, sizeof(si));
+        si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+        si.commandBufferCount = 1;
+        si.pCommandBuffers = &cmd;
+        g_xpu_vk.vkQueueSubmit(g_xpu_vk.queue, 1, &si, VK_NULL_HANDLE);
+        g_xpu_vk.vkQueueWaitIdle(g_xpu_vk.queue);
+        g_xpu_vk.vkFreeCommandBuffers(g_xpu_vk.device, g_xpu_vk.cmdPool, 1, &cmd);
+    }
+    cajeta_xpu_vk_free(staging);
+}
+
+static void cajeta_xpu_vk_tex_free(int64_t handle) {
+    struct cajeta_vk_tex* t = cajeta_xpu_vk_tex_rec(handle);
+    if (!t) return;
+    if (t->view) g_xpu_vk.vkDestroyImageView(g_xpu_vk.device, t->view, NULL);
+    if (t->image) g_xpu_vk.vkDestroyImage(g_xpu_vk.device, t->image, NULL);
+    if (t->memory) g_xpu_vk.vkFreeMemory(g_xpu_vk.device, t->memory, NULL);
+    t->live = 0; t->image = VK_NULL_HANDLE; t->view = VK_NULL_HANDLE;
+    t->memory = VK_NULL_HANDLE;
+}
+
+// Create a transient VkSampler from a cajeta Sampler's modes: filterMode 0 =
+// nearest, 1 = linear; addressMode 0 = clamp-to-edge, 1 = repeat. Normalized
+// coords (unnormalizedCoordinates = FALSE); single mip (sample at LOD 0).
+// Returns the VkSampler as an int64 (0 on failure) so the build-shared launch
+// translation never names a Vulkan type. Pair with cajeta_xpu_vk_destroy_sampler.
+static int64_t cajeta_xpu_vk_make_sampler(int32_t filterMode,
+                                          int32_t addressMode) {
+    VkFilter f = filterMode == 1 ? VK_FILTER_LINEAR : VK_FILTER_NEAREST;
+    VkSamplerAddressMode a = addressMode == 1
+                                 ? VK_SAMPLER_ADDRESS_MODE_REPEAT
+                                 : VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    VkSamplerCreateInfo sci;
+    memset(&sci, 0, sizeof(sci));
+    sci.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+    sci.magFilter = f; sci.minFilter = f;
+    sci.mipmapMode = filterMode == 1 ? VK_SAMPLER_MIPMAP_MODE_LINEAR
+                                     : VK_SAMPLER_MIPMAP_MODE_NEAREST;
+    sci.addressModeU = a; sci.addressModeV = a; sci.addressModeW = a;
+    sci.minLod = 0.0f; sci.maxLod = 0.0f;
+    sci.borderColor = VK_BORDER_COLOR_FLOAT_OPAQUE_BLACK;
+    sci.unnormalizedCoordinates = VK_FALSE;
+    VkSampler s = VK_NULL_HANDLE;
+    if (g_xpu_vk.vkCreateSampler(g_xpu_vk.device, &sci, NULL, &s) != VK_SUCCESS)
+        return 0;
+    return (int64_t) (uintptr_t) s;
+}
+
+static void cajeta_xpu_vk_destroy_sampler(int64_t handle) {
+    if (!handle) return;
+    g_xpu_vk.vkDestroySampler(g_xpu_vk.device,
+                              (VkSampler) (uintptr_t) handle, NULL);
+}
+
 // One dispatch: shader module + descriptor set (binding i = bindings[i]) +
 // pipeline + command buffer + submit + wait. `bindings` are 1-based table
 // handles, in kernel-parameter order. Mirrors VulkanDriver::launch.
+// Per-binding resource kind, after launch_vulkan has wrapped scalars into SSBOs.
+#define CAJ_VKB_BUFFER  0   // bindings[i] = buffer-table handle  -> STORAGE_BUFFER
+#define CAJ_VKB_TEXTURE 1   // bindings[i] = texture-table handle -> SAMPLED_IMAGE
+#define CAJ_VKB_SAMPLER 2   // bindings[i] = (int64) VkSampler    -> SAMPLER
+
+static VkDescriptorType cajeta_vkb_desc_type(uint8_t kind) {
+    if (kind == CAJ_VKB_TEXTURE) return VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+    if (kind == CAJ_VKB_SAMPLER) return VK_DESCRIPTOR_TYPE_SAMPLER;
+    return VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+}
+
 static int cajeta_xpu_vk_launch(const void* spirv, uint64_t len,
                                 const char* entry, const int64_t* bindings,
-                                int n, unsigned gx, unsigned gy, unsigned gz,
+                                const uint8_t* kinds, int n,
+                                unsigned gx, unsigned gy, unsigned gz,
                                 unsigned bx, unsigned by, unsigned bz,
                                 unsigned sharedBytes) {
     if (!spirv || len < 4 || n <= 0) return 0;
@@ -4508,7 +4829,7 @@ static int cajeta_xpu_vk_launch(const void* spirv, uint64_t len,
     memset(binds, 0, sizeof(binds[0]) * n);
     for (int i = 0; i < n; ++i) {
         binds[i].binding = (uint32_t) i;
-        binds[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        binds[i].descriptorType = cajeta_vkb_desc_type(kinds[i]);
         binds[i].descriptorCount = 1;
         binds[i].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
     }
@@ -4558,15 +4879,28 @@ static int cajeta_xpu_vk_launch(const void* spirv, uint64_t len,
                                           &cpci, NULL, &pipeline) != VK_SUCCESS)
         goto done;
 
-    VkDescriptorPoolSize poolSize;
-    poolSize.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    poolSize.descriptorCount = (uint32_t) n;
+    // Pool sized by the distinct descriptor types actually used (storage
+    // buffer / sampled image / sampler), one entry per non-empty class.
+    uint32_t nBuf = 0, nImg = 0, nSamp = 0;
+    for (int i = 0; i < n; ++i) {
+        if (kinds[i] == CAJ_VKB_TEXTURE) ++nImg;
+        else if (kinds[i] == CAJ_VKB_SAMPLER) ++nSamp;
+        else ++nBuf;
+    }
+    VkDescriptorPoolSize poolSizes[3];
+    uint32_t nPool = 0;
+    if (nBuf) { poolSizes[nPool].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+                poolSizes[nPool++].descriptorCount = nBuf; }
+    if (nImg) { poolSizes[nPool].type = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+                poolSizes[nPool++].descriptorCount = nImg; }
+    if (nSamp){ poolSizes[nPool].type = VK_DESCRIPTOR_TYPE_SAMPLER;
+                poolSizes[nPool++].descriptorCount = nSamp; }
     VkDescriptorPoolCreateInfo dpci;
     memset(&dpci, 0, sizeof(dpci));
     dpci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
     dpci.maxSets = 1;
-    dpci.poolSizeCount = 1;
-    dpci.pPoolSizes = &poolSize;
+    dpci.poolSizeCount = nPool;
+    dpci.pPoolSizes = poolSizes;
     if (g_xpu_vk.vkCreateDescriptorPool(g_xpu_vk.device, &dpci, NULL, &descPool)
             != VK_SUCCESS) goto done;
 
@@ -4581,20 +4915,34 @@ static int cajeta_xpu_vk_launch(const void* spirv, uint64_t len,
             != VK_SUCCESS) goto done;
 
     VkDescriptorBufferInfo bufInfos[64];
+    VkDescriptorImageInfo imgInfos[64];
     VkWriteDescriptorSet writes[64];
     memset(writes, 0, sizeof(writes[0]) * n);
+    memset(imgInfos, 0, sizeof(imgInfos[0]) * n);
     for (int i = 0; i < n; ++i) {
-        struct cajeta_vk_buf* r = cajeta_xpu_vk_rec(bindings[i]);
-        if (!r) goto done;
-        bufInfos[i].buffer = r->buffer;
-        bufInfos[i].offset = 0;
-        bufInfos[i].range = VK_WHOLE_SIZE;
         writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         writes[i].dstSet = descSet;
         writes[i].dstBinding = (uint32_t) i;
         writes[i].descriptorCount = 1;
-        writes[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        writes[i].pBufferInfo = &bufInfos[i];
+        writes[i].descriptorType = cajeta_vkb_desc_type(kinds[i]);
+        if (kinds[i] == CAJ_VKB_TEXTURE) {
+            struct cajeta_vk_tex* t = cajeta_xpu_vk_tex_rec(bindings[i]);
+            if (!t) goto done;
+            imgInfos[i].imageView = t->view;
+            imgInfos[i].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            writes[i].pImageInfo = &imgInfos[i];
+        } else if (kinds[i] == CAJ_VKB_SAMPLER) {
+            imgInfos[i].sampler = (VkSampler) (uintptr_t) bindings[i];
+            if (imgInfos[i].sampler == VK_NULL_HANDLE) goto done;
+            writes[i].pImageInfo = &imgInfos[i];
+        } else {
+            struct cajeta_vk_buf* r = cajeta_xpu_vk_rec(bindings[i]);
+            if (!r) goto done;
+            bufInfos[i].buffer = r->buffer;
+            bufInfos[i].offset = 0;
+            bufInfos[i].range = VK_WHOLE_SIZE;
+            writes[i].pBufferInfo = &bufInfos[i];
+        }
     }
     g_xpu_vk.vkUpdateDescriptorSets(g_xpu_vk.device, (uint32_t) n, writes, 0,
                                     NULL);
@@ -4648,12 +4996,24 @@ static int cajeta_xpu_vulkan_init_locked(void) { return 0; }
 static int64_t cajeta_xpu_vk_alloc(uint64_t b) { (void) b; return 0; }
 static void* cajeta_xpu_vk_mapped(int64_t h) { (void) h; return NULL; }
 static void cajeta_xpu_vk_free(int64_t h) { (void) h; }
+static int64_t cajeta_xpu_vk_tex_alloc(uint32_t w, uint32_t h) {
+    (void) w; (void) h; return 0;
+}
+static void cajeta_xpu_vk_tex_upload(int64_t h, const void* d,
+                                     uint32_t w, uint32_t ht) {
+    (void) h; (void) d; (void) w; (void) ht;
+}
+static void cajeta_xpu_vk_tex_free(int64_t h) { (void) h; }
+static int64_t cajeta_xpu_vk_make_sampler(int32_t f, int32_t a) {
+    (void) f; (void) a; return 0;
+}
+static void cajeta_xpu_vk_destroy_sampler(int64_t h) { (void) h; }
 static int cajeta_xpu_vk_launch(const void* s, uint64_t l, const char* e,
-                                const int64_t* b, int n,
+                                const int64_t* b, const uint8_t* k, int n,
                                 unsigned gx, unsigned gy, unsigned gz,
                                 unsigned bx, unsigned by, unsigned bz,
                                 unsigned sharedBytes) {
-    (void) s; (void) l; (void) e; (void) b; (void) n;
+    (void) s; (void) l; (void) e; (void) b; (void) k; (void) n;
     (void) gx; (void) gy; (void) gz; (void) bx; (void) by; (void) bz;
     (void) sharedBytes; return 0;
 }
@@ -5154,15 +5514,81 @@ void __cajeta_xpu_buffer_free(void* self, int64_t handle) {
     }
 }
 
-// --- Texture2D + Sampler (Item 8, CPU emulation) ----------------------------
+// --- HIP texture helpers (Item 8 Stage C) -----------------------------------
+// On AMD a Texture2D is a hipArray (created here) whose handle is a pointer to a
+// cajeta_hip_tex record. The hipTextureObject — which carries the image AND
+// sampler SRDs the kernel's __ockl_image_sample_2D reads — is built per launch
+// (cajeta_xpu_launch_hip) from this array + the paired Sampler's modes.
+static int cajeta_hip_tex_supported(void) {
+    return g_xpu_hip.hipMallocArray && g_xpu_hip.hipMemcpy2DToArray &&
+           g_xpu_hip.hipCreateTextureObject && g_xpu_hip.hipDestroyTextureObject;
+}
+
+static int64_t cajeta_xpu_hip_tex_alloc(uint32_t w, uint32_t h) {
+    if (!cajeta_hip_tex_supported()) return 0;
+    struct caj_hip_channel_format_desc cd;
+    memset(&cd, 0, sizeof(cd));
+    cd.x = 32;                          // R32, single float channel
+    cd.f = CAJ_HIP_CHANNEL_FLOAT;
+    void* array = NULL;
+    if (g_xpu_hip.hipMallocArray(&array, &cd, w, h, 0) != 0 || !array) return 0;
+    struct cajeta_hip_tex* t =
+        (struct cajeta_hip_tex*) malloc(sizeof(*t));
+    if (!t) { if (g_xpu_hip.hipFreeArray) g_xpu_hip.hipFreeArray(array); return 0; }
+    t->array = array; t->w = w; t->h = h;
+    return (int64_t) (intptr_t) t;
+}
+
+static void cajeta_xpu_hip_tex_upload(int64_t handle, const void* data,
+                                      uint32_t w, uint32_t h) {
+    struct cajeta_hip_tex* t = (struct cajeta_hip_tex*) (intptr_t) handle;
+    if (!t || !t->array || w != t->w || h != t->h) return;
+    size_t rowBytes = (size_t) w * sizeof(float);
+    g_xpu_hip.hipMemcpy2DToArray(t->array, 0, 0, data, rowBytes, rowBytes, h,
+                                 CAJ_HIP_MEMCPY_HTOD);
+}
+
+static void cajeta_xpu_hip_tex_free(int64_t handle) {
+    struct cajeta_hip_tex* t = (struct cajeta_hip_tex*) (intptr_t) handle;
+    if (!t) return;
+    if (t->array && g_xpu_hip.hipFreeArray) g_xpu_hip.hipFreeArray(t->array);
+    free(t);
+}
+
+// Build a hipTextureObject from a texture record's array + a cajeta Sampler's
+// modes (filterMode 0=nearest/1=linear, addressMode 0=clamp/1=wrap), normalized
+// coords, element-type read. Returns the object pointer (as int64) or 0.
+static int64_t cajeta_xpu_hip_make_texobj(int64_t texHandle, int32_t filterMode,
+                                          int32_t addressMode) {
+    struct cajeta_hip_tex* t = (struct cajeta_hip_tex*) (intptr_t) texHandle;
+    if (!t || !t->array || !cajeta_hip_tex_supported()) return 0;
+    struct caj_hip_resource_desc rd;
+    memset(&rd, 0, sizeof(rd));
+    rd.resType = CAJ_HIP_RES_ARRAY;
+    rd.res.array.array = t->array;
+    struct caj_hip_texture_desc td;
+    memset(&td, 0, sizeof(td));
+    int hipAddr = addressMode == 1 ? CAJ_HIP_ADDR_WRAP : CAJ_HIP_ADDR_CLAMP;
+    td.addressMode[0] = hipAddr; td.addressMode[1] = hipAddr;
+    td.addressMode[2] = hipAddr;
+    td.filterMode = filterMode == 1 ? CAJ_HIP_FILTER_LINEAR : CAJ_HIP_FILTER_POINT;
+    td.readMode = CAJ_HIP_READ_ELEMENT;
+    td.normalizedCoords = 1;
+    void* texObj = NULL;
+    if (g_xpu_hip.hipCreateTextureObject(&texObj, &rd, &td, NULL) != 0)
+        return 0;
+    return (int64_t) (intptr_t) texObj;
+}
+
+// --- Texture2D + Sampler (Item 8) -------------------------------------------
 // A Texture2D is a small host-side handle (deviceHandle + width/height) over a
 // device image; on the CPU backend the device image IS a host allocation. The
 // int64 deviceHandle is a pointer to this texobj — a row-major float32 image
 // with its dimensions — exactly as a Buffer's handle is its host block. The
 // kernel receives that pointer (marshalled like a buffer) and reads it through
 // __cajeta_xpu_cpu_tex_sample, which does the addressing + filtering the GPU
-// texture unit would. The SIMT/Vulkan rungs (Stages B–D) create real device
-// images here instead; for now only the CPU case is wired.
+// texture unit would. On Vulkan/AMD the handle is a device image / hipArray
+// record and the kernel samples it through the native image path.
 struct cajeta_cpu_texobj {
     float*   data;   // row-major width*height float32 texels (owned)
     uint32_t w;
@@ -5186,7 +5612,11 @@ int64_t __cajeta_xpu_texture_alloc(void* self, uint32_t width, uint32_t height) 
             if (!t->data) { free(t); return 0; }
             return (int64_t) (intptr_t) t;
         }
-        // CUDA/HIP texture objects + Vulkan sampled images land in Stages B–D.
+        case CAJ_XPU_VULKAN:
+            return cajeta_xpu_vk_tex_alloc(width, height);  // sampled image (Stage B)
+        case CAJ_XPU_HIP:
+            return cajeta_xpu_hip_tex_alloc(width, height); // hipArray (Stage C)
+        // CUDA texture objects land in Stage D (emit-only).
         default: return 0;
     }
 }
@@ -5207,6 +5637,14 @@ void __cajeta_xpu_texture_upload(void* self, int64_t handle, void* host,
             if (t->data) memcpy(t->data, data, bytes);
             return;
         }
+        case CAJ_XPU_VULKAN:
+            (void) bytes;
+            cajeta_xpu_vk_tex_upload(handle, data, width, height);
+            return;
+        case CAJ_XPU_HIP:
+            (void) bytes;
+            cajeta_xpu_hip_tex_upload(handle, data, width, height);
+            return;
         default: return;
     }
 }
@@ -5222,6 +5660,8 @@ void __cajeta_xpu_texture_free(void* self, int64_t handle) {
             free(t);
             return;
         }
+        case CAJ_XPU_VULKAN: cajeta_xpu_vk_tex_free(handle); return;
+        case CAJ_XPU_HIP:    cajeta_xpu_hip_tex_free(handle); return;
         default: return;
     }
 }
@@ -5315,11 +5755,15 @@ static void cajeta_xpu_launch_cuda(const char* kernelName,
 
 // HIP launch: lazily load the hsaco module + resolve the function (reusing the
 // shared module table — only one device backend is active per run), then 1-D
-// launch. Mirrors cajeta_xpu_launch_cuda with hip* entry points.
+// launch. Mirrors cajeta_xpu_launch_cuda with hip* entry points. Texture params
+// (Item 8 Stage C) are translated here: the argv slot holds a texture-record
+// handle, so a hipTextureObject is built from its hipArray + the paired Sampler's
+// modes and substituted into the kernelParams (the kernel reads the image+sampler
+// SRDs from that object via __ockl_image_sample_2D); destroyed after the launch.
 static void cajeta_xpu_launch_hip(const char* kernelName,
                                   int32_t gridX, int32_t gridY, int32_t gridZ,
                                   int32_t blockX, int32_t blockY, int32_t blockZ,
-                                  uint32_t sharedBytes, void* argv) {
+                                  uint32_t sharedBytes, void* argvv) {
     pthread_mutex_lock(&g_xpu_cuda_lock);
     struct cajeta_xpu_module* e = cajeta_xpu_find_module(kernelName);
     if (e) {
@@ -5340,11 +5784,55 @@ static void cajeta_xpu_launch_hip(const char* kernelName,
                 kernelName);
         return;
     }
+    void** argv = (void**) argvv;
+
+    // Texture-object translation (only if this kernel has a Texture2D param).
+    void** useArgv = argv;
+    void* subArgv[64];
+    void* texObjVals[8];
+    int64_t texObjs[8];
+    int ntex = 0;
+    struct cajeta_kparams* kp = cajeta_xpu_find_kparams(kernelName);
+    if (kp && kp->count > 0 && kp->count <= 64) {
+        int hasTex = 0;
+        for (int i = 0; i < kp->count; ++i)
+            if (kp->kind[i] == CAJETA_KP_TEXTURE) { hasTex = 1; break; }
+        if (hasTex) {
+            // The (single, v1) Sampler param supplies the filter/address modes.
+            int32_t filterMode = CAJ_HIP_FILTER_LINEAR, addressMode = 0;
+            for (int i = 0; i < kp->count; ++i)
+                if (kp->kind[i] == CAJETA_KP_SAMPLER) {
+                    const int32_t* modes = (const int32_t*) argv[i];
+                    filterMode = modes[0]; addressMode = modes[1];
+                    break;
+                }
+            for (int i = 0; i < kp->count; ++i) {
+                subArgv[i] = argv[i];
+                if (kp->kind[i] == CAJETA_KP_TEXTURE && ntex < 8) {
+                    int64_t rec = *(int64_t*) argv[i];   // texture-record handle
+                    int64_t obj = cajeta_xpu_hip_make_texobj(rec, filterMode,
+                                                             addressMode);
+                    texObjs[ntex] = obj;
+                    texObjVals[ntex] = (void*) (intptr_t) obj;
+                    subArgv[i] = &texObjVals[ntex];      // arg = the texObj ptr
+                    ++ntex;
+                }
+            }
+            useArgv = subArgv;
+        }
+    }
+
     g_xpu_hip.hipModuleLaunchKernel(fn, (unsigned) gridX, (unsigned) gridY,
                                     (unsigned) gridZ, (unsigned) blockX,
                                     (unsigned) blockY, (unsigned) blockZ,
                                     (unsigned) sharedBytes, /*stream=*/NULL,
-                                    (void**) argv, /*extra=*/NULL);
+                                    useArgv, /*extra=*/NULL);
+    if (ntex > 0) {
+        g_xpu_hip.hipDeviceSynchronize();   // finish before destroying objects
+        for (int i = 0; i < ntex; ++i)
+            if (texObjs[i] && g_xpu_hip.hipDestroyTextureObject)
+                g_xpu_hip.hipDestroyTextureObject((void*) (intptr_t) texObjs[i]);
+    }
 }
 
 // Vulkan launch: translate the uniform kernelParams argv into descriptor
@@ -5379,30 +5867,56 @@ static void cajeta_xpu_launch_vulkan(const char* kernelName,
     }
     const int n = kp->count;
     int64_t bindings[64];
-    int64_t transient[64];
-    int ntrans = 0;
+    uint8_t bkinds[64];                     // per-binding resource kind
+    int64_t transient[64];                  // transient scalar SSBOs to free
+    int64_t samplers[64];                   // transient VkSamplers (as int64)
+    int ntrans = 0, nsamp = 0;
     int built = 1;
     for (int i = 0; i < n; ++i) {
-        if (kp->isBuffer[i]) {
-            bindings[i] = *(int64_t*) argv[i];    // existing storage buffer
-        } else {
-            uint32_t sz = kp->byteSize[i] ? kp->byteSize[i] : 4u;
-            int64_t h = cajeta_xpu_vk_alloc(sz);  // transient scalar SSBO
-            if (!h) { built = 0; break; }
-            void* m = cajeta_xpu_vk_mapped(h);
-            if (m) memcpy(m, argv[i], sz);
-            bindings[i] = h;
-            transient[ntrans++] = h;
+        switch (kp->kind[i]) {
+            case CAJETA_KP_BUFFER:
+                bindings[i] = *(int64_t*) argv[i];    // existing storage buffer
+                bkinds[i] = CAJ_VKB_BUFFER;
+                break;
+            case CAJETA_KP_TEXTURE:
+                // argv slot holds the Texture2D deviceHandle = texture-table index.
+                bindings[i] = *(int64_t*) argv[i];
+                bkinds[i] = CAJ_VKB_TEXTURE;
+                break;
+            case CAJETA_KP_SAMPLER: {
+                // argv slot points at the by-value Sampler POD: { i32 filterMode,
+                // i32 addressMode }. Build a transient VkSampler from it.
+                const int32_t* modes = (const int32_t*) argv[i];
+                int64_t s = cajeta_xpu_vk_make_sampler(modes[0], modes[1]);
+                if (!s) { built = 0; break; }
+                bindings[i] = s;
+                bkinds[i] = CAJ_VKB_SAMPLER;
+                samplers[nsamp++] = s;
+                break;
+            }
+            default: {   // scalar by value -> transient single-element SSBO
+                uint32_t sz = kp->byteSize[i] ? kp->byteSize[i] : 4u;
+                int64_t h = cajeta_xpu_vk_alloc(sz);
+                if (!h) { built = 0; break; }
+                void* m = cajeta_xpu_vk_mapped(h);
+                if (m) memcpy(m, argv[i], sz);
+                bindings[i] = h;
+                bkinds[i] = CAJ_VKB_BUFFER;
+                transient[ntrans++] = h;
+                break;
+            }
         }
+        if (!built) break;
     }
     if (built)
-        cajeta_xpu_vk_launch(spirv, len, kernelName, bindings, n,
+        cajeta_xpu_vk_launch(spirv, len, kernelName, bindings, bkinds, n,
                              (unsigned) gridX, (unsigned) gridY, (unsigned) gridZ,
                              (unsigned) (blockX > 0 ? blockX : 1),
                              (unsigned) (blockY > 0 ? blockY : 1),
                              (unsigned) (blockZ > 0 ? blockZ : 1),
                              (unsigned) (sharedBytes > 0 ? sharedBytes : 0));
     for (int i = 0; i < ntrans; ++i) cajeta_xpu_vk_free(transient[i]);
+    for (int i = 0; i < nsamp; ++i) cajeta_xpu_vk_destroy_sampler(samplers[i]);
 }
 
 // The host-source `kernel.launch(...)` entry point: dispatch to the active

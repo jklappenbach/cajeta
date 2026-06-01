@@ -18,6 +18,7 @@
 
 #include "cajeta/xpu/amd/AmdgpuBackend.h"
 #include "cajeta/xpu/amd/AmdgpuKernelLowering.h"
+#include "XpuDeviceTestUtil.h"
 
 #include "cajeta/compile/Compiler.h"
 #include "cajeta/compile/CajetaModule.h"
@@ -184,6 +185,75 @@ TEST(XpuAmdgpuLoopEmitTests, lowersStridedSumLoop) {
     EXPECT_NE(isa.find("global_load"), std::string::npos) << isa;
     EXPECT_NE(isa.find("global_store"), std::string::npos) << isa;
     EXPECT_NE(isa.find("s_endpgm"), std::string::npos) << isa;
+}
+
+namespace {
+// A 2-D texture sampled through a Sampler — the Item 8 Stage C kernel.
+const char* kTextureSampleSource =
+    "package test;\n"
+    "import cajeta.xpu.core.Buffer;\n"
+    "import cajeta.xpu.core.Texture2D;\n"
+    "import cajeta.xpu.core.Sampler;\n"
+    "import cajeta.xpu.core.Thread;\n"
+    "public class M {\n"
+    "    @Kernel\n"
+    "    public static void sampleTex(Texture2D tex, Sampler s,\n"
+    "                                 Buffer<float32> out, uint32 n) {\n"
+    "        uint32 i = Thread.globalIdX();\n"
+    "        if (i < n) { out[i] = tex.sample(s, 0.5, 0.5); }\n"
+    "    }\n"
+    "}\n";
+} // namespace
+
+// Item 8 Stage C: tex.sample lowers to a call to the ROCm device-library
+// function __ockl_image_sample_2D, with the texture param typed as a constant
+// (addrspace 4) pointer to the HIP texture object. GPU-free: just the IR shape,
+// before the device-library link.
+TEST(XpuAmdgpuLoopEmitTests, lowersTextureSampleToOcklCall) {
+    Compiler compiler;
+    auto module = compileForInspection(compiler, kTextureSampleSource, "test.M");
+    auto k = findMethod(module->getStructures()["test.M"], "sampleTex");
+    ASSERT_NE(k, nullptr);
+
+    auto tm = createAmdgpuTargetMachine("gfx1151");
+    ASSERT_NE(tm, nullptr);
+    llvm::LLVMContext deviceCtx;
+    llvm::Module deviceModule("xpu_texsample_amdgpu_ir", deviceCtx);
+    configureDeviceModule(deviceModule, *tm);
+    llvm::Function* fn = lowerKernel(k, deviceModule);
+    ASSERT_NE(fn, nullptr);
+
+    std::string ir = printModule(deviceModule);
+    // The texture param is a constant-AS pointer (the HIP texture object).
+    EXPECT_NE(ir.find("ptr addrspace(4)"), std::string::npos) << ir;
+    // The sample call targets the ROCm device-library image-sample function.
+    EXPECT_NE(ir.find("__ockl_image_sample_2D"), std::string::npos) << ir;
+}
+
+// With the ROCm device bitcode present, the device-library link + AMDGPU codegen
+// turn that call into a real gfx1151 image_sample instruction (the hardware
+// texture path). Gated on a ROCm/HIP install (which is where the device bitcode
+// lives); the GPU itself isn't exercised — this is still ISA text.
+TEST(XpuAmdgpuLoopEmitTests, textureSampleEmitsImageSampleIsa) {
+    CAJETA_SKIP_IF_NO_HIP();
+    Compiler compiler;
+    auto module = compileForInspection(compiler, kTextureSampleSource, "test.M");
+    auto k = findMethod(module->getStructures()["test.M"], "sampleTex");
+    ASSERT_NE(k, nullptr);
+
+    auto tm = createAmdgpuTargetMachine("gfx1151");
+    ASSERT_NE(tm, nullptr);
+    llvm::LLVMContext deviceCtx;
+    llvm::Module deviceModule("xpu_texsample_amdgpu_isa", deviceCtx);
+    configureDeviceModule(deviceModule, *tm);
+    ASSERT_NE(lowerKernel(k, deviceModule), nullptr);
+
+    std::string isa = emitIsa(deviceModule, *tm);   // links ockl.bc internally
+    ASSERT_FALSE(isa.empty());
+    EXPECT_NE(isa.find(".amdhsa_kernel sampleTex"), std::string::npos) << isa;
+    // The gfx11 hardware image-sample (dim:SQ_RSRC_IMG_2D) from the linked
+    // __ockl_image_sample_2D — proof the device-library path reached real ISA.
+    EXPECT_NE(isa.find("image_sample"), std::string::npos) << isa;
 }
 
 // Item 7: a POD struct passed by value as a kernel arg lowers to AMDGPU. The

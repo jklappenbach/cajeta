@@ -1296,7 +1296,12 @@ llvm::Function* LoweringTarget::createKernel(
     std::vector<llvm::Type*> tys;
     tys.reserve(params.size());
     for (auto& p : params) {
-        tys.push_back(p.isBuffer ? bufferParamType(m, p.type) : p.type);
+        if (p.isBuffer)
+            tys.push_back(bufferParamType(m, p.type));
+        else if (p.isTexture)
+            tys.push_back(textureParamType(m));   // texture handle (ptr/i64)
+        else
+            tys.push_back(p.type);                 // scalar / sampler {i32,i32}
     }
     auto* fnTy = llvm::FunctionType::get(llvm::Type::getVoidTy(ctx), tys,
                                          /*vararg=*/false);
@@ -1344,6 +1349,12 @@ llvm::Type* LoweringTarget::bufferParamType(llvm::Module& m,
     // NVPTX/AMDGPU: a buffer base is a global (addrspace 1) pointer — the same
     // type createKernel gives a kernel buffer param, so a helper arg matches it.
     return llvm::PointerType::get(m.getContext(), kGlobalAS);
+}
+
+llvm::Type* LoweringTarget::textureParamType(llvm::Module& m) {
+    // Default (NVPTX emit-only): cudaTextureObject_t is a 64-bit handle by value.
+    // AMDGPU overrides to ptr addrspace(4) (the HIP texture object).
+    return llvm::Type::getInt64Ty(m.getContext());
 }
 
 // Admit the kernel parameters: Buffer<T>/arrays carry an element type,
@@ -1413,8 +1424,15 @@ std::vector<KernelParamInfo> collectKernelParamInfo(const MethodPtr& method,
     std::vector<KernelParamInfo> info;
     if (!method) return info;
     for (auto& p : collectParams(method, ctx)) {
+        uint8_t kind = KernelParamInfo::Scalar;
         unsigned bytes = 0;
-        if (!p.isBuffer && p.type) {
+        if (p.isTexture) {
+            kind = KernelParamInfo::Texture;
+        } else if (p.isSampler) {
+            kind = KernelParamInfo::Sampler;
+        } else if (p.isBuffer) {
+            kind = KernelParamInfo::Buffer;
+        } else if (p.type) {
             // POD struct: the marshalled by-value footprint (alloc size under
             // natural alignment — identical across the host + device targets
             // for an all-primitive struct). Scalars: their byte width.
@@ -1422,7 +1440,7 @@ std::vector<KernelParamInfo> collectKernelParamInfo(const MethodPtr& method,
                 ? (unsigned) llvm::DataLayout("").getTypeAllocSize(p.type)
                 : (p.type->getScalarSizeInBits() + 7u) / 8u;
         }
-        info.push_back({p.isBuffer, bytes});
+        info.push_back({kind, bytes});
     }
     return info;
 }

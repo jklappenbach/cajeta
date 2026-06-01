@@ -159,6 +159,14 @@ namespace xpu {
         // storage-buffer handle (spirv.VulkanBuffer) it keeps in bufferBases.
         virtual llvm::Type* bufferParamType(llvm::Module& m, llvm::Type* elemTy);
 
+        // The LLVM type of a Texture2D when passed as a kernel parameter in the
+        // flat pointer-arg model (Item 8 Stage C/D). AMDGPU: ptr addrspace(4) to
+        // the HIP texture object (image obj at +0, sampler obj at +48), consumed
+        // by sampleTexture via __ockl_image_sample_2D. NVPTX (emit-only): i64
+        // (cudaTextureObject_t handle by value). Default: i64. CPU/Vulkan override
+        // createKernel/materializeParam and never consult this.
+        virtual llvm::Type* textureParamType(llvm::Module& m);
+
         // --- wave / subgroup ops (the @Wave variance-shaped feature) ---------
         //
         // All three backends have hardware wave ops, but they diverge in

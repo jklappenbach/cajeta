@@ -60,9 +60,11 @@ namespace vulkan {
             hostModule.getOrInsertFunction("__cajeta_xpu_register_module", regTy);
 
         // void __cajeta_xpu_register_kernel_params(i8* name, i32 count,
-        //                                          i8* isBuffer, i32* byteSize)
+        //                                          i8* kind, i32* byteSize)
         // The Vulkan rung of the runtime dispatcher needs this to turn the
-        // uniform kernelParams argv into descriptor bindings (scalars -> SSBOs).
+        // uniform kernelParams argv into descriptor bindings (scalars -> SSBOs,
+        // buffers -> storage buffers, textures -> sampled images, samplers ->
+        // VkSamplers). kind[i] = KernelParamInfo::Kind for param i.
         llvm::FunctionType* kpTy = llvm::FunctionType::get(
             voidTy, {ptrTy, i32Ty, ptrTy, ptrTy}, false);
         llvm::FunctionCallee kpFn = hostModule.getOrInsertFunction(
@@ -122,20 +124,20 @@ namespace vulkan {
             std::vector<KernelParamInfo> info =
                 collectKernelParamInfo(method, ctx);
             if (!info.empty()) {
-                std::vector<uint8_t> isBuf;
+                std::vector<uint8_t> kinds;
                 std::vector<uint32_t> sizes;
-                isBuf.reserve(info.size());
+                kinds.reserve(info.size());
                 sizes.reserve(info.size());
                 for (auto& pi : info) {
-                    isBuf.push_back(pi.isBuffer ? 1 : 0);
+                    kinds.push_back(pi.kind);
                     sizes.push_back(pi.byteSize);
                 }
-                llvm::Constant* isBufInit = llvm::ConstantDataArray::get(
-                    ctx, llvm::ArrayRef<uint8_t>(isBuf.data(), isBuf.size()));
-                auto* isBufGV = new llvm::GlobalVariable(
-                    hostModule, isBufInit->getType(), /*isConstant=*/true,
-                    llvm::GlobalValue::PrivateLinkage, isBufInit,
-                    "xpu.kpbuf." + entryName);
+                llvm::Constant* kindInit = llvm::ConstantDataArray::get(
+                    ctx, llvm::ArrayRef<uint8_t>(kinds.data(), kinds.size()));
+                auto* kindGV = new llvm::GlobalVariable(
+                    hostModule, kindInit->getType(), /*isConstant=*/true,
+                    llvm::GlobalValue::PrivateLinkage, kindInit,
+                    "xpu.kpkind." + entryName);
                 llvm::Constant* szInit = llvm::ConstantDataArray::get(
                     ctx, llvm::ArrayRef<uint32_t>(sizes.data(), sizes.size()));
                 auto* szGV = new llvm::GlobalVariable(
@@ -145,7 +147,7 @@ namespace vulkan {
                 b.CreateCall(kpFn, {nameStr,
                                     llvm::ConstantInt::get(i32Ty,
                                                            (uint32_t) info.size()),
-                                    isBufGV, szGV});
+                                    kindGV, szGV});
             }
             b.CreateRetVoid();
 

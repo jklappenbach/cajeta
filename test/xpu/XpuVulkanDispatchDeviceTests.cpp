@@ -334,6 +334,85 @@ TEST(XpuVulkanDispatchDeviceTests, podStructArgOnDevice) {
     EXPECT_FLOAT_EQ(fn(), 65536.0f);   // Σ(2i+1) over [0,256)
 }
 
+// Item 8 Stage B: a Texture2D sampled through a Sampler with bilinear filtering,
+// on the real Vulkan device (RADV / Strix Halo). The Texture2D binds a native
+// SAMPLED_IMAGE descriptor, the Sampler a VkSampler (filter/address from its
+// modes), and tex.sample(...) lowers to OpImageSampleExplicitLod. A 2×2 image
+// {0,1,2,3} sampled at the four texel centers returns the exact texels; the
+// dead-center (0.5,0.5) returns the 4-texel average 1.5 — bit-exact, so the
+// in-kernel compare uses a small epsilon only to guard GPU weight precision.
+TEST(XpuVulkanDispatchDeviceTests, textureSampleOnDevice) {
+    if (!VulkanDriver::available()) {
+        GTEST_SKIP() << "no Vulkan device/driver available";
+    }
+    const char* src =
+        "package test;\n"
+        "import cajeta.xpu.core.Buffer;\n"
+        "import cajeta.xpu.core.Texture2D;\n"
+        "import cajeta.xpu.core.Sampler;\n"
+        "import cajeta.xpu.core.Stream;\n"
+        "import cajeta.xpu.core.Thread;\n"
+        "public class TexSample {\n"
+        "    @Kernel\n"
+        "    public static void sample(Texture2D tex, Sampler s,\n"
+        "                              Buffer<float32> us, Buffer<float32> vs,\n"
+        "                              Buffer<float32> out, uint32 n) {\n"
+        "        uint32 i = Thread.globalIdX();\n"
+        "        if (i < n) { out[i] = tex.sample(s, us[i], vs[i]); }\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        uint32 w = 2;\n"
+        "        uint32 h = 2;\n"
+        "        float32[] pixels = new float32[4];\n"
+        "        pixels[0] = 0.0f; pixels[1] = 1.0f;\n"
+        "        pixels[2] = 2.0f; pixels[3] = 3.0f;\n"
+        "        Texture2D tex = heap Texture2D(w, h);\n"
+        "        tex.upload(pixels);\n"
+        "        Sampler samp = heap Sampler(1, 0);\n"   // linear, clamp
+        "        uint32 n = 5;\n"
+        "        float32[] hus = new float32[n];\n"
+        "        float32[] hvs = new float32[n];\n"
+        "        float32[] hexp = new float32[n];\n"
+        "        hus[0] = 0.25f; hvs[0] = 0.25f; hexp[0] = 0.0f;\n"
+        "        hus[1] = 0.75f; hvs[1] = 0.25f; hexp[1] = 1.0f;\n"
+        "        hus[2] = 0.25f; hvs[2] = 0.75f; hexp[2] = 2.0f;\n"
+        "        hus[3] = 0.75f; hvs[3] = 0.75f; hexp[3] = 3.0f;\n"
+        "        hus[4] = 0.5f;  hvs[4] = 0.5f;  hexp[4] = 1.5f;\n"
+        "        float32[] hout = new float32[n];\n"
+        "        for (uint32 i = 0; i < n; i = i + 1) { hout[i] = -1.0f; }\n"
+        "        Buffer<float32> us = heap Buffer<float32>(0, n);\n"
+        "        Buffer<float32> vs = heap Buffer<float32>(0, n);\n"
+        "        Buffer<float32> out = heap Buffer<float32>(0, n);\n"
+        "        us.allocate();\n"
+        "        vs.allocate();\n"
+        "        out.allocate();\n"
+        "        us.upload(hus);\n"
+        "        vs.upload(hvs);\n"
+        "        out.upload(hout);\n"
+        "        Stream s = Stream.current();\n"
+        "        sample.launch(s, grid: [1], block: [64])(tex, samp, us, vs, out, n);\n"
+        "        s.sync();\n"
+        "        out.download(hout);\n"
+        "        us.free();\n"
+        "        vs.free();\n"
+        "        out.free();\n"
+        "        for (uint32 i = 0; i < n; i = i + 1) {\n"
+        "            float32 d = hout[i] - hexp[i];\n"
+        "            if (d < -0.01f || d > 0.01f) { return (int32)(100 + i); }\n"
+        "        }\n"
+        "        return 777;\n"
+        "    }\n"
+        "}\n";
+    CajetaJit::Options o;
+    o.xpuBackends = {cajeta::xpu::Backend::Spirv};
+    auto jit = CajetaJit::compile(src, "test.TexSample", o);
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<int (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    int r = fn();
+    EXPECT_EQ(r, 777) << "fail code " << r << " (100+i: sampled texel != expected)";
+}
+
 // Bundle vulkan + cpu; CAJETA_XPU_BACKEND=cpu forces the fall to the CPU even
 // with the Vulkan device present — the canonical degrade-to-CPU bundle.
 TEST(XpuVulkanDispatchDeviceTests, bundledVulkanCpuForcedToCpu) {
