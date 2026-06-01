@@ -4906,16 +4906,18 @@ struct cajeta_cpu_grid_slice {
     int32_t blockX;
     int32_t cxStart;
     int32_t cxEnd;
+    int32_t dynShared;    // dynamic shared-memory byte count (coord[9])
 };
 
 // Run a contiguous slice of blocks. The launcher thunk is the per-BLOCK wrapper
 // (Inc 5B): it loops the block's work-items internally (vectorized), so we call
 // it ONCE PER BLOCK, setting ctaid.x + ntid.x. coord = [tid.xyz (unused here),
-// ctaid.xyz, ntid.xyz]. Each worker owns its coord[9] (no sharing); a
+// ctaid.xyz, ntid.xyz, dynShared]. Each worker owns its coord (no sharing); a
 // data-parallel, barrier-free CPU kernel writes disjoint elements, so the
-// fan-out is race-free for any kernel that is correct on a GPU.
+// fan-out is race-free for any kernel that is correct on a GPU. coord[9] carries
+// the dynamic shared-memory byte count (the wrapper alloca's it per block).
 static void cajeta_xpu_cpu_run_slice(const struct cajeta_cpu_grid_slice* s) {
-    int32_t coord[9] = {0, 0, 0, 0, 0, 0, s->blockX, 1, 1};   // ntid=(blockX,1,1)
+    int32_t coord[10] = {0, 0, 0, 0, 0, 0, s->blockX, 1, 1, s->dynShared};
     for (int32_t cx = s->cxStart; cx < s->cxEnd; ++cx) {
         coord[3] = cx;                                        // ctaid.x
         s->fn(s->argv, coord);   // per-block; the wrapper loops work-items
@@ -4944,7 +4946,7 @@ static void* cajeta_xpu_cpu_worker(void* arg) {
 #define CAJETA_XPU_CPU_MAX_WORKERS 256
 
 static void cajeta_xpu_launch_cpu(const char* name, int32_t gridX, int32_t blockX,
-                                  void* argv) {
+                                  int32_t sharedBytes, void* argv) {
     void* p = __cajeta_xpu_lookup_cpu_kernel(name);
     if (!p) {
         fprintf(stderr, "cajeta.xpu: no registered CPU kernel '%s' to launch\n",
@@ -4968,7 +4970,8 @@ static void cajeta_xpu_launch_cpu(const char* name, int32_t gridX, int32_t block
     // Serial path: forced, tiny launch, single core, or a single block.
     if (force_serial || gridX <= 1 || blockX <= 0 || nworkers <= 1 ||
         total < CAJETA_XPU_CPU_PARALLEL_THRESHOLD) {
-        struct cajeta_cpu_grid_slice all = {fn, (void**) argv, blockX, 0, gridX};
+        struct cajeta_cpu_grid_slice all = {fn, (void**) argv, blockX, 0, gridX,
+                                            sharedBytes};
         cajeta_xpu_cpu_run_slice(&all);
         return;
     }
@@ -4985,6 +4988,7 @@ static void cajeta_xpu_launch_cpu(const char* name, int32_t gridX, int32_t block
         slices[i].blockX = blockX;
         slices[i].cxStart = cx;
         slices[i].cxEnd = cx + count;
+        slices[i].dynShared = sharedBytes;
         cx += count;
         if (i == nworkers - 1) {
             spawned[i] = 0;   // the calling thread runs the last slice
@@ -5243,7 +5247,8 @@ void __cajeta_xpu_launch(const char* kernelName, int32_t gridX, int32_t blockX,
             cajeta_xpu_launch_vulkan(kernelName, gridX, argv);
             return;
         case CAJ_XPU_CPU:
-            cajeta_xpu_launch_cpu(kernelName, gridX, blockX, argv);
+            cajeta_xpu_launch_cpu(kernelName, gridX, blockX,
+                                  (int32_t) sharedBytes, argv);
             return;
         default: return;   // none: diagnostic emitted
     }

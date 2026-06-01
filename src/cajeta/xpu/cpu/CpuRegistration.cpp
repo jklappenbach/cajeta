@@ -371,15 +371,19 @@ void foldWaveVariants(llvm::Function& f) {
             // handed to LoopVectorize → SIMD. 1-D over tid.x (the launch ABI is
             // 1-D: ntid.y/z == 1); tid.y/z are 0.
             std::vector<llvm::Type*> wtys;
-            wtys.reserve(nReal + kNumBlockCoordParams);
+            wtys.reserve(nReal + kNumBlockCoordParams + 1);
             for (unsigned i = 0; i < nReal; ++i)
                 wtys.push_back(kfnTy->getParamType(i));
             for (unsigned i = 0; i < kNumBlockCoordParams; ++i)
                 wtys.push_back(i32);
+            wtys.push_back(i32);            // dynamic shared-memory byte count
             llvm::Function* wrapper = llvm::Function::Create(
                 llvm::FunctionType::get(voidTy, wtys, false),
                 llvm::GlobalValue::ExternalLinkage,
                 "__cajeta_xpu_cpu_block." + entryName, hostModule);
+            // The trailing wrapper param is the dynamic shared byte count; a
+            // `shared T[runtimeN]` array allocas it per block (else unused → DCE).
+            llvm::Value* dynSharedBytes = wrapper->getArg(nReal + kNumBlockCoordParams);
 
             llvm::Value* ctaidX = wrapper->getArg(nReal + 0);
             llvm::Value* ctaidY = wrapper->getArg(nReal + 1);
@@ -398,7 +402,7 @@ void foldWaveVariants(llvm::Function& f) {
                     std::vector<llvm::Value*> ctaidV = {ctaidX, ctaidY, ctaidZ};
                     std::vector<llvm::Value*> ntidV  = {ntidX,  ntidY,  ntidZ};
                     fissionBarrierKernel(linked, wrapper, nReal, ctaidV, ntidV,
-                                         hostModule, &wiLatches);
+                                         hostModule, &wiLatches, dynSharedBytes);
                 } catch (cajeta::Exception&) {
                     wrapper->eraseFromParent();
                     linked->eraseFromParent();    // has barrier markers; unusable
@@ -529,6 +533,12 @@ void foldWaveVariants(llvm::Function& f) {
                     i32, coordArg, llvm::ConstantInt::get(i64, j), "coord.slot");
                 callArgs.push_back(b.CreateLoad(i32, cPtr, "coord.val"));
             }
+            // coord[9]: the dynamic shared-memory byte count (the launch's
+            // `sharedBytes:`), passed as the wrapper's trailing param.
+            llvm::Value* dynPtr = b.CreateInBoundsGEP(
+                i32, coordArg, llvm::ConstantInt::get(i64, kNumCoordParams),
+                "coord.dyn.slot");
+            callArgs.push_back(b.CreateLoad(i32, dynPtr, "coord.dyn"));
             b.CreateCall(wrapper, callArgs);
             b.CreateRetVoid();
 
