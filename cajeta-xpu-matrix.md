@@ -278,7 +278,7 @@ These are backend-neutral gaps from `cajeta-xpu.md`, unaffected by the Vulkan co
 | Labeled `break` / `continue` | deferred (XPU-N01) |
 | 2D/3D launch | ✅ done — 3-D launch ABI; CUDA/HIP 3-D grid+block; Vulkan 3-D grid (baked block, §4); CPU 3-D grid + block + barrier fission |
 | Multi-arch bundling (fatbin) | **AMD ✅** — `--xpu-arch=gfx1100,gfx1151` → `clang-offload-bundle` via `assembleHsacoBundle`, `hipModuleLoadData` selects the device arch (verified on-device). NVIDIA fatbin parallel deferred (no `ptxas`/`fatbinary` on this box). |
-| Texture / Sampler types | deferred |
+| Texture / Sampler types | ✅ done — `Texture2D` + `Sampler` args + `tex.sample(s, u, v)` (2-D sampled, float32 texel, normalized coords, nearest/bilinear, clamp/wrap, explicit LOD 0). Per-backend `LoweringTarget::sampleTexture` seam — see §11. CPU + Vulkan (RADV) + AMD (gfx1151) verified on-device; NVIDIA emit-only. Needs LLVM 23 (Vulkan `samplelevel`). |
 | `@PushConstant` (Vulkan-only surface) | deferred — note: BDA already *uses* a push-constant block internally (§3), so the plumbing arrives early on Vulkan |
 | POD structs as kernel args without explicit `implements KernelArg` | ✅ done — a plain `class { <primitive fields> }` (no inheritance, no marker) is admitted by value (`isPodStruct`); marshalled vtable-stripped field-by-field through `kernelParams`; the kernel reads fields with `p.field` (an `extractvalue` / `OpCompositeExtract` off the SSA aggregate — **no alloca**, so SPIR-V logical addressing stays valid). NVPTX/AMDGPU by-value kernarg, CPU thunk aggregate load, Vulkan single descriptor-SSBO. Verified on AMD (gfx1151) + Vulkan (RADV). Read-only, all-primitive fields, no inheritance in v1. |
 
@@ -294,6 +294,7 @@ Where a platform lacks a native primitive — can Cajeta provide it, and if not,
 - **Vulkan · workgroup barrier** → `group.memory.barrier.with.group.sync` + a one-instruction post-emit fixup (`SpirvBackend::fixupControlBarriers`) that corrects LLVM 22's Vulkan-forbidden SequentiallyConsistent semantics to `WorkgroupMemory|AcquireRelease`. Now passes strict `spirv-val` and runs on-device. *(§1)*
 - **Vulkan · block dim** → fixed compile-time `LocalSize` (first cut); spec-constant `LocalSizeId` is the refinement. *(§4)*
 - **AMD · workgroup dim read** → dispatch-packet load (no `ntid` intrinsic, but the value is recoverable). *(§1)*
+- **All · `tex.sample(sampler, u, v)`** (Item 8) → one `LoweringTarget::sampleTexture` seam, four native realizations: CPU C bilinear (`__cajeta_xpu_cpu_tex_sample`); Vulkan `llvm.spv.resource.samplelevel` → `OpImageSampleExplicitLod` (image + sampler descriptors); AMD `__ockl_image_sample_2D` → `image_sample` (ROCm device-lib **hybrid-linked only for sampling kernels** — reuses ROCm's SRD build + coord normalization rather than hand-packing gfx descriptors); NVIDIA `llvm.nvvm.tex.unified.2d` → PTX `tex.2d`. Texture marshals like a `Buffer` handle, `Sampler` like a by-value POD; on AMD/NVIDIA the sampler state rides the texture object (built per-launch). CPU+Vulkan+AMD on-device, NVIDIA emit-only. *(needs LLVM 23 for Vulkan)*
 
 **Not cleanly possible (and why):**
 

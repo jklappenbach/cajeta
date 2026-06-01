@@ -128,6 +128,23 @@ public:
         return readSreg(b, m, llvm::Intrinsic::nvvm_read_ptx_sreg_laneid);
     }
 
+    // tex.sample(sampler, u, v) → llvm.nvvm.tex.unified.2d.v4f32.f32 (Item 8
+    // Stage D, emit-only). NVIDIA's "unified" texture fetch takes the i64
+    // cudaTextureObject_t — which bundles the image AND the sampler state — so
+    // the separate Sampler kernel arg is unused here (as on AMD). The default
+    // textureParamType (i64) already gives the handle by value. Returns
+    // {float,float,float,float}; v1 takes the R channel. No NVIDIA hardware
+    // here — proven via the PTX `tex.2d` instruction in the emit test.
+    llvm::Value* sampleTexture(llvm::IRBuilderBase& b, llvm::Module& m,
+                               llvm::Value* texHandle,
+                               llvm::Value* /*samplerHandle*/, llvm::Value* u,
+                               llvm::Value* v) override {
+        llvm::Function* tex = llvm::Intrinsic::getOrInsertDeclaration(
+            &m, llvm::Intrinsic::nvvm_tex_unified_2d_v4f32_f32);
+        llvm::Value* rgba = b.CreateCall(tex, {texHandle, u, v}, "tex.rgba");
+        return b.CreateExtractValue(rgba, {0}, "tex.sample");
+    }
+
 private:
     static llvm::Value* readSreg(llvm::IRBuilderBase& b, llvm::Module& m,
                                  llvm::Intrinsic::ID id) {
