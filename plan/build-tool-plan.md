@@ -452,8 +452,8 @@ work.
 
 ### Deliverables — Phase 6b (HTTP, MVS, overrides, CLI)
 
-- [ ] HTTP repository driver — bearer token auth.
-- [ ] HTTP repository driver — mutual-TLS auth.
+- [x] HTTP repository driver — bearer token auth.
+- [x] HTTP repository driver — mutual-TLS auth.
 - [x] Transitive dep expansion (fetch each `.cja`'s embedded
       `cajeta.json`, recurse). _Interim: sidecar `cajeta.json`
       next to the `.cja` in the repo; embed-in-archive lands

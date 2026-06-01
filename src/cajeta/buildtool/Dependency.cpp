@@ -70,6 +70,53 @@ namespace cajeta::buildtool {
                            ": type='" + r.type + "' requires 'url'");
             }
 
+            // Optional auth block — only meaningful for http /
+            // maven-compat. Parse for any repo type; the driver
+            // ignores it where it doesn't apply.
+            if (const auto* a = obj->getObject("auth")) {
+                if (auto t = a->getString("type")) {
+                    r.auth.type = t->str();
+                }
+                if (auto v = a->getString("token-env")) {
+                    r.auth.tokenEnv = v->str();
+                }
+                if (auto v = a->getString("token")) {
+                    r.auth.tokenLiteral = v->str();
+                }
+                if (auto v = a->getString("client-cert")) {
+                    r.auth.clientCertPath = v->str();
+                }
+                if (auto v = a->getString("client-key")) {
+                    r.auth.clientKeyPath = v->str();
+                }
+                if (auto v = a->getString("ca-cert")) {
+                    r.auth.caCertPath = v->str();
+                }
+                // Cross-field validation: 'mtls' needs cert+key;
+                // 'bearer' needs a token source.
+                if (r.auth.type == "bearer" &&
+                    r.auth.tokenEnv.empty() &&
+                    r.auth.tokenLiteral.empty()) {
+                    return err("settings.repositories." + r.name +
+                               ".auth: 'bearer' requires 'token-env' or "
+                               "'token'");
+                }
+                if (r.auth.type == "mtls" &&
+                    (r.auth.clientCertPath.empty() ||
+                     r.auth.clientKeyPath.empty())) {
+                    return err("settings.repositories." + r.name +
+                               ".auth: 'mtls' requires 'client-cert' and "
+                               "'client-key'");
+                }
+                if (!r.auth.type.empty() &&
+                    r.auth.type != "bearer" &&
+                    r.auth.type != "mtls") {
+                    return err("settings.repositories." + r.name +
+                               ".auth.type: must be 'bearer' or 'mtls'; "
+                               "got '" + r.auth.type + "'");
+                }
+            }
+
             out.push_back(std::move(r));
         }
 

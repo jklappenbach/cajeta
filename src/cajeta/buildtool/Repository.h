@@ -71,12 +71,22 @@ namespace cajeta::buildtool {
 
     using RepositoryPtr = std::shared_ptr<Repository>;
 
-    // Build the typed Repository drivers from the parsed spec list.
-    // In priority-descending order. Phase 6a recognizes
-    // `filesystem`; other types are returned as
-    // not-yet-implemented errors so the developer sees a clear
-    // signal that the driver isn't there yet.
+    // Build the typed Repository drivers from the parsed spec list,
+    // in priority-descending order.
+    //
+    // `downloadStageDir` is the directory where remote drivers
+    // (HTTP, eventually Git) stage fetched bytes before the
+    // ArtifactCache content-addresses them. The path is created on
+    // demand; callers typically pass `<projectRoot>/.cajeta/cache/downloads/`.
+    // Local-only drivers (filesystem) ignore it.
+    //
+    // Recognized types:
+    //   - filesystem (Phase 6a)
+    //   - http        (Phase 6b)
+    // `git` / `maven-compat` parse but return a "not yet
+    // implemented" error here so the developer sees a clear signal.
     llvm::Expected<std::vector<RepositoryPtr>> buildRepositories(
-        const std::vector<RepositorySpec>& specs);
+        const std::vector<RepositorySpec>& specs,
+        const std::string& downloadStageDir = {});
 
 } // namespace cajeta::buildtool

@@ -6,6 +6,7 @@
 #include <cctype>
 #include <cstring>
 #include <deque>
+#include <filesystem>
 #include <optional>
 #include <set>
 #include <sstream>
@@ -653,7 +654,15 @@ namespace cajeta::buildtool {
                        " dependency(ies) but settings.repositories is "
                        "empty — add at least one repository to fetch from");
         }
-        auto repos = buildRepositories(*repoSpecs);
+        // Remote drivers stage downloads under .cajeta/cache/downloads/
+        // before the ArtifactCache content-addresses them. Living
+        // under the project's own .cajeta keeps interrupted fetches
+        // scoped to the project — `rm -rf .cajeta` is the user's
+        // escape hatch.
+        std::string downloadStage =
+            (std::filesystem::path(projectRoot) / ".cajeta" / "cache" /
+             "downloads").string();
+        auto repos = buildRepositories(*repoSpecs, downloadStage);
         if (!repos) return repos.takeError();
 
         auto overrides = parseOverrides(m);
