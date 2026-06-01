@@ -1274,6 +1274,74 @@ New package `src/main/kotlin/dev/cajeta/idea/debugger/`. A custom
   toggle; selecting one re-targets `stackTrace`/`variables`.
 - **Edit values**: `CajetaValueModifier` → `setVariable`.
 
+### Part C — Checkpoint execution (status)
+
+Parts A and B above are the original outline. The actual build runs
+**checkpoint-by-checkpoint** on branch `idea-ide` (implement + verify one
+checkpoint, report, gate the next; TDD-first; debugger tests live in the
+separate `cajeta_debug_test` target, not the main suite). Status below;
+checkpoint commit hashes are on `idea-ide`. Note the implementation took the
+**JIT-in-process** path (`cajeta dap` LLJIT-runs the target and parks the
+executing fiber in-process) rather than the AOT/DWARF/ptrace path sketched in
+Part A — same DAP wire contract, different backend.
+
+**CP1–CP5 — compiler + DAP foundation (DONE).**
+- CP1 JIT host (`cajeta jit-run`); CP2 statement safepoints + `DebugLocTable`;
+  CP3 `DebugController` stop/resume + per-fiber id + breakpoint arming; CP4
+  `cajeta dap` server (initialize/launch/setBreakpoints/configurationDone/
+  threads/stackTrace/continue/disconnect + stopped/exited/terminated); CP5
+  scopes/variables/setVariable + multi-frame stackTrace + the per-fiber
+  `dbg_top` frame chain and the host `DebugVars` value layer.
+
+**CP6 — IntelliJ XDebugger integration (DONE through CP6f-1; CP6f-2/3 in
+progress).** Pattern: behavioral core is plain JVM (no `com.intellij.*`) so it
+unit-tests without a platform fixture and drives the real `cajeta dap` binary;
+platform classes are thin delegates.
+- **CP6a** DAP client core (`Json`/`DapTransport`/`DapClient`). **DONE.**
+- **CP6b** run config + ProgramRunner + `XDebugProcess` skeleton +
+  `CajetaDebugSession` (launch handshake, run-control). **DONE.**
+- **CP6c** line breakpoints + suspend context (stack frames + source
+  positions). **DONE.**
+- **CP6d** variables view (scopes → variables → `XValue`). **DONE.**
+- **CP6e** variable value editing (`setVariable` via `XValueModifier`).
+  **DONE.**
+- **CP6f** — conditional / exception breakpoints + fibers view. Re-split after
+  a read-only audit (only conditional bp is backed by the existing runtime;
+  exception bp + fibers need C++ runtime work):
+  - **CP6f-1** conditional breakpoints — server-side condition eval
+    (`evaluateCondition`, a constrained `<local> <op> <literal>` grammar) +
+    plugin wiring of `XLineBreakpoint` conditions. **DONE.**
+  - **CP6f-2** fibers view (full multi-stack, stop-the-world). Sub-split:
+    **2a** runtime live-fiber registry + `dbg_id` fix **(DONE)**; **2b** DAP
+    `threads`/per-fiber `stackTrace` wiring **(NEXT)**; **2c** plugin
+    multi-stack thread dropdown; **2d** hard carrier-quiesce for the
+    entry-thread-vs-live-fibers edge case.
+  - **CP6f-3** exception breakpoints — runtime throw-interception hook into
+    `DebugController` + `setExceptionBreakpoints` + `stopped{reason:"exception"}`.
+
+**CP7 — ownership / allocation / lifetime visualization + drop breakpoints
+(PLANNED, after CP6f).** Strong at-a-glance indication of allocation and
+lifetime in both the Variables view and inline in the editor. Full requirements
+(FR-1…FR-9) and the CP7-1a…CP7-6 checkpoint mapping live in
+[`ide-plugin-debug-fr-1.md`](ide-plugin-debug-fr-1.md). Summary:
+- **CP7-1a..1d** metadata foundation — capture allocation class (stack/heap/
+  shared) + ownership role (owner/borrow/transferred) + lifetime in debug-info
+  codegen → runtime frame chain → DAP `variables` facets.
+- **CP7-2** Variables-view rendering (icon + color + bold; moved-out struck/
+  greyed; textual tag/tooltip backup).
+- **CP7-3** editor gutter icons; **CP7-4** full inline decorations, live-
+  updating as the user steps.
+- **CP7-5** configuration, legend, accessibility.
+- **CP7-6** drop / destructor breakpoints — break when an object is dropped,
+  surfaced as a breakpoint on the class destructor (mechanism: the destructor /
+  synthesized drop wrapper carries a breakable safepoint).
+
+The CP7 group depends on the CP6f line completing first; CP7-1a..1d touch
+different layers and may be authored in parallel. The language semantics being
+visualized are specified in
+[`MemoryModel.md`](../../cajeta-docs/stdlib/MemoryModel.md) (owned by a separate
+workstream); this plan covers only the debugger surfacing of them.
+
 ### Verification — Debugging tier
 
 *Compiler (Part A), independent of the IDE:*
@@ -1304,6 +1372,16 @@ New package `src/main/kotlin/dev/cajeta/idea/debugger/`. A custom
       the frames + variables.
 - [ ] Step over/into/out work; Watch/Evaluate evaluates an expression in
       the selected frame.
+
+*CP7 — ownership / allocation / lifetime (planned, after CP6f):*
+
+- [ ] At a stop, owners vs borrows and stack/heap/shared bindings render
+      distinctly in the Variables pane (icon + color + bold) and a moved-out
+      binding is shown consumed, not with a stale value.
+- [ ] The same distinctions appear inline in the editor (gutter icons +
+      inline decorations) and update as the user steps.
+- [ ] A breakpoint on a class destructor fires when an instance is dropped,
+      with the dropped object inspectable at the stop (CP7-6).
 
 ## Out of scope for v0.1
 
