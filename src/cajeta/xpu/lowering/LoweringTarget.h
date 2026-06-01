@@ -157,6 +157,15 @@ namespace xpu {
         // mbcnt; Vulkan SubgroupLocalInvocationId; CPU tid.x % width.
         virtual llvm::Value* waveLaneId(llvm::IRBuilderBase& b,
                                         llvm::Module& m) = 0;
+
+        // A dynamic (runtime-sized) `shared T[n]` lowers to an external unsized
+        // [0 x T] addrspace(3) global — the native extern-shared model on NVPTX
+        // and AMDGPU, where the launch sizes it. Vulkan can't: an external
+        // workgroup variable needs the Vulkan-forbidden Linkage capability, and a
+        // workgroup array needs a concrete length. Backends that return true get a
+        // concrete INTERNAL [1 x T] array instead (a post-emit pass turns the
+        // length into a spec constant the launch's sharedBytes sets).
+        virtual bool dynamicSharedNeedsConcreteSize() const { return false; }
     };
 
 } // namespace xpu

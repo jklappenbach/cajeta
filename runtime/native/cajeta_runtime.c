@@ -4483,7 +4483,8 @@ static void cajeta_xpu_vk_free(int64_t handle) {
 static int cajeta_xpu_vk_launch(const void* spirv, uint64_t len,
                                 const char* entry, const int64_t* bindings,
                                 int n, unsigned gx, unsigned gy, unsigned gz,
-                                unsigned bx, unsigned by, unsigned bz) {
+                                unsigned bx, unsigned by, unsigned bz,
+                                unsigned sharedBytes) {
     if (!spirv || len < 4 || n <= 0) return 0;
     VkShaderModule module = VK_NULL_HANDLE;
     VkDescriptorSetLayout setLayout = VK_NULL_HANDLE;
@@ -4526,17 +4527,19 @@ static int cajeta_xpu_vk_launch(const void* spirv, uint64_t len,
     if (g_xpu_vk.vkCreatePipelineLayout(g_xpu_vk.device, &plci, NULL,
                                         &pipeLayout) != VK_SUCCESS) goto done;
 
-    // Set the workgroup-size spec constants (SpecId 0/1/2 = block.x/y/z; see
-    // injectWorkgroupSizeSpecConstant) so the SPIR-V's WorkgroupSize matches the
-    // launch's block dims instead of the baked default.
-    uint32_t specData[3] = { bx, by, bz };
-    VkSpecializationMapEntry specEntries[3] = {
+    // Spec constants: SpecId 0/1/2 = block.x/y/z (workgroup size, see
+    // injectWorkgroupSizeSpecConstant), SpecId 3 = the dynamic shared array's
+    // length in elements (= sharedBytes / 4; the dynamic-shared element is 4 bytes
+    // — int32/float32 — for now). Set at pipeline creation.
+    uint32_t specData[4] = { bx, by, bz, sharedBytes / 4u };
+    VkSpecializationMapEntry specEntries[4] = {
         { 0, 0,                    sizeof(uint32_t) },
         { 1, sizeof(uint32_t),     sizeof(uint32_t) },
         { 2, 2 * sizeof(uint32_t), sizeof(uint32_t) },
+        { 3, 3 * sizeof(uint32_t), sizeof(uint32_t) },
     };
     VkSpecializationInfo specInfo;
-    specInfo.mapEntryCount = 3;
+    specInfo.mapEntryCount = 4;
     specInfo.pMapEntries = specEntries;
     specInfo.dataSize = sizeof(specData);
     specInfo.pData = specData;
@@ -4647,9 +4650,11 @@ static void cajeta_xpu_vk_free(int64_t h) { (void) h; }
 static int cajeta_xpu_vk_launch(const void* s, uint64_t l, const char* e,
                                 const int64_t* b, int n,
                                 unsigned gx, unsigned gy, unsigned gz,
-                                unsigned bx, unsigned by, unsigned bz) {
+                                unsigned bx, unsigned by, unsigned bz,
+                                unsigned sharedBytes) {
     (void) s; (void) l; (void) e; (void) b; (void) n;
-    (void) gx; (void) gy; (void) gz; (void) bx; (void) by; (void) bz; return 0;
+    (void) gx; (void) gy; (void) gz; (void) bx; (void) by; (void) bz;
+    (void) sharedBytes; return 0;
 }
 #endif  // CAJETA_RT_HAS_VULKAN
 
@@ -5231,7 +5236,7 @@ static void cajeta_xpu_launch_hip(const char* kernelName,
 static void cajeta_xpu_launch_vulkan(const char* kernelName,
                                      int32_t gridX, int32_t gridY, int32_t gridZ,
                                      int32_t blockX, int32_t blockY, int32_t blockZ,
-                                     void* argvv) {
+                                     int32_t sharedBytes, void* argvv) {
     void** argv = (void**) argvv;
     pthread_mutex_lock(&g_xpu_cuda_lock);
     struct cajeta_xpu_module* e = cajeta_xpu_find_module(kernelName);
@@ -5274,7 +5279,8 @@ static void cajeta_xpu_launch_vulkan(const char* kernelName,
                              (unsigned) gridX, (unsigned) gridY, (unsigned) gridZ,
                              (unsigned) (blockX > 0 ? blockX : 1),
                              (unsigned) (blockY > 0 ? blockY : 1),
-                             (unsigned) (blockZ > 0 ? blockZ : 1));
+                             (unsigned) (blockZ > 0 ? blockZ : 1),
+                             (unsigned) (sharedBytes > 0 ? sharedBytes : 0));
     for (int i = 0; i < ntrans; ++i) cajeta_xpu_vk_free(transient[i]);
 }
 
@@ -5296,7 +5302,8 @@ void __cajeta_xpu_launch(const char* kernelName,
             return;
         case CAJ_XPU_VULKAN:
             cajeta_xpu_launch_vulkan(kernelName, gridX, gridY, gridZ,
-                                     blockX, blockY, blockZ, argv);
+                                     blockX, blockY, blockZ,
+                                     (int32_t) sharedBytes, argv);
             return;
         case CAJ_XPU_CPU:
             cajeta_xpu_launch_cpu(kernelName, gridX, gridY, gridZ,

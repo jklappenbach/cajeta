@@ -42,7 +42,7 @@ fix the regression first). Don't build new Vulkan capability on a red base.
 | 2 | **`@Device` helper calls** | capability | medium-large | ◐ core done (scalar params + return, same class, helper-chains; Buffer params deferred) |
 | 3 | **Vulkan block dim — spec-constant workgroup size** | vulkan | medium | ✅ done (verified on-device, block 128) |
 | 4 | **Multi-arch bundling (fatbin)** | deployment | medium | ◐ AMD done + verified on-device; NVIDIA untestable here (no ptxas/fatbinary) |
-| 5 | **Vulkan dynamic shared memory** | vulkan | medium | ☐ not started |
+| 5 | **Vulkan dynamic shared memory** | vulkan | medium | ✅ done (verified on-device) |
 | 6 | **`for-each` parallel loops** | capability | medium | ☐ not started |
 | 7 | **POD structs as kernel args** | capability | small-medium | ☐ not started |
 | 8 | **Texture / Sampler types** | capability | large | ☐ not started |
@@ -294,6 +294,41 @@ verified here; deferred rather than ship untested binary-format code.
 per-`vkCmdDispatch`, so dynamic LDS is a pipeline-cache key, not a launch scalar.
 (CPU dynamic shared landed in Inc 10; NV/AMD are native.) **Goal:** spec-constant
 array length keyed into the pipeline cache by the launch's `sharedBytes:`.
+
+**Investigated (2026-05-31): the current path is BROKEN, not just deferred.** A
+`shared int32[n]` (runtime `n`) lowers to an external unsized `[0 x T]`
+addrspace(3) global; the SPIR-V backend emits it as `OpVariable Workgroup` with
+`LinkageAttributes "…" Import` + `OpCapability Linkage`, which `spirv-val` rejects
+(`Capability Linkage is not allowed by Vulkan 1.3`). So a dynamic-shared kernel
+produces invalid SPIR-V today. **Scope is bigger than Item 3** (which only *added*
+ops): the fix needs (1) the IR/lowering to emit a **concrete internal** Workgroup
+array for the Vulkan dynamic-shared case (a default `[N x T]`, not an external
+import) so the SPIR-V is valid; (2) a post-emit patch turning the array's length
+operand into an `OpSpecConstant` (SpecId) — i.e. **modify** the `OpTypeArray`
+length and add a spec constant, harder than the add-only Item-3 patch; (3) thread
+`sharedBytes` to the Vulkan launcher (it's dropped today — `cajeta_xpu_launch_vulkan`
+takes grid/block but not `sharedBytes`) and set the length spec constant
+(`sharedBytes/sizeof(T)`) via `VkSpecializationInfo` at pipeline creation. A
+substantial, intricate increment of its own.
+
+**✅ DONE + verified on-device (2026-05-31).** And the access path was the real
+gotcha: `lowerSharedDecl` decays the shared array to a flat `T*`, so the SPIR-V
+backend drops the `OpTypeArray` entirely (the variable became a scalar `i32*`) —
+no array to size. Fix in three parts: (1) a `LoweringTarget::dynamicSharedNeedsConcreteSize()`
+hook (Vulkan-only) so the dynamic-shared global is a concrete **internal** `[256 x T]`
+(>1 so it stays an array, not a decayed scalar), named `cajeta_dynsh_…`; (2) keep
+it **typed** — a new `arrayShared` map + a `lowerLValueAddr` branch index it as
+`gep arrTy, gv, {0, i}` so the `OpTypeArray` survives; (3) `injectDynamicSharedSpecConstant`
+(SpirvBackend) finds that array via its OpName, adds an `OpSpecConstant` (SpecId 3,
+default = the baked 256) inserted **before** the `OpTypeArray` (types can't
+forward-reference) and repoints the length operand; (4) the runtime threads
+`sharedBytes` to the Vulkan launcher and sets SpecId 3 = `sharedBytes/4` via
+`VkSpecializationInfo` (alongside Item 3's workgroup-size SpecId 0/1/2). Test
+`XpuVulkanDispatchDeviceTests.dynamicSharedOnDevice` (`shared int32[n]`, barrier,
+cross-lane read on the Strix Halo APU). **Limitations:** one dynamic shared array
+per kernel; 4-byte element (int32/float32) — the runtime divides bytes by 4 (a
+non-4-byte element would need the elem size plumbed to the launcher). spirv-val
+passes; the patched SPIR-V also runs at the default 256 if `sharedBytes` is unset.
 
 ---
 

@@ -206,6 +206,89 @@ bool injectWorkgroupSizeSpecConstant(std::vector<uint8_t>& bytes) {
     return true;
 }
 
+// Make a dynamic shared array's LENGTH a specialization constant set from the
+// launch's sharedBytes. The shared lowerer emits a concrete `[256 x T]` internal
+// Workgroup array named `cajeta_dynsh_…` (a 1-elem array would decay to a scalar,
+// and an external/unsized one needs the forbidden Linkage capability). This finds
+// that array via its OpName, adds an OpSpecConstant (SpecId 3, default = the baked
+// length) and repoints the OpTypeArray's length operand to it — the array is then
+// sized at pipeline creation. Op/enum: OpName=5, OpDecorate=71, OpTypeArray=28,
+// OpTypePointer=32, OpConstant=43, OpVariable=59, OpSpecConstant=50; SpecId deco=1.
+constexpr uint32_t kSpecIdDynShared = 3;   // 0/1/2 are the workgroup-size dims
+bool injectDynamicSharedSpecConstant(std::vector<uint8_t>& bytes) {
+    if (bytes.size() < 20 || (bytes.size() % 4) != 0) return false;
+    std::vector<uint32_t> w(bytes.size() / 4);
+    std::memcpy(w.data(), bytes.data(), bytes.size());
+    if (w[0] != 0x07230203u) return false;
+
+    constexpr uint32_t kOpName = 5, kOpDecorate = 71, kOpTypeArray = 28,
+                       kOpTypePointer = 32, kOpConstant = 43, kOpVariable = 59,
+                       kOpSpecConstant = 50, kSpecId = 1;
+
+    uint32_t dynVar = 0;
+    std::map<uint32_t, uint32_t> varType;       // OpVariable result -> result type
+    std::map<uint32_t, uint32_t> ptrPointee;    // OpTypePointer result -> pointee
+    std::map<uint32_t, size_t> arrLenWord;      // OpTypeArray result -> length-operand word idx
+    std::map<uint32_t, uint32_t> constType;     // OpConstant result -> type
+    std::map<uint32_t, uint32_t> constVal;      // OpConstant result -> literal
+    size_t firstFn = 0, decoEnd = 0;
+    for (size_t i = 5; i < w.size();) {
+        uint32_t wc = w[i] >> 16, op = w[i] & 0xFFFFu;
+        if (wc == 0 || i + wc > w.size()) return false;
+        if (op == kOpName && wc >= 3) {
+            const char* s = reinterpret_cast<const char*>(&w[i + 2]);
+            size_t maxLen = (wc - 2) * 4;
+            if (strnlen(s, maxLen) < maxLen &&
+                std::string(s).find("cajeta_dynsh_") != std::string::npos)
+                dynVar = w[i + 1];
+        } else if (op == kOpVariable && wc >= 3) {
+            varType[w[i + 2]] = w[i + 1];
+        } else if (op == kOpTypePointer && wc == 4) {
+            ptrPointee[w[i + 1]] = w[i + 3];
+        } else if (op == kOpTypeArray && wc == 4) {
+            arrLenWord[w[i + 1]] = i + 3;
+        } else if (op == kOpConstant && wc >= 4) {
+            constType[w[i + 2]] = w[i + 1];
+            constVal[w[i + 2]] = w[i + 3];
+        } else if (op >= 71 && op <= 76) {
+            decoEnd = i + wc;
+        } else if ((w[i] & 0xFFFFu) == 54 /*OpFunction*/) {   // section 9 ends
+            firstFn = i; break;
+        }
+        i += wc;
+    }
+    if (!dynVar || decoEnd == 0 || firstFn == 0) return false;
+    auto vt = varType.find(dynVar);
+    if (vt == varType.end()) return false;
+    auto pp = ptrPointee.find(vt->second);
+    if (pp == ptrPointee.end()) return false;
+    auto al = arrLenWord.find(pp->second);
+    if (al == arrLenWord.end()) return false;
+    uint32_t lenConst = w[al->second];
+    auto ct = constType.find(lenConst);
+    auto cv = constVal.find(lenConst);
+    if (ct == constType.end() || cv == constVal.end()) return false;
+
+    uint32_t newId = w[3];
+    w[3] = newId + 1;
+    w[al->second] = newId;                          // repoint the array length
+
+    uint32_t spec[4] = {(4u << 16) | kOpSpecConstant, ct->second, newId,
+                        cv->second};                // default = the baked length
+    uint32_t deco[4] = {(4u << 16) | kOpDecorate, newId, kSpecId,
+                        kSpecIdDynShared};
+    // The spec constant must precede the OpTypeArray that uses it (types/constants
+    // can't forward-reference). Insert it just before the array; decorations
+    // (earlier in the module) may forward-reference, so insert that at decoEnd.
+    size_t arrStart = al->second - 3;               // OpTypeArray instruction start
+    w.insert(w.begin() + arrStart, spec, spec + 4); // before the array (later pos)
+    w.insert(w.begin() + decoEnd, deco, deco + 4);  // decoEnd < arrStart, unshifted
+
+    bytes.resize(w.size() * 4);
+    std::memcpy(bytes.data(), w.data(), bytes.size());
+    return true;
+}
+
 } // namespace
 
 std::unique_ptr<llvm::TargetMachine>
@@ -258,6 +341,9 @@ std::vector<uint8_t> emitSpirv(llvm::Module& deviceModule,
     // Make the workgroup size a spec constant so the launch's block dims set it
     // at pipeline creation (default = the baked LocalSize). No-op if absent.
     injectWorkgroupSizeSpecConstant(spirv);
+    // Make a dynamic shared array's length a spec constant (SpecId 3) set from
+    // the launch's sharedBytes. No-op for kernels without dynamic shared.
+    injectDynamicSharedSpecConstant(spirv);
     return spirv;
 }
 
