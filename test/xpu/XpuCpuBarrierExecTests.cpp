@@ -877,8 +877,20 @@ namespace {
 
 struct ScopedEnv {
     std::string key;
-    ScopedEnv(const char* k, const char* v) : key(k) { ::setenv(k, v, 1); }
-    ~ScopedEnv() { ::unsetenv(key.c_str()); }
+    ScopedEnv(const char* k, const char* v) : key(k) {
+#if defined(_WIN32)
+        _putenv_s(k, v);
+#else
+        ::setenv(k, v, 1);
+#endif
+    }
+    ~ScopedEnv() {
+#if defined(_WIN32)
+        _putenv_s(key.c_str(), "");   // empty value removes the var on Windows
+#else
+        ::unsetenv(key.c_str());
+#endif
+    }
 };
 
 // The body text of `define ... @<name>(...) { ... }`, or "" if absent.

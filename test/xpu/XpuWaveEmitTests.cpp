@@ -281,7 +281,10 @@ TEST(XpuWaveEmitTests, spirvLowersReduceToSubgroupSumAndValidates) {
     { std::ofstream o(path, std::ios::binary);
       o.write(reinterpret_cast<const char*>(spirv.data()),
               (std::streamsize) spirv.size()); }
-    llvm::StringRef env = "--target-env", ver = "vulkan1.3", file = path.c_str();
+    // path::c_str() is const wchar_t* on Windows; hold a std::string so the
+    // StringRef binds to a char buffer that outlives the wait.
+    std::string fileStr = path.string();
+    llvm::StringRef env = "--target-env", ver = "vulkan1.3", file = fileStr;
     llvm::SmallVector<llvm::StringRef, 4> args = {*tool, env, ver, file};
     int rc = llvm::sys::ExecuteAndWait(*tool, args);
     std::filesystem::remove(path);
@@ -348,7 +351,10 @@ TEST(XpuWaveEmitTests, spirvLowersLaneIdToSubgroupInvocationAndValidates) {
     { std::ofstream o(path, std::ios::binary);
       o.write(reinterpret_cast<const char*>(spirv.data()),
               (std::streamsize) spirv.size()); }
-    llvm::StringRef env = "--target-env", ver = "vulkan1.3", file = path.c_str();
+    // path::c_str() is const wchar_t* on Windows; hold a std::string so the
+    // StringRef binds to a char buffer that outlives the wait.
+    std::string fileStr = path.string();
+    llvm::StringRef env = "--target-env", ver = "vulkan1.3", file = fileStr;
     llvm::SmallVector<llvm::StringRef, 4> args = {*tool, env, ver, file};
     int rc = llvm::sys::ExecuteAndWait(*tool, args);
     std::filesystem::remove(path);
