@@ -422,21 +422,48 @@ work.
 
 **Goal:** `cajeta build` can fetch transitive deps.
 
-### Deliverables
+### Deliverables — Phase 6a (model + filesystem + direct resolve)
 
-- [ ] Filesystem repository driver.
+- [x] `RepositorySpec` + `DependencySpec` types parsed from
+      `settings.repositories` and `settings.dependencies`.
+- [x] Repository priority-descending sort with stable
+      declaration-order tiebreak.
+- [x] Type inference from fields (path → filesystem; url →
+      http) when `type` is omitted.
+- [x] `Repository` interface (listVersions, fetch) +
+      `buildRepositories()` constructor.
+- [x] Filesystem repository driver
+      (`<root>/<name>/<version>/<name>-<version>.cja`).
+- [x] HTTP / Git / Maven-compat: parsed but rejected at driver
+      construction with a clear "Phase 6b/6c" message.
+- [x] Local artifact cache at
+      `<projectRoot>/.cajeta/cache/artifacts/<sha256>.cja`.
+- [x] Workstation-wide cache fallback at
+      `~/.cajeta/cache/artifacts/<sha256>.cja` with
+      write-through on insert.
+- [x] Direct-dependency resolver: priority-walk repositories,
+      pick the highest version satisfying the constraint,
+      honor `from`-pin, insert into cache.
+- [x] Version-constraint matcher (Phase 6a): exact (`1.2.3`,
+      release-only — does NOT match `1.2.3-rc1`), wildcards
+      (`1.2.*`, `1.*`, `*`).
+- [x] Version-comparator: numeric-aware (so `1.0.10 > 1.0.9`).
+
+### Deliverables — Phase 6b (HTTP, MVS, overrides, CLI)
+
 - [ ] HTTP repository driver — bearer token auth.
 - [ ] HTTP repository driver — mutual-TLS auth.
-- [ ] MVS constraint solver.
+- [ ] Transitive dep expansion (fetch each `.cja`'s embedded
+      `cajeta.json`, recurse).
+- [ ] MVS constraint solver — choose lowest version satisfying
+      ALL constraints across the graph.
+- [ ] Range operators in version constraints (`>=1.2.0`,
+      `<2.0.0`, comma-separated combinations).
 - [ ] Transitive override mechanism from `settings.overrides`.
 - [ ] Override: pin to version.
 - [ ] Override: version range constraint.
-- [ ] Override: local path replacement.
-- [ ] Override: Git replacement.
-- [ ] Major-version-downgrade guard (with `allow-major-downgrade`
-      escape).
-- [ ] Local artifact cache at `.cajeta/cache/artifacts/<sha256>.cja`.
-- [ ] Workstation-wide cache fallback at `~/.cajeta/cache/`.
+- [ ] Major-version-downgrade guard (with
+      `allow-major-downgrade` escape).
 - [ ] `cajeta add <dep>` subcommand.
 - [ ] `cajeta remove <dep>` subcommand.
 - [ ] `cajeta upgrade [dep]` subcommand with capability-change
@@ -444,6 +471,27 @@ work.
 - [ ] `cajeta info --resolve-time` for diagnosing pathological
       resolution.
 - [ ] Maven-compat shim (`type: maven-compat`).
+- [ ] BuildAction integration: pass `--classpath` from resolver
+      output to the compiler.
+
+### Deliverables — Phase 6c (Git + melts)
+
+- [ ] Git repository driver — clone-and-build at
+      branch/tag/rev.
+- [ ] Override: local path replacement.
+- [ ] Override: Git replacement.
+- [ ] `melt` top-level manifest block recognized.
+- [ ] `settings.melts` array parsed.
+- [ ] Melt-provided dependency constraint table built in
+      declaration order.
+- [ ] Melt-provided properties / actions / repositories merged
+      into the consumer.
+- [ ] `"*"` version in dependencies looks up from melt table.
+- [ ] Transitive melt imports (post-order, cycle detection).
+- [ ] Resolved melts recorded in lockfile.
+- [ ] `cajeta info --melts` / `--melt-tree` output.
+- [ ] `cajeta upgrade --melt <name>`.
+- [ ] `cajeta publish --as-melt`.
 
 ### Melts (deliverables added)
 
