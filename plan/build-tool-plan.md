@@ -220,16 +220,32 @@ action. End-to-end the simplest possible task works.
 
 ### Deliverables — Phase 3b (composition + DAG)
 
-- [ ] Task DAG builder from `tasks.*.depends-on` references.
-- [ ] Task-DAG cycle detection at load time.
-- [ ] `parallel` composition wrapper — concurrent children.
-- [ ] `run-task` composition wrapper — inline task invocation.
-- [ ] `when` / `skip-when` action-level conditional skipping.
-- [ ] `cajeta task <name> --show` prints the resolved action
-      sequence with substitutions applied (without running it).
-- [ ] Reference to an undefined `${id.field}` (when the id
-      doesn't appear elsewhere in the task) fails at load
-      time with a citation.
+- [x] Task model extended to a tagged union
+      (`ActionEntry::Kind` = Invocation / Parallel / RunTask).
+- [x] Parser recognizes `parallel` groups + `run-task` entries
+      + exclusive `action`/`parallel`/`run-task` discriminator.
+- [x] `validateTaskGraph()` — undefined-dep check + cycle
+      detection via DFS with gray/black coloring; error names
+      the cycle members in order.
+- [x] `runTask()` topologically expands `depends-on` and runs
+      each dep before the target; deps already executed in the
+      same invocation are not re-run.
+- [x] `parallel` execution: one `std::thread` per child with
+      `TaskContext::snapshot()`-isolated contexts; `join()`
+      then `mergeOutputs()` in declaration order so the parent
+      sees deterministic post-parallel state.
+- [x] `run-task` composition: recursive `runTask` with the
+      entry's params substituted in the calling context;
+      called task's resolved `outputs` block published under
+      the entry's `id`.
+- [x] `when` / `skip-when` evaluated at action invocation:
+      truthy = anything not in {"", "false", "0", "null"};
+      `when=false` skips, `skip-when=true` skips.
+- [x] `cajeta task <name> --show` prints the resolved action
+      sequence + outputs without executing; best-effort
+      substitution leaves unknowns as literal `${name}`.
+- [x] Task graph validated up front in `loadProject()` so any
+      cycle errors before the first action runs.
 
 ### Acceptance
 
@@ -245,12 +261,16 @@ action. End-to-end the simplest possible task works.
 - [x] An unknown task name errors clearly.
 - [x] Duplicate `id` across actions in one task errors at
       task load.
-- [ ] Parallel children run concurrently and merge outputs
-      (Phase 3b).
-- [ ] `run-task` composes one task's outputs into another's
-      input chain (Phase 3b).
-- [ ] A cycle in the depends-on graph fails at load time
-      (Phase 3b).
+- [x] Parallel children run concurrently and merge outputs.
+- [x] `run-task` composes one task's outputs into another's
+      input chain (consumer reads `${id.field}` where field is
+      from the called task's `outputs` block).
+- [x] A cycle in the depends-on graph fails at load time with
+      a citation naming the cycle members.
+- [x] `when` / `skip-when` skip actions when expected; the
+      action's child command is never invoked when skipped.
+- [x] `cajeta task <name> --show` prints the structure without
+      running.
 
 ---
 

@@ -73,6 +73,19 @@ namespace cajeta::buildtool {
         actionOutputs_[id] = outputs;
     }
 
+    TaskContext TaskContext::snapshot() const {
+        TaskContext out(props_);
+        out.params_ = params_;
+        out.actionOutputs_ = actionOutputs_;
+        return out;
+    }
+
+    void TaskContext::mergeOutputs(const TaskContext& other) {
+        for (const auto& kv : other.actionOutputs_) {
+            actionOutputs_[kv.first] = kv.second;
+        }
+    }
+
     std::optional<std::string> TaskContext::lookup(
         const std::string& name) const {
         // params.<name>

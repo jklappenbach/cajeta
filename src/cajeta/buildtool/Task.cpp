@@ -2,8 +2,11 @@
 
 #include <llvm/Support/Error.h>
 
+#include <algorithm>
 #include <set>
 #include <string>
+#include <unordered_set>
+#include <vector>
 
 namespace cajeta::buildtool {
 
@@ -71,51 +74,145 @@ namespace cajeta::buildtool {
             return llvm::Error::success();
         }
 
-        llvm::Error parseActionInvocation(const std::string& taskName,
-                                          size_t index,
-                                          const llvm::json::Value& v,
-                                          ActionInvocation& out) {
-            const auto* obj = v.getAsObject();
-            if (!obj) {
-                return err("task '" + taskName + "': actions[" +
-                           std::to_string(index) + "] must be an object");
-            }
-            // Phase 3a only handles plain action-invocation entries.
-            // Phase 3b adds parallel groups and run-task entries; for
-            // now we reject those forms with a clear "not yet" message
-            // so the parse failure points at what's missing rather
-            // than mis-parsing them as actions.
-            if (obj->get("parallel")) {
-                return err("task '" + taskName + "': actions[" +
-                           std::to_string(index) + "] is a parallel group; "
-                           "parallel/run-task composition lands in "
-                           "Phase 3b");
-            }
-            if (obj->get("run-task")) {
-                return err("task '" + taskName + "': actions[" +
-                           std::to_string(index) + "] is a run-task entry; "
-                           "parallel/run-task composition lands in "
-                           "Phase 3b");
-            }
+        // Forward decl; parseActionEntry recurses into parallel groups.
+        llvm::Error parseActionEntry(const std::string& taskName,
+                                     const std::string& breadcrumb,
+                                     const llvm::json::Value& v,
+                                     ActionEntry& out);
 
-            auto actionStr = obj->getString("action");
+        llvm::Error parseActionInvocation(const std::string& taskName,
+                                          const std::string& breadcrumb,
+                                          const llvm::json::Object& obj,
+                                          ActionInvocation& out) {
+            auto actionStr = obj.getString("action");
             if (!actionStr) {
-                return err("task '" + taskName + "': actions[" +
-                           std::to_string(index) +
-                           "] missing required 'action' field");
+                return err("task '" + taskName + "': " + breadcrumb +
+                           " missing required 'action' field");
             }
             out.action = actionStr->str();
-            if (auto id = obj->getString("id")) out.id = id->str();
-            if (auto w  = obj->getString("when"))      out.whenExpr     = w->str();
-            if (auto sw = obj->getString("skip-when")) out.skipWhenExpr = sw->str();
+            if (auto id = obj.getString("id")) out.id = id->str();
+            if (auto w  = obj.getString("when"))      out.whenExpr     = w->str();
+            if (auto sw = obj.getString("skip-when")) out.skipWhenExpr = sw->str();
 
-            // Everything else is an action-specific param. Pass through
-            // verbatim; the action's own validator inspects them.
-            for (const auto& kv : *obj) {
+            // Everything else is an action-specific param.
+            for (const auto& kv : obj) {
                 if (kActionMetaFields.count(kv.first.str())) continue;
                 out.params[kv.first] = kv.second;
             }
             return llvm::Error::success();
+        }
+
+        llvm::Error parseParallelGroup(const std::string& taskName,
+                                       const std::string& breadcrumb,
+                                       const llvm::json::Object& obj,
+                                       ParallelGroup& out) {
+            // The `parallel` field is the array of children. Other
+            // fields aren't allowed on a parallel entry.
+            for (const auto& kv : obj) {
+                if (kv.first.str() != "parallel") {
+                    return err("task '" + taskName + "': " + breadcrumb +
+                               " parallel entry has unexpected field '" +
+                               kv.first.str() +
+                               "' (parallel takes only the 'parallel' array)");
+                }
+            }
+            const auto* arr = obj.getArray("parallel");
+            if (!arr) {
+                return err("task '" + taskName + "': " + breadcrumb +
+                           " 'parallel' must be an array");
+            }
+            for (size_t i = 0; i < arr->size(); ++i) {
+                ActionEntry child;
+                std::string childBc = breadcrumb + ".parallel[" +
+                                      std::to_string(i) + "]";
+                if (auto e = parseActionEntry(taskName, childBc,
+                                              (*arr)[i], child)) {
+                    return std::move(e);
+                }
+                out.children.push_back(std::move(child));
+            }
+            return llvm::Error::success();
+        }
+
+        llvm::Error parseRunTaskCall(const std::string& taskName,
+                                     const std::string& breadcrumb,
+                                     const llvm::json::Object& obj,
+                                     RunTaskCall& out) {
+            // Allowed fields: run-task, params, id, when, skip-when.
+            static const std::set<std::string> kRunTaskFields = {
+                "run-task", "params", "id", "when", "skip-when",
+            };
+            for (const auto& kv : obj) {
+                if (!kRunTaskFields.count(kv.first.str())) {
+                    return err("task '" + taskName + "': " + breadcrumb +
+                               " run-task entry has unexpected field '" +
+                               kv.first.str() +
+                               "' (allowed: run-task, params, id, when, skip-when)");
+                }
+            }
+            auto name = obj.getString("run-task");
+            if (!name) {
+                return err("task '" + taskName + "': " + breadcrumb +
+                           " 'run-task' must be a string (the called task's name)");
+            }
+            out.taskName = name->str();
+            if (auto id = obj.getString("id")) out.id = id->str();
+            if (auto w  = obj.getString("when"))      out.whenExpr     = w->str();
+            if (auto sw = obj.getString("skip-when")) out.skipWhenExpr = sw->str();
+
+            if (const auto* p = obj.getObject("params")) {
+                for (const auto& kv : *p) {
+                    auto s = kv.second.getAsString();
+                    if (!s) {
+                        return err("task '" + taskName + "': " + breadcrumb +
+                                   " params." + kv.first.str() +
+                                   " must be a string");
+                    }
+                    out.params[kv.first.str()] = s->str();
+                }
+            }
+            return llvm::Error::success();
+        }
+
+        llvm::Error parseActionEntry(const std::string& taskName,
+                                     const std::string& breadcrumb,
+                                     const llvm::json::Value& v,
+                                     ActionEntry& out) {
+            const auto* obj = v.getAsObject();
+            if (!obj) {
+                return err("task '" + taskName + "': " + breadcrumb +
+                           " must be an object");
+            }
+            const bool hasParallel = obj->get("parallel") != nullptr;
+            const bool hasRunTask  = obj->get("run-task") != nullptr;
+            const bool hasAction   = obj->get("action") != nullptr;
+            const int count =
+                (hasParallel ? 1 : 0) + (hasRunTask ? 1 : 0) + (hasAction ? 1 : 0);
+            if (count == 0) {
+                return err("task '" + taskName + "': " + breadcrumb +
+                           " must declare exactly one of "
+                           "'action', 'parallel', or 'run-task'");
+            }
+            if (count > 1) {
+                return err("task '" + taskName + "': " + breadcrumb +
+                           " declares more than one of "
+                           "'action', 'parallel', or 'run-task' "
+                           "(pick exactly one)");
+            }
+            if (hasParallel) {
+                out.kind = ActionEntry::Kind::Parallel;
+                out.parallel = std::make_shared<ParallelGroup>();
+                return parseParallelGroup(taskName, breadcrumb, *obj,
+                                          *out.parallel);
+            }
+            if (hasRunTask) {
+                out.kind = ActionEntry::Kind::RunTask;
+                return parseRunTaskCall(taskName, breadcrumb, *obj,
+                                        out.runTask);
+            }
+            out.kind = ActionEntry::Kind::Invocation;
+            return parseActionInvocation(taskName, breadcrumb, *obj,
+                                         out.invocation);
         }
 
         llvm::Error parseStringMap(const std::string& taskName,
@@ -203,11 +300,13 @@ namespace cajeta::buildtool {
                            "' missing required 'actions' array");
             }
             for (size_t i = 0; i < actionsArr->size(); ++i) {
-                ActionInvocation inv;
-                if (auto e = parseActionInvocation(name, i, (*actionsArr)[i], inv)) {
+                ActionEntry entry;
+                std::string bc = "actions[" + std::to_string(i) + "]";
+                if (auto e = parseActionEntry(name, bc,
+                                              (*actionsArr)[i], entry)) {
                     return std::move(e);
                 }
-                t.actions.push_back(std::move(inv));
+                t.actions.push_back(std::move(entry));
             }
 
             if (const auto* outputs = tobj->getObject("outputs")) {
@@ -233,6 +332,78 @@ namespace cajeta::buildtool {
     llvm::Expected<std::map<std::string, Task>> parseTasks(
         const Manifest& manifest) {
         return parseTasks(manifest.tasksRaw);
+    }
+
+    namespace {
+
+        // DFS-based cycle detector. `path` carries the current
+        // exploration chain so a cycle error names its members.
+        // White / gray / black coloring: not-seen / visiting / done.
+        bool detectCycle(const std::string& name,
+                         const std::map<std::string, Task>& tasks,
+                         std::unordered_set<std::string>& gray,
+                         std::unordered_set<std::string>& black,
+                         std::vector<std::string>& path,
+                         std::vector<std::string>& cycleOut) {
+            if (black.count(name)) return false;
+            if (gray.count(name)) {
+                // Found a cycle. Walk back through `path` until we hit
+                // `name` to record the cycle members.
+                auto it = std::find(path.begin(), path.end(), name);
+                if (it != path.end()) {
+                    cycleOut.assign(it, path.end());
+                }
+                cycleOut.push_back(name);
+                return true;
+            }
+            auto it = tasks.find(name);
+            if (it == tasks.end()) {
+                // Reference to a task that doesn't exist — different
+                // error class; caller flags it separately.
+                return false;
+            }
+            gray.insert(name);
+            path.push_back(name);
+            for (const auto& dep : it->second.dependsOn) {
+                if (detectCycle(dep, tasks, gray, black, path, cycleOut)) {
+                    return true;
+                }
+            }
+            path.pop_back();
+            gray.erase(name);
+            black.insert(name);
+            return false;
+        }
+
+    } // namespace
+
+    llvm::Error validateTaskGraph(const std::map<std::string, Task>& tasks) {
+        // First: undefined-dep check. A task referencing a depends-on
+        // target that isn't in the table is a load-time error.
+        for (const auto& kv : tasks) {
+            for (const auto& dep : kv.second.dependsOn) {
+                if (!tasks.count(dep)) {
+                    return err("task '" + kv.first +
+                               "' depends on undefined task '" + dep + "'");
+                }
+            }
+        }
+        // Then: cycle detection.
+        std::unordered_set<std::string> gray, black;
+        std::vector<std::string> path;
+        std::vector<std::string> cycle;
+        for (const auto& kv : tasks) {
+            if (black.count(kv.first)) continue;
+            if (detectCycle(kv.first, tasks, gray, black, path, cycle)) {
+                std::string cycleStr;
+                for (const auto& n : cycle) {
+                    if (!cycleStr.empty()) cycleStr += " → ";
+                    cycleStr += n;
+                }
+                return err("cyclic depends-on: " + cycleStr);
+            }
+        }
+        return llvm::Error::success();
     }
 
 } // namespace cajeta::buildtool
