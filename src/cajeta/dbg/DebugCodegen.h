@@ -34,8 +34,11 @@ namespace cajeta::dbg {
     // `facets` (CP7-1b) carries the allocation class + ownership role, classified
     // at the call site from the Field/FormalParameter, and is passed through to
     // the runtime as two bytes for the IDE ownership/allocation view.
+    // `dropEntry` (CP7-1c) is the owner's drop-chain entry pointer (Field/
+    // FormalParameter::getDropEntry()) or null for a non-owner; the runtime
+    // reads its `active` flag at a stop to derive the lifetime state.
     void emitDbgLocal(cajeta::CajetaModulePtr module, const std::string& name,
                       const std::string& type, llvm::Value* slot,
-                      MemoryFacets facets);
+                      MemoryFacets facets, llvm::Value* dropEntry);
 
 } // namespace cajeta::dbg

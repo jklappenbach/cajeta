@@ -24,6 +24,10 @@ using cajeta::dbg::deriveAllocClass;
 using cajeta::dbg::deriveOwnershipRole;
 using cajeta::dbg::allocClassName;
 using cajeta::dbg::ownershipRoleName;
+using cajeta::dbg::LifetimeState;
+using cajeta::dbg::LifetimeInputs;
+using cajeta::dbg::deriveLifetime;
+using cajeta::dbg::lifetimeStateName;
 
 // ---- allocation class (FR-1.1) ----
 
@@ -137,4 +141,52 @@ TEST(MemoryFacetsNames, OwnershipRoleNames) {
     EXPECT_STREQ(ownershipRoleName(OwnershipRole::Borrow), "borrow");
     EXPECT_STREQ(ownershipRoleName(OwnershipRole::TransferredOut), "moved");
     EXPECT_STREQ(ownershipRoleName(OwnershipRole::Unknown), "unknown");
+}
+
+// ---- lifetime derivation at a stop (CP7-1c, FR-2.2) ----
+
+TEST(MemoryFacetsLifetime, ActiveOwnerIsAboutToDrop) {
+    LifetimeInputs in;
+    in.ownership = OwnershipRole::Owner;
+    in.hasDropEntry = true;
+    in.dropEntryActive = true;
+    EXPECT_EQ(deriveLifetime(in), LifetimeState::AboutToDrop);
+}
+
+TEST(MemoryFacetsLifetime, InactiveOwnerIsMovedOut) {
+    LifetimeInputs in;
+    in.ownership = OwnershipRole::Owner;
+    in.hasDropEntry = true;
+    in.dropEntryActive = false;   // entry deactivated => moved out at runtime
+    EXPECT_EQ(deriveLifetime(in), LifetimeState::MovedOut);
+}
+
+TEST(MemoryFacetsLifetime, TransferredOutRoleIsMovedOut) {
+    LifetimeInputs in;
+    in.ownership = OwnershipRole::TransferredOut;   // static move-out dominates
+    EXPECT_EQ(deriveLifetime(in), LifetimeState::MovedOut);
+}
+
+TEST(MemoryFacetsLifetime, BorrowIsLive) {
+    LifetimeInputs in;
+    in.ownership = OwnershipRole::Borrow;
+    EXPECT_EQ(deriveLifetime(in), LifetimeState::Live);
+}
+
+TEST(MemoryFacetsLifetime, PlainValueIsLive) {
+    LifetimeInputs in;   // Unknown ownership, no drop entry: an in-scope value
+    EXPECT_EQ(deriveLifetime(in), LifetimeState::Live);
+}
+
+TEST(MemoryFacetsLifetime, OwnerWithoutTrackedEntryIsLive) {
+    LifetimeInputs in;
+    in.ownership = OwnershipRole::Owner;   // anomalous: no entry -> not misleading
+    EXPECT_EQ(deriveLifetime(in), LifetimeState::Live);
+}
+
+TEST(MemoryFacetsNames, LifetimeStateNames) {
+    EXPECT_STREQ(lifetimeStateName(LifetimeState::Live), "live");
+    EXPECT_STREQ(lifetimeStateName(LifetimeState::MovedOut), "moved-out");
+    EXPECT_STREQ(lifetimeStateName(LifetimeState::AboutToDrop), "about-to-drop");
+    EXPECT_STREQ(lifetimeStateName(LifetimeState::Unknown), "unknown");
 }

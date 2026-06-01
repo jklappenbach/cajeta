@@ -10,6 +10,7 @@
 #include <gtest/gtest.h>
 
 #include <cstdint>
+#include <cstdlib>
 
 #include "cajeta/dbg/MemoryFacets.h"
 
@@ -23,23 +24,30 @@ extern "C" {
     void __cajeta_dbg_frame_enter(const char* func);
     void __cajeta_dbg_frame_leave(void);
     void __cajeta_dbg_local(const char* name, const char* type, void* addr,
-                            uint8_t alloc, uint8_t ownership);
+                            uint8_t alloc, uint8_t ownership, void* drop_entry);
     void** __cajeta_dbg_top_ptr(void);
     uint8_t __cajeta_dbg_local_alloc(void* frame, int i);
     uint8_t __cajeta_dbg_local_ownership(void* frame, int i);
+    int8_t __cajeta_dbg_local_drop_active(void* frame, int i);
     const char* __cajeta_dbg_local_name(void* frame, int i);
     int __cajeta_dbg_frame_nlocals(void* frame);
+    // Drop-chain helpers, to give a local a real entry with a live active flag.
+    size_t __cajeta_drop_entry_size(void);
+    void __cajeta_drop_push(void* e, void* obj, void (*drop_fn)(void*));
+    void __cajeta_drop_mark_inactive(void* e);
+    void __cajeta_drop_pop_run(void* e);
 }
 
 namespace {
     // Register a local whose facet bytes come from classifyField, mirroring
-    // exactly what the codegen call sites do.
+    // exactly what the codegen call sites do. `dropEntry` is the owner's
+    // drop-chain entry (null for non-owners), as the call sites pass.
     void registerLocal(const char* name, const char* type, void* addr,
-                       const FieldFacetInputs& in) {
+                       const FieldFacetInputs& in, void* dropEntry = nullptr) {
         MemoryFacets f = classifyField(in);
         __cajeta_dbg_local(name, type, addr,
                            static_cast<uint8_t>(f.alloc),
-                           static_cast<uint8_t>(f.ownership));
+                           static_cast<uint8_t>(f.ownership), dropEntry);
     }
 }
 
@@ -154,4 +162,35 @@ TEST(DbgLocalFacets, OutOfRangeReadsUnknown) {
     EXPECT_EQ(__cajeta_dbg_local_alloc(top, 5), 0);
     EXPECT_EQ(__cajeta_dbg_local_ownership(top, -1), 0);
     __cajeta_dbg_frame_leave();
+}
+
+// CP7-1c: the drop-active accessor reports -1 for a local with no drop entry
+// (borrow / value) and the entry's live `active` flag for an owner.
+TEST(DbgLocalFacets, DropActiveReflectsEntryState) {
+    EXPECT_EQ(__cajeta_dbg_local_drop_active(nullptr, 0), -1);
+
+    ASSERT_EQ(*__cajeta_dbg_top_ptr(), nullptr);
+    __cajeta_dbg_frame_enter("demo.F::m");
+
+    int32_t prim = 0;
+    FieldFacetInputs pin; pin.isStackField = true;
+    registerLocal("prim", "int32", &prim, pin);          // no entry
+
+    void* slot = nullptr;
+    void* e = std::malloc(__cajeta_drop_entry_size());
+    __cajeta_drop_push(e, nullptr, nullptr);             // active = 1
+    FieldFacetInputs oin; oin.isHeapField = true; oin.ownsDrop = true;
+    registerLocal("o", "demo.Foo", &slot, oin, e);
+
+    void* top = *__cajeta_dbg_top_ptr();
+    EXPECT_EQ(__cajeta_dbg_local_drop_active(top, 0), -1);  // prim: no entry
+    EXPECT_EQ(__cajeta_dbg_local_drop_active(top, 1), 1);   // owner: active
+
+    __cajeta_drop_mark_inactive(e);
+    EXPECT_EQ(__cajeta_dbg_local_drop_active(top, 1), 0);   // moved out
+
+    __cajeta_drop_pop_run(e);
+    std::free(e);
+    __cajeta_dbg_frame_leave();
+    EXPECT_EQ(*__cajeta_dbg_top_ptr(), nullptr);
 }

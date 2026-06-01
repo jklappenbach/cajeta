@@ -41,6 +41,18 @@ namespace cajeta::dbg {
         TransferredOut = 3,  // ownership moved out via `#`; the binding is consumed
     };
 
+    // The binding's lifetime state AT A STOP (FR-1.2 / FR-2.2). Unlike alloc
+    // class and ownership role (largely static), this is dynamic: it depends on
+    // runtime drop-chain state at the parked safepoint, so it is derived by the
+    // host when it walks frames, not baked in at codegen time. `Unknown` is the
+    // wire default before derivation runs.
+    enum class LifetimeState : uint8_t {
+        Unknown     = 0,
+        Live        = 1,  // holds a valid value; in scope, not moved out
+        MovedOut    = 2,  // ownership transferred away; reading it is an error
+        AboutToDrop = 3,  // a live owner on the drop chain, scheduled to drop
+    };
+
     struct MemoryFacets {
         AllocClass alloc = AllocClass::Unknown;
         OwnershipRole ownership = OwnershipRole::Unknown;
@@ -75,10 +87,30 @@ namespace cajeta::dbg {
     // Both facets at once.
     MemoryFacets classifyField(const FieldFacetInputs& in);
 
+    // Signals gathered at a STOP for lifetime derivation (CP7-1c). `ownership`
+    // is the already-classified role; `hasDropEntry`/`dropEntryActive` come from
+    // the runtime drop chain (an owner registers a `cajeta_drop_entry` whose
+    // `active` flag is cleared when ownership is moved out). All-false degrades
+    // to Live for an in-scope binding — never a misleading moved-out.
+    struct LifetimeInputs {
+        OwnershipRole ownership      = OwnershipRole::Unknown;
+        bool          hasDropEntry   = false;
+        bool          dropEntryActive = false;
+    };
+
+    // Lifetime state. A statically moved-out role (TransferredOut) dominates;
+    // then an owner with a live drop entry is AboutToDrop, and one whose entry
+    // has been deactivated (moved out at runtime) is MovedOut; everything else
+    // in scope — borrows, plain values, owners without a tracked entry — is
+    // Live. Never returns Unknown: a registered local is, by construction, in
+    // scope (Unknown is reserved as the pre-derivation wire default).
+    LifetimeState deriveLifetime(const LifetimeInputs& in);
+
     // Stable lowercase tags, also the textual affordance carried over the wire
     // so meaning never rests on color alone (FR-5.3). TransferredOut prints as
     // "moved" (the user-facing term).
     const char* allocClassName(AllocClass c);
     const char* ownershipRoleName(OwnershipRole r);
+    const char* lifetimeStateName(LifetimeState s);
 
 } // namespace cajeta::dbg

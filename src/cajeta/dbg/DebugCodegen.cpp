@@ -36,19 +36,25 @@ namespace cajeta::dbg {
 
     void emitDbgLocal(cajeta::CajetaModulePtr module, const std::string& name,
                       const std::string& type, llvm::Value* slot,
-                      MemoryFacets facets) {
+                      MemoryFacets facets, llvm::Value* dropEntry) {
         llvm::IRBuilder<>* builder = emitGuard(module);
         if (!builder || !slot) return;
         llvm::Function* fn = module->getRuntimeFunction("__cajeta_dbg_local");
         if (!fn) return;
         llvm::Value* nameC = builder->CreateGlobalStringPtr(name);
         llvm::Value* typeC = builder->CreateGlobalStringPtr(type);
-        // The facet enums travel as two i8s, matching __cajeta_dbg_local's
-        // (name, type, addr, alloc, ownership) ABI in cajeta_runtime.c.
+        // The facet enums travel as two i8s, the drop entry as a ptr, matching
+        // __cajeta_dbg_local's (name, type, addr, alloc, ownership, drop_entry)
+        // ABI in cajeta_runtime.c.
         llvm::Value* allocC = builder->getInt8(static_cast<uint8_t>(facets.alloc));
         llvm::Value* ownC   = builder->getInt8(static_cast<uint8_t>(facets.ownership));
+        // Non-owners have no drop entry; pass an explicit null ptr.
+        llvm::Value* dropC = dropEntry
+            ? dropEntry
+            : llvm::ConstantPointerNull::get(
+                  llvm::PointerType::get(*module->getLlvmContext(), 0));
         // Opaque pointers: the alloca is already a ptr; no bitcast needed.
-        builder->CreateCall(fn, {nameC, typeC, slot, allocC, ownC});
+        builder->CreateCall(fn, {nameC, typeC, slot, allocC, ownC, dropC});
     }
 
 } // namespace cajeta::dbg

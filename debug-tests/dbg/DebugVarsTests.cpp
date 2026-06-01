@@ -9,6 +9,7 @@
 #include <gtest/gtest.h>
 
 #include <cstdint>
+#include <cstdlib>
 #include <string>
 #include <vector>
 
@@ -20,15 +21,24 @@ using cajeta::dbg::writeValue;
 using cajeta::dbg::evaluateCondition;
 using cajeta::dbg::DbgFrameInfo;
 using cajeta::dbg::DbgVar;
+using cajeta::dbg::AllocClass;
+using cajeta::dbg::OwnershipRole;
+using cajeta::dbg::LifetimeState;
 
 // Native runtime frame-chain builders + the head selector (native copy).
 extern "C" {
     void __cajeta_dbg_frame_enter(const char* func);
     void __cajeta_dbg_frame_leave(void);
-    // CP7-1b: the two trailing bytes are alloc class + ownership role.
+    // CP7-1b/1c: trailing args are alloc class + ownership role + the owner's
+    // drop-chain entry pointer (null for non-owners).
     void __cajeta_dbg_local(const char* name, const char* type, void* addr,
-                            uint8_t alloc, uint8_t ownership);
+                            uint8_t alloc, uint8_t ownership, void* drop_entry);
     void** __cajeta_dbg_top_ptr(void);
+    // Drop-chain helpers used to drive a real lifetime state in the chain test.
+    size_t __cajeta_drop_entry_size(void);
+    void __cajeta_drop_push(void* e, void* obj, void (*drop_fn)(void*));
+    void __cajeta_drop_mark_inactive(void* e);
+    void __cajeta_drop_pop_run(void* e);
 }
 
 // ---- pure formatValue ----
@@ -158,8 +168,8 @@ TEST(DebugVarsChain, SingleFrameLocals) {
 
     __cajeta_dbg_frame_enter("demo.Calc::main");
     int32_t a = 6, b = 7;
-    __cajeta_dbg_local("a", "int32", &a, 0, 0);
-    __cajeta_dbg_local("b", "int32", &b, 0, 0);
+    __cajeta_dbg_local("a", "int32", &a, 0, 0, nullptr);
+    __cajeta_dbg_local("b", "int32", &b, 0, 0, nullptr);
 
     std::vector<DbgFrameInfo> frames = walkFrames(*__cajeta_dbg_top_ptr());
     ASSERT_EQ(frames.size(), 1u);
@@ -179,10 +189,10 @@ TEST(DebugVarsChain, NestedFramesInnermostFirst) {
 
     __cajeta_dbg_frame_enter("demo.A::outer");
     int32_t x = 1;
-    __cajeta_dbg_local("x", "int32", &x, 0, 0);
+    __cajeta_dbg_local("x", "int32", &x, 0, 0, nullptr);
     __cajeta_dbg_frame_enter("demo.A::inner");
     int32_t y = 2;
-    __cajeta_dbg_local("y", "int32", &y, 0, 0);
+    __cajeta_dbg_local("y", "int32", &y, 0, 0, nullptr);
 
     std::vector<DbgFrameInfo> frames = walkFrames(*__cajeta_dbg_top_ptr());
     ASSERT_EQ(frames.size(), 2u);
@@ -192,6 +202,51 @@ TEST(DebugVarsChain, NestedFramesInnermostFirst) {
     EXPECT_EQ(frames[1].locals[0].name, "x");
 
     __cajeta_dbg_frame_leave();
+    __cajeta_dbg_frame_leave();
+    EXPECT_EQ(*__cajeta_dbg_top_ptr(), nullptr);
+}
+
+// CP7-1c: walkFrames reads back the static facets and derives lifetime from
+// the owner's live drop-entry `active` flag.
+TEST(DebugVarsChain, FacetsAndLifetimeAtStop) {
+    ASSERT_EQ(*__cajeta_dbg_top_ptr(), nullptr);
+    __cajeta_dbg_frame_enter("demo.F::m");
+
+    // A stack primitive: Stack / Unknown / Live, no drop entry.
+    int32_t p = 9;
+    __cajeta_dbg_local("p", "int32", &p,
+                       static_cast<uint8_t>(AllocClass::Stack),
+                       static_cast<uint8_t>(OwnershipRole::Unknown), nullptr);
+
+    // An owned heap object with a live drop entry: Heap / Owner / AboutToDrop.
+    void* slot = nullptr;
+    void* e = std::malloc(__cajeta_drop_entry_size());
+    __cajeta_drop_push(e, nullptr, nullptr);   // sets active = 1
+    __cajeta_dbg_local("o", "demo.Foo", &slot,
+                       static_cast<uint8_t>(AllocClass::Heap),
+                       static_cast<uint8_t>(OwnershipRole::Owner), e);
+
+    std::vector<DbgFrameInfo> frames = walkFrames(*__cajeta_dbg_top_ptr());
+    ASSERT_EQ(frames.size(), 1u);
+    ASSERT_EQ(frames[0].locals.size(), 2u);
+
+    EXPECT_EQ(frames[0].locals[0].alloc, AllocClass::Stack);
+    EXPECT_EQ(frames[0].locals[0].ownership, OwnershipRole::Unknown);
+    EXPECT_EQ(frames[0].locals[0].lifetime, LifetimeState::Live);
+
+    EXPECT_EQ(frames[0].locals[1].alloc, AllocClass::Heap);
+    EXPECT_EQ(frames[0].locals[1].ownership, OwnershipRole::Owner);
+    EXPECT_EQ(frames[0].locals[1].lifetime, LifetimeState::AboutToDrop);
+
+    // Move the owner out -> its drop entry deactivates -> lifetime MovedOut.
+    __cajeta_drop_mark_inactive(e);
+    std::vector<DbgFrameInfo> after = walkFrames(*__cajeta_dbg_top_ptr());
+    EXPECT_EQ(after[0].locals[1].lifetime, LifetimeState::MovedOut);
+    // The static facets are unchanged by the move.
+    EXPECT_EQ(after[0].locals[1].ownership, OwnershipRole::Owner);
+
+    __cajeta_drop_pop_run(e);   // inactive -> no fire; restores the chain head
+    std::free(e);
     __cajeta_dbg_frame_leave();
     EXPECT_EQ(*__cajeta_dbg_top_ptr(), nullptr);
 }

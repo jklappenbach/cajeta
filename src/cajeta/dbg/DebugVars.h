@@ -15,12 +15,21 @@
 #include <string>
 #include <vector>
 
+#include "cajeta/dbg/MemoryFacets.h"
+
 namespace cajeta::dbg {
 
     struct DbgVar {
         std::string name;
         std::string type;   // cajeta canonical type name
         void* addr = nullptr;  // the local's slot
+        // CP7-1b/1c memory facets, read back from the frame chain at a stop.
+        // alloc + ownership are carried as bytes by __cajeta_dbg_local;
+        // lifetime is derived here (deriveLifetime) from the drop entry's live
+        // `active` flag. Default Unknown until walkFrames fills them.
+        AllocClass    alloc    = AllocClass::Unknown;
+        OwnershipRole ownership = OwnershipRole::Unknown;
+        LifetimeState lifetime = LifetimeState::Unknown;
     };
 
     struct DbgFrameInfo {
