@@ -42,29 +42,42 @@ namespace cajeta::buildtool {
         const std::vector<RepositoryPtr>& repos,
         ArtifactCache& cache);
 
-    // Transitive resolution (Phase 6b). Walks the dependency graph
-    // starting from `deps`, fetching each picked dep's published
-    // `cajeta.json` (via Repository::fetchManifestJson) and
-    // recursing into its `settings.dependencies`.
+    // Transitive resolution with Minimum-Version-Selection
+    // (Phase 6b). Gathers every constraint declared for each
+    // package across the dependency graph and picks the LOWEST
+    // version satisfying all of them. If a newly-discovered
+    // child constraint excludes a previously-picked version,
+    // the package is re-picked (still lowest-satisfying) and
+    // its children re-walked. Iterates to a fixed point.
     //
-    // Per-package version picker: highest-satisfying across the
-    // collected constraint set (matches `resolveDirect` semantics).
-    // The MVS solver (next slice) swaps this for lowest-satisfying
-    // and adds re-pick-on-conflict iteration. The walking machinery
-    // stays the same.
+    // Properties:
+    //   - Deterministic: same inputs → same picks (constraint
+    //     gathering order is the BFS visitation order, but the
+    //     final pick depends only on the constraint set).
+    //   - Terminating: each re-pick can only raise a package's
+    //     selected version (constraints only ever get added /
+    //     tightened), and the version set is finite.
+    //   - Conflicts surface as a clear "no version of X satisfies
+    //     [<atom>, <atom>, ...]" error citing every contributing
+    //     constraint atom.
     //
-    // Returns the unique resolved set in topological order — root
-    // deps in declaration order first, then each dep's
-    // transitive children, with cycles broken by the first-seen
-    // package.
+    // Per-package version picker: lowest version that satisfies
+    // EVERY collected constraint, walked repo-priority-first
+    // (first repo with any satisfying version wins; within that
+    // repo the lowest satisfying version is picked). The `from`
+    // pin restricts to one repo; conflicting `from` pins for the
+    // same package error out.
+    //
+    // Output order is topological: root deps in declaration
+    // order first, then each dep's transitive children in
+    // declaration order.
     //
     // A dep whose repository can't produce a manifest sidecar
     // (`fetchManifestJson` returns nullopt) is treated as a leaf —
     // i.e. assumed to have no further dependencies. This is the
     // backwards-compatible path for archives that pre-date the
-    // sidecar convention; the MVS solver will keep the same
-    // behaviour.
-    llvm::Expected<std::vector<ResolvedDependency>> resolveTransitive(
+    // sidecar convention.
+    llvm::Expected<std::vector<ResolvedDependency>> resolveMvs(
         const std::vector<DependencySpec>& deps,
         const std::vector<RepositoryPtr>& repos,
         ArtifactCache& cache);

@@ -30,7 +30,7 @@ using cajeta::buildtool::RepositoryPtr;
 using cajeta::buildtool::RepositorySpec;
 using cajeta::buildtool::resolveDirect;
 using cajeta::buildtool::ResolvedDependency;
-using cajeta::buildtool::resolveTransitive;
+using cajeta::buildtool::resolveMvs;
 using cajeta::buildtool::versionSatisfies;
 
 namespace {
@@ -492,7 +492,7 @@ TEST(DependencyTests, filesystemRepoNoSidecarReturnsNullopt) {
 
 // ─── transitive resolver ──────────────────────────────────────────────
 
-TEST(DependencyTests, transitiveResolverExpandsOneLevel) {
+TEST(DependencyTests, mvsResolverExpandsOneLevel) {
     auto root = makeFsRepo({
         {"com.example.foo", "1.0.0", "foo-1.0.0"},
         {"com.example.bar", "1.5.0", "bar-1.5.0"},
@@ -512,7 +512,7 @@ TEST(DependencyTests, transitiveResolverExpandsOneLevel) {
     deps.push_back(d);
 
     ArtifactCache cache(projectDir.string(), homeDir.string());
-    auto resolved = resolveTransitive(deps, repos, cache);
+    auto resolved = resolveMvs(deps, repos, cache);
     ASSERT_TRUE((bool)resolved) << errorText(resolved.takeError());
     ASSERT_EQ(resolved->size(), 2u);
     EXPECT_EQ((*resolved)[0].name, "com.example.foo");
@@ -525,7 +525,7 @@ TEST(DependencyTests, transitiveResolverExpandsOneLevel) {
     std::filesystem::remove_all(homeDir);
 }
 
-TEST(DependencyTests, transitiveResolverThreeDeepGraph) {
+TEST(DependencyTests, mvsResolverThreeDeepGraph) {
     // foo -> bar -> baz, three-deep chain (matches the Phase 6
     // acceptance criterion).
     auto root = makeFsRepo({
@@ -547,7 +547,7 @@ TEST(DependencyTests, transitiveResolverThreeDeepGraph) {
     deps.push_back(d);
 
     ArtifactCache cache(projectDir.string(), homeDir.string());
-    auto resolved = resolveTransitive(deps, repos, cache);
+    auto resolved = resolveMvs(deps, repos, cache);
     ASSERT_TRUE((bool)resolved) << errorText(resolved.takeError());
     ASSERT_EQ(resolved->size(), 3u);
     EXPECT_EQ((*resolved)[0].name, "a.foo");
@@ -559,7 +559,7 @@ TEST(DependencyTests, transitiveResolverThreeDeepGraph) {
     std::filesystem::remove_all(homeDir);
 }
 
-TEST(DependencyTests, transitiveResolverDeduplicatesDiamond) {
+TEST(DependencyTests, mvsResolverDeduplicatesDiamond) {
     // Diamond:  root -> {a, b}, both a and b -> shared.
     // shared should appear exactly once in the resolved set.
     auto root = makeFsRepo({
@@ -582,7 +582,7 @@ TEST(DependencyTests, transitiveResolverDeduplicatesDiamond) {
     deps.push_back(a); deps.push_back(b);
 
     ArtifactCache cache(projectDir.string(), homeDir.string());
-    auto resolved = resolveTransitive(deps, repos, cache);
+    auto resolved = resolveMvs(deps, repos, cache);
     ASSERT_TRUE((bool)resolved) << errorText(resolved.takeError());
     EXPECT_EQ(resolved->size(), 3u);
     int sharedCount = 0;
@@ -596,7 +596,7 @@ TEST(DependencyTests, transitiveResolverDeduplicatesDiamond) {
     std::filesystem::remove_all(homeDir);
 }
 
-TEST(DependencyTests, transitiveResolverBreaksCycles) {
+TEST(DependencyTests, mvsResolverBreaksCycles) {
     // A -> B, B -> A. Neither should loop forever; both should
     // appear in the resolved set exactly once.
     auto root = makeFsRepo({
@@ -616,7 +616,7 @@ TEST(DependencyTests, transitiveResolverBreaksCycles) {
     deps.push_back(d);
 
     ArtifactCache cache(projectDir.string(), homeDir.string());
-    auto resolved = resolveTransitive(deps, repos, cache);
+    auto resolved = resolveMvs(deps, repos, cache);
     ASSERT_TRUE((bool)resolved) << errorText(resolved.takeError());
     EXPECT_EQ(resolved->size(), 2u);
 
@@ -625,7 +625,7 @@ TEST(DependencyTests, transitiveResolverBreaksCycles) {
     std::filesystem::remove_all(homeDir);
 }
 
-TEST(DependencyTests, transitiveResolverTreatsLeafAsTerminalWhenSidecarMissing) {
+TEST(DependencyTests, mvsResolverTreatsLeafAsTerminalWhenSidecarMissing) {
     // Backwards-compat with pre-sidecar artifacts: foo's sidecar
     // declares it depends on bar, but bar has no sidecar so the
     // walker terminates there without erroring.
@@ -646,7 +646,7 @@ TEST(DependencyTests, transitiveResolverTreatsLeafAsTerminalWhenSidecarMissing) 
     deps.push_back(d);
 
     ArtifactCache cache(projectDir.string(), homeDir.string());
-    auto resolved = resolveTransitive(deps, repos, cache);
+    auto resolved = resolveMvs(deps, repos, cache);
     ASSERT_TRUE((bool)resolved) << errorText(resolved.takeError());
     ASSERT_EQ(resolved->size(), 2u);
     EXPECT_EQ((*resolved)[1].name, "l.bar");
@@ -656,7 +656,7 @@ TEST(DependencyTests, transitiveResolverTreatsLeafAsTerminalWhenSidecarMissing) 
     std::filesystem::remove_all(homeDir);
 }
 
-TEST(DependencyTests, transitiveResolverErrorsOnUnsatisfiableChildConstraint) {
+TEST(DependencyTests, mvsResolverErrorsOnUnsatisfiableChildConstraint) {
     auto root = makeFsRepo({
         {"u.foo", "1.0.0", "foo"},
         {"u.bar", "1.0.0", "bar"},
@@ -675,13 +675,169 @@ TEST(DependencyTests, transitiveResolverErrorsOnUnsatisfiableChildConstraint) {
     deps.push_back(d);
 
     ArtifactCache cache(projectDir.string(), homeDir.string());
-    auto resolved = resolveTransitive(deps, repos, cache);
+    auto resolved = resolveMvs(deps, repos, cache);
     ASSERT_FALSE((bool)resolved);
     auto msg = errorText(resolved.takeError());
     EXPECT_NE(msg.find("u.bar"), std::string::npos);
-    EXPECT_NE(msg.find("not satisfied"), std::string::npos);
+    EXPECT_NE(msg.find("satisfies constraints"), std::string::npos)
+        << "expected MVS unsatisfiable message, got: " << msg;
 
     std::filesystem::remove_all(root);
+    std::filesystem::remove_all(projectDir);
+    std::filesystem::remove_all(homeDir);
+}
+
+// ─── MVS-specific behavior (Phase 6b acceptance criteria) ─────────────
+
+TEST(DependencyTests, mvsPicksLowestSatisfyingFromRange) {
+    // Repo has versions 1.0.0, 1.2.0, 1.5.0, 1.9.0; constraint `>=1.2.0,<2.0.0`
+    // → MVS picks 1.2.0 (lowest satisfying). The Phase 6a-style
+    // "highest satisfying" resolver would have picked 1.9.0.
+    auto root = makeFsRepo({
+        {"m.foo", "1.0.0", "v1.0.0"},
+        {"m.foo", "1.2.0", "v1.2.0"},
+        {"m.foo", "1.5.0", "v1.5.0"},
+        {"m.foo", "1.9.0", "v1.9.0"},
+    });
+    writeSidecarManifest(root, "m.foo", "1.2.0", {});
+    auto projectDir = makeTempDir("mvs-low-proj");
+    auto homeDir    = makeTempDir("mvs-low-home");
+    std::vector<RepositoryPtr> repos = {
+        std::make_shared<FilesystemRepository>("test", root.string()),
+    };
+    std::vector<DependencySpec> deps;
+    DependencySpec d; d.name = "m.foo"; d.versionConstraint = ">=1.2.0,<2.0.0";
+    deps.push_back(d);
+
+    ArtifactCache cache(projectDir.string(), homeDir.string());
+    auto resolved = resolveMvs(deps, repos, cache);
+    ASSERT_TRUE((bool)resolved) << errorText(resolved.takeError());
+    ASSERT_EQ(resolved->size(), 1u);
+    EXPECT_EQ((*resolved)[0].version, "1.2.0");
+
+    std::filesystem::remove_all(root);
+    std::filesystem::remove_all(projectDir);
+    std::filesystem::remove_all(homeDir);
+}
+
+TEST(DependencyTests, mvsRepicksOnTighterChildConstraint) {
+    // root -> foo, baz
+    // foo  -> shared >=1.0.0
+    // baz  -> shared >=1.5.0
+    // Expected MVS pick for `shared`: 1.5.0 (lowest satisfying max).
+    // Repo has shared at 1.0.0, 1.2.0, 1.5.0, 1.9.0. Walking BFS in
+    // declaration order, foo's child constraint arrives first and
+    // picks 1.0.0; when baz's child constraint arrives later it
+    // forces a re-pick to 1.5.0.
+    auto root = makeFsRepo({
+        {"r.foo",    "1.0.0", "foo"},
+        {"r.baz",    "1.0.0", "baz"},
+        {"r.shared", "1.0.0", "s1.0.0"},
+        {"r.shared", "1.2.0", "s1.2.0"},
+        {"r.shared", "1.5.0", "s1.5.0"},
+        {"r.shared", "1.9.0", "s1.9.0"},
+    });
+    writeSidecarManifest(root, "r.foo", "1.0.0", {{"r.shared", ">=1.0.0"}});
+    writeSidecarManifest(root, "r.baz", "1.0.0", {{"r.shared", ">=1.5.0"}});
+    writeSidecarManifest(root, "r.shared", "1.0.0", {});
+    writeSidecarManifest(root, "r.shared", "1.2.0", {});
+    writeSidecarManifest(root, "r.shared", "1.5.0", {});
+    writeSidecarManifest(root, "r.shared", "1.9.0", {});
+
+    auto projectDir = makeTempDir("mvs-repick-proj");
+    auto homeDir    = makeTempDir("mvs-repick-home");
+    std::vector<RepositoryPtr> repos = {
+        std::make_shared<FilesystemRepository>("test", root.string()),
+    };
+    std::vector<DependencySpec> deps;
+    DependencySpec a; a.name = "r.foo"; a.versionConstraint = "1.0.0";
+    DependencySpec b; b.name = "r.baz"; b.versionConstraint = "1.0.0";
+    deps.push_back(a); deps.push_back(b);
+
+    ArtifactCache cache(projectDir.string(), homeDir.string());
+    auto resolved = resolveMvs(deps, repos, cache);
+    ASSERT_TRUE((bool)resolved) << errorText(resolved.takeError());
+    ASSERT_EQ(resolved->size(), 3u);
+
+    std::string sharedPick;
+    for (const auto& r : *resolved) {
+        if (r.name == "r.shared") sharedPick = r.version;
+    }
+    EXPECT_EQ(sharedPick, "1.5.0");
+
+    std::filesystem::remove_all(root);
+    std::filesystem::remove_all(projectDir);
+    std::filesystem::remove_all(homeDir);
+}
+
+TEST(DependencyTests, mvsRejectsContradictoryExactRequirements) {
+    // foo asks for shared 1.0.0 exact; baz asks for shared 2.0.0 exact.
+    // No single version satisfies both — MVS should error with both
+    // constraints cited.
+    auto root = makeFsRepo({
+        {"x.foo",    "1.0.0", "foo"},
+        {"x.baz",    "1.0.0", "baz"},
+        {"x.shared", "1.0.0", "s1"},
+        {"x.shared", "2.0.0", "s2"},
+    });
+    writeSidecarManifest(root, "x.foo", "1.0.0", {{"x.shared", "1.0.0"}});
+    writeSidecarManifest(root, "x.baz", "1.0.0", {{"x.shared", "2.0.0"}});
+    writeSidecarManifest(root, "x.shared", "1.0.0", {});
+    writeSidecarManifest(root, "x.shared", "2.0.0", {});
+
+    auto projectDir = makeTempDir("mvs-contra-proj");
+    auto homeDir    = makeTempDir("mvs-contra-home");
+    std::vector<RepositoryPtr> repos = {
+        std::make_shared<FilesystemRepository>("test", root.string()),
+    };
+    std::vector<DependencySpec> deps;
+    DependencySpec a; a.name = "x.foo"; a.versionConstraint = "1.0.0";
+    DependencySpec b; b.name = "x.baz"; b.versionConstraint = "1.0.0";
+    deps.push_back(a); deps.push_back(b);
+
+    ArtifactCache cache(projectDir.string(), homeDir.string());
+    auto resolved = resolveMvs(deps, repos, cache);
+    ASSERT_FALSE((bool)resolved);
+    auto msg = errorText(resolved.takeError());
+    EXPECT_NE(msg.find("x.shared"), std::string::npos);
+    EXPECT_NE(msg.find("1.0.0"), std::string::npos);
+    EXPECT_NE(msg.find("2.0.0"), std::string::npos)
+        << "error should cite both contributing constraints, got: " << msg;
+
+    std::filesystem::remove_all(root);
+    std::filesystem::remove_all(projectDir);
+    std::filesystem::remove_all(homeDir);
+}
+
+TEST(DependencyTests, mvsConflictingFromPinsError) {
+    auto rootA = makeFsRepo({{"f.pkg", "1.0.0", "fromA"}});
+    auto rootB = makeFsRepo({{"f.pkg", "1.0.0", "fromB"}});
+    writeSidecarManifest(rootA, "f.pkg", "1.0.0", {});
+    writeSidecarManifest(rootB, "f.pkg", "1.0.0", {});
+
+    auto projectDir = makeTempDir("mvs-from-proj");
+    auto homeDir    = makeTempDir("mvs-from-home");
+    std::vector<RepositoryPtr> repos = {
+        std::make_shared<FilesystemRepository>("A", rootA.string()),
+        std::make_shared<FilesystemRepository>("B", rootB.string()),
+    };
+    // Two root deps for the same package with different `from` pins.
+    std::vector<DependencySpec> deps;
+    DependencySpec a; a.name = "f.pkg"; a.versionConstraint = "1.0.0";
+    a.fromRepo = "A";
+    DependencySpec b; b.name = "f.pkg"; b.versionConstraint = "1.0.0";
+    b.fromRepo = "B";
+    deps.push_back(a); deps.push_back(b);
+
+    ArtifactCache cache(projectDir.string(), homeDir.string());
+    auto resolved = resolveMvs(deps, repos, cache);
+    ASSERT_FALSE((bool)resolved);
+    auto msg = errorText(resolved.takeError());
+    EXPECT_NE(msg.find("conflicting 'from'"), std::string::npos)
+        << "expected from-pin conflict error, got: " << msg;
+
+    std::filesystem::remove_all(rootA);
+    std::filesystem::remove_all(rootB);
     std::filesystem::remove_all(projectDir);
     std::filesystem::remove_all(homeDir);
 }

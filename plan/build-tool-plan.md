@@ -458,7 +458,7 @@ work.
       `cajeta.json`, recurse). _Interim: sidecar `cajeta.json`
       next to the `.cja` in the repo; embed-in-archive lands
       with PublishAction as a fast path._
-- [ ] MVS constraint solver — choose lowest version satisfying
+- [x] MVS constraint solver — choose lowest version satisfying
       ALL constraints across the graph.
 - [x] Range operators in version constraints (`>=1.2.0`,
       `<2.0.0`, comma-separated combinations).

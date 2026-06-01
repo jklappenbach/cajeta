@@ -6,9 +6,11 @@
 #include <cctype>
 #include <cstring>
 #include <deque>
+#include <optional>
 #include <set>
 #include <sstream>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace cajeta::buildtool {
@@ -203,6 +205,28 @@ namespace cajeta::buildtool {
 
     namespace {
 
+        // Pick the lowest version in `candidates` that satisfies
+        // every entry in `constraints`. Returns the empty string if
+        // no candidate satisfies the conjunction.
+        std::string lowestSatisfyingAll(
+            const std::vector<std::string>& candidates,
+            const std::vector<std::string>& constraints) {
+            // Ascending walk — first hit wins.
+            std::vector<std::string> sorted = candidates;
+            std::sort(sorted.begin(), sorted.end(),
+                [](const std::string& a, const std::string& b) {
+                    return compareVersions(a, b) < 0;
+                });
+            for (const auto& v : sorted) {
+                bool ok = true;
+                for (const auto& c : constraints) {
+                    if (!versionSatisfies(v, c)) { ok = false; break; }
+                }
+                if (ok) return v;
+            }
+            return "";
+        }
+
         // Resolve one dependency against the priority-ordered repos.
         // Honors the `from` pin; picks the highest version satisfying
         // `dep.versionConstraint`. Pulls the picked artifact into
@@ -211,9 +235,10 @@ namespace cajeta::buildtool {
         //
         // Also fetches the dep's sidecar `cajeta.json` (when the
         // winning repository can produce one) into
-        // `manifestJsonOut` — the transitive walker uses that to
-        // recurse without re-fetching. `manifestJsonOut` is left
-        // empty when no sidecar is available.
+        // `manifestJsonOut` — callers that need the dep's own
+        // constraints (the MVS walker) avoid a second fetch.
+        // `manifestJsonOut` is left empty when no sidecar is
+        // available.
         llvm::Expected<ResolvedDependency> resolveOne(
             const DependencySpec& dep,
             const std::vector<RepositoryPtr>& repos,
@@ -238,8 +263,6 @@ namespace cajeta::buildtool {
                 auto cached = cache.insert(*path);
                 if (!cached) return cached.takeError();
 
-                // Pull the sidecar manifest while we still know which
-                // repo won — saves the walker an extra round trip.
                 auto sidecar = repo->fetchManifestJson(dep.name, version);
                 if (!sidecar) return sidecar.takeError();
                 if (sidecar->has_value()) {
@@ -289,61 +312,209 @@ namespace cajeta::buildtool {
         return out;
     }
 
-    llvm::Expected<std::vector<ResolvedDependency>> resolveTransitive(
+    namespace {
+
+        // Per-package state maintained across the MVS fixed-point
+        // iteration. `constraints` accumulates every constraint
+        // string ever declared against this package; `fromRepo` is
+        // the (single) declared `from` pin, if any (conflicts
+        // error). The rest is the currently-picked artifact and
+        // the parsed declared-deps of its sidecar.
+        struct MvsState {
+            std::vector<std::string> constraints;
+            std::optional<std::string> fromRepo;
+
+            std::string version;
+            std::string resolvedFromRepo;
+            std::string artifactPath;
+            std::string sha256;
+            std::string manifestJson;
+            std::vector<DependencySpec> childDeps;
+            bool dirty = true;          // needs a pick or re-pick
+            bool everPicked = false;
+        };
+
+        // Pick lowest-satisfying-all across the priority-ordered
+        // repos. Returns the chosen version + repo + artifact
+        // path + sidecar manifest (or empty manifest when the
+        // winning repo can't produce one).
+        struct MvsPick {
+            std::string version;
+            std::string resolvedFromRepo;
+            std::string artifactPath;
+            std::string sha256;
+            std::string manifestJson;
+        };
+
+        llvm::Expected<MvsPick> pickLowestForAll(
+            const std::string& name,
+            const std::vector<std::string>& constraints,
+            const std::optional<std::string>& fromRepo,
+            const std::vector<RepositoryPtr>& repos,
+            ArtifactCache& cache) {
+            for (const auto& repo : repos) {
+                if (fromRepo && repo->name() != *fromRepo) continue;
+                auto versions = repo->listVersions(name);
+                if (!versions) return versions.takeError();
+                std::string v = lowestSatisfyingAll(*versions, constraints);
+                if (v.empty()) continue;
+                auto path = repo->fetch(name, v);
+                if (!path) return path.takeError();
+                auto cached = cache.insert(*path);
+                if (!cached) return cached.takeError();
+                auto sidecar = repo->fetchManifestJson(name, v);
+                if (!sidecar) return sidecar.takeError();
+
+                MvsPick out;
+                out.version = v;
+                out.resolvedFromRepo = repo->name();
+                out.artifactPath = *cached;
+                out.sha256 = ArtifactCache::sha256OfFile(*cached);
+                if (sidecar->has_value()) out.manifestJson = **sidecar;
+                return out;
+            }
+            std::string joined;
+            for (const auto& c : constraints) {
+                if (!joined.empty()) joined += ", ";
+                joined += c;
+            }
+            std::string repoList;
+            for (const auto& r : repos) {
+                if (fromRepo && r->name() != *fromRepo) continue;
+                if (!repoList.empty()) repoList += ", ";
+                repoList += r->name();
+            }
+            return err("no version of '" + name +
+                       "' satisfies constraints [" + joined +
+                       "] (tried: " +
+                       (repoList.empty() ? "<none>" : repoList) + ")");
+        }
+
+    } // namespace
+
+    llvm::Expected<std::vector<ResolvedDependency>> resolveMvs(
         const std::vector<DependencySpec>& deps,
         const std::vector<RepositoryPtr>& repos,
         ArtifactCache& cache) {
 
-        // BFS walk. Frontier holds dep specs we still need to
-        // resolve; `seen` tracks package names we've already
-        // resolved (first-pick wins — when the MVS solver lands,
-        // it'll re-pick on conflict). Output order is topological:
-        // root deps in declaration order first, then each picked
-        // dep's children in declaration order.
-        std::vector<ResolvedDependency> out;
-        std::set<std::string> seen;
-        std::deque<DependencySpec> frontier;
-        for (const auto& d : deps) frontier.push_back(d);
+        std::unordered_map<std::string, MvsState> state;
+        std::vector<std::string> insertionOrder;
 
-        while (!frontier.empty()) {
-            DependencySpec dep = frontier.front();
-            frontier.pop_front();
+        // Add a constraint + optional fromRepo for `name`. Returns
+        // true when the constraint set actually changed (caller
+        // marks dirty to trigger a re-pick).
+        auto addConstraint = [&](const std::string& name,
+                                 const std::string& constraint,
+                                 const std::optional<std::string>& fromRepo)
+            -> llvm::Expected<bool> {
+            auto [it, inserted] = state.try_emplace(name);
+            auto& s = it->second;
+            if (inserted) insertionOrder.push_back(name);
 
-            if (dep.versionConstraint.empty()) {
-                // 6c source-form (path / git). Skip — same contract
-                // as resolveDirect.
-                continue;
+            bool changed = inserted;
+            // Constraint set is treated as a set (dedupe by string).
+            if (std::find(s.constraints.begin(), s.constraints.end(),
+                          constraint) == s.constraints.end()) {
+                s.constraints.push_back(constraint);
+                changed = true;
             }
-            if (seen.count(dep.name)) {
-                // First-pick wins under the highest-satisfying
-                // policy. The MVS solver will replace this with
-                // a constraint-intersection re-pick.
-                continue;
-            }
-            seen.insert(dep.name);
-
-            std::string manifestJson;
-            auto r = resolveOne(dep, repos, cache, manifestJson);
-            if (!r) return r.takeError();
-            out.push_back(std::move(*r));
-
-            if (manifestJson.empty()) {
-                // No sidecar — treat as a leaf. Pre-sidecar
-                // artifacts silently fall through here; once they
-                // republish with a sidecar their transitive deps
-                // expand without any consumer-side change.
-                continue;
-            }
-            auto child = loadManifestString(
-                manifestJson, dep.name + "@" + out.back().version);
-            if (!child) return child.takeError();
-            auto childDeps = parseDependencies(*child);
-            if (!childDeps) return childDeps.takeError();
-            for (const auto& cd : *childDeps) {
-                if (!seen.count(cd.name)) {
-                    frontier.push_back(cd);
+            if (fromRepo) {
+                if (s.fromRepo && *s.fromRepo != *fromRepo) {
+                    return err("conflicting 'from' repository for '" + name +
+                               "': '" + *s.fromRepo + "' vs '" + *fromRepo + "'");
+                }
+                if (!s.fromRepo) {
+                    s.fromRepo = fromRepo;
+                    changed = true;
                 }
             }
+            if (changed) s.dirty = true;
+            return changed;
+        };
+
+        // Seed with the root deps.
+        for (const auto& d : deps) {
+            if (d.versionConstraint.empty()) continue;  // 6c forms
+            auto added = addConstraint(d.name, d.versionConstraint, d.fromRepo);
+            if (!added) return added.takeError();
+        }
+
+        // Fixed-point loop. We pick + propagate until no package is
+        // dirty. Each re-pick raises a package's chosen version,
+        // bounded by the version set in the repos, so termination
+        // is guaranteed. We iterate `insertionOrder` repeatedly so
+        // newly-discovered packages get visited in declaration
+        // order — keeps output deterministic.
+        bool anyDirty = true;
+        while (anyDirty) {
+            anyDirty = false;
+            for (size_t i = 0; i < insertionOrder.size(); ++i) {
+                const std::string name = insertionOrder[i];
+                auto& s = state[name];
+                if (!s.dirty) continue;
+
+                auto pick = pickLowestForAll(
+                    name, s.constraints, s.fromRepo, repos, cache);
+                if (!pick) return pick.takeError();
+
+                bool versionChanged = !s.everPicked ||
+                                      s.version != pick->version;
+                s.version = pick->version;
+                s.resolvedFromRepo = pick->resolvedFromRepo;
+                s.artifactPath = pick->artifactPath;
+                s.sha256 = pick->sha256;
+                s.manifestJson = pick->manifestJson;
+                s.everPicked = true;
+                s.dirty = false;
+
+                if (versionChanged) {
+                    // Re-parse declared children. The old set is
+                    // discarded — children of the prior version
+                    // contributed constraints which may now be
+                    // stale, but constraints once added stay; that
+                    // can only over-constrain, never break
+                    // correctness. (Over-constraining is the
+                    // conservative MVS choice when versions
+                    // change semantically — a future refinement is
+                    // to drop constraints contributed by a now-
+                    // superseded version.)
+                    s.childDeps.clear();
+                    if (!s.manifestJson.empty()) {
+                        auto child = loadManifestString(
+                            s.manifestJson, name + "@" + s.version);
+                        if (!child) return child.takeError();
+                        auto childDeps = parseDependencies(*child);
+                        if (!childDeps) return childDeps.takeError();
+                        s.childDeps = std::move(*childDeps);
+                    }
+                    // Propagate children's constraints. Each new
+                    // one may mark someone dirty for the next loop
+                    // iteration.
+                    for (const auto& cd : s.childDeps) {
+                        if (cd.versionConstraint.empty()) continue;
+                        auto added = addConstraint(
+                            cd.name, cd.versionConstraint, cd.fromRepo);
+                        if (!added) return added.takeError();
+                        if (*added) anyDirty = true;
+                    }
+                    // Re-pick of `name` might have CHANGED s.dirty
+                    // via cycles; preserve that.
+                    if (state[name].dirty) anyDirty = true;
+                }
+            }
+        }
+
+        std::vector<ResolvedDependency> out;
+        out.reserve(insertionOrder.size());
+        for (const auto& name : insertionOrder) {
+            const auto& s = state[name];
+            ResolvedDependency r;
+            r.name = name;
+            r.version = s.version;
+            r.resolvedFromRepo = s.resolvedFromRepo;
+            r.artifactPath = s.artifactPath;
+            r.sha256 = s.sha256;
+            out.push_back(std::move(r));
         }
         return out;
     }
