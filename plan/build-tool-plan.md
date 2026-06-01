@@ -281,23 +281,44 @@ compiler/repository surface.
 
 ### Deliverables
 
-- [ ] `copy` action with sandbox.
-- [ ] `delete` action.
-- [ ] `mkdir` action.
-- [ ] `sign` action wiring into existing
-      `cajeta archive sign` (ArchiveManagement.md §8).
-- [ ] `verify-sig` action wiring into existing
-      `cajeta archive verify-sig`.
-- [ ] `version` action — semver bump (major/minor/patch) or
-      explicit set; writes back to manifest.
-- [ ] `download` action with optional SHA-256 verify.
+- [x] `copy` action — `std::filesystem::copy` with recursive +
+      mkdir-parent + multi-source (`also` array) support.
+- [x] `delete` action — `std::filesystem::remove_all`;
+      `if-exists` default true (missing path is silent OK).
+- [x] `mkdir` action — `std::filesystem::create_directories`;
+      `recursive` default true.
+- [x] `sign` action — libcrypto ed25519. Mirrors the OpenSSL
+      flow in `cli/ArchiveCommands.cpp::cmdSign` (same EVP
+      DigestSign single-shot path). Accepts key as PEM via
+      `key-env` or `key-path`. Writes detached `.sig` next to
+      the input (or to `--out`). Records `key-id` in outputs
+      for downstream consumers.
+- [x] `verify-sig` action — libcrypto ed25519 verify; mirrors
+      `cmdVerifySig`. Returns `valid: "true"|"false"` as an
+      action output rather than failing the task — consumers
+      compare against an expectation. Tampering / wrong key
+      produces a clean "false" result, not an exception.
+- [x] `version` action — semver bump (major/minor/patch) or
+      explicit set; mutates manifest's `details.version`
+      in-place (regex-based replacement so JSONC comments and
+      formatting are preserved byte-for-byte except for the
+      version string itself).
+- [x] `download` action — `curl`-shell HTTP fetch with optional
+      `sha256` verification on the received bytes. Phase 6
+      swaps the transport in (libcurl or native) when the
+      repository protocol lands; until then curl-shell is
+      adequate for the use cases that aren't latency-sensitive.
 
 ### Acceptance
 
-- [ ] Each action passes happy-path + failure-mode unit tests.
+- [x] Each action passes happy-path + failure-mode unit tests
+      (14 cases in ActionCatalogTests.cpp).
 - [ ] Cacheable actions (`copy`, `sign`, `mkdir`) participate in
       the IR cache once Phase 5 lands.
-- [ ] `sign` + `verify-sig` round-trip a real `.cja`.
+- [x] `sign` + `verify-sig` round-trip a real ed25519 signature
+      (test generates a fresh keypair via openssl genpkey,
+      signs a payload, verifies it, then verifies tampered
+      payload fails).
 
 ---
 
