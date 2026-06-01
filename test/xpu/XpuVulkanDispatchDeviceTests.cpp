@@ -112,6 +112,65 @@ TEST(XpuVulkanDispatchDeviceTests, arbitraryBlockSizeOnDevice) {
     EXPECT_FLOAT_EQ(fn(), 4096.0f);
 }
 
+// Item 5: DYNAMIC (runtime-sized) shared memory on Vulkan. `shared int32[n]`
+// (runtime n) is a concrete internal Workgroup array whose length is a spec
+// constant (SpecId 3) set from the launch's sharedBytes: at pipeline creation.
+// Stage in[t] into the tile, barrier, read tile[(n-1)-t] (a cross-lane read that
+// needs the barrier) ⇒ out[t] = in[(n-1)-t]. n=64, sharedBytes=256.
+TEST(XpuVulkanDispatchDeviceTests, dynamicSharedOnDevice) {
+    if (!VulkanDriver::available()) {
+        GTEST_SKIP() << "no Vulkan device/driver available";
+    }
+    const char* src =
+        "package test;\n"
+        "import cajeta.xpu.core.Buffer;\n"
+        "import cajeta.xpu.core.Stream;\n"
+        "import cajeta.xpu.core.Thread;\n"
+        "import cajeta.xpu.core.Barrier;\n"
+        "import cajeta.xpu.core.Shared;\n"
+        "public class Dyn {\n"
+        "    @Kernel\n"
+        "    public static void dynstage(Buffer<int32> out, Buffer<int32> in,\n"
+        "                                uint32 n) {\n"
+        "        Shared<int32> tile = shared int32[n];\n"
+        "        uint32 t = Thread.x();\n"
+        "        if (t < n) { tile[t] = in[t]; }\n"
+        "        Barrier.workgroup();\n"
+        "        if (t < n) { out[t] = tile[(n - 1) - t]; }\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        uint32 n = 64;\n"
+        "        int32[] hin = new int32[n];\n"
+        "        int32[] hout = new int32[n];\n"
+        "        for (uint32 i = 0; i < n; i = i + 1) { hin[i] = (int32) i; hout[i] = 0; }\n"
+        "        Buffer<int32> in = heap Buffer<int32>(0, n);\n"
+        "        Buffer<int32> out = heap Buffer<int32>(0, n);\n"
+        "        in.allocate();\n"
+        "        out.allocate();\n"
+        "        in.upload(hin);\n"
+        "        out.upload(hout);\n"
+        "        Stream s = Stream.current();\n"
+        "        dynstage.launch(s, grid: [1], block: [64], sharedBytes: [256])(out, in, n);\n"
+        "        s.sync();\n"
+        "        out.download(hout);\n"
+        "        in.free();\n"
+        "        out.free();\n"
+        "        for (uint32 i = 0; i < n; i = i + 1) {\n"
+        "            if (hout[i] != (int32) ((n - 1) - i)) { return (int32) (100 + i); }\n"
+        "        }\n"
+        "        return 777;\n"
+        "    }\n"
+        "}\n";
+    CajetaJit::Options o;
+    o.xpuBackends = {cajeta::xpu::Backend::Spirv};
+    auto jit = CajetaJit::compile(src, "test.Dyn", o);
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<int (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    int r = fn();
+    EXPECT_EQ(r, 777) << "fail code " << r << " (100+i: out[i] != (n-1)-i)";
+}
+
 // Bundle vulkan + cpu; CAJETA_XPU_BACKEND=cpu forces the fall to the CPU even
 // with the Vulkan device present — the canonical degrade-to-CPU bundle.
 TEST(XpuVulkanDispatchDeviceTests, bundledVulkanCpuForcedToCpu) {

@@ -175,6 +175,10 @@ private:
     std::map<std::string, bool> bufferElemSigned;  // buffer name -> elem signed?
     std::shared_ptr<CajetaClass> cls;              // declaring class (helper resolution)
     DeviceFnCache* deviceFns = nullptr;            // shared @Device function cache
+    // A dynamic shared array kept TYPED (Vulkan): name -> {array global, array
+    // type}. Indexed as gep(arrTy, gv, {0, i}) so the SPIR-V OpTypeArray survives
+    // (a spec-constant length needs it), vs the decayed-to-T* base for others.
+    std::map<std::string, std::pair<llvm::Value*, llvm::Type*>> arrayShared;
     // At most one dynamic (runtime-sized) shared array per kernel — the
     // extern unsized addrspace(3) region is a single base; multiple would
     // alias (CUDA extern __shared__ / HIP HIP_DYNAMIC_SHARED both single).
@@ -343,6 +347,7 @@ private:
         llvm::GlobalValue::LinkageTypes linkage;
         llvm::Constant* init;
         uint64_t n;
+        bool isDynamic = false;
         if (auto* sizeCI = llvm::dyn_cast<llvm::ConstantInt>(sizeV)) {
             n = sizeCI->getZExtValue();
             if (n == 0) unsupported("shared array '" + nm + "' size must be > 0");
@@ -353,22 +358,44 @@ private:
                             "per kernel; '" + nm + "' is a second");
             }
             emittedDynamicShared = true;
-            n = 0;                                      // unsized
-            linkage = llvm::GlobalValue::ExternalLinkage;
+            isDynamic = true;
+            if (target.dynamicSharedNeedsConcreteSize()) {
+                // Vulkan: a concrete INTERNAL [N x T] placeholder (N>1 so it
+                // stays an OpTypeArray, not a decayed scalar); the SPIR-V
+                // post-emit pass rewrites its length to a spec constant the
+                // launch's sharedBytes sets at pipeline creation. N is just the
+                // spec constant's default.
+                n = 256;
+                linkage = llvm::GlobalValue::InternalLinkage;
+            } else {
+                n = 0;                                  // native extern shared
+                linkage = llvm::GlobalValue::ExternalLinkage;
+            }
         }
         llvm::ArrayType* arrTy = llvm::ArrayType::get(elemTy, n);
         init = (linkage == llvm::GlobalValue::ExternalLinkage)
                    ? nullptr                            // external: no initializer
                    : (llvm::Constant*) llvm::UndefValue::get(arrTy);
+        // '_' not '.': the device global's name becomes a target symbol, and '.'
+        // is a directive separator in PTX/AMDGCN asm. A concrete dynamic-shared
+        // array (Vulkan) is prefixed so the SPIR-V pass finds it by OpName.
+        std::string gname = fn->getName().str() + "_" + nm;
+        if (isDynamic && linkage == llvm::GlobalValue::InternalLinkage)
+            gname = "cajeta_dynsh_" + gname;
         auto* gv = new llvm::GlobalVariable(
             mod, arrTy, /*isConstant=*/false, linkage, init,
-            // '_' not '.': the device global's name becomes a target symbol,
-            // and '.' is a directive separator in both PTX and AMDGCN asm
-            // (the AsmPrinter would mangle it).
-            fn->getName().str() + "_" + nm, /*InsertBefore=*/nullptr,
+            gname, /*InsertBefore=*/nullptr,
             llvm::GlobalValue::NotThreadLocal, kSharedAS);
         gv->setAlignment(llvm::MaybeAlign(16));
 
+        if (isDynamic && linkage == llvm::GlobalValue::InternalLinkage) {
+            // Vulkan dynamic shared: keep the array TYPED (don't decay to T*), so
+            // its OpTypeArray survives for the spec-constant length patch.
+            arrayShared[nm] = {gv, arrTy};
+            bufferElems[nm] = elemTy;
+            bufferElemSigned[nm] = elemSigned;
+            return;
+        }
         // Decay [n x T]* -> T* (addrspace 3) and register like a buffer base so
         // tile[i] reuses lowerLValueAddr's GEP/load/store path unchanged.
         llvm::Value* zero =
@@ -653,6 +680,20 @@ private:
         auto baseId = std::dynamic_pointer_cast<IdentifierExpression>(
             exprChild(ai, 0));
         if (!baseId) unsupported("buffer index on a non-identifier base");
+        // A typed dynamic shared array (Vulkan): index it as an array
+        // (gep arrTy, gv, {0, i}) so the OpTypeArray survives in the SPIR-V.
+        if (auto as = arrayShared.find(baseId->getTextValue());
+            as != arrayShared.end()) {
+            llvm::Value* idx = lowerExpr(exprChild(ai, 1));
+            llvm::Type* i64 = llvm::Type::getInt64Ty(ctx);
+            if (idx->getType() != i64)
+                idx = builder.CreateIntCast(idx, i64,
+                                            exprSigned(exprChild(ai, 1)));
+            llvm::Value* zero = llvm::ConstantInt::get(i64, 0);
+            llvm::Value* addr = builder.CreateGEP(
+                as->second.second, as->second.first, {zero, idx}, "dynsh.idx");
+            return {addr, bufferElems[baseId->getTextValue()]};
+        }
         auto bv = bufferBases.find(baseId->getTextValue());
         auto be = bufferElems.find(baseId->getTextValue());
         if (bv == bufferBases.end() || be == bufferElems.end()) {

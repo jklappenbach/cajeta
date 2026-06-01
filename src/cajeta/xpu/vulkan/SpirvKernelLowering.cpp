@@ -200,6 +200,11 @@ public:
         return b.CreateCall(f, {}, "laneid");
     }
 
+    // Vulkan workgroup arrays need a concrete length and can't be external
+    // imports — emit a concrete internal array; emitSpirv's post-emit pass turns
+    // its length into a spec constant set by the launch's sharedBytes.
+    bool dynamicSharedNeedsConcreteSize() const override { return true; }
+
 private:
     static llvm::Value* readCoord(llvm::IRBuilderBase& b, llvm::Module& m,
                                   llvm::Intrinsic::ID id, unsigned dim) {
