@@ -96,6 +96,9 @@ namespace cajeta::dap {
         // CP6f: per-breakpoint condition keyed by (file basename, line). Empty
         // or absent entry means an unconditional breakpoint.
         std::map<std::pair<std::string, int>, std::string> conditions_;
+        // CP6f-3: desired break-on-throw state from setExceptionBreakpoints.
+        // Recorded pre-launch; applied to the controller in configurationDone.
+        bool exceptionsArmed_ = false;
         std::unique_ptr<cajeta::jit::JitDebugSession> session_;
         cajeta::dbg::StopEvent currentStop_;   // last stop (for stackTrace)
         // CP6f-2b-ii: flat per-stop frame table across all threads/fibers. The

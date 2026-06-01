@@ -452,6 +452,100 @@ TEST(DapServerSession, ThreadsListsSpawnedFiberAndStoppedThreadId) {
     EXPECT_EQ(countEvent(log, "terminated"), 1);
 }
 
+// CP6f-3: with exception breakpoints armed, a thrown exception parks the
+// program with reason "exception" before the catch runs; continue then lets it
+// be caught and run to termination.
+TEST(DapServerSession, ExceptionBreakpointStopsAtThrow) {
+    static const char* kThrowProg =
+        "package demo;\n"
+        "public class Calc {\n"
+        "    public static int32 main() {\n"
+        "        int32 result = 0;\n"
+        "        try {\n"
+        "            throw 99;\n"           // line 6 — armed exception parks here
+        "        } catch (Exception e) {\n"
+        "            result = 42;\n"
+        "        }\n"
+        "        return result;\n"
+        "    }\n"
+        "}\n";
+    TempProgram p("demo", "Calc.cajeta", kThrowProg);
+    DapServer srv;
+    std::vector<Json> log;
+
+    // initialize advertises an exception filter.
+    drive(srv, req(1, "initialize", Json::object()), log);
+    const Json* initResp = findResponse(log, "initialize");
+    ASSERT_NE(initResp, nullptr);
+    ASSERT_GE(initResp->at("body").at("exceptionBreakpointFilters").size(), 1u);
+
+    Json launchArgs = Json::object();
+    launchArgs["entry-method"] = "demo.Calc.main";
+    launchArgs["sourceRoot"] = p.sourceRoot();
+    drive(srv, req(2, "launch", launchArgs), log);
+
+    // Arm all-throws.
+    Json xbpArgs = Json::object();
+    Json filters = Json::array();
+    filters.push_back(Json(std::string("all")));
+    xbpArgs["filters"] = filters;
+    drive(srv, req(3, "setExceptionBreakpoints", xbpArgs), log);
+
+    // configurationDone runs the program; the throw must park with
+    // reason=exception (not yet terminated).
+    drive(srv, req(4, "configurationDone", Json::object()), log);
+    ASSERT_EQ(countEvent(log, "stopped"), 1);
+    EXPECT_EQ(countEvent(log, "terminated"), 0);
+    std::string reason;
+    for (const auto& m : log) {
+        if (m.at("type").asString() == "event" &&
+            m.at("event").asString() == "stopped") {
+            reason = m.at("body").at("reason").asString();
+        }
+    }
+    EXPECT_EQ(reason, "exception");
+
+    // continue -> the throw is caught, result becomes 42, program exits 42.
+    log.clear();
+    drive(srv, req(5, "continue", Json::object()), log);
+    EXPECT_EQ(countEvent(log, "terminated"), 1);
+    for (const auto& m : log) {
+        if (m.at("type").asString() == "event" &&
+            m.at("event").asString() == "exited") {
+            EXPECT_EQ(m.at("body").at("exitCode").asInt(), 42);
+        }
+    }
+}
+
+// CP6f-3: without exception breakpoints, a caught throw does NOT park.
+TEST(DapServerSession, ThrowDoesNotStopWhenExceptionsNotArmed) {
+    static const char* kThrowProg =
+        "package demo;\n"
+        "public class Calc {\n"
+        "    public static int32 main() {\n"
+        "        int32 result = 0;\n"
+        "        try {\n"
+        "            throw 99;\n"
+        "        } catch (Exception e) {\n"
+        "            result = 42;\n"
+        "        }\n"
+        "        return result;\n"
+        "    }\n"
+        "}\n";
+    TempProgram p("demo", "Calc.cajeta", kThrowProg);
+    DapServer srv;
+    std::vector<Json> log;
+    drive(srv, req(1, "initialize", Json::object()), log);
+    Json launchArgs = Json::object();
+    launchArgs["entry-method"] = "demo.Calc.main";
+    launchArgs["sourceRoot"] = p.sourceRoot();
+    drive(srv, req(2, "launch", launchArgs), log);
+    drive(srv, req(3, "configurationDone", Json::object()), log);
+
+    EXPECT_EQ(countEvent(log, "stopped"), 0);
+    EXPECT_EQ(countEvent(log, "terminated"), 1);
+}
+
 TEST(DapServerSession, NoBreakpointsRunsToTermination) {
     TempProgram p("demo", "Calc.cajeta", kProg);
     DapServer srv;

@@ -368,6 +368,20 @@ void __cajeta_dbg_safepoint(int32_t loc_id) {
     if (h) h(loc_id, __cajeta_dbg_current_fiber_id(), top);
 }
 
+// CP6f-3: settable exception handler. When the in-process debugger attaches
+// with exception breakpoints armed it installs one (via the JIT symbol, like
+// the safepoint handler); __cajeta_throw calls it at the throw chokepoint —
+// BEFORE the stack unwinds — so the throwing frame chain is still intact for
+// inspection. NULL by default (throws proceed normally). The handler receives
+// the thrown Throwable*, the current fiber id, and the dbg frame-chain head.
+typedef void (*cajeta_dbg_exception_fn)(void* throwable, int fiber_id,
+                                        void* frame_top);
+static cajeta_dbg_exception_fn __cajeta_dbg_exception_handler = NULL;
+
+void __cajeta_dbg_set_exception_handler(cajeta_dbg_exception_fn fn) {
+    __cajeta_dbg_exception_handler = fn;
+}
+
 long __cajeta_dbg_safepoint_count(void) {
     return __cajeta_dbg_safepoint_total;
 }
@@ -2284,6 +2298,14 @@ static void __cajeta_emit_uncaught(void* value, int is_unrec) {
 __attribute__((noreturn))
 void __cajeta_throw(void* value) {
     __cajeta_trace_record(value);
+    // CP6f-3: exception breakpoint. Notify the debugger BEFORE unwinding drops
+    // or longjmping, so the throwing frame chain (and its locals) are still
+    // live to inspect while parked. No-op when no handler is installed.
+    {
+        cajeta_dbg_exception_fn xh = __cajeta_dbg_exception_handler;
+        if (xh) xh(value, __cajeta_dbg_current_fiber_id(),
+                   *__cajeta_dbg_top_ptr());
+    }
     struct cajeta_exception_frame** excTop = __cajeta_exc_top_ptr();
     if (!*excTop) {
         int is_unrec = __cajeta_is_unrecoverable(value);

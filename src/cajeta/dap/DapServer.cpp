@@ -86,7 +86,10 @@ void DapServer::runToStopOrExit(const Emit& emit) {
             // CP6f-2b-ii: build the cross-thread frame table for this stop.
             rebuildFrameTable(std::move(frames));
             Json body = Json::object();
-            body["reason"] = "breakpoint";
+            // CP6f-3: reason reflects breakpoint vs exception stop.
+            body["reason"] =
+                ev.reason == cajeta::dbg::StopEvent::StopReason::Exception
+                    ? "exception" : "breakpoint";
             // CP6f-2b: the real stopped fiber id (0 = entry/main thread, >=1 a
             // spawned fiber) instead of a hard-coded 1.
             body["threadId"] = static_cast<int>(ev.fiberId);
@@ -171,6 +174,15 @@ bool DapServer::handle(const Json& request, const Emit& emit) {
         Json caps = Json::object();
         caps["supportsConfigurationDoneRequest"] = true;
         caps["supportsSetVariable"] = true;
+        // CP6f-3: advertise an "all throws" exception filter so the client can
+        // offer break-on-throw. Single filter for now (no type filtering yet).
+        Json filter = Json::object();
+        filter["filter"] = "all";
+        filter["label"] = "All thrown exceptions";
+        filter["default"] = false;
+        Json filters = Json::array();
+        filters.push_back(std::move(filter));
+        caps["exceptionBreakpointFilters"] = std::move(filters);
         emit(makeResponse(seq_++, requestSeq, command, true, caps));
         // Tell the client we're ready for breakpoint configuration.
         emit(makeEvent(seq_++, "initialized", Json::object()));
@@ -220,10 +232,28 @@ bool DapServer::handle(const Json& request, const Emit& emit) {
         return true;
     }
 
+    if (command == "setExceptionBreakpoints") {
+        // CP6f-3: a non-empty `filters` array arms break-on-throw (single
+        // all-throws toggle for now — type filtering is a later cut). Whole-
+        // replace semantics: an empty array disarms. The desired state is
+        // recorded and applied to the controller once the session exists
+        // (configurationDone); if a session is already running, apply live.
+        const Json& filters = args.at("filters");
+        exceptionsArmed_ = filters.size() > 0;
+        if (session_) {
+            if (exceptionsArmed_) session_->controller().armException();
+            else session_->controller().disarmException();
+        }
+        emit(makeResponse(seq_++, requestSeq, command, true, Json::object()));
+        return true;
+    }
+
     if (command == "configurationDone") {
         std::string err;
         session_ = cajeta::jit::startDebugSession(launchOpts_, breakpoints_, &err);
         bool ok = session_ != nullptr;
+        // CP6f-3: apply the exception-breakpoint state set during config.
+        if (ok && exceptionsArmed_) session_->controller().armException();
         emit(makeResponse(seq_++, requestSeq, command, ok,
                           ok ? Json::object() : Json(err)));
         if (ok) runToStopOrExit(emit);
