@@ -82,6 +82,23 @@ TEST(XpuHipDispatchDeviceTests, saxpyRoutesToHipOnDevice) {
     EXPECT_FLOAT_EQ(fn(), 4096.0f);   // 1024 * (2*1 + 2)
 }
 
+// Item 4 (user path): --xpu-arch=gfx1100,gfx1151 builds a MULTI-ARCH bundle for
+// the kernel; the runtime loads it on the real device (gfx1151) and runs SAXPY —
+// proving the compiler's arch-list plumbing -> assembleHsacoBundle -> dispatch.
+TEST(XpuHipDispatchDeviceTests, multiArchBundleRoutesToHipOnDevice) {
+    if (!HipDriver::available()) {
+        GTEST_SKIP() << "no ROCm/HIP device available";
+    }
+    CajetaJit::Options o;
+    o.xpuBackends = {cajeta::xpu::Backend::Amdgpu};
+    o.xpuArch = "gfx1100,gfx1151";
+    auto jit = CajetaJit::compile(kSaxpyHostSource, "test.Saxpy", o);
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<float (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    EXPECT_FLOAT_EQ(fn(), 4096.0f);
+}
+
 // Bundle BOTH amdgpu and cpu; CAJETA_XPU_BACKEND=cpu forces the fall to the CPU
 // even on a box with the GPU present — the explicit-bundle degrade-to-CPU
 // contract, validated against real hardware. GPU-independent (forced to CPU),

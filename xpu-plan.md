@@ -41,7 +41,7 @@ fix the regression first). Don't build new Vulkan capability on a red base.
 | 1 | **2D/3D launch** | capability | large | ✅ done (ABI + GPU 3-D + CPU 3-D grid/block/fission) |
 | 2 | **`@Device` helper calls** | capability | medium-large | ◐ core done (scalar params + return, same class, helper-chains; Buffer params deferred) |
 | 3 | **Vulkan block dim — spec-constant workgroup size** | vulkan | medium | ✅ done (verified on-device, block 128) |
-| 4 | **Multi-arch bundling (fatbin)** | deployment | medium | ☐ not started |
+| 4 | **Multi-arch bundling (fatbin)** | deployment | medium | ◐ AMD done + verified on-device; NVIDIA untestable here (no ptxas/fatbinary) |
 | 5 | **Vulkan dynamic shared memory** | vulkan | medium | ☐ not started |
 | 6 | **`for-each` parallel loops** | capability | medium | ☐ not started |
 | 7 | **POD structs as kernel args** | capability | small-medium | ☐ not started |
@@ -265,6 +265,26 @@ that sets the block dim.
 **Today:** single arch per emit. **Goal:** bundle multiple device arches (per
 backend) so one artifact runs across a hardware range — NV fatbin / AMD
 multi-target / Vulkan is arch-neutral SPIR-V (so mostly an NV/AMD concern).
+
+**✅ AMD done + verified on-device (2026-05-31).** Feasibility was confirmed by a
+direct experiment first: `hipModuleLoadData` accepts a clang-offload-bundle and the
+HIP runtime selects the running device's arch. Implementation: `assembleHsacoBundle`
+(AmdgpuBackend.cpp) assembles a per-arch hsaco from a fresh module clone
+(`assembleHsaco` mutates the module via the AMDGPU structurizer — a second
+in-place assembly hits `Cannot select llvm.amdgcn.if`) and bundles them with
+`clang-offload-bundler` (`-type=o`, targets `host-… , hipv4-amdgcn-amd-amdhsa--gfxXXXX`).
+`--xpu-arch` now accepts a comma list (`splitArchList`); `AmdgpuRegistration` +
+the `--xpu-emit=hsaco` path call `assembleHsacoBundle`; the embedded bundle loads
+through the unchanged runtime (`hipModuleLoadData`). Single arch is unchanged (the
+bundle path is just `assembleHsaco`). Tests: `XpuSaxpyAmdDeviceTests.multiArchBundleRunsOnDevice`
+(backend: build gfx1100+gfx1151 → load → select → launch → verify on Strix Halo)
+and `XpuHipDispatchDeviceTests.multiArchBundleRoutesToHipOnDevice` (full
+`--xpu-arch=gfx1100,gfx1151` compiler path → on-device).
+
+**☐ NVIDIA (untestable here).** Parallel structure — `ptxas` per `sm_XX` → cubins
+→ `fatbinary` → one fatbin (`cuModuleLoadData` accepts fatbins). **`ptxas`,
+`fatbinary`, and `nvcc` are all absent on this box**, so it can't be built or
+verified here; deferred rather than ship untested binary-format code.
 
 ---
 

@@ -63,6 +63,19 @@ namespace amd {
                                        llvm::TargetMachine& tm,
                                        const std::string& arch = "gfx1151");
 
+    // Assemble `deviceModule` for several gfx arches and bundle the per-arch
+    // hsacos into a single clang-offload-bundle ("HIP fatbin") that
+    // hipModuleLoadData loads, selecting the running device's arch. With one
+    // arch this is just assembleHsaco. Returns the bundle bytes, or empty on
+    // failure (clang-offload-bundler missing, or a per-arch codegen error). Each
+    // arch is assembled from a fresh module clone (assembleHsaco mutates it).
+    std::vector<uint8_t> assembleHsacoBundle(
+        llvm::Module& deviceModule, const std::vector<std::string>& arches);
+
+    // Split a comma-separated arch string ("gfx1100,gfx1151") into a list,
+    // trimming spaces and dropping empties. A single arch yields one element.
+    std::vector<std::string> splitArchList(const std::string& arch);
+
 } // namespace amd
 } // namespace xpu
 } // namespace cajeta

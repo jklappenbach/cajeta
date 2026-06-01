@@ -306,7 +306,8 @@ std::unique_ptr<CajetaJit> CajetaJit::compile(
             cajeta::xpu::emitBackendManifest(backends, *primary->getLlvmModule());
             for (cajeta::xpu::Backend be : backends) {
                 std::string arch =
-                    be == cajeta::xpu::Backend::Nvptx  ? "sm_89"
+                    !opts.xpuArch.empty()              ? opts.xpuArch
+                  : be == cajeta::xpu::Backend::Nvptx  ? "sm_89"
                   : be == cajeta::xpu::Backend::Amdgpu ? "gfx1151"
                   : be == cajeta::xpu::Backend::Spirv  ? "vulkan1.3"
                   :                                      "";

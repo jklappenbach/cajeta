@@ -28,6 +28,8 @@
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/Module.h"
 #include "llvm/Target/TargetMachine.h"
+#include "llvm/Support/Program.h"
+#include "llvm/Transforms/Utils/Cloning.h"
 
 #include <filesystem>
 #include <fstream>
@@ -155,5 +157,73 @@ TEST(XpuSaxpyAmdDeviceTests, runsOnDevice) {
             ++mismatches;
         }
     }
+    EXPECT_EQ(mismatches, 0u);
+}
+
+// Item 4: a MULTI-ARCH bundle (gfx1100 + gfx1151) built by assembleHsacoBundle
+// loads via hipModuleLoadData — the HIP runtime selects the running device's arch
+// — and the kernel runs correctly on-device. Proves AMD multi-arch fatbin end to
+// end (bundle → load → select → launch). Skips without HIP / the bundler.
+TEST(XpuSaxpyAmdDeviceTests, multiArchBundleRunsOnDevice) {
+    if (!HipDriver::available()) GTEST_SKIP() << "no HIP device";
+    if (!llvm::sys::findProgramByName("clang-offload-bundler"))
+        GTEST_SKIP() << "clang-offload-bundler not found";
+
+    const char* src =
+        "package test;\n"
+        "import cajeta.xpu.core.Buffer;\n"
+        "import cajeta.xpu.core.Thread;\n"
+        "public class M {\n"
+        "    @Kernel\n"
+        "    public static void saxpy(Buffer<float32> y, Buffer<float32> x,\n"
+        "                              float32 a, uint32 n) {\n"
+        "        uint32 i = Thread.globalIdX();\n"
+        "        if (i < n) { y[i] = a * x[i] + y[i]; }\n"
+        "    }\n"
+        "}\n";
+    Compiler compiler;
+    auto module = compileForInspection(compiler, src, "test.M");
+    auto saxpy = findMethod(module->getStructures()["test.M"], "saxpy");
+    ASSERT_NE(saxpy, nullptr);
+
+    auto tm = createAmdgpuTargetMachine("gfx1151");   // config only; arch-neutral
+    ASSERT_NE(tm, nullptr);
+    llvm::LLVMContext ctx;
+    llvm::Module deviceModule("xpu_saxpy_amd_multiarch", ctx);
+    configureDeviceModule(deviceModule, *tm);
+    lowerKernel(saxpy, deviceModule);
+
+    std::vector<uint8_t> bundle =
+        assembleHsacoBundle(deviceModule, {"gfx1100", "gfx1151"});
+    ASSERT_FALSE(bundle.empty()) << "multi-arch bundle assembly failed";
+
+    const unsigned n = 4096;
+    const float a = 2.0f;
+    std::vector<float> x(n), y(n);
+    for (unsigned i = 0; i < n; ++i) { x[i] = (float) i; y[i] = 1.0f; }
+
+    HipDriver hip;
+    ASSERT_TRUE(hip.init());
+    HipModule mod = hip.loadModule(bundle.data(), bundle.size());
+    ASSERT_NE(mod, nullptr) << "hipModuleLoadData rejected the multi-arch bundle";
+    HipFunction fn = hip.getFunction(mod, "saxpy");
+    ASSERT_NE(fn, nullptr);
+
+    const std::size_t bytes = std::size_t(n) * sizeof(float);
+    HipDevicePtr dY = hip.alloc(bytes), dX = hip.alloc(bytes);
+    ASSERT_NE(dY, nullptr); ASSERT_NE(dX, nullptr);
+    ASSERT_TRUE(hip.memcpyHtoD(dY, y.data(), bytes));
+    ASSERT_TRUE(hip.memcpyHtoD(dX, x.data(), bytes));
+    void* params[] = { &dY, &dX, (void*) &a, (void*) &n };
+    const unsigned block = 256, grid = (n + block - 1) / block;
+    ASSERT_TRUE(hip.launch(fn, grid, block, params));
+    ASSERT_TRUE(hip.synchronize());
+
+    std::vector<float> result(n);
+    ASSERT_TRUE(hip.memcpyDtoH(result.data(), dY, bytes));
+    hip.free(dY); hip.free(dX);
+    size_t mismatches = 0;
+    for (unsigned i = 0; i < n; ++i)
+        if (result[i] != a * x[i] + 1.0f) ++mismatches;
     EXPECT_EQ(mismatches, 0u);
 }
