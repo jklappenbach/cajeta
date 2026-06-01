@@ -83,8 +83,11 @@ namespace cajeta::buildtool {
     // Recognized types:
     //   - filesystem (Phase 6a)
     //   - http        (Phase 6b)
-    // `git` / `maven-compat` parse but return a "not yet
-    // implemented" error here so the developer sees a clear signal.
+    // `git` parses but errors here pending the Phase 6c driver.
+    // `maven-compat` parses but is deferred — Maven-Central-as-
+    // primary-host is a JVM pattern that doesn't fit cajeta;
+    // enterprise users can point the native HTTP driver at
+    // Nexus/Artifactory directly.
     llvm::Expected<std::vector<RepositoryPtr>> buildRepositories(
         const std::vector<RepositorySpec>& specs,
         const std::string& downloadStageDir = {});
