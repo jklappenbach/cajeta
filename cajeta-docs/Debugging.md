@@ -343,6 +343,27 @@ what will fire when the function returns or scope exits.
 }
 ```
 
+### Drop / destructor breakpoints
+
+To answer *"when was this instance destructed?"*, set an **ordinary source
+breakpoint on the class's destructor** — `~T()`. No special breakpoint type and
+no protocol extension are involved:
+
+- Every class implicitly extends `Object`, which declares the root virtual
+  destructor `~Object()`. Destruction is virtual — dropping through any base
+  reference dispatches to the most-derived `~T()` via the vtable drop slot.
+- A `~T()` body is a normal method body, so under `--debug-info` it carries the
+  same per-statement safepoints as any other code. A breakpoint on a line in
+  `~T()` therefore parks through the existing DebugController rendezvous when an
+  instance of `T` is dropped (at scope exit, or an explicit `delete`).
+- It composes with conditional breakpoints (CP6f-1) and is toggled/removed live
+  like any line breakpoint.
+
+To make a class's destruction observable, give it a `~T()` (even a trivial one)
+and breakpoint its body. A class with no `~T()` runs only `Object`'s empty
+destructor plus the synthesized field-drop/free wrapper, which carry no
+user-visible source line — add a `~T()` if you need to stop there.
+
 ### Ownership annotations in variables
 
 The standard DAP `variables` response gets a namespaced `cajeta`

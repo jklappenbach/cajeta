@@ -150,4 +150,32 @@ public class Object {
     public static boolean operator== (Object a, Object b) {
         return a.hash() == b.hash();
     }
+
+    /**
+     * **Virtual destructor — the root of every class's drop.**
+     *
+     * Every class implicitly extends `Object`, so destruction is **virtual**:
+     * dropping a value through *any* base reference dispatches to the
+     * most-derived destructor via the vtable drop slot, then walks the
+     * ancestor chain up to here. Override `~T()` in a subclass to release
+     * resources deterministically at scope exit.
+     *
+     * The default body is **empty** — `Object` owns no resources. The
+     * compiler-synthesized per-class drop wrapper still performs:
+     *
+     * 1. the class's own `~T()` (if any) + field auto-drops, then
+     * 2. each ancestor's destructor in reverse declaration order, then
+     * 3. a single `__cajeta_free` of the instance.
+     *
+     * ## Debugging
+     *
+     * An inherited or overridden destructor body carries normal statement
+     * safepoints under `--debug-info`, so **setting a breakpoint on a class's
+     * `~T()` is the supported way to answer _"when was this instance
+     * destructed?"_** — an ordinary source breakpoint, no special machinery.
+     *
+     * @see cajeta-docs/stdlib/MemoryModel.md § Destructors
+     */
+    ~Object() {
+    }
 }
