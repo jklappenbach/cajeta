@@ -288,7 +288,7 @@ the project's checkpoint-by-checkpoint principle. Hashes filled in as they land.
 | **CP7-2** ✅ | Variables-view rendering — plugin `MemoryFacets` core (parse + `present`→`FacetPresentation`) + `CajetaValue` wiring: ownership→icon, alloc→value color, moved-out→error styling + read-only, facet tag appended; 11 pure tests. (bold weight + native hover-tooltip deferred — info carried by icon+color+inline tag+error) | FR-4.*, FR-5.* | plugin |
 | **CP7-3** ✅ | Editor gutter icons — pure `summarizeGutter`→`GutterSummary` (significance precedence + per-binding tooltip) + `FacetGutterManager`/`CajetaFacetGutterRenderer` line-highlighter on the stopped line, fed by the same `loadVariables` as the Variables view (FR-6.5); cleared on step/resume/session-end (FR-6.3); 5 pure tests | FR-6.2–FR-6.5 | plugin |
 | **CP7-4** ✅ | Inline editor decorations — pure `inlineHint` (per-binding `name: tag`) + `FacetInlayManager` after-line-end `HintRenderer` inlay on the stopped line, one per open editor, same `loadVariables` source (FR-6.5); live clear on step/resume/session-end (FR-6.3); 3 pure tests | FR-6.1, FR-6.3–FR-6.5 | plugin |
-| **CP7-5** | Configuration, legend, accessibility | FR-7.* | plugin |
+| **CP7-5** ✅ | Configuration, legend, accessibility — 3 independent `CajetaSettings` toggles (variables/gutter/inline, default on) gating each surface; pure `MemoryFacetLegend` (tags ↔ meanings, drift-checked vs `present()`) shown on the settings page; color never sole carrier (textual tags, FR-7.4); 5 pure tests | FR-7.* | plugin |
 | **CP7-6** | Drop / destructor breakpoints | FR-9.* | runtime + DAP + plugin |
 
 Dependencies: CP7-2 depends on CP7-1a–d; CP7-1c depends on CP7-1b; CP7-3 and

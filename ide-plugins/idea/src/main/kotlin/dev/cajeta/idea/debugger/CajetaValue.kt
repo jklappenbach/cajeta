@@ -9,6 +9,7 @@ import com.intellij.xdebugger.frame.XValueModifier
 import com.intellij.xdebugger.frame.XValueNode
 import com.intellij.xdebugger.frame.XValuePlace
 import com.intellij.xdebugger.frame.presentation.XValuePresentation
+import dev.cajeta.idea.settings.CajetaSettings
 import javax.swing.Icon
 
 /**
@@ -28,7 +29,8 @@ class CajetaValue(
 
     override fun computePresentation(node: XValueNode, place: XValuePlace) {
         val facets = variable.facets
-        if (!facets.isKnown) {
+        // CP7-5 (FR-7.3): the Variables-view encoding is independently toggleable.
+        if (!facets.isKnown || !CajetaSettings.instance.showFacetsInVariables) {
             // No metadata (non-cajeta or undetermined): the original plain leaf.
             node.setPresentation(
                 AllIcons.Debugger.Value,

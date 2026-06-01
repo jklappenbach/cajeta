@@ -10,6 +10,7 @@ import com.intellij.openapi.editor.markup.RangeHighlighter
 import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.project.Project
 import com.intellij.xdebugger.XSourcePosition
+import dev.cajeta.idea.settings.CajetaSettings
 import javax.swing.Icon
 
 /**
@@ -30,7 +31,8 @@ class FacetGutterManager(private val project: Project) {
 
     /** Show (or replace) the gutter glyph on [position]'s line for [vars]. */
     fun showAt(position: XSourcePosition, vars: List<DapVariable>) {
-        val summary = summarizeGutter(vars)
+        // CP7-5 (FR-7.3): gutter icons are independently toggleable.
+        val summary = if (CajetaSettings.instance.showFacetsInGutter) summarizeGutter(vars) else null
         ApplicationManager.getApplication().invokeLater {
             clearInternal()
             if (summary == null) return@invokeLater
