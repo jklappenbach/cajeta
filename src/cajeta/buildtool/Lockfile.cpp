@@ -1,5 +1,8 @@
 #include "cajeta/buildtool/Lockfile.h"
 
+#include "cajeta/buildtool/Dependency.h"
+#include "cajeta/buildtool/Melt.h"
+
 #include <llvm/Support/Error.h>
 #include <llvm/Support/JSON.h>
 #include <llvm/Support/MemoryBuffer.h>
@@ -80,7 +83,46 @@ namespace cajeta::buildtool {
         lf.generatorVersion = CAJETA_VERSION;
         lf.resolvedAt = nowIso;
         lf.properties = props.values;
-        // packages/plugins/overrides stay empty until Phases 6/7.
+        // packages/melts/plugins/overrides stay empty until callers
+        // either populate the typed slots (composeLockfileWithResolution)
+        // or fill the raw escape hatches.
+        return lf;
+    }
+
+    Lockfile composeLockfileWithResolution(
+        const Manifest& manifest,
+        const std::string& manifestSource,
+        const ResolvedProperties& props,
+        const std::vector<ResolvedDependency>& resolvedDeps,
+        const MeltResolution& melts,
+        const std::map<std::string, std::string>& meltProvidedBy,
+        const std::string& nowIso) {
+        auto lf = composeLockfile(manifest, manifestSource, props, nowIso);
+        lf.packagesTyped.reserve(resolvedDeps.size());
+        for (const auto& d : resolvedDeps) {
+            ResolvedPackageEntry p;
+            p.name = d.name;
+            p.version = d.version;
+            p.resolvedFromRepo = d.resolvedFromRepo;
+            p.checksum = d.sha256;
+            auto it = meltProvidedBy.find(d.name);
+            p.providedBy = (it != meltProvidedBy.end())
+                           ? it->second
+                           : std::string("explicit");
+            lf.packagesTyped.push_back(std::move(p));
+        }
+        lf.meltsTyped.reserve(melts.resolvedMelts.size());
+        for (const auto& m : melts.resolvedMelts) {
+            ResolvedMeltEntry me;
+            me.name = m.name;
+            me.version = m.version;
+            me.resolvedFromRepo = m.resolvedFromRepo;
+            me.checksum = m.sha256;
+            for (const auto& t : m.transitiveMelts) {
+                me.transitiveMelts.push_back(t.name + "@" + t.version);
+            }
+            lf.meltsTyped.push_back(std::move(me));
+        }
         return lf;
     }
 
@@ -115,10 +157,53 @@ namespace cajeta::buildtool {
         }
         root["properties"] = std::move(propsObj);
 
-        // json::Value only accepts Array via move; copy then move.
+        // Packages array: typed entries get a deterministic shape
+        // (name, version, resolved-from, checksum, provided-by). When
+        // no typed entries are present, fall back to whatever was in
+        // packagesRaw (Phase 2 compatibility path — composeLockfile
+        // before melt resolution left it empty).
         {
-            llvm::json::Array a = lf.packages;
+            llvm::json::Array a;
+            if (!lf.packagesTyped.empty()) {
+                for (const auto& p : lf.packagesTyped) {
+                    a.push_back(llvm::json::Object{
+                        {"name",          p.name},
+                        {"version",       p.version},
+                        {"resolved-from", p.resolvedFromRepo},
+                        {"checksum",      p.checksum},
+                        {"provided-by",   p.providedBy.empty()
+                                          ? std::string("explicit")
+                                          : p.providedBy},
+                    });
+                }
+            } else {
+                a = lf.packagesRaw;
+            }
             root["packages"] = llvm::json::Value(std::move(a));
+        }
+        // Melts array: typed entries get their own shape per spec
+        // (name, version, resolved-from, checksum, transitive-melts).
+        {
+            llvm::json::Array a;
+            if (!lf.meltsTyped.empty()) {
+                for (const auto& mlt : lf.meltsTyped) {
+                    llvm::json::Array transit;
+                    for (const auto& t : mlt.transitiveMelts) {
+                        transit.push_back(t);
+                    }
+                    a.push_back(llvm::json::Object{
+                        {"name",             mlt.name},
+                        {"version",          mlt.version},
+                        {"resolved-from",    mlt.resolvedFromRepo},
+                        {"checksum",         mlt.checksum},
+                        {"transitive-melts", llvm::json::Value(
+                                                std::move(transit))},
+                    });
+                }
+            } else {
+                a = lf.meltsRaw;
+            }
+            root["melts"] = llvm::json::Value(std::move(a));
         }
         {
             llvm::json::Array a = lf.plugins;
@@ -193,7 +278,45 @@ namespace cajeta::buildtool {
             }
         }
         if (const auto* a = root->getArray("packages")) {
-            lf.packages = *a;
+            lf.packagesRaw = *a;
+            // Also parse into typed entries when the shape matches.
+            // Unknown fields are preserved via the raw fallback so
+            // round-trips don't drop schema additions.
+            for (size_t i = 0; i < a->size(); ++i) {
+                const auto* o = (*a)[i].getAsObject();
+                if (!o) continue;
+                ResolvedPackageEntry p;
+                if (auto v = o->getString("name"))          p.name = v->str();
+                if (auto v = o->getString("version"))       p.version = v->str();
+                if (auto v = o->getString("resolved-from")) p.resolvedFromRepo = v->str();
+                if (auto v = o->getString("checksum"))      p.checksum = v->str();
+                if (auto v = o->getString("provided-by"))   p.providedBy = v->str();
+                if (!p.name.empty() && !p.version.empty()) {
+                    lf.packagesTyped.push_back(std::move(p));
+                }
+            }
+        }
+        if (const auto* a = root->getArray("melts")) {
+            lf.meltsRaw = *a;
+            for (size_t i = 0; i < a->size(); ++i) {
+                const auto* o = (*a)[i].getAsObject();
+                if (!o) continue;
+                ResolvedMeltEntry me;
+                if (auto v = o->getString("name"))          me.name = v->str();
+                if (auto v = o->getString("version"))       me.version = v->str();
+                if (auto v = o->getString("resolved-from")) me.resolvedFromRepo = v->str();
+                if (auto v = o->getString("checksum"))      me.checksum = v->str();
+                if (const auto* t = o->getArray("transitive-melts")) {
+                    for (size_t j = 0; j < t->size(); ++j) {
+                        if (auto s = (*t)[j].getAsString()) {
+                            me.transitiveMelts.push_back(s->str());
+                        }
+                    }
+                }
+                if (!me.name.empty() && !me.version.empty()) {
+                    lf.meltsTyped.push_back(std::move(me));
+                }
+            }
         }
         if (const auto* a = root->getArray("plugins")) {
             lf.plugins = *a;

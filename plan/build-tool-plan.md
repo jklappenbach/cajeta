@@ -499,10 +499,15 @@ work.
       into the consumer.
 - [x] `"*"` version in dependencies looks up from melt table.
 - [x] Transitive melt imports (post-order, cycle detection).
-- [ ] Resolved melts recorded in lockfile.
-- [ ] `cajeta info --melts` / `--melt-tree` output.
-- [ ] `cajeta upgrade --melt <name>`.
-- [ ] `cajeta publish --as-melt`.
+- [x] Resolved melts recorded in lockfile.
+- [x] `cajeta info --melts` / `--melt-tree` output.
+- [~] `cajeta upgrade --melt <name>`. **Deferred** — needs Upgrader
+      extension to operate on `settings.melts` entries (the current
+      Upgrader iterates `settings.dependencies`). Ships as a follow-on
+      slice once the resolver outputs are stable.
+- [~] `cajeta publish --as-melt`. **Deferred to Phase 9** — depends
+      on the `publish`/`package` actions that ship with the
+      distribution phase.
 
 ### Melts (deliverables added)
 
@@ -536,14 +541,15 @@ work.
       any imported melt.
 - [x] Transitive melt imports (`melt.melts`) processed via
       post-order traversal with cycle detection.
-- [ ] Resolved melts recorded in lockfile under a top-level
+- [x] Resolved melts recorded in lockfile under a top-level
       `melts` array (each entry includes `transitive-melts`).
-- [ ] Per-resolved-package `provided-by` field in lockfile
+- [x] Per-resolved-package `provided-by` field in lockfile
       naming the melt that supplied the version (or `"explicit"`).
-- [ ] `cajeta info --melts` / `--melt-tree` output.
-- [ ] `cajeta upgrade --melt <name>` subcommand.
-- [ ] `cajeta publish --as-melt` subcommand (publishes a
-      manifest-only `.cja`).
+- [x] `cajeta info --melts` / `--melt-tree` output.
+- [~] `cajeta upgrade --melt <name>` subcommand. Deferred (see
+      above).
+- [~] `cajeta publish --as-melt` subcommand (publishes a
+      manifest-only `.cja`). Deferred to Phase 9.
 
 ### Acceptance
 

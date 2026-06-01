@@ -6,6 +6,7 @@
 #include "cajeta/buildtool/Lockfile.h"
 #include "cajeta/buildtool/Manifest.h"
 #include "cajeta/buildtool/ManifestEditor.h"
+#include "cajeta/buildtool/Melt.h"
 #include "cajeta/buildtool/Properties.h"
 #include "cajeta/buildtool/Resolver.h"
 #include "cajeta/buildtool/Task.h"
@@ -58,6 +59,8 @@ namespace cajeta::buildtool {
             bool writeLock = false;
             bool checkLock = false;
             bool resolveTime = false;
+            bool showMelts = false;
+            bool showMeltTree = false;
             PropertyOverrides overrides;
             loadEnvOverrides(overrides);
 
@@ -102,6 +105,10 @@ namespace cajeta::buildtool {
                     checkLock = true;
                 } else if (arg == "--resolve-time") {
                     resolveTime = true;
+                } else if (arg == "--melts") {
+                    showMelts = true;
+                } else if (arg == "--melt-tree") {
+                    showMeltTree = true;
                 } else if (arg == "--help" || arg == "-h") {
                     std::cout
                         << "Usage: cajeta info [options]\n"
@@ -115,6 +122,8 @@ namespace cajeta::buildtool {
                         << "  --write-lockfile       Write cajeta.lock with resolved state\n"
                         << "  --check-lockfile       Verify manifest matches recorded checksum\n"
                         << "  --resolve-time         Run resolver and print per-phase wall-clock\n"
+                        << "  --melts                Show imported melts + which dep each one provided\n"
+                        << "  --melt-tree            Show the transitive melt graph (post-order)\n"
                         << "  -P NAME=VALUE          Override a property for this invocation\n"
                         << "  --property=NAME=VALUE  Long form of -P\n"
                         << "  --flavor=NAME          Override active build flavor\n"
@@ -266,6 +275,79 @@ namespace cajeta::buildtool {
                           << "  fetchManifest:   "
                           << us(timings.fetchManifest) << " us across "
                           << timings.fetchManifestCalls << " call(s)\n";
+            }
+
+            if (showMelts || showMeltTree) {
+                std::string projectRoot =
+                    std::filesystem::path(manifestPath)
+                        .parent_path().string();
+                if (projectRoot.empty()) projectRoot = ".";
+
+                auto repoSpecs = parseRepositories(m);
+                if (!repoSpecs) {
+                    std::string msg;
+                    llvm::raw_string_ostream os(msg);
+                    os << repoSpecs.takeError();
+                    std::cerr << "cajeta info: " << msg << "\n";
+                    return 1;
+                }
+                std::string downloadStage =
+                    (std::filesystem::path(projectRoot) / ".cajeta" /
+                     "cache" / "downloads").string();
+                auto repos = buildRepositories(*repoSpecs, downloadStage);
+                if (!repos) {
+                    std::string msg;
+                    llvm::raw_string_ostream os(msg);
+                    os << repos.takeError();
+                    std::cerr << "cajeta info: " << msg << "\n";
+                    return 1;
+                }
+                ArtifactCache cache(projectRoot);
+                auto melts = resolveMelts(m, *repos, cache);
+                if (!melts) {
+                    std::string msg;
+                    llvm::raw_string_ostream os(msg);
+                    os << melts.takeError();
+                    std::cerr << "cajeta info: " << msg << "\n";
+                    return 1;
+                }
+
+                if (showMelts) {
+                    std::cout << "\nImported melts:\n";
+                    if (melts->resolvedMelts.empty()) {
+                        std::cout << "  (none declared in settings.melts)\n";
+                    }
+                    for (const auto& r : melts->resolvedMelts) {
+                        std::cout << "  - " << r.name << "@" << r.version
+                                  << " (from " << r.resolvedFromRepo
+                                  << ")\n";
+                    }
+                    if (!melts->depConstraints.empty()) {
+                        std::cout << "\nConstraints provided by melts:\n";
+                        for (const auto& [name, constraint] :
+                                 melts->depConstraints) {
+                            std::cout << "  " << name << " = "
+                                      << constraint << "  (from "
+                                      << melts->depProvidedBy[name]
+                                      << ")\n";
+                        }
+                    }
+                }
+
+                if (showMeltTree) {
+                    std::cout << "\nMelt tree (post-order):\n";
+                    if (melts->resolvedMelts.empty()) {
+                        std::cout << "  (none)\n";
+                    }
+                    for (const auto& r : melts->resolvedMelts) {
+                        std::cout << "  " << r.name << "@" << r.version
+                                  << "\n";
+                        for (const auto& t : r.transitiveMelts) {
+                            std::cout << "    └─ " << t.name
+                                      << "@" << t.version << "\n";
+                        }
+                    }
+                }
             }
 
             return 0;
