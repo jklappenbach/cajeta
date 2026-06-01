@@ -117,12 +117,15 @@ namespace cajeta::jit {
     };
 
     // Start a debug session. Compiles `opts.sourceRoot` (debug-info forced on),
-    // arms `breakpoints`, installs the safepoint handler, and launches the
-    // entry on a background thread. Returns null on a compile/JIT failure (with
-    // a message in *error when non-null).
+    // arms `breakpoints` (and break-on-throw when `armExceptions`), installs the
+    // handlers, and launches the entry on a background thread. Arming happens
+    // BEFORE the program thread starts, so a program that throws/hits a bp
+    // immediately can't race past the arm. Returns null on a compile/JIT failure
+    // (with a message in *error when non-null).
     std::unique_ptr<JitDebugSession> startDebugSession(
         const JitRunOptions& opts,
         const std::vector<Breakpoint>& breakpoints,
-        std::string* error = nullptr);
+        std::string* error = nullptr,
+        bool armExceptions = false);
 
 } // namespace cajeta::jit

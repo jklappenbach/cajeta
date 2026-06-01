@@ -376,7 +376,13 @@ void __cajeta_dbg_safepoint(int32_t loc_id) {
 // the thrown Throwable*, the current fiber id, and the dbg frame-chain head.
 typedef void (*cajeta_dbg_exception_fn)(void* throwable, int fiber_id,
                                         void* frame_top);
-static cajeta_dbg_exception_fn __cajeta_dbg_exception_handler = NULL;
+// NOT static: __cajeta_throw (far away in this TU) reads this global. Under the
+// JIT's partitioned/lazy materialization an `internal` global referenced across
+// distant functions can end up duplicated (the setter writes one copy, the
+// throw reads another) — observed as the exception handler never firing under
+// `cajeta dap` while the adjacent safepoint handler worked. External linkage
+// gives a single unified definition. (CP6f-3.)
+cajeta_dbg_exception_fn __cajeta_dbg_exception_handler = NULL;
 
 void __cajeta_dbg_set_exception_handler(cajeta_dbg_exception_fn fn) {
     __cajeta_dbg_exception_handler = fn;

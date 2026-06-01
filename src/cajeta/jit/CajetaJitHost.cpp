@@ -518,7 +518,8 @@ std::vector<JitDebugSession::FiberSnapshot> JitDebugSession::liveFibers() {
 std::unique_ptr<JitDebugSession> startDebugSession(
         const JitRunOptions& opts,
         const std::vector<Breakpoint>& breakpoints,
-        std::string* error) {
+        std::string* error,
+        bool armExceptions) {
     // Debug sessions always emit safepoints.
     JitRunOptions dbgOpts = opts;
     dbgOpts.debugInfo = true;
@@ -543,6 +544,9 @@ std::unique_ptr<JitDebugSession> startDebugSession(
             }
         }
     }
+    // CP6f-3: arm break-on-throw BEFORE the program thread starts (below), so a
+    // program that throws immediately can't race past the arm.
+    if (armExceptions) impl->controller.armException();
 
     llvm::orc::LLJIT* jit = impl->built.jit.get();
 

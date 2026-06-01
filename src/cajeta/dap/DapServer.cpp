@@ -250,10 +250,11 @@ bool DapServer::handle(const Json& request, const Emit& emit) {
 
     if (command == "configurationDone") {
         std::string err;
-        session_ = cajeta::jit::startDebugSession(launchOpts_, breakpoints_, &err);
+        // CP6f-3: arm break-on-throw inside startDebugSession (before the
+        // program thread starts) so an immediate throw can't race past it.
+        session_ = cajeta::jit::startDebugSession(launchOpts_, breakpoints_,
+                                                  &err, exceptionsArmed_);
         bool ok = session_ != nullptr;
-        // CP6f-3: apply the exception-breakpoint state set during config.
-        if (ok && exceptionsArmed_) session_->controller().armException();
         emit(makeResponse(seq_++, requestSeq, command, ok,
                           ok ? Json::object() : Json(err)));
         if (ok) runToStopOrExit(emit);
