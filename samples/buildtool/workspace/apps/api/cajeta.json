@@ -1,0 +1,37 @@
+{
+    "details": {
+        "name":               "com.example.api",
+        "version":            "0.1.0",
+        "description":        "Production HTTP API; depends on core + util",
+        "license":            "Apache-2.0",
+        "cajeta-lang-version": "1.0"
+    },
+
+    "settings": {
+        // App has a richer cap surface than the libs.
+        "capabilities": ["network", "filesystem", "clock"],
+        "dependencies": {
+            // Inter-member deps via path. The path is relative to
+            // THIS manifest's directory. When publishing externally
+            // (Phase 6c) these get rewritten to version-refs.
+            "com.example.core": { "path": "../../shared/core" },
+            "com.example.util": { "path": "../../shared/util" },
+            // External via workspace.shared-dependencies.
+            "cajeta.lang.io":   "*"
+        },
+        "build": {
+            "entry-method": "com.example.api.Main::main"
+        }
+    },
+
+    "tasks": {
+        "build": {
+            "description": "Build the API server (native executable)",
+            "actions": [
+                { "action": "build", "flavor": "release",
+                  "profile": "release", "id": "art" }
+            ],
+            "outputs": { "path": "${art.path}" }
+        }
+    }
+}

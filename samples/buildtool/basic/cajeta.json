@@ -1,0 +1,94 @@
+{
+    // Single-package starter — what `cajeta init` writes by default
+    // (per BuildTool.md "Default cajeta init manifest").
+
+    "details": {
+        "name":               "com.example.basic",
+        "version":            "0.1.0",
+        "description":        "Single-package buildtool sample",
+        "license":            "Apache-2.0",
+        "authors":            ["sample"],
+        "cajeta-lang-version": "1.0"
+    },
+
+    "properties": {
+        // Centralize repeated values here. ${stack-version} below
+        // demonstrates the substitution mechanism.
+        "stack-version": "1.0.0"
+    },
+
+    "settings": {
+        "capabilities": ["filesystem", "clock"],
+
+        "dependencies": {
+            // These reference the stack-version property — bumping
+            // it in one place flows to every dep.
+            "cajeta.lang":    "${stack-version}",
+            "cajeta.lang.io": "${stack-version}"
+        },
+
+        "dev-dependencies": {
+            "cajeta.testkit": "1.0.*"
+        },
+
+        "repositories": [
+            { "name": "central", "url": "https://repo.cajeta.org",
+              "priority": 0 }
+        ],
+
+        "build": {
+            "target":       "host",
+            "entry-method": "com.example.basic.Main::main"
+        }
+    },
+
+    "tasks": {
+
+        // ─── Starter build tasks ────────────────────────────────────
+        // Each task carries its own profile + flavor literals.
+        // Profile names are arbitrary; rename to match your envs.
+
+        "build": {
+            "description": "Local development build",
+            "params": {
+                "profile": { "type": "string", "default": "dev" }
+            },
+            "actions": [
+                { "action":  "build",
+                  "flavor":  "debug",
+                  "profile": "${params.profile}",
+                  "id":      "art" }
+            ],
+            "outputs": { "path": "${art.path}", "sha256": "${art.sha256}" }
+        },
+
+        "test": {
+            "description": "Unit tests with dependencies mocked",
+            "actions": [
+                { "action":  "build",
+                  "flavor":  "debug",
+                  "profile": "test",
+                  "id":      "art" },
+                { "action": "exec", "command": "echo",
+                  "args":   ["[test] would run tests against ${art.path}"] }
+            ]
+        },
+
+        "release": {
+            "description": "Release build + ship",
+            "actions": [
+                { "action":  "build",
+                  "flavor":  "release",
+                  "profile": "release",
+                  "id":      "art" },
+                { "action": "exec", "command": "echo",
+                  "args":   ["[release] would sign + publish ${art.path}"] }
+            ]
+        },
+
+        "clean": {
+            "description": "Wipe build outputs",
+            "actions": [ { "action": "clean" } ]
+        }
+    }
+}

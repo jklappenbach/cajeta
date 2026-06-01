@@ -1,0 +1,36 @@
+{
+    "details": {
+        "name":               "com.example.util",
+        "version":            "0.1.0",
+        "description":        "Shared utilities library",
+        "license":            "Apache-2.0",
+        "cajeta-lang-version": "1.0"
+    },
+
+    "settings": {
+        "capabilities": ["clock"],
+        "dependencies": {
+            "cajeta.lang": "*"
+        }
+    },
+
+    "tasks": {
+        "build": {
+            "description": "Build the util library",
+            "actions": [
+                { "action": "build", "flavor": "debug", "profile": "dev",
+                  "id":     "art" }
+            ],
+            "outputs": { "path": "${art.path}" }
+        },
+        "test": {
+            "description": "Unit tests",
+            "actions": [
+                { "action": "build", "flavor": "debug", "profile": "test",
+                  "id":     "art" },
+                { "action": "exec", "command": "echo",
+                  "args":   ["[util] would test ${art.path}"] }
+            ]
+        }
+    }
+}

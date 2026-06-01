@@ -1,0 +1,72 @@
+{
+    // Workspace-root manifest. The `workspace` block is what
+    // distinguishes a workspace from a regular project; member
+    // manifests don't carry it. See BuildTool.md "Workspaces".
+
+    "details": {
+        "name":               "com.example.platform",
+        "version":            "0.1.0",
+        "description":        "Shared-libs + apps workspace sample",
+        "license":            "Apache-2.0",
+        "cajeta-lang-version": "1.0"
+    },
+
+    "workspace": {
+        "members": [
+            "shared/core",
+            "shared/util",
+            "apps/api",
+            "apps/cli"
+        ],
+
+        // Workspace-level shared dependencies. Members opting in
+        // get the version constraint automatically.
+        "shared-dependencies": {
+            "cajeta.lang":    "1.0.*",
+            "cajeta.lang.io": "1.0.*",
+            "cajeta.testkit": "1.0.*"
+        }
+    },
+
+    "properties": {
+        "release-bucket": "${env.RELEASE_BUCKET}"
+    },
+
+    "settings": {
+        "repositories": [
+            { "name": "central", "url": "https://repo.cajeta.org",
+              "priority": 0 }
+        ]
+    },
+
+    "tasks": {
+
+        // Workspace-wide build: build every member in parallel,
+        // then echo a summary. Real workspaces would set up
+        // explicit depends-on between members where the build
+        // order matters.
+        "build": {
+            "description": "Build every workspace member",
+            "actions": [
+                { "parallel": [
+                    { "run-task": "shared/core:build"  },
+                    { "run-task": "shared/util:build"  },
+                    { "run-task": "apps/api:build"     },
+                    { "run-task": "apps/cli:build"     }
+                ]},
+                { "action": "exec", "command": "echo",
+                  "args":   ["[platform] workspace build complete"] }
+            ]
+        },
+
+        "test": {
+            "description": "Run every member's tests",
+            "actions": [
+                { "parallel": [
+                    { "run-task": "shared/core:test" },
+                    { "run-task": "shared/util:test" }
+                ]}
+            ]
+        }
+    }
+}
