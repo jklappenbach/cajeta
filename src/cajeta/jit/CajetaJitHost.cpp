@@ -358,6 +358,30 @@ void installHandler(llvm::orc::LLJIT* jit, void (*handler)(int32_t, int, void*))
     }
 }
 
+// CP6f-3 exception trampoline — forwards a throw at the runtime chokepoint to
+// the active session's controller. onException() no-ops unless exceptions are
+// armed, so this is always installed (arming is a controller flag the DAP
+// server flips via setExceptionBreakpoints).
+void exceptionTrampoline(void* throwable, int fiberId, void* frameTop) {
+    cajeta::dbg::DebugController* c;
+    {
+        std::lock_guard<std::mutex> lock(g_activeMutex);
+        c = g_activeController;
+    }
+    if (c) c->onException(throwable, static_cast<long>(fiberId), frameTop);
+}
+
+// Install (or clear) the exception handler via __cajeta_dbg_set_exception_handler.
+void installExceptionHandler(llvm::orc::LLJIT* jit,
+                             void (*handler)(void*, int, void*)) {
+    using SetFn = void (*)(void (*)(void*, int, void*));
+    if (auto sym = jit->lookup("__cajeta_dbg_set_exception_handler")) {
+        if (auto setFn = reinterpret_cast<SetFn>(sym->getValue())) setFn(handler);
+    } else {
+        cajeta::jit::consumeError(sym.takeError());
+    }
+}
+
 } // namespace
 
 std::string entryTargetFromDotted(const std::string& dotted) {
@@ -447,7 +471,10 @@ int JitDebugSession::join() {
         std::lock_guard<std::mutex> lock(g_activeMutex);
         if (g_activeController == &impl_->controller) g_activeController = nullptr;
     }
-    if (impl_->built.jit) installHandler(impl_->built.jit.get(), nullptr);
+    if (impl_->built.jit) {
+        installHandler(impl_->built.jit.get(), nullptr);
+        installExceptionHandler(impl_->built.jit.get(), nullptr);
+    }
     return impl_->exitCode;
 }
 
@@ -525,6 +552,7 @@ std::unique_ptr<JitDebugSession> startDebugSession(
         g_activeController = &impl->controller;
     }
     installHandler(jit, &safepointTrampoline);
+    installExceptionHandler(jit, &exceptionTrampoline);
     callVoidSymbol(jit, "__cajeta_dbg_reset_safepoint_count");
 
     auto entrySym = jit->lookup(impl->built.entryName);

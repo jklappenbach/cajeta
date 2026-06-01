@@ -22,6 +22,21 @@ namespace cajeta::dbg {
         return armed.count(locId) != 0;
     }
 
+    void DebugController::armException() {
+        std::lock_guard<std::mutex> lock(mutex);
+        exceptionArmed = true;
+    }
+
+    void DebugController::disarmException() {
+        std::lock_guard<std::mutex> lock(mutex);
+        exceptionArmed = false;
+    }
+
+    bool DebugController::isExceptionArmed() const {
+        std::lock_guard<std::mutex> lock(mutex);
+        return exceptionArmed;
+    }
+
     void DebugController::onSafepoint(int32_t locId, long fiberId) {
         onSafepoint(locId, fiberId, nullptr);
     }
@@ -35,6 +50,22 @@ namespace cajeta::dbg {
         stopped = true;
         resumeRequested = false;
         current = StopEvent{locId, fiberId, frameTop};
+        stoppedCv.notify_all();
+        resumeCv.wait(lock, [this] { return resumeRequested; });
+        stopped = false;
+    }
+
+    void DebugController::onException(void* throwable, long fiberId,
+                                      void* frameTop) {
+        std::unique_lock<std::mutex> lock(mutex);
+        if (!exceptionArmed) return;
+
+        // Park with reason=Exception. locId is -1 (no safepoint loc); the DAP
+        // layer reads the throwing line from the innermost frame's current_loc.
+        stopped = true;
+        resumeRequested = false;
+        current = StopEvent{-1, fiberId, frameTop,
+                            StopEvent::StopReason::Exception, throwable};
         stoppedCv.notify_all();
         resumeCv.wait(lock, [this] { return resumeRequested; });
         stopped = false;

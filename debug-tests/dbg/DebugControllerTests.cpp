@@ -80,6 +80,51 @@ TEST(DebugController, ResumeClearsStaleStopForNextWait) {
     EXPECT_FALSE(c.isStopped());
 }
 
+// CP6f-3: onException no-ops unless exceptions are armed.
+TEST(DebugController, ExceptionPassesThroughWhenNotArmed) {
+    DebugController c;
+    int dummy = 0;
+    c.onException(&dummy, 1, nullptr);   // not armed -> must not block
+    EXPECT_FALSE(c.isStopped());
+    EXPECT_FALSE(c.isExceptionArmed());
+}
+
+TEST(DebugController, ExceptionArmingIsQueryable) {
+    DebugController c;
+    EXPECT_FALSE(c.isExceptionArmed());
+    c.armException();
+    EXPECT_TRUE(c.isExceptionArmed());
+    c.disarmException();
+    EXPECT_FALSE(c.isExceptionArmed());
+}
+
+// An armed exception parks like a breakpoint and carries reason=Exception plus
+// the thrown value; resume() releases the throwing carrier.
+TEST(DebugController, ArmedExceptionParksWithThrowableThenResumes) {
+    DebugController c;
+    c.armException();
+    int thrown = 0;  // stand-in Throwable*; the controller is type-agnostic
+
+    std::atomic<bool> returned{false};
+    std::thread carrier([&] {
+        c.onException(&thrown, 7, nullptr);   // must block until resume()
+        returned = true;
+    });
+
+    StopEvent ev = c.waitForStop();
+    EXPECT_EQ(ev.reason, StopEvent::StopReason::Exception);
+    EXPECT_EQ(ev.throwable, &thrown);
+    EXPECT_EQ(ev.fiberId, 7);
+    EXPECT_EQ(ev.locId, -1);              // no safepoint loc for a throw
+    EXPECT_FALSE(returned.load());
+    EXPECT_TRUE(c.isStopped());
+
+    c.resume();
+    carrier.join();
+    EXPECT_TRUE(returned.load());
+    EXPECT_FALSE(c.isStopped());
+}
+
 TEST(DebugController, DisarmedLocPassesThrough) {
     DebugController c;
     c.arm(3);
