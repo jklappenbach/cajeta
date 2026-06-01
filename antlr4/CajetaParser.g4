@@ -655,7 +655,7 @@ parameterLabel
     ;
 
 parameterEntry
-    : parameterLabel? expression
+    : parameterLabel? REFERENCE? expression
     ;
 
 parameterList

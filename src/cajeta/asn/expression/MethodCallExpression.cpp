@@ -16,8 +16,10 @@
 #include "Expression.h"
 #include "DotExpression.h"
 #include "Identifier.h"
+#include "NewExpression.h"
 #include "cajeta/type/Scope.h"
 #include "cajeta/field/Field.h"
+#include "cajeta/field/ParameterField.h"
 #include <llvm/IR/IntrinsicInst.h>
 #include <llvm/IR/Intrinsics.h>
 
@@ -164,6 +166,10 @@ namespace cajeta {
                     ctxParameterEntry->expression());
                 if (ctxParameterEntry->parameterLabel()) {
                     entry.label = ctxParameterEntry->parameterLabel()->getText();
+                }
+                // Caller-side `#x` transfer (Phase 1 of #68).
+                if (ctxParameterEntry->REFERENCE()) {
+                    entry.callerTransferred = true;
                 }
                 parameters.push_back(entry);
             }
@@ -707,6 +713,31 @@ namespace cajeta {
                         builder->SetInsertPoint(okBB2);
                         offset = afterField;
                         diagIdx++;
+                    }
+                }
+
+                // Caller-side `#bytes` transfer (Phase 1 of #68). The
+                // inline view-construction path returns before the
+                // general transfer block below, so handle the
+                // caller-side acknowledgement here. The owning-vs-borrow
+                // view distinction itself is decided downstream by
+                // LocalVariableDeclaration (which also reads
+                // callerTransferred); this block just deactivates the
+                // bytes local's drop entry when the caller wrote `#`.
+                if (parameters[0].callerTransferred) {
+                    if (auto idExpr = std::dynamic_pointer_cast<IdentifierExpression>(
+                            parameters[0].expression)) {
+                        if (auto scope = module->getScopeStack().peek()) {
+                            FieldPtr field = scope->getField(idExpr->getTextValue());
+                            if (field) {
+                                if (llvm::Value* entry = field->getDropEntry()) {
+                                    if (llvm::Function* mark = module->getRuntimeFunction(
+                                            "__cajeta_drop_mark_inactive")) {
+                                        builder->CreateCall(mark, {entry});
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
 
@@ -4089,6 +4120,80 @@ namespace cajeta {
         // either don't have a drop entry or have it managed by their
         // own emission path. See MemoryModel.md § Borrow / transfer.
         {
+            // Helper: deactivate the named local's drop entry at the
+            // current insertion point. Used by both the caller-side and
+            // callee-side transfer passes below.
+            auto deactivateIfClassLocal = [&](size_t argIdx) {
+                if (argIdx >= parameters.size()) return;
+                auto argExprBase = parameters[argIdx].expression;
+                auto idExpr = std::dynamic_pointer_cast<IdentifierExpression>(
+                    argExprBase);
+                if (!idExpr) return;
+                auto scope = module->getScopeStack().peek();
+                if (!scope) return;
+                FieldPtr field = scope->getField(idExpr->getTextValue());
+                if (!field) return;
+                if (llvm::Value* entry = field->getDropEntry()) {
+                    if (llvm::Function* mark = module->getRuntimeFunction(
+                            "__cajeta_drop_mark_inactive")) {
+                        builder->CreateCall(mark, {entry});
+                    }
+                }
+            };
+            // Caller-side `#x` (Phase 1 of #68). The caller's intent is
+            // explicit at the source line — deactivate the source's drop
+            // regardless of whether we can resolve the callee or inspect
+            // its formals. Required for callees the standard non-ctor
+            // resolveMethod can't find (synthesized view ctors, free
+            // functions called via overloads, etc.); the caller-side
+            // marker is the authoritative signal for those.
+            //
+            // Phase 3a of #68 (body-side check): if the `#x` source is a
+            // borrowed class parameter (plain-T formal, no `#`), reject
+            // — the caller is claiming to transfer a value they don't
+            // own.
+            for (size_t i = 0; i < parameters.size(); ++i) {
+                if (!parameters[i].callerTransferred) continue;
+                auto idExpr = std::dynamic_pointer_cast<IdentifierExpression>(
+                    parameters[i].expression);
+                if (idExpr) {
+                    if (auto scope = module->getScopeStack().peek()) {
+                        FieldPtr field = scope->getField(idExpr->getTextValue());
+                        auto pf = std::dynamic_pointer_cast<ParameterField>(field);
+                        if (pf) {
+                            auto formal = pf->getFormalParameter();
+                            if (formal && !formal->isTransferred()) {
+                                auto klass = std::dynamic_pointer_cast<CajetaClass>(
+                                    field->getType());
+                                if (klass && !klass->isInterface()) {
+                                    throw Exception(
+                                        "cannot transfer borrowed parameter `"
+                                            + idExpr->getTextValue() + "` via "
+                                            "`#` — its formal is declared plain `T` "
+                                            "(borrow), so this scope doesn't own the "
+                                            "value. Fix: mark the formal `#"
+                                            + idExpr->getTextValue() + "` to receive "
+                                            "ownership at the outer call site, or "
+                                            "restructure to not retain the borrow.",
+                                        "CAJETA_ERROR_BORROW_PARAM_ESCAPES");
+                                }
+                            }
+                        }
+                    }
+                }
+                deactivateIfClassLocal(i);
+            }
+            // Callee-side `#T` formal — Phase 2 of #68: contract check.
+            // When the formal is `#T` and the caller didn't acknowledge
+            // transfer (no `#x` at the call site, no MoveExpression
+            // wrapper, no fresh allocator), throw
+            // CAJETA_ERROR_TRANSFER_REQUIRED so the caller has to either
+            // surrender ownership explicitly or restructure. The check
+            // fires only on a genuine double-free hazard: an
+            // IdentifierExpression of a class-typed local whose Field
+            // carries an active drop entry. Primitives, fresh ctors,
+            // null literals, and locals without drop entries naturally
+            // pass through. See cajeta-docs/stdlib/OwnershipTransfer.md.
             bool callFloatingX = true;
             for (auto& e : entries) {
                 if (e.label.empty()) { callFloatingX = false; break; }
@@ -4110,20 +4215,25 @@ namespace cajeta {
                     if (argIdx >= parameters.size()) break;
                     ++fIdx;
                     if (!fp->isTransferred()) continue;
-                    auto argExprBase = parameters[argIdx].expression;
+                    if (parameters[argIdx].callerTransferred) continue;
+                    auto argExpr = parameters[argIdx].expression;
+                    if (dynamic_pointer_cast<MoveExpression>(argExpr)) continue;
+                    if (dynamic_pointer_cast<NewExpression>(argExpr)) continue;
                     auto idExpr = std::dynamic_pointer_cast<IdentifierExpression>(
-                        argExprBase);
+                        argExpr);
                     if (!idExpr) continue;
                     auto scope = module->getScopeStack().peek();
                     if (!scope) continue;
                     FieldPtr field = scope->getField(idExpr->getTextValue());
-                    if (!field) continue;
-                    if (llvm::Value* entry = field->getDropEntry()) {
-                        if (llvm::Function* mark = module->getRuntimeFunction(
-                                "__cajeta_drop_mark_inactive")) {
-                            builder->CreateCall(mark, {entry});
-                        }
-                    }
+                    if (!field || !field->getDropEntry()) continue;
+                    throw Exception(
+                        "method `" + methodCallName + "` declares parameter `"
+                            + fp->getName() + "` as `#T` (ownership transfer required); "
+                            "write `#" + idExpr->getTextValue() + "` at the call site "
+                            "to surrender ownership of the source local, or pass a "
+                            "fresh `heap T(...)` / `stack T(...)` construction. "
+                            "See cajeta-docs/stdlib/OwnershipTransfer.md.",
+                        "CAJETA_ERROR_TRANSFER_REQUIRED");
                 }
             }
         }

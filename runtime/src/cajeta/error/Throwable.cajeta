@@ -7,7 +7,7 @@ package cajeta.error;
 public class Throwable {
     public String message;
 
-    public Throwable(String message) {
+    public Throwable(#String message) {
         this.message = message;
     }
 }

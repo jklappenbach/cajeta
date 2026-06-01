@@ -91,7 +91,7 @@ public class Tasks {
         int32 ok = Cajeta.taskWaitTimeout(done, deadline);
         if (ok == 1) {
             R val = await t;
-            return stack Optional<R>(true, val);
+            return stack Optional<R>(true, #val);
         }
         // Timeout — cancel cooperatively and drain. The await may throw
         // the cancellation sentinel; consume it so callers only see the
@@ -125,7 +125,7 @@ public class Tasks {
         int32 ok = Cajeta.taskWaitTimeout(done, deadlineNanos);
         if (ok == 1) {
             R val = await t;
-            return stack Optional<R>(true, val);
+            return stack Optional<R>(true, #val);
         }
         Cajeta.taskCancel(t);
         try {
@@ -197,7 +197,7 @@ public class Tasks {
                 Optional<T> r = ch.tryReceive();
                 if (r.isPresent()) {
                     SelectResult<T> sr = heap SelectResult<T>(i, r.get());
-                    return stack Optional<SelectResult<T>>(true, sr);
+                    return stack Optional<SelectResult<T>>(true, #sr);
                 }
                 if (!ch.isClosed()) {
                     any_open = true;

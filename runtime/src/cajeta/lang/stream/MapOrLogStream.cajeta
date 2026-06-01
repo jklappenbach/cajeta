@@ -28,28 +28,28 @@ public class MapOrLogStream<T, R> extends Stream<R> {
     (T) -> #R fn;
     (T, Exception) -> void logger;
 
-    public MapOrLogStream(Stream<T> source, (T) -> #R fn, (T, Exception) -> void logger) {
+    public MapOrLogStream(#Stream<T> source, (T) -> #R fn, (T, Exception) -> void logger) {
         this.source = source;
         this.fn = fn;
         this.logger = logger;
     }
 
-    public #Optional<R> next() {
+    public Optional<R> next() {
         while (true) {
             Optional<T> o = this.source.next();
             if (o.isEmpty()) {
-                return heap Optional<R>(false, null);
+                return stack Optional<R>(false, null);
             }
             T elem = o.get();
             try {
                 R mapped = this.fn(elem);
-                return heap Optional<R>(true, mapped);
+                return stack Optional<R>(true, #mapped);
             } catch (RecoverableException e) {
                 this.logger(elem, e);
                 // drop, pull next
             }
         }
-        return heap Optional<R>(false, null);
+        return stack Optional<R>(false, null);
     }
 
     /** Type-changing wrapper unwind — see MapStream. (Step 5b.) */
@@ -58,6 +58,6 @@ public class MapOrLogStream<T, R> extends Stream<R> {
     }
 
     public #Stream<R> cloneChainOver(#Stream<?> newRoot) {
-        return heap MapOrLogStream<T, R>(this.source.cloneChainOver(newRoot), this.fn, this.logger);
+        return heap MapOrLogStream<T, R>(this.source.cloneChainOver(#newRoot), this.fn, this.logger);
     }
 }

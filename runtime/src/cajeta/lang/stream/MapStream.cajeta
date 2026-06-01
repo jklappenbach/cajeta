@@ -13,18 +13,18 @@ public class MapStream<T, R> extends Stream<R> {
     Stream<T> source;
     (T) -> #R fn;
 
-    public MapStream(Stream<T> source, (T) -> #R fn) {
+    public MapStream(#Stream<T> source, (T) -> #R fn) {
         this.source = source;
         this.fn = fn;
     }
 
-    public #Optional<R> next() {
+    public Optional<R> next() {
         Optional<T> o = this.source.next();
         if (o.isEmpty()) {
-            return heap Optional<R>(false, null);
+            return stack Optional<R>(false, null);
         }
         R mapped = this.fn(o.get());
-        return heap Optional<R>(true, mapped);
+        return stack Optional<R>(true, #mapped);
     }
 
     /**
@@ -48,6 +48,6 @@ public class MapStream<T, R> extends Stream<R> {
      * naturally matches the MapStream<T,R> ctor's first arg.
      */
     public #Stream<R> cloneChainOver(#Stream<?> newRoot) {
-        return heap MapStream<T, R>(this.source.cloneChainOver(newRoot), this.fn);
+        return heap MapStream<T, R>(this.source.cloneChainOver(#newRoot), this.fn);
     }
 }

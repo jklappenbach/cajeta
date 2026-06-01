@@ -302,6 +302,36 @@ namespace cajeta {
             returnsStackValueCache = 1;
             return true;
         }
+        // #66: a class method whose body has no `return stack X(...)` (the
+        // canonical PeekStream/SkipStream shape — body is just `return o;`
+        // for a local Optional<T>) still needs sret if an ancestor class's
+        // same-name method is sret. The vtable slot ABI was fixed by the
+        // base; overrides must match or virtual dispatch misaligns args.
+        // Walk the superclass chain for any method with the same name +
+        // arg count whose own returnsStackValue() is true. Map key is the
+        // full canonical signature, not the bare name — iterate and match
+        // by name field + parameter count (the override discriminator the
+        // vtable slot resolution uses).
+        if (parent && !parent->isInterface()) {
+            size_t myParamCount = parameterList.size();
+            for (auto& ancestor : parent->getSuperClasses()) {
+                CajetaClassPtr cls = ancestor;
+                while (cls) {
+                    for (auto& kv : cls->getMethods()) {
+                        MethodPtr ancMethod = kv.second;
+                        if (!ancMethod || ancMethod.get() == this) continue;
+                        if (ancMethod->getName() != name) continue;
+                        if (ancMethod->getParameterList().size() != myParamCount) continue;
+                        if (ancMethod->returnsStackValue()) {
+                            returnsStackValueCache = 1;
+                            return true;
+                        }
+                    }
+                    if (cls->getSuperClasses().empty()) break;
+                    cls = cls->getSuperClasses().front();
+                }
+            }
+        }
         return false;
     }
 

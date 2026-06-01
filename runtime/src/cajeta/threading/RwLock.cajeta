@@ -23,7 +23,7 @@ public class RwLock<T> {
     pointer handle;
     T value;
 
-    public RwLock(T initial) {
+    public RwLock(#T initial) {
         this.handle = Cajeta.rwlockNew();
         this.value = initial;
     }

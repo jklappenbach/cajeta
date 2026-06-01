@@ -92,7 +92,7 @@ public class Channel<T> {
         this.size = this.size - 1;
         Cajeta.condvarNotifyAll(this.cond);
         Cajeta.lockRelease(this.handle);
-        return stack Optional<T>(true, item);
+        return stack Optional<T>(true, #item);
     }
 
     /** One-way close. Wakes every blocked sender/receiver to re-check. */
@@ -125,7 +125,7 @@ public class Channel<T> {
         this.size = this.size - 1;
         Cajeta.condvarNotifyAll(this.cond);
         Cajeta.lockRelease(this.handle);
-        return stack Optional<T>(true, item);
+        return stack Optional<T>(true, #item);
     }
 
     /**

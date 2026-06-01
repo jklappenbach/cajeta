@@ -27,16 +27,16 @@ public class HashMapKeyStream<K, V> extends Stream<K> implements Splittable<K> {
         this.idx = 0;
     }
 
-    public #Optional<K> next() {
+    public Optional<K> next() {
         while (this.idx < this.cap) {
             if (this.state[this.idx] == 1) {
                 K k = this.keys[this.idx];
                 this.idx = this.idx + 1;
-                return heap Optional<K>(true, k);
+                return stack Optional<K>(true, #k);
             }
             this.idx = this.idx + 1;
         }
-        return heap Optional<K>(false, null);
+        return stack Optional<K>(false, null);
     }
 
     /**
