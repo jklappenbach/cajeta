@@ -198,7 +198,7 @@ namespace cajeta::buildtool {
                 // call), so don't error. Just proceed.
             }
 
-            TaskContext childCtx(props);
+            TaskContext childCtx(props, parentCtx.manifest());
             if (auto e = bindParams(called, cli, childCtx)) {
                 return std::move(e);
             }
@@ -404,8 +404,9 @@ namespace cajeta::buildtool {
             const TaskInvocationParams& cliParams,
             const ResolvedProperties& props,
             const ActionRegistry& registry,
-            std::set<std::string>& executedTasks) {
-            TaskContext ctx(props);
+            std::set<std::string>& executedTasks,
+            const Manifest* manifest) {
+            TaskContext ctx(props, manifest);
             if (auto e = bindParams(task, cliParams, ctx)) {
                 return std::move(e);
             }
@@ -452,7 +453,8 @@ namespace cajeta::buildtool {
         const std::string& taskName,
         const TaskInvocationParams& cliParams,
         const ResolvedProperties& props,
-        const ActionRegistry& registry) {
+        const ActionRegistry& registry,
+        const Manifest* manifest) {
 
         // Validate the whole task graph for cycles before any action
         // fires. Cheap; catches the structural error early.
@@ -481,7 +483,7 @@ namespace cajeta::buildtool {
                 return err("no such task: '" + name + "'");
             }
             auto outs = runOneTask(tasks, it->second, p, props, registry,
-                                   executed);
+                                   executed, manifest);
             if (!outs) return outs.takeError();
             executed.insert(name);
             if (name == taskName) lastOutputs = std::move(*outs);
@@ -608,13 +610,14 @@ namespace cajeta::buildtool {
         const std::string& taskName,
         const TaskInvocationParams& cliParams,
         const ResolvedProperties& props,
-        std::ostream& out) {
+        std::ostream& out,
+        const Manifest* manifest) {
         if (auto e = validateTaskGraph(tasks)) return std::move(e);
         auto it = tasks.find(taskName);
         if (it == tasks.end()) return err("no such task: '" + taskName + "'");
         const Task& task = it->second;
 
-        TaskContext ctx(props);
+        TaskContext ctx(props, manifest);
         if (auto e = bindParams(task, cliParams, ctx)) return std::move(e);
 
         out << "task: " << taskName;

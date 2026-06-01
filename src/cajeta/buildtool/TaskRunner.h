@@ -44,12 +44,18 @@ namespace cajeta::buildtool {
     // before this task (each runs at most once per invocation).
     // Validates the task graph for cycles at entry — running a task
     // whose graph has a cycle errors before any action fires.
+    //
+    // `manifest` is passed through to TaskContext so actions like
+    // `build` can read `settings.build.binaries` and other
+    // manifest-level defaults. May be nullptr for unit tests that
+    // don't exercise manifest-aware actions.
     llvm::Expected<std::map<std::string, std::string>> runTask(
         const std::map<std::string, Task>& tasks,
         const std::string& taskName,
         const TaskInvocationParams& cliParams,
         const ResolvedProperties& props,
-        const ActionRegistry& registry);
+        const ActionRegistry& registry,
+        const Manifest* manifest = nullptr);
 
     // Print the resolved action sequence for a task without actually
     // running it. Used by `cajeta task <name> --show`. Substitutes
@@ -62,6 +68,7 @@ namespace cajeta::buildtool {
         const std::string& taskName,
         const TaskInvocationParams& cliParams,
         const ResolvedProperties& props,
-        std::ostream& out);
+        std::ostream& out,
+        const Manifest* manifest = nullptr);
 
 } // namespace cajeta::buildtool

@@ -216,6 +216,53 @@ namespace cajeta::buildtool {
         return m;
     }
 
+    llvm::Expected<SettingsBuild> parseSettingsBuild(const Manifest& m) {
+        auto err = [](const std::string& where, const std::string& msg) {
+            return llvm::createStringError(
+                llvm::inconvertibleErrorCode(),
+                where + ": " + msg);
+        };
+
+        SettingsBuild out;
+        const auto* settings = &m.settingsRaw;
+        const auto* build = settings->getObject("build");
+        if (!build) {
+            return out;  // no settings.build → defaults; valid
+        }
+        if (auto v = build->getString("entry-method"))
+            out.entryMethod = v->str();
+        if (auto v = build->getString("target"))
+            out.target = v->str();
+        if (auto v = build->getString("source-root"))
+            out.sourceRoot = v->str();
+        if (auto v = build->getString("output-dir"))
+            out.outputDir = v->str();
+        if (const auto* cf = build->getObject("custom-flavors")) {
+            out.customFlavorsRaw = *cf;
+        }
+        if (const auto* binaries = build->getObject("binaries")) {
+            for (const auto& kv : *binaries) {
+                BinarySpec b;
+                b.name = kv.first.str();
+                const auto* spec = kv.second.getAsObject();
+                if (!spec) {
+                    return err("settings.build.binaries",
+                               "entry '" + b.name + "' must be an object");
+                }
+                auto em = spec->getString("entry-method");
+                if (!em) {
+                    return err("settings.build.binaries." + b.name,
+                               "missing required 'entry-method'");
+                }
+                b.entryMethod = em->str();
+                if (auto d = spec->getString("description"))
+                    b.description = d->str();
+                out.binaries[b.name] = std::move(b);
+            }
+        }
+        return out;
+    }
+
     llvm::Expected<Manifest> loadManifestFile(const std::string& path) {
         auto buf = llvm::MemoryBuffer::getFile(path);
         if (!buf) {
