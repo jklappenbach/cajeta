@@ -189,7 +189,7 @@ namespace cajeta::buildtool {
                 return cite(sourceLabel,
                     "unknown top-level block '" + kv.first.str() +
                     "' (allowed: details, properties, settings, actions, "
-                    "plugins, tasks)");
+                    "plugins, tasks, workspace, melt)");
             }
         }
 

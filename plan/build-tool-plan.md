@@ -556,6 +556,68 @@ work.
 - [ ] A melt manifest that also declares `tasks` or
       `workspace` is rejected at validation time.
 
+### Deliverables — Phase 6d (Repository protocol v2 — deferred)
+
+Spec lives in `cajeta-docs/BuildTool.md` under "Repository
+protocol — v2 enhancements (deferred)". v1 (Phase 6a-c) is
+what initial release needs; v2 lands once registry traffic
+justifies the compute and storage. Backward compatibility is
+permanent — a v1-only client and a v2-only client both keep
+working against a server that advertises both.
+
+- [ ] `/.well-known/cajeta-capabilities.json` capability probe
+      on first contact with a repository (cached for the TTL
+      the server returns); v2 paths preferred when advertised.
+- [ ] `POST /v2/bundle` client + server: streamed tar.zst with
+      `have`/`want`/`transitive`/`format`; client unpacks into
+      the workstation cache as the stream arrives.
+- [ ] `GET /v2/resolve` + `GET /v2/blob/<sha256>` content-
+      addressed surface (metadata indirection + immutable blob
+      storage); workstation cache keys already match.
+- [ ] Retraction metadata (`retracted: true` + reason) surfaced
+      in resolve responses; new resolves emit a warning, old
+      lockfile entries keep resolving.
+- [ ] Pre-computed well-known bundles
+      (`GET /v2/bundle/well-known/<key>.tar.zst`) for the
+      stdlib and registered melts; key derived from melt
+      identity.
+- [ ] `POST /v2/lockfile-diff` differential fetch (with
+      fallback to full bundle on snapshot miss).
+- [ ] Opt-in `supercompress.zst` bundle format (cross-file
+      zstd over decompressed `.cja` payloads).
+- [ ] Transparency-log endpoint + verification on artifact
+      install; signing-launcher hooks the check in alongside
+      the per-artifact signature verify.
+- [ ] Mirror federation: client latency-probes the advertised
+      mirrors, prefers the closest, falls back to primary.
+- [ ] Namespace verification at publish: DNS TXT record
+      (`_cajeta-publish.<domain>`) or
+      `.github/cajeta-publish.txt`, verified once per
+      publisher.
+- [ ] CLI: `cajeta info --capabilities <repo>` prints the
+      v1/v2 surface a given repo advertises.
+
+### Acceptance — Phase 6d
+
+- [ ] A 50-dep cold install issues exactly one `/v2/bundle`
+      request (plus the capabilities probe + resolve calls)
+      against a v2-capable repository.
+- [ ] A subsequent install with one dep bumped fetches only
+      that dep's artifact (plus any new transitives), proven
+      by request log inspection.
+- [ ] A retracted artifact is still installable when its
+      sha256 is already in a downstream lockfile; new
+      resolves emit the retraction warning.
+- [ ] A v1-only client successfully installs from a v2-
+      capable server (capability probe + fallback path).
+- [ ] A v2-only client successfully installs from a v1-only
+      server (capability probe returns no `v2`, client uses
+      v1 endpoints).
+- [ ] Differential lockfile fetch over a one-dep-bump
+      transfers substantially less than the full bundle.
+- [ ] Transparency-log check fails the install when the log
+      entry's signature is invalid or absent.
+
 ---
 
 ## Phase 7 — Test action + first-party plugins

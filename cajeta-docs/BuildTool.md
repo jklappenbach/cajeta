@@ -1611,6 +1611,239 @@ consulted when the project-local cache misses, before falling
 back to the network. Useful for cold-clone CI runs that pre-warm
 the workstation cache.
 
+### Repository protocol — v2 enhancements (deferred)
+
+The v1 protocol above (one GET per artifact) is what cajeta's
+own central registry ships first. It's intentionally Maven-Central-
+shaped so existing CDN infrastructure, proxies, and mirroring tools
+work unchanged.
+
+v2 adds opt-in endpoints that fix Maven Central's two structural
+pain points: piecemeal transfer (50 deps = 50+ round trips) and
+URL-addressed bytes (path collisions, CDN-invalidation thrash,
+weak trust roots). Servers advertise v2 support via:
+
+```
+GET /.well-known/cajeta-capabilities.json
+→ {
+    "protocol-versions":  ["v1", "v2"],
+    "bundle":             true,
+    "content-addressed":  true,
+    "transparency-log":   "https://log.cajeta.org/v1",
+    "mirrors":            [
+      { "url": "https://mirror.eu.cajeta.org", "region": "eu-west" },
+      { "url": "https://mirror.us.cajeta.org", "region": "us-east" }
+    ]
+  }
+```
+
+When a v2-capable server is reached, the client prefers v2 paths.
+v1 stays available as the fallback / compatibility surface.
+
+#### Bundle endpoint
+
+One round trip for an arbitrary-sized dep graph, with client-cache
+awareness so already-fetched bytes don't move:
+
+```
+POST /v2/bundle
+Content-Type: application/cajeta-bundle-request+json
+
+{
+  "have":       ["sha256:abc...", "sha256:def..."],
+  "want":       [
+    { "name": "cajeta.io.net.http", "version": "1.2.5" },
+    { "name": "cajeta.lang",        "version": "1.0.7" }
+  ],
+  "transitive": true,
+  "format":     "tar.zst"
+}
+
+→ Content-Type: application/cajeta-bundle
+  Streamed tar.zst whose entries are one .cja per requested artifact
+  that isn't in `have`, plus a `bundle.json` index at the archive
+  root listing what's inside (name, version, sha256) and what was
+  omitted (already-cached + reason).
+```
+
+Properties:
+- Single request handles the entire resolved graph (with
+  `transitive: true` the server walks the graph server-side).
+- `have` lets the server omit bytes the client already has. A
+  build that bumped one dep transfers only that dep + any new
+  transitives.
+- Streamed response — the server starts writing tar.zst entries
+  as it reads them from storage; the client can start unpacking
+  before the transfer finishes.
+- Idempotent on `(have-set ∪ want-set)`, so common request shapes
+  are CDN-cacheable when the request body hashes into a key.
+
+#### Content-addressed storage
+
+v1 is path-addressed (`<name>/<version>/<name>-<version>.cja`),
+inheriting Maven Central's cache-invalidation problem: a republish
+collides at the same URL.
+
+v2 puts bytes under their sha256, with a small metadata indirection
+on top:
+
+```
+GET /v2/resolve?name=cajeta.lang&version=1.0.7
+→ {
+    "sha256":         "sha256:...",
+    "size":           1234567,
+    "deps":           [ { "name": "...", "version": "..." } ],
+    "capabilities":   ["network", "filesystem"],
+    "published-at":   "2026-05-15T...",
+    "retracted":      false,
+    "retracted-reason": null
+  }
+
+GET /v2/blob/<sha256>
+→ application/cja  (the bytes)
+```
+
+Consequences:
+- The blob's URL never changes once published. CDNs cache it
+  forever; invalidation is no longer a concept.
+- Mirrors, Bazel-style remote caches, and corporate proxies key
+  on the same sha256 the workstation cache already uses
+  (`.cajeta/cache/artifacts/<sha256>.cja`) — no translation layer.
+- Retractions stay byte-addressable: the bytes remain reachable
+  (downstream builds with the old sha256 in their lockfile keep
+  working) but the metadata flips `retracted: true` so new
+  resolves emit a warning.
+
+#### Pre-computed common bundles
+
+For widely-used dep sets (the stdlib, popular frameworks) the
+registry pre-computes bundles and serves them via plain GETs
+that the CDN caches:
+
+```
+GET /v2/bundle/well-known/cajeta-stdlib-1.0.7.tar.zst
+GET /v2/bundle/well-known/cajeta-platform-2024.1.0.tar.zst
+```
+
+Common combinations bypass the bundle compute step entirely. The
+keys are derived from a melt's identity, making melts the natural
+unit of pre-computation.
+
+#### Differential lockfile fetch
+
+Lockfiles encode the full resolved graph; two builds N days apart
+have lockfiles that differ in a small subset. The differential
+endpoint takes the old + new lockfile sha256 and returns only the
+diff:
+
+```
+POST /v2/lockfile-diff
+{
+  "old-lockfile-sha256": "sha256:...",
+  "new-lockfile-sha256": "sha256:..."
+}
+→ application/cajeta-bundle  (only artifacts in the diff)
+```
+
+If the server hasn't snapshotted the old lockfile, the client
+falls back to a regular `/v2/bundle` request. Both lockfiles must
+be publicly resolvable (i.e., already published or part of a
+publish operation); private project lockfiles use the bundle
+endpoint with an explicit `have` set instead.
+
+#### Cross-file compression (opt-in)
+
+Individual `.cja` archives are already compressed, so tar.zst of
+many of them gets concatenation-level compression only. For
+pre-computed common bundles where the CPU cost is paid once, an
+opt-in "super-compress" mode decompresses each .cja, concatenates,
+and re-compresses as one stream. Cross-file zstd captures shared
+symbols / class names / strings — 10-30% smaller in practice on
+mono-language ecosystems.
+
+```
+POST /v2/bundle
+{ ..., "format": "supercompress.zst" }
+```
+
+Server-CPU-expensive, so it's gated to pre-computed bundles or
+explicit request. The recipient inverts (decompress whole stream,
+split, re-compress each .cja to land in the workstation cache).
+
+#### Transparency log
+
+Maven Central trusts per-publisher PGP keys; key compromise
+allows undetectable malicious publishes. v2 adds a sigstore-style
+append-only log: every publication appends a record that clients
+can independently verify.
+
+```
+GET /v2/transparency-log/<sha256>
+→ {
+    "log-index":     12345,
+    "log-timestamp": "2026-05-15T...",
+    "log-signature": "...",
+    "key-id":        "...",
+    "issuer":        "github.com/owner/repo"
+  }
+```
+
+A malicious key works exactly once before the log entry is public,
+after which the publisher (or community) can revoke and
+investigate. The signing-launcher (see "Signing & launching")
+already verifies per-artifact signatures; the transparency check
+slots in alongside.
+
+#### Mirror federation
+
+Registries advertise mirrors in `/.well-known/cajeta-capabilities.json`
+(see above). The client probes mirror latency and prefers the
+closest, falling back to the primary on miss. Companies can host
+regional mirrors without ad-hoc HTTP proxy configuration.
+
+#### Namespace verification at publish
+
+Maven Central's namespace squatting (any unclaimed `groupId` was
+free for the taking) cost the ecosystem years of cleanup. v2
+requires DNS-proof or GitHub-proof of group ownership at publish
+time:
+
+- `com.example.foo` — TXT record at `_cajeta-publish.example.com`
+  containing the publisher's verification token, OR
+- `.github/cajeta-publish.txt` in `github.com/example`'s repo
+  root, OR
+- For non-DNS namespaces (e.g. `gh.<user>.<project>` for personal
+  packages), GitHub OIDC at publish time.
+
+Verified once per publisher; the registry then trusts that
+publisher for the entire group prefix.
+
+#### Data-rate impact
+
+For a project with 50 deps, average `.cja` size 200 KB, total
+payload ~10 MB, 50 ms RTT, 50 Mbps downlink:
+
+| Approach                                       | Round trips | Wall time |
+|------------------------------------------------|-------------|-----------|
+| v1 — one GET per artifact (Maven Central shape)| 100+        | ~12s (latency-bound) |
+| v1 — same, HTTP/2 multiplexed                  | 1 conn      | ~3s |
+| v2 `/bundle` cold (no client cache)            | 1 + resolve | ~2s (bandwidth-bound) |
+| v2 `/bundle` warm (one dep bumped)             | 1           | ~0.1s |
+| v2 pre-built well-known bundle                 | 1, CDN hit  | ~0.5s |
+
+The warm case is where bundle + content-addressing pay off most:
+incremental builds today re-validate every artifact in the graph
+even when the answer is "nothing changed."
+
+#### Roadmap
+
+v2 ships as a separate, post-v1 phase. v1 is what initial release
+needs; v2 lands once there's enough traffic to justify the
+registry-side compute and storage for bundle pre-computation.
+Backward compatibility is permanent — a v1-only client and a
+v2-only client both keep working against a server that advertises
+both.
+
 ---
 
 ## Capability system
