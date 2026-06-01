@@ -489,7 +489,7 @@ work.
       branch/tag/rev. _v1: locates a pre-built `.cja` under the
       checkout's `build/archive/`; recursive `cajeta build` of
       the cloned source is a future enhancement._
-- [ ] Override: local path replacement.
+- [x] Override: local path replacement.
 - [ ] Override: Git replacement.
 - [ ] `melt` top-level manifest block recognized.
 - [ ] `settings.melts` array parsed.

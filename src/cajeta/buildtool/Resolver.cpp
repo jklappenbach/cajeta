@@ -3,6 +3,7 @@
 #include "cajeta/buildtool/repo/TimingRepository.h"
 
 #include <llvm/Support/Error.h>
+#include <llvm/Support/JSON.h>
 
 #include <algorithm>
 #include <cctype>
@@ -10,6 +11,7 @@
 #include <cstring>
 #include <deque>
 #include <filesystem>
+#include <fstream>
 #include <optional>
 #include <set>
 #include <sstream>
@@ -355,6 +357,12 @@ namespace cajeta::buildtool {
             bool directRoot = false;
             std::optional<std::string> overrideConstraint;
             bool overrideAllowsMajorDowngrade = false;
+            // Phase 6c: path replacement override. When set (and not
+            // shadowed by a directRoot match), the package is resolved
+            // from this local directory instead of through any
+            // repository. Version + artifact + sidecar come from the
+            // directory's own cajeta.json + build/archive layout.
+            std::optional<std::string> overridePath;
 
             std::string version;
             std::string resolvedFromRepo;
@@ -387,6 +395,98 @@ namespace cajeta::buildtool {
             std::string sha256;
             std::string manifestJson;
         };
+
+        // Synthesize a pick from a local-path override. Reads the
+        // path's cajeta.json (must declare `details.name == name`),
+        // confirms a pre-built `.cja` at the conventional location,
+        // and surfaces the sidecar's bytes for transitive expansion.
+        //
+        // Symmetric with the GitRepository v1 limitation: a path
+        // override points at a *built* package, not raw source. A
+        // future enhancement can spawn a recursive `cajeta build`
+        // when the artifact is missing.
+        llvm::Expected<MvsPick> pickFromPathOverride(
+            const std::string& name,
+            const std::string& path,
+            ArtifactCache& cache) {
+            namespace fs = std::filesystem;
+            fs::path root = path;
+            std::error_code ec;
+            if (!fs::is_directory(root, ec)) {
+                return err("override for '" + name +
+                           "': path '" + path +
+                           "' is not a directory");
+            }
+            fs::path sidecar = root / "cajeta.json";
+            if (!fs::is_regular_file(sidecar, ec)) {
+                return err("override for '" + name +
+                           "': no cajeta.json at '" + sidecar.string() +
+                           "'");
+            }
+            std::ifstream in(sidecar, std::ios::binary);
+            if (!in) {
+                return err("override for '" + name +
+                           "': cannot open '" + sidecar.string() + "'");
+            }
+            std::ostringstream buf;
+            buf << in.rdbuf();
+            std::string sidecarBytes = buf.str();
+
+            auto parsed = llvm::json::parse(sidecarBytes);
+            if (!parsed) {
+                llvm::consumeError(parsed.takeError());
+                return err("override for '" + name +
+                           "': cajeta.json at '" + sidecar.string() +
+                           "' is not valid JSON");
+            }
+            const auto* obj = parsed->getAsObject();
+            if (!obj) {
+                return err("override for '" + name +
+                           "': cajeta.json at '" + sidecar.string() +
+                           "' must be a JSON object");
+            }
+            const auto* details = obj->getObject("details");
+            if (!details) {
+                return err("override for '" + name +
+                           "': cajeta.json at '" + sidecar.string() +
+                           "' missing 'details' block");
+            }
+            auto declName = details->getString("name");
+            auto declVer  = details->getString("version");
+            if (!declName || !declVer) {
+                return err("override for '" + name +
+                           "': cajeta.json at '" + sidecar.string() +
+                           "' must declare details.name + details.version");
+            }
+            if (declName->str() != name) {
+                return err("override for '" + name +
+                           "': cajeta.json at '" + sidecar.string() +
+                           "' declares name='" + declName->str() +
+                           "' which does not match");
+            }
+
+            std::string version = declVer->str();
+            fs::path artifact = root / "build" / "archive" /
+                                (name + "-" + version + ".cja");
+            if (!fs::is_regular_file(artifact, ec)) {
+                return err("override for '" + name +
+                           "': expected pre-built artifact at '" +
+                           artifact.string() + "' but it does not exist. "
+                           "v1 limitation: run `cajeta build` in '" +
+                           root.string() + "' first.");
+            }
+
+            auto cached = cache.insert(artifact.string());
+            if (!cached) return cached.takeError();
+
+            MvsPick out;
+            out.version = version;
+            out.resolvedFromRepo = "<path-override>";
+            out.artifactPath = *cached;
+            out.sha256 = ArtifactCache::sha256OfFile(*cached);
+            out.manifestJson = sidecarBytes;
+            return out;
+        }
 
         llvm::Expected<MvsPick> pickLowestForAll(
             const std::string& name,
@@ -441,14 +541,20 @@ namespace cajeta::buildtool {
         const std::vector<OverrideSpec>& overrides,
         ResolverTimings* timings) {
 
-        // Pre-flight: reject path/git override forms upfront with
-        // a Phase 6c message. Mirrors how Phase 6a stubs unknown
-        // repository types.
+        // Pre-flight: split overrides into version / path / git forms.
+        // Path overrides land here in Phase 6c; git overrides still
+        // defer to the next slice.
         std::unordered_map<std::string, const OverrideSpec*> overrideMap;
+        std::unordered_map<std::string, const OverrideSpec*> pathOverrideMap;
         for (const auto& o : overrides) {
-            if (o.path || o.git) {
+            if (o.git) {
                 return err("settings.overrides." + o.name +
-                           ": path/git replacement requires Phase 6c");
+                           ": git replacement requires Phase 6c "
+                           "(next slice)");
+            }
+            if (o.path) {
+                pathOverrideMap[o.name] = &o;
+                continue;
             }
             if (o.versionConstraint.empty()) {
                 return err("settings.overrides." + o.name +
@@ -480,6 +586,12 @@ namespace cajeta::buildtool {
                     s.overrideConstraint = it2->second->versionConstraint;
                     s.overrideAllowsMajorDowngrade =
                         it2->second->allowMajorDowngrade;
+                }
+                auto itp = pathOverrideMap.find(name);
+                if (itp != pathOverrideMap.end()) {
+                    s.overridePath = *itp->second->path;
+                    s.overrideAllowsMajorDowngrade =
+                        itp->second->allowMajorDowngrade;
                 }
             }
 
@@ -533,8 +645,15 @@ namespace cajeta::buildtool {
                 auto& s = state[name];
                 if (!s.dirty) continue;
 
-                auto pick = pickLowestForAll(
-                    name, effectiveConstraints(s), s.fromRepo, repos, cache);
+                llvm::Expected<MvsPick> pick = llvm::Expected<MvsPick>(
+                    MvsPick{});
+                if (s.overridePath && !s.directRoot) {
+                    pick = pickFromPathOverride(name, *s.overridePath, cache);
+                } else {
+                    pick = pickLowestForAll(
+                        name, effectiveConstraints(s), s.fromRepo,
+                        repos, cache);
+                }
                 if (!pick) return pick.takeError();
 
                 bool versionChanged = !s.everPicked ||
@@ -593,7 +712,9 @@ namespace cajeta::buildtool {
         // unless allow-major-downgrade is set.
         for (const auto& name : insertionOrder) {
             const auto& s = state[name];
-            if (!s.overrideConstraint || s.directRoot) continue;
+            bool overridden = (s.overrideConstraint || s.overridePath) &&
+                              !s.directRoot;
+            if (!overridden) continue;
             if (s.constraints.empty()) continue;  // override unused — nothing to compare
 
             // Recompute the "what would MVS have picked from the

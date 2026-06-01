@@ -1095,11 +1095,13 @@ TEST(DependencyTests, mvsOverrideRangeNarrowsResolution) {
     std::filesystem::remove_all(homeDir);
 }
 
-TEST(DependencyTests, mvsRejectsPathOverrideAsPhase6c) {
+// Path overrides ship in Phase 6c (see PathOverrideTests.cpp).
+// Git overrides still defer to the next slice.
+TEST(DependencyTests, mvsRejectsGitOverrideAsPhase6c) {
     auto root = makeFsRepo({{"px.bar", "1.0.0", "x"}});
     writeSidecarManifest(root, "px.bar", "1.0.0", {});
-    auto projectDir = makeTempDir("ov-path-proj");
-    auto homeDir    = makeTempDir("ov-path-home");
+    auto projectDir = makeTempDir("ov-git-proj");
+    auto homeDir    = makeTempDir("ov-git-home");
     std::vector<RepositoryPtr> repos = {
         std::make_shared<FilesystemRepository>("test", root.string()),
     };
@@ -1109,7 +1111,8 @@ TEST(DependencyTests, mvsRejectsPathOverrideAsPhase6c) {
 
     std::vector<OverrideSpec> overrides;
     OverrideSpec ov; ov.name = "px.bar";
-    ov.path = "./vendor/fork";
+    ov.git = "https://example.com/x";
+    ov.rev = "abc1234";
     overrides.push_back(ov);
 
     ArtifactCache cache(projectDir.string(), homeDir.string());
