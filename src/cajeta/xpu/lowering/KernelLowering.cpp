@@ -24,7 +24,10 @@
 #include "../../asn/expression/LiteralExpression.h"
 #include "../../asn/expression/NewExpression.h"
 #include "../../asn/expression/CreatorRest.h"
+#include "../../asn/expression/DotExpression.h"
+#include "../../type/StructureProperty.h"
 
+#include "llvm/IR/DataLayout.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/Module.h"
@@ -100,6 +103,43 @@ bool typeIsSigned(const CajetaTypePtr& t) {
     return t && (t->getTypeFlags() & SIGNED_FLAG);
 }
 
+// A POD struct kernel param, lowered to a device LLVM struct of its primitive
+// fields in declaration order. The host class carries a vtable pointer at LLVM
+// slot 0; that word is STRIPPED here (and by the launch-site marshaller in
+// CallExpression.cpp) — a host pointer is meaningless on the device and a
+// pointer inside a struct is invalid in the SPIR-V storage-buffer model. So the
+// device struct is { field0, field1, ... } and field i lives at index i.
+// Built as a literal StructType (uniqued by body), so the type collectParams
+// puts in the signature and the one lowerBody rebuilds for field GEPs are
+// identical. `type` is null when `t` is not a POD struct.
+struct DeviceStructInfo {
+    llvm::StructType* type = nullptr;
+    struct Field { unsigned index; llvm::Type* type; bool isSigned; };
+    std::map<std::string, Field> fields;
+};
+
+DeviceStructInfo deviceStructInfo(const CajetaTypePtr& t, llvm::LLVMContext& ctx) {
+    DeviceStructInfo info;
+    auto cls = std::dynamic_pointer_cast<CajetaClass>(t);
+    if (!cls) return info;
+    if (cls->isInterface() || isBufferType(t)) return info;
+    if (cls->countInheritedFields() != 0) return info;   // no inheritance v1
+    std::vector<llvm::Type*> ftys;
+    unsigned idx = 0;
+    for (auto& prop : cls->getPropertyList()) {
+        if (!prop || prop->isStatic()) continue;
+        llvm::Type* fty = deviceScalarType(prop->getType(), ctx);
+        if (!fty) return DeviceStructInfo{};             // non-primitive field
+        info.fields[prop->getName()] =
+            {idx, fty, typeIsSigned(prop->getType())};
+        ftys.push_back(fty);
+        ++idx;
+    }
+    if (ftys.empty()) return DeviceStructInfo{};
+    info.type = llvm::StructType::get(ctx, ftys);
+    return info;
+}
+
 // One device kernel's worth of lowering state.
 class DeviceLowerer {
 public:
@@ -150,6 +190,13 @@ public:
                 bufferBases[p.name] = v;
                 bufferElems[p.name] = p.type;
                 bufferElemSigned[p.name] = p.isSigned;
+            } else if (p.type->isStructTy()) {
+                // Read-only POD struct param (Item 7): keep the materialized
+                // aggregate as an SSA value and read fields via extractvalue —
+                // NO alloca round-trip, so it stays valid under SPIR-V logical
+                // addressing (an aggregate store to a Function-storage pointer
+                // is rejected by spirv-val: "not a logical pointer").
+                structValues[p.name] = v;
             } else {
                 llvm::Value* slot = entryAlloca(p.type, p.name);
                 builder.CreateStore(v, slot);
@@ -157,6 +204,13 @@ public:
                 slotTypes[p.name] = p.type;
                 signedness[p.name] = p.isSigned;
             }
+        }
+        // Field maps for POD-struct params, so `name.field` reads resolve to a
+        // GEP into the param's alloca slot (kept in `values`).
+        for (auto& p : method->getParameterList()) {
+            if (!p || p->getName() == "this") continue;
+            DeviceStructInfo si = deviceStructInfo(p->getType(), ctx);
+            if (si.type) structFields[p->getName()] = std::move(si);
         }
         lowerStatement(method->getBlock());
         // Kernels return void; close any open block.
@@ -185,6 +239,12 @@ private:
     std::vector<LoweringTarget::KernelParam> kparams;  // admitted params
     bool paramsAsArgs = false;  // true for @Device helpers (params are fn args)
     std::map<std::string, bool> bufferElemSigned;  // buffer name -> elem signed?
+    // POD struct params (Item 7): the materialized aggregate SSA value per param
+    // name, plus its field index/type/signedness map. A field read `name.field`
+    // is an extractvalue from structValues[name] at the recorded index — no
+    // alloca (keeps it valid in SPIR-V logical addressing). Read-only in v1.
+    std::map<std::string, llvm::Value*> structValues;       // name -> struct value
+    std::map<std::string, DeviceStructInfo> structFields;   // name -> field map
     std::shared_ptr<CajetaClass> cls;              // declaring class (helper resolution)
     DeviceFnCache* deviceFns = nullptr;            // shared @Device function cache
     // A dynamic shared array kept TYPED (Vulkan): name -> {array global, array
@@ -664,6 +724,7 @@ private:
     }
 
     bool lvalueSigned(const ExpressionPtr& e) {
+        if (auto* f = structFieldOf(e)) return f->isSigned;
         if (auto id = std::dynamic_pointer_cast<IdentifierExpression>(e)) {
             auto it = signedness.find(id->getTextValue());
             return it != signedness.end() ? it->second : true;
@@ -707,6 +768,12 @@ private:
         if (auto ai = std::dynamic_pointer_cast<ArrayIndexExpression>(expr)) {
             auto [addr, elemTy] = lowerLValueAddr(ai);
             return builder.CreateLoad(elemTy, addr, "elem");
+        }
+        if (std::dynamic_pointer_cast<DotExpression>(expr)) {
+            // POD-struct field read `name.field` (Item 7).
+            if (llvm::Value* fv = structFieldRead(expr)) return fv;
+            unsupported("field access — only POD-struct kernel params "
+                        "support 'name.field'");
         }
         if (auto bin = std::dynamic_pointer_cast<BinaryOpExpression>(expr)) {
             return lowerBinaryOp(bin);
@@ -788,9 +855,52 @@ private:
                          : builder.CreateFPToUI(v, dst);
     }
 
-    // Address (and element type) of an l-value. Only buffer/array indexing
-    // is supported as an assignment target in the slice.
+    // Decode `name.field` on a POD-struct kernel param to its field record, or
+    // nullptr if `e` isn't that shape (a non-dot, a dot on a non-struct, or an
+    // unknown field — the last surfaces as `unsupported` only at access time).
+    const DeviceStructInfo::Field* structFieldOf(const ExpressionPtr& e) {
+        auto dot = std::dynamic_pointer_cast<DotExpression>(e);
+        if (!dot || dot->getChildren().empty()) return nullptr;
+        auto baseId = std::dynamic_pointer_cast<IdentifierExpression>(
+            std::dynamic_pointer_cast<Expression>(dot->getChildren()[0]));
+        if (!baseId) return nullptr;
+        auto sit = structFields.find(baseId->getTextValue());
+        if (sit == structFields.end()) return nullptr;
+        auto fit = sit->second.fields.find(dot->getIdentifier());
+        if (fit == sit->second.fields.end()) return nullptr;
+        return &fit->second;
+    }
+
+    // Read `name.field` on a POD-struct kernel param as an extractvalue from the
+    // param's SSA aggregate (OpCompositeExtract on SPIR-V) — no pointer, so it's
+    // valid in logical addressing. Returns nullptr when `e` isn't a struct-field
+    // access; throws on a dot into a known struct param with an unknown field.
+    llvm::Value* structFieldRead(const ExpressionPtr& e) {
+        auto dot = std::dynamic_pointer_cast<DotExpression>(e);
+        if (!dot || dot->getChildren().empty()) return nullptr;
+        auto baseId = std::dynamic_pointer_cast<IdentifierExpression>(
+            std::dynamic_pointer_cast<Expression>(dot->getChildren()[0]));
+        if (!baseId) return nullptr;
+        auto vit = structValues.find(baseId->getTextValue());
+        auto sit = structFields.find(baseId->getTextValue());
+        if (vit == structValues.end() || sit == structFields.end())
+            return nullptr;
+        auto fit = sit->second.fields.find(dot->getIdentifier());
+        if (fit == sit->second.fields.end())
+            unsupported("unknown field '" + dot->getIdentifier() +
+                        "' on struct param '" + baseId->getTextValue() + "'");
+        return builder.CreateExtractValue(
+            vit->second, {fit->second.index},
+            baseId->getTextValue() + "." + dot->getIdentifier());
+    }
+
+    // Address (and element type) of an l-value. Buffer/array indexing and scalar
+    // locals are supported as assignment targets; POD-struct fields are read-only.
     std::pair<llvm::Value*, llvm::Type*> lowerLValueAddr(const ExpressionPtr& e) {
+        // POD-struct field `name.field` — read-only input in v1, never a target.
+        if (structFieldOf(e))
+            unsupported("POD-struct kernel params are read-only "
+                        "(no 'name.field = ...')");
         // Scalar local / param: assign straight to its alloca slot.
         if (auto id = std::dynamic_pointer_cast<IdentifierExpression>(e)) {
             const std::string& nm = id->getTextValue();
@@ -1080,6 +1190,7 @@ private:
     }
 
     bool exprSigned(const ExpressionPtr& e) {
+        if (auto* f = structFieldOf(e)) return f->isSigned;
         if (auto id = std::dynamic_pointer_cast<IdentifierExpression>(e)) {
             auto it = signedness.find(id->getTextValue());
             return it != signedness.end() ? it->second : true;
@@ -1190,12 +1301,18 @@ static std::vector<LoweringTarget::KernelParam> collectParams(
             }
             if (!elem) elem = llvm::Type::getFloatTy(ctx);  // default element
             params.push_back({p->getName(), /*isBuffer=*/true, elem, elemSigned});
-        } else {
-            llvm::Type* st = deviceScalarType(t, ctx);
-            if (!st) unsupported("kernel parameter type '" +
-                                 (t ? t->toCanonical() : std::string("?")) + "'");
+        } else if (llvm::Type* st = deviceScalarType(t, ctx)) {
             params.push_back({p->getName(), /*isBuffer=*/false, st,
                               typeIsSigned(t)});
+        } else if (DeviceStructInfo si = deviceStructInfo(t, ctx); si.type) {
+            // POD struct by value (Item 7) — an aggregate kernel param. It rides
+            // the non-buffer path: createKernel emits it by value, lowerBody
+            // gives it an entry-alloca slot, and field reads GEP into that slot.
+            params.push_back({p->getName(), /*isBuffer=*/false, si.type,
+                              /*isSigned=*/false});
+        } else {
+            unsupported("kernel parameter type '" +
+                        (t ? t->toCanonical() : std::string("?")) + "'");
         }
     }
     return params;
@@ -1207,8 +1324,14 @@ std::vector<KernelParamInfo> collectKernelParamInfo(const MethodPtr& method,
     if (!method) return info;
     for (auto& p : collectParams(method, ctx)) {
         unsigned bytes = 0;
-        if (!p.isBuffer && p.type)
-            bytes = (p.type->getScalarSizeInBits() + 7u) / 8u;
+        if (!p.isBuffer && p.type) {
+            // POD struct: the marshalled by-value footprint (alloc size under
+            // natural alignment — identical across the host + device targets
+            // for an all-primitive struct). Scalars: their byte width.
+            bytes = p.type->isStructTy()
+                ? (unsigned) llvm::DataLayout("").getTypeAllocSize(p.type)
+                : (p.type->getScalarSizeInBits() + 7u) / 8u;
+        }
         info.push_back({p.isBuffer, bytes});
     }
     return info;

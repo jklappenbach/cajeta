@@ -144,3 +144,38 @@ TEST(XpuNvptxLoopEmitTests, lowersIntegerOpsMix) {
     EXPECT_NE(ptx.find("shr"), std::string::npos) << ptx;  // i >> 2 (logical)
     EXPECT_NE(ptx.find("xor.b32"), std::string::npos) << ptx;
 }
+
+// Item 7: a POD struct passed by value as a kernel arg lowers to PTX. The kernel
+// takes `Params { int32 mul; int32 add; }` by value and reads its fields to
+// compute out[i] = i*mul + add — the struct rides param space, the fields feed a
+// signed multiply/add, and the result stores to global memory.
+TEST(XpuNvptxLoopEmitTests, lowersPodStructArg) {
+    auto src =
+        "package test;\n"
+        "import cajeta.xpu.core.Buffer;\n"
+        "import cajeta.xpu.core.Thread;\n"
+        "public class Params {\n"
+        "    int32 mul;\n"
+        "    int32 add;\n"
+        "    public Params(int32 mul, int32 add)"
+        " { this.mul = mul; this.add = add; }\n"
+        "}\n"
+        "public class M {\n"
+        "    @Kernel\n"
+        "    public static void k(Buffer<int32> out, Params p) {\n"
+        "        uint32 i = Thread.globalIdX();\n"
+        "        out[i] = (int32)i * p.mul + p.add;\n"
+        "    }\n"
+        "}\n";
+    std::string ptx = lowerToPtx(src, "test.M", "k");
+    ASSERT_FALSE(ptx.empty());
+
+    EXPECT_NE(ptx.find(".visible .entry k"), std::string::npos) << ptx;
+    // The struct fields arrive through kernel param space.
+    EXPECT_NE(ptx.find("ld.param"), std::string::npos) << ptx;
+    // i*mul + add : a signed multiply (possibly fused as mad) and a store.
+    bool hasMul = ptx.find("mul.lo.s32") != std::string::npos
+               || ptx.find("mad.lo.s32") != std::string::npos;
+    EXPECT_TRUE(hasMul) << ptx;
+    EXPECT_NE(ptx.find("st.global"), std::string::npos) << ptx;
+}

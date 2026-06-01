@@ -344,6 +344,44 @@ const char* kDeviceBufferParamSource =
     "    }\n"
     "}\n";
 
+// A POD struct passed BY VALUE as a kernel arg (Item 7). `Params` is a plain
+// class (two int32 fields, no marker interface); the kernel reads p.mul / p.add
+// to compute out[i] = i*mul + add. Marshalled field-by-field through the
+// kernelParams ABI; the CPU thunk loads the struct aggregate from argv[i].
+const char* kPodStructArgSource =
+    "package test;\n"
+    "import cajeta.xpu.core.Buffer;\n"
+    "import cajeta.xpu.core.Stream;\n"
+    "import cajeta.xpu.core.Thread;\n"
+    "public class Params {\n"
+    "    int32 mul;\n"
+    "    int32 add;\n"
+    "    public Params(int32 mul, int32 add) { this.mul = mul; this.add = add; }\n"
+    "}\n"
+    "public class PodArg {\n"
+    "    @Kernel\n"
+    "    public static void k(Buffer<int32> out, Params p) {\n"
+    "        uint32 i = Thread.globalIdX();\n"
+    "        out[i] = (int32)i * p.mul + p.add;\n"
+    "    }\n"
+    "    public static int32 run() {\n"
+    "        uint32 n = 64;\n"
+    "        int32[] hout = new int32[n];\n"
+    "        for (uint32 i = 0; i < n; i = i + 1) { hout[i] = -1; }\n"
+    "        Buffer<int32> out = heap Buffer<int32>(n);\n"
+    "        out.upload(hout);\n"
+    "        Params p = heap Params(3, 7);\n"
+    "        Stream s = Stream.current();\n"
+    "        k.launch(s, grid: [1], block: [64])(out, p);\n"
+    "        s.sync();\n"
+    "        out.download(hout);\n"
+    "        for (uint32 i = 0; i < n; i = i + 1) {\n"
+    "            if (hout[i] != (int32)(i * 3 + 7)) { return (int32)(100 + i); }\n"
+    "        }\n"
+    "        return 777;\n"
+    "    }\n"
+    "}\n";
+
 } // namespace
 
 // A large grid drives the runtime's multi-core fan-out (Inc 5A); the result must
@@ -429,6 +467,19 @@ TEST(XpuCpuDispatchTests, deviceHelperBufferParamOnCpu) {
     ASSERT_NE(fn, nullptr);
     int r = fn();
     EXPECT_EQ(r, 777) << "fail code " << r << " (100+i: out[i] != i*3)";
+}
+
+// Item 7: a POD struct passed by value as a kernel arg runs on CPU. The struct
+// is marshalled field-by-field; the kernel reads p.mul/p.add to compute
+// out[i] = i*3 + 7 for every work-item.
+TEST(XpuCpuDispatchTests, podStructArgOnCpu) {
+    auto jit = CajetaJit::compile(kPodStructArgSource, "test.PodArg",
+                                  cpuOptions());
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<int (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    int r = fn();
+    EXPECT_EQ(r, 777) << "fail code " << r << " (100+i: out[i] != i*3+7)";
 }
 
 // Explicit-only bundling is a build-time contract (locked decision #3): when the

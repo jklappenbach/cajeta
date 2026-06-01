@@ -215,6 +215,60 @@ TEST(XpuVulkanEmitTests, lowersSaxpyToSpirv) {
     }
 }
 
+// Item 7: a POD struct passed by value as a kernel arg lowers to a valid Vulkan
+// compute module. On SPIR-V the struct rides its own descriptor-bound storage
+// buffer (the scalar-SSBO mechanism, element type = the struct); the kernel
+// reads p.mul / p.add to compute out[i] = i*mul + add.
+TEST(XpuVulkanEmitTests, lowersPodStructArgToSpirv) {
+    auto src =
+        "package test;\n"
+        "import cajeta.xpu.core.Buffer;\n"
+        "import cajeta.xpu.core.Thread;\n"
+        "public class Params {\n"
+        "    int32 mul;\n"
+        "    int32 add;\n"
+        "    public Params(int32 mul, int32 add)"
+        " { this.mul = mul; this.add = add; }\n"
+        "}\n"
+        "public class M {\n"
+        "    @Kernel\n"
+        "    public static void k(Buffer<int32> out, Params p) {\n"
+        "        uint32 i = Thread.globalIdX();\n"
+        "        out[i] = (int32)i * p.mul + p.add;\n"
+        "    }\n"
+        "}\n";
+    Compiler compiler;
+    auto module = compileForInspection(compiler, src, "test.M");
+    auto k = findMethod(module->getStructures()["test.M"], "k");
+    ASSERT_NE(k, nullptr);
+
+    auto tmText = createSpirvTargetMachine("vulkan1.3");
+    ASSERT_NE(tmText, nullptr);
+    llvm::LLVMContext textCtx;
+    llvm::Module textModule("xpu_podstruct_vulkan_text", textCtx);
+    configureDeviceModule(textModule, *tmText);
+    llvm::Function* fn = lowerKernel(k, textModule);
+    ASSERT_NE(fn, nullptr);
+    EXPECT_EQ(fn->arg_size(), 0u);   // args arrive via descriptors
+    std::string text = emitSpirvText(textModule, *tmText);
+    ASSERT_FALSE(text.empty());
+    EXPECT_NE(text.find("OpEntryPoint GLCompute"), std::string::npos) << text;
+
+    auto tmBin = createSpirvTargetMachine("vulkan1.3");
+    ASSERT_NE(tmBin, nullptr);
+    llvm::LLVMContext binCtx;
+    llvm::Module binModule("xpu_podstruct_vulkan_bin", binCtx);
+    configureDeviceModule(binModule, *tmBin);
+    lowerKernel(k, binModule);
+    std::vector<uint8_t> spirv = emitSpirv(binModule, *tmBin);
+    ASSERT_FALSE(spirv.empty());
+    if (auto valid = validateSpirv(spirv)) {
+        EXPECT_TRUE(*valid) << "spirv-val rejected the POD-struct-arg module";
+    } else {
+        GTEST_SUCCEED() << "spirv-val not installed; skipped binary validation";
+    }
+}
+
 // A strided-sum loop kernel (identical source to the NVPTX/AMD loop tests)
 // lowers to a valid Vulkan compute SPIR-V module with descriptor buffers.
 TEST(XpuVulkanEmitTests, lowersStridedSumLoop) {

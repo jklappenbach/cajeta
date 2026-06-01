@@ -6,8 +6,10 @@
 #include "Identifier.h"
 #include "cajeta/compile/CajetaModule.h"
 #include "cajeta/type/CajetaClass.h"
+#include "cajeta/type/StructureProperty.h"
 #include "cajeta/type/Scope.h"
 #include "cajeta/error/Exception.h"
+#include "cajeta/xpu/core/KernelArgTrait.h"
 
 #include "llvm/IR/DerivedTypes.h"
 #include "llvm/IR/Function.h"
@@ -178,6 +180,32 @@ namespace cajeta {
                     builder->CreateLoad(i64Ty, hPtr, "buf.handle");
                 slot = builder->CreateAlloca(i64Ty, nullptr, "arg.buf");
                 builder->CreateStore(handle, slot);
+            } else if (klass && xpu::isPodStructType(klass)) {
+                // POD struct by value (Item 7). Marshal the FIELDS only into a
+                // packed, vtable-stripped buffer — the exact shape the device
+                // kernel reads (KernelLowering.cpp deviceStructInfo). `v` is a
+                // pointer to the host instance { vtable, fields... }; copy each
+                // field out by its host LLVM index into declaration-order slots.
+                std::vector<llvm::Type*> ftys;
+                std::vector<StructurePropertyPtr> fields;
+                for (auto& prop : klass->getPropertyList()) {
+                    if (!prop || prop->isStatic()) continue;
+                    fields.push_back(prop);
+                    ftys.push_back(prop->getType()->getLlvmType());
+                }
+                llvm::StructType* podTy = llvm::StructType::get(ctx, ftys);
+                slot = builder->CreateAlloca(podTy, nullptr, "arg.pod");
+                for (unsigned di = 0; di < fields.size(); ++di) {
+                    unsigned hostIdx =
+                        (unsigned) klass->getFieldLlvmIndex(fields[di]);
+                    llvm::Value* src = builder->CreateStructGEP(
+                        klass->getLlvmType(), v, hostIdx, "pod.src");
+                    llvm::Value* fv =
+                        builder->CreateLoad(ftys[di], src, "pod.field");
+                    llvm::Value* dst =
+                        builder->CreateStructGEP(podTy, slot, di, "pod.dst");
+                    builder->CreateStore(fv, dst);
+                }
             } else {
                 slot = builder->CreateAlloca(v->getType(), nullptr, "arg.scalar");
                 builder->CreateStore(v, slot);
