@@ -4482,7 +4482,8 @@ static void cajeta_xpu_vk_free(int64_t handle) {
 // handles, in kernel-parameter order. Mirrors VulkanDriver::launch.
 static int cajeta_xpu_vk_launch(const void* spirv, uint64_t len,
                                 const char* entry, const int64_t* bindings,
-                                int n, unsigned gx, unsigned gy, unsigned gz) {
+                                int n, unsigned gx, unsigned gy, unsigned gz,
+                                unsigned bx, unsigned by, unsigned bz) {
     if (!spirv || len < 4 || n <= 0) return 0;
     VkShaderModule module = VK_NULL_HANDLE;
     VkDescriptorSetLayout setLayout = VK_NULL_HANDLE;
@@ -4525,6 +4526,21 @@ static int cajeta_xpu_vk_launch(const void* spirv, uint64_t len,
     if (g_xpu_vk.vkCreatePipelineLayout(g_xpu_vk.device, &plci, NULL,
                                         &pipeLayout) != VK_SUCCESS) goto done;
 
+    // Set the workgroup-size spec constants (SpecId 0/1/2 = block.x/y/z; see
+    // injectWorkgroupSizeSpecConstant) so the SPIR-V's WorkgroupSize matches the
+    // launch's block dims instead of the baked default.
+    uint32_t specData[3] = { bx, by, bz };
+    VkSpecializationMapEntry specEntries[3] = {
+        { 0, 0,                    sizeof(uint32_t) },
+        { 1, sizeof(uint32_t),     sizeof(uint32_t) },
+        { 2, 2 * sizeof(uint32_t), sizeof(uint32_t) },
+    };
+    VkSpecializationInfo specInfo;
+    specInfo.mapEntryCount = 3;
+    specInfo.pMapEntries = specEntries;
+    specInfo.dataSize = sizeof(specData);
+    specInfo.pData = specData;
+
     VkComputePipelineCreateInfo cpci;
     memset(&cpci, 0, sizeof(cpci));
     cpci.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
@@ -4532,6 +4548,7 @@ static int cajeta_xpu_vk_launch(const void* spirv, uint64_t len,
     cpci.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
     cpci.stage.module = module;
     cpci.stage.pName = entry;
+    cpci.stage.pSpecializationInfo = &specInfo;
     cpci.layout = pipeLayout;
     if (g_xpu_vk.vkCreateComputePipelines(g_xpu_vk.device, VK_NULL_HANDLE, 1,
                                           &cpci, NULL, &pipeline) != VK_SUCCESS)
@@ -4629,9 +4646,10 @@ static void* cajeta_xpu_vk_mapped(int64_t h) { (void) h; return NULL; }
 static void cajeta_xpu_vk_free(int64_t h) { (void) h; }
 static int cajeta_xpu_vk_launch(const void* s, uint64_t l, const char* e,
                                 const int64_t* b, int n,
-                                unsigned gx, unsigned gy, unsigned gz) {
+                                unsigned gx, unsigned gy, unsigned gz,
+                                unsigned bx, unsigned by, unsigned bz) {
     (void) s; (void) l; (void) e; (void) b; (void) n;
-    (void) gx; (void) gy; (void) gz; return 0;
+    (void) gx; (void) gy; (void) gz; (void) bx; (void) by; (void) bz; return 0;
 }
 #endif  // CAJETA_RT_HAS_VULKAN
 
@@ -5212,6 +5230,7 @@ static void cajeta_xpu_launch_hip(const char* kernelName,
 // model: Vulkan's compute entry has no params, only descriptor bindings.
 static void cajeta_xpu_launch_vulkan(const char* kernelName,
                                      int32_t gridX, int32_t gridY, int32_t gridZ,
+                                     int32_t blockX, int32_t blockY, int32_t blockZ,
                                      void* argvv) {
     void** argv = (void**) argvv;
     pthread_mutex_lock(&g_xpu_cuda_lock);
@@ -5252,8 +5271,10 @@ static void cajeta_xpu_launch_vulkan(const char* kernelName,
     }
     if (built)
         cajeta_xpu_vk_launch(spirv, len, kernelName, bindings, n,
-                             (unsigned) gridX, (unsigned) gridY,
-                             (unsigned) gridZ);
+                             (unsigned) gridX, (unsigned) gridY, (unsigned) gridZ,
+                             (unsigned) (blockX > 0 ? blockX : 1),
+                             (unsigned) (blockY > 0 ? blockY : 1),
+                             (unsigned) (blockZ > 0 ? blockZ : 1));
     for (int i = 0; i < ntrans; ++i) cajeta_xpu_vk_free(transient[i]);
 }
 
@@ -5274,7 +5295,8 @@ void __cajeta_xpu_launch(const char* kernelName,
                                   blockX, blockY, blockZ, sharedBytes, argv);
             return;
         case CAJ_XPU_VULKAN:
-            cajeta_xpu_launch_vulkan(kernelName, gridX, gridY, gridZ, argv);
+            cajeta_xpu_launch_vulkan(kernelName, gridX, gridY, gridZ,
+                                     blockX, blockY, blockZ, argv);
             return;
         case CAJ_XPU_CPU:
             cajeta_xpu_launch_cpu(kernelName, gridX, gridY, gridZ,

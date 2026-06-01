@@ -14,7 +14,15 @@ Companion docs: [`cajeta-xpu.md`](cajeta-xpu.md) (NVIDIA∩AMD reckoning),
 docs + a commit checkpoint, never a miscompile (unsupported shapes degrade to a
 clean diagnostic + fallback). Status is kept current in the table below.
 
-### ⚑ Pre-flight before any Vulkan work (#3, #5, #9)
+### ✅ Pre-flight CLEARED (2026-05-31) — Vulkan is green on `cajeta-xpu`
+
+All 12 `*Vulkan*`/`*Spirv*` tests pass on this branch, including
+`XpuVulkanEmitTests.workgroupBarrierIsSpecValid` (the barrier-fixup test the failed
+task was about) **and the on-device Vulkan tests** (Strix Halo APU via RADV). The
+exit-144 background task was a `cajeta-two` worktree artifact, not a regression here.
+Vulkan items (#3/#5) are safe to build on.
+
+<details><summary>original flag</summary>
 
 A background task — *"Verify fixup semantics value + run all Vulkan Tier-0
 tests"* — failed with **exit 144** during this session. It is in the Vulkan
@@ -24,13 +32,15 @@ barrier-fixup area (`SpirvBackend::fixupControlBarriers`, the
 items #3/#5, re-run the Vulkan Tier-0 suite on this branch and confirm green** (or
 fix the regression first). Don't build new Vulkan capability on a red base.
 
+</details>
+
 ## Status
 
 | # | Item | Class | Effort | Status |
 |---|------|-------|--------|--------|
 | 1 | **2D/3D launch** | capability | large | ✅ done (ABI + GPU 3-D + CPU 3-D grid/block/fission) |
 | 2 | **`@Device` helper calls** | capability | medium-large | ◐ core done (scalar params + return, same class, helper-chains; Buffer params deferred) |
-| 3 | **Vulkan block dim — spec-constant `LocalSizeId`** | vulkan | medium | ☐ not started |
+| 3 | **Vulkan block dim — spec-constant workgroup size** | vulkan | medium | ✅ done (verified on-device, block 128) |
 | 4 | **Multi-arch bundling (fatbin)** | deployment | medium | ☐ not started |
 | 5 | **Vulkan dynamic shared memory** | vulkan | medium | ☐ not started |
 | 6 | **`for-each` parallel loops** | capability | medium | ☐ not started |
@@ -216,6 +226,37 @@ walk wholesale. Lower risk than 2D/3D stage 4.
 creation from the launch's `block`, with a per-blockDim pipeline cache. Unblocks
 arbitrary block sizes on Vulkan. Self-contained to the Vulkan backend + its
 runtime dispatch.
+
+**Feasibility (investigated 2026-05-31):** the size is baked by
+`fn->addFnAttr("hlsl.numthreads", "64,1,1")` (`SpirvKernelLowering.cpp`) →
+`OpExecutionMode LocalSize 64,1,1`. **There is no LLVM-IR path to a spec-constant
+`LocalSizeId`** (same class of limitation as `Wave.width()` / the barrier
+semantics). So this needs a **post-emit SPIR-V binary patch** — the pattern
+`SpirvBackend::fixupControlBarriers` already uses: rewrite the module to add a
+`WorkgroupSize` `OpSpecConstantComposite` (or `LocalSizeId` + three
+`OpSpecConstant` ids with `SpecId` decorations), switch `OpExecutionMode LocalSize`
+→ `OpExecutionModeId LocalSizeId`, and at the runtime: set those spec constants from
+the launch `block` via `VkSpecializationInfo` at pipeline creation, keyed into a
+per-(bx,by,bz) pipeline cache. **Substantial but well-precedented** (the barrier
+fixup is the template). Not started — a focused increment of its own.
+
+**✅ DONE (2026-05-31).** `injectWorkgroupSizeSpecConstant` (SpirvBackend.cpp,
+called from `emitSpirv` after the barrier fixup): word-stream surgery that adds
+three `OpSpecConstant uint` (SpecId 0/1/2, default = the baked LocalSize dims) + an
+`OpSpecConstantComposite v3uint` decorated `BuiltIn WorkgroupSize` (reusing the
+existing uint/v3uint types, creating v3uint if absent), inserting the constants
+before the first `OpFunction` and the decorations after the last existing one. The
+LocalSize execution mode is retained as the default. Runtime: the block dims are
+threaded dispatcher → `cajeta_xpu_launch_vulkan` → `cajeta_xpu_vk_launch`, which
+sets `VkSpecializationInfo` (SpecId 0/1/2 = block.x/y/z) on the compute pipeline
+stage. No pipeline cache needed — the pipeline is already created+destroyed per
+launch (a per-(bx,by,bz) cache is a deferred perf optimization). Verified: the
+patched SPIR-V passes strict `spirv-val` and runs on-device at the default 64
+(12 Vulkan tests green), and `XpuVulkanDispatchDeviceTests.arbitraryBlockSizeOnDevice`
+launches **block=128** on the Strix Halo APU and gets the right result (sum 4096;
+a stuck-at-64 workgroup would give 3072). The C++ `VulkanDriver` still defaults to
+64 (its direct-driver test is unchanged); the production runtime path is the one
+that sets the block dim.
 
 ---
 

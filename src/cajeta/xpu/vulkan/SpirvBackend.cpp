@@ -117,6 +117,95 @@ bool fixupControlBarriers(std::vector<uint8_t>& bytes) {
     return true;
 }
 
+// Make the compute workgroup size a SPECIALIZATION CONSTANT so the launch's
+// `block` dims set it at pipeline creation, instead of the fixed `OpExecutionMode
+// LocalSize 64,1,1` baked by hlsl.numthreads (LLVM 22 has no IR path to a
+// spec-constant LocalSizeId). We add the classic `WorkgroupSize` builtin pattern:
+// three `OpSpecConstant uint` (SpecId 0/1/2, defaulting to the baked dims) + an
+// `OpSpecConstantComposite v3uint` decorated `BuiltIn WorkgroupSize` — which
+// overrides the (retained) LocalSize default. The runtime supplies the three
+// spec constants via VkSpecializationInfo per (bx,by,bz). Raw word-stream surgery
+// like fixupControlBarriers; no-op on a malformed/odd module. SPIR-V op/enum
+// numbers: OpExecutionMode=16, OpTypeInt=21, OpTypeVector=23, OpFunction=54,
+// OpSpecConstant=50, OpSpecConstantComposite=51, OpDecorate=71; LocalSize mode=17,
+// SpecId deco=1, BuiltIn deco=11, WorkgroupSize builtin=25.
+bool injectWorkgroupSizeSpecConstant(std::vector<uint8_t>& bytes) {
+    if (bytes.size() < 20 || (bytes.size() % 4) != 0) return false;
+    std::vector<uint32_t> w(bytes.size() / 4);
+    std::memcpy(w.data(), bytes.data(), bytes.size());
+    if (w[0] != 0x07230203u) return false;
+
+    constexpr uint32_t kOpExecMode = 16, kOpTypeInt = 21, kOpTypeVector = 23,
+                       kOpFunction = 54, kOpSpecConstant = 50,
+                       kOpSpecConstComposite = 51, kOpDecorate = 71;
+    constexpr uint32_t kLocalSize = 17, kSpecId = 1, kBuiltIn = 11,
+                       kWorkgroupSize = 25;
+
+    uint32_t uintTy = 0, v3uintTy = 0;
+    uint32_t defX = 64, defY = 1, defZ = 1;
+    size_t decoEnd = 0;      // word idx just past the last OpDecorate/OpMemberDecorate
+    size_t firstFn = 0;      // word idx of the first OpFunction
+    bool sawLocalSize = false;
+
+    for (size_t i = 5; i < w.size();) {
+        uint32_t wc = w[i] >> 16, op = w[i] & 0xFFFFu;
+        if (wc == 0 || i + wc > w.size()) return false;
+        if (op == kOpExecMode && wc >= 6 && w[i + 2] == kLocalSize) {
+            defX = w[i + 3]; defY = w[i + 4]; defZ = w[i + 5];
+            sawLocalSize = true;
+        } else if (op == kOpTypeInt && wc >= 4 && w[i + 2] == 32 && w[i + 3] == 0) {
+            if (!uintTy) uintTy = w[i + 1];
+        } else if (op == kOpTypeVector && wc == 4 && w[i + 3] == 3 &&
+                   w[i + 2] == uintTy) {
+            if (!v3uintTy) v3uintTy = w[i + 1];
+        } else if (op >= 71 && op <= 76) {        // any OpDecorate* / OpMemberDecorate
+            decoEnd = i + wc;
+        } else if (op == kOpFunction) {
+            firstFn = i;
+            break;                                 // types/constants/decos all precede
+        }
+        i += wc;
+    }
+    if (!sawLocalSize || !uintTy || decoEnd == 0 || firstFn == 0) return false;
+
+    // Reserve ids: specX/Y/Z (+ the composite), and a v3uint type if absent.
+    uint32_t idX = w[3], idY = idX + 1, idZ = idX + 2, idWg = idX + 3;
+    uint32_t nextId = idX + 4;
+    std::vector<uint32_t> mkType;     // an OpTypeVector to insert if v3uint absent
+    if (!v3uintTy) {
+        v3uintTy = nextId++;
+        mkType = {(4u << 16) | kOpTypeVector, v3uintTy, uintTy, 3u};
+    }
+    w[3] = nextId;
+
+    // Constants (inserted before the first function): spec constants + composite.
+    std::vector<uint32_t> consts;
+    auto specConst = [&](uint32_t id, uint32_t def) {
+        consts.insert(consts.end(),
+                      {(4u << 16) | kOpSpecConstant, uintTy, id, def});
+    };
+    consts.insert(consts.end(), mkType.begin(), mkType.end());
+    specConst(idX, defX); specConst(idY, defY); specConst(idZ, defZ);
+    consts.insert(consts.end(),
+                  {(6u << 16) | kOpSpecConstComposite, v3uintTy, idWg,
+                   idX, idY, idZ});
+
+    // Decorations: SpecId 0/1/2 on the scalars + BuiltIn WorkgroupSize on composite.
+    std::vector<uint32_t> decos = {
+        (4u << 16) | kOpDecorate, idX, kSpecId, 0u,
+        (4u << 16) | kOpDecorate, idY, kSpecId, 1u,
+        (4u << 16) | kOpDecorate, idZ, kSpecId, 2u,
+        (4u << 16) | kOpDecorate, idWg, kBuiltIn, kWorkgroupSize};
+
+    // Insert the LATER block first (constants, at firstFn) so decoEnd stays valid.
+    w.insert(w.begin() + firstFn, consts.begin(), consts.end());
+    w.insert(w.begin() + decoEnd, decos.begin(), decos.end());
+
+    bytes.resize(w.size() * 4);
+    std::memcpy(bytes.data(), w.data(), bytes.size());
+    return true;
+}
+
 } // namespace
 
 std::unique_ptr<llvm::TargetMachine>
@@ -166,6 +255,9 @@ std::vector<uint8_t> emitSpirv(llvm::Module& deviceModule,
     // Make any workgroup barrier Vulkan-spec-valid (LLVM 22 emits forbidden
     // SequentiallyConsistent semantics). No-op for barrier-free kernels.
     fixupControlBarriers(spirv);
+    // Make the workgroup size a spec constant so the launch's block dims set it
+    // at pipeline creation (default = the baked LocalSize). No-op if absent.
+    injectWorkgroupSizeSpecConstant(spirv);
     return spirv;
 }
 
