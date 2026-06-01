@@ -448,7 +448,7 @@ namespace cajeta {
         // surrounding cleanup paths will be responsible for waiting.
         // TODO: integrate scope_exit into the early-return path.
         llvm::BasicBlock* bb = builder->GetInsertBlock();
-        if (bb && !bb->getTerminator()) {
+        if (bb && !bb->hasTerminator()) {
             if (llvm::Function* exitFn = module->getRuntimeFunction(
                     "__cajeta_scope_exit")) {
                 builder->CreateCall(exitFn, {});
@@ -530,7 +530,7 @@ namespace cajeta {
         if (thenBranch) thenBranch->generateCode(module);
         std::set<std::string> postThenNYA = preIfNYA;
         if (scope) postThenNYA = scope->snapshotNotYetAssigned();
-        if (!builder->GetInsertBlock()->getTerminator()) {
+        if (!builder->GetInsertBlock()->hasTerminator()) {
             builder->CreateBr(mergeBB);
         }
 
@@ -540,7 +540,7 @@ namespace cajeta {
             builder->SetInsertPoint(elseBB);
             if (elseBranch) elseBranch->generateCode(module);
             if (scope) postElseNYA = scope->snapshotNotYetAssigned();
-            if (!builder->GetInsertBlock()->getTerminator()) {
+            if (!builder->GetInsertBlock()->hasTerminator()) {
                 builder->CreateBr(mergeBB);
             }
         }
@@ -587,7 +587,7 @@ namespace cajeta {
         module->pushLoopContext(headBB, exitBB);
         if (body) body->generateCode(module);
         module->popLoopContext();
-        if (!builder->GetInsertBlock()->getTerminator()) {
+        if (!builder->GetInsertBlock()->hasTerminator()) {
             builder->CreateBr(headBB);
         }
 
@@ -639,7 +639,7 @@ namespace cajeta {
         module->pushLoopContext(updateBB, exitBB);
         if (body) body->generateCode(module);
         module->popLoopContext();
-        if (!builder->GetInsertBlock()->getTerminator()) {
+        if (!builder->GetInsertBlock()->hasTerminator()) {
             builder->CreateBr(updateBB);
         }
 
@@ -677,7 +677,7 @@ namespace cajeta {
         module->pushLoopContext(tailBB, exitBB);
         if (body) body->generateCode(module);
         module->popLoopContext();
-        if (!builder->GetInsertBlock()->getTerminator()) {
+        if (!builder->GetInsertBlock()->hasTerminator()) {
             builder->CreateBr(tailBB);
         }
 
@@ -793,7 +793,7 @@ namespace cajeta {
         module->pushLoopContext(updateBB, exitBB);
         if (body) body->generateCode(module);
         module->popLoopContext();
-        if (!builder->GetInsertBlock()->getTerminator()) {
+        if (!builder->GetInsertBlock()->hasTerminator()) {
             builder->CreateBr(updateBB);
         }
 
@@ -903,7 +903,7 @@ namespace cajeta {
         module->popTryCatchContext();
         std::set<std::string> postTryNYA = preTryNYA;
         if (daScope) postTryNYA = daScope->snapshotNotYetAssigned();
-        if (!builder->GetInsertBlock()->getTerminator()) {
+        if (!builder->GetInsertBlock()->hasTerminator()) {
             builder->CreateCall(pop, {});
             builder->CreateBr(afterBB);
         }
@@ -955,7 +955,7 @@ namespace cajeta {
             }
             if (c.body) c.body->generateCode(module);
         }
-        if (!builder->GetInsertBlock()->getTerminator()) {
+        if (!builder->GetInsertBlock()->hasTerminator()) {
             builder->CreateBr(afterBB);
         }
 
@@ -1081,7 +1081,7 @@ namespace cajeta {
             }
             std::set<std::string> postGroupNYA;
             if (scope) postGroupNYA = scope->snapshotNotYetAssigned();
-            if (!builder->GetInsertBlock()->getTerminator()) {
+            if (!builder->GetInsertBlock()->hasTerminator()) {
                 llvm::BasicBlock* fallTo = (i + 1 < groups.size()) ? groupBBs[i + 1] : afterBB;
                 builder->CreateBr(fallTo);
             }
