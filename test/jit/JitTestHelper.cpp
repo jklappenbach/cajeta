@@ -294,13 +294,26 @@ std::unique_ptr<CajetaJit> CajetaJit::compile(
                 }
             }
         }
-        // The JIT host-launch path is NVIDIA-only (AMD on-device tests drive
-        // the amd:: backend directly, mirroring XpuSaxpyDeviceTests), so the
-        // backend is fixed to Nvptx here. Routed through the dispatch seam so
-        // there is a single registration entry point.
-        cajeta::xpu::emitKernelRegistration(
-            cajeta::xpu::Backend::Nvptx, kernels, *primary->getLlvmModule(),
-            "sm_89");
+        if (!kernels.empty()) {
+            // Default to NVIDIA (the legacy JIT host-launch path); opts can
+            // select CPU to drive the GPU-free fall-to-CPU dispatcher, or any
+            // bundle. The manifest tells the runtime dispatcher which backends
+            // were bundled (cajeta-cpu.md Increment 4).
+            std::vector<cajeta::xpu::Backend> backends = opts.xpuBackends;
+            if (backends.empty()) {
+                backends.push_back(cajeta::xpu::Backend::Nvptx);
+            }
+            cajeta::xpu::emitBackendManifest(backends, *primary->getLlvmModule());
+            for (cajeta::xpu::Backend be : backends) {
+                std::string arch =
+                    be == cajeta::xpu::Backend::Nvptx  ? "sm_89"
+                  : be == cajeta::xpu::Backend::Amdgpu ? "gfx1151"
+                  : be == cajeta::xpu::Backend::Spirv  ? "vulkan1.3"
+                  :                                      "";
+                cajeta::xpu::emitKernelRegistration(
+                    be, kernels, *primary->getLlvmModule(), arch);
+            }
+        }
     }
 
     llvm::Module* llvmModule = primary->getLlvmModule();

@@ -684,6 +684,16 @@ private:
         } else if (recv == "Wave") {
             const auto& args = mc->getParameters();
             if (name == "width") return target.waveWidth(builder, mod);
+            if (name == "laneId") return target.waveLaneId(builder, mod);
+            if (name == "isFirstLane") {
+                // A width-agnostic cooperation helper, built on laneId(): the
+                // "one lane commits the wave's result" guard. Lowered here
+                // (not a seam point) so every backend gets it for free.
+                llvm::Value* lane = target.waveLaneId(builder, mod);
+                return builder.CreateICmpEQ(
+                    lane, llvm::ConstantInt::get(lane->getType(), 0),
+                    "wave.isfirst");
+            }
             if (name == "shuffleSync") {
                 if (args.size() != 2) unsupported("Wave.shuffleSync arity");
                 llvm::Value* value = lowerExpr(args[0].expression);
@@ -694,6 +704,11 @@ private:
                 if (args.size() != 1) unsupported("Wave.ballotSync arity");
                 llvm::Value* pred = toI1(lowerExpr(args[0].expression));
                 return target.waveBallot(builder, mod, pred);
+            }
+            if (name == "reduceSum") {
+                if (args.size() != 1) unsupported("Wave.reduceSum arity");
+                return target.waveReduceSum(builder, mod,
+                                            lowerExpr(args[0].expression));
             }
         }
         unsupported("device builtin '" + recv + "." + name + "()'");
@@ -876,15 +891,12 @@ llvm::Value* LoweringTarget::bufferElementPtr(llvm::IRBuilderBase& b,
     return b.CreateGEP(elemTy, base, {index}, "idx");
 }
 
-llvm::Function* lowerKernel(const MethodPtr& method, llvm::Module& deviceModule,
-                            LoweringTarget& target) {
-    if (!method) unsupported("null kernel method");
-    llvm::LLVMContext& ctx = deviceModule.getContext();
-
-    // Admit the kernel parameters: Buffer<T>/arrays carry an element type,
-    // primitives a scalar type. This classification is backend-neutral; HOW
-    // the params become a signature is the backend's call (target.createKernel
-    // / materializeParam) — the Vulkan fork.
+// Admit the kernel parameters: Buffer<T>/arrays carry an element type,
+// primitives a scalar type. This classification is backend-neutral; HOW the
+// params become a signature is the backend's call (target.createKernel /
+// materializeParam) — the Vulkan fork.
+static std::vector<LoweringTarget::KernelParam> collectParams(
+        const MethodPtr& method, llvm::LLVMContext& ctx) {
     std::vector<LoweringTarget::KernelParam> params;
     for (auto& p : method->getParameterList()) {
         if (!p) continue;
@@ -909,6 +921,28 @@ llvm::Function* lowerKernel(const MethodPtr& method, llvm::Module& deviceModule,
                               typeIsSigned(t)});
         }
     }
+    return params;
+}
+
+std::vector<KernelParamInfo> collectKernelParamInfo(const MethodPtr& method,
+                                                    llvm::LLVMContext& ctx) {
+    std::vector<KernelParamInfo> info;
+    if (!method) return info;
+    for (auto& p : collectParams(method, ctx)) {
+        unsigned bytes = 0;
+        if (!p.isBuffer && p.type)
+            bytes = (p.type->getScalarSizeInBits() + 7u) / 8u;
+        info.push_back({p.isBuffer, bytes});
+    }
+    return info;
+}
+
+llvm::Function* lowerKernel(const MethodPtr& method, llvm::Module& deviceModule,
+                            LoweringTarget& target) {
+    if (!method) unsupported("null kernel method");
+    llvm::LLVMContext& ctx = deviceModule.getContext();
+
+    std::vector<LoweringTarget::KernelParam> params = collectParams(method, ctx);
 
     llvm::Function* fn =
         target.createKernel(deviceModule, method->getName(), params);

@@ -64,6 +64,7 @@ namespace cajeta {
         Nvptx,    // NVIDIA: AST → device IR → PTX → ptxas → cubin, registered in-module.
         Amdgpu,   // AMD: AST → device IR → AMDGCN ISA → lld → hsaco, registered in-module.
         Vulkan,   // Vulkan: AST → device IR → SPIR-V (descriptor-set SSBOs), registered in-module.
+        Cpu,      // CPU: AST → host IR (grid→threads), linked into the module + registered.
     };
 
     // What device artifact (if any) to also drop to disk for inspection,
@@ -76,6 +77,7 @@ namespace cajeta {
         Hsaco,    // AMDGPU: write a per-kernel .hsaco (implies ld.lld present).
         Spirv,    // Vulkan: write a per-kernel .spv (Khronos SPIR-V binary).
         Spvasm,   // Vulkan: write a per-kernel .spvasm (SPIR-V disassembly text).
+        Object,   // CPU: write a per-kernel .o (native relocatable object).
     };
 
     class Compiler {
@@ -105,7 +107,12 @@ namespace cajeta {
         // unchanged. xpuArch is the device arch handed to the backend's
         // TargetMachine + assembler (e.g. "sm_89" for nvptx, "gfx1151" for
         // amdgpu); consulted whenever xpuBackend != None.
-        XpuBackend xpuBackend = XpuBackend::None;
+        // Selected device backends (empty = None). A list so a single binary
+        // can bundle several targets (e.g. --xpu-backend=vulkan,cpu); the
+        // runtime dispatcher (Increment 4) picks the best available at launch.
+        // Registration runs for every entry; --xpu-emit artifacts are dropped
+        // for whichever listed backend the emit kind belongs to.
+        vector<XpuBackend> xpuBackends;
         XpuEmit xpuEmit = XpuEmit::None;
         string xpuArch = "sm_89";
         // Optional output path override for single-file builds (--output / -o).
@@ -272,8 +279,28 @@ namespace cajeta {
         EmitMode getEmitMode() const { return emitMode; }
         void setEmitMode(EmitMode m) { emitMode = m; }
 
-        XpuBackend getXpuBackend() const { return xpuBackend; }
-        void setXpuBackend(XpuBackend b) { xpuBackend = b; }
+        // Single-backend setter (backward compatible): None clears the list,
+        // any other value makes it the sole selected backend.
+        void setXpuBackend(XpuBackend b) {
+            xpuBackends.clear();
+            if (b != XpuBackend::None) xpuBackends.push_back(b);
+        }
+        // Append a backend (for the multi-target --xpu-backend=a,b list).
+        void addXpuBackend(XpuBackend b) {
+            if (b == XpuBackend::None) return;
+            for (auto x : xpuBackends) if (x == b) return;
+            xpuBackends.push_back(b);
+        }
+        const vector<XpuBackend>& getXpuBackends() const { return xpuBackends; }
+        bool usesXpuBackend(XpuBackend b) const {
+            for (auto x : xpuBackends) if (x == b) return true;
+            return false;
+        }
+        // The first selected backend, or None if none — for callers that still
+        // think single-backend (and the no-op guard in emitXpuKernels).
+        XpuBackend getXpuBackend() const {
+            return xpuBackends.empty() ? XpuBackend::None : xpuBackends.front();
+        }
         XpuEmit getXpuEmit() const { return xpuEmit; }
         void setXpuEmit(XpuEmit e) { xpuEmit = e; }
         const string& getXpuArch() const { return xpuArch; }

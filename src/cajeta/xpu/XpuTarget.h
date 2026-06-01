@@ -39,6 +39,7 @@ namespace xpu {
         Nvptx,     // NVIDIA: AST -> device IR -> PTX -> ptxas -> cubin.
         Amdgpu,    // AMD:    AST -> device IR -> AMDGCN ISA -> lld -> hsaco.
         Spirv,     // Vulkan: AST -> device IR -> SPIR-V (descriptor-set SSBOs).
+        Cpu,       // CPU:    AST -> host IR (grid->threads) -> native object.
     };
 
     // Lowercase backend name for diagnostics / artifact suffixes.
@@ -47,6 +48,7 @@ namespace xpu {
             case Backend::Nvptx:  return "nvptx";
             case Backend::Amdgpu: return "amdgpu";
             case Backend::Spirv:  return "spirv";
+            case Backend::Cpu:    return "cpu";
         }
         return "?";
     }
@@ -61,6 +63,15 @@ namespace xpu {
                                const std::vector<MethodPtr>& kernels,
                                llvm::Module& hostModule,
                                const std::string& arch);
+
+    // Emit one global ctor per bundled backend calling the runtime hook
+    // __cajeta_xpu_register_backend((int) backend) — the compile-time manifest
+    // the runtime dispatcher (cajeta-cpu.md Increment 4) reads to know which
+    // backends a binary bundled. The Backend enum values (Nvptx=0, Amdgpu=1,
+    // Spirv=2, Cpu=3) deliberately match the runtime's priority-ordered ids
+    // (CUDA=0, HIP=1, VULKAN=2, CPU=3), so the id is just (int) backend.
+    void emitBackendManifest(const std::vector<Backend>& backends,
+                             llvm::Module& hostModule);
 
 } // namespace xpu
 } // namespace cajeta

@@ -1489,6 +1489,29 @@ namespace cajeta {
     }
 
     void Method::destroyScope() {
+        // Launch-borrow drop gate (XPU-K02, the implicit-drop half). A
+        // `kernel.launch(...)` borrows each Buffer until `Stream.sync()`; with
+        // Buffer<T>'s RAII destructor, letting a still-borrowed buffer leave
+        // scope before a sync would free device memory an in-flight kernel
+        // still references. The explicit-`free()` half is caught at the call
+        // site (MethodCallExpression); this catches the drop at scope exit.
+        // Only owned locals actually dropped here (a live drop entry, not
+        // moved-out) trip it — borrowed params and `#`-transferred buffers are
+        // skipped. Sync clears the borrow set, so a synced buffer is fine.
+        if (ScopePtr sc = module->getScopeStack().peek()) {
+            for (const string& name : sc->pendingLaunchBorrows()) {
+                if (!sc->containsField(name) || sc->isMoved(name)) continue;
+                FieldPtr f = sc->getField(name);
+                if (!f || !f->getDropEntry()) continue;
+                CajetaTypePtr t = f->getType();
+                if (!t || t->toCanonical().rfind("cajeta.xpu.core.Buffer", 0) != 0)
+                    continue;
+                throw Exception(
+                    "buffer '" + name + "' leaves scope while a launch still "
+                    "references it — sync the stream (Stream.sync()) before it "
+                    "is dropped", "XPU-K02");
+            }
+        }
         module->getScopeStack().pop();
     }
 

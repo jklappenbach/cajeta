@@ -56,6 +56,12 @@ namespace cajeta {
         Verbose,        // code samples + suggested fixes + doc URLs
     };
 
+    // LLVM IR optimization level for generated user code (the `--opt` flag).
+    // Cajeta historically ran NO IR optimization on user code (only codegen);
+    // O0 preserves that. O2/O3 run the full per-module pipeline (incl.
+    // LoopVectorize + SLP). Applies to --emit=obj/exe; see compile/Optimizer.h.
+    enum class OptLevel { O0, O1, O2, O3 };
+
     struct CompilerFlags {
         // ----- safety nets (runtime checks) -----
         BoundsCheck     bounds              = BoundsCheck::On;
@@ -78,6 +84,9 @@ namespace cajeta {
         // ----- profiling -----
         bool            profileCounters     = false;  // PGO-collection instrumentation
 
+        // ----- optimization -----
+        OptLevel        opt                 = OptLevel::O0;  // IR opt for --emit=obj/exe
+
         // ----- debugging -----
         // Emit __cajeta_dbg_safepoint(loc_id) at each statement boundary so the
         // in-process debugger (`cajeta dap`) can park the executing fiber at a
@@ -97,6 +106,7 @@ namespace cajeta {
                 case CompilerMode::DebugRelease:
                     f.poisonFree         = false;
                     f.profileCounters    = true;   // canonical PGO-collection build
+                    f.opt                = OptLevel::O2;
                     break;
                 case CompilerMode::Release:
                     f.sourceTags         = false;
@@ -109,6 +119,7 @@ namespace cajeta {
                     f.stackTraceCapture  = false;
                     f.diagVerbosity      = DiagVerbosity::Normal;
                     f.diagHints          = false;
+                    f.opt                = OptLevel::O2;
                     break;
                 case CompilerMode::Fast:
                     f.bounds             = BoundsCheck::Off;
@@ -122,6 +133,7 @@ namespace cajeta {
                     f.stackTraceCapture  = false;
                     f.diagVerbosity      = DiagVerbosity::Normal;
                     f.diagHints          = false;
+                    f.opt                = OptLevel::O3;
                     break;
                 case CompilerMode::Minimal:
                     f.bounds             = BoundsCheck::Off;
