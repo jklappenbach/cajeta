@@ -26,10 +26,12 @@
 #pragma once
 
 #include <memory>
+#include <vector>
 
 namespace llvm {
     class Module;
     class Function;
+    class LLVMContext;
 }
 
 namespace cajeta {
@@ -49,6 +51,18 @@ namespace xpu {
     llvm::Function* lowerKernel(const MethodPtr& method,
                                 llvm::Module& deviceModule,
                                 LoweringTarget& target);
+
+    // One kernel parameter's runtime-launch shape, in declaration order — the
+    // metadata the Vulkan rung of the runtime dispatcher needs to translate the
+    // uniform kernelParams argv into descriptor bindings (buffers map to
+    // existing storage buffers; scalars become single-element SSBOs sized by
+    // byteSize). Backend-neutral classification, same as lowerKernel uses.
+    struct KernelParamInfo {
+        bool isBuffer;
+        unsigned byteSize;   // scalar byte size (0 for buffers)
+    };
+    std::vector<KernelParamInfo> collectKernelParamInfo(const MethodPtr& method,
+                                                        llvm::LLVMContext& ctx);
 
 } // namespace xpu
 } // namespace cajeta

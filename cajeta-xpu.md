@@ -7,6 +7,35 @@ discipline is [`cajeta-docs/CajetaXPU-Variance.md`](cajeta-docs/CajetaXPU-Varian
 This file tracks *implementation status* — what's built, what's stubbed,
 and what's next.
 
+> **CPU backend + runtime dispatcher: DONE (degrade-to-CPU, all four
+> backends).** The same portable `@Kernel` source now compiles for the **CPU**
+> as a fourth backend (`--xpu-backend=cpu`) — the kernel lowers to host code in
+> a grid→threads model (the wave is width-1 for now; SIMD-lane vectorization is
+> a later increment), linked into the program and launched by a generic
+> launcher-thunk ABI. On top of that, a **runtime backend dispatcher** in the C
+> runtime (`runtime/native/cajeta_runtime.c` — the *sole* launch path for
+> compiled programs; the C++ drivers are compiler/test-only) picks, once at
+> first device touch, the highest-priority backend that is both **bundled**
+> (a compile-time manifest) and **available** (a runtime probe), priority
+> `CUDA → HIP → Vulkan → CPU`, env-forceable via `CAJETA_XPU_BACKEND`, and routes
+> the whole device surface (`Buffer` alloc/upload/download/free, `kernel.launch`,
+> `Stream.sync`) to it. A binary built `--xpu-backend=amdgpu,cpu` runs on the AMD
+> GPU when present and falls to the CPU when not; when nothing is available it
+> prints a precise *"no available backend among {…}"* diagnostic rather than
+> crashing (explicit-only bundling — degradation is a build-time contract). All
+> four rungs are device-validated where hardware exists (HIP + Vulkan on Strix
+> Halo, CPU GPU-free, CUDA behavior-preserved). Full log + decisions:
+> [`cajeta-cpu.md`](cajeta-cpu.md). Runnable demo: `samples/Tour/xpu/`.
+>
+> Two pre-existing compiler bugs were fixed in the course of this work, both
+> surfaced by the first AOT (`--emit=obj`) `@Kernel` program: (1) `TargetOptions`
+> defaulted `UseInitArray=false`, so the AsmPrinter emitted the legacy `.ctors`
+> section instead of `.init_array` — modern glibc never ran it, so **every** AOT
+> global constructor (per-class clinit, the runtime's `__attribute__((constructor))`
+> init, the XPU registration) silently never fired; (2) the Vulkan registration
+> reused one SPIR-V `TargetMachine` across kernels, which corrupts LLVM's
+> `SPIRVGlobalRegistry` and crashed on the second kernel — now one TM per kernel.
+
 > **AMD second backend: DONE (gfx1151, on-device).** SAXPY, a strided loop,
 > and static + dynamic shared-memory (LDS) reductions all compile through
 > `--xpu-backend=amdgpu` and run on a real Strix Halo APU (gfx1151) from the
@@ -266,6 +295,19 @@ kernel-argument ABI dropped out of the shared set — but the body walk, control
 flow, operators, coordinate reads, shared memory, and the entire frontend +
 name-keyed registration still hold across all three. The full per-feature
 breakdown is [`cajeta-xpu-matrix.md`](cajeta-xpu-matrix.md).
+
+- **`@Wave` extends cleanly to all three — and `reduce` overturned its own guess.**
+  `Wave.shuffleSync` / `ballotSync` / `reduceSum` add four pure-virtual leaf hooks
+  (`waveWidth`/`waveShuffle`/`waveBallot`/`waveReduceSum`) and nothing else. The matrix
+  had predicted reduce would *invert* comprehensiveness (one native op on Vulkan vs. a
+  shuffle/DPP sequence on NV/AMD); the build showed all three expose a single hardware
+  wave-reduce intrinsic (`spv.wave.reduce.sum` / `amdgcn.wave.reduce.add` /
+  `nvvm.redux.sync.add` — the last gated on sm_80+), so reduce maps 1:1 like
+  shuffle/ballot. Running it on-device surfaced two things only execution shows: AMDGPU
+  folds a *uniform-constant* reduce operand back to the operand (needs a divergent
+  operand to actually sum), and LLVM 22's SPIR-V backend cannot *select*
+  `spv.wave.get_lane_count`, so `Wave.width()` is emit-only on Vulkan today. Both are
+  recorded in the matrix, not papered over.
 
 ### AMD on-device increments (cajeta-amd.md) — all landed
 

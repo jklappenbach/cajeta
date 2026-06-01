@@ -12,6 +12,27 @@ This is a companion to the "NVIDIA∩AMD overlap reckoning" in
 [`cajeta-amd.md`](cajeta-amd.md). It extends that two-backend reckoning with the
 Vulkan/SPIR-V column.
 
+> **A fourth backend — CPU — and a runtime dispatcher now exist** (see
+> [`cajeta-cpu.md`](cajeta-cpu.md)). The CPU is deliberately *not* given a
+> column here: the three columns below measure the **GPU** variance surface, and
+> the CPU is a different shape — it has no hardware grid or coordinate
+> intrinsics, so its sole seam fork is the *coordinate source* (the kernel gains
+> 9 trailing `i32` coordinate params; `Thread`/`Workgroup` reads pull from those
+> — the grid→threads model), buffers are flat `addrspace(0)`, the wave is the
+> host SIMD vector (Inc 5C), and workgroup barriers run via work-item loop
+> fission (Inc 6 — split the kernel at each barrier, loop each region over the
+> block; per-block shared memory + context arrays; Inc 7 — multiple barriers per
+> uniform loop; Inc 8 — nested uniform loops with barriers; Inc 9 — wave ops +
+> barriers composed; Inc 10 — dynamic-sized shared memory). The body walk is the same ~90%
+> Core. Separately, the **runtime dispatcher** (in the C runtime, the sole launch
+> path for compiled programs) selects among bundled+available backends at startup
+> (`CUDA → HIP → Vulkan → CPU`) and routes launch + `Buffer<T>` device memory to
+> the winner — so "run anywhere, degrade to CPU" is ordinary dispatch reaching
+> its guaranteed terminal. The one launch-ABI asymmetry it exposed is Vulkan's:
+> the uniform `kernelParams` argv (buffer handles + raw scalars) doesn't map to
+> Vulkan's descriptor-set model, so scalars are wrapped in transient SSBOs from
+> per-kernel parameter metadata (rows in §2 already note the descriptor-set fork).
+
 ---
 
 ## Provenance & how to read this
@@ -192,30 +213,43 @@ why.
 
 ---
 
-## 8. Wave / subgroup ops (the `@Wave` feature — readlane + ballot built & measured)
+## 8. Wave / subgroup ops (the `@Wave` feature — readlane + ballot + reduce built & measured)
 
 Wave ops are the archetypal variance-shaped feature and the headline test of the
-seam — and the seam held. `Wave.shuffleSync` (readlane / shuffle-by-index) and
-`Wave.ballotSync` lower through the shared AST walk with only three new
-`LoweringTarget` methods (`waveWidth`/`waveShuffle`/`waveBallot`) forking. Built
-2026-05-30; emit-verified on all three backends, run on-device on AMD + Vulkan.
+seam — and the seam held. `Wave.shuffleSync` (readlane / shuffle-by-index),
+`Wave.ballotSync`, `Wave.reduceSum`, and `Wave.laneId` lower through the shared AST
+walk with only five `LoweringTarget` methods (`waveWidth`/`waveShuffle`/`waveBallot`/
+`waveReduceSum`/`waveLaneId`) forking. Built 2026-05-30; emit-verified on all three
+GPU backends, run on-device on AMD + Vulkan; **wave = SIMD lane on the CPU backend
+(Inc 5C, 2026-05-31)**.
 
-| Feature | Core | NVIDIA | AMD | Vulkan |
-|---------|------|--------|-----|--------|
-| Wave width | `Wave.width()` → i32 | `native` · `read.ptx.sreg.warpsize` (32) | `native` · `amdgcn.wavefrontsize` (32/64) | `native` · `spv.wave.get_lane_count` (queried) |
-| Shuffle / readlane | `Wave.shuffleSync(v, lane)` | `native` · `nvvm.shfl.sync.idx.i32` | `native` · `amdgcn.readlane` | `native` · `spv.wave.readlane` (→ `OpGroupNonUniformShuffle`) |
-| Ballot | `Wave.ballotSync(pred)` → i64 | `native` · `nvvm.vote.ballot.sync` (i32→i64) | `native` · `amdgcn.ballot.i32` (i32→i64) | `native` · `spv.wave.ballot` (`<4 x i32>`, low 64 → i64) |
-| Reduce / scan | — | `redux.sync` (sm_80+) or shuffle-sequence | DPP / shuffle-sequence | `native` · `spv.wave.reduce_*` *(single intrinsic)* | 
+| Feature | Core | NVIDIA | AMD | Vulkan | CPU (Inc 5C) |
+|---------|------|--------|-----|--------|--------------|
+| Wave width | `Wave.width()` → i32 | `native` · `read.ptx.sreg.warpsize` (32) | `native` · `amdgcn.wavefrontsize` (32/64) | ⚑ `emit-only: ` `spv.wave.get_lane_count` lowers from IR but LLVM 22's SPIR-V backend **cannot select it**, so `Wave.width()` does not run on-device yet | the host's native SIMD width W (16 AVX-512 / 8 AVX2); folded to a constant in a vectorized kernel |
+| Lane id | `Wave.laneId()` → i32 | `native` · `read.ptx.sreg.laneid` | `native` · `amdgcn.mbcnt.{lo,hi}` | `native` · `spv.subgroup_local_invocation_id` (validated) | `tid.x % W` |
+| Shuffle / readlane | `Wave.shuffleSync(v, lane)` | `native` · `nvvm.shfl.sync.idx.i32` | `native` · `amdgcn.readlane` | `native` · `spv.wave.readlane` (→ `OpGroupNonUniformShuffle`) | VFABI variant · per-lane gather `val[src[i]]` |
+| Ballot | `Wave.ballotSync(pred)` → i64 | `native` · `nvvm.vote.ballot.sync` (i32→i64) | `native` · `amdgcn.ballot.i32` (i32→i64) | `native` · `spv.wave.ballot` (`<4 x i32>`, low 64 → i64) | VFABI variant · `bitcast <W x i1> → iW` |
+| Reduce (sum) | `Wave.reduceSum(v)` → i32 | `native` · `nvvm.redux.sync.add` (sm_80+) | `native` · `amdgcn.wave.reduce.add` | `native` · `spv.wave.reduce.sum` (→ `OpGroupNonUniformIAdd`) | VFABI variant · `broadcast(vector.reduce.add)`; masked for divergence |
 
-**Reading:** wave ops are native on all three — width is the only real divergence
-(32 / 32-or-64 / queried), each surfaced by `waveWidth`. Two measured nuances:
-**ballot shape forks** (NV i32, AMD i32 wave32, Vulkan `<4 x i32>` 128-bit — the
-Core API normalizes to i64); and **reduce inverts the usual comprehensiveness**
-— it's a *single* intrinsic on Vulkan but a shuffle/DPP sequence on NV/AMD (the
-opposite of the "NVIDIA most comprehensive" pattern). The first cut ships
-readlane + ballot; reduce is the natural next increment. Tests:
-`XpuWaveEmitTests` (3 backends + `spirv-val`), `XpuWaveDeviceTests` (AMD + Vulkan
-on-device).
+**Reading:** wave ops are native on all three. **The reduce probe overturned its own
+hypothesis.** The guess (recorded here in the prior pass) was that reduce would
+*invert* comprehensiveness — one native intrinsic on Vulkan vs. a shuffle/DPP
+butterfly sequence on NV/AMD. The build showed the opposite: **all three expose a
+single hardware wave-reduce intrinsic in LLVM 22**, so reduce maps as cleanly as
+shuffle/ballot (`waveReduceSum` is a one-liner per backend). The real asymmetries are
+narrower and were only visible by running it:
+- **NVPTX `redux.sync` is gated on sm_80+** (Ampere); below that a butterfly-shuffle
+  fallback would be needed (out of scope — the emit test targets `sm_89`).
+- **AMDGPU folds a *uniform-constant* operand** to `wave.reduce.add` back to the
+  operand instead of summing it (`reduceSum(1)` returned 1 on-device); a *divergent*
+  operand takes the real reduction path. The device test feeds a buffer of 1s so the
+  reduction actually runs.
+- **Ballot shape still forks** (NV i32, AMD i32 wave32, Vulkan `<4 x i32>` 128-bit —
+  the Core API normalizes to i64).
+
+Tests: `XpuWaveEmitTests` (3 backends + `spirv-val`, shuffle/ballot/reduce),
+`XpuWaveDeviceTests` (shuffle/ballot/reduce on-device on AMD + Vulkan; the reduce
+check is width-agnostic — sum of 1s over a full wave == wave width ∈ {32, 64}).
 
 ---
 

@@ -107,6 +107,28 @@ public:
         llvm::Value* bits = b.CreateCall(f, {pred}, "ballot");
         return b.CreateZExt(bits, llvm::Type::getInt64Ty(ctx));
     }
+    llvm::Value* waveReduceSum(llvm::IRBuilderBase& b, llvm::Module& m,
+                               llvm::Value* value) override {
+        // wave.reduce.add over i32; strategy operand 0 = default lowering.
+        llvm::Type* i32 = llvm::Type::getInt32Ty(m.getContext());
+        llvm::Function* f = llvm::Intrinsic::getOrInsertDeclaration(
+            &m, llvm::Intrinsic::amdgcn_wave_reduce_add, {i32});
+        return b.CreateCall(f, {value, llvm::ConstantInt::get(i32, 0)}, "wavered");
+    }
+    llvm::Value* waveLaneId(llvm::IRBuilderBase& b, llvm::Module& m) override {
+        // The canonical AMDGPU lane-id idiom: mbcnt counts set bits of the
+        // exec-relative mask below this lane. hi(~0, lo(~0, 0)) = this lane's
+        // index within the wavefront (handles both wave32 and wave64).
+        llvm::Type* i32 = llvm::Type::getInt32Ty(m.getContext());
+        llvm::Value* allOnes = llvm::ConstantInt::get(i32, 0xFFFFFFFFu);
+        llvm::Function* lo = llvm::Intrinsic::getOrInsertDeclaration(
+            &m, llvm::Intrinsic::amdgcn_mbcnt_lo);
+        llvm::Function* hi = llvm::Intrinsic::getOrInsertDeclaration(
+            &m, llvm::Intrinsic::amdgcn_mbcnt_hi);
+        llvm::Value* lowCount =
+            b.CreateCall(lo, {allOnes, llvm::ConstantInt::get(i32, 0)}, "mbcnt.lo");
+        return b.CreateCall(hi, {allOnes, lowCount}, "wave.laneid");
+    }
 
 private:
     static llvm::Value* readId(llvm::IRBuilderBase& b, llvm::Module& m,
