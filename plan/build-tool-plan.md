@@ -248,12 +248,32 @@ compiler/repository surface.
 
 ## Phase 5 — `build` action + IR cache
 
-**Goal:** `cajeta build` produces a `.cja`; incremental builds
+**Goal:** `cajeta build` produces a `.cja`, an exploded-IR tree,
+or a native executable depending on `emit`; incremental builds
 work.
 
 ### Deliverables
 
 - [ ] `build` action wrapping the existing compiler binary.
+- [ ] `emit: "exploded-ir"` — per-source `.bc` tree under
+      `build/ir/<package>/<class>.bc`.
+- [ ] `emit: "archived-ir"` — `.cja` archive (library by default,
+      executable when entry-method is configured).
+- [ ] `emit: "executable"` — fully-linked native binary.
+- [ ] Default-emit selection: `executable` when entry-method
+      configured; `archived-ir` otherwise.
+- [ ] `entry-method` action param.
+- [ ] `binary` action param; resolves against
+      `settings.build.binaries`.
+- [ ] `settings.build.entry-method` manifest default.
+- [ ] `settings.build.binaries` named-binary registry
+      (`entry-method` + optional `description` per entry).
+- [ ] Output naming convention:
+      `build/archive/<details.name>-<binary-name>-<version>.cja`
+      when binary is named; `<details.name>-<version>.cja`
+      otherwise.
+- [ ] Hard error when `emit: "executable"` is requested with no
+      entry method resolvable.
 - [ ] Compiler-version + flag-set canonicalization for cache
       discriminator.
 - [ ] Per-file SHA-256-keyed IR cache under
@@ -268,13 +288,26 @@ work.
 
 ### Acceptance
 
-- [ ] First build of the cajeta stdlib succeeds end-to-end.
+- [ ] First build of the cajeta stdlib succeeds end-to-end with
+      default `emit` (`archived-ir`).
+- [ ] Each `emit` value produces output at the documented path
+      with the documented `format` output field.
+- [ ] Multi-binary project (3 binaries in `settings.build.binaries`)
+      builds each binary via a separate task; outputs at
+      distinct paths.
+- [ ] `cajeta build --binary=cli` produces the CLI executable;
+      `cajeta build --binary=server` produces the server
+      executable; both reuse the IR cache where source
+      overlaps.
 - [ ] Touching one source file rebuilds only that file +
       dependents.
 - [ ] Cache size cap enforces eviction.
 - [ ] Rebuild after eviction produces byte-identical IR.
 - [ ] Flag-set order doesn't bust the cache (canonicalization
       works).
+- [ ] `emit: "executable"` with no resolvable entry method
+      fails the build at action-validation time, not after a
+      partial compile.
 
 ---
 
@@ -456,12 +489,55 @@ literal (no overlay machinery).
 
 ---
 
-## Phase 9 — Distribution: upload + publish
+## Phase 9 — Distribution: package + upload + publish
 
-**Goal:** the release pipeline (sign → upload → publish) works
-end-to-end against real backends.
+**Goal:** the release pipeline (build → package → sign → upload
+→ publish) works end-to-end against real backends. The
+`package` action is the universal format-conversion verb; v1
+ships the IR/archive formats and a small set of executable-input
+formats (`tarball`, `zip`, `container`). Per-platform installer
+formats (`deb`, `rpm`, `msi`, `app-bundle`, `pkg`, `dmg`)
+follow as deferred slices.
 
-### Deliverables
+### `package` action deliverables (v1)
+
+- [ ] `package` action with `input` + `format` required params,
+      `spec` + format-specific params optional.
+- [ ] Input/format mismatch detected at action-validation time
+      (not mid-pipeline).
+- [ ] `format: "obj-tree"` — IR → per-source `.o` tree.
+- [ ] `format: "uber-ir"` — IR → linked `.bc`.
+- [ ] `format: "uber-archive"` — `.cja` + resolved deps →
+      single `.cja` with transitive contents.
+- [ ] `format: "static-lib"` — IR → `.a`.
+- [ ] `format: "shared-lib"` — IR → `.so` / `.dylib` / `.dll`
+      per host.
+- [ ] `format: "tarball"` — file or directory → `.tar.zst`
+      (`.tar.gz` if requested).
+- [ ] `format: "zip"` — file or directory → `.zip`.
+- [ ] `format: "container"` — executable → OCI image; supports
+      `base`, `tag`, `expose`, `env`, `labels`; outputs include
+      `manifest` + (when pushed) `registry-url`.
+- [ ] Inline-params metadata + `spec`-file metadata both
+      supported.
+- [ ] Output cache key on `(input-sha256, format,
+      format-specific-params)` so repeated packages of unchanged
+      input are skipped.
+
+### `package` action — deferred slices
+
+Each is a self-contained follow-on; not in v1 cut.
+
+- [ ] `format: "deb"`
+- [ ] `format: "rpm"`
+- [ ] `format: "msi"`
+- [ ] `format: "app-bundle"`
+- [ ] `format: "pkg"`
+- [ ] `format: "dmg"`
+- [ ] `format: "appimage"` / `"flatpak"` / `"snap"` (lowest
+      priority)
+
+### Upload + publish deliverables
 
 - [ ] `upload` action — `target: s3`.
 - [ ] `upload` action — `target: azure`.
@@ -482,6 +558,18 @@ end-to-end against real backends.
 
 ### Acceptance
 
+- [ ] A `release` task pipelines build (executable) →
+      sign → package (`container`) → upload (HTTP PUT to a
+      mock registry) without any intermediate manual steps.
+- [ ] `format: "uber-archive"` produces a `.cja` that contains
+      every transitive dep at the resolved version; a fresh
+      `cajeta install` against it has no further network
+      fetches.
+- [ ] `format: "container"` produces a valid OCI image that
+      runs the executable on `docker run` / `podman run`.
+- [ ] Input/format mismatch (`format: "obj-tree"` with an
+      `executable` input) fails at action-validation, with a
+      citation naming the expected input shape.
 - [ ] Artifact + signature upload to S3; URLs consumable by
       downstream actions.
 - [ ] Artifact upload to Azure Blob.
@@ -490,6 +578,8 @@ end-to-end against real backends.
 - [ ] SFTP works against a containerized SSH endpoint in CI.
 - [ ] Transient failure recovers via retry; persistent failure
       surfaces clearly.
+- [ ] `package` cache hits skip work when input is unchanged
+      (same `(input-sha256, format, params)` triple).
 
 ---
 
@@ -800,7 +890,7 @@ Each is a decision, not a unit of work.
                                         │         │
 8. Build flavors ←──────────────────────┘         │
                                                   │
-9. Distribution: upload + publish ←───────────────┘
+9. Distribution: package + upload + publish ←─────┘
          │
          ├─→ 10. Signing + launcher
          │
