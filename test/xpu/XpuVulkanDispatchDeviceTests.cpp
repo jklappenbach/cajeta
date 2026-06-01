@@ -28,12 +28,12 @@ using cajeta::xpu::vulkan::VulkanDriver;
 
 namespace {
 
-// n = 1024, block = kVulkanLocalSizeX (64), grid = 16. Each element 2*1 + 2 = 4
-// -> sum 4096 once launched; 2*1024 = 2048 if nothing ran.
-std::string saxpyHostSource() {
-    const unsigned block = cajeta::xpu::vulkan::kVulkanLocalSizeX;  // 64
+// n = 1024; each element 2*1 + 2 = 4 -> sum 4096 once launched (2048 if nothing
+// ran). `block` sets the launch block dim (and, via the spec-constant workgroup
+// size, the actual SPIR-V LocalSize); grid covers n = grid*block.
+std::string saxpyHostSource(unsigned block = cajeta::xpu::vulkan::kVulkanLocalSizeX) {
     const unsigned n = 1024;
-    const unsigned grid = n / block;                               // 16
+    const unsigned grid = n / block;
     return std::string(
         "package test;\n"
         "import cajeta.xpu.core.Buffer;\n"
@@ -88,6 +88,24 @@ TEST(XpuVulkanDispatchDeviceTests, saxpyRoutesToVulkanOnDevice) {
     CajetaJit::Options o;
     o.xpuBackends = {cajeta::xpu::Backend::Spirv};
     auto jit = CajetaJit::compile(saxpyHostSource(), "test.Saxpy", o);
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<float (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    EXPECT_FLOAT_EQ(fn(), 4096.0f);
+}
+
+// Item 3: an ARBITRARY block size (128, not the baked 64) runs on Vulkan via the
+// spec-constant workgroup size. The launch sets SpecId 0/1/2 = block.x/y/z at
+// pipeline creation, so GlobalInvocationId spans grid*128 = n and all 1024
+// elements are updated (sum 4096). If the workgroup were stuck at the baked 64,
+// only the first n/2 would run (sum 3072) — so this distinguishes the feature.
+TEST(XpuVulkanDispatchDeviceTests, arbitraryBlockSizeOnDevice) {
+    if (!VulkanDriver::available()) {
+        GTEST_SKIP() << "no Vulkan device/driver available";
+    }
+    CajetaJit::Options o;
+    o.xpuBackends = {cajeta::xpu::Backend::Spirv};
+    auto jit = CajetaJit::compile(saxpyHostSource(/*block=*/128), "test.Saxpy", o);
     ASSERT_NE(jit, nullptr);
     auto fn = jit->lookup<float (*)()>("run");
     ASSERT_NE(fn, nullptr);
