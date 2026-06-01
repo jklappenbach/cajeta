@@ -1,6 +1,7 @@
 #include "cajeta/buildtool/BuildToolCommands.h"
 
 #include "cajeta/buildtool/Action.h"
+#include "cajeta/buildtool/InitTemplates.h"
 #include "cajeta/buildtool/JsonC.h"
 #include "cajeta/buildtool/Lockfile.h"
 #include "cajeta/buildtool/Manifest.h"
@@ -217,6 +218,90 @@ namespace cajeta::buildtool {
                 }
             }
 
+            return 0;
+        }
+
+        // `cajeta init [<type>] [<dir>]` — write an archetype
+        // template to disk. The archetype source lives in
+        // samples/buildtool/<type>/; CMake embeds those bytes at
+        // build time so the binary is self-contained (no repo lookup
+        // at runtime). See cajeta-docs/BuildTool.md "Project shapes".
+        int initCommand(int argc, const char* argv[]) {
+            std::string templateName = "basic";
+            std::string destDir = ".";
+            bool force = false;
+            bool listOnly = false;
+
+            // Positional parsing: first non-flag is the template
+            // name, second is the destination directory. Both
+            // optional; defaults are `basic` + `.`.
+            int positional = 0;
+            for (int i = 2; i < argc; ++i) {
+                std::string_view arg = argv[i];
+                if (arg == "--force" || arg == "-f") {
+                    force = true;
+                } else if (arg == "--list") {
+                    listOnly = true;
+                } else if (arg == "--help" || arg == "-h") {
+                    std::cout
+                        << "Usage: cajeta init [<type>] [<dir>] [options]\n"
+                        << "\n"
+                        << "Write an archetype template to disk.\n"
+                        << "\n"
+                        << "  <type>     Archetype name (default: basic)\n"
+                        << "  <dir>      Destination directory (default: .)\n"
+                        << "  --force    Overwrite existing files\n"
+                        << "  --list     List available archetypes and exit\n"
+                        << "\n"
+                        << "Available archetypes:\n";
+                    for (const auto& name : availableInitTemplates()) {
+                        std::cout << "  " << name << "\n";
+                    }
+                    return 0;
+                } else if (!arg.empty() && arg[0] == '-') {
+                    std::cerr << "cajeta init: unknown argument '"
+                              << arg << "'\n";
+                    return 1;
+                } else if (positional == 0) {
+                    templateName = std::string(arg);
+                    ++positional;
+                } else if (positional == 1) {
+                    destDir = std::string(arg);
+                    ++positional;
+                } else {
+                    std::cerr << "cajeta init: unexpected positional argument '"
+                              << arg << "'\n";
+                    return 1;
+                }
+            }
+
+            if (listOnly) {
+                for (const auto& name : availableInitTemplates()) {
+                    std::cout << name << "\n";
+                }
+                return 0;
+            }
+
+            auto result = instantiateInitTemplate(templateName, destDir, force);
+            if (!result) {
+                std::string msg;
+                llvm::raw_string_ostream os(msg);
+                os << result.takeError();
+                std::cerr << msg << "\n";
+                return 1;
+            }
+
+            std::cout << "Initialized '" << templateName
+                      << "' archetype in " << destDir << ":\n";
+            for (const auto& p : result->filesWritten) {
+                std::cout << "  " << p << "\n";
+            }
+            std::cout
+                << "\nNext steps:\n"
+                << "  1. Edit cajeta.json's `details.name` to your package name.\n"
+                << "  2. Rename `src/main/cajeta/com/example/...` to match.\n"
+                << "  3. cajeta tasks       # list available tasks\n"
+                << "  4. cajeta task <name> --show    # inspect a task\n";
             return 0;
         }
 
@@ -481,7 +566,7 @@ namespace cajeta::buildtool {
             std::string_view cmd = argv[1];
             // Built-in subcommands handled elsewhere.
             if (cmd == "info" || cmd == "tasks" || cmd == "task" ||
-                cmd == "archive") {
+                cmd == "init" || cmd == "archive") {
                 return false;
             }
             // Anything starting with `-` is a flag for the existing
@@ -518,6 +603,10 @@ namespace cajeta::buildtool {
         }
         if (cmd == "task") {
             *exitCodeOut = taskShowCommand(argc, argv);
+            return true;
+        }
+        if (cmd == "init") {
+            *exitCodeOut = initCommand(argc, argv);
             return true;
         }
         if (looksLikeTaskInvocation(argc, argv)) {

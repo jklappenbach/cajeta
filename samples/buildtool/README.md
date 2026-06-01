@@ -11,6 +11,18 @@ demonstrates a different project shape from
 | [`multi-binary/`](multi-binary/) | Single package producing several binaries from one source tree |
 | [`melt/`](melt/)        | Melt-only package — curated version set, no source   |
 
+These directories double as the source of truth for
+`cajeta init <type>`. CMake (`cmake/EmbedInitTemplates.cmake`)
+walks the trees at build time and embeds them into the cajeta
+binary — there's no second copy of the archetype templates to
+keep in sync. Editing any `cajeta.json` or `.cajeta` source
+here propagates to the next `cajeta init` automatically.
+
+Only `cajeta.json` and `src/**/*.cajeta` files are embedded;
+`run.sh` and `README.md` describe the sample's place in this
+repository (not what a freshly-init'd project needs), so they
+are skipped at embed time.
+
 ## Caveat — compile pipeline not yet operational
 
 These samples ship as **manifest + structure demonstrations**. The
