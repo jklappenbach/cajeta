@@ -231,8 +231,9 @@ private:
             lowerDo(ds);
             return;
         }
-        if (std::dynamic_pointer_cast<EnhancedForStatement>(node)) {
-            unsupported("for-each loop in kernel body (next increment)");
+        if (auto efs = std::dynamic_pointer_cast<EnhancedForStatement>(node)) {
+            lowerEnhancedFor(efs);
+            return;
         }
         if (auto bs = std::dynamic_pointer_cast<BreakStatement>(node)) {
             if (!bs->getLabel().empty()) unsupported("labeled break");
@@ -462,6 +463,117 @@ private:
         // through lowerExprStatement so assignments hit lowerAssign.
         for (auto& u : fs->getUpdate()) lowerExprStatement(u);
         builder.CreateBr(head);
+        builder.SetInsertPoint(exit);
+    }
+
+    // Grid-stride for-each (Item 6):
+    //   for (idxType idx, elemType elem : buf.range(count)) body
+    // ⇒ for (idx = globalId.x; idx < count; idx += gridSize.x) {
+    //        elem = buf[idx]; body
+    //    }
+    // The iterable MUST be `<bufferParam>.range(<count>)` — device buffers carry
+    // no length, so the count is explicit (as in every GPU language). The element
+    // binding is a value copy of buf[idx] (range-for semantics); writes go via the
+    // index binding (`buf[idx] = …`). The iterator (index) binding is optional;
+    // without it the body can read `elem` but has no index to write by.
+    void lowerEnhancedFor(const std::shared_ptr<EnhancedForStatement>& efs) {
+        auto mc = std::dynamic_pointer_cast<MethodCallExpression>(
+            efs->getIterableExpr());
+        std::string bufName;
+        if (mc && mc->getMethodCallName() == "range" &&
+            !mc->getChildren().empty()) {
+            if (auto id = std::dynamic_pointer_cast<IdentifierExpression>(
+                    mc->getChildren()[0]))
+                bufName = id->getTextValue();
+        }
+        if (bufName.empty()) {
+            throw cajeta::Exception(
+                "XPU kernel lowering: a for-each in a kernel must iterate "
+                "`buffer.range(count)` (device buffers are unsized)", "XPU-N02");
+        }
+        auto bv = bufferBases.find(bufName);
+        auto be = bufferElems.find(bufName);
+        if (bv == bufferBases.end() || be == bufferElems.end()) {
+            throw cajeta::Exception(
+                "XPU kernel lowering: for-each receiver '" + bufName +
+                "' is not a kernel buffer parameter", "XPU-N02");
+        }
+        if (mc->getParameters().size() != 1) {
+            throw cajeta::Exception(
+                "XPU kernel lowering: buffer.range(count) takes exactly one "
+                "argument", "XPU-N02");
+        }
+
+        llvm::Type* i32 = llvm::Type::getInt32Ty(ctx);
+        llvm::Type* i64 = llvm::Type::getInt64Ty(ctx);
+
+        // Index type follows the iterator binding (default i32 / uint).
+        llvm::Type* idxTy =
+            efs->getIteratorType() ? deviceScalarType(efs->getIteratorType(), ctx)
+                                   : i32;
+        if (!idxTy || !idxTy->isIntegerTy()) idxTy = i32;
+        bool idxSigned =
+            efs->getIteratorType() && typeIsSigned(efs->getIteratorType());
+
+        llvm::Value* count =
+            coerceTo(lowerExpr(mc->getParameters()[0].expression), idxTy);
+        llvm::Value* stride = coerceTo(target.gridSize(builder, mod, 0), idxTy);
+
+        // Index slot, initialized to the global x-id. Bound to the iterator name
+        // when present (so the body can `buf[idx] = …`).
+        const bool hasIdx = efs->getIteratorType() != nullptr;
+        std::string idxName = hasIdx ? efs->getIteratorName()
+                                     : (bufName + ".fe.idx");
+        llvm::Value* idxSlot = entryAlloca(idxTy, idxName);
+        builder.CreateStore(coerceTo(target.globalId(builder, mod, 0), idxTy),
+                            idxSlot);
+        if (hasIdx) {
+            values[idxName] = idxSlot;
+            slotTypes[idxName] = idxTy;
+            signedness[idxName] = idxSigned;
+        }
+
+        // Element binding: a per-iteration value copy of buf[idx].
+        llvm::Type* elemTy = be->second;
+        const std::string& elemName = efs->getElementName();
+        llvm::Value* elemSlot = entryAlloca(elemTy, elemName);
+        values[elemName] = elemSlot;
+        slotTypes[elemName] = elemTy;
+        auto sit = bufferElemSigned.find(bufName);
+        signedness[elemName] = sit != bufferElemSigned.end() ? sit->second : true;
+
+        auto* head = llvm::BasicBlock::Create(ctx, "fe.head", fn);
+        auto* body = llvm::BasicBlock::Create(ctx, "fe.body", fn);
+        auto* upd  = llvm::BasicBlock::Create(ctx, "fe.update", fn);
+        auto* exit = llvm::BasicBlock::Create(ctx, "fe.exit", fn);
+        builder.CreateBr(head);
+
+        builder.SetInsertPoint(head);
+        llvm::Value* i = builder.CreateLoad(idxTy, idxSlot, idxName);
+        // Thread indices are non-negative; an unsigned compare is correct and
+        // lets a huge `count` (near INT_MAX) work.
+        builder.CreateCondBr(builder.CreateICmpULT(i, count, "fe.cmp"),
+                             body, exit);
+
+        builder.SetInsertPoint(body);
+        // elem = buf[idx]  (widen idx to i64 for the element GEP, like array idx).
+        llvm::Value* i64idx =
+            builder.CreateIntCast(i, i64, /*isSigned=*/idxSigned);
+        llvm::Value* addr =
+            target.bufferElementPtr(builder, mod, bv->second, elemTy, i64idx);
+        builder.CreateStore(builder.CreateLoad(elemTy, addr, "fe.elem"),
+                            elemSlot);
+        loopTargets.push_back({upd, exit});
+        lowerStatement(efs->getBody());
+        loopTargets.pop_back();
+        if (!builder.GetInsertBlock()->getTerminator()) builder.CreateBr(upd);
+
+        builder.SetInsertPoint(upd);
+        llvm::Value* next = builder.CreateAdd(
+            builder.CreateLoad(idxTy, idxSlot, idxName), stride, "fe.next");
+        builder.CreateStore(next, idxSlot);
+        builder.CreateBr(head);
+
         builder.SetInsertPoint(exit);
     }
 

@@ -47,6 +47,18 @@ public:
     }
     // globalId uses the shared default: ctaid*ntid + tid.
 
+    // Grid-stride stride (Item 6). The CPU kernel's coord ABI carries only the
+    // CURRENT block id (ctaid) + block dim (ntid), not the grid dimension (block
+    // count) — so gx·bx isn't available yet. Stage 2 threads it through the
+    // coord chain; until then, a grid-stride for-each kernel cleanly falls back
+    // to the host stub (XPU-N01) rather than miscompiling.
+    llvm::Value* gridSize(llvm::IRBuilderBase&, llvm::Module&,
+                          unsigned) override {
+        throw cajeta::Exception(
+            "XPU kernel lowering: unsupported construct — grid-stride for-each "
+            "on the CPU backend (Stage 2)", "XPU-N01");
+    }
+
     void workgroupBarrier(llvm::IRBuilderBase& b, llvm::Module& m) override {
         // A CPU workgroup barrier is realized by work-item loop fission in the
         // registration pass (cajeta-cpu.md Inc 6): this marker call delimits the

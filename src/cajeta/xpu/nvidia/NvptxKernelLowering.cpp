@@ -57,6 +57,16 @@ public:
             llvm::Intrinsic::nvvm_read_ptx_sreg_ntid_z};
         return readSreg(b, m, ids[dim]);
     }
+    // Grid-stride stride = nctaid·ntid (number of CTAs × CTA size).
+    llvm::Value* gridSize(llvm::IRBuilderBase& b, llvm::Module& m,
+                          unsigned dim) override {
+        static const llvm::Intrinsic::ID nctaid[3] = {
+            llvm::Intrinsic::nvvm_read_ptx_sreg_nctaid_x,
+            llvm::Intrinsic::nvvm_read_ptx_sreg_nctaid_y,
+            llvm::Intrinsic::nvvm_read_ptx_sreg_nctaid_z};
+        return b.CreateMul(readSreg(b, m, nctaid[dim]),
+                           workgroupDim(b, m, dim), "gridsize");
+    }
 
     void workgroupBarrier(llvm::IRBuilderBase& b, llvm::Module& m) override {
         // bar.sync 0 — synchronize all threads in the CTA.

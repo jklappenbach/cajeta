@@ -99,6 +99,59 @@ TEST(XpuHipDispatchDeviceTests, multiArchBundleRoutesToHipOnDevice) {
     EXPECT_FLOAT_EQ(fn(), 4096.0f);
 }
 
+// Item 6: a grid-stride for-each on the real AMD device. The stride comes from
+// the HSA dispatch packet's grid_size field. Grid is deliberately smaller than n
+// (grid=4, block=64 ⇒ 256 work-items < n=1024), so the loop must stride 4× to
+// cover all of out[i]=in[i]*2 (in[i]=1) ⇒ sum 2048. One element per thread would
+// give 512 — distinguishing.
+TEST(XpuHipDispatchDeviceTests, gridStrideForEachRoutesToHipOnDevice) {
+    if (!HipDriver::available()) {
+        GTEST_SKIP() << "no ROCm/HIP device available";
+    }
+    const char* src =
+        "package test;\n"
+        "import cajeta.xpu.core.Buffer;\n"
+        "import cajeta.xpu.core.Stream;\n"
+        "import cajeta.xpu.core.Thread;\n"
+        "public class Grid {\n"
+        "    @Kernel\n"
+        "    public static void scale(Buffer<float32> out, Buffer<float32> in,\n"
+        "                             uint32 n) {\n"
+        "        for (uint32 i, float32 v : in.range(n)) {\n"
+        "            out[i] = v * 2.0f;\n"
+        "        }\n"
+        "    }\n"
+        "    public static float32 run() {\n"
+        "        uint32 n = 1024;\n"
+        "        float32[] hx = new float32[n];\n"
+        "        float32[] hy = new float32[n];\n"
+        "        for (uint32 i = 0; i < n; i = i + 1) { hx[i] = 1.0f; hy[i] = 0.0f; }\n"
+        "        Buffer<float32> x = heap Buffer<float32>(0, n);\n"
+        "        Buffer<float32> y = heap Buffer<float32>(0, n);\n"
+        "        x.allocate();\n"
+        "        y.allocate();\n"
+        "        x.upload(hx);\n"
+        "        y.upload(hy);\n"
+        "        Stream s = Stream.current();\n"
+        "        scale.launch(s, grid: [4], block: [64])(y, x, n);\n"
+        "        s.sync();\n"
+        "        y.download(hy);\n"
+        "        x.free();\n"
+        "        y.free();\n"
+        "        float32 sum = 0.0f;\n"
+        "        for (uint32 i = 0; i < n; i = i + 1) { sum = sum + hy[i]; }\n"
+        "        return sum;\n"
+        "    }\n"
+        "}\n";
+    CajetaJit::Options o;
+    o.xpuBackends = {cajeta::xpu::Backend::Amdgpu};
+    auto jit = CajetaJit::compile(src, "test.Grid", o);
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<float (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    EXPECT_FLOAT_EQ(fn(), 2048.0f);   // all 1024 ran via grid-stride
+}
+
 // Bundle BOTH amdgpu and cpu; CAJETA_XPU_BACKEND=cpu forces the fall to the CPU
 // even on a box with the GPU present — the explicit-bundle degrade-to-CPU
 // contract, validated against real hardware. GPU-independent (forced to CPU),

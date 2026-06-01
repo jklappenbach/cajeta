@@ -64,6 +64,22 @@ public:
         return b.CreateZExt(sz16, llvm::Type::getInt32Ty(ctx), "wgsize.i32");
     }
 
+    // Grid-stride stride (Item 6). grid_size_{x,y,z} are uint32 fields of the
+    // HSA dispatch packet at byte offsets 12/16/20 — and already hold the TOTAL
+    // work-item count in each dim (gridDim·blockDim), so this is one load (no
+    // multiply needed, unlike NVPTX). Same dispatch.ptr addrspace(4) packet as
+    // workgroupDim above.
+    llvm::Value* gridSize(llvm::IRBuilderBase& b, llvm::Module& m,
+                          unsigned dim) override {
+        llvm::LLVMContext& ctx = m.getContext();
+        llvm::Function* dp = llvm::Intrinsic::getOrInsertDeclaration(
+            &m, llvm::Intrinsic::amdgcn_dispatch_ptr);
+        llvm::Value* packet = b.CreateCall(dp, {}, "dispatch.ptr");
+        llvm::Value* field = b.CreateConstGEP1_32(
+            llvm::Type::getInt8Ty(ctx), packet, 12 + 4 * dim, "gridsize.ptr");
+        return b.CreateLoad(llvm::Type::getInt32Ty(ctx), field, "gridsize");
+    }
+
     // Workgroup barrier with LDS-visibility ordering: a workgroup-scoped
     // release fence, the hardware s_barrier, then a workgroup-scoped acquire
     // fence — the same shape HIP's __syncthreads() lowers to, so shared-memory
