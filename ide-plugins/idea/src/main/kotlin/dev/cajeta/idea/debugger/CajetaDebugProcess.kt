@@ -41,6 +41,9 @@ class CajetaDebugProcess(
         if (launched) dapSession?.setExceptionBreakpoints(armed)
     }
 
+    // CP7-3: gutter glyphs summarizing the active bindings' memory facets.
+    private val gutter = FacetGutterManager(xSession.project)
+
     private var process: Process? = null
     private var dapSession: CajetaDebugSession? = null
 
@@ -73,10 +76,10 @@ class CajetaDebugProcess(
             dapSession = ds
 
             processHandler.onDestroy = { ds.disconnect() }
-            ds.onExited = { code -> processHandler.reportTerminated(code) }
-            ds.onTerminated = { processHandler.reportTerminated(0) }
+            ds.onExited = { code -> gutter.clear(); processHandler.reportTerminated(code) }
+            ds.onTerminated = { gutter.clear(); processHandler.reportTerminated(0) }
             ds.onOutput = { text -> processHandler.emitOutput(text) }
-            ds.onClosed = { processHandler.reportTerminated(0) }
+            ds.onClosed = { gutter.clear(); processHandler.reportTerminated(0) }
             ds.onStopped = { body -> onStopped(ds, body.opt("threadId")?.asInt() ?: 0) }
 
             ds.start()
@@ -132,12 +135,35 @@ class CajetaDebugProcess(
             ds.stackTrace(stoppedThreadId).thenApply { stResponse ->
                 val stoppedFrames = CajetaDebugSession.parseStackFrames(stResponse)
                     .map { CajetaStackFrame(it, resolvePosition(it), ds) }
-                buildContext(ds, threads, stoppedThreadId, stoppedFrames)
+                Pair(buildContext(ds, threads, stoppedThreadId, stoppedFrames), stoppedFrames)
             }
-        }.thenAccept { context ->
+        }.thenAccept { (context, stoppedFrames) ->
             session.positionReached(context)
+            // CP7-3: decorate the gutter at the stopped top frame's line using
+            // the same locals the Variables view loads (FR-6.5).
+            updateGutter(ds, stoppedFrames)
         }.exceptionally { e ->
             log.warn("building suspend context after stop failed", e)
+            null
+        }
+    }
+
+    /**
+     * Refresh the gutter glyph for the stopped top frame. Fetches that frame's
+     * locals via the same loadVariables path the Variables view uses; clears
+     * the gutter if there's no source position to anchor to.
+     */
+    private fun updateGutter(ds: CajetaDebugSession, stoppedFrames: List<CajetaStackFrame>) {
+        val top = stoppedFrames.firstOrNull()
+        val pos = top?.sourcePosition
+        if (top == null || pos == null) {
+            gutter.clear()
+            return
+        }
+        ds.loadVariables(top.frame.id).thenAccept { vars ->
+            gutter.showAt(pos, vars)
+        }.exceptionally {
+            gutter.clear()
             null
         }
     }
@@ -174,15 +200,18 @@ class CajetaDebugProcess(
     }
 
     override fun resume(context: XSuspendContext?) {
+        gutter.clear()   // CP7-3: stale facets vanish the moment we leave the stop.
         dapSession?.resume()
     }
 
     override fun startStepOver(context: XSuspendContext?) {
         // Real stepping is CP6e; for now resume to the next breakpoint.
+        gutter.clear()
         dapSession?.resume()
     }
 
     override fun stop() {
+        gutter.clear()
         dapSession?.disconnect()
         process?.destroyForcibly()
     }

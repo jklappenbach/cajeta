@@ -167,3 +167,56 @@ private fun MemoryFacets.lifetimePhrase(): String? = when (lifetime) {
     LifetimeState.ABOUT_TO_DROP -> "about to drop at scope exit"
     LifetimeState.UNKNOWN -> null
 }
+
+/**
+ * A one-line gutter summary of the bindings active at a stop (CP7-3, FR-6.2).
+ * [ownership] / [alloc] are the most significant facets across the bindings
+ * (so the glyph reflects the strongest signal present), [anyMovedOut] flags a
+ * consumed binding on the line, and [tooltip] enumerates every binding's tag.
+ */
+data class GutterSummary(
+    val ownership: OwnershipRole,
+    val alloc: AllocClass,
+    val anyMovedOut: Boolean,
+    val tooltip: String,
+    val count: Int,
+)
+
+/**
+ * Collapse the facets of the bindings active at a line into one [GutterSummary]
+ * for the editor gutter. Sources the same DAP variable facets the Variables
+ * view uses — no parallel derivation (FR-6.5). Returns null when no binding has
+ * known facets, so the caller shows no glyph rather than a meaningless one.
+ *
+ * Significance precedence (which single facet the glyph should reflect):
+ * ownership owner > borrow > moved; allocation shared > heap > stack — the
+ * rarer/heavier signal wins so it isn't masked by a mundane sibling.
+ */
+fun summarizeGutter(vars: List<DapVariable>): GutterSummary? {
+    val known = vars.filter { it.facets.isKnown }
+    if (known.isEmpty()) return null
+
+    val ownership = when {
+        known.any { it.facets.ownership == OwnershipRole.OWNER } -> OwnershipRole.OWNER
+        known.any { it.facets.ownership == OwnershipRole.BORROW } -> OwnershipRole.BORROW
+        known.any { it.facets.ownership == OwnershipRole.MOVED } -> OwnershipRole.MOVED
+        else -> OwnershipRole.UNKNOWN
+    }
+    val alloc = when {
+        known.any { it.facets.alloc == AllocClass.SHARED } -> AllocClass.SHARED
+        known.any { it.facets.alloc == AllocClass.HEAP } -> AllocClass.HEAP
+        known.any { it.facets.alloc == AllocClass.STACK } -> AllocClass.STACK
+        else -> AllocClass.UNKNOWN
+    }
+    val anyMovedOut = known.any { it.facets.lifetime == LifetimeState.MOVED_OUT }
+
+    val tooltip = buildString {
+        append("Cajeta memory facets")
+        for (v in known) {
+            val tag = v.facets.present().tag
+            append("\n").append(v.name)
+            if (tag.isNotEmpty()) append(" — ").append(tag)
+        }
+    }
+    return GutterSummary(ownership, alloc, anyMovedOut, tooltip, known.size)
+}

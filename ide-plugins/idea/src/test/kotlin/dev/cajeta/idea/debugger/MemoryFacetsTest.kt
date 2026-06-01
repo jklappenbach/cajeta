@@ -145,6 +145,64 @@ class MemoryFacetsTest {
         assertEquals(LifetimeState.ABOUT_TO_DROP, vars[0].facets.lifetime)
     }
 
+    // ---- gutter summary (CP7-3) ----
+
+    private fun varWith(name: String, facets: MemoryFacets) =
+        DapVariable(name = name, value = "", type = "", variablesReference = 0, facets = facets)
+
+    @Test
+    fun gutterSummaryNullWhenNothingKnown() {
+        assertEquals(null, summarizeGutter(emptyList()))
+        assertEquals(
+            null,
+            summarizeGutter(listOf(varWith("x", MemoryFacets.UNKNOWN))),
+        )
+    }
+
+    @Test
+    fun gutterSummaryPicksMostSignificantOwnershipAndAlloc() {
+        val vars = listOf(
+            varWith("b", MemoryFacets(AllocClass.STACK, OwnershipRole.BORROW, LifetimeState.LIVE)),
+            varWith("o", MemoryFacets(AllocClass.HEAP, OwnershipRole.OWNER, LifetimeState.ABOUT_TO_DROP)),
+        )
+        val s = summarizeGutter(vars)!!
+        assertEquals(OwnershipRole.OWNER, s.ownership)   // owner outranks borrow
+        assertEquals(AllocClass.HEAP, s.alloc)            // heap outranks stack
+        assertFalse(s.anyMovedOut)
+        assertEquals(2, s.count)
+        assertTrue(s.tooltip.contains("o — owner · heap · about-to-drop"))
+        assertTrue(s.tooltip.contains("b — borrow · stack"))
+    }
+
+    @Test
+    fun gutterSummaryFlagsMovedOut() {
+        val vars = listOf(
+            varWith("m", MemoryFacets(AllocClass.HEAP, OwnershipRole.OWNER, LifetimeState.MOVED_OUT)),
+        )
+        val s = summarizeGutter(vars)!!
+        assertTrue(s.anyMovedOut)
+    }
+
+    @Test
+    fun gutterSummarySharedOutranksHeap() {
+        val vars = listOf(
+            varWith("h", MemoryFacets(AllocClass.HEAP, OwnershipRole.UNKNOWN, LifetimeState.LIVE)),
+            varWith("s", MemoryFacets(AllocClass.SHARED, OwnershipRole.UNKNOWN, LifetimeState.LIVE)),
+        )
+        assertEquals(AllocClass.SHARED, summarizeGutter(vars)!!.alloc)
+    }
+
+    @Test
+    fun gutterSummaryIgnoresUnknownBindings() {
+        val vars = listOf(
+            varWith("u", MemoryFacets.UNKNOWN),
+            varWith("o", MemoryFacets(AllocClass.HEAP, OwnershipRole.OWNER, LifetimeState.LIVE)),
+        )
+        val s = summarizeGutter(vars)!!
+        assertEquals(1, s.count)   // only the known binding is summarized
+        assertFalse(s.tooltip.contains("\nu"))
+    }
+
     @Test
     fun parseVariablesWithoutCajetaIsUnknown() {
         val response = Json.obj(
