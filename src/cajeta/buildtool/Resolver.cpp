@@ -1,9 +1,12 @@
 #include "cajeta/buildtool/Resolver.h"
 
+#include "cajeta/buildtool/repo/TimingRepository.h"
+
 #include <llvm/Support/Error.h>
 
 #include <algorithm>
 #include <cctype>
+#include <chrono>
 #include <cstring>
 #include <deque>
 #include <filesystem>
@@ -435,7 +438,8 @@ namespace cajeta::buildtool {
         const std::vector<DependencySpec>& deps,
         const std::vector<RepositoryPtr>& repos,
         ArtifactCache& cache,
-        const std::vector<OverrideSpec>& overrides) {
+        const std::vector<OverrideSpec>& overrides,
+        ResolverTimings* timings) {
 
         // Pre-flight: reject path/git override forms upfront with
         // a Phase 6c message. Mirrors how Phase 6a stubs unknown
@@ -523,6 +527,7 @@ namespace cajeta::buildtool {
         bool anyDirty = true;
         while (anyDirty) {
             anyDirty = false;
+            if (timings) ++timings->mvsIterations;
             for (size_t i = 0; i < insertionOrder.size(); ++i) {
                 const std::string name = insertionOrder[i];
                 auto& s = state[name];
@@ -636,19 +641,31 @@ namespace cajeta::buildtool {
     resolveProjectDependencies(
         const Manifest& m,
         const std::string& projectRoot,
-        std::optional<std::string> homeOverride) {
+        std::optional<std::string> homeOverride,
+        ResolverTimings* timings) {
+
+        auto totalStart = std::chrono::steady_clock::now();
+        auto closeTotal = [&]() {
+            if (timings) {
+                timings->total =
+                    std::chrono::duration_cast<ResolverTimings::Duration>(
+                        std::chrono::steady_clock::now() - totalStart);
+            }
+        };
 
         auto deps = parseDependencies(m);
-        if (!deps) return deps.takeError();
+        if (!deps) { closeTotal(); return deps.takeError(); }
         if (deps->empty()) {
+            closeTotal();
             return std::vector<ResolvedDependency>{};  // no deps → no work
         }
 
         auto repoSpecs = parseRepositories(m);
-        if (!repoSpecs) return repoSpecs.takeError();
+        if (!repoSpecs) { closeTotal(); return repoSpecs.takeError(); }
         // Deps are declared but no repos to fetch them from → hard error
         // with a pointer at the user-fixable cause.
         if (repoSpecs->empty()) {
+            closeTotal();
             return err("settings.dependencies declares " +
                        std::to_string(deps->size()) +
                        " dependency(ies) but settings.repositories is "
@@ -663,13 +680,25 @@ namespace cajeta::buildtool {
             (std::filesystem::path(projectRoot) / ".cajeta" / "cache" /
              "downloads").string();
         auto repos = buildRepositories(*repoSpecs, downloadStage);
-        if (!repos) return repos.takeError();
+        if (!repos) { closeTotal(); return repos.takeError(); }
 
         auto overrides = parseOverrides(m);
-        if (!overrides) return overrides.takeError();
+        if (!overrides) { closeTotal(); return overrides.takeError(); }
+
+        // When timings are requested, decorate each repo with the
+        // recording wrapper. `wrapWithTimings(...,nullptr)` is a
+        // no-op pass-through so the non-timed path pays nothing.
+        std::vector<RepositoryPtr> repoList =
+            wrapWithTimings(*repos, timings);
 
         ArtifactCache cache(projectRoot, homeOverride);
-        return resolveMvs(*deps, *repos, cache, *overrides);
+        auto result = resolveMvs(
+            *deps, repoList, cache, *overrides, timings);
+        if (result && timings) {
+            timings->depsResolved = static_cast<int>(result->size());
+        }
+        closeTotal();
+        return result;
     }
 
 } // namespace cajeta::buildtool

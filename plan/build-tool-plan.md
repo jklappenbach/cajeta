@@ -471,7 +471,7 @@ work.
 - [x] `cajeta remove <dep>` subcommand.
 - [x] `cajeta upgrade [dep]` subcommand with capability-change
       prompt.
-- [ ] `cajeta info --resolve-time` for diagnosing pathological
+- [x] `cajeta info --resolve-time` for diagnosing pathological
       resolution.
 - [ ] Maven-compat shim (`type: maven-compat`).
 - [x] BuildAction integration: pass `--classpath` from resolver

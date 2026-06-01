@@ -7,6 +7,7 @@
 #include "cajeta/buildtool/Manifest.h"
 #include "cajeta/buildtool/ManifestEditor.h"
 #include "cajeta/buildtool/Properties.h"
+#include "cajeta/buildtool/Resolver.h"
 #include "cajeta/buildtool/Task.h"
 #include "cajeta/buildtool/TaskRunner.h"
 #include "cajeta/buildtool/Upgrader.h"
@@ -56,6 +57,7 @@ namespace cajeta::buildtool {
             bool resolved = false;
             bool writeLock = false;
             bool checkLock = false;
+            bool resolveTime = false;
             PropertyOverrides overrides;
             loadEnvOverrides(overrides);
 
@@ -98,6 +100,8 @@ namespace cajeta::buildtool {
                     writeLock = true;
                 } else if (arg == "--check-lockfile") {
                     checkLock = true;
+                } else if (arg == "--resolve-time") {
+                    resolveTime = true;
                 } else if (arg == "--help" || arg == "-h") {
                     std::cout
                         << "Usage: cajeta info [options]\n"
@@ -110,6 +114,7 @@ namespace cajeta::buildtool {
                         << "  --resolved             Dump the fully-resolved manifest (Phase 8)\n"
                         << "  --write-lockfile       Write cajeta.lock with resolved state\n"
                         << "  --check-lockfile       Verify manifest matches recorded checksum\n"
+                        << "  --resolve-time         Run resolver and print per-phase wall-clock\n"
                         << "  -P NAME=VALUE          Override a property for this invocation\n"
                         << "  --property=NAME=VALUE  Long form of -P\n"
                         << "  --flavor=NAME          Override active build flavor\n"
@@ -223,6 +228,44 @@ namespace cajeta::buildtool {
                         std::cout << "\nLockfile written: " << lockfilePath << "\n";
                     }
                 }
+            }
+
+            if (resolveTime) {
+                std::string projectRoot =
+                    std::filesystem::path(manifestPath)
+                        .parent_path().string();
+                if (projectRoot.empty()) projectRoot = ".";
+
+                ResolverTimings timings;
+                auto resolved = resolveProjectDependencies(
+                    m, projectRoot, std::nullopt, &timings);
+                if (!resolved) {
+                    std::string msg;
+                    llvm::raw_string_ostream os(msg);
+                    os << resolved.takeError();
+                    std::cerr << "cajeta info: resolve-time: "
+                              << msg << "\n";
+                    return 1;
+                }
+                auto us = [](ResolverTimings::Duration d) {
+                    return d.count();
+                };
+                std::cout << "\nResolver timings:\n"
+                          << "  total:           "
+                          << us(timings.total) << " us\n"
+                          << "  deps resolved:   "
+                          << timings.depsResolved << "\n"
+                          << "  MVS iterations:  "
+                          << timings.mvsIterations << "\n"
+                          << "  listVersions:    "
+                          << us(timings.listVersions) << " us across "
+                          << timings.listVersionsCalls << " call(s)\n"
+                          << "  fetch:           "
+                          << us(timings.fetch) << " us across "
+                          << timings.fetchCalls << " call(s)\n"
+                          << "  fetchManifest:   "
+                          << us(timings.fetchManifest) << " us across "
+                          << timings.fetchManifestCalls << " call(s)\n";
             }
 
             return 0;
