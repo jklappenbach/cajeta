@@ -96,8 +96,17 @@ namespace xpu {
         struct KernelParam {
             std::string name;
             bool isBuffer;       // Buffer<T>/array (else a scalar primitive)
-            llvm::Type* type;    // buffer element type, or the scalar type
+            llvm::Type* type;    // buffer element type, scalar type, or (sampler)
+                                 // the {i32 filterMode, i32 addressMode} struct
             bool isSigned;       // scalar signedness / buffer-element signedness
+            bool isTexture = false;  // Texture2D — a sampled-image handle (Item 8).
+                                     // Carried as a backend handle (ptr on CPU,
+                                     // image descriptor on Vulkan, image rsrc on
+                                     // AMD); `type` is the texel scalar (f32).
+            bool isSampler = false;  // Sampler — filter/address descriptor (Item 8).
+                                     // `type` is the {i32,i32} mode struct; bound
+                                     // by value (CPU/SIMT) or as an OpTypeSampler
+                                     // descriptor (Vulkan).
         };
 
         // Create the kernel function for `name`. Default: a void-returning
@@ -124,6 +133,21 @@ namespace xpu {
         virtual llvm::Value* bufferElementPtr(
             llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* base,
             llvm::Type* elemTy, llvm::Value* index);
+
+        // Sample the 2-D texture `texHandle` at normalized coords (u, v) in
+        // [0, 1] through `samplerHandle`, returning the filtered texel (f32) —
+        // the lowering of `tex.sample(sampler, u, v)` (Item 8). `texHandle` and
+        // `samplerHandle` are exactly the values materializeParam produced for
+        // the texture and sampler kernel params, so their representation is the
+        // backend's own (CPU: a host texobj ptr + the {i32,i32} sampler struct;
+        // Vulkan: image + sampler descriptors; AMD: image rsrc + sampler rsrc).
+        // Default: unsupported (XPU-N01) — only backends with image sampling
+        // override. Sampling at explicit LOD 0 (compute-valid; Vulkan requires
+        // explicit LOD outside a fragment shader).
+        virtual llvm::Value* sampleTexture(
+            llvm::IRBuilderBase& b, llvm::Module& m,
+            llvm::Value* texHandle, llvm::Value* samplerHandle,
+            llvm::Value* u, llvm::Value* v);
 
         // The LLVM type of a Buffer<T> when passed BY VALUE as a @Device helper
         // argument — i.e. the type of the buffer base held in bufferBases. A

@@ -10,6 +10,7 @@
 #include "../../type/CajetaType.h"
 #include "../../type/CajetaClass.h"
 #include "../core/XpuAttributes.h"
+#include "../core/KernelArgTrait.h"
 #include "../../error/Exception.h"
 
 #include "../../asn/AbstractSyntaxNode.h"
@@ -186,7 +187,15 @@ public:
                 ? fn->getArg(idx)
                 : target.materializeParam(builder, mod, fn, idx, p);
             ++idx;
-            if (p.isBuffer) {
+            if (p.isTexture) {
+                // Texture2D handle (Item 8): kept as the materialized backend
+                // value (a ptr on CPU); read only by `tex.sample(...)`.
+                textureHandles[p.name] = v;
+            } else if (p.isSampler) {
+                // Sampler descriptor (Item 8): the materialized {i32,i32} value;
+                // consumed by `tex.sample(sampler, ...)` via the backend seam.
+                samplerHandles[p.name] = v;
+            } else if (p.isBuffer) {
                 bufferBases[p.name] = v;
                 bufferElems[p.name] = p.type;
                 bufferElemSigned[p.name] = p.isSigned;
@@ -235,6 +244,11 @@ private:
     std::map<std::string, bool> signedness;
     std::map<std::string, llvm::Value*> bufferBases;  // buffer name -> addrspace(1) ptr
     std::map<std::string, llvm::Type*> bufferElems;   // buffer name -> element type
+    // Texture2D / Sampler kernel params (Item 8): the materialized backend
+    // handle per name. A `tex.sample(s, u, v)` looks the texture up here and the
+    // sampler arg up in samplerHandles, then hands both to target.sampleTexture.
+    std::map<std::string, llvm::Value*> textureHandles;  // texture name -> handle
+    std::map<std::string, llvm::Value*> samplerHandles;  // sampler name -> descriptor
 
     std::vector<LoweringTarget::KernelParam> kparams;  // admitted params
     bool paramsAsArgs = false;  // true for @Device helpers (params are fn args)
@@ -1011,6 +1025,22 @@ private:
                                             lowerExpr(args[0].expression));
             }
         }
+        // Texture2D.sample(sampler, u, v) (Item 8). `recv` names a texture kernel
+        // param; the first arg is a sampler kernel param, then the normalized
+        // (u, v) coords. Lowered to the backend image-sample seam.
+        if (name == "sample") {
+            auto th = textureHandles.find(recv);
+            if (th != textureHandles.end()) {
+                const auto& args = mc->getParameters();
+                if (args.size() != 3)
+                    unsupported("Texture2D.sample expects (Sampler, u, v)");
+                llvm::Value* samp = resolveSamplerArg(args[0].expression);
+                llvm::Value* u = toFloat(lowerExpr(args[1].expression));
+                llvm::Value* v = toFloat(lowerExpr(args[2].expression));
+                return target.sampleTexture(builder, mod, th->second, samp, u, v);
+            }
+        }
+
         // A user-defined @Device helper call (resolved within the kernel's
         // class). Lower the helper to a device function (cached) and call it.
         if (auto m = resolveDeviceMethod(recv, name, mc)) {
@@ -1025,6 +1055,29 @@ private:
                                                      ? "" : "dev.call");
         }
         unsupported("device builtin '" + recv + "." + name + "()'");
+    }
+
+    // Resolve the sampler argument of a `tex.sample(sampler, ...)` to its
+    // materialized descriptor. v1: the sampler must be a bare identifier naming
+    // a Sampler kernel param (the descriptor model — a sampler isn't an
+    // expressible value in a kernel body, only a bound resource).
+    llvm::Value* resolveSamplerArg(const ExpressionPtr& e) {
+        if (auto id = std::dynamic_pointer_cast<IdentifierExpression>(e)) {
+            auto it = samplerHandles.find(id->getTextValue());
+            if (it != samplerHandles.end()) return it->second;
+        }
+        unsupported("Texture2D.sample: first argument must be a Sampler "
+                    "kernel parameter");
+    }
+
+    // Coerce a value to f32 — texture coords are floats, but an int expression
+    // (e.g. a lane index used as a coordinate) is widened via signed conversion.
+    llvm::Value* toFloat(llvm::Value* v) {
+        llvm::Type* f32 = llvm::Type::getFloatTy(ctx);
+        if (v->getType() == f32) return v;
+        if (v->getType()->isFloatingPointTy())
+            return builder.CreateFPCast(v, f32);
+        return builder.CreateSIToFP(v, f32);
     }
 
     // Resolve a call `name(args)` / `Cls.name(args)` to a sibling @Device method
@@ -1272,6 +1325,20 @@ llvm::Value* LoweringTarget::bufferElementPtr(llvm::IRBuilderBase& b,
     return b.CreateGEP(elemTy, base, {index}, "idx");
 }
 
+llvm::Value* LoweringTarget::sampleTexture(llvm::IRBuilderBase& /*b*/,
+                                           llvm::Module& /*m*/,
+                                           llvm::Value* /*texHandle*/,
+                                           llvm::Value* /*samplerHandle*/,
+                                           llvm::Value* /*u*/,
+                                           llvm::Value* /*v*/) {
+    // Only backends with hardware image sampling override this (CPU emulation,
+    // Vulkan OpImageSampleExplicitLod, AMD image_sample). The default rejects a
+    // tex.sample() in a kernel lowered for a backend that has not implemented it.
+    throw cajeta::Exception(
+        "XPU kernel lowering: texture sampling not supported on backend '" +
+        std::string(name()) + "'", "XPU-N01");
+}
+
 llvm::Type* LoweringTarget::bufferParamType(llvm::Module& m,
                                             llvm::Type* /*elemTy*/) {
     // NVPTX/AMDGPU: a buffer base is a global (addrspace 1) pointer — the same
@@ -1290,7 +1357,30 @@ static std::vector<LoweringTarget::KernelParam> collectParams(
         if (!p) continue;
         if (p->getName() == "this") continue;
         CajetaTypePtr t = p->getType();
-        if (isBufferType(t)) {
+        if (isTextureType(t)) {
+            // Texture2D (Item 8): a sampled-image handle. `type` is the texel
+            // scalar (f32); the backend carries the handle itself (a ptr on CPU,
+            // a descriptor on Vulkan). isTexture routes createKernel/
+            // materializeParam and the `.sample()` lowering.
+            params.push_back({p->getName(), /*isBuffer=*/false,
+                              llvm::Type::getFloatTy(ctx), /*isSigned=*/true,
+                              /*isTexture=*/true, /*isSampler=*/false});
+        } else if (isSamplerType(t)) {
+            // Sampler (Item 8): filter/address descriptor. Carried by value as
+            // the {i32 filterMode, i32 addressMode} struct (the same shape the
+            // host marshaller packs) — NOT the by-value POD path, so it keeps a
+            // distinct kind for the Vulkan descriptor fork. deviceStructInfo on
+            // Sampler yields exactly {i32,i32}.
+            DeviceStructInfo si = deviceStructInfo(t, ctx);
+            llvm::Type* sty = si.type
+                ? (llvm::Type*) si.type
+                : (llvm::Type*) llvm::StructType::get(
+                      ctx, {llvm::Type::getInt32Ty(ctx),
+                            llvm::Type::getInt32Ty(ctx)});
+            params.push_back({p->getName(), /*isBuffer=*/false, sty,
+                              /*isSigned=*/false,
+                              /*isTexture=*/false, /*isSampler=*/true});
+        } else if (isBufferType(t)) {
             llvm::Type* elem = nullptr;
             bool elemSigned = true;
             if (auto cls = std::dynamic_pointer_cast<CajetaClass>(t)) {

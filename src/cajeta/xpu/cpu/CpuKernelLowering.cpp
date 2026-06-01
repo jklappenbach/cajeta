@@ -94,7 +94,9 @@ public:
         std::vector<llvm::Type*> tys;
         tys.reserve(params.size() + kNumCoordParams);
         for (auto& p : params) {
-            tys.push_back(p.isBuffer
+            // Buffers and Texture2D handles are flat host pointers; a Sampler
+            // rides by value as its {i32,i32} struct (p.type); scalars by value.
+            tys.push_back((p.isBuffer || p.isTexture)
                               ? (llvm::Type*) llvm::PointerType::get(ctx, 0)
                               : p.type);
         }
@@ -123,6 +125,36 @@ public:
     // matching the buffer base createKernel hands the kernel (Item 2).
     llvm::Type* bufferParamType(llvm::Module& m, llvm::Type* /*elemTy*/) override {
         return llvm::PointerType::get(m.getContext(), 0);
+    }
+
+    // Texture sampling (Item 8): emit a call to the C runtime bilinear/nearest
+    // sampler. `texHandle` is the host texobj pointer (the materialized texture
+    // param); `samplerHandle` is the {i32 filterMode, i32 addressMode} struct
+    // value (the materialized sampler param) — unpacked to two i32s here so the
+    // runtime sees a flat signature. The math (clamp/wrap addressing + filtering)
+    // lives in C, where it is easy to get right; the IR stays a single call.
+    //
+    //   float __cajeta_xpu_cpu_tex_sample(ptr tex, i32 filterMode,
+    //                                     i32 addressMode, float u, float v)
+    llvm::Value* sampleTexture(llvm::IRBuilderBase& b, llvm::Module& m,
+                               llvm::Value* texHandle, llvm::Value* samplerHandle,
+                               llvm::Value* u, llvm::Value* v) override {
+        llvm::LLVMContext& ctx = m.getContext();
+        llvm::Type* f32 = llvm::Type::getFloatTy(ctx);
+        llvm::Type* i32 = llvm::Type::getInt32Ty(ctx);
+        llvm::Value* filterMode =
+            b.CreateExtractValue(samplerHandle, {0}, "samp.filter");
+        llvm::Value* addressMode =
+            b.CreateExtractValue(samplerHandle, {1}, "samp.addr");
+        auto* fnTy = llvm::FunctionType::get(
+            f32, {llvm::PointerType::get(ctx, 0), i32, i32, f32, f32},
+            /*vararg=*/false);
+        llvm::FunctionCallee callee =
+            m.getOrInsertFunction("__cajeta_xpu_cpu_tex_sample", fnTy);
+        if (auto* f = llvm::dyn_cast<llvm::Function>(callee.getCallee()))
+            f->setDoesNotThrow();
+        return b.CreateCall(callee, {texHandle, filterMode, addressMode, u, v},
+                            "tex.sample");
     }
 
     // Wave ops. Each lowers to a *call* to its `__cajeta_xpu_wave_*` runtime

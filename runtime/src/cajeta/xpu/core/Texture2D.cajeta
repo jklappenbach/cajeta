@@ -1,0 +1,101 @@
+package cajeta.xpu.core;
+
+/**
+ * Texture2D — a read-only 2-D image of float32 texels, sampled in a kernel
+ * through a {@link Sampler} with hardware filtering.
+ *
+ * Like {@link Buffer}, this is a small host-side handle (deviceHandle + the
+ * width/height) over a device image resource. Backends tag the underlying
+ * storage (CUDA texture object / HIP texture object / Vulkan sampled image +
+ * view); from the user's perspective it is one opaque type with the standard
+ * create/upload/free operations and a device-only `sample`.
+ *
+ * MEMORY MODEL. The handle (this struct) is governed by the drop chain; the
+ * device image is acquired by the constructor and released by ~Texture2D() at
+ * scope exit (the Buffer/FileReader RAII convention). A launch borrows each
+ * Texture2D argument until the next Stream.sync().
+ *
+ * v1 LIMITS: 2-D, single-channel float32 texels, read-only, one Sampler. The
+ * generic Texture2D<T>, 3-D/cube, depth/compare, mip levels, and integer
+ * formats are follow-ups.
+ */
+public final class Texture2D {
+    int64 deviceHandle;
+    uint32 width;
+    uint32 height;
+
+    Texture2D(int64 deviceHandle, uint32 width, uint32 height) {
+        this.deviceHandle = deviceHandle;
+        this.width = width;
+        this.height = height;
+    }
+
+    /**
+     * RAII constructor: allocate a `width` x `height` float32 device image.
+     * The constructor acquires the device image and ~Texture2D() releases it.
+     *
+     *     Texture2D tex = heap Texture2D(w, h);
+     *     tex.upload(pixels);                       // row-major width*height
+     *     kernel.launch(s, ...)(tex, samp, ...);
+     *     s.sync();
+     *     // device image freed automatically at scope exit
+     */
+    public Texture2D(uint32 width, uint32 height) {
+        this.width = width;
+        this.height = height;
+        this.deviceHandle = this.deviceAlloc(width, height);
+    }
+
+    /**
+     * Destructor — release the device image. Runs via the drop chain at scope
+     * exit. Null-guarded and idempotent: a prior free(), or a moved-from handle
+     * (`#tex`), makes this a no-op.
+     */
+    ~Texture2D() {
+        if (this.deviceHandle != 0) {
+            this.deviceFree(this.deviceHandle);
+            this.deviceHandle = 0;
+        }
+    }
+
+    public uint32 textureWidth() {
+        return this.width;
+    }
+
+    public uint32 textureHeight() {
+        return this.height;
+    }
+
+    /**
+     * Host -> device transfer of `width`*`height` row-major float32 texels.
+     */
+    public void upload(float32[] host) {
+        this.deviceUpload(this.deviceHandle, host, this.width, this.height);
+    }
+
+    /**
+     * Device-only intrinsic: sample this texture at normalized coordinates
+     * (u, v) in [0, 1] through `s`, returning the filtered texel value. Lowered
+     * at the call site inside an @Kernel / @Device function to the backend's
+     * image-sample op (Vulkan OpImageSampleExplicitLod via
+     * llvm.spv.resource.samplelevel, AMD llvm.amdgcn.image.sample.2d, NVPTX
+     * llvm.nvvm.tex, or CPU bilinear emulation). The body here is a resolution
+     * placeholder — it is never emitted as a real call. Sampling on the host
+     * (outside a kernel) is unsupported.
+     */
+    public float32 sample(Sampler s, float32 u, float32 v) {
+        return 0.0f;
+    }
+
+    // Device-image primitives. Instance @Native methods (the Buffer convention):
+    // pointer-shaped at the ABI boundary, so one C symbol per name serves the
+    // type. The leading `this` the forwarder passes is ignored by the C side.
+    @Native("__cajeta_xpu_texture_alloc")
+    private int64 deviceAlloc(uint32 width, uint32 height);
+
+    @Native("__cajeta_xpu_texture_upload")
+    private void deviceUpload(int64 handle, float32[] host, uint32 width, uint32 height);
+
+    @Native("__cajeta_xpu_texture_free")
+    private void deviceFree(int64 handle);
+}

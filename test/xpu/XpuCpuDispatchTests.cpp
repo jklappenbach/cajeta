@@ -382,6 +382,65 @@ const char* kPodStructArgSource =
     "    }\n"
     "}\n";
 
+// Item 8 — a Texture2D sampled through a Sampler with bilinear filtering, end to
+// end on CPU. A 2×2 float image {0,1,2,3} (row-major) is uploaded; each work-item
+// samples at a per-lane (u,v) from coordinate buffers and writes the filtered
+// texel. Texel-center coords return the exact texel (0,1,2,3); the dead-center
+// (0.5,0.5) returns the 4-texel average 1.5. Proves the texture/sampler kernel
+// args marshal (texture like a buffer handle, sampler by value), the `.sample()`
+// lowering reaches __cajeta_xpu_cpu_tex_sample, and the C bilinear math is right.
+const char* kTextureSampleSource =
+    "package test;\n"
+    "import cajeta.xpu.core.Buffer;\n"
+    "import cajeta.xpu.core.Texture2D;\n"
+    "import cajeta.xpu.core.Sampler;\n"
+    "import cajeta.xpu.core.Stream;\n"
+    "import cajeta.xpu.core.Thread;\n"
+    "public class TexSample {\n"
+    "    @Kernel\n"
+    "    public static void sample(Texture2D tex, Sampler s,\n"
+    "                              Buffer<float32> us, Buffer<float32> vs,\n"
+    "                              Buffer<float32> out, uint32 n) {\n"
+    "        uint32 i = Thread.globalIdX();\n"
+    "        if (i < n) { out[i] = tex.sample(s, us[i], vs[i]); }\n"
+    "    }\n"
+    "    public static int32 run() {\n"
+    "        uint32 w = 2;\n"
+    "        uint32 h = 2;\n"
+    "        float32[] pixels = new float32[4];\n"
+    "        pixels[0] = 0.0f; pixels[1] = 1.0f;\n"
+    "        pixels[2] = 2.0f; pixels[3] = 3.0f;\n"
+    "        Texture2D tex = heap Texture2D(w, h);\n"
+    "        tex.upload(pixels);\n"
+    "        Sampler samp = heap Sampler(1, 0);\n"   // linear, clamp
+    "        uint32 n = 5;\n"
+    "        float32[] hus = new float32[n];\n"
+    "        float32[] hvs = new float32[n];\n"
+    "        float32[] hexp = new float32[n];\n"
+    "        hus[0] = 0.25f; hvs[0] = 0.25f; hexp[0] = 0.0f;\n"
+    "        hus[1] = 0.75f; hvs[1] = 0.25f; hexp[1] = 1.0f;\n"
+    "        hus[2] = 0.25f; hvs[2] = 0.75f; hexp[2] = 2.0f;\n"
+    "        hus[3] = 0.75f; hvs[3] = 0.75f; hexp[3] = 3.0f;\n"
+    "        hus[4] = 0.5f;  hvs[4] = 0.5f;  hexp[4] = 1.5f;\n"
+    "        float32[] hout = new float32[n];\n"
+    "        for (uint32 i = 0; i < n; i = i + 1) { hout[i] = -1.0f; }\n"
+    "        Buffer<float32> us = heap Buffer<float32>(n);\n"
+    "        Buffer<float32> vs = heap Buffer<float32>(n);\n"
+    "        Buffer<float32> out = heap Buffer<float32>(n);\n"
+    "        us.upload(hus);\n"
+    "        vs.upload(hvs);\n"
+    "        out.upload(hout);\n"
+    "        Stream s = Stream.current();\n"
+    "        sample.launch(s, grid: [1], block: [n])(tex, samp, us, vs, out, n);\n"
+    "        s.sync();\n"
+    "        out.download(hout);\n"
+    "        for (uint32 i = 0; i < n; i = i + 1) {\n"
+    "            if (hout[i] != hexp[i]) { return (int32)(100 + i); }\n"
+    "        }\n"
+    "        return 777;\n"
+    "    }\n"
+    "}\n";
+
 } // namespace
 
 // A large grid drives the runtime's multi-core fan-out (Inc 5A); the result must
@@ -480,6 +539,19 @@ TEST(XpuCpuDispatchTests, podStructArgOnCpu) {
     ASSERT_NE(fn, nullptr);
     int r = fn();
     EXPECT_EQ(r, 777) << "fail code " << r << " (100+i: out[i] != i*3+7)";
+}
+
+// Item 8: a Texture2D sampled through a Sampler (bilinear) runs on CPU — the
+// texture/sampler kernel args marshal, `.sample()` lowers to the C sampler, and
+// the bilinear/texel-center math returns the expected filtered texels.
+TEST(XpuCpuDispatchTests, textureSampleOnCpu) {
+    auto jit = CajetaJit::compile(kTextureSampleSource, "test.TexSample",
+                                  cpuOptions());
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<int (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    int r = fn();
+    EXPECT_EQ(r, 777) << "fail code " << r << " (100+i: sampled texel != expected)";
 }
 
 // Explicit-only bundling is a build-time contract (locked decision #3): when the

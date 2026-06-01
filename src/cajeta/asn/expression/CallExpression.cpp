@@ -156,12 +156,18 @@ namespace cajeta {
                 argExpr->getResolvedType());
             bool isBuffer = klass &&
                 klass->toCanonical().rfind("cajeta.xpu.core.Buffer", 0) == 0;
+            // Texture2D (Item 8): marshalled exactly like a Buffer — its
+            // deviceHandle (the runtime texture-object pointer / image handle)
+            // flows through the kernelParams slot, and the launch borrows it.
+            bool isTexture = klass &&
+                klass->toCanonical() == "cajeta.xpu.core.Texture2D";
 
             llvm::Value* slot;
-            if (isBuffer) {
+            if (isBuffer || isTexture) {
                 // Launch borrow scope (CajetaXPU §3.5/§11): a launch borrows
-                // each Buffer arg until the next Stream.sync()/Event.waitHost().
-                // Record the borrow so a free/reassign-before-sync is caught.
+                // each Buffer/Texture2D arg until the next Stream.sync()/
+                // Event.waitHost(). Record the borrow so a free/reassign-before-
+                // sync is caught.
                 if (auto id = std::dynamic_pointer_cast<IdentifierExpression>(argExpr)) {
                     if (auto sc = module->getScopeStack().peek()) {
                         sc->recordLaunchBorrow(id->getTextValue());
@@ -180,8 +186,13 @@ namespace cajeta {
                     builder->CreateLoad(i64Ty, hPtr, "buf.handle");
                 slot = builder->CreateAlloca(i64Ty, nullptr, "arg.buf");
                 builder->CreateStore(handle, slot);
-            } else if (klass && xpu::isPodStructType(klass)) {
-                // POD struct by value (Item 7). Marshal the FIELDS only into a
+            } else if (klass && (xpu::isPodStructType(klass) ||
+                                 xpu::isSamplerType(argExpr->getResolvedType()))) {
+                // POD struct by value (Item 7) — and the Sampler descriptor
+                // (Item 8), which is structurally the same {i32 filterMode,
+                // i32 addressMode} packing (admitted by name, not as a POD, but
+                // marshalled identically on the CPU/SIMT by-value path).
+                // Marshal the FIELDS only into a
                 // packed, vtable-stripped buffer — the exact shape the device
                 // kernel reads (KernelLowering.cpp deviceStructInfo). `v` is a
                 // pointer to the host instance { vtable, fields... }; copy each
