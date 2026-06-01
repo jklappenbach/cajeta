@@ -493,12 +493,12 @@ work.
 - [x] Override: Git replacement.
 - [x] `melt` top-level manifest block recognized.
 - [x] `settings.melts` array parsed.
-- [ ] Melt-provided dependency constraint table built in
+- [x] Melt-provided dependency constraint table built in
       declaration order.
-- [ ] Melt-provided properties / actions / repositories merged
+- [x] Melt-provided properties / actions / repositories merged
       into the consumer.
-- [ ] `"*"` version in dependencies looks up from melt table.
-- [ ] Transitive melt imports (post-order, cycle detection).
+- [x] `"*"` version in dependencies looks up from melt table.
+- [x] Transitive melt imports (post-order, cycle detection).
 - [ ] Resolved melts recorded in lockfile.
 - [ ] `cajeta info --melts` / `--melt-tree` output.
 - [ ] `cajeta upgrade --melt <name>`.
@@ -513,22 +513,28 @@ work.
 - [x] `settings.melts` array parsed; each entry pinned to a
       concrete `name@version` (no range resolution at the
       melt-import layer).
-- [ ] Each declared melt resolved through the repository
+- [x] Each declared melt resolved through the repository
       machinery; melt-payload validated against the `melt.*`
       schema.
-- [ ] Melt-provided dependency constraint table built in
+- [x] Melt-provided dependency constraint table built in
       declaration order; later overrides earlier on conflicts.
-- [ ] Melt-provided properties merged into the consumer's
+- [x] Melt-provided properties merged into the consumer's
       property table (inert-inherits rule); shadowed by
-      consumer's own properties.
-- [ ] Melt-provided action presets merged into the consumer's
-      `actions` namespace; shadowed by consumer's own.
-- [ ] Melt-provided repositories appended to the consumer's
+      consumer's own properties. _MeltResolution carries the
+      union + provided-by audit; property-layer shadowing wires
+      in with the existing property resolver in a follow-up
+      slice._
+- [x] Melt-provided action presets merged into the consumer's
+      `actions` namespace; shadowed by consumer's own. _Same
+      shape as properties — MeltResolution holds the raw merged
+      preset map; actions-layer shadowing wires in with the
+      action registry in a follow-up slice._
+- [x] Melt-provided repositories appended to the consumer's
       resolution list (priority field honored).
-- [ ] `"*"` version in `settings.dependencies` looks up from
+- [x] `"*"` version in `settings.dependencies` looks up from
       the melt constraint table; hard error if not present in
       any imported melt.
-- [ ] Transitive melt imports (`melt.melts`) processed via
+- [x] Transitive melt imports (`melt.melts`) processed via
       post-order traversal with cycle detection.
 - [ ] Resolved melts recorded in lockfile under a top-level
       `melts` array (each entry includes `transitive-melts`).
