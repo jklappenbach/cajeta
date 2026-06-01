@@ -665,6 +665,55 @@ public class M {
 }
 )CJ";
 
+// 2D/3D launch stage 4 — a barrier kernel over a 2-D BLOCK. An 8×8 tile is staged
+// into shared memory, a barrier, then each thread reads the TRANSPOSED element
+// (staged by a different thread → the barrier is load-bearing) and writes the
+// transpose out. tx/ty are per-work-item locals that cross the barrier (context
+// arrays, indexed by the linearized work-item index). in[i]=i ⇒ out is the
+// transpose: out[ty*8+tx] = in[tx*8+ty] = tx*8+ty. Proves fission runs the full
+// 3-D work-item nest (tid.x AND tid.y) inside the barrier regions.
+const char* kTranspose2dSource = R"CJ(
+package test;
+import cajeta.xpu.core.Buffer;
+import cajeta.xpu.core.Stream;
+import cajeta.xpu.core.Thread;
+import cajeta.xpu.core.Barrier;
+import cajeta.xpu.core.Shared;
+public class M {
+    @Kernel
+    public static void transpose2d(Buffer<int32> out, Buffer<int32> in) {
+        Shared<int32> tile = shared int32[64];
+        uint32 tx = Thread.x();
+        uint32 ty = Thread.y();
+        tile[ty * 8 + tx] = in[ty * 8 + tx];
+        Barrier.workgroup();
+        out[ty * 8 + tx] = tile[tx * 8 + ty];
+    }
+    public static int32 run() {
+        uint32 n = 64;
+        int32[] hin = new int32[n];
+        int32[] hout = new int32[n];
+        for (uint32 i = 0; i < n; i = i + 1) { hin[i] = (int32) i; hout[i] = 0; }
+        Buffer<int32> in = heap Buffer<int32>(n);
+        Buffer<int32> out = heap Buffer<int32>(n);
+        in.upload(hin);
+        out.upload(hout);
+        Stream s = Stream.current();
+        transpose2d.launch(s, grid: [1], block: [8, 8])(out, in);
+        s.sync();
+        out.download(hout);
+        for (uint32 ty = 0; ty < 8; ty = ty + 1) {
+            for (uint32 tx = 0; tx < 8; tx = tx + 1) {
+                if (hout[ty * 8 + tx] != (int32) (tx * 8 + ty)) {
+                    return (int32) (100 + ty * 8 + tx);
+                }
+            }
+        }
+        return 777;
+    }
+}
+)CJ";
+
 } // namespace
 
 // One barrier, two regions: both halves run for every work-item, with `t`
@@ -855,6 +904,18 @@ TEST(XpuCpuBarrierExecTests, dynamicSharedMemoryWithBarrier) {
     auto fn = jit->lookup<int (*)()>("run");
     ASSERT_NE(fn, nullptr);
     EXPECT_EQ(fn(), 32640);
+}
+
+// 2D/3D launch stage 4: a barrier kernel over a 2-D block (8×8 shared-memory
+// transpose). Fission runs the full 3-D work-item nest inside the regions, and
+// tx/ty cross the barrier via context arrays indexed by the linearized index.
+TEST(XpuCpuBarrierExecTests, barrierKernelOver2dBlock) {
+    auto jit = CajetaJit::compile(kTranspose2dSource, "test.M", cpuOptions());
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<int (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    int r = fn();
+    EXPECT_EQ(r, 777) << "fail code " << r << " (100+i: out[i] != transpose[i])";
 }
 
 // ----------------------------------------------------------------------------

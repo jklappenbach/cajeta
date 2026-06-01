@@ -28,7 +28,7 @@ fix the regression first). Don't build new Vulkan capability on a red base.
 
 | # | Item | Class | Effort | Status |
 |---|------|-------|--------|--------|
-| 1 | **2D/3D launch** | capability | large | ◐ in progress (stage 1 ✅; CPU multi-dim block + fission next) |
+| 1 | **2D/3D launch** | capability | large | ✅ done (ABI + GPU 3-D + CPU 3-D grid/block/fission) |
 | 2 | **`@Device` helper calls** | capability | medium-large | ☐ not started |
 | 3 | **Vulkan block dim — spec-constant `LocalSizeId`** | vulkan | medium | ☐ not started |
 | 4 | **Multi-arch bundling (fatbin)** | deployment | medium | ☐ not started |
@@ -108,8 +108,35 @@ stencils) need this.
   barrier (fission) kernels are marked `no3d` at registration (still 1-D), so a
   multi-dim-block launch of them gets a diagnostic, not a miscompile; non-barrier
   kernels run the nest. Test `multiDimBlockOnCpu` (4×3 block).
-- ☐ **Stage 4** — CPU barrier fission over a 3-D/linearized work-item index (lifts the
-  `no3d` mark on barrier kernels).
+- ◐ **Stage 4** — CPU barrier fission over a multi-dim block (lifts the `no3d` mark on
+  barrier kernels). **The deepest change in the codebase; design fixed, not yet built:**
+  - **Do NOT linearize naively.** Iterating one region loop over `[0, ntid.x·y·z)` with
+    `tid.x = lin % ntid.x` puts a `urem` on the index *inside* the vectorized region
+    loop, which scalarizes the shared-memory accesses (gather/scatter) and regresses
+    the Inc-6 reduction + every 1-D barrier/wave kernel from SIMD to per-lane. Rejected.
+  - **Design — 3-D nest per region (keeps `tid.x` the contiguous inner IV, no `urem`):**
+    - Step 1–2: three placeholders `phX/phY/phZ`; `vmap` tid.x→phX, tid.y→phY, tid.z→phZ
+      (not 0). Seed the taint fixpoint from all three.
+    - Step 7: context arrays sized `ntid.x·y·z` (compute once in the entry), indexed by a
+      **linear** index `tz·(ntidY·ntidX) + ty·ntidX + tx`. The `tz·..+ty·..` base is
+      loop-invariant in the inner `tx` loop → hoisted, so the inner GEP is `base + tx`
+      (an add, SIMD-friendly).
+    - Step 9: wrap each region in a **3-D loop nest** (outer tz, mid ty, inner tx) instead
+      of one loop; the inner `tx` latch is the one passed to `forceLoopVectorWidth`
+      (wave/SIMD). `RegionJob` carries 3 IVs.
+    - Step 10: rewrite phX→region.tx, phY→region.ty, phZ→region.tz; ctx GEP by the linear
+      index. Guardrails (divergence/post-dominance/tid-dependent trip count) generalize
+      to the 3-placeholder taint.
+  - **Verify:** a 2-D shared+barrier kernel (e.g. an 8×8 tile transpose-with-barrier or a
+    2-D block reduction) on CPU; the Inc-6 1-D reduction stays SIMD (no urem in its region
+    loop); wave+barrier still W-lane. Then drop the `no3d` mark on barrier kernels.
+  - ✅ **DONE.** Three placeholders (tid.x/y/z), context arrays sized `ntid.x·y·z` and
+    indexed by the linear index `tz·ntidYX + ty·ntidX + tx` (base loop-invariant in the x
+    loop → uniform, so the inner GEP is `base + tx`, contiguous/SIMD). Each region is a
+    tid.z→tid.y→tid.x nest; the inner tid.x latch is the wave/forced-VF loop. The `no3d`
+    mark + runtime guard are removed. Test `barrierKernelOver2dBlock` (8×8 shared transpose);
+    all 19 barrier tests green (Inc-6 reduction, nested, multi-barrier, wave+barrier,
+    dynamic-shared unregressed).
 
 ---
 
