@@ -7,6 +7,7 @@ import com.intellij.openapi.editor.Inlay
 import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.project.Project
 import com.intellij.xdebugger.XSourcePosition
+import dev.cajeta.idea.settings.CajetaSettings
 
 /**
  * Owns the inline editor decoration that shows the memory facets of the
@@ -25,7 +26,8 @@ class FacetInlayManager(private val project: Project) {
 
     /** Show (or replace) the inline hint on [position]'s line for [vars]. */
     fun showAt(position: XSourcePosition, vars: List<DapVariable>) {
-        val text = inlineHint(vars)
+        // CP7-5 (FR-7.3): inline decorations are independently toggleable.
+        val text = if (CajetaSettings.instance.showFacetsInline) inlineHint(vars) else null
         ApplicationManager.getApplication().invokeLater {
             clearInternal()
             if (text == null) return@invokeLater
