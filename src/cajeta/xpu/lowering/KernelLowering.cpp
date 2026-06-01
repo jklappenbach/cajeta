@@ -124,6 +124,12 @@ public:
         kparams = std::move(p);
     }
 
+    // True when lowering a @Device helper: its params are ordinary LLVM
+    // function arguments (the caller passes already-materialized values), so
+    // lowerBody reads fn->getArg(idx) directly instead of target.materializeParam
+    // — which on Vulkan would (wrongly) bind a fresh descriptor/SSBO per param.
+    void setParamsAsArgs(bool b) { paramsAsArgs = b; }
+
     void lowerBody(const MethodPtr& method) {
         if (!cls) cls = method->getParent();   // for @Device helper resolution
         builder.SetInsertPoint(llvm::BasicBlock::Create(ctx, "entry", fn));
@@ -134,7 +140,12 @@ public:
         // NVPTX/AMDGPU read fn->getArg(idx); Vulkan binds a descriptor here.
         unsigned idx = 0;
         for (auto& p : kparams) {
-            llvm::Value* v = target.materializeParam(builder, mod, fn, idx++, p);
+            // Kernel params go through the backend (descriptor binds on Vulkan);
+            // helper params are plain fn args, taken directly (setParamsAsArgs).
+            llvm::Value* v = paramsAsArgs
+                ? fn->getArg(idx)
+                : target.materializeParam(builder, mod, fn, idx, p);
+            ++idx;
             if (p.isBuffer) {
                 bufferBases[p.name] = v;
                 bufferElems[p.name] = p.type;
@@ -172,6 +183,7 @@ private:
     std::map<std::string, llvm::Type*> bufferElems;   // buffer name -> element type
 
     std::vector<LoweringTarget::KernelParam> kparams;  // admitted params
+    bool paramsAsArgs = false;  // true for @Device helpers (params are fn args)
     std::map<std::string, bool> bufferElemSigned;  // buffer name -> elem signed?
     std::shared_ptr<CajetaClass> cls;              // declaring class (helper resolution)
     DeviceFnCache* deviceFns = nullptr;            // shared @Device function cache
@@ -943,10 +955,12 @@ private:
         std::vector<llvm::Type*> tys;
         tys.reserve(params.size());
         for (auto& p : params) {
-            if (p.isBuffer)
-                unsupported("@Device helper with a Buffer/array param "
-                            "(scalar params only for now)");
-            tys.push_back(p.type);
+            // A Buffer<T> param takes the buffer base BY VALUE (the backend's
+            // pointer/handle), matching the caller's bufferBases entry; scalars
+            // by value. The helper is alwaysinline, so the base flows straight
+            // through inlining to the kernel's real buffer access (Item 2).
+            tys.push_back(p.isBuffer ? target.bufferParamType(mod, p.type)
+                                     : p.type);
         }
         llvm::Type* retTy = m->getReturnType()
                                 ? deviceScalarType(m->getReturnType(), ctx)
@@ -963,6 +977,8 @@ private:
 
         DeviceLowerer sub(mod, hfn, target);
         sub.setParams(params);
+        sub.setParamsAsArgs(true);   // helper params are plain fn args, not
+                                     // kernel descriptors/SSBOs (Vulkan)
         sub.setDeviceContext(cls, deviceFns);
         sub.lowerBody(m);
 
@@ -1116,9 +1132,7 @@ llvm::Function* LoweringTarget::createKernel(
     std::vector<llvm::Type*> tys;
     tys.reserve(params.size());
     for (auto& p : params) {
-        tys.push_back(p.isBuffer
-                          ? (llvm::Type*) llvm::PointerType::get(ctx, kGlobalAS)
-                          : p.type);
+        tys.push_back(p.isBuffer ? bufferParamType(m, p.type) : p.type);
     }
     auto* fnTy = llvm::FunctionType::get(llvm::Type::getVoidTy(ctx), tys,
                                          /*vararg=*/false);
@@ -1145,6 +1159,13 @@ llvm::Value* LoweringTarget::bufferElementPtr(llvm::IRBuilderBase& b,
     // addrspace-preserving GEP — the base pointer carries its address space
     // (1 for global buffers, 3 for shared globals); correct on NVPTX/AMDGPU.
     return b.CreateGEP(elemTy, base, {index}, "idx");
+}
+
+llvm::Type* LoweringTarget::bufferParamType(llvm::Module& m,
+                                            llvm::Type* /*elemTy*/) {
+    // NVPTX/AMDGPU: a buffer base is a global (addrspace 1) pointer — the same
+    // type createKernel gives a kernel buffer param, so a helper arg matches it.
+    return llvm::PointerType::get(m.getContext(), kGlobalAS);
 }
 
 // Admit the kernel parameters: Buffer<T>/arrays carry an element type,

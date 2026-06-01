@@ -39,7 +39,7 @@ fix the regression first). Don't build new Vulkan capability on a red base.
 | # | Item | Class | Effort | Status |
 |---|------|-------|--------|--------|
 | 1 | **2D/3D launch** | capability | large | ✅ done (ABI + GPU 3-D + CPU 3-D grid/block/fission) |
-| 2 | **`@Device` helper calls** | capability | medium-large | ◐ core done (scalar params + return, same class, helper-chains; Buffer params deferred) |
+| 2 | **`@Device` helper calls** | capability | medium-large | ✅ done (scalar + Buffer params, same class, helper-chains; verified on AMD & Vulkan) |
 | 3 | **Vulkan block dim — spec-constant workgroup size** | vulkan | medium | ✅ done (verified on-device, block 128) |
 | 4 | **Multi-arch bundling (fatbin)** | deployment | medium | ◐ AMD done + verified on-device; NVIDIA untestable here (no ptxas/fatbinary) |
 | 5 | **Vulkan dynamic shared memory** | vulkan | medium | ✅ done (verified on-device) |
@@ -211,9 +211,26 @@ walk wholesale. Lower risk than 2D/3D stage 4.
   `deviceHelperChainOnCpu` (helper-calls-helper, out[i]=i+2) run on CPU; full Xpu*
   suite green (141 passed / 7 GPU-skipped / 0 failed — the shared lowerer change
   didn't regress any backend's emit).
-- ☐ **Follow-ups:** `Buffer`/array params in helpers (needs the per-backend pointer/
-  descriptor-set handling — Vulkan forks); a clean cross-class resolution; on-device
-  GPU verification; an explicit recursion-rejection emit test.
+- ✅ **Buffer params in helpers done + verified on-device (2026-06-01).** A `@Device`
+  helper can now take `Buffer<T>` params. New seam `LoweringTarget::bufferParamType`
+  gives the by-value buffer-arg type per backend: `ptr addrspace(1)` (NVPTX/AMDGPU,
+  the base `createKernel` reuses it for lockstep), `ptr addrspace(0)` (CPU), and the
+  `spirv.VulkanBuffer` storage-buffer HANDLE (Vulkan, matching the kernel's writable
+  binding). `DeviceLowerer` gained `setParamsAsArgs(true)` for helpers — their params
+  are plain fn args (read via `fn->getArg`), NOT re-materialized, so Vulkan doesn't
+  bind a fresh descriptor per helper param. Two host-side fixes were needed: (a) the
+  frontend now host-stubs a `@Device` method with a `Buffer` param exactly as it
+  already did for `@Kernel` (buffer indexing is device-only — else host Phase-2
+  codegen null-derefs on `in[i]`); (b) the SPIR-V emit path runs `AlwaysInlinerPass`
+  before instruction selection — a descriptor handle can't cross a call boundary in
+  the in-tree SPIR-V selector (`selectStore`→`loadHandleBeforePosition` crashes), so
+  the alwaysinline helper must be folded into the kernel first (NVPTX/AMDGPU/CPU
+  tolerate the pointer arg across a call, but inlining is the helper's intent anyway).
+  Tests: `deviceHelperBufferParamOnCpu`, `deviceBufferParamHelperRoutesToHipOnDevice`
+  (AMD gfx1151), `deviceBufferParamHelperOnDevice` (Vulkan RADV) — a helper reading
+  one buffer + writing another, `out[i]=in[i]*3`, all green on real hardware.
+- ☐ **Follow-ups:** a clean cross-class resolution (helpers must be same-class today);
+  an explicit recursion-rejection emit test.
 
 ---
 

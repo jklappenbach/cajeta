@@ -154,6 +154,14 @@ public:
         return b.CreateLoad(p.type, ptr, p.name);
     }
 
+    // A @Device helper's Buffer<T> param is the storage-buffer HANDLE the kernel
+    // holds in bufferBases (not a pointer) — so the helper takes it by value and
+    // bufferElementPtr's getElementPtr path works inside the helper too. writable
+    // matches the kernel's binding (materializeParam binds buffers writable=true).
+    llvm::Type* bufferParamType(llvm::Module& m, llvm::Type* elemTy) override {
+        return vkBufferType(m.getContext(), elemTy, /*writable=*/true);
+    }
+
     // Descriptor-buffer handles route through resource.getpointer; shared-mem
     // globals (addrspace 3) keep the default GEP.
     llvm::Value* bufferElementPtr(llvm::IRBuilderBase& b, llvm::Module& m,

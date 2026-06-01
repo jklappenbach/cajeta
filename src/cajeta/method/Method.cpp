@@ -706,15 +706,17 @@ namespace cajeta {
         // per method, not once per generateCode invocation.
         cajeta::xpu::validateKernelParams(shared_from_this());
 
-        // CajetaXPU: a @Kernel taking Buffer<T> arguments operates on device
-        // memory and cannot execute on the host — buffer indexing (buf[i]) is
-        // device-only (CajetaXPU.md §3.6). Its real lowering is the device
-        // cubin (NvptxRegistration); the host function is never called in the
-        // launch model. Emit a trivial host stub so host Phase-2 codegen
-        // doesn't attempt to lower device-only constructs and crash on the
-        // resulting null operand. Kernels that take only host arrays /
-        // primitives keep their real body for the CPU-emulation path.
-        if (cajeta::xpu::isKernel(*this)) {
+        // CajetaXPU: a @Kernel — or a @Device helper — taking Buffer<T>
+        // arguments operates on device memory and cannot execute on the host:
+        // buffer indexing (buf[i]) is device-only (CajetaXPU.md §3.6). Its real
+        // lowering is the device function (NvptxRegistration / the @Device
+        // lowering in KernelLowering); the host function is never called in the
+        // launch model. Emit a trivial host stub so host Phase-2 codegen doesn't
+        // attempt to lower device-only constructs and crash on the resulting
+        // null operand. Methods that take only host arrays / primitives keep
+        // their real body (kernels for the CPU-emulation path; scalar @Device
+        // helpers because they're harmless host functions).
+        if (cajeta::xpu::isKernel(*this) || cajeta::xpu::isDevice(*this)) {
             bool hasDeviceBuffer = false;
             for (auto& p : parameterList) {
                 if (p && p->getType()

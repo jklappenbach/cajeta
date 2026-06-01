@@ -272,7 +272,7 @@ These are backend-neutral gaps from `cajeta-xpu.md`, unaffected by the Vulkan co
 | Real `launch(stream, grid:, block:)(args)` postfix grammar | deferred |
 | Launch-site resolution into `XpuMirLaunchSite` | placeholder |
 | MIR body-op walker (`Op_ThreadId`, `Op_BarrierWorkgroup`, …) | empty |
-| `@Device` user-defined helper calls | deferred (XPU-N01) |
+| `@Device` user-defined helper calls | ✅ scalar + Buffer<T> params, same-class, helper-chains; alwaysinline-folded per backend (Vulkan: `bufferParamType` = the storage-buffer handle + AlwaysInliner before SPIR-V isel); verified on AMD & Vulkan |
 | for-each parallel loops | **GPU ✅** — grid-stride `for (i, T v : buf.range(n))` ⇒ `for (i=globalId.x; i<n; i+=gridSize.x){ v=buf[i]; … }`; new `LoweringTarget::gridSize` (NVPTX nctaid·ntid, AMD dispatch-packet `grid_size`, SPIR-V NumWorkgroups·WorkgroupSize); verified on AMD & Vulkan (grid<n forces the stride). **CPU ✅** — coord ABI extended 9→12 (adds `nctaid.xyz` = gridDim), so `gridSize = nctaid·ntid` threads runtime→thunk→wrapper→kernel; verified `XpuCpuDispatchTests.gridStrideForEachOnCpu` (grid=2·block=64 over n=1024, 8 elems/work-item, full coverage). |
 | Labeled `break` / `continue` | deferred (XPU-N01) |
 | 2D/3D launch | ✅ done — 3-D launch ABI; CUDA/HIP 3-D grid+block; Vulkan 3-D grid (baked block, §4); CPU 3-D grid + block + barrier fission |

@@ -301,6 +301,49 @@ const char* kDeviceChainSource =
     "    }\n"
     "}\n";
 
+// Item 2 follow-up — a @Device helper taking Buffer<T> params. `scale` reads one
+// buffer and writes another (two buffer params, a read AND a write through the
+// helper), proving buffer bases flow by value into the inlined helper. in[i]=i,
+// out[i] = in[i]*3 = i*3.
+const char* kDeviceBufferParamSource =
+    "package test;\n"
+    "import cajeta.xpu.core.Buffer;\n"
+    "import cajeta.xpu.core.Stream;\n"
+    "import cajeta.xpu.core.Thread;\n"
+    "public class DevBuf {\n"
+    "    @Device\n"
+    "    public static void scale(Buffer<int32> out, Buffer<int32> in,\n"
+    "                             uint32 i) {\n"
+    "        out[i] = in[i] * 3;\n"
+    "    }\n"
+    "    @Kernel\n"
+    "    public static void k(Buffer<int32> out, Buffer<int32> in) {\n"
+    "        uint32 i = Thread.globalIdX();\n"
+    "        scale(out, in, i);\n"
+    "    }\n"
+    "    public static int32 run() {\n"
+    "        uint32 n = 64;\n"
+    "        int32[] hin = new int32[n];\n"
+    "        int32[] hout = new int32[n];\n"
+    "        for (uint32 i = 0; i < n; i = i + 1) {\n"
+    "            hin[i] = (int32)i;\n"
+    "            hout[i] = -1;\n"
+    "        }\n"
+    "        Buffer<int32> in = heap Buffer<int32>(n);\n"
+    "        Buffer<int32> out = heap Buffer<int32>(n);\n"
+    "        in.upload(hin);\n"
+    "        out.upload(hout);\n"
+    "        Stream s = Stream.current();\n"
+    "        k.launch(s, grid: [1], block: [64])(out, in);\n"
+    "        s.sync();\n"
+    "        out.download(hout);\n"
+    "        for (uint32 i = 0; i < n; i = i + 1) {\n"
+    "            if (hout[i] != (int32)(i * 3)) { return (int32)(100 + i); }\n"
+    "        }\n"
+    "        return 777;\n"
+    "    }\n"
+    "}\n";
+
 } // namespace
 
 // A large grid drives the runtime's multi-core fan-out (Inc 5A); the result must
@@ -374,6 +417,18 @@ TEST(XpuCpuDispatchTests, deviceHelperChainOnCpu) {
     ASSERT_NE(fn, nullptr);
     int r = fn();
     EXPECT_EQ(r, 777) << "fail code " << r << " (100+i: out[i] != i+2)";
+}
+
+// Item 2 follow-up: a @Device helper taking Buffer<T> params runs on CPU — buffer
+// bases pass by value into the helper, which reads `in` and writes `out`.
+TEST(XpuCpuDispatchTests, deviceHelperBufferParamOnCpu) {
+    auto jit = CajetaJit::compile(kDeviceBufferParamSource, "test.DevBuf",
+                                  cpuOptions());
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<int (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    int r = fn();
+    EXPECT_EQ(r, 777) << "fail code " << r << " (100+i: out[i] != i*3)";
 }
 
 // Explicit-only bundling is a build-time contract (locked decision #3): when the
