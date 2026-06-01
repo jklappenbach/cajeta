@@ -36,8 +36,10 @@ namespace cajeta::buildtool {
                     spec.name, spec.url, spec.auth, downloadStageDir));
             } else if (spec.type == "maven-compat") {
                 return err("repository '" + spec.name +
-                           "' uses type='maven-compat' — shim "
-                           "lands in Phase 6b (follow-up to HTTP).");
+                           "' uses type='maven-compat' — deferred "
+                           "(Maven-Central-as-host is a JVM pattern; "
+                           "cajeta consumers can use the native HTTP "
+                           "driver against Nexus/Artifactory instead).");
             } else if (spec.type == "git") {
                 return err("repository '" + spec.name +
                            "' uses type='git' — Git driver lands "

@@ -473,7 +473,13 @@ work.
       prompt.
 - [x] `cajeta info --resolve-time` for diagnosing pathological
       resolution.
-- [ ] Maven-compat shim (`type: maven-compat`).
+- [~] Maven-compat shim (`type: maven-compat`). **Deferred.**
+      Maven-Central-as-primary-host is a JVM-family pattern
+      (Kotlin/Scala/Groovy/Clojure); non-JVM languages all run
+      their own registry. Enterprises wanting to host `.cja`
+      artifacts on existing Nexus/Artifactory can point the
+      native HTTP driver at the right path directly. Revisit
+      when a concrete consumer asks.
 - [x] BuildAction integration: pass `--classpath` from resolver
       output to the compiler.
 
@@ -537,8 +543,8 @@ work.
 - [ ] MVS picks the lowest acceptable on a conflict.
 - [ ] Override forces a specific version transitively.
 - [ ] Major-version-downgrade guard fires when expected.
-- [ ] Maven-compat shim fetches a known artifact from a Maven
-      Central mirror.
+- [~] Maven-compat shim fetches a known artifact from a Maven
+      Central mirror. **Deferred** — see deliverables.
 - [ ] Local override beats remote on priority.
 
 ### Melts (acceptance criteria added)
@@ -1088,7 +1094,7 @@ Each is a decision, not a unit of work.
 | Plugin sandbox escape via subprocess weaknesses | bwrap + capability allowlist; security review before opening plugin authoring beyond first-party |
 | MVS conflict resolution explodes on large transitive graphs | O(N log N) typical; `cajeta info --resolve-time` for diagnosing pathological cases; benchmark against real manifests |
 | Reproducible-build verifier flakes intermittently | Part of release gating; flakes block the cut until resolved |
-| Maven-compat shim hits Maven Central rate limits in CI | Workstation-wide cache fallback; mirror corporate Nexus in CI |
+| Maven-compat shim hits Maven Central rate limits in CI | N/A — shim deferred; native HTTP driver against corporate Nexus covers the enterprise case |
 | `exec` becomes the de facto extension point and bypasses sandboxing | Document as escape hatch; lint warning when a task uses `exec` for something the catalog covers |
 | Plugin proliferation rebuilds the Maven plugin problem | Tight v1 first-party list; structured-findings as the only plugin extension surface; new action verbs go through the native catalog |
 
