@@ -50,7 +50,7 @@ namespace cajeta {
         // a stopgap until ownership analysis decides per-field whether a free is
         // appropriate; for now no free fires on functions that return their array.
         auto* block = module->getBuilder()->GetInsertBlock();
-        if (!block || block->getTerminator()) {
+        if (!block || block->hasTerminator()) {
             return;
         }
         MemoryManager::createFreeInstruction(module, createLoad(), block);

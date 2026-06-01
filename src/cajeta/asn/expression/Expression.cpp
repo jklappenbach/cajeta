@@ -2198,7 +2198,7 @@ namespace cajeta {
             // type otherwise; matches how a malformed regular method
             // would surface).
             llvm::BasicBlock* tail = lambdaBuilder->GetInsertBlock();
-            if (tail && !tail->getTerminator()) {
+            if (tail && !tail->hasTerminator()) {
                 llvm::Type* retTy = fn->getReturnType();
                 if (retTy->isVoidTy()) {
                     lambdaBuilder->CreateRetVoid();

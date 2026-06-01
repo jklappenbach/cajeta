@@ -214,7 +214,7 @@ public:
         }
         lowerStatement(method->getBlock());
         // Kernels return void; close any open block.
-        if (!builder.GetInsertBlock()->getTerminator()) {
+        if (!builder.GetInsertBlock()->hasTerminator()) {
             builder.CreateRetVoid();
         }
     }
@@ -501,12 +501,12 @@ private:
 
         builder.SetInsertPoint(thenBB);
         lowerStatement(ifs->getThenBranch());
-        if (!builder.GetInsertBlock()->getTerminator()) builder.CreateBr(endBB);
+        if (!builder.GetInsertBlock()->hasTerminator()) builder.CreateBr(endBB);
 
         if (ifs->getElseBranch()) {
             builder.SetInsertPoint(elseBB);
             lowerStatement(ifs->getElseBranch());
-            if (!builder.GetInsertBlock()->getTerminator()) builder.CreateBr(endBB);
+            if (!builder.GetInsertBlock()->hasTerminator()) builder.CreateBr(endBB);
         }
         builder.SetInsertPoint(endBB);
     }
@@ -529,7 +529,7 @@ private:
         loopTargets.push_back({upd, exit});
         lowerStatement(fs->getBody());
         loopTargets.pop_back();
-        if (!builder.GetInsertBlock()->getTerminator()) builder.CreateBr(upd);
+        if (!builder.GetInsertBlock()->hasTerminator()) builder.CreateBr(upd);
         builder.SetInsertPoint(upd);
         // Update exprs are statement-like (e.g. `j += stride`, `i++`): route
         // through lowerExprStatement so assignments hit lowerAssign.
@@ -638,7 +638,7 @@ private:
         loopTargets.push_back({upd, exit});
         lowerStatement(efs->getBody());
         loopTargets.pop_back();
-        if (!builder.GetInsertBlock()->getTerminator()) builder.CreateBr(upd);
+        if (!builder.GetInsertBlock()->hasTerminator()) builder.CreateBr(upd);
 
         builder.SetInsertPoint(upd);
         llvm::Value* next = builder.CreateAdd(
@@ -661,7 +661,7 @@ private:
         loopTargets.push_back({head, exit});
         lowerStatement(ws->getBody());
         loopTargets.pop_back();
-        if (!builder.GetInsertBlock()->getTerminator()) builder.CreateBr(head);
+        if (!builder.GetInsertBlock()->hasTerminator()) builder.CreateBr(head);
         builder.SetInsertPoint(exit);
     }
 
@@ -675,7 +675,7 @@ private:
         loopTargets.push_back({tail, exit});
         lowerStatement(ds->getBody());
         loopTargets.pop_back();
-        if (!builder.GetInsertBlock()->getTerminator()) builder.CreateBr(tail);
+        if (!builder.GetInsertBlock()->hasTerminator()) builder.CreateBr(tail);
         builder.SetInsertPoint(tail);
         builder.CreateCondBr(toI1(lowerExpr(ds->getCondition())), body, exit);
         builder.SetInsertPoint(exit);

@@ -191,7 +191,8 @@ TEST(XpuWaveEmitTests, spirvLowersSubgroupOpsAndValidates) {
     ASSERT_NE(cajeta::xpu::vulkan::lowerKernel(k, irMod), nullptr);
     std::string ir = printModule(irMod);
     EXPECT_NE(ir.find("llvm.spv.wave.readlane"), std::string::npos) << ir;
-    EXPECT_NE(ir.find("llvm.spv.wave.ballot"), std::string::npos) << ir;
+    // LLVM 23 renamed the ballot intrinsic spv.wave.ballot → spv.subgroup.ballot.
+    EXPECT_NE(ir.find("llvm.spv.subgroup.ballot"), std::string::npos) << ir;
 
     // Fresh module for emission (it mutates), then spirv-val.
     llvm::LLVMContext binCtx;

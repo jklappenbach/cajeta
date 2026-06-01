@@ -46,11 +46,16 @@ llvm::TargetExtType* vkBufferType(llvm::LLVMContext& ctx, llvm::Type* elemTy,
 llvm::Value* getElementPtr(llvm::IRBuilderBase& b, llvm::Module& m,
                            llvm::Value* handle, llvm::Value* index) {
     llvm::LLVMContext& ctx = m.getContext();
+    llvm::Type* i32 = llvm::Type::getInt32Ty(ctx);
     llvm::PointerType* sbPtr = llvm::PointerType::get(ctx, kStorageBufferAS);
-    llvm::Value* i32idx =
-        b.CreateTrunc(index, llvm::Type::getInt32Ty(ctx), "bidx");
+    llvm::Value* i32idx = b.CreateTrunc(index, i32, "bidx");
+    // LLVM 23 made the index operand of llvm.spv.resource.getpointer an
+    // overloaded type (was a fixed i32), so the intrinsic now has three
+    // overload types: {result ptr, handle, index}. Passing only two ran the
+    // signature decoder off the end of the type array.
     llvm::Function* gp = llvm::Intrinsic::getOrInsertDeclaration(
-        &m, llvm::Intrinsic::spv_resource_getpointer, {sbPtr, handle->getType()});
+        &m, llvm::Intrinsic::spv_resource_getpointer,
+        {sbPtr, handle->getType(), i32});
     return b.CreateCall(gp, {handle, i32idx}, "elem.ptr");
 }
 
@@ -189,12 +194,13 @@ public:
     }
     llvm::Value* waveBallot(llvm::IRBuilderBase& b, llvm::Module& m,
                             llvm::Value* pred) override {
-        // spv.wave.ballot yields a <4 x i32> (128-bit) mask; combine the low two
-        // lanes (covering up to 64 wave lanes) into the i64 API value.
+        // spv.subgroup.ballot (→ OpGroupNonUniformBallot) yields a <4 x i32>
+        // (128-bit) mask; combine the low two lanes (covering up to 64 wave
+        // lanes) into the i64 API value. (Renamed from spv.wave.ballot in LLVM 23.)
         llvm::LLVMContext& ctx = m.getContext();
         llvm::Type* i64 = llvm::Type::getInt64Ty(ctx);
         llvm::Function* f = llvm::Intrinsic::getOrInsertDeclaration(
-            &m, llvm::Intrinsic::spv_wave_ballot);
+            &m, llvm::Intrinsic::spv_subgroup_ballot);
         llvm::Value* vec = b.CreateCall(f, {pred}, "ballot");
         llvm::Value* lo = b.CreateZExt(
             b.CreateExtractElement(vec, uint64_t(0)), i64);

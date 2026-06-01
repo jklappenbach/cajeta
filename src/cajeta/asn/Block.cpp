@@ -31,7 +31,7 @@ namespace cajeta {
             // unused();` for documentation.
             llvm::BasicBlock* insertBB = builder
                 ? builder->GetInsertBlock() : nullptr;
-            if (insertBB && insertBB->getTerminator()) break;
+            if (insertBB && insertBB->hasTerminator()) break;
             child->generateCode(module);
         }
 
@@ -41,7 +41,7 @@ namespace cajeta {
             // exited this block — no further IR may be emitted at the
             // current insert point.
             llvm::BasicBlock* insertBB = builder ? builder->GetInsertBlock() : nullptr;
-            if (insertBB && !insertBB->getTerminator()) {
+            if (insertBB && !insertBB->hasTerminator()) {
                 m->emitTopFrameDrops(module);
             }
             m->popDropFrame();

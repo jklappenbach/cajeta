@@ -1158,7 +1158,7 @@ namespace cajeta {
         // methods this is the conventional "fall through to ret"; for non-void methods
         // a missing return is undefined in Cajeta semantics, but we emit a zero-value
         // ret so the IR remains well-formed.
-        if (!builder->GetInsertBlock()->getTerminator()) {
+        if (!builder->GetInsertBlock()->hasTerminator()) {
             // A4: fire @After advice BEFORE scope_exit + drops. The
             // advice runs in the method-body lifetime; cleanup
             // happens afterward so the advice can read state still
