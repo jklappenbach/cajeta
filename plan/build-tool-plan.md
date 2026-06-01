@@ -645,7 +645,10 @@ working against a server that advertises both.
 
 ### Deliverables
 
-- [ ] `test` action wrapping the test runner.
+- [x] `test` action wrapping the test runner. _v1: wraps an
+      already-built test binary, derives pass/fail/crashed counts
+      from exit code. Structured-findings wiring (richer per-test
+      reporting) lands with the plugin runtime in 7b._
 - [ ] Plugin runtime: subprocess isolation.
 - [ ] Plugin capability allowlist enforcement against
       `settings.plugins-allowed-capabilities`.
