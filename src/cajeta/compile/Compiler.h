@@ -53,6 +53,33 @@ namespace cajeta {
         Exe,      // Linked executable (requires lld in-process; see D1 / Compiler.cpp)
     };
 
+    // XPU (GPU compute) backend selection for the AOT path. None (default)
+    // leaves @Kernel methods as host stubs — the host-only program is
+    // byte-identical to a no-XPU build. Nvptx builds each @Kernel's cubin and
+    // embeds it + a registration ctor into the host module (mirroring the JIT
+    // helper), so a compiled `kernel.launch(...)` resolves the device function
+    // at runtime. (cajeta-xpu.md — was JIT-test-only before these CLI flags.)
+    enum class XpuBackend {
+        None,     // Default: no device codegen.
+        Nvptx,    // NVIDIA: AST → device IR → PTX → ptxas → cubin, registered in-module.
+        Amdgpu,   // AMD: AST → device IR → AMDGCN ISA → lld → hsaco, registered in-module.
+        Vulkan,   // Vulkan: AST → device IR → SPIR-V (descriptor-set SSBOs), registered in-module.
+        Cpu,      // CPU: AST → host IR (grid→threads), linked into the module + registered.
+    };
+
+    // What device artifact (if any) to also drop to disk for inspection,
+    // alongside the normal --emit output. None registers cubins only.
+    enum class XpuEmit {
+        None,     // Default: registration only, no standalone artifact.
+        Ptx,      // NVPTX: write a per-kernel .ptx next to the module output.
+        Cubin,    // NVPTX: write a per-kernel .cubin (implies ptxas present).
+        Isa,      // AMDGPU: write a per-kernel .isa (AMDGCN assembly text).
+        Hsaco,    // AMDGPU: write a per-kernel .hsaco (implies ld.lld present).
+        Spirv,    // Vulkan: write a per-kernel .spv (Khronos SPIR-V binary).
+        Spvasm,   // Vulkan: write a per-kernel .spvasm (SPIR-V disassembly text).
+        Object,   // CPU: write a per-kernel .o (native relocatable object).
+    };
+
     class Compiler {
     private:
         string targetTriple;
@@ -75,6 +102,19 @@ namespace cajeta {
         // Output mode. Default IR (write .ll). --emit=obj or --emit=exe switches to
         // native codegen for the configured target.
         EmitMode emitMode = EmitMode::IR;
+        // XPU device backend + per-kernel artifact emit (--xpu-backend /
+        // --xpu-emit / --xpu-arch). Default None: the AOT path is host-only and
+        // unchanged. xpuArch is the device arch handed to the backend's
+        // TargetMachine + assembler (e.g. "sm_89" for nvptx, "gfx1151" for
+        // amdgpu); consulted whenever xpuBackend != None.
+        // Selected device backends (empty = None). A list so a single binary
+        // can bundle several targets (e.g. --xpu-backend=vulkan,cpu); the
+        // runtime dispatcher (Increment 4) picks the best available at launch.
+        // Registration runs for every entry; --xpu-emit artifacts are dropped
+        // for whichever listed backend the emit kind belongs to.
+        vector<XpuBackend> xpuBackends;
+        XpuEmit xpuEmit = XpuEmit::None;
+        string xpuArch = "sm_89";
         // Optional output path override for single-file builds (--output / -o).
         // When empty, .ll/.o files land in the archive root mirroring the source tree
         // and executables land at <archive-root>/<entry-name>.
@@ -121,6 +161,15 @@ namespace cajeta {
 
         // Per-module emit dispatch based on emitMode.
         void emitForModule(CajetaModulePtr module);
+
+        // XPU device codegen for the AOT path (--xpu-backend=nvptx). Collects
+        // every @Kernel across the parsed modules, embeds each one's cubin +
+        // registration ctor into its host module (NvptxRegistration, the same
+        // pass the JIT helper runs), and — when --xpu-emit is ptx/cubin — also
+        // drops a per-kernel .ptx/.cubin under `archiveRootPath` for inspection.
+        // No-op when xpuBackend == None. Never throws: unsupported kernels
+        // (XPU-N01) or a missing ptxas are skipped with a diagnostic.
+        void emitXpuKernels(const std::string& archiveRootPath);
 
         // Walk every archive on `classpath`, re-parse each ClassSource
         // entry into a fresh CajetaModule, and register the resulting
@@ -229,6 +278,33 @@ namespace cajeta {
 
         EmitMode getEmitMode() const { return emitMode; }
         void setEmitMode(EmitMode m) { emitMode = m; }
+
+        // Single-backend setter (backward compatible): None clears the list,
+        // any other value makes it the sole selected backend.
+        void setXpuBackend(XpuBackend b) {
+            xpuBackends.clear();
+            if (b != XpuBackend::None) xpuBackends.push_back(b);
+        }
+        // Append a backend (for the multi-target --xpu-backend=a,b list).
+        void addXpuBackend(XpuBackend b) {
+            if (b == XpuBackend::None) return;
+            for (auto x : xpuBackends) if (x == b) return;
+            xpuBackends.push_back(b);
+        }
+        const vector<XpuBackend>& getXpuBackends() const { return xpuBackends; }
+        bool usesXpuBackend(XpuBackend b) const {
+            for (auto x : xpuBackends) if (x == b) return true;
+            return false;
+        }
+        // The first selected backend, or None if none — for callers that still
+        // think single-backend (and the no-op guard in emitXpuKernels).
+        XpuBackend getXpuBackend() const {
+            return xpuBackends.empty() ? XpuBackend::None : xpuBackends.front();
+        }
+        XpuEmit getXpuEmit() const { return xpuEmit; }
+        void setXpuEmit(XpuEmit e) { xpuEmit = e; }
+        const string& getXpuArch() const { return xpuArch; }
+        void setXpuArch(const string& a) { xpuArch = a; }
 
         void addClasspath(string s) { classpath.push_back(std::move(s)); }
         const std::vector<string>& getClasspath() const { return classpath; }

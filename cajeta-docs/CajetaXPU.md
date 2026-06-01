@@ -5,8 +5,21 @@ runtime layer — the layer that `cajeta.math`, `cajeta.render`,
 `cajeta.prism`, `cajeta.torch`, and anything else that wants to push
 work off the CPU plugs into.
 
-The library is `cajeta.xpu`. It is shaped around three peer backends
+The library is `cajeta.xpu`. It is shaped around three peer GPU backends
 today and is named to admit more tomorrow without renaming the prefix.
+
+> **Update (2026-05-31): a fourth backend — CPU — and a runtime dispatcher are
+> now implemented.** Three peer *GPU* backends (NVIDIA/AMD/Vulkan) remain the v1
+> focus described below, but the same portable `@Kernel` source also compiles
+> for the **CPU** (`--xpu-backend=cpu`, a grid→threads host lowering), and a
+> **runtime backend dispatcher** lets one binary bundle several backends and pick
+> the best available at launch — `CUDA → HIP → Vulkan → CPU` — falling to the CPU
+> when no accelerator is present ("run anywhere, degrade to CPU"). The dispatcher
+> lives in the C runtime (`runtime/native/cajeta_runtime.c`), the sole launch path
+> for compiled programs. This realizes Goal 1.1.2's "change a target flag" promise
+> and extends it to a *runtime* choice. Design, decisions, and the staged bring-up
+> log: **[`cajeta-cpu.md`](../cajeta-cpu.md)**. Runnable demo:
+> **`samples/Tour/xpu/`**.
 
 ---
 

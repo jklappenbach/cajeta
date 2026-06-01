@@ -58,9 +58,11 @@ namespace nvidia {
         void free(CudaDevicePtr p);
 
         // 1-D launch: grid x block threads. `kernelParams` is the CUDA
-        // argv — an array of pointers to each argument value.
+        // argv — an array of pointers to each argument value. sharedMemBytes
+        // sizes the kernel's dynamic (extern) shared memory; default 0 for
+        // static-only kernels.
         bool launch(CudaFunction f, unsigned gridX, unsigned blockX,
-                    void** kernelParams);
+                    void** kernelParams, unsigned sharedMemBytes = 0);
 
         // Block until all prior work on the context finishes.
         bool synchronize();

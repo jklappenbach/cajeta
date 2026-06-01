@@ -6,7 +6,10 @@
 
 #include "llvm/ADT/SmallString.h"
 #include "llvm/IR/Module.h"
+#include "llvm/IR/PassManager.h"
 #include "llvm/IR/LegacyPassManager.h"
+#include "llvm/Passes/PassBuilder.h"
+#include "llvm/Transforms/Utils/Mem2Reg.h"
 #include "llvm/MC/TargetRegistry.h"
 #include "llvm/Support/CodeGen.h"
 #include "llvm/Support/FileSystem.h"
@@ -40,6 +43,31 @@ void ensureTargetsInitialized() {
         llvm::InitializeAllAsmPrinters();
         llvm::InitializeAllAsmParsers();
     });
+}
+
+// Promote the kernel's entry-block allocas (loop counters, accumulators,
+// reassigned locals — see NvptxKernelLowering's mutable-slot model) into SSA
+// registers before PTX emission. addPassesToEmitFile runs ONLY the codegen
+// pipeline, no IR optimization, so without this the slots stay as .local
+// load/store traffic. mem2reg alone is correct and cheap; running it is
+// purely a quality improvement (alloca PTX is valid for ptxas either way).
+void optimizeDeviceModule(llvm::Module& m, llvm::TargetMachine& tm) {
+    llvm::PassBuilder pb(&tm);
+    llvm::LoopAnalysisManager lam;
+    llvm::FunctionAnalysisManager fam;
+    llvm::CGSCCAnalysisManager cgam;
+    llvm::ModuleAnalysisManager mam;
+    pb.registerModuleAnalyses(mam);
+    pb.registerCGSCCAnalyses(cgam);
+    pb.registerFunctionAnalyses(fam);
+    pb.registerLoopAnalyses(lam);
+    pb.crossRegisterProxies(lam, fam, cgam, mam);
+
+    llvm::FunctionPassManager fpm;
+    fpm.addPass(llvm::PromotePass());  // mem2reg
+    llvm::ModulePassManager mpm;
+    mpm.addPass(llvm::createModuleToFunctionPassAdaptor(std::move(fpm)));
+    mpm.run(m, mam);
 }
 
 } // namespace
@@ -76,6 +104,10 @@ std::string emitPtx(llvm::Module& deviceModule, llvm::TargetMachine& tm) {
     // qualifies (raw_string_ostream does not). PTX is textual, so
     // AssemblyFile (not ObjectFile); the NVPTX AsmPrinter must be
     // registered (InitializeAllAsmPrinters).
+    // Promote alloca slots to registers first (the codegen pipeline below
+    // does no IR optimization on its own).
+    optimizeDeviceModule(deviceModule, tm);
+
     llvm::SmallString<0> buf;
     llvm::raw_svector_ostream os(buf);
 

@@ -43,9 +43,14 @@ namespace cajeta {
     }
 
     // Lower the XPU launch form
-    //   kernel.launch(stream, grid: [gx], block: [bx])(args...)
+    //   kernel.launch(stream, grid: [gx], block: [bx], sharedBytes: [n])(args...)
     // to a host-side runtime call:
-    //   __cajeta_xpu_launch(i8* kernelName, i32 gridX, i32 blockX, ptr argv)
+    //   __cajeta_xpu_launch(i8* kernelName, i32 gridX, i32 blockX,
+    //                       i32 sharedBytes, ptr argv)
+    // `sharedBytes:` (the dynamic-shared-memory byte count, named to match
+    // cuLaunchKernel's sharedMemBytes and to avoid the `shared` keyword) is
+    // optional, default 0. The label can't be `shared:` — `shared` is the
+    // placement keyword, so it doesn't lex as a parameterLabel IDENTIFIER.
     // where `argv` is a stack array of pointers to each kernel argument value
     // (CUDA's kernelParams convention). Buffer<T> args contribute their device
     // pointer (the `deviceHandle` field); scalars contribute their value.
@@ -97,16 +102,22 @@ namespace cajeta {
 
         llvm::Value* gridX = nullptr;
         llvm::Value* blockX = nullptr;
+        llvm::Value* sharedBytes = nullptr;   // dynamic shared memory; 0 if absent
         for (auto& p : callee->getParameters()) {
             std::string label = stripColon(p.label);
             if (label == "grid")  gridX = lowerDim(p.expression);
             else if (label == "block") blockX = lowerDim(p.expression);
+            else if (label == "sharedBytes") sharedBytes = lowerDim(p.expression);
             // The unlabeled first param is the stream — accepted, not yet plumbed.
         }
         if (!gridX || !blockX) {
             throw Exception("launch requires grid: and block: dimensions",
                             "XPU-N02");
         }
+        // `shared:` is the dynamic-shared-memory byte count (cuLaunchKernel
+        // sharedMemBytes). Optional — kernels using only static shared memory
+        // (or none) omit it; default 0.
+        if (!sharedBytes) sharedBytes = llvm::ConstantInt::get(i32Ty, 0);
 
         // Marshal kernel args into argv = [N x ptr]; each entry points to a
         // stack slot holding that argument's value.
@@ -168,19 +179,21 @@ namespace cajeta {
         llvm::Value* nameStr =
             builder->CreateGlobalString(kernelName, "xpu.kernel.name");
 
-        // void __cajeta_xpu_launch(i8* name, i32 gridX, i32 blockX, ptr argv)
+        // void __cajeta_xpu_launch(i8* name, i32 gridX, i32 blockX,
+        //                          i32 sharedBytes, ptr argv)
         llvm::Function* launchFn =
             module->getRuntimeFunction("__cajeta_xpu_launch");
         if (!launchFn) {
             llvm::FunctionType* ft = llvm::FunctionType::get(
-                llvm::Type::getVoidTy(ctx), {ptrTy, i32Ty, i32Ty, ptrTy},
+                llvm::Type::getVoidTy(ctx), {ptrTy, i32Ty, i32Ty, i32Ty, ptrTy},
                 /*vararg=*/false);
             launchFn = llvm::cast<llvm::Function>(
                 module->getLlvmModule()
                     ->getOrInsertFunction("__cajeta_xpu_launch", ft)
                     .getCallee());
         }
-        builder->CreateCall(launchFn, {nameStr, gridX, blockX, argvBase});
+        builder->CreateCall(launchFn,
+                            {nameStr, gridX, blockX, sharedBytes, argvBase});
         return nullptr;  // launch is a void statement
     }
 

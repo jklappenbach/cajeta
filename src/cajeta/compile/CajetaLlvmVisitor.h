@@ -1474,10 +1474,19 @@ namespace cajeta {
             string className = enclosing
                 ? enclosing->getQName()->getTypeName()
                 : string();
-            if (!className.empty() && declaredName != className) {
+            // For a generic class the type name is the monomorphized form
+            // (e.g. "Buffer<float32>"), but the destructor is written against
+            // the base name — `~Buffer()`. Compare against the base, stripping
+            // any `<...>` type arguments, so generic classes can declare a
+            // destructor the same way non-generic ones do.
+            string baseName = className;
+            if (auto lt = baseName.find('<'); lt != string::npos) {
+                baseName = baseName.substr(0, lt);
+            }
+            if (!baseName.empty() && declaredName != baseName) {
                 throw Exception(
                     "destructor name `~" + declaredName + "` must match "
-                    "the enclosing class name (expected `~" + className + "`)",
+                    "the enclosing class name (expected `~" + baseName + "`)",
                     "CAJETA_ERROR_TYPE");
             }
             BlockPtr block = any_cast<BlockPtr>(visitBlock(ctx->destructorBody));

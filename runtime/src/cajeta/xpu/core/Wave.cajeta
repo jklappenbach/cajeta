@@ -21,6 +21,31 @@ public final class Wave {
     public static uint32 width();
 
     /**
+     * This work-item's lane index within its wave, in `[0, width())`.
+     * Together with `width()` this is the environment-interrogation
+     * surface: write wave-cooperative kernels in terms of `laneId()`
+     * and `width()` — never a hardcoded width — and the same source is
+     * correct on NVIDIA (32), AMD (32/64), Vulkan (runtime), and CPU
+     * (the host SIMD width, e.g. 16 on AVX-512 / 8 on AVX2).
+     *
+     *   NVPTX:  %laneid sreg
+     *   AMDGPU: mbcnt.hi(~0, mbcnt.lo(~0, 0))
+     *   SPIR-V: SubgroupLocalInvocationId
+     *   CPU:    work-item index mod width
+     */
+    @Native("__cajeta_xpu_wave_lane_id")
+    public static uint32 laneId();
+
+    /**
+     * True for exactly one lane of the wave — the lowest-indexed
+     * (`laneId() == 0`). The canonical width-agnostic cooperation
+     * guard: have one lane commit the wave's reduced/ballot result.
+     * Built on `laneId()`, so it is correct at any wave width.
+     */
+    @Native("__cajeta_xpu_wave_is_first_lane")
+    public static boolean isFirstLane();
+
+    /**
      * Read `value` from the lane identified by `srcLane`. All lanes
      * in the wave participate; `srcLane` may be uniform or
      * divergent. The .sync suffix on NVPTX is implicit — Cajeta's
@@ -36,4 +61,16 @@ public final class Wave {
      */
     @Native("__cajeta_xpu_wave_ballot_sync")
     public static uint64 ballotSync(boolean predicate);
+
+    /**
+     * Wave-wide reduction: the sum of `value` across all active lanes
+     * of the wave. Every lane receives the same total.
+     *
+     * Maps to a single hardware wave-reduce intrinsic on every backend:
+     *   NVPTX:  llvm.nvvm.redux.sync.add  (requires sm_80+ / Ampere)
+     *   AMDGPU: llvm.amdgcn.wave.reduce.add
+     *   SPIR-V: llvm.spv.wave.reduce.sum  (→ OpGroupNonUniformIAdd Reduce)
+     */
+    @Native("__cajeta_xpu_wave_reduce_sum_u32")
+    public static uint32 reduceSum(uint32 value);
 }

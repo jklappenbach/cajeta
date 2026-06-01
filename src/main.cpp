@@ -56,6 +56,8 @@ void printUsage(const char* progname) {
               << "  --source-tags=on|off                 Carry alloc/drop source positions on chain entries.\n"
               << "  --poison-free=on|off                 Sentinel-fill freed bytes.\n"
               << "  --live-set=strict|bounded|off        Live-allocation set discipline.\n"
+              << "  --opt=O0|O1|O2|O3                    IR optimization for --emit=obj/exe (default O0;\n"
+              << "                                       --release/--fast imply O2/O3).\n"
               << "  --drop-chain-validate=on|off         Per-push/pop integrity checks.\n"
               << "  --ub-traps=on|off                    Trap before would-be UB.\n"
               << "  --use-after-move-rt=on|off           Runtime backup for the static use-after-move check.\n"
@@ -74,6 +76,19 @@ void printUsage(const char* progname) {
               << "  --target=<triple>                    LLVM target triple. Default: host.\n"
               << "  --cpu=<name>                         Target CPU. Default: generic.\n"
               << "  --features=<list>                    Comma-separated target features (e.g. +neon).\n"
+              << "\n"
+              << "XPU (GPU compute, cajeta-docs/CajetaXPU.md):\n"
+              << "  --xpu-backend=<list>                 Device backend(s) for @Kernel methods, comma-separated\n"
+              << "                                       (none|nvptx|amdgpu|vulkan|cpu). Default none (host-only).\n"
+              << "                                       Each embeds its kernel + registration ctor so kernel.launch(...)\n"
+              << "                                       resolves at runtime; e.g. vulkan,cpu bundles a GPU target with a\n"
+              << "                                       CPU fallback (the runtime picks the best available at launch).\n"
+              << "  --xpu-arch=<arch>                    Device arch: nvptx SM target (e.g. sm_89, default),\n"
+              << "                                       amdgpu GFX target (e.g. gfx1151), or vulkan SPIR-V env\n"
+              << "                                       (e.g. vulkan1.3, the vulkan default). cpu has no arch.\n"
+              << "  --xpu-emit=none|ptx|cubin|isa|hsaco|spirv|spvasm|obj  Also drop a per-kernel device artifact for\n"
+              << "                                       inspection (ptx/cubin nvptx; isa/hsaco amdgpu; spirv/spvasm vulkan; obj cpu).\n"
+              << "                                       Default none (registration only).\n"
               << "  -o <path>                            Output path for the final artifact.\n"
               << "  --help, -h                           This message.\n"
               << "  --version, -V                        Print version + build provenance and exit.\n"
@@ -158,6 +173,10 @@ int main(int argc, const char* argv[]) {
 
     Compiler compiler(argc, argv);
     std::vector<std::string> positional;
+    // Track whether --xpu-arch was given explicitly so the amdgpu backend can
+    // default its arch to gfx1151 (vs the nvptx sm_89 default) only when the
+    // user didn't pin one. The two backends share a single xpuArch field.
+    bool xpuArchExplicit = false;
 
     auto parseModeName = [&](const std::string& name) -> bool {
         if (name == "debug")            { compiler.setMode(CompilerMode::Debug); return true; }
@@ -207,6 +226,13 @@ int main(int argc, const char* argv[]) {
             if (!setEnumFlag<LiveSet>("live-set", value,
                     { {"strict", LiveSet::Strict}, {"bounded", LiveSet::Bounded}, {"off", LiveSet::Off} },
                     compiler.getMutableFlags().liveSet)) {
+                printUsage(argv[0]); return 1;
+            }
+        } else if (match(arg, "opt", value)) {
+            if (!setEnumFlag<OptLevel>("opt", value,
+                    { {"O0", OptLevel::O0}, {"O1", OptLevel::O1},
+                      {"O2", OptLevel::O2}, {"O3", OptLevel::O3} },
+                    compiler.getMutableFlags().opt)) {
                 printUsage(argv[0]); return 1;
             }
         } else if (match(arg, "diag-verbosity", value)) {
@@ -275,6 +301,40 @@ int main(int argc, const char* argv[]) {
             compiler.setCpu(value);
         } else if (match(arg, "features", value)) {
             compiler.setFeatures(value);
+        } else if (match(arg, "xpu-backend", value)) {
+            // Comma-separated list — a binary can bundle several targets
+            // (e.g. vulkan,cpu); the runtime dispatcher picks the best
+            // available at launch. `none` clears the list.
+            compiler.setXpuBackend(XpuBackend::None);
+            size_t start = 0;
+            for (;;) {
+                size_t comma = value.find(',', start);
+                std::string tok = (comma == std::string::npos)
+                    ? value.substr(start) : value.substr(start, comma - start);
+                XpuBackend b;
+                if (!setEnumFlag<XpuBackend>("xpu-backend", tok,
+                        { {"none", XpuBackend::None}, {"nvptx", XpuBackend::Nvptx},
+                          {"amdgpu", XpuBackend::Amdgpu}, {"vulkan", XpuBackend::Vulkan},
+                          {"cpu", XpuBackend::Cpu} }, b)) {
+                    printUsage(argv[0]); return 1;
+                }
+                compiler.addXpuBackend(b);  // None is a no-op
+                if (comma == std::string::npos) break;
+                start = comma + 1;
+            }
+        } else if (match(arg, "xpu-emit", value)) {
+            XpuEmit e;
+            if (!setEnumFlag<XpuEmit>("xpu-emit", value,
+                    { {"none", XpuEmit::None}, {"ptx", XpuEmit::Ptx}, {"cubin", XpuEmit::Cubin},
+                      {"isa", XpuEmit::Isa}, {"hsaco", XpuEmit::Hsaco},
+                      {"spirv", XpuEmit::Spirv}, {"spvasm", XpuEmit::Spvasm},
+                      {"obj", XpuEmit::Object} }, e)) {
+                printUsage(argv[0]); return 1;
+            }
+            compiler.setXpuEmit(e);
+        } else if (match(arg, "xpu-arch", value)) {
+            compiler.setXpuArch(value);
+            xpuArchExplicit = true;
         } else if (arg == "-o") {
             if (i + 1 >= argc) {
                 std::cerr << "cajeta: -o requires a path argument\n";
@@ -296,6 +356,16 @@ int main(int argc, const char* argv[]) {
     if (positional.size() < 3) {
         printUsage(argc > 0 ? argv[0] : "cajeta");
         return 1;
+    }
+
+    // The xpuArch default ("sm_89") is NVPTX-shaped; for the amdgpu backend
+    // default to a GFX target instead, and for vulkan a SPIR-V target env,
+    // unless the user pinned --xpu-arch.
+    if (compiler.usesXpuBackend(XpuBackend::Vulkan) && !xpuArchExplicit) {
+        compiler.setXpuArch("vulkan1.3");
+    }
+    if (compiler.usesXpuBackend(XpuBackend::Amdgpu) && !xpuArchExplicit) {
+        compiler.setXpuArch("gfx1151");
     }
 
     try {
