@@ -221,7 +221,13 @@ else()
 endif()
 
 set(BINARY ${CMAKE_PROJECT_NAME})
-file(GLOB_RECURSE SOURCES LIST_DIRECTORIES false *.h *.cpp)
+# CONFIGURE_DEPENDS so ninja re-evaluates the glob (and reconfigures) when
+# source files are added/removed. Without it, a build dir configured before a
+# new .cpp existed silently omits that translation unit — its symbols then
+# fail to link (the XPU lowering/vulkan files hit exactly this). The stdlib
+# globs below already use CONFIGURE_DEPENDS; this keeps the C++ source glob
+# consistent.
+file(GLOB_RECURSE SOURCES CONFIGURE_DEPENDS LIST_DIRECTORIES false *.h *.cpp)
 list(FILTER SOURCES EXCLUDE REGEX ".*/main\\.cpp$")
 
 set(GENERATED_SOURCES

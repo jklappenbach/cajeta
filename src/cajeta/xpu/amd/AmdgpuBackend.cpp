@@ -1,0 +1,213 @@
+//
+// AMDGPU backend — see header.
+//
+
+#include "AmdgpuBackend.h"
+
+#include "llvm/ADT/SmallString.h"
+#include "llvm/IR/Module.h"
+#include "llvm/IR/PassManager.h"
+#include "llvm/IR/LegacyPassManager.h"
+#include "llvm/Passes/PassBuilder.h"
+#include "llvm/Transforms/Utils/Mem2Reg.h"
+#include "llvm/MC/TargetRegistry.h"
+#include "llvm/Support/CodeGen.h"
+#include "llvm/Support/FileSystem.h"
+#include "llvm/Support/MemoryBuffer.h"
+#include "llvm/Support/Program.h"
+#include "llvm/Support/TargetSelect.h"
+#include "llvm/Support/raw_ostream.h"
+#include "llvm/Target/TargetMachine.h"
+#include "llvm/Target/TargetOptions.h"
+#include "llvm/TargetParser/Triple.h"
+
+#include <cstdlib>
+#include <mutex>
+
+namespace cajeta {
+namespace xpu {
+namespace amd {
+
+namespace {
+
+// Process-global LLVM target registry init; same rationale as NvptxBackend
+// (this may run without a Compiler having initialized the registry).
+void ensureTargetsInitialized() {
+    static std::once_flag once;
+    std::call_once(once, [] {
+        llvm::InitializeAllTargets();
+        llvm::InitializeAllTargetMCs();
+        llvm::InitializeAllAsmPrinters();
+        llvm::InitializeAllAsmParsers();
+    });
+}
+
+// Promote entry-block allocas (loop counters, accumulators, reassigned
+// locals) to SSA registers before ISA emission. On AMDGPU these allocas live
+// in the private address space (5); mem2reg removes most of them, which both
+// improves codegen and sidesteps scratch traffic. addPassesToEmitFile runs
+// only the codegen pipeline (no IR optimization), so this must run first.
+void optimizeDeviceModule(llvm::Module& m, llvm::TargetMachine& tm) {
+    llvm::PassBuilder pb(&tm);
+    llvm::LoopAnalysisManager lam;
+    llvm::FunctionAnalysisManager fam;
+    llvm::CGSCCAnalysisManager cgam;
+    llvm::ModuleAnalysisManager mam;
+    pb.registerModuleAnalyses(mam);
+    pb.registerCGSCCAnalyses(cgam);
+    pb.registerFunctionAnalyses(fam);
+    pb.registerLoopAnalyses(lam);
+    pb.crossRegisterProxies(lam, fam, cgam, mam);
+
+    llvm::FunctionPassManager fpm;
+    fpm.addPass(llvm::PromotePass());  // mem2reg
+    llvm::ModulePassManager mpm;
+    mpm.addPass(llvm::createModuleToFunctionPassAdaptor(std::move(fpm)));
+    mpm.run(m, mam);
+}
+
+// Run the codegen pipeline to a chosen file type (Assembly or Object) into an
+// in-memory buffer. Returns false (and logs) if the TargetMachine can't emit
+// that file type.
+bool emitToBuffer(llvm::Module& m, llvm::TargetMachine& tm,
+                  llvm::CodeGenFileType type, llvm::SmallVectorImpl<char>& out) {
+    optimizeDeviceModule(m, tm);
+    llvm::raw_svector_ostream os(out);
+    llvm::legacy::PassManager pm;
+    if (tm.addPassesToEmitFile(pm, os, /*DwoOut=*/nullptr, type)) {
+        llvm::errs() << "cajeta.xpu.amd: AMDGPU TargetMachine cannot emit "
+                     << (type == llvm::CodeGenFileType::AssemblyFile
+                             ? "assembly" : "object") << "\n";
+        return false;
+    }
+    pm.run(m);
+    return true;
+}
+
+} // namespace
+
+std::unique_ptr<llvm::TargetMachine>
+createAmdgpuTargetMachine(const std::string& arch) {
+    ensureTargetsInitialized();
+
+    llvm::Triple triple(kAmdgpuTriple);
+    std::string error;
+    const llvm::Target* target =
+        llvm::TargetRegistry::lookupTarget(triple, error);
+    if (!target) {
+        llvm::errs() << "cajeta.xpu.amd: amdgcn target not available: "
+                     << error << "\n";
+        return nullptr;
+    }
+
+    llvm::TargetOptions opt;
+    // AMDGPU code objects are position-independent; PIC is the supported reloc
+    // model (the default/static models are rejected by the AMDGPU backend).
+    llvm::TargetMachine* tm = target->createTargetMachine(
+        triple, /*CPU=*/arch, /*Features=*/"", opt,
+        /*RM=*/llvm::Reloc::PIC_);
+    return std::unique_ptr<llvm::TargetMachine>(tm);
+}
+
+void configureDeviceModule(llvm::Module& m, llvm::TargetMachine& tm) {
+    m.setTargetTriple(llvm::Triple(kAmdgpuTriple));
+    m.setDataLayout(tm.createDataLayout());
+}
+
+std::string emitIsa(llvm::Module& deviceModule, llvm::TargetMachine& tm) {
+    llvm::SmallString<0> buf;
+    if (!emitToBuffer(deviceModule, tm, llvm::CodeGenFileType::AssemblyFile,
+                      buf)) {
+        return {};
+    }
+    return std::string(buf.begin(), buf.end());
+}
+
+std::string findLld() {
+    // 1. $ROCM_PATH/llvm/bin, then the conventional /opt/rocm location.
+    auto tryDir = [](const std::string& dir) -> std::string {
+        for (const char* exe : {"/ld.lld", "/ld.lld.exe"}) {
+            std::string p = dir + exe;
+            if (llvm::sys::fs::exists(p)) return p;
+        }
+        return {};
+    };
+    if (const char* rocm = std::getenv("ROCM_PATH")) {
+        if (auto p = tryDir(std::string(rocm) + "/llvm/bin"); !p.empty())
+            return p;
+    }
+    if (auto p = tryDir("/opt/rocm/llvm/bin"); !p.empty()) return p;
+    // 2. PATH.
+    if (auto found = llvm::sys::findProgramByName("ld.lld")) return *found;
+    return {};
+}
+
+std::vector<uint8_t> assembleHsaco(llvm::Module& deviceModule,
+                                   llvm::TargetMachine& tm,
+                                   const std::string& /*arch*/) {
+    std::string lld = findLld();
+    if (lld.empty()) {
+        llvm::errs() << "cajeta.xpu.amd: ld.lld not found (set ROCM_PATH or "
+                        "put ld.lld on PATH)\n";
+        return {};
+    }
+
+    // 1. Emit the relocatable AMDGCN ELF object to a temp file.
+    llvm::SmallString<0> objBuf;
+    if (!emitToBuffer(deviceModule, tm, llvm::CodeGenFileType::ObjectFile,
+                      objBuf)) {
+        return {};
+    }
+
+    llvm::SmallString<128> objPath, hsacoPath;
+    if (llvm::sys::fs::createTemporaryFile("cajeta_xpu", "o", objPath) ||
+        llvm::sys::fs::createTemporaryFile("cajeta_xpu", "hsaco", hsacoPath)) {
+        llvm::errs() << "cajeta.xpu.amd: could not create temp files\n";
+        return {};
+    }
+    struct Cleanup {
+        llvm::SmallString<128> a, b;
+        ~Cleanup() { llvm::sys::fs::remove(a); llvm::sys::fs::remove(b); }
+    } cleanup{objPath, hsacoPath};
+
+    {
+        std::error_code ec;
+        llvm::raw_fd_ostream out(objPath, ec, llvm::sys::fs::OF_None);
+        if (ec) {
+            llvm::errs() << "cajeta.xpu.amd: could not write object: "
+                         << ec.message() << "\n";
+            return {};
+        }
+        out.write(objBuf.data(), objBuf.size());
+    }
+
+    // 2. ld.lld -shared <obj> -o <hsaco>. -shared makes the code object an
+    // ET_DYN ELF, which hipModuleLoad accepts. ExecuteAndWait passes argv
+    // directly (no shell), so spaces in paths are safe.
+    std::string sharedFlag = "-shared";
+    std::string oFlag = "-o";
+    llvm::SmallVector<llvm::StringRef, 8> args = {
+        lld, sharedFlag, objPath.str(), oFlag, hsacoPath.str()};
+    std::string errMsg;
+    int rc = llvm::sys::ExecuteAndWait(lld, args, /*Env=*/std::nullopt,
+                                       /*Redirects=*/{}, /*SecondsToWait=*/0,
+                                       /*MemoryLimit=*/0, &errMsg);
+    if (rc != 0) {
+        llvm::errs() << "cajeta.xpu.amd: ld.lld failed (rc=" << rc << ") "
+                     << errMsg << "\n";
+        return {};
+    }
+
+    auto buf = llvm::MemoryBuffer::getFile(hsacoPath, /*IsText=*/false);
+    if (!buf) {
+        llvm::errs() << "cajeta.xpu.amd: could not read hsaco: "
+                     << buf.getError().message() << "\n";
+        return {};
+    }
+    llvm::StringRef bytes = (*buf)->getBuffer();
+    return std::vector<uint8_t>(bytes.bytes_begin(), bytes.bytes_end());
+}
+
+} // namespace amd
+} // namespace xpu
+} // namespace cajeta

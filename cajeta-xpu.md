@@ -7,6 +7,59 @@ discipline is [`cajeta-docs/CajetaXPU-Variance.md`](cajeta-docs/CajetaXPU-Varian
 This file tracks *implementation status* — what's built, what's stubbed,
 and what's next.
 
+> **CPU backend + runtime dispatcher: DONE (degrade-to-CPU, all four
+> backends).** The same portable `@Kernel` source now compiles for the **CPU**
+> as a fourth backend (`--xpu-backend=cpu`) — the kernel lowers to host code in
+> a grid→threads model (the wave is width-1 for now; SIMD-lane vectorization is
+> a later increment), linked into the program and launched by a generic
+> launcher-thunk ABI. On top of that, a **runtime backend dispatcher** in the C
+> runtime (`runtime/native/cajeta_runtime.c` — the *sole* launch path for
+> compiled programs; the C++ drivers are compiler/test-only) picks, once at
+> first device touch, the highest-priority backend that is both **bundled**
+> (a compile-time manifest) and **available** (a runtime probe), priority
+> `CUDA → HIP → Vulkan → CPU`, env-forceable via `CAJETA_XPU_BACKEND`, and routes
+> the whole device surface (`Buffer` alloc/upload/download/free, `kernel.launch`,
+> `Stream.sync`) to it. A binary built `--xpu-backend=amdgpu,cpu` runs on the AMD
+> GPU when present and falls to the CPU when not; when nothing is available it
+> prints a precise *"no available backend among {…}"* diagnostic rather than
+> crashing (explicit-only bundling — degradation is a build-time contract). All
+> four rungs are device-validated where hardware exists (HIP + Vulkan on Strix
+> Halo, CPU GPU-free, CUDA behavior-preserved). Full log + decisions:
+> [`cajeta-cpu.md`](cajeta-cpu.md). Runnable demo: `samples/Tour/xpu/`.
+>
+> Two pre-existing compiler bugs were fixed in the course of this work, both
+> surfaced by the first AOT (`--emit=obj`) `@Kernel` program: (1) `TargetOptions`
+> defaulted `UseInitArray=false`, so the AsmPrinter emitted the legacy `.ctors`
+> section instead of `.init_array` — modern glibc never ran it, so **every** AOT
+> global constructor (per-class clinit, the runtime's `__attribute__((constructor))`
+> init, the XPU registration) silently never fired; (2) the Vulkan registration
+> reused one SPIR-V `TargetMachine` across kernels, which corrupts LLVM's
+> `SPIRVGlobalRegistry` and crashed on the second kernel — now one TM per kernel.
+
+> **AMD second backend: DONE (gfx1151, on-device).** SAXPY, a strided loop,
+> and static + dynamic shared-memory (LDS) reductions all compile through
+> `--xpu-backend=amdgpu` and run on a real Strix Halo APU (gfx1151) from the
+> SAME Cajeta source that runs on NVIDIA. The seam was extracted empirically
+> by threading AMDGPU through the originally NVIDIA-only path — see
+> **[The NVIDIA∩AMD overlap reckoning](#the-nvidiaamd-overlap-reckoning)**
+> below for the measured variance surface (the deliverable the whole strategy
+> exists to produce). `cajeta-amd.md` was the pickup plan for this work.
+
+> **Vulkan third backend: DONE (SPIR-V, on-device via RADV).** SAXPY and a
+> static workgroup-shared tree reduction compile through `--xpu-backend=vulkan`
+> (LLVM 22 → Khronos SPIR-V, no external assembler) and run on the Strix Halo
+> APU via the radeon Vulkan ICD, from the SAME Cajeta source. Vulkan is the
+> *bigger* fork the strategy was built to measure: with no raw-pointer kernel
+> ABI and no Buffer Device Address path in LLVM 22's SPIR-V backend, buffers
+> become descriptor-set storage buffers — so the kernel **signature** and
+> **buffer access** fork, not just the coordinate leaf reads. Full log:
+> [`cajeta-vulkan.md`](cajeta-vulkan.md); the four-column capability matrix
+> (NVIDIA · AMD · Vulkan · core) is [`cajeta-xpu-matrix.md`](cajeta-xpu-matrix.md).
+> The build also surfaced that LLVM 22 emits a Vulkan-invalid workgroup barrier
+> (SequentiallyConsistent semantics) — fixed by a one-instruction SPIR-V
+> post-emit pass, so the emitted modules pass strict `spirv-val`; the one
+> remaining caveat is the compile-time-fixed block dim.
+
 > **Status: SAXPY runs on a real NVIDIA GPU (design phase 2 milestone).**
 > The NVPTX vertical slice is proven end-to-end on an RTX 4090 (sm_89,
 > CUDA 12.9, LLVM 22.1.4): the spec SAXPY `@Kernel` source compiles
@@ -35,6 +88,10 @@ deferrals first. Six commits on `cajeta-xpu` (after the restore commits):
 | C | `NvptxBackend` (TargetMachine + PTX emit) and `NvptxKernelLowering` (kernel AST → device IR) | `XpuNvptxEmitTests` |
 | D | `ptxas` → cubin assembly (`assembleCubin`) | `XpuNvptxEmitTests` |
 | E+F | `CudaDriver` (dlopen nvcuda) + SAXPY launched & verified on-device | `XpuSaxpyDeviceTests` |
+| G | host-source launch (`kernel.launch(...)` → `__cajeta_xpu_launch`) + cubin registration ctors + launch-borrow-scope checking | `XpuLaunchCodegenTests`, `XpuLaunchBorrowTests`, `XpuHostLaunchDeviceTests` |
+| H | general single-kernel compute bodies: mutable locals (entry allocas + mem2reg), `for`/`while`/`do-while`, unlabeled `break`/`continue`, compound assignment, full int/float operator set, unary/prefix/postfix `++`/`--`, numeric casts, `Barrier.workgroup()` | `XpuNvptxLoopEmitTests`, `XpuLoopDeviceTests` |
+| I | workgroup **shared memory** via a `shared` placement keyword (sibling of `heap`/`stack`): `Shared<T> tile = shared T[N];` → one per-block `addrspace(3)` global of constant size N, indexed/assigned like a buffer. Device-only (`XPU-K03` on the host path). | `XpuNvptxSharedEmitTests`, `XpuSharedDeviceTests` |
+| J | **dynamic shared memory**: a runtime-sized `shared T[expr]` lowers to an external unsized `addrspace(3)` global (`.extern .shared`), sized at launch via a new `sharedBytes:` launch-config key threaded through `__cajeta_xpu_launch` → `cuLaunchKernel`'s `sharedMemBytes`. One dynamic region per kernel. | `XpuNvptxSharedEmitTests`, `XpuSharedDeviceTests`, `XpuLaunchCodegenTests` |
 
 **Deviations from [`CajetaXPU.md`](cajeta-docs/CajetaXPU.md) (intentional, slice-scoped):**
 
@@ -100,9 +157,185 @@ deferrals first. Six commits on `cajeta-xpu` (after the restore commits):
   (`XpuLaunchBorrowTests`). Deferred: per-stream tracking, the move/reassign
   and auto-drop-at-scope-exit-without-sync cases, and cross-stream WAR/RAW
   (§11 cases 2–3).
-- **`--xpu-backend` / `--xpu-arch` / `--xpu-emit` CLI flags** for the AOT
-  `cajeta` path (the slice is JIT-test-driven).
-- Broaden `NvptxKernelLowering`'s construct coverage beyond the SAXPY subset.
+- **`--xpu-backend` / `--xpu-arch` / `--xpu-emit` CLI flags. DONE** — the AOT
+  `cajeta` binary now drives the NVPTX path (no longer JIT-test-only).
+  `--xpu-backend=nvptx` embeds each `@Kernel`'s cubin + registration ctor into
+  its host module (same `emitKernelRegistration` the JIT helper runs, hooked into
+  `Compiler::compile` after Phase-1/2 quiescence); `--xpu-arch=<sm_xx>` selects the
+  SM target; `--xpu-emit=ptx|cubin` also drops a per-kernel artifact for
+  inspection. Default `--xpu-backend=none` leaves the host-only path unchanged.
+  `XpuAotCliTests` (GPU-free for the PTX case; cubin gated on ptxas).
+- **Broaden `NvptxKernelLowering`'s construct coverage. DONE (increment H)** —
+  the device lowerer now handles general single-kernel compute bodies (loops,
+  unlabeled break/continue, compound assignment, the full int/float operator set,
+  unary/prefix/postfix `++`/`--`, numeric casts, `Barrier.workgroup()`), with
+  entry-block-alloca mutable slots promoted by mem2reg before PTX emit. Verified
+  on-device (`XpuLoopDeviceTests`) and in PTX text (`XpuNvptxLoopEmitTests`).
+  Still `XPU-N01` (next increment): Wave shuffles/ballots, calls to user
+  `@Device` helpers, for-each loops, and labeled break/continue.
+- **Workgroup shared memory. DONE (increment I)** — a third placement keyword
+  `shared` (sibling of `heap`/`stack`): `Shared<T> tile = shared T[N];` lowers to
+  one per-block `internal addrspace(3)` global of compile-time-constant size N;
+  indexing/assignment reuse the buffer path (LLVM tracks the address space on the
+  pointer). Device-only — the host codegen path rejects `shared` with `XPU-K03`.
+  Verified on-device (256-wide tree reduction, `XpuSharedDeviceTests`) and in PTX
+  text / via the AOT CLI (`.shared`/`ld.shared`/`st.shared`/`bar.sync`,
+  `XpuNvptxSharedEmitTests`).
+- **Dynamic shared memory. DONE (increment J)** — a runtime-sized `shared T[expr]`
+  (non-constant size) lowers to an external unsized `addrspace(3)` global
+  (`.extern .shared`), sized at launch. A new `sharedBytes:` launch-config key
+  (named to dodge the `shared` keyword + match CUDA's `sharedMemBytes`) threads
+  the byte count through `__cajeta_xpu_launch` (now 5-arg) → `cuLaunchKernel`'s
+  `sharedMemBytes`; `CudaDriver::launch` gains a defaulted `sharedMemBytes`. One
+  dynamic region per kernel. Verified on-device (dynamic tree reduction sized at
+  launch, `XpuSharedDeviceTests`) + PTX `.extern .shared` + launch lowering
+  (`XpuLaunchCodegenTests`). The shared-aliasing borrow rule (overlapping `&mut`
+  slices, spec §11 case 2) remains a separate deferred item.
+
+---
+
+## The NVIDIA∩AMD overlap reckoning
+
+The AMD second backend (cajeta-amd.md) was built to *measure* the
+NVIDIA∩AMD intersection, not assume it: the seam was extracted by threading
+AMDGPU through the originally NVIDIA-only lowerer, so the methods that ended
+up on the abstraction ARE the variance surface. With two backends now real
+and on-device, here is what actually forked vs. what stayed shared.
+
+### What forked — the `LoweringTarget` vtable (the whole variance surface)
+
+The ~885-line kernel-body AST walk is shared
+(`src/cajeta/xpu/lowering/KernelLowering.cpp`); only these decisions differ,
+and they are the *entire* `LoweringTarget` interface
+(`src/cajeta/xpu/lowering/LoweringTarget.h`):
+
+| `LoweringTarget` method | NVPTX | AMDGPU |
+|-------------------------|-------|--------|
+| `allocaAddressSpace()` | 0 (generic) | **5 (private)** — the one address-space fork; an AS-0 alloca is invalid IR on AMDGPU |
+| `threadId(dim)` | `nvvm.read.ptx.sreg.tid.*` | `amdgcn.workitem.id.*` |
+| `workgroupId(dim)` | `nvvm.read.ptx.sreg.ctaid.*` | `amdgcn.workgroup.id.*` |
+| `workgroupDim(dim)` | `nvvm.read.ptx.sreg.ntid.*` | **dispatch-packet load** (`amdgcn.dispatch.ptr` + i16 @ offset 4/6/8) — block dim is NOT an intrinsic on AMD |
+| `workgroupBarrier()` | `nvvm.barrier.cta.sync.aligned.all` | `amdgcn.s.barrier` wrapped in workgroup-scoped release/acquire fences (LDS visibility) |
+| `decorateKernel()` | `ptx_kernel` CC **+ `nvvm.annotations`** metadata | `amdgpu_kernel` CC, **no metadata** |
+| `globalId(dim)` | *shared default* — `workgroupId*workgroupDim + threadId` holds on both; not a fork |
+
+Backend-module decisions outside the AST walk (the `*Backend` /
+`*Registration` / driver files), also forked but mechanically:
+
+| Decision | NVPTX | AMDGPU |
+|----------|-------|--------|
+| Device triple | `nvptx64-nvidia-cuda` | `amdgcn-amd-amdhsa` |
+| Assemble | PTX → `ptxas` → cubin | object emitted directly by the TargetMachine → `ld.lld -shared` → hsaco (**no external assembler**) |
+| Driver / loader | `nvcuda` (`cuModuleLoadData` / `cuLaunchKernel`) | HIP (`hipModuleLoadData` / `hipModuleLaunchKernel`) |
+| Dynamic shared sizing | `cuLaunchKernel` `sharedMemBytes` | `hipModuleLaunchKernel` `sharedMemBytes` (= groupMemBytes) — *same launch-config shape* |
+
+### What stayed shared (≈90% — the measured core)
+
+- The **entire kernel-body AST walk**: statements, control flow
+  (`if`/`for`/`while`/`do`, unlabeled `break`/`continue`), the full int/float
+  operator set, short-circuit `&&`/`||`, unary/prefix/postfix, numeric casts,
+  the mutable-slot scalar model + mem2reg-before-emit.
+- **Buffer/array params → `addrspace(1)` pointers** — identical on both.
+- The **`shared` keyword → `addrspace(3)` globals**: static (internal
+  `[N x T]`) and dynamic (external unsized `[0 x T]`, launch-sized) — the IR
+  is byte-for-byte the same; only the launch-time byte count plumbs through a
+  different driver call.
+- **Address-space numbers** (`AddressSpace.h`): `amdNumberFor ≡
+  nvidiaNumberFor` confirmed — Global=1, Shared=3 agree. AS is *not* a fork
+  point for buffers or shared memory (only for allocas).
+- **Registration shape**: embed device bytes as a host constant + an
+  `llvm.global_ctors` entry calling the **backend-neutral**
+  `__cajeta_xpu_register_module(name, bytes, len)` — keyed by entry name.
+  Only the binary format behind it (cubin→hsaco) changed.
+- **All frontend work** — `@Kernel`/`@Device` recognition, `KernelArg`
+  validation (`XPU-K01`), launch grammar, MIR scaffolding, launch-borrow
+  checking — never touched; AMD inherited it for free.
+
+### What this measured that was previously a guess
+
+- **Address space is a near-non-fork.** The doc predicted Global/Shared agree;
+  confirmed. The *only* AS divergence is the alloca/private space (0 vs 5) —
+  exactly the "classic first AMDGPU bug" cajeta-amd.md §2 warned about.
+- **Block dim is the single most divergent coordinate.** Every other
+  coordinate read is a 1:1 intrinsic swap; only `workgroupDim` is structurally
+  different (AMD has no `ntid` intrinsic — it reads the HSA dispatch packet).
+- **The launch/registration surface is genuinely universal.** The
+  name-keyed runtime symbol and the launch-config shape (incl. `sharedMemBytes`)
+  did not fork at all — only the binary format and the driver entry points did.
+- **AMD needs no external assembler.** The TargetMachine emits the object
+  directly; `lld` links it — simpler than the NVPTX `ptxas` round-trip.
+
+This table is the empirical NVIDIA∩AMD core, and the input to the later "how
+much of this core extends to Vulkan/SPIR-V" question.
+
+### Extending to Vulkan/SPIR-V — the third backend's answer
+
+Vulkan was then threaded through the same seam ([`cajeta-vulkan.md`](cajeta-vulkan.md)),
+which *answered* that question with measurements rather than projection:
+
+- **The coordinate leaf reads generalize cleanly** — better than AMD, even.
+  `workgroupDim` (AMD's ugliest fork, a dispatch-packet load) is a *native*
+  single intrinsic on SPIR-V (`llvm.spv.workgroup.size`), and `globalId` is
+  native too (`llvm.spv.thread.id`). `addrspace(3)` shared memory maps straight
+  to the Workgroup storage class — a non-fork, exactly as predicted.
+- **But the kernel-argument model forks hard, and that's new.** LLVM 22's SPIR-V
+  backend has **no raw-pointer kernel ABI and no Buffer Device Address path**, so
+  buffers must be descriptor-set storage buffers. Unlike AMD (which forked only
+  `LoweringTarget`'s leaf reads), Vulkan forks the kernel **signature** (`void
+  main()`, no params) *and* the body's **buffer element access** (`getpointer`
+  vs GEP). The seam grew by three hooks — `createKernel`, `materializeParam`,
+  `bufferElementPtr` — all with NV/AMD-preserving defaults.
+- **Two measured limitations, recorded not hidden:** the workgroup barrier emits
+  Vulkan-forbidden SequentiallyConsistent semantics (runs on RADV, fails strict
+  `spirv-val`); and block dim is fixed at SPIR-V compile time (Vulkan has no free
+  per-dispatch workgroup size).
+
+So the NVIDIA∩AMD∩Vulkan core is *smaller* than NVIDIA∩AMD's ≈90% — the
+kernel-argument ABI dropped out of the shared set — but the body walk, control
+flow, operators, coordinate reads, shared memory, and the entire frontend +
+name-keyed registration still hold across all three. The full per-feature
+breakdown is [`cajeta-xpu-matrix.md`](cajeta-xpu-matrix.md).
+
+- **`@Wave` extends cleanly to all three — and `reduce` overturned its own guess.**
+  `Wave.shuffleSync` / `ballotSync` / `reduceSum` add four pure-virtual leaf hooks
+  (`waveWidth`/`waveShuffle`/`waveBallot`/`waveReduceSum`) and nothing else. The matrix
+  had predicted reduce would *invert* comprehensiveness (one native op on Vulkan vs. a
+  shuffle/DPP sequence on NV/AMD); the build showed all three expose a single hardware
+  wave-reduce intrinsic (`spv.wave.reduce.sum` / `amdgcn.wave.reduce.add` /
+  `nvvm.redux.sync.add` — the last gated on sm_80+), so reduce maps 1:1 like
+  shuffle/ballot. Running it on-device surfaced two things only execution shows: AMDGPU
+  folds a *uniform-constant* reduce operand back to the operand (needs a divergent
+  operand to actually sum), and LLVM 22's SPIR-V backend cannot *select*
+  `spv.wave.get_lane_count`, so `Wave.width()` is emit-only on Vulkan today. Both are
+  recorded in the matrix, not papered over.
+
+### AMD on-device increments (cajeta-amd.md) — all landed
+
+| Increment | What landed | Tests |
+|-----------|-------------|-------|
+| 0 | `XpuBackend::Amdgpu` + CLI (`--xpu-backend=amdgpu`, `gfx1151` default) + backend dispatch seam (`xpu::emitKernelRegistration`) | NVIDIA stays green |
+| 1 | `AmdgpuBackend` (TargetMachine, `emitIsa`, `assembleHsaco` via lld) | `XpuAmdgpuEmitTests` |
+| 2 | `LoweringTarget` seam + `AmdgpuKernelLowering` over the shared AST walk; NVPTX lowerer refactored onto the same shared lowerer (behavior-preserving) | `XpuAmdgpuLoopEmitTests` (+ all NVPTX emit tests still green) |
+| 3 | `AmdgpuRegistration` (hsaco + global_ctors) + AOT `--xpu-emit=isa\|hsaco` | `XpuAmdgpuAotCliTests` |
+| 4 | `HipDriver` (dlopen libamdhip64) + on-device SAXPY | `XpuSaxpyAmdDeviceTests` (gfx1151) |
+| 5 | static + dynamic LDS reductions on-device | `XpuSharedAmdDeviceTests` (gfx1151) |
+
+> **Box gotcha (environment, not Cajeta).** This Strix Halo box's
+> `ROCM_PATH` / `LD_LIBRARY_PATH` point at `/opt/rocm-7.x` (7.2.53210), whose
+> `libhsa-runtime64` **segfaults at code-object load** (deep in
+> `ReleaseQueueMainScratch` during the executable freeze). The
+> alternatives-canonical `/opt/rocm` (7.2.2) works. `HipDriver` defends
+> against this by pinning the canonical `/opt/rocm/lib/libhsa-runtime64.so.1`
+> with `RTLD_GLOBAL` before loading `libamdhip64`, so a poisoned
+> `LD_LIBRARY_PATH` can't bind the broken HSA runtime — the on-device tests
+> pass under the default (broken) env with no fiddling. Worth fixing the
+> shell env regardless (`/opt/rocm-7.x` looks like a broken dev build).
+
+**Still AMD-side refinement (not blocking the phase):** wave ops (the first
+variance-shaped feature that justifies the seam — `nvvm.shfl.sync` vs
+`amdgcn.ds.bpermute`/swizzle), the JIT host-source launch path for AMD (the
+AMD analog of `XpuHostLaunchDeviceTests` — the device tests currently drive
+`amd::` directly), multi-arch bundling, and `@Device` helper calls.
 
 ---
 

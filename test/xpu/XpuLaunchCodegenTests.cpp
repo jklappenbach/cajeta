@@ -104,3 +104,32 @@ TEST(XpuLaunchCodegenTests, launchLowersToRuntimeCall) {
     std::string ir = moduleIR(module);
     EXPECT_NE(ir.find("__cajeta_xpu_launch"), std::string::npos) << ir;
 }
+
+// A launch with a `sharedBytes:` config arg lowers to the 5-arg
+// __cajeta_xpu_launch(name, gridX, blockX, sharedBytes, argv), carrying the
+// dynamic-shared byte count. (The label is `sharedBytes:`, not `shared:` —
+// `shared` is the placement keyword and won't lex as a parameterLabel.)
+TEST(XpuLaunchCodegenTests, sharedConfigLowersByteCount) {
+    auto src =
+        "package test;\n"
+        "import cajeta.xpu.core.Buffer;\n"
+        "import cajeta.xpu.core.Stream;\n"
+        "public class M {\n"
+        "    @Kernel\n"
+        "    public static void k(Buffer<int32> out, uint32 n) { }\n"
+        "    public static void run(Buffer<int32> out, uint32 n) {\n"
+        "        k.launch(Stream.current(),\n"
+        "                 grid: [1], block: [256], sharedBytes: [2048])(out, n);\n"
+        "    }\n"
+        "}\n";
+    Compiler compiler;
+    auto module = compileForInspection(compiler, src, "test.M");
+    ASSERT_NO_THROW(codegenAll(compiler));
+
+    std::string ir = moduleIR(module);
+    // 5-arg runtime signature (the extra i32 is sharedBytes).
+    EXPECT_NE(ir.find("@__cajeta_xpu_launch(ptr, i32, i32, i32, ptr)"),
+              std::string::npos) << ir;
+    // The requested dynamic-shared byte count reaches the call.
+    EXPECT_NE(ir.find("i32 2048"), std::string::npos) << ir;
+}
