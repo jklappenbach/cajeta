@@ -1,9 +1,11 @@
 #include "cajeta/buildtool/BuildToolCommands.h"
 
+#include "cajeta/buildtool/Lockfile.h"
 #include "cajeta/buildtool/Manifest.h"
 #include "cajeta/buildtool/Properties.h"
 
 #include <llvm/Support/Error.h>
+#include <llvm/Support/MemoryBuffer.h>
 #include <llvm/Support/raw_ostream.h>
 
 #include <cstring>
@@ -35,8 +37,11 @@ namespace cajeta::buildtool {
         // think it did" — every block visible, every override applied.
         int infoCommand(int argc, const char* argv[]) {
             std::string manifestPath = "./cajeta.json";
+            std::string lockfilePath = "./cajeta.lock";
             bool dumpProperties = false;
             bool resolved = false;
+            bool writeLock = false;
+            bool checkLock = false;
             PropertyOverrides overrides;
             loadEnvOverrides(overrides);
 
@@ -73,19 +78,28 @@ namespace cajeta::buildtool {
                     overrides.flavor = value;
                 } else if (match(arg, "profile", value)) {
                     overrides.profile = value;
+                } else if (match(arg, "lockfile", value)) {
+                    lockfilePath = std::move(value);
+                } else if (arg == "--write-lockfile") {
+                    writeLock = true;
+                } else if (arg == "--check-lockfile") {
+                    checkLock = true;
                 } else if (arg == "--help" || arg == "-h") {
                     std::cout
                         << "Usage: cajeta info [options]\n"
                         << "\n"
                         << "Prints the parsed manifest.\n"
                         << "\n"
-                        << "  --manifest=<path>   Manifest file (default: ./cajeta.json)\n"
-                        << "  --properties        Dump the resolved property set\n"
-                        << "  --resolved          Dump the fully-resolved manifest (Phase 8)\n"
-                        << "  -P NAME=VALUE       Override a property for this invocation\n"
-                        << "  --property=NAME=VALUE   Long form of -P\n"
-                        << "  --flavor=NAME       Override active build flavor\n"
-                        << "  --profile=NAME      Override active profile\n";
+                        << "  --manifest=<path>      Manifest file (default: ./cajeta.json)\n"
+                        << "  --lockfile=<path>      Lockfile path (default: ./cajeta.lock)\n"
+                        << "  --properties           Dump the resolved property set\n"
+                        << "  --resolved             Dump the fully-resolved manifest (Phase 8)\n"
+                        << "  --write-lockfile       Write cajeta.lock with resolved state\n"
+                        << "  --check-lockfile       Verify manifest matches recorded checksum\n"
+                        << "  -P NAME=VALUE          Override a property for this invocation\n"
+                        << "  --property=NAME=VALUE  Long form of -P\n"
+                        << "  --flavor=NAME          Override active build flavor\n"
+                        << "  --profile=NAME         Override active profile\n";
                     return 0;
                 } else {
                     std::cerr << "cajeta info: unknown argument '"
@@ -135,7 +149,7 @@ namespace cajeta::buildtool {
             std::cout << "  plugins:    " << m.pluginsRaw.size() << " entries\n";
             std::cout << "  tasks:      " << m.tasksRaw.size() << " entries\n";
 
-            if (dumpProperties) {
+            if (dumpProperties || writeLock || checkLock) {
                 auto resolvedProps = resolveProperties(m, overrides);
                 if (!resolvedProps) {
                     std::string msg;
@@ -144,10 +158,56 @@ namespace cajeta::buildtool {
                     std::cerr << "cajeta info: " << msg << "\n";
                     return 1;
                 }
-                std::cout << "\nProperties (resolved):\n";
-                for (const auto& name : resolvedProps->resolutionOrder) {
-                    std::cout << "  " << name << " = "
-                              << resolvedProps->values[name] << "\n";
+
+                if (dumpProperties) {
+                    std::cout << "\nProperties (resolved):\n";
+                    for (const auto& name : resolvedProps->resolutionOrder) {
+                        std::cout << "  " << name << " = "
+                                  << resolvedProps->values[name] << "\n";
+                    }
+                }
+
+                if (writeLock || checkLock) {
+                    auto srcBuf = llvm::MemoryBuffer::getFile(manifestPath);
+                    if (!srcBuf) {
+                        std::cerr << "cajeta info: cannot read manifest source: "
+                                  << srcBuf.getError().message() << "\n";
+                        return 1;
+                    }
+                    std::string manifestSource = (*srcBuf)->getBuffer().str();
+
+                    if (checkLock) {
+                        auto existing = readLockfile(lockfilePath);
+                        if (!existing) {
+                            std::string msg;
+                            llvm::raw_string_ostream os(msg);
+                            os << existing.takeError();
+                            std::cerr << "cajeta info: " << msg << "\n";
+                            return 1;
+                        }
+                        auto drift = checkDrift(*existing, manifestSource);
+                        if (drift.changed) {
+                            std::cout << "\nLockfile drift detected:\n"
+                                      << "  recorded: " << drift.oldChecksum << "\n"
+                                      << "  current:  " << drift.newChecksum << "\n";
+                            return 1;
+                        }
+                        std::cout << "\nLockfile up to date ("
+                                  << drift.oldChecksum << ")\n";
+                    }
+
+                    if (writeLock) {
+                        Lockfile lf = composeLockfile(
+                            m, manifestSource, *resolvedProps, nowIsoUtc());
+                        if (auto e = writeLockfile(lockfilePath, lf)) {
+                            std::string msg;
+                            llvm::raw_string_ostream os(msg);
+                            os << e;
+                            std::cerr << "cajeta info: " << msg << "\n";
+                            return 1;
+                        }
+                        std::cout << "\nLockfile written: " << lockfilePath << "\n";
+                    }
                 }
             }
 
