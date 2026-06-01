@@ -44,6 +44,31 @@ namespace cajeta::buildtool {
         std::optional<std::string> fromRepo;  // optional repository pin
     };
 
+    // One entry in `settings.overrides` (Phase 6b). Forces a
+    // specific resolution for a TRANSITIVE dependency — a direct
+    // root dep of the same name still wins, per the spec.
+    //
+    // Two shapes today:
+    //   - Version pin / range:        "acme.lib": "1.2.5"
+    //                                "acme.lib": ">=1.2.0,<2.0.0"
+    //   - Object form with allow-major-downgrade:
+    //       "acme.lib": { "version": "1.2.5",
+    //                     "allow-major-downgrade": true }
+    //
+    // Path/Git replacement (`{ "path": "..." }` / `{ "git": ... }`)
+    // parses to an OverrideSpec with `path` / `git` populated but
+    // is rejected at the resolver boundary with a clear "Phase 6c"
+    // message — same pattern as the Phase 6a HTTP/Git
+    // repository-type stubs.
+    struct OverrideSpec {
+        std::string name;
+        std::string versionConstraint;       // empty when path/git form
+        std::optional<std::string> path;      // 6c
+        std::optional<std::string> git;       // 6c
+        std::optional<std::string> rev;       // 6c (companion to git)
+        bool allowMajorDowngrade = false;
+    };
+
     // Result of resolving one declared dep. Phase 6a only fills in
     // the direct-dep fields; transitive expansion + version
     // negotiation arrive with the MVS solver.
@@ -70,6 +95,16 @@ namespace cajeta::buildtool {
     // DependencySpec stubs with the version constraint empty for
     // now — the corresponding sources land in 6c.
     llvm::Expected<std::vector<DependencySpec>> parseDependencies(
+        const Manifest& m);
+
+    // Parse `settings.overrides` block. Returns the declared
+    // entries in declaration order. Accepted shapes:
+    //   { "name@kebab": "1.2.5" }
+    //   { "name@kebab": { "version": "1.2.5",
+    //                     "allow-major-downgrade": true } }
+    //   { "name@kebab": { "path": "./vendor/..." } }       // 6c
+    //   { "name@kebab": { "git": "...", "rev": "..." } }    // 6c
+    llvm::Expected<std::vector<OverrideSpec>> parseOverrides(
         const Manifest& m);
 
 } // namespace cajeta::buildtool

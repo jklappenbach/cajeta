@@ -126,4 +126,44 @@ namespace cajeta::buildtool {
         return out;
     }
 
+    llvm::Expected<std::vector<OverrideSpec>> parseOverrides(
+        const Manifest& m) {
+        std::vector<OverrideSpec> out;
+        const auto* settings = &m.settingsRaw;
+        const auto* overrides = settings->getObject("overrides");
+        if (!overrides) return out;
+
+        for (const auto& kv : *overrides) {
+            OverrideSpec o;
+            o.name = kv.first.str();
+            if (auto s = kv.second.getAsString()) {
+                o.versionConstraint = s->str();
+            } else if (const auto* obj = kv.second.getAsObject()) {
+                if (auto v = obj->getString("version")) {
+                    o.versionConstraint = v->str();
+                } else if (auto p = obj->getString("path")) {
+                    o.path = p->str();
+                } else if (auto g = obj->getString("git")) {
+                    o.git = g->str();
+                    if (auto r = obj->getString("rev")) {
+                        o.rev = r->str();
+                    }
+                } else {
+                    return err("settings.overrides." + o.name +
+                               ": object form requires 'version', "
+                               "'path', or 'git'");
+                }
+                if (auto a = obj->getBoolean("allow-major-downgrade")) {
+                    o.allowMajorDowngrade = *a;
+                }
+            } else {
+                return err("settings.overrides." + o.name +
+                           ": value must be a string (version constraint) "
+                           "or object");
+            }
+            out.push_back(std::move(o));
+        }
+        return out;
+    }
+
 } // namespace cajeta::buildtool
