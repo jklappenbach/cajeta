@@ -29,6 +29,16 @@ namespace cajeta::buildtool {
             const std::string& packageName,
             const std::string& version) const override;
 
+        // Reads `<root>/<name>/<version>/cajeta.json` when present
+        // and returns its raw bytes. Returns nullopt (not an error)
+        // when the sidecar is absent — old artifacts that pre-date
+        // the sidecar convention silently fall through to the next
+        // repository.
+        llvm::Expected<std::optional<std::string>>
+        fetchManifestJson(
+            const std::string& packageName,
+            const std::string& version) const override;
+
     private:
         std::string name_;
         std::string root_;

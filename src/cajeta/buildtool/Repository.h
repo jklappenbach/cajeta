@@ -12,6 +12,7 @@
 #include <llvm/Support/Error.h>
 
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -42,6 +43,28 @@ namespace cajeta::buildtool {
         // done with it (so callers can hand it to the compiler's
         // --classpath flag).
         virtual llvm::Expected<std::string> fetch(
+            const std::string& name,
+            const std::string& version) const = 0;
+
+        // Return the dep's published `cajeta.json` JSON bytes (the
+        // raw string — caller parses via `loadManifestString`).
+        // Used by the transitive-expansion walker to read each
+        // resolved dep's own `settings.dependencies` so we can
+        // expand the graph.
+        //
+        // Implementations may serve this from a sidecar file
+        // (filesystem repo) or a dedicated endpoint (HTTP repo's
+        // `GET /<name>/<version>/cajeta.json`). When the published
+        // archive embeds its manifest as a Resource entry (future
+        // optimization), drivers may extract from there instead —
+        // the contract is just "give me the bytes".
+        //
+        // `std::nullopt` means "this repo can't produce a manifest
+        // for this dep" (typical for archives that pre-date the
+        // sidecar convention). Caller falls through to the next
+        // repository or surfaces a clear error.
+        virtual llvm::Expected<std::optional<std::string>>
+        fetchManifestJson(
             const std::string& name,
             const std::string& version) const = 0;
     };

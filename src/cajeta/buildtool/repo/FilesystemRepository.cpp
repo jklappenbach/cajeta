@@ -4,6 +4,8 @@
 
 #include <algorithm>
 #include <filesystem>
+#include <fstream>
+#include <sstream>
 #include <string>
 #include <system_error>
 
@@ -65,6 +67,28 @@ namespace cajeta::buildtool {
         // ArtifactCache decides whether to copy it into the
         // content-addressed cache for hash-keyed lookup.
         return artifact.string();
+    }
+
+    llvm::Expected<std::optional<std::string>>
+    FilesystemRepository::fetchManifestJson(
+        const std::string& packageName,
+        const std::string& version) const {
+        namespace fs = std::filesystem;
+        fs::path sidecar = fs::path(root_) / packageName / version /
+                           "cajeta.json";
+        std::error_code ec;
+        if (!fs::is_regular_file(sidecar, ec)) {
+            return std::optional<std::string>{};
+        }
+        std::ifstream in(sidecar, std::ios::binary);
+        if (!in) {
+            return err("filesystem repository '" + name_ +
+                       "': cannot open manifest sidecar '" +
+                       sidecar.string() + "'");
+        }
+        std::ostringstream buf;
+        buf << in.rdbuf();
+        return std::optional<std::string>{buf.str()};
     }
 
 } // namespace cajeta::buildtool

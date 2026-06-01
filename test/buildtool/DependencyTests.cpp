@@ -30,6 +30,7 @@ using cajeta::buildtool::RepositoryPtr;
 using cajeta::buildtool::RepositorySpec;
 using cajeta::buildtool::resolveDirect;
 using cajeta::buildtool::ResolvedDependency;
+using cajeta::buildtool::resolveTransitive;
 using cajeta::buildtool::versionSatisfies;
 
 namespace {
@@ -74,6 +75,32 @@ namespace {
             o << pv.content;
         }
         return root;
+    }
+
+    // Drop a sidecar cajeta.json next to a fs-repo artifact. The
+    // manifest is the minimum loadManifestString will accept:
+    // `details.name`, `details.version`, plus settings.dependencies.
+    // Each entry in `deps` is "name@kebab" → constraint string.
+    void writeSidecarManifest(
+        const std::filesystem::path& repoRoot,
+        const std::string& pkg, const std::string& version,
+        const std::vector<std::pair<std::string, std::string>>& deps) {
+        std::ostringstream js;
+        js << "{\"details\":{\"name\":\"" << pkg
+           << "\",\"version\":\"" << version << "\"}";
+        if (!deps.empty()) {
+            js << ",\"settings\":{\"dependencies\":{";
+            for (size_t i = 0; i < deps.size(); ++i) {
+                if (i) js << ",";
+                js << "\"" << deps[i].first << "\":\""
+                   << deps[i].second << "\"";
+            }
+            js << "}}";
+        }
+        js << "}";
+        auto path = repoRoot / pkg / version / "cajeta.json";
+        std::ofstream o(path, std::ios::binary);
+        o << js.str();
     }
 
 } // namespace
@@ -433,6 +460,228 @@ TEST(DependencyTests, resolverFallsThroughRepoPriorityWhenFirstLacksPackage) {
 
     std::filesystem::remove_all(repoHighPrio);
     std::filesystem::remove_all(repoLowPrio);
+    std::filesystem::remove_all(projectDir);
+    std::filesystem::remove_all(homeDir);
+}
+
+// ─── filesystem sidecar manifest (Phase 6b) ───────────────────────────
+
+TEST(DependencyTests, filesystemRepoReadsSidecarManifestJson) {
+    auto root = makeFsRepo({{"com.example.foo", "1.0.0", "x"}});
+    writeSidecarManifest(root, "com.example.foo", "1.0.0",
+                         {{"com.example.bar", "1.*"}});
+    FilesystemRepository repo("test", root.string());
+
+    auto js = repo.fetchManifestJson("com.example.foo", "1.0.0");
+    ASSERT_TRUE((bool)js) << errorText(js.takeError());
+    ASSERT_TRUE(js->has_value());
+    EXPECT_NE((*js)->find("com.example.foo"), std::string::npos);
+    EXPECT_NE((*js)->find("com.example.bar"), std::string::npos);
+    std::filesystem::remove_all(root);
+}
+
+TEST(DependencyTests, filesystemRepoNoSidecarReturnsNullopt) {
+    auto root = makeFsRepo({{"com.example.foo", "1.0.0", "x"}});
+    // No sidecar written.
+    FilesystemRepository repo("test", root.string());
+    auto js = repo.fetchManifestJson("com.example.foo", "1.0.0");
+    ASSERT_TRUE((bool)js) << errorText(js.takeError());
+    EXPECT_FALSE(js->has_value());
+    std::filesystem::remove_all(root);
+}
+
+// ─── transitive resolver ──────────────────────────────────────────────
+
+TEST(DependencyTests, transitiveResolverExpandsOneLevel) {
+    auto root = makeFsRepo({
+        {"com.example.foo", "1.0.0", "foo-1.0.0"},
+        {"com.example.bar", "1.5.0", "bar-1.5.0"},
+    });
+    // foo depends on bar.
+    writeSidecarManifest(root, "com.example.foo", "1.0.0",
+                         {{"com.example.bar", "1.*"}});
+    writeSidecarManifest(root, "com.example.bar", "1.5.0", {});
+
+    auto projectDir = makeTempDir("trans-1lvl-proj");
+    auto homeDir    = makeTempDir("trans-1lvl-home");
+    std::vector<RepositoryPtr> repos = {
+        std::make_shared<FilesystemRepository>("test", root.string()),
+    };
+    std::vector<DependencySpec> deps;
+    DependencySpec d; d.name = "com.example.foo"; d.versionConstraint = "1.0.0";
+    deps.push_back(d);
+
+    ArtifactCache cache(projectDir.string(), homeDir.string());
+    auto resolved = resolveTransitive(deps, repos, cache);
+    ASSERT_TRUE((bool)resolved) << errorText(resolved.takeError());
+    ASSERT_EQ(resolved->size(), 2u);
+    EXPECT_EQ((*resolved)[0].name, "com.example.foo");
+    EXPECT_EQ((*resolved)[0].version, "1.0.0");
+    EXPECT_EQ((*resolved)[1].name, "com.example.bar");
+    EXPECT_EQ((*resolved)[1].version, "1.5.0");
+
+    std::filesystem::remove_all(root);
+    std::filesystem::remove_all(projectDir);
+    std::filesystem::remove_all(homeDir);
+}
+
+TEST(DependencyTests, transitiveResolverThreeDeepGraph) {
+    // foo -> bar -> baz, three-deep chain (matches the Phase 6
+    // acceptance criterion).
+    auto root = makeFsRepo({
+        {"a.foo", "1.0.0", "foo"},
+        {"a.bar", "2.0.0", "bar"},
+        {"a.baz", "3.0.0", "baz"},
+    });
+    writeSidecarManifest(root, "a.foo", "1.0.0", {{"a.bar", "2.*"}});
+    writeSidecarManifest(root, "a.bar", "2.0.0", {{"a.baz", "3.*"}});
+    writeSidecarManifest(root, "a.baz", "3.0.0", {});
+
+    auto projectDir = makeTempDir("trans-3deep-proj");
+    auto homeDir    = makeTempDir("trans-3deep-home");
+    std::vector<RepositoryPtr> repos = {
+        std::make_shared<FilesystemRepository>("test", root.string()),
+    };
+    std::vector<DependencySpec> deps;
+    DependencySpec d; d.name = "a.foo"; d.versionConstraint = "1.0.0";
+    deps.push_back(d);
+
+    ArtifactCache cache(projectDir.string(), homeDir.string());
+    auto resolved = resolveTransitive(deps, repos, cache);
+    ASSERT_TRUE((bool)resolved) << errorText(resolved.takeError());
+    ASSERT_EQ(resolved->size(), 3u);
+    EXPECT_EQ((*resolved)[0].name, "a.foo");
+    EXPECT_EQ((*resolved)[1].name, "a.bar");
+    EXPECT_EQ((*resolved)[2].name, "a.baz");
+
+    std::filesystem::remove_all(root);
+    std::filesystem::remove_all(projectDir);
+    std::filesystem::remove_all(homeDir);
+}
+
+TEST(DependencyTests, transitiveResolverDeduplicatesDiamond) {
+    // Diamond:  root -> {a, b}, both a and b -> shared.
+    // shared should appear exactly once in the resolved set.
+    auto root = makeFsRepo({
+        {"d.a",      "1.0.0", "a"},
+        {"d.b",      "1.0.0", "b"},
+        {"d.shared", "5.0.0", "shared"},
+    });
+    writeSidecarManifest(root, "d.a", "1.0.0", {{"d.shared", "5.*"}});
+    writeSidecarManifest(root, "d.b", "1.0.0", {{"d.shared", "5.*"}});
+    writeSidecarManifest(root, "d.shared", "5.0.0", {});
+
+    auto projectDir = makeTempDir("trans-diamond-proj");
+    auto homeDir    = makeTempDir("trans-diamond-home");
+    std::vector<RepositoryPtr> repos = {
+        std::make_shared<FilesystemRepository>("test", root.string()),
+    };
+    std::vector<DependencySpec> deps;
+    DependencySpec a; a.name = "d.a"; a.versionConstraint = "1.0.0";
+    DependencySpec b; b.name = "d.b"; b.versionConstraint = "1.0.0";
+    deps.push_back(a); deps.push_back(b);
+
+    ArtifactCache cache(projectDir.string(), homeDir.string());
+    auto resolved = resolveTransitive(deps, repos, cache);
+    ASSERT_TRUE((bool)resolved) << errorText(resolved.takeError());
+    EXPECT_EQ(resolved->size(), 3u);
+    int sharedCount = 0;
+    for (const auto& r : *resolved) {
+        if (r.name == "d.shared") ++sharedCount;
+    }
+    EXPECT_EQ(sharedCount, 1);
+
+    std::filesystem::remove_all(root);
+    std::filesystem::remove_all(projectDir);
+    std::filesystem::remove_all(homeDir);
+}
+
+TEST(DependencyTests, transitiveResolverBreaksCycles) {
+    // A -> B, B -> A. Neither should loop forever; both should
+    // appear in the resolved set exactly once.
+    auto root = makeFsRepo({
+        {"c.a", "1.0.0", "a"},
+        {"c.b", "1.0.0", "b"},
+    });
+    writeSidecarManifest(root, "c.a", "1.0.0", {{"c.b", "1.0.0"}});
+    writeSidecarManifest(root, "c.b", "1.0.0", {{"c.a", "1.0.0"}});
+
+    auto projectDir = makeTempDir("trans-cycle-proj");
+    auto homeDir    = makeTempDir("trans-cycle-home");
+    std::vector<RepositoryPtr> repos = {
+        std::make_shared<FilesystemRepository>("test", root.string()),
+    };
+    std::vector<DependencySpec> deps;
+    DependencySpec d; d.name = "c.a"; d.versionConstraint = "1.0.0";
+    deps.push_back(d);
+
+    ArtifactCache cache(projectDir.string(), homeDir.string());
+    auto resolved = resolveTransitive(deps, repos, cache);
+    ASSERT_TRUE((bool)resolved) << errorText(resolved.takeError());
+    EXPECT_EQ(resolved->size(), 2u);
+
+    std::filesystem::remove_all(root);
+    std::filesystem::remove_all(projectDir);
+    std::filesystem::remove_all(homeDir);
+}
+
+TEST(DependencyTests, transitiveResolverTreatsLeafAsTerminalWhenSidecarMissing) {
+    // Backwards-compat with pre-sidecar artifacts: foo's sidecar
+    // declares it depends on bar, but bar has no sidecar so the
+    // walker terminates there without erroring.
+    auto root = makeFsRepo({
+        {"l.foo", "1.0.0", "foo"},
+        {"l.bar", "1.0.0", "bar"},
+    });
+    writeSidecarManifest(root, "l.foo", "1.0.0", {{"l.bar", "1.0.0"}});
+    // No sidecar for bar.
+
+    auto projectDir = makeTempDir("trans-leaf-proj");
+    auto homeDir    = makeTempDir("trans-leaf-home");
+    std::vector<RepositoryPtr> repos = {
+        std::make_shared<FilesystemRepository>("test", root.string()),
+    };
+    std::vector<DependencySpec> deps;
+    DependencySpec d; d.name = "l.foo"; d.versionConstraint = "1.0.0";
+    deps.push_back(d);
+
+    ArtifactCache cache(projectDir.string(), homeDir.string());
+    auto resolved = resolveTransitive(deps, repos, cache);
+    ASSERT_TRUE((bool)resolved) << errorText(resolved.takeError());
+    ASSERT_EQ(resolved->size(), 2u);
+    EXPECT_EQ((*resolved)[1].name, "l.bar");
+
+    std::filesystem::remove_all(root);
+    std::filesystem::remove_all(projectDir);
+    std::filesystem::remove_all(homeDir);
+}
+
+TEST(DependencyTests, transitiveResolverErrorsOnUnsatisfiableChildConstraint) {
+    auto root = makeFsRepo({
+        {"u.foo", "1.0.0", "foo"},
+        {"u.bar", "1.0.0", "bar"},
+    });
+    // foo asks for bar 99.x which doesn't exist.
+    writeSidecarManifest(root, "u.foo", "1.0.0", {{"u.bar", "99.*"}});
+    writeSidecarManifest(root, "u.bar", "1.0.0", {});
+
+    auto projectDir = makeTempDir("trans-unsat-proj");
+    auto homeDir    = makeTempDir("trans-unsat-home");
+    std::vector<RepositoryPtr> repos = {
+        std::make_shared<FilesystemRepository>("test", root.string()),
+    };
+    std::vector<DependencySpec> deps;
+    DependencySpec d; d.name = "u.foo"; d.versionConstraint = "1.0.0";
+    deps.push_back(d);
+
+    ArtifactCache cache(projectDir.string(), homeDir.string());
+    auto resolved = resolveTransitive(deps, repos, cache);
+    ASSERT_FALSE((bool)resolved);
+    auto msg = errorText(resolved.takeError());
+    EXPECT_NE(msg.find("u.bar"), std::string::npos);
+    EXPECT_NE(msg.find("not satisfied"), std::string::npos);
+
+    std::filesystem::remove_all(root);
     std::filesystem::remove_all(projectDir);
     std::filesystem::remove_all(homeDir);
 }
