@@ -631,4 +631,36 @@ namespace cajeta::buildtool {
         return out;
     }
 
+    llvm::Expected<std::vector<ResolvedDependency>>
+    resolveProjectDependencies(
+        const Manifest& m,
+        const std::string& projectRoot,
+        std::optional<std::string> homeOverride) {
+
+        auto deps = parseDependencies(m);
+        if (!deps) return deps.takeError();
+        if (deps->empty()) {
+            return std::vector<ResolvedDependency>{};  // no deps → no work
+        }
+
+        auto repoSpecs = parseRepositories(m);
+        if (!repoSpecs) return repoSpecs.takeError();
+        // Deps are declared but no repos to fetch them from → hard error
+        // with a pointer at the user-fixable cause.
+        if (repoSpecs->empty()) {
+            return err("settings.dependencies declares " +
+                       std::to_string(deps->size()) +
+                       " dependency(ies) but settings.repositories is "
+                       "empty — add at least one repository to fetch from");
+        }
+        auto repos = buildRepositories(*repoSpecs);
+        if (!repos) return repos.takeError();
+
+        auto overrides = parseOverrides(m);
+        if (!overrides) return overrides.takeError();
+
+        ArtifactCache cache(projectRoot, homeOverride);
+        return resolveMvs(*deps, *repos, cache, *overrides);
+    }
+
 } // namespace cajeta::buildtool

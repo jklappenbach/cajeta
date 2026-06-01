@@ -474,7 +474,7 @@ work.
 - [ ] `cajeta info --resolve-time` for diagnosing pathological
       resolution.
 - [ ] Maven-compat shim (`type: maven-compat`).
-- [ ] BuildAction integration: pass `--classpath` from resolver
+- [x] BuildAction integration: pass `--classpath` from resolver
       output to the compiler.
 
 ### Deliverables — Phase 6c (Git + melts)

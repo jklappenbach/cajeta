@@ -20,6 +20,7 @@
 
 #include "cajeta/buildtool/Action.h"
 #include "cajeta/buildtool/Manifest.h"
+#include "cajeta/buildtool/Resolver.h"
 
 #include <llvm/Support/Error.h>
 
@@ -252,6 +253,31 @@ namespace cajeta::buildtool {
             if (!profile.empty()) {
                 argv.push_back("--profile=" + profile);
             }
+
+            // Resolve transitive dependencies (Phase 6b). The manifest's
+            // own directory is the project root — that's where the
+            // local artifact cache lives. Skip cleanly when no deps
+            // declared; surface any resolver error as a build failure.
+            if (ctx.manifest()) {
+                std::string projectRoot = ".";
+                if (!ctx.manifest()->sourcePath.empty()) {
+                    auto parent = fs::path(ctx.manifest()->sourcePath)
+                                      .parent_path();
+                    if (!parent.empty()) projectRoot = parent.string();
+                }
+                auto resolved = resolveProjectDependencies(
+                    *ctx.manifest(), projectRoot);
+                if (!resolved) return resolved.takeError();
+                if (!resolved->empty()) {
+                    std::string joined;
+                    for (const auto& r : *resolved) {
+                        if (!joined.empty()) joined += ",";
+                        joined += r.artifactPath;
+                    }
+                    argv.push_back("--classpath=" + joined);
+                }
+            }
+
             if (!outputPath.empty()) {
                 argv.push_back("-o");
                 argv.push_back(outputPath.string());
