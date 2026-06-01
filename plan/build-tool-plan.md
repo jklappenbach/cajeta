@@ -469,7 +469,7 @@ work.
       `allow-major-downgrade` escape).
 - [x] `cajeta add <dep>` subcommand.
 - [x] `cajeta remove <dep>` subcommand.
-- [ ] `cajeta upgrade [dep]` subcommand with capability-change
+- [x] `cajeta upgrade [dep]` subcommand with capability-change
       prompt.
 - [ ] `cajeta info --resolve-time` for diagnosing pathological
       resolution.
