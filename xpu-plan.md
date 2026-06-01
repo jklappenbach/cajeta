@@ -154,6 +154,42 @@ function-call ABI (all three GPU targets support device functions; CPU is just a
 host call that inlines). Recursion / call graph; address-space-correct pointer
 params.
 
+**Mapped wiring:** the kernel body is lowered by `DeviceLowerer` (in
+`KernelLowering.cpp`) — a per-function lowerer holding `fn`, `builder`, entry-block
+alloca `locals`, `loopTargets`, and `target` (the backend seam). Every method call
+in `lowerExpr` routes to `lowerBuiltinCall`, which matches `Thread`/`Workgroup`/
+`Barrier`/`Wave` and throws `XPU-N01` (`unsupported("device builtin …")`) for
+anything else — that's where a `@Device` call dies today.
+
+**Design (stages):**
+1. **Detect a user call.** In `lowerBuiltinCall` (or a new `lowerUserCall` before the
+   final `unsupported`), when `recv`/`name` don't match a builtin, resolve the target
+   `MethodPtr` (a static method on the kernel's class, or `recv` = a class name) and
+   check `isDevice(*m)`. If not `@Device`, keep the `XPU-N01`.
+2. **Lower the `@Device` method to a device function**, cached. Add a shared
+   `std::map<Method*, llvm::Function*>` device-function cache threaded into
+   `DeviceLowerer`. On first call, create the function (params: scalars by value,
+   `Buffer<T>`/array params as `addrspace(1)` pointers — reuse `collectParams` +
+   `createKernel`-style signature but with a real return type, non-kernel linkage,
+   `alwaysinline` for GPU/CPU), then recurse: a fresh `DeviceLowerer` over that fn
+   lowers its body (params → entry allocas, statements, `return expr`). Handles a
+   helper calling another helper (the cache breaks cycles; reject true recursion with
+   a clean `XPU-N01`).
+3. **Emit the call** at the site: lower each arg, coerce to the param type, `call` the
+   cached function, return its value.
+4. **Per backend:** NVPTX/AMDGPU/SPIR-V all support device functions; mark
+   `alwaysinline` so SPIR-V (no real call ABI issues) and the others inline cleanly.
+   CPU: same IR, inlines into the work-item loop. The `LoweringTarget` may need a
+   small hook for the function's calling convention/decoration (mirror
+   `decorateKernel`).
+5. **Tests:** a kernel calling a `@Device` helper (scalar args + a return) runs on CPU
+   (executable) and emits on the GPU backends; a helper-calls-helper chain; a helper
+   taking a `Buffer` param (addrspace correctness); reject recursion with `XPU-N01`.
+
+**Risk:** medium-large — it adds the first non-builtin call path to kernel lowering
+and a function cache/recursion guard, but reuses the existing `DeviceLowerer` body
+walk wholesale. Lower risk than 2D/3D stage 4.
+
 ---
 
 ## 3. Vulkan block dim — spec-constant `LocalSizeId`
