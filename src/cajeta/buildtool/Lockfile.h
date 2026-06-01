@@ -26,8 +26,33 @@
 #include <map>
 #include <optional>
 #include <string>
+#include <vector>
 
 namespace cajeta::buildtool {
+
+    // One resolved melt as recorded in the lockfile. Mirrors the
+    // `melts[]` schema in BuildTool.md "Lockfile".
+    struct ResolvedMeltEntry {
+        std::string name;
+        std::string version;
+        std::string resolvedFromRepo;
+        std::string checksum;                    // "sha256:<hex>"
+        // Concrete `name@version` strings for the immediate transitives
+        // declared by this melt's `melt.melts`.
+        std::vector<std::string> transitiveMelts;
+    };
+
+    // One resolved package in the lockfile, including the audit field
+    // that names which melt (or "explicit") supplied this version.
+    struct ResolvedPackageEntry {
+        std::string name;
+        std::string version;
+        std::string resolvedFromRepo;
+        std::string checksum;
+        // "explicit" when the consumer pinned it directly; otherwise
+        // "<melt-name>@<melt-version>" of the supplying melt.
+        std::string providedBy;
+    };
 
     // Lockfile data model. Phase 2 populates the top-level metadata
     // + properties; packages/plugins/overrides arrays exist as empty
@@ -40,12 +65,18 @@ namespace cajeta::buildtool {
         std::string resolvedAt;          // ISO 8601, UTC
         std::map<std::string, std::string> properties;
 
-        // Reserved for Phase 6: each entry will be
-        // { name, version, resolved-from, checksum, capabilities,
-        //   transitive-deps }.
-        // Modeled raw for now so the schema slot is on disk and the
-        // upgrade path is additive.
-        llvm::json::Array packages;
+        // Phase 6 typed entries. When `packagesTyped` is non-empty,
+        // the writer emits them as the `packages` array; otherwise it
+        // falls back to `packagesRaw` (the historical raw slot). Same
+        // pattern for `meltsTyped` / `meltsRaw`.
+        std::vector<ResolvedPackageEntry> packagesTyped;
+        std::vector<ResolvedMeltEntry> meltsTyped;
+
+        // Raw escape hatches for the slots that don't yet have typed
+        // models. Kept so the lockfile schema rev can extend
+        // additively without touching every caller.
+        llvm::json::Array packagesRaw;
+        llvm::json::Array meltsRaw;
 
         // Reserved for Phase 7.
         llvm::json::Array plugins;
@@ -78,6 +109,26 @@ namespace cajeta::buildtool {
         const Manifest& manifest,
         const std::string& manifestSource,
         const ResolvedProperties& props,
+        const std::string& nowIso);
+
+    // Same as composeLockfile() but populates the typed packages +
+    // melts slots from the resolver outputs. `meltProvidedBy` maps
+    // dep name → "<melt-name>@<melt-version>"; deps not in that map
+    // get "explicit" as their provided-by.
+    //
+    // Forward declarations for the resolver/melt types are pulled in
+    // here as full headers via the corresponding TU; using forward
+    // decls keeps this header lean for unit-test files that don't
+    // need them.
+    struct ResolvedDependency;
+    struct MeltResolution;
+    Lockfile composeLockfileWithResolution(
+        const Manifest& manifest,
+        const std::string& manifestSource,
+        const ResolvedProperties& props,
+        const std::vector<ResolvedDependency>& resolvedDeps,
+        const MeltResolution& melts,
+        const std::map<std::string, std::string>& meltProvidedBy,
         const std::string& nowIso);
 
     // Compare a Lockfile's recorded manifest-checksum against the
