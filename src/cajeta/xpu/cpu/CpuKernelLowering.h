@@ -34,9 +34,12 @@ namespace xpu {
 namespace cpu {
 
     // Number of trailing i32 coordinate parameters appended to every CPU
-    // kernel (3 dims × {threadId, workgroupId, workgroupDim}). The host driver
-    // passes a work-item's coordinates here; threadId() etc. read them back.
-    inline constexpr unsigned kNumCoordParams = 9;
+    // kernel (3 dims × {threadId, workgroupId, workgroupDim, gridDim}). The host
+    // driver passes a work-item's coordinates here; threadId() etc. read them
+    // back. The 4th group, gridDim (block count = nctaid), is what makes the
+    // grid-stride for-each loop's stride gridSize(dim) = nctaid·ntid available on
+    // the CPU (Item 6 Stage 2); the SIMT backends read it from hardware instead.
+    inline constexpr unsigned kNumCoordParams = 12;
 
     // Lower `method` (a @Kernel) into `deviceModule` (host-configured via
     // configureHostModule). Returns the created host function (symbol = simple

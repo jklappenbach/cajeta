@@ -24,13 +24,18 @@ namespace cpu {
         // The launcher thunk is the per-BLOCK wrapper (Inc 5B) — it loops the
         // block's work-items internally (vectorized). So we call it once per
         // BLOCK, setting only ctaid + ntid; tid is the wrapper's loop var.
-        // coord layout: [tid.xyz (unused here), ctaid.xyz, ntid.xyz, dynShared].
-        // coord[9] is the dynamic shared-memory byte count; this direct driver
-        // doesn't carry one (its kernels use static shared), so it stays 0.
-        std::int32_t coord[10] = {0, 0, 0, 0, 0, 0,
+        // coord layout: [tid.xyz (unused here), ctaid.xyz, ntid.xyz, nctaid.xyz,
+        // dynShared]. nctaid (grid block-count = gridX/Y/Z) feeds the kernel's
+        // gridSize() for grid-stride for-each. coord[12] is the dynamic
+        // shared-memory byte count; this direct driver doesn't carry one (its
+        // kernels use static shared), so it stays 0.
+        std::int32_t coord[13] = {0, 0, 0, 0, 0, 0,
                                   static_cast<std::int32_t>(blockX),
                                   static_cast<std::int32_t>(blockY),
-                                  static_cast<std::int32_t>(blockZ), 0};
+                                  static_cast<std::int32_t>(blockZ),
+                                  static_cast<std::int32_t>(gridX),
+                                  static_cast<std::int32_t>(gridY),
+                                  static_cast<std::int32_t>(gridZ), 0};
         for (unsigned cz = 0; cz < gridZ; ++cz) {
             coord[5] = static_cast<std::int32_t>(cz);   // ctaid.z
             for (unsigned cy = 0; cy < gridY; ++cy) {

@@ -25,7 +25,7 @@ namespace {
 
 // The CPU LoweringTarget. The SIMT backends read coordinates from hardware
 // intrinsics; the CPU has none, so the grid→threads model passes a work-item's
-// coordinates as the 9 trailing i32 kernel args and these reads pull them back.
+// coordinates as the 12 trailing i32 kernel args and these reads pull them back.
 class CpuTarget : public LoweringTarget {
 public:
     const char* name() const override { return "cpu"; }
@@ -47,16 +47,16 @@ public:
     }
     // globalId uses the shared default: ctaid*ntid + tid.
 
-    // Grid-stride stride (Item 6). The CPU kernel's coord ABI carries only the
-    // CURRENT block id (ctaid) + block dim (ntid), not the grid dimension (block
-    // count) — so gx·bx isn't available yet. Stage 2 threads it through the
-    // coord chain; until then, a grid-stride for-each kernel cleanly falls back
-    // to the host stub (XPU-N01) rather than miscompiling.
-    llvm::Value* gridSize(llvm::IRBuilderBase&, llvm::Module&,
-                          unsigned) override {
-        throw cajeta::Exception(
-            "XPU kernel lowering: unsupported construct — grid-stride for-each "
-            "on the CPU backend (Stage 2)", "XPU-N01");
+    // Grid-stride stride (Item 6 Stage 2). Total work-items in `dim` =
+    // gridDim·blockDim = nctaid·ntid. The SIMT backends read these from hardware;
+    // the CPU now carries the 4th coord group, gridDim (nctaid = block count),
+    // threaded from the launch ABI (runtime → thunk → wrapper → kernel). Returns
+    // i32, matching the other coord reads.
+    llvm::Value* gridSize(llvm::IRBuilderBase& b, llvm::Module&,
+                          unsigned dim) override {
+        return b.CreateMul(coord(b, /*group=*/9, dim),   // nctaid.{x,y,z}
+                           coord(b, /*group=*/6, dim),   // ntid.{x,y,z}
+                           "xpu.gridsize");
     }
 
     void workgroupBarrier(llvm::IRBuilderBase& b, llvm::Module& m) override {
@@ -108,7 +108,8 @@ public:
         for (auto& p : params) fn->getArg(i++)->setName(p.name);
         static const char* kCoordNames[kNumCoordParams] = {
             "tid.x", "tid.y", "tid.z", "ctaid.x", "ctaid.y",
-            "ctaid.z", "ntid.x", "ntid.y", "ntid.z"};
+            "ctaid.z", "ntid.x", "ntid.y", "ntid.z",
+            "nctaid.x", "nctaid.y", "nctaid.z"};
         for (unsigned c = 0; c < kNumCoordParams; ++c)
             fn->getArg(i++)->setName(kCoordNames[c]);
         decorateKernel(fn, m);
@@ -185,8 +186,8 @@ private:
         return call;
     }
 
-    // Read coordinate (group + dim) from the 9 trailing kernel args, laid out
-    // [tid.xyz, ctaid.xyz, ntid.xyz]. group ∈ {0,3,6}, dim ∈ {0,1,2}.
+    // Read coordinate (group + dim) from the 12 trailing kernel args, laid out
+    // [tid.xyz, ctaid.xyz, ntid.xyz, nctaid.xyz]. group ∈ {0,3,6,9}, dim ∈ {0,1,2}.
     static llvm::Value* coord(llvm::IRBuilderBase& b, unsigned group,
                               unsigned dim) {
         llvm::Function* fn = b.GetInsertBlock()->getParent();

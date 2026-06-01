@@ -43,7 +43,7 @@ fix the regression first). Don't build new Vulkan capability on a red base.
 | 3 | **Vulkan block dim — spec-constant workgroup size** | vulkan | medium | ✅ done (verified on-device, block 128) |
 | 4 | **Multi-arch bundling (fatbin)** | deployment | medium | ◐ AMD done + verified on-device; NVIDIA untestable here (no ptxas/fatbinary) |
 | 5 | **Vulkan dynamic shared memory** | vulkan | medium | ✅ done (verified on-device) |
-| 6 | **`for-each` parallel loops** | capability | medium | ◐ Stage 1 done (grid-stride; NVPTX/AMD/SPIR-V + frontend, verified on AMD & Vulkan; CPU = Stage 2) |
+| 6 | **`for-each` parallel loops** | capability | medium | ✅ done (grid-stride; NVPTX/AMD/SPIR-V + frontend verified on AMD & Vulkan; CPU coord-ABI extended, verified) |
 | 7 | **POD structs as kernel args** | capability | small-medium | ☐ not started |
 | 8 | **Texture / Sampler types** | capability | large | ☐ not started |
 | 9 | **`Wave.width()` on-device (Vulkan)** | vulkan | blocked | ⛔ external (LLVM 22 SPIR-V can't select `spv.wave.get_lane_count`) |
@@ -375,9 +375,10 @@ dim):
 
 **Staging.** (1) seam `gridSize` + NVPTX/AMD/SPIR-V + the frontend for-each lowering
 + `.range()` recognition + guardrails; device-tested on AMD & Vulkan (Strix Halo);
-CPU emits a clean `XPU-N01` fallback in the interim (never a miscompile). (2) the CPU
-coord-ABI extension + CPU grid-stride test (grid deliberately smaller than `n`, so
-the stride is exercised, not just grid-cover).
+CPU emits a clean `XPU-N01` fallback in the interim (never a miscompile). (2) ✅ the
+CPU coord-ABI extension (`nctaid.xyz` as the 4th coord group, 9→12 params) + CPU
+grid-stride test (grid deliberately smaller than `n`, so the stride is exercised, not
+just grid-cover).
 
 **Guardrails (`XPU-N02`, before mutation):** iterable not of the form
 `ident.range(expr)`; the receiver not a known buffer param; nested for-each over the
@@ -404,6 +405,20 @@ Tests: `XpuVulkanDispatchDeviceTests.gridStrideForEachOnDevice` (RADV) and
 grid=4·block=64 over n=1024 ⇒ sum 2048 (every element ran via the stride). CPU
 emits a clean `XPU-N01` (host-stub fallback) until Stage 2 threads `gx·bx` through
 the coord ABI. Full `Xpu*` suite green (148/7-skipped).
+
+**✅ Stage 2 DONE — CPU grid-stride (2026-06-01).** The CPU kernel coord ABI grew
+from 9 to 12 trailing i32 params: the 4th group, `nctaid.xyz` (gridDim = block
+count), is threaded from the launch ABI through the whole chain — runtime
+`run_slice` coord array (now 13: `[tid, ctaid, ntid, nctaid, dynShared]`, dynShared
+moved to `coord[12]`), `CpuDriver`, the launcher thunk (`coord[3..11]` → wrapper's 9
+block-coord params), the per-block wrapper (passes `nctaid` into both the barrier-free
+work-item-loop call and the fission `vmap`), and the kernel itself. `CpuTarget::
+gridSize(dim)` now returns `nctaid(dim)·ntid(dim)` instead of throwing `XPU-N01`. Test:
+`XpuCpuDispatchTests.gridStrideForEachOnCpu` — `n=1024`, grid=2·block=64 ⇒ gridSize=128
+< n, so each work-item strides over 8 elements; `in[i]=i`, `out[i]=v`, verifying
+`out[i]==i` for **all** i proves full coverage with the correct per-element index (a
+stride of just `ntid`=64 would miscover). `XpuCpuExecTests` SAXPY signature + the two
+coord-count comments in `XpuCpuEmitTests` updated to 12. Full CPU suite green (46).
 
 > ✅ **Root-caused & fixed (2026-06-01).** The intermittent `LLVM ERROR: Unable to
 > get address space id` abort (seen once, in `XpuVulkanEmitTests.lowersSaxpyToSpirv`)

@@ -106,6 +106,7 @@ void fissionBarrierKernel(llvm::Function* linked, llvm::Function* wrapper,
                           unsigned nReal,
                           const std::vector<llvm::Value*>& ctaid,
                           const std::vector<llvm::Value*>& ntid,
+                          const std::vector<llvm::Value*>& nctaid,
                           llvm::Module& hostModule,
                           std::vector<llvm::BranchInst*>* workItemLatches,
                           llvm::Value* dynSharedBytes) {
@@ -142,6 +143,7 @@ void fissionBarrierKernel(llvm::Function* linked, llvm::Function* wrapper,
     for (unsigned d = 0; d < 3; ++d) {
         vmap[linked->getArg(nReal + 3 + d)] = ctaid[d];
         vmap[linked->getArg(nReal + 6 + d)] = ntid[d];
+        vmap[linked->getArg(nReal + 9 + d)] = nctaid[d];   // gridDim (Item 6 St.2)
     }
     llvm::SmallVector<llvm::ReturnInst*, 4> returns;
     llvm::CloneFunctionInto(wrapper, linked, vmap,

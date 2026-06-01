@@ -325,9 +325,11 @@ void foldWaveVariants(llvm::Function& f) {
         // all kernels; null is tolerated (vectorization just won't fire).
         std::unique_ptr<llvm::TargetMachine> hostTm = createCpuTargetMachine();
 
-        // The per-block wrapper takes 6 coordinate params (ctaid.{x,y,z},
-        // ntid.{x,y,z}); the 3 tid coords become its internal work-item loop var.
-        const unsigned kNumBlockCoordParams = 6;
+        // The per-block wrapper takes 9 coordinate params (ctaid.{x,y,z},
+        // ntid.{x,y,z}, nctaid.{x,y,z}); the 3 tid coords become its internal
+        // work-item loop var. nctaid (grid block-count) rides through so the
+        // kernel's gridSize(dim) = nctaid·ntid (grid-stride for-each, Item 6 St.2).
+        const unsigned kNumBlockCoordParams = 9;
 
         int emitted = 0;
         for (auto& method : kernels) {
@@ -391,6 +393,9 @@ void foldWaveVariants(llvm::Function& f) {
             llvm::Value* ntidX  = wrapper->getArg(nReal + 3);
             llvm::Value* ntidY  = wrapper->getArg(nReal + 4);
             llvm::Value* ntidZ  = wrapper->getArg(nReal + 5);
+            llvm::Value* nctaidX = wrapper->getArg(nReal + 6);
+            llvm::Value* nctaidY = wrapper->getArg(nReal + 7);
+            llvm::Value* nctaidZ = wrapper->getArg(nReal + 8);
 
             // A kernel that calls Barrier.workgroup() can't run as one work-item
             // loop — it is split at each barrier into regions, each looped over
@@ -404,8 +409,10 @@ void foldWaveVariants(llvm::Function& f) {
                 try {
                     std::vector<llvm::Value*> ctaidV = {ctaidX, ctaidY, ctaidZ};
                     std::vector<llvm::Value*> ntidV  = {ntidX,  ntidY,  ntidZ};
+                    std::vector<llvm::Value*> nctaidV = {nctaidX, nctaidY, nctaidZ};
                     fissionBarrierKernel(linked, wrapper, nReal, ctaidV, ntidV,
-                                         hostModule, &wiLatches, dynSharedBytes);
+                                         nctaidV, hostModule, &wiLatches,
+                                         dynSharedBytes);
                 } catch (cajeta::Exception&) {
                     wrapper->eraseFromParent();
                     linked->eraseFromParent();    // has barrier markers; unusable
@@ -486,6 +493,7 @@ void foldWaveVariants(llvm::Function& f) {
             kArgs.push_back(tz);                      // tid.z
             kArgs.push_back(ctaidX); kArgs.push_back(ctaidY); kArgs.push_back(ctaidZ);
             kArgs.push_back(ntidX);  kArgs.push_back(ntidY);  kArgs.push_back(ntidZ);
+            kArgs.push_back(nctaidX); kArgs.push_back(nctaidY); kArgs.push_back(nctaidZ);
             llvm::CallInst* kcall = b.CreateCall(linked, kArgs);
             tid->addIncoming(b.CreateAdd(tid, one, "tid.next"), wBody);
             llvm::BranchInst* latchBr = b.CreateBr(wHead);   // inner (x) back-edge
@@ -537,11 +545,11 @@ void foldWaveVariants(llvm::Function& f) {
 
             // --- Uniform launcher thunk → the per-block wrapper -------------
             // void __cajeta_xpu_cpu_launch.<name>(ptr argv, ptr coord). The
-            // runtime calls it ONCE PER BLOCK; coord still carries 9 i32s, but
-            // the wrapper consumes only ctaid.{x,y,z} (coord[3..5]) and
-            // ntid.{x,y,z} (coord[6..8]) — the work-item loop lives in the
-            // wrapper. argv[i] points to the i-th real argument's value (the
-            // cuLaunch/hipModuleLaunch kernelParams convention).
+            // runtime calls it ONCE PER BLOCK; coord carries 12 i32s, but the
+            // wrapper consumes only ctaid.{x,y,z} (coord[3..5]), ntid.{x,y,z}
+            // (coord[6..8]) and nctaid.{x,y,z} (coord[9..11]) — the work-item loop
+            // lives in the wrapper. argv[i] points to the i-th real argument's
+            // value (the cuLaunch/hipModuleLaunch kernelParams convention).
             llvm::FunctionType* thunkTy =
                 llvm::FunctionType::get(voidTy, {ptrTy, ptrTy}, false);
             llvm::Function* thunk = llvm::Function::Create(
@@ -562,12 +570,12 @@ void foldWaveVariants(llvm::Function& f) {
                 llvm::Value* slot = b.CreateLoad(ptrTy, slotPtr, "argv.ptr");
                 callArgs.push_back(b.CreateLoad(kfnTy->getParamType(i), slot, "arg"));
             }
-            for (unsigned j = 3; j < kNumCoordParams; ++j) {   // ctaid+ntid xyz
+            for (unsigned j = 3; j < kNumCoordParams; ++j) {   // ctaid+ntid+nctaid xyz
                 llvm::Value* cPtr = b.CreateInBoundsGEP(
                     i32, coordArg, llvm::ConstantInt::get(i64, j), "coord.slot");
                 callArgs.push_back(b.CreateLoad(i32, cPtr, "coord.val"));
             }
-            // coord[9]: the dynamic shared-memory byte count (the launch's
+            // coord[12]: the dynamic shared-memory byte count (the launch's
             // `sharedBytes:`), passed as the wrapper's trailing param.
             llvm::Value* dynPtr = b.CreateInBoundsGEP(
                 i32, coordArg, llvm::ConstantInt::get(i64, kNumCoordParams),

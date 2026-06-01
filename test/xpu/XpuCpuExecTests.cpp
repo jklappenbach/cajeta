@@ -4,7 +4,7 @@
 //
 // The portable SAXPY kernel lowered by CpuTarget is JIT-compiled and run over a
 // grid by a host driver that supplies each work-item's coordinates through the
-// 9 trailing kernel args (the grid→threads model). This proves the lowering is
+// 12 trailing kernel args (the grid→threads model). This proves the lowering is
 // not just structurally right (XpuCpuEmitTests) but *semantically* correct —
 // and it is the CPU oracle the GPU backends can be diffed against. GPU-free.
 //
@@ -75,11 +75,12 @@ cajeta::MethodPtr findMethod(const cajeta::CajetaClassPtr& klass,
     return nullptr;
 }
 
-// The lowered kernel's host signature: (y, x, a, then 9 i32 coordinates).
+// The lowered kernel's host signature: (y, x, a, then 12 i32 coordinates).
 using SaxpyFn = void (*)(float*, float*, float,
                          int32_t, int32_t, int32_t,   // tid.{x,y,z}
                          int32_t, int32_t, int32_t,   // ctaid.{x,y,z}
-                         int32_t, int32_t, int32_t);  // ntid.{x,y,z}
+                         int32_t, int32_t, int32_t,   // ntid.{x,y,z}
+                         int32_t, int32_t, int32_t);  // nctaid.{x,y,z}
 
 } // namespace
 
@@ -125,7 +126,7 @@ TEST(XpuCpuExecTests, saxpyRunsOnCpuOverAGrid) {
     for (int32_t ctaid = 0; ctaid < G; ++ctaid)
         for (int32_t tid = 0; tid < B; ++tid)
             saxpy(y.data(), x.data(), a,
-                  tid, 0, 0, ctaid, 0, 0, B, 1, 1);
+                  tid, 0, 0, ctaid, 0, 0, B, 1, 1, G, 1, 1);
 
     for (int i = 0; i < N; ++i)
         EXPECT_FLOAT_EQ(y[i], a * x[i] + y0[i]) << "element " << i;
