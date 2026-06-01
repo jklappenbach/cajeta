@@ -264,8 +264,8 @@ diagnostic for an *unsupported* barrier shape is `XPU-N02`.
   miscompile):** a barrier under work-item-divergent control flow (post-dominance check — the
   barrier must post-dominate its level's entry); a barrier in a loop with a `tid`-dependent
   trip count; a barrier in a nested loop (one level — *lifted in Inc 8*); dynamic-sized shared
-  memory; wave ops + barriers in one kernel (the 5C forced-VF path and fission — *composed in
-  Inc 9*).
+  memory (*lifted in Inc 10*); wave ops + barriers in one kernel (the 5C forced-VF path and
+  fission — *composed in Inc 9*).
 - **Verified:** `XpuCpuBarrierExecTests` — two straight-line regions run the whole block;
   per-block shared memory staged + read cross-lane; the **canonical tree reduction**
   (`in[i]=i`, 256 block ⇒ `out[0]=32640`) with a barrier inside the uniform loop; 32 blocks ×
@@ -369,6 +369,38 @@ work-item loop, so the 5C machinery applies **per region** unchanged.
   barrier, and GPU suites unchanged.
 - **Barrier fission scope cuts are now fully lifted** — multiple barriers per loop (Inc 7),
   register accumulator across the back-edge (Inc 7), nested loops (Inc 8), wave + barrier (Inc 9).
+
+### Increment 10 — dynamic (runtime-sized) shared memory + a barrier ✅ (landed 2026-05-31)
+Lifts the static-shared-size requirement: a `shared T[runtimeN]` array (sized by a kernel
+parameter, not a constant) lowers to an external unsized `[0 × T]` addrspace(3) global, and the
+fission pass now allocas it per block from the launch's `sharedBytes:` count instead of throwing
+`XPU-N02`.
+- **The launch ABI carries the byte count to the CPU wrapper.** `__cajeta_xpu_launch` already
+  took `sharedBytes` (cuLaunchKernel's dynamic-shared bytes), but `cajeta_xpu_launch_cpu` dropped
+  it. It now threads it: the per-block coord vector gains a 10th slot (`coord[9]` = dynamic-shared
+  bytes), the generated launcher thunk loads it and passes it as the per-block wrapper's trailing
+  param, and fission's step 5 allocas `alloca i8, i64 sharedBytes` (aligned 16) for an unsized
+  shared global and `addrspacecast`s it to addrspace(3). The kernel's typed GEPs index the byte
+  buffer unchanged. Every wrapper gains the trailing param (uniform thunk ABI); non-dynamic
+  kernels ignore it (DCE). The two thunk callers — the C runtime `run_slice` and the C++
+  `CpuDriver` — both write the 10-slot coord.
+- **Verified:** `XpuCpuBarrierExecTests.dynamicSharedMemoryWithBarrier` — the canonical tree
+  reduction with `shared int32[n]` (runtime `n`), launched `sharedBytes: [1024]` over a 256
+  block ⇒ `out[0]=32640`. Full `Xpu*` suite green (137 passed / 7 GPU-skipped / 0 failed);
+  static-shared, wave, and device launch paths unchanged (the extra coord slot is additive).
+
+### Wave-width / block-size constraint (documented — not a fixable bug)
+The wave-on-CPU model (5C) maps a wave to the **W SIMD lanes** of a vectorized iteration, where
+W is the host's native width (16 AVX-512 / 8 AVX2 / 4 SSE). This W differs from a GPU warp
+(32/64), so a wave kernel's *partitioning* is platform-specific by construction — only
+**width-agnostic** kernels (that query `Wave.width()` and produce a width-independent result, e.g.
+the two-level reduction whose block total is the same for any W) are portable. Such kernels need
+the **block size to be a multiple of W** to have full waves; a partial tail wave (block not a
+multiple of W) runs the scalar width-1 stub in the loop's scalar epilogue. This is **inherent**,
+not a miscompile to fix: tail-folding wouldn't make a non-W-multiple block cross-platform-correct
+(the kernel's own `block/width` already drops the partial wave), and it is automatically satisfied
+by every warp-multiple block size (32/64/128/256 — all divisible by 4/8/16), i.e. by all
+GPU-idiomatic launch shapes. Inherited from the barrier-free 5C path; Inc 9 adds nothing new here.
 
 ### Docs
 - This file (the log). The matrix gains a **CPU column** (today: emit + grid→threads

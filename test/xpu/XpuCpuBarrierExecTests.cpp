@@ -620,6 +620,51 @@ public class M {
 }
 )CJ";
 
+// Dynamic (runtime-sized) shared memory + a barrier: `shared int32[n]` with `n` a
+// runtime parameter lowers to an external unsized addrspace(3) global; the launch
+// passes its byte count via `sharedBytes:`, and the per-block wrapper allocas that
+// many bytes. Otherwise the canonical tree reduction. in[i]=i over a 256 block,
+// sharedBytes = 256*4 ⇒ out[0] = 32640.
+const char* kDynSharedSource = R"CJ(
+package test;
+import cajeta.xpu.core.Buffer;
+import cajeta.xpu.core.Stream;
+import cajeta.xpu.core.Thread;
+import cajeta.xpu.core.Workgroup;
+import cajeta.xpu.core.Barrier;
+import cajeta.xpu.core.Shared;
+public class M {
+    @Kernel
+    public static void dynreduce(Buffer<int32> out, Buffer<int32> in, uint32 n) {
+        Shared<int32> tile = shared int32[n];
+        uint32 t = Thread.x();
+        if (t < n) { tile[t] = in[t]; } else { tile[t] = 0; }
+        Barrier.workgroup();
+        for (uint32 s = 128; s > 0; s >>= 1) {
+            if (t < s) { tile[t] += tile[t + s]; }
+            Barrier.workgroup();
+        }
+        if (t == 0) { out[Workgroup.x()] = tile[0]; }
+    }
+    public static int32 run() {
+        uint32 n = 256;
+        int32[] hin = new int32[n];
+        int32[] hout = new int32[1];
+        for (uint32 i = 0; i < n; i = i + 1) { hin[i] = (int32) i; }
+        hout[0] = 0;
+        Buffer<int32> in = heap Buffer<int32>(n);
+        Buffer<int32> out = heap Buffer<int32>(1);
+        in.upload(hin);
+        out.upload(hout);
+        Stream s = Stream.current();
+        dynreduce.launch(s, grid: [1], block: [256], sharedBytes: [1024])(out, in, n);
+        s.sync();
+        out.download(hout);
+        return hout[0];
+    }
+}
+)CJ";
+
 } // namespace
 
 // One barrier, two regions: both halves run for every work-item, with `t`
@@ -800,6 +845,16 @@ TEST(XpuCpuBarrierExecTests, waveReduceWithBarrierMembership) {
     ASSERT_NE(fn, nullptr);
     int r = fn();
     EXPECT_GE(r, 2) << "fail code " << r << " (1000+i: out[i] != W; -1: bad probe)";
+}
+
+// Dynamic (runtime-sized) shared memory + a barrier: the wrapper allocas the
+// launch's `sharedBytes:` count per block. Tree reduction ⇒ out[0]=32640.
+TEST(XpuCpuBarrierExecTests, dynamicSharedMemoryWithBarrier) {
+    auto jit = CajetaJit::compile(kDynSharedSource, "test.M", cpuOptions());
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<int (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    EXPECT_EQ(fn(), 32640);
 }
 
 // ----------------------------------------------------------------------------

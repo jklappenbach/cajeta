@@ -104,7 +104,8 @@ void fissionBarrierKernel(llvm::Function* linked, llvm::Function* wrapper,
                           const std::vector<llvm::Value*>& ctaid,
                           const std::vector<llvm::Value*>& ntid,
                           llvm::Module& hostModule,
-                          std::vector<llvm::BranchInst*>* workItemLatches) {
+                          std::vector<llvm::BranchInst*>* workItemLatches,
+                          llvm::Value* dynSharedBytes) {
     llvm::LLVMContext& ctx = wrapper->getContext();
     llvm::Type* i32 = llvm::Type::getInt32Ty(ctx);
     llvm::Value* ntidX = ntid[0];
@@ -216,11 +217,23 @@ void fissionBarrierKernel(llvm::Function* linked, llvm::Function* wrapper,
                 if (auto* gv = llvm::dyn_cast<llvm::GlobalVariable>(op))
                     if (gv->getAddressSpace() == 3) sharedGlobals.insert(gv);
     for (llvm::GlobalVariable* gv : sharedGlobals) {
-        if (!gv->hasInitializer())
-            unsupported("dynamic-sized shared memory with a barrier (require a "
-                        "static size)");
-        auto* buf = eb.CreateAlloca(gv->getValueType(), 0, nullptr,
-                                    gv->getName() + ".blk");
+        llvm::AllocaInst* buf;
+        if (gv->hasInitializer()) {
+            // Static `shared T[N]`: a per-block [N x T] stack buffer.
+            buf = eb.CreateAlloca(gv->getValueType(), 0, nullptr,
+                                  gv->getName() + ".blk");
+        } else {
+            // Dynamic `shared T[runtimeN]` (an external unsized addrspace(3)
+            // global): alloca the launch's `sharedBytes:` count of bytes per
+            // block. The kernel's typed GEPs index this byte buffer unchanged.
+            if (!dynSharedBytes)
+                unsupported("dynamic-sized shared memory needs a runtime byte "
+                            "count (the launch's sharedBytes:)");
+            llvm::Value* bytes = eb.CreateZExt(
+                dynSharedBytes, llvm::Type::getInt64Ty(ctx), "dyn.shared.bytes");
+            buf = eb.CreateAlloca(llvm::Type::getInt8Ty(ctx), 0, bytes,
+                                  gv->getName() + ".dyn");
+        }
         buf->setAlignment(llvm::Align(16));
         gv->replaceAllUsesWith(
             eb.CreateAddrSpaceCast(buf, llvm::PointerType::get(ctx, 3)));

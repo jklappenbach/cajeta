@@ -44,14 +44,18 @@ namespace cpu {
     // If `workItemLatches` is non-null, the back-edge branch of every generated
     // region work-item loop is appended to it — the caller forces VF=W on them to
     // vectorize wave ops inside a fissioned kernel (wave + barrier composition).
-    // Throws cajeta::Exception("XPU-N02") on an unsupported construct.
+    // `dynSharedBytes` (if non-null) is the runtime dynamic-shared byte count: a
+    // `shared T[runtimeN]` array allocas that many bytes per block instead of
+    // requiring a static size. Throws cajeta::Exception("XPU-N02") on an
+    // unsupported construct.
     void fissionBarrierKernel(llvm::Function* linked, llvm::Function* wrapper,
                               unsigned nReal,
                               const std::vector<llvm::Value*>& ctaid,
                               const std::vector<llvm::Value*>& ntid,
                               llvm::Module& hostModule,
                               std::vector<llvm::BranchInst*>* workItemLatches
-                                  = nullptr);
+                                  = nullptr,
+                              llvm::Value* dynSharedBytes = nullptr);
 
 } // namespace cpu
 } // namespace xpu
