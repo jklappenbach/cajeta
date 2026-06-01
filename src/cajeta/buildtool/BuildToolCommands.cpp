@@ -1105,6 +1105,323 @@ namespace cajeta::buildtool {
             return 0;
         }
 
+        // `cajeta coverage {ignore,list,remove}` — manipulate the
+        // cajeta.coverage plugin's exclude list in cajeta.json.
+        //
+        // The IDE plugin's "right-click → ignore in coverage" action
+        // shells out to `cajeta coverage ignore --kind <k> --pattern
+        // <p> --reason <r>`; CI scripts can call `cajeta coverage
+        // list` to enumerate the current exclusions before opening a
+        // PR; `cajeta coverage remove` deletes an entry by pattern.
+        //
+        // The JSONC-preserving rewrite lives in ManifestEditor —
+        // this layer is argv-parsing + a small generic-reason filter
+        // that catches obvious sloppy reasons before they hit disk.
+
+        // Reasons we refuse to record. Lowercase, exact-match; the
+        // plugin author's own config parser may extend this list,
+        // but the CLI catches the most common drift before it hits
+        // disk. See plan/coverage-exclude-and-cli.md "Generic-reason
+        // list" for the rationale.
+        bool isGenericCoverageReason(std::string_view reason) {
+            std::string lower;
+            lower.reserve(reason.size());
+            for (char c : reason) {
+                lower += static_cast<char>(
+                    std::tolower(static_cast<unsigned char>(c)));
+            }
+            // Trim surrounding whitespace.
+            size_t b = 0, e = lower.size();
+            while (b < e && std::isspace(
+                       static_cast<unsigned char>(lower[b]))) ++b;
+            while (e > b && std::isspace(
+                       static_cast<unsigned char>(lower[e - 1]))) --e;
+            lower = lower.substr(b, e - b);
+            return lower.empty() ||
+                   lower == "wip"   || lower == "todo"  ||
+                   lower == "skip"  || lower == "fixme" ||
+                   lower == "tbd";
+        }
+
+        // Pull the exclude array out of the manifest. Returns an
+        // empty vector when the plugin isn't declared (callers print
+        // the "no entries" message). Each entry is the JSON value as
+        // parsed — typed objects or back-compat strings.
+        std::vector<llvm::json::Value>
+        readCoverageExcludes(const llvm::json::Object& root) {
+            std::vector<llvm::json::Value> out;
+            const auto* plugins = root.getObject("plugins");
+            if (!plugins) return out;
+            const auto* cov = plugins->getObject("cajeta.coverage");
+            if (!cov) return out;
+            const auto* config = cov->getObject("config");
+            if (!config) return out;
+            const auto* arr = config->getArray("exclude");
+            if (!arr) return out;
+            out.reserve(arr->size());
+            for (const auto& v : *arr) {
+                out.push_back(v);
+            }
+            return out;
+        }
+
+        int coverageIgnoreCommand(int argc, const char* argv[]) {
+            std::string manifestPath = "./cajeta.json";
+            std::string kind;
+            std::string pattern;
+            std::string reason;
+
+            for (int i = 3; i < argc; ++i) {
+                std::string_view arg = argv[i];
+                std::string value;
+                if (match(arg, "manifest", value)) {
+                    manifestPath = value;
+                } else if (match(arg, "kind",    value)) {
+                    kind = value;
+                } else if (match(arg, "pattern", value)) {
+                    pattern = value;
+                } else if (match(arg, "reason",  value)) {
+                    reason = value;
+                } else if (arg == "--help" || arg == "-h") {
+                    std::cout
+                        << "Usage: cajeta coverage ignore "
+                        << "--kind=<file|package|symbol> "
+                        << "--pattern=<glob> --reason=<text> "
+                        << "[--manifest=<path>]\n"
+                        << "\n"
+                        << "Add a typed exclude entry to "
+                        << "plugins.cajeta.coverage.config.exclude.\n"
+                        << "Refuses generic reasons "
+                        << "(wip/todo/skip/fixme/tbd) and duplicates.\n";
+                    return 0;
+                } else {
+                    std::cerr << "cajeta coverage ignore: unknown "
+                                 "argument '" << arg << "'\n";
+                    return 1;
+                }
+            }
+            if (kind.empty() || pattern.empty() || reason.empty()) {
+                std::cerr << "cajeta coverage ignore: --kind, "
+                             "--pattern, and --reason are all "
+                             "required\n";
+                return 1;
+            }
+            if (isGenericCoverageReason(reason)) {
+                std::cerr << "cajeta coverage ignore: '" << reason
+                          << "' is too generic; provide a specific "
+                          << "justification (the reason shows up on "
+                          << "every PR diff)\n";
+                return 1;
+            }
+
+            std::string src;
+            if (!readFileBytes(manifestPath, src)) {
+                std::cerr << "cajeta coverage ignore: cannot read "
+                          << "manifest '" << manifestPath << "'\n";
+                return 1;
+            }
+            auto out = appendCoverageExclude(src, kind, pattern, reason);
+            if (!out) {
+                std::string msg;
+                llvm::raw_string_ostream os(msg);
+                os << out.takeError();
+                std::cerr << "cajeta coverage ignore: " << msg << "\n";
+                return 1;
+            }
+            if (!writeFileBytes(manifestPath, *out)) {
+                std::cerr << "cajeta coverage ignore: cannot write "
+                          << "manifest '" << manifestPath << "'\n";
+                return 1;
+            }
+            std::cout << "added " << kind << " exclude '" << pattern
+                      << "' to " << manifestPath << "\n";
+            return 0;
+        }
+
+        int coverageListCommand(int argc, const char* argv[]) {
+            std::string manifestPath = "./cajeta.json";
+            std::string kindFilter;
+
+            for (int i = 3; i < argc; ++i) {
+                std::string_view arg = argv[i];
+                std::string value;
+                if (match(arg, "manifest", value)) {
+                    manifestPath = value;
+                } else if (match(arg, "kind", value)) {
+                    kindFilter = value;
+                } else if (arg == "--help" || arg == "-h") {
+                    std::cout
+                        << "Usage: cajeta coverage list "
+                        << "[--kind=<file|package|symbol>] "
+                        << "[--manifest=<path>]\n"
+                        << "\n"
+                        << "Print the cajeta.coverage exclude list.\n";
+                    return 0;
+                } else {
+                    std::cerr << "cajeta coverage list: unknown "
+                                 "argument '" << arg << "'\n";
+                    return 1;
+                }
+            }
+
+            std::string src;
+            if (!readFileBytes(manifestPath, src)) {
+                std::cerr << "cajeta coverage list: cannot read "
+                          << "manifest '" << manifestPath << "'\n";
+                return 1;
+            }
+            auto parsed = parseJsonC(src);
+            if (!parsed) {
+                std::string msg;
+                llvm::raw_string_ostream os(msg);
+                os << parsed.takeError();
+                std::cerr << "cajeta coverage list: " << msg << "\n";
+                return 1;
+            }
+            const auto* root = parsed->getAsObject();
+            if (!root) {
+                std::cerr << "cajeta coverage list: manifest root is "
+                             "not an object\n";
+                return 1;
+            }
+            auto excludes = readCoverageExcludes(*root);
+            if (excludes.empty()) {
+                std::cout << "no exclude entries declared "
+                             "(plugins.cajeta.coverage.config.exclude)\n";
+                return 0;
+            }
+            int shown = 0;
+            for (const auto& v : excludes) {
+                std::string kind, pattern, reason;
+                if (const auto* obj = v.getAsObject()) {
+                    if (auto s = obj->getString("kind"))
+                        kind = s->str();
+                    if (auto s = obj->getString("pattern"))
+                        pattern = s->str();
+                    if (auto s = obj->getString("reason"))
+                        reason = s->str();
+                } else if (auto s = v.getAsString()) {
+                    // Back-compat: bare string entry → implicit file kind.
+                    kind = "file";
+                    pattern = s->str();
+                    reason = "(legacy entry; no reason recorded)";
+                }
+                if (!kindFilter.empty() && kind != kindFilter) continue;
+                std::cout << "  " << kind << "\t" << pattern;
+                if (!reason.empty()) {
+                    std::cout << "\t— " << reason;
+                }
+                std::cout << "\n";
+                ++shown;
+            }
+            if (shown == 0) {
+                std::cout << "no entries matched kind '" << kindFilter
+                          << "'\n";
+            }
+            return 0;
+        }
+
+        int coverageRemoveCommand(int argc, const char* argv[]) {
+            std::string manifestPath = "./cajeta.json";
+            std::string pattern;
+            bool assumeYes = false;
+
+            for (int i = 3; i < argc; ++i) {
+                std::string_view arg = argv[i];
+                std::string value;
+                if (match(arg, "manifest", value)) {
+                    manifestPath = value;
+                } else if (match(arg, "pattern", value)) {
+                    pattern = value;
+                } else if (arg == "--yes" || arg == "-y") {
+                    assumeYes = true;
+                } else if (arg == "--help" || arg == "-h") {
+                    std::cout
+                        << "Usage: cajeta coverage remove "
+                        << "--pattern=<glob> "
+                        << "[--manifest=<path>] [--yes]\n"
+                        << "\n"
+                        << "Remove every exclude entry matching the "
+                        << "given pattern. Prompts on a TTY unless "
+                        << "--yes is passed.\n";
+                    return 0;
+                } else {
+                    std::cerr << "cajeta coverage remove: unknown "
+                                 "argument '" << arg << "'\n";
+                    return 1;
+                }
+            }
+            if (pattern.empty()) {
+                std::cerr << "cajeta coverage remove: --pattern is "
+                             "required\n";
+                return 1;
+            }
+
+            std::string src;
+            if (!readFileBytes(manifestPath, src)) {
+                std::cerr << "cajeta coverage remove: cannot read "
+                          << "manifest '" << manifestPath << "'\n";
+                return 1;
+            }
+            // Confirmation prompt when interactive. Removing an
+            // entry is irreversible (well, modulo re-running ignore
+            // with the same reason); skipping the prompt with --yes
+            // makes CI scripts straightforward.
+            if (!assumeYes && isatty(STDIN_FILENO) != 0) {
+                std::cout << "Remove cajeta.coverage exclude "
+                          << "matching '" << pattern << "' from "
+                          << manifestPath << "? [y/N] ";
+                std::string line;
+                std::getline(std::cin, line);
+                if (line.empty() ||
+                    (line[0] != 'y' && line[0] != 'Y')) {
+                    std::cout << "aborted.\n";
+                    return 1;
+                }
+            }
+            auto out = removeCoverageExclude(src, pattern);
+            if (!out) {
+                std::string msg;
+                llvm::raw_string_ostream os(msg);
+                os << out.takeError();
+                std::cerr << "cajeta coverage remove: " << msg << "\n";
+                return 1;
+            }
+            if (!writeFileBytes(manifestPath, out->newSource)) {
+                std::cerr << "cajeta coverage remove: cannot write "
+                          << "manifest '" << manifestPath << "'\n";
+                return 1;
+            }
+            std::cout << "removed " << out->count
+                      << " exclude(s) matching '" << pattern
+                      << "' from " << manifestPath << "\n";
+            return 0;
+        }
+
+        int coverageCommand(int argc, const char* argv[]) {
+            if (argc < 3 || std::string_view(argv[2]) == "--help" ||
+                std::string_view(argv[2]) == "-h") {
+                std::cout
+                    << "Usage: cajeta coverage <subcommand> [options]\n"
+                    << "\n"
+                    << "Subcommands:\n"
+                    << "  ignore   Add a typed exclude entry.\n"
+                    << "  list     Print the current exclude entries.\n"
+                    << "  remove   Remove entries by pattern.\n"
+                    << "\n"
+                    << "Run `cajeta coverage <subcommand> --help` for "
+                    << "subcommand-specific options.\n";
+                return argc < 3 ? 1 : 0;
+            }
+            std::string_view sub = argv[2];
+            if (sub == "ignore") return coverageIgnoreCommand(argc, argv);
+            if (sub == "list")   return coverageListCommand(argc, argv);
+            if (sub == "remove") return coverageRemoveCommand(argc, argv);
+            std::cerr << "cajeta coverage: unknown subcommand '"
+                      << sub << "' (expected: ignore, list, remove)\n";
+            return 1;
+        }
+
         // Decide whether `argv[1]` is a task invocation. Returns
         // false (so the compiler-side fallthrough runs) when there's
         // no manifest or no matching task — that way `cajeta archive`
@@ -1116,7 +1433,7 @@ namespace cajeta::buildtool {
             if (cmd == "info" || cmd == "tasks" || cmd == "task" ||
                 cmd == "init" || cmd == "archive" ||
                 cmd == "add"  || cmd == "remove" ||
-                cmd == "upgrade") {
+                cmd == "upgrade" || cmd == "coverage") {
                 return false;
             }
             // Anything starting with `-` is a flag for the existing
@@ -1169,6 +1486,10 @@ namespace cajeta::buildtool {
         }
         if (cmd == "upgrade") {
             *exitCodeOut = upgradeCommand(argc, argv);
+            return true;
+        }
+        if (cmd == "coverage") {
+            *exitCodeOut = coverageCommand(argc, argv);
             return true;
         }
         if (looksLikeTaskInvocation(argc, argv)) {

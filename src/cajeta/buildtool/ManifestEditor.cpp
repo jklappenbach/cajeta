@@ -563,4 +563,458 @@ namespace cajeta::buildtool {
         return out;
     }
 
+    namespace {
+
+        // Navigate to the `plugins.cajeta.coverage` object's interior
+        // bounds. Returns nullopt when any step is missing — the
+        // coverage CLI surfaces this as "no cajeta.coverage plugin
+        // declared".
+        struct CoverageBlockBounds {
+            size_t pluginOpen;    // interior of plugins.cajeta.coverage
+            size_t pluginClose;
+        };
+        std::optional<CoverageBlockBounds>
+        findCoverageBlock(const std::string& src) {
+            size_t pluginsOpen = findObjectOpenAfterKey(src, 0, "plugins");
+            if (pluginsOpen == std::string::npos) return std::nullopt;
+            size_t pluginsClose = findMatchingClose(src, pluginsOpen);
+            if (pluginsClose == std::string::npos) return std::nullopt;
+            size_t covOpen = findObjectOpenAfterKey(
+                src, pluginsOpen, "cajeta.coverage");
+            if (covOpen == std::string::npos || covOpen >= pluginsClose) {
+                return std::nullopt;
+            }
+            size_t covClose = findMatchingClose(src, covOpen);
+            if (covClose == std::string::npos) return std::nullopt;
+            CoverageBlockBounds b;
+            b.pluginOpen = covOpen;
+            b.pluginClose = covClose;
+            return b;
+        }
+
+        // Walk an array's interior and yield positions for each
+        // object-literal entry. Returns (objectOpen, objectClose)
+        // pairs where `objectOpen` is the position just after `{`
+        // and `objectClose` is the position of the matching `}`.
+        // Non-object array entries (strings — the back-compat form)
+        // are skipped here; the caller scans those separately.
+        std::vector<std::pair<size_t, size_t>>
+        enumerateObjectEntries(const std::string& src,
+                               size_t openPos, size_t closePos) {
+            std::vector<std::pair<size_t, size_t>> out;
+            size_t i = openPos;
+            while (i < closePos) {
+                while (i < closePos &&
+                       (std::isspace(static_cast<unsigned char>(src[i])) ||
+                        src[i] == ',')) ++i;
+                if (i >= closePos) break;
+                if (src[i] == '{') {
+                    size_t inside = i + 1;
+                    size_t close = findMatchingClose(src, inside);
+                    if (close == std::string::npos || close >= closePos) break;
+                    out.emplace_back(inside, close);
+                    i = close + 1;
+                    continue;
+                }
+                // String entry or other — skip it.
+                i = skipValue(src, i);
+            }
+            return out;
+        }
+
+        // Read a string-typed field out of an object scope. Used to
+        // extract the `kind` and `pattern` of each typed exclude
+        // entry. Returns the raw unescaped string contents, or
+        // nullopt when the field is missing or its value isn't a
+        // string. (We deliberately don't unescape — exclude patterns
+        // shouldn't carry JSON escapes in practice, and a literal
+        // compare is what the duplicate-check needs anyway.)
+        std::optional<std::string> readStringField(
+            const std::string& src, size_t openPos, size_t closePos,
+            const std::string& field) {
+            auto loc = findEntry(src, openPos, closePos, field);
+            if (!loc) return std::nullopt;
+            if (loc->valueStart >= src.size() ||
+                src[loc->valueStart] != '"') {
+                return std::nullopt;
+            }
+            // valueEnd is one past the closing quote (per skipValue).
+            // Strip the surrounding quotes.
+            if (loc->valueEnd < loc->valueStart + 2) return std::nullopt;
+            return src.substr(loc->valueStart + 1,
+                              (loc->valueEnd - 1) - (loc->valueStart + 1));
+        }
+
+        // Insert (or locate) the `config.exclude` array path inside a
+        // coverage block. On entry `covOpen`/`covClose` mark the
+        // interior of `plugins.cajeta.coverage`. Mutates `src` to
+        // ensure `config` exists (as an object) and `exclude` exists
+        // (as an array inside it). Returns the new source plus the
+        // array's interior bounds.
+        struct EnsuredExclude {
+            std::string source;
+            size_t arrayOpen;
+            size_t arrayClose;
+        };
+        llvm::Expected<EnsuredExclude> ensureExcludeArray(
+            const std::string& srcIn,
+            size_t covOpen, size_t covClose) {
+            std::string src = srcIn;
+
+            size_t configOpen = findObjectOpenAfterKey(
+                src, covOpen, "config");
+            if (configOpen == std::string::npos || configOpen >= covClose) {
+                // Inject an empty config object.
+                std::string out = insertEntry(
+                    src, covOpen, covClose, "config", "<inline>");
+                std::string marker = "\"config\": \"<inline>\"";
+                auto mp = out.find(marker);
+                if (mp == std::string::npos) {
+                    return err("manifest: failed to inject coverage "
+                               "config block (insert marker not found)");
+                }
+                out.replace(mp, marker.size(), "\"config\": {}");
+                // Re-find now that we've mutated the source.
+                src = out;
+                covOpen = findObjectOpenAfterKey(src, 0, "cajeta.coverage");
+                if (covOpen == std::string::npos) {
+                    return err("manifest: coverage block lost after "
+                               "config injection");
+                }
+                covClose = findMatchingClose(src, covOpen);
+                configOpen = findObjectOpenAfterKey(
+                    src, covOpen, "config");
+                if (configOpen == std::string::npos) {
+                    return err("manifest: config block lost after "
+                               "injection");
+                }
+            }
+            size_t configClose = findMatchingClose(src, configOpen);
+            if (configClose == std::string::npos) {
+                return err("manifest: malformed coverage config block");
+            }
+
+            size_t arrayOpen = findArrayOpenAfterKey(
+                src, configOpen, "exclude");
+            if (arrayOpen == std::string::npos || arrayOpen >= configClose) {
+                // Inject an empty array.
+                std::string out = insertEntry(
+                    src, configOpen, configClose, "exclude", "<inline>");
+                std::string marker = "\"exclude\": \"<inline>\"";
+                auto mp = out.find(marker);
+                if (mp == std::string::npos) {
+                    return err("manifest: failed to inject coverage "
+                               "exclude array (insert marker not found)");
+                }
+                out.replace(mp, marker.size(), "\"exclude\": []");
+                src = out;
+                covOpen = findObjectOpenAfterKey(src, 0, "cajeta.coverage");
+                covClose = findMatchingClose(src, covOpen);
+                configOpen = findObjectOpenAfterKey(src, covOpen, "config");
+                configClose = findMatchingClose(src, configOpen);
+                arrayOpen = findArrayOpenAfterKey(
+                    src, configOpen, "exclude");
+                if (arrayOpen == std::string::npos) {
+                    return err("manifest: exclude array lost after "
+                               "injection");
+                }
+            }
+            size_t arrayClose = findMatchingArrayClose(src, arrayOpen);
+            if (arrayClose == std::string::npos) {
+                return err("manifest: malformed coverage exclude array");
+            }
+
+            EnsuredExclude r;
+            r.source = std::move(src);
+            r.arrayOpen = arrayOpen;
+            r.arrayClose = arrayClose;
+            return r;
+        }
+
+        // Escape a string for safe embedding in a JSON string literal.
+        // Handles backslash + double-quote + the common control chars;
+        // sufficient for exclude patterns and reason text (which the
+        // CLI receives as command-line argv, so it's already plain
+        // bytes — we just need to keep the JSON parser happy).
+        std::string jsonEscape(const std::string& s) {
+            std::string out;
+            out.reserve(s.size() + 2);
+            for (char c : s) {
+                if (c == '\\') { out += "\\\\"; }
+                else if (c == '"') { out += "\\\""; }
+                else if (c == '\n') { out += "\\n"; }
+                else if (c == '\r') { out += "\\r"; }
+                else if (c == '\t') { out += "\\t"; }
+                else { out += c; }
+            }
+            return out;
+        }
+
+    } // namespace
+
+    llvm::Expected<std::string> appendCoverageExclude(
+        const std::string& source,
+        const std::string& kind,
+        const std::string& pattern,
+        const std::string& reason) {
+        if (auto e = validate(source)) return std::move(e);
+
+        if (kind != "file" && kind != "package" && kind != "symbol") {
+            return err("appendCoverageExclude: kind must be one of "
+                       "'file', 'package', 'symbol' (got '" + kind + "')");
+        }
+
+        auto bounds = findCoverageBlock(source);
+        if (!bounds) {
+            return err("no cajeta.coverage plugin declared in "
+                       "plugins; add it before calling "
+                       "`cajeta coverage ignore`");
+        }
+
+        auto ensured = ensureExcludeArray(source,
+                                          bounds->pluginOpen,
+                                          bounds->pluginClose);
+        if (!ensured) return ensured.takeError();
+
+        // Duplicate check: scan existing entries for the same kind +
+        // pattern. Same pattern with a different reason is still a
+        // duplicate — we'd otherwise accumulate stale entries every
+        // time the IDE re-runs the action.
+        std::string src = std::move(ensured->source);
+        size_t arrayOpen = ensured->arrayOpen;
+        size_t arrayClose = ensured->arrayClose;
+        auto entries = enumerateObjectEntries(src, arrayOpen, arrayClose);
+        for (const auto& [eOpen, eClose] : entries) {
+            auto eKind = readStringField(src, eOpen, eClose, "kind");
+            auto ePat  = readStringField(src, eOpen, eClose, "pattern");
+            if (eKind && ePat && *eKind == kind && *ePat == pattern) {
+                return err("coverage exclude already present: " +
+                           kind + " '" + pattern + "'");
+            }
+        }
+
+        // Indent computation. Two shapes to handle:
+        //   1. Non-empty array — at least one existing entry on its
+        //      own line. Inner indent = the existing entry's indent.
+        //   2. Empty / inline array (`[]`) — no inner content to
+        //      probe. Fall back to the indent of the line that
+        //      contains the array opening, plus one indentation
+        //      step. The "indentation step" is detected by reading
+        //      the manifest's leading indent style elsewhere in the
+        //      source (settings's nesting, root entries).
+        auto leadingIndentOnLineContaining =
+            [&](size_t pos) -> std::string {
+                if (pos > src.size()) return std::string();
+                size_t lineStart = pos;
+                while (lineStart > 0 && src[lineStart - 1] != '\n') {
+                    --lineStart;
+                }
+                std::string lead;
+                size_t j = lineStart;
+                while (j < src.size() &&
+                       (src[j] == ' ' || src[j] == '\t')) {
+                    lead += src[j];
+                    ++j;
+                }
+                return lead;
+            };
+        auto detectOneIndentStep = [&]() -> std::string {
+            // Walk the source; whichever indent appears at the
+            // first nested line is our step size.
+            for (size_t i = 0; i + 1 < src.size(); ++i) {
+                if (src[i] != '\n') continue;
+                size_t j = i + 1;
+                std::string lead;
+                while (j < src.size() &&
+                       (src[j] == ' ' || src[j] == '\t')) {
+                    lead += src[j];
+                    ++j;
+                }
+                if (!lead.empty()) return lead;
+            }
+            return "    ";
+        };
+
+        std::string outer;
+        std::string indent;
+        if (isEmptyInterior(src, arrayOpen, arrayClose)) {
+            outer  = leadingIndentOnLineContaining(arrayOpen);
+            indent = outer + detectOneIndentStep();
+        } else {
+            indent = detectInnerIndent(src, arrayOpen, arrayClose);
+            // Outer indent (the array's closing-bracket indent).
+            for (size_t i = arrayClose; i-- > 0; ) {
+                if (src[i] == '\n') {
+                    size_t j = i + 1;
+                    while (j < arrayClose &&
+                           (src[j] == ' ' || src[j] == '\t')) {
+                        outer += src[j];
+                        ++j;
+                    }
+                    break;
+                }
+            }
+        }
+        std::string innerIndent = indent + detectOneIndentStep();
+
+        // Build the new entry. Always emit kind/pattern/reason in
+        // that order so the on-disk shape is predictable for reviewers.
+        std::string entry =
+            "{\n" +
+            innerIndent + "\"kind\": \""    + jsonEscape(kind)    + "\",\n" +
+            innerIndent + "\"pattern\": \"" + jsonEscape(pattern) + "\",\n" +
+            innerIndent + "\"reason\": \""  + jsonEscape(reason)  + "\"\n" +
+            indent + "}";
+
+        std::string out = src;
+        if (isEmptyInterior(out, arrayOpen, arrayClose)) {
+            std::string injected = "\n" + indent + entry + "\n" + outer;
+            out.replace(arrayOpen, arrayClose - arrayOpen, injected);
+        } else {
+            // Append after the last existing entry — same shape as
+            // insertEntry but adapted for arrays of objects.
+            size_t prev = arrayClose;
+            while (prev > arrayOpen &&
+                   std::isspace(static_cast<unsigned char>(out[prev - 1]))) {
+                --prev;
+            }
+            std::string injection;
+            if (prev > arrayOpen && out[prev - 1] != ',') {
+                injection += ",";
+            }
+            injection += "\n";
+            injection += indent;
+            injection += entry;
+            out.insert(prev, injection);
+        }
+        if (auto e = validate(out)) return std::move(e);
+        return out;
+    }
+
+    llvm::Expected<RemoveCoverageExcludeResult> removeCoverageExclude(
+        const std::string& source,
+        const std::string& pattern) {
+        if (auto e = validate(source)) return std::move(e);
+
+        auto bounds = findCoverageBlock(source);
+        if (!bounds) {
+            return err("no cajeta.coverage plugin declared in plugins");
+        }
+        // Don't use ensureExcludeArray here — we'd rather error out
+        // when there's no exclude array to remove from than silently
+        // create one.
+        size_t configOpen = findObjectOpenAfterKey(
+            source, bounds->pluginOpen, "config");
+        if (configOpen == std::string::npos ||
+            configOpen >= bounds->pluginClose) {
+            return err("no exclude entries in cajeta.coverage "
+                       "(no config block)");
+        }
+        size_t configClose = findMatchingClose(source, configOpen);
+        size_t arrayOpen = findArrayOpenAfterKey(
+            source, configOpen, "exclude");
+        if (arrayOpen == std::string::npos || arrayOpen >= configClose) {
+            return err("no exclude entries in cajeta.coverage "
+                       "(no exclude array)");
+        }
+        size_t arrayClose = findMatchingArrayClose(source, arrayOpen);
+        if (arrayClose == std::string::npos) {
+            return err("manifest: malformed coverage exclude array");
+        }
+
+        // Collect deletion spans first; remove in reverse so earlier
+        // offsets stay valid as we splice out later ones.
+        struct Span { size_t begin; size_t end; };
+        std::vector<Span> toRemove;
+        auto entries =
+            enumerateObjectEntries(source, arrayOpen, arrayClose);
+        for (const auto& [eOpen, eClose] : entries) {
+            auto ePat = readStringField(source, eOpen, eClose, "pattern");
+            if (!ePat || *ePat != pattern) continue;
+            // Entry spans from the `{` (eOpen - 1) through `}` (eClose).
+            Span s;
+            s.begin = eOpen - 1;
+            s.end   = eClose + 1;
+            toRemove.push_back(s);
+        }
+        // Also support the back-compat string-only form: literal
+        // `"<pattern>"` entries get nuked too. Scan for them between
+        // the array bounds, skipping anything inside an existing
+        // object literal (the typed entries we already enumerated).
+        std::string strLit = "\"" + pattern + "\"";
+        size_t strScan = arrayOpen;
+        while (strScan < arrayClose) {
+            size_t hit = source.find(strLit, strScan);
+            if (hit == std::string::npos || hit >= arrayClose) break;
+            // Reject hits that fall inside one of the typed objects.
+            bool insideObj = false;
+            for (const auto& [eOpen, eClose] : entries) {
+                if (hit >= eOpen - 1 && hit <= eClose + 1) {
+                    insideObj = true;
+                    break;
+                }
+            }
+            if (!insideObj) {
+                Span s;
+                s.begin = hit;
+                s.end   = hit + strLit.size();
+                toRemove.push_back(s);
+            }
+            strScan = hit + strLit.size();
+        }
+        if (toRemove.empty()) {
+            return err("coverage exclude '" + pattern +
+                       "' not found");
+        }
+        // Sort by begin so the trailing-comma logic operates on
+        // entries in source order.
+        std::sort(toRemove.begin(), toRemove.end(),
+                  [](const Span& a, const Span& b) {
+                      return a.begin < b.begin;
+                  });
+
+        std::string out = source;
+        // Delete in reverse to keep offsets stable. For each entry,
+        // also eat one adjacent comma + the whitespace on whichever
+        // side we ate it (so we don't leave dangling commas).
+        for (auto it = toRemove.rbegin(); it != toRemove.rend(); ++it) {
+            size_t removeBegin = it->begin;
+            size_t removeEnd   = it->end;
+            // Eat trailing whitespace + comma.
+            size_t tail = removeEnd;
+            while (tail < arrayClose &&
+                   std::isspace(static_cast<unsigned char>(out[tail]))) {
+                ++tail;
+            }
+            bool ateTrailing = false;
+            if (tail < arrayClose && out[tail] == ',') {
+                removeEnd = tail + 1;
+                ateTrailing = true;
+            }
+            if (!ateTrailing) {
+                ssize_t head = static_cast<ssize_t>(removeBegin) - 1;
+                while (head >= static_cast<ssize_t>(arrayOpen) &&
+                       std::isspace(
+                           static_cast<unsigned char>(out[head]))) --head;
+                if (head >= static_cast<ssize_t>(arrayOpen) &&
+                    out[head] == ',') {
+                    removeBegin = static_cast<size_t>(head);
+                }
+            }
+            out.erase(removeBegin, removeEnd - removeBegin);
+            // arrayClose shifted; the next iteration recomputes none
+            // of this because we walk in reverse and only the
+            // surviving (earlier) spans care about array bounds. The
+            // trailing-comma loop above is conservative — it stops
+            // at the original arrayClose, which is always still a
+            // safe upper bound after deletions.
+        }
+        if (auto e = validate(out)) return std::move(e);
+
+        RemoveCoverageExcludeResult r;
+        r.newSource = std::move(out);
+        r.count = static_cast<int>(toRemove.size());
+        return r;
+    }
+
 } // namespace cajeta::buildtool
