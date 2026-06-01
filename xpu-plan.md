@@ -29,7 +29,7 @@ fix the regression first). Don't build new Vulkan capability on a red base.
 | # | Item | Class | Effort | Status |
 |---|------|-------|--------|--------|
 | 1 | **2D/3D launch** | capability | large | ✅ done (ABI + GPU 3-D + CPU 3-D grid/block/fission) |
-| 2 | **`@Device` helper calls** | capability | medium-large | ☐ not started |
+| 2 | **`@Device` helper calls** | capability | medium-large | ◐ core done (scalar params + return, same class, helper-chains; Buffer params deferred) |
 | 3 | **Vulkan block dim — spec-constant `LocalSizeId`** | vulkan | medium | ☐ not started |
 | 4 | **Multi-arch bundling (fatbin)** | deployment | medium | ☐ not started |
 | 5 | **Vulkan dynamic shared memory** | vulkan | medium | ☐ not started |
@@ -189,6 +189,21 @@ anything else — that's where a `@Device` call dies today.
 **Risk:** medium-large — it adds the first non-builtin call path to kernel lowering
 and a function cache/recursion guard, but reuses the existing `DeviceLowerer` body
 walk wholesale. Lower risk than 2D/3D stage 4.
+
+**Progress:**
+- ✅ **Core done.** `DeviceLowerer` gains a `@Device` context (the kernel's class +
+  a shared `Method*→Function*` cache). `lowerBuiltinCall`, before its `XPU-N01`,
+  resolves a non-builtin call to a sibling `@Device` method (same class, by arity),
+  lowers it to a cached `alwaysinline` device function (scalar params + scalar/void
+  return; a fresh `DeviceLowerer` over the helper's body, `ReturnStatement` now emits
+  the value), and emits the `call` with coerced args. A nullptr cache entry catches
+  recursion (→ `XPU-N01`). Tests `deviceHelperCallOnCpu` (out[i]=i*i) and
+  `deviceHelperChainOnCpu` (helper-calls-helper, out[i]=i+2) run on CPU; full Xpu*
+  suite green (141 passed / 7 GPU-skipped / 0 failed — the shared lowerer change
+  didn't regress any backend's emit).
+- ☐ **Follow-ups:** `Buffer`/array params in helpers (needs the per-backend pointer/
+  descriptor-set handling — Vulkan forks); a clean cross-class resolution; on-device
+  GPU verification; an explicit recursion-rejection emit test.
 
 ---
 

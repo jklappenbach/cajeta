@@ -193,6 +193,72 @@ const char* kBlock2dSource =
     "    }\n"
     "}\n";
 
+// Item 2 — a kernel calling a user-defined @Device helper (scalar arg + scalar
+// return). The helper is lowered to a device function and inlined; out[i] = i*i.
+const char* kDeviceHelperSource =
+    "package test;\n"
+    "import cajeta.xpu.core.Buffer;\n"
+    "import cajeta.xpu.core.Stream;\n"
+    "import cajeta.xpu.core.Thread;\n"
+    "public class DevH {\n"
+    "    @Device\n"
+    "    public static int32 square(int32 x) { return x * x; }\n"
+    "    @Kernel\n"
+    "    public static void k(Buffer<int32> out) {\n"
+    "        uint32 i = Thread.globalIdX();\n"
+    "        out[i] = square((int32) i);\n"
+    "    }\n"
+    "    public static int32 run() {\n"
+    "        uint32 n = 64;\n"
+    "        int32[] hout = new int32[n];\n"
+    "        for (uint32 i = 0; i < n; i = i + 1) { hout[i] = -1; }\n"
+    "        Buffer<int32> out = heap Buffer<int32>(n);\n"
+    "        out.upload(hout);\n"
+    "        Stream s = Stream.current();\n"
+    "        k.launch(s, grid: [1], block: [64])(out);\n"
+    "        s.sync();\n"
+    "        out.download(hout);\n"
+    "        for (uint32 i = 0; i < n; i = i + 1) {\n"
+    "            if (hout[i] != (int32)(i * i)) { return (int32)(100 + i); }\n"
+    "        }\n"
+    "        return 777;\n"
+    "    }\n"
+    "}\n";
+
+// Item 2 — a @Device helper that calls another @Device helper (exercises the
+// shared function cache + nested lowering). twice(x) = inc(inc(x)) = x+2.
+const char* kDeviceChainSource =
+    "package test;\n"
+    "import cajeta.xpu.core.Buffer;\n"
+    "import cajeta.xpu.core.Stream;\n"
+    "import cajeta.xpu.core.Thread;\n"
+    "public class DevChain {\n"
+    "    @Device\n"
+    "    public static int32 inc(int32 x) { return x + 1; }\n"
+    "    @Device\n"
+    "    public static int32 twice(int32 x) { return inc(inc(x)); }\n"
+    "    @Kernel\n"
+    "    public static void k(Buffer<int32> out) {\n"
+    "        uint32 i = Thread.globalIdX();\n"
+    "        out[i] = twice((int32) i);\n"
+    "    }\n"
+    "    public static int32 run() {\n"
+    "        uint32 n = 64;\n"
+    "        int32[] hout = new int32[n];\n"
+    "        for (uint32 i = 0; i < n; i = i + 1) { hout[i] = -1; }\n"
+    "        Buffer<int32> out = heap Buffer<int32>(n);\n"
+    "        out.upload(hout);\n"
+    "        Stream s = Stream.current();\n"
+    "        k.launch(s, grid: [1], block: [64])(out);\n"
+    "        s.sync();\n"
+    "        out.download(hout);\n"
+    "        for (uint32 i = 0; i < n; i = i + 1) {\n"
+    "            if (hout[i] != (int32)(i + 2)) { return (int32)(100 + i); }\n"
+    "        }\n"
+    "        return 777;\n"
+    "    }\n"
+    "}\n";
+
 } // namespace
 
 // A large grid drives the runtime's multi-core fan-out (Inc 5A); the result must
@@ -233,6 +299,26 @@ TEST(XpuCpuDispatchTests, multiDimBlockOnCpu) {
     auto fn = jit->lookup<int (*)()>("run");
     ASSERT_NE(fn, nullptr);
     EXPECT_EQ(fn(), 777);
+}
+
+// Item 2: a kernel calling a user-defined @Device helper runs on CPU.
+TEST(XpuCpuDispatchTests, deviceHelperCallOnCpu) {
+    auto jit = CajetaJit::compile(kDeviceHelperSource, "test.DevH", cpuOptions());
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<int (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    int r = fn();
+    EXPECT_EQ(r, 777) << "fail code " << r << " (100+i: out[i] != i*i)";
+}
+
+// Item 2: a @Device helper calling another @Device helper runs on CPU.
+TEST(XpuCpuDispatchTests, deviceHelperChainOnCpu) {
+    auto jit = CajetaJit::compile(kDeviceChainSource, "test.DevChain", cpuOptions());
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<int (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    int r = fn();
+    EXPECT_EQ(r, 777) << "fail code " << r << " (100+i: out[i] != i+2)";
 }
 
 // Explicit-only bundling is a build-time contract (locked decision #3): when the
