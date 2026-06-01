@@ -57,4 +57,35 @@ namespace cajeta::buildtool {
         const std::string& oldVersion,
         const std::string& newVersion);
 
+    // Append a typed exclude entry to
+    // `plugins.cajeta.coverage.config.exclude`. Creates `config` /
+    // `exclude` when missing; refuses to add if the
+    // `plugins.cajeta.coverage` block itself isn't declared (we
+    // don't silently activate the plugin). Refuses duplicates by
+    // (kind, pattern) — same pattern with a different reason is
+    // still a duplicate.
+    //
+    // `kind` must be one of "file", "package", "symbol"; this
+    // function trusts the caller for the rest (the CLI surface
+    // rejects generic reasons before reaching here, so the validator
+    // doesn't need a second pass).
+    llvm::Expected<std::string> appendCoverageExclude(
+        const std::string& source,
+        const std::string& kind,
+        const std::string& pattern,
+        const std::string& reason);
+
+    // Remove every exclude entry whose `pattern` field matches
+    // `pattern`. The `count` field reports how many entries were
+    // removed so the caller can confirm the operation. Errors when
+    // no entries match (so the user sees a clear "nothing to
+    // remove" instead of a silent no-op).
+    struct RemoveCoverageExcludeResult {
+        std::string newSource;
+        int count = 0;
+    };
+    llvm::Expected<RemoveCoverageExcludeResult> removeCoverageExclude(
+        const std::string& source,
+        const std::string& pattern);
+
 } // namespace cajeta::buildtool

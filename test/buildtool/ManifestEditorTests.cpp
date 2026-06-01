@@ -20,7 +20,9 @@
 #include <string>
 
 using cajeta::buildtool::addDependencyToManifest;
+using cajeta::buildtool::appendCoverageExclude;
 using cajeta::buildtool::loadManifestString;
+using cajeta::buildtool::removeCoverageExclude;
 using cajeta::buildtool::removeDependencyFromManifest;
 
 namespace {
@@ -219,4 +221,210 @@ TEST(ManifestEditorTests, roundTripAddThenRemoveReturnsSameDecls) {
     ASSERT_TRUE((bool)removed) << errorText(removed.takeError());
     EXPECT_EQ(declaredConstraint(*removed, "keep"), "1.0.0");
     EXPECT_EQ(declaredConstraint(*removed, "transient"), "");
+}
+
+// ─── coverage exclude mutators ──────────────────────────────────────
+
+namespace {
+
+    // Returns the typed exclude entries from the resulting manifest
+    // as kind+pattern+reason triples. Empty when none declared.
+    struct ExcludeRow { std::string kind, pattern, reason; };
+    std::vector<ExcludeRow> readExcludes(const std::string& src) {
+        std::vector<ExcludeRow> out;
+        auto m = loadManifestString(src);
+        if (!m) { consumeError(m.takeError()); return out; }
+        const auto* cov = m->pluginsRaw.getObject("cajeta.coverage");
+        if (!cov) return out;
+        const auto* config = cov->getObject("config");
+        if (!config) return out;
+        const auto* arr = config->getArray("exclude");
+        if (!arr) return out;
+        for (const auto& v : *arr) {
+            ExcludeRow r;
+            if (const auto* o = v.getAsObject()) {
+                if (auto s = o->getString("kind"))    r.kind = s->str();
+                if (auto s = o->getString("pattern")) r.pattern = s->str();
+                if (auto s = o->getString("reason"))  r.reason = s->str();
+            } else if (auto s = v.getAsString()) {
+                r.kind = "file"; r.pattern = s->str();
+            }
+            out.push_back(std::move(r));
+        }
+        return out;
+    }
+
+    constexpr const char* kCoverageManifestNoExclude = R"({
+    "details": { "name": "p", "version": "0.1.0" },
+    "plugins": {
+        "cajeta.coverage": {
+            "version": "1.0.*",
+            "config": {
+                "grain": "line",
+                "min": 80
+            }
+        }
+    }
+})";
+
+    constexpr const char* kCoverageManifestNoConfig = R"({
+    "details": { "name": "p", "version": "0.1.0" },
+    "plugins": {
+        "cajeta.coverage": {
+            "version": "1.0.*"
+        }
+    }
+})";
+
+    constexpr const char* kCoverageManifestNoPlugin = R"({
+    "details": { "name": "p", "version": "0.1.0" }
+})";
+
+} // namespace
+
+TEST(ManifestEditorTests, coverageAppendCreatesExcludeArrayInline) {
+    auto out = appendCoverageExclude(
+        kCoverageManifestNoExclude, "file",
+        "**/*_generated.cajeta", "machine-generated");
+    ASSERT_TRUE((bool)out) << errorText(out.takeError());
+    auto rows = readExcludes(*out);
+    ASSERT_EQ(rows.size(), 1u);
+    EXPECT_EQ(rows[0].kind,    "file");
+    EXPECT_EQ(rows[0].pattern, "**/*_generated.cajeta");
+    EXPECT_EQ(rows[0].reason,  "machine-generated");
+}
+
+TEST(ManifestEditorTests, coverageAppendCreatesConfigBlock) {
+    auto out = appendCoverageExclude(
+        kCoverageManifestNoConfig, "symbol",
+        "com.foo.Bar.baz", "trivial accessor");
+    ASSERT_TRUE((bool)out) << errorText(out.takeError());
+    auto rows = readExcludes(*out);
+    ASSERT_EQ(rows.size(), 1u);
+    EXPECT_EQ(rows[0].kind, "symbol");
+}
+
+TEST(ManifestEditorTests, coverageAppendAppendsToExistingArray) {
+    auto first = appendCoverageExclude(
+        kCoverageManifestNoExclude, "file",
+        "**/*_generated.cajeta", "machine-generated");
+    ASSERT_TRUE((bool)first);
+    auto second = appendCoverageExclude(
+        *first, "symbol",
+        "com.foo.Bar.baz", "trivial accessor; tested everywhere");
+    ASSERT_TRUE((bool)second) << errorText(second.takeError());
+    auto rows = readExcludes(*second);
+    ASSERT_EQ(rows.size(), 2u);
+    EXPECT_EQ(rows[0].pattern, "**/*_generated.cajeta");
+    EXPECT_EQ(rows[1].pattern, "com.foo.Bar.baz");
+}
+
+TEST(ManifestEditorTests, coverageAppendRefusesDuplicateKindAndPattern) {
+    auto first = appendCoverageExclude(
+        kCoverageManifestNoExclude, "file",
+        "**/*_generated.cajeta", "machine-generated");
+    ASSERT_TRUE((bool)first);
+    auto dup = appendCoverageExclude(
+        *first, "file",
+        "**/*_generated.cajeta", "different reason");
+    ASSERT_FALSE((bool)dup);
+    auto msg = errorText(dup.takeError());
+    EXPECT_NE(msg.find("already present"), std::string::npos);
+}
+
+TEST(ManifestEditorTests, coverageAppendAllowsDifferentKindSamePattern) {
+    auto first = appendCoverageExclude(
+        kCoverageManifestNoExclude, "file",
+        "com.foo.*", "files in foo");
+    ASSERT_TRUE((bool)first);
+    auto second = appendCoverageExclude(
+        *first, "package",
+        "com.foo.*", "package foo");
+    ASSERT_TRUE((bool)second) << errorText(second.takeError());
+    auto rows = readExcludes(*second);
+    EXPECT_EQ(rows.size(), 2u);
+}
+
+TEST(ManifestEditorTests, coverageAppendRefusesWhenPluginNotDeclared) {
+    auto out = appendCoverageExclude(
+        kCoverageManifestNoPlugin, "file", "x", "y");
+    ASSERT_FALSE((bool)out);
+    auto msg = errorText(out.takeError());
+    EXPECT_NE(msg.find("no cajeta.coverage plugin"), std::string::npos);
+}
+
+TEST(ManifestEditorTests, coverageAppendRefusesUnknownKind) {
+    auto out = appendCoverageExclude(
+        kCoverageManifestNoExclude, "function", "x", "y");
+    ASSERT_FALSE((bool)out);
+}
+
+TEST(ManifestEditorTests, coverageRemoveDeletesMatchingPattern) {
+    auto added = appendCoverageExclude(
+        kCoverageManifestNoExclude, "file",
+        "**/*_generated.cajeta", "machine-generated");
+    ASSERT_TRUE((bool)added);
+    auto removed = removeCoverageExclude(
+        *added, "**/*_generated.cajeta");
+    ASSERT_TRUE((bool)removed) << errorText(removed.takeError());
+    EXPECT_EQ(removed->count, 1);
+    EXPECT_TRUE(readExcludes(removed->newSource).empty());
+}
+
+TEST(ManifestEditorTests, coverageRemoveErrorsWhenPatternNotFound) {
+    auto out = removeCoverageExclude(
+        kCoverageManifestNoExclude, "missing");
+    ASSERT_FALSE((bool)out);
+}
+
+TEST(ManifestEditorTests, coverageRemoveAcrossKindsByPattern) {
+    auto first = appendCoverageExclude(
+        kCoverageManifestNoExclude, "file",
+        "com.foo.*", "f");
+    ASSERT_TRUE((bool)first);
+    auto second = appendCoverageExclude(
+        *first, "package",
+        "com.foo.*", "p");
+    ASSERT_TRUE((bool)second);
+    auto removed = removeCoverageExclude(*second, "com.foo.*");
+    ASSERT_TRUE((bool)removed) << errorText(removed.takeError());
+    EXPECT_EQ(removed->count, 2);
+    EXPECT_TRUE(readExcludes(removed->newSource).empty());
+}
+
+TEST(ManifestEditorTests, coverageRoundTripAppendThenRemove) {
+    auto added = appendCoverageExclude(
+        kCoverageManifestNoExclude, "symbol",
+        "com.foo.Bar.baz", "trivial accessor");
+    ASSERT_TRUE((bool)added);
+    auto removed = removeCoverageExclude(
+        *added, "com.foo.Bar.baz");
+    ASSERT_TRUE((bool)removed) << errorText(removed.takeError());
+    // After remove, re-add should succeed (no dangling state).
+    auto reAdded = appendCoverageExclude(
+        removed->newSource, "symbol",
+        "com.foo.Bar.baz", "trivial accessor");
+    ASSERT_TRUE((bool)reAdded) << errorText(reAdded.takeError());
+}
+
+TEST(ManifestEditorTests, coverageAppendPreservesComments) {
+    std::string src = R"({
+    "details": { "name": "p", "version": "0.1.0" },
+    "plugins": {
+        // The coverage plugin gates CI on min %.
+        "cajeta.coverage": {
+            "version": "1.0.*",
+            "config": {
+                "grain": "line",  // line-grain probes
+                "min": 80
+            }
+        }
+    }
+})";
+    auto out = appendCoverageExclude(
+        src, "file", "**/*.gen", "generated");
+    ASSERT_TRUE((bool)out) << errorText(out.takeError());
+    EXPECT_NE(out->find("// The coverage plugin gates CI on min %."),
+              std::string::npos);
+    EXPECT_NE(out->find("// line-grain probes"), std::string::npos);
 }
