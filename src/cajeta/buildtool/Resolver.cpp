@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstring>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -66,36 +67,116 @@ namespace cajeta::buildtool {
         return 0;
     }
 
+    namespace {
+
+        std::string trim(const std::string& s) {
+            size_t b = 0, e = s.size();
+            while (b < e && std::isspace(static_cast<unsigned char>(s[b]))) ++b;
+            while (e > b && std::isspace(static_cast<unsigned char>(s[e - 1]))) --e;
+            return s.substr(b, e - b);
+        }
+
+        // A single atomic constraint piece. The full constraint
+        // string is a comma-separated AND of these.
+        //
+        //   op == Eq, operand "1.2.3"   → exact (release-only — does
+        //                                  NOT match "1.2.3-rc1")
+        //   op == Wild, operand "1.2"   → "1.2.*" form
+        //   op == Ge/Gt/Le/Lt           → range operator
+        enum class Op { Eq, Wild, Ge, Gt, Le, Lt };
+        struct Atom { Op op; std::string operand; };
+
+        // Parse one comma-piece. Recognized prefixes (longest-match):
+        //   ">="  ">"  "<="  "<"  "="
+        // No prefix + contains '*' → Wild.
+        // No prefix + bare semver  → Eq.
+        llvm::Expected<Atom> parseAtom(const std::string& raw) {
+            std::string s = trim(raw);
+            if (s.empty()) {
+                return err("empty constraint atom");
+            }
+            auto starts = [&](const char* p) {
+                size_t n = std::strlen(p);
+                return s.size() >= n && s.compare(0, n, p) == 0;
+            };
+            Op op = Op::Eq;
+            size_t consume = 0;
+            if (starts(">=")) { op = Op::Ge; consume = 2; }
+            else if (starts("<=")) { op = Op::Le; consume = 2; }
+            else if (starts(">"))  { op = Op::Gt; consume = 1; }
+            else if (starts("<"))  { op = Op::Lt; consume = 1; }
+            else if (starts("="))  { op = Op::Eq; consume = 1; }
+            std::string operand = trim(s.substr(consume));
+            if (operand.empty()) {
+                return err("constraint atom '" + raw + "' has no version");
+            }
+            if (op == Op::Eq && operand.find('*') != std::string::npos) {
+                op = Op::Wild;
+                operand = operand.substr(0, operand.find('*'));
+                if (!operand.empty() && operand.back() == '.') {
+                    operand.pop_back();
+                }
+            }
+            return Atom{op, operand};
+        }
+
+        bool atomMatches(const Atom& a, const std::string& version) {
+            switch (a.op) {
+                case Op::Eq:
+                    // Release-only: prereleases (`1.2.3-rc1`) do NOT
+                    // satisfy `1.2.3`. Matches Phase 6a behaviour.
+                    return version == a.operand;
+                case Op::Wild: {
+                    if (a.operand.empty()) return true;  // bare "*"
+                    auto pParts = splitDots(a.operand);
+                    auto vParts = splitDots(semverCore(version));
+                    if (vParts.size() < pParts.size()) return false;
+                    for (size_t i = 0; i < pParts.size(); ++i) {
+                        if (vParts[i] != pParts[i]) return false;
+                    }
+                    return true;
+                }
+                case Op::Ge: return compareVersions(version, a.operand) >= 0;
+                case Op::Gt: return compareVersions(version, a.operand) >  0;
+                case Op::Le: return compareVersions(version, a.operand) <= 0;
+                case Op::Lt: return compareVersions(version, a.operand) <  0;
+            }
+            return false;
+        }
+
+        std::vector<std::string> splitCommas(const std::string& s) {
+            std::vector<std::string> out;
+            std::string cur;
+            for (char c : s) {
+                if (c == ',') { out.push_back(cur); cur.clear(); }
+                else cur += c;
+            }
+            out.push_back(cur);
+            return out;
+        }
+
+    } // namespace
+
     bool versionSatisfies(const std::string& version,
                           const std::string& constraint) {
         if (constraint == "*") return true;
         if (constraint.empty()) return false;
 
-        // Wildcard form: "1.2.*", "1.*"
-        auto starPos = constraint.find('*');
-        if (starPos != std::string::npos) {
-            std::string prefix = constraint.substr(0, starPos);
-            // Strip trailing `.` from prefix for comparison.
-            if (!prefix.empty() && prefix.back() == '.') {
-                prefix.pop_back();
+        // Comma-separated AND. Each piece is parsed into an Atom.
+        // If any piece fails to parse, the whole constraint is
+        // unsatisfiable (returns false rather than raising — keeps
+        // the predicate total at the resolver boundary; bad
+        // constraints are caught at parse time when we add
+        // validation in 6b).
+        for (const auto& piece : splitCommas(constraint)) {
+            auto atom = parseAtom(piece);
+            if (!atom) {
+                consumeError(atom.takeError());
+                return false;
             }
-            // Match "prefix" + "." + tail-of-any-segments.
-            // Compare the version's leading dot-segments against
-            // prefix's segments.
-            auto pParts = splitDots(prefix);
-            auto vParts = splitDots(semverCore(version));
-            if (vParts.size() < pParts.size()) return false;
-            for (size_t i = 0; i < pParts.size(); ++i) {
-                if (vParts[i] != pParts[i]) return false;
-            }
-            return true;
+            if (!atomMatches(*atom, version)) return false;
         }
-        // Exact match (Phase 6a only). Compare the full strings so
-        // a prerelease (`1.2.3-rc1`) doesn't satisfy the
-        // release-version constraint (`1.2.3`). Semver convention:
-        // prereleases sort before the release and require explicit
-        // opt-in to match.
-        return version == constraint;
+        return true;
     }
 
     namespace {
