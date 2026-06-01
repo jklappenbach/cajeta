@@ -35,6 +35,11 @@ class CajetaDebugProcess(
         // Push the file's breakpoints with their conditions (CP6f).
         if (launched) dapSession?.setBreakpoints(file, breakpointRegistry.breakpointsFor(file))
     }
+    // CP6f-3b: break-on-throw toggle. Live updates after launch; the handler's
+    // `armed` flag seeds the handshake.
+    private val exceptionBreakpointHandler = CajetaExceptionBreakpointHandler { armed ->
+        if (launched) dapSession?.setExceptionBreakpoints(armed)
+    }
 
     private var process: Process? = null
     private var dapSession: CajetaDebugSession? = null
@@ -46,7 +51,8 @@ class CajetaDebugProcess(
 
     override fun doGetProcessHandler(): ProcessHandler = processHandler
 
-    override fun getBreakpointHandlers(): Array<XBreakpointHandler<*>> = arrayOf(breakpointHandler)
+    override fun getBreakpointHandlers(): Array<XBreakpointHandler<*>> =
+        arrayOf(breakpointHandler, exceptionBreakpointHandler)
 
     override fun sessionInitialized() {
         val binary = CajetaSettings.instance.compilerPath
@@ -87,6 +93,9 @@ class CajetaDebugProcess(
                     stopOnEntry = configuration.stopOnEntry,
                 ),
                 initialBreakpoints,
+                // CP6f-3b: arm break-on-throw inside the handshake (before
+                // configurationDone) if the user enabled it.
+                exceptionBreakpoints = exceptionBreakpointHandler.armed,
             ).thenRun {
                 launched = true
                 // Reconcile any breakpoints registered during the handshake.

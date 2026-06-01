@@ -71,6 +71,8 @@
             implementation="dev.cajeta.idea.debugger.CajetaProgramRunner"/>
         <xdebugger.breakpointType
             implementation="dev.cajeta.idea.debugger.CajetaLineBreakpointType"/>
+        <xdebugger.breakpointType
+            implementation="dev.cajeta.idea.debugger.CajetaExceptionBreakpointType"/>
     </extensions>
 
     <actions>

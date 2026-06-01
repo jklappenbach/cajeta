@@ -270,6 +270,33 @@ class CajetaDebugSessionTest {
     }
 
     @Test
+    fun setExceptionBreakpointsArmedSendsAllFilter() {
+        connect()
+        runServer()
+        session.start()
+
+        session.setExceptionBreakpoints(true).get(5, TimeUnit.SECONDS)
+
+        val filters = lastRequestByCommand["setExceptionBreakpoints"]!!
+            .at("arguments").at("filters")
+        assertEquals(1, filters.size)
+        assertEquals("all", filters[0].asString())
+    }
+
+    @Test
+    fun setExceptionBreakpointsDisarmedSendsEmptyFilters() {
+        connect()
+        runServer()
+        session.start()
+
+        session.setExceptionBreakpoints(false).get(5, TimeUnit.SECONDS)
+
+        val filters = lastRequestByCommand["setExceptionBreakpoints"]!!
+            .at("arguments").at("filters")
+        assertEquals(0, filters.size)
+    }
+
+    @Test
     fun scopesSendsFrameId() {
         connect()
         runServer()

@@ -53,12 +53,19 @@ class CajetaDebugSession(private val client: DapClient) {
 
     /**
      * initialize -> launch -> setBreakpoints (grouped by file) ->
-     * configurationDone. The returned future completes when configurationDone
-     * is acknowledged (the program then begins executing on the server).
+     * [setExceptionBreakpoints] -> configurationDone. The returned future
+     * completes when configurationDone is acknowledged (the program then begins
+     * executing on the server).
+     *
+     * Exception breakpoints (CP6f-3) MUST be armed inside this handshake, before
+     * configurationDone — the server runs the program synchronously from
+     * configurationDone, so a program that throws immediately would already be
+     * past the throw if we armed afterward.
      */
     fun launch(
         params: LaunchParams,
         breakpoints: List<LineBreakpoint> = emptyList(),
+        exceptionBreakpoints: Boolean = false,
     ): CompletableFuture<Void> {
         var chain = client.sendRequest(
             "initialize",
@@ -70,6 +77,9 @@ class CajetaDebugSession(private val client: DapClient) {
             chain = chain.thenCompose {
                 client.sendRequest("setBreakpoints", breakpointArgs(file, fileBreakpoints))
             }
+        }
+        if (exceptionBreakpoints) {
+            chain = chain.thenCompose { setExceptionBreakpoints(true) }
         }
         return chain
             .thenCompose { client.sendRequest("configurationDone") }
@@ -123,6 +133,18 @@ class CajetaDebugSession(private val client: DapClient) {
 
     /** DAP `threads`; structured via [parseThreads]. */
     fun threads(): CompletableFuture<Json> = client.sendRequest("threads", Json.obj())
+
+    /**
+     * Arm or disarm break-on-throw (CP6f-3). `armed` true sends the "all"
+     * exception filter; false sends an empty filter list (whole-replace
+     * semantics on the server). The server advertises the filter in
+     * `initialize`'s `exceptionBreakpointFilters`.
+     */
+    fun setExceptionBreakpoints(armed: Boolean): CompletableFuture<Json> {
+        val filters = Json.arr()
+        if (armed) filters.add(Json.of("all"))
+        return client.sendRequest("setExceptionBreakpoints", Json.obj("filters" to filters))
+    }
 
     /** DAP `scopes` for a frame; structured via [parseScopes]. */
     fun scopes(frameId: Int): CompletableFuture<Json> =
