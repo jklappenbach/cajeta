@@ -5,6 +5,8 @@
 #include <algorithm>
 #include <cctype>
 #include <cstring>
+#include <deque>
+#include <set>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -199,6 +201,72 @@ namespace cajeta::buildtool {
 
     } // namespace
 
+    namespace {
+
+        // Resolve one dependency against the priority-ordered repos.
+        // Honors the `from` pin; picks the highest version satisfying
+        // `dep.versionConstraint`. Pulls the picked artifact into
+        // the content-addressed cache. Returns a fully populated
+        // ResolvedDependency on success.
+        //
+        // Also fetches the dep's sidecar `cajeta.json` (when the
+        // winning repository can produce one) into
+        // `manifestJsonOut` — the transitive walker uses that to
+        // recurse without re-fetching. `manifestJsonOut` is left
+        // empty when no sidecar is available.
+        llvm::Expected<ResolvedDependency> resolveOne(
+            const DependencySpec& dep,
+            const std::vector<RepositoryPtr>& repos,
+            ArtifactCache& cache,
+            std::string& manifestJsonOut) {
+            ResolvedDependency resolved;
+            resolved.name = dep.name;
+            manifestJsonOut.clear();
+
+            for (const auto& repo : repos) {
+                if (dep.fromRepo && repo->name() != *dep.fromRepo) continue;
+
+                auto versions = repo->listVersions(dep.name);
+                if (!versions) return versions.takeError();
+                std::string version = highestSatisfying(
+                    *versions, dep.versionConstraint);
+                if (version.empty()) continue;  // try next repo
+
+                auto path = repo->fetch(dep.name, version);
+                if (!path) return path.takeError();
+
+                auto cached = cache.insert(*path);
+                if (!cached) return cached.takeError();
+
+                // Pull the sidecar manifest while we still know which
+                // repo won — saves the walker an extra round trip.
+                auto sidecar = repo->fetchManifestJson(dep.name, version);
+                if (!sidecar) return sidecar.takeError();
+                if (sidecar->has_value()) {
+                    manifestJsonOut = **sidecar;
+                }
+
+                resolved.version = version;
+                resolved.resolvedFromRepo = repo->name();
+                resolved.artifactPath = *cached;
+                resolved.sha256 = ArtifactCache::sha256OfFile(*cached);
+                return resolved;
+            }
+
+            std::string repoList;
+            for (const auto& r : repos) {
+                if (dep.fromRepo && r->name() != *dep.fromRepo) continue;
+                if (!repoList.empty()) repoList += ", ";
+                repoList += r->name();
+            }
+            return err("dependency '" + dep.name + " " +
+                       dep.versionConstraint +
+                       "' not satisfied by any repository (tried: " +
+                       (repoList.empty() ? "<none>" : repoList) + ")");
+        }
+
+    } // namespace
+
     llvm::Expected<std::vector<ResolvedDependency>> resolveDirect(
         const std::vector<DependencySpec>& deps,
         const std::vector<RepositoryPtr>& repos,
@@ -213,48 +281,69 @@ namespace cajeta::buildtool {
                 // callers can decide whether to error or proceed.
                 continue;
             }
+            std::string _manifestJson;
+            auto r = resolveOne(dep, repos, cache, _manifestJson);
+            if (!r) return r.takeError();
+            out.push_back(std::move(*r));
+        }
+        return out;
+    }
 
-            // Walk repos in priority order. If `fromRepo` is set,
-            // restrict to that one repo (per BuildTool.md spec).
-            ResolvedDependency resolved;
-            resolved.name = dep.name;
-            bool found = false;
-            for (const auto& repo : repos) {
-                if (dep.fromRepo && repo->name() != *dep.fromRepo) continue;
+    llvm::Expected<std::vector<ResolvedDependency>> resolveTransitive(
+        const std::vector<DependencySpec>& deps,
+        const std::vector<RepositoryPtr>& repos,
+        ArtifactCache& cache) {
 
-                auto versions = repo->listVersions(dep.name);
-                if (!versions) return versions.takeError();
-                std::string version = highestSatisfying(
-                    *versions, dep.versionConstraint);
-                if (version.empty()) continue;  // try next repo
+        // BFS walk. Frontier holds dep specs we still need to
+        // resolve; `seen` tracks package names we've already
+        // resolved (first-pick wins — when the MVS solver lands,
+        // it'll re-pick on conflict). Output order is topological:
+        // root deps in declaration order first, then each picked
+        // dep's children in declaration order.
+        std::vector<ResolvedDependency> out;
+        std::set<std::string> seen;
+        std::deque<DependencySpec> frontier;
+        for (const auto& d : deps) frontier.push_back(d);
 
-                auto path = repo->fetch(dep.name, version);
-                if (!path) return path.takeError();
+        while (!frontier.empty()) {
+            DependencySpec dep = frontier.front();
+            frontier.pop_front();
 
-                // Pull into the content-addressed cache.
-                auto cached = cache.insert(*path);
-                if (!cached) return cached.takeError();
-
-                resolved.version = version;
-                resolved.resolvedFromRepo = repo->name();
-                resolved.artifactPath = *cached;
-                resolved.sha256 = ArtifactCache::sha256OfFile(*cached);
-                found = true;
-                break;
+            if (dep.versionConstraint.empty()) {
+                // 6c source-form (path / git). Skip — same contract
+                // as resolveDirect.
+                continue;
             }
-            if (!found) {
-                std::string repoList;
-                for (const auto& r : repos) {
-                    if (dep.fromRepo && r->name() != *dep.fromRepo) continue;
-                    if (!repoList.empty()) repoList += ", ";
-                    repoList += r->name();
+            if (seen.count(dep.name)) {
+                // First-pick wins under the highest-satisfying
+                // policy. The MVS solver will replace this with
+                // a constraint-intersection re-pick.
+                continue;
+            }
+            seen.insert(dep.name);
+
+            std::string manifestJson;
+            auto r = resolveOne(dep, repos, cache, manifestJson);
+            if (!r) return r.takeError();
+            out.push_back(std::move(*r));
+
+            if (manifestJson.empty()) {
+                // No sidecar — treat as a leaf. Pre-sidecar
+                // artifacts silently fall through here; once they
+                // republish with a sidecar their transitive deps
+                // expand without any consumer-side change.
+                continue;
+            }
+            auto child = loadManifestString(
+                manifestJson, dep.name + "@" + out.back().version);
+            if (!child) return child.takeError();
+            auto childDeps = parseDependencies(*child);
+            if (!childDeps) return childDeps.takeError();
+            for (const auto& cd : *childDeps) {
+                if (!seen.count(cd.name)) {
+                    frontier.push_back(cd);
                 }
-                return err("dependency '" + dep.name + " " +
-                           dep.versionConstraint +
-                           "' not satisfied by any repository (tried: " +
-                           (repoList.empty() ? "<none>" : repoList) + ")");
             }
-            out.push_back(std::move(resolved));
         }
         return out;
     }

@@ -42,6 +42,33 @@ namespace cajeta::buildtool {
         const std::vector<RepositoryPtr>& repos,
         ArtifactCache& cache);
 
+    // Transitive resolution (Phase 6b). Walks the dependency graph
+    // starting from `deps`, fetching each picked dep's published
+    // `cajeta.json` (via Repository::fetchManifestJson) and
+    // recursing into its `settings.dependencies`.
+    //
+    // Per-package version picker: highest-satisfying across the
+    // collected constraint set (matches `resolveDirect` semantics).
+    // The MVS solver (next slice) swaps this for lowest-satisfying
+    // and adds re-pick-on-conflict iteration. The walking machinery
+    // stays the same.
+    //
+    // Returns the unique resolved set in topological order — root
+    // deps in declaration order first, then each dep's
+    // transitive children, with cycles broken by the first-seen
+    // package.
+    //
+    // A dep whose repository can't produce a manifest sidecar
+    // (`fetchManifestJson` returns nullopt) is treated as a leaf —
+    // i.e. assumed to have no further dependencies. This is the
+    // backwards-compatible path for archives that pre-date the
+    // sidecar convention; the MVS solver will keep the same
+    // behaviour.
+    llvm::Expected<std::vector<ResolvedDependency>> resolveTransitive(
+        const std::vector<DependencySpec>& deps,
+        const std::vector<RepositoryPtr>& repos,
+        ArtifactCache& cache);
+
     // Test whether `version` satisfies `constraint`. Exposed for
     // unit tests.
     bool versionSatisfies(const std::string& version,
