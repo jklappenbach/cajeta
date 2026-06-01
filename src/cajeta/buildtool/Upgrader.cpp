@@ -2,6 +2,7 @@
 
 #include "cajeta/buildtool/ArtifactCache.h"
 #include "cajeta/buildtool/ManifestEditor.h"
+#include "cajeta/buildtool/Melt.h"
 #include "cajeta/buildtool/Repository.h"
 #include "cajeta/buildtool/Resolver.h"
 
@@ -315,6 +316,161 @@ namespace cajeta::buildtool {
             if (!e.changed) continue;
             auto rewritten = addDependencyToManifest(
                 src, e.name, e.newConstraint);
+            if (!rewritten) return rewritten.takeError();
+            src = std::move(*rewritten);
+        }
+        return src;
+    }
+
+    // ─── Melt upgrades ──────────────────────────────────────────
+
+    bool MeltUpgradePlan::anyChange() const {
+        for (const auto& e : entries) if (e.changed) return true;
+        return false;
+    }
+
+    namespace {
+
+        // Parse the typed Melt block from a melt artifact's sidecar
+        // bytes. Returns an empty Melt when the sidecar is missing
+        // or doesn't carry a melt block.
+        Melt parseMeltSidecar(const std::string& json) {
+            Melt out;
+            if (json.empty()) return out;
+            auto m = loadManifestString(json, "<melt-sidecar>");
+            if (!m) {
+                llvm::consumeError(m.takeError());
+                return out;
+            }
+            if (!m->hasMelt) return out;
+            auto typed = parseMelt(*m);
+            if (!typed) {
+                llvm::consumeError(typed.takeError());
+                return out;
+            }
+            return std::move(*typed);
+        }
+
+        // Compute the diff between two melts' curated dep tables.
+        MeltDependencyDelta diffMeltDeps(
+            const std::map<std::string, std::string>& oldT,
+            const std::map<std::string, std::string>& newT) {
+            MeltDependencyDelta d;
+            for (const auto& [name, constraint] : newT) {
+                auto it = oldT.find(name);
+                if (it == oldT.end()) {
+                    d.added.emplace_back(name, constraint);
+                } else if (it->second != constraint) {
+                    d.changed.emplace_back(name, it->second, constraint);
+                }
+            }
+            for (const auto& [name, _] : oldT) {
+                if (!newT.count(name)) d.removed.push_back(name);
+            }
+            std::sort(d.added.begin(), d.added.end());
+            std::sort(d.removed.begin(), d.removed.end());
+            std::sort(d.changed.begin(), d.changed.end());
+            return d;
+        }
+
+    } // namespace
+
+    llvm::Expected<MeltUpgradePlan> planMeltUpgrade(
+        const Manifest& m,
+        const std::string& projectRoot,
+        const std::vector<std::string>& targetNames,
+        const std::map<std::string, std::string>& explicitVersions,
+        std::optional<std::string> homeOverride) {
+        auto imports = parseSettingsMelts(m);
+        if (!imports) return imports.takeError();
+        if (imports->empty()) {
+            return err("upgrade --melt: settings.melts is empty — "
+                       "no melts declared");
+        }
+
+        auto repoSpecs = parseRepositories(m);
+        if (!repoSpecs) return repoSpecs.takeError();
+        if (repoSpecs->empty()) {
+            return err("upgrade --melt: settings.repositories is empty — "
+                       "add at least one repository to resolve from");
+        }
+        std::string downloadStage =
+            (std::filesystem::path(projectRoot) / ".cajeta" / "cache" /
+             "downloads").string();
+        auto repos = buildRepositories(*repoSpecs, downloadStage);
+        if (!repos) return repos.takeError();
+
+        // Resolve names that are actually selected by this upgrade.
+        std::map<std::string, std::string> currentVersions;
+        for (const auto& imp : *imports) {
+            currentVersions[imp.name] = imp.version;
+        }
+        std::vector<std::string> selected;
+        if (targetNames.empty()) {
+            for (const auto& imp : *imports) selected.push_back(imp.name);
+        } else {
+            for (const auto& n : targetNames) {
+                if (!currentVersions.count(n)) {
+                    return err("upgrade --melt: '" + n +
+                               "' is not declared in settings.melts");
+                }
+                selected.push_back(n);
+            }
+        }
+
+        (void)homeOverride;  // matched signature with planUpgrade
+
+        MeltUpgradePlan plan;
+        for (const auto& name : selected) {
+            MeltUpgradeEntry e;
+            e.name = name;
+            e.oldVersion = currentVersions[name];
+
+            // Pick newVersion: explicit when provided, else highest.
+            auto evIt = explicitVersions.find(name);
+            if (evIt != explicitVersions.end()) {
+                auto carrier = findRepoCarrying(name, evIt->second, *repos);
+                if (!carrier) return carrier.takeError();
+                if (carrier->empty()) {
+                    return err("upgrade --melt: no repository carries "
+                               "melt '" + name + "@" + evIt->second + "'");
+                }
+                e.newVersion = evIt->second;
+                e.resolvedFromRepo = *carrier;
+            } else {
+                auto pick = highestAcrossRepos(name, *repos);
+                if (!pick) return pick.takeError();
+                if (pick->version.empty()) {
+                    return err("upgrade --melt: no repository has any "
+                               "version of melt '" + name + "'");
+                }
+                e.newVersion = pick->version;
+                e.resolvedFromRepo = pick->fromRepo;
+            }
+
+            e.changed = e.oldVersion != e.newVersion;
+            if (e.changed) {
+                auto oldBytes = fetchSidecar(name, e.oldVersion, *repos);
+                if (!oldBytes) return oldBytes.takeError();
+                auto newBytes = fetchSidecar(name, e.newVersion, *repos);
+                if (!newBytes) return newBytes.takeError();
+                e.depDelta = diffMeltDeps(
+                    parseMeltSidecar(*oldBytes).dependencies,
+                    parseMeltSidecar(*newBytes).dependencies);
+            }
+            plan.entries.push_back(std::move(e));
+        }
+        return plan;
+    }
+
+    llvm::Expected<std::string> applyMeltUpgradePlan(
+        const std::string& manifestSource,
+        const MeltUpgradePlan& plan) {
+        std::string src = manifestSource;
+        for (const auto& e : plan.entries) {
+            if (!e.changed) continue;
+            auto rewritten = setMeltImportInManifest(
+                src, e.name, e.oldVersion, e.newVersion);
             if (!rewritten) return rewritten.takeError();
             src = std::move(*rewritten);
         }

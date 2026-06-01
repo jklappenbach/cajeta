@@ -405,6 +405,106 @@ namespace cajeta::buildtool {
         return out;
     }
 
+    namespace {
+
+        // Sibling of findObjectOpenAfterKey for array-valued keys.
+        // Returns the position immediately inside the opening `[`.
+        size_t findArrayOpenAfterKey(const std::string& src,
+                                     size_t fromPos,
+                                     const std::string& key) {
+            std::string pat = "\"" + key + "\"";
+            auto keyPos = src.find(pat, fromPos);
+            if (keyPos == std::string::npos) return std::string::npos;
+            size_t i = keyPos + pat.size();
+            while (i < src.size() &&
+                   std::isspace(static_cast<unsigned char>(src[i]))) ++i;
+            if (i >= src.size() || src[i] != ':') return std::string::npos;
+            ++i;
+            while (i < src.size() &&
+                   std::isspace(static_cast<unsigned char>(src[i]))) ++i;
+            if (i >= src.size() || src[i] != '[') return std::string::npos;
+            return i + 1;
+        }
+
+        // Find the position of the matching `]` for an array opened
+        // at `insidePos` (the first byte inside `[`).
+        size_t findMatchingArrayClose(const std::string& src,
+                                      size_t insidePos) {
+            int depth = 1;
+            bool inStr = false;
+            bool escape = false;
+            for (size_t i = insidePos; i < src.size(); ++i) {
+                char c = src[i];
+                if (inStr) {
+                    if (escape) { escape = false; continue; }
+                    if (c == '\\') { escape = true; continue; }
+                    if (c == '"') inStr = false;
+                    continue;
+                }
+                if (c == '"') { inStr = true; continue; }
+                if (c == '[') ++depth;
+                else if (c == ']') {
+                    --depth;
+                    if (depth == 0) return i;
+                }
+            }
+            return std::string::npos;
+        }
+
+    } // namespace
+
+    llvm::Expected<std::string> setMeltImportInManifest(
+        const std::string& source,
+        const std::string& name,
+        const std::string& oldVersion,
+        const std::string& newVersion) {
+        if (auto e = validate(source)) return std::move(e);
+
+        size_t settingsOpen = findObjectOpenAfterKey(source, 0, "settings");
+        if (settingsOpen == std::string::npos) {
+            return err("melt '" + name + "@" + oldVersion +
+                       "' not declared (no settings.melts block)");
+        }
+        size_t settingsClose = findMatchingClose(source, settingsOpen);
+        if (settingsClose == std::string::npos) {
+            return err("manifest: malformed settings block");
+        }
+        size_t meltsOpen =
+            findArrayOpenAfterKey(source, settingsOpen, "melts");
+        if (meltsOpen == std::string::npos || meltsOpen >= settingsClose) {
+            return err("melt '" + name + "@" + oldVersion +
+                       "' not declared (no settings.melts array)");
+        }
+        size_t meltsClose = findMatchingArrayClose(source, meltsOpen);
+        if (meltsClose == std::string::npos) {
+            return err("manifest: malformed settings.melts array");
+        }
+
+        std::string oldLit = "\"" + name + "@" + oldVersion + "\"";
+        std::string newLit = "\"" + name + "@" + newVersion + "\"";
+
+        // Look for the literal entry inside the array bounds only.
+        size_t hit = source.find(oldLit, meltsOpen);
+        if (hit == std::string::npos || hit >= meltsClose) {
+            return err("melt '" + name + "@" + oldVersion +
+                       "' not declared in settings.melts");
+        }
+        // Refuse to rewrite when the literal appears more than once
+        // in the array (ambiguity — the user has a duplicate entry,
+        // which should be cleaned up by hand before bumping).
+        size_t second = source.find(oldLit, hit + oldLit.size());
+        if (second != std::string::npos && second < meltsClose) {
+            return err("melt '" + name + "@" + oldVersion +
+                       "' appears more than once in settings.melts — "
+                       "deduplicate before upgrading");
+        }
+
+        std::string out = source;
+        out.replace(hit, oldLit.size(), newLit);
+        if (auto e = validate(out)) return std::move(e);
+        return out;
+    }
+
     llvm::Expected<std::string> removeDependencyFromManifest(
         const std::string& source,
         const std::string& name) {
