@@ -3933,7 +3933,15 @@ namespace cajeta {
         for (auto& param : innerCall->getParameters()) {
             auto expr = param.expression;
             if (!expr) continue;
-            // (a) Explicit #-transfer.
+            // (a) Explicit caller-side #-transfer at the argument slot
+            // (Phase 1 of #68 — the canonical shape). Pre-Phase-1 the
+            // REFERENCE was parsed as a MoveExpression-wrapped child;
+            // post-Phase-1 it's captured on the MethodCallParameter
+            // itself via callerTransferred. Accept both: the new flag
+            // is authoritative going forward, and the legacy wrapping
+            // still appears in non-argument contexts (assignment RHS,
+            // return expressions).
+            if (param.callerTransferred) continue;
             if (dynamic_pointer_cast<MoveExpression>(expr)) continue;
             // (b) Fresh allocator — anonymous new, auto-promoted.
             if (dynamic_pointer_cast<NewExpression>(expr)) continue;

@@ -54,6 +54,10 @@ namespace cajeta {
                             b.label.pop_back();
                         }
                     }
+                    // Caller-side `#x` transfer (Phase 1 of #68).
+                    if (entryCtx->REFERENCE()) {
+                        b.callerTransferred = true;
+                    }
                     bindings.push_back(b);
                 }
             }

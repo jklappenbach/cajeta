@@ -52,6 +52,10 @@ namespace cajeta {
                     if (ctxParameterEntry->parameterLabel()) {
                         entry.label = ctxParameterEntry->parameterLabel()->getText();
                     }
+                    // Caller-side `#x` transfer (Phase 1 of #68).
+                    if (ctxParameterEntry->REFERENCE()) {
+                        entry.callerTransferred = true;
+                    }
                     parameters.push_back(entry);
                 }
             }

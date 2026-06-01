@@ -45,8 +45,8 @@ public class Stream<T> {
      * Pull the next element. Implementers override; default returns
      * an empty Optional.
      */
-    public #Optional<T> next() {
-        return heap Optional<T>(false, null);
+    public Optional<T> next() {
+        return stack Optional<T>(false, null);
     }
 
     /**
@@ -247,18 +247,18 @@ public class Stream<T> {
      * borrow-via-local issue — neither result gets a drop entry
      * since both are immediate temporaries.
      */
-    public #Optional<T> findFirst((T) -> boolean pred) {
+    public Optional<T> findFirst((T) -> boolean pred) {
         if (this.isParallel) {
             return ParallelDriver.findAnyParallelChain<T>(this, pred);
         }
         Optional<T> o = this.next();
         while (o.isPresent()) {
             if (pred(o.get())) {
-                return heap Optional<T>(true, o.get());
+                return stack Optional<T>(true, o.get());
             }
             o = this.next();
         }
-        return heap Optional<T>(false, null);
+        return stack Optional<T>(false, null);
     }
 
     /**

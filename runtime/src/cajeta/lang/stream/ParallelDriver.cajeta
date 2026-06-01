@@ -402,7 +402,7 @@ public class ParallelDriver {
      *      isn't Splittable or the size is below threshold, fall
      *      back to sequential `head.next()` walk.
      *   3. For each split share, rebuild the head's wrapper chain
-     *      over the share via `head.cloneChainOver(piece)` —
+     *      over the share via `head.cloneChainOver(#piece)` —
      *      wrappers recurse to rebuild themselves bottom-up,
      *      Splittable roots return the share unchanged. Fork via
      *      `scope { spawn reduceWorker<T> }`.
@@ -461,7 +461,7 @@ public class ParallelDriver {
             if (piece == null) {
                 break;
             }
-            shares[si] = head.cloneChainOver(piece);
+            shares[si] = head.cloneChainOver(#piece);
             shareCount = shareCount + 1;
             si = si + 1;
         }
@@ -548,7 +548,7 @@ public class ParallelDriver {
             if (piece == null) {
                 break;
             }
-            shares[si] = head.cloneChainOver(piece);
+            shares[si] = head.cloneChainOver(#piece);
             shareCount = shareCount + 1;
             si = si + 1;
         }
@@ -641,7 +641,7 @@ public class ParallelDriver {
             if (piece == null) {
                 break;
             }
-            shares[si] = head.cloneChainOver(piece);
+            shares[si] = head.cloneChainOver(#piece);
             shareCount = shareCount + 1;
             si = si + 1;
         }
@@ -677,7 +677,7 @@ public class ParallelDriver {
     /**
      * Wrapper-chain-aware parallel anyMatch. Same shape as
      * `reduceParallelChain`: walk unwrap, reject stateful, rebuild
-     * each share via `head.cloneChainOver(piece)`, fork via
+     * each share via `head.cloneChainOver(#piece)`, fork via
      * `scope { spawn findHitWorker<T> }`. Short-circuits via a
      * shared `boolean[1] hit` flag.
      */
@@ -715,7 +715,7 @@ public class ParallelDriver {
             if (piece == null) {
                 break;
             }
-            shares[si] = head.cloneChainOver(piece);
+            shares[si] = head.cloneChainOver(#piece);
             shareCount = shareCount + 1;
             si = si + 1;
         }
@@ -780,7 +780,7 @@ public class ParallelDriver {
             if (piece == null) {
                 break;
             }
-            shares[si] = head.cloneChainOver(piece);
+            shares[si] = head.cloneChainOver(#piece);
             shareCount = shareCount + 1;
             si = si + 1;
         }
@@ -844,7 +844,7 @@ public class ParallelDriver {
             if (piece == null) {
                 break;
             }
-            shares[si] = head.cloneChainOver(piece);
+            shares[si] = head.cloneChainOver(#piece);
             shareCount = shareCount + 1;
             si = si + 1;
         }
@@ -881,10 +881,10 @@ public class ParallelDriver {
      *
      * Same chain-walking shape as anyMatchParallelChain: walk
      * unwrap, reject stateful, rebuild each share via
-     * `head.cloneChainOver(piece)`, fork via
+     * `head.cloneChainOver(#piece)`, fork via
      * `scope { spawn findAnyWorker<T> }`.
      */
-    public static #Optional<T> findAnyParallelChain<T>(Stream<T> head, (T) -> boolean predicate) {
+    public static Optional<T> findAnyParallelChain<T>(Stream<T> head, (T) -> boolean predicate) {
         int32 depth = 0;
         Stream<?> cur = head;
         while (cur != null) {
@@ -904,11 +904,11 @@ public class ParallelDriver {
             Optional<T> oY = head.next();
             while (oY.isPresent()) {
                 if (predicate(oY.get())) {
-                    return heap Optional<T>(true, oY.get());
+                    return stack Optional<T>(true, oY.get());
                 }
                 oY = head.next();
             }
-            return heap Optional<T>(false, null);
+            return stack Optional<T>(false, null);
         }
         Stream<T>[] shares = new Stream<T>[nSplits - 1];
         int32 shareCount = 0;
@@ -918,7 +918,7 @@ public class ParallelDriver {
             if (piece == null) {
                 break;
             }
-            shares[si] = head.cloneChainOver(piece);
+            shares[si] = head.cloneChainOver(#piece);
             shareCount = shareCount + 1;
             si = si + 1;
         }
@@ -946,7 +946,7 @@ public class ParallelDriver {
             }
         }
         if (result[0] != null && result[0].isPresent()) {
-            return heap Optional<T>(true, result[0].get());
+            return stack Optional<T>(true, result[0].get());
         }
         // Tail walks on the orchestrator after scope-join — workers
         // finished without a hit, but the root may have residual
@@ -954,11 +954,11 @@ public class ParallelDriver {
         Optional<T> ot = head.next();
         while (ot.isPresent()) {
             if (predicate(ot.get())) {
-                return heap Optional<T>(true, ot.get());
+                return stack Optional<T>(true, ot.get());
             }
             ot = head.next();
         }
-        return heap Optional<T>(false, null);
+        return stack Optional<T>(false, null);
     }
 
     /**
@@ -1023,7 +1023,7 @@ public class ParallelDriver {
             if (piece == null) {
                 break;
             }
-            shares[si] = head.cloneChainOver(piece);
+            shares[si] = head.cloneChainOver(#piece);
             shareCount = shareCount + 1;
             si = si + 1;
         }

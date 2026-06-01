@@ -1190,7 +1190,15 @@ namespace cajeta {
             } else {
                 // Fallback (e.g. `return someStackLocal;` or a stack
                 // aggregate): produce the value/pointer and copy it into
-                // the sret slot.
+                // the sret slot. For a class-typed identifier (the
+                // FilterStream `return o;` shape after the #66 stream
+                // pipeline sweep), the field's getOrCreateAllocation
+                // returns the local's pointer SLOT (an alloca of `ptr`)
+                // — to copy the struct bytes we have to load through the
+                // slot once to recover the struct's actual address. The
+                // class typing comes from the expression's resolvedType;
+                // raw `pointer`-typed slots and aggregate-direct results
+                // skip the load.
                 llvm::Value* v = expression->generateCode(module);
                 llvm::Type* structTy = nullptr;
                 if (auto m = module->getCurrentMethod()) {
@@ -1204,13 +1212,48 @@ namespace cajeta {
                 }
                 if (v && structTy) {
                     if (v->getType()->isPointerTy()) {
+                        // A class-typed expression (the `return o;` shape
+                        // for a class local; also a class-typed parameter
+                        // or member access) produced a SLOT pointer, not
+                        // the struct address — local slots are alloca of
+                        // ptr that holds the struct address. To memcpy
+                        // the struct bytes we have to load through the
+                        // slot once. Without the load, the memcpy reads
+                        // the slot's pointer bytes (8 bytes of `ptr to
+                        // struct` + adjacent stack) instead of the struct
+                        // contents — the runtime SIGSEGVs or returns
+                        // uninitialized data on the caller's first
+                        // method call.
+                        llvm::Value* srcPtr = v;
+                        // Identifier-of-class-typed-local: the field's
+                        // allocation is a SLOT (alloca of ptr) holding
+                        // the struct address. Load through to get the
+                        // struct address before memcpy. Field lookup
+                        // through scope, not expression->getResolvedType
+                        // (which IdentifierExpression::resolveTypes leaves
+                        // null when the local was declared after the
+                        // surrounding block's resolveTypes ran — see
+                        // Statement.cpp's resolveTypes ordering).
+                        if (auto idExpr = dynamic_pointer_cast<IdentifierExpression>(expression)) {
+                            if (auto scope = module->getScopeStack().peek()) {
+                                FieldPtr fld = scope->getField(idExpr->getTextValue());
+                                if (fld) {
+                                    auto klass = dynamic_pointer_cast<CajetaClass>(fld->getType());
+                                    if (klass && !klass->isInterface()) {
+                                        llvm::Type* ptrTy = llvm::PointerType::get(
+                                            *module->getLlvmContext(), 0);
+                                        srcPtr = builder->CreateLoad(ptrTy, v);
+                                    }
+                                }
+                            }
+                        }
                         const llvm::DataLayout& dl =
                             module->getLlvmModule()->getDataLayout();
                         llvm::Value* sz = llvm::ConstantInt::get(
                             llvm::Type::getInt64Ty(*module->getLlvmContext()),
                             dl.getTypeAllocSize(structTy));
                         builder->CreateMemCpy(sretPtr, llvm::MaybeAlign(8),
-                            v, llvm::MaybeAlign(8), sz);
+                            srcPtr, llvm::MaybeAlign(8), sz);
                     } else {
                         builder->CreateStore(v, sretPtr);
                     }
@@ -1302,6 +1345,51 @@ namespace cajeta {
                                     "`#T`. See cajeta-docs/stdlib/MemoryModel"
                                     ".md § Function signatures.",
                                     "CAJETA_ERROR_FRESH_RETURN_NEEDS_TRANSFER");
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        // Phase 3a of #68 (body-side borrow-escape check): returning a
+        // borrowed class parameter through a `#T`-return signature is
+        // a silent escape. The caller will register a fresh drop entry
+        // expecting ownership, but the value was the caller-of-caller's
+        // borrow — when the original owner drops, the receiver's drop
+        // fires on the same allocation and produces a double free. The
+        // borrow-param's formal is plain `T` (not `#T`), so the
+        // parameter doesn't own its value and can't transfer it.
+        if (auto m = module->getCurrentMethod()) {
+            if (m->isReturnsOwnership() && expression) {
+                if (auto idExpr = dynamic_pointer_cast<IdentifierExpression>(expression)) {
+                    auto scope = module->getScopeStack().peek();
+                    if (scope) {
+                        FieldPtr fld = scope->getField(idExpr->getTextValue());
+                        auto pf = dynamic_pointer_cast<ParameterField>(fld);
+                        if (pf) {
+                            auto formal = pf->getFormalParameter();
+                            if (formal && !formal->isTransferred()) {
+                                auto klass = dynamic_pointer_cast<CajetaClass>(
+                                    fld->getType());
+                                if (klass && !klass->isInterface()) {
+                                    throw Exception(
+                                        "method `" + m->toCanonical(false)
+                                            + "` declares a `#T` return "
+                                            "(ownership transfer) but returns "
+                                            "borrowed parameter `"
+                                            + idExpr->getTextValue() + "` "
+                                            "declared without `#`. The caller "
+                                            "would register a fresh drop entry "
+                                            "on receipt and free a value the "
+                                            "original owner still references. "
+                                            "Fix: mark the parameter `#"
+                                            + idExpr->getTextValue() + "` so the "
+                                            "caller transfers ownership, or "
+                                            "change the return type to plain "
+                                            "`T` (borrow pass-through). See "
+                                            "cajeta-docs/stdlib/OwnershipTransfer.md.",
+                                        "CAJETA_ERROR_BORROW_PARAM_ESCAPES");
+                                }
                             }
                         }
                     }

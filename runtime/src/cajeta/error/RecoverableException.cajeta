@@ -6,7 +6,7 @@ package cajeta.error;
 // can chain-walk a thrown instance's vtable to decide whether the
 // throw should propagate to abort.
 public class RecoverableException extends Exception {
-    public RecoverableException(String message) {
+    public RecoverableException(#String message) {
         this.message = message;
         this.cause = 0;
     }

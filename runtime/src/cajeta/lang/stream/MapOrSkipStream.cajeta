@@ -22,26 +22,26 @@ public class MapOrSkipStream<T, R> extends Stream<R> {
     Stream<T> source;
     (T) -> #R fn;
 
-    public MapOrSkipStream(Stream<T> source, (T) -> #R fn) {
+    public MapOrSkipStream(#Stream<T> source, (T) -> #R fn) {
         this.source = source;
         this.fn = fn;
     }
 
-    public #Optional<R> next() {
+    public Optional<R> next() {
         while (true) {
             Optional<T> o = this.source.next();
             if (o.isEmpty()) {
-                return heap Optional<R>(false, null);
+                return stack Optional<R>(false, null);
             }
             try {
                 R mapped = this.fn(o.get());
-                return heap Optional<R>(true, mapped);
+                return stack Optional<R>(true, #mapped);
             } catch (RecoverableException e) {
                 // drop the element, pull the next one
             }
         }
         // unreachable; while(true) above either returns or continues
-        return heap Optional<R>(false, null);
+        return stack Optional<R>(false, null);
     }
 
     /** Type-changing wrapper unwind — see MapStream. (Step 5b.) */
@@ -50,6 +50,6 @@ public class MapOrSkipStream<T, R> extends Stream<R> {
     }
 
     public #Stream<R> cloneChainOver(#Stream<?> newRoot) {
-        return heap MapOrSkipStream<T, R>(this.source.cloneChainOver(newRoot), this.fn);
+        return heap MapOrSkipStream<T, R>(this.source.cloneChainOver(#newRoot), this.fn);
     }
 }

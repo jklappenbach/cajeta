@@ -74,7 +74,7 @@ public class String {
      * `cachedCpLength` is initialized to -1 (not yet computed); the
      * first `count()` call walks `bytes` and caches the result.
      */
-    public String(int8[] bytes, int32 byteLength) {
+    public String(#int8[] bytes, int32 byteLength) {
         this.bytes = bytes;
         this.byteLength = byteLength;
         this.mode = 1;

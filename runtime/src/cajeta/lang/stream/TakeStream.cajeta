@@ -16,14 +16,14 @@ public class TakeStream<T> extends Stream<T> {
     Stream<T> source;
     int32 remaining;
 
-    public TakeStream(Stream<T> source, int32 n) {
+    public TakeStream(#Stream<T> source, int32 n) {
         this.source = source;
         this.remaining = n;
     }
 
-    public #Optional<T> next() {
+    public Optional<T> next() {
         if (this.remaining <= 0) {
-            return heap Optional<T>(false, null);
+            return stack Optional<T>(false, null);
         }
         Optional<T> o = this.source.next();
         if (o.isEmpty()) {

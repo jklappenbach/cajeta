@@ -452,14 +452,15 @@ namespace cajeta {
                             auto argExpr = mceParams[0].expression;
                             // Owning vs borrow form (Views.md § Construction).
                             // `View(#buf)` transfers buffer ownership to the
-                            // view; `View(buf)` borrows. The MoveExpression
-                            // wrapper at the argument site is the discriminator.
-                            // For owning form we skip setViewSource so the
-                            // borrow-checker treats the view as an owner
-                            // (returnable, transferable, no escape error);
-                            // a deferred drop-entry registration further down
-                            // handles scope-exit cleanup.
-                            bool isOwning = dynamic_pointer_cast<MoveExpression>(argExpr) != nullptr;
+                            // view; `View(buf)` borrows. Pre-Phase-1 the `#`
+                            // produced a MoveExpression wrapper at the arg
+                            // site; post-Phase-1 (#68) it sets
+                            // MethodCallParameter::callerTransferred and the
+                            // inner expression is the bare identifier. Either
+                            // signal is the owning-form discriminator.
+                            bool isOwning =
+                                mceParams[0].callerTransferred
+                                || dynamic_pointer_cast<MoveExpression>(argExpr) != nullptr;
                             field->setIsOwningView(isOwning);
                             if (!isOwning) {
                                 if (auto idArg = dynamic_pointer_cast<IdentifierExpression>(argExpr)) {

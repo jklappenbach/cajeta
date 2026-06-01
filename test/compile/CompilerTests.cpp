@@ -50,7 +50,12 @@ TEST(CompilerTests, canThrowOnInvalidInput) {
 // 2026-05-31: bumped 106 → 108 for R9.3 — cajeta.threading.Tasks pulls
 // in Optional<int32> as a stdlib-side instantiation (heap Optional<int32>
 // in withTimeoutInt32's return), so the structure count goes up by 2.
-static constexpr size_t STDLIB_STRUCTURE_COUNT = 108;
+// 2026-05-31: bumped 108 → 110 after #66 stream pipeline sweep —
+// converting `#Optional<T>` returns to value-form `Optional<T>` widens
+// the set of eagerly-instantiated stream wrappers visible at module-
+// load time (the new sret signatures pull in additional template
+// monomorphizations that the heap-return path resolved lazily).
+static constexpr size_t STDLIB_STRUCTURE_COUNT = 110;
 
 TEST(CompilerTests, canParseOnValidShortPackage) {
     string inputPath = CAJETA_TEST_ROOT + string("/compile/code/src/cajeta/Test.cajeta");

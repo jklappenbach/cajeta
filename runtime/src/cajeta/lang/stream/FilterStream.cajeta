@@ -14,17 +14,17 @@ public class FilterStream<T> extends Stream<T> {
     Stream<T> source;
     (T) -> boolean pred;
 
-    public FilterStream(Stream<T> source, (T) -> boolean pred) {
+    public FilterStream(#Stream<T> source, (T) -> boolean pred) {
         this.source = source;
         this.pred = pred;
     }
 
-    public #Optional<T> next() {
+    public Optional<T> next() {
         Optional<T> o = this.source.next();
         while (o.isPresent()) {
             T v = o.get();
             if (this.pred(v)) {
-                return heap Optional<T>(true, v);
+                return stack Optional<T>(true, #v);
             }
             o = this.source.next();
         }
@@ -43,6 +43,6 @@ public class FilterStream<T> extends Stream<T> {
      * free the inner stream the just-constructed FilterStream needs.
      */
     public #Stream<T> cloneChainOver(#Stream<?> newRoot) {
-        return heap FilterStream<T>(this.source.cloneChainOver(newRoot), this.pred);
+        return heap FilterStream<T>(this.source.cloneChainOver(#newRoot), this.pred);
     }
 }

@@ -27,7 +27,7 @@ public class Mutex<T> {
     pointer cond;
     T value;
 
-    public Mutex(T initial) {
+    public Mutex(#T initial) {
         this.handle = Cajeta.lockNew();
         this.cond = Cajeta.condvarNew();
         this.value = initial;

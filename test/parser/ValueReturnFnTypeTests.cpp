@@ -7,19 +7,20 @@
 // produces a sret-shaped function-type. The call site allocates the result
 // slot in its own frame and threads it as the closure's hidden arg 0.
 //
-// This file covers what is reachable WITHOUT the grammar threading step that
-// will land alongside source migration. The sret form is reachable only via
-// inference (no LHS-pinned expected type), and today the two practical
-// avenues there — `var` declarations of fn-typed locals, and the
-// `(expr)(args)` postfix-call form — are not implemented for fn types in
-// the parser. As a result, the end-to-end matched-ABI tests for lambda
-// `stack X(...)` callbacks and method-ref direct binding land in the follow-
-// up commit that introduces source-side `#R` syntax + migrates existing
-// `(P) -> R` sites that mean ownership.
+// Source-level discrimination: `(P) -> R` is the sret value-return form;
+// `(P) -> #R` is the ownership / heap-return form. The grammar's
+// `typeTypeOrVoid REFERENCE?` token threads `returnsOwn` through
+// CajetaType::fromContext and LambdaExpression::resolveTypes (mirrored from
+// Method::returnsStackValue body scans where the type is inferred).
 //
-// For now, the suite holds a primitive-fn smoke that exercises the same
-// closure-record + indirect-call ABI without touching the sret path, so a
-// regression in the shared L2 lambda machinery would be caught here.
+// Tests below exercise the full M5(b) matrix:
+//   - primitiveFnTypedLocalSmoke           — shared closure ABI regression guard
+//   - lambdaStackReturnIntoSretCallback    — lambda `stack X(...)` direct (N3)
+//   - lambdaBlockStackReturnIntoSretCallback — block-body variant
+//   - methodRefToSretMethodDirectBinding   — method-ref sret→sret direct (N4)
+//   - ownershipFormConstructorRefStillWorks — `#R` path lock-in
+//   - methodRefBorrowToSretAdapter         — borrow→sret synthesized thunk (N5)
+//   - methodRefOwnershipToSretRejected     — matrix `#R → R` error
 //
 
 #include "gtest/gtest.h"

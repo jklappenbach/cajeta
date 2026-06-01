@@ -18,7 +18,7 @@
 // After the fix, the upcast happens implicitly at the ctor call:
 //
 //   ArrayStream<int32> as = heap ArrayStream<int32>(xs, 5);
-//   TakeStream<int32> t = heap TakeStream<int32>(as, 3);  // works
+//   TakeStream<int32> t = heap TakeStream<int32>(#as, 3);  // works
 //
 
 #include "gtest/gtest.h"
@@ -77,7 +77,7 @@ TEST(SubtypeArgLookupTests, derivedClassArgBindsToBaseClassParamStdlib) {
         "    public static int32 run() {\n"
         "        int32[] xs = {1, 2, 3, 4, 5};\n"
         "        ArrayStream<int32> as = heap ArrayStream<int32>(xs, 5);\n"
-        "        TakeStream<int32> t = heap TakeStream<int32>(as, 3);\n"
+        "        TakeStream<int32> t = heap TakeStream<int32>(#as, 3);\n"
         "        return t.count();\n"
         "    }\n"
         "}\n";
