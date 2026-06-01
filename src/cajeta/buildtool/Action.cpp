@@ -58,8 +58,9 @@ namespace cajeta::buildtool {
 
     } // namespace
 
-    TaskContext::TaskContext(const ResolvedProperties& props)
-        : props_(props) {}
+    TaskContext::TaskContext(const ResolvedProperties& props,
+                             const Manifest* manifest)
+        : props_(props), manifest_(manifest) {}
 
     void TaskContext::setParam(const std::string& name,
                                const std::string& value) {
@@ -74,7 +75,7 @@ namespace cajeta::buildtool {
     }
 
     TaskContext TaskContext::snapshot() const {
-        TaskContext out(props_);
+        TaskContext out(props_, manifest_);
         out.params_ = params_;
         out.actionOutputs_ = actionOutputs_;
         return out;
@@ -140,6 +141,7 @@ namespace cajeta::buildtool {
     std::unique_ptr<Action> makeVerifySigAction();
     std::unique_ptr<Action> makeVersionAction();
     std::unique_ptr<Action> makeDownloadAction();
+    std::unique_ptr<Action> makeBuildAction();
 
     ActionRegistry::ActionRegistry() {
         auto reg = [&](std::unique_ptr<Action> a) {
@@ -155,6 +157,8 @@ namespace cajeta::buildtool {
         reg(makeVerifySigAction());
         reg(makeVersionAction());
         reg(makeDownloadAction());
+        // Phase 5a: build action.
+        reg(makeBuildAction());
     }
 
     const Action* ActionRegistry::get(const std::string& name) const {

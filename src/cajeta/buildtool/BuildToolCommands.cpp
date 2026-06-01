@@ -311,7 +311,8 @@ namespace cajeta::buildtool {
                 return 1;
             }
             if (auto e = showTask(project->tasks, taskName, cliParams,
-                                  project->props, std::cout)) {
+                                  project->props, std::cout,
+                                  &project->manifest)) {
                 std::string msg;
                 llvm::raw_string_ostream os(msg);
                 os << e;
@@ -450,7 +451,7 @@ namespace cajeta::buildtool {
             ActionRegistry registry;
             auto outputs = runTask(
                 project->tasks, taskName, cliParams,
-                project->props, registry);
+                project->props, registry, &project->manifest);
             if (!outputs) {
                 std::string msg;
                 llvm::raw_string_ostream os(msg);

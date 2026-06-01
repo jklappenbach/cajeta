@@ -32,7 +32,13 @@ namespace cajeta::buildtool {
     // Cleared / rebuilt per task invocation.
     class TaskContext {
     public:
-        TaskContext(const ResolvedProperties& props);
+        TaskContext(const ResolvedProperties& props,
+                    const Manifest* manifest = nullptr);
+
+        // The manifest the task is running against. Null if the
+        // context was constructed without one (e.g. for unit tests
+        // that don't need build-action functionality).
+        const Manifest* manifest() const { return manifest_; }
 
         // Bind a task parameter. Available as ${params.<name>}.
         void setParam(const std::string& name, const std::string& value);
@@ -67,6 +73,7 @@ namespace cajeta::buildtool {
 
     private:
         const ResolvedProperties& props_;
+        const Manifest* manifest_;
         std::map<std::string, std::string> params_;
         // id → outputs map; outputs is field-name → value
         std::map<std::string, std::map<std::string, std::string>> actionOutputs_;

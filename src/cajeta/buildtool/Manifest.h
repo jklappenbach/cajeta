@@ -38,6 +38,27 @@ namespace cajeta::buildtool {
         std::string library() const;   // last segment
     };
 
+    // settings.build.binaries entry — names a buildable executable
+    // with its entry method. Multi-binary projects declare several
+    // here; build tasks reference them via `binary: "<name>"`.
+    struct BinarySpec {
+        std::string name;
+        std::string entryMethod;
+        std::optional<std::string> description;
+    };
+
+    // settings.build block. Carries cross-cutting build defaults the
+    // build action reads when invoked.
+    struct SettingsBuild {
+        std::optional<std::string> entryMethod;         // single-binary default
+        std::optional<std::string> target;              // "host" / target triple
+        std::optional<std::string> sourceRoot;          // default: src/main/cajeta
+        std::optional<std::string> outputDir;           // default: build/
+        std::map<std::string, BinarySpec> binaries;     // named-binary registry
+        // Phase 5b: custom-flavors map; left raw for now.
+        llvm::json::Object customFlavorsRaw;
+    };
+
     // Top-level manifest. Phase 0 keeps the non-details blocks as raw
     // JSON values so we can validate they exist and have the right
     // top-level type without yet modeling their contents. Later phases
@@ -54,6 +75,12 @@ namespace cajeta::buildtool {
         // manifest was loaded from an in-memory string.
         std::string sourcePath;
     };
+
+    // Parse the `settings.build` block from a manifest. Returns a
+    // typed SettingsBuild; missing block → defaults. Errors on
+    // structurally invalid shapes (e.g. binaries entry without
+    // `entry-method`).
+    llvm::Expected<SettingsBuild> parseSettingsBuild(const Manifest& m);
 
     // Load + validate a manifest from disk. Errors are
     // `cajeta::buildtool::ManifestError` with citation-style messages.

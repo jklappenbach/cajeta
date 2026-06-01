@@ -328,28 +328,35 @@ compiler/repository surface.
 or a native executable depending on `emit`; incremental builds
 work.
 
-### Deliverables
+### Deliverables — Phase 5a (build action)
 
-- [ ] `build` action wrapping the existing compiler binary.
-- [ ] `emit: "exploded-ir"` — per-source `.bc` tree under
-      `build/ir/<package>/<class>.bc`.
-- [ ] `emit: "archived-ir"` — `.cja` archive (library by default,
-      executable when entry-method is configured).
-- [ ] `emit: "executable"` — fully-linked native binary.
-- [ ] Default-emit selection: `executable` when entry-method
-      configured; `archived-ir` otherwise.
-- [ ] `entry-method` action param.
-- [ ] `binary` action param; resolves against
+- [x] `build` action wrapping the existing compiler binary
+      (fork+exec; `/proc/self/exe` for the binary path).
+- [x] `emit: "exploded-ir"` — per-source `.bc` tree.
+- [x] `emit: "archived-ir"` — `.cja` archive.
+- [x] `emit: "executable"` — native binary.
+- [x] Default-emit selection: `executable` when entry-method
+      resolved; `archived-ir` otherwise.
+- [x] `entry-method` action param.
+- [x] `binary` action param; resolves against
       `settings.build.binaries`.
-- [ ] `settings.build.entry-method` manifest default.
-- [ ] `settings.build.binaries` named-binary registry
+- [x] `settings.build.entry-method` manifest default.
+- [x] `settings.build.binaries` named-binary registry
       (`entry-method` + optional `description` per entry).
-- [ ] Output naming convention:
-      `build/archive/<details.name>-<binary-name>-<version>.cja`
-      when binary is named; `<details.name>-<version>.cja`
-      otherwise.
-- [ ] Hard error when `emit: "executable"` is requested with no
+- [x] `parseSettingsBuild()` extracts settings.build into a
+      typed model.
+- [x] Manifest threaded through `TaskContext` so actions can
+      read settings.build at invocation time.
+- [x] Hard error when `emit: "executable"` is requested with no
       entry method resolvable.
+- [x] Hard error when `binary` names a missing entry; error
+      lists available binaries.
+- [x] Default output paths:
+      `build/ir/`, `build/archive/<name>-<version>.cja`,
+      `build/exe/<name>`. Override via `output-path` param.
+
+### Deliverables — Phase 5b (IR cache + custom flavors)
+
 - [ ] Compiler-version + flag-set canonicalization for cache
       discriminator.
 - [ ] Per-file SHA-256-keyed IR cache under
@@ -358,9 +365,33 @@ work.
       with cycle-break fixed point).
 - [ ] Cache eviction: LRU + size cap from `settings.build.cache`.
 - [ ] Cache TTL eviction.
-- [ ] `clean` action (removes `.cajeta/work/`).
+- [ ] Custom-flavor map composition
+      (`{ "base": "release", "debug-info": "full" }`).
 - [ ] `cajeta clean --deep` flag (also wipes `.cajeta/cache/`)
       with confirmation prompt.
+
+### Acceptance
+
+- [x] `emit` value validated against the three legal options
+      with a citation-style error on bad values (5a).
+- [x] Multi-binary project (3 binaries in
+      `settings.build.binaries`) resolves each via the `binary`
+      param; missing binary errors with the available list (5a).
+- [x] `binary` param without a manifest fails with a clear
+      error (5a).
+- [ ] First build of a real source tree succeeds end-to-end
+      with default `emit` (`archived-ir`). [needs Phase 5b's
+      cache or a separate integration smoke once real source
+      compiles work in CI]
+- [ ] Touching one source file rebuilds only that file +
+      dependents (Phase 5b).
+- [ ] Cache size cap enforces eviction (Phase 5b).
+- [ ] Rebuild after eviction produces byte-identical IR
+      (Phase 5b).
+- [ ] Flag-set order doesn't bust the cache (Phase 5b).
+- [ ] `emit: "executable"` with no resolvable entry method
+      fails the build at action-validation time, not after a
+      partial compile (5a — implemented).
 
 ### Acceptance
 
