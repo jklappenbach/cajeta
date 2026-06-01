@@ -14,11 +14,16 @@ namespace cajeta::buildtool {
 
     namespace {
 
-        // The six valid top-level blocks in a manifest, per
-        // BuildTool.md "Manifest — cajeta.json".
+        // The valid top-level blocks in a manifest. Six core blocks
+        // plus two specialty blocks (workspace + melt) that are
+        // mutually exclusive with `tasks`/source content. See
+        // BuildTool.md "Manifest — cajeta.json". Phase 6c adds the
+        // typed parsers for `workspace` + `melt`; today they parse
+        // through as raw objects on the manifest.
         const std::set<std::string> kTopLevelBlocks = {
             "details", "properties", "settings",
             "actions", "plugins", "tasks",
+            "workspace", "melt",
         };
 
         // Fields recognized inside the `details` block. Phase 0 is

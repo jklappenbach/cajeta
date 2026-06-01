@@ -1,0 +1,9 @@
+package com.example.core;
+
+// Shared core library. Apps in the workspace depend on this via
+// path references in their cajeta.json.
+public class Core {
+    public static String greeting() {
+        return "hello from core";
+    }
+}
