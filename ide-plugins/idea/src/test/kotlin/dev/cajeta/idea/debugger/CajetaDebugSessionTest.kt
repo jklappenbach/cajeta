@@ -224,6 +224,52 @@ class CajetaDebugSessionTest {
     }
 
     @Test
+    fun stackTraceSendsThreadId() {
+        connect()
+        runServer()
+        session.start()
+
+        session.stackTrace(5).get(5, TimeUnit.SECONDS)
+
+        val req = lastRequestByCommand["stackTrace"]!!
+        assertEquals(5, req.at("arguments").at("threadId").asInt())
+    }
+
+    @Test
+    fun threadsRequestIsSent() {
+        connect()
+        runServer()
+        session.start()
+
+        session.threads().get(5, TimeUnit.SECONDS)
+
+        assertTrue(received.contains("threads"))
+    }
+
+    @Test
+    fun parseThreadsDecodesThreads() {
+        val response = Json.obj(
+            "body" to Json.obj(
+                "threads" to Json.arr(
+                    Json.obj("id" to Json.of(0), "name" to Json.of("main")),
+                    Json.obj("id" to Json.of(1), "name" to Json.of("fiber 1")),
+                ),
+            ),
+        )
+        val threads = CajetaDebugSession.parseThreads(response)
+        assertEquals(2, threads.size)
+        assertEquals(0, threads[0].id)
+        assertEquals("main", threads[0].name)
+        assertEquals(1, threads[1].id)
+        assertEquals("fiber 1", threads[1].name)
+    }
+
+    @Test
+    fun parseThreadsEmptyWhenNoBody() {
+        assertTrue(CajetaDebugSession.parseThreads(Json.obj()).isEmpty())
+    }
+
+    @Test
     fun scopesSendsFrameId() {
         connect()
         runServer()

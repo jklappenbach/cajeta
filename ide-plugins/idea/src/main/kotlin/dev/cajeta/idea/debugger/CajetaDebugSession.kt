@@ -110,8 +110,19 @@ class CajetaDebugSession(private val client: DapClient) {
     fun setBreakpoints(file: String, breakpoints: List<LineBreakpoint>): CompletableFuture<Json> =
         client.sendRequest("setBreakpoints", breakpointArgs(file, breakpoints))
 
-    /** Raw stackTrace response; structured frames via [parseStackFrames]. */
+    /** Raw stackTrace response (stopped thread); structured via [parseStackFrames]. */
     fun stackTrace(): CompletableFuture<Json> = client.sendRequest("stackTrace")
+
+    /**
+     * Raw stackTrace for a specific thread/fiber (CP6f-2c). The server keys the
+     * per-stop frame table by threadId; frame ids are global so they round-trip
+     * through scopes/variables unchanged. Structured via [parseStackFrames].
+     */
+    fun stackTrace(threadId: Int): CompletableFuture<Json> =
+        client.sendRequest("stackTrace", Json.obj("threadId" to Json.of(threadId)))
+
+    /** DAP `threads`; structured via [parseThreads]. */
+    fun threads(): CompletableFuture<Json> = client.sendRequest("threads", Json.obj())
 
     /** DAP `scopes` for a frame; structured via [parseScopes]. */
     fun scopes(frameId: Int): CompletableFuture<Json> =
@@ -204,6 +215,26 @@ class CajetaDebugSession(private val client: DapClient) {
         }
 
         /**
+         * Map a DAP `threads` response body to thread records (CP6f-2c). The
+         * cajeta server reports the entry/program thread as id 0 ("main") plus
+         * one entry per live fiber keyed by its stable dbg id. Pure — unit-tested.
+         */
+        fun parseThreads(threadsResponse: Json): List<DapThread> {
+            val threads = threadsResponse.opt("body")?.opt("threads") ?: return emptyList()
+            val out = mutableListOf<DapThread>()
+            for (i in 0 until threads.size) {
+                val t = threads[i]
+                out.add(
+                    DapThread(
+                        id = t.opt("id")?.asInt() ?: 0,
+                        name = t.opt("name")?.asString() ?: "thread ${t.opt("id")?.asInt() ?: 0}",
+                    ),
+                )
+            }
+            return out
+        }
+
+        /**
          * Map a DAP `scopes` response body to scope records. variablesReference
          * is the handle passed to [variables]. Pure — unit-tested.
          */
@@ -247,6 +278,9 @@ class CajetaDebugSession(private val client: DapClient) {
         }
     }
 }
+
+/** A DAP thread/fiber, decoded for the XExecutionStack mapping layer. */
+data class DapThread(val id: Int, val name: String)
 
 /** A single DAP stack frame, decoded for the XStackFrame mapping layer. */
 data class DapStackFrame(
