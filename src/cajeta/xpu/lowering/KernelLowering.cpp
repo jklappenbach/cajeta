@@ -9,6 +9,7 @@
 #include "../../type/FormalParameter.h"
 #include "../../type/CajetaType.h"
 #include "../../type/CajetaClass.h"
+#include "../core/XpuAttributes.h"
 #include "../../error/Exception.h"
 
 #include "../../asn/AbstractSyntaxNode.h"
@@ -46,6 +47,11 @@ llvm::Value* LoweringTarget::globalId(llvm::IRBuilderBase& b, llvm::Module& m,
     llvm::Value* tid = threadId(b, m, dim);
     return b.CreateAdd(b.CreateMul(wid, wdim), tid, "gid");
 }
+
+// Defined far below (after the anonymous-namespace block); forward-declared in
+// cajeta::xpu so DeviceLowerer (in that block) can lower @Device helpers.
+static std::vector<LoweringTarget::KernelParam> collectParams(
+        const MethodPtr& method, llvm::LLVMContext& ctx);
 
 namespace {
 
@@ -97,8 +103,19 @@ bool typeIsSigned(const CajetaTypePtr& t) {
 // One device kernel's worth of lowering state.
 class DeviceLowerer {
 public:
+    using DeviceFnCache = std::map<const Method*, llvm::Function*>;
+
     DeviceLowerer(llvm::Module& m, llvm::Function* fn, LoweringTarget& target)
         : mod(m), ctx(m.getContext()), builder(ctx), fn(fn), target(target) {}
+
+    // @Device helper-call context: `cls` resolves a bare helper name to its
+    // sibling method; `deviceFns` is a cache of already-lowered @Device functions
+    // shared across the kernel and all helpers (a nullptr entry = currently being
+    // lowered → a recursive call, which is rejected).
+    void setDeviceContext(std::shared_ptr<CajetaClass> c, DeviceFnCache* cache) {
+        cls = std::move(c);
+        deviceFns = cache;
+    }
 
     // The admitted kernel params (computed by lowerKernel); materialized into
     // the entry block by lowerBody via target.materializeParam (allocas /
@@ -108,6 +125,7 @@ public:
     }
 
     void lowerBody(const MethodPtr& method) {
+        if (!cls) cls = method->getParent();   // for @Device helper resolution
         builder.SetInsertPoint(llvm::BasicBlock::Create(ctx, "entry", fn));
         // Materialize params now that the entry block exists. Scalars get a
         // mutable alloca slot (so they can be reassigned / serve as loop
@@ -155,6 +173,8 @@ private:
 
     std::vector<LoweringTarget::KernelParam> kparams;  // admitted params
     std::map<std::string, bool> bufferElemSigned;  // buffer name -> elem signed?
+    std::shared_ptr<CajetaClass> cls;              // declaring class (helper resolution)
+    DeviceFnCache* deviceFns = nullptr;            // shared @Device function cache
     // At most one dynamic (runtime-sized) shared array per kernel — the
     // extern unsized addrspace(3) region is a single base; multiple would
     // alias (CUDA extern __shared__ / HIP HIP_DYNAMIC_SHARED both single).
@@ -230,9 +250,14 @@ private:
             lowerExprStatement(es->getExpression());
             return;
         }
-        if (std::dynamic_pointer_cast<ReturnStatement>(node)) {
-            // @Kernel returns void; a bare `return;` just closes the block.
-            builder.CreateRetVoid();
+        if (auto rs = std::dynamic_pointer_cast<ReturnStatement>(node)) {
+            // @Kernel returns void; a @Device helper returns its value.
+            if (fn->getReturnType()->isVoidTy() || !rs->getExpression()) {
+                builder.CreateRetVoid();
+            } else {
+                llvm::Value* v = lowerExpr(rs->getExpression());
+                builder.CreateRet(coerceTo(v, fn->getReturnType()));
+            }
             return;
         }
         unsupported("statement form in kernel body");
@@ -711,7 +736,85 @@ private:
                                             lowerExpr(args[0].expression));
             }
         }
+        // A user-defined @Device helper call (resolved within the kernel's
+        // class). Lower the helper to a device function (cached) and call it.
+        if (auto m = resolveDeviceMethod(recv, name, mc)) {
+            llvm::Function* hfn = lowerDeviceFn(m);
+            const auto& args = mc->getParameters();
+            std::vector<llvm::Value*> argv;
+            argv.reserve(args.size());
+            for (unsigned i = 0; i < args.size(); ++i)
+                argv.push_back(coerceTo(lowerExpr(args[i].expression),
+                                        hfn->getArg(i)->getType()));
+            return builder.CreateCall(hfn, argv, hfn->getReturnType()->isVoidTy()
+                                                     ? "" : "dev.call");
+        }
         unsupported("device builtin '" + recv + "." + name + "()'");
+    }
+
+    // Resolve a call `name(args)` / `Cls.name(args)` to a sibling @Device method
+    // of the kernel's class (first cut: same class only), matched by arity.
+    MethodPtr resolveDeviceMethod(
+            const std::string& recv, const std::string& name,
+            const std::shared_ptr<MethodCallExpression>& mc) {
+        if (!cls || !deviceFns) return nullptr;
+        if (!recv.empty()) {
+            // `Cls.helper(...)` — accept only the kernel's own (simple) class
+            // name (the last segment of the qualified name).
+            std::string q = cls->toCanonical();
+            std::string simple = q.substr(q.find_last_of('.') + 1);
+            if (recv != simple) return nullptr;
+        }
+        unsigned argc = (unsigned) mc->getParameters().size();
+        for (auto& kv : cls->getMethods()) {
+            const MethodPtr& m = kv.second;
+            if (!m || m->getName() != name || !isDevice(*m)) continue;
+            if (m->getParameters().size() != argc) continue;
+            return m;
+        }
+        return nullptr;
+    }
+
+    // Lower a @Device method to a device function (scalar params + scalar/void
+    // return), cached. alwaysinline so every backend folds the call away. A
+    // nullptr cache entry means it's mid-lowering → a recursive call (rejected).
+    llvm::Function* lowerDeviceFn(const MethodPtr& m) {
+        auto it = deviceFns->find(m.get());
+        if (it != deviceFns->end()) {
+            if (!it->second) unsupported("recursive @Device call");
+            return it->second;
+        }
+        (*deviceFns)[m.get()] = nullptr;            // mark in-progress
+
+        std::vector<LoweringTarget::KernelParam> params = collectParams(m, ctx);
+        std::vector<llvm::Type*> tys;
+        tys.reserve(params.size());
+        for (auto& p : params) {
+            if (p.isBuffer)
+                unsupported("@Device helper with a Buffer/array param "
+                            "(scalar params only for now)");
+            tys.push_back(p.type);
+        }
+        llvm::Type* retTy = m->getReturnType()
+                                ? deviceScalarType(m->getReturnType(), ctx)
+                                : nullptr;
+        if (!retTy) retTy = llvm::Type::getVoidTy(ctx);
+        auto* fnTy = llvm::FunctionType::get(retTy, tys, /*vararg=*/false);
+        std::string fname = "__cajeta_xpu_dev." +
+            (cls ? cls->toCanonical() + "." : std::string()) + m->getName();
+        auto* hfn = llvm::Function::Create(
+            fnTy, llvm::GlobalValue::InternalLinkage, fname, &mod);
+        hfn->addFnAttr(llvm::Attribute::AlwaysInline);
+        unsigned i = 0;
+        for (auto& p : params) hfn->getArg(i++)->setName(p.name);
+
+        DeviceLowerer sub(mod, hfn, target);
+        sub.setParams(params);
+        sub.setDeviceContext(cls, deviceFns);
+        sub.lowerBody(m);
+
+        (*deviceFns)[m.get()] = hfn;
+        return hfn;
     }
 
     llvm::Value* lowerBinaryOp(const std::shared_ptr<BinaryOpExpression>& bin) {
@@ -949,6 +1052,11 @@ llvm::Function* lowerKernel(const MethodPtr& method, llvm::Module& deviceModule,
 
     DeviceLowerer lowerer(deviceModule, fn, target);
     lowerer.setParams(std::move(params));
+    // A per-kernel cache of lowered @Device helper functions (shared with any
+    // nested helper lowering), so each helper is emitted once and recursion is
+    // caught. The functions live in the module; the cache is just for dedup.
+    DeviceLowerer::DeviceFnCache deviceFns;
+    lowerer.setDeviceContext(method->getParent(), &deviceFns);
     lowerer.lowerBody(method);
     return fn;
 }
