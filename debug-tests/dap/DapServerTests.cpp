@@ -208,7 +208,10 @@ TEST(DapServerSession, ScopesVariablesAndSetVariable) {
     EXPECT_EQ(frames[0].at("line").asInt(), 6);
     int frameId = frames[0].at("id").asInt();
 
-    // scopes -> a single "Locals" scope with variablesReference frameId+1.
+    // scopes -> a single "Locals" scope. variablesReference is an OPAQUE handle
+    // (>=1; DAP reserves 0 for "no children"). We deliberately do NOT assert any
+    // arithmetic relation to frameId — the contract is the round-trip:
+    // variables(varsRef) returns this frame's locals (asserted just below).
     log.clear();
     Json scopesArgs = Json::object();
     scopesArgs["frameId"] = frameId;
@@ -219,7 +222,7 @@ TEST(DapServerSession, ScopesVariablesAndSetVariable) {
     ASSERT_EQ(scopes.size(), 1u);
     EXPECT_EQ(scopes[0].at("name").asString(), "Locals");
     int varsRef = scopes[0].at("variablesReference").asInt();
-    EXPECT_EQ(varsRef, frameId + 1);
+    EXPECT_GE(varsRef, 1);
 
     // variables -> a == 6, b == 7, both typed int32.
     log.clear();
@@ -390,10 +393,62 @@ TEST(DapServerSession, ThreadsListsSpawnedFiberAndStoppedThreadId) {
     EXPECT_TRUE(sawMain) << "main thread (id 0) missing";
     EXPECT_TRUE(sawStopped) << "stopped fiber id missing from threads";
 
+    // CP6f-2b-ii: per-fiber stackTrace — ask for the stopped fiber's frames and
+    // confirm its top frame is `worker` parked at line 4.
+    log.clear();
+    Json stArgs = Json::object();
+    stArgs["threadId"] = stoppedTid;
+    drive(srv, req(6, "stackTrace", stArgs), log);
+    const Json* stResp = findResponse(log, "stackTrace");
+    ASSERT_NE(stResp, nullptr);
+    const Json& wf = stResp->at("body").at("stackFrames");
+    ASSERT_GE(wf.size(), 1u) << "stopped fiber has no frames";
+    EXPECT_EQ(wf[0].at("line").asInt(), 4);
+    int workerFrameId = wf[0].at("id").asInt();
+
+    // Round-trip the opaque handle: scopes(frameId) -> ref, variables(ref) shows
+    // the worker's param x == 41. No assumption about ref's numeric value.
+    log.clear();
+    Json scArgs = Json::object();
+    scArgs["frameId"] = workerFrameId;
+    drive(srv, req(7, "scopes", scArgs), log);
+    const Json* scResp2 = findResponse(log, "scopes");
+    ASSERT_NE(scResp2, nullptr);
+    int xRef = scResp2->at("body").at("scopes")[0].at("variablesReference").asInt();
+    EXPECT_GE(xRef, 1);
+
+    log.clear();
+    Json vArgs = Json::object();
+    vArgs["variablesReference"] = xRef;
+    drive(srv, req(8, "variables", vArgs), log);
+    const Json* vResp2 = findResponse(log, "variables");
+    ASSERT_NE(vResp2, nullptr);
+    const Json& wvars = vResp2->at("body").at("variables");
+    std::string xVal;
+    for (size_t i = 0; i < wvars.size(); ++i) {
+        if (wvars[i].at("name").asString() == "x")
+            xVal = wvars[i].at("value").asString();
+    }
+    EXPECT_EQ(xVal, "41") << "worker fiber's param x not readable via its frame";
+
+    // Distinct fibers get distinct frame ids: main (thread 0) is parked at the
+    // await on line 8; its top frame id must differ from the worker's.
+    log.clear();
+    Json stMain = Json::object();
+    stMain["threadId"] = 0;
+    drive(srv, req(9, "stackTrace", stMain), log);
+    const Json* mainSt = findResponse(log, "stackTrace");
+    ASSERT_NE(mainSt, nullptr);
+    const Json& mf = mainSt->at("body").at("stackFrames");
+    if (mf.size() >= 1u) {
+        EXPECT_NE(mf[0].at("id").asInt(), workerFrameId)
+            << "main and worker share a frameId — table not global";
+    }
+
     // Resume to termination so the parked carrier unblocks before the DapServer
     // dtor join()s it (else deadlock). 41 + 1 = 42.
     log.clear();
-    drive(srv, req(6, "continue", Json::object()), log);
+    drive(srv, req(10, "continue", Json::object()), log);
     EXPECT_EQ(countEvent(log, "terminated"), 1);
 }
 

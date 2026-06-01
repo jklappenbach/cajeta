@@ -78,6 +78,18 @@ namespace cajeta::dap {
         bool shouldStopAt(const cajeta::dbg::StopEvent& stop,
                           const std::vector<cajeta::dbg::DbgFrameInfo>& frames) const;
 
+        // CP6f-2b-ii: at each stop, build a flat frame table across ALL
+        // threads/fibers (the stopped thread's chain + every other live fiber's
+        // chain) and reset the variablesReference handle table. `stoppedFrames`
+        // is the already-walked chain of the stopped thread (avoids re-walking).
+        void rebuildFrameTable(std::vector<cajeta::dbg::DbgFrameInfo> stoppedFrames);
+
+        // One decoded stack frame plus the thread/fiber it belongs to.
+        struct FrameEntry {
+            int threadId;                    // owning thread (0=entry) / fiber id
+            cajeta::dbg::DbgFrameInfo info;  // func, locId, locals
+        };
+
         int seq_ = 1;                          // outbound seq counter
         cajeta::jit::JitRunOptions launchOpts_;
         std::vector<cajeta::jit::Breakpoint> breakpoints_;
@@ -86,10 +98,17 @@ namespace cajeta::dap {
         std::map<std::pair<std::string, int>, std::string> conditions_;
         std::unique_ptr<cajeta::jit::JitDebugSession> session_;
         cajeta::dbg::StopEvent currentStop_;   // last stop (for stackTrace)
-        // CP5: frames + locals snapshotted from the dbg chain at the last stop
-        // (innermost first). Valid until the next resume; rebuilt on each stop.
-        // frame N's "Locals" scope uses variablesReference N+1.
-        std::vector<cajeta::dbg::DbgFrameInfo> frames_;
+        // CP6f-2b-ii: flat per-stop frame table across all threads/fibers. The
+        // DAP frameId is a monotonic index into this (no per-thread arithmetic);
+        // stackTrace slices it by threadId. Rebuilt on each stop, cleared on
+        // termination.
+        std::vector<FrameEntry> frameTable_;
+        // CP6f-2b-ii: opaque variablesReference handle table. DAP reserves ref 0
+        // for "no children", so handles count up from 1 — no `frameId+1` trick.
+        // Each maps to a frameTable_ index (that frame's Locals scope).
+        // Object-expansion handles will join this same table in CP7.
+        std::map<int, int> varRefToFrame_;
+        int nextVarRef_ = 1;
         bool haveStop_ = false;
         bool terminated_ = false;
         int exitCode_ = 0;
