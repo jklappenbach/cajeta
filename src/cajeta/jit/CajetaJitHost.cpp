@@ -558,6 +558,16 @@ std::unique_ptr<JitDebugSession> startDebugSession(
     installHandler(jit, &safepointTrampoline);
     installExceptionHandler(jit, &exceptionTrampoline);
     callVoidSymbol(jit, "__cajeta_dbg_reset_safepoint_count");
+    // CP6f-3c: disable throw-site backtrace capture in debug sessions. The
+    // debugger supplies the stack itself (stackTrace), and backtrace(3) at the
+    // throw site hangs/faults when the entry runs on the session's spawned
+    // program thread under `cajeta dap` (mingw unwinder on a non-main thread).
+    if (auto sym = jit->lookup("__cajeta_set_stack_trace_capture")) {
+        using SetCap = void (*)(int);
+        if (auto fn = reinterpret_cast<SetCap>(sym->getValue())) fn(0);
+    } else {
+        cajeta::jit::consumeError(sym.takeError());
+    }
 
     auto entrySym = jit->lookup(impl->built.entryName);
     if (!entrySym) {
