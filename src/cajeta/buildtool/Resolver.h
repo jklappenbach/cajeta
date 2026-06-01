@@ -18,11 +18,37 @@
 
 #include <llvm/Support/Error.h>
 
+#include <chrono>
 #include <optional>
 #include <string>
 #include <vector>
 
 namespace cajeta::buildtool {
+
+    // Counters + accumulated wall-clock for one resolver run. When a
+    // pointer is passed to `resolveProjectDependencies` (and through
+    // to `resolveMvs`), each repository call records into here via
+    // the `TimingRepository` wrapper installed by the orchestrator.
+    //
+    // Used by `cajeta info --resolve-time` to surface pathological
+    // graphs (e.g. an MVS fixed-point that re-picks many times, or a
+    // repo whose `listVersions` is slow).
+    struct ResolverTimings {
+        using Duration = std::chrono::microseconds;
+        Duration total{0};
+        Duration listVersions{0};
+        Duration fetch{0};
+        Duration fetchManifest{0};
+        int listVersionsCalls = 0;
+        int fetchCalls = 0;
+        int fetchManifestCalls = 0;
+        // Number of fixed-point iterations the MVS solver ran. Each
+        // iteration is one full pass over the package set picking
+        // dirty packages; bumping above ~deps_count signals
+        // re-pick churn.
+        int mvsIterations = 0;
+        int depsResolved = 0;
+    };
 
     // Resolve every declared dependency. Inputs are the
     // priority-ordered repository drivers, the declared deps,
@@ -82,7 +108,8 @@ namespace cajeta::buildtool {
         const std::vector<DependencySpec>& deps,
         const std::vector<RepositoryPtr>& repos,
         ArtifactCache& cache,
-        const std::vector<OverrideSpec>& overrides = {});
+        const std::vector<OverrideSpec>& overrides = {},
+        ResolverTimings* timings = nullptr);
 
     // Compare just the major-version component of two semver
     // strings. Returns <0 if a's major is lower, 0 if equal, >0
@@ -120,6 +147,7 @@ namespace cajeta::buildtool {
     resolveProjectDependencies(
         const Manifest& m,
         const std::string& projectRoot,
-        std::optional<std::string> homeOverride = std::nullopt);
+        std::optional<std::string> homeOverride = std::nullopt,
+        ResolverTimings* timings = nullptr);
 
 } // namespace cajeta::buildtool
