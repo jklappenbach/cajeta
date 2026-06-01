@@ -19,6 +19,11 @@
 #include "cajeta/xpu/amd/HipDriver.h"
 
 #include <cstdlib>
+#if defined(_WIN32)
+// POSIX setenv/unsetenv are absent on mingw; shim onto _putenv_s.
+static inline int setenv(const char* k, const char* v, int) { return _putenv_s(k, v); }
+static inline int unsetenv(const char* k) { return _putenv_s(k, ""); }
+#endif
 
 using cajeta_test::CajetaJit;
 using cajeta::xpu::amd::HipDriver;
