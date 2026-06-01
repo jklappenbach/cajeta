@@ -147,7 +147,7 @@ stopped selling Intel Macs in 2022; the GH runner pool is being wound
 down). Intel Mac users build from source:
 
 ```sh
-brew install cmake ninja llvm antlr4-cpp-runtime openjdk@17 \
+brew install cmake ninja llvm antlr4-cpp-runtime openjdk@21 \
     googletest glog zstd xxhash
 export LLVM_DIR="$(brew --prefix llvm)/lib/cmake/llvm"
 git clone https://github.com/jklappenbach/cajeta.git
@@ -162,23 +162,92 @@ specifically), restoring the matrix row is a 4-line YAML edit.
 
 ## Artifact shape
 
-Each release publishes:
+Each release publishes a generic archive per target plus a native installer
+per (format × arch), and the IDE plugin zip:
 
 ```
-cajeta-v<version>-<triple>.tar.gz   (Unix)
-cajeta-v<version>-<triple>.zip      (Windows)
+cajeta-v<version>-<triple>.tar.gz     generic archive (Unix)
+cajeta-v<version>-<triple>.zip        generic archive (Windows)
+cajeta_<version>_<arch>.deb           Debian/Ubuntu      (amd64 / arm64)
+cajeta-<version>-1.<arch>.rpm         Fedora/RHEL        (x86_64 / aarch64)
+cajeta-<version>-<arch>.msi           Windows installer
+cajeta-<version>-<arch>.pkg           macOS installer
+cajeta-idea-<version>.zip             IntelliJ IDEA plugin (arch-independent)
+*.sha256                              checksum beside each installer
 ```
 
-Contents:
+Generic-archive contents:
 
 - `bin/cajeta` (or `bin\cajeta.exe`) — the compiler binary.
-- `lib/cajeta-stdlib.cja` — the parsed stdlib as a project-only cja
-  archive, suitable for downstream `--classpath` ingestion. (Today
-  the compiler also embeds the stdlib internally, so the file is
-  primarily for inspection / forward-compat with the eventual
-  classpath-stdlib model.)
 - `VERSION` — exact version string this build was cut from.
 - `README.md`, `LICENSE` — top-of-tree as of the tag.
+
+The native installers (`cpack`-driven, from the CMake `install()` rules) lay
+the binary out per OS — Linux `/usr/lib/cajeta/cajeta` + `/usr/bin/cajeta`
+symlink; Windows `C:\Program Files\Cajeta\bin` (+ system `PATH`); macOS via
+`productbuild`. The Windows installers bundle the MinGW runtime DLLs so the
+binary is self-contained; the Linux packages declare only base-system deps
+(once the self-contained static-link lands — see `plan/installer-plan.md` D2).
+
+## Distribution channels
+
+Tiered; each tier consumes the one below (full table in
+`plan/installer-plan.md` §2):
+
+- **Tier 0 — GitHub Releases:** the artifacts above. Always produced. The
+  `cajeta` installers here are the direct single-version path; we do **not**
+  host `cajeta` apt/dnf repos.
+- **Tier 1 — `cvm` (Cajeta Version Manager) via package managers + shim:** the
+  ecosystems (apt / dnf / AUR / Homebrew / winget) ship **cvm**, not `cajeta` —
+  cvm is version-independent, so one evergreen package per ecosystem covers "get
+  latest" despite distro lag. `cvm self update` defers to the package manager
+  when cvm is PM-installed. The `curl … | sh` shim covers brewless/repoless.
+  Written in Cajeta (`plan/installer-plan.md` §2 / D12).
+- **Tier 2 — IDE plugin:** Marketplace, `cajeta ide install` (embedded), or
+  install-from-disk with `cajeta-idea-<ver>.zip`.
+
+## IDE plugin & JetBrains Marketplace
+
+The `plugin` job (JDK 21 + Gradle) builds `cajeta-idea-<version>.zip` once; its
+`pluginVersion` is synced to `VERSION` at build time (`-PpluginVersion=...`).
+Every compiler build job downloads that zip and embeds it into the binary, so
+`cajeta ide install` works from any distribution form.
+
+On **production tags** (never dry-run, and pre-release `-rc`/`-beta` tags are
+skipped), the workflow runs `signPlugin` + `publishPlugin` to the Marketplace.
+This requires repository secrets:
+
+- `PUBLISH_TOKEN` — Marketplace API token (vendor account).
+- `CERTIFICATE_CHAIN`, `PRIVATE_KEY`, `PRIVATE_KEY_PASSWORD` — plugin signing.
+
+**One-time bootstrap:** the very first upload of a plugin must be done by hand
+through the Marketplace UI (JetBrains review); automated `publishPlugin` only
+works for subsequent updates. Until the secrets are set, the publish step
+no-ops with a warning (the release still ships the plugin zip + embedded copy).
+
+## Installer tooling provisioned in CI
+
+- **Linux:** `dpkg-deb` (preinstalled) + `rpmbuild` (`rpm` package) for
+  `cpack -G DEB`/`-G RPM`.
+- **Windows:** WiX Toolset **v5** as a dotnet global tool
+  (`dotnet tool install --global wix --version 5.0.2` + the `WixToolset.UI`
+  extension). Pinned to v5 deliberately — **WiX v6/v7 require accepting the
+  Open Source Maintenance Fee (OSMF) EULA**, which we avoid.
+- **macOS:** `productbuild` (preinstalled). Signing + notarization
+  (Developer ID Installer cert → `notarytool` → `stapler`) is still open —
+  see `plan/installer-plan.md` §6.
+
+## Install-test matrix (validation)
+
+Before a format is promoted from "produced" to a release gate, install-test it
+in a clean environment (the workflow's packaging steps are `continue-on-error`
+until then):
+
+- `.deb` → `docker run ubuntu:24.04` → `apt install ./*.deb` → `cajeta --version`.
+- `.rpm` → `docker run fedora:latest` → `dnf install ./*.rpm` → `cajeta --version`.
+- `.msi` → clean Windows → `msiexec /i ... /qn` → fresh shell → `cajeta --version`.
+- `.pkg` → clean macOS → `installer -pkg ... -target /` → `cajeta --version`.
+- plugin → `cajeta ide install` into a clean IDEA; confirm it loads.
 
 ## When the workflow fails
 
@@ -194,9 +263,9 @@ publish the artifacts that built cleanly. To diagnose a failed job:
      install llvm`) didn't materialize. Bump the workflow's LLVM
      version pin in lockstep with `setup.sh`.
    - **antlr4 generator timeout.** ANTLR4 codegen runs `java` against
-     the parser grammar; if the runner image is missing JRE 17, the
+     the parser grammar; if the runner image is missing JRE 21, the
      build fails at parser-generation time. The workflow installs
-     `openjdk-17-jre` on all Linux jobs; macOS runners have JRE
+     `openjdk-21-jre` on all Linux jobs; macOS runners have JRE
      pre-bundled.
    - **lld not available.** Some runner images don't ship `lld-<ver>`
      as a separate package. The workflow sets `CAJETA_NO_LLD=1` to

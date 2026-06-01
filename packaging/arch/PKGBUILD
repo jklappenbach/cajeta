@@ -1,0 +1,36 @@
+# Maintainer: Julian Klappenbach <jklappenbach@gmail.com>
+#
+# AUR package for cvm — the Cajeta Version Manager (plan §2 Tier 1 / D12).
+#
+# The package ecosystems carry cvm, NOT cajeta: cvm is version-independent
+# (a 1.0 cvm installs an 8.0 cajeta), so this evergreen package covers "get
+# latest" forever, sidestepping Arch/distro lag. cajeta itself is a direct
+# download (Tier-0 release tarball / installers).
+#
+# Installs the PREBUILT cvm binary (cvm is Cajeta-compiled — building from
+# source would need cajeta already present). The release workflow builds cvm
+# per target.
+#
+# RELEASE AUTOMATION regenerates pkgver + sha256sums for each cvm release and
+# pushes to the AUR repo. sha256sums below is a 'SKIP' placeholder.
+
+pkgname=cvm
+pkgver=0.0.0
+pkgrel=1
+pkgdesc="Cajeta Version Manager — installs and switches Cajeta toolchains"
+arch=('x86_64' 'aarch64')
+url="https://github.com/jklappenbach/cajeta"
+license=('MIT')
+depends=('glibc' 'gcc-libs')
+# cvm manages cajeta under ~/.cajeta; it does not conflict with a direct cajeta
+# install (it detects and reconciles one — see D12).
+
+_triple="${CARCH}-linux-gnu"
+source=("cvm-v${pkgver}-${_triple}.tar.gz::${url}/releases/download/cvm-v${pkgver}/cvm-v${pkgver}-${_triple}.tar.gz")
+sha256sums=('SKIP')
+
+package() {
+    local _stage="${srcdir}/cvm-v${pkgver}-${_triple}"
+    install -Dm755 "${_stage}/cvm" "${pkgdir}/usr/bin/cvm"
+    # cvm self-update is disabled when package-managed; `pacman -Syu` updates it.
+}

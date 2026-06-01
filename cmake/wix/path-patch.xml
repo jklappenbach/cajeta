@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  CPack WiX patch (plan/installer-plan.md §5): add the install's bin/ to the
+  system PATH so `cajeta` is on PATH after an MSI install without manual setup.
+
+  The fragment is merged into the component that owns cajeta.exe. That
+  component id (CM_CP_cajeta.bin.cajeta.exe) is derived deterministically by
+  CPack from the COMPONENT name ("cajeta") + the relative install path
+  (bin/cajeta.exe), so it is stable across builds. [CM_DP_cajeta.bin] is the
+  WiX directory token for the installed bin/ folder, resolved at install time.
+-->
+<CPackWiXPatch>
+  <CPackWiXFragment Id="CM_CP_cajeta.bin.cajeta.exe">
+    <Environment Id="CajetaSystemPath"
+                 Name="PATH"
+                 Value="[CM_DP_cajeta.bin]"
+                 Permanent="no"
+                 Part="last"
+                 Action="set"
+                 System="yes" />
+  </CPackWiXFragment>
+</CPackWiXPatch>
