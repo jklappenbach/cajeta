@@ -208,6 +208,10 @@ namespace cajeta {
 
         ExpressionPtr getIterableExpr() const { return iterableExpr; }
         StatementPtr getBody() const { return body; }
+        CajetaTypePtr getElementType() const { return elementType; }
+        const string& getElementName() const { return elementName; }
+        CajetaTypePtr getIteratorType() const { return iteratorType; }
+        const string& getIteratorName() const { return iteratorName; }
 
         void resolveTypes(CajetaModulePtr module) override;
         llvm::Value* generateCode(CajetaModulePtr module) override;

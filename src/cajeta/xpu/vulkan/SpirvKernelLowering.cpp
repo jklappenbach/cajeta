@@ -95,6 +95,16 @@ public:
                           unsigned dim) override {
         return readCoord(b, m, llvm::Intrinsic::spv_thread_id, dim);
     }
+    // Grid-stride stride = NumWorkgroups·WorkgroupSize. Both builtins are valid
+    // in the GLCompute execution model; GlobalSize would require the OpenCL
+    // Kernel capability (invalid in a Vulkan shader), so it's deliberately not used.
+    llvm::Value* gridSize(llvm::IRBuilderBase& b, llvm::Module& m,
+                          unsigned dim) override {
+        return b.CreateMul(
+            readCoord(b, m, llvm::Intrinsic::spv_num_workgroups, dim),
+            readCoord(b, m, llvm::Intrinsic::spv_workgroup_size, dim),
+            "gridsize");
+    }
 
     void workgroupBarrier(llvm::IRBuilderBase& b, llvm::Module& m) override {
         // Workgroup control + memory barrier in one intrinsic (ordering folded

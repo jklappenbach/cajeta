@@ -61,6 +61,13 @@ namespace xpu {
         virtual llvm::Value* globalId(llvm::IRBuilderBase& b, llvm::Module& m,
                                       unsigned dim);
 
+        // Total work-items in dim (= gridDim·blockDim) — the grid-stride loop's
+        // stride (Item 6). NVPTX: nctaid·ntid. AMDGPU: the HSA dispatch packet's
+        // grid_size field (already the total). SPIR-V: NumWorkgroups·WorkgroupSize.
+        // CPU: gx·bx, threaded through the coord ABI. Returns i32.
+        virtual llvm::Value* gridSize(llvm::IRBuilderBase& b, llvm::Module& m,
+                                      unsigned dim) = 0;
+
         // Workgroup barrier (synchronize all threads in the block, with the
         // memory ordering the backend needs for LDS visibility).
         virtual void workgroupBarrier(llvm::IRBuilderBase& b,

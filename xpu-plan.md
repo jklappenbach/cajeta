@@ -43,7 +43,7 @@ fix the regression first). Don't build new Vulkan capability on a red base.
 | 3 | **Vulkan block dim — spec-constant workgroup size** | vulkan | medium | ✅ done (verified on-device, block 128) |
 | 4 | **Multi-arch bundling (fatbin)** | deployment | medium | ◐ AMD done + verified on-device; NVIDIA untestable here (no ptxas/fatbinary) |
 | 5 | **Vulkan dynamic shared memory** | vulkan | medium | ✅ done (verified on-device) |
-| 6 | **`for-each` parallel loops** | capability | medium | ☐ not started |
+| 6 | **`for-each` parallel loops** | capability | medium | ◐ Stage 1 done (grid-stride; NVPTX/AMD/SPIR-V + frontend, verified on AMD & Vulkan; CPU = Stage 2) |
 | 7 | **POD structs as kernel args** | capability | small-medium | ☐ not started |
 | 8 | **Texture / Sampler types** | capability | large | ☐ not started |
 | 9 | **`Wave.width()` on-device (Vulkan)** | vulkan | blocked | ⛔ external (LLVM 22 SPIR-V can't select `spv.wave.get_lane_count`) |
@@ -334,8 +334,93 @@ passes; the patched SPIR-V also runs at the default 256 if `sharedBytes` is unse
 
 ## 6. `for-each` parallel loops
 
-**Today:** deferred (`XPU-N01`). **Goal:** a parallel-loop construct that lowers
-to grid-stride iteration (or maps to the launch grid).
+**Today:** deferred (`XPU-N01` at `KernelLowering.cpp` — the `EnhancedForStatement`
+already parses, only device lowering rejects it). **Goal (decided):** the
+**grid-stride loop**, the universal in-kernel idiom (CUDA/HIP/OpenCL/Metal). Surface:
+
+```
+for (uint32 i, float32 v : in.range(n)) { out[i] = v * 2.0f; }
+```
+
+lowers to
+
+```
+for (uint32 i = Thread.globalIdX(); i < n; i += gridDim.x*blockDim.x) {
+    float32 v = in[i];      // element binding (a read of in[i])
+    out[i] = v * 2.0f;      // index i available for writes
+}
+```
+
+The iterable is `buffer.range(count)` — a device-recognized pseudo-method (no
+grammar change; `in.range(n)` already parses as a `MethodCallExpression`). The
+Cajeta iterator extension `for (idx, T elem : …)` supplies the index binding `i`;
+the element binding `elem` is `in[i]` (a value read). Any other for-each iterable
+in a kernel → clean `XPU-N02` (device buffers are unsized pointers — exactly as in
+every GPU language — so an explicit `.range(count)` is required).
+
+**The one real cost: a new coordinate on the lowering seam.** The grid-stride
+stride is `gridDim.x * blockDim.x` (total work-items in x), which the seam doesn't
+expose today. Add `LoweringTarget::gridSize(b, m, dim)` → i32 (total work-items in
+dim):
+- **NVPTX:** `nctaid.{x,y,z}` sreg × existing `ntid` (`workgroupDim`).
+- **AMDGPU:** one load — `grid_size_{x,y,z}` (uint32) is at HSA dispatch-packet
+  offset `12 + 4·dim`; it already equals gridDim·blockDim (total work-items).
+- **SPIR-V:** `spv.num.workgroups(dim)` × `spv.workgroup.size(dim)` (both valid in
+  GLCompute; `GlobalSize` would need the OpenCL Kernel cap, so avoid it).
+- **CPU:** the heavy one — the kernel ABI's 9 trailing coords are
+  `[tid.xyz, ctaid.xyz, ntid.xyz]`, with **no grid dimension (block count)**. The
+  stride `gx·bx` must be threaded runtime-slice → coord[] → launch-thunk → per-block
+  wrapper → kernel, alongside the `dynShared` slot. Invasive on the same coord chain
+  the barrier-fission pass owns.
+
+**Staging.** (1) seam `gridSize` + NVPTX/AMD/SPIR-V + the frontend for-each lowering
++ `.range()` recognition + guardrails; device-tested on AMD & Vulkan (Strix Halo);
+CPU emits a clean `XPU-N01` fallback in the interim (never a miscompile). (2) the CPU
+coord-ABI extension + CPU grid-stride test (grid deliberately smaller than `n`, so
+the stride is exercised, not just grid-cover).
+
+**Guardrails (`XPU-N02`, before mutation):** iterable not of the form
+`ident.range(expr)`; the receiver not a known buffer param; nested for-each over the
+same buffer (one level for now); for-each combined with a barrier in the same region
+(defer — interacts with fission). Element binding is read-only (writes go via the
+index); a write to the element binding name → `XPU-N02`.
+
+**Verification.** AMD + Vulkan on-device: `n=1024`, launch a grid **smaller** than
+`n` (e.g. grid=4, block=64 ⇒ 256 work-items < 1024) so the grid-stride loop must
+iterate; `out[i] = in[i]*2` for all `i` ⇒ checksum proves every element ran. Emit
+test: the kernel IR contains a counted loop whose IV starts at the global id and
+increments by `gridSize`. Stage 2 adds the CPU exec test.
+
+**✅ Stage 1 DONE + verified on-device (2026-06-01).** `gridSize(dim)` added to the
+`LoweringTarget` seam (pure-virtual); NVPTX (`nctaid·ntid`), AMDGPU (one
+dispatch-packet load of `grid_size`, offset 12+4·dim), SPIR-V
+(`num_workgroups·workgroup_size`). Frontend: `lowerEnhancedFor` in
+`KernelLowering.cpp` recognizes `buf.range(count)`, binds the optional index +
+element (a value copy of `buf[i]`), and emits the grid-stride loop
+(`i=globalId.x; i<count; i+=gridSize.x`); non-`range` iterables and non-buffer
+receivers → `XPU-N02`. `EnhancedForStatement` gained element/iterator accessors.
+Tests: `XpuVulkanDispatchDeviceTests.gridStrideForEachOnDevice` (RADV) and
+`XpuHipDispatchDeviceTests.gridStrideForEachRoutesToHipOnDevice` (gfx1151), both
+grid=4·block=64 over n=1024 ⇒ sum 2048 (every element ran via the stride). CPU
+emits a clean `XPU-N01` (host-stub fallback) until Stage 2 threads `gx·bx` through
+the coord ABI. Full `Xpu*` suite green (148/7-skipped).
+
+> ✅ **Root-caused & fixed (2026-06-01).** The intermittent `LLVM ERROR: Unable to
+> get address space id` abort (seen once, in `XpuVulkanEmitTests.lowersSaxpyToSpirv`)
+> was a **TargetMachine reuse** bug in two SPIR-V emit unit tests
+> (`lowersSaxpyToSpirv`, `lowersStridedSumLoop`): each ran *two* codegen passes
+> (`emitSpirvText` + `emitSpirv`) through **one** TM. LLVM's SPIR-V backend
+> accumulates codegen state (`SPIRVGlobalRegistry`) on the TM — the production
+> `VulkanRegistration`/`Compiler` paths use a fresh TM per kernel/emit for exactly
+> this reason (documented in `VulkanRegistration.cpp`), but these tests didn't. The
+> corrupted registry intermittently emits a garbage address space. Fix: a fresh TM
+> per emit in both tests (matching the production invariant); the anti-pattern
+> existed *only* in these two tests. Corroborating: ASAN found no heap corruption
+> (consistent with SPIR-V-internal logical state, not a C++ heap bug). The original
+> event is rare (1 in ~30 unfixed-binary runs), so a 16-round differential couldn't
+> reproduce it on the old binary either (inconclusive by statistics) — but the fix
+> removes a documented anti-pattern and the fixed binary is clean across ~28
+> full-suite runs.
 
 ---
 

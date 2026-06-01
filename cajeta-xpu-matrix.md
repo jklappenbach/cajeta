@@ -273,7 +273,7 @@ These are backend-neutral gaps from `cajeta-xpu.md`, unaffected by the Vulkan co
 | Launch-site resolution into `XpuMirLaunchSite` | placeholder |
 | MIR body-op walker (`Op_ThreadId`, `Op_BarrierWorkgroup`, …) | empty |
 | `@Device` user-defined helper calls | deferred (XPU-N01) |
-| for-each parallel loops | deferred (XPU-N01) |
+| for-each parallel loops | **GPU ✅** — grid-stride `for (i, T v : buf.range(n))` ⇒ `for (i=globalId.x; i<n; i+=gridSize.x){ v=buf[i]; … }`; new `LoweringTarget::gridSize` (NVPTX nctaid·ntid, AMD dispatch-packet `grid_size`, SPIR-V NumWorkgroups·WorkgroupSize); verified on AMD & Vulkan (grid<n forces the stride). CPU = clean XPU-N01 fallback pending the coord-ABI extension (Stage 2). |
 | Labeled `break` / `continue` | deferred (XPU-N01) |
 | 2D/3D launch | ✅ done — 3-D launch ABI; CUDA/HIP 3-D grid+block; Vulkan 3-D grid (baked block, §4); CPU 3-D grid + block + barrier fission |
 | Multi-arch bundling (fatbin) | **AMD ✅** — `--xpu-arch=gfx1100,gfx1151` → `clang-offload-bundle` via `assembleHsacoBundle`, `hipModuleLoadData` selects the device arch (verified on-device). NVIDIA fatbin parallel deferred (no `ptxas`/`fatbinary` on this box). |
