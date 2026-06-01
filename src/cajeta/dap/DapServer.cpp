@@ -56,6 +56,34 @@ Json stackTraceBody(const StopEvent& stop, const DbgLocTable& table) {
     return body;
 }
 
+Json variableJson(const cajeta::dbg::DbgVar& v, const std::string& renderedValue) {
+    using cajeta::dbg::LifetimeState;
+    Json var = Json::object();
+    var["name"] = v.name;
+    var["value"] = renderedValue;
+    var["type"] = v.type;
+    var["variablesReference"] = 0;
+
+    // Namespaced facet tags — the plugin's source of truth for the
+    // icon/color/strike rendering, and a textual affordance on their own.
+    Json meta = Json::object();
+    meta["alloc"] = cajeta::dbg::allocClassName(v.alloc);
+    meta["ownership"] = cajeta::dbg::ownershipRoleName(v.ownership);
+    meta["lifetime"] = cajeta::dbg::lifetimeStateName(v.lifetime);
+    var["cajeta"] = std::move(meta);
+
+    // A moved-out binding is consumed: reading it is a language error, so it
+    // must not look editable. Map to the standard read-only attribute.
+    if (v.lifetime == LifetimeState::MovedOut) {
+        Json attrs = Json::array();
+        attrs.push_back(std::string("readOnly"));
+        Json hint = Json::object();
+        hint["attributes"] = std::move(attrs);
+        var["presentationHint"] = std::move(hint);
+    }
+    return var;
+}
+
 DapServer::DapServer() = default;
 
 DapServer::~DapServer() {
@@ -362,12 +390,8 @@ bool DapServer::handle(const Json& request, const Emit& emit) {
         if (it != varRefToFrame_.end() &&
                 static_cast<size_t>(it->second) < frameTable_.size()) {
             for (const auto& v : frameTable_[it->second].info.locals) {
-                Json var = Json::object();
-                var["name"] = v.name;
-                var["value"] = cajeta::dbg::formatValue(v.type, v.addr);
-                var["type"] = v.type;
-                var["variablesReference"] = 0;
-                vars.push_back(std::move(var));
+                vars.push_back(variableJson(
+                    v, cajeta::dbg::formatValue(v.type, v.addr)));
             }
         }
         Json body = Json::object();

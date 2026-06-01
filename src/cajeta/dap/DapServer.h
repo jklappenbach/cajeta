@@ -50,6 +50,17 @@ namespace cajeta::dap {
     Json stackTraceBody(const cajeta::dbg::StopEvent& stop,
                         const cajeta::dbg::DbgLocTable& table);
 
+    // One DAP `variables` entry for a local (CP7-1d). `renderedValue` is the
+    // already-formatted value (so this builder stays pure — no memory deref —
+    // and unit-tests without a live address). Beyond {name, type, value,
+    // variablesReference} it carries the CP7 memory facets two ways: a
+    // namespaced `cajeta` sub-object with the textual alloc/ownership/lifetime
+    // tags (the authoritative, color-independent carrier, FR-3.1/FR-5.3), and a
+    // DAP-standard `presentationHint.attributes:["readOnly"]` for a moved-out
+    // binding so a generic client also blocks editing a consumed value (FR-4.3).
+    Json variableJson(const cajeta::dbg::DbgVar& v,
+                      const std::string& renderedValue);
+
     class DapServer {
     public:
         using Emit = std::function<void(const Json&)>;

@@ -22,8 +22,13 @@ using cajeta::dap::Json;
 using cajeta::dap::makeResponse;
 using cajeta::dap::makeEvent;
 using cajeta::dap::stackTraceBody;
+using cajeta::dap::variableJson;
 using cajeta::dbg::StopEvent;
 using cajeta::dbg::DbgLocTable;
+using cajeta::dbg::DbgVar;
+using cajeta::dbg::AllocClass;
+using cajeta::dbg::OwnershipRole;
+using cajeta::dbg::LifetimeState;
 using cajeta::debugtest::TempProgram;
 
 // ---- pure builders ----
@@ -58,6 +63,56 @@ TEST(DapServerBuilders, StackTraceFromLoc) {
     EXPECT_EQ(f.at("name").asString(), "demo.Calc::main");
     EXPECT_EQ(f.at("source").at("name").asString(), "Calc.cajeta");
     EXPECT_EQ(body.at("totalFrames").asInt(), 1);
+}
+
+TEST(DapServerBuilders, VariableJsonCarriesFacets) {
+    DbgVar v;
+    v.name = "o";
+    v.type = "demo.Foo";
+    v.alloc = AllocClass::Heap;
+    v.ownership = OwnershipRole::Owner;
+    v.lifetime = LifetimeState::AboutToDrop;
+    Json var = variableJson(v, "<demo.Foo@0x1>");
+
+    EXPECT_EQ(var.at("name").asString(), "o");
+    EXPECT_EQ(var.at("type").asString(), "demo.Foo");
+    EXPECT_EQ(var.at("value").asString(), "<demo.Foo@0x1>");
+    EXPECT_EQ(var.at("variablesReference").asInt(), 0);
+    // Namespaced facet tags.
+    ASSERT_TRUE(var.has("cajeta"));
+    EXPECT_EQ(var.at("cajeta").at("alloc").asString(), "heap");
+    EXPECT_EQ(var.at("cajeta").at("ownership").asString(), "owner");
+    EXPECT_EQ(var.at("cajeta").at("lifetime").asString(), "about-to-drop");
+    // A live (about-to-drop) binding is still editable -> no readOnly hint.
+    EXPECT_FALSE(var.has("presentationHint"));
+}
+
+TEST(DapServerBuilders, VariableJsonMovedOutIsReadOnly) {
+    DbgVar v;
+    v.name = "moved";
+    v.type = "demo.Foo";
+    v.alloc = AllocClass::Heap;
+    v.ownership = OwnershipRole::Owner;
+    v.lifetime = LifetimeState::MovedOut;
+    Json var = variableJson(v, "<demo.Foo@0x1>");
+
+    EXPECT_EQ(var.at("cajeta").at("lifetime").asString(), "moved-out");
+    ASSERT_TRUE(var.has("presentationHint"));
+    const Json& attrs = var.at("presentationHint").at("attributes");
+    ASSERT_EQ(attrs.size(), 1u);
+    EXPECT_EQ(attrs[0].asString(), "readOnly");
+}
+
+TEST(DapServerBuilders, VariableJsonUnknownFacetsAreTagged) {
+    DbgVar v;        // all-default facets: a plain value
+    v.name = "x";
+    v.type = "int32";
+    Json var = variableJson(v, "5");
+    // Unknown is emitted explicitly so the plugin renders neutral, not wrong.
+    EXPECT_EQ(var.at("cajeta").at("alloc").asString(), "unknown");
+    EXPECT_EQ(var.at("cajeta").at("ownership").asString(), "unknown");
+    EXPECT_EQ(var.at("cajeta").at("lifetime").asString(), "unknown");
+    EXPECT_FALSE(var.has("presentationHint"));
 }
 
 // ---- scripted end-to-end ----
