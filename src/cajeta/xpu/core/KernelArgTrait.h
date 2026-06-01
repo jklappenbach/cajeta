@@ -15,11 +15,15 @@
 //   - user types declared `class X implements KernelArg` (the marker
 //     interface from runtime/src/cajeta/xpu/core/KernelArg.cajeta) — still
 //     admitted even when not a pure POD (the explicit opt-in)
+//   - Texture2D / Sampler (Item 8) — matched by canonical name. A read-only
+//     2-D float image and its filtering/addressing config; bound as image +
+//     sampler descriptors (Vulkan) or texture-object handles (CUDA/HIP), and
+//     read in the kernel via `tex.sample(sampler, u, v)`. Sampler is admitted
+//     by name (NOT as a POD struct) so it takes the sampler-descriptor path.
 //
 // v1 does NOT yet admit:
 //   - non-POD structs (non-primitive fields / inherited fields) without an
 //     explicit `implements KernelArg`
-//   - Texture<Format,Dim> / Sampler — types not yet declared
 //   - @PushConstant structs — Vulkan-only, deferred to phase 5
 //
 // Variance check (CajetaXPU-Variance.md row 2 — launch arg model):
@@ -55,6 +59,14 @@ namespace xpu {
     // by the admissibility check and the launch-site marshaller so both
     // agree on exactly which arguments take the by-value struct path.
     bool isPodStructType(const CajetaTypePtr& type);
+
+    // Is `type` the cajeta.xpu.core.Texture2D resp. Sampler type (Item 8)?
+    // Matched by canonical name. Shared by the admissibility check, the
+    // launch-site marshaller, and the kernel-param classifier so all agree on
+    // which arguments take the texture-image resp. sampler-descriptor path
+    // (rather than the by-value POD-struct path Sampler would otherwise match).
+    bool isTextureType(const CajetaTypePtr& type);
+    bool isSamplerType(const CajetaTypePtr& type);
 
     // Validate every parameter of `method`. Throws cajeta::Exception
     // (errorId "XPU-K01") with a clear diagnostic on the first non-

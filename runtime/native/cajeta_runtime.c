@@ -26,6 +26,7 @@
 #  endif
 #endif
 
+#include <math.h>      // floorf — CPU texture-sample bilinear/nearest filtering
 #include <setjmp.h>
 #include <stdbool.h>
 #include <stddef.h>
@@ -5151,6 +5152,123 @@ void __cajeta_xpu_buffer_free(void* self, int64_t handle) {
         case CAJ_XPU_CPU:    free((void*) (intptr_t) handle); return;
         default: return;
     }
+}
+
+// --- Texture2D + Sampler (Item 8, CPU emulation) ----------------------------
+// A Texture2D is a small host-side handle (deviceHandle + width/height) over a
+// device image; on the CPU backend the device image IS a host allocation. The
+// int64 deviceHandle is a pointer to this texobj — a row-major float32 image
+// with its dimensions — exactly as a Buffer's handle is its host block. The
+// kernel receives that pointer (marshalled like a buffer) and reads it through
+// __cajeta_xpu_cpu_tex_sample, which does the addressing + filtering the GPU
+// texture unit would. The SIMT/Vulkan rungs (Stages B–D) create real device
+// images here instead; for now only the CPU case is wired.
+struct cajeta_cpu_texobj {
+    float*   data;   // row-major width*height float32 texels (owned)
+    uint32_t w;
+    uint32_t h;
+};
+
+// __cajeta_xpu_texture_alloc(this, width, height) -> int64 handle.
+// Instance @Native (the Buffer convention): the leading `self` is the cajeta
+// `this`, ignored — the device side is keyed on the returned handle.
+int64_t __cajeta_xpu_texture_alloc(void* self, uint32_t width, uint32_t height) {
+    (void) self;
+    if (width == 0 || height == 0) return 0;
+    switch (cajeta_xpu_active_backend()) {
+        case CAJ_XPU_CPU: {
+            struct cajeta_cpu_texobj* t =
+                (struct cajeta_cpu_texobj*) malloc(sizeof(*t));
+            if (!t) return 0;
+            t->w = width;
+            t->h = height;
+            t->data = (float*) calloc((size_t) width * height, sizeof(float));
+            if (!t->data) { free(t); return 0; }
+            return (int64_t) (intptr_t) t;
+        }
+        // CUDA/HIP texture objects + Vulkan sampled images land in Stages B–D.
+        default: return 0;
+    }
+}
+
+// __cajeta_xpu_texture_upload(this, handle, host, width, height).
+// `host` is a Cajeta float32[] header — { i64 count, [count x f32] data } — so
+// the texels start at offset 8 (matches __cajeta_xpu_buffer_upload).
+void __cajeta_xpu_texture_upload(void* self, int64_t handle, void* host,
+                                 uint32_t width, uint32_t height) {
+    (void) self;
+    if (!handle || !host || width == 0 || height == 0) return;
+    const void* data = (const void*) ((const char*) host + 8);
+    size_t bytes = (size_t) width * height * sizeof(float);
+    switch (cajeta_xpu_active_backend()) {
+        case CAJ_XPU_CPU: {
+            struct cajeta_cpu_texobj* t =
+                (struct cajeta_cpu_texobj*) (intptr_t) handle;
+            if (t->data) memcpy(t->data, data, bytes);
+            return;
+        }
+        default: return;
+    }
+}
+
+void __cajeta_xpu_texture_free(void* self, int64_t handle) {
+    (void) self;
+    if (!handle) return;
+    switch (cajeta_xpu_active_backend()) {
+        case CAJ_XPU_CPU: {
+            struct cajeta_cpu_texobj* t =
+                (struct cajeta_cpu_texobj*) (intptr_t) handle;
+            free(t->data);
+            free(t);
+            return;
+        }
+        default: return;
+    }
+}
+
+// Address one axis: clamp-to-edge (addressMode 0) or repeat/wrap (1). `n` > 0.
+static inline int cajeta_tex_addr(int c, int n, int32_t addressMode) {
+    if (addressMode == 1) {                 // repeat (wrap)
+        c %= n;
+        if (c < 0) c += n;
+        return c;
+    }
+    if (c < 0) return 0;                     // clamp-to-edge
+    if (c >= n) return n - 1;
+    return c;
+}
+
+// CPU texture sampler — the lowering of `tex.sample(sampler, u, v)`. (u, v) are
+// normalized coords in [0, 1]; filterMode 0 = nearest, 1 = bilinear; addressMode
+// 0 = clamp, 1 = wrap. Bilinear uses the texel-center convention (coord =
+// u*W - 0.5) matching GPU texture units. Out-of-range texels are resolved by the
+// addressing mode, so the gather is always in-bounds.
+float __cajeta_xpu_cpu_tex_sample(void* texp, int32_t filterMode,
+                                  int32_t addressMode, float u, float v) {
+    struct cajeta_cpu_texobj* t = (struct cajeta_cpu_texobj*) texp;
+    if (!t || !t->data || t->w == 0 || t->h == 0) return 0.0f;
+    int W = (int) t->w, H = (int) t->h;
+    if (filterMode == 0) {                   // nearest
+        int x = cajeta_tex_addr((int) floorf(u * (float) W), W, addressMode);
+        int y = cajeta_tex_addr((int) floorf(v * (float) H), H, addressMode);
+        return t->data[(size_t) y * W + x];
+    }
+    // bilinear (texel-center)
+    float fx = u * (float) W - 0.5f;
+    float fy = v * (float) H - 0.5f;
+    int x0 = (int) floorf(fx), y0 = (int) floorf(fy);
+    float dx = fx - (float) x0, dy = fy - (float) y0;
+    int cx0 = cajeta_tex_addr(x0,     W, addressMode);
+    int cx1 = cajeta_tex_addr(x0 + 1, W, addressMode);
+    int cy0 = cajeta_tex_addr(y0,     H, addressMode);
+    int cy1 = cajeta_tex_addr(y0 + 1, H, addressMode);
+    float t00 = t->data[(size_t) cy0 * W + cx0];
+    float t10 = t->data[(size_t) cy0 * W + cx1];
+    float t01 = t->data[(size_t) cy1 * W + cx0];
+    float t11 = t->data[(size_t) cy1 * W + cx1];
+    float a = t00 + (t10 - t00) * dx;
+    float b = t01 + (t11 - t01) * dx;
+    return a + (b - a) * dy;
 }
 
 // --- Launch + module registration -------------------------------------------

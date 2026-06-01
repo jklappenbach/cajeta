@@ -119,6 +119,24 @@ TEST(XpuKernelArgTests, bufferTypeAdmissible) {
     EXPECT_NO_THROW(compileAndCodegen(compiler, src, "test.K"));
 }
 
+// Texture2D + Sampler (Item 8) are admissible kernel args, matched by name.
+// Sampler is structurally a POD struct but must be admitted via the sampler
+// path, not rejected and not treated as by-value POD.
+TEST(XpuKernelArgTests, textureAndSamplerAdmissible) {
+    auto src =
+        "package test;\n"
+        "import cajeta.xpu.core.Buffer;\n"
+        "import cajeta.xpu.core.Texture2D;\n"
+        "import cajeta.xpu.core.Sampler;\n"
+        "public class K {\n"
+        "    @Kernel\n"
+        "    public static void run(Texture2D tex, Sampler s,\n"
+        "                           Buffer<float32> out, uint32 n) { }\n"
+        "}\n";
+    Compiler compiler;
+    EXPECT_NO_THROW(compileAndCodegen(compiler, src, "test.K"));
+}
+
 // User class implementing KernelArg is admissible.
 TEST(XpuKernelArgTests, userTypeImplementingKernelArgAdmissible) {
     auto src =

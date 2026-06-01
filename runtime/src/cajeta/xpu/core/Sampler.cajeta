@@ -1,0 +1,26 @@
+package cajeta.xpu.core;
+
+/**
+ * Sampler — filtering + addressing configuration for {@link Texture2D.sample}.
+ *
+ * A small host-side value carrying the mode bits; the runtime builds the
+ * backend sampler object (Vulkan VkSampler / CUDA-HIP texture-object sampler
+ * state / CPU emulation) from these at launch. A Sampler is admissible as a
+ * kernel argument by name (not as a POD struct): on Vulkan it is bound as its
+ * own OpTypeSampler descriptor, distinct from the by-value POD-struct path.
+ *
+ *   filterMode:  0 = nearest, 1 = linear (bilinear)
+ *   addressMode: 0 = clamp-to-edge, 1 = repeat (wrap)
+ *
+ * v1 LIMITS: these two modes, isotropic, no mip bias / anisotropy / border
+ * color / compare. Those are follow-ups.
+ */
+public final class Sampler {
+    int32 filterMode;
+    int32 addressMode;
+
+    public Sampler(int32 filterMode, int32 addressMode) {
+        this.filterMode = filterMode;
+        this.addressMode = addressMode;
+    }
+}

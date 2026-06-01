@@ -30,6 +30,16 @@ bool isBufferInstantiation(const std::string& canonical) {
     return canonical[kPrefix.size()] == '<';
 }
 
+// Texture2D / Sampler (Item 8) are matched by exact canonical name (neither is
+// a template, so no `<...>` follow-on like Buffer). Texture2D is a read-only
+// 2-D float image; Sampler is its filtering/addressing config.
+bool isTextureCanonical(const std::string& canonical) {
+    return canonical == "cajeta.xpu.core.Texture2D";
+}
+bool isSamplerCanonical(const std::string& canonical) {
+    return canonical == "cajeta.xpu.core.Sampler";
+}
+
 // A class implements the KernelArg marker interface if its
 // implemented-interfaces list contains cajeta.xpu.core.KernelArg.
 // `getImplementedInterfaces()` returns the concrete CajetaClass
@@ -92,7 +102,14 @@ bool isKernelArgAdmissible(const CajetaTypePtr& type) {
     // classes/interfaces that implement the KernelArg marker interface.
     auto klass = std::dynamic_pointer_cast<CajetaClass>(type);
     if (klass) {
-        if (isBufferInstantiation(type->toCanonical())) return true;
+        const std::string canonical = type->toCanonical();
+        if (isBufferInstantiation(canonical)) return true;
+        // Texture2D / Sampler matched by name BEFORE the POD-struct check —
+        // Sampler is a plain primitive-field class (so isPodStruct would also
+        // admit it), but it must take the sampler-descriptor path, not the
+        // by-value POD path.
+        if (isTextureCanonical(canonical)) return true;
+        if (isSamplerCanonical(canonical)) return true;
         if (isPodStruct(klass)) return true;
         if (implementsKernelArg(klass)) return true;
     }
@@ -101,7 +118,19 @@ bool isKernelArgAdmissible(const CajetaTypePtr& type) {
 }
 
 bool isPodStructType(const CajetaTypePtr& type) {
+    if (!type) return false;
+    // Sampler matches isPodStruct structurally (primitive fields, no
+    // inheritance) but is NOT a by-value POD arg — it is a sampler descriptor.
+    if (isSamplerCanonical(type->toCanonical())) return false;
     return isPodStruct(std::dynamic_pointer_cast<CajetaClass>(type));
+}
+
+bool isTextureType(const CajetaTypePtr& type) {
+    return type && isTextureCanonical(type->toCanonical());
+}
+
+bool isSamplerType(const CajetaTypePtr& type) {
+    return type && isSamplerCanonical(type->toCanonical());
 }
 
 void validateKernelParams(const MethodPtr& method) {
@@ -125,7 +154,8 @@ void validateKernelParams(const MethodPtr& method) {
                 << (t ? t->toCanonical() : std::string("<unknown>"))
                 << "' which is not admissible as a kernel argument. "
                 << "Admissible types: primitives, "
-                << "cajeta.xpu.core.Buffer<T>, POD structs (a class with "
+                << "cajeta.xpu.core.Buffer<T>, cajeta.xpu.core.Texture2D, "
+                << "cajeta.xpu.core.Sampler, POD structs (a class with "
                 << "only primitive fields and no inheritance), or any type "
                 << "that implements cajeta.xpu.core.KernelArg.";
             throw cajeta::Exception(msg.str(), "XPU-K01");
