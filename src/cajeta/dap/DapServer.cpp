@@ -86,7 +86,9 @@ void DapServer::runToStopOrExit(const Emit& emit) {
             frames_ = std::move(frames);
             Json body = Json::object();
             body["reason"] = "breakpoint";
-            body["threadId"] = 1;
+            // CP6f-2b: the real stopped fiber id (0 = entry/main thread, >=1 a
+            // spawned fiber) instead of a hard-coded 1.
+            body["threadId"] = static_cast<int>(ev.fiberId);
             body["allThreadsStopped"] = true;
             emit(makeEvent(seq_++, "stopped", std::move(body)));
             return;
@@ -193,11 +195,23 @@ bool DapServer::handle(const Json& request, const Emit& emit) {
     }
 
     if (command == "threads") {
+        // CP6f-2b: the program/entry thread is always id 0 ("main"); each live
+        // fiber from the JIT registry is an additional thread keyed by its
+        // stable dbg id. The carrier is parked while we enumerate, so the
+        // registry is stable.
         Json threads = Json::array();
-        Json t = Json::object();
-        t["id"] = 1;
-        t["name"] = "main";
-        threads.push_back(std::move(t));
+        Json main = Json::object();
+        main["id"] = 0;
+        main["name"] = "main";
+        threads.push_back(std::move(main));
+        if (session_) {
+            for (const auto& f : session_->liveFibers()) {
+                Json t = Json::object();
+                t["id"] = f.id;
+                t["name"] = "fiber " + std::to_string(f.id);
+                threads.push_back(std::move(t));
+            }
+        }
         Json body = Json::object();
         body["threads"] = std::move(threads);
         emit(makeResponse(seq_++, requestSeq, command, true, std::move(body)));

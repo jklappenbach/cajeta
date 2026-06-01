@@ -95,6 +95,23 @@ namespace cajeta::jit {
         // return value, or 0 for a void entry). Idempotent.
         int join();
 
+        // Debugger CP6f-2b: a snapshot of one live fiber from the runtime's
+        // fiber registry (registered at spawn, removed when the carrier frees a
+        // finished fiber). Read while the program is parked at a breakpoint.
+        struct FiberSnapshot {
+            int id;          // stable per-fiber dbg id (1, 2, 3, ...)
+            void* frameTop;  // head of this fiber's debug frame chain
+                             // (feed to DebugVars::walkFrames)
+            int state;       // cajeta_fiber_state enum value
+        };
+
+        // Enumerate live fibers from the JIT module's registry. The registry is
+        // populated by the JIT'd program (the embedded-bitcode runtime copy),
+        // so this resolves the __cajeta_dbg_fiber_* accessors via jit->lookup
+        // rather than the host's native runtime copy (whose registry is empty).
+        // Returns empty if the symbols aren't found. Safe to call while parked.
+        std::vector<FiberSnapshot> liveFibers();
+
     private:
         std::unique_ptr<Impl> impl_;
     };

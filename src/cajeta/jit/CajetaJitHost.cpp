@@ -451,6 +451,43 @@ int JitDebugSession::join() {
     return impl_->exitCode;
 }
 
+std::vector<JitDebugSession::FiberSnapshot> JitDebugSession::liveFibers() {
+    std::vector<FiberSnapshot> out;
+    llvm::orc::LLJIT* jit = impl_->built.jit.get();
+    if (!jit) return out;
+
+    // Resolve the registry accessors in the JIT module (the registry is
+    // populated by the JIT'd program's runtime copy, not the host's native
+    // copy). Any miss -> empty (graceful: a build without the CP6f-2a runtime
+    // simply reports no fibers).
+    auto resolve = [jit](const char* name) -> void* {
+        if (auto sym = jit->lookup(name)) {
+            return reinterpret_cast<void*>(sym->getValue());
+        } else {
+            cajeta::jit::consumeError(sym.takeError());
+            return nullptr;
+        }
+    };
+    auto countFn = reinterpret_cast<int (*)()>(resolve("__cajeta_dbg_fiber_count"));
+    auto atFn = reinterpret_cast<void* (*)(int)>(resolve("__cajeta_dbg_fiber_at"));
+    auto idFn = reinterpret_cast<long (*)(void*)>(resolve("__cajeta_dbg_fiber_id_of"));
+    auto ftFn = reinterpret_cast<void* (*)(void*)>(resolve("__cajeta_dbg_fiber_frame_top"));
+    auto stFn = reinterpret_cast<int (*)(void*)>(resolve("__cajeta_dbg_fiber_state"));
+    if (!countFn || !atFn || !idFn || !ftFn || !stFn) return out;
+
+    int n = countFn();
+    for (int i = 0; i < n; ++i) {
+        void* handle = atFn(i);
+        if (!handle) continue;
+        out.push_back(FiberSnapshot{
+            static_cast<int>(idFn(handle)),
+            ftFn(handle),
+            stFn(handle),
+        });
+    }
+    return out;
+}
+
 std::unique_ptr<JitDebugSession> startDebugSession(
         const JitRunOptions& opts,
         const std::vector<Breakpoint>& breakpoints,
