@@ -54,6 +54,19 @@ namespace cajeta::buildtool {
         std::string providedBy;
     };
 
+    // One resolved plugin in the lockfile. Mirrors the top-level
+    // `plugins` array per BuildTool.md "Plugin declaration".
+    struct ResolvedPluginEntry {
+        std::string name;
+        std::string version;
+        std::string resolvedFromRepo;
+        std::string checksum;
+        // Sorted list of the plugin's declared capabilities. Recorded
+        // so reviewers see capability additions on every PR — same
+        // motivation as recording resolved versions.
+        std::vector<std::string> capabilities;
+    };
+
     // Lockfile data model. Phase 2 populates the top-level metadata
     // + properties; packages/plugins/overrides arrays exist as empty
     // slots ready for Phases 6/7 to fill.
@@ -68,18 +81,19 @@ namespace cajeta::buildtool {
         // Phase 6 typed entries. When `packagesTyped` is non-empty,
         // the writer emits them as the `packages` array; otherwise it
         // falls back to `packagesRaw` (the historical raw slot). Same
-        // pattern for `meltsTyped` / `meltsRaw`.
+        // pattern for `meltsTyped` / `meltsRaw` and `pluginsTyped` /
+        // `pluginsRaw`.
         std::vector<ResolvedPackageEntry> packagesTyped;
         std::vector<ResolvedMeltEntry> meltsTyped;
+        // Phase 7 typed entries.
+        std::vector<ResolvedPluginEntry> pluginsTyped;
 
         // Raw escape hatches for the slots that don't yet have typed
         // models. Kept so the lockfile schema rev can extend
         // additively without touching every caller.
         llvm::json::Array packagesRaw;
         llvm::json::Array meltsRaw;
-
-        // Reserved for Phase 7.
-        llvm::json::Array plugins;
+        llvm::json::Array pluginsRaw;
 
         // Reserved for Phase 6 — overrides applied to the resolved
         // graph.
@@ -112,16 +126,16 @@ namespace cajeta::buildtool {
         const std::string& nowIso);
 
     // Same as composeLockfile() but populates the typed packages +
-    // melts slots from the resolver outputs. `meltProvidedBy` maps
-    // dep name → "<melt-name>@<melt-version>"; deps not in that map
-    // get "explicit" as their provided-by.
+    // melts + plugins slots from the resolver outputs.
+    // `meltProvidedBy` maps dep name → "<melt-name>@<melt-version>";
+    // deps not in that map get "explicit" as their provided-by.
     //
-    // Forward declarations for the resolver/melt types are pulled in
-    // here as full headers via the corresponding TU; using forward
-    // decls keeps this header lean for unit-test files that don't
-    // need them.
+    // Forward declarations for the resolver/melt/plugin types are
+    // pulled in via the corresponding TU; using forward decls keeps
+    // this header lean for unit-test files that don't need them.
     struct ResolvedDependency;
     struct MeltResolution;
+    struct ResolvedPlugin;
     Lockfile composeLockfileWithResolution(
         const Manifest& manifest,
         const std::string& manifestSource,
@@ -129,6 +143,7 @@ namespace cajeta::buildtool {
         const std::vector<ResolvedDependency>& resolvedDeps,
         const MeltResolution& melts,
         const std::map<std::string, std::string>& meltProvidedBy,
+        const std::vector<ResolvedPlugin>& resolvedPlugins,
         const std::string& nowIso);
 
     // Compare a Lockfile's recorded manifest-checksum against the

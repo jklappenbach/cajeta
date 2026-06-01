@@ -649,11 +649,16 @@ working against a server that advertises both.
       already-built test binary, derives pass/fail/crashed counts
       from exit code. Structured-findings wiring (richer per-test
       reporting) lands with the plugin runtime in 7b._
-- [ ] Plugin runtime: subprocess isolation.
-- [ ] Plugin capability allowlist enforcement against
-      `settings.plugins-allowed-capabilities`.
+- [~] Plugin runtime: subprocess isolation. _Parser + manifest model +
+      capability check + lockfile slots ship in 7b. Subprocess + JSON-line
+      protocol + action dispatch ship in 7c._
+- [x] Plugin capability allowlist enforcement against
+      `settings.plugins-allowed-capabilities`. _First-party plugins (`cajeta.*`)
+      get a wider default allowlist; user plugins use `["filesystem"]`._
 - [ ] Structured-findings stream from plugin to build tool.
-- [ ] Plugin lockfile entry (top-level `plugins` array).
+- [x] Plugin lockfile entry (top-level `plugins` array). _Typed
+      ResolvedPluginEntry with name, version, resolved-from, checksum,
+      and the plugin's declared capability set._
 - [ ] `cajeta.coverage` plugin — `cajeta.coverage.instrument`
       action.
 - [ ] `cajeta.coverage` plugin — `cajeta.coverage.collect`

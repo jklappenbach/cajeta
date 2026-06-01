@@ -10,6 +10,7 @@
 #include "cajeta/buildtool/Lockfile.h"
 #include "cajeta/buildtool/Manifest.h"
 #include "cajeta/buildtool/Melt.h"
+#include "cajeta/buildtool/Plugin.h"
 #include "cajeta/buildtool/Properties.h"
 
 #include <gtest/gtest.h>
@@ -106,7 +107,7 @@ TEST(LockfileMeltsTests, composeWithResolutionRecordsMeltsAndProvidedBy) {
     };
 
     auto lf = composeLockfileWithResolution(
-        m, "manifest-source", props, deps, melts, providedBy,
+        m, "manifest-source", props, deps, melts, providedBy, {},
         "2026-06-01T00:00:00Z");
 
     ASSERT_EQ(lf.packagesTyped.size(), 2u);
@@ -149,7 +150,7 @@ TEST(LockfileMeltsTests, writeReadRoundtripPreservesTypedSlots) {
     };
 
     auto lf = composeLockfileWithResolution(
-        m, "manifest-source", props, deps, melts, providedBy,
+        m, "manifest-source", props, deps, melts, providedBy, {},
         "2026-06-01T00:00:00Z");
 
     auto path = tempPath("rt").string();
@@ -195,7 +196,7 @@ TEST(LockfileMeltsTests, onDiskShapeIsHumanReadable) {
     };
 
     auto lf = composeLockfileWithResolution(
-        m, "manifest-source", props, deps, melts, providedBy,
+        m, "manifest-source", props, deps, melts, providedBy, {},
         "2026-06-01T00:00:00Z");
 
     auto path = tempPath("disk").string();
@@ -219,7 +220,7 @@ TEST(LockfileMeltsTests, packagesAndMeltsEmptyWhenNoResolution) {
     MeltResolution melts;
     std::map<std::string, std::string> providedBy;
     auto lf = composeLockfileWithResolution(
-        m, "manifest-source", props, {}, melts, providedBy,
+        m, "manifest-source", props, {}, melts, providedBy, {},
         "2026-06-01T00:00:00Z");
     EXPECT_TRUE(lf.packagesTyped.empty());
     EXPECT_TRUE(lf.meltsTyped.empty());

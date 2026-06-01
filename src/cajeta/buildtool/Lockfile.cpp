@@ -2,6 +2,7 @@
 
 #include "cajeta/buildtool/Dependency.h"
 #include "cajeta/buildtool/Melt.h"
+#include "cajeta/buildtool/Plugin.h"
 
 #include <llvm/Support/Error.h>
 #include <llvm/Support/JSON.h>
@@ -11,6 +12,7 @@
 #include <openssl/evp.h>
 #include <openssl/sha.h>
 
+#include <algorithm>
 #include <chrono>
 #include <ctime>
 #include <fstream>
@@ -96,6 +98,7 @@ namespace cajeta::buildtool {
         const std::vector<ResolvedDependency>& resolvedDeps,
         const MeltResolution& melts,
         const std::map<std::string, std::string>& meltProvidedBy,
+        const std::vector<ResolvedPlugin>& resolvedPlugins,
         const std::string& nowIso) {
         auto lf = composeLockfile(manifest, manifestSource, props, nowIso);
         lf.packagesTyped.reserve(resolvedDeps.size());
@@ -122,6 +125,20 @@ namespace cajeta::buildtool {
                 me.transitiveMelts.push_back(t.name + "@" + t.version);
             }
             lf.meltsTyped.push_back(std::move(me));
+        }
+        lf.pluginsTyped.reserve(resolvedPlugins.size());
+        for (const auto& rp : resolvedPlugins) {
+            ResolvedPluginEntry pe;
+            pe.name = rp.name;
+            pe.version = rp.version;
+            pe.resolvedFromRepo = rp.resolvedFromRepo;
+            pe.checksum = rp.sha256;
+            // Capability list lands sorted so the lockfile is stable
+            // across hash-set iteration order.
+            pe.capabilities.assign(rp.capabilities.begin(),
+                                   rp.capabilities.end());
+            std::sort(pe.capabilities.begin(), pe.capabilities.end());
+            lf.pluginsTyped.push_back(std::move(pe));
         }
         return lf;
     }
@@ -205,8 +222,28 @@ namespace cajeta::buildtool {
             }
             root["melts"] = llvm::json::Value(std::move(a));
         }
+        // Plugins array: typed entries when populated, raw fallback
+        // otherwise (Phase 2 schema slot stayed an empty array).
         {
-            llvm::json::Array a = lf.plugins;
+            llvm::json::Array a;
+            if (!lf.pluginsTyped.empty()) {
+                for (const auto& p : lf.pluginsTyped) {
+                    llvm::json::Array caps;
+                    for (const auto& c : p.capabilities) {
+                        caps.push_back(c);
+                    }
+                    a.push_back(llvm::json::Object{
+                        {"name",          p.name},
+                        {"version",       p.version},
+                        {"resolved-from", p.resolvedFromRepo},
+                        {"checksum",      p.checksum},
+                        {"capabilities",  llvm::json::Value(
+                                              std::move(caps))},
+                    });
+                }
+            } else {
+                a = lf.pluginsRaw;
+            }
             root["plugins"] = llvm::json::Value(std::move(a));
         }
         {
@@ -319,7 +356,26 @@ namespace cajeta::buildtool {
             }
         }
         if (const auto* a = root->getArray("plugins")) {
-            lf.plugins = *a;
+            lf.pluginsRaw = *a;
+            for (size_t i = 0; i < a->size(); ++i) {
+                const auto* o = (*a)[i].getAsObject();
+                if (!o) continue;
+                ResolvedPluginEntry p;
+                if (auto v = o->getString("name"))          p.name = v->str();
+                if (auto v = o->getString("version"))       p.version = v->str();
+                if (auto v = o->getString("resolved-from")) p.resolvedFromRepo = v->str();
+                if (auto v = o->getString("checksum"))      p.checksum = v->str();
+                if (const auto* cs = o->getArray("capabilities")) {
+                    for (size_t j = 0; j < cs->size(); ++j) {
+                        if (auto s = (*cs)[j].getAsString()) {
+                            p.capabilities.push_back(s->str());
+                        }
+                    }
+                }
+                if (!p.name.empty() && !p.version.empty()) {
+                    lf.pluginsTyped.push_back(std::move(p));
+                }
+            }
         }
         if (const auto* a = root->getArray("overrides")) {
             lf.overrides = *a;
