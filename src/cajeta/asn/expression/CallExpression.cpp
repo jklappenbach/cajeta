@@ -84,14 +84,9 @@ namespace cajeta {
             throw Exception("launch receiver is not a kernel name", "XPU-N02");
         }
 
-        // First element of a `grid:`/`block:` dimension array, as i32.
-        auto lowerDim = [&](const ExpressionPtr& dimExpr) -> llvm::Value* {
-            ExpressionPtr e = dimExpr;
-            if (auto arr =
-                    std::dynamic_pointer_cast<ArrayLiteralExpression>(dimExpr)) {
-                if (arr->getElements().empty()) return nullptr;
-                e = arr->getElements()[0];
-            }
+        // Lower one dimension expression (an array element or a bare scalar) to
+        // i32.
+        auto lowerOne = [&](const ExpressionPtr& e) -> llvm::Value* {
             llvm::Value* v = e->generateCode(module);
             v = loadIfLValue(module, v, e);
             if (v->getType() != i32Ty) {
@@ -99,18 +94,41 @@ namespace cajeta {
             }
             return v;
         };
+        // Extract up to 3 dims from a `grid:`/`block:` value — an array literal
+        // `[x]`/`[x,y]`/`[x,y,z]` or a bare scalar (= x). Missing dims default to
+        // 1, so a 1-D launch still works unchanged. Returns false if no x dim
+        // (an empty array) — the caller treats that as a missing grid:/block:.
+        auto lowerDims = [&](const ExpressionPtr& dimExpr,
+                             llvm::Value* out[3]) -> bool {
+            std::vector<ExpressionPtr> elems;
+            if (auto arr =
+                    std::dynamic_pointer_cast<ArrayLiteralExpression>(dimExpr)) {
+                elems = arr->getElements();
+            } else {
+                elems.push_back(dimExpr);   // bare scalar = x dim
+            }
+            if (elems.empty()) return false;
+            for (unsigned d = 0; d < 3; ++d)
+                out[d] = (d < elems.size()) ? lowerOne(elems[d])
+                                            : llvm::ConstantInt::get(i32Ty, 1);
+            return true;
+        };
 
-        llvm::Value* gridX = nullptr;
-        llvm::Value* blockX = nullptr;
+        llvm::Value* grid[3]  = {nullptr, nullptr, nullptr};
+        llvm::Value* block[3] = {nullptr, nullptr, nullptr};
+        bool haveGrid = false, haveBlock = false;
         llvm::Value* sharedBytes = nullptr;   // dynamic shared memory; 0 if absent
         for (auto& p : callee->getParameters()) {
             std::string label = stripColon(p.label);
-            if (label == "grid")  gridX = lowerDim(p.expression);
-            else if (label == "block") blockX = lowerDim(p.expression);
-            else if (label == "sharedBytes") sharedBytes = lowerDim(p.expression);
+            if (label == "grid")  haveGrid  = lowerDims(p.expression, grid);
+            else if (label == "block") haveBlock = lowerDims(p.expression, block);
+            else if (label == "sharedBytes") {
+                llvm::Value* sb[3];
+                if (lowerDims(p.expression, sb)) sharedBytes = sb[0];
+            }
             // The unlabeled first param is the stream — accepted, not yet plumbed.
         }
-        if (!gridX || !blockX) {
+        if (!haveGrid || !haveBlock) {
             throw Exception("launch requires grid: and block: dimensions",
                             "XPU-N02");
         }
@@ -179,13 +197,15 @@ namespace cajeta {
         llvm::Value* nameStr =
             builder->CreateGlobalString(kernelName, "xpu.kernel.name");
 
-        // void __cajeta_xpu_launch(i8* name, i32 gridX, i32 blockX,
+        // void __cajeta_xpu_launch(i8* name, i32 gridX, i32 gridY, i32 gridZ,
+        //                          i32 blockX, i32 blockY, i32 blockZ,
         //                          i32 sharedBytes, ptr argv)
         llvm::Function* launchFn =
             module->getRuntimeFunction("__cajeta_xpu_launch");
         if (!launchFn) {
             llvm::FunctionType* ft = llvm::FunctionType::get(
-                llvm::Type::getVoidTy(ctx), {ptrTy, i32Ty, i32Ty, i32Ty, ptrTy},
+                llvm::Type::getVoidTy(ctx),
+                {ptrTy, i32Ty, i32Ty, i32Ty, i32Ty, i32Ty, i32Ty, i32Ty, ptrTy},
                 /*vararg=*/false);
             launchFn = llvm::cast<llvm::Function>(
                 module->getLlvmModule()
@@ -193,7 +213,9 @@ namespace cajeta {
                     .getCallee());
         }
         builder->CreateCall(launchFn,
-                            {nameStr, gridX, blockX, sharedBytes, argvBase});
+                            {nameStr, grid[0], grid[1], grid[2],
+                             block[0], block[1], block[2], sharedBytes,
+                             argvBase});
         return nullptr;  // launch is a void statement
     }
 
