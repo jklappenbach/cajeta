@@ -1,0 +1,12 @@
+package cajeta.lint.security;
+
+/**
+ * Raised when a `cajeta.lint.security` config entry fails parse-
+ * time validation. The message always cites the array + index so
+ * the author can find the offending entry without grep.
+ */
+public class LintConfigException extends Exception {
+    public LintConfigException(String message) {
+        super(message);
+    }
+}
