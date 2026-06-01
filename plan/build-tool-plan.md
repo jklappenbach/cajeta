@@ -109,29 +109,38 @@ sensibly on malformed input.
 
 ### Deliverables
 
-- [ ] Built-in property resolver: `${details.name}`,
+- [x] Built-in property resolver: `${details.name}`,
       `${details.version}`, `${details.group}`,
       `${details.library}`, `${flavor}`, `${profile}`,
       `${target}`, `${env.NAME}`, `${workspace.root}`,
-      `${cajeta.version}`.
-- [ ] User-defined property resolver from `properties` block.
-- [ ] Topological resolution for property-references-property.
-- [ ] Cycle detection with citation.
-- [ ] Missing-property hard error with reference-site citation.
-- [ ] CLI `-P NAME=VALUE` override.
-- [ ] `CAJETA_PROPERTY_NAME` env override.
-- [ ] Override precedence: CLI → env → profile → manifest.
-- [ ] `cajeta info --properties` prints the resolved set.
+      `${cajeta.version}`. `src/cajeta/buildtool/Properties.{h,cpp}`.
+- [x] User-defined property resolver from `properties` block.
+- [x] Topological resolution for property-references-property
+      via DFS-and-memoize.
+- [x] Cycle detection with citation (error names the cycle
+      members in order).
+- [x] Missing-property hard error with reference-site citation.
+- [x] CLI `-P NAME=VALUE` override.
+- [x] `CAJETA_PROPERTY_NAME` env override.
+- [x] Override precedence: CLI → env → manifest. (Profile slot
+      reserved in PropertyOverrides; populated in Phase 8 once
+      profile activation lands.)
+- [x] `cajeta info --properties` prints the resolved set
+      (substituted values in resolution order).
+- [x] `$$` escape for literal `$`.
 
 ### Acceptance
 
-- [ ] Built-ins resolve correctly across the test matrix.
-- [ ] Property-references-property resolves topologically.
-- [ ] Cyclic property references fail at load time with a clear
-      cycle diagram.
-- [ ] CLI and env overrides apply in the documented precedence
-      order.
-- [ ] User property collision with a built-in is a hard error.
+- [x] Built-ins resolve correctly across the test matrix
+      (4 tests in PropertiesTests).
+- [x] Property-references-property resolves topologically
+      (3-level chain test passes).
+- [x] Cyclic property references fail at load time with a clear
+      cycle diagram in the error.
+- [x] CLI and env overrides apply in the documented precedence
+      order (3 precedence tests).
+- [x] User property collision with a built-in is a hard error
+      (`details.*` and `env.*` namespace collision tests).
 
 ---
 

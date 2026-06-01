@@ -1,6 +1,7 @@
 #include "cajeta/buildtool/BuildToolCommands.h"
 
 #include "cajeta/buildtool/Manifest.h"
+#include "cajeta/buildtool/Properties.h"
 
 #include <llvm/Support/Error.h>
 #include <llvm/Support/raw_ostream.h>
@@ -28,15 +29,16 @@ namespace cajeta::buildtool {
             return true;
         }
 
-        // `cajeta info` — Phase 0 implementation. Loads the manifest
-        // and prints a structured summary. `--properties` (deferred to
-        // Phase 1) will print the resolved property set; today we
-        // print the unresolved properties block verbatim so the
-        // surface is visible end-to-end.
+        // `cajeta info` — loads the manifest, optionally resolves
+        // properties, prints a structured summary. The summary is the
+        // load-bearing diagnostic for "did my manifest parse the way I
+        // think it did" — every block visible, every override applied.
         int infoCommand(int argc, const char* argv[]) {
             std::string manifestPath = "./cajeta.json";
             bool dumpProperties = false;
             bool resolved = false;
+            PropertyOverrides overrides;
+            loadEnvOverrides(overrides);
 
             for (int i = 2; i < argc; ++i) {
                 std::string_view arg = argv[i];
@@ -47,18 +49,43 @@ namespace cajeta::buildtool {
                     dumpProperties = true;
                 } else if (arg == "--resolved") {
                     resolved = true;
+                } else if (arg == "-P" && i + 1 < argc) {
+                    auto parsed = parseCliOverride(argv[++i]);
+                    if (!parsed) {
+                        std::string msg;
+                        llvm::raw_string_ostream os(msg);
+                        os << parsed.takeError();
+                        std::cerr << "cajeta info: " << msg << "\n";
+                        return 1;
+                    }
+                    overrides.cli[parsed->first] = parsed->second;
+                } else if (match(arg, "property", value)) {
+                    auto parsed = parseCliOverride(value);
+                    if (!parsed) {
+                        std::string msg;
+                        llvm::raw_string_ostream os(msg);
+                        os << parsed.takeError();
+                        std::cerr << "cajeta info: " << msg << "\n";
+                        return 1;
+                    }
+                    overrides.cli[parsed->first] = parsed->second;
+                } else if (match(arg, "flavor", value)) {
+                    overrides.flavor = value;
+                } else if (match(arg, "profile", value)) {
+                    overrides.profile = value;
                 } else if (arg == "--help" || arg == "-h") {
                     std::cout
-                        << "Usage: cajeta info [--manifest=<path>] "
-                           "[--properties] [--resolved]\n"
+                        << "Usage: cajeta info [options]\n"
                         << "\n"
-                        << "Prints the parsed manifest. Phase 0 prints the "
-                           "details block + the names of the other top-level "
-                           "blocks.\n"
+                        << "Prints the parsed manifest.\n"
                         << "\n"
                         << "  --manifest=<path>   Manifest file (default: ./cajeta.json)\n"
-                        << "  --properties        Dump the properties block (resolution arrives in Phase 1)\n"
-                        << "  --resolved          Dump the resolved manifest (Phase 8)\n";
+                        << "  --properties        Dump the resolved property set\n"
+                        << "  --resolved          Dump the fully-resolved manifest (Phase 8)\n"
+                        << "  -P NAME=VALUE       Override a property for this invocation\n"
+                        << "  --property=NAME=VALUE   Long form of -P\n"
+                        << "  --flavor=NAME       Override active build flavor\n"
+                        << "  --profile=NAME      Override active profile\n";
                     return 0;
                 } else {
                     std::cerr << "cajeta info: unknown argument '"
@@ -108,10 +135,20 @@ namespace cajeta::buildtool {
             std::cout << "  plugins:    " << m.pluginsRaw.size() << " entries\n";
             std::cout << "  tasks:      " << m.tasksRaw.size() << " entries\n";
 
-            if (dumpProperties && !m.propertiesRaw.empty()) {
-                std::cout << "\nProperties (unresolved):\n";
-                llvm::json::Value v(llvm::json::Object(m.propertiesRaw));
-                llvm::outs() << llvm::formatv("{0:2}", v) << "\n";
+            if (dumpProperties) {
+                auto resolvedProps = resolveProperties(m, overrides);
+                if (!resolvedProps) {
+                    std::string msg;
+                    llvm::raw_string_ostream os(msg);
+                    os << resolvedProps.takeError();
+                    std::cerr << "cajeta info: " << msg << "\n";
+                    return 1;
+                }
+                std::cout << "\nProperties (resolved):\n";
+                for (const auto& name : resolvedProps->resolutionOrder) {
+                    std::cout << "  " << name << " = "
+                              << resolvedProps->values[name] << "\n";
+                }
             }
 
             return 0;
