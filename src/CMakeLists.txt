@@ -449,6 +449,79 @@ if(DEFINED LLVM_ENABLE_RTTI AND NOT LLVM_ENABLE_RTTI)
             PROPERTIES COMPILE_OPTIONS "-fno-rtti")
 endif()
 
+# ------------------------------------------------------------------------------
+# Embedded `cajeta init` archetype templates.
+#
+# samples/buildtool/<type>/ doubles as the on-disk worked example AND
+# the source-of-truth for what `cajeta init <type>` writes. CMake walks
+# those trees here and emits a generated .cpp that embeds the bytes.
+# This eliminates drift between the samples and the archetypes the
+# binary ships.
+#
+# Convention: only `cajeta.json` and anything under `src/` is embedded.
+# `run.sh` and `README.md` describe the SAMPLE (where it lives in the
+# repo, what today's CLI surface can exercise) — that's sample-meta,
+# not what a freshly-init'd project needs. The init command writes a
+# minimal next-steps message instead.
+set(CAJETA_INIT_TEMPLATE_ROOT ${PROJECT_SOURCE_DIR}/samples/buildtool)
+set(CAJETA_INIT_TEMPLATE_NAMES basic workspace multi-binary melt)
+set(CAJETA_INIT_TEMPLATE_FILES "")
+set(CAJETA_INIT_MANIFEST_ROWS "")
+foreach(tname ${CAJETA_INIT_TEMPLATE_NAMES})
+    set(troot ${CAJETA_INIT_TEMPLATE_ROOT}/${tname})
+    if (NOT EXISTS ${troot})
+        message(FATAL_ERROR
+            "init template '${tname}' missing: ${troot} does not exist")
+    endif()
+    # Manifest (always one). Glob picks up the cajeta.json at the root
+    # and per-member manifests under workspace/.
+    file(GLOB_RECURSE manifests CONFIGURE_DEPENDS ${troot}/cajeta.json
+                                                  ${troot}/*/cajeta.json
+                                                  ${troot}/*/*/cajeta.json
+                                                  ${troot}/*/*/*/cajeta.json)
+    # Source files (zero or more — `melt` has none).
+    file(GLOB_RECURSE sources CONFIGURE_DEPENDS ${troot}/src/*.cajeta
+                                                ${troot}/*/src/*.cajeta
+                                                ${troot}/*/*/src/*.cajeta
+                                                ${troot}/*/*/*/src/*.cajeta
+                                                ${troot}/*/*/*/*/src/*.cajeta)
+    list(SORT manifests)
+    list(SORT sources)
+    foreach(abs ${manifests} ${sources})
+        file(RELATIVE_PATH rel "${troot}" "${abs}")
+        list(APPEND CAJETA_INIT_TEMPLATE_FILES ${abs})
+        list(APPEND CAJETA_INIT_MANIFEST_ROWS "${tname}\t${rel}\t${abs}")
+    endforeach()
+endforeach()
+
+set(CAJETA_INIT_EMBED    ${CMAKE_CURRENT_BINARY_DIR}/cajeta_init_embedded.cpp)
+set(CAJETA_INIT_MANIFEST ${CMAKE_CURRENT_BINARY_DIR}/cajeta_init_manifest.txt)
+
+# Write the manifest at configure time. CONFIGURE_DEPENDS on the globs
+# above re-runs cmake (and thus rewrites this manifest) when samples
+# are added or removed. The custom-command's DEPENDS picks up edits.
+file(WRITE "${CAJETA_INIT_MANIFEST}" "")
+foreach(row ${CAJETA_INIT_MANIFEST_ROWS})
+    file(APPEND "${CAJETA_INIT_MANIFEST}" "${row}\n")
+endforeach()
+
+add_custom_command(
+    OUTPUT ${CAJETA_INIT_EMBED}
+    COMMAND ${CMAKE_COMMAND}
+            -DMANIFEST=${CAJETA_INIT_MANIFEST}
+            -DEMBED_OUT=${CAJETA_INIT_EMBED}
+            -P ${PROJECT_SOURCE_DIR}/cmake/EmbedInitTemplates.cmake
+    DEPENDS ${CAJETA_INIT_TEMPLATE_FILES}
+            ${CAJETA_INIT_MANIFEST}
+            ${PROJECT_SOURCE_DIR}/cmake/EmbedInitTemplates.cmake
+    COMMENT "Embedding cajeta init archetype templates into ${CAJETA_INIT_EMBED}"
+    VERBATIM
+)
+
+set_source_files_properties(${CAJETA_INIT_EMBED} PROPERTIES GENERATED TRUE)
+list(APPEND GENERATED_SOURCES ${CAJETA_INIT_EMBED})
+# ------------------------------------------------------------------------------
+
 add_library(${CMAKE_PROJECT_NAME}_lib STATIC ${SOURCES} ${GENERATED_SOURCES})
 target_link_libraries(${CMAKE_PROJECT_NAME}_lib
         PUBLIC

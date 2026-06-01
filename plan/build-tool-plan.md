@@ -44,7 +44,8 @@ end (already exists); the build tool is the new code.
       transitive overrides, capability declarations.
 - [ ] Repository types: filesystem, HTTP, Git, Maven-compat shim.
 - [ ] Incremental builds (IR cache).
-- [ ] Default `cajeta init` template.
+- [x] Default `cajeta init` template (basic/workspace/multi-binary/melt
+      archetypes, embedded from `samples/buildtool/` at build time).
 - [ ] First-party plugins: `cajeta.coverage`,
       `cajeta.lint.security`.
 - [ ] Archive signing + launcher verification + `cajeta trust`.
@@ -1135,7 +1136,9 @@ A v1 release means all of the following are checked:
 - [ ] A non-trivial cajeta project (the stdlib itself or a
       sample app) builds, tests, and publishes end-to-end via
       `cajeta` with no external scripting.
-- [ ] The default `cajeta init` template ships and works.
+- [x] The default `cajeta init` template ships and works
+      (basic/workspace/multi-binary/melt; embedded from
+      `samples/buildtool/`).
 - [ ] First-party plugins ship and work.
 - [ ] First-party melts (a stdlib melt, at minimum) ship and
       are importable.
