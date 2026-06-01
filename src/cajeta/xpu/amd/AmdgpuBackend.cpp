@@ -5,10 +5,14 @@
 #include "AmdgpuBackend.h"
 
 #include "llvm/ADT/SmallString.h"
+#include "llvm/IR/Function.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/PassManager.h"
 #include "llvm/IR/LegacyPassManager.h"
+#include "llvm/IRReader/IRReader.h"
+#include "llvm/Linker/Linker.h"
 #include "llvm/Passes/PassBuilder.h"
+#include "llvm/Support/SourceMgr.h"
 #include "llvm/Transforms/Utils/Mem2Reg.h"
 #include "llvm/MC/TargetRegistry.h"
 #include "llvm/Support/CodeGen.h"
@@ -43,12 +47,78 @@ void ensureTargetsInitialized() {
     });
 }
 
+// Locate the ROCm device-bitcode directory (ockl/oclc). Honors ROCM_PATH, else
+// the canonical /opt/rocm install. Empty if neither has the bitcode.
+std::string findRocmBitcodeDir() {
+    auto has = [](const std::string& d) {
+        return llvm::sys::fs::exists(d + "/ockl.bc");
+    };
+    if (const char* rp = std::getenv("ROCM_PATH")) {
+        std::string d = std::string(rp) + "/amdgcn/bitcode";
+        if (has(d)) return d;
+    }
+    std::string d = "/opt/rocm/amdgcn/bitcode";
+    if (has(d)) return d;
+    return {};
+}
+
+// Link one ROCm bitcode file into `m` (same context), pulling ONLY the symbols
+// needed to resolve `m`'s outstanding references (LinkOnlyNeeded) — so a single
+// device-library function (and its transitive deps) is merged in, not the whole
+// library. Returns false (and logs) on parse/link failure.
+bool linkRocmBitcode(llvm::Module& m, const std::string& path) {
+    llvm::SMDiagnostic err;
+    std::unique_ptr<llvm::Module> lib =
+        llvm::parseIRFile(path, err, m.getContext());
+    if (!lib) {
+        llvm::errs() << "cajeta.xpu.amd: cannot parse " << path << ": "
+                     << err.getMessage() << "\n";
+        return false;
+    }
+    // The device libs carry their own (amdgcn) datalayout/triple; align them to
+    // the destination's so the linker doesn't reject a benign mismatch.
+    lib->setDataLayout(m.getDataLayout());
+    lib->setTargetTriple(m.getTargetTriple());
+    if (llvm::Linker::linkModules(m, std::move(lib),
+                                  llvm::Linker::Flags::LinkOnlyNeeded)) {
+        llvm::errs() << "cajeta.xpu.amd: failed to link " << path << "\n";
+        return false;
+    }
+    return true;
+}
+
+// Item 8 Stage C (hybrid): a kernel that samples a Texture2D references the
+// ROCm device-library function __ockl_image_sample_2D (emitted by AmdgpuTarget).
+// Link it — and the gfx ISA-version control global it reads — ONLY for such
+// kernels; every other AMD kernel is untouched (no device-lib dependency). If
+// the bitcode isn't installed, the declaration is left unresolved: codegen then
+// fails and the kernel falls back to the host stub, exactly like XPU-N01.
+void linkAmdDeviceLibsIfNeeded(llvm::Module& m, llvm::TargetMachine& tm) {
+    llvm::Function* f = m.getFunction("__ockl_image_sample_2D");
+    if (!f || !f->isDeclaration()) return;  // not sampled here
+    std::string dir = findRocmBitcodeDir();
+    if (dir.empty()) {
+        llvm::errs() << "cajeta.xpu.amd: ROCm device bitcode not found "
+                        "(set ROCM_PATH); texture sampling needs ockl.bc\n";
+        return;
+    }
+    if (!linkRocmBitcode(m, dir + "/ockl.bc")) return;
+    // __ockl_image_sample_2D reads @__oclc_ISA_version (a constant the control
+    // library provides) to pick the gfx image-sample sequence.
+    std::string gfx = tm.getTargetCPU().str();          // e.g. "gfx1151"
+    std::string isa = gfx.rfind("gfx", 0) == 0 ? gfx.substr(3) : gfx;
+    linkRocmBitcode(m, dir + "/oclc_isa_version_" + isa + ".bc");
+}
+
 // Promote entry-block allocas (loop counters, accumulators, reassigned
 // locals) to SSA registers before ISA emission. On AMDGPU these allocas live
 // in the private address space (5); mem2reg removes most of them, which both
 // improves codegen and sidesteps scratch traffic. addPassesToEmitFile runs
 // only the codegen pipeline (no IR optimization), so this must run first.
 void optimizeDeviceModule(llvm::Module& m, llvm::TargetMachine& tm) {
+    // Pull in ROCm image-sample device code first (texture kernels only), so the
+    // merged functions go through mem2reg + codegen with the kernel.
+    linkAmdDeviceLibsIfNeeded(m, tm);
     llvm::PassBuilder pb(&tm);
     llvm::LoopAnalysisManager lam;
     llvm::FunctionAnalysisManager fam;

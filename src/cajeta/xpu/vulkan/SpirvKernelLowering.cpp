@@ -41,6 +41,22 @@ llvm::TargetExtType* vkBufferType(llvm::LLVMContext& ctx, llvm::Type* elemTy,
                                     {kStorageBufferSC, writable ? 1u : 0u});
 }
 
+// target("spirv.Image", texelTy, Dim, Depth, Arrayed, MS, Sampled, Format) —
+// the handle type llvm.spv.resource.handlefrombinding returns for a 2-D sampled
+// Texture2D. Dim=1 → 2D, Depth=2 → not-a-depth-image, Arrayed=0, MS=0,
+// Sampled=1 → used with a sampler, Format=0 → Unknown. Matches the upstream
+// SampleLevel recipe (OpTypeImage <texel> 2D 2 0 0 1 Unknown). (Item 8 Stage B.)
+llvm::TargetExtType* vkImageType(llvm::LLVMContext& ctx, llvm::Type* texelTy) {
+    return llvm::TargetExtType::get(ctx, "spirv.Image", {texelTy},
+                                    {1, 2, 0, 0, 1, 0});
+}
+
+// target("spirv.Sampler") — the handle type for a Sampler descriptor (→
+// OpTypeSampler). No type/int params; combined with an image at the sample site.
+llvm::TargetExtType* vkSamplerType(llvm::LLVMContext& ctx) {
+    return llvm::TargetExtType::get(ctx, "spirv.Sampler", {}, {});
+}
+
 // llvm.spv.resource.getpointer(handle, i32 index) -> ptr addrspace(11). `index`
 // arrives i64-widened from the shared lowerer; SPIR-V wants i32.
 llvm::Value* getElementPtr(llvm::IRBuilderBase& b, llvm::Module& m,
@@ -146,6 +162,17 @@ public:
     llvm::Value* materializeParam(llvm::IRBuilderBase& b, llvm::Module& m,
                                   llvm::Function* /*fn*/, unsigned idx,
                                   const KernelParam& p) override {
+        // Texture2D (Item 8): a SAMPLED_IMAGE descriptor; the handle is consumed
+        // only by `tex.sample(...)` via sampleTexture. (set 0, binding = idx.)
+        if (p.isTexture) {
+            return bindResource(b, m, vkImageType(m.getContext(), p.type), idx,
+                                p.name);
+        }
+        // Sampler (Item 8): a SAMPLER descriptor. The filter/address modes live
+        // in the runtime VkSampler, not the SPIR-V — here it's just a handle.
+        if (p.isSampler) {
+            return bindResource(b, m, vkSamplerType(m.getContext()), idx, p.name);
+        }
         if (p.isBuffer) {
             return bindResource(b, m, vkBufferType(m.getContext(), p.type, true),
                                 idx, p.name);
@@ -157,6 +184,34 @@ public:
             b, m, handle,
             llvm::ConstantInt::get(llvm::Type::getInt64Ty(m.getContext()), 0));
         return b.CreateLoad(p.type, ptr, p.name);
+    }
+
+    // Texture2D.sample(sampler, u, v) → OpImageSampleExplicitLod … Lod, native
+    // and compute-valid via llvm.spv.resource.samplelevel (LLVM 23). texHandle is
+    // the spirv.Image, samplerHandle the spirv.Sampler (both descriptor handles
+    // from materializeParam). coord = <u, v>; explicit LOD 0 (compute has no
+    // implicit derivatives); no constant offset. Returns the R channel of the
+    // <4 x float> gather (Texture2D's texel is a scalar float in v1). (Stage B.)
+    llvm::Value* sampleTexture(llvm::IRBuilderBase& b, llvm::Module& m,
+                               llvm::Value* texHandle, llvm::Value* samplerHandle,
+                               llvm::Value* u, llvm::Value* v) override {
+        llvm::LLVMContext& ctx = m.getContext();
+        llvm::Type* f32 = llvm::Type::getFloatTy(ctx);
+        llvm::Type* i32 = llvm::Type::getInt32Ty(ctx);
+        auto* v2f = llvm::FixedVectorType::get(f32, 2);
+        auto* v4f = llvm::FixedVectorType::get(f32, 4);
+        auto* v2i = llvm::FixedVectorType::get(i32, 2);
+        llvm::Value* coord = llvm::PoisonValue::get(v2f);
+        coord = b.CreateInsertElement(coord, u, uint64_t(0));
+        coord = b.CreateInsertElement(coord, v, uint64_t(1), "tex.coord");
+        llvm::Value* lod = llvm::ConstantFP::get(f32, 0.0);
+        llvm::Value* offset = llvm::ConstantAggregateZero::get(v2i);
+        // CreateIntrinsic infers the (result, image, sampler, coord, offset)
+        // overloads from the operand types, exactly as clang's HLSL SampleLevel.
+        llvm::Value* rgba = b.CreateIntrinsic(
+            v4f, llvm::Intrinsic::spv_resource_samplelevel,
+            {texHandle, samplerHandle, coord, lod, offset});
+        return b.CreateExtractElement(rgba, uint64_t(0), "tex.sample");
     }
 
     // A @Device helper's Buffer<T> param is the storage-buffer HANDLE the kernel

@@ -25,6 +25,7 @@
 
 #pragma once
 
+#include <cstdint>
 #include <memory>
 #include <vector>
 
@@ -56,10 +57,14 @@ namespace xpu {
     // metadata the Vulkan rung of the runtime dispatcher needs to translate the
     // uniform kernelParams argv into descriptor bindings (buffers map to
     // existing storage buffers; scalars become single-element SSBOs sized by
-    // byteSize). Backend-neutral classification, same as lowerKernel uses.
+    // byteSize; textures bind sampled images; samplers bind VkSamplers).
+    // Backend-neutral classification, same as lowerKernel uses.
     struct KernelParamInfo {
-        bool isBuffer;
-        unsigned byteSize;   // scalar byte size (0 for buffers)
+        // kind: 0 = scalar, 1 = buffer, 2 = texture, 3 = sampler (matches the
+        // runtime's CAJETA_KP_* constants in cajeta_runtime.c).
+        enum Kind : uint8_t { Scalar = 0, Buffer = 1, Texture = 2, Sampler = 3 };
+        uint8_t kind;
+        unsigned byteSize;   // scalar/POD byte size (0 for buffer/texture/sampler)
     };
     std::vector<KernelParamInfo> collectKernelParamInfo(const MethodPtr& method,
                                                         llvm::LLVMContext& ctx);

@@ -321,6 +321,76 @@ TEST(XpuVulkanEmitTests, lowersStridedSumLoop) {
     }
 }
 
+// Item 8 Stage B: a Texture2D.sample(sampler, u, v) kernel lowers to native
+// Vulkan image sampling — the texture binds a SAMPLED_IMAGE descriptor, the
+// sampler a SAMPLER descriptor, and the sample becomes OpImageSampleExplicitLod
+// with an explicit Lod (compute-valid; no implicit derivatives). Proven against
+// strict spirv-val --target-env vulkan1.3.
+TEST(XpuVulkanEmitTests, lowersTextureSampleToSpirv) {
+    auto src =
+        "package test;\n"
+        "import cajeta.xpu.core.Buffer;\n"
+        "import cajeta.xpu.core.Thread;\n"
+        "import cajeta.xpu.core.Texture2D;\n"
+        "import cajeta.xpu.core.Sampler;\n"
+        "public class M {\n"
+        "    @Kernel\n"
+        "    public static void sampleTex(Texture2D tex, Sampler s,\n"
+        "                                 Buffer<float32> out, uint32 n) {\n"
+        "        uint32 i = Thread.globalIdX();\n"
+        "        if (i < n) {\n"
+        "            out[i] = tex.sample(s, 0.5, 0.5);\n"
+        "        }\n"
+        "    }\n"
+        "}\n";
+    Compiler compiler;
+    auto module = compileForInspection(compiler, src, "test.M");
+    auto k = findMethod(module->getStructures()["test.M"], "sampleTex");
+    ASSERT_NE(k, nullptr);
+
+    auto tmIr = createSpirvTargetMachine("vulkan1.3");
+    ASSERT_NE(tmIr, nullptr);
+    llvm::LLVMContext irCtx;
+    llvm::Module irModule("xpu_texsample_vulkan_ir", irCtx);
+    configureDeviceModule(irModule, *tmIr);
+    llvm::Function* fn = lowerKernel(k, irModule);
+    ASSERT_NE(fn, nullptr);
+    EXPECT_EQ(fn->arg_size(), 0u);   // args arrive via descriptors
+
+    std::string ir = printModule(irModule);
+    // Image + sampler bound as descriptors; sampled via samplelevel.
+    EXPECT_NE(ir.find("llvm.spv.resource.handlefrombinding"),
+              std::string::npos) << ir;
+    EXPECT_NE(ir.find("llvm.spv.resource.samplelevel"), std::string::npos) << ir;
+
+    auto tmText = createSpirvTargetMachine("vulkan1.3");
+    ASSERT_NE(tmText, nullptr);
+    llvm::LLVMContext textCtx;
+    llvm::Module textModule("xpu_texsample_vulkan_text", textCtx);
+    configureDeviceModule(textModule, *tmText);
+    lowerKernel(k, textModule);
+    std::string text = emitSpirvText(textModule, *tmText);
+    ASSERT_FALSE(text.empty());
+    EXPECT_NE(text.find("OpEntryPoint GLCompute"), std::string::npos) << text;
+    EXPECT_NE(text.find("OpTypeImage"), std::string::npos) << text;
+    EXPECT_NE(text.find("OpTypeSampler"), std::string::npos) << text;
+    EXPECT_NE(text.find("OpImageSampleExplicitLod"), std::string::npos) << text;
+
+    auto tmBin = createSpirvTargetMachine("vulkan1.3");
+    ASSERT_NE(tmBin, nullptr);
+    llvm::LLVMContext binCtx;
+    llvm::Module binModule("xpu_texsample_vulkan_bin", binCtx);
+    configureDeviceModule(binModule, *tmBin);
+    lowerKernel(k, binModule);
+    std::vector<uint8_t> spirv = emitSpirv(binModule, *tmBin);
+    ASSERT_FALSE(spirv.empty());
+    if (auto valid = validateSpirv(spirv)) {
+        EXPECT_TRUE(*valid) << "spirv-val rejected the texture-sample module";
+    } else {
+        GTEST_SUCCEED() << "spirv-val not installed; skipped binary validation";
+    }
+}
+
 // A workgroup-shared kernel with a barrier emits a SPIR-V module that is
 // strictly Vulkan-VALID — proving the barrier post-pass (SpirvBackend's
 // fixupControlBarriers) rewrites LLVM 22's forbidden SequentiallyConsistent
