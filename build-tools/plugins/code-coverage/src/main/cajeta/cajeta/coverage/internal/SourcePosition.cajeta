@@ -1,0 +1,27 @@
+package cajeta.coverage.internal;
+
+/**
+ * A source-position record for one probe-id. Read from the compiler's
+ * coverage-map sidecar by PositionLookup. Stack-allocated at call
+ * sites — no need for boxing because callers either consume the
+ * fields immediately or copy into a Finding.
+ */
+public class SourcePosition {
+    int32 line;
+    int32 column;
+    int32 endLine;
+    int32 endColumn;
+
+    public SourcePosition(int32 line, int32 column,
+                          int32 endLine, int32 endColumn) {
+        this.line      = line;
+        this.column    = column;
+        this.endLine   = endLine;
+        this.endColumn = endColumn;
+    }
+
+    public int32 line()      { return this.line;      }
+    public int32 column()    { return this.column;    }
+    public int32 endLine()   { return this.endLine;   }
+    public int32 endColumn() { return this.endColumn; }
+}

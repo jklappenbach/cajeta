@@ -1,0 +1,57 @@
+package cajeta.coverage.format;
+
+import cajeta.collection.ArrayList;
+import cajeta.coverage.CoverageMap;
+import cajeta.io.file.FileWriter;
+import cajeta.io.file.Path;
+
+/**
+ * lcov tracefile output (`lcov.info`). The de-facto exchange format
+ * for Coveralls, Codecov, and most "upload your coverage to a
+ * dashboard" pipelines. Spec: `man geninfo` (the lcov source-of-
+ * truth) and the long-form description in the kernel tree's
+ * `Documentation/dev-tools/gcov.rst`.
+ *
+ * Minimal record set we emit:
+ *   TN:                    (test name — empty, we don't preserve it)
+ *   SF:<source-path>       (source file)
+ *   DA:<line>,<count>      (executed line + execution count)
+ *   LH:<n>                 (lines hit)
+ *   LF:<n>                 (lines found)
+ *   end_of_record
+ *
+ * Branch (BRDA/BRH/BRF) and function (FN/FNDA) records are skipped
+ * in v1 — cajeta tracks probes, not the line/branch/function split
+ * lcov assumes. We surface the probe space as DA records at line
+ * grain and translate at higher grains by emitting one DA per
+ * representative line.
+ */
+public class LcovFormat {
+
+    public static String emit(Path outputDir, CoverageMap map) {
+        Path out = outputDir.resolve("lcov.info");
+        FileWriter w = FileWriter.openTruncate(out);
+
+        ArrayList<String> paths = map.files().keys();
+        int32 i = 0;
+        while (i < paths.count()) {
+            String fpath = paths.get(i);
+            CoverageMap.FileEntry e = map.files().get(fpath).get();
+            w.writeText("TN:\n");
+            w.writeText("SF:" + fpath + "\n");
+            // TODO: per-probe DA records require the per-source
+            // position sidecar (PositionLookup) here too — currently
+            // omitted to keep this emitter independent of the
+            // sidecar (the report action loads it once and could
+            // pass it in). Lines-hit/lines-found are reported at
+            // probe granularity; consumers of lcov.info that need
+            // line-level detail can fall back to the sarif format.
+            w.writeText("LH:" + String.valueOf(e.hitProbes())   + "\n");
+            w.writeText("LF:" + String.valueOf(e.totalProbes()) + "\n");
+            w.writeText("end_of_record\n");
+            i = i + 1;
+        }
+        w.close();
+        return out.toString();
+    }
+}

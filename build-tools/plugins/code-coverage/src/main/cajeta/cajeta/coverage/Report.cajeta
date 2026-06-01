@@ -1,0 +1,157 @@
+package cajeta.coverage;
+
+import cajeta.buildtool.plugin.ActionContext;
+import cajeta.buildtool.plugin.ActionResult;
+import cajeta.buildtool.plugin.Finding;
+import cajeta.buildtool.plugin.Json;
+import cajeta.collection.ArrayList;
+import cajeta.coverage.format.ConsoleFormat;
+import cajeta.coverage.format.HtmlFormat;
+import cajeta.coverage.format.LcovFormat;
+import cajeta.coverage.format.SarifFormat;
+import cajeta.io.file.Path;
+
+/**
+ * `cajeta.coverage.report` — emit configured reports, gate on
+ * thresholds, return a structured findings stream.
+ *
+ * Threshold logic:
+ *  - `min`          (overall percent). Action fails if `overall < min`.
+ *  - `min-per-file` (per-file floor). Action fails if any file is below.
+ *
+ * Failure messages cite the bottom-N files so the developer doesn't
+ * have to chase numbers — same motivation as Rust's `--show-missing`.
+ *
+ * Findings: one Finding per uncovered line/branch/region with
+ * `severity=info` (uncovered code isn't an error, it's a signal).
+ *
+ * Required capability: `filesystem`.
+ */
+public class Report {
+
+    /** How many low-coverage files to cite in failure / console output. */
+    static final int32 BOTTOM_N = 5;
+
+    /**
+     * @capability filesystem
+     */
+    public static ActionResult run(ActionContext ctx, Json params) {
+        // ── Param parsing ────────────────────────────────────────
+        Optional<String> maybeInput = params.optString("input");
+        if (maybeInput.isEmpty()) {
+            return ActionResult.error(
+                "cajeta.coverage.report: missing required 'input' " +
+                "(path to merged coverage map)");
+        }
+        Path inputPath = Path.of(maybeInput.get());
+        if (!inputPath.exists()) {
+            return ActionResult.error(
+                "cajeta.coverage.report: 'input' (" + inputPath.toString() +
+                ") does not exist");
+        }
+
+        Optional<int32> minPercent      = params.optInt("min");
+        Optional<int32> minPerFile      = params.optInt("min-per-file");
+        ArrayList<String> formats       = params.getStringArray("report");
+        Path outputDir = Path.of(
+            params.getString("output-dir", ctx.workdir() + "/build/coverage"));
+
+        // ── Load ─────────────────────────────────────────────────
+        CoverageMap map = CoverageMapReader.read(inputPath);
+        float overall = map.overallPercent();
+
+        // ── Findings: one per uncovered probe ────────────────────
+        // The coverage map carries probe IDs only; positions come
+        // from the compiler-emitted sidecar (loaded lazily).
+        ArrayList<Finding> findings = #new ArrayList<Finding>();
+        PositionLookup posMap = PositionLookup.load(ctx, map);
+        ArrayList<String> filePaths = map.files().keys();
+        int32 fi = 0;
+        while (fi < filePaths.count()) {
+            String fpath = filePaths.get(fi);
+            CoverageMap.FileEntry entry = map.files().get(fpath).get();
+            int32 pid = 0;
+            while (pid < entry.totalProbes()) {
+                if (!entry.wasHit(pid)) {
+                    SourcePosition pos = posMap.lookup(fpath, pid);
+                    findings.add(#Finding.uncovered(
+                        fpath, pos.line(), pos.column(),
+                        "line not exercised by tests"));
+                }
+                pid = pid + 1;
+            }
+            fi = fi + 1;
+        }
+
+        // ── Emit each requested format ───────────────────────────
+        outputDir.createDirectories();
+        String htmlPath   = "";
+        String sarifPath  = "";
+        String lcovPath   = "";
+        String consoleSummary = "";
+        int32 si = 0;
+        while (si < formats.count()) {
+            String fmt = formats.get(si);
+            if (fmt == "html") {
+                htmlPath = HtmlFormat.emit(outputDir, map, findings);
+            } else if (fmt == "sarif") {
+                sarifPath = SarifFormat.emit(outputDir, map, findings);
+            } else if (fmt == "lcov") {
+                lcovPath = LcovFormat.emit(outputDir, map);
+            } else if (fmt == "console") {
+                consoleSummary = ConsoleFormat.render(map, BOTTOM_N);
+                ctx.write(consoleSummary);
+            } else {
+                return ActionResult.error(
+                    "cajeta.coverage.report: unknown report format '" +
+                    fmt + "' (expected: html, sarif, lcov, console)");
+            }
+            si = si + 1;
+        }
+
+        // ── Threshold gates ──────────────────────────────────────
+        // Bottom-N citation is computed once and reused so the
+        // failure message and the console summary agree on which
+        // files dragged the percentage down.
+        if (minPercent.isPresent() && overall < minPercent.get()) {
+            ArrayList<CoverageMap.FileEntry> bottom =
+                BottomN.select(map, BOTTOM_N);
+            ActionResult r = #new ActionResult();
+            r.output("percent", FloatFormat.oneDecimal(overall));
+            r.output("html-path",  htmlPath);
+            r.output("sarif-path", sarifPath);
+            r.output("lcov-path",  lcovPath);
+            r.findings(#findings);
+            return r.error(
+                "cajeta.coverage.report: coverage " +
+                FloatFormat.oneDecimal(overall) +
+                "% < min " + String.valueOf(minPercent.get()) + "%; " +
+                "bottom " + String.valueOf(bottom.count()) +
+                " files:\n" + BottomN.cite(bottom));
+        }
+        if (minPerFile.isPresent()) {
+            ArrayList<CoverageMap.FileEntry> belowFloor =
+                BottomN.filesBelow(map, minPerFile.get());
+            if (belowFloor.count() > 0) {
+                ActionResult r = #new ActionResult();
+                r.output("percent", FloatFormat.oneDecimal(overall));
+                r.findings(#findings);
+                return r.error(
+                    "cajeta.coverage.report: " +
+                    String.valueOf(belowFloor.count()) +
+                    " files below min-per-file " +
+                    String.valueOf(minPerFile.get()) + "%:\n" +
+                    BottomN.cite(belowFloor));
+            }
+        }
+
+        // ── Success ──────────────────────────────────────────────
+        ActionResult r = #new ActionResult();
+        r.output("percent",    FloatFormat.oneDecimal(overall));
+        r.output("html-path",  htmlPath);
+        r.output("sarif-path", sarifPath);
+        r.output("lcov-path",  lcovPath);
+        r.findings(#findings);
+        return #r;
+    }
+}

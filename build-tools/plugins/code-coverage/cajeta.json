@@ -1,0 +1,101 @@
+{
+    // cajeta.coverage — first-party code coverage plugin.
+    //
+    // Ships three actions consumed by the `test` task:
+    //   - cajeta.coverage.instrument  — build with probe emission
+    //   - cajeta.coverage.collect     — reduce probe hits into a map
+    //   - cajeta.coverage.report      — emit reports, gate on min %
+    //
+    // See README.md for action-by-action params/outputs.
+    // See cajeta-docs/BuildTool.md "Code coverage" for the user spec.
+
+    "details": {
+        "name":               "cajeta.coverage",
+        "version":            "1.0.0",
+        "description":        "Line/branch/region coverage for cajeta projects",
+        "license":            "Apache-2.0",
+        "authors":            ["cajeta"],
+        "cajeta-lang-version": "1.0",
+
+        // Plugin manifest block. The build tool's plugin loader
+        // (Phase 7c) reads this to validate that a package marketed
+        // as a plugin actually declares the action symbols it claims
+        // to ship.
+        "plugin": {
+            "id": "cajeta.coverage",
+            "actions": [
+                "cajeta.coverage.instrument",
+                "cajeta.coverage.collect",
+                "cajeta.coverage.report"
+            ],
+            // Per-action entry symbol the loader resolves from the
+            // plugin's .cja. Convention: `<package>::<action-leaf>`.
+            "entries": {
+                "cajeta.coverage.instrument": "cajeta.coverage.Instrument::run",
+                "cajeta.coverage.collect":    "cajeta.coverage.Collect::run",
+                "cajeta.coverage.report":     "cajeta.coverage.Report::run"
+            }
+        }
+    },
+
+    "settings": {
+        // What the plugin itself needs at runtime:
+        //   - filesystem: reads source / writes reports.
+        //   - process:    instrument re-invokes the cajeta compiler
+        //                 as a subprocess to drive the probed build.
+        // The consumer's `plugins-allowed-capabilities` must include
+        // these or the build tool refuses to load the plugin.
+        "capabilities": ["filesystem", "process"],
+
+        "dependencies": {
+            "cajeta.lang":      "1.0.*",
+            "cajeta.lang.io":   "1.0.*",
+            "cajeta.collection": "1.0.*",
+            // The plugin-author API exposes Finding, ActionResult,
+            // Json, and the action-runner contract. First-party
+            // until the surface stabilizes; user plugins import it
+            // identically.
+            "cajeta.buildtool.plugin": "1.0.*"
+        },
+
+        "build": {
+            "target":       "host",
+            // The plugin is a library, not an executable. The build
+            // tool loads its .cja and resolves per-action symbols
+            // from it — there is no main(). Marker per BuildTool.md
+            // "Plugin declaration".
+            "kind":         "plugin"
+        }
+    },
+
+    "tasks": {
+
+        "build": {
+            "description": "Build the coverage plugin",
+            "actions": [
+                { "action":  "build",
+                  "flavor":  "release",
+                  "profile": "release",
+                  "id":      "art" }
+            ],
+            "outputs": { "path": "${art.path}", "sha256": "${art.sha256}" }
+        },
+
+        "test": {
+            "description": "Plugin's own unit tests",
+            "actions": [
+                { "action":  "build",
+                  "flavor":  "debug",
+                  "profile": "test",
+                  "id":      "art" },
+                { "action": "test", "input": "${art.path}", "id": "tr" }
+            ],
+            "outputs": { "passed": "${tr.passed}", "failed": "${tr.failed}" }
+        },
+
+        "clean": {
+            "description": "Wipe build outputs",
+            "actions": [ { "action": "clean" } ]
+        }
+    }
+}
