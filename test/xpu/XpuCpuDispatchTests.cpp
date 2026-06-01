@@ -118,6 +118,42 @@ CajetaJit::Options cpuOptions() {
     return o;
 }
 
+// 2-D launch grid (2D/3D launch, stage 1): a 4×3 grid of 1-D blocks. Each block
+// writes its own (bx,by) index, so the result proves ctaid.x AND ctaid.y reach
+// the kernel through the runtime's 3-D grid decode. out[by*4+bx] = by*10+bx.
+const char* kGrid2dSource =
+    "package test;\n"
+    "import cajeta.xpu.core.Buffer;\n"
+    "import cajeta.xpu.core.Stream;\n"
+    "import cajeta.xpu.core.Workgroup;\n"
+    "public class Grid2d {\n"
+    "    @Kernel\n"
+    "    public static void grid2d(Buffer<int32> out) {\n"
+    "        uint32 bx = Workgroup.x();\n"
+    "        uint32 by = Workgroup.y();\n"
+    "        out[by * 4 + bx] = (int32)(by * 10 + bx);\n"
+    "    }\n"
+    "    public static int32 run() {\n"
+    "        uint32 n = 12;\n"
+    "        int32[] hout = new int32[n];\n"
+    "        for (uint32 i = 0; i < n; i = i + 1) { hout[i] = -1; }\n"
+    "        Buffer<int32> out = heap Buffer<int32>(n);\n"
+    "        out.upload(hout);\n"
+    "        Stream s = Stream.current();\n"
+    "        grid2d.launch(s, grid: [4, 3], block: [1])(out);\n"
+    "        s.sync();\n"
+    "        out.download(hout);\n"
+    "        for (uint32 by = 0; by < 3; by = by + 1) {\n"
+    "            for (uint32 bx = 0; bx < 4; bx = bx + 1) {\n"
+    "                if (hout[by * 4 + bx] != (int32)(by * 10 + bx)) {\n"
+    "                    return (int32)(100 + by * 4 + bx);\n"
+    "                }\n"
+    "            }\n"
+    "        }\n"
+    "        return 777;\n"
+    "    }\n"
+    "}\n";
+
 } // namespace
 
 // A large grid drives the runtime's multi-core fan-out (Inc 5A); the result must
@@ -138,6 +174,16 @@ TEST(XpuCpuDispatchTests, saxpyHostSourceRunsOnCpu) {
     auto fn = jit->lookup<float (*)()>("run");
     ASSERT_NE(fn, nullptr);
     EXPECT_FLOAT_EQ(fn(), 4096.0f);
+}
+
+// 2D/3D launch (stage 1): a multi-dim GRID of 1-D blocks runs on CPU — ctaid.x/y
+// both reach the kernel via the runtime's linearized-block decode.
+TEST(XpuCpuDispatchTests, multiDimGridOnCpu) {
+    auto jit = CajetaJit::compile(kGrid2dSource, "test.Grid2d", cpuOptions());
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<int (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    EXPECT_EQ(fn(), 777);
 }
 
 // Explicit-only bundling is a build-time contract (locked decision #3): when the

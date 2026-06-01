@@ -127,8 +127,9 @@ TEST(XpuLaunchCodegenTests, sharedConfigLowersByteCount) {
     ASSERT_NO_THROW(codegenAll(compiler));
 
     std::string ir = moduleIR(module);
-    // 5-arg runtime signature (the extra i32 is sharedBytes).
-    EXPECT_NE(ir.find("@__cajeta_xpu_launch(ptr, i32, i32, i32, ptr)"),
+    // 9-arg runtime signature: name, gridX/Y/Z, blockX/Y/Z, sharedBytes, argv.
+    EXPECT_NE(ir.find(
+                  "@__cajeta_xpu_launch(ptr, i32, i32, i32, i32, i32, i32, i32, ptr)"),
               std::string::npos) << ir;
     // The requested dynamic-shared byte count reaches the call.
     EXPECT_NE(ir.find("i32 2048"), std::string::npos) << ir;

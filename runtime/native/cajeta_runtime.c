@@ -4482,7 +4482,7 @@ static void cajeta_xpu_vk_free(int64_t handle) {
 // handles, in kernel-parameter order. Mirrors VulkanDriver::launch.
 static int cajeta_xpu_vk_launch(const void* spirv, uint64_t len,
                                 const char* entry, const int64_t* bindings,
-                                int n, unsigned groups) {
+                                int n, unsigned gx, unsigned gy, unsigned gz) {
     if (!spirv || len < 4 || n <= 0) return 0;
     VkShaderModule module = VK_NULL_HANDLE;
     VkDescriptorSetLayout setLayout = VK_NULL_HANDLE;
@@ -4595,7 +4595,7 @@ static int cajeta_xpu_vk_launch(const void* spirv, uint64_t len,
     g_xpu_vk.vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
     g_xpu_vk.vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
                                      pipeLayout, 0, 1, &descSet, 0, NULL);
-    g_xpu_vk.vkCmdDispatch(cmd, groups, 1, 1);
+    g_xpu_vk.vkCmdDispatch(cmd, gx, gy, gz);   // 3-D grid (block dim is baked)
     g_xpu_vk.vkEndCommandBuffer(cmd);
 
     VkSubmitInfo si;
@@ -4628,8 +4628,10 @@ static int64_t cajeta_xpu_vk_alloc(uint64_t b) { (void) b; return 0; }
 static void* cajeta_xpu_vk_mapped(int64_t h) { (void) h; return NULL; }
 static void cajeta_xpu_vk_free(int64_t h) { (void) h; }
 static int cajeta_xpu_vk_launch(const void* s, uint64_t l, const char* e,
-                                const int64_t* b, int n, unsigned g) {
-    (void) s; (void) l; (void) e; (void) b; (void) n; (void) g; return 0;
+                                const int64_t* b, int n,
+                                unsigned gx, unsigned gy, unsigned gz) {
+    (void) s; (void) l; (void) e; (void) b; (void) n;
+    (void) gx; (void) gy; (void) gz; return 0;
 }
 #endif  // CAJETA_RT_HAS_VULKAN
 
@@ -4899,27 +4901,32 @@ static void cajeta_xpu_sync_active(void) {
 // ntid.xyz]; argv is the kernelParams array shared across work-items.
 typedef void (*cajeta_cpu_launch_fn)(void** argv, const int32_t* coord);
 
-// One worker's slice of the grid: blocks [cxStart, cxEnd), each blockX threads.
+// One worker's slice of the grid: linear block indices [bStart, bEnd) of a
+// gx*gy*gz block grid, each block sized (bx,by,bz) work-items.
 struct cajeta_cpu_grid_slice {
     cajeta_cpu_launch_fn fn;
     void** argv;
-    int32_t blockX;
-    int32_t cxStart;
-    int32_t cxEnd;
+    int32_t bx, by, bz;   // block (workgroup) dims → ntid.xyz
+    int32_t gx, gy, gz;   // grid dims (in blocks) → for decoding ctaid.xyz
+    int32_t bStart;       // linear block index range [bStart, bEnd)
+    int32_t bEnd;
     int32_t dynShared;    // dynamic shared-memory byte count (coord[9])
 };
 
 // Run a contiguous slice of blocks. The launcher thunk is the per-BLOCK wrapper
 // (Inc 5B): it loops the block's work-items internally (vectorized), so we call
-// it ONCE PER BLOCK, setting ctaid.x + ntid.x. coord = [tid.xyz (unused here),
-// ctaid.xyz, ntid.xyz, dynShared]. Each worker owns its coord (no sharing); a
-// data-parallel, barrier-free CPU kernel writes disjoint elements, so the
-// fan-out is race-free for any kernel that is correct on a GPU. coord[9] carries
-// the dynamic shared-memory byte count (the wrapper alloca's it per block).
+// it ONCE PER BLOCK, setting ctaid.xyz + ntid.xyz. coord = [tid.xyz (the
+// wrapper's loop var), ctaid.xyz, ntid.xyz, dynShared]. Each worker owns its
+// coord (no sharing); a data-parallel CPU kernel writes disjoint elements, so
+// the fan-out is race-free for any kernel correct on a GPU. The 3-D grid is
+// linearized (x fastest) and decoded back to ctaid.xyz per block.
 static void cajeta_xpu_cpu_run_slice(const struct cajeta_cpu_grid_slice* s) {
-    int32_t coord[10] = {0, 0, 0, 0, 0, 0, s->blockX, 1, 1, s->dynShared};
-    for (int32_t cx = s->cxStart; cx < s->cxEnd; ++cx) {
-        coord[3] = cx;                                        // ctaid.x
+    int32_t coord[10] = {0, 0, 0, 0, 0, 0, s->bx, s->by, s->bz, s->dynShared};
+    int32_t gxy = s->gx * s->gy;
+    for (int32_t lin = s->bStart; lin < s->bEnd; ++lin) {
+        coord[3] = lin % s->gx;            // ctaid.x
+        coord[4] = (lin / s->gx) % s->gy;  // ctaid.y
+        coord[5] = lin / gxy;              // ctaid.z
         s->fn(s->argv, coord);   // per-block; the wrapper loops work-items
     }
 }
@@ -4945,7 +4952,9 @@ static void* cajeta_xpu_cpu_worker(void* arg) {
 #endif
 #define CAJETA_XPU_CPU_MAX_WORKERS 256
 
-static void cajeta_xpu_launch_cpu(const char* name, int32_t gridX, int32_t blockX,
+static void cajeta_xpu_launch_cpu(const char* name,
+                                  int32_t gridX, int32_t gridY, int32_t gridZ,
+                                  int32_t blockX, int32_t blockY, int32_t blockZ,
                                   int32_t sharedBytes, void* argv) {
     void* p = __cajeta_xpu_lookup_cpu_kernel(name);
     if (!p) {
@@ -4954,40 +4963,63 @@ static void cajeta_xpu_launch_cpu(const char* name, int32_t gridX, int32_t block
         return;
     }
     cajeta_cpu_launch_fn fn = (cajeta_cpu_launch_fn) p;
+    if (gridX < 1) gridX = 1; if (gridY < 1) gridY = 1; if (gridZ < 1) gridZ = 1;
+
+    // The CPU per-block wrapper currently loops the work-item index over tid.x
+    // only; a multi-dim BLOCK (ntid.y/z > 1) would skip the y/z work-items. Until
+    // the wrapper grows a 3-D work-item loop nest, reject a multi-dim block with a
+    // clear diagnostic rather than silently miscompiling (a multi-dim GRID of
+    // 1-D blocks is fully supported).
+    if (blockY > 1 || blockZ > 1) {
+        fprintf(stderr,
+                "cajeta.xpu: CPU backend does not yet support a multi-dim block "
+                "(block.y/z > 1) for '%s'; use a 1-D block (a multi-dim grid is "
+                "supported)\n", name);
+        return;
+    }
 
     // CAJETA_XPU_CPU_SERIAL forces single-threaded execution — a deterministic
     // debug/oracle mode and the serial baseline for benchmarking. Read once.
     static int force_serial = -1;
     if (force_serial < 0) force_serial = getenv("CAJETA_XPU_CPU_SERIAL") ? 1 : 0;
 
-    int64_t total = (int64_t) (gridX > 0 ? gridX : 0) *
-                    (int64_t) (blockX > 0 ? blockX : 0);
+    // Blocks fan out across threads (never the work-items of one block); the
+    // 3-D grid is flattened to nblocks linear indices, decoded to ctaid.xyz in
+    // run_slice.
+    int32_t nblocks = gridX * gridY * gridZ;
+    int64_t blockSize = (int64_t) (blockX > 0 ? blockX : 1) *
+                        (int64_t) (blockY > 0 ? blockY : 1) *
+                        (int64_t) (blockZ > 0 ? blockZ : 1);
+    int64_t total = (int64_t) nblocks * blockSize;
     long cores = sysconf(_SC_NPROCESSORS_ONLN);
     if (cores < 1) cores = 1;
-    int32_t nworkers = (int32_t) ((long) gridX < cores ? (long) gridX : cores);
+    int32_t nworkers = (int32_t) ((long) nblocks < cores ? (long) nblocks : cores);
     if (nworkers > CAJETA_XPU_CPU_MAX_WORKERS) nworkers = CAJETA_XPU_CPU_MAX_WORKERS;
 
     // Serial path: forced, tiny launch, single core, or a single block.
-    if (force_serial || gridX <= 1 || blockX <= 0 || nworkers <= 1 ||
+    if (force_serial || nblocks <= 1 || nworkers <= 1 ||
         total < CAJETA_XPU_CPU_PARALLEL_THRESHOLD) {
-        struct cajeta_cpu_grid_slice all = {fn, (void**) argv, blockX, 0, gridX,
-                                            sharedBytes};
+        struct cajeta_cpu_grid_slice all = {fn, (void**) argv,
+                                            blockX, blockY, blockZ,
+                                            gridX, gridY, gridZ,
+                                            0, nblocks, sharedBytes};
         cajeta_xpu_cpu_run_slice(&all);
         return;
     }
 
-    // Parallel fan-out: chunk the gridX blocks evenly across `nworkers`.
+    // Parallel fan-out: chunk the nblocks linear block indices across `nworkers`.
     pthread_t threads[CAJETA_XPU_CPU_MAX_WORKERS];
     struct cajeta_cpu_grid_slice slices[CAJETA_XPU_CPU_MAX_WORKERS];
     char spawned[CAJETA_XPU_CPU_MAX_WORKERS];
-    int32_t base = gridX / nworkers, rem = gridX % nworkers, cx = 0;
+    int32_t base = nblocks / nworkers, rem = nblocks % nworkers, cx = 0;
     for (int32_t i = 0; i < nworkers; ++i) {
         int32_t count = base + (i < rem ? 1 : 0);
         slices[i].fn = fn;
         slices[i].argv = (void**) argv;
-        slices[i].blockX = blockX;
-        slices[i].cxStart = cx;
-        slices[i].cxEnd = cx + count;
+        slices[i].bx = blockX; slices[i].by = blockY; slices[i].bz = blockZ;
+        slices[i].gx = gridX;  slices[i].gy = gridY;  slices[i].gz = gridZ;
+        slices[i].bStart = cx;
+        slices[i].bEnd = cx + count;
         slices[i].dynShared = sharedBytes;
         cx += count;
         if (i == nworkers - 1) {
@@ -5115,9 +5147,10 @@ void __cajeta_xpu_buffer_free(void* self, int64_t handle) {
 // runtime; this is the not-yet-wired no-op so the symbol resolves and host
 // codegen of a launch site links.
 // CUDA launch: lazily load the module + resolve the function, then 1-D launch.
-static void cajeta_xpu_launch_cuda(const char* kernelName, int32_t gridX,
-                                   int32_t blockX, uint32_t sharedBytes,
-                                   void* argv) {
+static void cajeta_xpu_launch_cuda(const char* kernelName,
+                                   int32_t gridX, int32_t gridY, int32_t gridZ,
+                                   int32_t blockX, int32_t blockY, int32_t blockZ,
+                                   uint32_t sharedBytes, void* argv) {
     pthread_mutex_lock(&g_xpu_cuda_lock);
     struct cajeta_xpu_module* e = cajeta_xpu_find_module(kernelName);
     if (e) {
@@ -5138,11 +5171,12 @@ static void cajeta_xpu_launch_cuda(const char* kernelName, int32_t gridX,
                 kernelName);
         return;
     }
-    // 1-D grid/block; default stream; kernelParams = the CUDA argv the launch
+    // 3-D grid/block; default stream; kernelParams = the CUDA argv the launch
     // site marshalled (pointers to each arg value). sharedBytes sizes the
     // kernel's dynamic (extern) shared memory; 0 for static-only kernels.
-    g_xpu_cuda.cuLaunchKernel(fn, (unsigned) gridX, 1, 1,
-                              (unsigned) blockX, 1, 1,
+    g_xpu_cuda.cuLaunchKernel(fn, (unsigned) gridX, (unsigned) gridY,
+                              (unsigned) gridZ, (unsigned) blockX,
+                              (unsigned) blockY, (unsigned) blockZ,
                               (unsigned) sharedBytes, /*stream=*/NULL,
                               (void**) argv, /*extra=*/NULL);
 }
@@ -5150,9 +5184,10 @@ static void cajeta_xpu_launch_cuda(const char* kernelName, int32_t gridX,
 // HIP launch: lazily load the hsaco module + resolve the function (reusing the
 // shared module table — only one device backend is active per run), then 1-D
 // launch. Mirrors cajeta_xpu_launch_cuda with hip* entry points.
-static void cajeta_xpu_launch_hip(const char* kernelName, int32_t gridX,
-                                  int32_t blockX, uint32_t sharedBytes,
-                                  void* argv) {
+static void cajeta_xpu_launch_hip(const char* kernelName,
+                                  int32_t gridX, int32_t gridY, int32_t gridZ,
+                                  int32_t blockX, int32_t blockY, int32_t blockZ,
+                                  uint32_t sharedBytes, void* argv) {
     pthread_mutex_lock(&g_xpu_cuda_lock);
     struct cajeta_xpu_module* e = cajeta_xpu_find_module(kernelName);
     if (e) {
@@ -5173,8 +5208,9 @@ static void cajeta_xpu_launch_hip(const char* kernelName, int32_t gridX,
                 kernelName);
         return;
     }
-    g_xpu_hip.hipModuleLaunchKernel(fn, (unsigned) gridX, 1, 1,
-                                    (unsigned) blockX, 1, 1,
+    g_xpu_hip.hipModuleLaunchKernel(fn, (unsigned) gridX, (unsigned) gridY,
+                                    (unsigned) gridZ, (unsigned) blockX,
+                                    (unsigned) blockY, (unsigned) blockZ,
                                     (unsigned) sharedBytes, /*stream=*/NULL,
                                     (void**) argv, /*extra=*/NULL);
 }
@@ -5186,7 +5222,8 @@ static void cajeta_xpu_launch_hip(const char* kernelName, int32_t gridX,
 // dispatch gridX work-groups (the local size is baked into the SPIR-V). This is
 // the one backend whose launch ABI forks from the pointer-arg kernelParams
 // model: Vulkan's compute entry has no params, only descriptor bindings.
-static void cajeta_xpu_launch_vulkan(const char* kernelName, int32_t gridX,
+static void cajeta_xpu_launch_vulkan(const char* kernelName,
+                                     int32_t gridX, int32_t gridY, int32_t gridZ,
                                      void* argvv) {
     void** argv = (void**) argvv;
     pthread_mutex_lock(&g_xpu_cuda_lock);
@@ -5227,27 +5264,33 @@ static void cajeta_xpu_launch_vulkan(const char* kernelName, int32_t gridX,
     }
     if (built)
         cajeta_xpu_vk_launch(spirv, len, kernelName, bindings, n,
-                             (unsigned) gridX);
+                             (unsigned) gridX, (unsigned) gridY,
+                             (unsigned) gridZ);
     for (int i = 0; i < ntrans; ++i) cajeta_xpu_vk_free(transient[i]);
 }
 
 // The host-source `kernel.launch(...)` entry point: dispatch to the active
 // backend (chosen + cached on first device touch).
-void __cajeta_xpu_launch(const char* kernelName, int32_t gridX, int32_t blockX,
+void __cajeta_xpu_launch(const char* kernelName,
+                         int32_t gridX, int32_t gridY, int32_t gridZ,
+                         int32_t blockX, int32_t blockY, int32_t blockZ,
                          uint32_t sharedBytes, void* argv) {
     if (!kernelName) return;
     switch (cajeta_xpu_active_backend()) {
         case CAJ_XPU_CUDA:
-            cajeta_xpu_launch_cuda(kernelName, gridX, blockX, sharedBytes, argv);
+            cajeta_xpu_launch_cuda(kernelName, gridX, gridY, gridZ,
+                                   blockX, blockY, blockZ, sharedBytes, argv);
             return;
         case CAJ_XPU_HIP:
-            cajeta_xpu_launch_hip(kernelName, gridX, blockX, sharedBytes, argv);
+            cajeta_xpu_launch_hip(kernelName, gridX, gridY, gridZ,
+                                  blockX, blockY, blockZ, sharedBytes, argv);
             return;
         case CAJ_XPU_VULKAN:
-            cajeta_xpu_launch_vulkan(kernelName, gridX, argv);
+            cajeta_xpu_launch_vulkan(kernelName, gridX, gridY, gridZ, argv);
             return;
         case CAJ_XPU_CPU:
-            cajeta_xpu_launch_cpu(kernelName, gridX, blockX,
+            cajeta_xpu_launch_cpu(kernelName, gridX, gridY, gridZ,
+                                  blockX, blockY, blockZ,
                                   (int32_t) sharedBytes, argv);
             return;
         default: return;   // none: diagnostic emitted
