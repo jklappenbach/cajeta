@@ -4,11 +4,17 @@ import cajeta.buildtool.plugin.ActionContext;
 import cajeta.buildtool.plugin.ActionResult;
 import cajeta.buildtool.plugin.Finding;
 import cajeta.buildtool.plugin.Json;
+import cajeta.buildtool.plugin.JsonArray;
 import cajeta.collection.ArrayList;
 import cajeta.coverage.format.ConsoleFormat;
 import cajeta.coverage.format.HtmlFormat;
 import cajeta.coverage.format.LcovFormat;
 import cajeta.coverage.format.SarifFormat;
+import cajeta.coverage.internal.BottomN;
+import cajeta.coverage.internal.FilteredCounts;
+import cajeta.coverage.internal.FloatFormat;
+import cajeta.coverage.internal.PositionLookup;
+import cajeta.coverage.internal.SourcePosition;
 import cajeta.io.file.Path;
 
 /**
@@ -56,22 +62,55 @@ public class Report {
         Path outputDir = Path.of(
             params.getString("output-dir", ctx.workdir() + "/build/coverage"));
 
+        // ── Resolve exclude list ────────────────────────────────
+        // The plugin's `config.exclude` array is merged into `params`
+        // by the build tool before dispatch — same path as `min`
+        // and friends. Parse it once into a typed list and build a
+        // matcher we can probe per-file / per-symbol below.
+        Optional<JsonArray> excludeRaw = params.optArray("exclude");
+        ArrayList<Exclude> excludes = #new ArrayList<Exclude>();
+        if (excludeRaw.isPresent()) {
+            // Parsing throws on bad entries; let the exception
+            // surface so the action result carries the parse error.
+            excludes = ExcludeParser.parse(ctx, excludeRaw.get());
+        }
+        ExcludeMatcher matcher = #new ExcludeMatcher(excludes);
+
         // ── Load ─────────────────────────────────────────────────
         CoverageMap map = CoverageMapReader.read(inputPath);
-        float overall = map.overallPercent();
 
-        // ── Findings: one per uncovered probe ────────────────────
+        // ── Findings + filtered counts in one pass ───────────────
         // The coverage map carries probe IDs only; positions come
-        // from the compiler-emitted sidecar (loaded lazily).
+        // from the compiler-emitted sidecar (loaded lazily). The
+        // sidecar lookup also resolves the package + symbol so the
+        // exclude matcher can apply package/symbol-kind filters
+        // alongside the file-kind ones.
         ArrayList<Finding> findings = #new ArrayList<Finding>();
         PositionLookup posMap = PositionLookup.load(ctx, map);
+        FilteredCounts counts = #new FilteredCounts();
         ArrayList<String> filePaths = map.files().keys();
         int32 fi = 0;
         while (fi < filePaths.count()) {
             String fpath = filePaths.get(fi);
             CoverageMap.FileEntry entry = map.files().get(fpath).get();
+            // File-kind exclude drops the whole file from numerator
+            // AND denominator — `cajeta.coverage.report` treats opt-
+            // out as "this file was never expected to be tested,"
+            // not "this file got tested and is fine."
+            if (matcher.matchesFile(fpath)) {
+                fi = fi + 1;
+                continue;
+            }
             int32 pid = 0;
             while (pid < entry.totalProbes()) {
+                String pkg    = posMap.packageFor(fpath);
+                String symbol = posMap.symbolFor(fpath, pid);
+                if (matcher.matchesPackage(pkg) ||
+                    matcher.matchesSymbol(symbol)) {
+                    pid = pid + 1;
+                    continue;
+                }
+                counts.recordProbe(fpath, entry.wasHit(pid));
                 if (!entry.wasHit(pid)) {
                     SourcePosition pos = posMap.lookup(fpath, pid);
                     findings.add(#Finding.uncovered(
@@ -82,6 +121,7 @@ public class Report {
             }
             fi = fi + 1;
         }
+        float overall = counts.overallPercent();
 
         // ── Emit each requested format ───────────────────────────
         outputDir.createDirectories();
@@ -99,7 +139,7 @@ public class Report {
             } else if (fmt == "lcov") {
                 lcovPath = LcovFormat.emit(outputDir, map);
             } else if (fmt == "console") {
-                consoleSummary = ConsoleFormat.render(map, BOTTOM_N);
+                consoleSummary = ConsoleFormat.render(map, counts, BOTTOM_N);
                 ctx.write(consoleSummary);
             } else {
                 return ActionResult.error(
@@ -110,12 +150,13 @@ public class Report {
         }
 
         // ── Threshold gates ──────────────────────────────────────
-        // Bottom-N citation is computed once and reused so the
-        // failure message and the console summary agree on which
-        // files dragged the percentage down.
+        // Bottom-N citation is computed once from the FILTERED
+        // counts so the failure message and the console summary
+        // agree on which files dragged the percentage down — and
+        // both reflect the report's exclusion config.
         if (minPercent.isPresent() && overall < minPercent.get()) {
-            ArrayList<CoverageMap.FileEntry> bottom =
-                BottomN.select(map, BOTTOM_N);
+            ArrayList<FilteredCounts.FileEntry> bottom =
+                counts.bottomN(BOTTOM_N);
             ActionResult r = #new ActionResult();
             r.output("percent", FloatFormat.oneDecimal(overall));
             r.output("html-path",  htmlPath);
@@ -127,11 +168,11 @@ public class Report {
                 FloatFormat.oneDecimal(overall) +
                 "% < min " + String.valueOf(minPercent.get()) + "%; " +
                 "bottom " + String.valueOf(bottom.count()) +
-                " files:\n" + BottomN.cite(bottom));
+                " files:\n" + FilteredCounts.cite(bottom));
         }
         if (minPerFile.isPresent()) {
-            ArrayList<CoverageMap.FileEntry> belowFloor =
-                BottomN.filesBelow(map, minPerFile.get());
+            ArrayList<FilteredCounts.FileEntry> belowFloor =
+                counts.filesBelow(minPerFile.get());
             if (belowFloor.count() > 0) {
                 ActionResult r = #new ActionResult();
                 r.output("percent", FloatFormat.oneDecimal(overall));
@@ -141,7 +182,7 @@ public class Report {
                     String.valueOf(belowFloor.count()) +
                     " files below min-per-file " +
                     String.valueOf(minPerFile.get()) + "%:\n" +
-                    BottomN.cite(belowFloor));
+                    FilteredCounts.cite(belowFloor));
             }
         }
 
