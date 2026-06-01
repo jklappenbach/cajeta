@@ -122,9 +122,9 @@ sensibly on malformed input.
 - [x] Missing-property hard error with reference-site citation.
 - [x] CLI `-P NAME=VALUE` override.
 - [x] `CAJETA_PROPERTY_NAME` env override.
-- [x] Override precedence: CLI → env → manifest. (Profile slot
-      reserved in PropertyOverrides; populated in Phase 8 once
-      profile activation lands.)
+- [x] Override precedence: CLI → env → manifest. (No "active
+      profile" precedence layer — profile is a per-task literal,
+      not a central state. See BuildTool.md "Profiles".)
 - [x] `cajeta info --properties` prints the resolved set
       (substituted values in resolution order).
 - [x] `$$` escape for literal `$`.
@@ -305,6 +305,41 @@ work.
       resolution.
 - [ ] Maven-compat shim (`type: maven-compat`).
 
+### Melts (deliverables added)
+
+- [ ] `melt` top-level manifest block recognized; melt packages
+      can be published + fetched like regular artifacts but
+      contain no source/tasks. Validator rejects melt manifests
+      that also declare `tasks` or `workspace`.
+- [ ] `settings.melts` array parsed; each entry pinned to a
+      concrete `name@version` (no range resolution at the
+      melt-import layer).
+- [ ] Each declared melt resolved through the repository
+      machinery; melt-payload validated against the `melt.*`
+      schema.
+- [ ] Melt-provided dependency constraint table built in
+      declaration order; later overrides earlier on conflicts.
+- [ ] Melt-provided properties merged into the consumer's
+      property table (inert-inherits rule); shadowed by
+      consumer's own properties.
+- [ ] Melt-provided action presets merged into the consumer's
+      `actions` namespace; shadowed by consumer's own.
+- [ ] Melt-provided repositories appended to the consumer's
+      resolution list (priority field honored).
+- [ ] `"*"` version in `settings.dependencies` looks up from
+      the melt constraint table; hard error if not present in
+      any imported melt.
+- [ ] Transitive melt imports (`melt.melts`) processed via
+      post-order traversal with cycle detection.
+- [ ] Resolved melts recorded in lockfile under a top-level
+      `melts` array (each entry includes `transitive-melts`).
+- [ ] Per-resolved-package `provided-by` field in lockfile
+      naming the melt that supplied the version (or `"explicit"`).
+- [ ] `cajeta info --melts` / `--melt-tree` output.
+- [ ] `cajeta upgrade --melt <name>` subcommand.
+- [ ] `cajeta publish --as-melt` subcommand (publishes a
+      manifest-only `.cja`).
+
 ### Acceptance
 
 - [ ] Three-deep transitive dep graph resolves correctly.
@@ -314,6 +349,24 @@ work.
 - [ ] Maven-compat shim fetches a known artifact from a Maven
       Central mirror.
 - [ ] Local override beats remote on priority.
+
+### Melts (acceptance criteria added)
+
+- [ ] A package importing two melts that constrain the same
+      dep to different versions resolves to the later-listed
+      melt's version (and the lockfile records `provided-by`).
+- [ ] A consumer declaring `"*"` for a dep that's in an
+      imported melt resolves to the melt-provided version.
+- [ ] A consumer declaring `"*"` for a dep that's in NO
+      imported melt fails the build with a clear error citing
+      the dep name.
+- [ ] A melt that transitively imports itself fails the build
+      with a cycle citation.
+- [ ] An explicit version on a consumer's dep overrides the
+      melt-provided constraint; the build emits a warning
+      naming the divergence.
+- [ ] A melt manifest that also declares `tasks` or
+      `workspace` is rejected at validation time.
 
 ---
 
@@ -358,37 +411,48 @@ work.
 
 ---
 
-## Phase 8 — Profiles + flavors
+## Phase 8 — Build flavors
 
-**Goal:** `cajeta build --profile=ci` activates the CI overlay.
+**Goal:** `build` action accepts string or map flavor values;
+custom flavor definitions compose by name. Profile is per-task
+literal (no overlay machinery).
 
 ### Deliverables
 
-- [ ] Profile overlay resolver — JSON-merge-patch semantics
-      (RFC 7396).
-- [ ] `+field` append-rather-than-replace semantics.
-- [ ] Deletion via `null` in overlay.
-- [ ] Profile activation: CLI `--profile=<name>`.
-- [ ] Profile activation: `CAJETA_PROFILE` env var.
-- [ ] Sticky profile via `.cajeta/profile` (one-line file, not
-      committed).
-- [ ] Manifest default profile (`profiles.default`).
-- [ ] Multi-profile composition (`--profile=a,b,c`).
-- [ ] `cajeta profile activate <name>` subcommand.
-- [ ] `cajeta profile deactivate` subcommand.
-- [ ] `cajeta profile show <name>` (prints merged manifest).
-- [ ] `cajeta profile diff <a> <b>` subcommand.
-- [ ] Built-in build flavors: release, debug, debug-release,
-      fast, minimal, instrumented.
-- [ ] Custom flavor support via `settings.build.custom-flavors`.
+- [ ] Two built-in flavors: `release`, `debug`. Property
+      bundles defined as in BuildTool.md "Built-in flavors".
+- [ ] Property vocabulary parser: `opt`, `lto`, `debug-info`,
+      `strip-symbols`, `bounds-check`, `null-checks`,
+      `overflow-checks`, `asan`/`tsan`/`msan`/`ubsan`,
+      `analytics`, `source-tags`.
+- [ ] Unknown property key at manifest-load is a hard error.
+- [ ] `flavor` accepts string (name) form.
+- [ ] `flavor` accepts map (composition) form with `base` +
+      property overrides.
+- [ ] `settings.build.custom-flavors` block: project-named
+      composition maps.
+- [ ] Custom-flavor cycle detection (`A.base == B` and
+      `B.base == A` rejected at load time).
+- [ ] Resolved flavor passed to the compiler as the
+      corresponding flag set.
+- [ ] `build` action accepts `profile` string param; passes
+      through to compiler as `--profile=<name>`.
 
 ### Acceptance
 
-- [ ] Active profile + flavor materializes a fully resolved
-      manifest; `cajeta info --resolved` shows it.
-- [ ] Two profiles composed merge in declared order.
-- [ ] Sticky profile survives across invocations until cleared.
-- [ ] Custom flavor extends a built-in correctly.
+- [ ] `flavor: "release"` resolves to the built-in property
+      bundle.
+- [ ] `flavor: { "base": "release", "debug-info": "full" }`
+      resolves to release's bundle with debug-info overridden.
+- [ ] `flavor: "integration"` referencing a custom-flavor map
+      resolves through the named composition.
+- [ ] Unknown property key (`debg-info`) produces a citation
+      naming the offending key + the allowed vocabulary.
+- [ ] Two custom flavors with `base` cycling fail load-time
+      validation.
+- [ ] `build` action with `profile: "test"` invokes the
+      compiler with `--profile=test`; `@Profile`-gated DI
+      resolution sees the right components.
 
 ---
 
@@ -556,6 +620,80 @@ across members.
 
 ---
 
+## Phase 14 — Toolchain provisioning + dispatch
+
+**Goal:** the manifest can pin the toolchain version + distribution;
+the build tool auto-fetches the right one and dispatches into it
+transparently (rustup model). End of "works on my machine"
+toolchain-mismatch failures.
+
+### Deliverables
+
+- [ ] `settings.toolchain` manifest block parsed + validated
+      (`version`, `distribution`, `channel`, `sha256`, `fetch`,
+      `from`).
+- [ ] `.cajeta-toolchain` project-local one-line override file
+      recognized; precedence above manifest pin.
+- [ ] Toolchain store layout at `~/.cajeta/toolchains/<dist>/<version>/`
+      (bin/, lib/, share/, current symlink).
+- [ ] Transparent re-exec dispatch when the running cajeta
+      doesn't match the resolved pin.
+- [ ] `CAJETA_NO_DISPATCH=1` env escape hatch.
+- [ ] `fetch: auto` — download + verify + install + dispatch.
+- [ ] `fetch: warn` — warn-and-proceed with running toolchain.
+- [ ] `fetch: error` — refuse + suggest install command.
+- [ ] `fetch: off` — skip the check entirely.
+- [ ] `cajeta toolchain list` subcommand.
+- [ ] `cajeta toolchain install <dist>:<ver>` subcommand.
+- [ ] `cajeta toolchain remove <dist>:<ver>` subcommand.
+- [ ] `cajeta toolchain default <ver>` subcommand
+      (workstation-wide default symlink).
+- [ ] `cajeta toolchain pin <ver>` subcommand (writes
+      `settings.toolchain` into cajeta.json).
+- [ ] `cajeta toolchain which` — print resolved binary path.
+- [ ] `cajeta toolchain show` — manifest pin + resolved binary.
+- [ ] Toolchain registry HTTP protocol implementation (index.json
+      + per-version archive + signed checksums).
+- [ ] Toolchain registry protocol spec
+      (`toolchain-registry-v1.md` in cajeta-docs/specs/).
+- [ ] Signed-archive verification on install (reuses
+      `~/.cajeta/trust/keys/` trust store).
+- [ ] Reserved distribution names enforced: `official`,
+      `nightly`, `lts`, `system`.
+- [ ] `toolchain` block in lockfile (distribution + version + sha256).
+- [ ] Toolchain version/distribution included in IR cache
+      discriminator (already designed in Phase 5; this phase
+      wires the toolchain identity into the discriminator
+      computation).
+
+### Acceptance
+
+- [ ] Project pinned to `official:1.0.3` with no toolchain in
+      `~/.cajeta/toolchains/` auto-downloads, verifies, installs,
+      and re-execs into it on first build.
+- [ ] Same project on a second machine produces a byte-identical
+      `.cja` (toolchain pin enforces reproducibility).
+- [ ] Bumping the pin to a newer version flips the dispatch on
+      next invocation, no other state changes needed.
+- [ ] Lockfile drift detection now fires for toolchain version
+      changes (in addition to manifest and melt changes).
+- [ ] `cajeta toolchain pin 1.0.4` mutates cajeta.json correctly;
+      next build dispatches to 1.0.4.
+- [ ] `.cajeta-toolchain` file overrides the manifest pin for
+      that working tree only.
+- [ ] `CAJETA_NO_DISPATCH=1` runs the PATH binary regardless of
+      pin.
+- [ ] An unsigned toolchain archive fails to install with a
+      clear error citing the missing signature.
+- [ ] A toolchain archive whose signature doesn't verify against
+      a trusted key fails with the computed-vs-expected digest
+      pair.
+- [ ] Cross-compilation: same toolchain, different
+      `settings.build.target` produces both target's artifacts
+      from one toolchain install.
+
+---
+
 ## Cross-cutting workstreams
 
 These don't fit neatly in one phase; they run in parallel and
@@ -657,10 +795,10 @@ Each is a decision, not a unit of work.
 4. FS + crypto ←────┘         │
                               ├─→ 5. build + IR cache
                               │         │
-6. Repos + deps ←─────────────┘         │
+6. Repos + deps + melts ←─────┘         │
                                         ├─→ 7. test + plugins
                                         │         │
-8. Profiles + flavors ←─────────────────┘         │
+8. Build flavors ←──────────────────────┘         │
                                                   │
 9. Distribution: upload + publish ←───────────────┘
          │
@@ -670,11 +808,16 @@ Each is a decision, not a unit of work.
          │
 12. Workspaces ← runs alongside 6-9
          │
-13. Git + attestation ← final phase before v1 cut
+13. Git + attestation
+         │
+14. Toolchain provisioning + dispatch ← final phase before v1 cut;
+         depends on 6 (registry protocol) + 10 (signed verification)
 ```
 
-The big serial dependencies: `0 → 1 → 2 → 3 → 5 → 6 → 7`. The
-rest can be parallelized once their predecessors are stable.
+The big serial dependencies: `0 → 1 → 2 → 3 → 5 → 6 → 7`. Phase
+14 depends on 6 (repository protocol reuse) and 10 (signed
+toolchain verification). The rest can be parallelized once their
+predecessors are stable.
 
 ---
 
@@ -687,10 +830,16 @@ A v1 release means all of the following are checked:
       `cajeta` with no external scripting.
 - [ ] The default `cajeta init` template ships and works.
 - [ ] First-party plugins ship and work.
+- [ ] First-party melts (a stdlib melt, at minimum) ship and
+      are importable.
 - [ ] Signing + verification path is end-to-end with a real
       trust store.
+- [ ] Toolchain provisioning works: project pinned to
+      `official:<version>` auto-fetches on first build,
+      re-execs transparently, reproduces byte-identically on
+      a second machine.
 - [ ] Reproducible-build CI passes for 7 consecutive nights.
 - [ ] Documentation in sync: BuildTool.md (spec), this plan
-      (status all checked through Phase 13), Tour entry.
+      (status all checked through Phase 14), Tour entry.
 
 Anything beyond that is v1.x or v2.
