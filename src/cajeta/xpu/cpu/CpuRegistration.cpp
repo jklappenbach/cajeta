@@ -396,13 +396,10 @@ void foldWaveVariants(llvm::Function& f) {
             // loop — it is split at each barrier into regions, each looped over
             // the block (Inc 6 fission). XPU-N02 on an unsupported construct →
             // discard + fall back to the host stub.
-            // The non-barrier wrapper runs a 3-D work-item loop nest, so it
-            // handles a multi-dim block. Barrier (fission) kernels are still 1-D
-            // (their work-item loops iterate tid.x only) until 2D/3D stage 4, so
-            // they are marked "no 3-D block" and the runtime rejects a multi-dim
-            // block launch of them with a diagnostic rather than miscompiling.
-            const bool isBarrierKernel = usesBarrier(*linked);
-            if (isBarrierKernel) {
+            // Both paths now run a 3-D work-item loop nest (the non-barrier
+            // wrapper directly; fission per region), so a multi-dim block runs on
+            // either (2D/3D stage 4).
+            if (usesBarrier(*linked)) {
                 std::vector<llvm::BranchInst*> wiLatches;
                 try {
                     std::vector<llvm::Value*> ctaidV = {ctaidX, ctaidY, ctaidZ};
@@ -589,14 +586,6 @@ void foldWaveVariants(llvm::Function& f) {
             llvm::Value* nameStr =
                 b.CreateGlobalString(entryName, "xpu.cpu.kname." + entryName);
             b.CreateCall(regFn, {nameStr, thunk});
-            // Barrier kernels are 1-D-block-only (fission); mark them so the
-            // runtime guards a multi-dim-block launch.
-            if (isBarrierKernel) {
-                llvm::FunctionCallee no3dFn = hostModule.getOrInsertFunction(
-                    "__cajeta_xpu_cpu_kernel_no_3d_block",
-                    llvm::FunctionType::get(voidTy, {ptrTy}, false));
-                b.CreateCall(no3dFn, {nameStr});
-            }
             b.CreateRetVoid();
 
             llvm::appendToGlobalCtors(hostModule, ctor, /*priority=*/65535);

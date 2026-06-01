@@ -275,7 +275,7 @@ These are backend-neutral gaps from `cajeta-xpu.md`, unaffected by the Vulkan co
 | `@Device` user-defined helper calls | deferred (XPU-N01) |
 | for-each parallel loops | deferred (XPU-N01) |
 | Labeled `break` / `continue` | deferred (XPU-N01) |
-| 2D/3D launch (currently 1-D indexing) | deferred |
+| 2D/3D launch | ✅ done — 3-D launch ABI; CUDA/HIP 3-D grid+block; Vulkan 3-D grid (baked block, §4); CPU 3-D grid + block + barrier fission |
 | Multi-arch bundling (fatbin) | deferred — single arch per emit |
 | Texture / Sampler types | deferred |
 | `@PushConstant` (Vulkan-only surface) | deferred — note: BDA already *uses* a push-constant block internally (§3), so the plumbing arrives early on Vulkan |

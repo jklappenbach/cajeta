@@ -4749,30 +4749,8 @@ uint32_t __cajeta_xpu_wave_reduce_sum_u32(uint32_t value) { return value; }
 #ifndef CAJETA_XPU_CPU_KERNEL_MAX
 #define CAJETA_XPU_CPU_KERNEL_MAX 256
 #endif
-static struct { const char* name; void* fn; int no3d; }
-    g_cpu_kernels[CAJETA_XPU_CPU_KERNEL_MAX];
+static struct { const char* name; void* fn; } g_cpu_kernels[CAJETA_XPU_CPU_KERNEL_MAX];
 static int g_cpu_kernel_count = 0;
-
-// Mark a kernel as 1-D-block-only (a barrier/fission kernel whose work-item loop
-// iterates tid.x only); the launch guard then rejects a multi-dim-block launch
-// of it. Non-barrier kernels run a 3-D loop nest and are left unmarked (no3d=0).
-void __cajeta_xpu_cpu_kernel_no_3d_block(const char* name) {
-    if (!name) return;
-    for (int i = 0; i < g_cpu_kernel_count; ++i)
-        if (g_cpu_kernels[i].name && strcmp(g_cpu_kernels[i].name, name) == 0) {
-            g_cpu_kernels[i].no3d = 1;
-            return;
-        }
-}
-
-// 1 if the kernel was marked 1-D-block-only (above); 0 otherwise.
-static int cajeta_xpu_cpu_kernel_is_no3d(const char* name) {
-    if (!name) return 0;
-    for (int i = 0; i < g_cpu_kernel_count; ++i)
-        if (g_cpu_kernels[i].name && strcmp(g_cpu_kernels[i].name, name) == 0)
-            return g_cpu_kernels[i].no3d;
-    return 0;
-}
 
 void __cajeta_xpu_register_cpu_kernel(const char* name, void* fn) {
     if (!name || !fn) return;
@@ -4987,17 +4965,6 @@ static void cajeta_xpu_launch_cpu(const char* name,
     cajeta_cpu_launch_fn fn = (cajeta_cpu_launch_fn) p;
     if (gridX < 1) gridX = 1; if (gridY < 1) gridY = 1; if (gridZ < 1) gridZ = 1;
 
-    // A multi-dim BLOCK (ntid.y/z > 1) runs the non-barrier wrapper's 3-D
-    // work-item loop nest. Barrier (fission) kernels are still 1-D-block-only
-    // (marked no3d at registration); reject a multi-dim-block launch of those
-    // with a clear diagnostic rather than silently skipping the y/z work-items.
-    if ((blockY > 1 || blockZ > 1) && cajeta_xpu_cpu_kernel_is_no3d(name)) {
-        fprintf(stderr,
-                "cajeta.xpu: CPU backend does not yet support a multi-dim block "
-                "(block.y/z > 1) for the barrier kernel '%s'; use a 1-D block (a "
-                "multi-dim grid is supported)\n", name);
-        return;
-    }
 
     // CAJETA_XPU_CPU_SERIAL forces single-threaded execution — a deterministic
     // debug/oracle mode and the serial baseline for benchmarking. Read once.

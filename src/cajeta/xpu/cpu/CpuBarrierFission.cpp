@@ -51,7 +51,10 @@ struct RegionJob {
     std::vector<llvm::BasicBlock*> blocks;
     llvm::BasicBlock* predBlock = nullptr;      // feeds the region (edge → entry)
     llvm::BasicBlock* doneTarget = nullptr;     // where the loop exits when done
-    llvm::Value* iv = nullptr;                  // work-item index in this region
+    llvm::Value* ivX = nullptr;                 // tid.x (inner work-item-loop IV)
+    llvm::Value* ivY = nullptr;                 // tid.y (mid loop IV)
+    llvm::Value* ivZ = nullptr;                 // tid.z (outer loop IV)
+    llvm::Value* linear = nullptr;              // tz*ntidY*ntidX + ty*ntidX + tx
 };
 
 // Per-work-item value set: the least fixpoint over SSA def-use AND memory
@@ -66,10 +69,10 @@ struct RegionJob {
 // receives a tainted value (a per-work-item slot), and re-propagate, to a
 // fixpoint. Over-approximation is safe: a wrongly-widened uniform slot still
 // computes the right value, just with redundant per-lane storage.
-void computeTaint(llvm::Value* seed,
+void computeTaint(llvm::ArrayRef<llvm::Value*> seeds,
                   llvm::ArrayRef<llvm::AllocaInst*> slots,
                   llvm::SmallPtrSetImpl<llvm::Value*>& tainted) {
-    llvm::SmallVector<llvm::Value*, 32> work{seed};
+    llvm::SmallVector<llvm::Value*, 32> work(seeds.begin(), seeds.end());
     for (;;) {
         while (!work.empty()) {                       // SSA def-use propagation
             llvm::Value* v = work.pop_back_val();
@@ -109,20 +112,33 @@ void fissionBarrierKernel(llvm::Function* linked, llvm::Function* wrapper,
     llvm::LLVMContext& ctx = wrapper->getContext();
     llvm::Type* i32 = llvm::Type::getInt32Ty(ctx);
     llvm::Value* ntidX = ntid[0];
+    llvm::Value* ntidY = ntid[1];
+    llvm::Value* ntidZ = ntid[2];
 
-    // --- 1. True-entry + the work-item-index placeholder --------------------
+    // --- 1. True-entry + the work-item-index placeholders (tid.x/y/z) -------
+    // 3-D blocks: each region's work-item loop is a tid.z→tid.y→tid.x nest, so
+    // tid.x stays the contiguous inner IV (no `urem`, SIMD preserved). The three
+    // placeholders stand in for the tid coords until the per-region IVs exist.
     auto* trueEntry = llvm::BasicBlock::Create(ctx, "entry", wrapper);
     llvm::IRBuilder<> eb(trueEntry);
-    auto* placeholder = llvm::cast<llvm::Instruction>(
-        eb.CreateFreeze(llvm::PoisonValue::get(i32), "wiid.ph"));
+    auto* phX = llvm::cast<llvm::Instruction>(
+        eb.CreateFreeze(llvm::PoisonValue::get(i32), "wiid.x.ph"));
+    auto* phY = llvm::cast<llvm::Instruction>(
+        eb.CreateFreeze(llvm::PoisonValue::get(i32), "wiid.y.ph"));
+    auto* phZ = llvm::cast<llvm::Instruction>(
+        eb.CreateFreeze(llvm::PoisonValue::get(i32), "wiid.z.ph"));
+    // y*x stride + total work-items per block, for context arrays sized by the
+    // whole 3-D block and indexed by a linearized work-item index.
+    llvm::Value* ntidYX  = eb.CreateMul(ntidY, ntidX, "ntid.yx");
+    llvm::Value* ntidAll = eb.CreateMul(ntidYX, ntidZ, "ntid.all");
 
     // --- 2. Clone the per-work-item kernel body in --------------------------
     llvm::ValueToValueMapTy vmap;
     for (unsigned i = 0; i < nReal; ++i)
         vmap[linked->getArg(i)] = wrapper->getArg(i);
-    vmap[linked->getArg(nReal + 0)] = placeholder;                    // tid.x
-    vmap[linked->getArg(nReal + 1)] = llvm::ConstantInt::get(i32, 0); // tid.y
-    vmap[linked->getArg(nReal + 2)] = llvm::ConstantInt::get(i32, 0); // tid.z
+    vmap[linked->getArg(nReal + 0)] = phX;   // tid.x
+    vmap[linked->getArg(nReal + 1)] = phY;   // tid.y
+    vmap[linked->getArg(nReal + 2)] = phZ;   // tid.z
     for (unsigned d = 0; d < 3; ++d) {
         vmap[linked->getArg(nReal + 3 + d)] = ctaid[d];
         vmap[linked->getArg(nReal + 6 + d)] = ntid[d];
@@ -160,7 +176,8 @@ void fissionBarrierKernel(llvm::Function* linked, llvm::Function* wrapper,
     for (auto& in : *bodyEntry)
         if (auto* a = llvm::dyn_cast<llvm::AllocaInst>(&in)) allocas.push_back(a);
     llvm::SmallPtrSet<llvm::Value*, 32> tainted;
-    computeTaint(placeholder, allocas, tainted);
+    llvm::Value* phSeeds[] = {phX, phY, phZ};
+    computeTaint(phSeeds, allocas, tainted);
 
     auto loopHasBarrier = [&](llvm::Loop* L) {
         for (llvm::BasicBlock* b : boundarySet)
@@ -365,7 +382,7 @@ void fissionBarrierKernel(llvm::Function* linked, llvm::Function* wrapper,
             }
         }
         if (perWorkItem && multi) {
-            auto* arr = eb.CreateAlloca(a->getAllocatedType(), 0, ntidX,
+            auto* arr = eb.CreateAlloca(a->getAllocatedType(), 0, ntidAll,
                                         a->getName() + ".ctx");
             arr->setAlignment(a->getAlign());
             ctxArray[a] = arr;
@@ -375,14 +392,24 @@ void fissionBarrierKernel(llvm::Function* linked, llvm::Function* wrapper,
     // --- 8. Hoist remaining allocas to the true entry -----------------------
     for (llvm::AllocaInst* a : allocas) {
         if (ctxArray.count(a)) continue;
-        a->moveBefore(placeholder);
+        a->moveBefore(phX);
     }
 
-    // --- 9. Wrap each region in a counted work-item loop --------------------
+    // --- 9. Wrap each region in a 3-D work-item loop nest -------------------
+    // Per region: a tid.z → tid.y → tid.x nest. The inner tid.x loop is the
+    // contiguous, vectorizable one (its latch is forced to VF=W for waves), so a
+    // 1-D block (ntid.y/z == 1) is the same single SIMD loop as before; the z/y
+    // loops are single-trip. The region body sits inside the x loop.
+    llvm::Constant* z0 = llvm::ConstantInt::get(i32, 0);
+    llvm::Constant* one = llvm::ConstantInt::get(i32, 1);
     for (RegionJob& J : jobs) {
-        auto* ph = llvm::BasicBlock::Create(ctx, "wi.ph", wrapper, J.entry);
+        auto* ph   = llvm::BasicBlock::Create(ctx, "wi.ph", wrapper, J.entry);
+        auto* zHd  = llvm::BasicBlock::Create(ctx, "wi.z.head", wrapper, J.entry);
+        auto* yHd  = llvm::BasicBlock::Create(ctx, "wi.y.head", wrapper, J.entry);
         auto* head = llvm::BasicBlock::Create(ctx, "wi.head", wrapper, J.entry);
-        auto* latch = llvm::BasicBlock::Create(ctx, "wi.latch", wrapper, J.entry);
+        auto* xLat = llvm::BasicBlock::Create(ctx, "wi.latch", wrapper, J.entry);
+        auto* yLat = llvm::BasicBlock::Create(ctx, "wi.y.latch", wrapper, J.entry);
+        auto* zLat = llvm::BasicBlock::Create(ctx, "wi.z.latch", wrapper, J.entry);
 
         // pred → preheader (redirect the specific edge pred → entry)
         auto* pterm = J.predBlock->getTerminator();
@@ -392,41 +419,72 @@ void fissionBarrierKernel(llvm::Function* linked, llvm::Function* wrapper,
                 pterm->setSuccessor(s, ph); redirected = true;
             }
         if (!redirected) unsupported("region predecessor edge not found");
-        llvm::BranchInst::Create(head, ph);
+        llvm::BranchInst::Create(zHd, ph);
 
-        llvm::IRBuilder<> hb(head);
-        auto* tid = hb.CreatePHI(i32, 2, "wi.tid");
-        tid->addIncoming(llvm::ConstantInt::get(i32, 0), ph);
-        hb.CreateCondBr(hb.CreateICmpSLT(tid, ntidX, "wi.cond"), J.entry,
+        llvm::IRBuilder<> zb(zHd);                              // tid.z loop
+        auto* tz = zb.CreatePHI(i32, 2, "wi.tz");
+        tz->addIncoming(z0, ph);
+        zb.CreateCondBr(zb.CreateICmpSLT(tz, ntidZ, "wi.z.cond"), yHd,
                         J.doneTarget);
-        J.iv = tid;
 
-        llvm::IRBuilder<> lb(latch);
-        tid->addIncoming(
-            lb.CreateAdd(tid, llvm::ConstantInt::get(i32, 1), "wi.next"), latch);
-        auto* latchBr = lb.CreateBr(head);
+        llvm::IRBuilder<> yb(yHd);                              // tid.y loop
+        auto* ty = yb.CreatePHI(i32, 2, "wi.ty");
+        ty->addIncoming(z0, zHd);
+        yb.CreateCondBr(yb.CreateICmpSLT(ty, ntidY, "wi.y.cond"), head, zLat);
+
+        llvm::IRBuilder<> hb(head);                             // tid.x loop (inner)
+        auto* tx = hb.CreatePHI(i32, 2, "wi.tx");
+        tx->addIncoming(z0, yHd);
+        hb.CreateCondBr(hb.CreateICmpSLT(tx, ntidX, "wi.cond"), J.entry, yLat);
+        J.ivX = tx; J.ivY = ty; J.ivZ = tz;
+
+        llvm::IRBuilder<> xlb(xLat);                            // inner back-edge
+        tx->addIncoming(xlb.CreateAdd(tx, one, "wi.next"), xLat);
+        auto* latchBr = xlb.CreateBr(head);
         if (workItemLatches) workItemLatches->push_back(latchBr);
 
-        // region exit edge(s) (to doneTarget, or a ret) → latch
+        llvm::IRBuilder<> ylb(yLat);
+        ty->addIncoming(ylb.CreateAdd(ty, one, "wi.y.next"), yLat);
+        ylb.CreateBr(yHd);
+
+        llvm::IRBuilder<> zlb(zLat);
+        tz->addIncoming(zlb.CreateAdd(tz, one, "wi.z.next"), zLat);
+        zlb.CreateBr(zHd);
+
+        // region exit edge(s) (to doneTarget, or a ret) → the inner (x) latch
         for (llvm::BasicBlock* bb : J.blocks) {
             auto* term = bb->getTerminator();
             if (llvm::isa<llvm::ReturnInst>(term)) {
                 term->eraseFromParent();
-                llvm::BranchInst::Create(latch, bb);
+                llvm::BranchInst::Create(xLat, bb);
             } else {
                 for (unsigned s = 0; s < term->getNumSuccessors(); ++s)
                     if (term->getSuccessor(s) == J.doneTarget)
-                        term->setSuccessor(s, latch);
+                        term->setSuccessor(s, xLat);
             }
         }
+
+        // Linearized work-item index for context-array accesses:
+        // tz*ntidYX + ty*ntidX + tx. Built at the region entry (after its phis);
+        // the tz*ntidYX + ty*ntidX base is loop-invariant in the x loop and
+        // hoists out, leaving `base + tx` in the inner loop (SIMD-friendly).
+        llvm::IRBuilder<> rb(&*J.entry->getFirstInsertionPt());
+        J.linear = rb.CreateAdd(
+            rb.CreateAdd(rb.CreateMul(tz, ntidYX, "wi.zbase"),
+                         rb.CreateMul(ty, ntidX, "wi.ybase")),
+            tx, "wi.linear");
     }
 
-    // --- 10. Rewrite per region: tid placeholder + context-array indexing ---
+    // --- 10. Rewrite per region: tid placeholders + context-array indexing --
     for (RegionJob& J : jobs) {
         for (llvm::BasicBlock* bb : J.blocks) {
             for (llvm::Instruction& in : *bb) {
-                for (unsigned k = 0; k < in.getNumOperands(); ++k)
-                    if (in.getOperand(k) == placeholder) in.setOperand(k, J.iv);
+                for (unsigned k = 0; k < in.getNumOperands(); ++k) {
+                    llvm::Value* op = in.getOperand(k);
+                    if (op == phX) in.setOperand(k, J.ivX);
+                    else if (op == phY) in.setOperand(k, J.ivY);
+                    else if (op == phZ) in.setOperand(k, J.ivZ);
+                }
                 llvm::Value* ptr = nullptr;
                 unsigned ptrIdx = 0;
                 if (auto* ld = llvm::dyn_cast<llvm::LoadInst>(&in)) {
@@ -440,15 +498,18 @@ void fissionBarrierKernel(llvm::Function* linked, llvm::Function* wrapper,
                 auto f = ctxArray.find(llvm::dyn_cast<llvm::AllocaInst>(ptr));
                 if (f == ctxArray.end()) continue;
                 llvm::IRBuilder<> b(&in);
+                // Index the per-work-item context array by the linearized index.
                 in.setOperand(ptrIdx,
                               b.CreateInBoundsGEP(f->second->getAllocatedType(),
-                                                  f->second, J.iv, "ctx.p"));
+                                                  f->second, J.linear, "ctx.p"));
             }
         }
     }
 
     for (auto& kv : ctxArray) kv.first->eraseFromParent();
-    placeholder->eraseFromParent();
+    phX->eraseFromParent();
+    phY->eraseFromParent();
+    phZ->eraseFromParent();
     (void) hostModule;
 }
 
