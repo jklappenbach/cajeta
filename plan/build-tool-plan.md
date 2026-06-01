@@ -462,10 +462,10 @@ work.
       ALL constraints across the graph.
 - [x] Range operators in version constraints (`>=1.2.0`,
       `<2.0.0`, comma-separated combinations).
-- [ ] Transitive override mechanism from `settings.overrides`.
-- [ ] Override: pin to version.
-- [ ] Override: version range constraint.
-- [ ] Major-version-downgrade guard (with
+- [x] Transitive override mechanism from `settings.overrides`.
+- [x] Override: pin to version.
+- [x] Override: version range constraint.
+- [x] Major-version-downgrade guard (with
       `allow-major-downgrade` escape).
 - [ ] `cajeta add <dep>` subcommand.
 - [ ] `cajeta remove <dep>` subcommand.

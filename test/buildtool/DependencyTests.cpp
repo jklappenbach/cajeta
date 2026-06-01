@@ -24,6 +24,8 @@ using cajeta::buildtool::DependencySpec;
 using cajeta::buildtool::FilesystemRepository;
 using cajeta::buildtool::loadManifestString;
 using cajeta::buildtool::parseDependencies;
+using cajeta::buildtool::OverrideSpec;
+using cajeta::buildtool::parseOverrides;
 using cajeta::buildtool::parseRepositories;
 using cajeta::buildtool::Repository;
 using cajeta::buildtool::RepositoryPtr;
@@ -838,6 +840,285 @@ TEST(DependencyTests, mvsConflictingFromPinsError) {
 
     std::filesystem::remove_all(rootA);
     std::filesystem::remove_all(rootB);
+    std::filesystem::remove_all(projectDir);
+    std::filesystem::remove_all(homeDir);
+}
+
+// ─── settings.overrides parsing ───────────────────────────────────────
+
+TEST(DependencyTests, parsesOverridesShortAndObjectForms) {
+    auto m = mustLoad(R"({
+        "details": { "name": "a.b", "version": "0.1" },
+        "settings": {
+            "overrides": {
+                "acme.metrics": "1.2.5",
+                "old.lib":      ">=2.3.4,<3.0.0",
+                "down.grade":   { "version": "1.0.0",
+                                  "allow-major-downgrade": true },
+                "vendor.fork":  { "path": "./vendor/patched-fork" },
+                "old.vuln":     { "git": "https://example.com/fork",
+                                  "rev": "a1b2c3d" }
+            }
+        }
+    })");
+    auto overrides = parseOverrides(m);
+    ASSERT_TRUE((bool)overrides) << errorText(overrides.takeError());
+    ASSERT_EQ(overrides->size(), 5u);
+
+    auto byName = [&](const std::string& n) -> const OverrideSpec* {
+        for (const auto& o : *overrides) if (o.name == n) return &o;
+        return nullptr;
+    };
+    ASSERT_NE(byName("acme.metrics"), nullptr);
+    EXPECT_EQ(byName("acme.metrics")->versionConstraint, "1.2.5");
+
+    ASSERT_NE(byName("old.lib"), nullptr);
+    EXPECT_EQ(byName("old.lib")->versionConstraint, ">=2.3.4,<3.0.0");
+
+    ASSERT_NE(byName("down.grade"), nullptr);
+    EXPECT_EQ(byName("down.grade")->versionConstraint, "1.0.0");
+    EXPECT_TRUE(byName("down.grade")->allowMajorDowngrade);
+
+    ASSERT_NE(byName("vendor.fork"), nullptr);
+    ASSERT_TRUE(byName("vendor.fork")->path.has_value());
+    EXPECT_EQ(*byName("vendor.fork")->path, "./vendor/patched-fork");
+
+    ASSERT_NE(byName("old.vuln"), nullptr);
+    ASSERT_TRUE(byName("old.vuln")->git.has_value());
+    EXPECT_EQ(*byName("old.vuln")->git, "https://example.com/fork");
+    ASSERT_TRUE(byName("old.vuln")->rev.has_value());
+    EXPECT_EQ(*byName("old.vuln")->rev, "a1b2c3d");
+}
+
+// ─── MVS with overrides (Phase 6b) ────────────────────────────────────
+
+TEST(DependencyTests, mvsOverridePinsTransitive) {
+    // root -> foo, foo -> bar >=1.0.0. Without overrides MVS picks
+    // bar 1.0.0 (lowest). Override forces bar 1.5.0; the override
+    // wins (no direct dep on bar).
+    auto root = makeFsRepo({
+        {"o.foo", "1.0.0", "foo"},
+        {"o.bar", "1.0.0", "b1"},
+        {"o.bar", "1.5.0", "b2"},
+        {"o.bar", "1.9.0", "b3"},
+    });
+    writeSidecarManifest(root, "o.foo", "1.0.0", {{"o.bar", ">=1.0.0"}});
+    writeSidecarManifest(root, "o.bar", "1.0.0", {});
+    writeSidecarManifest(root, "o.bar", "1.5.0", {});
+    writeSidecarManifest(root, "o.bar", "1.9.0", {});
+
+    auto projectDir = makeTempDir("ov-pin-proj");
+    auto homeDir    = makeTempDir("ov-pin-home");
+    std::vector<RepositoryPtr> repos = {
+        std::make_shared<FilesystemRepository>("test", root.string()),
+    };
+    std::vector<DependencySpec> deps;
+    DependencySpec d; d.name = "o.foo"; d.versionConstraint = "1.0.0";
+    deps.push_back(d);
+
+    std::vector<OverrideSpec> overrides;
+    OverrideSpec ov; ov.name = "o.bar"; ov.versionConstraint = "1.5.0";
+    overrides.push_back(ov);
+
+    ArtifactCache cache(projectDir.string(), homeDir.string());
+    auto resolved = resolveMvs(deps, repos, cache, overrides);
+    ASSERT_TRUE((bool)resolved) << errorText(resolved.takeError());
+
+    std::string barVersion;
+    for (const auto& r : *resolved) {
+        if (r.name == "o.bar") barVersion = r.version;
+    }
+    EXPECT_EQ(barVersion, "1.5.0");
+
+    std::filesystem::remove_all(root);
+    std::filesystem::remove_all(projectDir);
+    std::filesystem::remove_all(homeDir);
+}
+
+TEST(DependencyTests, mvsOverrideIgnoredForDirectRootDep) {
+    // Root depends directly on bar 1.9.0. Override says bar 1.0.0.
+    // Spec: direct beats override. bar stays at 1.9.0.
+    auto root = makeFsRepo({
+        {"o2.bar", "1.0.0", "b1"},
+        {"o2.bar", "1.5.0", "b2"},
+        {"o2.bar", "1.9.0", "b3"},
+    });
+    writeSidecarManifest(root, "o2.bar", "1.0.0", {});
+    writeSidecarManifest(root, "o2.bar", "1.5.0", {});
+    writeSidecarManifest(root, "o2.bar", "1.9.0", {});
+
+    auto projectDir = makeTempDir("ov-direct-proj");
+    auto homeDir    = makeTempDir("ov-direct-home");
+    std::vector<RepositoryPtr> repos = {
+        std::make_shared<FilesystemRepository>("test", root.string()),
+    };
+    std::vector<DependencySpec> deps;
+    DependencySpec d; d.name = "o2.bar"; d.versionConstraint = "1.9.0";
+    deps.push_back(d);
+
+    std::vector<OverrideSpec> overrides;
+    OverrideSpec ov; ov.name = "o2.bar"; ov.versionConstraint = "1.0.0";
+    overrides.push_back(ov);
+
+    ArtifactCache cache(projectDir.string(), homeDir.string());
+    auto resolved = resolveMvs(deps, repos, cache, overrides);
+    ASSERT_TRUE((bool)resolved) << errorText(resolved.takeError());
+    ASSERT_EQ(resolved->size(), 1u);
+    EXPECT_EQ((*resolved)[0].version, "1.9.0");
+
+    std::filesystem::remove_all(root);
+    std::filesystem::remove_all(projectDir);
+    std::filesystem::remove_all(homeDir);
+}
+
+TEST(DependencyTests, mvsOverrideMajorDowngradeErrors) {
+    // root -> foo, foo -> bar >=2.0.0. Override pins bar to 1.0.0.
+    // That's a major-version drop. Default policy errors.
+    auto root = makeFsRepo({
+        {"d.foo", "1.0.0", "foo"},
+        {"d.bar", "1.0.0", "b1"},
+        {"d.bar", "2.0.0", "b2"},
+        {"d.bar", "2.5.0", "b3"},
+    });
+    writeSidecarManifest(root, "d.foo", "1.0.0", {{"d.bar", ">=2.0.0"}});
+    writeSidecarManifest(root, "d.bar", "1.0.0", {});
+    writeSidecarManifest(root, "d.bar", "2.0.0", {});
+    writeSidecarManifest(root, "d.bar", "2.5.0", {});
+
+    auto projectDir = makeTempDir("ov-dg-err-proj");
+    auto homeDir    = makeTempDir("ov-dg-err-home");
+    std::vector<RepositoryPtr> repos = {
+        std::make_shared<FilesystemRepository>("test", root.string()),
+    };
+    std::vector<DependencySpec> deps;
+    DependencySpec d; d.name = "d.foo"; d.versionConstraint = "1.0.0";
+    deps.push_back(d);
+
+    std::vector<OverrideSpec> overrides;
+    OverrideSpec ov; ov.name = "d.bar"; ov.versionConstraint = "1.0.0";
+    overrides.push_back(ov);
+
+    ArtifactCache cache(projectDir.string(), homeDir.string());
+    auto resolved = resolveMvs(deps, repos, cache, overrides);
+    ASSERT_FALSE((bool)resolved);
+    auto msg = errorText(resolved.takeError());
+    EXPECT_NE(msg.find("d.bar"), std::string::npos);
+    EXPECT_NE(msg.find("allow-major-downgrade"), std::string::npos)
+        << "expected guidance toward the escape hatch, got: " << msg;
+
+    std::filesystem::remove_all(root);
+    std::filesystem::remove_all(projectDir);
+    std::filesystem::remove_all(homeDir);
+}
+
+TEST(DependencyTests, mvsOverrideMajorDowngradeAllowed) {
+    // Same as above but with allow-major-downgrade=true. The build
+    // succeeds and bar resolves to 1.0.0.
+    auto root = makeFsRepo({
+        {"d2.foo", "1.0.0", "foo"},
+        {"d2.bar", "1.0.0", "b1"},
+        {"d2.bar", "2.0.0", "b2"},
+    });
+    writeSidecarManifest(root, "d2.foo", "1.0.0", {{"d2.bar", ">=2.0.0"}});
+    writeSidecarManifest(root, "d2.bar", "1.0.0", {});
+    writeSidecarManifest(root, "d2.bar", "2.0.0", {});
+
+    auto projectDir = makeTempDir("ov-dg-allow-proj");
+    auto homeDir    = makeTempDir("ov-dg-allow-home");
+    std::vector<RepositoryPtr> repos = {
+        std::make_shared<FilesystemRepository>("test", root.string()),
+    };
+    std::vector<DependencySpec> deps;
+    DependencySpec d; d.name = "d2.foo"; d.versionConstraint = "1.0.0";
+    deps.push_back(d);
+
+    std::vector<OverrideSpec> overrides;
+    OverrideSpec ov; ov.name = "d2.bar"; ov.versionConstraint = "1.0.0";
+    ov.allowMajorDowngrade = true;
+    overrides.push_back(ov);
+
+    ArtifactCache cache(projectDir.string(), homeDir.string());
+    auto resolved = resolveMvs(deps, repos, cache, overrides);
+    ASSERT_TRUE((bool)resolved) << errorText(resolved.takeError());
+    std::string barVersion;
+    for (const auto& r : *resolved) {
+        if (r.name == "d2.bar") barVersion = r.version;
+    }
+    EXPECT_EQ(barVersion, "1.0.0");
+
+    std::filesystem::remove_all(root);
+    std::filesystem::remove_all(projectDir);
+    std::filesystem::remove_all(homeDir);
+}
+
+TEST(DependencyTests, mvsOverrideRangeNarrowsResolution) {
+    // foo -> bar >=1.0.0. Bar repo has 1.0.0, 1.5.0, 1.9.0.
+    // Without override MVS picks 1.0.0. Override range
+    // ">=1.5.0,<1.9.0" picks 1.5.0 (lowest satisfying).
+    auto root = makeFsRepo({
+        {"o3.foo", "1.0.0", "foo"},
+        {"o3.bar", "1.0.0", "b1"},
+        {"o3.bar", "1.5.0", "b2"},
+        {"o3.bar", "1.9.0", "b3"},
+    });
+    writeSidecarManifest(root, "o3.foo", "1.0.0", {{"o3.bar", ">=1.0.0"}});
+    writeSidecarManifest(root, "o3.bar", "1.0.0", {});
+    writeSidecarManifest(root, "o3.bar", "1.5.0", {});
+    writeSidecarManifest(root, "o3.bar", "1.9.0", {});
+
+    auto projectDir = makeTempDir("ov-range-proj");
+    auto homeDir    = makeTempDir("ov-range-home");
+    std::vector<RepositoryPtr> repos = {
+        std::make_shared<FilesystemRepository>("test", root.string()),
+    };
+    std::vector<DependencySpec> deps;
+    DependencySpec d; d.name = "o3.foo"; d.versionConstraint = "1.0.0";
+    deps.push_back(d);
+
+    std::vector<OverrideSpec> overrides;
+    OverrideSpec ov; ov.name = "o3.bar";
+    ov.versionConstraint = ">=1.5.0,<1.9.0";
+    overrides.push_back(ov);
+
+    ArtifactCache cache(projectDir.string(), homeDir.string());
+    auto resolved = resolveMvs(deps, repos, cache, overrides);
+    ASSERT_TRUE((bool)resolved) << errorText(resolved.takeError());
+    std::string barVersion;
+    for (const auto& r : *resolved) {
+        if (r.name == "o3.bar") barVersion = r.version;
+    }
+    EXPECT_EQ(barVersion, "1.5.0");
+
+    std::filesystem::remove_all(root);
+    std::filesystem::remove_all(projectDir);
+    std::filesystem::remove_all(homeDir);
+}
+
+TEST(DependencyTests, mvsRejectsPathOverrideAsPhase6c) {
+    auto root = makeFsRepo({{"px.bar", "1.0.0", "x"}});
+    writeSidecarManifest(root, "px.bar", "1.0.0", {});
+    auto projectDir = makeTempDir("ov-path-proj");
+    auto homeDir    = makeTempDir("ov-path-home");
+    std::vector<RepositoryPtr> repos = {
+        std::make_shared<FilesystemRepository>("test", root.string()),
+    };
+    std::vector<DependencySpec> deps;
+    DependencySpec d; d.name = "px.bar"; d.versionConstraint = "1.0.0";
+    deps.push_back(d);
+
+    std::vector<OverrideSpec> overrides;
+    OverrideSpec ov; ov.name = "px.bar";
+    ov.path = "./vendor/fork";
+    overrides.push_back(ov);
+
+    ArtifactCache cache(projectDir.string(), homeDir.string());
+    auto resolved = resolveMvs(deps, repos, cache, overrides);
+    ASSERT_FALSE((bool)resolved);
+    auto msg = errorText(resolved.takeError());
+    EXPECT_NE(msg.find("Phase 6c"), std::string::npos);
+    EXPECT_NE(msg.find("px.bar"), std::string::npos);
+
+    std::filesystem::remove_all(root);
     std::filesystem::remove_all(projectDir);
     std::filesystem::remove_all(homeDir);
 }

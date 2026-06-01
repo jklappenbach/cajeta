@@ -71,6 +71,21 @@ namespace cajeta::buildtool {
         return 0;
     }
 
+    int compareMajor(const std::string& a, const std::string& b) {
+        auto aParts = splitDots(semverCore(a));
+        auto bParts = splitDots(semverCore(b));
+        std::string aMaj = aParts.empty() ? "0" : aParts[0];
+        std::string bMaj = bParts.empty() ? "0" : bParts[0];
+        if (isAllDigits(aMaj) && isAllDigits(bMaj)) {
+            unsigned long long ai = std::stoull(aMaj);
+            unsigned long long bi = std::stoull(bMaj);
+            if (ai == bi) return 0;
+            return ai < bi ? -1 : 1;
+        }
+        int c = aMaj.compare(bMaj);
+        return c == 0 ? 0 : (c < 0 ? -1 : 1);
+    }
+
     namespace {
 
         std::string trim(const std::string& s) {
@@ -320,9 +335,22 @@ namespace cajeta::buildtool {
         // the (single) declared `from` pin, if any (conflicts
         // error). The rest is the currently-picked artifact and
         // the parsed declared-deps of its sidecar.
+        //
+        // Override interplay (Phase 6b):
+        //   - `directRoot`: this package appears in the project's
+        //     own `dependencies` block. Per spec, direct beats
+        //     override — `overrideConstraint` is ignored when
+        //     `directRoot` is set.
+        //   - `overrideConstraint`: when set (and !directRoot), the
+        //     pick uses ONLY this constraint set, NOT the gathered
+        //     transitive constraints. The gathered set is kept for
+        //     the post-MVS major-downgrade audit.
         struct MvsState {
             std::vector<std::string> constraints;
             std::optional<std::string> fromRepo;
+            bool directRoot = false;
+            std::optional<std::string> overrideConstraint;
+            bool overrideAllowsMajorDowngrade = false;
 
             std::string version;
             std::string resolvedFromRepo;
@@ -333,6 +361,16 @@ namespace cajeta::buildtool {
             bool dirty = true;          // needs a pick or re-pick
             bool everPicked = false;
         };
+
+        // Returns the effective constraint set used for picking:
+        // the override's lone constraint when override is in effect,
+        // else the gathered transitive set.
+        std::vector<std::string> effectiveConstraints(const MvsState& s) {
+            if (s.overrideConstraint && !s.directRoot) {
+                return { *s.overrideConstraint };
+            }
+            return s.constraints;
+        }
 
         // Pick lowest-satisfying-all across the priority-ordered
         // repos. Returns the chosen version + repo + artifact
@@ -395,7 +433,24 @@ namespace cajeta::buildtool {
     llvm::Expected<std::vector<ResolvedDependency>> resolveMvs(
         const std::vector<DependencySpec>& deps,
         const std::vector<RepositoryPtr>& repos,
-        ArtifactCache& cache) {
+        ArtifactCache& cache,
+        const std::vector<OverrideSpec>& overrides) {
+
+        // Pre-flight: reject path/git override forms upfront with
+        // a Phase 6c message. Mirrors how Phase 6a stubs unknown
+        // repository types.
+        std::unordered_map<std::string, const OverrideSpec*> overrideMap;
+        for (const auto& o : overrides) {
+            if (o.path || o.git) {
+                return err("settings.overrides." + o.name +
+                           ": path/git replacement requires Phase 6c");
+            }
+            if (o.versionConstraint.empty()) {
+                return err("settings.overrides." + o.name +
+                           ": override must specify a version constraint");
+            }
+            overrideMap[o.name] = &o;
+        }
 
         std::unordered_map<std::string, MvsState> state;
         std::vector<std::string> insertionOrder;
@@ -405,11 +460,23 @@ namespace cajeta::buildtool {
         // marks dirty to trigger a re-pick).
         auto addConstraint = [&](const std::string& name,
                                  const std::string& constraint,
-                                 const std::optional<std::string>& fromRepo)
+                                 const std::optional<std::string>& fromRepo,
+                                 bool asDirectRoot)
             -> llvm::Expected<bool> {
             auto [it, inserted] = state.try_emplace(name);
             auto& s = it->second;
-            if (inserted) insertionOrder.push_back(name);
+            if (inserted) {
+                insertionOrder.push_back(name);
+                // Wire override metadata at first sight — the same
+                // override applies regardless of which BFS step
+                // introduced the package.
+                auto it2 = overrideMap.find(name);
+                if (it2 != overrideMap.end()) {
+                    s.overrideConstraint = it2->second->versionConstraint;
+                    s.overrideAllowsMajorDowngrade =
+                        it2->second->allowMajorDowngrade;
+                }
+            }
 
             bool changed = inserted;
             // Constraint set is treated as a set (dedupe by string).
@@ -417,6 +484,10 @@ namespace cajeta::buildtool {
                           constraint) == s.constraints.end()) {
                 s.constraints.push_back(constraint);
                 changed = true;
+            }
+            if (asDirectRoot && !s.directRoot) {
+                s.directRoot = true;
+                changed = true;  // direct-vs-override flip changes pick
             }
             if (fromRepo) {
                 if (s.fromRepo && *s.fromRepo != *fromRepo) {
@@ -432,10 +503,13 @@ namespace cajeta::buildtool {
             return changed;
         };
 
-        // Seed with the root deps.
+        // Seed with the root deps. These are flagged directRoot so
+        // any same-named override is ignored (per spec: direct
+        // wins over override).
         for (const auto& d : deps) {
             if (d.versionConstraint.empty()) continue;  // 6c forms
-            auto added = addConstraint(d.name, d.versionConstraint, d.fromRepo);
+            auto added = addConstraint(d.name, d.versionConstraint,
+                                       d.fromRepo, /*asDirectRoot=*/true);
             if (!added) return added.takeError();
         }
 
@@ -454,7 +528,7 @@ namespace cajeta::buildtool {
                 if (!s.dirty) continue;
 
                 auto pick = pickLowestForAll(
-                    name, s.constraints, s.fromRepo, repos, cache);
+                    name, effectiveConstraints(s), s.fromRepo, repos, cache);
                 if (!pick) return pick.takeError();
 
                 bool versionChanged = !s.everPicked ||
@@ -493,7 +567,8 @@ namespace cajeta::buildtool {
                     for (const auto& cd : s.childDeps) {
                         if (cd.versionConstraint.empty()) continue;
                         auto added = addConstraint(
-                            cd.name, cd.versionConstraint, cd.fromRepo);
+                            cd.name, cd.versionConstraint, cd.fromRepo,
+                            /*asDirectRoot=*/false);
                         if (!added) return added.takeError();
                         if (*added) anyDirty = true;
                     }
@@ -501,6 +576,43 @@ namespace cajeta::buildtool {
                     // via cycles; preserve that.
                     if (state[name].dirty) anyDirty = true;
                 }
+            }
+        }
+
+        // Post-MVS audit: any package that was forced by an override
+        // (and is NOT a direct root dep) gets compared against what
+        // the gathered transitive constraints would have selected.
+        // If the override dropped the major version below what
+        // transitives needed, this is the documented hard error
+        // unless allow-major-downgrade is set.
+        for (const auto& name : insertionOrder) {
+            const auto& s = state[name];
+            if (!s.overrideConstraint || s.directRoot) continue;
+            if (s.constraints.empty()) continue;  // override unused — nothing to compare
+
+            // Recompute the "what would MVS have picked from the
+            // transitive set alone" baseline. If that set is itself
+            // unsatisfiable, the override RESCUED the build — not
+            // a downgrade situation.
+            auto baseline = pickLowestForAll(
+                name, s.constraints, s.fromRepo, repos, cache);
+            if (!baseline) {
+                consumeError(baseline.takeError());
+                continue;
+            }
+            if (compareMajor(s.version, baseline->version) < 0 &&
+                !s.overrideAllowsMajorDowngrade) {
+                std::string transitives;
+                for (const auto& c : s.constraints) {
+                    if (!transitives.empty()) transitives += ", ";
+                    transitives += c;
+                }
+                return err("override for '" + name + "' pins to '" +
+                           s.version + "' but transitives need [" +
+                           transitives + "] (baseline pick was '" +
+                           baseline->version +
+                           "'); set 'allow-major-downgrade': true on the "
+                           "override to accept this drop");
             }
         }
 

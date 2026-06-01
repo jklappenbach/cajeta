@@ -80,7 +80,16 @@ namespace cajeta::buildtool {
     llvm::Expected<std::vector<ResolvedDependency>> resolveMvs(
         const std::vector<DependencySpec>& deps,
         const std::vector<RepositoryPtr>& repos,
-        ArtifactCache& cache);
+        ArtifactCache& cache,
+        const std::vector<OverrideSpec>& overrides = {});
+
+    // Compare just the major-version component of two semver
+    // strings. Returns <0 if a's major is lower, 0 if equal, >0
+    // if higher. Exposed for the override / major-downgrade
+    // guard tests; the resolver uses it to detect when applying
+    // an override drops a package below the major version a
+    // transitive needed.
+    int compareMajor(const std::string& a, const std::string& b);
 
     // Test whether `version` satisfies `constraint`. Exposed for
     // unit tests.
