@@ -491,8 +491,8 @@ work.
       the cloned source is a future enhancement._
 - [x] Override: local path replacement.
 - [x] Override: Git replacement.
-- [ ] `melt` top-level manifest block recognized.
-- [ ] `settings.melts` array parsed.
+- [x] `melt` top-level manifest block recognized.
+- [x] `settings.melts` array parsed.
 - [ ] Melt-provided dependency constraint table built in
       declaration order.
 - [ ] Melt-provided properties / actions / repositories merged
@@ -506,11 +506,11 @@ work.
 
 ### Melts (deliverables added)
 
-- [ ] `melt` top-level manifest block recognized; melt packages
+- [x] `melt` top-level manifest block recognized; melt packages
       can be published + fetched like regular artifacts but
       contain no source/tasks. Validator rejects melt manifests
       that also declare `tasks` or `workspace`.
-- [ ] `settings.melts` array parsed; each entry pinned to a
+- [x] `settings.melts` array parsed; each entry pinned to a
       concrete `name@version` (no range resolution at the
       melt-import layer).
 - [ ] Each declared melt resolved through the repository
