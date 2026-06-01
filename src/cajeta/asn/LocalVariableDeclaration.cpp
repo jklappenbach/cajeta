@@ -920,7 +920,8 @@ namespace cajeta {
                 dbg::emitDbgLocal(module, field->getName(),
                                   type->toCanonical(),
                                   field->getOrCreateAllocation(),
-                                  dbg::classifyField(facetIn));
+                                  dbg::classifyField(facetIn),
+                                  field->getDropEntry());
             }
         }
 

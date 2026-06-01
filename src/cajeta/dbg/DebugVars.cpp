@@ -20,6 +20,9 @@ extern "C" {
     const char* __cajeta_dbg_local_name(void* frame, int i);
     const char* __cajeta_dbg_local_type(void* frame, int i);
     void* __cajeta_dbg_local_addr(void* frame, int i);
+    uint8_t __cajeta_dbg_local_alloc(void* frame, int i);
+    uint8_t __cajeta_dbg_local_ownership(void* frame, int i);
+    int8_t __cajeta_dbg_local_drop_active(void* frame, int i);
 }
 
 std::vector<DbgFrameInfo> walkFrames(void* top) {
@@ -37,6 +40,17 @@ std::vector<DbgFrameInfo> walkFrames(void* top) {
             v.name = nm ? nm : "";
             v.type = ty ? ty : "";
             v.addr = __cajeta_dbg_local_addr(f, i);
+            // CP7-1b: static facets, carried as bytes by the frame chain.
+            v.alloc     = static_cast<AllocClass>(__cajeta_dbg_local_alloc(f, i));
+            v.ownership  = static_cast<OwnershipRole>(__cajeta_dbg_local_ownership(f, i));
+            // CP7-1c: lifetime is dynamic — derive it now from the owner's
+            // drop-entry `active` flag, read live at this stop (-1 => no entry).
+            int8_t active = __cajeta_dbg_local_drop_active(f, i);
+            LifetimeInputs lin;
+            lin.ownership       = v.ownership;
+            lin.hasDropEntry    = active >= 0;
+            lin.dropEntryActive = active == 1;
+            v.lifetime = deriveLifetime(lin);
             info.locals.push_back(std::move(v));
         }
         out.push_back(std::move(info));

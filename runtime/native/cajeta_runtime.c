@@ -268,6 +268,12 @@ struct cajeta_dbg_local {
     // the host reads them back through the accessors below and maps them.
     uint8_t alloc;
     uint8_t ownership;
+    // CP7-1c: the owner's drop-chain entry (a struct cajeta_drop_entry*, base
+    // or debug shape — its `active` flag lives at the same offset in both), or
+    // NULL for a non-owner. The host reads `active` LIVE at a stop to derive
+    // lifetime state (active => about-to-drop, cleared => moved-out at runtime).
+    // A raw void* so this struct stays above the cajeta_drop_entry definition.
+    void* drop_entry;
 };
 struct cajeta_dbg_frame {
     const char* func;          // cajeta-mangled enclosing function name
@@ -305,7 +311,7 @@ void __cajeta_dbg_frame_leave(void) {
 }
 
 void __cajeta_dbg_local(const char* name, const char* type, void* addr,
-                        uint8_t alloc, uint8_t ownership) {
+                        uint8_t alloc, uint8_t ownership, void* drop_entry) {
     struct cajeta_dbg_frame** top = __cajeta_dbg_top_ptr();
     struct cajeta_dbg_frame* f = *top;
     if (!f || f->nlocals >= CAJETA_DBG_MAX_LOCALS) return;
@@ -314,6 +320,7 @@ void __cajeta_dbg_local(const char* name, const char* type, void* addr,
     f->locals[f->nlocals].addr = addr;
     f->locals[f->nlocals].alloc = alloc;
     f->locals[f->nlocals].ownership = ownership;
+    f->locals[f->nlocals].drop_entry = drop_entry;
     f->nlocals++;
 }
 
@@ -1958,6 +1965,24 @@ void __cajeta_drop_mark_inactive(struct cajeta_drop_entry* e) {
         }
     }
     e->active = 0;
+}
+
+// CP7-1c host accessor for the debug frame chain. Companion to the
+// __cajeta_dbg_local_* accessors defined up near the frame-chain helpers, but
+// placed here because it dereferences a cajeta_drop_entry (defined above; the
+// frame-chain block stores the entry only as an opaque void*). Reports the
+// live lifetime signal for local `i`: 1 = active owner (scheduled to drop),
+// 0 = inactive (moved out at runtime), -1 = no drop entry (borrow / value).
+// The `active` flag sits at the same offset in the base and debug entry
+// shapes, so the base cast is valid for both. Pure read — safe to call from
+// the debugger thread while parked (FR-2.3).
+int8_t __cajeta_dbg_local_drop_active(void* frame, int i) {
+    if (!frame) return -1;
+    struct cajeta_dbg_frame* f = frame;
+    if (i < 0 || i >= f->nlocals) return -1;
+    void* e = f->locals[i].drop_entry;
+    if (!e) return -1;
+    return ((struct cajeta_drop_entry*) e)->active ? 1 : 0;
 }
 
 

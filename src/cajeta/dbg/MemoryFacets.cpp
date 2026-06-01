@@ -26,6 +26,20 @@ namespace cajeta::dbg {
         return MemoryFacets{deriveAllocClass(in), deriveOwnershipRole(in)};
     }
 
+    LifetimeState deriveLifetime(const LifetimeInputs& in) {
+        // Static move-out (the `#`-transferred-out role) dominates.
+        if (in.ownership == OwnershipRole::TransferredOut)
+            return LifetimeState::MovedOut;
+        // An owner's runtime drop entry decides between still-scheduled-to-drop
+        // and moved-out-at-runtime (the entry was deactivated on transfer).
+        if (in.ownership == OwnershipRole::Owner && in.hasDropEntry)
+            return in.dropEntryActive ? LifetimeState::AboutToDrop
+                                      : LifetimeState::MovedOut;
+        // Borrows, plain values, and owners without a tracked entry: a
+        // registered local is in scope, so it is live.
+        return LifetimeState::Live;
+    }
+
     const char* allocClassName(AllocClass c) {
         switch (c) {
             case AllocClass::Stack:  return "stack";
@@ -43,6 +57,16 @@ namespace cajeta::dbg {
             case OwnershipRole::TransferredOut: return "moved";
             case OwnershipRole::Unknown:
             default:                            return "unknown";
+        }
+    }
+
+    const char* lifetimeStateName(LifetimeState s) {
+        switch (s) {
+            case LifetimeState::Live:        return "live";
+            case LifetimeState::MovedOut:    return "moved-out";
+            case LifetimeState::AboutToDrop: return "about-to-drop";
+            case LifetimeState::Unknown:
+            default:                         return "unknown";
         }
     }
 
