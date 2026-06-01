@@ -2,7 +2,7 @@ package cajeta.coverage.format;
 
 import cajeta.collection.ArrayList;
 import cajeta.coverage.CoverageMap;
-import cajeta.coverage.internal.BottomN;
+import cajeta.coverage.internal.FilteredCounts;
 import cajeta.coverage.internal.FloatFormat;
 
 /**
@@ -14,23 +14,30 @@ import cajeta.coverage.internal.FloatFormat;
  *      61.2%  src/codec/JsonReader.cajeta        (49/80)
  *      ...
  *
+ * Operates on `FilteredCounts` (the post-exclude view) so the
+ * percentages match the gate decision. `map` is along for the ride
+ * to surface the configured grain in the summary line — the
+ * filtered view doesn't track grain since it's invariant across
+ * the report.
+ *
  * No color, no ANSI. The build tool's output stream is the channel
  * for terminal styling — emitting raw ANSI here would corrupt CI
  * log captures. The host tool can color-wrap on the way out.
  */
 public class ConsoleFormat {
 
-    public static String render(CoverageMap map, int32 bottomN) {
+    public static String render(
+        CoverageMap map, FilteredCounts counts, int32 bottomN) {
         StringBuilder b = stack StringBuilder();
         b.append("coverage: ");
-        b.append(FloatFormat.oneDecimal(map.overallPercent()));
+        b.append(FloatFormat.oneDecimal(counts.overallPercent()));
         b.append("%  (files: ");
-        b.append(String.valueOf(map.count()));
+        b.append(String.valueOf(counts.count()));
         b.append(", grain: ");
         b.append(map.grain().toName());
         b.append(")\n");
 
-        ArrayList<CoverageMap.FileEntry> bottom = BottomN.select(map, bottomN);
+        ArrayList<FilteredCounts.FileEntry> bottom = counts.bottomN(bottomN);
         // Skip the section entirely if nothing's below 100% — the
         // happy case shouldn't be cluttered with an empty header.
         if (bottom.count() == 0) {
@@ -40,7 +47,7 @@ public class ConsoleFormat {
             return b.toString();
         }
         b.append("files needing attention:\n");
-        b.append(BottomN.cite(bottom));
+        b.append(FilteredCounts.cite(bottom));
         return b.toString();
     }
 }

@@ -68,6 +68,34 @@
         }
     },
 
+    // Example consumer config — what a project would put under its
+    // own `plugins.cajeta.coverage.config` block. Kept here so the
+    // plugin author can grep the live shape; consumers of the
+    // plugin copy what they need.
+    //
+    // "plugins": {
+    //     "cajeta.coverage": {
+    //         "version": "1.0.*",
+    //         "config": {
+    //             "grain":        "line",
+    //             "min":          80,
+    //             "min-per-file": 50,
+    //             "report":       ["html", "sarif", "console"],
+    //             "exclude": [
+    //                 { "kind":    "file",
+    //                   "pattern": "**/*_generated.cajeta",
+    //                   "reason":  "machine-generated; covered via integration" },
+    //                 { "kind":    "package",
+    //                   "pattern": "com.example.mock.*",
+    //                   "reason":  "test scaffolding" },
+    //                 { "kind":    "symbol",
+    //                   "pattern": "com.example.Foo.getCount",
+    //                   "reason":  "trivial accessor; tested implicitly via every use" }
+    //             ]
+    //         }
+    //     }
+    // }
+
     "tasks": {
 
         "build": {
