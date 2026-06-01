@@ -220,3 +220,20 @@ fun summarizeGutter(vars: List<DapVariable>): GutterSummary? {
     }
     return GutterSummary(ownership, alloc, anyMovedOut, tooltip, known.size)
 }
+
+/**
+ * The inline editor decoration for the bindings active at a stop (CP7-4,
+ * FR-6.1): a compact `name: tag` list rendered on/near the current line so
+ * ownership/allocation/lifetime are visible on the page without opening the
+ * Variables view. Same facet source (FR-6.5); null when nothing is known, so
+ * no empty hint is drawn. A binding whose tag is empty (only the unremarkable
+ * `live`/`unknown` facets) contributes just its name.
+ */
+fun inlineHint(vars: List<DapVariable>): String? {
+    val known = vars.filter { it.facets.isKnown }
+    if (known.isEmpty()) return null
+    return known.joinToString("   ") { v ->
+        val tag = v.facets.present().tag
+        if (tag.isEmpty()) v.name else "${v.name}: $tag"
+    }
+}
