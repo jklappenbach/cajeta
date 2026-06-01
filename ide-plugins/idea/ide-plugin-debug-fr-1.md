@@ -282,7 +282,7 @@ the project's checkpoint-by-checkpoint principle. Hashes filled in as they land.
 | Checkpoint | Scope | Requirements | Layer |
 |---|---|---|---|
 | **CP7-1a** ✅ `baeed84` | Memory-facets classification core (AllocClass/OwnershipRole enums + `classifyField` + names; pure, 14 tests) | FR-1.1–FR-1.4 | compiler / `dbg::MemoryFacets` |
-| **CP7-1b** | Runtime frame-chain carries facets + host accessors | FR-2.1, FR-2.3 | runtime + host |
+| **CP7-1b** ✅ | Runtime frame-chain carries facets + host accessors (`__cajeta_dbg_local` +2 bytes; `_alloc`/`_ownership` accessors; both call sites classify from Field/FormalParameter; 6 read-back tests) | FR-2.1, FR-2.3 | runtime + host |
 | **CP7-1c** | Lifetime/drop-state derivation at a stop | FR-2.2 | runtime + host |
 | **CP7-1d** | DAP `variables` carries facets (+ `Debugging.md`) | FR-3.1–FR-3.3 | DAP server |
 | **CP7-2** | Variables-view rendering (icon+color+bold, tag/tooltip, moved-out) | FR-4.*, FR-5.* | plugin |

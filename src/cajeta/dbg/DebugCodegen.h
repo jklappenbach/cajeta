@@ -2,9 +2,9 @@
 // Debugger CP5 codegen helpers. When --debug-info is on, these emit the calls
 // that build the per-fiber debug frame chain in the runtime:
 //
-//   __cajeta_dbg_frame_enter(func)        — at each method prologue
-//   __cajeta_dbg_frame_leave()            — on every return path
-//   __cajeta_dbg_local(name, type, slot)  — at each named local/param alloca
+//   __cajeta_dbg_frame_enter(func)              — at each method prologue
+//   __cajeta_dbg_frame_leave()                  — on every return path
+//   __cajeta_dbg_local(name, type, slot, facets)— at each named local/param
 //
 // Each is a no-op unless module->getFlags().debugInfo is set (so the main,
 // non-debug build is untouched) and the builder/runtime function resolve.
@@ -17,6 +17,7 @@
 #include <string>
 
 #include "cajeta/compile/CajetaModule.h"
+#include "cajeta/dbg/MemoryFacets.h"
 #include "llvm/IR/Value.h"
 
 namespace cajeta::dbg {
@@ -30,7 +31,11 @@ namespace cajeta::dbg {
 
     // Register a named local/parameter in the current debug frame. `slot` is the
     // local's alloca (primitives: holds the value; objects: holds the heap ptr).
+    // `facets` (CP7-1b) carries the allocation class + ownership role, classified
+    // at the call site from the Field/FormalParameter, and is passed through to
+    // the runtime as two bytes for the IDE ownership/allocation view.
     void emitDbgLocal(cajeta::CajetaModulePtr module, const std::string& name,
-                      const std::string& type, llvm::Value* slot);
+                      const std::string& type, llvm::Value* slot,
+                      MemoryFacets facets);
 
 } // namespace cajeta::dbg
