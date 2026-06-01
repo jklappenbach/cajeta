@@ -204,6 +204,53 @@ TEST(XpuNvptxEmitTests, lowersSaxpyKernelToPtx) {
     EXPECT_NE(ptx.find("add.rn.f32"), std::string::npos) << ptx;
 }
 
+// Item 8 Stage D (NVIDIA, emit-only): tex.sample lowers to the NVPTX unified
+// texture fetch — the i64 cudaTextureObject_t is sampled via
+// llvm.nvvm.tex.unified.2d.v4f32.f32, which emits the PTX `tex.2d` instruction.
+// No NVIDIA hardware here, so this is PTX text only (the on-device dispatch is
+// GTEST_SKIPped like the other NVPTX device tests).
+TEST(XpuNvptxEmitTests, lowersTextureSampleToPtxTex) {
+    auto src =
+        "package test;\n"
+        "import cajeta.xpu.core.Buffer;\n"
+        "import cajeta.xpu.core.Texture2D;\n"
+        "import cajeta.xpu.core.Sampler;\n"
+        "import cajeta.xpu.core.Thread;\n"
+        "public class M {\n"
+        "    @Kernel\n"
+        "    public static void sampleTex(Texture2D tex, Sampler s,\n"
+        "                                 Buffer<float32> out, uint32 n) {\n"
+        "        uint32 i = Thread.globalIdX();\n"
+        "        if (i < n) { out[i] = tex.sample(s, 0.5, 0.5); }\n"
+        "    }\n"
+        "}\n";
+    Compiler compiler;
+    auto module = compileForInspection(compiler, src, "test.M");
+    auto k = findMethod(module->getStructures()["test.M"], "sampleTex");
+    ASSERT_NE(k, nullptr);
+
+    auto tm = createNvptxTargetMachine("sm_89");
+    ASSERT_NE(tm, nullptr);
+    llvm::LLVMContext deviceCtx;
+    llvm::Module deviceModule("xpu_texsample_nvptx", deviceCtx);
+    configureDeviceModule(deviceModule, *tm);
+    llvm::Function* fn = lowerKernel(k, deviceModule);
+    ASSERT_NE(fn, nullptr);
+
+    // The IR carries the unified texture-fetch intrinsic; the texture param is
+    // the i64 cudaTextureObject_t handle.
+    std::string ir;
+    { llvm::raw_string_ostream os(ir); deviceModule.print(os, nullptr); }
+    EXPECT_NE(ir.find("llvm.nvvm.tex.unified.2d.v4f32.f32"),
+              std::string::npos) << ir;
+
+    std::string ptx = emitPtx(deviceModule, *tm);
+    ASSERT_FALSE(ptx.empty());
+    EXPECT_NE(ptx.find(".visible .entry sampleTex"), std::string::npos) << ptx;
+    // The hardware texture fetch: PTX `tex.2d.v4.f32.f32`.
+    EXPECT_NE(ptx.find("tex.2d"), std::string::npos) << ptx;
+}
+
 // ptxas assembles the SAXPY PTX into a cubin — proving LLVM 22's PTX is
 // accepted by the CUDA 12.9 assembler for sm_89. No GPU needed (ptxas is
 // a host tool); skipped if ptxas isn't installed.

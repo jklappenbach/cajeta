@@ -45,7 +45,7 @@ fix the regression first). Don't build new Vulkan capability on a red base.
 | 5 | **Vulkan dynamic shared memory** | vulkan | medium | ✅ done (verified on-device) |
 | 6 | **`for-each` parallel loops** | capability | medium | ✅ done (grid-stride; NVPTX/AMD/SPIR-V + frontend verified on AMD & Vulkan; CPU coord-ABI extended, verified) |
 | 7 | **POD structs as kernel args** | capability | small-medium | ✅ done (by-value, all 4 backends; verified on AMD & Vulkan) |
-| 8 | **Texture / Sampler types** | capability | large | ☐ not started |
+| 8 | **Texture / Sampler types** | capability | large | ✅ done (2-D sampled, bilinear; CPU + Vulkan + AMD verified on-device, NVIDIA emit-only; needs LLVM 23) |
 | 9 | **`Wave.width()` on-device (Vulkan)** | vulkan | blocked | ⛔ external (LLVM 22 SPIR-V can't select `spv.wave.get_lane_count`) |
 
 Ordering rationale: foundational/highest-leverage first (2D/3D launch unblocks
@@ -506,11 +506,40 @@ an `@Kernel` arg; the kernel reads its fields with `p.field`.
 
 ---
 
-## 8. Texture / Sampler types
+## 8. Texture / Sampler types — ✅ done
 
-**Today:** deferred. **Goal:** texture/sampler kernel-arg types + sampling ops.
-Large — backend-specific (CUDA texture objects, AMD image resources, Vulkan
-sampled images / descriptor sets). Lowest priority of the capability items.
+**`Texture2D` + `Sampler` kernel-arg types with `tex.sample(sampler, u, v)`** —
+2-D sampled texture, float32 texels, normalized coords, nearest/bilinear
+filtering, clamp/wrap addressing, explicit LOD 0 (compute-valid). The
+`sampleTexture` seam on `LoweringTarget` is the per-backend variance point; each
+backend reaches its native hardware texture unit (or emulates it):
+
+| Backend | Texture handle | Sample lowering | Status |
+|---------|----------------|-----------------|--------|
+| **CPU** | host texobj ptr | `__cajeta_xpu_cpu_tex_sample` (C bilinear) | ✅ runs |
+| **Vulkan** | `spirv.Image` + `spirv.Sampler` descriptors | `llvm.spv.resource.samplelevel` → `OpImageSampleExplicitLod` | ✅ on-device (RADV) |
+| **AMD** | `ptr addrspace(4)` HIP texture object | `__ockl_image_sample_2D` (ROCm device lib) → `image_sample` | ✅ on-device (gfx1151) |
+| **NVIDIA** | i64 `cudaTextureObject_t` | `llvm.nvvm.tex.unified.2d.v4f32.f32` → PTX `tex.2d` | ◐ emit-only (no NV HW) |
+
+**Marshalling:** a texture flows like a `Buffer` (the int64 `deviceHandle`); a
+`Sampler` flows like a by-value POD `{i32 filterMode, i32 addressMode}`. On
+Vulkan the sampler is its own descriptor; on AMD/NVIDIA the sampler state is
+baked into the texture object at creation (so the kernel's separate `Sampler`
+arg is unused on-device there). The Vulkan + AMD launch paths translate the
+texture arg into the native object per launch (descriptor write / texture object).
+
+**Key dependencies / decisions:**
+- **LLVM 23** — Vulkan needs `llvm.spv.resource.samplelevel` (absent in LLVM 22).
+- **AMD: hybrid device-library linking** — `ockl.bc` (+ `oclc_isa_version_<gfx>.bc`)
+  is linked *only* into kernels that sample (other AMD kernels, and the
+  ROCm-bitcode dependency, are untouched/opt-in). This reuses ROCm's correct SRD
+  construction + coord normalization rather than hand-building gfx descriptors;
+  it's also the same mechanism that would later unlock `ocml` math intrinsics.
+
+**v1 limits (follow-ups):** 2-D only (no 1-D/3-D/cube/array); single float
+channel (no RGBA/integer/normalized-int formats); no mipmaps/LOD selection,
+depth/compare, or anisotropy; one sampler paired per texture; NVIDIA sampling is
+emit-only here (no hardware to verify the dispatch).
 
 ---
 
