@@ -40,6 +40,12 @@ namespace cajeta::buildtool {
         // that don't need build-action functionality).
         const Manifest* manifest() const { return manifest_; }
 
+        // The resolved property table the context was built with.
+        // Exposed for actions that consult it directly (e.g. the
+        // reproducible-build helpers read
+        // `cajeta.source-date-epoch`).
+        const ResolvedProperties& properties() const { return props_; }
+
         // Bind a task parameter. Available as ${params.<name>}.
         void setParam(const std::string& name, const std::string& value);
 

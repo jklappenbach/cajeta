@@ -21,6 +21,7 @@
 #include "cajeta/buildtool/Action.h"
 #include "cajeta/buildtool/Flavor.h"
 #include "cajeta/buildtool/Manifest.h"
+#include "cajeta/buildtool/Reproducibility.h"
 #include "cajeta/buildtool/Resolver.h"
 
 #include <llvm/Support/Error.h>
@@ -316,6 +317,25 @@ namespace cajeta::buildtool {
             if (!outputPath.empty()) {
                 argv.push_back("-o");
                 argv.push_back(outputPath.string());
+            }
+
+            // Phase 11: append the reproducibility flag set. Order
+            // is fixed (vocabulary-order, not host-locale-dependent)
+            // so the argv we emit hashes the same across hosts.
+            {
+                std::string projectRootForRepro = ".";
+                if (ctx.manifest() && !ctx.manifest()->sourcePath.empty()) {
+                    auto parent = fs::path(ctx.manifest()->sourcePath)
+                                      .parent_path();
+                    if (!parent.empty()) {
+                        projectRootForRepro = parent.string();
+                    }
+                }
+                for (auto& f : reproducibilityFlags(
+                                   ctx.properties(),
+                                   projectRootForRepro)) {
+                    argv.push_back(std::move(f));
+                }
             }
             // Positional args: <entry-method> <source-root> <archive-root>
             argv.push_back(entry->empty() ? std::string("*") : *entry);
