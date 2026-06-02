@@ -3,8 +3,8 @@ package cajeta.coverage;
 import cajeta.buildtool.plugin.ActionContext;
 import cajeta.buildtool.plugin.ActionResult;
 import cajeta.buildtool.plugin.Finding;
-import cajeta.buildtool.plugin.Json;
-import cajeta.buildtool.plugin.JsonArray;
+import cajeta.codec.json.JsonArray;
+import cajeta.codec.json.JsonObject;
 import cajeta.collection.ArrayList;
 import cajeta.coverage.format.ConsoleFormat;
 import cajeta.coverage.format.HtmlFormat;
@@ -41,9 +41,9 @@ public class Report {
     /**
      * @capability filesystem
      */
-    public static ActionResult run(ActionContext ctx, Json params) {
+    public static ActionResult run(ActionContext ctx, JsonObject params) {
         // ── Param parsing ────────────────────────────────────────
-        Optional<String> maybeInput = params.optString("input");
+        Optional<String> maybeInput = params.getString("input");
         if (maybeInput.isEmpty()) {
             return ActionResult.error(
                 "cajeta.coverage.report: missing required 'input' " +
@@ -56,18 +56,19 @@ public class Report {
                 ") does not exist");
         }
 
-        Optional<int32> minPercent      = params.optInt("min");
-        Optional<int32> minPerFile      = params.optInt("min-per-file");
+        Optional<int32> minPercent      = params.getInt("min");
+        Optional<int32> minPerFile      = params.getInt("min-per-file");
         ArrayList<String> formats       = params.getStringArray("report");
         Path outputDir = Path.of(
-            params.getString("output-dir", ctx.workdir() + "/build/coverage"));
+            params.getString("output-dir").orElse(
+                ctx.workdir() + "/build/coverage"));
 
         // ── Resolve exclude list ────────────────────────────────
         // The plugin's `config.exclude` array is merged into `params`
         // by the build tool before dispatch — same path as `min`
         // and friends. Parse it once into a typed list and build a
         // matcher we can probe per-file / per-symbol below.
-        Optional<JsonArray> excludeRaw = params.optArray("exclude");
+        Optional<JsonArray> excludeRaw = params.getArray("exclude");
         ArrayList<Exclude> excludes = #new ArrayList<Exclude>();
         if (excludeRaw.isPresent()) {
             // Parsing throws on bad entries; let the exception
@@ -113,7 +114,8 @@ public class Report {
                 counts.recordProbe(fpath, entry.wasHit(pid));
                 if (!entry.wasHit(pid)) {
                     SourcePosition pos = posMap.lookup(fpath, pid);
-                    findings.add(#Finding.uncovered(
+                    findings.add(#Finding.info(
+                        "uncovered",
                         fpath, pos.line(), pos.column(),
                         "line not exercised by tests"));
                 }

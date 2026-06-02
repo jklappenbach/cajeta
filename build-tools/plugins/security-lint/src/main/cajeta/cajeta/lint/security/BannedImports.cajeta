@@ -1,10 +1,9 @@
 package cajeta.lint.security;
 
 import cajeta.buildtool.plugin.ActionContext;
-import cajeta.buildtool.plugin.Json;
-import cajeta.buildtool.plugin.JsonArray;
-import cajeta.buildtool.plugin.JsonObject;
-import cajeta.buildtool.plugin.JsonValueKind;
+import cajeta.codec.json.JsonArray;
+import cajeta.codec.json.JsonObject;
+import cajeta.codec.json.JsonValue;
 import cajeta.collection.ArrayList;
 import cajeta.coverage.Glob;
 
@@ -68,10 +67,10 @@ public class BannedImports {
         int32 legacyCount = 0;
         int32 i = 0;
         while (i < arr.count()) {
-            Json v = arr.get(i);
-            if (v.kind() == JsonValueKind.OBJECT) {
+            JsonValue v = arr.get(i);
+            if (v.kind() == JsonValue.OBJECT) {
                 out.add(#parseTypedEntry(v.asObject(), i));
-            } else if (v.kind() == JsonValueKind.STRING) {
+            } else if (v.kind() == JsonValue.STRING) {
                 String pat = v.asString();
                 if (pat.count() == 0) {
                     throw stack LintConfigException(
@@ -83,8 +82,7 @@ public class BannedImports {
             } else {
                 throw stack LintConfigException(
                     "banned-imports[" + String.valueOf(i) +
-                    "]: entry must be an object or string; got " +
-                    v.kind().toName());
+                    "]: entry must be an object or string");
             }
             i = i + 1;
         }
@@ -99,20 +97,20 @@ public class BannedImports {
     }
 
     static BannedImportEntry parseTypedEntry(JsonObject obj, int32 idx) {
-        Optional<Json> patV = obj.getOptional("pattern");
-        if (patV.isEmpty() || patV.get().kind() != JsonValueKind.STRING) {
+        Optional<String> patV = obj.getString("pattern");
+        if (patV.isEmpty()) {
             throw stack LintConfigException(
                 "banned-imports[" + String.valueOf(idx) +
                 "]: 'pattern' (string) is required");
         }
-        Optional<Json> reasonV = obj.getOptional("reason");
-        if (reasonV.isEmpty() || reasonV.get().kind() != JsonValueKind.STRING) {
+        Optional<String> reasonV = obj.getString("reason");
+        if (reasonV.isEmpty()) {
             throw stack LintConfigException(
                 "banned-imports[" + String.valueOf(idx) +
                 "]: 'reason' (string) is required");
         }
-        String pattern = patV.get().asString();
-        String reason  = reasonV.get().asString();
+        String pattern = patV.get();
+        String reason  = reasonV.get();
         if (pattern.count() == 0) {
             throw stack LintConfigException(
                 "banned-imports[" + String.valueOf(idx) +

@@ -1,10 +1,9 @@
 package cajeta.coverage;
 
 import cajeta.buildtool.plugin.ActionContext;
-import cajeta.buildtool.plugin.Json;
-import cajeta.buildtool.plugin.JsonArray;
-import cajeta.buildtool.plugin.JsonObject;
-import cajeta.buildtool.plugin.JsonValueKind;
+import cajeta.codec.json.JsonArray;
+import cajeta.codec.json.JsonObject;
+import cajeta.codec.json.JsonValue;
 import cajeta.collection.ArrayList;
 import cajeta.collection.HashSet;
 
@@ -58,10 +57,10 @@ public class ExcludeParser {
         int32 backCompatCount = 0;
         int32 i = 0;
         while (i < excludeArr.count()) {
-            Json entry = excludeArr.get(i);
-            if (entry.kind() == JsonValueKind.OBJECT) {
+            JsonValue entry = excludeArr.get(i);
+            if (entry.kind() == JsonValue.OBJECT) {
                 out.add(#parseTypedEntry(entry.asObject(), i));
-            } else if (entry.kind() == JsonValueKind.STRING) {
+            } else if (entry.kind() == JsonValue.STRING) {
                 // Back-compat: bare string is implicitly file-kind.
                 String pat = entry.asString();
                 if (pat.count() == 0) {
@@ -75,8 +74,7 @@ public class ExcludeParser {
                 throw stack ExcludeConfigException(
                     "exclude[" + String.valueOf(i) +
                     "]: entry must be an object (typed form) or " +
-                    "a string (legacy file-glob); got " +
-                    entry.kind().toName());
+                    "a string (legacy file-glob)");
             }
             i = i + 1;
         }
@@ -119,18 +117,18 @@ public class ExcludeParser {
     }
 
     static String requireString(JsonObject obj, String key, int32 idx) {
-        Optional<Json> v = obj.getOptional(key);
+        Optional<String> v = obj.getString(key);
         if (v.isEmpty()) {
-            throw stack ExcludeConfigException(
-                "exclude[" + String.valueOf(idx) +
-                "]: missing required '" + key + "'");
-        }
-        if (v.get().kind() != JsonValueKind.STRING) {
+            if (!obj.containsKey(key)) {
+                throw stack ExcludeConfigException(
+                    "exclude[" + String.valueOf(idx) +
+                    "]: missing required '" + key + "'");
+            }
             throw stack ExcludeConfigException(
                 "exclude[" + String.valueOf(idx) +
                 "]: '" + key + "' must be a string");
         }
-        return v.get().asString();
+        return v.get();
     }
 
     /**

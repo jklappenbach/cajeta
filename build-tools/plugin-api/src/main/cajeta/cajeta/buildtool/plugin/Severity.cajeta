@@ -1,0 +1,36 @@
+package cajeta.buildtool.plugin;
+
+/**
+ * Finding severity. Three levels — `ERROR`, `WARNING`, `INFO` —
+ * intentionally narrower than SARIF's full set (`NONE`, `NOTE`,
+ * `WARNING`, `ERROR`). v1 picks the three that map cleanly to the
+ * native lint task's `--fail-on-severity=<level>` flag.
+ *
+ * Per-format mapping:
+ *
+ *   - SARIF: ERROR→`error`, WARNING→`warning`, INFO→`note`.
+ *   - console / lcov / html: same words verbatim.
+ *   - lint task gate: `--fail-on-severity=warning` fails the
+ *     build on any ERROR or WARNING.
+ *
+ * Use the typed enum at construction (`Finding.error(...)`); use
+ * `toName()` at emit time when a format wants the string form.
+ */
+public enum Severity {
+    ERROR,
+    WARNING,
+    INFO;
+
+    public static Optional<Severity> parse(String s) {
+        if (s == "error")   { return stack Optional<Severity>(true, Severity.ERROR);   }
+        if (s == "warning") { return stack Optional<Severity>(true, Severity.WARNING); }
+        if (s == "info")    { return stack Optional<Severity>(true, Severity.INFO);    }
+        return stack Optional<Severity>(false, Severity.INFO);
+    }
+
+    public String toName() {
+        if (this == Severity.ERROR)   { return "error";   }
+        if (this == Severity.WARNING) { return "warning"; }
+        return "info";
+    }
+}

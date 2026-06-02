@@ -3,8 +3,8 @@ package cajeta.lint.security;
 import cajeta.buildtool.plugin.ActionContext;
 import cajeta.buildtool.plugin.ActionResult;
 import cajeta.buildtool.plugin.Finding;
-import cajeta.buildtool.plugin.Json;
-import cajeta.buildtool.plugin.JsonArray;
+import cajeta.codec.json.JsonArray;
+import cajeta.codec.json.JsonObject;
 import cajeta.collection.ArrayList;
 import cajeta.io.file.FileReader;
 import cajeta.io.file.Path;
@@ -37,7 +37,7 @@ public class Scan {
     /**
      * @capability filesystem
      */
-    public static ActionResult run(ActionContext ctx, Json params) {
+    public static ActionResult run(ActionContext ctx, JsonObject params) {
         // ── Param parsing ────────────────────────────────────────
         ArrayList<String> sourceRoots = params.getStringArray("source-roots");
         if (sourceRoots.count() == 0) {
@@ -46,10 +46,14 @@ public class Scan {
         ArrayList<String> excludeFiles =
             params.getStringArray("exclude-files");
 
+        // getArray returns Optional<JsonArray>; the parsers accept
+        // null for "no config" so unwrap with a null fallback.
+        Optional<JsonArray> bannedRaw  = params.getArray("banned-imports");
+        Optional<JsonArray> secretsRaw = params.getArray("secret-patterns");
         BannedImports banned = BannedImports.parse(
-            ctx, params.optArray("banned-imports").orElseNull());
+            ctx, bannedRaw.isPresent()  ? bannedRaw.get()  : #null);
         SecretPatterns secrets = SecretPatterns.parse(
-            ctx, params.optArray("secret-patterns").orElseNull());
+            ctx, secretsRaw.isPresent() ? secretsRaw.get() : #null);
 
         // Resolve source roots relative to the project workdir so
         // the consumer's `"source-roots": ["src/main"]` works

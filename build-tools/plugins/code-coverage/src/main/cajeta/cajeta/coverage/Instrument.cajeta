@@ -3,7 +3,7 @@ package cajeta.coverage;
 import cajeta.buildtool.plugin.ActionContext;
 import cajeta.buildtool.plugin.ActionResult;
 import cajeta.buildtool.plugin.Finding;
-import cajeta.buildtool.plugin.Json;
+import cajeta.codec.json.JsonObject;
 import cajeta.collection.ArrayList;
 import cajeta.io.file.Path;
 import cajeta.io.process.Process;
@@ -29,11 +29,11 @@ public class Instrument {
      * @capability filesystem
      * @capability process
      */
-    public static ActionResult run(ActionContext ctx, Json params) {
+    public static ActionResult run(ActionContext ctx, JsonObject params) {
         // ── Param parsing ────────────────────────────────────────
         // Defaults come from the plugin's `config` block (the build
         // tool merges those into `params` before dispatch).
-        String grainStr = params.getString("grain", "line");
+        String grainStr = params.getString("grain").orElse("line");
         Optional<Grain> maybeGrain = Grain.parse(grainStr);
         if (maybeGrain.isEmpty()) {
             return ActionResult.error(
@@ -42,8 +42,8 @@ public class Instrument {
         }
         Grain grain = maybeGrain.get();
 
-        String flavor  = params.getString("flavor",  "debug");
-        String profile = params.getString("profile", "test");
+        String flavor  = params.getString("flavor").orElse("debug");
+        String profile = params.getString("profile").orElse("test");
 
         ArrayList<String> excludes = params.getStringArray("exclude");
 

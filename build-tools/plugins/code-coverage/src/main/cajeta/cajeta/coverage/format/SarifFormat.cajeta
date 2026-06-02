@@ -60,7 +60,7 @@ public class SarifFormat {
             if (i > 0) { w.writeText(",\n"); }
             w.writeText("      {\n");
             w.writeText("        \"ruleId\": \"" + escape(f.rule()) + "\",\n");
-            w.writeText("        \"level\": \"" + sarifLevel(f.severity()) + "\",\n");
+            w.writeText("        \"level\": \"" + sarifLevel(f.severity().toName()) + "\",\n");
             w.writeText("        \"message\": { \"text\": \"" + escape(f.message()) + "\" },\n");
             w.writeText("        \"locations\": [{\n");
             w.writeText("          \"physicalLocation\": {\n");
