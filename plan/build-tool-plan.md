@@ -1085,37 +1085,63 @@ ones.
 
 ### Deliverables
 
-- [ ] `sign` action wires into `cajeta archive sign`.
-- [ ] Key-id recorded in archive's `.cajeta-manifest` section.
-- [ ] Launcher mode: `off` (default for local builds).
-- [ ] Launcher mode: `warn`.
-- [ ] Launcher mode: `strict`.
-- [ ] `--verify-signature[=mode]` CLI flag.
-- [ ] Trust store layout: `~/.cajeta/trust/keys/`.
-- [ ] Trust store layout: `/etc/cajeta/trust/keys/` (Windows:
-      `%ProgramData%`).
-- [ ] `CAJETA_TRUST_KEYS_DIR` env override.
-- [ ] Trust-store lookup precedence: env → user → system.
-- [ ] `cajeta trust list` subcommand.
-- [ ] `cajeta trust add <id> <pem-path>` subcommand.
-- [ ] `cajeta trust remove <id>` subcommand.
-- [ ] `cajeta trust show <id>` (prints fingerprint).
-- [ ] `cajeta trust verify <archive>` (one-shot).
-- [ ] `CAJETA_REQUIRE_SIGNATURE=strict` env enforcement.
+- [x] `sign` action wires into `cajeta archive sign`. Both
+      paths produce a `<archive>.sig` ed25519 detached
+      signature; both share OpenSSL EVP_DigestSign flow.
+- [x] Key-id recorded alongside the archive.
+      Shipping form: a sidecar `<archive>.sig.keyid` file (one
+      line, the key-id) — written by both the SignAction and
+      `cajeta archive sign --key-id=...`. Mutating the .cja
+      manifest in-place would change the archive bytes (which
+      changes the signature), so the sidecar is the canonical
+      surface.
+- [x] Launcher mode: `off` (default for local builds).
+      `resolveVerifyMode` falls through to "off" when neither
+      env nor CLI selects.
+- [x] Launcher mode: `warn`. Recognized by `resolveVerifyMode`.
+- [x] Launcher mode: `strict`. Recognized by `resolveVerifyMode`.
+- [x] `--verify-signature[=mode]` CLI flag (CLI value flows
+      through `resolveVerifyMode`).
+- [x] Trust store layout: `~/.cajeta/trust/keys/<id>.pem`.
+- [x] Trust store layout: `/etc/cajeta/trust/keys/<id>.pem`
+      (Windows: `%ProgramData%\cajeta\trust\keys\`).
+- [x] `CAJETA_TRUST_KEYS_DIR` env override.
+- [x] Trust-store lookup precedence: env → user → system.
+      `resolveTrustStoreLayout` orders roots; `lookupTrustedKey`
+      returns the first hit.
+- [x] `cajeta trust list` subcommand. Prints `<key-id>\t<tier>\t
+      sha256:<fingerprint>\t<path>` per entry.
+- [x] `cajeta trust add <id> <pem-path>` subcommand.
+- [x] `cajeta trust remove <id>` subcommand.
+- [x] `cajeta trust show <id>` (prints tier + fingerprint).
+- [x] `cajeta trust verify <archive>` (one-shot verify against
+      the matching trusted key).
+- [x] `CAJETA_REQUIRE_SIGNATURE=strict` env enforcement. Env
+      wins over CLI in `resolveVerifyMode`.
 
 ### Acceptance
 
-- [ ] Signed archive verifies under `strict` mode.
-- [ ] Unsigned archive fails under `strict` mode with the
-      expected error message.
-- [ ] Tampered archive fails verification with computed-vs-
-      expected digest pair printed.
-- [ ] Trust-add then verify works end-to-end against a fresh
-      keypair.
-- [ ] System trust store unaffected when a user adds/removes
-      keys.
-- [ ] `CAJETA_REQUIRE_SIGNATURE=strict` overrides a laxer CLI
-      flag.
+- [x] Signed archive verifies under `strict` mode. →
+      `Phase10AcceptanceTests.signedArchiveVerifiesUnderStrict`.
+- [x] Unsigned archive fails under `strict` mode with the
+      expected error message. →
+      `Phase10AcceptanceTests.unsignedArchiveFailsUnderStrict`.
+- [x] Tampered archive fails verification with computed-vs-
+      expected digest pair printed. →
+      `Phase10AcceptanceTests.tamperedArchiveFailsWithDigestPair`
+      (asserts both "does NOT match" + the computed `sha256:`
+      pair in the citation).
+- [x] Trust-add then verify works end-to-end against a fresh
+      keypair. → `Phase10AcceptanceTests.trustAddThenVerifyEndToEnd`
+      (asserts both pre-add failure + post-add success).
+- [x] System trust store unaffected when a user adds/removes
+      keys. →
+      `Phase10AcceptanceTests.systemStoreUntouchedByUserAddRemove`
+      (system file remains; system tier surfaces unchanged after
+      user-tier mutations).
+- [x] `CAJETA_REQUIRE_SIGNATURE=strict` overrides a laxer CLI
+      flag. →
+      `Phase10AcceptanceTests.envRequireSignatureOverridesCli`.
 
 ---
 

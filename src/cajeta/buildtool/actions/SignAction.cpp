@@ -187,6 +187,18 @@ namespace cajeta::buildtool {
                 return err("sign: short write to '" + outPath + "'");
             }
 
+            // Phase 10: write a key-id sidecar so the launcher's
+            // signature-verify path can resolve the matching public
+            // key without out-of-band metadata. The sidecar lives
+            // alongside the .sig file — `<archive>.sig.keyid` when
+            // `out` defaults to `<archive>.sig`. When the caller
+            // overrides `out`, the sidecar lands next to whatever
+            // was named.
+            {
+                std::ofstream kidOut(outPath + ".keyid", std::ios::trunc);
+                if (kidOut) kidOut << keyId->str() << "\n";
+            }
+
             ActionResult r;
             r.outputs["path"]   = outPath;
             r.outputs["sha256"] = sha256Hex(sig);
