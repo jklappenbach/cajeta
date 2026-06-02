@@ -107,12 +107,18 @@ namespace cajeta::buildtool {
                 }
             }
 
-            // Phase 11: sandbox wrap. The exec action requests the
-            // (process, filesystem, env) capability set; network is
-            // off by default and toggled via the action param
-            // `network: true` (kept opt-in so a tool that calls
-            // home is loud about it).
-            {
+            // Phase 11: sandbox wrap, opt-in via `sandbox: true`.
+            // The exec action is the user's escape hatch — auto-
+            // wrapping it would change long-standing behaviour for
+            // every shell-style invocation. Internal actions
+            // (build / package / upload / publish) consult the
+            // sandbox abstraction directly per their declared
+            // capability set.
+            bool wantSandbox = false;
+            if (auto sb = params.getBoolean("sandbox"); sb && *sb) {
+                wantSandbox = true;
+            }
+            if (wantSandbox) {
                 SandboxPolicy pol;
                 pol.capabilities = {Capability::Process,
                                     Capability::Filesystem,
