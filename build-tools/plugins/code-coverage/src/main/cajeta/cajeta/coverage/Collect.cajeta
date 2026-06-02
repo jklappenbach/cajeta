@@ -2,7 +2,7 @@ package cajeta.coverage;
 
 import cajeta.buildtool.plugin.ActionContext;
 import cajeta.buildtool.plugin.ActionResult;
-import cajeta.buildtool.plugin.Json;
+import cajeta.codec.json.JsonObject;
 import cajeta.collection.ArrayList;
 import cajeta.io.file.File;
 import cajeta.io.file.FileReader;
@@ -25,9 +25,9 @@ public class Collect {
     /**
      * @capability filesystem
      */
-    public static ActionResult run(ActionContext ctx, Json params) {
+    public static ActionResult run(ActionContext ctx, JsonObject params) {
         // ── Param parsing ────────────────────────────────────────
-        Optional<String> maybeInput = params.optString("input");
+        Optional<String> maybeInput = params.getString("input");
         if (maybeInput.isEmpty()) {
             return ActionResult.error(
                 "cajeta.coverage.collect: missing required 'input' " +
@@ -41,7 +41,8 @@ public class Collect {
         }
 
         Path outputPath = Path.of(
-            params.getString("output", ctx.workdir() + "/build/coverage.map"));
+            params.getString("output").orElse(
+                ctx.workdir() + "/build/coverage.map"));
 
         // ── Walk dump files + merge ──────────────────────────────
         ArrayList<Path> dumps = inputDir.listMatching("*.probe");
