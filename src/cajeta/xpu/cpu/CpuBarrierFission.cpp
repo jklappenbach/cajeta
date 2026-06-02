@@ -375,7 +375,7 @@ void fissionBarrierKernel(llvm::Function* linked, llvm::Function* wrapper,
     // --- 8. Hoist remaining allocas to the true entry -----------------------
     for (llvm::AllocaInst* a : allocas) {
         if (ctxArray.count(a)) continue;
-        a->moveBefore(placeholder);
+        a->moveBefore(placeholder->getIterator());
     }
 
     // --- 9. Wrap each region in a counted work-item loop --------------------
