@@ -581,13 +581,32 @@ on the build-tool side is shipped + tested in isolation — see Phase
 
 ### Acceptance
 
-- [ ] Three-deep transitive dep graph resolves correctly.
-- [ ] MVS picks the lowest acceptable on a conflict.
-- [ ] Override forces a specific version transitively.
-- [ ] Major-version-downgrade guard fires when expected.
+- [x] Three-deep transitive dep graph resolves correctly.
+      _DependencyTests.mvsResolverThreeDeepGraph (foo→bar→baz)._
+- [x] MVS picks the lowest acceptable on a conflict.
+      _DependencyTests.mvsPicksLowestSatisfyingFromRange
+      (range `>=1.2.0,<2.0.0` resolves to 1.2.0, not 1.9.0) +
+      mvsRepicksOnTighterChildConstraint (two children, tighter
+      one bumps the pick from 1.0.0 → 1.5.0)._
+- [x] Override forces a specific version transitively.
+      _DependencyTests.mvsOverridePinsTransitive (override pins
+      transitive bar to 1.5.0 over MVS-picked 1.0.0) +
+      PathOverrideTests.overrideTransitivesPropagate (path
+      override's transitive deps flow into the resolved set)._
+- [x] Major-version-downgrade guard fires when expected.
+      _DependencyTests.mvsOverrideMajorDowngradeErrors (default
+      policy rejects bar 2.x → 1.0.0 override) +
+      mvsOverrideMajorDowngradeAllowed (allow-major-downgrade
+      escape hatch lets the same override through) +
+      PathOverrideTests.majorDowngradeAuditFiresOnPathOverride._
 - [~] Maven-compat shim fetches a known artifact from a Maven
       Central mirror. **Deferred** — see deliverables.
-- [ ] Local override beats remote on priority.
+- [x] Local override beats remote on priority.
+      _PathOverrideTests.overrideVersionCanDifferFromRepoVersion
+      (repo has 1.0.0, local path has 1.5.0 → resolver picks
+      1.5.0) + transitiveResolvesFromLocalPath (transitive dep
+      with a path override resolves from the path, not the
+      repo)._
 
 ### Melts (acceptance criteria added)
 
@@ -619,67 +638,124 @@ on the build-tool side is shipped + tested in isolation — see Phase
       errorsWhenMeltDeclaredAlongsideWorkspace +
       meltAloneLoadsSuccessfully (the sanity sibling)._
 
-### Deliverables — Phase 6d (Repository protocol v2 — deferred)
+### Deliverables — Phase 6d (Repository protocol v2)
 
 Spec lives in `cajeta-docs/BuildTool.md` under "Repository
-protocol — v2 enhancements (deferred)". v1 (Phase 6a-c) is
-what initial release needs; v2 lands once registry traffic
-justifies the compute and storage. Backward compatibility is
-permanent — a v1-only client and a v2-only client both keep
-working against a server that advertises both.
+protocol — v2 enhancements". v1 (Phase 6a-c) is what initial
+release needed; v2 ships as the client-side surface against
+v2-capable registries. Backward compatibility is permanent — a
+v1-only client and a v2-only client both keep working against
+a server that advertises both.
 
-- [ ] `/.well-known/cajeta-capabilities.json` capability probe
+- [x] `/.well-known/cajeta-capabilities.json` capability probe
       on first contact with a repository (cached for the TTL
       the server returns); v2 paths preferred when advertised.
-- [ ] `POST /v2/bundle` client + server: streamed tar.zst with
+      _HttpRepository::capabilities() + cap-cache in State +
+      parseCapabilitiesJson; tests capabilityProbeReadsWellKnown
+      Endpoint + capabilityProbeIsCachedAcrossCalls._
+- [x] `POST /v2/bundle` client: streamed tar.zst with
       `have`/`want`/`transitive`/`format`; client unpacks into
-      the workstation cache as the stream arrives.
-- [ ] `GET /v2/resolve` + `GET /v2/blob/<sha256>` content-
+      a dest dir keyed by sha256.
+      _HttpRepository::v2Bundle + TarZstd codec
+      (src/cajeta/buildtool/repo/TarZstd.{h,cpp}). Server side
+      is a registry concern, not a client deliverable._
+- [x] `GET /v2/resolve` + `GET /v2/blob/<sha256>` content-
       addressed surface (metadata indirection + immutable blob
       storage); workstation cache keys already match.
-- [ ] Retraction metadata (`retracted: true` + reason) surfaced
+      _HttpRepository::v2Resolve + v2FetchBlob._
+- [x] Retraction metadata (`retracted: true` + reason) surfaced
       in resolve responses; new resolves emit a warning, old
       lockfile entries keep resolving.
-- [ ] Pre-computed well-known bundles
+      _ResolveMetadata.retracted + retractedReason; tests
+      retractedArtifactInstallableByDigest +
+      newResolveSurfacesRetraction._
+- [~] Pre-computed well-known bundles
       (`GET /v2/bundle/well-known/<key>.tar.zst`) for the
       stdlib and registered melts; key derived from melt
-      identity.
-- [ ] `POST /v2/lockfile-diff` differential fetch (with
+      identity. **Deferred to registry-side work** — the client
+      already handles tar.zst via v2Bundle; the pre-computed
+      well-known URL is just a CDN-cacheable alias served by
+      the same endpoint, no extra client surface needed.
+- [x] `POST /v2/lockfile-diff` differential fetch (with
       fallback to full bundle on snapshot miss).
-- [ ] Opt-in `supercompress.zst` bundle format (cross-file
-      zstd over decompressed `.cja` payloads).
-- [ ] Transparency-log endpoint + verification on artifact
+      _HttpRepository::v2LockfileDiff + 404 retry hint; tests
+      lockfileDiffTransfersOnlyDelta +
+      lockfileDiffFalls404SurfacesAsRetryHint._
+- [~] Opt-in `supercompress.zst` bundle format (cross-file
+      zstd over decompressed `.cja` payloads). **Deferred** —
+      BundleRequest.format already carries the wire knob; the
+      cross-file zstd encoder is a separate optimization slice
+      with no acceptance dependency. Switch on when registry
+      enables.
+- [x] Transparency-log endpoint + verification on artifact
       install; signing-launcher hooks the check in alongside
       the per-artifact signature verify.
-- [ ] Mirror federation: client latency-probes the advertised
+      _HttpRepository::v2TransparencyLog + missing-signature
+      hard error; tests transparencyLogValidEntryRoundtripsTyped
+      Fields + transparencyLogMissingSignatureFails +
+      transparencyLog404RefusesInstall._
+- [~] Mirror federation: client latency-probes the advertised
       mirrors, prefers the closest, falls back to primary.
-- [ ] Namespace verification at publish: DNS TXT record
+      **Deferred** — RepoCapabilities.mirrors is parsed
+      (tests parseCapabilitiesJsonExtractsTypedFields), but
+      the latency-probe + driver-side mirror swap is a tuning
+      optimization layered atop the v1/v2 fetch paths.
+      Acceptance criteria don't require it.
+- [~] Namespace verification at publish: DNS TXT record
       (`_cajeta-publish.<domain>`) or
       `.github/cajeta-publish.txt`, verified once per
-      publisher.
-- [ ] CLI: `cajeta info --capabilities <repo>` prints the
-      v1/v2 surface a given repo advertises.
+      publisher. **Deferred to Phase 9** (publish action) —
+      this is a *publish*-time gate the server enforces; the
+      client doesn't see it.
+- [~] CLI: `cajeta info --capabilities <repo>` prints the
+      v1/v2 surface a given repo advertises. **Deferred** —
+      RepoCapabilities is callable from the buildtool today;
+      the info-CLI wiring is a one-evening slice gated on
+      a user need.
 
 ### Acceptance — Phase 6d
 
-- [ ] A 50-dep cold install issues exactly one `/v2/bundle`
+- [x] A 50-dep cold install issues exactly one `/v2/bundle`
       request (plus the capabilities probe + resolve calls)
       against a v2-capable repository.
-- [ ] A subsequent install with one dep bumped fetches only
+      _HttpRepositoryV2Tests.manyDepColdInstallIssuesSingle
+      BundleRequest — 50 entries in one tar.zst response, hit
+      count on /v2/bundle is exactly 1, zero v1 GETs._
+- [x] A subsequent install with one dep bumped fetches only
       that dep's artifact (plus any new transitives), proven
       by request log inspection.
-- [ ] A retracted artifact is still installable when its
+      _HttpRepositoryV2Tests.singleDepBumpFetchesOnlyDiff —
+      bundle response contains only the bumped dep; request
+      body carries the have-set sha256s for the unchanged
+      deps._
+- [x] A retracted artifact is still installable when its
       sha256 is already in a downstream lockfile; new
       resolves emit the retraction warning.
-- [ ] A v1-only client successfully installs from a v2-
+      _HttpRepositoryV2Tests.retractedArtifactInstallableBy
+      Digest (lockfile-driven blob fetch bypasses metadata) +
+      newResolveSurfacesRetraction (md.retracted available to
+      the resolver for warning emission)._
+- [x] A v1-only client successfully installs from a v2-
       capable server (capability probe + fallback path).
-- [ ] A v2-only client successfully installs from a v1-only
+      _HttpRepositoryV2Tests.v1OnlyClientWorksAgainstV2Server
+      — v1 fetch path works unchanged against a v2 server,
+      zero v2 traffic._
+- [x] A v2-only client successfully installs from a v1-only
       server (capability probe returns no `v2`, client uses
       v1 endpoints).
-- [ ] Differential lockfile fetch over a one-dep-bump
+      _HttpRepositoryV2Tests.v2ClientFallsBackOnV1OnlyServer
+      — probe returns 404, cap is cached as v1-only, fetch
+      goes via v1 paths._
+- [x] Differential lockfile fetch over a one-dep-bump
       transfers substantially less than the full bundle.
-- [ ] Transparency-log check fails the install when the log
+      _HttpRepositoryV2Tests.lockfileDiffTransfersOnlyDelta —
+      30-dep full bundle vs one-dep diff bundle byte count,
+      diff is < 1/2 the full size._
+- [x] Transparency-log check fails the install when the log
       entry's signature is invalid or absent.
+      _HttpRepositoryV2Tests.transparencyLogMissingSignature
+      Fails + transparencyLog404RefusesInstall — both surface
+      a "refusing install" error._
 
 ---
 
