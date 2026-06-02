@@ -177,4 +177,9 @@ namespace cajeta::buildtool {
         return names;
     }
 
+    void ActionRegistry::registerAction(std::unique_ptr<Action> action) {
+        std::string n = action->name();
+        actions_[std::move(n)] = std::move(action);
+    }
+
 } // namespace cajeta::buildtool

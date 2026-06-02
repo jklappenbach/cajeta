@@ -230,6 +230,43 @@ namespace cajeta::buildtool {
                 }
             }
             r.capabilities = std::move(pluginCaps);
+
+            // Read `details.plugin.{binary,actions,entries}` so the
+            // runtime knows how to dispatch this plugin. Absent when
+            // the sidecar predates the plugin protocol (e.g. a pure
+            // library); plugins lacking a binary parse OK but can't
+            // be invoked (PluginAction surfaces the error at run).
+            const auto& pluginObj = pluginManifest->details.pluginRaw;
+            if (auto s = pluginObj.getString("binary")) {
+                // Resolve relative paths against the artifact's
+                // own directory. The artifact lives in the local
+                // cache; binaries shipped inside the plugin's
+                // published archive land alongside.
+                std::string bin = s->str();
+                if (!bin.empty() && bin[0] != '/') {
+                    auto slash = r.artifactPath.find_last_of('/');
+                    std::string parent = (slash == std::string::npos)
+                                             ? "."
+                                             : r.artifactPath.substr(0, slash);
+                    bin = parent + "/" + bin;
+                }
+                r.binaryPath = std::move(bin);
+            }
+            if (const auto* arr = pluginObj.getArray("actions")) {
+                for (const auto& v : *arr) {
+                    if (auto an = v.getAsString()) {
+                        r.actionNames.push_back(an->str());
+                    }
+                }
+            }
+            if (const auto* eobj = pluginObj.getObject("entries")) {
+                for (const auto& kv : *eobj) {
+                    if (auto sv = kv.second.getAsString()) {
+                        r.entries[kv.first.str()] = sv->str();
+                    }
+                }
+            }
+
             alreadyResolved[spec.name] = r.version;
             out.push_back(std::move(r));
         }

@@ -65,6 +65,22 @@ namespace cajeta::buildtool {
         // a plugin appears here — anything outside the allowlist
         // would have caused resolvePlugins() to error.
         std::set<std::string> capabilities;
+        // The plugin's `details.plugin.binary` field, resolved to an
+        // absolute path. Empty until the plugin lands a binary —
+        // pure-source plugin packages parse successfully but can't
+        // be dispatched at runtime.
+        std::string binaryPath;
+        // The plugin's `details.plugin.actions` list — the namespaced
+        // action names this plugin advertises. Drives action-name
+        // dispatch in PluginAction / ActionRegistry. Empty when the
+        // sidecar's plugin block is absent.
+        std::vector<std::string> actionNames;
+        // `details.plugin.entries` map: action-name → entry symbol.
+        // The plugin runtime forwards the entry path to the plugin
+        // binary so it knows which entry to call. v1 makes this
+        // round-trip data (the build tool doesn't interpret it);
+        // future in-process dispatch resolves symbols against it.
+        std::map<std::string, std::string> entries;
     };
 
     // Parse `plugins` from the consumer manifest. Each value must be
