@@ -31,6 +31,11 @@ namespace cajeta::buildtool {
         std::vector<std::string> authors;            // empty == not set
         std::optional<std::string> repositoryUrl;
         std::optional<std::string> cajetaLangVersion;
+        // `details.plugin` sub-block — present only on plugin
+        // sidecars. Raw because the shape is owned by the plugin
+        // protocol version, not the manifest schema; Plugin.cpp
+        // reads `id`, `binary`, `actions`, and `entries` out of it.
+        llvm::json::Object pluginRaw;
 
         // Derived from `name` by splitting on the last `.`. Cached at
         // load time so consumers don't recompute on every reference.

@@ -120,6 +120,13 @@ namespace cajeta::buildtool {
         // `cajeta task --show` output).
         std::vector<std::string> list() const;
 
+        // Register a new action by name. Overwrites any prior
+        // registration for the same name (silent — the caller is
+        // expected to manage namespace conflicts before reaching
+        // here; plugin-action collisions surface earlier as a
+        // resolvePlugins error).
+        void registerAction(std::unique_ptr<Action> action);
+
     private:
         std::map<std::string, std::unique_ptr<Action>> actions_;
     };

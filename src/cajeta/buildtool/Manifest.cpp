@@ -33,6 +33,12 @@ namespace cajeta::buildtool {
         const std::set<std::string> kDetailsFields = {
             "name", "version", "description", "license",
             "authors", "repository-url", "cajeta-lang-version",
+            // `plugin` carries the plugin-specific sub-block
+            // (id / actions / entries / binary) for packages that
+            // ship as plugins. Present only on plugin sidecars;
+            // captured raw because each runtime version owns the
+            // shape of that block.
+            "plugin",
         };
 
         // Build a citation-style error. `where` is a human-readable
@@ -147,6 +153,18 @@ namespace cajeta::buildtool {
                     }
                     out.authors.push_back(s->str());
                 }
+            }
+
+            // Plugin sub-block — optional. Captured raw because the
+            // shape is owned by the plugin protocol, not the
+            // manifest schema (Plugin.cpp's resolvePlugins reads it).
+            if (const auto* p = d->get("plugin")) {
+                const auto* obj = p->getAsObject();
+                if (!obj) {
+                    return cite(where + ".details",
+                        "'plugin' must be an object");
+                }
+                out.pluginRaw = *obj;
             }
 
             return llvm::Error::success();
