@@ -65,14 +65,14 @@ TEST(FlavorTests, inlineMapComposesOverrides) {
     auto r = resolveFlavor(
         llvm::json::Value(llvm::json::Object{
             {"base", "release"},
-            {"opt", "speed"},
+            {"opt", "O3"},
         }),
         customFlavors);
     ASSERT_TRUE((bool)r) << errorText(r.takeError());
     EXPECT_EQ(r->base, "release");
     auto opt = r->overrides.getString("opt");
     ASSERT_TRUE(opt);
-    EXPECT_EQ(opt->str(), "speed");
+    EXPECT_EQ(opt->str(), "O3");
 }
 
 TEST(FlavorTests, unknownCustomNameErrors) {
@@ -105,6 +105,223 @@ TEST(FlavorTests, missingBaseInCustomErrors) {
     EXPECT_NE(msg.find("missing required 'base'"), std::string::npos);
 }
 
+// ─── Phase 8: property vocabulary + load-time validation ──────────
+
+TEST(FlavorTests, vocabularyHasAllThirteenKeys) {
+    using cajeta::buildtool::flavorPropertyVocab;
+    const auto& v = flavorPropertyVocab();
+    EXPECT_EQ(v.size(), 13u);
+    // Spot-check a key from each major group: optimization,
+    // safety, sanitizer, instrumentation.
+    bool sawOpt = false, sawBoundsCheck = false, sawAsan = false,
+         sawSourceTags = false;
+    for (const auto& s : v) {
+        if (s.key == "opt") sawOpt = true;
+        if (s.key == "bounds-check") sawBoundsCheck = true;
+        if (s.key == "asan") sawAsan = true;
+        if (s.key == "source-tags") sawSourceTags = true;
+    }
+    EXPECT_TRUE(sawOpt);
+    EXPECT_TRUE(sawBoundsCheck);
+    EXPECT_TRUE(sawAsan);
+    EXPECT_TRUE(sawSourceTags);
+}
+
+TEST(FlavorTests, findKnownPropertyReturnsSpec) {
+    using cajeta::buildtool::findFlavorPropertySpec;
+    auto* opt = findFlavorPropertySpec("opt");
+    ASSERT_TRUE(opt);
+    EXPECT_EQ(opt->kind,
+              cajeta::buildtool::FlavorPropertySpec::Kind::EnumString);
+    EXPECT_EQ(opt->allowed.size(), 5u);
+
+    auto* asan = findFlavorPropertySpec("asan");
+    ASSERT_TRUE(asan);
+    EXPECT_EQ(asan->kind,
+              cajeta::buildtool::FlavorPropertySpec::Kind::Boolean);
+}
+
+TEST(FlavorTests, findUnknownPropertyReturnsNull) {
+    using cajeta::buildtool::findFlavorPropertySpec;
+    EXPECT_EQ(findFlavorPropertySpec("debg-info"), nullptr);
+    EXPECT_EQ(findFlavorPropertySpec(""), nullptr);
+}
+
+TEST(FlavorTests, validatePropertyAcceptsCorrectValues) {
+    using cajeta::buildtool::validateFlavorProperty;
+    EXPECT_FALSE((bool)validateFlavorProperty(
+        "opt", llvm::json::Value("O2"), "test"));
+    EXPECT_FALSE((bool)validateFlavorProperty(
+        "asan", llvm::json::Value(true), "test"));
+    EXPECT_FALSE((bool)validateFlavorProperty(
+        "bounds-check", llvm::json::Value("trap"), "test"));
+}
+
+TEST(FlavorTests, validatePropertyRejectsUnknownKey) {
+    using cajeta::buildtool::validateFlavorProperty;
+    auto e = validateFlavorProperty(
+        "debg-info", llvm::json::Value("full"), "where");
+    ASSERT_TRUE((bool)e);
+    auto msg = errorText(std::move(e));
+    EXPECT_NE(msg.find("unknown property key"), std::string::npos);
+    EXPECT_NE(msg.find("debg-info"), std::string::npos);
+    EXPECT_NE(msg.find("where"), std::string::npos);
+    // Citation must list the allowed vocabulary.
+    EXPECT_NE(msg.find("debug-info"), std::string::npos);
+}
+
+TEST(FlavorTests, validatePropertyRejectsOutOfRangeEnum) {
+    using cajeta::buildtool::validateFlavorProperty;
+    auto e = validateFlavorProperty(
+        "opt", llvm::json::Value("speed"), "test");
+    ASSERT_TRUE((bool)e);
+    auto msg = errorText(std::move(e));
+    EXPECT_NE(msg.find("speed"), std::string::npos);
+    EXPECT_NE(msg.find("O2"), std::string::npos);
+}
+
+TEST(FlavorTests, validatePropertyRejectsWrongValueType) {
+    using cajeta::buildtool::validateFlavorProperty;
+    auto e = validateFlavorProperty(
+        "asan", llvm::json::Value("true"), "test");
+    ASSERT_TRUE((bool)e);
+    auto msg = errorText(std::move(e));
+    EXPECT_NE(msg.find("boolean"), std::string::npos);
+}
+
+TEST(FlavorTests, builtinReleasePropertiesMatchSpec) {
+    using cajeta::buildtool::builtinFlavorProperties;
+    auto r = builtinFlavorProperties("release");
+    ASSERT_TRUE((bool)r) << errorText(r.takeError());
+    EXPECT_EQ(r->getString("opt")->str(), "O2");
+    EXPECT_EQ(r->getString("lto")->str(), "thin");
+    EXPECT_EQ(*r->getBoolean("strip-symbols"), true);
+    EXPECT_EQ(r->getString("debug-info")->str(), "line");
+    EXPECT_EQ(r->getString("bounds-check")->str(), "off");
+}
+
+TEST(FlavorTests, builtinDebugPropertiesMatchSpec) {
+    using cajeta::buildtool::builtinFlavorProperties;
+    auto r = builtinFlavorProperties("debug");
+    ASSERT_TRUE((bool)r) << errorText(r.takeError());
+    EXPECT_EQ(r->getString("opt")->str(), "O0");
+    EXPECT_EQ(r->getString("lto")->str(), "off");
+    EXPECT_EQ(*r->getBoolean("strip-symbols"), false);
+    EXPECT_EQ(r->getString("debug-info")->str(), "full");
+    EXPECT_EQ(r->getString("bounds-check")->str(), "on");
+}
+
+TEST(FlavorTests, builtinUnknownNameErrors) {
+    using cajeta::buildtool::builtinFlavorProperties;
+    auto r = builtinFlavorProperties("nope");
+    ASSERT_FALSE((bool)r);
+    auto msg = errorText(r.takeError());
+    EXPECT_NE(msg.find("not a built-in"), std::string::npos);
+}
+
+TEST(FlavorTests, effectivePropertiesMergesBuiltInAndOverrides) {
+    using cajeta::buildtool::effectiveProperties;
+    using cajeta::buildtool::ResolvedFlavor;
+    ResolvedFlavor rf;
+    rf.base = "release";
+    rf.overrides["debug-info"] = "full";
+    rf.overrides["asan"]       = true;
+    auto eff = effectiveProperties(rf);
+    ASSERT_TRUE((bool)eff) << errorText(eff.takeError());
+    // Override beats default.
+    EXPECT_EQ(eff->getString("debug-info")->str(), "full");
+    // Override key new to the bundle is added.
+    EXPECT_EQ(*eff->getBoolean("asan"), true);
+    // Untouched default is preserved.
+    EXPECT_EQ(eff->getString("opt")->str(), "O2");
+}
+
+TEST(FlavorTests, toCompilerFlagsRendersDeterministically) {
+    using cajeta::buildtool::toCompilerFlags;
+    llvm::json::Object props{
+        {"opt",           "O2"},
+        {"asan",          true},
+        {"strip-symbols", false},
+        {"bounds-check",  "off"},
+    };
+    auto flags = toCompilerFlags(props);
+    // Vocabulary order: opt, lto, debug-info, strip-symbols,
+    // bounds-check, null-checks, overflow-checks, asan, tsan, msan,
+    // ubsan, analytics, source-tags. Skip-on-absent.
+    ASSERT_EQ(flags.size(), 4u);
+    EXPECT_EQ(flags[0], "--opt=O2");
+    EXPECT_EQ(flags[1], "--strip-symbols=false");
+    EXPECT_EQ(flags[2], "--bounds-check=off");
+    EXPECT_EQ(flags[3], "--asan=true");
+}
+
+TEST(FlavorTests, validateCustomFlavorsAcceptsValidChain) {
+    using cajeta::buildtool::validateCustomFlavors;
+    llvm::json::Object cf;
+    cf["integration"] = llvm::json::Object{
+        {"base",       "release"},
+        {"debug-info", "full"},
+        {"analytics",  true},
+    };
+    cf["asan-debug"] = llvm::json::Object{
+        {"base", "debug"},
+        {"asan", true},
+    };
+    EXPECT_FALSE((bool)validateCustomFlavors(cf));
+}
+
+TEST(FlavorTests, validateCustomFlavorsRejectsUnknownKey) {
+    using cajeta::buildtool::validateCustomFlavors;
+    llvm::json::Object cf;
+    cf["typo"] = llvm::json::Object{
+        {"base",       "release"},
+        {"debg-info",  "full"},
+    };
+    auto e = validateCustomFlavors(cf);
+    ASSERT_TRUE((bool)e);
+    auto msg = errorText(std::move(e));
+    EXPECT_NE(msg.find("debg-info"), std::string::npos);
+    EXPECT_NE(msg.find("custom-flavors.typo"), std::string::npos);
+}
+
+TEST(FlavorTests, validateCustomFlavorsRejectsCycle) {
+    using cajeta::buildtool::validateCustomFlavors;
+    llvm::json::Object cf;
+    cf["a"] = llvm::json::Object{{"base", "b"}};
+    cf["b"] = llvm::json::Object{{"base", "a"}};
+    auto e = validateCustomFlavors(cf);
+    ASSERT_TRUE((bool)e);
+    auto msg = errorText(std::move(e));
+    EXPECT_NE(msg.find("cycle"), std::string::npos);
+}
+
+TEST(FlavorTests, validateCustomFlavorsRejectsBadBaseType) {
+    using cajeta::buildtool::validateCustomFlavors;
+    llvm::json::Object cf;
+    cf["weird"] = llvm::json::Object{
+        {"base", 42},
+    };
+    auto e = validateCustomFlavors(cf);
+    ASSERT_TRUE((bool)e);
+    auto msg = errorText(std::move(e));
+    EXPECT_NE(msg.find("base"), std::string::npos);
+    EXPECT_NE(msg.find("string"), std::string::npos);
+}
+
+TEST(FlavorTests, resolveFlavorInlineRejectsBadKey) {
+    llvm::json::Object cf;
+    auto r = resolveFlavor(
+        llvm::json::Value(llvm::json::Object{
+            {"base",      "release"},
+            {"debg-info", "full"},
+        }),
+        cf);
+    ASSERT_FALSE((bool)r);
+    auto msg = errorText(r.takeError());
+    EXPECT_NE(msg.find("debg-info"), std::string::npos);
+    EXPECT_NE(msg.find("inline flavor"), std::string::npos);
+}
+
 TEST(FlavorTests, inlineWithoutBaseErrors) {
     llvm::json::Object customFlavors;
     auto r = resolveFlavor(
@@ -119,17 +336,19 @@ TEST(FlavorTests, chainedCustomFlavorsCompose) {
     llvm::json::Object customFlavors;
     customFlavors["base-tuned"] = llvm::json::Object{
         {"base", "release"},
-        {"opt", "size"},
+        {"opt", "Oz"},
     };
     customFlavors["app"] = llvm::json::Object{
         {"base", "base-tuned"},
-        {"strip-symbols", "true"},
+        {"strip-symbols", true},
     };
     auto r = resolveFlavor(llvm::json::Value("app"), customFlavors);
     ASSERT_TRUE((bool)r) << errorText(r.takeError());
     EXPECT_EQ(r->base, "release");
     EXPECT_TRUE(r->overrides.getString("opt"));
-    EXPECT_TRUE(r->overrides.getString("strip-symbols"));
+    auto strip = r->overrides.getBoolean("strip-symbols");
+    ASSERT_TRUE(strip);
+    EXPECT_TRUE(*strip);
 }
 
 TEST(FlavorTests, neitherStringNorObjectErrors) {

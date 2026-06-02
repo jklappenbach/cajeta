@@ -1,5 +1,6 @@
 #include "cajeta/buildtool/Manifest.h"
 
+#include "cajeta/buildtool/Flavor.h"
 #include "cajeta/buildtool/JsonC.h"
 
 #include <llvm/Support/Error.h>
@@ -246,6 +247,26 @@ namespace cajeta::buildtool {
             if (auto e = requireObject(
                     sourceLabel, "workspace",
                     root->get("workspace"), m.workspaceRaw)) return std::move(e);
+        }
+
+        // Phase 8: custom-flavor validation at load time. Walks every
+        // settings.build.custom-flavors entry — unknown property keys
+        // and base-chain cycles surface here rather than mid-build.
+        if (const auto* settings = root->getObject("settings")) {
+            if (const auto* build = settings->getObject("build")) {
+                if (const auto* cf = build->getObject("custom-flavors")) {
+                    if (auto e = validateCustomFlavors(*cf)) {
+                        // Prepend the source label so the error
+                        // points at the manifest, not just the
+                        // offending custom-flavor entry.
+                        std::string msg;
+                        llvm::raw_string_ostream os(msg);
+                        os << e;
+                        consumeError(std::move(e));
+                        return cite(sourceLabel, msg);
+                    }
+                }
+            }
         }
 
         // Melt mutual exclusion. A melt package's purpose is to export

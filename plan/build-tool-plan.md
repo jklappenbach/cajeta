@@ -882,40 +882,60 @@ literal (no overlay machinery).
 
 ### Deliverables
 
-- [ ] Two built-in flavors: `release`, `debug`. Property
+- [x] Two built-in flavors: `release`, `debug`. Property
       bundles defined as in BuildTool.md "Built-in flavors".
-- [ ] Property vocabulary parser: `opt`, `lto`, `debug-info`,
+      `builtinFlavorProperties()` in `Flavor.cpp`.
+- [x] Property vocabulary parser: `opt`, `lto`, `debug-info`,
       `strip-symbols`, `bounds-check`, `null-checks`,
       `overflow-checks`, `asan`/`tsan`/`msan`/`ubsan`,
-      `analytics`, `source-tags`.
-- [ ] Unknown property key at manifest-load is a hard error.
-- [ ] `flavor` accepts string (name) form.
-- [ ] `flavor` accepts map (composition) form with `base` +
-      property overrides.
-- [ ] `settings.build.custom-flavors` block: project-named
-      composition maps.
-- [ ] Custom-flavor cycle detection (`A.base == B` and
-      `B.base == A` rejected at load time).
-- [ ] Resolved flavor passed to the compiler as the
-      corresponding flag set.
-- [ ] `build` action accepts `profile` string param; passes
-      through to compiler as `--profile=<name>`.
+      `analytics`, `source-tags`. 13 entries in
+      `flavorPropertyVocab()`; `findFlavorPropertySpec` + typed
+      `FlavorPropertySpec::Kind` (Boolean / EnumString).
+- [x] Unknown property key at manifest-load is a hard error.
+      `loadManifestString` → `validateCustomFlavors` walks every
+      override; error cites the offending key + allowed vocab.
+- [x] `flavor` accepts string (name) form. (Phase 5b carry-over.)
+- [x] `flavor` accepts map (composition) form with `base` +
+      property overrides. (Phase 5b carry-over; Phase 8 adds
+      inline-form key/value vocab enforcement.)
+- [x] `settings.build.custom-flavors` block: project-named
+      composition maps. (Phase 5b carry-over.)
+- [x] Custom-flavor cycle detection (`A.base == B` and
+      `B.base == A` rejected at load time). `validateCustomFlavors`
+      walks every chain via `inlineChain` with a visiting set.
+- [x] Resolved flavor passed to the compiler as the
+      corresponding flag set. `BuildAction` materialises
+      `effectiveProperties(flavor)` → `toCompilerFlags()` →
+      `--<key>=<value>` argv entries in vocabulary order.
+- [x] `build` action accepts `profile` string param; passes
+      through to compiler as `--profile=<name>`. (Phase 5a
+      carry-over; pin in `Phase8AcceptanceTests`.)
 
 ### Acceptance
 
-- [ ] `flavor: "release"` resolves to the built-in property
-      bundle.
-- [ ] `flavor: { "base": "release", "debug-info": "full" }`
+- [x] `flavor: "release"` resolves to the built-in property
+      bundle. → `Phase8AcceptanceTests.releaseStringResolvesToBuiltInBundle`.
+- [x] `flavor: { "base": "release", "debug-info": "full" }`
       resolves to release's bundle with debug-info overridden.
-- [ ] `flavor: "integration"` referencing a custom-flavor map
-      resolves through the named composition.
-- [ ] Unknown property key (`debg-info`) produces a citation
-      naming the offending key + the allowed vocabulary.
-- [ ] Two custom flavors with `base` cycling fail load-time
-      validation.
-- [ ] `build` action with `profile: "test"` invokes the
+      → `Phase8AcceptanceTests.inlineMapOverridesReleaseDebugInfo`.
+- [x] `flavor: "integration"` referencing a custom-flavor map
+      resolves through the named composition. →
+      `Phase8AcceptanceTests.customFlavorIntegrationResolvesThroughComposition`.
+- [x] Unknown property key (`debg-info`) produces a citation
+      naming the offending key + the allowed vocabulary. →
+      `Phase8AcceptanceTests.unknownPropertyKeyCitesOffenderAndVocab`
+      (3 layers: vocab validation, inline resolve, manifest load).
+- [x] Two custom flavors with `base` cycling fail load-time
+      validation. →
+      `Phase8AcceptanceTests.customFlavorCycleFailsLoadTimeValidation`.
+- [x] `build` action with `profile: "test"` invokes the
       compiler with `--profile=test`; `@Profile`-gated DI
-      resolution sees the right components.
+      resolution sees the right components. →
+      `Phase8AcceptanceTests.resolvedFlavorProducesCompilerFlagArgv` +
+      `.profileParamFlagPassThroughShape`. Note: end-to-end
+      `@Profile`-gated DI verification is gated on compiler
+      integration; the argv pass-through that DI consumes is
+      what's pinned here.
 
 ---
 
