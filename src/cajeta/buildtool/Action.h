@@ -79,6 +79,26 @@ namespace cajeta::buildtool {
         std::map<std::string, std::map<std::string, std::string>> actionOutputs_;
     };
 
+    // One structured finding emitted by an action. Plugins stream
+    // findings as `{"kind": "finding", ...}` records on stdout; the
+    // PluginRuntime parses each into one of these. Native actions
+    // that produce findings (lint, etc.) populate this list
+    // directly. The `lint` task aggregates findings across every
+    // action it runs and surfaces them in one unified report.
+    //
+    // Severity matches the Severity enum in the plugin API:
+    //   - "error":   blocks the task (treat as failure)
+    //   - "warning": surfaced but non-blocking
+    //   - "info":    advisory
+    struct ActionFinding {
+        std::string rule;
+        std::string severity;   // "error" | "warning" | "info"
+        std::string file;
+        int line = 0;
+        int column = 0;
+        std::string message;
+    };
+
     // The result of running one action invocation.
     struct ActionResult {
         // Outputs the action published. Get exposed under the
@@ -88,6 +108,11 @@ namespace cajeta::buildtool {
         // them; empty otherwise). Used by --verbose flows.
         std::string stdoutLog;
         std::string stderrLog;
+        // Structured findings the action emitted (plugins via the
+        // `kind: "finding"` JSON-line record; native actions populate
+        // directly). The lint task aggregates these across every
+        // action; the test task uses the count as a gating signal.
+        std::vector<ActionFinding> findings;
     };
 
     // Per-action contract. Each native action is a subclass.
