@@ -143,6 +143,7 @@ namespace cajeta::buildtool {
     std::unique_ptr<Action> makeDownloadAction();
     std::unique_ptr<Action> makeBuildAction();
     std::unique_ptr<Action> makeTestAction();
+    std::unique_ptr<Action> makeCleanAction();
 
     ActionRegistry::ActionRegistry() {
         auto reg = [&](std::unique_ptr<Action> a) {
@@ -160,6 +161,8 @@ namespace cajeta::buildtool {
         reg(makeDownloadAction());
         // Phase 5a: build action.
         reg(makeBuildAction());
+        // Phase 5b: clean action (with --deep cache wipe).
+        reg(makeCleanAction());
         // Phase 7a: test action.
         reg(makeTestAction());
     }

@@ -19,6 +19,7 @@
 //   - otherwise              → archived-ir
 
 #include "cajeta/buildtool/Action.h"
+#include "cajeta/buildtool/Flavor.h"
 #include "cajeta/buildtool/Manifest.h"
 #include "cajeta/buildtool/Resolver.h"
 
@@ -165,12 +166,31 @@ namespace cajeta::buildtool {
                            "or settings.build.entry-method");
             }
 
-            // Resolve flavor. Phase 5a accepts string form only
-            // (release / debug / custom flavor name). Map-form
-            // composition lands in Phase 5b.
+            // Resolve flavor. Phase 5b: string form (built-in or
+            // custom-flavor name) OR object form
+            // ({base, ...overrides}). resolveFlavor walks the chain,
+            // detects cycles, and yields (effective base, override
+            // map). Overrides are honored by the discriminator (so a
+            // custom-flavor change re-keys the cache); compiler-side
+            // flag emission for them lands in Phase 8.
             std::string flavor;
-            if (auto v = params.getString("flavor")) flavor = v->str();
-            else flavor = "release";
+            llvm::json::Object flavorOverrides;
+            {
+                llvm::json::Object customFlavors;
+                if (ctx.manifest()) {
+                    auto sb = parseSettingsBuild(*ctx.manifest());
+                    if (!sb) return sb.takeError();
+                    customFlavors = sb->customFlavorsRaw;
+                }
+                llvm::json::Value flavorRef("release");
+                if (const auto* v = params.get("flavor")) {
+                    flavorRef = *v;
+                }
+                auto resolved = resolveFlavor(flavorRef, customFlavors);
+                if (!resolved) return resolved.takeError();
+                flavor = resolved->base;
+                flavorOverrides = std::move(resolved->overrides);
+            }
 
             // Resolve target.
             std::string target = "host";
