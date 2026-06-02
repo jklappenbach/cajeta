@@ -12,6 +12,8 @@
 #include "cajeta/buildtool/Task.h"
 #include "cajeta/buildtool/TaskRunner.h"
 #include "cajeta/buildtool/Upgrader.h"
+#include "cajeta/cli/SignatureVerify.h"
+#include "cajeta/cli/TrustStore.h"
 
 #include <filesystem>
 #include <fstream>
@@ -1497,6 +1499,171 @@ namespace cajeta::buildtool {
             return 0;
         }
 
+        // ─── Phase 10 — `cajeta trust` subcommands ──────────────
+        //
+        // The trust store is the launcher's allow-list of ed25519
+        // public keys. Subcommands live next to `cajeta publish` so
+        // operators can keep one mental model: project tools work
+        // on the manifest; trust tools work on `~/.cajeta/trust/`.
+
+        int trustListCommand(int /*argc*/, const char* /*argv*/[]) {
+            auto layout = cajeta::cli::resolveTrustStoreLayout();
+            auto keys = cajeta::cli::listTrustedKeys(layout);
+            if (keys.empty()) {
+                std::cout << "(no trusted keys)\n";
+                return 0;
+            }
+            for (const auto& k : keys) {
+                std::cout << k.keyId
+                          << "\t" << k.tier
+                          << "\tsha256:" << k.fingerprint
+                          << "\t" << k.path
+                          << "\n";
+            }
+            return 0;
+        }
+
+        int trustAddCommand(int argc, const char* argv[]) {
+            if (argc < 4) {
+                std::cerr << "Usage: cajeta trust add <key-id> <pem-path>\n";
+                return 2;
+            }
+            std::string keyId = argv[2];
+            std::string pem = argv[3];
+            auto layout = cajeta::cli::resolveTrustStoreLayout();
+            if (auto e = cajeta::cli::addTrustedKey(layout, keyId, pem)) {
+                std::string msg;
+                llvm::raw_string_ostream os(msg);
+                os << e;
+                consumeError(std::move(e));
+                std::cerr << msg << "\n";
+                return 1;
+            }
+            std::cout << "added '" << keyId << "' to user trust store\n";
+            return 0;
+        }
+
+        int trustRemoveCommand(int argc, const char* argv[]) {
+            if (argc < 3) {
+                std::cerr << "Usage: cajeta trust remove <key-id>\n";
+                return 2;
+            }
+            std::string keyId = argv[2];
+            auto layout = cajeta::cli::resolveTrustStoreLayout();
+            if (auto e = cajeta::cli::removeTrustedKey(layout, keyId)) {
+                std::string msg;
+                llvm::raw_string_ostream os(msg);
+                os << e;
+                consumeError(std::move(e));
+                std::cerr << msg << "\n";
+                return 1;
+            }
+            std::cout << "removed '" << keyId << "' from user store\n";
+            return 0;
+        }
+
+        int trustShowCommand(int argc, const char* argv[]) {
+            if (argc < 3) {
+                std::cerr << "Usage: cajeta trust show <key-id>\n";
+                return 2;
+            }
+            std::string keyId = argv[2];
+            auto layout = cajeta::cli::resolveTrustStoreLayout();
+            auto e = cajeta::cli::lookupTrustedKey(layout, keyId);
+            if (!e) {
+                std::cerr << "trust show: '" << keyId
+                          << "' not found in any tier\n";
+                return 1;
+            }
+            std::cout << "key-id:      " << e->keyId << "\n"
+                      << "tier:        " << e->tier << "\n"
+                      << "fingerprint: sha256:" << e->fingerprint << "\n"
+                      << "path:        " << e->path << "\n";
+            return 0;
+        }
+
+        int trustVerifyCommand(int argc, const char* argv[]) {
+            if (argc < 3) {
+                std::cerr << "Usage: cajeta trust verify <archive>\n";
+                return 2;
+            }
+            std::string archive = argv[2];
+            auto layout = cajeta::cli::resolveTrustStoreLayout();
+            auto r = cajeta::cli::verifyArchiveSignature(layout, archive);
+            if (!r) {
+                std::string msg;
+                llvm::raw_string_ostream os(msg);
+                os << r.takeError();
+                std::cerr << msg << "\n";
+                return 1;
+            }
+            std::cout << "ok: " << archive
+                      << "  key-id=" << r->keyId
+                      << "  fingerprint=sha256:" << r->fingerprint
+                      << "  archive-sha256=sha256:" << r->archiveSha256
+                      << "\n";
+            return 0;
+        }
+
+        int trustCommand(int argc, const char* argv[]) {
+            if (argc < 3 || std::string_view(argv[2]) == "--help" ||
+                std::string_view(argv[2]) == "-h") {
+                std::cout
+                    << "Usage: cajeta trust <subcommand> [args...]\n"
+                    << "\n"
+                    << "  list\n"
+                    << "    Print every key-id visible through the\n"
+                    << "    env → user → system precedence chain.\n"
+                    << "  add <key-id> <pem-path>\n"
+                    << "    Copy a PEM ed25519 public key into the\n"
+                    << "    user trust store. System tier untouched.\n"
+                    << "  remove <key-id>\n"
+                    << "    Delete a key from the user tier.\n"
+                    << "  show <key-id>\n"
+                    << "    Print tier + fingerprint for one key.\n"
+                    << "  verify <archive>\n"
+                    << "    One-shot: verify archive against the\n"
+                    << "    matching trusted key (using the\n"
+                    << "    <archive>.sig + <archive>.sig.keyid\n"
+                    << "    sidecar).\n";
+                return argc < 3 ? 1 : 0;
+            }
+            std::string_view sub = argv[2];
+            if (sub == "list")   return trustListCommand(argc, argv);
+            if (sub == "add")    return trustAddCommand(argc, argv);
+            if (sub == "remove") return trustRemoveCommand(argc, argv);
+            if (sub == "show")   return trustShowCommand(argc, argv);
+            if (sub == "verify") return trustVerifyCommand(argc, argv);
+            std::cerr << "cajeta trust: unknown subcommand '"
+                      << sub << "'\n";
+            return 2;
+        }
+
+        // Resolve the effective signature-verification mode.
+        //
+        // Precedence (highest first):
+        //   1. CAJETA_REQUIRE_SIGNATURE env (always wins; safety
+        //      net — operators can pin strict regardless of CLI).
+        //   2. --verify-signature[=mode] CLI flag (parsed by the
+        //      dispatcher; "" means absent).
+        //   3. Default: "off" for local builds.
+        //
+        // Returns "off" / "warn" / "strict".
+        std::string resolveVerifyMode(const std::string& cliMode) {
+            const char* env = std::getenv("CAJETA_REQUIRE_SIGNATURE");
+            if (env && *env) {
+                std::string s(env);
+                if (s == "strict" || s == "warn" || s == "off") {
+                    return s;
+                }
+            }
+            if (cliMode == "strict" || cliMode == "warn" ||
+                cliMode == "off") {
+                return cliMode;
+            }
+            return "off";
+        }
+
         int coverageCommand(int argc, const char* argv[]) {
             if (argc < 3 || std::string_view(argv[2]) == "--help" ||
                 std::string_view(argv[2]) == "-h") {
@@ -1533,7 +1700,7 @@ namespace cajeta::buildtool {
                 cmd == "init" || cmd == "archive" ||
                 cmd == "add"  || cmd == "remove" ||
                 cmd == "upgrade" || cmd == "coverage" ||
-                cmd == "publish") {
+                cmd == "publish" || cmd == "trust") {
                 return false;
             }
             // Anything starting with `-` is a flag for the existing
@@ -1594,6 +1761,10 @@ namespace cajeta::buildtool {
         }
         if (cmd == "publish") {
             *exitCodeOut = publishCommand(argc, argv);
+            return true;
+        }
+        if (cmd == "trust") {
+            *exitCodeOut = trustCommand(argc, argv);
             return true;
         }
         if (looksLikeTaskInvocation(argc, argv)) {
