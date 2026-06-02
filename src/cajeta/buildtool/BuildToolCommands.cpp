@@ -8,6 +8,7 @@
 #include "cajeta/buildtool/ManifestEditor.h"
 #include "cajeta/buildtool/Melt.h"
 #include "cajeta/buildtool/Properties.h"
+#include "cajeta/buildtool/Provenance.h"
 #include "cajeta/buildtool/Reproducibility.h"
 #include "cajeta/buildtool/Resolver.h"
 #include "cajeta/buildtool/Sandbox.h"
@@ -1875,6 +1876,133 @@ namespace cajeta::buildtool {
             return failed == 0 ? 0 : 1;
         }
 
+        // Phase 13: `cajeta install <archive>` — consumer-side
+        // verification before extracting / installing a built
+        // archive. The flow:
+        //
+        //   1. Compute archive sha256.
+        //   2. If `<archive>.sig` exists (or `--require-signature`),
+        //      verify against the trust store (Phase 10).
+        //   3. If `<archive>.attestation` exists (or
+        //      `--require-attestation`), verify the provenance's
+        //      digest claim matches the computed sha256 + the
+        //      Statement / predicate type strings are spec-shaped.
+        //   4. Refuse to install when any verification step fails.
+        //
+        // v1 is verification-only — the install path that unpacks
+        // the archive into the user's local cache lives alongside
+        // the existing ArtifactCache and lands when first-party
+        // package consumption flows do.
+        int installCommand(int argc, const char* argv[]) {
+            if (argc < 3) {
+                std::cerr << "Usage: cajeta install <archive> "
+                             "[--require-signature] [--require-attestation]\n";
+                return 1;
+            }
+            std::string archive = argv[2];
+            bool requireSig = false;
+            bool requireAtt = false;
+            for (int i = 3; i < argc; ++i) {
+                std::string_view a = argv[i];
+                if (a == "--require-signature") requireSig = true;
+                else if (a == "--require-attestation") requireAtt = true;
+                else {
+                    std::cerr << "cajeta install: unknown argument '"
+                              << a << "'\n";
+                    return 1;
+                }
+            }
+            namespace fs = std::filesystem;
+            if (!fs::exists(archive)) {
+                std::cerr << "cajeta install: archive not found: '"
+                          << archive << "'\n";
+                return 1;
+            }
+            std::ifstream in(archive, std::ios::binary);
+            if (!in) {
+                std::cerr << "cajeta install: cannot read '"
+                          << archive << "'\n";
+                return 1;
+            }
+            std::ostringstream ss;
+            ss << in.rdbuf();
+            std::string bytes = ss.str();
+            std::string sha = sha256Hex(bytes);
+
+            std::cout << "Archive:     " << archive << "\n";
+            std::cout << "Size:        " << bytes.size() << " bytes\n";
+            std::cout << "SHA-256:     " << sha << "\n";
+
+            std::string sigPath = archive + ".sig";
+            std::string keyIdPath = sigPath + ".keyid";
+            std::string attPath = archive + ".attestation";
+
+            bool sigPresent = fs::exists(sigPath);
+            bool attPresent = fs::exists(attPath);
+
+            if (requireSig && !sigPresent) {
+                std::cerr << "cajeta install: refusing to install — "
+                             "--require-signature set but '" << sigPath
+                          << "' not found\n";
+                return 1;
+            }
+            if (requireAtt && !attPresent) {
+                std::cerr << "cajeta install: refusing to install — "
+                             "--require-attestation set but '" << attPath
+                          << "' not found\n";
+                return 1;
+            }
+
+            if (sigPresent) {
+                cajeta::cli::VerifyOptions opts;
+                if (fs::exists(keyIdPath)) {
+                    opts.signaturePathOverride = sigPath;
+                }
+                auto layout = cajeta::cli::resolveTrustStoreLayout();
+                auto v = cajeta::cli::verifyArchiveSignature(
+                    layout, archive, opts);
+                if (!v) {
+                    std::string msg;
+                    llvm::raw_string_ostream os(msg);
+                    os << v.takeError();
+                    std::cerr << "cajeta install: signature verify "
+                                 "failed — " << msg << "\n";
+                    return 1;
+                }
+                std::cout << "Signature:   verified (key-id "
+                          << v->keyId << ")\n";
+            } else {
+                std::cout << "Signature:   (none — not required)\n";
+            }
+
+            if (attPresent) {
+                std::ifstream af(attPath, std::ios::binary);
+                std::ostringstream as;
+                as << af.rdbuf();
+                auto pv = verifyProvenanceJson(as.str(), sha);
+                if (!pv) {
+                    std::string msg;
+                    llvm::raw_string_ostream os(msg);
+                    os << pv.takeError();
+                    std::cerr << "cajeta install: attestation "
+                                 "verify failed — " << msg << "\n";
+                    return 1;
+                }
+                std::cout << "Attestation: verified (build "
+                          << pv->compilerVersion;
+                if (!pv->flavor.empty())
+                    std::cout << " / flavor=" << pv->flavor;
+                if (!pv->target.empty())
+                    std::cout << " / target=" << pv->target;
+                std::cout << ")\n";
+            } else {
+                std::cout << "Attestation: (none — not required)\n";
+            }
+
+            std::cout << "OK — archive verified, ready to install\n";
+            return 0;
+        }
+
         // Phase 11: `cajeta verify-reproducible <archive-a>
         // <archive-b>` — byte-compare two archives produced from
         // the same source/lockfile. Exit 0 on identical, 1 on
@@ -2043,7 +2171,8 @@ namespace cajeta::buildtool {
                 cmd == "publish" || cmd == "trust" ||
                 cmd == "workspace" ||
                 cmd == "verify-reproducible" ||
-                cmd == "sandbox-info") {
+                cmd == "sandbox-info" ||
+                cmd == "install") {
                 return false;
             }
             // Anything starting with `-` is a flag for the existing
@@ -2120,6 +2249,10 @@ namespace cajeta::buildtool {
         }
         if (cmd == "sandbox-info") {
             *exitCodeOut = sandboxInfoCommand(argc, argv);
+            return true;
+        }
+        if (cmd == "install") {
+            *exitCodeOut = installCommand(argc, argv);
             return true;
         }
         if (looksLikeTaskInvocation(argc, argv)) {
