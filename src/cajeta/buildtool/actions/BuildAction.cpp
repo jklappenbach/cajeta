@@ -274,6 +274,21 @@ namespace cajeta::buildtool {
                 argv.push_back("--profile=" + profile);
             }
 
+            // Phase 8: emit the effective property bundle as
+            // `--<key>=<value>` flags. The built-in defaults come from
+            // builtinFlavorProperties; overrides (custom-flavor chain
+            // + inline map) win.
+            {
+                ResolvedFlavor rf;
+                rf.base = flavor;
+                rf.overrides = flavorOverrides;
+                auto effective = effectiveProperties(rf);
+                if (!effective) return effective.takeError();
+                for (auto& f : toCompilerFlags(*effective)) {
+                    argv.push_back(std::move(f));
+                }
+            }
+
             // Resolve transitive dependencies (Phase 6b). The manifest's
             // own directory is the project root — that's where the
             // local artifact cache lives. Skip cleanly when no deps
