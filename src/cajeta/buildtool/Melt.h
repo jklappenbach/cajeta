@@ -148,18 +148,27 @@ namespace cajeta::buildtool {
         const std::vector<RepositoryPtr>& repos,
         ArtifactCache& cache);
 
-    // Walk `deps` in-place: every entry whose versionConstraint is
-    // `"*"` has its constraint substituted from
-    // `melts.depConstraints`. An entry that names a dep no imported
-    // melt curates is a hard error (per spec — `"*"` requires a
-    // melt-provided pin).
+    // Walk `deps` in-place. Two cases:
+    //
+    //   - `"*"` constraint        — substituted from melts.depConstraints.
+    //                                Missing entry is a hard error.
+    //   - explicit constraint     — kept verbatim; if a melt curates
+    //                                the SAME dep at a different
+    //                                version, that's a divergence
+    //                                (consumer's explicit pin wins)
+    //                                and one warning per occurrence
+    //                                is appended to `warningsOut`.
     //
     // Each substitution is recorded in `providedByOut` (dep name →
-    // "melt-name@melt-version"), letting downstream callers
-    // populate the lockfile's `provided-by` field.
+    // "melt-name@melt-version"), letting downstream callers populate
+    // the lockfile's `provided-by` field. Divergence warnings are
+    // for the operator's CLI output — they don't change resolution
+    // behavior, they just surface that the consumer chose to ignore
+    // curated guidance.
     llvm::Error applyMeltLookups(
         std::vector<DependencySpec>& deps,
         const MeltResolution& melts,
-        std::map<std::string, std::string>& providedByOut);
+        std::map<std::string, std::string>& providedByOut,
+        std::vector<std::string>& warningsOut);
 
 } // namespace cajeta::buildtool

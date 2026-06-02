@@ -196,3 +196,38 @@ TEST(ManifestTests, errorsOnRootBeingNonObject) {
     EXPECT_NE(msg.find("manifest root must be a JSON object"),
               std::string::npos);
 }
+
+// ─── Melt mutual exclusion (Phase 6c acceptance) ──────────────────
+
+TEST(ManifestTests, errorsWhenMeltDeclaredAlongsideTasks) {
+    auto m = loadManifestString(R"({
+        "details": { "name": "p.melt", "version": "1.0.0" },
+        "melt": { "dependencies": {} },
+        "tasks": { "build": { "actions": [] } }
+    })");
+    ASSERT_FALSE((bool)m);
+    auto msg = errorText(m.takeError());
+    EXPECT_NE(msg.find("'melt' and 'tasks'"), std::string::npos);
+}
+
+TEST(ManifestTests, errorsWhenMeltDeclaredAlongsideWorkspace) {
+    auto m = loadManifestString(R"({
+        "details": { "name": "p.melt", "version": "1.0.0" },
+        "melt": { "dependencies": {} },
+        "workspace": { "members": [] }
+    })");
+    ASSERT_FALSE((bool)m);
+    auto msg = errorText(m.takeError());
+    EXPECT_NE(msg.find("'melt' and 'workspace'"), std::string::npos);
+}
+
+TEST(ManifestTests, meltAloneLoadsSuccessfully) {
+    // Sanity: melt without tasks/workspace is the canonical melt
+    // package shape and must parse cleanly.
+    auto m = loadManifestString(R"({
+        "details": { "name": "p.melt", "version": "1.0.0" },
+        "melt": { "dependencies": {} }
+    })");
+    ASSERT_TRUE((bool)m) << errorText(m.takeError());
+    EXPECT_TRUE(m->hasMelt);
+}

@@ -893,10 +893,18 @@ namespace cajeta::buildtool {
 
         // Substitute `"*"` deps using the melt constraint table.
         // Anything left with `"*"` at the end is a hard error per spec.
+        // Divergence between a consumer's explicit dep and a melt's
+        // curated version surfaces as warnings (consumer wins, but
+        // the operator sees what they overrode).
         std::map<std::string, std::string> meltProvidedBy;
-        if (auto e = applyMeltLookups(*deps, *melts, meltProvidedBy)) {
+        std::vector<std::string> meltDivergenceWarnings;
+        if (auto e = applyMeltLookups(*deps, *melts, meltProvidedBy,
+                                      meltDivergenceWarnings)) {
             closeTotal();
             return std::move(e);
+        }
+        for (const auto& w : meltDivergenceWarnings) {
+            llvm::errs() << "warning: " << w << "\n";
         }
 
         if (deps->empty()) {

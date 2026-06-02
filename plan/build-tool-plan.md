@@ -591,21 +591,33 @@ on the build-tool side is shipped + tested in isolation — see Phase
 
 ### Melts (acceptance criteria added)
 
-- [ ] A package importing two melts that constrain the same
+- [x] A package importing two melts that constrain the same
       dep to different versions resolves to the later-listed
       melt's version (and the lockfile records `provided-by`).
-- [ ] A consumer declaring `"*"` for a dep that's in an
+      _MeltResolverTests.laterMeltOverridesEarlierOnConflict
+      pins the resolver side; LockfileMeltsTests.laterMeltWins
+      AndLockfileRecordsProvidedBy pins the lockfile carry-through._
+- [x] A consumer declaring `"*"` for a dep that's in an
       imported melt resolves to the melt-provided version.
-- [ ] A consumer declaring `"*"` for a dep that's in NO
+      _MeltResolverTests.projectResolutionAppliesStarFromMelt._
+- [x] A consumer declaring `"*"` for a dep that's in NO
       imported melt fails the build with a clear error citing
-      the dep name.
-- [ ] A melt that transitively imports itself fails the build
-      with a cycle citation.
-- [ ] An explicit version on a consumer's dep overrides the
+      the dep name. _MeltResolverTests.projectResolutionStarWith
+      NoMeltFails + applyMeltLookupsErrorsWhenNoMeltProvides._
+- [x] A melt that transitively imports itself fails the build
+      with a cycle citation. _MeltResolverTests.cycleDetectedAndCited._
+- [x] An explicit version on a consumer's dep overrides the
       melt-provided constraint; the build emits a warning
-      naming the divergence.
-- [ ] A melt manifest that also declares `tasks` or
+      naming the divergence. _applyMeltLookups gained a
+      warningsOut channel; resolveProjectDependencies prints
+      every warning to stderr. MeltResolverTests.applyMeltLookups
+      LeavesExplicitConstraintsAlone + applyMeltLookupsExplicit
+      MatchingMeltEmitsNoWarning pin the divergence + null cases._
+- [x] A melt manifest that also declares `tasks` or
       `workspace` is rejected at validation time.
+      _ManifestTests.errorsWhenMeltDeclaredAlongsideTasks +
+      errorsWhenMeltDeclaredAlongsideWorkspace +
+      meltAloneLoadsSuccessfully (the sanity sibling)._
 
 ### Deliverables — Phase 6d (Repository protocol v2 — deferred)
 
