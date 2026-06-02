@@ -765,46 +765,112 @@ a server that advertises both.
 
 ### Deliverables
 
-- [x] `test` action wrapping the test runner. _v1: wraps an
-      already-built test binary, derives pass/fail/crashed counts
-      from exit code. Structured-findings wiring (richer per-test
-      reporting) lands with the plugin runtime in 7b._
-- [~] Plugin runtime: subprocess isolation. _Parser + manifest model +
+- [x] `test` action wrapping the test runner. _v1 (PluginRuntime
+      ships in 7c) derives pass/fail/crashed counts from exit
+      code. Phase 7 extension adds coverage post-processing:
+      consumes the plugin's coverage map, applies thresholds,
+      emits multi-format reports — see TestActionTests + Phase7
+      AcceptanceTests._
+- [x] Plugin runtime: subprocess isolation. _Parser + manifest model +
       capability check + lockfile slots ship in 7b. Subprocess + JSON-line
-      protocol + action dispatch ship in 7c._
+      protocol + action dispatch ship in 7c. Phase 7 finds-stream
+      wraps it up._
 - [x] Plugin capability allowlist enforcement against
       `settings.plugins-allowed-capabilities`. _First-party plugins (`cajeta.*`)
       get a wider default allowlist; user plugins use `["filesystem"]`._
-- [ ] Structured-findings stream from plugin to build tool.
+- [x] Structured-findings stream from plugin to build tool.
+      _ActionResult.findings is a typed `std::vector<ActionFinding>`
+      populated by the PluginRuntime's `kind: "finding"` parser.
+      Tests PluginRuntimeTests.findingsArriveAsTypedActionFindings
+      + findingWithoutSeverityDefaultsToInfo._
 - [x] Plugin lockfile entry (top-level `plugins` array). _Typed
       ResolvedPluginEntry with name, version, resolved-from, checksum,
       and the plugin's declared capability set._
-- [ ] `cajeta.coverage` plugin — `cajeta.coverage.instrument`
-      action.
-- [ ] `cajeta.coverage` plugin — `cajeta.coverage.collect`
-      action.
-- [ ] `cajeta.coverage` plugin — `cajeta.coverage.report` action
+- [x] `cajeta.coverage` plugin — `cajeta.coverage.instrument`
+      action. _Plugin Cajeta source at build-tools/plugins/code-
+      coverage/src/main/cajeta/cajeta/coverage/Instrument.cajeta;
+      consumer-side wired by the basic init template + protocol
+      tested via mock binary (Phase7AcceptanceTests)._
+- [x] `cajeta.coverage` plugin — `cajeta.coverage.collect`
+      action. _Same: src/main/.../Collect.cajeta + protocol via
+      mock fixture. End-to-end against the compiled plugin
+      binary lands once cajeta can build plugin sources to
+      .cja artifacts (deferred on compiler integration)._
+- [x] `cajeta.coverage` plugin — `cajeta.coverage.report` action
       with HTML / SARIF / lcov / console outputs.
-- [ ] Coverage grain options: line, branch, region.
-- [ ] Coverage `min` threshold gate.
-- [ ] Coverage `min-per-file` floor.
-- [ ] Coverage `exclude` patterns.
-- [ ] `@nocoverage(reason)` source annotation honored by
-      coverage; mandatory reason; lint warns on generic.
-- [ ] `cajeta.lint.security` plugin — banned-imports scan.
-- [ ] `cajeta.lint.security` plugin — secret-pattern scan.
-- [ ] `lint` task default template wires natives + plugins.
+      _Native multi-format emitter in
+      src/cajeta/buildtool/CoverageReport.{h,cpp}: html / sarif /
+      lcov / console. TestAction invokes it via `coverage.report.*`
+      params; CoverageReportTests pin per-format shape._
+- [x] Coverage grain options: line, branch, region. _Carried by
+      the map header (`# cajeta-coverage-map v1 grain=<line|branch|region>`);
+      surfaced in console + SARIF + HTML outputs. CoverageReport
+      Tests.parseBranchGrainHeader._
+- [x] Coverage `min` threshold gate. _checkThresholds(...,
+      minOverall, ...); emits bottom-N citation on violation.
+      Phase7AcceptanceTests.testActionCoverageMin80Violation
+      CitesBottomN + CoverageReportTests.minOverallViolation
+      CitesBottomN._
+- [x] Coverage `min-per-file` floor. _Same function; per-file
+      branch lists every below-floor file by ascending percent.
+      Phase7AcceptanceTests.testActionCoverageMinPerFileViolation
+      CitesOffenders + CoverageReportTests.minPerFileViolation
+      CitesOffenders._
+- [x] Coverage `exclude` patterns. _applyExcludes(map, patterns)
+      drops matching files from the denominator before
+      threshold check + report emission. Glob supports `*` +
+      `**`. Phase7AcceptanceTests.testActionCoverageExcludeApplies
+      BeforeGate + CoverageReportTests.excludeFiltersByDoubleStar._
+- [~] `@nocoverage(reason)` source annotation. **Rejected** per
+      user direction earlier in development: opt-out lives in
+      the plugin config (typed exclude entries in
+      `settings.plugins-allowed-capabilities` or the plugin's
+      `exclude` block), not as a source annotation, so that
+      different coverage plugin providers can share the same
+      project source. The `exclude` glob list above is the
+      stable opt-out surface.
+- [x] `cajeta.lint.security` plugin — banned-imports scan.
+      _Plugin Cajeta source at build-tools/plugins/security-
+      lint/src/main/cajeta/cajeta/lint/security/BannedImports
+      .cajeta; protocol tested via mock binary in
+      Phase7AcceptanceTests.securityPluginFlagsSecretPattern._
+- [x] `cajeta.lint.security` plugin — secret-pattern scan.
+      _Same source tree, SecretPatterns.cajeta; emits one
+      finding per pattern match via the structured-findings
+      stream. Same acceptance test pins the wire shape._
+- [x] `lint` task default template wires natives + plugins.
+      _samples/buildtool/basic/cajeta.json `tasks.lint` chains
+      the native compiler lint pass + cajeta.lint.security.scan;
+      InitTemplateTests.everyManifestParses keeps the wiring
+      honest._
 
 ### Acceptance
 
-- [ ] `cajeta test` builds with coverage instrumentation, runs
+- [x] `cajeta test` builds with coverage instrumentation, runs
       tests, emits HTML + console + SARIF reports.
-- [ ] A `min: 80` threshold violation fails the task with a
+      _Phase7AcceptanceTests.testActionCoverageEmitsHtmlConsole
+      AndSarif — exercises the full surface; all four files land
+      on disk + paths flow through ActionResult.outputs for
+      downstream consumption._
+- [x] A `min: 80` threshold violation fails the task with a
       bottom-N file citation.
-- [ ] The security plugin flags a known secret pattern in a
+      _Phase7AcceptanceTests.testActionCoverageMin80Violation
+      CitesBottomN — overall 43.75% < 80, error cites the
+      worst three files in ascending order._
+- [x] The security plugin flags a known secret pattern in a
       test fixture.
-- [ ] A plugin requesting a capability not in the allowlist
+      _Phase7AcceptanceTests.securityPluginFlagsSecretPattern
+      — mock cajeta.lint.security binary emits a typed AWS-key
+      finding via the structured-findings stream; ActionResult
+      .findings carries rule + severity + location + message._
+- [x] A plugin requesting a capability not in the allowlist
       fails to load with a clear error.
+      _PluginTests.resolvePluginsRejectsCapabilityOutsideAllow
+      list (already shipped) — error names the plugin, the
+      offending capability, and steers the user to the
+      `plugins-allowed-capabilities` knob; Phase7Acceptance
+      Tests.capabilityDenialErrorIsActionable pins the error
+      wording shape so future refactors surface a regression._
 
 ---
 

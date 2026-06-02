@@ -122,12 +122,12 @@ printf '{"kind":"result","status":"ok"}\n'
     EXPECT_EQ(r->outputs["b"], "2");
 }
 
-TEST(PluginRuntimeTests, propagatesFindingsAsAggregatedOutput) {
+TEST(PluginRuntimeTests, findingsArriveAsTypedActionFindings) {
     auto dir = tempDir("findings");
     auto bin = stageScript(dir, "p.sh", R"(
 cat > /dev/null
-printf '{"kind":"finding","rule":"r1","severity":"warning","file":"f","line":1,"column":1,"message":"m1"}\n'
-printf '{"kind":"finding","rule":"r2","severity":"info","file":"g","line":2,"column":1,"message":"m2"}\n'
+printf '{"kind":"finding","rule":"r1","severity":"warning","file":"f.cajeta","line":12,"column":3,"message":"m1"}\n'
+printf '{"kind":"finding","rule":"r2","severity":"info","file":"g.cajeta","line":42,"column":1,"message":"m2"}\n'
 printf '{"kind":"result","status":"ok"}\n'
 )");
     auto m = makeManifest();
@@ -138,10 +138,38 @@ printf '{"kind":"result","status":"ok"}\n'
     llvm::json::Object params;
     auto r = invokePluginAction(plugin, "acme.lint.scan", params, ctx);
     ASSERT_TRUE((bool)r) << errorText(r.takeError());
-    auto it = r->outputs.find("findings");
-    ASSERT_NE(it, r->outputs.end());
-    EXPECT_NE(it->second.find("\"r1\""), std::string::npos);
-    EXPECT_NE(it->second.find("\"r2\""), std::string::npos);
+    // Typed delivery: ActionResult.findings is a vector of
+    // ActionFinding, not a JSON-concat string. The lint task can
+    // aggregate across actions without re-parsing.
+    ASSERT_EQ(r->findings.size(), 2u);
+    EXPECT_EQ(r->findings[0].rule,     "r1");
+    EXPECT_EQ(r->findings[0].severity, "warning");
+    EXPECT_EQ(r->findings[0].file,     "f.cajeta");
+    EXPECT_EQ(r->findings[0].line,     12);
+    EXPECT_EQ(r->findings[0].column,   3);
+    EXPECT_EQ(r->findings[0].message,  "m1");
+    EXPECT_EQ(r->findings[1].rule,     "r2");
+    EXPECT_EQ(r->findings[1].severity, "info");
+    // Default severity is "info" when the plugin omits the field.
+}
+
+TEST(PluginRuntimeTests, findingWithoutSeverityDefaultsToInfo) {
+    auto dir = tempDir("findings-def");
+    auto bin = stageScript(dir, "p.sh", R"(
+cat > /dev/null
+printf '{"kind":"finding","rule":"r","file":"f","line":1,"column":1,"message":"m"}\n'
+printf '{"kind":"result","status":"ok"}\n'
+)");
+    auto m = makeManifest();
+    auto props = makeProps(m);
+    TaskContext ctx(props, &m);
+    auto plugin = makePlugin("acme.lint", "acme.lint.scan", bin);
+
+    llvm::json::Object params;
+    auto r = invokePluginAction(plugin, "acme.lint.scan", params, ctx);
+    ASSERT_TRUE((bool)r) << errorText(r.takeError());
+    ASSERT_EQ(r->findings.size(), 1u);
+    EXPECT_EQ(r->findings[0].severity, "info");
 }
 
 TEST(PluginRuntimeTests, resultErrorFailsTheAction) {

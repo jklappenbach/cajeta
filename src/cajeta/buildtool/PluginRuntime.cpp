@@ -241,13 +241,27 @@ namespace cajeta::buildtool {
                 }
                 state.result.outputs[key->str()] = value->str();
             } else if (k == "finding") {
-                // Findings carry through as a structured output the
-                // task aggregator (Phase 7's lint task work) reads.
-                // v1 stores them as JSON in outputs.findings as a
-                // single string — TaskContext doesn't yet have a
-                // typed findings channel.
-                state.result.outputs["findings"] +=
-                    trimmed + "\n";
+                // Structured findings — parsed into the typed
+                // ActionResult.findings list. The lint task
+                // aggregates these across actions; the test task
+                // gates on coverage findings.
+                ActionFinding f;
+                if (auto s = obj->getString("rule")) f.rule = s->str();
+                if (auto s = obj->getString("severity")) {
+                    f.severity = s->str();
+                }
+                if (auto s = obj->getString("file")) f.file = s->str();
+                if (auto n = obj->getInteger("line")) {
+                    f.line = static_cast<int>(*n);
+                }
+                if (auto n = obj->getInteger("column")) {
+                    f.column = static_cast<int>(*n);
+                }
+                if (auto s = obj->getString("message")) {
+                    f.message = s->str();
+                }
+                if (f.severity.empty()) f.severity = "info";
+                state.result.findings.push_back(std::move(f));
             } else if (k == "result") {
                 state.resultSeen = true;
                 auto status = obj->getString("status");

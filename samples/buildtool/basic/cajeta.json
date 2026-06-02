@@ -20,6 +20,12 @@
     "settings": {
         "capabilities": ["filesystem", "clock"],
 
+        // First-party plugins (`cajeta.*`) get a wider default
+        // allowlist; user plugins fall back to ["filesystem"].
+        // Override here when a project pulls in plugins that need
+        // additional capabilities.
+        "plugins-allowed-capabilities": ["filesystem"],
+
         "dependencies": {
             // These reference the stack-version property — bumping
             // it in one place flows to every dep.
@@ -29,6 +35,14 @@
 
         "dev-dependencies": {
             "cajeta.testkit": "1.0.*"
+        },
+
+        // First-party lint + coverage plugins. Optional — comment
+        // out when not in use; `lint` + `test` tasks fall back to
+        // native-only actions.
+        "plugins": {
+            "cajeta.lint.security": "1.0.*",
+            "cajeta.coverage":      "1.0.*"
         },
 
         "repositories": [
@@ -63,14 +77,38 @@
         },
 
         "test": {
-            "description": "Unit tests with dependencies mocked",
+            "description": "Unit tests with coverage instrumentation",
             "actions": [
                 { "action":  "build",
                   "flavor":  "debug",
                   "profile": "test",
                   "id":      "art" },
-                { "action": "exec", "command": "echo",
-                  "args":   ["[test] would run tests against ${art.path}"] }
+
+                // Instrument the build for coverage. The plugin
+                // emits a probed binary + records the map file path
+                // its `collect` action will write to.
+                { "action":  "cajeta.coverage.instrument",
+                  "params":  { "input": "${art.path}" },
+                  "id":      "instr" },
+
+                // Run the (probed) tests; on success the coverage
+                // map is read + gated by `min` / `min-per-file`.
+                // Reports land in build/reports/.
+                { "action":  "test",
+                  "params": {
+                      "input": "${instr.path}",
+                      "coverage": {
+                          "map":          "${workdir}/build/cov.map",
+                          "min":           80,
+                          "min-per-file":  50,
+                          "exclude":       ["test/**", "**/fixtures/**"],
+                          "report": {
+                              "console": "${workdir}/build/reports/cov.txt",
+                              "html":    "${workdir}/build/reports/cov.html",
+                              "sarif":   "${workdir}/build/reports/cov.sarif"
+                          }
+                      }
+                  } }
             ]
         },
 
@@ -89,6 +127,37 @@
         "clean": {
             "description": "Wipe build outputs",
             "actions": [ { "action": "clean" } ]
+        },
+
+        // ─── Default `lint` task ────────────────────────────────────
+        // Wires native + plugin actions into one task. Findings from
+        // every action stream into ActionResult.findings; the task
+        // runner aggregates them across actions into one unified
+        // report. Native actions for the language-level lint live
+        // alongside `cajeta.lint.security` (banned-imports +
+        // secret-pattern scan).
+        //
+        // Override at the project level to add custom rule sets, or
+        // delete + replace if you only want one of the two pillars.
+        "lint": {
+            "description": "Run native + plugin lint actions",
+            "actions": [
+                // Native compiler lint pass — shape pinned by the
+                // language; here we just route to the `exec` action
+                // with the lint subcommand so projects without the
+                // plugin still get a useful baseline.
+                { "action":  "exec",
+                  "command": "cajeta",
+                  "args":    ["lint", "--manifest", "${cajeta.json}"],
+                  "id":      "native" },
+
+                // First-party security plugin — banned-imports +
+                // secret-pattern scan. Findings carry through the
+                // typed ActionResult.findings channel.
+                { "action":  "cajeta.lint.security.scan",
+                  "params":  { "target-dir": "${workdir}/src" },
+                  "id":      "sec" }
+            ]
         }
     }
 }
