@@ -46,7 +46,7 @@ fix the regression first). Don't build new Vulkan capability on a red base.
 | 6 | **`for-each` parallel loops** | capability | medium | ✅ done (grid-stride; NVPTX/AMD/SPIR-V + frontend verified on AMD & Vulkan; CPU coord-ABI extended, verified) |
 | 7 | **POD structs as kernel args** | capability | small-medium | ✅ done (by-value, all 4 backends; verified on AMD & Vulkan) |
 | 8 | **Texture / Sampler types** | capability | large | ✅ done (2-D sampled, bilinear; CPU + Vulkan + AMD verified on-device, NVIDIA emit-only; needs LLVM 23) |
-| 9 | **`Wave.width()` on-device (Vulkan)** | vulkan | blocked | ⛔ external (LLVM 22 SPIR-V can't select `spv.wave.get_lane_count`) |
+| 9 | **`Wave.width()` on-device (Vulkan)** | vulkan | ✅ done | routed to selectable `spv.subgroup.size` (SubgroupSize builtin); runs on RADV |
 
 Ordering rationale: foundational/highest-leverage first (2D/3D launch unblocks
 whole workload classes and other items index against it), then kernel modularity
@@ -247,8 +247,9 @@ runtime dispatch.
 **Feasibility (investigated 2026-05-31):** the size is baked by
 `fn->addFnAttr("hlsl.numthreads", "64,1,1")` (`SpirvKernelLowering.cpp`) →
 `OpExecutionMode LocalSize 64,1,1`. **There is no LLVM-IR path to a spec-constant
-`LocalSizeId`** (same class of limitation as `Wave.width()` / the barrier
-semantics). So this needs a **post-emit SPIR-V binary patch** — the pattern
+`LocalSizeId`** (same class of limitation as the barrier semantics — no IR
+intrinsic exists at all, unlike `Wave.width()` which was fixed by switching to a
+selectable intrinsic). So this needs a **post-emit SPIR-V binary patch** — the pattern
 `SpirvBackend::fixupControlBarriers` already uses: rewrite the module to add a
 `WorkgroupSize` `OpSpecConstantComposite` (or `LocalSizeId` + three
 `OpSpecConstant` ids with `SpecId` decorations), switch `OpExecutionMode LocalSize`
@@ -543,10 +544,15 @@ emit-only here (no hardware to verify the dispatch).
 
 ---
 
-## 9. `Wave.width()` on-device (Vulkan) — ⛔ externally blocked
+## 9. `Wave.width()` on-device (Vulkan) — ✅ done
 
-`spv.wave.get_lane_count` lowers from IR, but **LLVM 22's SPIR-V backend cannot
-select it**, so `Wave.width()` doesn't run on-device on Vulkan (it emits but
-fails selection). Not a Cajeta-side fix — tracked until the upstream backend
-gains the pattern (or a post-emit workaround is found). NV/AMD/CPU all have
-`Wave.width()`.
+Originally ⛔: `spv.wave.get_lane_count` lowers from IR but the SPIR-V backend
+**cannot select it** (`intrinsic selection not implemented` — still true through
+LLVM 23). The fix is Cajeta-side: route `waveWidth` to **`llvm.spv.subgroup.size`**
+instead — the selectable sibling of the `spv.subgroup.local.invocation.id` already
+used by `Wave.laneId()`. The SPIR-V instruction selector lowers it via
+`loadBuiltinInputID(BuiltIn::SubgroupSize)` → `OpLoad` of the `SubgroupSize`
+builtin (verified: `llc -mtriple=spirv-unknown-vulkan-compute` emits
+`OpDecorate … BuiltIn SubgroupSize`). `Wave.width()` now runs natively on Vulkan
+(`XpuWaveDeviceTests.vulkanWaveWidthRunsOnDevice`, on RADV/gfx1151), alongside the
+existing NV/AMD/CPU paths. No upstream change or post-emit workaround needed.
