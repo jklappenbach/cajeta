@@ -130,7 +130,7 @@ public class JsonObject {
      * for the convenience-tier callers that iterate config
      * objects; the hot-path tokenizer should keep using `keyAt`.
      */
-    public ArrayList<String> keys() {
+    public #ArrayList<String> keys() {
         ArrayList<String> out = #new ArrayList<String>();
         int32 i = 0;
         while (i < this.sizeCount) {
@@ -197,7 +197,7 @@ public class JsonObject {
      * slot (caller iterates `getArray(key)` directly if the
      * stricter behavior is needed).
      */
-    public ArrayList<String> getStringArray(String key) {
+    public #ArrayList<String> getStringArray(String key) {
         ArrayList<String> out = #new ArrayList<String>();
         Optional<JsonArray> arr = this.getArray(key);
         if (arr.isEmpty()) { return out; }
