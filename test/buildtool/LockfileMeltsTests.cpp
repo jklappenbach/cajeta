@@ -233,3 +233,58 @@ TEST(LockfileMeltsTests, packagesAndMeltsEmptyWhenNoResolution) {
     EXPECT_NE(contents.find("\"packages\": []"), std::string::npos);
     std::filesystem::remove(path);
 }
+
+// Phase 6c acceptance: when two melts curate the same dep at
+// different versions, the later-listed melt wins (verified in
+// MeltResolverTests.laterMeltOverridesEarlierOnConflict) AND the
+// lockfile records the winning melt's name as provided-by. This
+// stitches the two pieces together — the resolver picks the winner
+// + records it in MeltResolution.depProvidedBy; the lockfile
+// composer carries that through to the packages[] entry.
+TEST(LockfileMeltsTests, laterMeltWinsAndLockfileRecordsProvidedBy) {
+    auto m = mustLoad(R"({
+        "details": { "name": "c", "version": "0.1.0" }
+    })");
+    auto props = resolve(m);
+
+    // The resolver's depProvidedBy map for a two-melt conflict has
+    // the later-listed melt as the source.
+    std::map<std::string, std::string> providedBy{
+        {"acme.lib", "b.melt@1.0.0"},
+    };
+
+    std::vector<ResolvedDependency> deps;
+    {
+        ResolvedDependency d;
+        d.name = "acme.lib"; d.version = "1.5.0";
+        d.resolvedFromRepo = "central"; d.sha256 = "sha256:bbb";
+        deps.push_back(d);
+    }
+
+    MeltResolution melts;
+    {
+        MeltResolution::Resolved r;
+        r.name = "a.melt"; r.version = "1.0.0";
+        r.resolvedFromRepo = "central"; r.sha256 = "sha256:aaa";
+        melts.resolvedMelts.push_back(r);
+    }
+    {
+        MeltResolution::Resolved r;
+        r.name = "b.melt"; r.version = "1.0.0";
+        r.resolvedFromRepo = "central"; r.sha256 = "sha256:bbb";
+        melts.resolvedMelts.push_back(r);
+    }
+
+    auto lf = composeLockfileWithResolution(
+        m, "manifest-source", props, deps, melts, providedBy, {},
+        "2026-06-01T00:00:00Z");
+
+    ASSERT_EQ(lf.packagesTyped.size(), 1u);
+    EXPECT_EQ(lf.packagesTyped[0].name,    "acme.lib");
+    EXPECT_EQ(lf.packagesTyped[0].version, "1.5.0");
+    EXPECT_EQ(lf.packagesTyped[0].providedBy, "b.melt@1.0.0");
+
+    ASSERT_EQ(lf.meltsTyped.size(), 2u);
+    EXPECT_EQ(lf.meltsTyped[0].name, "a.melt");
+    EXPECT_EQ(lf.meltsTyped[1].name, "b.melt");
+}

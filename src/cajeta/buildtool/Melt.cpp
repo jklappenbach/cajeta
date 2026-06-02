@@ -275,20 +275,39 @@ namespace cajeta::buildtool {
     llvm::Error applyMeltLookups(
         std::vector<DependencySpec>& deps,
         const MeltResolution& melts,
-        std::map<std::string, std::string>& providedByOut) {
+        std::map<std::string, std::string>& providedByOut,
+        std::vector<std::string>& warningsOut) {
         for (auto& dep : deps) {
-            if (dep.versionConstraint != "*") continue;
             auto it = melts.depConstraints.find(dep.name);
-            if (it == melts.depConstraints.end()) {
-                return err("dependency '" + dep.name +
-                           "' declared as '*' but no imported melt "
-                           "curates it — supply an explicit version "
-                           "or import a melt that pins it");
+            if (dep.versionConstraint == "*") {
+                if (it == melts.depConstraints.end()) {
+                    return err("dependency '" + dep.name +
+                               "' declared as '*' but no imported melt "
+                               "curates it — supply an explicit version "
+                               "or import a melt that pins it");
+                }
+                dep.versionConstraint = it->second;
+                auto byIt = melts.depProvidedBy.find(dep.name);
+                if (byIt != melts.depProvidedBy.end()) {
+                    providedByOut[dep.name] = byIt->second;
+                }
+                continue;
             }
-            dep.versionConstraint = it->second;
-            auto byIt = melts.depProvidedBy.find(dep.name);
-            if (byIt != melts.depProvidedBy.end()) {
-                providedByOut[dep.name] = byIt->second;
+            // Explicit version: keep the consumer's pin, but surface
+            // a divergence warning when a melt would have curated a
+            // different version. The operator sees in their build
+            // output exactly which curated guidance they overrode.
+            if (it != melts.depConstraints.end() &&
+                it->second != dep.versionConstraint) {
+                auto byIt = melts.depProvidedBy.find(dep.name);
+                std::string source = (byIt != melts.depProvidedBy.end())
+                                         ? byIt->second
+                                         : std::string("<melt>");
+                warningsOut.push_back(
+                    "dep '" + dep.name + "': consumer pins '" +
+                    dep.versionConstraint + "' but melt '" + source +
+                    "' curates '" + it->second +
+                    "' — using consumer's");
             }
         }
         return llvm::Error::success();

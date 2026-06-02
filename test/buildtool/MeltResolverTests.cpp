@@ -307,10 +307,12 @@ TEST(MeltResolverTests, applyMeltLookupsSubstitutesStarConstraint) {
       deps.push_back(d); }
 
     std::map<std::string, std::string> providedBy;
-    auto e = applyMeltLookups(deps, melts, providedBy);
+    std::vector<std::string> warnings;
+    auto e = applyMeltLookups(deps, melts, providedBy, warnings);
     ASSERT_FALSE((bool)e);
     EXPECT_EQ(deps[0].versionConstraint, "1.2.5");
     EXPECT_EQ(providedBy["acme.lib"], "platform.melt@1.0.0");
+    EXPECT_TRUE(warnings.empty());
 }
 
 TEST(MeltResolverTests, applyMeltLookupsErrorsWhenNoMeltProvides) {
@@ -321,7 +323,8 @@ TEST(MeltResolverTests, applyMeltLookupsErrorsWhenNoMeltProvides) {
       deps.push_back(d); }
 
     std::map<std::string, std::string> providedBy;
-    auto e = applyMeltLookups(deps, melts, providedBy);
+    std::vector<std::string> warnings;
+    auto e = applyMeltLookups(deps, melts, providedBy, warnings);
     ASSERT_TRUE((bool)e);
     std::string msg;
     llvm::raw_string_ostream os(msg);
@@ -341,10 +344,35 @@ TEST(MeltResolverTests, applyMeltLookupsLeavesExplicitConstraintsAlone) {
       deps.push_back(d); }
 
     std::map<std::string, std::string> providedBy;
-    auto e = applyMeltLookups(deps, melts, providedBy);
+    std::vector<std::string> warnings;
+    auto e = applyMeltLookups(deps, melts, providedBy, warnings);
     ASSERT_FALSE((bool)e);
     EXPECT_EQ(deps[0].versionConstraint, "1.4.0");
     EXPECT_TRUE(providedBy.empty());
+    // Divergence is captured as a warning even though the consumer's
+    // explicit version takes precedence.
+    ASSERT_EQ(warnings.size(), 1u);
+    EXPECT_NE(warnings[0].find("acme.lib"), std::string::npos);
+    EXPECT_NE(warnings[0].find("1.4.0"), std::string::npos);
+    EXPECT_NE(warnings[0].find("1.2.5"), std::string::npos);
+}
+
+TEST(MeltResolverTests, applyMeltLookupsExplicitMatchingMeltEmitsNoWarning) {
+    // When the consumer's explicit version equals what the melt
+    // curates, there's no divergence to warn about.
+    MeltResolution melts;
+    melts.depConstraints["acme.lib"] = "1.2.5";
+    melts.depProvidedBy["acme.lib"]  = "platform.melt@1.0.0";
+
+    std::vector<DependencySpec> deps;
+    { DependencySpec d; d.name = "acme.lib"; d.versionConstraint = "1.2.5";
+      deps.push_back(d); }
+
+    std::map<std::string, std::string> providedBy;
+    std::vector<std::string> warnings;
+    auto e = applyMeltLookups(deps, melts, providedBy, warnings);
+    ASSERT_FALSE((bool)e);
+    EXPECT_TRUE(warnings.empty());
 }
 
 // ─── end-to-end: resolveProjectDependencies wires the full pipe ───
