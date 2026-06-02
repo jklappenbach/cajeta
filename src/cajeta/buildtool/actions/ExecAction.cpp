@@ -8,8 +8,11 @@
 // (Phase 9).
 
 #include "cajeta/buildtool/Action.h"
+#include "cajeta/buildtool/Sandbox.h"
 
 #include <llvm/Support/Error.h>
+
+#include <cstdlib>
 
 #include <cerrno>
 #include <cstring>
@@ -102,6 +105,29 @@ namespace cajeta::buildtool {
                     if (!resolved) return resolved.takeError();
                     envEntries.push_back(kv.first.str() + "=" + *resolved);
                 }
+            }
+
+            // Phase 11: sandbox wrap. The exec action requests the
+            // (process, filesystem, env) capability set; network is
+            // off by default and toggled via the action param
+            // `network: true` (kept opt-in so a tool that calls
+            // home is loud about it).
+            {
+                SandboxPolicy pol;
+                pol.capabilities = {Capability::Process,
+                                    Capability::Filesystem,
+                                    Capability::Env};
+                if (auto net = params.getBoolean("network");
+                    net && *net) {
+                    pol.capabilities.insert(Capability::Network);
+                }
+                pol.projectRoot = workingDir.empty() ? "." : workingDir;
+                const char* disable = std::getenv("CAJETA_NO_SANDBOX");
+                pol.disabled = (disable && *disable);
+                auto wrap = wrapInSandbox(pol, argStrings, envEntries);
+                if (!wrap) return wrap.takeError();
+                argStrings = std::move(wrap->argv);
+                envEntries  = std::move(wrap->envEntries);
             }
 
             // Build argv / envp arrays as null-terminated C strings.

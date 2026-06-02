@@ -8,7 +8,9 @@
 #include "cajeta/buildtool/ManifestEditor.h"
 #include "cajeta/buildtool/Melt.h"
 #include "cajeta/buildtool/Properties.h"
+#include "cajeta/buildtool/Reproducibility.h"
 #include "cajeta/buildtool/Resolver.h"
+#include "cajeta/buildtool/Sandbox.h"
 #include "cajeta/buildtool/Task.h"
 #include "cajeta/buildtool/TaskRunner.h"
 #include "cajeta/buildtool/Upgrader.h"
@@ -1873,6 +1875,69 @@ namespace cajeta::buildtool {
             return failed == 0 ? 0 : 1;
         }
 
+        // Phase 11: `cajeta verify-reproducible <archive-a>
+        // <archive-b>` — byte-compare two archives produced from
+        // the same source/lockfile. Exit 0 on identical, 1 on
+        // diff. Used by the CI rebuild-and-compare verifier.
+        int verifyReproducibleCommand(int argc, const char* argv[]) {
+            if (argc < 4) {
+                std::cerr << "Usage: cajeta verify-reproducible "
+                             "<archive-a> <archive-b>\n";
+                return 1;
+            }
+            std::string a = argv[2];
+            std::string b = argv[3];
+            auto r = verifyReproducibleArchive(a, b);
+            if (r.identical) {
+                std::cout << "OK — archives are byte-identical ("
+                          << r.sizeA << " bytes)\n";
+                return 0;
+            }
+            std::cerr << "FAIL — " << r.diff << "\n";
+            return 1;
+        }
+
+        // Phase 11: `cajeta sandbox-info` — diagnostic dump of the
+        // sandbox layer's current view of the host. Surfaces
+        // bwrap-availability + which actions get which capability
+        // sets so consumers can audit their build before shipping.
+        int sandboxInfoCommand(int /*argc*/, const char* /*argv*/[]) {
+            std::cout << "Sandbox primitive: "
+                      << (hostSandboxAvailable() ? "available" : "missing")
+                      << "\n";
+            const char* dbg = std::getenv("CAJETA_NO_SANDBOX");
+            std::cout << "CAJETA_NO_SANDBOX:  "
+                      << (dbg && *dbg ? "set (sandbox bypassed)" : "unset")
+                      << "\n";
+            std::cout << "\nNative action capabilities:\n";
+            // Hand-listed so the output's stable; pulled from
+            // nativeActionCapabilities() above.
+            for (const char* name : {"echo", "copy", "mkdir",
+                                      "checksum", "sign", "verify",
+                                      "download", "exec", "build",
+                                      "clean", "test", "lint",
+                                      "package", "upload", "publish"}) {
+                auto caps = nativeActionCapabilities(name);
+                std::cout << "  " << name << ": ";
+                if (!caps) {
+                    std::cout << "<unknown action>\n";
+                    continue;
+                }
+                if (caps->empty()) {
+                    std::cout << "(none — pure data)\n";
+                    continue;
+                }
+                bool first = true;
+                for (auto c : *caps) {
+                    if (!first) std::cout << ", ";
+                    std::cout << capabilityToString(c);
+                    first = false;
+                }
+                std::cout << "\n";
+            }
+            return 0;
+        }
+
         int workspaceCommand(int argc, const char* argv[]) {
             if (argc < 3 ||
                 std::string_view(argv[2]) == "--help" ||
@@ -1976,7 +2041,9 @@ namespace cajeta::buildtool {
                 cmd == "add"  || cmd == "remove" ||
                 cmd == "upgrade" || cmd == "coverage" ||
                 cmd == "publish" || cmd == "trust" ||
-                cmd == "workspace") {
+                cmd == "workspace" ||
+                cmd == "verify-reproducible" ||
+                cmd == "sandbox-info") {
                 return false;
             }
             // Anything starting with `-` is a flag for the existing
@@ -2045,6 +2112,14 @@ namespace cajeta::buildtool {
         }
         if (cmd == "workspace") {
             *exitCodeOut = workspaceCommand(argc, argv);
+            return true;
+        }
+        if (cmd == "verify-reproducible") {
+            *exitCodeOut = verifyReproducibleCommand(argc, argv);
+            return true;
+        }
+        if (cmd == "sandbox-info") {
+            *exitCodeOut = sandboxInfoCommand(argc, argv);
             return true;
         }
         if (looksLikeTaskInvocation(argc, argv)) {
