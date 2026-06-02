@@ -8,6 +8,8 @@
 #include "../../type/CajetaView.h"
 #include "../../type/CajetaView.h"
 #include "../../type/CajetaArray.h"
+#include "../../type/CajetaVector.h"
+#include "../../type/VectorOps.h"
 #include "../../error/Exception.h"
 #include <functional>
 #include "Identifier.h"
@@ -63,6 +65,16 @@ namespace cajeta {
                     }
                 }
             }
+        }
+        // Vector component access: v.x/.y/.z/.w (and .r/.g/.b/.a) -> element
+        // type. Invalid components are left unresolved here; generateCode emits
+        // the clear diagnostic.
+        if (auto vecT = dynamic_pointer_cast<CajetaVector>(lhs->getResolvedType())) {
+            int lane = vecops::laneForComponentName(identifier);
+            if (lane >= 0 && (unsigned) lane < vecT->getLanes()) {
+                resolvedType = vecT->getElementType();
+            }
+            return;
         }
         auto klass = dynamic_pointer_cast<CajetaClass>(lhs->getResolvedType());
         if (!klass) {
@@ -251,6 +263,26 @@ namespace cajeta {
         // null resolvedType at resolve time.
         if (!lhs->getResolvedType()) {
             lhs->resolveTypes(module);
+        }
+        // Vector component read: v.x/.y/.z/.w (and .r/.g/.b/.a) -> extractelement.
+        if (auto vecT = dynamic_pointer_cast<CajetaVector>(lhs->getResolvedType())) {
+            int lane = vecops::laneForComponentName(identifier);
+            if (lane < 0) {
+                throw Exception(
+                    "'" + identifier + "' is not a vector component (use "
+                    ".x/.y/.z/.w or .r/.g/.b/.a)",
+                    "CAJETA_ERROR_VECTOR_COMPONENT");
+            }
+            if ((unsigned) lane >= vecT->getLanes()) {
+                throw Exception(
+                    "component '." + identifier + "' is out of range for "
+                    "Vector<...," + std::to_string(vecT->getLanes()) + ">",
+                    "CAJETA_ERROR_VECTOR_COMPONENT");
+            }
+            llvm::Value* vecVal = loadIfLValue(module, base, lhs);
+            resolvedType = vecT->getElementType();
+            return vecops::extractLane(*module->getBuilder(), vecVal,
+                                       (unsigned) lane);
         }
         auto klass = dynamic_pointer_cast<CajetaClass>(lhs->getResolvedType());
         if (!klass) {

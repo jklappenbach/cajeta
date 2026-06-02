@@ -7,6 +7,9 @@
 #include "cajeta/compile/CajetaModule.h"
 #include "cajeta/type/CajetaClass.h"
 #include "cajeta/type/CajetaArray.h"
+#include "cajeta/type/CajetaVector.h"
+#include "cajeta/type/CajetaConstantType.h"
+#include "cajeta/type/VectorOps.h"
 #include "cajeta/error/Exception.h"
 
 namespace cajeta {
@@ -23,9 +26,30 @@ namespace cajeta {
     // time (it needs each arg's resolvedType, which the surrounding
     // method's resolve-pass populates first); for now, resolvedType
     // stays null on diamond forms until generateCode fills it in.
+    // Built-in Vector<T,N>: resolve to the CajetaVector value type. Shared by
+    // resolveTypes and generateCode. typeArguments were captured at parse time
+    // (the element CajetaType + a CajetaConstantType lane count).
+    static CajetaVectorPtr resolveVectorNew(
+            CajetaModulePtr module, const string& typeName,
+            const vector<CajetaTypePtr>& typeArguments) {
+        if (typeName != "Vector" || typeArguments.size() != 2) return nullptr;
+        auto cv = dynamic_pointer_cast<CajetaConstantType>(typeArguments[1]);
+        if (!cv) {
+            throw Exception(
+                "Vector length N must be a positive integer constant",
+                "CAJETA_ERROR_VECTOR_LENGTH");
+        }
+        return CajetaVector::validateAndCreate(module, typeArguments[0],
+                                               cv->getValue());
+    }
+
     void NewExpression::resolveTypes(CajetaModulePtr module) {
         AbstractSyntaxNode::resolveTypes(module);
         if (typeName.empty()) return;
+        if (auto vt = resolveVectorNew(module, typeName, typeArguments)) {
+            resolvedType = vt;
+            return;
+        }
         // boundElementType wins when set: it was captured at parse
         // time when the template-substitution stack was live, so it
         // already reflects T → concrete-arg even though the stack is
@@ -78,6 +102,36 @@ namespace cajeta {
             throw cajeta::Exception(
                 "`shared` placement is only valid inside an @Kernel body "
                 "(GPU workgroup-shared memory)", "XPU-K03");
+        }
+        // Built-in Vector<T,N> construction -> SSA `<N x T>`, no alloc/heap.
+        // The `new`/`stack` keyword is purely syntactic here; the result is a
+        // register value (a value type, like a primitive).
+        if (auto vecTy = resolveVectorNew(module, typeName, typeArguments)) {
+            auto ccr = dynamic_pointer_cast<ClassCreatorRest>(creatorRest);
+            if (!ccr) {
+                throw Exception(
+                    "Vector construction requires a (a, b, ...) argument list",
+                    "CAJETA_ERROR_VECTOR_CONSTRUCT");
+            }
+            unsigned lanes = vecTy->getLanes();
+            auto& params = ccr->getParameters();
+            if (params.size() != lanes) {
+                throw Exception(
+                    "Vector<...," + std::to_string(lanes) + "> needs "
+                    + std::to_string(lanes) + " arguments (got "
+                    + std::to_string(params.size()) + ")",
+                    "CAJETA_ERROR_VECTOR_CONSTRUCT");
+            }
+            llvm::Type* elemTy = vecTy->getElementType()->getLlvmType();
+            llvm::IRBuilder<>* b = module->getBuilder();
+            std::vector<llvm::Value*> elems;
+            elems.reserve(lanes);
+            for (auto& p : params) {
+                llvm::Value* v = p.expression->generateCode(module);
+                v = loadIfLValue(module, v, p.expression);
+                elems.push_back(vecops::coerceScalar(*b, v, elemTy));
+            }
+            return vecops::buildVector(*b, elemTy, lanes, elems);
         }
         // Look up the target type by name. typeName names the class for `new Foo()`, or
         // the element type for `new T[...]`. Package is "" for primitives (e.g. int32).

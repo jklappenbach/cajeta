@@ -205,6 +205,33 @@ namespace cajeta {
             if (args[i] && args[i]->isWildcard()) continue;
             auto argClass = dynamic_pointer_cast<CajetaClass>(args[i]);
             for (auto& bound : param.bounds) {
+                // Numeric category markers — Numeric / Floating / Integral —
+                // are satisfied by a primitive's FLAGS, not a CajetaClass
+                // parent-chain. They are the only way to bound a type
+                // parameter to primitives (which carry no class ancestry, so
+                // the class-bound path below rejects them outright). Used by
+                // the built-in `Vector<T extends Numeric, N>`. Bool carries
+                // NUMBER_FLAG|INT_FLAG so it is admitted here; element types
+                // that forbid bool (Vector) reject it at their own interception.
+                const std::string& markerName = bound->getTypeName();
+                if (markerName == "Numeric" || markerName == "Floating"
+                        || markerName == "Integral") {
+                    CajetaTypeFlags f = args[i] ? args[i]->getTypeFlags() : 0;
+                    bool ok = (markerName == "Numeric"  && (f & NUMBER_FLAG))
+                           || (markerName == "Floating" && (f & FLOAT_FLAG))
+                           || (markerName == "Integral" && (f & INT_FLAG));
+                    if (!ok) {
+                        throw Exception(
+                            "template " + qName->toCanonical() + ": argument '"
+                                + (args[i] ? args[i]->getQName()->toCanonical()
+                                           : std::string("<null>"))
+                                + "' does not satisfy numeric bound '"
+                                + markerName + "' on parameter '" + param.name
+                                + "'",
+                            "CAJETA_ERROR_TYPE_PARAMETER_BOUND");
+                    }
+                    continue;
+                }
                 // Resolve the bound: try the bound's full canonical first,
                 // then fall back to its short name (matches how `extends`
                 // names are looked up). canonicalMap holds the template's

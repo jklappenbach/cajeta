@@ -370,6 +370,7 @@ classOrInterfaceType
 typeArgument
     : typeType
     | primitiveType
+    | integerLiteral
     | annotation* '?' ((EXTENDS | SUPER) typeType)?
     ;
 

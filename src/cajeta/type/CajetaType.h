@@ -43,6 +43,11 @@ namespace cajeta {
     #define BIT_64_FLAG             0b00000100000000000000
     #define BIT_128_FLAG            0b00001000000000000000
     #define ENUM_FLAG               0b00010000000000000000
+    // A compile-time integer constant carried as a non-type template argument
+    // (the N in Vector<T, N>) — never lowered to an llvm type. See CajetaConstantType.
+    #define CONSTANT_FLAG           0b00100000000000000000
+    // A fixed-width numeric vector lowering to llvm `<N x T>`. See CajetaVector.
+    #define VECTOR_FLAG             0b01000000000000000000
     #define BIT_SIZE_MASK           0b00001111111000000000
 
 

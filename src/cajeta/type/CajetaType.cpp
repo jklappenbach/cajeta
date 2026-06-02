@@ -12,6 +12,8 @@
 #include "CajetaCapture.h"
 #include "CajetaClass.h"
 #include "CajetaTask.h"
+#include "CajetaConstantType.h"
+#include "CajetaVector.h"
 #include "CajetaFunctionType.h"
 #include "../error/InvalidOperandException.h"
 #include "../error/Exception.h"
@@ -645,7 +647,37 @@ namespace cajeta {
                 // "Task" template class just to satisfy the
                 // isTemplate() check. See cajeta-docs/AsyncStatus.md §
                 // Plan: Task<T> as user-typeable template.
-                if (qName->getTypeName() == "Task"
+                if (qName->getTypeName() == "Vector"
+                        && targs->typeArgument().size() == 2) {
+                    // Built-in Vector<T, N> — a value vector lowering to
+                    // <N x T>. arg0: element type (a non-bool numeric
+                    // primitive). arg1: a positive integer-constant lane
+                    // count. Synthesized here (like Task) before the generic
+                    // template path; the element-numeric / N-positive
+                    // constraints are checked directly since Vector is not a
+                    // user template that would run TemplateInstantiator's bound
+                    // check. See CajetaVector.
+                    auto* elemArg = targs->typeArgument()[0];
+                    auto* lenArg = targs->typeArgument()[1];
+                    if (!elemArg->typeType()) {
+                        throw Exception(
+                            "Vector element type must be a non-bool numeric "
+                            "primitive type",
+                            "CAJETA_ERROR_VECTOR_ELEMENT_TYPE");
+                    }
+                    CajetaTypePtr elemT = fromContext(elemArg->typeType(), module);
+                    if (lenArg->integerLiteral() == nullptr) {
+                        throw Exception(
+                            "Vector length N must be a positive integer "
+                            "literal constant",
+                            "CAJETA_ERROR_VECTOR_LENGTH");
+                    }
+                    int64_t n = CajetaConstantType::parseLiteral(
+                        lenArg->integerLiteral());
+                    // Semantic checks (numeric/non-bool element, positive N)
+                    // are shared with the construction path. See CajetaVector.
+                    type = CajetaVector::validateAndCreate(module, elemT, n);
+                } else if (qName->getTypeName() == "Task"
                         && targs->typeArgument().size() == 1) {
                     auto* singleArg = targs->typeArgument()[0];
                     if (singleArg->typeType()) {
@@ -716,6 +748,19 @@ namespace cajeta {
                                     throw "wildcard sentinel construction failed — CajetaType::init not run?";
                                 }
                                 args.push_back(wild);
+                                continue;
+                            }
+                            if (targ->integerLiteral() != nullptr) {
+                                // Non-type (integer constant) template
+                                // argument — the `N` in `Vector<T, N>` and,
+                                // latently, any future user template that
+                                // takes a `uint32 N` parameter. Carried as a
+                                // CajetaConstantType so it flows through the
+                                // existing vector<CajetaTypePtr> + cache-key
+                                // machinery unchanged.
+                                args.push_back(CajetaConstantType::of(
+                                    CajetaConstantType::parseLiteral(
+                                        targ->integerLiteral())));
                                 continue;
                             }
                             if (!targ->typeType()) {

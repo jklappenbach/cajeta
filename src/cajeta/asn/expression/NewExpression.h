@@ -7,6 +7,7 @@
 #include "Expression.h"
 #include "CreatorRest.h"
 #include "../../type/CajetaType.h"
+#include "../../type/CajetaConstantType.h"
 #include "../../compile/CajetaModule.h"
 
 namespace cajeta {
@@ -74,6 +75,14 @@ namespace cajeta {
                         auto* lastTad = tads.back();
                         if (auto* targs = lastTad->typeArguments()) {
                             for (auto* targ : targs->typeArgument()) {
+                                if (targ->integerLiteral() != nullptr) {
+                                    // Non-type (integer) template argument —
+                                    // the `N` in `new Vector<float32, 4>(...)`.
+                                    typeArguments.push_back(CajetaConstantType::of(
+                                        CajetaConstantType::parseLiteral(
+                                            targ->integerLiteral())));
+                                    continue;
+                                }
                                 if (!targ->typeType()) {
                                     throw "wildcard type arguments not supported in v1";
                                 }

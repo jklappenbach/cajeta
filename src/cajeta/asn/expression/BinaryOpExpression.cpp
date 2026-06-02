@@ -9,6 +9,8 @@
 #include "../../type/CajetaClass.h"
 #include "../../type/CajetaView.h"
 #include "../../type/CajetaArray.h"
+#include "../../type/CajetaVector.h"
+#include "../../type/VectorOps.h"
 #include "../../util/MemoryManager.h"
 #include "Expression.h"
 #include "DotExpression.h"
@@ -405,6 +407,25 @@ namespace cajeta {
         llvm::Type* rt = r->getType();
         if (lt == rt) return {l, r};
 
+        // Vector broadcast: a `vec op scalar` / `scalar op vec` splats the
+        // scalar to the vector's shape so the element-wise op sees two
+        // same-shape vectors. Same-shape vectors hit the `lt == rt` fast path
+        // above. (Vector<T,N> is the Item-8-follow-on value type.)
+        if (lt->isVectorTy() || rt->isVectorTy()) {
+            if (lt->isVectorTy() && !rt->isVectorTy()) {
+                auto* vt = llvm::cast<llvm::FixedVectorType>(lt);
+                r = vecops::splat(*builder,
+                    vecops::coerceScalar(*builder, r, vt->getElementType()),
+                    vt->getNumElements());
+            } else if (rt->isVectorTy() && !lt->isVectorTy()) {
+                auto* vt = llvm::cast<llvm::FixedVectorType>(rt);
+                l = vecops::splat(*builder,
+                    vecops::coerceScalar(*builder, l, vt->getElementType()),
+                    vt->getNumElements());
+            }
+            return {l, r};
+        }
+
         if (lt->isFloatingPointTy() || rt->isFloatingPointTy()) {
             // Promote the int side to FP, then widen FP to the larger.
             if (lt->isIntegerTy()) l = builder->CreateSIToFP(l, rt);
@@ -747,6 +768,68 @@ namespace cajeta {
         // target address and only rhs needs r-value coercion.
         switch (binaryOp) {
             case BINARY_OP_ASSIGN: {
+                // Vector component/index assignment: `v.x = e` / `v[i] = e`.
+                // The vector lives in a slot reached via the base sub-expression
+                // (an l-value: a local alloca or a field GEP). Load the `<N x T>`,
+                // insertelement at the lane, store back. lhsAst's own generateCode
+                // yields the extracted element value, not a slot, so we bypass it
+                // and re-evaluate the base as an l-value.
+                {
+                    ExpressionPtr vbase;
+                    CajetaVectorPtr vvec;
+                    llvm::Value* vlane = nullptr;
+                    if (auto dotLhs = dynamic_pointer_cast<DotExpression>(lhsAst)) {
+                        auto& ch = dotLhs->getChildren();
+                        if (!ch.empty()) {
+                            if (auto be = dynamic_pointer_cast<Expression>(ch[0])) {
+                                if (!be->getResolvedType()) be->resolveTypes(module);
+                                if (auto vt = dynamic_pointer_cast<CajetaVector>(
+                                        be->getResolvedType())) {
+                                    int lane = vecops::laneForComponentName(
+                                        dotLhs->getIdentifier());
+                                    if (lane < 0 || (unsigned) lane >= vt->getLanes()) {
+                                        throw Exception(
+                                            "component '." + dotLhs->getIdentifier()
+                                            + "' is out of range for Vector<...,"
+                                            + std::to_string(vt->getLanes()) + ">",
+                                            "CAJETA_ERROR_VECTOR_COMPONENT");
+                                    }
+                                    vbase = be; vvec = vt;
+                                    vlane = builder->getInt32((unsigned) lane);
+                                }
+                            }
+                        }
+                    } else if (auto arrLhs =
+                            dynamic_pointer_cast<ArrayIndexExpression>(lhsAst)) {
+                        auto& ch = arrLhs->getChildren();
+                        if (ch.size() >= 2) {
+                            if (auto be = dynamic_pointer_cast<Expression>(ch[0])) {
+                                if (!be->getResolvedType()) be->resolveTypes(module);
+                                if (auto vt = dynamic_pointer_cast<CajetaVector>(
+                                        be->getResolvedType())) {
+                                    vbase = be; vvec = vt;
+                                    auto ie = dynamic_pointer_cast<Expression>(ch[1]);
+                                    vlane = loadIfLValue(
+                                        module, ch[1]->generateCode(module), ie);
+                                }
+                            }
+                        }
+                    }
+                    if (vbase && vvec) {
+                        llvm::Value* slot = vbase->generateCode(module);
+                        llvm::Type* vecLlvm = vvec->getLlvmType();
+                        llvm::Value* cur = builder->CreateLoad(vecLlvm, slot,
+                                                               "vec.cur");
+                        llvm::Value* rv = vecops::coerceScalar(*builder,
+                            loadR(rhs),
+                            vvec->getElementType()->getLlvmType());
+                        llvm::Value* nv = builder->CreateInsertElement(
+                            cur, rv, vlane, "vec.set");
+                        builder->CreateStore(nv, slot);
+                        result = nv;
+                        break;
+                    }
+                }
                 // Struct-to-struct assignment: both sides are addresses of struct allocas;
                 // emit a memcpy sized by the struct's allocation size from the data layout.
                 // STRUCT_FLAG (a real flag bit) is the right discriminator; STRUCT_TYPE_ID
@@ -1245,7 +1328,7 @@ namespace cajeta {
                     return ((pick(a) | pick(b)) & SIGNED_FLAG) != 0;
                 };
                 auto [pl, pr] = coerceArithPair(module, l, r);
-                if (pl->getType()->isFloatingPointTy()) {
+                if (pl->getType()->isFPOrFPVectorTy()) {
                     result = emitFpBinOp(module, pl, pr, llvm::Instruction::FAdd);
                 } else if (module->getFlags().overflowChecks == OverflowChecks::On
                         && pl->getType()->isIntegerTy()
@@ -1267,7 +1350,7 @@ namespace cajeta {
                     };
                     return ((pick(a) | pick(b)) & SIGNED_FLAG) != 0;
                 };
-                if (l->getType()->isFloatingPointTy()) {
+                if (l->getType()->isFPOrFPVectorTy()) {
                     result = emitFpBinOp(module, l, r, llvm::Instruction::FSub);
                 } else if (module->getFlags().overflowChecks == OverflowChecks::On
                         && l->getType()->isIntegerTy()
@@ -1289,7 +1372,7 @@ namespace cajeta {
                     };
                     return ((pick(a) | pick(b)) & SIGNED_FLAG) != 0;
                 };
-                if (l->getType()->isFloatingPointTy()) {
+                if (l->getType()->isFPOrFPVectorTy()) {
                     result = emitFpBinOp(module, l, r, llvm::Instruction::FMul);
                 } else if (module->getFlags().overflowChecks == OverflowChecks::On
                         && l->getType()->isIntegerTy()
@@ -1303,7 +1386,7 @@ namespace cajeta {
             }
             case BINARY_OP_DIV: {
                 auto [l, r] = coerceArithPair(module, loadL(lhs), loadR(rhs));
-                if (l->getType()->isFloatingPointTy()) {
+                if (l->getType()->isFPOrFPVectorTy()) {
                     result = emitFpBinOp(module, l, r, llvm::Instruction::FDiv);
                 } else {
                     if (module->getFlags().ubTraps) {
@@ -1371,7 +1454,7 @@ namespace cajeta {
             }
             case BINARY_OP_MOD: {
                 auto [l, r] = coerceArithPair(module, loadL(lhs), loadR(rhs));
-                if (l->getType()->isFloatingPointTy()) {
+                if (l->getType()->isFPOrFPVectorTy()) {
                     result = builder->CreateFRem(l, r);
                 } else {
                     if (module->getFlags().ubTraps) {
