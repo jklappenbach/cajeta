@@ -43,7 +43,9 @@ TEST(CompilerTests, canThrowOnInvalidInput) {
 // 2026-05-29: bumped 74 → 96 after the cajeta-xpu work merged the
 // cajeta.xpu.core prelude (Stream, Buffer, Thread, Workgroup, Barrier,
 // Event, Wave, …) into the implicitly-loaded stdlib — +22 structures.
-static constexpr size_t STDLIB_STRUCTURE_COUNT = 96;
+// 2026-06-01: bumped 96 → 98 — Item 8 added cajeta.xpu.core.Texture2D
+// and cajeta.xpu.core.Sampler to that prelude (+2 structures).
+static constexpr size_t STDLIB_STRUCTURE_COUNT = 98;
 
 TEST(CompilerTests, canParseOnValidShortPackage) {
     string inputPath = CAJETA_TEST_ROOT + string("/compile/code/src/cajeta/Test.cajeta");
