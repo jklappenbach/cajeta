@@ -3,6 +3,7 @@
 #include "cajeta/buildtool/Dependency.h"
 #include "cajeta/buildtool/Melt.h"
 #include "cajeta/buildtool/Plugin.h"
+#include "cajeta/buildtool/Workspace.h"
 
 #include <llvm/Support/Error.h>
 #include <llvm/Support/JSON.h>
@@ -143,6 +144,52 @@ namespace cajeta::buildtool {
         return lf;
     }
 
+    Lockfile composeWorkspaceLockfile(
+        const Workspace* workspace,
+        const WorkspaceLockfileInputs& inputs,
+        const ResolvedProperties& props,
+        const std::string& nowIso) {
+        Lockfile lf;
+        lf.lockfileVersion = 1;
+        lf.manifestChecksum = sha256Hex(inputs.workspaceManifestSource);
+        lf.generatorTool = "cajeta";
+        lf.generatorVersion = CAJETA_VERSION;
+        lf.resolvedAt = nowIso;
+        lf.properties = props.values;
+        lf.isWorkspace = true;
+        if (workspace) {
+            for (const auto& m : workspace->members) {
+                Lockfile::WorkspaceMemberEntry e;
+                e.name = memberShortName(m);
+                e.declaredPath = m.declaredPath;
+                auto it = inputs.memberManifestSources.find(e.name);
+                if (it != inputs.memberManifestSources.end()) {
+                    e.manifestChecksum = sha256Hex(it->second);
+                }
+                lf.workspaceMembers.push_back(std::move(e));
+            }
+            // Flatten per-member resolutions in declaration order so
+            // the on-disk lockfile is stable across hash-map
+            // iteration order.
+            for (const auto& m : workspace->members) {
+                auto memberName = memberShortName(m);
+                auto it = inputs.perMemberDeps.find(memberName);
+                if (it == inputs.perMemberDeps.end()) continue;
+                for (const auto& d : it->second) {
+                    ResolvedPackageEntry p;
+                    p.name = d.name;
+                    p.version = d.version;
+                    p.resolvedFromRepo = d.resolvedFromRepo;
+                    p.checksum = d.sha256;
+                    p.providedBy = "explicit";
+                    p.memberOwner = memberName;
+                    lf.packagesTyped.push_back(std::move(p));
+                }
+            }
+        }
+        return lf;
+    }
+
     DriftReport checkDrift(const Lockfile& lf,
                            const std::string& currentSource) {
         DriftReport rep;
@@ -183,7 +230,7 @@ namespace cajeta::buildtool {
             llvm::json::Array a;
             if (!lf.packagesTyped.empty()) {
                 for (const auto& p : lf.packagesTyped) {
-                    a.push_back(llvm::json::Object{
+                    llvm::json::Object obj{
                         {"name",          p.name},
                         {"version",       p.version},
                         {"resolved-from", p.resolvedFromRepo},
@@ -191,7 +238,14 @@ namespace cajeta::buildtool {
                         {"provided-by",   p.providedBy.empty()
                                           ? std::string("explicit")
                                           : p.providedBy},
-                    });
+                    };
+                    // Workspace discriminator — omitted on
+                    // single-package lockfiles so their disk shape
+                    // stays byte-identical to the pre-Phase-12 form.
+                    if (!p.memberOwner.empty()) {
+                        obj["member"] = p.memberOwner;
+                    }
+                    a.push_back(std::move(obj));
                 }
             } else {
                 a = lf.packagesRaw;
@@ -249,6 +303,19 @@ namespace cajeta::buildtool {
         {
             llvm::json::Array a = lf.overrides;
             root["overrides"] = llvm::json::Value(std::move(a));
+        }
+        if (lf.isWorkspace) {
+            llvm::json::Array members;
+            for (const auto& m : lf.workspaceMembers) {
+                members.push_back(llvm::json::Object{
+                    {"name",              m.name},
+                    {"path",              m.declaredPath},
+                    {"manifest-checksum", m.manifestChecksum},
+                });
+            }
+            root["workspace"] = llvm::json::Object{
+                {"members", llvm::json::Value(std::move(members))},
+            };
         }
 
         std::string text;
@@ -328,6 +395,7 @@ namespace cajeta::buildtool {
                 if (auto v = o->getString("resolved-from")) p.resolvedFromRepo = v->str();
                 if (auto v = o->getString("checksum"))      p.checksum = v->str();
                 if (auto v = o->getString("provided-by"))   p.providedBy = v->str();
+                if (auto v = o->getString("member"))        p.memberOwner = v->str();
                 if (!p.name.empty() && !p.version.empty()) {
                     lf.packagesTyped.push_back(std::move(p));
                 }
@@ -379,6 +447,23 @@ namespace cajeta::buildtool {
         }
         if (const auto* a = root->getArray("overrides")) {
             lf.overrides = *a;
+        }
+        if (const auto* ws = root->getObject("workspace")) {
+            lf.isWorkspace = true;
+            if (const auto* arr = ws->getArray("members")) {
+                for (const auto& v : *arr) {
+                    const auto* o = v.getAsObject();
+                    if (!o) continue;
+                    Lockfile::WorkspaceMemberEntry e;
+                    if (auto s = o->getString("name"))
+                        e.name = s->str();
+                    if (auto s = o->getString("path"))
+                        e.declaredPath = s->str();
+                    if (auto s = o->getString("manifest-checksum"))
+                        e.manifestChecksum = s->str();
+                    lf.workspaceMembers.push_back(std::move(e));
+                }
+            }
         }
         return lf;
     }

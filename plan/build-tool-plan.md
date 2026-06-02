@@ -1184,23 +1184,73 @@ across members.
 
 ### Deliverables
 
-- [ ] Workspace manifest schema (`workspace.members`,
+- [x] Workspace manifest schema (`workspace.members`,
       `workspace.shared-dependencies`).
-- [ ] Workspace-root manifest discovery.
-- [ ] Single lockfile across members.
-- [ ] Member-task shadow of workspace-task with the same name.
-- [ ] Cross-member task invocation
-      (`run-task <member>:<task>`).
-- [ ] `cajeta workspace build [-p member]` subcommand.
-- [ ] `cajeta workspace publish [-p member]` subcommand.
+      *Implemented:* `src/cajeta/buildtool/Workspace.{h,cpp}`
+      (`parseWorkspace`, `WorkspaceSharedDependency`).
+      Strict unknown-key rejection mirrors the top-level Manifest
+      loader.
+- [x] Workspace-root manifest discovery.
+      *Implemented:* `Workspace::discoverWorkspaceRoot(startDir)` —
+      walks parent directories looking for the nearest ancestor
+      whose `cajeta.json` carries a `workspace` block.
+- [x] Single lockfile across members.
+      *Implemented:* `composeWorkspaceLockfile` in `Lockfile.cpp`
+      plus the on-disk `workspace.members[]` block and `member`
+      discriminator on each `packages[]` entry. Single-package
+      lockfiles stay byte-identical to their pre-Phase-12 form
+      (the `member` field is omitted when empty).
+- [x] Member-task shadow of workspace-task with the same name.
+      *Implemented:* `workspaceRunForMember` in
+      `BuildToolCommands.cpp` — checks the member's parsed task
+      set first; falls back to the workspace-root task definition
+      when the member doesn't redeclare it.
+- [x] Cross-member task invocation (`run-task <member>:<task>`).
+      *Implemented:* `resolveCrossMemberRef` in
+      `BuildToolCommands.cpp` (runTaskCommand prologue). Member
+      lookup is short-name-based; unknown member produces a clear
+      "known: …" error.
+- [x] `cajeta workspace build [-p member]` subcommand.
+      *Implemented:* `workspaceCommand` + `workspaceTaskCommand` in
+      `BuildToolCommands.cpp`, registered in the dispatcher and
+      added to `looksLikeTaskInvocation`'s deny-list. Supports
+      `-p <member>`, `--member=<x>`, `--package=<x>`,
+      `--manifest=<root-path>`. Default order is topological
+      (`topologicallySortMembers`).
+- [x] `cajeta workspace publish [-p member]` subcommand.
+      *Implemented:* same `workspaceTaskCommand` with `taskName =
+      "publish"`. Also wires `test` for symmetry.
 
 ### Acceptance
 
-- [ ] A 3-member workspace builds in one invocation.
-- [ ] Changing one member rebuilds only that member +
+- [x] A 3-member workspace builds in one invocation.
+      *Pinned by:* `Phase12.threeMemberWorkspaceBuildsInOneInvocation`
+      — asserts the 3-member load + topological sort produces
+      `core → api → client` from a single `loadWorkspace` call,
+      matching what `cajeta workspace build` iterates.
+- [x] Changing one member rebuilds only that member +
       downstream members.
-- [ ] Workspace + member can both define a `build` task; the
+      *Pinned by:*
+      `Phase12.changingOneMemberMarksOnlyItAndDownstreamDirty` —
+      composes a workspace lockfile, mutates `core`'s manifest,
+      asserts `core/api/client` all become dirty while a
+      no-mutation rerun returns the empty set. Implemented via
+      `membersNeedingRebuild` in `Workspace.cpp` (manifest-checksum
+      drift detection + iterative downstream propagation).
+- [x] Workspace + member can both define a `build` task; the
       member's wins for that member's invocation.
+      *Pinned by:* `Phase12.memberTaskShadowsWorkspaceTaskOfSameName`
+      + `Phase12.workspaceTaskFallsThroughWhenMemberDoesNotDefine`.
+      Implementation in `workspaceRunForMember`.
+
+### Deferred (Phase 12 polish)
+
+- Automatic cross-member path-override synthesis (today members
+  must declare an explicit `settings.overrides.<sibling>.path` when
+  consuming a sibling member's source); the workspace surface
+  already provides `${workspace.root}` for the user.
+- `cajeta workspace clean` / `…lock` / `…info` — `build`, `publish`,
+  `test`, `members` are the v1 set.
 
 ---
 

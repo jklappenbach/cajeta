@@ -12,6 +12,7 @@
 #include "cajeta/buildtool/Task.h"
 #include "cajeta/buildtool/TaskRunner.h"
 #include "cajeta/buildtool/Upgrader.h"
+#include "cajeta/buildtool/Workspace.h"
 #include "cajeta/cli/SignatureVerify.h"
 #include "cajeta/cli/TrustStore.h"
 
@@ -1011,9 +1012,83 @@ namespace cajeta::buildtool {
 
         // Dispatch a named task. Parses CLI args into property /
         // task-param overrides, then invokes the runner.
+        // Phase 12: resolve a possibly-`<member>:<task>` invocation
+        // to the manifest path the task lives in, plus the bare task
+        // name to look up. Returns std::nullopt for plain task names
+        // (the caller falls back to the local `./cajeta.json`).
+        //
+        // The colon form requires a workspace root on the ancestor
+        // chain. The member is looked up by short name; an unknown
+        // member produces a structured error.
+        struct ResolvedTaskRef {
+            std::string manifestPath;
+            std::string taskName;
+        };
+        llvm::Expected<std::optional<ResolvedTaskRef>>
+        resolveCrossMemberRef(std::string_view raw) {
+            auto colon = raw.find(':');
+            if (colon == std::string_view::npos) return std::optional<ResolvedTaskRef>{};
+            // Bare leading colon, trailing colon, or empty halves
+            // are user typos — surface them rather than silently
+            // treating as a single-segment name.
+            std::string memberName{raw.substr(0, colon)};
+            std::string taskName{raw.substr(colon + 1)};
+            if (memberName.empty() || taskName.empty()) {
+                return llvm::createStringError(
+                    llvm::inconvertibleErrorCode(),
+                    "cross-member task '" + std::string(raw) +
+                    "' must be of the form '<member>:<task>'");
+            }
+            auto wsRoot = discoverWorkspaceRoot(".");
+            if (!wsRoot) {
+                return llvm::createStringError(
+                    llvm::inconvertibleErrorCode(),
+                    "'" + memberName + ":" + taskName +
+                    "' requires a workspace ancestor with a "
+                    "'workspace' block; none found from cwd");
+            }
+            auto ws = loadWorkspace(*wsRoot);
+            if (!ws) return ws.takeError();
+            for (const auto& m : ws->members) {
+                if (memberShortName(m) == memberName) {
+                    return std::optional<ResolvedTaskRef>{
+                        ResolvedTaskRef{m.manifestPath, taskName}};
+                }
+            }
+            std::string known;
+            for (const auto& m : ws->members) {
+                if (!known.empty()) known += ", ";
+                known += memberShortName(m);
+            }
+            return llvm::createStringError(
+                llvm::inconvertibleErrorCode(),
+                "no workspace member named '" + memberName +
+                "' (known: " + known + ")");
+        }
+
         int runTaskCommand(int argc, const char* argv[]) {
             std::string manifestPath = "./cajeta.json";
             std::string taskName = argv[1];
+            // Phase 12: `<member>:<task>` reroutes the task lookup
+            // to a sibling member's manifest before any property
+            // resolution runs. The bare task name is restored so
+            // the rest of the dispatch is identical to a normal
+            // run-task invocation.
+            {
+                auto ref = resolveCrossMemberRef(taskName);
+                if (!ref) {
+                    std::string msg;
+                    llvm::raw_string_ostream os(msg);
+                    os << ref.takeError();
+                    std::cerr << "cajeta " << taskName << ": "
+                              << msg << "\n";
+                    return 1;
+                }
+                if (ref->has_value()) {
+                    manifestPath = (**ref).manifestPath;
+                    taskName = (**ref).taskName;
+                }
+            }
             PropertyOverrides overrides;
             loadEnvOverrides(overrides);
             TaskInvocationParams cliParams;
@@ -1664,6 +1739,206 @@ namespace cajeta::buildtool {
             return "off";
         }
 
+        // Phase 12: `cajeta workspace …` subcommand surface.
+        //
+        // The user can be standing anywhere inside a workspace; we
+        // walk up to find the workspace root, load the workspace,
+        // and iterate (or single-pick via `-p`) the members.
+        //
+        // Per the spec a member-task shadows the workspace-task of
+        // the same name: when a member's manifest declares its own
+        // task with the requested name, that wins; otherwise we
+        // dispatch to the workspace-root's task definition with the
+        // member's manifest as the context.
+        int workspaceRunForMember(
+            const Workspace& ws,
+            const WorkspaceMember& m,
+            const std::string& taskName) {
+            // Member-defined task wins.
+            auto memberTasks = parseTasks(m.manifest);
+            if (!memberTasks) {
+                std::string msg;
+                llvm::raw_string_ostream os(msg);
+                os << memberTasks.takeError();
+                std::cerr << "cajeta workspace: member '"
+                          << memberShortName(m) << "': " << msg << "\n";
+                return 1;
+            }
+            std::string manifestForTask = m.manifestPath;
+            bool memberWins = (memberTasks->count(taskName) > 0);
+            if (!memberWins) {
+                // Fall back to the workspace-root's task definition
+                // by invoking against the workspace-root manifest
+                // — the member contributes its source tree via
+                // ${workspace.root}-relative paths in the action.
+                manifestForTask = ws.manifestPath;
+            }
+            PropertyOverrides overrides;
+            loadEnvOverrides(overrides);
+            auto project = loadProject(manifestForTask, overrides);
+            if (!project) {
+                std::string msg;
+                llvm::raw_string_ostream os(msg);
+                os << project.takeError();
+                std::cerr << "cajeta workspace: " << msg << "\n";
+                return 1;
+            }
+            if (!project->tasks.count(taskName)) {
+                std::cerr << "cajeta workspace: task '" << taskName
+                          << "' not defined in "
+                          << (memberWins ? "member '" + memberShortName(m) + "'"
+                                         : "workspace root")
+                          << "\n";
+                return 1;
+            }
+            ActionRegistry registry;
+            TaskInvocationParams cliParams;
+            auto outputs = runTask(
+                project->tasks, taskName, cliParams,
+                project->props, registry, &project->manifest);
+            if (!outputs) {
+                std::string msg;
+                llvm::raw_string_ostream os(msg);
+                os << outputs.takeError();
+                std::cerr << "cajeta workspace: " << memberShortName(m)
+                          << ":" << taskName << ": " << msg << "\n";
+                return 1;
+            }
+            std::cout << "[workspace] " << memberShortName(m)
+                      << ":" << taskName << " — "
+                      << (memberWins ? "member-defined" : "shadow of workspace task")
+                      << " — OK\n";
+            return 0;
+        }
+
+        int workspaceTaskCommand(
+            int argc, const char* argv[],
+            const std::string& taskName) {
+            std::string memberFilter;
+            std::string explicitRoot;
+            for (int i = 2; i < argc; ++i) {
+                std::string_view arg = argv[i];
+                std::string value;
+                if (arg == "-p" && i + 1 < argc) {
+                    memberFilter = argv[++i];
+                } else if (match(arg, "package", value)) {
+                    memberFilter = std::move(value);
+                } else if (match(arg, "member", value)) {
+                    memberFilter = std::move(value);
+                } else if (match(arg, "manifest", value)) {
+                    explicitRoot = std::move(value);
+                } else {
+                    std::cerr << "cajeta workspace " << taskName
+                              << ": unknown argument '" << arg << "'\n";
+                    return 1;
+                }
+            }
+            std::string rootPath = explicitRoot;
+            if (rootPath.empty()) {
+                auto found = discoverWorkspaceRoot(".");
+                if (!found) {
+                    std::cerr << "cajeta workspace " << taskName
+                              << ": no workspace root found from cwd\n";
+                    return 1;
+                }
+                rootPath = *found;
+            }
+            auto ws = loadWorkspace(rootPath);
+            if (!ws) {
+                std::string msg;
+                llvm::raw_string_ostream os(msg);
+                os << ws.takeError();
+                std::cerr << "cajeta workspace " << taskName
+                          << ": " << msg << "\n";
+                return 1;
+            }
+            auto order = topologicallySortMembers(*ws);
+            if (!order) {
+                std::string msg;
+                llvm::raw_string_ostream os(msg);
+                os << order.takeError();
+                std::cerr << "cajeta workspace " << taskName
+                          << ": " << msg << "\n";
+                return 1;
+            }
+            int failed = 0;
+            for (const auto* m : *order) {
+                if (!memberFilter.empty() &&
+                    memberShortName(*m) != memberFilter) {
+                    continue;
+                }
+                int rc = workspaceRunForMember(*ws, *m, taskName);
+                if (rc != 0) ++failed;
+            }
+            return failed == 0 ? 0 : 1;
+        }
+
+        int workspaceCommand(int argc, const char* argv[]) {
+            if (argc < 3 ||
+                std::string_view(argv[2]) == "--help" ||
+                std::string_view(argv[2]) == "-h") {
+                std::cout
+                    << "Usage: cajeta workspace <subcommand> [options]\n"
+                    << "\n"
+                    << "Subcommands:\n"
+                    << "  build   [-p <member>]       build every member "
+                       "(or one) in topological order\n"
+                    << "  publish [-p <member>]       publish every member "
+                       "(or one)\n"
+                    << "  test    [-p <member>]       run the test task on "
+                       "every member (or one)\n"
+                    << "  members                     list workspace members\n"
+                    << "\n"
+                    << "Options:\n"
+                    << "  --manifest=<path>           workspace-root "
+                       "manifest path (default: discover via ancestors)\n";
+                return argc < 3 ? 1 : 0;
+            }
+            std::string_view sub = argv[2];
+            int subArgc = argc - 1;
+            const char** subArgv = argv + 1;
+            // subArgv[0] is now the original argv[1] ("workspace")
+            // — the callee uses it for diagnostics, so let it stand.
+            if (sub == "build")   return workspaceTaskCommand(subArgc, subArgv, "build");
+            if (sub == "publish") return workspaceTaskCommand(subArgc, subArgv, "publish");
+            if (sub == "test")    return workspaceTaskCommand(subArgc, subArgv, "test");
+            if (sub == "members") {
+                std::string explicitRoot;
+                for (int i = 3; i < argc; ++i) {
+                    std::string v;
+                    if (match(argv[i], "manifest", v)) explicitRoot = std::move(v);
+                }
+                std::string rootPath = explicitRoot;
+                if (rootPath.empty()) {
+                    auto found = discoverWorkspaceRoot(".");
+                    if (!found) {
+                        std::cerr << "cajeta workspace members: "
+                                     "no workspace root found from cwd\n";
+                        return 1;
+                    }
+                    rootPath = *found;
+                }
+                auto ws = loadWorkspace(rootPath);
+                if (!ws) {
+                    std::string msg;
+                    llvm::raw_string_ostream os(msg);
+                    os << ws.takeError();
+                    std::cerr << "cajeta workspace members: "
+                              << msg << "\n";
+                    return 1;
+                }
+                std::cout << "Workspace root: " << ws->rootPath << "\n";
+                for (const auto& m : ws->members) {
+                    std::cout << "  " << memberShortName(m)
+                              << "  ->  " << m.declaredPath << "\n";
+                }
+                return 0;
+            }
+            std::cerr << "cajeta workspace: unknown subcommand '"
+                      << sub << "'\n";
+            return 1;
+        }
+
         int coverageCommand(int argc, const char* argv[]) {
             if (argc < 3 || std::string_view(argv[2]) == "--help" ||
                 std::string_view(argv[2]) == "-h") {
@@ -1700,7 +1975,8 @@ namespace cajeta::buildtool {
                 cmd == "init" || cmd == "archive" ||
                 cmd == "add"  || cmd == "remove" ||
                 cmd == "upgrade" || cmd == "coverage" ||
-                cmd == "publish" || cmd == "trust") {
+                cmd == "publish" || cmd == "trust" ||
+                cmd == "workspace") {
                 return false;
             }
             // Anything starting with `-` is a flag for the existing
@@ -1765,6 +2041,10 @@ namespace cajeta::buildtool {
         }
         if (cmd == "trust") {
             *exitCodeOut = trustCommand(argc, argv);
+            return true;
+        }
+        if (cmd == "workspace") {
+            *exitCodeOut = workspaceCommand(argc, argv);
             return true;
         }
         if (looksLikeTaskInvocation(argc, argv)) {

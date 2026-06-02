@@ -52,6 +52,12 @@ namespace cajeta::buildtool {
         // "explicit" when the consumer pinned it directly; otherwise
         // "<melt-name>@<melt-version>" of the supplying melt.
         std::string providedBy;
+        // Phase 12: when this lockfile is workspace-scoped, names
+        // the member that owns this entry. Empty for non-workspace
+        // (single-package) lockfiles. The disk shape omits the
+        // field when empty so single-package lockfiles stay
+        // byte-identical to their pre-Phase-12 form.
+        std::string memberOwner;
     };
 
     // One resolved plugin in the lockfile. Mirrors the top-level
@@ -98,6 +104,22 @@ namespace cajeta::buildtool {
         // Reserved for Phase 6 — overrides applied to the resolved
         // graph.
         llvm::json::Array overrides;
+
+        // Phase 12: workspace-scoped lockfile. When `isWorkspace` is
+        // true the document carries a top-level `workspace` block
+        // whose `members` array lists each member by short name +
+        // manifest checksum. Per-member resolved packages live in
+        // the same flat `packages` array with a `member` field
+        // discriminator so the surrounding tooling (drift checks,
+        // provided-by audit) operates uniformly across workspaces +
+        // single-package projects.
+        bool isWorkspace = false;
+        struct WorkspaceMemberEntry {
+            std::string name;              // memberShortName
+            std::string declaredPath;      // workspace-relative
+            std::string manifestChecksum;  // "sha256:<hex>"
+        };
+        std::vector<WorkspaceMemberEntry> workspaceMembers;
     };
 
     // Compute SHA-256 hex digest of a byte string. Returns
@@ -125,17 +147,42 @@ namespace cajeta::buildtool {
         const ResolvedProperties& props,
         const std::string& nowIso);
 
-    // Same as composeLockfile() but populates the typed packages +
-    // melts + plugins slots from the resolver outputs.
-    // `meltProvidedBy` maps dep name → "<melt-name>@<melt-version>";
-    // deps not in that map get "explicit" as their provided-by.
-    //
     // Forward declarations for the resolver/melt/plugin types are
     // pulled in via the corresponding TU; using forward decls keeps
     // this header lean for unit-test files that don't need them.
     struct ResolvedDependency;
     struct MeltResolution;
     struct ResolvedPlugin;
+    struct Workspace;
+
+    // Phase 12: compose a workspace lockfile from per-member
+    // resolutions. The result's `manifestChecksum` is computed over
+    // the workspace-root manifest source. Per-member packages are
+    // flattened into `packagesTyped` with a `memberOwner` annotation
+    // (carried via ResolvedPackageEntry.providedBy when no melt
+    // supplied the dep — for workspace mode the entry's `member`
+    // field on disk distinguishes ownership).
+    //
+    // `members` is the loaded workspace member list. `perMemberDeps`
+    // is indexed by `memberShortName(member)` — entries for absent
+    // members are silently dropped (member may legitimately have no
+    // deps). `nowIso` is the resolved-at timestamp.
+    struct WorkspaceLockfileInputs {
+        std::string workspaceManifestSource;
+        std::map<std::string, std::vector<ResolvedDependency>>
+            perMemberDeps;
+        std::map<std::string, std::string> memberManifestSources;
+    };
+    Lockfile composeWorkspaceLockfile(
+        const Workspace* workspace,
+        const WorkspaceLockfileInputs& inputs,
+        const ResolvedProperties& props,
+        const std::string& nowIso);
+
+    // Same as composeLockfile() but populates the typed packages +
+    // melts + plugins slots from the resolver outputs.
+    // `meltProvidedBy` maps dep name → "<melt-name>@<melt-version>";
+    // deps not in that map get "explicit" as their provided-by.
     Lockfile composeLockfileWithResolution(
         const Manifest& manifest,
         const std::string& manifestSource,
