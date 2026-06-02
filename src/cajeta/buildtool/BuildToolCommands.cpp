@@ -1398,6 +1398,105 @@ namespace cajeta::buildtool {
             return 0;
         }
 
+        // `cajeta publish` — sugar over the publish action. Walks the
+        // manifest for name + version, picks the archived-ir output
+        // path from settings.build, accepts --url / --auth / --
+        // signature / --archive overrides, and invokes the publish
+        // action through the registry so the action's retry + transport
+        // logic stays single-source.
+        int publishCommand(int argc, const char* argv[]) {
+            std::string manifestPath = "./cajeta.json";
+            std::string urlArg;
+            std::string archiveArg;
+            std::string signatureArg;
+            std::string keyIdArg;
+            std::string authArg;
+            for (int i = 2; i < argc; ++i) {
+                std::string_view a = argv[i];
+                std::string v;
+                if (match(a, "manifest", v))      manifestPath = std::move(v);
+                else if (match(a, "url", v))      urlArg       = std::move(v);
+                else if (match(a, "archive", v))  archiveArg   = std::move(v);
+                else if (match(a, "signature", v))signatureArg = std::move(v);
+                else if (match(a, "key-id", v))   keyIdArg     = std::move(v);
+                else if (match(a, "auth", v))     authArg      = std::move(v);
+                else if (a == "--help" || a == "-h") {
+                    std::cout
+                        << "Usage: cajeta publish [options]\n"
+                        << "\n"
+                        << "  --manifest=PATH    cajeta.json (default ./cajeta.json)\n"
+                        << "  --url=URL          registry URL (required)\n"
+                        << "  --archive=PATH     .cja to publish (default settings.build output)\n"
+                        << "  --signature=PATH   detached .sig\n"
+                        << "  --key-id=ID        opaque signing key id\n"
+                        << "  --auth=HEADER      Authorization header (e.g. 'Bearer T')\n";
+                    return 0;
+                }
+            }
+            if (urlArg.empty()) {
+                std::cerr << "cajeta publish: --url is required\n";
+                return 2;
+            }
+
+            auto m = loadManifestFile(manifestPath);
+            if (!m) {
+                std::string msg;
+                llvm::raw_string_ostream os(msg);
+                os << m.takeError();
+                std::cerr << "cajeta publish: " << msg << "\n";
+                return 1;
+            }
+
+            // Default archive path mirrors BuildAction's archived-ir
+            // emit shape: build/archive/<name>-<version>.cja.
+            std::string archive = archiveArg;
+            if (archive.empty()) {
+                auto sb = parseSettingsBuild(*m);
+                if (!sb) {
+                    std::string msg;
+                    llvm::raw_string_ostream os(msg);
+                    os << sb.takeError();
+                    std::cerr << "cajeta publish: " << msg << "\n";
+                    return 1;
+                }
+                std::string outDir = sb->outputDir.value_or("build");
+                archive = outDir + "/archive/" + m->details.name + "-" +
+                          m->details.version + ".cja";
+            }
+
+            ResolvedProperties props;
+            TaskContext ctx(props, &(*m));
+            ActionRegistry reg;
+            const Action* act = reg.get("publish");
+            if (!act) {
+                std::cerr << "cajeta publish: 'publish' action not registered\n";
+                return 1;
+            }
+
+            llvm::json::Object params{
+                {"archive", archive},
+                {"url",     urlArg},
+                {"name",    m->details.name},
+                {"version", m->details.version},
+            };
+            if (!signatureArg.empty()) params["signature"] = signatureArg;
+            if (!keyIdArg.empty())     params["key-id"]    = keyIdArg;
+            if (!authArg.empty())      params["auth"]      = authArg;
+
+            auto r = act->run(params, ctx);
+            if (!r) {
+                std::string msg;
+                llvm::raw_string_ostream os(msg);
+                os << r.takeError();
+                std::cerr << "cajeta publish: " << msg << "\n";
+                return 1;
+            }
+            for (const auto& kv : r->outputs) {
+                std::cout << kv.first << "=" << kv.second << "\n";
+            }
+            return 0;
+        }
+
         int coverageCommand(int argc, const char* argv[]) {
             if (argc < 3 || std::string_view(argv[2]) == "--help" ||
                 std::string_view(argv[2]) == "-h") {
@@ -1433,7 +1532,8 @@ namespace cajeta::buildtool {
             if (cmd == "info" || cmd == "tasks" || cmd == "task" ||
                 cmd == "init" || cmd == "archive" ||
                 cmd == "add"  || cmd == "remove" ||
-                cmd == "upgrade" || cmd == "coverage") {
+                cmd == "upgrade" || cmd == "coverage" ||
+                cmd == "publish") {
                 return false;
             }
             // Anything starting with `-` is a flag for the existing
@@ -1490,6 +1590,10 @@ namespace cajeta::buildtool {
         }
         if (cmd == "coverage") {
             *exitCodeOut = coverageCommand(argc, argv);
+            return true;
+        }
+        if (cmd == "publish") {
+            *exitCodeOut = publishCommand(argc, argv);
             return true;
         }
         if (looksLikeTaskInvocation(argc, argv)) {
