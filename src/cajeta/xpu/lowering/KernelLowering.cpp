@@ -9,6 +9,9 @@
 #include "../../type/FormalParameter.h"
 #include "../../type/CajetaType.h"
 #include "../../type/CajetaClass.h"
+#include "../../type/CajetaVector.h"
+#include "../../type/CajetaConstantType.h"
+#include "../../type/VectorOps.h"
 #include "../core/XpuAttributes.h"
 #include "../core/KernelArgTrait.h"
 #include "../../error/Exception.h"
@@ -29,6 +32,7 @@
 #include "../../type/StructureProperty.h"
 
 #include "llvm/IR/DataLayout.h"
+#include "llvm/IR/DerivedTypes.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/Module.h"
@@ -91,6 +95,19 @@ llvm::Type* deviceScalarType(const CajetaTypePtr& t, llvm::LLVMContext& ctx) {
         return llvm::Type::getInt1Ty(ctx);             // boolean (no BIT flag)
     }
     return nullptr;
+}
+
+// Map a Vector<T,N> CajetaType to a device LLVM `<N x T>`, built fresh in the
+// device context. Returns nullptr when `t` is not a CajetaVector (or its
+// element type isn't a device scalar). The element-type/lane data is read
+// structurally off the CajetaVector — the device walker carries no resolved
+// types, but a Vector local's declared type is a CajetaVector regardless.
+llvm::Type* deviceVectorType(const CajetaTypePtr& t, llvm::LLVMContext& ctx) {
+    auto vec = std::dynamic_pointer_cast<CajetaVector>(t);
+    if (!vec) return nullptr;
+    llvm::Type* elem = deviceScalarType(vec->getElementType(), ctx);
+    if (!elem) return nullptr;
+    return llvm::FixedVectorType::get(elem, vec->getLanes());
 }
 
 bool isBufferType(const CajetaTypePtr& t) {
@@ -360,6 +377,7 @@ private:
             if (!vd) continue;
             const std::string& nm = vd->getIdentifier();
             llvm::Type* slotTy = deviceScalarType(declType, ctx);
+            if (!slotTy) slotTy = deviceVectorType(declType, ctx);  // Vector<T,N>
             auto init = vd->getInitializer();
             if (!init || init->getChildren().empty()) {
                 // No initializer — reserve the slot; a later assignment fills it.
@@ -709,6 +727,10 @@ private:
     void lowerAssign(const std::shared_ptr<BinaryOpExpression>& bin) {
         ExpressionPtr lhs = exprChild(bin, 0);
         ExpressionPtr rhs = exprChild(bin, 1);
+        // A lane of a vector local (`v.x = …` / `v[i] = …`) isn't addressable —
+        // it's load-insertelement-store, not a GEP. Handled here before the
+        // l-value-address path (which only knows scalars and buffers).
+        if (tryVectorElementAssign(bin, lhs, rhs)) return;
         auto [addr, elemTy] = lowerLValueAddr(lhs);
         llvm::Value* rv = lowerExpr(rhs);
         BinaryOp op = bin->getBinaryOp();
@@ -776,16 +798,25 @@ private:
                 llvm::Type::getFloatTy(ctx),
                 std::stod(stripSuffix(fl->getRawValue())));
         }
+        if (auto ne = std::dynamic_pointer_cast<NewExpression>(expr)) {
+            // Built-in Vector<T,N> construction -> SSA `<N x T>` (no alloc). The
+            // only `new` form admitted in a kernel body.
+            return lowerNewVector(ne);
+        }
         if (auto mc = std::dynamic_pointer_cast<MethodCallExpression>(expr)) {
             return lowerBuiltinCall(mc);
         }
         if (auto ai = std::dynamic_pointer_cast<ArrayIndexExpression>(expr)) {
+            // Vector local `v[i]` reads a lane (extractelement), not memory.
+            if (llvm::Value* ve = vectorIndexRead(ai)) return ve;
             auto [addr, elemTy] = lowerLValueAddr(ai);
             return builder.CreateLoad(elemTy, addr, "elem");
         }
-        if (std::dynamic_pointer_cast<DotExpression>(expr)) {
+        if (auto dot = std::dynamic_pointer_cast<DotExpression>(expr)) {
             // POD-struct field read `name.field` (Item 7).
             if (llvm::Value* fv = structFieldRead(expr)) return fv;
+            // Vector component read `v.x` / `v.r` (extractelement).
+            if (llvm::Value* cv = vectorComponentRead(dot)) return cv;
             unsupported("field access — only POD-struct kernel params "
                         "support 'name.field'");
         }
@@ -867,6 +898,163 @@ private:
                                            : builder.CreateUIToFP(v, dst);
         return dstSigned ? builder.CreateFPToSI(v, dst)   // fp -> int
                          : builder.CreateFPToUI(v, dst);
+    }
+
+    // ---- Vector<T,N> (mirror of the host expression codegen) ------------
+    //
+    // The device walker has no resolved types, so a vector local is recognized
+    // by its slot type being an LLVM vector (`<N x T>`). Construction reads the
+    // element type + lane count straight off the NewExpression's captured type
+    // arguments. All IR is built through the shared vecops helpers, so the lane
+    // mapping / dot-reduce logic stays identical to the host path.
+
+    // `new Vector<T,N>(a, b, ...)` -> SSA `<N x T>`. Rejects any other `new`.
+    llvm::Value* lowerNewVector(const std::shared_ptr<NewExpression>& ne) {
+        const auto& targs = ne->getTypeArguments();
+        if (ne->getTypeName() != "Vector" || targs.size() != 2) {
+            unsupported("`new` in a kernel body (only Vector<T,N> construction "
+                        "is supported)");
+        }
+        llvm::Type* elemTy = deviceScalarType(targs[0], ctx);
+        auto cN = std::dynamic_pointer_cast<CajetaConstantType>(targs[1]);
+        if (!elemTy || !cN) unsupported("invalid Vector<T,N> type arguments");
+        unsigned lanes = (unsigned) cN->getValue();
+        auto ccr = std::dynamic_pointer_cast<ClassCreatorRest>(
+            ne->getCreatorRest());
+        if (!ccr) {
+            unsupported("Vector construction requires a (a, b, ...) argument "
+                        "list");
+        }
+        const auto& params = ccr->getParameters();
+        if (params.size() != lanes) {
+            unsupported("Vector<...," + std::to_string(lanes) + "> needs " +
+                        std::to_string(lanes) + " arguments (got " +
+                        std::to_string(params.size()) + ")");
+        }
+        std::vector<llvm::Value*> elems;
+        elems.reserve(lanes);
+        for (auto& p : params) {
+            elems.push_back(vecops::coerceScalar(
+                builder, lowerExpr(p.expression), elemTy));
+        }
+        return vecops::buildVector(builder, elemTy, lanes, elems);
+    }
+
+    // The `<N x T>` slot type of a vector local named `nm`, or nullptr if `nm`
+    // isn't a bound local of vector type.
+    llvm::FixedVectorType* vectorSlotType(const std::string& nm) {
+        auto it = slotTypes.find(nm);
+        if (it == slotTypes.end() || !it->second->isVectorTy()) return nullptr;
+        return llvm::cast<llvm::FixedVectorType>(it->second);
+    }
+
+    // `v.x` / `v.r` -> extractelement, or nullptr when `dot`'s base isn't a
+    // vector local. Throws on a component letter beyond the lane count.
+    llvm::Value* vectorComponentRead(const std::shared_ptr<DotExpression>& dot) {
+        if (dot->getChildren().empty()) return nullptr;
+        auto baseId = std::dynamic_pointer_cast<IdentifierExpression>(
+            std::dynamic_pointer_cast<Expression>(dot->getChildren()[0]));
+        if (!baseId) return nullptr;
+        llvm::FixedVectorType* vt = vectorSlotType(baseId->getTextValue());
+        if (!vt) return nullptr;
+        int lane = vecops::laneForComponentName(dot->getIdentifier());
+        if (lane < 0 || (unsigned) lane >= vt->getNumElements()) {
+            unsupported("vector component '." + dot->getIdentifier() +
+                        "' is out of range");
+        }
+        llvm::Value* vec = builder.CreateLoad(
+            vt, values[baseId->getTextValue()], baseId->getTextValue());
+        return vecops::extractLane(builder, vec, (unsigned) lane);
+    }
+
+    // `v[i]` -> extractelement, or nullptr when the base isn't a vector local.
+    llvm::Value* vectorIndexRead(const std::shared_ptr<ArrayIndexExpression>& ai) {
+        auto baseId = std::dynamic_pointer_cast<IdentifierExpression>(
+            exprChild(ai, 0));
+        if (!baseId) return nullptr;
+        llvm::FixedVectorType* vt = vectorSlotType(baseId->getTextValue());
+        if (!vt) return nullptr;
+        llvm::Value* vec = builder.CreateLoad(
+            vt, values[baseId->getTextValue()], baseId->getTextValue());
+        llvm::Value* idx = lowerExpr(exprChild(ai, 1));
+        return vecops::extractLane(builder, vec, idx);
+    }
+
+    // `v.x = e` / `v[i] = e` (and the compound `op=` forms): load the slot,
+    // insertelement the new lane value, store back. Returns false when `lhs`
+    // isn't a vector-local component/index — the caller then takes the normal
+    // (scalar / buffer) assignment path.
+    bool tryVectorElementAssign(const std::shared_ptr<BinaryOpExpression>& bin,
+                                const ExpressionPtr& lhs,
+                                const ExpressionPtr& rhs) {
+        std::string baseName;
+        llvm::Value* laneIdx = nullptr;
+        if (auto dot = std::dynamic_pointer_cast<DotExpression>(lhs)) {
+            if (dot->getChildren().empty()) return false;
+            auto baseId = std::dynamic_pointer_cast<IdentifierExpression>(
+                std::dynamic_pointer_cast<Expression>(dot->getChildren()[0]));
+            if (!baseId) return false;
+            llvm::FixedVectorType* vt = vectorSlotType(baseId->getTextValue());
+            if (!vt) return false;
+            int lane = vecops::laneForComponentName(dot->getIdentifier());
+            if (lane < 0 || (unsigned) lane >= vt->getNumElements()) {
+                unsupported("vector component '." + dot->getIdentifier() +
+                            "' is out of range");
+            }
+            baseName = baseId->getTextValue();
+            laneIdx = builder.getInt32((unsigned) lane);
+        } else if (auto ai = std::dynamic_pointer_cast<ArrayIndexExpression>(lhs)) {
+            auto baseId = std::dynamic_pointer_cast<IdentifierExpression>(
+                exprChild(ai, 0));
+            if (!baseId || !vectorSlotType(baseId->getTextValue())) return false;
+            baseName = baseId->getTextValue();
+            laneIdx = lowerExpr(exprChild(ai, 1));
+        } else {
+            return false;
+        }
+        llvm::FixedVectorType* vt = vectorSlotType(baseName);
+        llvm::Type* elemTy = vt->getElementType();
+        llvm::Value* slot = values[baseName];
+        llvm::Value* loaded = builder.CreateLoad(vt, slot, baseName);
+        llvm::Value* rv = lowerExpr(rhs);
+        BinaryOp op = bin->getBinaryOp();
+        if (op != BINARY_OP_ASSIGN) {
+            llvm::Value* cur = vecops::extractLane(builder, loaded, laneIdx);
+            auto sit = signedness.find(baseName);
+            rv = applyBinOp(compoundBase(op), cur, rv,
+                            sit != signedness.end() ? sit->second : true,
+                            elemTy->isFloatingPointTy());
+        }
+        rv = coerceTo(rv, elemTy);
+        builder.CreateStore(vecops::insertLane(builder, loaded, rv, laneIdx),
+                            slot);
+        return true;
+    }
+
+    // `a.dot(b)`, `v.length()`, `v.normalize()` on a vector local `recv`.
+    llvm::Value* lowerVectorMethod(
+            const std::string& recv, const std::string& name,
+            const std::shared_ptr<MethodCallExpression>& mc) {
+        llvm::FixedVectorType* vt = vectorSlotType(recv);
+        bool isFloat = vt->getElementType()->isFloatingPointTy();
+        llvm::Value* self = builder.CreateLoad(vt, values[recv], recv);
+        const auto& args = mc->getParameters();
+        if (name == "dot") {
+            if (args.size() != 1) unsupported("Vector.dot expects one argument");
+            llvm::Value* other = lowerExpr(args[0].expression);
+            return vecops::dot(builder, self, other, isFloat);
+        }
+        if (name == "length") {
+            if (!isFloat) unsupported("Vector.length requires a "
+                                      "floating-point element type");
+            return vecops::length(builder, self);
+        }
+        if (name == "normalize") {
+            if (!isFloat) unsupported("Vector.normalize requires a "
+                                      "floating-point element type");
+            return vecops::normalize(builder, self);
+        }
+        unsupported("unknown Vector method '" + name + "'");
     }
 
     // Decode `name.field` on a POD-struct kernel param to its field record, or
@@ -1024,6 +1212,11 @@ private:
                 return target.waveReduceSum(builder, mod,
                                             lowerExpr(args[0].expression));
             }
+        }
+        // Vector<T,N> instance methods: a.dot(b), v.length(), v.normalize().
+        // `recv` names a vector local.
+        if (!recv.empty() && vectorSlotType(recv)) {
+            return lowerVectorMethod(recv, name, mc);
         }
         // Texture2D.sample(sampler, u, v) (Item 8). `recv` names a texture kernel
         // param; the first arg is a sampler kernel param, then the normalized
@@ -1190,7 +1383,9 @@ private:
     llvm::Value* applyBinOp(BinaryOp op, llvm::Value* l, llvm::Value* r,
                             bool sign, bool /*fpHint*/) {
         unifyOperands(l, r, sign);
-        bool fp = l->getType()->isFloatingPointTy();
+        // isFPOrFPVectorTy so element-wise `<N x float>` arithmetic routes to
+        // CreateFAdd/… (a bare isFloatingPointTy is false for a vector type).
+        bool fp = l->getType()->isFPOrFPVectorTy();
         switch (op) {
             case BINARY_OP_ADD: return fp ? builder.CreateFAdd(l, r) : builder.CreateAdd(l, r);
             case BINARY_OP_SUB: return fp ? builder.CreateFSub(l, r) : builder.CreateSub(l, r);
@@ -1221,6 +1416,23 @@ private:
         llvm::Type* lt = l->getType();
         llvm::Type* rt = r->getType();
         if (lt == rt) return;
+        // Vector op scalar: broadcast the scalar to the vector's shape (coercing
+        // its element type first). Two different-shape vectors are a type error
+        // the verifier catches; same-shape vectors took the `lt == rt` fast path.
+        bool lVec = lt->isVectorTy(), rVec = rt->isVectorTy();
+        if (lVec != rVec) {
+            auto* vt = llvm::cast<llvm::FixedVectorType>(lVec ? lt : rt);
+            llvm::Type* elemTy = vt->getElementType();
+            unsigned n = vt->getNumElements();
+            if (lVec) {
+                r = vecops::splat(builder,
+                                  vecops::coerceScalar(builder, r, elemTy), n);
+            } else {
+                l = vecops::splat(builder,
+                                  vecops::coerceScalar(builder, l, elemTy), n);
+            }
+            return;
+        }
         bool lFp = lt->isFloatingPointTy(), rFp = rt->isFloatingPointTy();
         if (lFp || rFp) {
             llvm::Type* fT = lFp ? lt : rt;
@@ -1396,8 +1608,10 @@ static std::vector<LoweringTarget::KernelParam> collectParams(
             bool elemSigned = true;
             if (auto cls = std::dynamic_pointer_cast<CajetaClass>(t)) {
                 if (!cls->getTypeArguments().empty()) {
-                    elem = deviceScalarType(cls->getTypeArguments()[0], ctx);
-                    elemSigned = typeIsSigned(cls->getTypeArguments()[0]);
+                    CajetaTypePtr arg0 = cls->getTypeArguments()[0];
+                    elem = deviceScalarType(arg0, ctx);
+                    if (!elem) elem = deviceVectorType(arg0, ctx);  // Buffer<Vector<..>>
+                    elemSigned = typeIsSigned(arg0);
                 }
             }
             if (!elem) elem = llvm::Type::getFloatTy(ctx);  // default element
