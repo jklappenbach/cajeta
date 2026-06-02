@@ -33,6 +33,11 @@ find_package(OpenSSL REQUIRED)
 # header surface is reachable from test code that exercises the
 # in-process HTTP fixture server.
 find_package(CURL REQUIRED)
+# zlib is used unconditionally by the OCI image writer (Phase 9, gzip
+# layer encoding). It's also pulled in by lld below — that block stays
+# but is now redundant on the linker side. Doubling the find_package
+# is a no-op (CMake caches the target).
+find_package(ZLIB REQUIRED)
 
 # LLVM (since 18) expects an IMPORTED target zstd::libzstd_shared.
 # Prefer the proper find_package(zstd CONFIG) path — MSYS2 (mingw-w64),
@@ -543,6 +548,7 @@ target_link_libraries(${CMAKE_PROJECT_NAME}_lib
         ${LLVM_LIBS}
         glog::glog
         zstd
+        ZLIB::ZLIB
         OpenSSL::Crypto
         CURL::libcurl)
 # The native runtime (cajeta_runtime.c, embedded in this lib) uses

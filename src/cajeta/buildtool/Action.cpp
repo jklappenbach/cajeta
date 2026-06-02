@@ -144,6 +144,9 @@ namespace cajeta::buildtool {
     std::unique_ptr<Action> makeBuildAction();
     std::unique_ptr<Action> makeTestAction();
     std::unique_ptr<Action> makeCleanAction();
+    std::unique_ptr<Action> makePackageAction();
+    std::unique_ptr<Action> makeUploadAction();
+    std::unique_ptr<Action> makePublishAction();
 
     ActionRegistry::ActionRegistry() {
         auto reg = [&](std::unique_ptr<Action> a) {
@@ -165,6 +168,10 @@ namespace cajeta::buildtool {
         reg(makeCleanAction());
         // Phase 7a: test action.
         reg(makeTestAction());
+        // Phase 9: distribution actions.
+        reg(makePackageAction());
+        reg(makeUploadAction());
+        reg(makePublishAction());
     }
 
     const Action* ActionRegistry::get(const std::string& name) const {
