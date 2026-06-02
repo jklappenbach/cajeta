@@ -21,6 +21,20 @@ import cajeta.lang.String;
  * (Tier 1 + 2) bypass JsonValue entirely and pay zero overhead.
  */
 public class JsonValue {
+
+    // Named constants for the kind discriminator. Match the comment
+    // table above; exposed so user code can compare against
+    // `JsonValue.OBJECT` / `JsonValue.STRING` etc. instead of bare
+    // ints. Kept on JsonValue (rather than a separate enum class)
+    // so the discriminator stays a plain int32 — no enum allocation
+    // per kind check.
+    public static final int32 NULL    = 0;
+    public static final int32 BOOLEAN = 1;
+    public static final int32 NUMBER  = 2;
+    public static final int32 STRING  = 3;
+    public static final int32 ARRAY   = 4;
+    public static final int32 OBJECT  = 5;
+
     int32 kind;
     boolean boolVal;
     int64 numVal;
