@@ -24,6 +24,8 @@
 //   sha256    sha256 of the archive bytes (re-confirmed)
 
 #include "cajeta/buildtool/Action.h"
+#include "cajeta/buildtool/Lockfile.h"
+#include "cajeta/buildtool/Provenance.h"
 #include "cajeta/buildtool/Retry.h"
 
 #include <llvm/Support/Error.h>
@@ -146,6 +148,44 @@ namespace cajeta::buildtool {
                 authHeader = v->str();
             }
 
+            // Phase 13: SLSA v1 provenance attached to the archive
+            // when the caller asks for it (`attestation: true`).
+            // The composed JSON lives next to the archive as
+            // `<archive>.attestation` and is also uploaded as the
+            // `attestation` form field. `cajeta install` reads the
+            // sidecar back and verifies the digest + shape.
+            std::string attestationPath;
+            if (auto v = params.getBoolean("attestation"); v && *v) {
+                ProvenanceInputs prov;
+                prov.archiveName = fs::path(archive).filename().string();
+                prov.archiveSha256 = sha;
+                if (auto x = params.getString("manifest-checksum"))
+                    prov.manifestChecksum = x->str();
+                if (auto x = params.getString("lockfile-checksum"))
+                    prov.lockfileChecksum = x->str();
+                if (auto x = params.getString("compiler-version"))
+                    prov.compilerVersion = x->str();
+                else prov.compilerVersion = CAJETA_VERSION;
+                if (auto x = params.getString("flavor"))
+                    prov.flavor = x->str();
+                if (auto x = params.getString("target"))
+                    prov.target = x->str();
+                if (auto x = params.getString("builder-id"))
+                    prov.builderId = x->str();
+                prov.startedOn = nowIsoUtc();
+                prov.finishedOn = prov.startedOn;
+                std::string body = composeProvenanceJson(prov);
+                attestationPath = archive + ".attestation";
+                std::ofstream att(attestationPath,
+                                  std::ios::binary | std::ios::trunc);
+                if (!att) {
+                    return err("publish: cannot write attestation '" +
+                               attestationPath + "'");
+                }
+                att.write(body.data(),
+                          static_cast<std::streamsize>(body.size()));
+            }
+
             RetryPolicy policy;
             policy.isTransient = defaultNetworkTransient;
             if (auto v = params.getInteger("retries")) {
@@ -203,6 +243,11 @@ namespace cajeta::buildtool {
                     ::curl_mime_data(p, keyId.c_str(),
                                      CURL_ZERO_TERMINATED);
                 }
+                if (!attestationPath.empty()) {
+                    auto* p = ::curl_mime_addpart(mime);
+                    ::curl_mime_name(p, "attestation");
+                    ::curl_mime_filedata(p, attestationPath.c_str());
+                }
 
                 respBody.clear();
                 ::curl_easy_setopt(curl, CURLOPT_URL, publishUrl.c_str());
@@ -253,6 +298,9 @@ namespace cajeta::buildtool {
             result.outputs["name"]    = nameV->str();
             result.outputs["version"] = versionV->str();
             if (!keyId.empty()) result.outputs["key-id"] = keyId;
+            if (!attestationPath.empty()) {
+                result.outputs["attestation"] = attestationPath;
+            }
             return result;
         }
     };

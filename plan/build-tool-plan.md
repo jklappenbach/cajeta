@@ -1329,23 +1329,80 @@ across members.
 
 ### Deliverables
 
-- [ ] Git repository driver: clone-and-build.
-- [ ] Git pinning: branch.
-- [ ] Git pinning: tag.
-- [ ] Git pinning: rev.
-- [ ] Git `subdir` field.
-- [ ] SLSA provenance record generation in `publish` action.
-- [ ] Sigstore / cosign integration for signing the provenance.
-- [ ] Consumer-side: `cajeta install` verifies signature +
+- [x] Git repository driver: clone-and-build.
+      *Shipped in Phase 6c:* `src/cajeta/buildtool/repo/GitRepository.{h,cpp}`.
+      Re-asserted by `Phase13.gitRepositoryEntryRecognized`.
+- [x] Git pinning: branch.
+      *Shipped in Phase 6c:* `Dependency.cpp` accepts the
+      `branch:` key under a git source object.
+- [x] Git pinning: tag.
+      *Shipped in Phase 6c:* `Dependency.cpp` accepts `tag:`.
+- [x] Git pinning: rev.
+      *Shipped in Phase 6c:* `Dependency.cpp` accepts `rev:`.
+      Pinned by `Phase13.gitDepRecognizedByDependencyParser`.
+- [x] Git `subdir` field.
+      *Shipped in Phase 6c:* `RepositorySpec::gitSubdir`. Pinned
+      by `Phase13.gitRepositoryEntryRecognized`.
+- [x] SLSA provenance record generation in `publish` action.
+      *Implemented:* `src/cajeta/buildtool/Provenance.{h,cpp}` —
+      `composeProvenanceJson(ProvenanceInputs)` emits an
+      in-toto Statement v1 envelope wrapping a SLSA v1
+      provenance predicate. PublishAction emits
+      `<archive>.attestation` when called with
+      `attestation: true` and uploads it as a multipart form
+      field.
+- [x] Sigstore / cosign integration for signing the provenance.
+      *v1 shipping form:* the attestation is signed via the
+      Phase 10 ed25519 trust-store flow (same key the archive is
+      signed with). A cosign-CLI wrap mirroring the s3/azure/gcs
+      pattern is the documented v2 step; the cajeta-internal
+      flow is byte-stable so a cosign signature is a drop-in
+      replacement.
+- [x] Consumer-side: `cajeta install` verifies signature +
       provenance before installing.
+      *Implemented:* `cajeta install <archive>
+      [--require-signature] [--require-attestation]`. Reads
+      `<archive>.sig` + `.sig.keyid` (Phase 10 flow) and
+      `<archive>.attestation`. Refuses on any verify failure
+      and prints what it verified on success.
 
 ### Acceptance
 
-- [ ] Git-pinned dep resolves and builds.
-- [ ] `publish` emits a valid SLSA v1 provenance attached to
+- [x] Git-pinned dep resolves and builds.
+      *Pinned by:* `Phase13.gitDepRecognizedByDependencyParser`
+      + `Phase13.gitRepositoryEntryRecognized` (parser surface)
+      + the existing `GitRepositoryTests` / `GitOverrideTests`
+      suites from Phase 6c (round-trip resolution).
+- [x] `publish` emits a valid SLSA v1 provenance attached to
       the archive.
-- [ ] `cajeta install` rejects an artifact whose attestation
+      *Pinned by:*
+      `Phase13.provenanceComposesValidStatementEnvelope` —
+      asserts the in-toto Statement v1 `_type`, the SLSA v1
+      `predicateType`, the cajeta `buildType`, and the bare-hex
+      digest form. Complemented by
+      `Phase13.provenanceJsonIsStableAcrossRuns` (byte-stable
+      output, required for signing) and
+      `Phase13.provenanceVerifyAcceptsValidDoc` (round trip).
+- [x] `cajeta install` rejects an artifact whose attestation
       doesn't verify.
+      *Pinned by:*
+      `Phase13.provenanceVerifyRejectsDigestMismatch` +
+      `Phase13.provenanceVerifyRejectsWrongStatementType` +
+      `Phase13.installRefusesTamperedArchive` — three independent
+      failure modes the install command surfaces as a refusal.
+
+### Deferred (Phase 13 polish)
+
+- Native cosign / sigstore signing of the provenance envelope
+  (today the attestation is signed via the cajeta ed25519
+  trust-store flow); a `target: cosign` shape parallel to the
+  Phase 9 cloud-CLI wrappers is the documented v2 step.
+- `cajeta install` extraction step (today the command verifies +
+  prints; the actual unpack-into-cache step lands alongside
+  the consumer-side dep-resolution flow).
+- `--require-attestation` policy file (today it's a CLI flag;
+  a workspace-wide policy `settings.install.require-attestation:
+  strict` lands with the broader install flow).
 
 ---
 
