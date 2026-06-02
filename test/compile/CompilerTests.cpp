@@ -55,7 +55,15 @@ TEST(CompilerTests, canThrowOnInvalidInput) {
 // the set of eagerly-instantiated stream wrappers visible at module-
 // load time (the new sret signatures pull in additional template
 // monomorphizations that the heap-return path resolved lazily).
-static constexpr size_t STDLIB_STRUCTURE_COUNT = 110;
+// 2026-06-02: bumped 110 → 123 after the feature/build-system merge.
+// New eagerly-instantiated stdlib structures: cajeta.collection.Cache +
+// CacheNode (Phase 5b spin-off), cajeta.codec.json typed-getter
+// monomorphizations (Optional<String>, Optional<int32>, Optional<int64>,
+// Optional<boolean>, Optional<JsonArray>, Optional<JsonObject>), and the
+// ArrayList<String> / `#ArrayList<String>` instantiations from
+// JsonObject::keys + getStringArray now that those returns are marked
+// for ownership transfer.
+static constexpr size_t STDLIB_STRUCTURE_COUNT = 123;
 
 TEST(CompilerTests, canParseOnValidShortPackage) {
     string inputPath = CAJETA_TEST_ROOT + string("/compile/code/src/cajeta/Test.cajeta");
