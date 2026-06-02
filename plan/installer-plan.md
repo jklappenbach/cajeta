@@ -293,12 +293,14 @@ Verbs: `cvm toolchain install <ver>`, `cvm default <ver>`, `cvm which`,
       `install(... RUNTIME_DEPENDENCY_SET)` (transitive `file(GET_RUNTIME_
       DEPENDENCIES)`, not a hardcoded list). *(Verified: 13 DLLs bundled incl.
       `libLLVM-22.dll`; installed binary runs under a clean PATH with no MinGW.)*
-- [ ] **Optional plugin feature** (D8): surface the plugin post-install. **Design
+- [x] **Optional plugin feature** (D8): surface the plugin post-install. **Design
       note:** a per-machine MSI custom action runs as **LocalSystem**, so it must
       NOT auto-run `cajeta ide install` (that would target the SYSTEM profile, not
-      the user's). Plan: a final-dialog/readme hint telling the user to run
-      `cajeta ide install` (now on PATH). The embed + verb (§7) are done; only the
-      MSI hint UI remains.
+      the user's). *(Done: the finish dialog shows a hint to run `cajeta ide
+      install` (now on PATH), via `WIXUI_EXITDIALOGOPTIONALTEXT` set from a
+      `#PRODUCT` patch fragment in `cmake/wix/path-patch.xml` — a printed hint,
+      not a custom action. Verified: `cpack -G WIX` builds clean (WiX v5) and the
+      property is present in the generated MSI Property table.)*
 - [ ] Build + **install-test on a clean Windows runner**: `msiexec /i … /qn`,
       fresh shell, `--version`, compile a sample, plugin-feature on/off,
       uninstall cleanly. *(Partial: admin-extract (`msiexec /a`) payload verified
