@@ -123,6 +123,25 @@ const char* kLaneSource =
     "    }\n"
     "}\n";
 
+// out[t] = Wave.width() (Item 9). Reads the SubgroupSize builtin directly.
+// Every lane in a dispatch sees the same subgroup size W ∈ {32, 64}, so the
+// width-agnostic check is the same as for reduceSum(1): all lanes agree on a
+// valid wave width. On Vulkan this lowers to the spv.subgroup.size builtin read
+// (the spv.wave.get.lane.count intrinsic the SPIR-V backend still can't select
+// is no longer used) — so Wave.width() now runs natively on Vulkan.
+const char* kWidthSource =
+    "package test;\n"
+    "import cajeta.xpu.core.Buffer;\n"
+    "import cajeta.xpu.core.Thread;\n"
+    "import cajeta.xpu.core.Wave;\n"
+    "public class M {\n"
+    "    @Kernel\n"
+    "    public static void wavewidth(Buffer<uint32> out) {\n"
+    "        uint32 t = Thread.x();\n"
+    "        out[t] = Wave.width();\n"
+    "    }\n"
+    "}\n";
+
 // reduceSum(1) over a full wave == wave width; the only real wave sizes are 32
 // and 64, and every lane must agree (block is a multiple of both).
 void expectUniformWaveWidth(const std::vector<uint32_t>& out) {
@@ -368,4 +387,80 @@ TEST(XpuWaveDeviceTests, vulkanLaneIdRunsOnDevice) {
     vk.free(dOut);
     for (unsigned i = 0; i < kVerify; ++i)
         EXPECT_EQ(out[i], i) << "lane " << i;
+}
+
+// Item 9: Wave.width() on-device. Was ⛔ on Vulkan — the SPIR-V backend cannot
+// select llvm.spv.wave.get.lane.count (still true through LLVM 23). The fix
+// routes Wave.width() to the selectable spv.subgroup.size builtin read instead,
+// so it now runs natively. Every lane reports the same valid wave width.
+TEST(XpuWaveDeviceTests, amdgpuWaveWidthRunsOnDevice) {
+    if (!cajeta::xpu::amd::HipDriver::available()) {
+        GTEST_SKIP() << "no ROCm/HIP device available";
+    }
+    Compiler compiler;
+    auto module = compileForInspection(compiler, kWidthSource);
+    auto k = findMethod(module->getStructures()["test.M"], "wavewidth");
+    ASSERT_NE(k, nullptr);
+
+    auto tm = cajeta::xpu::amd::createAmdgpuTargetMachine("gfx1151");
+    ASSERT_NE(tm, nullptr);
+    llvm::LLVMContext ctx;
+    llvm::Module dev("xpu_width_amddevice", ctx);
+    cajeta::xpu::amd::configureDeviceModule(dev, *tm);
+    cajeta::xpu::amd::lowerKernel(k, dev);
+    std::vector<uint8_t> hsaco = cajeta::xpu::amd::assembleHsaco(dev, *tm, "gfx1151");
+    ASSERT_FALSE(hsaco.empty()) << "hsaco assembly failed (ld.lld present?)";
+
+    cajeta::xpu::amd::HipDriver hip;
+    ASSERT_TRUE(hip.init());
+    auto mod = hip.loadModule(hsaco.data(), hsaco.size());
+    ASSERT_NE(mod, nullptr);
+    auto fn = hip.getFunction(mod, "wavewidth");
+    ASSERT_NE(fn, nullptr);
+
+    const unsigned block = kReduceBlock;  // multiple of 32 and 64
+    auto dOut = hip.alloc(block * sizeof(uint32_t));
+    ASSERT_NE(dOut, nullptr);
+    void* params[] = { &dOut };
+    ASSERT_TRUE(hip.launch(fn, /*grid=*/1, block, params));
+    ASSERT_TRUE(hip.synchronize());
+
+    std::vector<uint32_t> out(block, 0);
+    ASSERT_TRUE(hip.memcpyDtoH(out.data(), dOut, block * sizeof(uint32_t)));
+    hip.free(dOut);
+    expectUniformWaveWidth(out);
+}
+
+TEST(XpuWaveDeviceTests, vulkanWaveWidthRunsOnDevice) {
+    if (!cajeta::xpu::vulkan::VulkanDriver::available()) {
+        GTEST_SKIP() << "no Vulkan compute device available";
+    }
+    Compiler compiler;
+    auto module = compileForInspection(compiler, kWidthSource);
+    auto k = findMethod(module->getStructures()["test.M"], "wavewidth");
+    ASSERT_NE(k, nullptr);
+
+    auto tm = cajeta::xpu::vulkan::createSpirvTargetMachine("vulkan1.3");
+    ASSERT_NE(tm, nullptr);
+    llvm::LLVMContext ctx;
+    llvm::Module dev("xpu_width_vkdevice", ctx);
+    cajeta::xpu::vulkan::configureDeviceModule(dev, *tm);
+    cajeta::xpu::vulkan::lowerKernel(k, dev);
+    std::vector<uint8_t> spirv = cajeta::xpu::vulkan::emitSpirv(dev, *tm);
+    ASSERT_FALSE(spirv.empty());
+
+    const unsigned threads = cajeta::xpu::vulkan::kVulkanLocalSizeX;
+    cajeta::xpu::vulkan::VulkanDriver vk;
+    ASSERT_TRUE(vk.init());
+    auto dOut = vk.alloc(threads * sizeof(uint32_t));
+    ASSERT_NE(dOut, 0u);
+    std::vector<uint32_t> zero(threads, 0);
+    ASSERT_TRUE(vk.upload(dOut, zero.data(), threads * sizeof(uint32_t)));
+    ASSERT_TRUE(vk.launch(spirv.data(), spirv.size(), "wavewidth", {dOut},
+                          /*groupCountX=*/1));
+
+    std::vector<uint32_t> out(threads, 0);
+    ASSERT_TRUE(vk.download(out.data(), dOut, threads * sizeof(uint32_t)));
+    vk.free(dOut);
+    expectUniformWaveWidth(out);
 }

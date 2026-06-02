@@ -226,7 +226,7 @@ GPU backends, run on-device on AMD + Vulkan; **wave = SIMD lane on the CPU backe
 
 | Feature | Core | NVIDIA | AMD | Vulkan | CPU (Inc 5C) |
 |---------|------|--------|-----|--------|--------------|
-| Wave width | `Wave.width()` → i32 | `native` · `read.ptx.sreg.warpsize` (32) | `native` · `amdgcn.wavefrontsize` (32/64) | ⚑ `emit-only: ` `spv.wave.get_lane_count` lowers from IR but LLVM 22's SPIR-V backend **cannot select it**, so `Wave.width()` does not run on-device yet | the host's native SIMD width W (16 AVX-512 / 8 AVX2); folded to a constant in a vectorized kernel |
+| Wave width | `Wave.width()` → i32 | `native` · `read.ptx.sreg.warpsize` (32) | `native` · `amdgcn.wavefrontsize` (32/64) | `native: ` `spv.subgroup.size` → `OpLoad` of the **SubgroupSize** builtin (`loadBuiltinInputID`). NOT `spv.wave.get_lane_count`, which the SPIR-V backend still can't select through LLVM 23 — the sibling `spv.subgroup.size` is selectable, so `Wave.width()` now runs on-device (verified on RADV/gfx1151). | the host's native SIMD width W (16 AVX-512 / 8 AVX2); folded to a constant in a vectorized kernel |
 | Lane id | `Wave.laneId()` → i32 | `native` · `read.ptx.sreg.laneid` | `native` · `amdgcn.mbcnt.{lo,hi}` | `native` · `spv.subgroup_local_invocation_id` (validated) | `tid.x % W` |
 | Shuffle / readlane | `Wave.shuffleSync(v, lane)` | `native` · `nvvm.shfl.sync.idx.i32` | `native` · `amdgcn.readlane` | `native` · `spv.wave.readlane` (→ `OpGroupNonUniformShuffle`) | VFABI variant · per-lane gather `val[src[i]]` |
 | Ballot | `Wave.ballotSync(pred)` → i64 | `native` · `nvvm.vote.ballot.sync` (i32→i64) | `native` · `amdgcn.ballot.i32` (i32→i64) | `native` · `spv.wave.ballot` (`<4 x i32>`, low 64 → i64) | VFABI variant · `bitcast <W x i1> → iW` |

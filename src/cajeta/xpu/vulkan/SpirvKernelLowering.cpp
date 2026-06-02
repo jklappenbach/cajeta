@@ -235,9 +235,15 @@ public:
     }
 
     // Wave ops via the SPIR-V subgroup intrinsics (→ OpGroupNonUniform*).
+    // SubgroupSize builtin (→ OpLoad of the SubgroupSize builtin) — the sibling
+    // of the SubgroupLocalInvocationId read used by waveLaneId. NOT
+    // spv.wave.get.lane.count, which the SPIR-V backend never wired into isel
+    // ("intrinsic selection not implemented", still true through LLVM 23);
+    // spv.subgroup.size IS selected (loadBuiltinInputID), so Wave.width() now
+    // runs on-device on Vulkan.
     llvm::Value* waveWidth(llvm::IRBuilderBase& b, llvm::Module& m) override {
         llvm::Function* f = llvm::Intrinsic::getOrInsertDeclaration(
-            &m, llvm::Intrinsic::spv_wave_get_lane_count);
+            &m, llvm::Intrinsic::spv_subgroup_size);
         return b.CreateCall(f, {}, "lanecount");
     }
     llvm::Value* waveShuffle(llvm::IRBuilderBase& b, llvm::Module& m,
