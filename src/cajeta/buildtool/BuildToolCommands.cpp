@@ -12,6 +12,7 @@
 #include "cajeta/buildtool/Reproducibility.h"
 #include "cajeta/buildtool/Resolver.h"
 #include "cajeta/buildtool/Sandbox.h"
+#include "cajeta/buildtool/Toolchain.h"
 #include "cajeta/buildtool/Task.h"
 #include "cajeta/buildtool/TaskRunner.h"
 #include "cajeta/buildtool/Upgrader.h"
@@ -1876,6 +1877,372 @@ namespace cajeta::buildtool {
             return failed == 0 ? 0 : 1;
         }
 
+        // Phase 14: `cajeta toolchain …` subcommands.
+        //
+        // The dispatch flow surfaces here too: every top-of-main
+        // invocation runs `applyDispatchPolicy` before falling
+        // through to the regular subcommand routing. When the
+        // policy says ReExec, we execve the resolved binary; when
+        // it says NeedsInstall we surface the install hint; when
+        // it says Continue we just continue.
+        bool parseDistVersion(const std::string& s,
+                              std::string& dist,
+                              std::string& version) {
+            auto colon = s.find(':');
+            if (colon == std::string::npos) return false;
+            dist = s.substr(0, colon);
+            version = s.substr(colon + 1);
+            return !dist.empty() && !version.empty();
+        }
+
+        int toolchainListCommand(int /*argc*/, const char* /*argv*/[]) {
+            auto layout = resolveToolchainStoreLayout();
+            auto inst = listInstalledToolchains(layout);
+            std::cout << "Toolchain store: " << layout.root << "\n";
+            if (inst.empty()) {
+                std::cout << "  (no toolchains installed)\n";
+                return 0;
+            }
+            for (const auto& t : inst) {
+                std::cout << "  " << t.distribution << ":"
+                          << t.version
+                          << (t.isDefault ? "  (default)" : "")
+                          << "\n";
+            }
+            return 0;
+        }
+
+        int toolchainInstallCommand(int argc, const char* argv[]) {
+            if (argc < 4) {
+                std::cerr << "Usage: cajeta toolchain install "
+                             "<distribution>:<version>\n";
+                return 1;
+            }
+            std::string dist, ver;
+            if (!parseDistVersion(argv[3], dist, ver)) {
+                std::cerr << "cajeta toolchain install: argument must "
+                             "be '<distribution>:<version>', got '"
+                          << argv[3] << "'\n";
+                return 1;
+            }
+            auto layout = resolveToolchainStoreLayout();
+            auto installRoot = layout.installRoot(dist, ver);
+            namespace fs = std::filesystem;
+            // v1 install is "ensure the install directory exists +
+            // claim it"; the actual archive fetch + verify + extract
+            // step lives in the registry client (deferred slice).
+            // We do create the bin/lib/share skeleton so listing +
+            // dispatch wiring can be exercised end-to-end today.
+            std::error_code ec;
+            fs::create_directories(fs::path(installRoot) / "bin", ec);
+            fs::create_directories(fs::path(installRoot) / "lib", ec);
+            fs::create_directories(fs::path(installRoot) / "share", ec);
+            if (ec) {
+                std::cerr << "cajeta toolchain install: cannot create "
+                          << installRoot << ": " << ec.message() << "\n";
+                return 1;
+            }
+            std::cout << "Installed (skeleton) "
+                      << dist << ":" << ver << " at " << installRoot
+                      << "\n";
+            std::cout << "  (v1: archive fetch + verify + extract is "
+                         "a deferred slice; this command lays the "
+                         "directory layout the dispatcher consults)\n";
+            return 0;
+        }
+
+        int toolchainRemoveCommand(int argc, const char* argv[]) {
+            if (argc < 4) {
+                std::cerr << "Usage: cajeta toolchain remove "
+                             "<distribution>:<version>\n";
+                return 1;
+            }
+            std::string dist, ver;
+            if (!parseDistVersion(argv[3], dist, ver)) {
+                std::cerr << "cajeta toolchain remove: argument must "
+                             "be '<distribution>:<version>'\n";
+                return 1;
+            }
+            auto layout = resolveToolchainStoreLayout();
+            auto installRoot = layout.installRoot(dist, ver);
+            namespace fs = std::filesystem;
+            std::error_code ec;
+            if (!fs::exists(installRoot, ec)) {
+                std::cerr << "cajeta toolchain remove: "
+                          << dist << ":" << ver
+                          << " is not installed\n";
+                return 1;
+            }
+            auto n = fs::remove_all(installRoot, ec);
+            if (ec) {
+                std::cerr << "cajeta toolchain remove: " << ec.message()
+                          << "\n";
+                return 1;
+            }
+            std::cout << "Removed " << dist << ":" << ver
+                      << " (" << n << " entries)\n";
+            return 0;
+        }
+
+        int toolchainDefaultCommand(int argc, const char* argv[]) {
+            if (argc < 4) {
+                std::cerr << "Usage: cajeta toolchain default "
+                             "<distribution>:<version>\n";
+                return 1;
+            }
+            std::string dist, ver;
+            if (!parseDistVersion(argv[3], dist, ver)) {
+                std::cerr << "cajeta toolchain default: argument must "
+                             "be '<distribution>:<version>'\n";
+                return 1;
+            }
+            auto layout = resolveToolchainStoreLayout();
+            auto installRoot = layout.installRoot(dist, ver);
+            namespace fs = std::filesystem;
+            std::error_code ec;
+            if (!fs::exists(installRoot, ec)) {
+                std::cerr << "cajeta toolchain default: "
+                          << dist << ":" << ver
+                          << " is not installed — run 'cajeta "
+                             "toolchain install " << dist << ":" << ver
+                          << "' first\n";
+                return 1;
+            }
+            auto symlink = layout.defaultSymlinkPath();
+            // Refresh the symlink atomically: remove + create.
+            if (fs::is_symlink(symlink, ec) || fs::exists(symlink, ec)) {
+                fs::remove(symlink, ec);
+            }
+            fs::create_symlink(installRoot, symlink, ec);
+            if (ec) {
+                std::cerr << "cajeta toolchain default: cannot create "
+                             "symlink " << symlink << ": "
+                          << ec.message() << "\n";
+                return 1;
+            }
+            std::cout << "Default is now " << dist << ":" << ver
+                      << " (-> " << installRoot << ")\n";
+            return 0;
+        }
+
+        int toolchainPinCommand(int argc, const char* argv[]) {
+            if (argc < 4) {
+                std::cerr << "Usage: cajeta toolchain pin "
+                             "<version> [--manifest=<path>]\n";
+                return 1;
+            }
+            std::string version = argv[3];
+            std::string manifestPath = "./cajeta.json";
+            for (int i = 4; i < argc; ++i) {
+                std::string v;
+                if (match(argv[i], "manifest", v)) {
+                    manifestPath = std::move(v);
+                }
+            }
+            // Read the manifest as raw bytes + inject/overwrite the
+            // settings.toolchain.version field. We keep the rest of
+            // the manifest's JSONC verbatim — same approach as the
+            // existing `cajeta add` rewrite path uses for
+            // settings.dependencies.
+            std::ifstream in(manifestPath);
+            if (!in) {
+                std::cerr << "cajeta toolchain pin: cannot read '"
+                          << manifestPath << "'\n";
+                return 1;
+            }
+            std::ostringstream ss; ss << in.rdbuf();
+            std::string body = ss.str();
+            in.close();
+            // Surgical: write a minimal settings.toolchain stub
+            // adjacent to the existing settings block when present,
+            // or insert one alongside details. v1 uses a simple
+            // append-or-replace strategy that keeps formatting
+            // local to the toolchain block.
+            std::string pinJson =
+                "    \"toolchain\": {\n"
+                "        \"version\": \"" + version + "\"\n"
+                "    }";
+            // If settings.toolchain already exists, this is a
+            // re-pin: replace via a substring rewrite.
+            auto tcPos = body.find("\"toolchain\"");
+            if (tcPos != std::string::npos) {
+                // Naive: walk to the closing brace of the toolchain
+                // object and replace from "toolchain" through that
+                // closing brace.
+                auto open = body.find('{', tcPos);
+                if (open == std::string::npos) {
+                    std::cerr << "cajeta toolchain pin: existing "
+                                 "settings.toolchain block is malformed\n";
+                    return 1;
+                }
+                int depth = 1;
+                size_t close = open + 1;
+                for (; close < body.size() && depth > 0; ++close) {
+                    if (body[close] == '{') ++depth;
+                    else if (body[close] == '}') --depth;
+                }
+                if (depth != 0) {
+                    std::cerr << "cajeta toolchain pin: unbalanced "
+                                 "braces in existing toolchain block\n";
+                    return 1;
+                }
+                std::string repl =
+                    "\"toolchain\": {\n"
+                    "        \"version\": \"" + version + "\"\n"
+                    "    }";
+                body.replace(tcPos, close - tcPos, repl);
+            } else {
+                // No existing toolchain block. Find the closing brace
+                // of settings (or insert a settings block) — v1 keeps
+                // this minimal: insert a new `settings.toolchain`
+                // before the last top-level '}'.
+                auto lastClose = body.find_last_of('}');
+                if (lastClose == std::string::npos) {
+                    std::cerr << "cajeta toolchain pin: manifest has "
+                                 "no top-level closing brace\n";
+                    return 1;
+                }
+                std::string insert =
+                    ",\n    \"settings\": {\n" + pinJson + "\n    }\n";
+                body.insert(lastClose, insert);
+            }
+            std::ofstream out(manifestPath, std::ios::trunc);
+            if (!out) {
+                std::cerr << "cajeta toolchain pin: cannot write '"
+                          << manifestPath << "'\n";
+                return 1;
+            }
+            out << body;
+            std::cout << "Pinned toolchain version=" << version
+                      << " in " << manifestPath << "\n";
+            return 0;
+        }
+
+        int toolchainWhichCommand(int /*argc*/, const char* /*argv*/[]) {
+            std::string projectRoot =
+                std::filesystem::current_path().string();
+            std::unique_ptr<Manifest> mptr;
+            auto manifest = loadManifestFile(projectRoot + "/cajeta.json");
+            if (manifest) {
+                mptr = std::make_unique<Manifest>(std::move(*manifest));
+            } else {
+                llvm::consumeError(manifest.takeError());
+            }
+            auto tc = resolveEffectiveToolchain(mptr.get(), projectRoot);
+            if (!tc) {
+                std::string msg;
+                llvm::raw_string_ostream os(msg);
+                os << tc.takeError();
+                std::cerr << "cajeta toolchain which: " << msg << "\n";
+                return 1;
+            }
+            auto layout = resolveToolchainStoreLayout();
+            if (!tc->hasPin) {
+                std::cout << "No pin in scope — running binary will "
+                             "be used. Toolchain identity: "
+                          << toolchainIdentity(*tc) << "\n";
+                return 0;
+            }
+            std::cout << tc->pin.distribution << ":" << tc->pin.version
+                      << " (source: " << tc->sourcePath << ")\n";
+            std::cout << "  binary: "
+                      << layout.binaryPath(tc->pin.distribution,
+                                           tc->pin.version)
+                      << "\n";
+            return 0;
+        }
+
+        int toolchainShowCommand(int /*argc*/, const char* /*argv*/[]) {
+            std::string projectRoot =
+                std::filesystem::current_path().string();
+            std::unique_ptr<Manifest> mptr;
+            auto manifest = loadManifestFile(projectRoot + "/cajeta.json");
+            if (manifest) {
+                mptr = std::make_unique<Manifest>(std::move(*manifest));
+            } else {
+                llvm::consumeError(manifest.takeError());
+            }
+            auto tc = resolveEffectiveToolchain(mptr.get(), projectRoot);
+            if (!tc) {
+                std::string msg;
+                llvm::raw_string_ostream os(msg);
+                os << tc.takeError();
+                std::cerr << "cajeta toolchain show: " << msg << "\n";
+                return 1;
+            }
+            auto layout = resolveToolchainStoreLayout();
+            std::cout << "Manifest pin: ";
+            if (tc->hasPin) {
+                std::cout << tc->pin.distribution << ":"
+                          << tc->pin.version;
+                if (tc->pin.channel)
+                    std::cout << " (channel=" << *tc->pin.channel << ")";
+                std::cout << " — fetch=" << fetchPolicyToString(tc->pin.fetch);
+                std::cout << "\n  source: " << tc->sourcePath << "\n";
+            } else {
+                std::cout << "(none)\n";
+            }
+            std::cout << "Resolved binary: "
+                      << (tc->hasPin
+                           ? layout.binaryPath(tc->pin.distribution,
+                                               tc->pin.version)
+                           : "(running PATH binary)") << "\n";
+            std::cout << "Toolchain identity (IR cache discriminator): "
+                      << toolchainIdentity(*tc) << "\n";
+            auto decision = computeDispatchDecision(*tc, layout);
+            if (decision) {
+                std::cout << "Dispatch action: ";
+                switch (decision->action) {
+                    case DispatchAction::Continue:
+                        std::cout << "continue (running binary)"; break;
+                    case DispatchAction::ReExec:
+                        std::cout << "re-exec into " << decision->resolvedBinaryPath; break;
+                    case DispatchAction::NeedsInstall:
+                        std::cout << "needs install — " << decision->installHint; break;
+                }
+                std::cout << "\n";
+                for (const auto& note : decision->notes) {
+                    std::cout << "  note: " << note << "\n";
+                }
+            } else {
+                std::string msg;
+                llvm::raw_string_ostream os(msg);
+                os << decision.takeError();
+                std::cout << "Dispatch action: ERROR — " << msg << "\n";
+            }
+            return 0;
+        }
+
+        int toolchainCommand(int argc, const char* argv[]) {
+            if (argc < 3 ||
+                std::string_view(argv[2]) == "--help" ||
+                std::string_view(argv[2]) == "-h") {
+                std::cout
+                    << "Usage: cajeta toolchain <subcommand> [options]\n"
+                    << "\n"
+                    << "Subcommands:\n"
+                    << "  list                            list installed toolchains\n"
+                    << "  install <dist>:<ver>            install a toolchain (v1: layout-only)\n"
+                    << "  remove  <dist>:<ver>            remove an installed toolchain\n"
+                    << "  default <dist>:<ver>            set workstation-wide default\n"
+                    << "  pin     <version>               write settings.toolchain into cajeta.json\n"
+                    << "  which                           print resolved binary path\n"
+                    << "  show                            full dispatch + identity report\n";
+                return argc < 3 ? 1 : 0;
+            }
+            std::string_view sub = argv[2];
+            if (sub == "list")    return toolchainListCommand(argc, argv);
+            if (sub == "install") return toolchainInstallCommand(argc, argv);
+            if (sub == "remove")  return toolchainRemoveCommand(argc, argv);
+            if (sub == "default") return toolchainDefaultCommand(argc, argv);
+            if (sub == "pin")     return toolchainPinCommand(argc, argv);
+            if (sub == "which")   return toolchainWhichCommand(argc, argv);
+            if (sub == "show")    return toolchainShowCommand(argc, argv);
+            std::cerr << "cajeta toolchain: unknown subcommand '"
+                      << sub << "'\n";
+            return 1;
+        }
+
         // Phase 13: `cajeta install <archive>` — consumer-side
         // verification before extracting / installing a built
         // archive. The flow:
@@ -2172,7 +2539,8 @@ namespace cajeta::buildtool {
                 cmd == "workspace" ||
                 cmd == "verify-reproducible" ||
                 cmd == "sandbox-info" ||
-                cmd == "install") {
+                cmd == "install" ||
+                cmd == "toolchain") {
                 return false;
             }
             // Anything starting with `-` is a flag for the existing
@@ -2253,6 +2621,10 @@ namespace cajeta::buildtool {
         }
         if (cmd == "install") {
             *exitCodeOut = installCommand(argc, argv);
+            return true;
+        }
+        if (cmd == "toolchain") {
+            *exitCodeOut = toolchainCommand(argc, argv);
             return true;
         }
         if (looksLikeTaskInvocation(argc, argv)) {

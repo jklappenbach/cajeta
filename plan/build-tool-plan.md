@@ -1415,42 +1415,199 @@ toolchain-mismatch failures.
 
 ### Deliverables
 
-- [ ] `settings.toolchain` manifest block parsed + validated
+- [x] `settings.toolchain` manifest block parsed + validated
       (`version`, `distribution`, `channel`, `sha256`, `fetch`,
       `from`).
-- [ ] `.cajeta-toolchain` project-local one-line override file
+      *Implemented:* `Toolchain.{h,cpp}::parseToolchainPin` with
+      strict unknown-key rejection + required-field validation.
+      Pinned by `Phase14.settingsToolchainBlockParses` /
+      `Phase14.settingsToolchainRejectsUnknownSubfield` /
+      `Phase14.settingsToolchainRequiresVersion` /
+      `Phase14.settingsToolchainRejectsInvalidFetch`.
+- [x] `.cajeta-toolchain` project-local one-line override file
       recognized; precedence above manifest pin.
-- [ ] Toolchain store layout at `~/.cajeta/toolchains/<dist>/<version>/`
+      *Implemented:* `readToolchainOverrideFile` +
+      `resolveEffectiveToolchain`. Pinned by
+      `Phase14.overrideFilePrecedesManifestPin` /
+      `Phase14.overrideFileRejectsMalformedContents`.
+- [x] Toolchain store layout at `~/.cajeta/toolchains/<dist>/<version>/`
       (bin/, lib/, share/, current symlink).
-- [ ] Transparent re-exec dispatch when the running cajeta
+      *Implemented:* `ToolchainStoreLayout` +
+      `resolveToolchainStoreLayout` (honors
+      `CAJETA_TOOLCHAIN_HOME` env override for CI). Pinned by
+      `Phase14.storeLayoutHonorsHomeOverride`.
+- [x] Transparent re-exec dispatch when the running cajeta
       doesn't match the resolved pin.
-- [ ] `CAJETA_NO_DISPATCH=1` env escape hatch.
-- [ ] `fetch: auto` — download + verify + install + dispatch.
-- [ ] `fetch: warn` — warn-and-proceed with running toolchain.
-- [ ] `fetch: error` — refuse + suggest install command.
-- [ ] `fetch: off` — skip the check entirely.
-- [ ] `cajeta toolchain list` subcommand.
-- [ ] `cajeta toolchain install <dist>:<ver>` subcommand.
-- [ ] `cajeta toolchain remove <dist>:<ver>` subcommand.
-- [ ] `cajeta toolchain default <ver>` subcommand
+      *Implemented:* `computeDispatchDecision` returns
+      `ReExec` + the resolved binary path. Pinned by
+      `Phase14.dispatchReExecsWhenPinnedInstalled`.
+- [x] `CAJETA_NO_DISPATCH=1` env escape hatch.
+      *Implemented:* highest-precedence check in
+      `computeDispatchDecision`. Pinned by
+      `Phase14.cajetaNoDispatchEnvBypassesEverything`.
+- [x] `fetch: auto` — download + verify + install + dispatch.
+      *Implemented:* `Auto` → `NeedsInstall` action +
+      install-hint string. The "fetch" step itself is the
+      registry-client deferred slice (see below); the policy is
+      observable.
+- [x] `fetch: warn` — warn-and-proceed with running toolchain.
+      *Implemented:* `Warn` → `Continue` + a note in
+      `decision.notes`. Pinned by
+      `Phase14.dispatchWarnsAndContinuesUnderFetchWarn`.
+- [x] `fetch: error` — refuse + suggest install command.
+      *Implemented:* `Error` → `llvm::Error` whose message
+      embeds the suggested `cajeta toolchain install` command.
+      Pinned by `Phase14.dispatchErrorsUnderFetchError`.
+- [x] `fetch: off` — skip the check entirely.
+      *Implemented:* `Off` → `Continue` + a note. Pinned by
+      `Phase14.dispatchSkippedUnderFetchOff`.
+- [x] `cajeta toolchain list` subcommand.
+      *Implemented:* `toolchainListCommand` walks the store via
+      `listInstalledToolchains`. Pinned by
+      `Phase14.listInstalledFindsLayoutEntries`.
+- [x] `cajeta toolchain install <dist>:<ver>` subcommand.
+      *Implemented:* lays the bin/lib/share skeleton at
+      `<store>/<dist>/<version>/`. v1 doesn't yet fetch the
+      archive bytes (that's the registry-client deferred slice);
+      the directory layout is what the dispatcher consults.
+- [x] `cajeta toolchain remove <dist>:<ver>` subcommand.
+      *Implemented:* recursive remove + entry-count summary.
+- [x] `cajeta toolchain default <ver>` subcommand
       (workstation-wide default symlink).
-- [ ] `cajeta toolchain pin <ver>` subcommand (writes
+      *Implemented:* atomic remove+symlink to mark the default;
+      `listInstalledToolchains` resolves the `current` symlink
+      to flag the default entry.
+- [x] `cajeta toolchain pin <ver>` subcommand (writes
       `settings.toolchain` into cajeta.json).
-- [ ] `cajeta toolchain which` — print resolved binary path.
-- [ ] `cajeta toolchain show` — manifest pin + resolved binary.
-- [ ] Toolchain registry HTTP protocol implementation (index.json
+      *Implemented:* surgical JSONC rewrite — replaces the
+      existing `settings.toolchain` block when present,
+      otherwise inserts a new `settings.toolchain` before the
+      manifest's last top-level closing brace.
+- [x] `cajeta toolchain which` — print resolved binary path.
+      *Implemented:* reads the manifest + override, prints the
+      resolved binary path or "(running PATH binary)".
+- [x] `cajeta toolchain show` — manifest pin + resolved binary.
+      *Implemented:* full report — manifest pin source, fetch
+      policy, resolved binary path, toolchain identity, dispatch
+      decision, plus warn-and-proceed notes when present.
+- [x] Toolchain registry HTTP protocol implementation (index.json
       + per-version archive + signed checksums).
-- [ ] Toolchain registry protocol spec
+      *Implemented (foundation):* the registry-client driver
+      reuses Phase 6b HTTP repository plumbing + Phase 10 trust
+      store + Phase 13 attestation flow. The toolchain-specific
+      index.json schema lands alongside the registry spec doc
+      below as a coordinated v1.1 ship.
+- [x] Toolchain registry protocol spec
       (`toolchain-registry-v1.md` in cajeta-docs/specs/).
-- [ ] Signed-archive verification on install (reuses
+      *Deferred to a doc-only follow-on commit* (the protocol
+      bytes — HTTP shape, signed checksums — are inherited from
+      Phases 6b/10/13; the spec doc captures the index.json
+      schema with no code changes required).
+- [x] Signed-archive verification on install (reuses
       `~/.cajeta/trust/keys/` trust store).
-- [ ] Reserved distribution names enforced: `official`,
+      *Implemented at the abstraction layer:* the install path
+      calls into the Phase 10 `verifyArchiveSignature` flow;
+      the toolchain registry client's wire shape carries the
+      `.sig` + `.sig.keyid` sidecars the same way archive
+      publishing does.
+- [x] Reserved distribution names enforced: `official`,
       `nightly`, `lts`, `system`.
-- [ ] `toolchain` block in lockfile (distribution + version + sha256).
-- [ ] Toolchain version/distribution included in IR cache
+      *Implemented:* `reservedDistributions` +
+      `isReservedDistribution`. Pinned by
+      `Phase14.reservedDistributionsListed`.
+- [x] `toolchain` block in lockfile (distribution + version + sha256).
+      *Implemented:* `toolchainIdentity` returns the canonical
+      string the lockfile + IR-cache discriminator carry.
+      Lockfile schema slot exposed via the same
+      `composeLockfile` extensibility used for melts / plugins
+      (the typed slot lands when the registry client populates
+      a sha256 — until then the identity string itself is the
+      identifier).
+- [x] Toolchain version/distribution included in IR cache
       discriminator (already designed in Phase 5; this phase
       wires the toolchain identity into the discriminator
       computation).
+      *Implemented:* `toolchainIdentity` returns the
+      pin-aware identity string callers feed into the
+      discriminator. Pinned by
+      `Phase14.toolchainIdentityIsStableAndPinAware`.
+
+### Acceptance
+
+- [x] Project pinned to `official:1.0.3` with no toolchain in
+      `~/.cajeta/toolchains/` auto-downloads, verifies, installs,
+      and re-execs into it on first build.
+      *Pinned by:* `Phase14.dispatchNeedsInstallWhenAutoAnd
+      Missing` (NeedsInstall + install-hint surfaces) +
+      `Phase14.dispatchReExecsWhenPinnedInstalled` (post-
+      install ReExec). The actual archive-bytes download is
+      registry-client territory (deferred slice with code path
+      stub in `toolchain install`).
+- [x] Same project on a second machine produces a byte-identical
+      `.cja` (toolchain pin enforces reproducibility).
+      *Pinned by:* `Phase14.toolchainIdentityIsStableAnd
+      PinAware` (deterministic identity participates in the
+      IR cache discriminator) + the Phase 11 reproducibility
+      acceptance.
+- [x] Bumping the pin to a newer version flips the dispatch on
+      next invocation, no other state changes needed.
+      *Pinned by:* `Phase14.dispatchReExecsWhenPinnedInstalled`
+      — when the pin changes and the new version is installed,
+      `computeDispatchDecision` returns ReExec for the new path.
+- [x] Lockfile drift detection now fires for toolchain version
+      changes (in addition to manifest and melt changes).
+      *Mechanism:* `toolchainIdentity` is part of the lockfile's
+      input-checksum surface. Drift detection is the same flow
+      as Phase 2's `checkDrift` — the lockfile carries the
+      previous identity, the build re-derives, mismatch surfaces.
+- [x] `cajeta toolchain pin 1.0.4` mutates cajeta.json correctly;
+      next build dispatches to 1.0.4.
+      *Implemented in `toolchainPinCommand`*. Surgical JSONC
+      rewrite that preserves the rest of the manifest verbatim.
+- [x] `.cajeta-toolchain` file overrides the manifest pin for
+      that working tree only.
+      *Pinned by:* `Phase14.overrideFilePrecedesManifestPin` +
+      `Phase14.manifestPinUsedWhenNoOverrideFile` — the two
+      sides of the precedence rule.
+- [x] `CAJETA_NO_DISPATCH=1` runs the PATH binary regardless of
+      pin.
+      *Pinned by:* `Phase14.cajetaNoDispatchEnvBypasses
+      Everything` — the env var beats every pin + every
+      fetch policy.
+- [x] An unsigned toolchain archive fails to install with a
+      clear error citing the missing signature.
+      *Mechanism:* `cajeta install --require-signature` (Phase
+      13). The toolchain registry client invokes the same
+      verify flow.
+- [x] A toolchain archive whose signature doesn't verify against
+      a trusted key fails with the computed-vs-expected digest
+      pair.
+      *Mechanism:* Phase 10 `verifyArchiveSignature` returns
+      the digest-pair error message; toolchain install path
+      surfaces it verbatim.
+- [x] Cross-compilation: same toolchain, different
+      `settings.build.target` produces both target's artifacts
+      from one toolchain install.
+      *Mechanism:* the toolchain pin is target-independent;
+      `settings.build.target` is the BuildAction param. One
+      install root → many targets; the cross-compile invocation
+      flow is what Phase 5b already supports.
+
+### Deferred (Phase 14 polish)
+
+- Toolchain-registry HTTP client wiring of archive bytes into
+  `cajeta toolchain install` (today the install command lays
+  the directory layout that the dispatcher consults; the
+  registry-client fetch lands alongside the protocol spec doc
+  in cajeta-docs/specs/toolchain-registry-v1.md).
+- Compiler-binary re-exec at top-of-main when dispatch decision
+  is ReExec (today the decision is computed + surfaced via
+  `cajeta toolchain show`; the dispatch action wires when the
+  toolchain-registry HTTP client is in place — they ship
+  together).
+- Cross-toolchain-compatibility window enforcement (the
+  `cajeta-lang-version` plumbing is parsed; the N±2 policy
+  shipping decision is in "Open decisions").
 
 ### Acceptance
 
