@@ -13,6 +13,8 @@
 #include "cajeta/util/MemoryManager.h"
 #include "cajeta/asn/expression/Identifier.h"
 #include "cajeta/type/CajetaArray.h"
+#include "cajeta/type/CajetaVector.h"
+#include "cajeta/type/VectorOps.h"
 #include "cajeta/type/CajetaTask.h"
 #include "cajeta/error/ExplicitCastRequiredException.h"
 #include "cajeta/error/InvalidOperandException.h"
@@ -438,6 +440,8 @@ namespace cajeta {
                 CajetaTypePtr lhsType = exprChild->getResolvedType();
                 if (auto arr = dynamic_pointer_cast<CajetaArray>(lhsType)) {
                     resolvedType = arr->getElementType();
+                } else if (auto vecT = dynamic_pointer_cast<CajetaVector>(lhsType)) {
+                    resolvedType = vecT->getElementType();
                 } else if (auto klass = dynamic_pointer_cast<CajetaClass>(lhsType)) {
                     // Try to find operator[] on the class. parameterList
                     // computation needs the index expression's resolved
@@ -481,6 +485,30 @@ namespace cajeta {
         llvm::LLVMContext& ctx = *module->getLlvmContext();
         llvm::Type* i64Ty = llvm::Type::getInt64Ty(ctx);
         llvm::Type* i32Ty = llvm::Type::getInt32Ty(ctx);
+
+        // Vector index read: v[i] -> extractelement (dynamic index ok). The
+        // assignment form v[i] = x is handled by BinaryOpExpression's
+        // assignment path (it needs the vector's slot, not this value).
+        if (auto lhsVecExpr = dynamic_pointer_cast<Expression>(children[0])) {
+            if (!lhsVecExpr->getResolvedType()) lhsVecExpr->resolveTypes(module);
+            if (auto vecT = dynamic_pointer_cast<CajetaVector>(
+                    lhsVecExpr->getResolvedType())) {
+                llvm::Value* vecVal = loadIfLValue(
+                    module, children[0]->generateCode(module), lhsVecExpr);
+                llvm::Value* idx = loadIfLValue(
+                    module, children[1]->generateCode(module),
+                    dynamic_pointer_cast<Expression>(children[1]));
+                resolvedType = vecT->getElementType();
+                llvm::Value* elt = vecops::extractLane(*builder, vecVal, idx);
+                // Wrap in a slot so consumers (which loadIfLValue an
+                // ArrayIndex result as a pointer) read the element correctly —
+                // mirrors the operator[] GET path below.
+                llvm::AllocaInst* slot = builder->CreateAlloca(
+                    elt->getType(), nullptr, "vec.idx.slot");
+                builder->CreateStore(elt, slot);
+                return slot;
+            }
+        }
 
         // Operator overload dispatch: if the LHS resolves to a class with
         // an `operator[]` method, route through it instead of the native-

@@ -5,6 +5,8 @@
 #include "MethodCallExpression.h"
 #include "cajeta/compile/CajetaModule.h"
 #include "cajeta/type/CajetaArray.h"
+#include "cajeta/type/CajetaVector.h"
+#include "cajeta/type/VectorOps.h"
 #include "cajeta/type/CajetaClass.h"
 #include "cajeta/type/CajetaView.h"
 #include "cajeta/type/CajetaFunctionType.h"
@@ -1819,6 +1821,46 @@ namespace cajeta {
                     exprChild->resolveTypes(module);
                 }
                 receiverType = exprChild->getResolvedType();
+            }
+            // Vector geometry methods: a.dot(b) -> T, v.length() -> T,
+            // v.normalize() -> Vector. Intercepted on a CajetaVector receiver
+            // before the generic class-method dispatch (vectors aren't classes).
+            if (auto vecT = dynamic_pointer_cast<CajetaVector>(receiverType)) {
+                llvm::Value* self = loadIfLValue(module, receiver, exprChild);
+                bool isFloat = vecT->getElementType()->getLlvmType()
+                                   ->isFloatingPointTy();
+                if (methodCallName == "dot") {
+                    if (parameters.size() != 1) {
+                        throw Exception("Vector.dot expects 1 argument",
+                                        "CAJETA_ERROR_VECTOR_METHOD");
+                    }
+                    llvm::Value* other = loadIfLValue(module,
+                        parameters[0].expression->generateCode(module),
+                        parameters[0].expression);
+                    resolvedType = vecT->getElementType();
+                    return vecops::dot(*builder, self, other, isFloat);
+                }
+                if (methodCallName == "length") {
+                    if (!isFloat) {
+                        throw Exception(
+                            "Vector.length requires a floating-point element type",
+                            "CAJETA_ERROR_VECTOR_METHOD");
+                    }
+                    resolvedType = vecT->getElementType();
+                    return vecops::length(*builder, self);
+                }
+                if (methodCallName == "normalize") {
+                    if (!isFloat) {
+                        throw Exception(
+                            "Vector.normalize requires a floating-point element type",
+                            "CAJETA_ERROR_VECTOR_METHOD");
+                    }
+                    resolvedType = vecT;
+                    return vecops::normalize(*builder, self);
+                }
+                throw Exception(
+                    "Vector has no method '" + methodCallName + "'",
+                    "CAJETA_ERROR_VECTOR_METHOD");
             }
             // l-value -> r-value coercion. Local-variable receivers are AllocaInsts;
             // ArrayIndex receivers are slot addresses where the slot holds a `ptr` to
