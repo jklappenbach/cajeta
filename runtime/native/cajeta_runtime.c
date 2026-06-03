@@ -4330,8 +4330,19 @@ struct cajeta_vk {
     PFN_vkDestroyAccelerationStructureKHR vkDestroyAccelerationStructureKHR;
     PFN_vkCmdBuildAccelerationStructuresKHR vkCmdBuildAccelerationStructuresKHR;
     PFN_vkGetAccelerationStructureDeviceAddressKHR vkGetAccelerationStructureDeviceAddressKHR;
+    // minAccelerationStructureScratchOffsetAlignment — the BVH build scratch
+    // device address must be rounded up to this (VUID-...-scratchData-03710).
+    VkDeviceSize scratchAlign;
 };
 static struct cajeta_vk g_xpu_vk;
+
+// Serializes all VkQueue submits + VkCommandPool use + AS-table mutation (BVH
+// build, AS free, and kernel launch). A VkQueue and a VkCommandPool require
+// external host synchronization; the launch/build/free paths can be driven from
+// different OS threads (the program's main thread vs a carrier-fiber thread), so
+// without this they race the shared queue/pool/table. Distinct from
+// g_xpu_cuda_lock (which only guards backend init/load).
+static pthread_mutex_t g_xpu_vk_submit_mu = PTHREAD_MUTEX_INITIALIZER;
 
 struct cajeta_vk_buf {
     VkBuffer buffer;
@@ -4400,6 +4411,9 @@ static int cajeta_xpu_vulkan_init_locked(void) {
     PFN_vkGetPhysicalDeviceFeatures2 getFeatures2 =
         (PFN_vkGetPhysicalDeviceFeatures2) g_xpu_vk.getInstanceProcAddr(
             g_xpu_vk.instance, "vkGetPhysicalDeviceFeatures2");
+    PFN_vkGetPhysicalDeviceProperties2 getProps2 =
+        (PFN_vkGetPhysicalDeviceProperties2) g_xpu_vk.getInstanceProcAddr(
+            g_xpu_vk.instance, "vkGetPhysicalDeviceProperties2");
     #undef CAJ_VKI
     g_xpu_vk.getDeviceProcAddr = (PFN_vkGetDeviceProcAddr)
         g_xpu_vk.getInstanceProcAddr(g_xpu_vk.instance, "vkGetDeviceProcAddr");
@@ -4477,8 +4491,22 @@ static int cajeta_xpu_vulkan_init_locked(void) {
                     f2.pNext = &bdaf;
                     getFeatures2(g_xpu_vk.phys, &f2);
                     if (rqf.rayQuery && asf.accelerationStructure &&
-                        bdaf.bufferDeviceAddress)
+                        bdaf.bufferDeviceAddress) {
                         wantRayQuery = 1;
+                        // Cache the BVH-build scratch offset alignment.
+                        if (getProps2) {
+                            VkPhysicalDeviceAccelerationStructurePropertiesKHR asp;
+                            memset(&asp, 0, sizeof(asp));
+                            asp.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_PROPERTIES_KHR;
+                            VkPhysicalDeviceProperties2 p2;
+                            memset(&p2, 0, sizeof(p2));
+                            p2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
+                            p2.pNext = &asp;
+                            getProps2(g_xpu_vk.phys, &p2);
+                            g_xpu_vk.scratchAlign =
+                                asp.minAccelerationStructureScratchOffsetAlignment;
+                        }
+                    }
                 }
             }
         }
@@ -4578,6 +4606,12 @@ static int cajeta_xpu_vulkan_init_locked(void) {
     // the plain compute path (rayQuery stays 0).
     if (wantRayQuery) {
         CAJ_VKD(vkGetBufferDeviceAddress);
+        if (!g_xpu_vk.vkGetBufferDeviceAddress)
+            // Core 1.2 name absent (e.g. a 1.1 device exposing only the KHR
+            // extension): fall back to the ABI-identical KHR entry point.
+            g_xpu_vk.vkGetBufferDeviceAddress = (PFN_vkGetBufferDeviceAddress)
+                g_xpu_vk.getDeviceProcAddr(g_xpu_vk.device,
+                                           "vkGetBufferDeviceAddressKHR");
         CAJ_VKD(vkGetAccelerationStructureBuildSizesKHR);
         CAJ_VKD(vkCreateAccelerationStructureKHR);
         CAJ_VKD(vkDestroyAccelerationStructureKHR);
@@ -4928,11 +4962,15 @@ static struct cajeta_vk_accel* cajeta_xpu_vk_accel_rec(int64_t handle) {
     return a->live ? a : NULL;
 }
 
-// Create a host-visible/coherent buffer that also exposes a device address
-// (VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT + SHADER_DEVICE_ADDRESS usage). Used for
-// every AS build input/scratch/store. Returns 1 on success. `outMapped` may be
-// NULL when the caller doesn't need to fill the buffer from the host.
+// Create a buffer that exposes a device address (VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT
+// + SHADER_DEVICE_ADDRESS usage), backed by memory satisfying `props`. Used for the
+// AS build input/scratch/store. Returns 1 on success. `outMapped` non-NULL means the
+// caller will fill the buffer from the host, so `props` MUST be host-visible (no
+// fallback — a non-mappable type would break the memcpy). For a device-only buffer
+// (`outMapped` NULL), if `props` (e.g. DEVICE_LOCAL) isn't available we fall back to
+// any memory type — correctness over the device-local perf preference.
 static int cajeta_xpu_vk_make_addr_buffer(uint64_t bytes, VkBufferUsageFlags usage,
+                                          VkMemoryPropertyFlags props,
                                           VkBuffer* outBuf, VkDeviceMemory* outMem,
                                           void** outMapped) {
     if (bytes == 0) return 0;
@@ -4948,9 +4986,9 @@ static int cajeta_xpu_vk_make_addr_buffer(uint64_t bytes, VkBufferUsageFlags usa
     VkMemoryRequirements req;
     memset(&req, 0, sizeof(req));
     g_xpu_vk.vkGetBufferMemoryRequirements(g_xpu_vk.device, buf, &req);
-    int mt = cajeta_xpu_vk_find_memory_type(
-        req.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
-                                VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    int mt = cajeta_xpu_vk_find_memory_type(req.memoryTypeBits, props);
+    if (mt < 0 && !outMapped)   // device-only buffer: any memory type is fine
+        mt = cajeta_xpu_vk_find_memory_type(req.memoryTypeBits, 0);
     if (mt < 0) { g_xpu_vk.vkDestroyBuffer(g_xpu_vk.device, buf, NULL); return 0; }
     VkMemoryAllocateFlagsInfo fi;
     memset(&fi, 0, sizeof(fi));
@@ -4998,6 +5036,10 @@ static VkDeviceAddress cajeta_xpu_vk_buf_addr(VkBuffer b) {
 static int64_t cajeta_xpu_vk_accel_build_aabbs(const float* aabbs, uint32_t count) {
     if (!g_xpu_vk.rayQuery || !aabbs || count == 0) return 0;
 
+    // Serialize the whole build: it submits to the shared queue/cmdpool and
+    // mutates the g_vk_accels table (slot-find + count++), both of which race
+    // a concurrent launch/build/free from another OS thread without this.
+    pthread_mutex_lock(&g_xpu_vk_submit_mu);
     VkBuffer aabbBuf = VK_NULL_HANDLE, asBuf = VK_NULL_HANDLE,
              scratchBuf = VK_NULL_HANDLE;
     VkDeviceMemory aabbMem = VK_NULL_HANDLE, asMem = VK_NULL_HANDLE,
@@ -5012,7 +5054,8 @@ static int64_t cajeta_xpu_vk_accel_build_aabbs(const float* aabbs, uint32_t coun
     if (!cajeta_xpu_vk_make_addr_buffer(
             aabbBytes,
             VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR,
-            &aabbBuf, &aabbMem, &aabbMapped))
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+            &aabbBuf, &aabbMem, &aabbMapped))   // host-mapped: filled by memcpy
         goto accel_done;
     memcpy(aabbMapped, aabbs, (size_t) aabbBytes);
 
@@ -5051,6 +5094,7 @@ static int64_t cajeta_xpu_vk_accel_build_aabbs(const float* aabbs, uint32_t coun
     if (!cajeta_xpu_vk_make_addr_buffer(
             sizes.accelerationStructureSize,
             VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR,
+            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,   // device-only (host never touches)
             &asBuf, &asMem, NULL))
         goto accel_done;
     VkAccelerationStructureCreateInfoKHR aci;
@@ -5063,13 +5107,23 @@ static int64_t cajeta_xpu_vk_accel_build_aabbs(const float* aabbs, uint32_t coun
                                                   &accel) != VK_SUCCESS)
         goto accel_done;
 
-    // 5. Scratch buffer; complete the build-geometry info.
-    if (!cajeta_xpu_vk_make_addr_buffer(sizes.buildScratchSize,
+    // 5. Scratch buffer; complete the build-geometry info. The scratch device
+    // address MUST be aligned to minAccelerationStructureScratchOffsetAlignment
+    // (VUID-VkAccelerationStructureBuildGeometryInfoKHR-scratchData-03710) — a raw
+    // buffer base is not guaranteed to satisfy it, so over-allocate by (align-1)
+    // and round the address up. scratchAlign is a power of two (Vulkan requires it).
+    VkDeviceSize scratchAlign = g_xpu_vk.scratchAlign ? g_xpu_vk.scratchAlign : 256;
+    if (!cajeta_xpu_vk_make_addr_buffer(sizes.buildScratchSize + scratchAlign - 1,
                                         VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                                        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
                                         &scratchBuf, &scratchMem, NULL))
         goto accel_done;
     bgi.dstAccelerationStructure = accel;
-    bgi.scratchData.deviceAddress = cajeta_xpu_vk_buf_addr(scratchBuf);
+    {
+        VkDeviceAddress sAddr = cajeta_xpu_vk_buf_addr(scratchBuf);
+        sAddr = (sAddr + scratchAlign - 1) & ~((VkDeviceAddress) scratchAlign - 1);
+        bgi.scratchData.deviceAddress = sAddr;
+    }
 
     // 6. Record + submit the build.
     VkAccelerationStructureBuildRangeInfoKHR range;
@@ -5126,6 +5180,7 @@ accel_done:
                                            &cmd);
     if (scratchBuf) g_xpu_vk.vkDestroyBuffer(g_xpu_vk.device, scratchBuf, NULL);
     if (scratchMem) g_xpu_vk.vkFreeMemory(g_xpu_vk.device, scratchMem, NULL);
+    if (aabbMapped) g_xpu_vk.vkUnmapMemory(g_xpu_vk.device, aabbMem);
     if (aabbBuf) g_xpu_vk.vkDestroyBuffer(g_xpu_vk.device, aabbBuf, NULL);
     if (aabbMem) g_xpu_vk.vkFreeMemory(g_xpu_vk.device, aabbMem, NULL);
     // On failure these are still set (success cleared them); tear them down.
@@ -5133,18 +5188,21 @@ accel_done:
                                                           NULL);
     if (asBuf) g_xpu_vk.vkDestroyBuffer(g_xpu_vk.device, asBuf, NULL);
     if (asMem) g_xpu_vk.vkFreeMemory(g_xpu_vk.device, asMem, NULL);
+    pthread_mutex_unlock(&g_xpu_vk_submit_mu);
     return result;
 }
 
 static void cajeta_xpu_vk_accel_free(int64_t handle) {
+    pthread_mutex_lock(&g_xpu_vk_submit_mu);   // serialize vs build/launch + table
     struct cajeta_vk_accel* a = cajeta_xpu_vk_accel_rec(handle);
-    if (!a) return;
+    if (!a) { pthread_mutex_unlock(&g_xpu_vk_submit_mu); return; }
     if (a->accel)
         g_xpu_vk.vkDestroyAccelerationStructureKHR(g_xpu_vk.device, a->accel, NULL);
     if (a->asBuf) g_xpu_vk.vkDestroyBuffer(g_xpu_vk.device, a->asBuf, NULL);
     if (a->asMem) g_xpu_vk.vkFreeMemory(g_xpu_vk.device, a->asMem, NULL);
     a->accel = VK_NULL_HANDLE; a->asBuf = VK_NULL_HANDLE;
     a->asMem = VK_NULL_HANDLE; a->live = 0;
+    pthread_mutex_unlock(&g_xpu_vk_submit_mu);
 }
 
 // One dispatch: shader module + descriptor set (binding i = bindings[i]) +
@@ -5170,6 +5228,10 @@ static int cajeta_xpu_vk_launch(const void* spirv, uint64_t len,
                                 unsigned bx, unsigned by, unsigned bz,
                                 unsigned sharedBytes) {
     if (!spirv || len < 4 || n <= 0) return 0;
+    // Serialize the dispatch: VkQueue + VkCommandPool require external host
+    // synchronization, and an AS binding reads the g_vk_accels table — all shared
+    // with the build/free paths, which may run on a different OS thread.
+    pthread_mutex_lock(&g_xpu_vk_submit_mu);
     VkShaderModule module = VK_NULL_HANDLE;
     VkDescriptorSetLayout setLayout = VK_NULL_HANDLE;
     VkPipelineLayout pipeLayout = VK_NULL_HANDLE;
@@ -5367,6 +5429,7 @@ done:
     if (setLayout) g_xpu_vk.vkDestroyDescriptorSetLayout(g_xpu_vk.device,
                                                          setLayout, NULL);
     if (module) g_xpu_vk.vkDestroyShaderModule(g_xpu_vk.device, module, NULL);
+    pthread_mutex_unlock(&g_xpu_vk_submit_mu);
     return ok;
 }
 

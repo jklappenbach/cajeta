@@ -490,7 +490,7 @@ TEST(XpuVulkanDispatchDeviceTests, rayQuerySpatialIndexOnDevice) {
         "        s.sync();\n"
         "        out.download(hout);\n"
         "        px.free(); py.free(); pz.free(); out.free();\n"
-        "        if (hout[0] < 1) { return 101; }\n"   // inside: >=1 candidate
+        "        if (hout[0] != 1) { return 101; }\n"  // inside: exactly 1 candidate (one box)
         "        if (hout[1] != 0) { return 102; }\n"  // outside: no candidate
         "        return 777;\n"
         "    }\n"
