@@ -37,11 +37,18 @@ namespace cajeta {
         // recognizes this on a kernel-local's initializer and emits a per-block
         // addrspace(3) global; the host generateCode path rejects it.
         bool sharedAlloc = false;
+        // NRVO sret slot, set by ReturnStatement when this `stack X(...)` is
+        // the returned expression of a value-returning method. Forwarded to
+        // the CreatorRest at generateCode so the instance is built directly
+        // into the caller's return slot. See cajeta-docs/stdlib/ValueReturns.md.
+        llvm::Value* nrvoTarget = nullptr;
     public:
         void setStackAlloc(bool v) { stackAlloc = v; }
         bool getStackAlloc() const { return stackAlloc; }
         void setSharedAlloc(bool v) { sharedAlloc = v; }
         bool getSharedAlloc() const { return sharedAlloc; }
+        void setNrvoTarget(llvm::Value* t) { nrvoTarget = t; }
+        llvm::Value* getNrvoTarget() const { return nrvoTarget; }
 
         // The creator-rest (ClassCreatorRest or ArrayCreatorRest), exposed so
         // the device lowerer can read a `shared T[N]` array creation's size

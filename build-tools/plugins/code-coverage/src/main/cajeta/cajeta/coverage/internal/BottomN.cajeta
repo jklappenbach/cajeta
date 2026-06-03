@@ -1,0 +1,113 @@
+package cajeta.coverage.internal;
+
+import cajeta.collection.ArrayList;
+import cajeta.coverage.CoverageMap;
+
+/**
+ * Bottom-N file selection + citation formatting. Pulled out so the
+ * Report action's threshold-gate path and console renderer agree on
+ * which files to surface (and how to format them).
+ *
+ * "Bottom-N by coverage" is a partial sort — we only need the lowest
+ * `n`, not a full ordering. v1 uses a heap of size `n` swept across
+ * all entries (`O(files * log n)`); good enough for any plausible
+ * project size.
+ */
+public class BottomN {
+
+    /**
+     * Pick the `n` files with the lowest percentage, ascending.
+     * Returns fewer than `n` when the map has fewer files. Ties are
+     * broken by lexicographic file path so the output is
+     * deterministic across runs (matters for CI logs).
+     */
+    public static ArrayList<CoverageMap.FileEntry> select(
+        CoverageMap map, int32 n) {
+        ArrayList<CoverageMap.FileEntry> result =
+            #new ArrayList<CoverageMap.FileEntry>();
+        ArrayList<String> paths = map.files().keys();
+        // Insertion-sorted accumulator. For BOTTOM_N == 5 this is
+        // effectively linear and the simplest correct shape until
+        // PriorityQueue<T> stabilizes.
+        int32 i = 0;
+        while (i < paths.count()) {
+            CoverageMap.FileEntry e = map.files().get(paths.get(i)).get();
+            insertSortedAsc(result, e, n);
+            i = i + 1;
+        }
+        return result;
+    }
+
+    /**
+     * All files strictly below `floorPercent`, ascending by percentage.
+     * Used by the `min-per-file` gate.
+     */
+    public static ArrayList<CoverageMap.FileEntry> filesBelow(
+        CoverageMap map, int32 floorPercent) {
+        ArrayList<CoverageMap.FileEntry> result =
+            #new ArrayList<CoverageMap.FileEntry>();
+        ArrayList<String> paths = map.files().keys();
+        int32 i = 0;
+        while (i < paths.count()) {
+            CoverageMap.FileEntry e = map.files().get(paths.get(i)).get();
+            if (e.percent() < floorPercent) {
+                insertSortedAsc(result, e, result.count() + 1);
+            }
+            i = i + 1;
+        }
+        return result;
+    }
+
+    /**
+     * Human-formatted citation:
+     *   <percent>%   <path>   (<hit>/<total>)
+     * one per line. Used both in failure messages and in the console
+     * format's "files needing attention" section.
+     */
+    public static String cite(ArrayList<CoverageMap.FileEntry> files) {
+        StringBuilder b = stack StringBuilder();
+        int32 i = 0;
+        while (i < files.count()) {
+            CoverageMap.FileEntry e = files.get(i);
+            b.append("  ");
+            b.append(FloatFormat.oneDecimal(e.percent()));
+            b.append("%  ");
+            b.append(e.path());
+            b.append("  (");
+            b.append(String.valueOf(e.hitProbes()));
+            b.append("/");
+            b.append(String.valueOf(e.totalProbes()));
+            b.append(")\n");
+            i = i + 1;
+        }
+        return b.toString();
+    }
+
+    // Insert `e` in ascending percent order, truncating to capacity `n`.
+    static void insertSortedAsc(
+        ArrayList<CoverageMap.FileEntry> bucket,
+        CoverageMap.FileEntry e,
+        int32 n) {
+        // Trivially full and worse than the current worst → drop.
+        if (bucket.count() >= n &&
+            e.percent() >= bucket.get(bucket.count() - 1).percent()) {
+            return;
+        }
+        // Linear scan to find the insertion point. Stable on equal
+        // percents (uses path order for deterministic tie-break).
+        int32 i = 0;
+        while (i < bucket.count()) {
+            CoverageMap.FileEntry cur = bucket.get(i);
+            if (e.percent() < cur.percent()) { break; }
+            if (e.percent() == cur.percent() &&
+                e.path().compareTo(cur.path()) < 0) {
+                break;
+            }
+            i = i + 1;
+        }
+        bucket.insert(i, e);
+        while (bucket.count() > n) {
+            bucket.removeAt(bucket.count() - 1);
+        }
+    }
+}

@@ -26,9 +26,16 @@ namespace cajeta {
         bool reference;
         llvm::Function* llvmFunction;
         int paramIndex;
+        // Retained reference to the declaring formal so downstream
+        // borrow-escape checks (Phase 3 of #68, body-side `#T` contract
+        // enforcement) can consult the formal's `transferred` bit
+        // without re-walking the method's parameter list.
+        FormalParameterPtr formalParameter;
 
     public:
         ParameterField(CajetaModulePtr module, FormalParameterPtr formalParameter, llvm::Function* llvmFunction, int paramIndex);
+
+        FormalParameterPtr getFormalParameter() const { return formalParameter; }
 
         llvm::Value* createStore(llvm::Value* value) override;
 

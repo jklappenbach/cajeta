@@ -1,0 +1,42 @@
+{
+    "details": {
+        "name":               "com.example.core",
+        "version":            "0.1.0",
+        "description":        "Shared core library — used by apps",
+        "license":            "Apache-2.0",
+        "cajeta-lang-version": "1.0"
+    },
+
+    "settings": {
+        "capabilities": ["clock"],
+        "dependencies": {
+            // Inherited from workspace.shared-dependencies — member
+            // doesn't restate the version.
+            "cajeta.lang": "*"
+        }
+    },
+
+    "tasks": {
+        "build": {
+            "description": "Build the core library (library archive)",
+            "actions": [
+                { "action":  "build",
+                  "flavor":  "debug",
+                  "profile": "dev",
+                  "id":      "art" }
+            ],
+            "outputs": { "path": "${art.path}" }
+        },
+        "test": {
+            "description": "Unit tests",
+            "actions": [
+                { "action":  "build",
+                  "flavor":  "debug",
+                  "profile": "test",
+                  "id":      "art" },
+                { "action": "exec", "command": "echo",
+                  "args":   ["[core] would test ${art.path}"] }
+            ]
+        }
+    }
+}

@@ -311,6 +311,8 @@ namespace cajeta {
 
         PrefixOp getOp() const { return op; }
 
+        void resolveTypes(CajetaModulePtr module) override;
+
         llvm::Value* generateCode(CajetaModulePtr module) override;
     };
 
@@ -402,8 +404,16 @@ namespace cajeta {
         // hasBorrowCaptures flag, consumed by the L3-2 escape check at
         // ReturnStatement and propagated to function-typed Fields.
         bool _hasBorrowCaptures = false;
+        // Target-type hint from the surrounding context, mirroring
+        // LambdaExpression. When the LHS is an sret-form function-type and
+        // the underlying method's natural ABI is borrow (non-sret, non-#),
+        // setting expectedType lets resolveTypes pick the sret-form fnType
+        // and generateCode synthesize the borrow→sret adapter thunk
+        // (cajeta-docs/stdlib/ValueReturns.md — M5(b) adapter).
+        CajetaTypePtr expectedType;
     public:
         bool getHasBorrowCaptures() const { return _hasBorrowCaptures; }
+        void setExpectedType(CajetaTypePtr t) { expectedType = std::move(t); }
         MethodReferenceExpression(antlr4::Token* token,
                                   CajetaTypePtr receiverType,
                                   ExpressionPtr receiverExpr,

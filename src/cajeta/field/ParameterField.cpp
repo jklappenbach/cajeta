@@ -10,7 +10,8 @@
 namespace cajeta {
 
     ParameterField::ParameterField(CajetaModulePtr module, FormalParameterPtr formalParameter, llvm::Function* llvmFunction, int paramIndex) :
-            Field(module, formalParameter->getName(), formalParameter->getType()) {
+            Field(module, formalParameter->getName(), formalParameter->getType()),
+            formalParameter(formalParameter) {
         reference = false;
         this->llvmFunction = llvmFunction;
         this->paramIndex = paramIndex;

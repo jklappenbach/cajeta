@@ -51,7 +51,11 @@ target_compile_definitions(${BINARY} PRIVATE
         CAJETA_SOURCE_ROOT_DEFAULT="${PROJECT_SOURCE_DIR}")
 
 include(GoogleTest)
-gtest_discover_tests(${BINARY})
+# Per-test timeout: individual tests should finish in well under 10s
+# (JIT compile + run); 120s catches a hang (e.g. async / spawn deadlock
+# under -j$(nproc) contention) without false-positiving on slow tests.
+gtest_discover_tests(${BINARY}
+        PROPERTIES TIMEOUT 120)
 
 # `release_tests` target — runs the curated cross-compilation subset (see
 # release_filter.txt + release_tests.sh) instead of the full battery. It

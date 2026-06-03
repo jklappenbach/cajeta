@@ -229,7 +229,7 @@ TEST(LambdaReturnInferenceTests, userGenericHelperInlineBlockBodyLambda) {
     auto src =
         "package test;\n"
         "public final class D {\n"
-        "    public static R apply<R>(R seed, (R) -> R fn) {\n"
+        "    public static R apply<R>(R seed, (R) -> #R fn) {\n"
         "        return fn(seed);\n"
         "    }\n"
         "    public static int32 run() {\n"

@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cajeta.org/specs/capabilities-v1.json",
+  "title": "Cajeta capability vocabulary — v1",
+  "description": "Canonical capability list referenced by action declarations (action-catalog-v1.json), plugin manifests, and the `settings.plugins-allowed-capabilities` / `settings.capabilities` knobs in cajeta.json. Authoritative C++ source is the `Capability` enum in src/cajeta/buildtool/Sandbox.h. Adding a new capability is a minor-version bump of this document. Removing one is a major-version bump.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["capabilities-version", "capabilities"],
+  "properties": {
+    "capabilities-version": { "const": 1 },
+    "capabilities": {
+      "type": "object",
+      "additionalProperties": { "$ref": "#/$defs/capability" }
+    }
+  },
+  "$defs": {
+    "capability": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["description", "deploy-time-enforcement"],
+      "properties": {
+        "description": { "type": "string" },
+        "deploy-time-enforcement": {
+          "type": "string",
+          "description": "How the capability is enforced when sandboxing is active (Phase 11). `bwrap` for Linux; macOS / Windows currently stub but document the planned shape."
+        },
+        "default-for-actions": {
+          "type": "array",
+          "items": { "type": "string", "description": "Action names that include this capability in their default requested set." }
+        }
+      }
+    }
+  },
+  "examples": [
+    {
+      "capabilities-version": 1,
+      "capabilities": {
+        "filesystem": {
+          "description": "Read or write files inside the project root (and its declared writable paths). Read-only host paths like /usr /lib /etc/alternatives are always available; everything else is denied unless explicitly bound.",
+          "deploy-time-enforcement": "bwrap --bind <project-root> --ro-bind-try /usr /lib /bin /etc/alternatives — outside-root access fails at the sandbox boundary.",
+          "default-for-actions": ["copy", "delete", "mkdir", "sign", "verify-sig", "version", "download", "build", "clean", "package", "upload", "publish", "test"]
+        },
+        "process": {
+          "description": "Fork+exec a subprocess. Required for any action that runs the compiler, an installer, or an arbitrary command.",
+          "deploy-time-enforcement": "bwrap inherits the host PID/exec policy; capability is signal-only at the action-validation layer (firstDisallowedCapability rejects pre-invocation).",
+          "default-for-actions": ["build", "test", "exec"]
+        },
+        "network": {
+          "description": "Open outbound network connections. Required for HTTP/Git/SFTP repository drivers and cloud uploads. Without this capability the sandbox emits `--unshare-net` so even an action that calls libcurl fails clean.",
+          "deploy-time-enforcement": "bwrap --unshare-net when absent.",
+          "default-for-actions": ["download", "upload", "publish"]
+        },
+        "env": {
+          "description": "Read environment variables. The sandbox `--clearenv`s by default and selectively re-exposes only the variables an action requests (PATH, HOME faked to /tmp, plus action-declared passthrough).",
+          "deploy-time-enforcement": "bwrap --clearenv + --setenv K V per declared passthrough.",
+          "default-for-actions": ["build", "test", "exec"]
+        }
+      }
+    }
+  ],
+  "notes": [
+    "Capability semver: adding a capability is a minor bump (consumers must update their allowlists, but existing allowlists keep working — the new capability simply isn't granted). Removing a capability is a major bump.",
+    "First-party plugins (cajeta.*) get a wider default allowlist than user plugins; see Plugin.cpp::resolvePlugins. The wider default is hard-coded, not configurable — it's part of the plugin namespace contract.",
+    "Capability checks fire twice: at action invocation (firstDisallowedCapability gating the action.run() call) and at sandbox wrap (wrapInSandbox translating the granted set into bwrap argv)."
+  ]
+}

@@ -1,5 +1,7 @@
 package cajeta.codec.json;
 
+import cajeta.collection.ArrayList;
+import cajeta.lang.Optional;
 import cajeta.lang.String;
 
 // Minimal key/value store backing JsonValue.OBJECT. Parallel arrays
@@ -99,5 +101,115 @@ public class JsonObject {
         this.keyLens = dstL;
         this.values = dstV;
         this.cap = newCap;
+    }
+
+    // ── Typed convenience accessors ─────────────────────────────
+    //
+    // Symmetric Optional-returning getters over the same lookup
+    // semantics as `get(key) → JsonValue`. The legacy `get` stays
+    // for the byte-level / null-on-miss API that the tokenizer's
+    // hot path uses; the typed getters are for plugin / user code
+    // that wants `if (x.getString("field").isPresent()) { ... }`
+    // without the manual kind check.
+    //
+    // Each accessor returns `Optional.empty()` when the key is
+    // missing OR when the present value's kind doesn't match the
+    // requested type. That's a deliberate choice: a malformed
+    // config (`{ "min": "eighty" }`) shouldn't silently default —
+    // the caller observes empty and surfaces a "wrong kind" error
+    // with its own message. The kind-check helpers `containsKey`
+    // and `valueKindAt` are exposed for that branch.
+
+    public boolean containsKey(String key) {
+        return this.get(key) != null;
+    }
+
+    /**
+     * Insertion-ordered list of the object's keys, decoded as
+     * `cajeta.lang.String`. Allocates one String per key — fine
+     * for the convenience-tier callers that iterate config
+     * objects; the hot-path tokenizer should keep using `keyAt`.
+     */
+    public #ArrayList<String> keys() {
+        ArrayList<String> out = #new ArrayList<String>();
+        int32 i = 0;
+        while (i < this.sizeCount) {
+            out.add(#heap String(this.keys[i], this.keyLens[i]));
+            i = i + 1;
+        }
+        return out;
+    }
+
+    public Optional<String> getString(String key) {
+        JsonValue v = this.get(key);
+        if (v == null || v.kind() != 3) {
+            return stack Optional<String>(false, #null);
+        }
+        return stack Optional<String>(true, v.asString());
+    }
+
+    public Optional<int32> getInt(String key) {
+        JsonValue v = this.get(key);
+        if (v == null || v.kind() != 2) {
+            return stack Optional<int32>(false, 0);
+        }
+        return stack Optional<int32>(true, v.asInt32());
+    }
+
+    public Optional<int64> getLong(String key) {
+        JsonValue v = this.get(key);
+        if (v == null || v.kind() != 2) {
+            return stack Optional<int64>(false, 0);
+        }
+        return stack Optional<int64>(true, v.asInt64());
+    }
+
+    public Optional<boolean> getBoolean(String key) {
+        JsonValue v = this.get(key);
+        if (v == null || v.kind() != 1) {
+            return stack Optional<boolean>(false, false);
+        }
+        return stack Optional<boolean>(true, v.asBoolean());
+    }
+
+    public Optional<JsonArray> getArray(String key) {
+        JsonValue v = this.get(key);
+        if (v == null || v.kind() != 4) {
+            return stack Optional<JsonArray>(false, #null);
+        }
+        return stack Optional<JsonArray>(true, v.asArray());
+    }
+
+    public Optional<JsonObject> getObject(String key) {
+        JsonValue v = this.get(key);
+        if (v == null || v.kind() != 5) {
+            return stack Optional<JsonObject>(false, #null);
+        }
+        return stack Optional<JsonObject>(true, v.asObject());
+    }
+
+    /**
+     * Collect a string-typed array into an `ArrayList<String>`.
+     * Returns empty on missing key — the "list of patterns" config
+     * shape almost always wants the empty-when-absent semantics.
+     * A present-but-non-array value still returns empty; a present
+     * array containing a non-string element returns empty for that
+     * slot (caller iterates `getArray(key)` directly if the
+     * stricter behavior is needed).
+     */
+    public #ArrayList<String> getStringArray(String key) {
+        ArrayList<String> out = #new ArrayList<String>();
+        Optional<JsonArray> arr = this.getArray(key);
+        if (arr.isEmpty()) { return out; }
+        JsonArray a = arr.get();
+        int32 i = 0;
+        while (i < a.count()) {
+            JsonValue v = a.get(i);
+            if (v != null && v.kind() == 3) {
+                out.add(v.asString());
+            }
+            i = i + 1;
+        }
+        return out;
     }
 }

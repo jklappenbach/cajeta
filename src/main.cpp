@@ -11,6 +11,7 @@
 #include "cajeta/cli/IdeCommands.h"
 #include "cajeta/jit/CajetaJitHost.h"
 #include "cajeta/dap/DapServer.h"
+#include "cajeta/buildtool/BuildToolCommands.h"
 
 // CAJETA_VERSION and CAJETA_GIT_HASH are stamped at configure time by the
 // top-level CMakeLists.txt. Fall back to a placeholder if a non-CMake build
@@ -156,11 +157,17 @@ bool setBoolFlag(const char* flagName, const std::string& value, bool& out) {
 int main(int argc, const char* argv[]) {
     // Top-level subcommand dispatch. `cajeta archive ...` routes to
     // the archive-management surface (cajeta-docs/ArchiveManagement.md);
-    // anything else falls through to the legacy compile flow below.
-    // When BuildTool.md ships, more subcommands ("build", "test",
-    // "run", ...) land alongside `archive`.
+    // `cajeta info` (and eventually `build`, `test`, ...) routes to
+    // the build-tool surface (cajeta-docs/BuildTool.md). Anything not
+    // claimed by either falls through to the legacy compile flow below.
     if (argc >= 2 && std::string(argv[1]) == "archive") {
         return cajeta::dispatchArchive(argc, argv);
+    }
+    {
+        int btExit = 0;
+        if (cajeta::buildtool::dispatchBuildTool(argc, argv, &btExit)) {
+            return btExit;
+        }
     }
 
     // `cajeta jit-run <sourceRoot> <package.Class.method>` — in-process JIT

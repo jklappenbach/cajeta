@@ -156,11 +156,11 @@ All `cajeta.io.*` is **designed, unimplemented**. See `cajeta-docs/stdlib/Io.md`
 
 | ID | Name | Description | Status | Doc / tests |
 |----|------|-------------|--------|-------------|
-| S-801 | Fiber runtime (R1-R5-A') | Stackful fibers, scheduler, timer wheel, reactor | shipped | `cajeta-docs/AsyncStatus.md` |
+| S-801 | Fiber runtime (R1-R5-A') | Stackful fibers + single-carrier cooperative scheduler. NOT YET: work-stealing pool, timer wheel, I/O reactor | shipped | `cajeta-docs/stdlib/AsyncStatus.md` |
 | S-802 | `Task<T>` + `spawn` syntax | Lightweight async tasks | shipped | `test/parser/TaskTypingTests.cpp`, `SpawnDropTests.cpp`, `AsyncSyntaxTests.cpp`, `DetachTests.cpp`, `PerFiberDropChainTests.cpp` |
-| S-803 | `Lock` class + intrinsics | Mutex via `Cajeta.lockNew()` etc. | shipped | `test/parser/LockIntrinsicTests.cpp`, `LockClassTests.cpp` |
+| S-803 | `Lock` class + intrinsics | Intrinsics (`Cajeta.lockNew()` etc.) shipped; the cajeta-source `Lock`/`LockGuard` classes exist only as inline test source, not yet as a stdlib `cajeta.threading` package (R7-A promotes them) | partial | `test/parser/LockIntrinsicTests.cpp`, `LockClassTests.cpp` |
 | S-804 | `Fiber` / `Thread` cajeta-source classes | Surface wrappers around runtime | designed | Runtime exists; surface classes haven't been declared |
-| S-805 | R5-C / R5-D runtime items | Per AsyncStatus.md | designed | `cajeta-docs/AsyncStatus.md` |
+| S-805 | R5-C / R5-D runtime items | R5-C cooperative cancellation + R5-D scope exception-escalation, in the runtime (`__cajeta_fiber_cancel`, cancel re-raise in `__cajeta_task_wait`) | shipped | `cajeta-docs/stdlib/AsyncStatus.md` |
 
 ## Stdlib — `cajeta.error`
 

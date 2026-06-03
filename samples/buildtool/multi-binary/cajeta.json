@@ -1,0 +1,89 @@
+{
+    // Single source tree producing three independent binaries.
+    // See BuildTool.md "The build action in detail" / "Multiple
+    // binaries from one source tree".
+
+    "details": {
+        "name":               "com.example.multi",
+        "version":            "0.1.0",
+        "description":        "Single project producing server + migrate + diag binaries",
+        "license":            "Apache-2.0",
+        "cajeta-lang-version": "1.0"
+    },
+
+    "settings": {
+        "capabilities": ["network", "filesystem", "clock"],
+        "dependencies": {
+            "cajeta.lang":    "*",
+            "cajeta.lang.io": "*"
+        },
+        "repositories": [
+            { "name": "central", "url": "https://repo.cajeta.org",
+              "priority": 0 }
+        ],
+
+        "build": {
+            "target": "host",
+
+            // Named binaries — tasks reference by name.
+            "binaries": {
+                "server": {
+                    "entry-method": "com.example.multi.server.Main::main",
+                    "description":  "Production HTTP server"
+                },
+                "migrate": {
+                    "entry-method": "com.example.multi.migrate.Main::main",
+                    "description":  "Database migration runner (standalone)"
+                },
+                "diag": {
+                    "entry-method": "com.example.multi.diag.Main::main",
+                    "description":  "On-call diagnostic tool"
+                }
+            }
+        }
+    },
+
+    "tasks": {
+
+        // Default `build` builds the server (the most common case).
+        "build": {
+            "description": "Build the server (default)",
+            "actions": [
+                { "action": "build", "binary": "server",
+                  "flavor": "release", "profile": "release",
+                  "id":     "art" }
+            ],
+            "outputs": { "path": "${art.path}" }
+        },
+
+        "build-migrate": {
+            "description": "Build the migration runner",
+            "actions": [
+                { "action": "build", "binary": "migrate",
+                  "flavor": "release", "profile": "release" }
+            ]
+        },
+
+        "build-diag": {
+            "description": "Build the on-call diagnostic tool",
+            "actions": [
+                { "action": "build", "binary": "diag",
+                  "flavor": "release", "profile": "release" }
+            ]
+        },
+
+        "build-all": {
+            "description": "Build every binary in parallel",
+            "actions": [
+                { "parallel": [
+                    { "action": "build", "binary": "server",
+                      "flavor": "release", "profile": "release" },
+                    { "action": "build", "binary": "migrate",
+                      "flavor": "release", "profile": "release" },
+                    { "action": "build", "binary": "diag",
+                      "flavor": "release", "profile": "release" }
+                ]}
+            ]
+        }
+    }
+}

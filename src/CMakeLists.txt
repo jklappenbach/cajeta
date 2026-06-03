@@ -32,6 +32,17 @@ find_package(ZLIB REQUIRED)
 # cajeta-docs/ArchiveManagement.md §8.
 find_package(OpenSSL REQUIRED)
 
+# libcurl powers the HTTP repository driver (Phase 6b: bearer + mTLS
+# auth, GETs against the v1 registry REST API). Linked PUBLIC so the
+# header surface is reachable from test code that exercises the
+# in-process HTTP fixture server.
+find_package(CURL REQUIRED)
+# zlib is used unconditionally by the OCI image writer (Phase 9, gzip
+# layer encoding). It's also pulled in by lld below — that block stays
+# but is now redundant on the linker side. Doubling the find_package
+# is a no-op (CMake caches the target).
+find_package(ZLIB REQUIRED)
+
 # LLVM (since 18) expects an IMPORTED target zstd::libzstd_shared.
 # Prefer the proper find_package(zstd CONFIG) path — MSYS2 (mingw-w64),
 # vcpkg, and most modern distros ship zstdConfig.cmake. Falls back to
@@ -372,6 +383,15 @@ set(CAJETA_STDLIB_DIRS
         ${CAJETA_STDLIB_ROOT}/cajeta/lang
         ${CAJETA_STDLIB_ROOT}/cajeta/lang/stream
         ${CAJETA_STDLIB_ROOT}/cajeta/error
+        # cajeta/time before cajeta/threading: R9.3's withTimeout (a stdlib
+        # function in cajeta.threading) takes a Duration parameter, so the
+        # Duration class has to be loadable when threading parses.
+        ${CAJETA_STDLIB_ROOT}/cajeta/time
+        # Threading sync primitives (Lock/LockGuard today; Mutex/RwLock/
+        # ConditionVariable/Channel/Semaphore land in later R7 sub-phases).
+        # After cajeta/lang (needs Object) and cajeta/error (future
+        # Channel close/timeout throws).
+        ${CAJETA_STDLIB_ROOT}/cajeta/threading
         ${CAJETA_STDLIB_ROOT}/cajeta/io/file
         ${CAJETA_STDLIB_ROOT}/cajeta/hash
         ${CAJETA_STDLIB_ROOT}/cajeta/collection
@@ -482,6 +502,79 @@ if(DEFINED LLVM_ENABLE_RTTI AND NOT LLVM_ENABLE_RTTI)
             PROPERTIES COMPILE_OPTIONS "-fno-rtti")
 endif()
 
+# ------------------------------------------------------------------------------
+# Embedded `cajeta init` archetype templates.
+#
+# samples/buildtool/<type>/ doubles as the on-disk worked example AND
+# the source-of-truth for what `cajeta init <type>` writes. CMake walks
+# those trees here and emits a generated .cpp that embeds the bytes.
+# This eliminates drift between the samples and the archetypes the
+# binary ships.
+#
+# Convention: only `cajeta.json` and anything under `src/` is embedded.
+# `run.sh` and `README.md` describe the SAMPLE (where it lives in the
+# repo, what today's CLI surface can exercise) — that's sample-meta,
+# not what a freshly-init'd project needs. The init command writes a
+# minimal next-steps message instead.
+set(CAJETA_INIT_TEMPLATE_ROOT ${PROJECT_SOURCE_DIR}/samples/buildtool)
+set(CAJETA_INIT_TEMPLATE_NAMES basic workspace multi-binary melt)
+set(CAJETA_INIT_TEMPLATE_FILES "")
+set(CAJETA_INIT_MANIFEST_ROWS "")
+foreach(tname ${CAJETA_INIT_TEMPLATE_NAMES})
+    set(troot ${CAJETA_INIT_TEMPLATE_ROOT}/${tname})
+    if (NOT EXISTS ${troot})
+        message(FATAL_ERROR
+            "init template '${tname}' missing: ${troot} does not exist")
+    endif()
+    # Manifest (always one). Glob picks up the cajeta.json at the root
+    # and per-member manifests under workspace/.
+    file(GLOB_RECURSE manifests CONFIGURE_DEPENDS ${troot}/cajeta.json
+                                                  ${troot}/*/cajeta.json
+                                                  ${troot}/*/*/cajeta.json
+                                                  ${troot}/*/*/*/cajeta.json)
+    # Source files (zero or more — `melt` has none).
+    file(GLOB_RECURSE sources CONFIGURE_DEPENDS ${troot}/src/*.cajeta
+                                                ${troot}/*/src/*.cajeta
+                                                ${troot}/*/*/src/*.cajeta
+                                                ${troot}/*/*/*/src/*.cajeta
+                                                ${troot}/*/*/*/*/src/*.cajeta)
+    list(SORT manifests)
+    list(SORT sources)
+    foreach(abs ${manifests} ${sources})
+        file(RELATIVE_PATH rel "${troot}" "${abs}")
+        list(APPEND CAJETA_INIT_TEMPLATE_FILES ${abs})
+        list(APPEND CAJETA_INIT_MANIFEST_ROWS "${tname}\t${rel}\t${abs}")
+    endforeach()
+endforeach()
+
+set(CAJETA_INIT_EMBED    ${CMAKE_CURRENT_BINARY_DIR}/cajeta_init_embedded.cpp)
+set(CAJETA_INIT_MANIFEST ${CMAKE_CURRENT_BINARY_DIR}/cajeta_init_manifest.txt)
+
+# Write the manifest at configure time. CONFIGURE_DEPENDS on the globs
+# above re-runs cmake (and thus rewrites this manifest) when samples
+# are added or removed. The custom-command's DEPENDS picks up edits.
+file(WRITE "${CAJETA_INIT_MANIFEST}" "")
+foreach(row ${CAJETA_INIT_MANIFEST_ROWS})
+    file(APPEND "${CAJETA_INIT_MANIFEST}" "${row}\n")
+endforeach()
+
+add_custom_command(
+    OUTPUT ${CAJETA_INIT_EMBED}
+    COMMAND ${CMAKE_COMMAND}
+            -DMANIFEST=${CAJETA_INIT_MANIFEST}
+            -DEMBED_OUT=${CAJETA_INIT_EMBED}
+            -P ${PROJECT_SOURCE_DIR}/cmake/EmbedInitTemplates.cmake
+    DEPENDS ${CAJETA_INIT_TEMPLATE_FILES}
+            ${CAJETA_INIT_MANIFEST}
+            ${PROJECT_SOURCE_DIR}/cmake/EmbedInitTemplates.cmake
+    COMMENT "Embedding cajeta init archetype templates into ${CAJETA_INIT_EMBED}"
+    VERBATIM
+)
+
+set_source_files_properties(${CAJETA_INIT_EMBED} PROPERTIES GENERATED TRUE)
+list(APPEND GENERATED_SOURCES ${CAJETA_INIT_EMBED})
+# ------------------------------------------------------------------------------
+
 add_library(${CMAKE_PROJECT_NAME}_lib STATIC ${SOURCES} ${GENERATED_SOURCES})
 target_link_libraries(${CMAKE_PROJECT_NAME}_lib
         PUBLIC
@@ -498,7 +591,8 @@ target_link_libraries(${CMAKE_PROJECT_NAME}_lib
         glog::glog
         zstd
         ZLIB::ZLIB
-        OpenSSL::Crypto)
+        OpenSSL::Crypto
+        CURL::libcurl)
 # The native runtime (cajeta_runtime.c, embedded in this lib) uses
 # BCryptGenRandom for its RNG on Windows — link the bcrypt system lib.
 # Only the test binary actually pulls the native runtime object; on

@@ -1061,6 +1061,7 @@ void emitOpenSSLError(const char* prefix) {
 int cmdSign(const std::vector<std::string>& args, const CommonFlags& /*f*/) {
     std::string keyPath;
     std::string outPath;
+    std::string keyId;
     std::vector<std::string> positional;
     for (size_t i = 0; i < args.size(); ++i) {
         const auto& a = args[i];
@@ -1080,6 +1081,14 @@ int cmdSign(const std::vector<std::string>& args, const CommonFlags& /*f*/) {
             outPath = args[++i];
         } else if (a.rfind("--out=", 0) == 0) {
             outPath = a.substr(6);
+        } else if (a == "--key-id") {
+            if (i + 1 >= args.size()) {
+                std::cerr << "cajeta archive sign: --key-id requires a value\n";
+                return EXIT_USAGE;
+            }
+            keyId = args[++i];
+        } else if (a.rfind("--key-id=", 0) == 0) {
+            keyId = a.substr(9);
         } else if (a.rfind("--", 0) == 0) {
             std::cerr << "cajeta archive sign: unknown flag: " << a << "\n";
             return EXIT_USAGE;
@@ -1160,6 +1169,13 @@ int cmdSign(const std::vector<std::string>& args, const CommonFlags& /*f*/) {
     if (!out) {
         std::cerr << "cajeta archive sign: short write to " << outPath << "\n";
         return EXIT_IO;
+    }
+
+    // Phase 10: write the key-id sidecar so the launcher's
+    // signature-verify path can resolve the matching public key.
+    if (!keyId.empty()) {
+        std::ofstream kidOut(outPath + ".keyid", std::ios::trunc);
+        if (kidOut) kidOut << keyId << "\n";
     }
     return EXIT_OK;
 }

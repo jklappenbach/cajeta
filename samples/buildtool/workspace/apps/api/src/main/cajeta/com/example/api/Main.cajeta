@@ -1,0 +1,12 @@
+package com.example.api;
+
+import com.example.core.Core;
+import com.example.util.Util;
+import cajeta.lang.System;
+
+public class Main {
+    public static void main(String[] args) {
+        System.out.println(Core.greeting());
+        System.out.println("sum: " + Util.add(2, 3));
+    }
+}

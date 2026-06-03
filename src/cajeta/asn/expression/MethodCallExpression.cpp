@@ -6,6 +6,7 @@
 #include "cajeta/compile/CajetaModule.h"
 #include "cajeta/type/CajetaArray.h"
 #include "cajeta/type/CajetaClass.h"
+#include "cajeta/type/CajetaTask.h"
 #include "cajeta/type/CajetaView.h"
 #include "cajeta/type/CajetaFunctionType.h"
 #include "cajeta/method/Method.h"
@@ -15,8 +16,10 @@
 #include "Expression.h"
 #include "DotExpression.h"
 #include "Identifier.h"
+#include "NewExpression.h"
 #include "cajeta/type/Scope.h"
 #include "cajeta/field/Field.h"
+#include "cajeta/field/ParameterField.h"
 #include <llvm/IR/IntrinsicInst.h>
 #include <llvm/IR/Intrinsics.h>
 
@@ -163,6 +166,10 @@ namespace cajeta {
                     ctxParameterEntry->expression());
                 if (ctxParameterEntry->parameterLabel()) {
                     entry.label = ctxParameterEntry->parameterLabel()->getText();
+                }
+                // Caller-side `#x` transfer (Phase 1 of #68).
+                if (ctxParameterEntry->REFERENCE()) {
+                    entry.callerTransferred = true;
                 }
                 parameters.push_back(entry);
             }
@@ -492,8 +499,25 @@ namespace cajeta {
                     llvm::Value* captures = builder->CreateLoad(
                         ptrTy, capSlot, "captures_ptr");
 
+                    // M5(b) — sret form: caller allocates the result slot
+                    // in its own frame and threads it as the closure's
+                    // hidden arg 0. The call returns void; MCE's value is
+                    // the slot pointer (callers chain into it like any
+                    // class instance pointer).
+                    llvm::Value* sretSlot = nullptr;
+                    auto retClass = dynamic_pointer_cast<CajetaClass>(fnType->getReturnType());
+                    if (fnType->usesSret() && retClass) {
+                        llvm::Function* curFn = builder->GetInsertBlock()->getParent();
+                        llvm::IRBuilder<> entryBuilder(
+                            &curFn->getEntryBlock(),
+                            curFn->getEntryBlock().begin());
+                        sretSlot = entryBuilder.CreateAlloca(
+                            retClass->getLlvmType(), nullptr, "fn_sret");
+                    }
                     vector<llvm::Value*> args;
-                    args.push_back(captures);  // implicit first arg per L2 ABI
+                    if (sretSlot) args.push_back(sretSlot);
+                    args.push_back(captures);  // implicit captures arg per L2 ABI
+                    size_t baseIdx = sretSlot ? 2 : 1;
                     llvm::FunctionType* sig = fnType->getLlvmFunctionType();
                     for (size_t i = 0; i < parameters.size(); ++i) {
                         if (parameters[i].expression
@@ -512,9 +536,9 @@ namespace cajeta {
                         v = loadIfLValue(module, v, exprAst);
                         // Width-coerce to the function signature's expected
                         // param type (matches the coercion invokeMethod does
-                        // for ordinary calls). Signature index is i + 1 to
-                        // skip the captures slot.
-                        size_t sigIdx = i + 1;
+                        // for ordinary calls). Signature index is baseIdx + i
+                        // (sret-shifted when applicable).
+                        size_t sigIdx = baseIdx + i;
                         if (sig && sigIdx < sig->getNumParams() && v
                                 && v->getType() != sig->getParamType(sigIdx)) {
                             llvm::Type* expected = sig->getParamType(sigIdx);
@@ -527,7 +551,19 @@ namespace cajeta {
                         }
                         args.push_back(v);
                     }
-                    return builder->CreateCall(sig, callee, args);
+                    llvm::CallInst* call = builder->CreateCall(sig, callee, args);
+                    if (sretSlot && retClass) {
+                        call->addParamAttr(0, llvm::Attribute::get(
+                            llvmCtx, llvm::Attribute::StructRet,
+                            retClass->getLlvmType()));
+                        // Pin resolvedType so chained `.field` / `.method()`
+                        // see the value-typed result the sret slot holds.
+                        if (fnType->getReturnType()) {
+                            resolvedType = fnType->getReturnType();
+                        }
+                        return sretSlot;
+                    }
+                    return call;
                 }
             }
         }
@@ -677,6 +713,31 @@ namespace cajeta {
                         builder->SetInsertPoint(okBB2);
                         offset = afterField;
                         diagIdx++;
+                    }
+                }
+
+                // Caller-side `#bytes` transfer (Phase 1 of #68). The
+                // inline view-construction path returns before the
+                // general transfer block below, so handle the
+                // caller-side acknowledgement here. The owning-vs-borrow
+                // view distinction itself is decided downstream by
+                // LocalVariableDeclaration (which also reads
+                // callerTransferred); this block just deactivates the
+                // bytes local's drop entry when the caller wrote `#`.
+                if (parameters[0].callerTransferred) {
+                    if (auto idExpr = std::dynamic_pointer_cast<IdentifierExpression>(
+                            parameters[0].expression)) {
+                        if (auto scope = module->getScopeStack().peek()) {
+                            FieldPtr field = scope->getField(idExpr->getTextValue());
+                            if (field) {
+                                if (llvm::Value* entry = field->getDropEntry()) {
+                                    if (llvm::Function* mark = module->getRuntimeFunction(
+                                            "__cajeta_drop_mark_inactive")) {
+                                        builder->CreateCall(mark, {entry});
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
 
@@ -1629,6 +1690,398 @@ namespace cajeta {
                     llvm::Value* h = loadValue(0);
                     return builder->CreateCall(fn, {h});
                 }
+                // Condition-variable intrinsics (R7-B). Fiber-aware, paired
+                // with a lock handle; `Mutex<T>.withLockWhen` builds on them.
+                // condvarWait(cv, lock) atomically releases `lock`, parks the
+                // fiber (or cond_waits on the main thread), and reacquires
+                // `lock` on wake. condvarNotifyAll wakes every waiter (which
+                // re-checks its own predicate). See cajeta-docs/stdlib/Thread.md.
+                if (ns == "Cajeta" && methodCallName == "condvarNew" && parameters.empty()) {
+                    llvm::Function* fn = module->getRuntimeFunction("__cajeta_condvar_new");
+                    return builder->CreateCall(fn, {});
+                }
+                if (ns == "Cajeta" && methodCallName == "condvarWait" && parameters.size() == 2) {
+                    llvm::Function* fn = module->getRuntimeFunction("__cajeta_condvar_wait");
+                    llvm::Value* cv = loadValue(0);
+                    llvm::Value* lock = loadValue(1);
+                    return builder->CreateCall(fn, {cv, lock});
+                }
+                if (ns == "Cajeta" && methodCallName == "condvarNotifyAll" && parameters.size() == 1) {
+                    llvm::Function* fn = module->getRuntimeFunction("__cajeta_condvar_notify_all");
+                    llvm::Value* cv = loadValue(0);
+                    return builder->CreateCall(fn, {cv});
+                }
+                if (ns == "Cajeta" && methodCallName == "condvarDestroy" && parameters.size() == 1) {
+                    llvm::Function* fn = module->getRuntimeFunction("__cajeta_condvar_destroy");
+                    llvm::Value* cv = loadValue(0);
+                    return builder->CreateCall(fn, {cv});
+                }
+                // Reader-writer lock intrinsics (R7-D). Fiber-aware; back
+                // `RwLock<T>`. Many readers share; a writer is exclusive.
+                if (ns == "Cajeta" && methodCallName == "rwlockNew" && parameters.empty()) {
+                    llvm::Function* fn = module->getRuntimeFunction("__cajeta_rwlock_new");
+                    return builder->CreateCall(fn, {});
+                }
+                if (ns == "Cajeta" && methodCallName == "rwlockRdlock" && parameters.size() == 1) {
+                    llvm::Function* fn = module->getRuntimeFunction("__cajeta_rwlock_rdlock");
+                    return builder->CreateCall(fn, {loadValue(0)});
+                }
+                if (ns == "Cajeta" && methodCallName == "rwlockWrlock" && parameters.size() == 1) {
+                    llvm::Function* fn = module->getRuntimeFunction("__cajeta_rwlock_wrlock");
+                    return builder->CreateCall(fn, {loadValue(0)});
+                }
+                if (ns == "Cajeta" && methodCallName == "rwlockRdunlock" && parameters.size() == 1) {
+                    llvm::Function* fn = module->getRuntimeFunction("__cajeta_rwlock_rdunlock");
+                    return builder->CreateCall(fn, {loadValue(0)});
+                }
+                if (ns == "Cajeta" && methodCallName == "rwlockWrunlock" && parameters.size() == 1) {
+                    llvm::Function* fn = module->getRuntimeFunction("__cajeta_rwlock_wrunlock");
+                    return builder->CreateCall(fn, {loadValue(0)});
+                }
+                if (ns == "Cajeta" && methodCallName == "rwlockDestroy" && parameters.size() == 1) {
+                    llvm::Function* fn = module->getRuntimeFunction("__cajeta_rwlock_destroy");
+                    return builder->CreateCall(fn, {loadValue(0)});
+                }
+                // Atomic<T> intrinsics (R8 Slice 1). The new/destroy pair is
+                // a small runtime helper (malloc/free of the underlying
+                // word). The load/store/fetch_add/compareAndSet are emitted
+                // INLINE as LLVM atomic instructions — a runtime-call would
+                // defeat atomicity's whole purpose and block the optimizer
+                // from reasoning about ordering. All seq_cst for v1;
+                // memory-order parameterization is R8 Slice 1b.
+                // See cajeta-docs/stdlib/Thread.md and the AtomicInt32 /
+                // AtomicInt64 wrapper classes in cajeta.threading.
+                if (ns == "Cajeta" && methodCallName == "atomicI32New" && parameters.size() == 1) {
+                    llvm::Function* fn = module->getRuntimeFunction("__cajeta_atomic_i32_new");
+                    llvm::Value* v = loadValue(0);
+                    if (v->getType() != i32Ty) v = builder->CreateIntCast(v, i32Ty, /*isSigned=*/true);
+                    return builder->CreateCall(fn, {v});
+                }
+                if (ns == "Cajeta" && methodCallName == "atomicI32Destroy" && parameters.size() == 1) {
+                    llvm::Function* fn = module->getRuntimeFunction("__cajeta_atomic_i32_destroy");
+                    return builder->CreateCall(fn, {loadValue(0)});
+                }
+                if (ns == "Cajeta" && methodCallName == "atomicI32Load" && parameters.size() == 1) {
+                    auto* load = builder->CreateLoad(i32Ty, loadValue(0), "atomic.i32.load");
+                    load->setAtomic(llvm::AtomicOrdering::SequentiallyConsistent);
+                    load->setAlignment(llvm::Align(4));
+                    return load;
+                }
+                if (ns == "Cajeta" && methodCallName == "atomicI32Store" && parameters.size() == 2) {
+                    llvm::Value* v = loadValue(1);
+                    if (v->getType() != i32Ty) v = builder->CreateIntCast(v, i32Ty, /*isSigned=*/true);
+                    auto* store = builder->CreateStore(v, loadValue(0));
+                    store->setAtomic(llvm::AtomicOrdering::SequentiallyConsistent);
+                    store->setAlignment(llvm::Align(4));
+                    return store;
+                }
+                if (ns == "Cajeta" && methodCallName == "atomicI32FetchAdd" && parameters.size() == 2) {
+                    llvm::Value* v = loadValue(1);
+                    if (v->getType() != i32Ty) v = builder->CreateIntCast(v, i32Ty, /*isSigned=*/true);
+                    return builder->CreateAtomicRMW(
+                        llvm::AtomicRMWInst::Add, loadValue(0), v,
+                        llvm::MaybeAlign(4),
+                        llvm::AtomicOrdering::SequentiallyConsistent);
+                }
+                if (ns == "Cajeta" && methodCallName == "atomicI32CompareAndSet"
+                        && parameters.size() == 3) {
+                    llvm::Value* expected = loadValue(1);
+                    llvm::Value* desired = loadValue(2);
+                    if (expected->getType() != i32Ty) expected = builder->CreateIntCast(expected, i32Ty, true);
+                    if (desired->getType() != i32Ty) desired = builder->CreateIntCast(desired, i32Ty, true);
+                    auto* cmpxchg = builder->CreateAtomicCmpXchg(
+                        loadValue(0), expected, desired,
+                        llvm::MaybeAlign(4),
+                        llvm::AtomicOrdering::SequentiallyConsistent,
+                        llvm::AtomicOrdering::SequentiallyConsistent);
+                    // The cmpxchg result is `{ T old, i1 success }`; we
+                    // surface the boolean success flag (matches Java's
+                    // compareAndSet shape).
+                    return builder->CreateExtractValue(cmpxchg, 1, "atomic.cas.ok");
+                }
+                if (ns == "Cajeta" && methodCallName == "atomicI64New" && parameters.size() == 1) {
+                    llvm::Function* fn = module->getRuntimeFunction("__cajeta_atomic_i64_new");
+                    llvm::Value* v = loadValue(0);
+                    if (v->getType() != i64Ty) v = builder->CreateIntCast(v, i64Ty, /*isSigned=*/true);
+                    return builder->CreateCall(fn, {v});
+                }
+                if (ns == "Cajeta" && methodCallName == "atomicI64Destroy" && parameters.size() == 1) {
+                    llvm::Function* fn = module->getRuntimeFunction("__cajeta_atomic_i64_destroy");
+                    return builder->CreateCall(fn, {loadValue(0)});
+                }
+                if (ns == "Cajeta" && methodCallName == "atomicI64Load" && parameters.size() == 1) {
+                    auto* load = builder->CreateLoad(i64Ty, loadValue(0), "atomic.i64.load");
+                    load->setAtomic(llvm::AtomicOrdering::SequentiallyConsistent);
+                    load->setAlignment(llvm::Align(8));
+                    return load;
+                }
+                if (ns == "Cajeta" && methodCallName == "atomicI64Store" && parameters.size() == 2) {
+                    llvm::Value* v = loadValue(1);
+                    if (v->getType() != i64Ty) v = builder->CreateIntCast(v, i64Ty, /*isSigned=*/true);
+                    auto* store = builder->CreateStore(v, loadValue(0));
+                    store->setAtomic(llvm::AtomicOrdering::SequentiallyConsistent);
+                    store->setAlignment(llvm::Align(8));
+                    return store;
+                }
+                if (ns == "Cajeta" && methodCallName == "atomicI64FetchAdd" && parameters.size() == 2) {
+                    llvm::Value* v = loadValue(1);
+                    if (v->getType() != i64Ty) v = builder->CreateIntCast(v, i64Ty, /*isSigned=*/true);
+                    return builder->CreateAtomicRMW(
+                        llvm::AtomicRMWInst::Add, loadValue(0), v,
+                        llvm::MaybeAlign(8),
+                        llvm::AtomicOrdering::SequentiallyConsistent);
+                }
+                if (ns == "Cajeta" && methodCallName == "atomicI64CompareAndSet"
+                        && parameters.size() == 3) {
+                    llvm::Value* expected = loadValue(1);
+                    llvm::Value* desired = loadValue(2);
+                    if (expected->getType() != i64Ty) expected = builder->CreateIntCast(expected, i64Ty, true);
+                    if (desired->getType() != i64Ty) desired = builder->CreateIntCast(desired, i64Ty, true);
+                    auto* cmpxchg = builder->CreateAtomicCmpXchg(
+                        loadValue(0), expected, desired,
+                        llvm::MaybeAlign(8),
+                        llvm::AtomicOrdering::SequentiallyConsistent,
+                        llvm::AtomicOrdering::SequentiallyConsistent);
+                    return builder->CreateExtractValue(cmpxchg, 1, "atomic.cas.ok");
+                }
+                // Fixed-ordering atomic intrinsics (R8.1b). LLVM atomic IR
+                // bakes the ordering at instruction construction; a runtime-
+                // variable ordering would force a per-op switch (collapsed
+                // only via the inliner, perf-unpredictable at -O0). So each
+                // (op, ordering) combo is its own intrinsic + class method,
+                // matching the named-method approach in cajeta.threading.
+                // AtomicInt32 / AtomicInt64. The orderings shipped now are
+                // the ones the work-stealing deque (R8.2) needs; add more
+                // when a concrete consumer surfaces.
+                //
+                // Pattern below: small lambda factories for the four atomic
+                // shapes (load / store / fetchAdd / casExpectedOK) keyed on
+                // type width + ordering; each named intrinsic delegates to
+                // them with its fixed ordering.
+                auto atomicLoadOrd = [&](llvm::Type* ty, unsigned alignBytes,
+                                          llvm::AtomicOrdering ord,
+                                          const char* nameHint) -> llvm::Value* {
+                    auto* load = builder->CreateLoad(ty, loadValue(0), nameHint);
+                    load->setAtomic(ord);
+                    load->setAlignment(llvm::Align(alignBytes));
+                    return load;
+                };
+                auto atomicStoreOrd = [&](llvm::Type* ty, unsigned alignBytes,
+                                           llvm::AtomicOrdering ord) -> llvm::Value* {
+                    llvm::Value* v = loadValue(1);
+                    if (v->getType() != ty) v = builder->CreateIntCast(v, ty, /*isSigned=*/true);
+                    auto* store = builder->CreateStore(v, loadValue(0));
+                    store->setAtomic(ord);
+                    store->setAlignment(llvm::Align(alignBytes));
+                    return store;
+                };
+                auto atomicFetchAddOrd = [&](llvm::Type* ty, unsigned alignBytes,
+                                              llvm::AtomicOrdering ord) -> llvm::Value* {
+                    llvm::Value* v = loadValue(1);
+                    if (v->getType() != ty) v = builder->CreateIntCast(v, ty, /*isSigned=*/true);
+                    return builder->CreateAtomicRMW(
+                        llvm::AtomicRMWInst::Add, loadValue(0), v,
+                        llvm::MaybeAlign(alignBytes), ord);
+                };
+                auto atomicCasOrd = [&](llvm::Type* ty, unsigned alignBytes,
+                                         llvm::AtomicOrdering succ,
+                                         llvm::AtomicOrdering fail) -> llvm::Value* {
+                    llvm::Value* expected = loadValue(1);
+                    llvm::Value* desired = loadValue(2);
+                    if (expected->getType() != ty) expected = builder->CreateIntCast(expected, ty, /*isSigned=*/true);
+                    if (desired->getType() != ty) desired = builder->CreateIntCast(desired, ty, /*isSigned=*/true);
+                    auto* cmpxchg = builder->CreateAtomicCmpXchg(
+                        loadValue(0), expected, desired,
+                        llvm::MaybeAlign(alignBytes), succ, fail);
+                    return builder->CreateExtractValue(cmpxchg, 1, "atomic.cas.ok");
+                };
+                // ---- i32 ----
+                if (ns == "Cajeta" && methodCallName == "atomicI32LoadRelaxed" && parameters.size() == 1) {
+                    return atomicLoadOrd(i32Ty, 4, llvm::AtomicOrdering::Monotonic, "atomic.i32.load.rlx");
+                }
+                if (ns == "Cajeta" && methodCallName == "atomicI32LoadAcquire" && parameters.size() == 1) {
+                    return atomicLoadOrd(i32Ty, 4, llvm::AtomicOrdering::Acquire, "atomic.i32.load.acq");
+                }
+                if (ns == "Cajeta" && methodCallName == "atomicI32StoreRelaxed" && parameters.size() == 2) {
+                    return atomicStoreOrd(i32Ty, 4, llvm::AtomicOrdering::Monotonic);
+                }
+                if (ns == "Cajeta" && methodCallName == "atomicI32StoreRelease" && parameters.size() == 2) {
+                    return atomicStoreOrd(i32Ty, 4, llvm::AtomicOrdering::Release);
+                }
+                if (ns == "Cajeta" && methodCallName == "atomicI32FetchAddRelaxed" && parameters.size() == 2) {
+                    return atomicFetchAddOrd(i32Ty, 4, llvm::AtomicOrdering::Monotonic);
+                }
+                if (ns == "Cajeta" && methodCallName == "atomicI32CompareAndSetAcquire" && parameters.size() == 3) {
+                    return atomicCasOrd(i32Ty, 4,
+                        llvm::AtomicOrdering::Acquire,
+                        llvm::AtomicOrdering::Acquire);
+                }
+                // ---- i64 ----
+                if (ns == "Cajeta" && methodCallName == "atomicI64LoadRelaxed" && parameters.size() == 1) {
+                    return atomicLoadOrd(i64Ty, 8, llvm::AtomicOrdering::Monotonic, "atomic.i64.load.rlx");
+                }
+                if (ns == "Cajeta" && methodCallName == "atomicI64LoadAcquire" && parameters.size() == 1) {
+                    return atomicLoadOrd(i64Ty, 8, llvm::AtomicOrdering::Acquire, "atomic.i64.load.acq");
+                }
+                if (ns == "Cajeta" && methodCallName == "atomicI64StoreRelaxed" && parameters.size() == 2) {
+                    return atomicStoreOrd(i64Ty, 8, llvm::AtomicOrdering::Monotonic);
+                }
+                if (ns == "Cajeta" && methodCallName == "atomicI64StoreRelease" && parameters.size() == 2) {
+                    return atomicStoreOrd(i64Ty, 8, llvm::AtomicOrdering::Release);
+                }
+                if (ns == "Cajeta" && methodCallName == "atomicI64FetchAddRelaxed" && parameters.size() == 2) {
+                    return atomicFetchAddOrd(i64Ty, 8, llvm::AtomicOrdering::Monotonic);
+                }
+                if (ns == "Cajeta" && methodCallName == "atomicI64CompareAndSetAcquire" && parameters.size() == 3) {
+                    return atomicCasOrd(i64Ty, 8,
+                        llvm::AtomicOrdering::Acquire,
+                        llvm::AtomicOrdering::Acquire);
+                }
+                // R9.1 — cooperative timeout. taskWaitTimeout(done_addr,
+                // deadline_ns) returns 1 if *done_addr flipped before the
+                // deadline, 0 if the deadline expired first. deadline_ns
+                // is a CLOCK_MONOTONIC absolute timestamp; compute one via
+                // currentTimeNanos() + a duration in nanos. See R9 plan
+                // and Thread.md § withTimeout for the eventual stdlib API.
+                if (ns == "Cajeta" && methodCallName == "taskWaitTimeout"
+                        && parameters.size() == 2) {
+                    llvm::Function* fn = module->getRuntimeFunction("__cajeta_task_wait_timeout");
+                    llvm::Value* doneAddr = loadValue(0);
+                    llvm::Value* deadline = loadValue(1);
+                    if (deadline->getType() != i64Ty) {
+                        deadline = builder->CreateIntCast(deadline, i64Ty, /*isSigned=*/true);
+                    }
+                    return builder->CreateCall(fn, {doneAddr, deadline});
+                }
+                if (ns == "Cajeta" && methodCallName == "currentTimeNanos"
+                        && parameters.empty()) {
+                    llvm::Function* fn = module->getRuntimeFunction("__cajeta_currentTimeNanos");
+                    return builder->CreateCall(fn, {});
+                }
+                // R9.3 — surface the Task<T>'s done-flag address as a raw
+                // pointer so user-level withTimeout (cajeta.threading.Tasks)
+                // can feed it to taskWaitTimeout. The Task is heap-allocated
+                // and the call arg is the pointer to it; we GEP at the
+                // DONE_FIELD_INDEX defined in CajetaTask.h. The argument
+                // type must resolve to a CajetaTask (Task<T>) — anything
+                // else is a compile error.
+                // R9.4 — I/O reactor surface. ioWait blocks the calling
+                // fiber (or main thread, via direct epoll_wait) until the
+                // requested event bitmask fires on fd. eventfd helpers
+                // and fdClose round out the minimal Linux fd surface used
+                // by R9.4's bring-up tests; they're documented as Linux-
+                // only (the runtime stubs them on macOS / Windows pending
+                // kqueue / IOCP).
+                if (ns == "Cajeta" && methodCallName == "ioWait"
+                        && parameters.size() == 2) {
+                    llvm::Function* fn = module->getRuntimeFunction("__cajeta_io_wait");
+                    llvm::Value* fdv = loadValue(0);
+                    llvm::Value* evv = loadValue(1);
+                    if (fdv->getType() != i32Ty) fdv = builder->CreateIntCast(fdv, i32Ty, true);
+                    if (evv->getType() != i32Ty) evv = builder->CreateIntCast(evv, i32Ty, true);
+                    return builder->CreateCall(fn, {fdv, evv});
+                }
+                if (ns == "Cajeta" && methodCallName == "eventfdCreate"
+                        && parameters.empty()) {
+                    llvm::Function* fn = module->getRuntimeFunction("__cajeta_eventfd_create");
+                    return builder->CreateCall(fn, {});
+                }
+                if (ns == "Cajeta" && methodCallName == "eventfdSignal"
+                        && parameters.size() == 1) {
+                    llvm::Function* fn = module->getRuntimeFunction("__cajeta_eventfd_signal");
+                    llvm::Value* fdv = loadValue(0);
+                    if (fdv->getType() != i32Ty) fdv = builder->CreateIntCast(fdv, i32Ty, true);
+                    return builder->CreateCall(fn, {fdv});
+                }
+                if (ns == "Cajeta" && methodCallName == "eventfdConsume"
+                        && parameters.size() == 1) {
+                    llvm::Function* fn = module->getRuntimeFunction("__cajeta_eventfd_consume");
+                    llvm::Value* fdv = loadValue(0);
+                    if (fdv->getType() != i32Ty) fdv = builder->CreateIntCast(fdv, i32Ty, true);
+                    return builder->CreateCall(fn, {fdv});
+                }
+                if (ns == "Cajeta" && methodCallName == "fdClose"
+                        && parameters.size() == 1) {
+                    llvm::Function* fn = module->getRuntimeFunction("__cajeta_fd_close");
+                    llvm::Value* fdv = loadValue(0);
+                    if (fdv->getType() != i32Ty) fdv = builder->CreateIntCast(fdv, i32Ty, true);
+                    return builder->CreateCall(fn, {fdv});
+                }
+                if (ns == "Cajeta" && methodCallName == "taskDonePointer"
+                        && parameters.size() == 1) {
+                    auto argExpr = dynamic_pointer_cast<Expression>(parameters[0].expression);
+                    if (argExpr && !argExpr->getResolvedType()) {
+                        argExpr->resolveTypes(module);
+                    }
+                    auto argType = argExpr ? argExpr->getResolvedType() : nullptr;
+                    auto task = dynamic_pointer_cast<CajetaTask>(argType);
+                    if (!task) {
+                        throw Exception(
+                            "Cajeta.taskDonePointer requires a Task<T> argument",
+                            "CAJETA_ERROR_TYPE_MISMATCH");
+                    }
+                    llvm::Value* taskPtr = loadValue(0);
+                    return builder->CreateStructGEP(
+                        task->getLlvmType(), taskPtr,
+                        CajetaTask::DONE_FIELD_INDEX, "task_done_ptr");
+                }
+                // R5-C / R9.3 — cooperative task cancellation. Loads the
+                // task's fiber pointer and signals cancellation via
+                // __cajeta_fiber_cancel with a sentinel (void*)1 throwable.
+                // The body sees the cancellation at its next park/wake
+                // boundary (i.e., next await) — bodies without yield
+                // points run to completion regardless. The trampoline
+                // catches the cancellation throw and stores it on
+                // task->exception; a subsequent `await` will re-raise,
+                // letting callers wrap it in try/catch. Used by
+                // cajeta.threading.Tasks.withTimeout to terminate slow
+                // bodies on deadline rather than letting them run to
+                // natural completion.
+                if (ns == "Cajeta" && methodCallName == "taskCancel"
+                        && parameters.size() == 1) {
+                    auto argExpr = dynamic_pointer_cast<Expression>(parameters[0].expression);
+                    if (argExpr && !argExpr->getResolvedType()) {
+                        argExpr->resolveTypes(module);
+                    }
+                    auto argType = argExpr ? argExpr->getResolvedType() : nullptr;
+                    auto task = dynamic_pointer_cast<CajetaTask>(argType);
+                    if (!task) {
+                        throw Exception(
+                            "Cajeta.taskCancel requires a Task<T> argument",
+                            "CAJETA_ERROR_TYPE_MISMATCH");
+                    }
+                    llvm::Value* taskPtr = loadValue(0);
+                    llvm::Type* ptrTy2 = llvm::PointerType::get(llvmCtx, 0);
+                    llvm::Value* fiberSlot = builder->CreateStructGEP(
+                        task->getLlvmType(), taskPtr,
+                        CajetaTask::FIBER_FIELD_INDEX, "task_fiber_slot");
+                    llvm::Value* fiberPtr = builder->CreateLoad(
+                        ptrTy2, fiberSlot, "task_fiber");
+                    llvm::Function* cancelFn = module->getRuntimeFunction(
+                        "__cajeta_fiber_cancel");
+                    // Sentinel (void*)1 — same shape as `throw 1` produces,
+                    // catches with `catch (Exception e)` reading `(int32) e`.
+                    llvm::Value* sentinel = builder->CreateIntToPtr(
+                        llvm::ConstantInt::get(
+                            llvm::Type::getInt64Ty(llvmCtx), 1), ptrTy2);
+                    return builder->CreateCall(cancelFn, {fiberPtr, sentinel});
+                }
+                // R9.5 — cooperative fiber sleep. Parks the running fiber
+                // on the timer wheel for `nanos` nanoseconds (built atop
+                // __cajeta_task_wait_timeout against a sentinel done flag
+                // that never flips, so the deadline is the only wake).
+                // Used by Channel.select's poll-and-backoff loop and
+                // available to any caller wanting a cooperative sleep
+                // without burning CPU.
+                if (ns == "Cajeta" && methodCallName == "fiberSleepNanos"
+                        && parameters.size() == 1) {
+                    llvm::Function* fn = module->getRuntimeFunction("__cajeta_fiber_sleep_nanos");
+                    llvm::Value* nanos = loadValue(0);
+                    if (nanos->getType() != i64Ty) {
+                        nanos = builder->CreateIntCast(nanos, i64Ty, /*isSigned=*/true);
+                    }
+                    return builder->CreateCall(fn, {nanos});
+                }
                 if (ns == "System" && methodCallName == "exit" && parameters.size() == 1) {
                     llvm::Function* fn = module->getRuntimeFunction("__cajeta_exit");
                     llvm::Value* code = loadValue(0);
@@ -1830,7 +2283,22 @@ namespace cajeta {
             // static-dispatch path picks up targetClass.
             if (receiver) {
                 if (auto* a = llvm::dyn_cast<llvm::AllocaInst>(receiver)) {
-                    receiver = builder->CreateLoad(a->getAllocatedType(), a);
+                    // Two alloca shapes can show up here:
+                    //   * ptr / primitive slot — a StackField for a class
+                    //     local stores the heap (or sret-slot) pointer in a
+                    //     `ptr`-typed slot; load-through materializes the
+                    //     instance pointer for dispatch.
+                    //   * struct slot — an sret slot from a chained
+                    //     value-returning MCE (e.g. `Duration.ofMillis(3)
+                    //     .toNanos()`). The alloca IS the in-place value's
+                    //     address; load-through would yield the struct
+                    //     value and the downstream vtable load /
+                    //     `this` pass would receive a non-pointer (task
+                    //     #46, M5(b) chained-sret gap). Skip the load —
+                    //     the slot pointer itself is the receiver address.
+                    if (!a->getAllocatedType()->isStructTy()) {
+                        receiver = builder->CreateLoad(a->getAllocatedType(), a);
+                    }
                 } else if (dynamic_pointer_cast<ArrayIndexExpression>(exprChild)) {
                     receiver = builder->CreateLoad(
                         llvm::PointerType::get(*module->getLlvmContext(), 0), receiver);
@@ -1936,15 +2404,30 @@ namespace cajeta {
                         closureTy, closurePtr, 1, "closure.captures");
                     llvm::Value* captures = builder->CreateLoad(
                         ptrTy, capSlot, "captures_ptr");
+                    // M5(b) — sret form: allocate the caller-owned result
+                    // slot and thread it as the closure's hidden arg 0;
+                    // call returns void, MCE value is the slot pointer.
+                    llvm::Value* sretSlot = nullptr;
+                    auto retClass = dynamic_pointer_cast<CajetaClass>(fnType->getReturnType());
+                    if (fnType->usesSret() && retClass) {
+                        llvm::Function* curFn = builder->GetInsertBlock()->getParent();
+                        llvm::IRBuilder<> entryBuilder(
+                            &curFn->getEntryBlock(),
+                            curFn->getEntryBlock().begin());
+                        sretSlot = entryBuilder.CreateAlloca(
+                            retClass->getLlvmType(), nullptr, "fn_sret");
+                    }
                     vector<llvm::Value*> args;
+                    if (sretSlot) args.push_back(sretSlot);
                     args.push_back(captures);
+                    size_t baseIdx = sretSlot ? 2 : 1;
                     llvm::FunctionType* sig = fnType->getLlvmFunctionType();
                     for (size_t i = 0; i < parameters.size(); ++i) {
                         llvm::Value* v = parameters[i].expression->generateCode(module);
                         if (auto* a = llvm::dyn_cast_or_null<llvm::AllocaInst>(v)) {
                             v = builder->CreateLoad(a->getAllocatedType(), a);
                         }
-                        size_t sigIdx = i + 1;
+                        size_t sigIdx = baseIdx + i;
                         if (sig && sigIdx < sig->getNumParams() && v
                                 && v->getType() != sig->getParamType(sigIdx)) {
                             llvm::Type* expected = sig->getParamType(sigIdx);
@@ -1964,7 +2447,14 @@ namespace cajeta {
                     if (fnType->getReturnType()) {
                         resolvedType = fnType->getReturnType();
                     }
-                    return builder->CreateCall(sig, callee, args);
+                    llvm::CallInst* call = builder->CreateCall(sig, callee, args);
+                    if (sretSlot && retClass) {
+                        call->addParamAttr(0, llvm::Attribute::get(
+                            llvmCtx, llvm::Attribute::StructRet,
+                            retClass->getLlvmType()));
+                        return sretSlot;
+                    }
+                    return call;
                 }
             }
         }
@@ -3630,6 +4120,80 @@ namespace cajeta {
         // either don't have a drop entry or have it managed by their
         // own emission path. See MemoryModel.md § Borrow / transfer.
         {
+            // Helper: deactivate the named local's drop entry at the
+            // current insertion point. Used by both the caller-side and
+            // callee-side transfer passes below.
+            auto deactivateIfClassLocal = [&](size_t argIdx) {
+                if (argIdx >= parameters.size()) return;
+                auto argExprBase = parameters[argIdx].expression;
+                auto idExpr = std::dynamic_pointer_cast<IdentifierExpression>(
+                    argExprBase);
+                if (!idExpr) return;
+                auto scope = module->getScopeStack().peek();
+                if (!scope) return;
+                FieldPtr field = scope->getField(idExpr->getTextValue());
+                if (!field) return;
+                if (llvm::Value* entry = field->getDropEntry()) {
+                    if (llvm::Function* mark = module->getRuntimeFunction(
+                            "__cajeta_drop_mark_inactive")) {
+                        builder->CreateCall(mark, {entry});
+                    }
+                }
+            };
+            // Caller-side `#x` (Phase 1 of #68). The caller's intent is
+            // explicit at the source line — deactivate the source's drop
+            // regardless of whether we can resolve the callee or inspect
+            // its formals. Required for callees the standard non-ctor
+            // resolveMethod can't find (synthesized view ctors, free
+            // functions called via overloads, etc.); the caller-side
+            // marker is the authoritative signal for those.
+            //
+            // Phase 3a of #68 (body-side check): if the `#x` source is a
+            // borrowed class parameter (plain-T formal, no `#`), reject
+            // — the caller is claiming to transfer a value they don't
+            // own.
+            for (size_t i = 0; i < parameters.size(); ++i) {
+                if (!parameters[i].callerTransferred) continue;
+                auto idExpr = std::dynamic_pointer_cast<IdentifierExpression>(
+                    parameters[i].expression);
+                if (idExpr) {
+                    if (auto scope = module->getScopeStack().peek()) {
+                        FieldPtr field = scope->getField(idExpr->getTextValue());
+                        auto pf = std::dynamic_pointer_cast<ParameterField>(field);
+                        if (pf) {
+                            auto formal = pf->getFormalParameter();
+                            if (formal && !formal->isTransferred()) {
+                                auto klass = std::dynamic_pointer_cast<CajetaClass>(
+                                    field->getType());
+                                if (klass && !klass->isInterface()) {
+                                    throw Exception(
+                                        "cannot transfer borrowed parameter `"
+                                            + idExpr->getTextValue() + "` via "
+                                            "`#` — its formal is declared plain `T` "
+                                            "(borrow), so this scope doesn't own the "
+                                            "value. Fix: mark the formal `#"
+                                            + idExpr->getTextValue() + "` to receive "
+                                            "ownership at the outer call site, or "
+                                            "restructure to not retain the borrow.",
+                                        "CAJETA_ERROR_BORROW_PARAM_ESCAPES");
+                                }
+                            }
+                        }
+                    }
+                }
+                deactivateIfClassLocal(i);
+            }
+            // Callee-side `#T` formal — Phase 2 of #68: contract check.
+            // When the formal is `#T` and the caller didn't acknowledge
+            // transfer (no `#x` at the call site, no MoveExpression
+            // wrapper, no fresh allocator), throw
+            // CAJETA_ERROR_TRANSFER_REQUIRED so the caller has to either
+            // surrender ownership explicitly or restructure. The check
+            // fires only on a genuine double-free hazard: an
+            // IdentifierExpression of a class-typed local whose Field
+            // carries an active drop entry. Primitives, fresh ctors,
+            // null literals, and locals without drop entries naturally
+            // pass through. See cajeta-docs/stdlib/OwnershipTransfer.md.
             bool callFloatingX = true;
             for (auto& e : entries) {
                 if (e.label.empty()) { callFloatingX = false; break; }
@@ -3651,20 +4215,25 @@ namespace cajeta {
                     if (argIdx >= parameters.size()) break;
                     ++fIdx;
                     if (!fp->isTransferred()) continue;
-                    auto argExprBase = parameters[argIdx].expression;
+                    if (parameters[argIdx].callerTransferred) continue;
+                    auto argExpr = parameters[argIdx].expression;
+                    if (dynamic_pointer_cast<MoveExpression>(argExpr)) continue;
+                    if (dynamic_pointer_cast<NewExpression>(argExpr)) continue;
                     auto idExpr = std::dynamic_pointer_cast<IdentifierExpression>(
-                        argExprBase);
+                        argExpr);
                     if (!idExpr) continue;
                     auto scope = module->getScopeStack().peek();
                     if (!scope) continue;
                     FieldPtr field = scope->getField(idExpr->getTextValue());
-                    if (!field) continue;
-                    if (llvm::Value* entry = field->getDropEntry()) {
-                        if (llvm::Function* mark = module->getRuntimeFunction(
-                                "__cajeta_drop_mark_inactive")) {
-                            builder->CreateCall(mark, {entry});
-                        }
-                    }
+                    if (!field || !field->getDropEntry()) continue;
+                    throw Exception(
+                        "method `" + methodCallName + "` declares parameter `"
+                            + fp->getName() + "` as `#T` (ownership transfer required); "
+                            "write `#" + idExpr->getTextValue() + "` at the call site "
+                            "to surrender ownership of the source local, or pass a "
+                            "fresh `heap T(...)` / `stack T(...)` construction. "
+                            "See cajeta-docs/stdlib/OwnershipTransfer.md.",
+                        "CAJETA_ERROR_TRANSFER_REQUIRED");
                 }
             }
         }

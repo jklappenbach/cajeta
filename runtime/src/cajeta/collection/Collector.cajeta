@@ -29,11 +29,11 @@ package cajeta.collection;
  * MethodLevelTemplate.md.
  */
 public class Collector<T, R> {
-    public () -> R supplier;
-    public (R, T) -> R accumulator;
-    public (R, R) -> R combiner;
+    public () -> #R supplier;
+    public (R, T) -> #R accumulator;
+    public (R, R) -> #R combiner;
 
-    public Collector(() -> R supplier, (R, T) -> R accumulator, (R, R) -> R combiner) {
+    public Collector(() -> #R supplier, (R, T) -> #R accumulator, (R, R) -> #R combiner) {
         this.supplier = supplier;
         this.accumulator = accumulator;
         this.combiner = combiner;

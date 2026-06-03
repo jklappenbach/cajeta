@@ -45,8 +45,8 @@ public class Stream<T> {
      * Pull the next element. Implementers override; default returns
      * an empty Optional.
      */
-    public #Optional<T> next() {
-        return heap Optional<T>(false, null);
+    public Optional<T> next() {
+        return stack Optional<T>(false, null);
     }
 
     /**
@@ -247,18 +247,18 @@ public class Stream<T> {
      * borrow-via-local issue — neither result gets a drop entry
      * since both are immediate temporaries.
      */
-    public #Optional<T> findFirst((T) -> boolean pred) {
+    public Optional<T> findFirst((T) -> boolean pred) {
         if (this.isParallel) {
             return ParallelDriver.findAnyParallelChain<T>(this, pred);
         }
         Optional<T> o = this.next();
         while (o.isPresent()) {
             if (pred(o.get())) {
-                return heap Optional<T>(true, o.get());
+                return stack Optional<T>(true, o.get());
             }
             o = this.next();
         }
-        return heap Optional<T>(false, null);
+        return stack Optional<T>(false, null);
     }
 
     /**
@@ -277,7 +277,7 @@ public class Stream<T> {
      * associative and `seed` its identity for the parallel path to
      * give the same answer as the sequential one.
      */
-    public T reduce(T seed, (T, T) -> T fn) {
+    public T reduce(T seed, (T, T) -> #T fn) {
         if (this.isParallel) {
             return ParallelDriver.reduceParallelChain<T>(this, seed, fn);
         }
@@ -296,7 +296,7 @@ public class Stream<T> {
      * inherited `next()` is what subclasses customize; this combinator
      * stays the same body across every Stream<T> subclass.
      */
-    public final R fold<R>(R seed, (R, T) -> R fn) {
+    public final R fold<R>(R seed, (R, T) -> #R fn) {
         if (this.isParallel) {
             throw new Exception("CAJETA_ERROR_STREAM_PARALLEL_FOLD_NO_COMBINER: 2-arg fold(seed, fn) cannot be applied to a parallel stream because there is no way to merge per-worker partials; use the 3-arg fold(seed, fn, combiner) overload, or call .sequential() first");
         }
@@ -312,7 +312,7 @@ public class Stream<T> {
     /**
      * Cross-type left-fold with explicit `combiner` for the parallel
      * path. Same per-element accumulation as the 2-arg `fold<R>`, but
-     * adds the `(R, R) -> R combiner` that the parallel driver uses
+     * adds the `(R, R) -> #R combiner` that the parallel driver uses
      * to merge per-worker partials at join time (Java's
      * `reduce(seed, accumulator, combiner)` shape).
      *
@@ -330,7 +330,7 @@ public class Stream<T> {
      * Violating these gives a numerically-correct but
      * implementation-dependent answer.
      */
-    public final R fold<R>(R seed, (R, T) -> R fn, (R, R) -> R combiner) {
+    public final R fold<R>(R seed, (R, T) -> #R fn, (R, R) -> #R combiner) {
         if (this.isParallel) {
             return ParallelDriver.foldParallelChain<T, R>(this, seed, fn, combiner);
         }
@@ -402,7 +402,7 @@ public class Stream<T> {
     /**
      * Applies `fn: (T) -> R` to each element, yielding Stream<R>.
      */
-    public final #Stream<R> map<R>((T) -> R fn) {
+    public final #Stream<R> map<R>((T) -> #R fn) {
         return heap MapStream<T, R>(this, fn);
     }
 
@@ -411,7 +411,7 @@ public class Stream<T> {
      * by draining each returned inner stream before pulling the next
      * outer element. Yields Stream<R>.
      */
-    public final #Stream<R> flatMap<R>((T) -> Stream<R> fn) {
+    public final #Stream<R> flatMap<R>((T) -> #Stream<R> fn) {
         return heap FlatMapStream<T, R>(this, fn);
     }
 
@@ -424,7 +424,7 @@ public class Stream<T> {
      * record. See `StreamParallelism.ErrorHandling.md` § 3.3 for
      * the full pattern catalogue.
      */
-    public final #Stream<R> mapOrSkip<R>((T) -> R fn) {
+    public final #Stream<R> mapOrSkip<R>((T) -> #R fn) {
         return heap MapOrSkipStream<T, R>(this, fn);
     }
 
@@ -436,7 +436,7 @@ public class Stream<T> {
      * Use when you need a same-length stream and a sentinel value
      * is acceptable for failures (0 for sum, identity for product).
      */
-    public final #Stream<R> mapOrFallback<R>((T) -> R fn, R fallback) {
+    public final #Stream<R> mapOrFallback<R>((T) -> #R fn, R fallback) {
         return heap MapOrFallbackStream<T, R>(this, fn, fallback);
     }
 
@@ -450,7 +450,7 @@ public class Stream<T> {
      * pipeline. The logger sees both the offending element and the
      * caught exception.
      */
-    public final #Stream<R> mapOrLog<R>((T) -> R fn, (T, Exception) -> void logger) {
+    public final #Stream<R> mapOrLog<R>((T) -> #R fn, (T, Exception) -> void logger) {
         return heap MapOrLogStream<T, R>(this, fn, logger);
     }
 }

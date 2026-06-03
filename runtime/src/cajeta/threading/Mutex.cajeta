@@ -1,0 +1,94 @@
+package cajeta.threading;
+
+/**
+ * Fused mutual-exclusion + protected data — cajeta-docs/stdlib/Thread.md
+ * § `Mutex<T>`. The mutex is a pure exclusion marker; it *owns* a single
+ * piece of data `T`, and the only way to touch that data is to hold the
+ * lock. There is no `value` handle that escapes the locked region —
+ * access goes through `withLock`, so "read/write the data without the
+ * lock" is structurally unrepresentable.
+ *
+ * This is the lambda form, closest to Java's `synchronized (obj) { ... }`:
+ * the closure passed to `withLock` *is* the critical section. The lock is
+ * held for the closure's duration and released when it returns (or
+ * unwinds — see below). The protected value is handed to the closure and
+ * the closure's result is stored back.
+ *
+ * Async behaviour (cajeta-docs/stdlib/AsyncStatus.md): on the single-carrier
+ * cooperative scheduler, acquiring a held lock from a fiber parks the
+ * fiber and yields to the carrier rather than blocking the OS thread.
+ *
+ * v1 surface: `withLock` (mutate-and-store) + `get` (snapshot). A
+ * compute-only `(T) -> R` read variant and a non-blocking `tryLock`
+ * land in a later sub-phase.
+ */
+public class Mutex<T> {
+    pointer handle;
+    pointer cond;
+    T value;
+
+    public Mutex(#T initial) {
+        this.handle = Cajeta.lockNew();
+        this.cond = Cajeta.condvarNew();
+        this.value = initial;
+    }
+
+    public ~Mutex() {
+        Cajeta.condvarDestroy(this.cond);
+        Cajeta.lockDestroy(this.handle);
+    }
+
+    /**
+     * Run `fn` as the critical section: acquire, pass the current
+     * protected value to `fn`, store what `fn` returns, release.
+     * Equivalent to `synchronized (this) { value = fn(value); }`.
+     *
+     * After storing, wakes any `withLockWhen` waiters so they re-check
+     * their predicate against the new value.
+     *
+     * Exception-safe: the lock is released by the method-scoped
+     * `LockGuard`'s drop, which fires on normal return AND on exception
+     * unwind through this frame — so a throw inside `fn` still releases.
+     */
+    public void withLock((T) -> #T fn) {
+        Cajeta.lockAcquire(this.handle);
+        LockGuard g = new LockGuard(this.handle);
+        this.value = fn(this.value);
+        Cajeta.condvarNotifyAll(this.cond);
+    }
+
+    /**
+     * Wait-for-condition critical section. Acquire, then block until
+     * `cond(value)` holds — each wait atomically releases the lock,
+     * suspends (parks the fiber / cond_waits on the main thread), and
+     * reacquires on wake. Once the predicate holds, run `fn`, store its
+     * result, and wake other waiters. The protected value never escapes
+     * the locked region.
+     *
+     * `cond` must be side-effect-free (it is re-evaluated on every wake).
+     * Exception-safe via the same method-scoped `LockGuard` drop as
+     * `withLock`.
+     */
+    public void withLockWhen((T) -> boolean cond, (T) -> #T fn) {
+        Cajeta.lockAcquire(this.handle);
+        LockGuard g = new LockGuard(this.handle);
+        while (!cond(this.value)) {
+            Cajeta.condvarWait(this.cond, this.handle);
+        }
+        this.value = fn(this.value);
+        Cajeta.condvarNotifyAll(this.cond);
+    }
+
+    /**
+     * Snapshot the protected value under the lock. Intended for
+     * value/primitive `T` — returns an independent copy. (For a heap
+     * class `T` this hands out a reference that outlives the lock; the
+     * `withLock` form is the safe way to operate on mutable `T`.)
+     */
+    public T get() {
+        Cajeta.lockAcquire(this.handle);
+        T snapshot = this.value;
+        Cajeta.lockRelease(this.handle);
+        return snapshot;
+    }
+}

@@ -20,25 +20,25 @@ import cajeta.error.RecoverableException;
  */
 public class MapOrFallbackStream<T, R> extends Stream<R> {
     Stream<T> source;
-    (T) -> R fn;
+    (T) -> #R fn;
     R fallback;
 
-    public MapOrFallbackStream(Stream<T> source, (T) -> R fn, R fallback) {
+    public MapOrFallbackStream(#Stream<T> source, (T) -> #R fn, #R fallback) {
         this.source = source;
         this.fn = fn;
         this.fallback = fallback;
     }
 
-    public #Optional<R> next() {
+    public Optional<R> next() {
         Optional<T> o = this.source.next();
         if (o.isEmpty()) {
-            return heap Optional<R>(false, null);
+            return stack Optional<R>(false, null);
         }
         try {
             R mapped = this.fn(o.get());
-            return heap Optional<R>(true, mapped);
+            return stack Optional<R>(true, #mapped);
         } catch (RecoverableException e) {
-            return heap Optional<R>(true, this.fallback);
+            return stack Optional<R>(true, this.fallback);
         }
     }
 
@@ -48,6 +48,6 @@ public class MapOrFallbackStream<T, R> extends Stream<R> {
     }
 
     public #Stream<R> cloneChainOver(#Stream<?> newRoot) {
-        return heap MapOrFallbackStream<T, R>(this.source.cloneChainOver(newRoot), this.fn, this.fallback);
+        return heap MapOrFallbackStream<T, R>(this.source.cloneChainOver(#newRoot), this.fn, this.fallback);
     }
 }

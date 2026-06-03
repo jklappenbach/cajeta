@@ -1,0 +1,48 @@
+package cajeta.time;
+
+/**
+ * An elapsed-time value in nanoseconds. Minimal v1: just enough to lower
+ * `withTimeout(d, body)` from cajeta.threading (R9.3) and to compute
+ * `Cajeta.currentTimeNanos() + d.toNanos()` deadlines for the timer
+ * intrinsic (R9.1).
+ *
+ * No arithmetic, no comparison, no formatting — those land when a
+ * concrete consumer surfaces a need. Don't speculatively add them.
+ *
+ * `nanos` is signed int64, so the representable range is approximately
+ * ±292 years. Negative durations parse and round-trip but have no
+ * defined semantics at the timeout layer (the timer intrinsic treats a
+ * deadline already in the past as an immediate timeout).
+ */
+public class Duration {
+    int64 nanos;
+
+    public Duration(int64 nanos) {
+        this.nanos = nanos;
+    }
+
+    /** Construct from a raw nanosecond count. */
+    public static Duration ofNanos(int64 nanos) {
+        return stack Duration(nanos);
+    }
+
+    /** Construct from milliseconds. 1 ms = 1_000_000 ns. */
+    public static Duration ofMillis(int64 millis) {
+        return stack Duration(millis * 1000000);
+    }
+
+    /** Construct from seconds. 1 s = 1_000_000_000 ns. */
+    public static Duration ofSeconds(int64 seconds) {
+        return stack Duration(seconds * 1000000000);
+    }
+
+    /** Construct from minutes. 1 min = 60 s. */
+    public static Duration ofMinutes(int64 minutes) {
+        return stack Duration(minutes * 60000000000);
+    }
+
+    /** Total nanoseconds. */
+    public int64 toNanos() {
+        return this.nanos;
+    }
+}

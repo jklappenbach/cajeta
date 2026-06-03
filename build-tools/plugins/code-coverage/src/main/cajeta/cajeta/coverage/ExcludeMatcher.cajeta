@@ -1,0 +1,197 @@
+package cajeta.coverage;
+
+import cajeta.collection.ArrayList;
+
+/**
+ * Decides which probes / findings get dropped per the resolved
+ * exclude list.
+ *
+ * Three predicates over the same input shape (the resolved exclude
+ * list + the candidate's identifying string):
+ *
+ *   - matchesFile(filePath)            — kind=FILE
+ *   - matchesPackage(packageDotted)    — kind=PACKAGE
+ *   - matchesSymbol(symbolQualified)   — kind=SYMBOL
+ *
+ * `matchesAny(filePath, packageDotted, symbolQualified)` is the
+ * convenience the Report action calls per probe: returns true if any
+ * exclude matches at any granularity, with the entry that matched
+ * (so the action can emit "dropped N probes via X" diagnostics).
+ *
+ * Glob dialect:
+ *
+ *   `*`   — match any sequence not containing the kind's separator
+ *           ( `/` for file paths, `.` for package + symbol names ).
+ *   `**`  — match any sequence including separators. File-glob only;
+ *           package + symbol kinds reject `**` (separators in those
+ *           names are meaningful and there's no shorthand for
+ *           "anything across them").
+ *   `?`   — match exactly one character.
+ *   any other char — literal match.
+ *
+ * The implementation is a small recursive matcher — coverage maps
+ * aren't huge enough to warrant pre-compiling globs to a regex / DFA.
+ * If profiling later proves otherwise we can switch to
+ * `cajeta.regex.Pattern` without changing the public surface.
+ */
+public class ExcludeMatcher {
+
+    ArrayList<Exclude> excludes;
+
+    public ExcludeMatcher(ArrayList<Exclude> excludes) {
+        this.excludes = excludes;
+    }
+
+    public boolean matchesFile(String filePath) {
+        return firstMatch(filePath, ExcludeKind.FILE).isPresent();
+    }
+
+    public boolean matchesPackage(String pkg) {
+        return firstMatch(pkg, ExcludeKind.PACKAGE).isPresent();
+    }
+
+    public boolean matchesSymbol(String symbol) {
+        return firstMatch(symbol, ExcludeKind.SYMBOL).isPresent();
+    }
+
+    /**
+     * Convenience: returns the matching Exclude (so diagnostics can
+     * cite the pattern + reason) or empty when nothing applies.
+     * `pkg` and `symbol` may be empty strings if the caller doesn't
+     * have them resolved for this probe — those kinds simply skip.
+     */
+    public Optional<Exclude> matchesAny(
+        String filePath, String pkg, String symbol) {
+        Optional<Exclude> hit = firstMatch(filePath, ExcludeKind.FILE);
+        if (hit.isPresent()) { return hit; }
+        if (pkg.count() > 0) {
+            hit = firstMatch(pkg, ExcludeKind.PACKAGE);
+            if (hit.isPresent()) { return hit; }
+        }
+        if (symbol.count() > 0) {
+            hit = firstMatch(symbol, ExcludeKind.SYMBOL);
+            if (hit.isPresent()) { return hit; }
+        }
+        return stack Optional<Exclude>(false, #null);
+    }
+
+    Optional<Exclude> firstMatch(String candidate, ExcludeKind kind) {
+        int32 i = 0;
+        while (i < this.excludes.count()) {
+            Exclude e = this.excludes.get(i);
+            if (e.kind() == kind &&
+                Glob.matches(e.pattern(), candidate, separatorFor(kind))) {
+                return stack Optional<Exclude>(true, e);
+            }
+            i = i + 1;
+        }
+        return stack Optional<Exclude>(false, #null);
+    }
+
+    static char separatorFor(ExcludeKind kind) {
+        if (kind == ExcludeKind.FILE) { return '/'; }
+        return '.';
+    }
+}
+
+/**
+ * The glob matcher. Public so unit tests can pin its semantics
+ * independently of the matcher's wiring.
+ */
+public class Glob {
+
+    /**
+     * True when `candidate` matches `pattern` under the dialect
+     * documented on `ExcludeMatcher`. `separator` is the char that
+     * `**` is required to cross but `*` is forbidden from crossing
+     * (`/` for file paths, `.` for dotted names).
+     */
+    public static boolean matches(
+        String pattern, String candidate, char separator) {
+        // For dotted-name kinds, `**` is meaningless — reject up
+        // front so a typo doesn't silently behave like a literal.
+        if (separator != '/' && containsDoubleStar(pattern)) {
+            // Soft fail: treat as no match. Earlier diagnostic at
+            // parse time would be louder, but the parser hasn't
+            // resolved kind→separator semantics yet, so we err on
+            // the side of "no surprising matches."
+            return false;
+        }
+        return matchAt(pattern, 0, candidate, 0, separator);
+    }
+
+    static boolean containsDoubleStar(String pattern) {
+        int32 i = 0;
+        while (i + 1 < pattern.count()) {
+            if (pattern.charAt(i) == '*' &&
+                pattern.charAt(i + 1) == '*') {
+                return true;
+            }
+            i = i + 1;
+        }
+        return false;
+    }
+
+    /**
+     * Recursive matcher. Indices into pattern / candidate, plus the
+     * separator that bounds single-star wildcards.
+     *
+     * Cases handled (in order checked):
+     *   - end of pattern + end of candidate            → match
+     *   - end of pattern, candidate left               → no match
+     *   - `**` in pattern + separator-traversing tail  → recurse
+     *   - `*` in pattern (single, separator-bounded)   → recurse
+     *   - `?` in pattern                               → consume 1
+     *   - literal char                                 → compare
+     */
+    static boolean matchAt(
+        String pat, int32 pi, String cand, int32 ci, char separator) {
+        while (pi < pat.count()) {
+            char pc = pat.charAt(pi);
+            if (pc == '*') {
+                boolean doubleStar = false;
+                if (pi + 1 < pat.count() && pat.charAt(pi + 1) == '*') {
+                    doubleStar = true;
+                    pi = pi + 2;
+                    // Eat an optional `/` immediately after `**` so
+                    // `src/**/Foo.cajeta` matches `src/Foo.cajeta` as
+                    // well as `src/a/b/Foo.cajeta` — same convention
+                    // bash + git use.
+                    if (pi < pat.count() && pat.charAt(pi) == '/') {
+                        pi = pi + 1;
+                    }
+                } else {
+                    pi = pi + 1;
+                }
+                // Try every split: `*` (or `**`) absorbs k chars,
+                // then the rest of the pattern must match the rest
+                // of the candidate.
+                int32 ci2 = ci;
+                while (true) {
+                    if (matchAt(pat, pi, cand, ci2, separator)) {
+                        return true;
+                    }
+                    if (ci2 >= cand.count()) { return false; }
+                    char absorbed = cand.charAt(ci2);
+                    if (!doubleStar && absorbed == separator) {
+                        return false;
+                    }
+                    ci2 = ci2 + 1;
+                }
+            }
+            if (ci >= cand.count()) { return false; }
+            char cc = cand.charAt(ci);
+            if (pc == '?') {
+                // `?` matches one of anything (including a separator
+                // in v1 — bash treats it that way too).
+                pi = pi + 1;
+                ci = ci + 1;
+                continue;
+            }
+            if (pc != cc) { return false; }
+            pi = pi + 1;
+            ci = ci + 1;
+        }
+        return ci == cand.count();
+    }
+}
