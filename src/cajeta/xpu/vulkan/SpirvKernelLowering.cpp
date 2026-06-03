@@ -7,6 +7,7 @@
 
 #include "../lowering/KernelLowering.h"
 #include "../lowering/LoweringTarget.h"
+#include "cajeta/error/Exception.h"
 
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/DerivedTypes.h"
@@ -29,6 +30,22 @@ namespace {
 // in address space 0. (Probed against LLVM 22 + spirv-val, 2026-05-30.)
 constexpr unsigned kStorageBufferSC = 12;
 constexpr unsigned kStorageBufferAS = 11;
+
+#ifndef CAJETA_HAS_SPV_RAY_QUERY
+// This Cajeta compiler was built against an LLVM WITHOUT the cajeta-llvm fork's
+// SPV_KHR_ray_query intrinsics (llvm.spv.ray.query.*) — see plans/c0 /
+// CAJETA-FORK.md. The ray-query *opaque types* are plain string-named
+// TargetExtTypes (fine on stock LLVM), but the *operations* need the fork
+// intrinsics. Rather than make cajeta itself fail to build against stock LLVM, a
+// RayQuery in a kernel becomes a clean lowering-time diagnostic.
+[[noreturn]] static void rayQueryNoForkToolchain() {
+    throw cajeta::Exception(
+        "XPU kernel lowering: SPV_KHR_ray_query is unavailable in this build — the "
+        "Cajeta compiler was linked against an LLVM that lacks the ray-query "
+        "intrinsics. Rebuild against the cajeta-llvm fork toolchain (plans/c0) to "
+        "enable RayQuery / AccelerationStructure.", "XPU-N02");
+}
+#endif
 
 // target("spirv.VulkanBuffer", [0 x elemTy], StorageBuffer, writable) — the
 // handle type llvm.spv.resource.handlefrombinding returns for a (RW)Structured
@@ -250,6 +267,7 @@ public:
         return vkRayQueryType(m.getContext());
     }
 
+#if CAJETA_HAS_SPV_RAY_QUERY
     // OpRayQueryInitializeKHR rq, as, rayFlags, cullMask, origin, tMin, dir, tMax.
     // `as` is overloaded on the intrinsic (the AS handle type); origin/direction
     // are <3 x float>.
@@ -280,6 +298,23 @@ public:
             &m, llvm::Intrinsic::spv_ray_query_get_intersection_type);
         return b.CreateCall(f, {rqPtr, intersection}, "rq.type");
     }
+#else
+    // Stock-LLVM build: the ray-query ops need the fork intrinsics. Unnamed params
+    // (no unused-arg warnings); each throws the clean fork-toolchain diagnostic.
+    void rayQueryInitialize(llvm::IRBuilderBase&, llvm::Module&, llvm::Value*,
+                            llvm::Value*, llvm::Value*, llvm::Value*, llvm::Value*,
+                            llvm::Value*, llvm::Value*, llvm::Value*) override {
+        rayQueryNoForkToolchain();
+    }
+    llvm::Value* rayQueryProceed(llvm::IRBuilderBase&, llvm::Module&,
+                                 llvm::Value*) override {
+        rayQueryNoForkToolchain();
+    }
+    llvm::Value* rayQueryIntersectionType(llvm::IRBuilderBase&, llvm::Module&,
+                                          llvm::Value*, llvm::Value*) override {
+        rayQueryNoForkToolchain();
+    }
+#endif
 
     // A @Device helper's Buffer<T> param is the storage-buffer HANDLE the kernel
     // holds in bufferBases (not a pointer) — so the helper takes it by value and

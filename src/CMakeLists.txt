@@ -87,6 +87,41 @@ find_package(LLVM REQUIRED CONFIG)
 separate_arguments(LLVM_DEFINITIONS_LIST NATIVE_COMMAND "${LLVM_DEFINITIONS}")
 add_definitions(${LLVM_DEFINITIONS_LIST})
 include_directories(${LLVM_INCLUDE_DIRS})
+
+# Detect whether this LLVM carries the cajeta-llvm fork's SPV_KHR_ray_query
+# intrinsics (llvm.spv.ray.query.*). The ray-query lowering references the
+# intrinsic enums directly, which is a hard compile error against stock upstream
+# LLVM (it lacks them). When absent, cajeta still builds and a RayQuery in a
+# kernel becomes a clean XPU-N02 diagnostic instead (SpirvKernelLowering.cpp).
+# This unblocks release legs that haven't yet got a fork toolchain artifact.
+# See plans/c0 / cajeta-llvm CAJETA-FORK.md.
+include(CheckCXXSourceCompiles)
+# Re-detect every configure: the LLVM toolchain can change between configures
+# (fork <-> stock) and the result must track it. Compile-ONLY (STATIC_LIBRARY
+# target type) so a spurious LINK failure doesn't mask a present enum — a plain
+# check_cxx_source_compiles links a full executable and can fail at ld for
+# reasons unrelated to whether the enum exists.
+unset(CAJETA_HAS_SPV_RAY_QUERY CACHE)
+set(_CAJETA_RQ_INCLUDES "${CMAKE_REQUIRED_INCLUDES}")
+set(_CAJETA_RQ_FLAGS "${CMAKE_REQUIRED_FLAGS}")
+set(_CAJETA_RQ_TTYPE "${CMAKE_TRY_COMPILE_TARGET_TYPE}")
+set(CMAKE_REQUIRED_INCLUDES ${LLVM_INCLUDE_DIRS})
+set(CMAKE_REQUIRED_FLAGS "-std=c++17 ${LLVM_DEFINITIONS}")
+set(CMAKE_TRY_COMPILE_TARGET_TYPE STATIC_LIBRARY)
+check_cxx_source_compiles("
+#include <llvm/IR/Intrinsics.h>
+#include <llvm/IR/IntrinsicsSPIRV.h>
+int probe() { return (int) llvm::Intrinsic::spv_ray_query_initialize; }
+" CAJETA_HAS_SPV_RAY_QUERY)
+set(CMAKE_REQUIRED_INCLUDES "${_CAJETA_RQ_INCLUDES}")
+set(CMAKE_REQUIRED_FLAGS "${_CAJETA_RQ_FLAGS}")
+set(CMAKE_TRY_COMPILE_TARGET_TYPE "${_CAJETA_RQ_TTYPE}")
+if(CAJETA_HAS_SPV_RAY_QUERY)
+    message(STATUS "cajeta: LLVM has SPV_KHR_ray_query intrinsics (fork toolchain) -- ray query ENABLED")
+else()
+    message(STATUS "cajeta: LLVM lacks SPV_KHR_ray_query intrinsics (stock LLVM) -- ray query DISABLED (clean XPU-N02 diagnostic)")
+endif()
+
 find_package(ANTLR REQUIRED)
 
 # System antlr4 runtime headers + library. Portability: search across
@@ -462,6 +497,9 @@ target_include_directories(${CMAKE_PROJECT_NAME}_lib PUBLIC
 if(CAJETA_HAS_LLD)
     target_compile_definitions(${CMAKE_PROJECT_NAME}_lib PUBLIC CAJETA_HAS_LLD=1)
     target_include_directories(${CMAKE_PROJECT_NAME}_lib PUBLIC ${CAJETA_LLD_INCLUDE_DIR})
+endif()
+if(CAJETA_HAS_SPV_RAY_QUERY)
+    target_compile_definitions(${CMAKE_PROJECT_NAME}_lib PUBLIC CAJETA_HAS_SPV_RAY_QUERY=1)
 endif()
 
 add_executable(${CMAKE_PROJECT_NAME} main.cpp)
