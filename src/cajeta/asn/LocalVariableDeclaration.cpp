@@ -178,6 +178,12 @@ namespace cajeta {
                 if (!children.empty()) {
                     if (auto lambda = dynamic_pointer_cast<LambdaExpression>(children[0])) {
                         lambda->setExpectedType(type);
+                    } else if (auto mref = dynamic_pointer_cast<MethodReferenceExpression>(children[0])) {
+                        // M5(b) adapter — sret-form LHS + borrow-returning
+                        // target needs the method-ref to know the expected
+                        // ABI so it can pick the sret-shaped fnType and
+                        // synthesize the borrow→sret adapter thunk.
+                        mref->setExpectedType(type);
                     }
                 }
             }
@@ -446,14 +452,15 @@ namespace cajeta {
                             auto argExpr = mceParams[0].expression;
                             // Owning vs borrow form (Views.md § Construction).
                             // `View(#buf)` transfers buffer ownership to the
-                            // view; `View(buf)` borrows. The MoveExpression
-                            // wrapper at the argument site is the discriminator.
-                            // For owning form we skip setViewSource so the
-                            // borrow-checker treats the view as an owner
-                            // (returnable, transferable, no escape error);
-                            // a deferred drop-entry registration further down
-                            // handles scope-exit cleanup.
-                            bool isOwning = dynamic_pointer_cast<MoveExpression>(argExpr) != nullptr;
+                            // view; `View(buf)` borrows. Pre-Phase-1 the `#`
+                            // produced a MoveExpression wrapper at the arg
+                            // site; post-Phase-1 (#68) it sets
+                            // MethodCallParameter::callerTransferred and the
+                            // inner expression is the bare identifier. Either
+                            // signal is the owning-form discriminator.
+                            bool isOwning =
+                                mceParams[0].callerTransferred
+                                || dynamic_pointer_cast<MoveExpression>(argExpr) != nullptr;
                             field->setIsOwningView(isOwning);
                             if (!isOwning) {
                                 if (auto idArg = dynamic_pointer_cast<IdentifierExpression>(argExpr)) {
@@ -574,9 +581,55 @@ namespace cajeta {
                                     mcName, mcEntries,
                                     /*isConstructor=*/false, floatingAll);
                                 if (resolved && !resolved->isReturnsOwnership()) {
-                                    // Non-# return — the local is a borrow
-                                    // of whatever the callee returned.
-                                    initIsBorrow = true;
+                                    if (resolved->returnsStackValue()) {
+                                        // Value-return (sret + NRVO): the callee
+                                        // constructed a stack instance into the
+                                        // caller's sret slot, so this local owns
+                                        // its fields and needs the stack-drop
+                                        // variant (drops owned fields, does NOT
+                                        // free the alloca). Mirrors the path a
+                                        // direct `stack X(...)` initializer takes.
+                                        // KNOWN LIMITATION: reassigning the local
+                                        // in a loop (`o = ch.receive()` repeatedly)
+                                        // doesn't fire pre-overwrite drops, so a
+                                        // value type that owns heap fields leaks
+                                        // one set of fields per iteration. See
+                                        // cajeta-docs/stdlib/ValueReturns.md (M5).
+                                        initIsStackAlloc = true;
+                                    } else {
+                                        // Non-# return — the local is a borrow
+                                        // of whatever the callee returned.
+                                        initIsBorrow = true;
+                                    }
+                                }
+                                // M5(b) — fn-typed MCE through a function-
+                                // typed local or field: when the fn-type
+                                // uses sret, the local takes ownership of
+                                // the caller-allocated sret slot's value
+                                // (stack-drop variant), same as a direct
+                                // sret-method call above.
+                                if (!resolved && !initIsStackAlloc && !initIsBorrow) {
+                                    CajetaFunctionTypePtr fnTy;
+                                    if (mcKids.empty()) {
+                                        auto scope = module->getScopeStack().peek();
+                                        FieldPtr fld = scope
+                                            ? scope->getField(mcName) : nullptr;
+                                        if (fld) {
+                                            fnTy = dynamic_pointer_cast<CajetaFunctionType>(
+                                                fld->getType());
+                                        }
+                                    }
+                                    if (!fnTy && targetCls) {
+                                        auto& props = targetCls->getProperties();
+                                        auto pit = props.find(mcName);
+                                        if (pit != props.end()) {
+                                            fnTy = dynamic_pointer_cast<CajetaFunctionType>(
+                                                pit->second->getType());
+                                        }
+                                    }
+                                    if (fnTy && fnTy->usesSret()) {
+                                        initIsStackAlloc = true;
+                                    }
                                 }
                             }
                         }

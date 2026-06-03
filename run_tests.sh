@@ -23,6 +23,12 @@
 #   NO_RETRY=1   skip the serial retry of failed/crashed shards (first pass
 #                is authoritative; otherwise problem shards are re-run alone
 #                and only deterministic failures count)
+#   SHARD_TIMEOUT=N  per-shard wall-clock timeout in seconds (default 600).
+#                If a shard runs longer than this it is killed and reported
+#                as a hung shard with the last-started test surfaced — the
+#                aggregator does NOT block forever on a hung shard. Tune up
+#                if you have legitimately long shards; tune down for tighter
+#                bounds in CI.
 
 set -e
 
@@ -188,6 +194,13 @@ done
 tmpdir=$(mktemp -d -t cajeta_test_shards.XXXXXX)
 trap 'rm -rf "$tmpdir"' EXIT
 
+# Per-shard wall-clock timeout. A shard that exceeds this is killed by
+# `timeout(1)`. The aggregator then classifies exit code 124 (SIGTERM, the
+# default `timeout` signal) or 137 (SIGKILL, used by timeout after the grace
+# period if the child ignores SIGTERM) as a hung shard and surfaces the last
+# test that started.
+shard_timeout="${SHARD_TIMEOUT:-600}"
+
 echo ">> Running $num_tests tests across $shards shards..."
 start_time=$SECONDS
 
@@ -208,8 +221,14 @@ for ((s=0; s<shards; s++)); do
         # Disable set -e here so a crashing/failing test binary still falls
         # through to record its exit code (set -e would terminate the
         # subshell mid-flight and the aggregator would see exit_file=?).
+        # `timeout --kill-after=10 $shard_timeout` sends SIGTERM at the
+        # deadline (exit 124) and SIGKILL 10s later if the binary ignores
+        # the term (exit 137). Either keeps the parent's `wait` loop from
+        # blocking forever on a hung shard — a cross-test state-leakage
+        # hang inside `cajeta_test` was the original motivation.
         set +e
-        CAJETA_SOURCE_ROOT="$SCRIPT_DIR" "$TEST_BIN" \
+        timeout --kill-after=10 "$shard_timeout" \
+            env CAJETA_SOURCE_ROOT="$SCRIPT_DIR" "$TEST_BIN" \
             "--gtest_filter=${shard_filters[$s]}" \
             --gtest_brief=1 \
             > "$out_file" 2>&1
@@ -285,7 +304,8 @@ for ((s=0; s<shards; s++)); do
         # the signal-death diagnostic is printed at the *current* shell's
         # level, so the redirect must apply to the current shell (group), not
         # to a child subshell.
-        { CAJETA_SOURCE_ROOT="$SCRIPT_DIR" "$TEST_BIN" \
+        { timeout --kill-after=10 "$shard_timeout" \
+              env CAJETA_SOURCE_ROOT="$SCRIPT_DIR" "$TEST_BIN" \
               "--gtest_filter=${shard_filters[$s]}" \
               --gtest_brief=0 \
               > "$verbose_log" 2>&1 ; } 2>/dev/null || true
@@ -301,9 +321,10 @@ for ((s=0; s<shards; s++)); do
         # tear-down race). Treat empty / non-numeric as "unknown" rather
         # than letting `[ "" -ge 128 ]` blow up with "integer expected".
         case "$exit_code" in
+            124) reason="HUNG (timeout ${shard_timeout}s — likely cross-test state leak inside the binary)" ;;
             134) reason="SIGABRT (assertion / abort)" ;;
             136) reason="SIGFPE (divide-by-zero / FP exception)" ;;
-            137) reason="SIGKILL (OOM or external kill)" ;;
+            137) reason="SIGKILL (OOM, external kill, OR timeout grace expired — hung shard)" ;;
             139) reason="SIGSEGV (segfault)" ;;
             1)   reason="exit 1 with no gtest summary (aborted before report)" ;;
             ''|\?)
@@ -384,7 +405,8 @@ if { [ "$total_failed" -gt 0 ] || [ ${#crashed_shards[@]} -gt 0 ]; } \
         r_out="$tmpdir/retry_${s}.out"
         r_exit="$tmpdir/retry_${s}.exit"
         { set +e
-          CAJETA_SOURCE_ROOT="$SCRIPT_DIR" "$TEST_BIN" \
+          timeout --kill-after=10 "$shard_timeout" \
+              env CAJETA_SOURCE_ROOT="$SCRIPT_DIR" "$TEST_BIN" \
               "--gtest_filter=${shard_filters[$s]}" \
               --gtest_brief=1 > "$r_out" 2>&1
           echo "$?" > "$r_exit"

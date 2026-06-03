@@ -6,7 +6,7 @@ package cajeta.error;
 // whose vtable chain reaches that address bypass user catch handlers
 // and propagate to abort. See cajeta-docs/stdlib/ErrorModel.md.
 public class UnrecoverableException extends Exception {
-    public UnrecoverableException(String message) {
+    public UnrecoverableException(#String message) {
         this.message = message;
         this.cause = 0;
     }

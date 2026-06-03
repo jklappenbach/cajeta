@@ -1,0 +1,64 @@
+package cajeta.threading;
+
+/**
+ * Atomic 64-bit signed integer — cajeta-docs/stdlib/Thread.md § Atomics.
+ *
+ * Same design as `AtomicInt32` (a heap cell + compiler-emitted inline LLVM
+ * atomic instructions); see that class's doc for the rationale, the v1
+ * surface contract, and the ordered-overload constraints. The 64-bit variant
+ * matters for sequence numbers, timestamps, and generation counters that
+ * overflow i32 under sustained traffic.
+ */
+public class AtomicInt64 {
+    pointer cell;
+
+    public AtomicInt64(int64 initial) {
+        this.cell = Cajeta.atomicI64New(initial);
+    }
+
+    public ~AtomicInt64() {
+        Cajeta.atomicI64Destroy(this.cell);
+    }
+
+    public int64 load() {
+        return Cajeta.atomicI64Load(this.cell);
+    }
+
+    public void store(int64 v) {
+        Cajeta.atomicI64Store(this.cell, v);
+    }
+
+    public int64 fetchAdd(int64 delta) {
+        return Cajeta.atomicI64FetchAdd(this.cell, delta);
+    }
+
+    public boolean compareAndSet(int64 expected, int64 desired) {
+        return Cajeta.atomicI64CompareAndSet(this.cell, expected, desired);
+    }
+
+    // ----- Fixed-ordering variants (R8.1b) — see AtomicInt32 for the
+    // rationale (distinct method names per (op, ordering) instead of an
+    // enum-based ordered overload).
+
+    public int64 loadRelaxed() {
+        return Cajeta.atomicI64LoadRelaxed(this.cell);
+    }
+    public int64 loadAcquire() {
+        return Cajeta.atomicI64LoadAcquire(this.cell);
+    }
+
+    public void storeRelaxed(int64 v) {
+        Cajeta.atomicI64StoreRelaxed(this.cell, v);
+    }
+    public void storeRelease(int64 v) {
+        Cajeta.atomicI64StoreRelease(this.cell, v);
+    }
+
+    public int64 fetchAddRelaxed(int64 delta) {
+        return Cajeta.atomicI64FetchAddRelaxed(this.cell, delta);
+    }
+
+    public boolean compareAndSetAcquire(int64 expected, int64 desired) {
+        return Cajeta.atomicI64CompareAndSetAcquire(this.cell, expected, desired);
+    }
+}

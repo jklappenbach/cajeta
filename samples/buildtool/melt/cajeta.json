@@ -1,0 +1,63 @@
+{
+    // A melt — cajeta's name for a BOM / version catalog. Curates
+    // a coordinated set of versions, properties, action presets,
+    // and repositories that consumers import as one unit. See
+    // BuildTool.md "Melts".
+    //
+    // This package has:
+    //   - NO `tasks` block         (melts aren't built)
+    //   - NO `src/`                (melts ship only the manifest)
+    //   - YES `melt` block         (the curated payload)
+
+    "details": {
+        "name":               "com.example.platform-melt",
+        "version":            "2024.1.0",
+        "description":        "Curated platform versions for our org",
+        "license":            "Apache-2.0",
+        "cajeta-lang-version": "1.0"
+    },
+
+    "melt": {
+        // Version constraints consumers inherit. A consumer
+        // importing this melt with a `"*"` version on any of
+        // these deps gets the constraint here.
+        "dependencies": {
+            "cajeta.lang":         "1.0.7",
+            "cajeta.lang.io":      "1.0.7",
+            "cajeta.io.net.http":  "1.2.5",
+            "cajeta.threading":    "1.4.3"
+        },
+
+        // Properties consumers see after importing.
+        "properties": {
+            "platform-version": "2024.1",
+            "release-tag":      "v${platform-version}-stable"
+        },
+
+        // Action presets consumers can invoke directly.
+        "actions": {
+            "ship-to-platform": {
+                "extends": "upload",
+                "params": {
+                    "target": "s3",
+                    "bucket": "platform-releases-shared",
+                    "prefix": "${details.name}/${details.version}/"
+                }
+            }
+        },
+
+        // Repositories to add to the consumer's resolution list.
+        "repositories": [
+            { "name":     "platform-mirror",
+              "url":      "https://platform-mirror.example.internal",
+              "priority": 150 }
+        ],
+
+        // Melts can transitively import other melts. Resolution
+        // is post-order; later imports override earlier.
+        "melts": [
+            // Empty for this sample. A real platform melt might
+            // import: { "cajeta.platform.lang-melt": "1.0.0" }
+        ]
+    }
+}

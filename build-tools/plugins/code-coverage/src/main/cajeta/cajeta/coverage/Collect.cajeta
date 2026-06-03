@@ -1,0 +1,90 @@
+package cajeta.coverage;
+
+import cajeta.buildtool.plugin.ActionContext;
+import cajeta.buildtool.plugin.ActionResult;
+import cajeta.codec.json.JsonObject;
+import cajeta.collection.ArrayList;
+import cajeta.io.file.File;
+import cajeta.io.file.FileReader;
+import cajeta.io.file.FileWriter;
+import cajeta.io.file.Path;
+
+/**
+ * `cajeta.coverage.collect` — reduce raw per-test probe dumps into
+ * a merged CoverageMap on disk.
+ *
+ * The test runner writes one dump per test process (see ProbeData
+ * for the on-disk format). This action walks the input directory,
+ * reads every dump, and merges them into a single CoverageMap the
+ * report action consumes.
+ *
+ * Required capability: `filesystem`.
+ */
+public class Collect {
+
+    /**
+     * @capability filesystem
+     */
+    public static ActionResult run(ActionContext ctx, JsonObject params) {
+        // ── Param parsing ────────────────────────────────────────
+        Optional<String> maybeInput = params.getString("input");
+        if (maybeInput.isEmpty()) {
+            return ActionResult.error(
+                "cajeta.coverage.collect: missing required 'input' " +
+                "(path to the test runner's probe-data dir)");
+        }
+        Path inputDir = Path.of(maybeInput.get());
+        if (!inputDir.exists() || !inputDir.isDirectory()) {
+            return ActionResult.error(
+                "cajeta.coverage.collect: 'input' (" + inputDir.toString() +
+                ") is not a directory");
+        }
+
+        Path outputPath = Path.of(
+            params.getString("output").orElse(
+                ctx.workdir() + "/build/coverage.map"));
+
+        // ── Walk dump files + merge ──────────────────────────────
+        ArrayList<Path> dumps = inputDir.listMatching("*.probe");
+        if (dumps.count() == 0) {
+            return ActionResult.error(
+                "cajeta.coverage.collect: no *.probe files in '" +
+                inputDir.toString() +
+                "' (did the test runner enable coverage emission?)");
+        }
+
+        // First file's grain wins; subsequent files must match. A
+        // mismatch is a configuration bug — the test runner shouldn't
+        // be emitting at multiple grains within one collect dir.
+        Optional<Grain> agreedGrain = stack Optional<Grain>(false, Grain.LINE);
+        CoverageMap map = #null;
+        int32 i = 0;
+        while (i < dumps.count()) {
+            ProbeData dump = ProbeDataReader.read(dumps.get(i));
+            if (agreedGrain.isEmpty()) {
+                agreedGrain = stack Optional<Grain>(true, dump.getGrain());
+                map = #new CoverageMap(dump.getGrain());
+            } else if (agreedGrain.get() != dump.getGrain()) {
+                return ActionResult.error(
+                    "cajeta.coverage.collect: probe dump " +
+                    dumps.get(i).toString() +
+                    " has grain '" + dump.getGrain().toName() +
+                    "' but earlier dumps used '" +
+                    agreedGrain.get().toName() + "'");
+            }
+            ProbeMerger.mergeInto(map, dump, ctx);
+            i = i + 1;
+        }
+
+        // ── Write the merged map ─────────────────────────────────
+        outputPath.parent().createDirectories();
+        CoverageMapWriter.write(outputPath, map);
+
+        // ── Result ───────────────────────────────────────────────
+        ActionResult r = #new ActionResult();
+        r.output("path",  outputPath.toString());
+        r.output("files", String.valueOf(map.count()));
+        r.output("grain", agreedGrain.get().toName());
+        return #r;
+    }
+}

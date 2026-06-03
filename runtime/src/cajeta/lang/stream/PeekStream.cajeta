@@ -13,12 +13,12 @@ public class PeekStream<T> extends Stream<T> {
     Stream<T> source;
     (T) -> void fn;
 
-    public PeekStream(Stream<T> source, (T) -> void fn) {
+    public PeekStream(#Stream<T> source, (T) -> void fn) {
         this.source = source;
         this.fn = fn;
     }
 
-    public #Optional<T> next() {
+    public Optional<T> next() {
         Optional<T> o = this.source.next();
         if (o.isPresent()) {
             this.fn(o.get());
@@ -35,6 +35,6 @@ public class PeekStream<T> extends Stream<T> {
      * then wrap the result in a fresh PeekStream<T>(_, fn).
      */
     public #Stream<T> cloneChainOver(#Stream<?> newRoot) {
-        return heap PeekStream<T>(this.source.cloneChainOver(newRoot), this.fn);
+        return heap PeekStream<T>(this.source.cloneChainOver(#newRoot), this.fn);
     }
 }

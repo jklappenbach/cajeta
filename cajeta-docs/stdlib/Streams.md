@@ -38,11 +38,21 @@ empty stream — never null-defaults, never crashes.
 ```cajeta
 public class Stream<T> {
     public Optional<T> next() {
-        return heap Optional<T>(false, null);
+        return stack Optional<T>(false, null);
     }
     // ... terminals inherited by every subclass ...
 }
 ```
+
+The pull primitive returns by value (sret + NRVO per
+`cajeta-docs/stdlib/ValueReturns.md`); every wrapper override
+(`FilterStream`, `MapStream`, `PeekStream`, etc.) follows suit so the
+vtable slot ABI lines up. A subclass override whose body never says
+`return stack X(...)` (e.g. `PeekStream.next` is `return o;` only)
+still inherits the sret shape from `Stream.next` —
+`Method::returnsStackValue()` walks the superclass chain so the
+override matches the base method's signature without source-level
+annotation.
 
 ## Terminal combinators
 

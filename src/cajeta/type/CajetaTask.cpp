@@ -20,6 +20,15 @@ namespace cajeta {
         // class today).
         qName = QualifiedName::getOrCreate(typeName);
         canonical = qName->toCanonical();
+        // Expose the element type via the standard CajetaClass
+        // typeArguments interface so the method-template unifier (and
+        // any other generic-machinery walker) can recurse into Task<R>
+        // and bind R from a Task<int32> arg the same way it does for a
+        // user-declared `Optional<R>` formal. Without this `Task<R>`
+        // looks like a non-instantiated class to the unifier — implicit
+        // T-inference through a Task<R> formal silently fails to bind R
+        // (task #47).
+        setTypeArguments({elementType});
 
         llvm::LLVMContext* ctx = module->getLlvmContext();
 

@@ -15,12 +15,12 @@ public class SkipStream<T> extends Stream<T> {
     Stream<T> source;
     int32 remaining;
 
-    public SkipStream(Stream<T> source, int32 n) {
+    public SkipStream(#Stream<T> source, int32 n) {
         this.source = source;
         this.remaining = n;
     }
 
-    public #Optional<T> next() {
+    public Optional<T> next() {
         while (this.remaining > 0) {
             Optional<T> dropped = this.source.next();
             if (dropped.isEmpty()) {

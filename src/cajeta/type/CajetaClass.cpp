@@ -3315,12 +3315,39 @@ namespace cajeta {
     // Non-class types (primitives, arrays, etc.) only match by exact
     // canonical-name equality — no upcast walk. Class types try identity
     // first, then BFS up `superClasses`.
-    static int subtypeDistance(CajetaTypePtr declaredType, CajetaTypePtr argType) {
+    static int subtypeDistance(CajetaTypePtr declaredType, CajetaTypePtr argType,
+                               bool relaxNullToRef = false) {
         if (!declaredType || !argType) return -1;
         if (declaredType->getQName() && argType->getQName()
                 && declaredType->getQName()->toCanonical()
                     == argType->getQName()->toCanonical()) {
             return 0;
+        }
+        // Null-literal arg (`null` resolves to the primitive `pointer`
+        // canonical, see LiteralExpression.cpp:28) is the canonical "no
+        // reference" value. For CONSTRUCTORS we let it match any
+        // reference-typed formal so a call like
+        // `heap Optional<Foo>(false, null)` resolves to the existing
+        // ctor instead of silently dropping (pre-fix the malloc+memset
+        // happened to look like `{present=false,value=null}` by
+        // coincidence, but no ctor ran). Gated to constructors because
+        // the broader resolution path needs strict rejection to stay
+        // sound — e.g. `String s == null` must stay as a direct ptr
+        // icmp instead of resolving up to `Object::operator==(Object,
+        // Object)`, whose body dereferences the receiver via vtable
+        // lookup and SIGSEGVs on null. High distance so any non-null
+        // candidate beats this.
+        if (relaxNullToRef && argType->getQName()
+                && argType->getQName()->toCanonical() == "pointer") {
+            // Any non-primitive declared formal accepts `null`. Covers
+            // classes, interfaces, function types, and unbound type
+            // parameters (wildcard `?`) which arise when the ctor was
+            // registered on a template's open form (e.g. Optional<?>'s
+            // `value:?` formal during stream-pipeline lowering).
+            bool declIsPrimitive =
+                (declaredType->getTypeFlags() & PRIMITIVE_FLAG) != 0;
+            if (declIsPrimitive) return -1;
+            return 1000;
         }
         auto argClass = dynamic_pointer_cast<CajetaClass>(argType);
         auto declaredClass = dynamic_pointer_cast<CajetaClass>(declaredType);
@@ -3378,7 +3405,8 @@ namespace cajeta {
     static MethodPtr findSubtypeMatch(
             const map<string, map<string, MethodPtr>>& genericMap,
             const string& methodName,
-            const vector<ParameterEntry>& parameters) {
+            const vector<ParameterEntry>& parameters,
+            bool relaxNullToRef = false) {
         MethodPtr best;
         int bestScore = std::numeric_limits<int>::max();
         const size_t argCount = parameters.size();
@@ -3411,7 +3439,8 @@ namespace cajeta {
                 for (size_t i = 0; i < argCount; ++i) {
                     int dist = subtypeDistance(
                         ordered[i + paramOffset]->getType(),
-                        parameters[i].type);
+                        parameters[i].type,
+                        relaxNullToRef);
                     if (dist < 0) { ok = false; break; }
                     score += dist;
                 }
@@ -3734,7 +3763,8 @@ namespace cajeta {
         // *current* class; the parent walk below picks up inherited
         // methods via recursion, which itself triggers this fallback at
         // each level.
-        if (MethodPtr m = findSubtypeMatch(*genericMap, methodName, parameters)) {
+        if (MethodPtr m = findSubtypeMatch(*genericMap, methodName, parameters,
+                /*relaxNullToRef=*/isConstructor)) {
             return m;
         }
 
@@ -3774,7 +3804,8 @@ namespace cajeta {
 
     llvm::Value* CajetaClass::invokeMethod(string& methodName, vector<ParameterEntry> parameters, bool isConstructor, llvm::Value* thisValue,
                                             CajetaModulePtr callerModule, bool forceDirectCall,
-                                            const vector<CajetaTypePtr>& explicitMethodTypeArgs) {
+                                            const vector<CajetaTypePtr>& explicitMethodTypeArgs,
+                                            llvm::Value* sretTarget) {
         bool floatingParams = true;
         for (auto &param : parameters) {
             if (param.label.empty()) {
@@ -3876,6 +3907,30 @@ namespace cajeta {
         // pass their own module; the fallback is preserved for sites
         // that haven't been threaded through yet.
         CajetaModulePtr emitMod = callerModule ? callerModule : module;
+        // Value-return (sret) ABI: a method that returns a stack value by copy
+        // takes the result slot as hidden arg 0 (before `this`). Use the
+        // caller-supplied slot, or materialize a temp in the caller's frame; the
+        // returned pointer then behaves like any class-instance pointer. See
+        // cajeta-docs/stdlib/ValueReturns.md.
+        bool usesSret = method->returnsStackValue();
+        int sretOffset = usesSret ? 1 : 0;
+        llvm::Value* sretSlot = sretTarget;
+        if (usesSret) {
+            if (!sretSlot) {
+                llvm::Type* structTy = method->getReturnType()
+                    ? method->getReturnType()->getLlvmType() : nullptr;
+                if (structTy) {
+                    llvm::Function* parentFn =
+                        emitMod->getBuilder()->GetInsertBlock()->getParent();
+                    llvm::IRBuilder<> entryBuilder(&parentFn->getEntryBlock(),
+                        parentFn->getEntryBlock().begin());
+                    sretSlot = entryBuilder.CreateAlloca(structTy);
+                }
+            }
+            if (sretSlot) {
+                methodArgs.insert(methodArgs.begin(), sretSlot);
+            }
+        }
         // Coerce each arg to match the function's parameter type. Integer
         // literals default to i64, but the function may expect i32 / i8 / etc.
         // Without coercion the JIT verifier rejects the call as a type
@@ -3956,8 +4011,8 @@ namespace cajeta {
                     v = bodyAlloca;
                 }
             }
-            if (mft && (int) mft->getNumParams() > i + thisOffset) {
-                llvm::Type* expected = mft->getParamType(i + thisOffset);
+            if (mft && (int) mft->getNumParams() > i + thisOffset + sretOffset) {
+                llvm::Type* expected = mft->getParamType(i + thisOffset + sretOffset);
                 if (v && v->getType() != expected) {
                     if (expected->isIntegerTy() && v->getType()->isIntegerTy()) {
                         v = coerceBuilder->CreateIntCast(v, expected, /*isSigned=*/true);
@@ -4038,6 +4093,14 @@ namespace cajeta {
         // base-typed receiver there must still dispatch through the vtable.
         bool isNativeForwarder = method->findAnnotation("Native") != nullptr;
         bool isFinalClass = this->getModifiers().find(FINAL) != this->getModifiers().end();
+        // Value-returning (sret) methods participate in virtual dispatch: the
+        // concrete override's LLVM function already carries the sret signature
+        // (Method::generatePrototype), so the vtable slot's stored fn-ptr type
+        // matches the indirect-call type. The sret pointer rides as
+        // methodArgs[0] and is left untouched by the class-vtable path; the
+        // interface fat-pointer branches don't intersect (interface-declared
+        // methods can't be sret today — returnsStackValue() is gated false for
+        // interface returns).
         bool useVtable = thisValue && !isStatic && !isConstructor && !isView
             && !forceDirectCall && !isMethodTemplateInst
             && !(isNativeForwarder && isFinalClass);
@@ -4072,8 +4135,12 @@ namespace cajeta {
                     "iface_class_method_fn");
                 callee = fnPtr;
             }
-            if (!methodArgs.empty()) {
-                methodArgs[0] = dataPtr;
+            // Swap iface body for the underlying class instance at the
+            // `this` slot (after the hidden sret pointer when present —
+            // overwriting methodArgs[0] would otherwise clobber the sret
+            // slot and the impl would write its result into garbage).
+            if ((int) methodArgs.size() > sretOffset) {
+                methodArgs[sretOffset] = dataPtr;
             }
         } else if (useVtable && isInterfaceRecv) {
             // Interface receiver via fat pointer body. Load the per-(impl,
@@ -4123,11 +4190,15 @@ namespace cajeta {
                 callee = builder->CreateLoad(ptrTy, methodSlot, "iface_method_fn");
             }
 
-            // Swap the body pointer for the data pointer at arg position
-            // 0 — the implementer's function expects its concrete class
-            // instance as `this`, not the interface body.
-            if (!methodArgs.empty()) {
-                methodArgs[0] = dataPtr;
+            // Swap the body pointer for the data pointer at the `this`
+            // slot — the implementer's function expects its concrete
+            // class instance as `this`, not the interface body. The
+            // `this` slot sits at sretOffset (i.e. position 1 when sret
+            // is in play, else position 0); overwriting methodArgs[0]
+            // unconditionally would clobber the sret slot and the impl
+            // would write its result into garbage.
+            if ((int) methodArgs.size() > sretOffset) {
+                methodArgs[sretOffset] = dataPtr;
             }
         } else if (useVtable) {
             llvm::Function* lookupFn = emitMod->getRuntimeFunction("__cajeta_vtable_lookup");
@@ -4183,10 +4254,12 @@ namespace cajeta {
             const CajetaClass* declaring = method->getParent().get();
             if (declaring && declaring != this) {
                 uint64_t off = this->getSubObjectByteOffset(declaring);
-                if (off != 0 && !methodArgs.empty()) {
+                // `this` sits at methodArgs[sretOffset] (after the hidden sret
+                // pointer, when present).
+                if (off != 0 && (int) methodArgs.size() > sretOffset) {
                     llvm::Type* i8Ty = llvm::Type::getInt8Ty(llvmCtx);
-                    methodArgs[0] = builder->CreateInBoundsGEP(
-                        i8Ty, methodArgs[0],
+                    methodArgs[sretOffset] = builder->CreateInBoundsGEP(
+                        i8Ty, methodArgs[sretOffset],
                         llvm::ConstantInt::get(
                             llvm::Type::getInt64Ty(llvmCtx), off),
                         "subobj_this");
@@ -4194,8 +4267,15 @@ namespace cajeta {
             }
         }
 
-        return builder->CreateCall(method->getLlvmFunctionType(),
+        llvm::Value* callInst = builder->CreateCall(method->getLlvmFunctionType(),
             callee, llvm::ArrayRef<llvm::Value*>(methodArgs));
+        // For a value-return (sret) call the LLVM result is void; hand back a
+        // pointer to the constructed value so the caller treats it like any
+        // class-instance pointer.
+        if (usesSret && sretSlot) {
+            return sretSlot;
+        }
+        return callInst;
     }
 
     /**

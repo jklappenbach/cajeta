@@ -58,7 +58,7 @@ TEST(UpcastInitializerTests, dotStreamAssignedToBaseStreamLocalThenIntoCtor) {
         "    public static int32 run() {\n"
         "        int32[] xs = {1, 2, 3, 4, 5};\n"
         "        Stream<int32> src = xs.stream();\n"
-        "        TakeStream<int32> t = heap TakeStream<int32>(src, 3);\n"
+        "        TakeStream<int32> t = heap TakeStream<int32>(#src, 3);\n"
         "        return t.count();\n"
         "    }\n"
         "}\n";

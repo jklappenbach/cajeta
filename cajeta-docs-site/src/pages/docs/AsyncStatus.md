@@ -7,11 +7,46 @@ description: 'Tracks the R1–R5 rollout of the async runtime described in Threa
 
 Tracks the R1–R5 rollout of the async runtime described in `ThreadModel.md`. Counterpart to `ImplementationStatus.md` (which covers the MemoryModel rollout).
 
+<!-- SYNC NOTE: this is the published-site mirror of cajeta-docs/stdlib/AsyncStatus.md
+     (the in-repo source of truth). Keep the body content of the two in sync when
+     editing either; this copy adds the Astro frontmatter above and uses bare doc names. -->
+
+
 ---
 
 ## Current status
 
-**Phases R1 through R5-D + error-model v1 complete.** Full structured-concurrency story functional end-to-end: stackful fibers, scope joins, cancellation, exception escalation. Error model has stdlib Throwable hierarchy (in `package cajeta.error;`, with `cause` chaining), `throws` clause grammar + advisory lint with try/catch coverage awareness, runtime exception path on `void*`, Task<T> exception slot with await re-raise, and stack-trace capture at throw sites with auto-print on uncaught.
+**Phases R1 through R9 + error-model v1 complete.** Full structured-concurrency
+story functional end-to-end: stackful fibers on a multi-carrier work-stealing
+pool, scope joins, cancellation, exception escalation, atomics, timers, async
+I/O reactor. Error model has stdlib Throwable hierarchy (in `package cajeta.error;`,
+with `cause` chaining), `throws` clause grammar + advisory lint with try/catch
+coverage awareness, runtime exception path on `void*`, Task<T> exception slot
+with await re-raise, and stack-trace capture at throw sites with auto-print on
+uncaught.
+
+> **Scheduler reality (authoritative — this doc is the source of truth).** The
+> executor is a **multi-carrier work-stealing pool** (Chase–Lev deques per
+> carrier). Default carrier count is `min(nproc, 4)`; `CAJETA_CARRIERS=N`
+> overrides for deterministic-order debug runs (set to 1 for the
+> single-carrier model the early releases shipped). Timer wheel ships
+> (`__cajeta_task_wait_timeout` + a sorted-list timer thread), backing
+> `cajeta.time.Duration`, `Tasks.withTimeout<R>`, and `Tasks.withDeadline<R>`.
+> Sync→async bridge ships as `Tasks.runBlocking<R>(() -> R body) -> R` (R9.5)
+> for non-async entry points that want to drive an async body. Multiplexed
+> receive ships as `Tasks.selectReceive<T>(Channel<T>[])` returning
+> `Optional<SelectResult<T>>` (R9.6) — Go-style channel select over an
+> array; lowest-index-wins on simultaneous readiness; empty Optional
+> signals all channels closed+drained. `cajeta.threading.AsyncIterator<T>`
+> interface ships (R9.7) with the canonical
+> `while ((opt = iter.next()).isPresent()) ...` loop pattern — a
+> `for (T x in iter)` desugaring is the planned v2.1 surface.
+> Async I/O reactor ships (Linux epoll), with `Cajeta.io*` intrinsics for
+> non-blocking fd registration / wait. Atomics ship as `cajeta.threading.AtomicInt32/64` (R8.1).
+
+**R5-C / R5-D — shipped (named here precisely, since `Features.md` S-805 long read "designed"):**
+- [x] R5-C cooperative cancellation — `CancellationException extends RecoverableException`; scope sets each child fiber's `cancel_with`; `__cajeta_task_wait` re-raises it on the next park-resume (commit `fa7c7f8`).
+- [x] R5-D scope exception-escalation — `scope_exit`/`scope_exit_to` join children, cancel surviving siblings on the first non-null exception slot, then re-raise the first throw into the containing frame.
 
 **Post-v1 polish items — all shipped:**
 - [x] Recoverable/Unrecoverable distinction via vtable type-check (#210) — commit `ea5ca6e`.

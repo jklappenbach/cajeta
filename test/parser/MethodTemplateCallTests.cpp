@@ -125,7 +125,7 @@ TEST(MethodTemplateCallTests, instanceMethodOnTemplatedReceiver) {
         "public class Box<T> {\n"
         "    public T item;\n"
         "    public Box(T t) { this.item = t; }\n"
-        "    public final R transform<R>((T) -> R fn, T arg) { return fn(arg); }\n"
+        "    public final R transform<R>((T) -> #R fn, T arg) { return fn(arg); }\n"
         "}\n"
         "public final class D {\n"
         "    public static int32 run() {\n"

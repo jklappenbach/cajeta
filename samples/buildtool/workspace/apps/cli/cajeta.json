@@ -1,0 +1,31 @@
+{
+    "details": {
+        "name":               "com.example.cli",
+        "version":            "0.1.0",
+        "description":        "CLI tool sharing core + util with the API",
+        "license":            "Apache-2.0",
+        "cajeta-lang-version": "1.0"
+    },
+
+    "settings": {
+        "capabilities": ["filesystem", "env"],
+        "dependencies": {
+            "com.example.util": { "path": "../../shared/util" },
+            "cajeta.lang.io":   "*"
+        },
+        "build": {
+            "entry-method": "com.example.cli.Main::main"
+        }
+    },
+
+    "tasks": {
+        "build": {
+            "description": "Build the CLI executable",
+            "actions": [
+                { "action": "build", "flavor": "release",
+                  "profile": "release", "id": "art" }
+            ],
+            "outputs": { "path": "${art.path}" }
+        }
+    }
+}

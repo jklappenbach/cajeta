@@ -45,7 +45,7 @@ TEST(StringViewCtorTests, viewCtorPopulatesByteLength) {
         "public final class D {\n"
         "    public static int32 run() {\n"
         "        int8[] b = new int8[5];\n"
-        "        String s = heap String(b, 5);\n"
+        "        String s = heap String(#b, 5);\n"
         "        return s.byteLength;\n"
         "    }\n"
         "}\n";
@@ -63,7 +63,7 @@ TEST(StringViewCtorTests, viewCtorSetsModeToView) {
         "public final class D {\n"
         "    public static int32 run() {\n"
         "        int8[] b = new int8[3];\n"
-        "        String s = heap String(b, 3);\n"
+        "        String s = heap String(#b, 3);\n"
         "        return s.mode;\n"
         "    }\n"
         "}\n";
@@ -88,7 +88,7 @@ TEST(StringViewCtorTests, viewCtorPlusCountEndToEnd) {
         "        b[4] = (int8) 0x9F;\n"
         "        b[5] = (int8) 0x98;\n"
         "        b[6] = (int8) 0x80;\n"
-        "        String s = heap String(b, 7);\n"
+        "        String s = heap String(#b, 7);\n"
         "        return s.count();\n"
         "    }\n"
         "}\n";

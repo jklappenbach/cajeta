@@ -1,0 +1,106 @@
+package cajeta.coverage;
+
+import cajeta.buildtool.plugin.ActionContext;
+import cajeta.buildtool.plugin.ActionResult;
+import cajeta.buildtool.plugin.Finding;
+import cajeta.codec.json.JsonObject;
+import cajeta.collection.ArrayList;
+import cajeta.io.file.Path;
+import cajeta.io.process.Process;
+import cajeta.io.process.ProcessBuilder;
+
+/**
+ * `cajeta.coverage.instrument` — drive a probed build of the project.
+ *
+ * Spawns `cajeta build --instrument=coverage --coverage-grain=<g>` as
+ * a subprocess. The compiler emits an instrumented `.cja` plus a
+ * sibling coverage map (probe-id → source position) the report
+ * action later consumes.
+ *
+ * Required capabilities: `filesystem` (read sources, write output)
+ * and `process` (spawn the compiler).
+ */
+public class Instrument {
+
+    /**
+     * Entry symbol the build tool dispatches `cajeta.coverage.instrument`
+     * invocations to.
+     *
+     * @capability filesystem
+     * @capability process
+     */
+    public static ActionResult run(ActionContext ctx, JsonObject params) {
+        // ── Param parsing ────────────────────────────────────────
+        // Defaults come from the plugin's `config` block (the build
+        // tool merges those into `params` before dispatch).
+        String grainStr = params.getString("grain").orElse("line");
+        Optional<Grain> maybeGrain = Grain.parse(grainStr);
+        if (maybeGrain.isEmpty()) {
+            return ActionResult.error(
+                "cajeta.coverage.instrument: unknown grain '" + grainStr +
+                "' (expected one of: line, branch, region)");
+        }
+        Grain grain = maybeGrain.get();
+
+        String flavor  = params.getString("flavor").orElse("debug");
+        String profile = params.getString("profile").orElse("test");
+
+        ArrayList<String> excludes = params.getStringArray("exclude");
+
+        // ── Build the compiler argv ──────────────────────────────
+        ProcessBuilder pb = #new ProcessBuilder();
+        pb.command("cajeta");
+        pb.arg("build");
+        pb.arg("--flavor=" + flavor);
+        pb.arg("--profile=" + profile);
+        pb.arg("--instrument=coverage");
+        pb.arg("--coverage-grain=" + grain.toName());
+        int32 ei = 0;
+        while (ei < excludes.count()) {
+            pb.arg("--coverage-exclude=" + excludes.get(ei));
+            ei = ei + 1;
+        }
+        pb.workdir(ctx.workdir());
+
+        // Stream the compiler's output through our context so the
+        // user sees progress live, not buffered until exit.
+        pb.inheritStdout();
+        pb.inheritStderr();
+
+        // ── Spawn + wait ─────────────────────────────────────────
+        Process proc = pb.spawn();
+        int32 exitCode = proc.waitFor();
+        if (exitCode != 0) {
+            return ActionResult.error(
+                "cajeta.coverage.instrument: cajeta build failed (exit " +
+                String.valueOf(exitCode) + ")");
+        }
+
+        // ── Locate the artifact + probe count ────────────────────
+        // The compiler writes the probed artifact at the same path
+        // a non-instrumented build would, with a sibling coverage
+        // map (`<artifact>.coverage-map`). Probe count is recorded
+        // in the map's header — we surface it as an output for
+        // telemetry without reading the full file.
+        Path artifact = Path.of(ctx.workdir() + "/build/archive").
+            resolve(ctx.projectName() + "-" + ctx.projectVersion() + ".cja");
+        if (!artifact.exists()) {
+            return ActionResult.error(
+                "cajeta.coverage.instrument: expected artifact at " +
+                artifact.toString() + " but the path doesn't exist");
+        }
+        Path covMap = artifact.parent().resolve(
+            artifact.fileName() + ".coverage-map");
+        int32 probeCount = 0;
+        if (covMap.exists()) {
+            probeCount = CoverageMapHeader.readProbeCount(covMap);
+        }
+
+        // ── Result ───────────────────────────────────────────────
+        ActionResult r = #new ActionResult();
+        r.output("path",        artifact.toString());
+        r.output("probe-count", String.valueOf(probeCount));
+        r.output("grain",       grain.toName());
+        return #r;
+    }
+}

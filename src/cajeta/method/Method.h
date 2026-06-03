@@ -88,6 +88,15 @@ namespace cajeta {
         // transfers ownership of the returned value to its caller. See
         // `MemoryModel.md` § Function signatures.
         bool returnsOwnership = false;
+        // Cached result of the value-return body scan. -1 = not computed,
+        // 0 = false, 1 = true. A method "returns a stack value" iff (it does
+        // not transfer ownership and) a return statement hands back a `stack`
+        // construction (`return stack X(...)`), which makes the return a
+        // by-value copy lowered through the sret + NRVO ABI rather than a
+        // pointer. Storage class lives on the construction expression, so this
+        // scan is the single source of truth — there is no `stack T` return
+        // type. See cajeta-docs/stdlib/ValueReturns.md.
+        int returnsStackValueCache = -1;
         BlockPtr block;
         bool constructor;
         // Abstract method — has no body, no LLVM function declaration.
@@ -358,6 +367,27 @@ namespace cajeta {
 
         bool isReturnsOwnership() const { return returnsOwnership; }
         void setReturnsOwnership(bool v) { returnsOwnership = v; }
+
+        // True iff this method returns a `stack`-constructed value by copy
+        // (lowered via the sret + NRVO ABI). Computed lazily by scanning the
+        // body for a `return stack X(...)`; cached. See returnsStackValueCache.
+        bool returnsStackValue();
+
+        // Shared body-scan helpers, exposed for lambdas (M5(b)) which run the
+        // same "does this body return by stack value?" question over their
+        // expression or block body to choose the sret-vs-ownership function-
+        // type ABI. Definitions live in Method.cpp.
+        static bool exprIsStackConstruction(const ExpressionPtr& e);
+        static bool nodeHasStackReturn(const AbstractSyntaxNodePtr& node);
+        static bool blockHasStackReturn(const BlockPtr& block);
+
+        // [heap-optional-return] lint: warn when a method declared
+        // `#Optional<T>` returns only `heap Optional<...>(...)` values
+        // — the heap allocation is scope-bounded (becomes the return,
+        // never escapes elsewhere) and can usually be a value-return
+        // `stack Optional<...>(...)` via the M3 sret/NRVO ABI. Fires
+        // once per method (statically-deduped) from generateCode.
+        void lintHeapOptionalReturn();
 
         // Push a fresh (empty) drop frame onto the stack. Block::generateCode
         // calls this at its entry; the frame collects every owned local

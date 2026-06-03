@@ -1,0 +1,180 @@
+package cajeta.coverage.internal;
+
+import cajeta.collection.ArrayList;
+import cajeta.collection.HashMap;
+
+/**
+ * Per-file probe counts after exclude filtering.
+ *
+ * Report's main loop walks every probe in the merged coverage map,
+ * skips the ones the matcher excludes, and records the rest here.
+ * The result is the source of truth for the action's emitted
+ * percentages — `CoverageMap.overallPercent()` reflects the raw
+ * map, but the report's numbers must reflect the filtered view.
+ *
+ * Keeping the filter state out of CoverageMap (and in this view
+ * object instead) keeps the map type pure: it stays the merged
+ * data, not "merged minus the report's specific exclusion set."
+ * Two reports run against the same map with different exclude
+ * configurations get distinct FilteredCounts without mutating the
+ * shared map.
+ */
+public class FilteredCounts {
+
+    /**
+     * Per-file aggregate after filtering. Same shape as
+     * `CoverageMap.FileEntry` minus the probe bitset (we only need
+     * the running totals once the filter pass is done).
+     */
+    public class FileEntry {
+        String path;
+        int32  totalProbes;
+        int32  hitProbes;
+
+        public FileEntry(String path) {
+            this.path = path;
+            this.totalProbes = 0;
+            this.hitProbes = 0;
+        }
+        public String  path()        { return this.path;        }
+        public int32   totalProbes() { return this.totalProbes; }
+        public int32   hitProbes()   { return this.hitProbes;   }
+        public float percent() {
+            if (this.totalProbes == 0) { return 100.0; }
+            return (this.hitProbes * 100.0) / this.totalProbes;
+        }
+    }
+
+    HashMap<String, FileEntry> files;
+
+    public FilteredCounts() {
+        this.files = #new HashMap<String, FileEntry>();
+    }
+
+    /**
+     * Record one filtered-in probe + whether it was hit. Called per
+     * probe from Report's main loop (after the exclude matcher
+     * decided to keep this probe in the report).
+     */
+    public void recordProbe(String filePath, boolean hit) {
+        Optional<FileEntry> existing = this.files.get(filePath);
+        FileEntry e = #null;
+        if (existing.isPresent()) {
+            e = existing.get();
+        } else {
+            e = #new FileEntry(filePath);
+            this.files.put(filePath, #e);
+        }
+        e.totalProbes = e.totalProbes + 1;
+        if (hit) {
+            e.hitProbes = e.hitProbes + 1;
+        }
+    }
+
+    /**
+     * Overall percentage across every filtered probe. Same shape as
+     * `CoverageMap.overallPercent`: weighted by raw probe count, not
+     * by file (so a 500-probe file with 90% counts more than a
+     * 5-probe file with 100%).
+     */
+    public float overallPercent() {
+        int64 totalHit    = 0;
+        int64 totalProbes = 0;
+        ArrayList<String> keys = this.files.keys();
+        int32 i = 0;
+        while (i < keys.count()) {
+            FileEntry e = this.files.get(keys.get(i)).get();
+            totalHit    = totalHit    + e.hitProbes();
+            totalProbes = totalProbes + e.totalProbes();
+            i = i + 1;
+        }
+        if (totalProbes == 0) {
+            return 100.0;
+        }
+        return (totalHit * 100.0) / totalProbes;
+    }
+
+    public int32 count() {
+        return this.files.count();
+    }
+
+    /**
+     * The `n` files with the lowest filtered percentage, ascending.
+     * Same partial-sort shape as `BottomN.select`, but operating on
+     * the filtered view so the report's failure messages cite
+     * post-filter percentages.
+     */
+    public ArrayList<FileEntry> bottomN(int32 n) {
+        ArrayList<FileEntry> bucket = #new ArrayList<FileEntry>();
+        ArrayList<String> keys = this.files.keys();
+        int32 i = 0;
+        while (i < keys.count()) {
+            FileEntry e = this.files.get(keys.get(i)).get();
+            insertSortedAsc(bucket, e, n);
+            i = i + 1;
+        }
+        return bucket;
+    }
+
+    /** Every file below `floorPercent`, ascending. */
+    public ArrayList<FileEntry> filesBelow(int32 floorPercent) {
+        ArrayList<FileEntry> bucket = #new ArrayList<FileEntry>();
+        ArrayList<String> keys = this.files.keys();
+        int32 i = 0;
+        while (i < keys.count()) {
+            FileEntry e = this.files.get(keys.get(i)).get();
+            if (e.percent() < floorPercent) {
+                insertSortedAsc(bucket, e, bucket.count() + 1);
+            }
+            i = i + 1;
+        }
+        return bucket;
+    }
+
+    /**
+     * Human-formatted citation, one line per file:
+     *   `  <pct>%  <path>  (<hit>/<total>)`
+     * Used in failure messages and the console summary; same shape
+     * as `BottomN.cite` for visual consistency.
+     */
+    public static String cite(ArrayList<FileEntry> files) {
+        StringBuilder b = stack StringBuilder();
+        int32 i = 0;
+        while (i < files.count()) {
+            FileEntry e = files.get(i);
+            b.append("  ");
+            b.append(FloatFormat.oneDecimal(e.percent()));
+            b.append("%  ");
+            b.append(e.path());
+            b.append("  (");
+            b.append(String.valueOf(e.hitProbes()));
+            b.append("/");
+            b.append(String.valueOf(e.totalProbes()));
+            b.append(")\n");
+            i = i + 1;
+        }
+        return b.toString();
+    }
+
+    static void insertSortedAsc(
+        ArrayList<FileEntry> bucket, FileEntry e, int32 n) {
+        if (bucket.count() >= n &&
+            e.percent() >= bucket.get(bucket.count() - 1).percent()) {
+            return;
+        }
+        int32 i = 0;
+        while (i < bucket.count()) {
+            FileEntry cur = bucket.get(i);
+            if (e.percent() < cur.percent()) { break; }
+            if (e.percent() == cur.percent() &&
+                e.path().compareTo(cur.path()) < 0) {
+                break;
+            }
+            i = i + 1;
+        }
+        bucket.insert(i, e);
+        while (bucket.count() > n) {
+            bucket.removeAt(bucket.count() - 1);
+        }
+    }
+}

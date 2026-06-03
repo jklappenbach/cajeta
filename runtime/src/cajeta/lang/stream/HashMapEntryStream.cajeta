@@ -26,18 +26,18 @@ public class HashMapEntryStream<K, V> extends Stream<Pair<K, V>> implements Spli
         this.idx = 0;
     }
 
-    public #Optional<Pair<K, V>> next() {
+    public Optional<Pair<K, V>> next() {
         while (this.idx < this.cap) {
             if (this.state[this.idx] == 1) {
                 K k = this.keys[this.idx];
                 V v = this.vals[this.idx];
                 this.idx = this.idx + 1;
                 Pair<K, V> p = heap Pair<K, V>(k, v);
-                return heap Optional<Pair<K, V>>(true, p);
+                return stack Optional<Pair<K, V>>(true, #p);
             }
             this.idx = this.idx + 1;
         }
-        return heap Optional<Pair<K, V>>(false, null);
+        return stack Optional<Pair<K, V>>(false, null);
     }
 
     public #Stream<Pair<K, V>> trySplit() {

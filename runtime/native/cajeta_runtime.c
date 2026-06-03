@@ -909,18 +909,201 @@ struct cajeta_fiber {
 static pthread_mutex_t __cajeta_task_mutex = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t  __cajeta_task_queue_cond = PTHREAD_COND_INITIALIZER;
 static pthread_cond_t  __cajeta_task_done_cond  = PTHREAD_COND_INITIALIZER;
-// Ready queue: fibers whose next scheduler tick will resume execution.
-static struct cajeta_fiber* __cajeta_ready_head = NULL;
-static struct cajeta_fiber* __cajeta_ready_tail = NULL;
+
+// R8.2 — per-carrier Chase-Lev work-stealing deque, replacing the prior
+// linked-list ready queue. Single-producer (the owning carrier — i.e. the
+// thread that called push_bottom / pop_bottom) and multi-consumer (other
+// carriers stealing from the top, see deque_steal). For v1 there's still
+// only one carrier, so the atomic protocol is dormant under
+// __cajeta_task_mutex; the structure is in place so R8.3 (multi-carrier
+// pool) lifts the owner-side mutex with minimal churn while the steal
+// path is already correct.
+//
+// Layout: a fixed-size circular slot array plus monotonically-growing
+// `top` / `bottom` sequence numbers. Bottom is where the owner pushes /
+// pops (LIFO); top is where stealers consume (FIFO from the deque's
+// perspective). The slot index is `seq % CAJETA_DEQUE_CAP`. Capacity is
+// generous for v1; overflow aborts. A growable variant lands when a
+// workload actually needs it.
+//
+// References: Chase & Lev 2005 "Dynamic Circular Work-Stealing Deque"; the
+// memory-ordering choices here mirror the cppmem-validated lowering in
+// the standard libcds / Crossbeam-deque implementations.
+#define CAJETA_DEQUE_CAP 2048
+
+struct cajeta_carrier_deque {
+    // top / bottom are accessed via __atomic_* builtins (no _Atomic
+    // qualifier — those builtins take plain integer pointers).
+    int64_t top;
+    int64_t bottom;
+    struct cajeta_fiber* slots[CAJETA_DEQUE_CAP];
+};
+
+static void __cajeta_deque_init(struct cajeta_carrier_deque* d) {
+    __atomic_store_n(&d->top, 0, __ATOMIC_SEQ_CST);
+    __atomic_store_n(&d->bottom, 0, __ATOMIC_SEQ_CST);
+}
+
+// Owner-side push (LIFO end). Single-writer; under the v1 mutex it's
+// uncontended. Capacity overflow aborts — v1 doesn't grow.
+static void __cajeta_deque_push_bottom(struct cajeta_carrier_deque* d,
+                                        struct cajeta_fiber* f) {
+    int64_t b = __atomic_load_n(&d->bottom, __ATOMIC_RELAXED);
+    int64_t t = __atomic_load_n(&d->top, __ATOMIC_ACQUIRE);
+    if (b - t >= CAJETA_DEQUE_CAP) {
+        fprintf(stderr, "cajeta: carrier deque overflow (%lld slots in use)\n",
+                (long long) (b - t));
+        abort();
+    }
+    d->slots[b % CAJETA_DEQUE_CAP] = f;
+    // Release the slot write before publishing the new bottom — a future
+    // stealer observing the new `bottom` must also see the slot's content.
+    __atomic_thread_fence(__ATOMIC_RELEASE);
+    __atomic_store_n(&d->bottom, b + 1, __ATOMIC_RELAXED);
+}
+
+// Owner-side pop (LIFO end). Returns NULL on empty. The Chase-Lev "last
+// element" CAS is what makes the owner / stealer race tight even when
+// only one fiber is left.
+static struct cajeta_fiber* __cajeta_deque_pop_bottom(
+        struct cajeta_carrier_deque* d) {
+    int64_t b = __atomic_load_n(&d->bottom, __ATOMIC_RELAXED) - 1;
+    __atomic_store_n(&d->bottom, b, __ATOMIC_RELAXED);
+    // The SeqCst fence pairs with steal()'s SeqCst fence; without it,
+    // pop_bottom and steal can both think they got the last element.
+    __atomic_thread_fence(__ATOMIC_SEQ_CST);
+    int64_t t = __atomic_load_n(&d->top, __ATOMIC_RELAXED);
+    if (t > b) {
+        // Empty — restore bottom and bail.
+        __atomic_store_n(&d->bottom, t, __ATOMIC_RELAXED);
+        return NULL;
+    }
+    struct cajeta_fiber* f = d->slots[b % CAJETA_DEQUE_CAP];
+    if (t < b) {
+        // Multi-element case — uncontended.
+        return f;
+    }
+    // t == b: last element. Race with steal() for it.
+    int64_t expected = t;
+    if (!__atomic_compare_exchange_n(&d->top, &expected, t + 1,
+            /*weak=*/0, __ATOMIC_SEQ_CST, __ATOMIC_RELAXED)) {
+        f = NULL;  // stealer won
+    }
+    __atomic_store_n(&d->bottom, t + 1, __ATOMIC_RELAXED);
+    return f;
+}
+
+// Stealer-side pop (FIFO end). Returns NULL on empty or on a lost race
+// (the owner / another stealer claimed the slot first). Unused by R8.2's
+// single carrier — present so R8.3 lights it up without further deque
+// surgery.
+__attribute__((unused))
+static struct cajeta_fiber* __cajeta_deque_steal(
+        struct cajeta_carrier_deque* d) {
+    int64_t t = __atomic_load_n(&d->top, __ATOMIC_ACQUIRE);
+    // Pairs with pop_bottom's SeqCst fence.
+    __atomic_thread_fence(__ATOMIC_SEQ_CST);
+    int64_t b = __atomic_load_n(&d->bottom, __ATOMIC_ACQUIRE);
+    if (t >= b) return NULL;
+    struct cajeta_fiber* f = d->slots[t % CAJETA_DEQUE_CAP];
+    int64_t expected = t;
+    if (!__atomic_compare_exchange_n(&d->top, &expected, t + 1,
+            /*weak=*/0, __ATOMIC_SEQ_CST, __ATOMIC_RELAXED)) {
+        return NULL;  // lost the race
+    }
+    return f;
+}
+
+// Snapshot the deque's size from the owner's perspective. Callers hold
+// __cajeta_task_mutex so this is the only writer running; the load
+// orderings can be relaxed.
+static int64_t __cajeta_deque_size(struct cajeta_carrier_deque* d) {
+    int64_t b = __atomic_load_n(&d->bottom, __ATOMIC_RELAXED);
+    int64_t t = __atomic_load_n(&d->top, __ATOMIC_RELAXED);
+    return b - t;
+}
 // Parked list: fibers blocked inside __cajeta_task_wait waiting for some
 // task's done flag to flip. Wake-all-on-any-complete is the v1 strategy.
+// Protected by __cajeta_task_mutex (the pool-level mutex).
 static struct cajeta_fiber* __cajeta_parked_head = NULL;
 static int __cajeta_task_workers_started = 0;
-static pthread_t __cajeta_task_worker;
 // Set by __cajeta_task_shutdown to signal the carrier loop to exit.
 // The carrier's pthread_cond_wait predicate checks this alongside
 // the ready-queue head so a shutdown request reliably unblocks it.
 static int __cajeta_task_shutdown_requested = 0;
+
+// R9.1 timer state (declared here so __cajeta_task_shutdown — which lives
+// above the timer implementation block — can join the timer thread on
+// teardown). The struct cajeta_timer_entry definition + the function
+// bodies live further down alongside __cajeta_task_wait_timeout.
+struct cajeta_timer_entry;
+static struct cajeta_timer_entry* __cajeta_timer_head = NULL;
+static pthread_cond_t __cajeta_timer_cond = PTHREAD_COND_INITIALIZER;
+static pthread_t __cajeta_timer_thread;
+static int __cajeta_timer_started = 0;
+static int __cajeta_timer_shutdown_requested = 0;
+
+// R9.4 reactor state (declared above task_shutdown for the same reason as
+// the timer state). The waiter struct + reactor loop body live below
+// alongside __cajeta_io_wait.
+struct cajeta_io_waiter;
+static struct cajeta_io_waiter* __cajeta_reactor_waiters = NULL;
+static pthread_t __cajeta_reactor_thread;
+static int __cajeta_reactor_started = 0;
+static int __cajeta_reactor_shutdown_requested = 0;
+#if defined(__linux__)
+static int __cajeta_reactor_epfd = -1;
+#endif
+
+// R8.3 — multi-carrier pool, flag-gated N=1.
+//
+// Each carrier owns one Chase-Lev deque + a deque_mutex that protects
+// non-steal accesses to it (push_bottom / pop_bottom). The deque's steal
+// path stays lock-free, so other carriers can steal from this carrier's
+// top without taking deque_mutex — only the owner-side ops (push_bottom,
+// pop_bottom) serialize on it. Cross-thread pushes (main-thread spawn,
+// lock_release waking a waiter, etc.) take the target carrier's deque_mutex
+// — Chase-Lev's single-producer contract holds within the mutex.
+//
+// Pool-level coordination — sleep/wake of idle carriers, shutdown,
+// parked-list bookkeeping — runs under __cajeta_task_mutex
+// (pre-existing). One shared cond, __cajeta_task_queue_cond, that idle
+// carriers cond_wait on; pushers signal one when sleeping_count > 0
+// (broadcast on shutdown).
+//
+// Carrier count is read from $CAJETA_CARRIERS at the first
+// __cajeta_task_run, clamped to [1, CAJETA_MAX_CARRIERS]. Default is
+// min(_SC_NPROCESSORS_ONLN, CAJETA_DEFAULT_CARRIERS_CAP) — multi-carrier
+// by default so spawned tasks actually run in parallel. Single-carrier
+// behaviour the prior releases had is opt-in via CAJETA_CARRIERS=1
+// (still the canonical knob for deterministic-order debug runs).
+#define CAJETA_MAX_CARRIERS 16
+// Default-cap so a 64-core box doesn't spin up 16 carriers on a
+// program that has no work for them. Empirically picked at 4 — gives
+// real parallelism for the typical channel/fan-out workloads in tests
+// and stays comfortably inside CAJETA_MAX_CARRIERS' upper bound. Users
+// who want more can set CAJETA_CARRIERS=N explicitly.
+#define CAJETA_DEFAULT_CARRIERS_CAP 4
+
+struct cajeta_carrier {
+    pthread_t thread;
+    int carrier_id;
+    pthread_mutex_t deque_mutex;
+    struct cajeta_carrier_deque deque;
+};
+
+static struct cajeta_carrier __cajeta_carriers[CAJETA_MAX_CARRIERS];
+static int __cajeta_carrier_count = 0;
+// Number of carriers currently parked in cond_wait. Pushers consult
+// this to decide whether to signal — non-zero means a signal will
+// land on a sleeper rather than burning cycles on a busy one.
+static int __cajeta_sleeping_count = 0;
+
+// Per-thread pointer to the running carrier struct. NULL on the main
+// thread / any non-carrier thread. Used by __cajeta_publish_ready to
+// route new work onto the spawning carrier's own deque (locality —
+// the carrier that produced the work is likely to consume it next).
+static __thread struct cajeta_carrier* __cajeta_my_carrier = NULL;
 
 // Per-OS-thread state. Only the carrier thread will ever have a non-null
 // __cajeta_current_fiber — the main thread sees it null and falls through
@@ -986,34 +1169,88 @@ int __cajeta_dbg_fiber_state(void* fiber) {
 }
 
 // Fiber entry trampoline — invoked by makecontext on first resume. Runs
-// the user trampoline (which calls the async fn + signals done) and then
-// falls through to uc_link, which returns to the carrier.
+// the user trampoline (which calls the async fn + signals done), then
+// explicitly swaps back to the running carrier's TLS slot.
+//
+// R8.3 — explicit swap-back instead of relying on uc_link. uc_link is a
+// pointer baked into the ucontext at makecontext time, and on glibc
+// `&__cajeta_carrier_ctx` resolves to the carrier-thread that
+// FIRST DISPATCHED the fiber. After a steal, a different carrier owns
+// the fiber but uc_link still points at the original carrier's TLS slot;
+// a fall-off-the-end then jumps into the wrong saved context. The
+// explicit swapcontext here evaluates `&__cajeta_carrier_ctx` in the
+// CURRENTLY running carrier's TLS, so it's always the right address.
 static void __cajeta_fiber_entry(void) {
     struct cajeta_fiber* f = __cajeta_current_fiber;
     f->trampoline(f->trampoline_arg);
     f->state = CAJETA_FIBER_DONE;
-    // Falling off the end here triggers uc_link -> back to carrier.
+    __cajeta_swapcontext(&f->ctx, &__cajeta_carrier_ctx);
 }
 
-// Move every parked fiber to the ready queue. Caller holds the mutex.
-// Called from __cajeta_task_complete — the cheapest correct policy when
-// we don't track who-awaits-whom yet. Each woken parker will spin-check
-// its own done flag and (likely) re-park if it wasn't the target.
-static void __cajeta_wake_all_parked_locked(void) {
-    while (__cajeta_parked_head) {
-        struct cajeta_fiber* f = __cajeta_parked_head;
-        __cajeta_parked_head = f->next;
-        f->state = CAJETA_FIBER_READY;
-        f->next = NULL;
-        if (__cajeta_ready_tail) {
-            __cajeta_ready_tail->next = f;
-            __cajeta_ready_tail = f;
-        } else {
-            __cajeta_ready_head = f;
-            __cajeta_ready_tail = f;
-        }
+// R8.3 — publish a ready fiber onto one of the pool's deques. Routes to
+// the current carrier's deque when the caller is running on one (locality);
+// otherwise carrier 0 (main-thread spawn, lock-release on the main thread,
+// etc.). Takes the target carrier's deque_mutex around the push so
+// Chase-Lev's single-producer invariant holds, then signals one sleeper on
+// the pool condvar if any carrier is parked.
+//
+// Caller must NOT hold __cajeta_task_mutex; this function takes it
+// internally for the sleeper-signal step. (Holding it would deadlock
+// against this routine's own attempt to acquire it.)
+static void __cajeta_publish_ready(struct cajeta_fiber* f) {
+    f->state = CAJETA_FIBER_READY;
+    f->next = NULL;
+    struct cajeta_carrier* target = __cajeta_my_carrier
+        ? __cajeta_my_carrier
+        : &__cajeta_carriers[0];
+    pthread_mutex_lock(&target->deque_mutex);
+    __cajeta_deque_push_bottom(&target->deque, f);
+    pthread_mutex_unlock(&target->deque_mutex);
+    pthread_mutex_lock(&__cajeta_task_mutex);
+    if (__cajeta_sleeping_count > 0) {
+        pthread_cond_signal(&__cajeta_task_queue_cond);
     }
-    pthread_cond_broadcast(&__cajeta_task_queue_cond);
+    pthread_mutex_unlock(&__cajeta_task_mutex);
+}
+
+// Detach every parked fiber and return them as a NULL-terminated list.
+// Caller holds __cajeta_task_mutex. The caller is responsible for
+// publishing each one onto a carrier's deque AFTER releasing the pool
+// mutex — publishing under the pool mutex would invert the lock order
+// publish_ready uses (deque → pool) and deadlock with concurrent pushes.
+static struct cajeta_fiber* __cajeta_drain_parked_locked(void) {
+    struct cajeta_fiber* drained = __cajeta_parked_head;
+    __cajeta_parked_head = NULL;
+    return drained;
+}
+
+// Total work across every carrier's deque. Lock-free — reads atomic
+// top/bottom on each deque without taking deque mutexes. Used by carriers
+// pre-sleep to avoid going to cond_wait when there's still work somewhere
+// in the pool (the race-fix for the small window between a steal-scan
+// finishing empty and the carrier committing to sleep).
+static int64_t __cajeta_pool_total_work(void) {
+    int64_t total = 0;
+    for (int i = 0; i < __cajeta_carrier_count; ++i) {
+        total += __cajeta_deque_size(&__cajeta_carriers[i].deque);
+    }
+    return total;
+}
+
+// Steal a ready fiber from a peer carrier's deque top. Round-robin starting
+// after `self` to spread the steal load. NULL if every peer's deque is
+// empty or every steal attempt loses the CAS race.
+static struct cajeta_fiber* __cajeta_steal_one(struct cajeta_carrier* self) {
+    int n = __cajeta_carrier_count;
+    if (n <= 1) return NULL;
+    int start = self ? self->carrier_id + 1 : 0;
+    for (int step = 0; step < n; ++step) {
+        int idx = (start + step) % n;
+        if (&__cajeta_carriers[idx] == self) continue;
+        struct cajeta_fiber* f = __cajeta_deque_steal(&__cajeta_carriers[idx].deque);
+        if (f) return f;
+    }
+    return NULL;
 }
 
 // Park the running fiber. Called by __cajeta_task_wait when inside a fiber
@@ -1030,32 +1267,65 @@ static void __cajeta_fiber_park(void) {
     __cajeta_swapcontext(&f->ctx, &__cajeta_carrier_ctx);
 }
 
-// Carrier loop: pop a ready fiber, swap into it, observe its post-yield
-// state, free if done. Single carrier suffices for v1 because all fibers
-// are cooperative — they yield to each other inside this thread.
+// Carrier loop. Pop own deque (LIFO, cache-warm); on empty, try stealing
+// from peer carriers (lock-free); on universally-empty, sleep on the pool
+// condvar until a pusher signals. R8.3 — the carrier struct comes in via
+// the pthread_create arg so each carrier knows its own deque, mutex, and
+// id without TLS-init plumbing.
 static void* __cajeta_carrier_loop(void* arg) {
-    (void) arg;
+    struct cajeta_carrier* self = (struct cajeta_carrier*) arg;
+    __cajeta_my_carrier = self;
     for (;;) {
-        pthread_mutex_lock(&__cajeta_task_mutex);
-        while (!__cajeta_ready_head && !__cajeta_task_shutdown_requested) {
+        // Owner-side pop on self's deque. Under self->deque_mutex so a
+        // concurrent cross-thread push (publish_ready from another
+        // carrier or main) can't race with this pop.
+        pthread_mutex_lock(&self->deque_mutex);
+        struct cajeta_fiber* f = __cajeta_deque_pop_bottom(&self->deque);
+        pthread_mutex_unlock(&self->deque_mutex);
+
+        // Empty own deque — try stealing from peers (lock-free).
+        if (!f) {
+            f = __cajeta_steal_one(self);
+        }
+
+        if (!f) {
+            // Pool-wide empty. Sleep on the shared condvar after a
+            // re-check under the pool mutex (a pusher may have just
+            // committed work between our last scan and now).
+            pthread_mutex_lock(&__cajeta_task_mutex);
+            if (__cajeta_task_shutdown_requested
+                    && __cajeta_pool_total_work() == 0) {
+                pthread_mutex_unlock(&__cajeta_task_mutex);
+                return NULL;
+            }
+            if (__cajeta_pool_total_work() > 0) {
+                pthread_mutex_unlock(&__cajeta_task_mutex);
+                continue;
+            }
+            __cajeta_sleeping_count++;
             pthread_cond_wait(&__cajeta_task_queue_cond, &__cajeta_task_mutex);
-        }
-        if (__cajeta_task_shutdown_requested && !__cajeta_ready_head) {
+            __cajeta_sleeping_count--;
             pthread_mutex_unlock(&__cajeta_task_mutex);
-            return NULL;
+            continue;
         }
-        struct cajeta_fiber* f = __cajeta_ready_head;
-        __cajeta_ready_head = f->next;
-        if (!__cajeta_ready_head) __cajeta_ready_tail = NULL;
         f->next = NULL;
-        pthread_mutex_unlock(&__cajeta_task_mutex);
 
         __cajeta_current_fiber = f;
         f->state = CAJETA_FIBER_RUNNING;
         if (!f->stack) {
             // First-resume init: allocate the stack and prime the context
             // to dispatch to __cajeta_fiber_entry. uc_link points back at
-            // the carrier so a normal fall-off-the-end returns here.
+            // this thread's carrier_ctx slot — single carrier per thread,
+            // so the address stays stable across the fiber's lifetime.
+            // For multi-carrier work-stealing (R8.3+), a fiber CAN land
+            // on a different carrier than originally allocated; uc_link
+            // would then need updating before each swap, but the obvious
+            // `f->ctx.uc_link = &__cajeta_carrier_ctx` immediately
+            // before swapcontext corrupts the saved trampoline state on
+            // glibc (probably because makecontext snapshots uc_link
+            // arch-dependently into the synthesized frame). v1 punts:
+            // stealing is disabled below until the cross-carrier
+            // uc_link handoff is solved at a deeper layer.
             f->stack = malloc(CAJETA_FIBER_STACK_SIZE);
             if (!f->stack) {
                 fprintf(stderr, "cajeta: fiber stack malloc failed\n");
@@ -1098,13 +1368,61 @@ void __cajeta_task_shutdown(void) {
     }
     __cajeta_task_shutdown_requested = 1;
     pthread_cond_broadcast(&__cajeta_task_queue_cond);
+    int n = __cajeta_carrier_count;
+    // R9.1 — if the timer thread was lazy-started, signal it to exit too.
+    // Same JIT-survives-across-tests rationale as carrier shutdown: leaving
+    // it running would let it observe (and signal on) a recycled condvar
+    // address in the next test.
+    int timer_was_started = __cajeta_timer_started;
+    if (timer_was_started) {
+        __cajeta_timer_shutdown_requested = 1;
+        pthread_cond_signal(&__cajeta_timer_cond);
+    }
+    // R9.4 — same for the I/O reactor. It uses epoll_wait with a 1s
+    // poll timeout, so the shutdown flag is observed within ~1s without
+    // any explicit wake. Closing the epfd from outside would race the
+    // reactor's epoll_wait return, so we let the poll timeout do it.
+    int reactor_was_started = __cajeta_reactor_started;
+    if (reactor_was_started) {
+        __cajeta_reactor_shutdown_requested = 1;
+    }
     pthread_mutex_unlock(&__cajeta_task_mutex);
-    pthread_join(__cajeta_task_worker, NULL);
+    for (int i = 0; i < n; ++i) {
+        pthread_join(__cajeta_carriers[i].thread, NULL);
+    }
+    if (timer_was_started) {
+        pthread_join(__cajeta_timer_thread, NULL);
+    }
+    if (reactor_was_started) {
+        pthread_join(__cajeta_reactor_thread, NULL);
+    }
     // Reset state so a subsequent __cajeta_task_run (e.g. the next test's
-    // first spawn) starts a fresh carrier with a clean queue.
+    // first spawn) starts a fresh pool with clean queues. The deque per
+    // carrier is re-initialized on the next workers_started=1 transition
+    // in __cajeta_task_run.
     pthread_mutex_lock(&__cajeta_task_mutex);
     __cajeta_task_shutdown_requested = 0;
     __cajeta_task_workers_started = 0;
+    for (int i = 0; i < n; ++i) {
+        pthread_mutex_destroy(&__cajeta_carriers[i].deque_mutex);
+    }
+    __cajeta_carrier_count = 0;
+    if (timer_was_started) {
+        __cajeta_timer_started = 0;
+        __cajeta_timer_shutdown_requested = 0;
+        __cajeta_timer_head = NULL;
+    }
+    if (reactor_was_started) {
+        __cajeta_reactor_started = 0;
+        __cajeta_reactor_shutdown_requested = 0;
+        __cajeta_reactor_waiters = NULL;
+#if defined(__linux__)
+        if (__cajeta_reactor_epfd >= 0) {
+            close(__cajeta_reactor_epfd);
+            __cajeta_reactor_epfd = -1;
+        }
+#endif
+    }
     pthread_mutex_unlock(&__cajeta_task_mutex);
 }
 
@@ -1145,18 +1463,40 @@ void __cajeta_task_run(void* arg, cajeta_task_trampoline_fn trampoline,
     __cajeta_dbg_fiber_register(f);
     if (!__cajeta_task_workers_started) {
         __cajeta_task_workers_started = 1;
-        pthread_create(&__cajeta_task_worker, NULL,
-                       __cajeta_carrier_loop, NULL);
+        // Carrier count from $CAJETA_CARRIERS if set; otherwise default
+        // to min(_SC_NPROCESSORS_ONLN, CAJETA_DEFAULT_CARRIERS_CAP) so
+        // spawned tasks get real parallelism out of the box. Clamped to
+        // [1, CAJETA_MAX_CARRIERS]. Read once at first spawn — the pool
+        // is fixed-size for the lifetime of this scheduler instance.
+        int n;
+        const char* env = getenv("CAJETA_CARRIERS");
+        if (env && *env) {
+            int parsed = atoi(env);
+            n = (parsed >= 1) ? parsed : 1;
+        } else {
+            long cores = sysconf(_SC_NPROCESSORS_ONLN);
+            if (cores < 1) cores = 1;
+            n = (int) cores;
+            if (n > CAJETA_DEFAULT_CARRIERS_CAP) n = CAJETA_DEFAULT_CARRIERS_CAP;
+        }
+        if (n > CAJETA_MAX_CARRIERS) n = CAJETA_MAX_CARRIERS;
+        __cajeta_carrier_count = n;
+        for (int i = 0; i < n; ++i) {
+            __cajeta_carriers[i].carrier_id = i;
+            pthread_mutex_init(&__cajeta_carriers[i].deque_mutex, NULL);
+            __cajeta_deque_init(&__cajeta_carriers[i].deque);
+        }
+        for (int i = 0; i < n; ++i) {
+            pthread_create(&__cajeta_carriers[i].thread, NULL,
+                           __cajeta_carrier_loop, &__cajeta_carriers[i]);
+        }
     }
-    if (__cajeta_ready_tail) {
-        __cajeta_ready_tail->next = f;
-        __cajeta_ready_tail = f;
-    } else {
-        __cajeta_ready_head = f;
-        __cajeta_ready_tail = f;
-    }
-    pthread_cond_signal(&__cajeta_task_queue_cond);
     pthread_mutex_unlock(&__cajeta_task_mutex);
+    // Publish the new fiber. publish_ready acquires the target carrier's
+    // deque_mutex itself; doing it outside __cajeta_task_mutex keeps the
+    // pool → deque lock order (and avoids the recursive task_mutex grab
+    // publish_ready does for the sleeper-signal step).
+    __cajeta_publish_ready(f);
 }
 
 // Block until the task at `done_addr` flips to nonzero. From a fiber:
@@ -1209,12 +1549,489 @@ void __cajeta_fiber_cancel(struct cajeta_fiber* fiber, void* throwable) {
 // own await condition.
 void __cajeta_task_complete(int32_t* done_addr) {
     if (!done_addr) return;
+    // Phase 1 — flip the done flag, wake any main-thread awaiters, and
+    // detach the parked list (under pool_mutex only).
     pthread_mutex_lock(&__cajeta_task_mutex);
     *done_addr = 1;
     pthread_cond_broadcast(&__cajeta_task_done_cond);
-    __cajeta_wake_all_parked_locked();
+    struct cajeta_fiber* woken = __cajeta_drain_parked_locked();
+    pthread_mutex_unlock(&__cajeta_task_mutex);
+    // Phase 2 — publish each woken parker WITHOUT holding pool_mutex.
+    // publish_ready's lock order (deque → pool) would invert against
+    // pool → deque if we did this inside Phase 1.
+    while (woken) {
+        struct cajeta_fiber* next = woken->next;
+        __cajeta_publish_ready(woken);
+        woken = next;
+    }
+}
+
+// --- R9.1 — timer wheel + cooperative timeout -----------------------------
+//
+// Goal: let a fiber's __cajeta_task_wait honor a deadline. The intrinsic
+// __cajeta_task_wait_timeout returns 1 if *done_addr flips before the
+// deadline, 0 if the deadline expires first.
+//
+// Mechanism: a sorted singly-linked list of (deadline_ns, fiber) entries
+// protected by __cajeta_task_mutex; a single timer thread (lazy-started on
+// the first registration) sleeps via pthread_cond_timedwait until the next
+// deadline; on expire it walks the list, detaches expired fibers from
+// __cajeta_parked_head and publishes them. The fiber-side loop rechecks
+// done_addr + deadline on every wake — wake-all spurious wakes from
+// __cajeta_task_complete converge naturally (recheck rejects them) without
+// needing a wake_reason CAS. The race to manage is "timer wake vs.
+// concurrent wake-all": both take __cajeta_task_mutex and use parked-list
+// membership as the gate, so the fiber is detached and published exactly
+// once. If timer fires while the fiber isn't on parked_head (running, or
+// already published), the timer entry is consumed (removed from the timer
+// list) and the fiber catches the expired deadline via the now_ns check
+// on its next park-loop iteration.
+//
+// Timer entries are owned by the FIBER'S STACK (one per __cajeta_task_wait_timeout
+// call), so the timer thread never frees memory it didn't allocate. The fiber
+// cancels its own entry before returning; cancel is idempotent against
+// already-consumed entries via a linear walk of the live list.
+
+#include <time.h>
+#include <errno.h>
+
+// Statics (head, cond, thread, started, shutdown_requested) declared
+// above the carrier section so __cajeta_task_shutdown can join the
+// timer thread on teardown; the struct definition follows here.
+struct cajeta_timer_entry {
+    int64_t deadline_ns;
+    struct cajeta_fiber* fiber;
+    struct cajeta_timer_entry* next;
+};
+
+static int64_t __cajeta_now_ns(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (int64_t) ts.tv_sec * 1000000000LL + (int64_t) ts.tv_nsec;
+}
+
+// Insert entry into the sorted-by-deadline list. Caller holds __cajeta_task_mutex.
+static void __cajeta_timer_insert_locked(struct cajeta_timer_entry* e) {
+    struct cajeta_timer_entry** p = &__cajeta_timer_head;
+    while (*p && (*p)->deadline_ns <= e->deadline_ns) p = &(*p)->next;
+    e->next = *p;
+    *p = e;
+}
+
+// Remove `f` from __cajeta_parked_head if present. Returns 1 if removed.
+// Caller holds __cajeta_task_mutex.
+static int __cajeta_parked_remove_locked(struct cajeta_fiber* f) {
+    if (!__cajeta_parked_head) return 0;
+    if (__cajeta_parked_head == f) {
+        __cajeta_parked_head = f->next;
+        f->next = NULL;
+        return 1;
+    }
+    for (struct cajeta_fiber* p = __cajeta_parked_head; p->next; p = p->next) {
+        if (p->next == f) {
+            p->next = f->next;
+            f->next = NULL;
+            return 1;
+        }
+    }
+    return 0;
+}
+
+// Timer thread. Sleeps on __cajeta_timer_cond until the next deadline (or
+// a register/cancel/shutdown signal), wakes expired fibers, sleeps again.
+static void* __cajeta_timer_loop(void* arg) {
+    (void) arg;
+    pthread_mutex_lock(&__cajeta_task_mutex);
+    for (;;) {
+        if (__cajeta_timer_shutdown_requested) {
+            pthread_mutex_unlock(&__cajeta_task_mutex);
+            return NULL;
+        }
+        int64_t now = __cajeta_now_ns();
+        struct cajeta_fiber* to_publish = NULL;
+        while (__cajeta_timer_head && __cajeta_timer_head->deadline_ns <= now) {
+            struct cajeta_timer_entry* e = __cajeta_timer_head;
+            __cajeta_timer_head = e->next;
+            e->next = NULL;
+            // Best-effort detach + publish. If fiber isn't on parked_head,
+            // it's running (or already on a deque); the fiber's next park-
+            // loop iteration will see the expired deadline.
+            if (__cajeta_parked_remove_locked(e->fiber)) {
+                e->fiber->next = to_publish;
+                to_publish = e->fiber;
+            }
+        }
+        if (to_publish) {
+            pthread_mutex_unlock(&__cajeta_task_mutex);
+            while (to_publish) {
+                struct cajeta_fiber* next = to_publish->next;
+                __cajeta_publish_ready(to_publish);
+                to_publish = next;
+            }
+            pthread_mutex_lock(&__cajeta_task_mutex);
+            continue;
+        }
+        if (__cajeta_timer_head) {
+            int64_t deadline = __cajeta_timer_head->deadline_ns;
+            struct timespec ts;
+            ts.tv_sec = (time_t) (deadline / 1000000000LL);
+            ts.tv_nsec = (long) (deadline % 1000000000LL);
+            // CLOCK_REALTIME-based timedwait — the default. Deadline is
+            // monotonic ns, which works regardless of clock choice for
+            // an upper-bound sleep (the worst case is a stale clock
+            // sleeping longer than needed; the fiber-side deadline check
+            // catches up either way).
+            pthread_cond_timedwait(&__cajeta_timer_cond,
+                                    &__cajeta_task_mutex, &ts);
+        } else {
+            pthread_cond_wait(&__cajeta_timer_cond, &__cajeta_task_mutex);
+        }
+    }
+}
+
+// Lazy-start the timer thread on first registration. Caller holds task_mutex.
+static void __cajeta_timer_ensure_started_locked(void) {
+    if (__cajeta_timer_started) return;
+    __cajeta_timer_started = 1;
+    pthread_create(&__cajeta_timer_thread, NULL, __cajeta_timer_loop, NULL);
+}
+
+// Cancel a timer entry. No-op if already consumed by the timer thread
+// (not in the live list anymore). Caller must NOT hold task_mutex.
+static void __cajeta_timer_cancel(struct cajeta_timer_entry* entry) {
+    pthread_mutex_lock(&__cajeta_task_mutex);
+    struct cajeta_timer_entry** p = &__cajeta_timer_head;
+    while (*p) {
+        if (*p == entry) {
+            *p = entry->next;
+            entry->next = NULL;
+            break;
+        }
+        p = &(*p)->next;
+    }
     pthread_mutex_unlock(&__cajeta_task_mutex);
 }
+
+// R9.1 intrinsic — block until *done_addr flips OR deadline_ns is reached.
+// Returns 1 on done, 0 on timeout. Mirrors __cajeta_task_wait but adds a
+// per-call timer entry that wakes the fiber at the deadline. deadline_ns
+// is a CLOCK_MONOTONIC absolute timestamp (use __cajeta_currentTimeNanos
+// to compute one from a duration).
+int32_t __cajeta_task_wait_timeout(int32_t* done_addr, int64_t deadline_ns) {
+    if (!done_addr) return 1;
+    if (!__cajeta_current_fiber) {
+        // Main thread / non-fiber caller: cond_timedwait on the existing
+        // task-done condvar. The condvar's clock is CLOCK_REALTIME; convert
+        // our monotonic deadline by computing the remaining nanos and
+        // adding to a fresh REALTIME `now`. Sufficient for the timeout
+        // ceiling; precision-critical use should switch to a CLOCK_MONOTONIC
+        // condvar (pthread_condattr_setclock) when a user surfaces a need.
+        pthread_mutex_lock(&__cajeta_task_mutex);
+        while (!*done_addr) {
+            int64_t mono_now = __cajeta_now_ns();
+            if (mono_now >= deadline_ns) {
+                pthread_mutex_unlock(&__cajeta_task_mutex);
+                return 0;
+            }
+            int64_t remaining_ns = deadline_ns - mono_now;
+            struct timespec real_ts;
+            clock_gettime(CLOCK_REALTIME, &real_ts);
+            int64_t real_deadline = (int64_t) real_ts.tv_sec * 1000000000LL
+                                  + (int64_t) real_ts.tv_nsec
+                                  + remaining_ns;
+            real_ts.tv_sec = (time_t) (real_deadline / 1000000000LL);
+            real_ts.tv_nsec = (long) (real_deadline % 1000000000LL);
+            int rc = pthread_cond_timedwait(&__cajeta_task_done_cond,
+                                             &__cajeta_task_mutex,
+                                             &real_ts);
+            if (rc == ETIMEDOUT) {
+                pthread_mutex_unlock(&__cajeta_task_mutex);
+                return 0;
+            }
+        }
+        pthread_mutex_unlock(&__cajeta_task_mutex);
+        return 1;
+    }
+    // Fiber path. Stack-local entry: lifetime = this function, which is
+    // safe because the fiber's stack persists across park/resume.
+    struct cajeta_timer_entry entry;
+    entry.deadline_ns = deadline_ns;
+    entry.fiber = __cajeta_current_fiber;
+    entry.next = NULL;
+    pthread_mutex_lock(&__cajeta_task_mutex);
+    __cajeta_timer_ensure_started_locked();
+    int signal_timer = (__cajeta_timer_head == NULL
+                        || __cajeta_timer_head->deadline_ns > deadline_ns);
+    __cajeta_timer_insert_locked(&entry);
+    pthread_mutex_unlock(&__cajeta_task_mutex);
+    if (signal_timer) {
+        pthread_cond_signal(&__cajeta_timer_cond);
+    }
+    for (;;) {
+        if (*done_addr) {
+            __cajeta_timer_cancel(&entry);
+            return 1;
+        }
+        if (__cajeta_now_ns() >= deadline_ns) {
+            __cajeta_timer_cancel(&entry);
+            return 0;
+        }
+        __cajeta_fiber_park();
+        // Mirror __cajeta_task_wait's R5-C cancel handling: a scope's
+        // first-throw escalation may have set cancel_with while we were
+        // parked; honor it before looping (we still cancel our timer so
+        // the entry doesn't outlive this fiber's stack frame).
+        void* cancel = __cajeta_current_fiber->cancel_with;
+        if (cancel) {
+            __cajeta_current_fiber->cancel_with = NULL;
+            __cajeta_timer_cancel(&entry);
+            __cajeta_throw(cancel);
+        }
+    }
+}
+
+// R9.1 intrinsic — current CLOCK_MONOTONIC nanoseconds. Surfaced for stdlib
+// computing a deadline from a Duration (R9.3): `now() + d.toNanos()`.
+int64_t __cajeta_currentTimeNanos(void) {
+    return __cajeta_now_ns();
+}
+
+// R9.5 — fiber-aware sleep. Park the running fiber on the timer wheel for
+// up to `nanos` nanoseconds. Built on top of __cajeta_task_wait_timeout
+// by feeding it a sentinel done_addr that never flips — the wait then
+// always resolves via the deadline. From the main thread / non-fiber
+// caller, cond_timedwait on the same condvar (same fallback the timeout
+// path takes). Used by Channel.select's polling backoff; available to
+// other callers wanting a cooperative sleep.
+void __cajeta_fiber_sleep_nanos(int64_t nanos) {
+    if (nanos <= 0) return;
+    int32_t never = 0;
+    int64_t deadline = __cajeta_now_ns() + nanos;
+    (void) __cajeta_task_wait_timeout(&never, deadline);
+}
+
+// --- R9.4 — I/O reactor / netpoller -----------------------------------------
+//
+// Goal: park a fiber on file-descriptor readiness without freezing the
+// carrier OS thread. The intrinsic __cajeta_io_wait(fd, events_mask) blocks
+// the calling fiber until any of the requested events fires on `fd`, then
+// returns 1; non-fiber callers fall through to a direct blocking
+// epoll_wait so the surface API is uniform across both contexts.
+//
+// Mechanism: a single epoll fd owned by a dedicated reactor thread.
+// __cajeta_io_wait registers (fd, requested events, current fiber) with
+// the reactor and parks. The reactor's epoll_wait loop wakes, finds the
+// matching waiter(s), detaches each fiber from __cajeta_parked_head, and
+// republishes via __cajeta_publish_ready. EPOLLONESHOT ensures each fd
+// auto-cleans from epoll after firing; the per-call waiter struct lives
+// on the heap (single per fiber, multiple fibers may wait on different
+// fds) and is freed by the wake path.
+//
+// v1 limitations:
+//   - Linux only. macOS (kqueue) and Windows (IOCP) are stubbed; the
+//     intrinsic returns -1 there.
+//   - Each io_wait call sets up its own epoll registration; long-lived
+//     persistent registrations (the standard netpoller pattern for high
+//     fd counts) come when a real consumer surfaces.
+//   - No deadline parameter v1. Deadlines compose with the R9.1 timer —
+//     a withIoTimeout(d, fd, events) helper at the cajeta level can layer
+//     both. Deferred until a use case lands.
+//   - One waiter per fd in v1. Two fibers waiting on the same fd would
+//     have only one notified (whichever the epoll_ctl_add saw second
+//     would EEXIST and we degrade to MOD). Real netpoller semantics
+//     (separate read/write waiter queues per fd) lands later.
+
+#if defined(__linux__)
+#  include <sys/epoll.h>
+#  include <sys/eventfd.h>
+#endif
+
+#define CAJETA_IO_READ  1
+#define CAJETA_IO_WRITE 2
+
+struct cajeta_io_waiter {
+    int fd;
+    int events;
+    struct cajeta_fiber* fiber;
+    struct cajeta_io_waiter* next;
+};
+
+#if defined(__linux__)
+
+static int __cajeta_io_events_to_epoll(int events) {
+    int e = 0;
+    if (events & CAJETA_IO_READ)  e |= EPOLLIN;
+    if (events & CAJETA_IO_WRITE) e |= EPOLLOUT;
+    return e | EPOLLONESHOT;
+}
+
+// Reactor thread main loop. Polls epoll_wait with a 1-second timeout so
+// the shutdown flag is observed even when no I/O is in flight. On each
+// ready event, walks the waiter list under task_mutex, detaches matched
+// fibers from __cajeta_parked_head, and publishes them.
+static void* __cajeta_reactor_loop(void* arg) {
+    (void) arg;
+    for (;;) {
+        if (__cajeta_reactor_shutdown_requested) return NULL;
+        struct epoll_event ep[64];
+        int n = epoll_wait(__cajeta_reactor_epfd, ep, 64, 1000);
+        if (n < 0) {
+            if (errno == EINTR) continue;
+            return NULL;
+        }
+        if (n == 0) continue;
+        struct cajeta_fiber* to_publish = NULL;
+        pthread_mutex_lock(&__cajeta_task_mutex);
+        for (int i = 0; i < n; ++i) {
+            int fd = ep[i].data.fd;
+            struct cajeta_io_waiter** p = &__cajeta_reactor_waiters;
+            while (*p) {
+                if ((*p)->fd == fd) {
+                    struct cajeta_io_waiter* w = *p;
+                    *p = w->next;
+                    // The fd auto-removed itself from epoll via
+                    // EPOLLONESHOT; just need to detach + publish the
+                    // fiber.
+                    if (__cajeta_parked_remove_locked(w->fiber)) {
+                        w->fiber->next = to_publish;
+                        to_publish = w->fiber;
+                    }
+                    free(w);
+                } else {
+                    p = &(*p)->next;
+                }
+            }
+        }
+        pthread_mutex_unlock(&__cajeta_task_mutex);
+        while (to_publish) {
+            struct cajeta_fiber* next = to_publish->next;
+            __cajeta_publish_ready(to_publish);
+            to_publish = next;
+        }
+    }
+}
+
+// Lazy-start the reactor on first registration. Caller holds task_mutex.
+static void __cajeta_reactor_ensure_started_locked(void) {
+    if (__cajeta_reactor_started) return;
+    __cajeta_reactor_epfd = epoll_create1(EPOLL_CLOEXEC);
+    if (__cajeta_reactor_epfd < 0) {
+        fprintf(stderr, "cajeta: epoll_create1 failed: %d\n", errno);
+        return;
+    }
+    __cajeta_reactor_started = 1;
+    pthread_create(&__cajeta_reactor_thread, NULL,
+                    __cajeta_reactor_loop, NULL);
+}
+
+// Cancel a waiter (clear the registration) on the error/cleanup path.
+// Caller holds task_mutex; entry must NOT have been published yet.
+static void __cajeta_reactor_cancel_locked(struct cajeta_io_waiter* w) {
+    struct cajeta_io_waiter** p = &__cajeta_reactor_waiters;
+    while (*p) {
+        if (*p == w) { *p = w->next; break; }
+        p = &(*p)->next;
+    }
+    epoll_ctl(__cajeta_reactor_epfd, EPOLL_CTL_DEL, w->fd, NULL);
+}
+
+int32_t __cajeta_io_wait(int32_t fd, int32_t events) {
+    if (!__cajeta_current_fiber) {
+        // Non-fiber caller: skip the reactor and just do a direct
+        // blocking epoll_wait. Same observable surface — 1 on ready,
+        // 0/-1 on error — without paying for reactor lazy-start.
+        int epfd = epoll_create1(EPOLL_CLOEXEC);
+        if (epfd < 0) return -1;
+        struct epoll_event ep;
+        ep.events = __cajeta_io_events_to_epoll(events);
+        ep.data.fd = fd;
+        if (epoll_ctl(epfd, EPOLL_CTL_ADD, fd, &ep) < 0) {
+            close(epfd);
+            return -1;
+        }
+        struct epoll_event got;
+        int n;
+        do {
+            n = epoll_wait(epfd, &got, 1, -1);
+        } while (n < 0 && errno == EINTR);
+        close(epfd);
+        return (n > 0) ? 1 : 0;
+    }
+    pthread_mutex_lock(&__cajeta_task_mutex);
+    __cajeta_reactor_ensure_started_locked();
+    if (!__cajeta_reactor_started) {
+        pthread_mutex_unlock(&__cajeta_task_mutex);
+        return -1;
+    }
+    struct cajeta_io_waiter* w = malloc(sizeof(*w));
+    if (!w) {
+        pthread_mutex_unlock(&__cajeta_task_mutex);
+        return -1;
+    }
+    w->fd = fd;
+    w->events = events;
+    w->fiber = __cajeta_current_fiber;
+    w->next = __cajeta_reactor_waiters;
+    __cajeta_reactor_waiters = w;
+    struct epoll_event ep;
+    ep.events = __cajeta_io_events_to_epoll(events);
+    ep.data.fd = fd;
+    int rc = epoll_ctl(__cajeta_reactor_epfd, EPOLL_CTL_ADD, fd, &ep);
+    if (rc < 0 && errno == EEXIST) {
+        rc = epoll_ctl(__cajeta_reactor_epfd, EPOLL_CTL_MOD, fd, &ep);
+    }
+    if (rc < 0) {
+        __cajeta_reactor_cancel_locked(w);
+        free(w);
+        pthread_mutex_unlock(&__cajeta_task_mutex);
+        return -1;
+    }
+    pthread_mutex_unlock(&__cajeta_task_mutex);
+    __cajeta_fiber_park();
+    return 1;
+}
+
+// Linux eventfd surface, exposed for test bring-up and for cooperative
+// cross-fiber signalling. eventfd is a counter the kernel guarantees is
+// edge-sensitive on writes — perfect for the "one-shot ready" pattern
+// the I/O reactor needs to verify end-to-end.
+int32_t __cajeta_eventfd_create(void) {
+    int fd = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
+    return (fd < 0) ? -1 : (int32_t) fd;
+}
+
+int32_t __cajeta_eventfd_signal(int32_t fd) {
+    uint64_t one = 1;
+    ssize_t n = write(fd, &one, sizeof(one));
+    return (n == (ssize_t) sizeof(one)) ? 0 : -1;
+}
+
+int64_t __cajeta_eventfd_consume(int32_t fd) {
+    uint64_t buf = 0;
+    ssize_t n = read(fd, &buf, sizeof(buf));
+    return (n == (ssize_t) sizeof(buf)) ? (int64_t) buf : -1;
+}
+
+int32_t __cajeta_fd_close(int32_t fd) {
+    return close(fd);
+}
+
+#else /* !__linux__ */
+
+int32_t __cajeta_io_wait(int32_t fd, int32_t events) {
+    (void) fd; (void) events;
+    fprintf(stderr, "cajeta: __cajeta_io_wait not yet implemented on this platform\n");
+    return -1;
+}
+int32_t __cajeta_eventfd_create(void) {
+    fprintf(stderr, "cajeta: __cajeta_eventfd_create requires Linux\n");
+    return -1;
+}
+int32_t __cajeta_eventfd_signal(int32_t fd) { (void) fd; return -1; }
+int64_t __cajeta_eventfd_consume(int32_t fd) { (void) fd; return -1; }
+int32_t __cajeta_fd_close(int32_t fd) { (void) fd; return -1; }
+
+#endif /* __linux__ */
 
 // --- Threading: scope frames (R5-A) ---------------------------------------
 //
@@ -1493,21 +2310,11 @@ void __cajeta_lock_release(void* p) {
     pthread_cond_signal(&l->released_cond);
     pthread_mutex_unlock(&l->mutex);
     if (next) {
-        // Move the woken fiber onto the carrier's ready queue. Done
-        // under the task mutex so it pairs correctly with the carrier's
-        // dequeue.
-        pthread_mutex_lock(&__cajeta_task_mutex);
-        next->state = CAJETA_FIBER_READY;
-        next->next = NULL;
-        if (__cajeta_ready_tail) {
-            __cajeta_ready_tail->next = next;
-            __cajeta_ready_tail = next;
-        } else {
-            __cajeta_ready_head = next;
-            __cajeta_ready_tail = next;
-        }
-        pthread_cond_signal(&__cajeta_task_queue_cond);
-        pthread_mutex_unlock(&__cajeta_task_mutex);
+        // Publish the woken fiber onto a carrier's deque (current carrier
+        // if running on one, else carrier 0). publish_ready takes the
+        // per-carrier deque_mutex + signals a sleeping carrier through
+        // the pool condvar.
+        __cajeta_publish_ready(next);
     }
 }
 
@@ -1533,6 +2340,348 @@ void __cajeta_lock_destroy(void* p) {
     pthread_cond_destroy(&l->released_cond);
     pthread_mutex_destroy(&l->mutex);
     free(l);
+}
+
+// --- Threading sync primitives: condition variable (R7-B) ----------------
+//
+// Fiber-aware condvar, paired with a Lock handle. `Mutex<T>.withLockWhen`
+// (cajeta-docs/stdlib/Thread.md § Mutex) builds on it: wait-for-predicate
+// inside a held lock, with notify on every mutation. A single condvar with
+// notify-all + per-waiter predicate re-check is the v1 strategy (spurious
+// wakeups are possible but harmless — each waiter re-tests its own
+// condition).
+//
+// Same single-carrier discipline as the Lock: a fiber waiter enqueues on
+// the condvar's own wait queue and swaps to the carrier; a main-thread
+// waiter blocks on the condvar's pthread cond. notify_all moves every fiber
+// waiter onto the carrier ready queue and broadcasts the pthread cond.
+
+struct cajeta_async_condvar {
+    pthread_mutex_t mutex;        // protects the wait queue; serializes with notify
+    pthread_cond_t  main_cond;    // main-thread waiters block here
+    struct cajeta_fiber* wait_head;
+    struct cajeta_fiber* wait_tail;
+};
+
+void* __cajeta_condvar_new(void) {
+    struct cajeta_async_condvar* cv =
+        (struct cajeta_async_condvar*) malloc(sizeof(*cv));
+    if (!cv) {
+        fprintf(stderr, "cajeta: __cajeta_condvar_new failed\n");
+        abort();
+    }
+    if (pthread_mutex_init(&cv->mutex, NULL) != 0) {
+        fprintf(stderr, "cajeta: condvar pthread_mutex_init failed\n");
+        free(cv);
+        abort();
+    }
+    if (pthread_cond_init(&cv->main_cond, NULL) != 0) {
+        fprintf(stderr, "cajeta: condvar pthread_cond_init failed\n");
+        pthread_mutex_destroy(&cv->mutex);
+        free(cv);
+        abort();
+    }
+    cv->wait_head = NULL;
+    cv->wait_tail = NULL;
+    return cv;
+}
+
+// Atomically release `lockp`, suspend until notified, then reacquire `lockp`.
+// The caller MUST hold `lockp` on entry; it holds it again on return.
+void __cajeta_condvar_wait(void* cvp, void* lockp) {
+    if (!cvp || !lockp) return;
+    struct cajeta_async_condvar* cv = (struct cajeta_async_condvar*) cvp;
+    if (__cajeta_current_fiber) {
+        // Fiber path: enqueue self on the condvar wait queue, release the
+        // user lock, then swap to the carrier. Enqueue happens under
+        // cv->mutex BEFORE the lock release so a concurrent notify_all
+        // (which also takes cv->mutex) can't slip between enqueue and
+        // release and lose the wakeup — once we're on the queue, notify
+        // will move us to the ready queue and we'll be resumed.
+        struct cajeta_fiber* self = __cajeta_current_fiber;
+        pthread_mutex_lock(&cv->mutex);
+        self->next = NULL;
+        if (cv->wait_tail) {
+            cv->wait_tail->next = self;
+            cv->wait_tail = self;
+        } else {
+            cv->wait_head = self;
+            cv->wait_tail = self;
+        }
+        self->state = CAJETA_FIBER_PARKED;
+        pthread_mutex_unlock(&cv->mutex);
+        __cajeta_lock_release(lockp);
+        __cajeta_swapcontext(&self->ctx, &__cajeta_carrier_ctx);
+        // Resumed by notify_all (carrier re-dispatched us). Reacquire the
+        // user lock before returning — may itself park if the lock is held.
+        __cajeta_lock_acquire(lockp);
+        return;
+    }
+    // Main-thread path: classic cond_wait. Release the user lock, block on
+    // the condvar's own pthread cond, reacquire on wake. cv->mutex guards
+    // the wait so it pairs with notify_all's broadcast under the same mutex.
+    pthread_mutex_lock(&cv->mutex);
+    __cajeta_lock_release(lockp);
+    pthread_cond_wait(&cv->main_cond, &cv->mutex);
+    pthread_mutex_unlock(&cv->mutex);
+    __cajeta_lock_acquire(lockp);
+}
+
+// Wake every waiter: move all fiber waiters onto the carrier ready queue and
+// broadcast the main-thread cond. Woken waiters re-check their predicate.
+void __cajeta_condvar_notify_all(void* cvp) {
+    if (!cvp) return;
+    struct cajeta_async_condvar* cv = (struct cajeta_async_condvar*) cvp;
+    pthread_mutex_lock(&cv->mutex);
+    struct cajeta_fiber* w = cv->wait_head;
+    cv->wait_head = NULL;
+    cv->wait_tail = NULL;
+    pthread_cond_broadcast(&cv->main_cond);
+    pthread_mutex_unlock(&cv->mutex);
+    while (w) {
+        struct cajeta_fiber* next = w->next;
+        __cajeta_publish_ready(w);
+        w = next;
+    }
+}
+
+void __cajeta_condvar_destroy(void* cvp) {
+    if (!cvp) return;
+    struct cajeta_async_condvar* cv = (struct cajeta_async_condvar*) cvp;
+    pthread_cond_destroy(&cv->main_cond);
+    pthread_mutex_destroy(&cv->mutex);
+    free(cv);
+}
+
+// --- Threading sync primitives: reader-writer lock (R7-D) ----------------
+//
+// Fiber-aware RW lock backing `RwLock<T>` (cajeta-docs/stdlib/Thread.md §
+// RwLock). Many readers may hold it concurrently; a writer holds it
+// exclusively. Writer-preference: a reader blocks while any writer is
+// waiting, so a steady stream of readers can't starve a writer.
+//
+// Same single-carrier discipline as Lock/condvar: a blocked fiber parks on
+// the appropriate wait queue and swaps to the carrier; a blocked main
+// thread cond_waits. Unlock wakes ALL waiters (writers first) and lets each
+// re-check its predicate — spurious wakeups are harmless, matching the
+// condvar's notify-all strategy. Under the single carrier this costs little.
+
+// Publish a NULL-terminated fiber list onto the carrier pool's deques.
+// Each fiber is routed via __cajeta_publish_ready, which picks the
+// current carrier (if any) or carrier 0 and takes that carrier's
+// deque_mutex. Shared by the rwlock unlock paths.
+static void __cajeta_ready_enqueue_list(struct cajeta_fiber* head) {
+    while (head) {
+        struct cajeta_fiber* next = head->next;
+        __cajeta_publish_ready(head);
+        head = next;
+    }
+}
+
+struct cajeta_async_rwlock {
+    pthread_mutex_t mutex;        // protects state + wait queues
+    pthread_cond_t  main_cond;    // main-thread readers + writers block here
+    int readers;                  // active shared-read holders
+    int writer;                   // 1 if a writer holds it exclusively
+    int writers_waiting;          // queued writers (drives writer-preference)
+    struct cajeta_fiber* rwait_head;   // fiber readers waiting
+    struct cajeta_fiber* rwait_tail;
+    struct cajeta_fiber* wwait_head;   // fiber writers waiting
+    struct cajeta_fiber* wwait_tail;
+};
+
+void* __cajeta_rwlock_new(void) {
+    struct cajeta_async_rwlock* rw =
+        (struct cajeta_async_rwlock*) malloc(sizeof(*rw));
+    if (!rw) {
+        fprintf(stderr, "cajeta: __cajeta_rwlock_new failed\n");
+        abort();
+    }
+    if (pthread_mutex_init(&rw->mutex, NULL) != 0) {
+        fprintf(stderr, "cajeta: rwlock pthread_mutex_init failed\n");
+        free(rw);
+        abort();
+    }
+    if (pthread_cond_init(&rw->main_cond, NULL) != 0) {
+        fprintf(stderr, "cajeta: rwlock pthread_cond_init failed\n");
+        pthread_mutex_destroy(&rw->mutex);
+        free(rw);
+        abort();
+    }
+    rw->readers = 0;
+    rw->writer = 0;
+    rw->writers_waiting = 0;
+    rw->rwait_head = NULL;
+    rw->rwait_tail = NULL;
+    rw->wwait_head = NULL;
+    rw->wwait_tail = NULL;
+    return rw;
+}
+
+void __cajeta_rwlock_rdlock(void* p) {
+    if (!p) return;
+    struct cajeta_async_rwlock* rw = (struct cajeta_async_rwlock*) p;
+    if (!__cajeta_current_fiber) {
+        pthread_mutex_lock(&rw->mutex);
+        while (rw->writer || rw->writers_waiting > 0) {
+            pthread_cond_wait(&rw->main_cond, &rw->mutex);
+        }
+        rw->readers++;
+        pthread_mutex_unlock(&rw->mutex);
+        return;
+    }
+    struct cajeta_fiber* self = __cajeta_current_fiber;
+    pthread_mutex_lock(&rw->mutex);
+    for (;;) {
+        if (!rw->writer && rw->writers_waiting == 0) {
+            rw->readers++;
+            pthread_mutex_unlock(&rw->mutex);
+            return;
+        }
+        self->next = NULL;
+        if (rw->rwait_tail) {
+            rw->rwait_tail->next = self;
+            rw->rwait_tail = self;
+        } else {
+            rw->rwait_head = self;
+            rw->rwait_tail = self;
+        }
+        self->state = CAJETA_FIBER_PARKED;
+        pthread_mutex_unlock(&rw->mutex);
+        __cajeta_swapcontext(&self->ctx, &__cajeta_carrier_ctx);
+        pthread_mutex_lock(&rw->mutex);
+    }
+}
+
+void __cajeta_rwlock_wrlock(void* p) {
+    if (!p) return;
+    struct cajeta_async_rwlock* rw = (struct cajeta_async_rwlock*) p;
+    if (!__cajeta_current_fiber) {
+        pthread_mutex_lock(&rw->mutex);
+        rw->writers_waiting++;
+        while (rw->writer || rw->readers > 0) {
+            pthread_cond_wait(&rw->main_cond, &rw->mutex);
+        }
+        rw->writers_waiting--;
+        rw->writer = 1;
+        pthread_mutex_unlock(&rw->mutex);
+        return;
+    }
+    struct cajeta_fiber* self = __cajeta_current_fiber;
+    pthread_mutex_lock(&rw->mutex);
+    rw->writers_waiting++;
+    for (;;) {
+        if (!rw->writer && rw->readers == 0) {
+            rw->writers_waiting--;
+            rw->writer = 1;
+            pthread_mutex_unlock(&rw->mutex);
+            return;
+        }
+        self->next = NULL;
+        if (rw->wwait_tail) {
+            rw->wwait_tail->next = self;
+            rw->wwait_tail = self;
+        } else {
+            rw->wwait_head = self;
+            rw->wwait_tail = self;
+        }
+        self->state = CAJETA_FIBER_PARKED;
+        pthread_mutex_unlock(&rw->mutex);
+        __cajeta_swapcontext(&self->ctx, &__cajeta_carrier_ctx);
+        pthread_mutex_lock(&rw->mutex);
+    }
+}
+
+// Detach both wait queues (writers first) and wake them once unlocked, so
+// woken fibers re-check their predicate against the new state.
+static void __cajeta_rwlock_wake_all_locked(struct cajeta_async_rwlock* rw,
+                                            struct cajeta_fiber** ww,
+                                            struct cajeta_fiber** rwq) {
+    *ww = rw->wwait_head;
+    rw->wwait_head = NULL;
+    rw->wwait_tail = NULL;
+    *rwq = rw->rwait_head;
+    rw->rwait_head = NULL;
+    rw->rwait_tail = NULL;
+    pthread_cond_broadcast(&rw->main_cond);
+}
+
+void __cajeta_rwlock_rdunlock(void* p) {
+    if (!p) return;
+    struct cajeta_async_rwlock* rw = (struct cajeta_async_rwlock*) p;
+    struct cajeta_fiber* ww = NULL;
+    struct cajeta_fiber* rwq = NULL;
+    pthread_mutex_lock(&rw->mutex);
+    if (rw->readers > 0) rw->readers--;
+    // Only the last reader out can let a writer in; wake then.
+    if (rw->readers == 0) {
+        __cajeta_rwlock_wake_all_locked(rw, &ww, &rwq);
+    }
+    pthread_mutex_unlock(&rw->mutex);
+    __cajeta_ready_enqueue_list(ww);
+    __cajeta_ready_enqueue_list(rwq);
+}
+
+void __cajeta_rwlock_wrunlock(void* p) {
+    if (!p) return;
+    struct cajeta_async_rwlock* rw = (struct cajeta_async_rwlock*) p;
+    struct cajeta_fiber* ww = NULL;
+    struct cajeta_fiber* rwq = NULL;
+    pthread_mutex_lock(&rw->mutex);
+    rw->writer = 0;
+    __cajeta_rwlock_wake_all_locked(rw, &ww, &rwq);
+    pthread_mutex_unlock(&rw->mutex);
+    __cajeta_ready_enqueue_list(ww);
+    __cajeta_ready_enqueue_list(rwq);
+}
+
+void __cajeta_rwlock_destroy(void* p) {
+    if (!p) return;
+    struct cajeta_async_rwlock* rw = (struct cajeta_async_rwlock*) p;
+    pthread_cond_destroy(&rw->main_cond);
+    pthread_mutex_destroy(&rw->mutex);
+    free(rw);
+}
+
+// --- atomic<T> backing storage (R8 Slice 1) ---------------------------------
+//
+// Atomic<T> classes (cajeta.threading.AtomicInt32 / AtomicInt64) own a heap-
+// allocated word that the compiler-emitted inline LLVM atomic instructions
+// (atomicrmw / cmpxchg / load atomic / store atomic) operate on directly. The
+// runtime's role is just the alloc/free of the underlying cell — the
+// arithmetic and ordering live in IR so the optimizer can reason about them
+// (a runtime call would defeat the point of an atomic). Plain malloc/free is
+// fine: these cells aren't tracked in the live-set (the owning Atomic<T>
+// class's drop wrapper calls the destroy intrinsic, and the cell never
+// outlives its owner).
+int32_t* __cajeta_atomic_i32_new(int32_t initial) {
+    int32_t* cell = (int32_t*) malloc(sizeof(int32_t));
+    if (!cell) {
+        fprintf(stderr, "cajeta: __cajeta_atomic_i32_new failed\n");
+        abort();
+    }
+    // Initial store is seq_cst so a subsequent reader on another carrier
+    // sees the constructed value without an extra fence at the call site.
+    __atomic_store_n(cell, initial, __ATOMIC_SEQ_CST);
+    return cell;
+}
+
+void __cajeta_atomic_i32_destroy(int32_t* cell) {
+    if (cell) free(cell);
+}
+
+int64_t* __cajeta_atomic_i64_new(int64_t initial) {
+    int64_t* cell = (int64_t*) malloc(sizeof(int64_t));
+    if (!cell) {
+        fprintf(stderr, "cajeta: __cajeta_atomic_i64_new failed\n");
+        abort();
+    }
+    __atomic_store_n(cell, initial, __ATOMIC_SEQ_CST);
+    return cell;
+}
+
+void __cajeta_atomic_i64_destroy(int64_t* cell) {
+    if (cell) free(cell);
 }
 
 // Abort with a diagnostic when an array index is out of bounds. Compiler emits a

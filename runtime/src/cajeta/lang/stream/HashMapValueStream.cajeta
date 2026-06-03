@@ -19,16 +19,16 @@ public class HashMapValueStream<K, V> extends Stream<V> implements Splittable<V>
         this.idx = 0;
     }
 
-    public #Optional<V> next() {
+    public Optional<V> next() {
         while (this.idx < this.cap) {
             if (this.state[this.idx] == 1) {
                 V v = this.vals[this.idx];
                 this.idx = this.idx + 1;
-                return heap Optional<V>(true, v);
+                return stack Optional<V>(true, #v);
             }
             this.idx = this.idx + 1;
         }
-        return heap Optional<V>(false, null);
+        return stack Optional<V>(false, null);
     }
 
     /**
