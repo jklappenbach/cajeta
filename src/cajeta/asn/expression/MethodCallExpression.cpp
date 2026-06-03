@@ -266,7 +266,22 @@ namespace cajeta {
         auto* builder = module->getBuilder();
         auto& llvmCtx = *module->getLlvmContext();
         llvm::Value* v = argNode->generateCode(module);
-        if (auto* a = llvm::dyn_cast_or_null<llvm::AllocaInst>(v)) {
+        auto argExpr = std::dynamic_pointer_cast<Expression>(argNode);
+        CajetaTypePtr argTy = argExpr ? argExpr->getResolvedType() : nullptr;
+        if (!argTy && argExpr) {
+            argExpr->resolveTypes(module);
+            argTy = argExpr->getResolvedType();
+        }
+        // Load through l-values to the r-value: a String passed as a local
+        // (alloca), an array element (`args[i]` — an ArrayIndex GEP whose slot
+        // holds the heap `String*`), or a class field (a DotExpression GEP)
+        // must become the heap String pointer, not the slot address.
+        // loadIfLValue uses the AST's resolved type to load reference elements
+        // as `ptr`; it leaves literal globals / r-values untouched. (The old
+        // alloca-only load mishandled array elements and fields.)
+        if (argExpr) {
+            v = loadIfLValue(module, v, argExpr);
+        } else if (auto* a = llvm::dyn_cast_or_null<llvm::AllocaInst>(v)) {
             v = builder->CreateLoad(a->getAllocatedType(), a);
         }
         // Post Phase 2b-β: a "String" arg is now a class
@@ -279,12 +294,6 @@ namespace cajeta {
         // pointer, then GEP past its 8-byte count to land on the
         // first data byte. The literal codegen guarantees null
         // termination so any strlen-reader sees the right end.
-        auto argExpr = std::dynamic_pointer_cast<Expression>(argNode);
-        CajetaTypePtr argTy = argExpr ? argExpr->getResolvedType() : nullptr;
-        if (!argTy && argExpr) {
-            argExpr->resolveTypes(module);
-            argTy = argExpr->getResolvedType();
-        }
         if (argTy) {
             auto cls = std::dynamic_pointer_cast<CajetaClass>(argTy);
             if (cls && cls->getQName()

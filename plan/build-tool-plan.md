@@ -1790,17 +1790,20 @@ size/offsets + vtable passed from IR via DataLayout, so no hardcoded String
 ABI) and forwards it. `-D<key>=<value>` startup tokens are still consumed into
 system properties before the args vector is built.
 
-- [x] `main(String[] args)` receives the program arguments. *(The argv→String[]
-      materialization is verified correct end-to-end; see the blocker below.)*
-- [ ] **BLOCKER — array-of-class element access is broken.** Indexing a
-      `String[]` (or any `T[]` where `T` is a class) and using the element as
-      that class fails: `println(args[0])` prints the element *pointer's* bytes
-      (garbage) and a second access segfaults. Reproduces with a plain literal
-      `String[] x = {"a","b"}; println(x[0]);` too — so it is a pre-existing
-      `ArrayIndexExpression` typing gap (the array-index result of a
-      reference-element array is not carrying the element's class type to
-      consumers like `println`/assignment), NOT in the argv path. Exposed now
-      that `--emit=exe` programs run. Gate to actually *using* `args`.
+- [x] `main(String[] args)` receives the program arguments — **verified
+      end-to-end** (a program echoing `args[0..2]` prints the program path +
+      each argument, exit 0).
+- [x] **FIXED — array-of-class element access as a String argument.**
+      `println(args[i])` / `println(x[i])` for a `String[]` printed garbage /
+      segfaulted because `loadStringArg` only loaded *alloca* l-values, not the
+      array-element (or class-field) GEP, so it passed the element *slot
+      address* as the String pointer. Now routes through `loadIfLValue` (the
+      established l-value→r-value helper, which loads reference-array elements
+      and class fields as `ptr`), matching what BinaryOpExpression already does.
+      Also corrected `__cajeta_args_make`: `String[]` slots are `str_size`-
+      strided but hold a `String*` per element (matches the aggregate-init
+      lowering). Regression-checked: 194/194 across String/Stream/Json/
+      expression/Array suites.
 - [ ] Decide whether argv[0] (the program name) is included or stripped from
       `args` (currently included; the `-D` scan skips index 0 but the args
       vector does not). *Lean:* strip argv[0] so `args` is just user arguments,
