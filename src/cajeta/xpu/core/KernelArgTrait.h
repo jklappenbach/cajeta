@@ -68,6 +68,14 @@ namespace xpu {
     bool isTextureType(const CajetaTypePtr& type);
     bool isSamplerType(const CajetaTypePtr& type);
 
+    // Is `type` the cajeta.xpu.core.AccelerationStructure resp. RayQuery type
+    // (cajeta-gpu Part C ray query)? Matched by canonical name.
+    // AccelerationStructure is an admissible kernel arg (a descriptor-bound BVH);
+    // RayQuery is a device-only kernel-body local (never a kernel arg), recognized
+    // by the device lowerer when it declares a RayQuery local.
+    bool isAccelStructType(const CajetaTypePtr& type);
+    bool isRayQueryType(const CajetaTypePtr& type);
+
     // Validate every parameter of `method`. Throws cajeta::Exception
     // (errorId "XPU-K01") with a clear diagnostic on the first non-
     // admissible parameter found. No-op when `method` is not a @Kernel

@@ -204,7 +204,11 @@ public:
                 ? fn->getArg(idx)
                 : target.materializeParam(builder, mod, fn, idx, p);
             ++idx;
-            if (p.isTexture) {
+            if (p.isAccelStruct) {
+                // AccelerationStructure handle (Part C): the materialized
+                // descriptor; read only by `rq.initialize(as, ...)`.
+                accelHandles[p.name] = v;
+            } else if (p.isTexture) {
                 // Texture2D handle (Item 8): kept as the materialized backend
                 // value (a ptr on CPU); read only by `tex.sample(...)`.
                 textureHandles[p.name] = v;
@@ -266,6 +270,13 @@ private:
     // sampler arg up in samplerHandles, then hands both to target.sampleTexture.
     std::map<std::string, llvm::Value*> textureHandles;  // texture name -> handle
     std::map<std::string, llvm::Value*> samplerHandles;  // sampler name -> descriptor
+    // AccelerationStructure kernel params and RayQuery body locals (cajeta-gpu
+    // Part C ray query). An AS param's materialized descriptor handle is kept by
+    // name; a RayQuery local's opaque alloca (the OpVariable Function) by name.
+    // rq.initialize(as, ...) looks the AS up in accelHandles; every RayQuery op
+    // takes the alloca from rayQuerySlots.
+    std::map<std::string, llvm::Value*> accelHandles;    // AS name -> descriptor
+    std::map<std::string, llvm::Value*> rayQuerySlots;   // RayQuery name -> alloca
 
     std::vector<LoweringTarget::KernelParam> kparams;  // admitted params
     bool paramsAsArgs = false;  // true for @Device helpers (params are fn args)
@@ -376,6 +387,15 @@ private:
         for (auto& vd : lvd->getVariableDeclarators()) {
             if (!vd) continue;
             const std::string& nm = vd->getIdentifier();
+            // RayQuery local (Part C): a device-only opaque function-local. The
+            // alloca IS the object (an OpVariable Function of OpTypeRayQueryKHR);
+            // any `stack RayQuery()` initializer is just the construction and
+            // carries no value to store. Backend-gated: rayQueryType throws on a
+            // non-Vulkan backend (XPU-N02).
+            if (isRayQueryType(declType)) {
+                rayQuerySlots[nm] = entryAlloca(target.rayQueryType(mod), nm);
+                continue;
+            }
             llvm::Type* slotTy = deviceScalarType(declType, ctx);
             if (!slotTy) slotTy = deviceVectorType(declType, ctx);  // Vector<T,N>
             auto init = vd->getInitializer();
@@ -1222,6 +1242,11 @@ private:
         if (!recv.empty() && vectorSlotType(recv)) {
             return lowerVectorMethod(recv, name, mc);
         }
+        // RayQuery ops (Part C). `recv` names a RayQuery body local; the op
+        // lowers to a backend ray-query intrinsic (Vulkan llvm.spv.ray.query.*).
+        if (auto rq = rayQuerySlots.find(recv); rq != rayQuerySlots.end()) {
+            return lowerRayQueryMethod(rq->second, name, mc);
+        }
         // Texture2D.sample(sampler, u, v) (Item 8). `recv` names a texture kernel
         // param; the first arg is a sampler kernel param, then the normalized
         // (u, v) coords. Lowered to the backend image-sample seam.
@@ -1265,6 +1290,77 @@ private:
         }
         unsupported("Texture2D.sample: first argument must be a Sampler "
                     "kernel parameter");
+    }
+
+    // RayQuery op dispatch (Part C). `rqPtr` is the RayQuery alloca; the call is
+    // lowered to the backend ray-query seam (Vulkan llvm.spv.ray.query.*).
+    llvm::Value* lowerRayQueryMethod(
+            llvm::Value* rqPtr, const std::string& name,
+            const std::shared_ptr<MethodCallExpression>& mc) {
+        const auto& args = mc->getParameters();
+        llvm::Type* i32 = llvm::Type::getInt32Ty(ctx);
+        if (name == "initialize") {
+            // (AccelerationStructure, rayFlags, cullMask, ox, oy, oz, tMin,
+            //  dx, dy, dz, tMax) — origin/direction are component-wise scalars
+            // the lowerer assembles into <3 x float> vectors.
+            if (args.size() != 11)
+                unsupported("RayQuery.initialize expects (AccelerationStructure, "
+                            "rayFlags, cullMask, originX, originY, originZ, tMin, "
+                            "dirX, dirY, dirZ, tMax)");
+            llvm::Value* as = resolveAccelArg(args[0].expression);
+            llvm::Value* flags = coerceTo(lowerExpr(args[1].expression), i32);
+            llvm::Value* mask  = coerceTo(lowerExpr(args[2].expression), i32);
+            llvm::Value* origin = makeVec3(args[3].expression, args[4].expression,
+                                           args[5].expression);
+            llvm::Value* tMin = toFloat(lowerExpr(args[6].expression));
+            llvm::Value* dir = makeVec3(args[7].expression, args[8].expression,
+                                        args[9].expression);
+            llvm::Value* tMax = toFloat(lowerExpr(args[10].expression));
+            target.rayQueryInitialize(builder, mod, rqPtr, as, flags, mask,
+                                      origin, tMin, dir, tMax);
+            // Void op used as a statement; the discarded result is irrelevant.
+            return llvm::ConstantInt::get(i32, 0);
+        }
+        if (name == "proceed") {
+            if (!args.empty()) unsupported("RayQuery.proceed takes no arguments");
+            return target.rayQueryProceed(builder, mod, rqPtr);
+        }
+        if (name == "committedType" || name == "candidateType") {
+            if (!args.empty())
+                unsupported("RayQuery." + name + " takes no arguments");
+            // OpRayQueryGetIntersectionTypeKHR intersection selector:
+            // 1 = committed, 0 = candidate.
+            llvm::Value* which =
+                llvm::ConstantInt::get(i32, name == "committedType" ? 1 : 0);
+            return target.rayQueryIntersectionType(builder, mod, rqPtr, which);
+        }
+        unsupported("RayQuery." + name + "()");
+    }
+
+    // Resolve a `rq.initialize(as, ...)` acceleration-structure argument to its
+    // materialized descriptor. Like a sampler, the AS must be a bare identifier
+    // naming an AccelerationStructure kernel param (it is a bound resource, not
+    // an expressible value in a kernel body).
+    llvm::Value* resolveAccelArg(const ExpressionPtr& e) {
+        if (auto id = std::dynamic_pointer_cast<IdentifierExpression>(e)) {
+            auto it = accelHandles.find(id->getTextValue());
+            if (it != accelHandles.end()) return it->second;
+        }
+        unsupported("RayQuery.initialize: first argument must be an "
+                    "AccelerationStructure kernel parameter");
+    }
+
+    // Assemble a <3 x float> from three scalar expressions (ray origin /
+    // direction components), each coerced to f32.
+    llvm::Value* makeVec3(const ExpressionPtr& x, const ExpressionPtr& y,
+                          const ExpressionPtr& z) {
+        auto* v3f = llvm::FixedVectorType::get(llvm::Type::getFloatTy(ctx), 3);
+        llvm::Value* v = llvm::PoisonValue::get(v3f);
+        v = builder.CreateInsertElement(v, toFloat(lowerExpr(x)), uint64_t(0));
+        v = builder.CreateInsertElement(v, toFloat(lowerExpr(y)), uint64_t(1));
+        v = builder.CreateInsertElement(v, toFloat(lowerExpr(z)), uint64_t(2),
+                                        "ray.vec3");
+        return v;
     }
 
     // Coerce a value to f32 — texture coords are floats, but an int expression
@@ -1665,6 +1761,40 @@ llvm::Value* LoweringTarget::sampleTexture(llvm::IRBuilderBase& /*b*/,
         std::string(name()) + "'", "XPU-N01");
 }
 
+// Ray query (SPV_KHR_ray_query) is Vulkan-only — only SpirvTarget overrides
+// these. The defaults reject a RayQuery in a kernel lowered for a backend that
+// has no ray-query support.
+static cajeta::Exception rayQueryUnsupported(const char* backend) {
+    return cajeta::Exception(
+        "XPU kernel lowering: ray query (RayQuery / AccelerationStructure) is "
+        "supported only on the Vulkan backend, not '" + std::string(backend) +
+        "' (SPV_KHR_ray_query is a Vulkan-only extension)", "XPU-N02");
+}
+
+llvm::Type* LoweringTarget::rayQueryType(llvm::Module& /*m*/) {
+    throw rayQueryUnsupported(name());
+}
+
+void LoweringTarget::rayQueryInitialize(
+    llvm::IRBuilderBase& /*b*/, llvm::Module& /*m*/, llvm::Value* /*rqPtr*/,
+    llvm::Value* /*asHandle*/, llvm::Value* /*rayFlags*/, llvm::Value* /*cullMask*/,
+    llvm::Value* /*origin*/, llvm::Value* /*tMin*/, llvm::Value* /*direction*/,
+    llvm::Value* /*tMax*/) {
+    throw rayQueryUnsupported(name());
+}
+
+llvm::Value* LoweringTarget::rayQueryProceed(llvm::IRBuilderBase& /*b*/,
+                                             llvm::Module& /*m*/,
+                                             llvm::Value* /*rqPtr*/) {
+    throw rayQueryUnsupported(name());
+}
+
+llvm::Value* LoweringTarget::rayQueryIntersectionType(
+    llvm::IRBuilderBase& /*b*/, llvm::Module& /*m*/, llvm::Value* /*rqPtr*/,
+    llvm::Value* /*intersection*/) {
+    throw rayQueryUnsupported(name());
+}
+
 llvm::Type* LoweringTarget::bufferParamType(llvm::Module& m,
                                             llvm::Type* /*elemTy*/) {
     // NVPTX/AMDGPU: a buffer base is a global (addrspace 1) pointer — the same
@@ -1712,6 +1842,16 @@ static std::vector<LoweringTarget::KernelParam> collectParams(
             params.push_back({p->getName(), /*isBuffer=*/false, sty,
                               /*isSigned=*/false,
                               /*isTexture=*/false, /*isSampler=*/true});
+        } else if (isAccelStructType(t)) {
+            // AccelerationStructure (cajeta-gpu Part C): a descriptor-bound BVH.
+            // The handle is opaque (an OpTypeAccelerationStructureKHR on Vulkan),
+            // so `type` is an unused placeholder; materializeParam binds it and
+            // the RayQuery ops consume the handle. isAccelStruct routes
+            // createKernel/materializeParam, exactly like isTexture.
+            params.push_back({p->getName(), /*isBuffer=*/false,
+                              llvm::Type::getInt64Ty(ctx), /*isSigned=*/false,
+                              /*isTexture=*/false, /*isSampler=*/false,
+                              /*isAccelStruct=*/true});
         } else if (isBufferType(t)) {
             llvm::Type* elem = nullptr;
             bool elemSigned = true;
