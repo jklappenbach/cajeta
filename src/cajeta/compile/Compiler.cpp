@@ -33,8 +33,10 @@
 #include "../xpu/cpu/CpuBackend.h"
 #include "../xpu/cpu/CpuKernelLowering.h"
 #include "../method/Method.h"
+#include "cajeta/buildtool/Subprocess.h"
 #include "llvm/IR/Module.h"
 #include <algorithm>
+#include <cstdlib>
 #include <fstream>
 #include <sys/stat.h>
 
@@ -1067,36 +1069,60 @@ namespace cajeta {
     // when it was found at CMake-configure time (see CAJETA_HAS_LLD in CMakeLists.txt);
     // otherwise emits a clear diagnostic so the user can link with their toolchain.
     void Compiler::linkExecutable(const string& archiveRootPath) {
-#ifdef CAJETA_HAS_LLD
-        std::vector<const char*> args;
-        args.push_back("ld.lld");
-        for (auto& obj : objectFiles) {
-            args.push_back(obj.c_str());
-        }
-        string outArg = "-o";
         string outPath = outputPath.empty()
             ? (archiveRootPath + "a.out")
             : outputPath;
-        args.push_back(outArg.c_str());
-        args.push_back(outPath.c_str());
-        // Caller is responsible for any libc / sysroot flags via environment or a
-        // future --linker-arg passthrough. For pure-Cajeta programs that don't pull
-        // libc symbols this minimal arg list is enough.
-        lld::Result r = lld::lldMain(args, llvm::outs(), llvm::errs(),
-            {{lld::Gnu, &lld::elf::link}});
-        if (r.retCode != 0) {
-            cerr << "cajeta: lld link failed (exit " << r.retCode << ")" << std::endl;
+
+        // Link through the system C compiler/driver rather than calling a raw
+        // linker: the driver locates the platform's CRT, startup objects, libc,
+        // and library search paths, and selects the right object format
+        // (ELF / COFF-mingw / Mach-O) for the host — far more robust and
+        // portable than reconstructing a per-OS link line. (Linking inherently
+        // needs the platform CRT/libc, so a system toolchain is required
+        // regardless.) Honor $CC, then fall back to the usual driver names.
+        std::vector<std::string> drivers;
+        if (const char* envCc = std::getenv("CC")) {
+            if (*envCc) drivers.emplace_back(envCc);
         }
+        drivers.emplace_back("cc");
+        drivers.emplace_back("clang");
+        drivers.emplace_back("gcc");
+
+        buildtool::SubprocessResult res;
+        bool launched = false;
+        std::string usedDriver;
+        for (const auto& drv : drivers) {
+            buildtool::SubprocessOptions opt;
+            opt.argv.push_back(drv);
+            for (const auto& obj : objectFiles) opt.argv.push_back(obj);
+            opt.argv.push_back("-o");
+            opt.argv.push_back(outPath);
+            // Platform libraries the cajeta runtime references (the driver adds
+            // the CRT + libc itself).
+#if defined(_WIN32)
+            opt.argv.push_back("-lbcrypt");   // BCryptGenRandom (runtime RNG)
+            opt.argv.push_back("-lpthread");  // winpthreads
+#elif defined(__APPLE__)
+            opt.argv.push_back("-lpthread");
 #else
-        cerr << "cajeta: --emit=exe requires lld libraries (install lld-"
-             << LLVM_VERSION_MAJOR << "-dev and reconfigure with CMake)."
-             << std::endl;
-        cerr << "Object files produced: ";
-        for (auto& obj : objectFiles) cerr << obj << " ";
-        cerr << "\nLink with: cc " ;
-        for (auto& obj : objectFiles) cerr << obj << " ";
-        cerr << "-o <executable>" << std::endl;
+            opt.argv.push_back("-lpthread");
+            opt.argv.push_back("-lm");
+            opt.argv.push_back("-ldl");
 #endif
+            res = buildtool::runSubprocess(opt);
+            if (res.launched) { launched = true; usedDriver = drv; break; }
+        }
+
+        if (!launched) {
+            cerr << "cajeta: --emit=exe could not find a C compiler to link "
+                 << "with (tried $CC, cc, clang, gcc). Set $CC to your "
+                 << "toolchain's driver." << std::endl;
+            return;
+        }
+        if (res.code() != 0) {
+            cerr << "cajeta: link failed — '" << usedDriver << "' exited "
+                 << res.code() << std::endl;
+        }
     }
 
     void Compiler::emitCMainShim(const std::string& entryMethod) {
