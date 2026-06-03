@@ -1474,7 +1474,15 @@ void __cajeta_task_run(void* arg, cajeta_task_trampoline_fn trampoline,
             int parsed = atoi(env);
             n = (parsed >= 1) ? parsed : 1;
         } else {
+#if defined(_WIN32)
+            // sysconf/_SC_NPROCESSORS_ONLN is POSIX; on Windows ask the Win32
+            // API (windows.h is included at file scope for the fiber/lock paths).
+            SYSTEM_INFO cpu_si;
+            GetSystemInfo(&cpu_si);
+            long cores = (long) cpu_si.dwNumberOfProcessors;
+#else
             long cores = sysconf(_SC_NPROCESSORS_ONLN);
+#endif
             if (cores < 1) cores = 1;
             n = (int) cores;
             if (n > CAJETA_DEFAULT_CARRIERS_CAP) n = CAJETA_DEFAULT_CARRIERS_CAP;

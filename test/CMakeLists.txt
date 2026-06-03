@@ -43,6 +43,12 @@ target_link_libraries(${BINARY} PRIVATE
         GTest::gtest
         GTest::gtest_main)
 
+# The build-tool HTTP test server (test/buildtool/TestHttpServer.h) speaks
+# Winsock2 on Windows; link the sockets library.
+if(WIN32)
+    target_link_libraries(${BINARY} PRIVATE ws2_32)
+endif()
+
 # Bake the project source root into the test binary so the disk-reading
 # CompilerTests (`canParseOnValidShortPackage`, etc.) can find their .cajeta
 # fixtures without requiring CAJETA_SOURCE_ROOT to be set in the environment.

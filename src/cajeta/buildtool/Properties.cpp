@@ -11,12 +11,14 @@
 #include <sstream>
 #include <unordered_set>
 #include <vector>
-#include <unistd.h>
 
-// The global environ pointer. `extern` declared at file scope (not
-// inside the cajeta namespace below) so the link references ::environ
-// rather than cajeta::buildtool::environ.
+// The global environ pointer. On POSIX it's `environ` (declared extern at file
+// scope so the reference resolves to ::environ, not cajeta::buildtool::environ);
+// on Windows the CRT exposes it as `_environ` via <stdlib.h>, where `environ`
+// itself is a macro and cannot be redeclared.
+#if !defined(_WIN32)
 extern char** environ;
+#endif
 
 #ifndef CAJETA_VERSION
 #define CAJETA_VERSION "0.0.0-unknown"
@@ -208,7 +210,12 @@ namespace cajeta::buildtool {
 
     void loadEnvOverrides(PropertyOverrides& dst) {
         const std::string prefix = "CAJETA_PROPERTY_";
-        for (char** e = ::environ; *e; ++e) {
+#if defined(_WIN32)
+        char** envp = _environ;
+#else
+        char** envp = environ;
+#endif
+        for (char** e = envp; e && *e; ++e) {
             std::string entry = *e;
             if (entry.compare(0, prefix.size(), prefix) != 0) continue;
             auto eq = entry.find('=', prefix.size());

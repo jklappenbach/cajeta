@@ -31,7 +31,8 @@
 #include <fstream>
 #include <sstream>
 #include <string>
-#include <unistd.h>
+
+#include "../PortableEnv.h"
 
 using cajeta::cli::addTrustedKey;
 using cajeta::cli::fingerprintOfPemFile;
@@ -204,13 +205,13 @@ TEST(Phase10AcceptanceTests, addThenRemoveRespectsUserTier) {
     auto pemPath = f.root / "fresh.pem";
     writeFile(pemPath, kp.publicPem);
 
-    ASSERT_FALSE((bool)addTrustedKey(f.layout, "fresh", pemPath));
+    ASSERT_FALSE((bool)addTrustedKey(f.layout, "fresh", pemPath.string()));
     auto entry = lookupTrustedKey(f.layout, "fresh");
     ASSERT_TRUE(entry.has_value());
     EXPECT_EQ(entry->tier, "user");
 
     // Duplicate add → error citing remove-first.
-    auto dup = addTrustedKey(f.layout, "fresh", pemPath);
+    auto dup = addTrustedKey(f.layout, "fresh", pemPath.string());
     ASSERT_TRUE((bool)dup);
     auto msg = errorText(std::move(dup));
     EXPECT_NE(msg.find("already exists"), std::string::npos);
@@ -233,7 +234,7 @@ TEST(Phase10AcceptanceTests, addRejectsNonEd25519Pem) {
     auto pemPath = f.root / "bad.pem";
     writeFile(pemPath, "-----BEGIN CERTIFICATE-----\nGARBAGE\n"
                        "-----END CERTIFICATE-----\n");
-    auto e = addTrustedKey(f.layout, "bad", pemPath);
+    auto e = addTrustedKey(f.layout, "bad", pemPath.string());
     ASSERT_TRUE((bool)e);
     auto msg = errorText(std::move(e));
     EXPECT_NE(msg.find("PUBLIC KEY"), std::string::npos);
@@ -262,7 +263,7 @@ TEST(Phase10AcceptanceTests, systemStoreUntouchedByUserAddRemove) {
     auto kp = generateEd25519KeyPair();
     auto userPem = f.root / "user.pem";
     writeFile(userPem, kp.publicPem);
-    ASSERT_FALSE((bool)addTrustedKey(layout, "user-only", userPem));
+    ASSERT_FALSE((bool)addTrustedKey(layout, "user-only", userPem.string()));
 
     // System key still surfaces.
     auto sys2 = lookupTrustedKey(layout, "sys-only");
@@ -286,7 +287,7 @@ TEST(Phase10AcceptanceTests, signedArchiveVerifiesUnderStrict) {
     auto kp = generateEd25519KeyPair();
     auto pemPath = f.root / "sig.pem";
     writeFile(pemPath, kp.publicPem);
-    ASSERT_FALSE((bool)addTrustedKey(f.layout, f.keyId, pemPath));
+    ASSERT_FALSE((bool)addTrustedKey(f.layout, f.keyId, pemPath.string()));
 
     auto sig = signBytes(kp.privatePem, f.archiveBytes);
     writeFile(f.archive.string() + ".sig", sig);
@@ -322,7 +323,7 @@ TEST(Phase10AcceptanceTests, tamperedArchiveFailsWithDigestPair) {
     auto kp = generateEd25519KeyPair();
     auto pemPath = f.root / "sig.pem";
     writeFile(pemPath, kp.publicPem);
-    ASSERT_FALSE((bool)addTrustedKey(f.layout, f.keyId, pemPath));
+    ASSERT_FALSE((bool)addTrustedKey(f.layout, f.keyId, pemPath.string()));
 
     // Sign the ORIGINAL bytes…
     auto sig = signBytes(kp.privatePem, f.archiveBytes);
@@ -362,7 +363,7 @@ TEST(Phase10AcceptanceTests, trustAddThenVerifyEndToEnd) {
     }
 
     // Add → verify succeeds.
-    ASSERT_FALSE((bool)addTrustedKey(f.layout, f.keyId, pemPath));
+    ASSERT_FALSE((bool)addTrustedKey(f.layout, f.keyId, pemPath.string()));
     auto r = verifyArchiveSignature(f.layout, f.archive.string());
     ASSERT_TRUE((bool)r) << errorText(r.takeError());
 

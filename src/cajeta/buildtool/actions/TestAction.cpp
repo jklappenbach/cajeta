@@ -24,16 +24,14 @@
 
 #include <llvm/Support/Error.h>
 
-#include <cerrno>
-#include <cstring>
+#include <cstdio>
 #include <fstream>
 #include <map>
 #include <sstream>
 #include <string>
 #include <vector>
 
-#include <sys/wait.h>
-#include <unistd.h>
+#include "cajeta/buildtool/Subprocess.h"
 
 namespace cajeta::buildtool {
 
@@ -42,21 +40,6 @@ namespace cajeta::buildtool {
         llvm::Error err(const std::string& msg) {
             return llvm::createStringError(
                 llvm::inconvertibleErrorCode(), msg);
-        }
-
-        // Drain a pipe to EOF.
-        void drainFd(int fd, std::string& out) {
-            char buf[4096];
-            for (;;) {
-                ssize_t n = ::read(fd, buf, sizeof(buf));
-                if (n > 0) {
-                    out.append(buf, static_cast<size_t>(n));
-                    continue;
-                }
-                if (n == 0) break;
-                if (errno == EINTR) continue;
-                break;
-            }
         }
 
     } // namespace
@@ -157,82 +140,36 @@ namespace cajeta::buildtool {
                 coverageObj = params.getObject("coverage");
             }
 
-            std::vector<char*> argv;
-            argv.reserve(binaryArgs.size() + 1);
-            for (auto& a : binaryArgs) argv.push_back(a.data());
-            argv.push_back(nullptr);
-
-            int outPipe[2], errPipe[2];
-            if (::pipe(outPipe) < 0) {
-                return err(std::string("test: pipe(stdout): ") +
-                           std::strerror(errno));
-            }
-            if (::pipe(errPipe) < 0) {
-                ::close(outPipe[0]); ::close(outPipe[1]);
-                return err(std::string("test: pipe(stderr): ") +
-                           std::strerror(errno));
-            }
-
-            pid_t pid = ::fork();
-            if (pid < 0) {
-                ::close(outPipe[0]); ::close(outPipe[1]);
-                ::close(errPipe[0]); ::close(errPipe[1]);
-                return err(std::string("test: fork: ") +
-                           std::strerror(errno));
-            }
-            if (pid == 0) {
-                ::dup2(outPipe[1], STDOUT_FILENO);
-                ::dup2(errPipe[1], STDERR_FILENO);
-                ::close(outPipe[0]); ::close(outPipe[1]);
-                ::close(errPipe[0]); ::close(errPipe[1]);
-                ::execvp(argv[0], argv.data());
-                std::string msg = "test: cannot execute '" +
-                                  binaryArgs[0] + "': " +
-                                  std::strerror(errno) + "\n";
-                ::write(STDERR_FILENO, msg.data(), msg.size());
-                _exit(127);
-            }
-
-            ::close(outPipe[1]);
-            ::close(errPipe[1]);
-
+            // Run the test binary, capturing stdout/stderr.
             std::string stdoutBuf, stderrBuf;
-            drainFd(outPipe[0], stdoutBuf);
-            drainFd(errPipe[0], stderrBuf);
-            ::close(outPipe[0]);
-            ::close(errPipe[0]);
+            SubprocessOptions so;
+            so.argv = binaryArgs;
+            so.outData = &stdoutBuf;
+            so.errData = &stderrBuf;
+            SubprocessResult res = runSubprocess(so);
+            if (!res.launched) {
+                return err("test: cannot execute '" + binaryArgs[0] + "': " +
+                           res.error);
+            }
 
             // Forward to parent streams so the developer sees the
             // test output live-ish (drain-then-forward isn't truly
             // live, but it's close enough until we add line
             // streaming alongside structured findings).
             if (!stdoutBuf.empty()) {
-                ::write(STDOUT_FILENO,
-                        stdoutBuf.data(), stdoutBuf.size());
+                std::fwrite(stdoutBuf.data(), 1, stdoutBuf.size(), stdout);
             }
             if (!stderrBuf.empty()) {
-                ::write(STDERR_FILENO,
-                        stderrBuf.data(), stderrBuf.size());
-            }
-
-            int status = 0;
-            for (;;) {
-                pid_t w = ::waitpid(pid, &status, 0);
-                if (w < 0) {
-                    if (errno == EINTR) continue;
-                    return err(std::string("test: waitpid: ") +
-                               std::strerror(errno));
-                }
-                break;
+                std::fwrite(stderrBuf.data(), 1, stderrBuf.size(), stderr);
             }
 
             int passed = 0, failed = 0, crashed = 0, exitCode = 0;
-            if (WIFEXITED(status)) {
-                exitCode = WEXITSTATUS(status);
+            if (res.exited) {
+                exitCode = res.exitCode;
                 if (exitCode == 0) passed = 1;
                 else                failed = 1;
-            } else if (WIFSIGNALED(status)) {
-                exitCode = 128 + WTERMSIG(status);
+            } else if (res.signaled) {
+                exitCode = 128 + res.signal;
                 crashed = 1;
             } else {
                 exitCode = -1;
