@@ -92,20 +92,25 @@ namespace cajeta::buildtool {
 
     const std::vector<FlavorPropertySpec>& flavorPropertyVocab() {
         using K = FlavorPropertySpec::Kind;
+        // 4th field = the compiler frontend flag this property lowers to
+        // (empty = build-flavor intent with no frontend flag; see
+        // FlavorPropertySpec::compilerFlag and BuildTool.md "Property
+        // vocabulary"). `opt`'s `Oz` is flavor-only — the frontend's --opt
+        // accepts O0..O3 — so a flavor using `Oz` is rejected at lowering.
         static const std::vector<FlavorPropertySpec> v = {
-            {"opt",             K::EnumString, {"O0", "O1", "O2", "O3", "Oz"}},
-            {"lto",             K::EnumString, {"off", "thin", "full"}},
-            {"debug-info",      K::EnumString, {"off", "line", "full"}},
-            {"strip-symbols",   K::Boolean,    {}},
-            {"bounds-check",    K::EnumString, {"on", "off", "trap"}},
-            {"null-checks",     K::EnumString, {"on", "off", "trap"}},
-            {"overflow-checks", K::EnumString, {"on", "off", "wrapping"}},
-            {"asan",            K::Boolean,    {}},
-            {"tsan",            K::Boolean,    {}},
-            {"msan",            K::Boolean,    {}},
-            {"ubsan",           K::Boolean,    {}},
-            {"analytics",       K::Boolean,    {}},
-            {"source-tags",     K::Boolean,    {}},
+            {"opt",             K::EnumString, {"O0", "O1", "O2", "O3", "Oz"}, "opt"},
+            {"lto",             K::EnumString, {"off", "thin", "full"},        ""},
+            {"debug-info",      K::EnumString, {"off", "line", "full"},        ""},
+            {"strip-symbols",   K::Boolean,    {},                            ""},
+            {"bounds-check",    K::EnumString, {"on", "off", "trap"},          "bounds"},
+            {"null-checks",     K::EnumString, {"on", "off", "trap"},          "null-checks"},
+            {"overflow-checks", K::EnumString, {"on", "off", "wrapping"},      "overflow-checks"},
+            {"asan",            K::Boolean,    {},                            ""},
+            {"tsan",            K::Boolean,    {},                            ""},
+            {"msan",            K::Boolean,    {},                            ""},
+            {"ubsan",           K::Boolean,    {},                            ""},
+            {"analytics",       K::Boolean,    {},                            ""},
+            {"source-tags",     K::Boolean,    {},                            "source-tags"},
         };
         return v;
     }
@@ -298,6 +303,11 @@ namespace cajeta::buildtool {
         // how the JSON object stores keys.
         std::vector<std::string> out;
         for (const auto& spec : flavorPropertyVocab()) {
+            // Only properties that map to a compiler frontend flag are
+            // lowered to argv; the rest (lto, debug-info, strip-symbols,
+            // sanitizers, analytics) are build-flavor intent honored at the
+            // emit/link stage, not understood by the frontend.
+            if (spec.compilerFlag.empty()) continue;
             const auto* v = props.get(spec.key);
             if (!v) continue;
             std::string rendered;
@@ -305,7 +315,7 @@ namespace cajeta::buildtool {
             case FlavorPropertySpec::Kind::Boolean: {
                 auto b = v->getAsBoolean();
                 if (!b) continue; // skip malformed silently — validator catches.
-                rendered = *b ? "true" : "false";
+                rendered = *b ? "on" : "off";  // frontend bools accept on/off
                 break;
             }
             case FlavorPropertySpec::Kind::EnumString: {
@@ -315,7 +325,7 @@ namespace cajeta::buildtool {
                 break;
             }
             }
-            out.push_back("--" + spec.key + "=" + rendered);
+            out.push_back("--" + spec.compilerFlag + "=" + rendered);
         }
         return out;
     }

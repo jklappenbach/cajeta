@@ -88,6 +88,13 @@ void printUsage(const char* progname) {
               << "  --target=<triple>                    LLVM target triple. Default: host.\n"
               << "  --cpu=<name>                         Target CPU. Default: generic.\n"
               << "  --features=<list>                    Comma-separated target features (e.g. +neon).\n"
+              << "  --profile=<name>                     Active @Profile for component gating\n"
+              << "                                       (dev/test/release/...; default none).\n"
+              << "\n"
+              << "Reproducible builds (cajeta-docs/BuildTool.md):\n"
+              << "  --source-date-epoch=<unix-ts>        Fixed build timestamp (SOURCE_DATE_EPOCH).\n"
+              << "  --debug-prefix-map=<from>=<to>       Remap source paths in debug info.\n"
+              << "  --seed=<hex>                         Deterministic salt for any build RNG.\n"
               << "\n"
               << "XPU (GPU compute, cajeta-docs/CajetaXPU.md):\n"
               << "  --xpu-backend=<list>                 Device backend(s) for @Kernel methods, comma-separated\n"
@@ -339,6 +346,18 @@ int main(int argc, const char* argv[]) {
             compiler.setCpu(value);
         } else if (match(arg, "features", value)) {
             compiler.setFeatures(value);
+        } else if (match(arg, "profile", value)) {
+            // Active @Profile for component gating: CajetaModule includes a
+            // @Profile-annotated component only when it matches the active
+            // profile (profile-neutral components are always included). The
+            // build tool forwards each task's `profile` here (dev/test/release/…).
+            CajetaModule::setActiveProfile(value);
+        } else if (match(arg, "source-date-epoch", value)) {
+            compiler.getMutableFlags().sourceDateEpoch = value;
+        } else if (match(arg, "debug-prefix-map", value)) {
+            compiler.getMutableFlags().debugPrefixMap = value;
+        } else if (match(arg, "seed", value)) {
+            compiler.getMutableFlags().seed = value;
         } else if (match(arg, "xpu-backend", value)) {
             // Comma-separated list — a binary can bundle several targets
             // (e.g. vulkan,cpu); the runtime dispatcher picks the best

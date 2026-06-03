@@ -574,6 +574,42 @@ void* __cajeta_new_array_header(uint64_t header_size, uint64_t elem_size, uint64
     return hdr;
 }
 
+void* __cajeta_alloc(uint64_t size);  // defined below; used by __cajeta_args_make
+
+// Materialize a cajeta `String[]` from C `argv` for a `main(String[] args)`
+// entry point. The String struct's total size and field byte offsets, plus the
+// String vtable, are passed in from the emit shim (computed via LLVM's
+// DataLayout on the real class type) so nothing about the String ABI is
+// hardcoded here. Returns a standard CajetaArray `{ i64 count, [count x ptr] }`
+// of owned (mode=0) String instances, each holding a heap copy of an argv slot.
+void* __cajeta_args_make(int64_t argc, char** argv,
+                         void* string_vtable, int64_t str_size,
+                         int64_t off_bytes, int64_t off_byte_len,
+                         int64_t off_mode, int64_t off_cplen) {
+    if (argc < 0) argc = 0;
+    void* arr = __cajeta_new_array_header(8, sizeof(void*), (uint64_t) argc);
+    void** elems = (void**) ((char*) arr + 8);
+    for (int64_t i = 0; i < argc; i++) {
+        const char* s = (argv && argv[i]) ? argv[i] : "";
+        int64_t len = (int64_t) strlen(s);
+        // bytes payload: CajetaArray { i64 count=len, [len+1 x i8] } — the
+        // trailing NUL keeps any legacy strlen reader happy (matches the
+        // string-literal materialization in LiteralExpression.cpp).
+        void* bytes = __cajeta_new_array_header(8, 1, (uint64_t) (len + 1));
+        *((int64_t*) bytes) = len;                       // count excludes the NUL
+        memcpy((char*) bytes + 8, s, (size_t) len + 1);  // copy incl. the NUL
+        // String instance: vtable is field 0 (offset 0 by construction).
+        void* str = __cajeta_alloc((uint64_t) str_size);
+        *(void**)   ((char*) str)                = string_vtable;
+        *(void**)   ((char*) str + off_bytes)    = bytes;
+        *(int32_t*) ((char*) str + off_byte_len) = (int32_t) len;
+        *(int32_t*) ((char*) str + off_mode)     = 0;    // owned: drop reclaims bytes
+        *(int32_t*) ((char*) str + off_cplen)    = -1;   // codepoint length uncomputed
+        elems[i] = str;
+    }
+    return arr;
+}
+
 // Idempotent — see FieldOwnership.md § Solution B. Auto field drop and the
 // owning local's chain pop both call this for the same array address; the
 // first one wins the live-set claim and actually frees, the second sees

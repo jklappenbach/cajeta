@@ -1756,6 +1756,54 @@ Each is a decision, not a unit of work.
       shipping as `cajeta.*`. *Lean:* `cajeta.coverage`,
       `cajeta.lint.security`, possibly `cajeta.fmt.import-order`.
 
+### AOT executable linking (`--emit=exe`) — currently a stub
+
+`Compiler::linkExecutable` is incomplete: it hardcodes the **ELF** lld driver
+(`lld::elf::link`) and links **only the object files** — no C runtime / startup
+/ libc. Its own comment concedes it only works for "pure-Cajeta programs that
+don't pull libc symbols," but real programs pull `printf`/`malloc`/etc. via the
+runtime. So `cajeta build` → exe has **never produced a runnable binary**, and
+on Windows the ELF driver can't emit a PE at all. This is the gate to running
+any built program (including cvm). Needs a real link driver:
+
+- [ ] **Per-OS lld driver:** ELF (`lld::elf`) on Linux, **COFF/mingw**
+      (`lld::mingw` / `lld::coff`) on Windows, Mach-O (`lld::macho`) on macOS —
+      selected from the target triple.
+- [ ] **Link the C runtime + startup + libc** (crt objects, `-lmingw32`/`-lmsvcrt`
+      on Windows; crt1/`-lc` on Linux; the mingw/SDK lib search paths). The
+      cajeta runtime's `__cajeta_*` helpers call into libc, so libc must be on
+      the link line.
+- [ ] **`--linker-arg` passthrough** + sysroot/lib-path discovery (reuse the
+      MSYS2/mingw paths the build already knows).
+- [ ] Verify a scaffolded `cajeta init` project links + runs on each OS
+      (`hello world` round-trip, then a `main(String[] args)` that echoes argv).
+- [ ] This is the prerequisite for [[aot-debuginfo-and-release-stripping-plan]]
+      (split-debug/strip happen during this link).
+
+### Program entry & command-line arguments
+
+`--emit=exe` accepts a static no-arg `main()` or `main(String[] args)`. The C
+`main(argc, argv)` shim (`Compiler::emitCMainShim`) materializes the cajeta
+`String[]` from argv via the `__cajeta_args_make` runtime helper (struct
+size/offsets + vtable passed from IR via DataLayout, so no hardcoded String
+ABI) and forwards it. `-D<key>=<value>` startup tokens are still consumed into
+system properties before the args vector is built.
+
+- [x] `main(String[] args)` receives the program arguments.
+- [ ] Decide whether argv[0] (the program name) is included or stripped from
+      `args` (currently included; the `-D` scan skips index 0 but the args
+      vector does not). *Lean:* strip argv[0] so `args` is just user arguments,
+      matching most CLIs; expose the program path another way.
+- [ ] Drop-chain / ownership audit for the materialized `String[]` (owned
+      Strings holding heap byte copies) — confirm clean reclamation when `main`
+      drops the array vs. leaks-at-exit.
+- [ ] `int32 main(String[] args)` return path is exercised end-to-end (exit
+      code) once a CLI program (cvm) uses it.
+- [ ] Honor the reproducibility flags now accepted by the compiler
+      (`--source-date-epoch`, `--debug-prefix-map`, `--seed`) where the emit
+      stage embeds timestamps / paths (currently accepted + stored, not yet
+      consumed).
+
 ---
 
 ## Risks
