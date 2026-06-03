@@ -363,9 +363,18 @@ public class Uri {
             cursor = authEnd;
 
             // Apply the scheme default port when no explicit port was
-            // present in the authority.
+            // present in the authority. Bind the boolean field to a local
+            // before the ternary condition — a field used directly as a
+            // ternary condition (`u.hasScheme ? .. : ..`) mistypes the
+            // field load and builds a malformed ICmp; a local condition
+            // lowers cleanly.
             if (!u.hasExplicitPort) {
-                u.port = u.hasScheme ? Uri.defaultPortFor(u.scheme) : -1;
+                boolean schemed = u.hasScheme;
+                if (schemed) {
+                    u.port = Uri.defaultPortFor(u.scheme);
+                } else {
+                    u.port = -1;
+                }
             }
         }
 

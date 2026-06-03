@@ -395,23 +395,25 @@ set(CAJETA_STDLIB_DIRS
         ${CAJETA_STDLIB_ROOT}/cajeta/io/file
         ${CAJETA_STDLIB_ROOT}/cajeta/hash
         ${CAJETA_STDLIB_ROOT}/cajeta/collection
-        # ── cajeta.net (cajeta-net branch, NET-* plan) — STAGED, NOT YET in the
-        # eager built-in stdlib. Several net sources call socket/reactor
-        # intrinsics through compiler receiver-dispatch lowering that is not yet
-        # implemented (see plan NET-1.3 / MethodCallExpression.cpp), so eager
-        # compilation hard-crashes the stdlib build and craters every JIT test.
-        # Re-enable these dirs once that lowering lands and the net stdlib
-        # compiles clean. Source, native C, and tests remain on the branch.
-        #   ${CAJETA_STDLIB_ROOT}/cajeta/net
-        #   ${CAJETA_STDLIB_ROOT}/cajeta/net/reactor
-        #   ${CAJETA_STDLIB_ROOT}/cajeta/net/dns
-        #   ${CAJETA_STDLIB_ROOT}/cajeta/net/uri
+        # ── cajeta.net (cajeta-net branch, NET-* plan) — PURE-LOGIC SLICE.
+        # Only directories whose .cajeta sources are pure logic (no socket /
+        # reactor intrinsic calls) are eagerly compiled here. The socket-backed
+        # files call compiler receiver-dispatch lowering that isn't implemented
+        # yet (NET-1.3 / MethodCallExpression.cpp); eager-compiling them crashes
+        # the stdlib build. Those are isolated under gated subdirs and are NOT
+        # listed: cajeta/net/socket, cajeta/net/reactor, cajeta/net/dns, and the
+        # socket-backed files of net/http + net/ws (see net/http/socket,
+        # net/ws/socket). The embed glob is non-recursive, so listing net/http
+        # picks up only its pure message-model files, not net/http/socket.
+        ${CAJETA_STDLIB_ROOT}/cajeta/net          # NetException + exception hierarchy only (data types gated under net/socket)
+        ${CAJETA_STDLIB_ROOT}/cajeta/net/uri      # RFC 3986 URI parse/build (NET-6)
+        # net/http + net/ws are a larger surface (never-compiled agent code needing
+        # ownership-marker fixes); deferred from the minimal slice until the crypto +
+        # URI core compiles clean. Socket files already isolated under */socket.
         #   ${CAJETA_STDLIB_ROOT}/cajeta/net/http
         #   ${CAJETA_STDLIB_ROOT}/cajeta/net/ws
         ${CAJETA_STDLIB_ROOT}/cajeta/wire
-        # cajeta/codec parent (Base64, NET-11.3) — staged with net for the same
-        # reason; codec/json below predates this and stays enabled.
-        #   ${CAJETA_STDLIB_ROOT}/cajeta/codec
+        ${CAJETA_STDLIB_ROOT}/cajeta/codec        # Base64 (NET-11.3)
         ${CAJETA_STDLIB_ROOT}/cajeta/codec/json
         # Larger-than-memory collections. Listed after collection/wire/
         # io.file so its dependencies (BPlusTree shape, Encoder, File) are
