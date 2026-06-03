@@ -1756,29 +1756,30 @@ Each is a decision, not a unit of work.
       shipping as `cajeta.*`. *Lean:* `cajeta.coverage`,
       `cajeta.lint.security`, possibly `cajeta.fmt.import-order`.
 
-### AOT executable linking (`--emit=exe`) — currently a stub
+### AOT executable linking (`--emit=exe`) — DONE (cc-driver)
 
-`Compiler::linkExecutable` is incomplete: it hardcodes the **ELF** lld driver
-(`lld::elf::link`) and links **only the object files** — no C runtime / startup
-/ libc. Its own comment concedes it only works for "pure-Cajeta programs that
-don't pull libc symbols," but real programs pull `printf`/`malloc`/etc. via the
-runtime. So `cajeta build` → exe has **never produced a runnable binary**, and
-on Windows the ELF driver can't emit a PE at all. This is the gate to running
-any built program (including cvm). Needs a real link driver:
+`Compiler::linkExecutable` now links through the **system C compiler/driver**
+(`$CC`, else `cc`/`clang`/`gcc`, found on PATH) rather than a raw in-process
+linker. The driver locates the platform CRT, startup objects, libc, and lib
+search paths and picks the right object format (ELF / COFF-mingw / Mach-O) for
+the host — robust and portable, the same approach rustc/ghc use. Runtime
+platform libs are added explicitly (`-lbcrypt -lpthread` on Windows;
+`-lpthread -lm -ldl` on Linux; `-lpthread` on macOS). Spawned via the build
+tool's portable `Subprocess` helper. **Verified: a scaffolded `cajeta init`
+project compiles fully offline, links, and runs (`hello from ...`, exit 0) as a
+native Windows PE.** This previously never worked on any platform.
 
-- [ ] **Per-OS lld driver:** ELF (`lld::elf`) on Linux, **COFF/mingw**
-      (`lld::mingw` / `lld::coff`) on Windows, Mach-O (`lld::macho`) on macOS —
-      selected from the target triple.
-- [ ] **Link the C runtime + startup + libc** (crt objects, `-lmingw32`/`-lmsvcrt`
-      on Windows; crt1/`-lc` on Linux; the mingw/SDK lib search paths). The
-      cajeta runtime's `__cajeta_*` helpers call into libc, so libc must be on
-      the link line.
-- [ ] **`--linker-arg` passthrough** + sysroot/lib-path discovery (reuse the
-      MSYS2/mingw paths the build already knows).
-- [ ] Verify a scaffolded `cajeta init` project links + runs on each OS
-      (`hello world` round-trip, then a `main(String[] args)` that echoes argv).
-- [ ] This is the prerequisite for [[aot-debuginfo-and-release-stripping-plan]]
-      (split-debug/strip happen during this link).
+- [x] Driver-based link with correct per-OS object format + CRT/libc.
+- [x] `hello world` round-trip on Windows (compile → link → run).
+- [ ] Verify on Linux + macOS runners (the per-OS lib lists are best-effort,
+      untested off Windows).
+- [ ] `--linker-arg` passthrough for advanced cases (static linking, custom
+      sysroot, extra libs).
+- [ ] On Windows, append `.exe` to the output name (currently the artifact is
+      extension-less, e.g. `build/exe/com.example.basic`; it runs, but `.exe`
+      is conventional).
+- [ ] Prerequisite path for [[aot-debuginfo-and-release-stripping-plan]] —
+      split-debug/strip plug into this driver link (e.g. `-g`/`-s`/`objcopy`).
 
 ### Program entry & command-line arguments
 
@@ -1789,7 +1790,17 @@ size/offsets + vtable passed from IR via DataLayout, so no hardcoded String
 ABI) and forwards it. `-D<key>=<value>` startup tokens are still consumed into
 system properties before the args vector is built.
 
-- [x] `main(String[] args)` receives the program arguments.
+- [x] `main(String[] args)` receives the program arguments. *(The argv→String[]
+      materialization is verified correct end-to-end; see the blocker below.)*
+- [ ] **BLOCKER — array-of-class element access is broken.** Indexing a
+      `String[]` (or any `T[]` where `T` is a class) and using the element as
+      that class fails: `println(args[0])` prints the element *pointer's* bytes
+      (garbage) and a second access segfaults. Reproduces with a plain literal
+      `String[] x = {"a","b"}; println(x[0]);` too — so it is a pre-existing
+      `ArrayIndexExpression` typing gap (the array-index result of a
+      reference-element array is not carrying the element's class type to
+      consumers like `println`/assignment), NOT in the argv path. Exposed now
+      that `--emit=exe` programs run. Gate to actually *using* `args`.
 - [ ] Decide whether argv[0] (the program name) is included or stripped from
       `args` (currently included; the `-D` scan skips index 0 but the args
       vector does not). *Lean:* strip argv[0] so `args` is just user arguments,
