@@ -1,0 +1,96 @@
+package cajeta.xpu.core;
+
+/**
+ * RayQuery — a kernel-local cursor that traces a single ray through an
+ * {@link AccelerationStructure} and walks the intersection candidates, entirely
+ * inside a compute kernel (the `SPV_KHR_ray_query` "ray query in a shader"
+ * model — no separate ray-tracing pipeline or hit shaders).
+ *
+ * Unlike Buffer / Texture2D / AccelerationStructure, a RayQuery is NOT a host
+ * handle: it is a device-only, function-local object (lowered to an
+ * `OpVariable Function` of `OpTypeRayQueryKHR`). It is constructed on the kernel
+ * stack, initialized against a bound AccelerationStructure, then advanced:
+ *
+ *     RayQuery rq = stack RayQuery();
+ *     rq.initialize(scene, 0, 255,        // AS, rayFlags, cullMask
+ *                   px, py, pz,  0.0f,       // origin,    tMin
+ *                   0.0f, 0.0f, 1.0f, r);    // direction, tMax
+ *     while (rq.proceed()) {
+ *         if (rq.candidateType() == 1u) {    // an AABB / procedural candidate
+ *             // ... test the primitive; confirm/generate is a follow-up ...
+ *         }
+ *     }
+ *     uint32 hit = rq.committedType();        // 0 = none committed
+ *
+ * The origin and direction are passed as three float32 scalars each (the lowerer
+ * assembles the `<3 x float>` vectors); this keeps RayQuery independent of the
+ * Vector<T,N> language type. For a spatial-index query, use a degenerate
+ * near-zero-length ray (tMax ≈ 0) centred on the query point.
+ *
+ * RAY QUERY IS VULKAN-ONLY. `SPV_KHR_ray_query` is an `[EnvVulkan]` extension;
+ * these operations lower only on the Vulkan/SPIR-V backend. On other backends a
+ * RayQuery in a kernel is a clean "not supported on backend" diagnostic.
+ *
+ * v1 ops: initialize / proceed / committedType / candidateType — enough for the
+ * spatial-index walk. Confirm/generate-intersection, the per-candidate geometry
+ * getters (t, instance/primitive id, barycentrics), and committed-hit details
+ * are follow-ups as their opcodes are lowered.
+ *
+ * The method bodies here are resolution placeholders — they are never emitted as
+ * real calls; each is lowered at its call site inside an @Kernel / @Device
+ * function to the backend ray-query op (Vulkan `OpRayQueryInitializeKHR` /
+ * `OpRayQueryProceedKHR` / `OpRayQueryGetIntersectionTypeKHR` via the
+ * `llvm.spv.ray.query.*` intrinsics). Using a RayQuery on the host is unsupported.
+ */
+public final class RayQuery {
+    // Placeholder field. RayQuery is a device-only opaque (the device lowerer
+    // ignores this host class entirely and allocates an OpTypeRayQueryKHR), but
+    // the host front-end still lays the class out — a zero-field class has no
+    // LLVM type, which would make every instance method's `this` parameter null.
+    // One reserved word gives it a valid (never-used) host layout.
+    int32 reserved;
+
+    public RayQuery() {
+        this.reserved = 0;
+    }
+
+    /**
+     * Device-only intrinsic: begin a ray query against `as`. `rayFlags` is the
+     * standard ray-flags bitmask (0 = none); `cullMask` the 8-bit instance cull
+     * mask (255 = all). The ray is (origin, direction) with parametric extent
+     * [tMin, tMax]; origin/direction are given component-wise.
+     */
+    public void initialize(AccelerationStructure as, uint32 rayFlags, uint32 cullMask,
+                           float32 originX, float32 originY, float32 originZ,
+                           float32 tMin,
+                           float32 dirX, float32 dirY, float32 dirZ,
+                           float32 tMax) {
+    }
+
+    /**
+     * Device-only intrinsic: advance the traversal to the next candidate
+     * intersection. Returns true while there is a candidate to inspect, false
+     * once traversal is complete.
+     */
+    public boolean proceed() {
+        return false;
+    }
+
+    /**
+     * Device-only intrinsic: the type of the current COMMITTED intersection —
+     * 0 = none, 1 = triangle, 2 = generated (procedural/AABB). Read after the
+     * proceed() loop completes.
+     */
+    public uint32 committedType() {
+        return 0;
+    }
+
+    /**
+     * Device-only intrinsic: the type of the current CANDIDATE intersection —
+     * 0 = triangle candidate, 1 = AABB (procedural) candidate. Read inside the
+     * proceed() loop to decide how to test the candidate.
+     */
+    public uint32 candidateType() {
+        return 0;
+    }
+}

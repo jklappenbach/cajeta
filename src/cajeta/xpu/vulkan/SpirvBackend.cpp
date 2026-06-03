@@ -12,6 +12,7 @@
 #include "llvm/Transforms/IPO/AlwaysInliner.h"
 #include "llvm/MC/TargetRegistry.h"
 #include "llvm/Support/CodeGen.h"
+#include "llvm/Support/CommandLine.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Support/TargetSelect.h"
 #include "llvm/Target/TargetMachine.h"
@@ -29,6 +30,25 @@ namespace vulkan {
 
 namespace {
 
+// Enable the SPIR-V extensions cajeta emits. The in-tree SPIR-V backend gates
+// extension opcodes/capabilities behind the `spirv-ext` cl::opt (the same flag
+// llc takes as `--spirv-ext=...`); for in-process emission there is no command
+// line, so we set it programmatically. The SPIRV target's own
+// SPIRVSubtarget::addExtensionsToClOpt would be cleaner, but its header is not
+// shipped in the LLVM artifact, so we drive the registered option directly.
+//
+// `SPV_KHR_ray_query` (cajeta-gpu Part C) is the first; "all of the cutting-edge
+// GPU calls" (cooperative matrix, etc.) extend this list as they land. The
+// parser also accepts "khr" (all KHR) / "all" — kept to an explicit allowlist so
+// emission stays deterministic and only the extensions we test are enabled.
+void enableSpirvExtensions() {
+    static const char* kExtensions = "+SPV_KHR_ray_query";
+    auto& opts = llvm::cl::getRegisteredOptions();
+    auto it = opts.find("spirv-ext");
+    if (it != opts.end())
+        it->second->addOccurrence(0, "spirv-ext", kExtensions);
+}
+
 void ensureTargetsInitialized() {
     static std::once_flag once;
     std::call_once(once, [] {
@@ -36,6 +56,7 @@ void ensureTargetsInitialized() {
         llvm::InitializeAllTargetMCs();
         llvm::InitializeAllAsmPrinters();
         llvm::InitializeAllAsmParsers();
+        enableSpirvExtensions();
     });
 }
 

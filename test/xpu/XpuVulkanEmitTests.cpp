@@ -391,6 +391,97 @@ TEST(XpuVulkanEmitTests, lowersTextureSampleToSpirv) {
     }
 }
 
+// cajeta-gpu Part C increment 3a: a kernel that traces a ray query against a
+// descriptor-bound AccelerationStructure lowers to the SPV_KHR_ray_query ops.
+// The AS binds an ACCELERATION_STRUCTURE_KHR descriptor (handlefrombinding — the
+// same path buffers/textures use, proven spirv-val-clean for the AS type in
+// increment 2c); the RayQuery local is an OpVariable Function; initialize/
+// proceed/committedType/candidateType lower to the llvm.spv.ray.query.*
+// intrinsics → OpRayQueryInitializeKHR/ProceedKHR/GetIntersectionTypeKHR. Proven
+// against strict spirv-val --target-env vulkan1.3.
+TEST(XpuVulkanEmitTests, lowersRayQueryToSpirv) {
+    auto src =
+        "package test;\n"
+        "import cajeta.xpu.core.Buffer;\n"
+        "import cajeta.xpu.core.Thread;\n"
+        "import cajeta.xpu.core.AccelerationStructure;\n"
+        "import cajeta.xpu.core.RayQuery;\n"
+        "public class M {\n"
+        "    @Kernel\n"
+        "    public static void trace(AccelerationStructure scene,\n"
+        "                             Buffer<uint32> out, uint32 n) {\n"
+        "        uint32 i = Thread.globalIdX();\n"
+        "        if (i < n) {\n"
+        "            RayQuery rq;\n"
+        "            rq.initialize(scene, 0, 255,\n"
+        "                          0.0, 0.0, 0.0, 0.0,\n"
+        "                          0.0, 0.0, 1.0, 1000.0);\n"
+        "            uint32 acc = 0;\n"
+        "            while (rq.proceed()) {\n"
+        "                acc = acc + rq.candidateType();\n"
+        "            }\n"
+        "            out[i] = acc + rq.committedType();\n"
+        "        }\n"
+        "    }\n"
+        "}\n";
+    Compiler compiler;
+    auto module = compileForInspection(compiler, src, "test.M");
+    auto k = findMethod(module->getStructures()["test.M"], "trace");
+    ASSERT_NE(k, nullptr);
+
+    auto tmIr = createSpirvTargetMachine("vulkan1.3");
+    ASSERT_NE(tmIr, nullptr);
+    llvm::LLVMContext irCtx;
+    llvm::Module irModule("xpu_rayquery_vulkan_ir", irCtx);
+    configureDeviceModule(irModule, *tmIr);
+    llvm::Function* fn = lowerKernel(k, irModule);
+    ASSERT_NE(fn, nullptr);
+    EXPECT_EQ(fn->arg_size(), 0u);   // args arrive via descriptors
+
+    std::string ir = printModule(irModule);
+    // AS bound as a descriptor; the three ray-query intrinsics emitted.
+    EXPECT_NE(ir.find("llvm.spv.resource.handlefrombinding"),
+              std::string::npos) << ir;
+    EXPECT_NE(ir.find("llvm.spv.ray.query.initialize"), std::string::npos) << ir;
+    EXPECT_NE(ir.find("llvm.spv.ray.query.proceed"), std::string::npos) << ir;
+    EXPECT_NE(ir.find("llvm.spv.ray.query.get.intersection.type"),
+              std::string::npos) << ir;
+
+    auto tmText = createSpirvTargetMachine("vulkan1.3");
+    ASSERT_NE(tmText, nullptr);
+    llvm::LLVMContext textCtx;
+    llvm::Module textModule("xpu_rayquery_vulkan_text", textCtx);
+    configureDeviceModule(textModule, *tmText);
+    lowerKernel(k, textModule);
+    std::string text = emitSpirvText(textModule, *tmText);
+    ASSERT_FALSE(text.empty());
+    EXPECT_NE(text.find("OpEntryPoint GLCompute"), std::string::npos) << text;
+    EXPECT_NE(text.find("OpCapability RayQueryKHR"), std::string::npos) << text;
+    EXPECT_NE(text.find("OpExtension \"SPV_KHR_ray_query\""),
+              std::string::npos) << text;
+    EXPECT_NE(text.find("OpTypeAccelerationStructureKHR"),
+              std::string::npos) << text;
+    EXPECT_NE(text.find("OpTypeRayQueryKHR"), std::string::npos) << text;
+    EXPECT_NE(text.find("OpRayQueryInitializeKHR"), std::string::npos) << text;
+    EXPECT_NE(text.find("OpRayQueryProceedKHR"), std::string::npos) << text;
+    EXPECT_NE(text.find("OpRayQueryGetIntersectionTypeKHR"),
+              std::string::npos) << text;
+
+    auto tmBin = createSpirvTargetMachine("vulkan1.3");
+    ASSERT_NE(tmBin, nullptr);
+    llvm::LLVMContext binCtx;
+    llvm::Module binModule("xpu_rayquery_vulkan_bin", binCtx);
+    configureDeviceModule(binModule, *tmBin);
+    lowerKernel(k, binModule);
+    std::vector<uint8_t> spirv = emitSpirv(binModule, *tmBin);
+    ASSERT_FALSE(spirv.empty());
+    if (auto valid = validateSpirv(spirv)) {
+        EXPECT_TRUE(*valid) << "spirv-val rejected the ray-query module";
+    } else {
+        GTEST_SUCCEED() << "spirv-val not installed; skipped binary validation";
+    }
+}
+
 // A workgroup-shared kernel with a barrier emits a SPIR-V module that is
 // strictly Vulkan-VALID — proving the barrier post-pass (SpirvBackend's
 // fixupControlBarriers) rewrites LLVM 22's forbidden SequentiallyConsistent

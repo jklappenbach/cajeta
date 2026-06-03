@@ -39,6 +39,17 @@ bool isTextureCanonical(const std::string& canonical) {
 bool isSamplerCanonical(const std::string& canonical) {
     return canonical == "cajeta.xpu.core.Sampler";
 }
+// AccelerationStructure (cajeta-gpu Part C) — a descriptor-bound BVH handle,
+// admissible as a kernel argument (it lowers to an OpTypeAccelerationStructureKHR
+// descriptor on Vulkan). RayQuery is NOT a kernel arg — it is a device-only
+// function-local — so it has no admissibility entry; it is recognized only by
+// the device lowerer (isRayQueryType) when it appears as a kernel-body local.
+bool isAccelStructCanonical(const std::string& canonical) {
+    return canonical == "cajeta.xpu.core.AccelerationStructure";
+}
+bool isRayQueryCanonical(const std::string& canonical) {
+    return canonical == "cajeta.xpu.core.RayQuery";
+}
 
 // A class implements the KernelArg marker interface if its
 // implemented-interfaces list contains cajeta.xpu.core.KernelArg.
@@ -110,6 +121,7 @@ bool isKernelArgAdmissible(const CajetaTypePtr& type) {
         // by-value POD path.
         if (isTextureCanonical(canonical)) return true;
         if (isSamplerCanonical(canonical)) return true;
+        if (isAccelStructCanonical(canonical)) return true;
         if (isPodStruct(klass)) return true;
         if (implementsKernelArg(klass)) return true;
     }
@@ -131,6 +143,14 @@ bool isTextureType(const CajetaTypePtr& type) {
 
 bool isSamplerType(const CajetaTypePtr& type) {
     return type && isSamplerCanonical(type->toCanonical());
+}
+
+bool isAccelStructType(const CajetaTypePtr& type) {
+    return type && isAccelStructCanonical(type->toCanonical());
+}
+
+bool isRayQueryType(const CajetaTypePtr& type) {
+    return type && isRayQueryCanonical(type->toCanonical());
 }
 
 void validateKernelParams(const MethodPtr& method) {
@@ -155,7 +175,8 @@ void validateKernelParams(const MethodPtr& method) {
                 << "' which is not admissible as a kernel argument. "
                 << "Admissible types: primitives, "
                 << "cajeta.xpu.core.Buffer<T>, cajeta.xpu.core.Texture2D, "
-                << "cajeta.xpu.core.Sampler, POD structs (a class with "
+                << "cajeta.xpu.core.Sampler, "
+                << "cajeta.xpu.core.AccelerationStructure, POD structs (a class with "
                 << "only primitive fields and no inheritance), or any type "
                 << "that implements cajeta.xpu.core.KernelArg.";
             throw cajeta::Exception(msg.str(), "XPU-K01");

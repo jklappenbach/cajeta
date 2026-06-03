@@ -107,6 +107,12 @@ namespace xpu {
                                      // `type` is the {i32,i32} mode struct; bound
                                      // by value (CPU/SIMT) or as an OpTypeSampler
                                      // descriptor (Vulkan).
+            bool isAccelStruct = false;  // AccelerationStructure — a descriptor-
+                                     // bound BVH (cajeta-gpu Part C). Carried as a
+                                     // backend handle; on Vulkan an
+                                     // OpTypeAccelerationStructureKHR bound via
+                                     // resource.handlefrombinding. `type` unused
+                                     // (the AS handle is opaque). Ray-query only.
         };
 
         // Create the kernel function for `name`. Default: a void-returning
@@ -148,6 +154,41 @@ namespace xpu {
             llvm::IRBuilderBase& b, llvm::Module& m,
             llvm::Value* texHandle, llvm::Value* samplerHandle,
             llvm::Value* u, llvm::Value* v);
+
+        // --- ray query (SPV_KHR_ray_query) — the Vulkan-only fork ------------
+        //
+        // A RayQuery kernel-body local is a function-local opaque object; its
+        // ops lower to the llvm.spv.ray.query.* intrinsics (the texture-style
+        // intrinsic path, since the __spirv_* builtin path is shader-gated to
+        // OpenCL and ray query is [EnvVulkan]-only). Only the Vulkan backend
+        // overrides these; the defaults reject a RayQuery in a kernel lowered
+        // for a backend without ray-query support (XPU-N02).
+
+        // The LLVM type to alloca for a `RayQuery` local. Vulkan:
+        // target("spirv.RayQueryKHR"). Default: unsupported.
+        virtual llvm::Type* rayQueryType(llvm::Module& m);
+
+        // rq.initialize(as, rayFlags, cullMask, origin<3xf32>, tMin,
+        //               direction<3xf32>, tMax). `rqPtr` is the RayQuery alloca;
+        // `asHandle` the materialized AccelerationStructure descriptor.
+        // Void op (→ OpRayQueryInitializeKHR).
+        virtual void rayQueryInitialize(
+            llvm::IRBuilderBase& b, llvm::Module& m,
+            llvm::Value* rqPtr, llvm::Value* asHandle,
+            llvm::Value* rayFlags, llvm::Value* cullMask,
+            llvm::Value* origin, llvm::Value* tMin,
+            llvm::Value* direction, llvm::Value* tMax);
+
+        // rq.proceed() → i1 (→ OpRayQueryProceedKHR).
+        virtual llvm::Value* rayQueryProceed(
+            llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* rqPtr);
+
+        // rq.committedType()/candidateType() → i32. `intersection` is the i32
+        // intersection selector (1 = committed, 0 = candidate).
+        // (→ OpRayQueryGetIntersectionTypeKHR.)
+        virtual llvm::Value* rayQueryIntersectionType(
+            llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* rqPtr,
+            llvm::Value* intersection);
 
         // The LLVM type of a Buffer<T> when passed BY VALUE as a @Device helper
         // argument — i.e. the type of the buffer base held in bufferBases. A

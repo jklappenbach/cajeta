@@ -57,6 +57,23 @@ llvm::TargetExtType* vkSamplerType(llvm::LLVMContext& ctx) {
     return llvm::TargetExtType::get(ctx, "spirv.Sampler", {}, {});
 }
 
+// target("spirv.AccelerationStructureKHR") — the handle type for an
+// AccelerationStructure descriptor (→ OpTypeAccelerationStructureKHR). No
+// type/int params (zero-parameterized opaque). handlefrombinding materializes it
+// into a UniformConstant descriptor (set 0, binding = idx) and an OpLoad — the
+// path proven spirv-val-clean in cajeta-gpu Part C increment 2c — and the loaded
+// handle feeds OpRayQueryInitializeKHR. (cajeta-gpu Part C ray query.)
+llvm::TargetExtType* vkAccelStructType(llvm::LLVMContext& ctx) {
+    return llvm::TargetExtType::get(ctx, "spirv.AccelerationStructureKHR", {}, {});
+}
+
+// target("spirv.RayQueryKHR") — the function-local ray-query opaque
+// (→ OpTypeRayQueryKHR). Allocated per RayQuery kernel local; the alloca is the
+// OpVariable Function the ray-query ops mutate.
+llvm::TargetExtType* vkRayQueryType(llvm::LLVMContext& ctx) {
+    return llvm::TargetExtType::get(ctx, "spirv.RayQueryKHR", {}, {});
+}
+
 // llvm.spv.resource.getpointer(handle, i32 index) -> ptr addrspace(11). `index`
 // arrives i64-widened from the shared lowerer; SPIR-V wants i32.
 llvm::Value* getElementPtr(llvm::IRBuilderBase& b, llvm::Module& m,
@@ -173,6 +190,13 @@ public:
         if (p.isSampler) {
             return bindResource(b, m, vkSamplerType(m.getContext()), idx, p.name);
         }
+        // AccelerationStructure (Part C): an ACCELERATION_STRUCTURE_KHR
+        // descriptor; the loaded handle is consumed only by `rq.initialize(as,
+        // ...)`. (set 0, binding = idx — same handlefrombinding path as buffers.)
+        if (p.isAccelStruct) {
+            return bindResource(b, m, vkAccelStructType(m.getContext()), idx,
+                                p.name);
+        }
         if (p.isBuffer) {
             return bindResource(b, m, vkBufferType(m.getContext(), p.type, true),
                                 idx, p.name);
@@ -212,6 +236,49 @@ public:
             v4f, llvm::Intrinsic::spv_resource_samplelevel,
             {texHandle, samplerHandle, coord, lod, offset});
         return b.CreateExtractElement(rgba, uint64_t(0), "tex.sample");
+    }
+
+    // --- ray query (SPV_KHR_ray_query) ----------------------------------------
+    // The ops lower to the llvm.spv.ray.query.* intrinsics + GlobalISel
+    // selection (cajeta-gpu Part C increments 1/2/2c, in the cajeta-llvm fork).
+    // The builtin __spirv_* path can't reach them: it is shader-gated to OpenCL
+    // and ray query is [EnvVulkan]-only.
+
+    // A RayQuery local is an alloca of target("spirv.RayQueryKHR")
+    // (→ OpVariable Function of OpTypeRayQueryKHR).
+    llvm::Type* rayQueryType(llvm::Module& m) override {
+        return vkRayQueryType(m.getContext());
+    }
+
+    // OpRayQueryInitializeKHR rq, as, rayFlags, cullMask, origin, tMin, dir, tMax.
+    // `as` is overloaded on the intrinsic (the AS handle type); origin/direction
+    // are <3 x float>.
+    void rayQueryInitialize(llvm::IRBuilderBase& b, llvm::Module& m,
+                            llvm::Value* rqPtr, llvm::Value* asHandle,
+                            llvm::Value* rayFlags, llvm::Value* cullMask,
+                            llvm::Value* origin, llvm::Value* tMin,
+                            llvm::Value* direction, llvm::Value* tMax) override {
+        llvm::Function* f = llvm::Intrinsic::getOrInsertDeclaration(
+            &m, llvm::Intrinsic::spv_ray_query_initialize, {asHandle->getType()});
+        b.CreateCall(f, {rqPtr, asHandle, rayFlags, cullMask, origin, tMin,
+                         direction, tMax});
+    }
+
+    // OpRayQueryProceedKHR — returns i1.
+    llvm::Value* rayQueryProceed(llvm::IRBuilderBase& b, llvm::Module& m,
+                                 llvm::Value* rqPtr) override {
+        llvm::Function* f = llvm::Intrinsic::getOrInsertDeclaration(
+            &m, llvm::Intrinsic::spv_ray_query_proceed);
+        return b.CreateCall(f, {rqPtr}, "rq.proceed");
+    }
+
+    // OpRayQueryGetIntersectionTypeKHR rq, intersection — returns i32.
+    llvm::Value* rayQueryIntersectionType(llvm::IRBuilderBase& b, llvm::Module& m,
+                                          llvm::Value* rqPtr,
+                                          llvm::Value* intersection) override {
+        llvm::Function* f = llvm::Intrinsic::getOrInsertDeclaration(
+            &m, llvm::Intrinsic::spv_ray_query_get_intersection_type);
+        return b.CreateCall(f, {rqPtr, intersection}, "rq.type");
     }
 
     // A @Device helper's Buffer<T> param is the storage-buffer HANDLE the kernel
