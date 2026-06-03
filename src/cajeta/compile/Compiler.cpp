@@ -17,6 +17,9 @@
 #include "llvm/Transforms/Utils/ModuleUtils.h"
 #include "../asn/AbstractSyntaxNode.h"
 #include "../type/CajetaType.h"
+#include "../type/CajetaArray.h"
+#include "../type/FormalParameter.h"
+#include "../type/QualifiedName.h"
 #include "cajeta/error/CajetaExceptions.h"
 #include "CajetaParserBaseVisitor.h"
 #include "../xpu/core/XpuAttributes.h"
@@ -1100,21 +1103,38 @@ namespace cajeta {
         // entryMethod arrives as `pkg.subpkg.Class.method` (dotted). Split
         // on the last '.' to separate class canonical from method name.
         // No method name → no shim.
-        auto lastDot = entryMethod.rfind('.');
-        if (lastDot == std::string::npos || lastDot + 1 >= entryMethod.size()) {
+        // Accept the canonical `package.Class::method` form (what the build
+        // tool emits) as well as the legacy all-dotted `package.Class.method`.
+        std::string classCanonical;
+        std::string methodName;
+        auto sep = entryMethod.find("::");
+        if (sep != std::string::npos) {
+            classCanonical = entryMethod.substr(0, sep);
+            methodName     = entryMethod.substr(sep + 2);
+        } else {
+            auto lastDot = entryMethod.rfind('.');
+            if (lastDot == std::string::npos || lastDot + 1 >= entryMethod.size()) {
+                cerr << "cajeta: --emit=" << (emitMode == EmitMode::Exe ? "exe" : "obj")
+                     << " entry method `" << entryMethod
+                     << "` must be in `package.Class::method` form" << std::endl;
+                return;
+            }
+            classCanonical = entryMethod.substr(0, lastDot);
+            methodName     = entryMethod.substr(lastDot + 1);
+        }
+        if (classCanonical.empty() || methodName.empty()) {
             cerr << "cajeta: --emit=" << (emitMode == EmitMode::Exe ? "exe" : "obj")
                  << " entry method `" << entryMethod
-                 << "` must be in `package.Class.method` form" << std::endl;
+                 << "` must be in `package.Class::method` form" << std::endl;
             return;
         }
-        std::string classCanonical = entryMethod.substr(0, lastDot);
-        std::string methodName     = entryMethod.substr(lastDot + 1);
 
         // Walk every user module looking for the matching class + method.
-        // Static, parameter-less; int32 or void return supported. Other
-        // shapes (e.g. `main(String[] args)`) are deferred — pre-parse
-        // argv handling needs the cajeta String[] materialization path.
+        // Static; int32 or void return. Two accepted shapes: a no-arg
+        // `main()`, or `main(String[] args)` which receives the command-line
+        // arguments (materialized from C argv by the shim below).
         MethodPtr entry;
+        bool entryTakesArgs = false;
         for (auto& m : modules) {
             auto it = m->getStructures().find(classCanonical);
             if (it == m->getStructures().end() || !it->second) continue;
@@ -1124,11 +1144,28 @@ namespace cajeta {
                 if (candidate->isMethodTemplate()) continue;
                 auto& mods = candidate->getModifiers();
                 if (mods.find(STATIC) == mods.end()) continue;
-                // Static method's parameterList has no `this` prepended; the
-                // entry shim wants a parameter-less function.
-                if (!candidate->getParameterList().empty()) continue;
-                entry = candidate;
-                break;
+                // Static method's parameterList has no `this` prepended.
+                const auto& params = candidate->getParameterList();
+                if (params.empty()) {
+                    entry = candidate;
+                    entryTakesArgs = false;
+                    break;
+                }
+                // Accept exactly one `String[]` parameter (the args vector).
+                if (params.size() == 1 && params[0] && params[0]->getType()) {
+                    auto arr = std::dynamic_pointer_cast<CajetaArray>(
+                        params[0]->getType());
+                    if (arr && arr->getElementType() &&
+                        arr->getElementType()->getQName() &&
+                        arr->getElementType()->getQName()->getTypeName()
+                            == "String" &&
+                        arr->getElementType()->getQName()->getPackageName()
+                            == "cajeta.lang") {
+                        entry = candidate;
+                        entryTakesArgs = true;
+                        break;
+                    }
+                }
             }
             if (entry) break;
         }
@@ -1245,7 +1282,59 @@ namespace cajeta {
             b.SetInsertPoint(afterLoop);
         }
 
-        llvm::Value* ret = b.CreateCall(entryExtern, {});
+        // For `main(String[] args)`, materialize the cajeta String[] from
+        // (argc, argv) and pass it. __cajeta_args_make takes the String class's
+        // total size + field byte offsets (from DataLayout) and its vtable, so
+        // the runtime writes each instance without any hardcoded String ABI.
+        std::vector<llvm::Value*> callArgs;
+        if (entryTakesArgs) {
+            auto klass = std::dynamic_pointer_cast<CajetaClass>(
+                CajetaType::of("String"));
+            llvm::StructType* strStructTy =
+                (klass && llvm::isa_and_nonnull<llvm::StructType>(
+                              klass->getLlvmType()))
+                    ? llvm::cast<llvm::StructType>(klass->getLlvmType())
+                    : nullptr;
+            if (!strStructTy) {
+                cerr << "cajeta: --emit=exe entry `" << entryMethod
+                     << "` takes String[] but the String class is unavailable"
+                     << std::endl;
+                return;
+            }
+            const llvm::DataLayout& dl = lmod->getDataLayout();
+            const llvm::StructLayout* sl = dl.getStructLayout(strStructTy);
+            llvm::Type* i64Ty = llvm::Type::getInt64Ty(ctx);
+            auto i64c = [&](uint64_t v) {
+                return llvm::ConstantInt::get(i64Ty, v);
+            };
+            // Field order matches the literal materialization: 0 vtable,
+            // 1 bytes, 2 byteLength, 3 mode, 4 cachedCpLength.
+            llvm::Value* strSize    = i64c(dl.getTypeAllocSize(strStructTy));
+            llvm::Value* offBytes   = i64c(sl->getElementOffset(1));
+            llvm::Value* offByteLen = i64c(sl->getElementOffset(2));
+            llvm::Value* offMode    = i64c(sl->getElementOffset(3));
+            llvm::Value* offCpLen   = i64c(sl->getElementOffset(4));
+
+            llvm::Constant* vtableRef =
+                llvm::ConstantPointerNull::get(llvm::PointerType::get(ctx, 0));
+            if (auto* vt = klass->getVirtualTableGlobal()) {
+                vtableRef = CajetaModule::ensureGlobalInModule(lmod, vt);
+            }
+
+            llvm::FunctionType* argsMakeTy = llvm::FunctionType::get(
+                ptrTy,
+                {i64Ty, ptrTy, ptrTy, i64Ty, i64Ty, i64Ty, i64Ty, i64Ty},
+                false);
+            llvm::FunctionCallee argsMakeFn =
+                lmod->getOrInsertFunction("__cajeta_args_make", argsMakeTy);
+            llvm::Value* argcI64 = b.CreateSExt(mainFn->getArg(0), i64Ty);
+            llvm::Value* argsArray = b.CreateCall(argsMakeFn,
+                {argcI64, mainFn->getArg(1), vtableRef, strSize,
+                 offBytes, offByteLen, offMode, offCpLen});
+            callArgs.push_back(argsArray);
+        }
+
+        llvm::Value* ret = b.CreateCall(entryExtern, callArgs);
         // Translate the cajeta return into a C exit code.
         //   int32  → cast (identity) to i32 and return.
         //   void   → return 0.

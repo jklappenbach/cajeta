@@ -26,12 +26,13 @@
         // additional capabilities.
         "plugins-allowed-capabilities": ["filesystem"],
 
-        "dependencies": {
-            // These reference the stack-version property — bumping
-            // it in one place flows to every dep.
-            "cajeta.lang":    "${stack-version}",
-            "cajeta.lang.io": "${stack-version}"
-        },
+        // Third-party runtime dependencies go here. The core standard
+        // library (cajeta.lang, cajeta.io, cajeta.codec, …, cajeta.xpu) is
+        // built into the toolchain — neither declared nor fetched — and only
+        // the parts your code actually uses are linked into the binary
+        // (dead-code elimination). The stdlib API level is pinned by
+        // `details.cajeta-lang-version` above.
+        "dependencies": {},
 
         "dev-dependencies": {
             "cajeta.testkit": "1.0.*"
