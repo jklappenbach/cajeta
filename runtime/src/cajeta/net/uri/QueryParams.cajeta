@@ -120,25 +120,28 @@ public class QueryParams {
     private static #QueryParams parseWith(String query, boolean form) {
         QueryParams q = heap QueryParams();
         q.formEncoded = form;
-        if (query == null) {
-            return #q;
-        }
-        int32 n = query.byteLength;
-        int8[] b = query.bytes;
+        // Single `return #q` at the end: moving `q` on an early return
+        // (the `query == null` path) would mark it moved for the
+        // fall-through path too, so the whole walk is guarded under one
+        // conditional instead (same workaround as BPlusTree.keysInOrder).
+        if (query != null) {
+            int32 n = query.byteLength;
+            int8[] b = query.bytes;
 
-        int32 segStart = 0;
-        int32 i = 0;
-        while (i <= n) {
-            // A segment ends at '&' (38) or at end-of-input.
-            boolean atEnd = (i == n);
-            boolean sep = (!atEnd) && (QueryParams.byteAt(b, i) == 38);
-            if (atEnd || sep) {
-                if (i > segStart) {
-                    QueryParams.addSegment(q, query, segStart, i, form);
+            int32 segStart = 0;
+            int32 i = 0;
+            while (i <= n) {
+                // A segment ends at '&' (38) or at end-of-input.
+                boolean atEnd = (i == n);
+                boolean sep = (!atEnd) && (QueryParams.byteAt(b, i) == 38);
+                if (atEnd || sep) {
+                    if (i > segStart) {
+                        QueryParams.addSegment(q, query, segStart, i, form);
+                    }
+                    segStart = i + 1;
                 }
-                segStart = i + 1;
+                i = i + 1;
             }
-            i = i + 1;
         }
         return #q;
     }
@@ -361,16 +364,24 @@ public class QueryParams {
      * [`parse`](#parse) does (`+`→space, then decode `%2B`→`+`).
      */
     public #String toString() {
-        // Two-pass: encode every key/value, sum lengths, then copy.
-        String[] encKeys = new String[this.sizeCount];
-        String[] encVals = new String[this.sizeCount];
+        // Two-pass: sum the encoded lengths, then copy. Each component is
+        // encoded twice (encode is pure) rather than cached in a
+        // `String[]` of owned handles — the intermediate owned-String
+        // array mis-codegens here (the array-of-owned-String build/read).
+        int32 count = this.sizeCount;
         int32 total = 0;
         int32 i = 0;
-        while (i < this.sizeCount) {
-            encKeys[i] = this.encodeComponent(this.keys[i]);
-            encVals[i] = this.encodeComponent(this.values[i]);
+        while (i < count) {
+            // Bind the array element to a named local before passing it —
+            // a direct `encodeComponent(this.keys[i])` lowers the element
+            // read to a slot l-value and mistypes the String argument
+            // (arrives empty); the workaround BPlusTree/ArrayList use.
+            String rk = this.keys[i];
+            String rv = this.values[i];
+            String ek = this.encodeComponent(rk);
+            String ev = this.encodeComponent(rv);
             // "key" + "=" + "val"; plus a '&' before every pair but the first.
-            total = total + encKeys[i].byteLength + encVals[i].byteLength + 1;
+            total = total + ek.byteLength + ev.byteLength + 1;
             if (i > 0) {
                 total = total + 1;                              // '&'
             }
@@ -379,15 +390,19 @@ public class QueryParams {
         int8[] out = new int8[total];
         int32 dst = 0;
         i = 0;
-        while (i < this.sizeCount) {
+        while (i < count) {
             if (i > 0) {
                 out[dst] = (int8) 38;                           // '&'
                 dst = dst + 1;
             }
-            dst = QueryParams.copyBytes(out, dst, encKeys[i]);
+            String rk = this.keys[i];
+            String ek = this.encodeComponent(rk);
+            dst = QueryParams.copyBytes(out, dst, ek);
             out[dst] = (int8) 61;                               // '='
             dst = dst + 1;
-            dst = QueryParams.copyBytes(out, dst, encVals[i]);
+            String rv = this.values[i];
+            String ev = this.encodeComponent(rv);
+            dst = QueryParams.copyBytes(out, dst, ev);
             i = i + 1;
         }
         return heap String(#out, total);
@@ -409,6 +424,7 @@ public class QueryParams {
         }
         return #enc;
     }
+
 
     // -- byte helpers -------------------------------------------------------
 
