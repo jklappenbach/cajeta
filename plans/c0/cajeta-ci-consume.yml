@@ -1,0 +1,25 @@
+# cajeta-side consumption — add this STEP to cajeta's own CI job, BEFORE the cmake
+# configure step. It downloads the prebuilt toolchain from the fork's Release and
+# exposes it via LLVM_DIR (env) + PATH (for clang-23/lld). **No cajeta source change**:
+# cajeta's existing find_package(LLVM CONFIG) honors the LLVM_DIR env var, and
+# find_program(clang-${LLVM_VERSION_MAJOR}) finds the bundled clang on PATH.
+
+      - name: Fetch prebuilt LLVM toolchain (from the cajeta-spirv fork)
+        env:
+          # Point at the asset published by fork-build-llvm.yml. Bump the tag when
+          # you cut a new toolchain (new pinned base or new SPIR-V patches).
+          LLVM_ASSET_URL: https://github.com/jklappenbach/cajeta-llvm/releases/download/cajeta-llvm-23-r2/cajeta-llvm-23-r2-linux-x64.tar.zst
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/cajeta-llvm"
+          curl -fsSL "$LLVM_ASSET_URL" -o /tmp/llvm.tar.zst
+          # --strip-components=1 drops the leading llvm-install/ dir from the tar.
+          tar --zstd -xf /tmp/llvm.tar.zst -C "$HOME/cajeta-llvm" --strip-components=1
+          echo "LLVM_DIR=$HOME/cajeta-llvm/lib/cmake/llvm" >> "$GITHUB_ENV"
+          echo "$HOME/cajeta-llvm/bin" >> "$GITHUB_PATH"
+
+# Local-dev equivalent (no CI): same idea via build.sh / your shell —
+#   export LLVM_DIR="$HOME/cajeta-llvm/lib/cmake/llvm"
+#   export PATH="$HOME/cajeta-llvm/bin:$PATH"
+# then ./build.sh as usual. Your current local source build keeps working unchanged;
+# this only matters when you want the prebuilt toolchain instead.
