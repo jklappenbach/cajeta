@@ -9,20 +9,14 @@
 
 #include "cajeta/buildtool/Action.h"
 #include "cajeta/buildtool/Sandbox.h"
+#include "cajeta/buildtool/Subprocess.h"
 
 #include <llvm/Support/Error.h>
 
+#include <cstdio>
 #include <cstdlib>
-
-#include <cerrno>
-#include <cstring>
 #include <string>
 #include <vector>
-
-#include <fcntl.h>
-#include <signal.h>
-#include <sys/wait.h>
-#include <unistd.h>
 
 namespace cajeta::buildtool {
 
@@ -31,22 +25,6 @@ namespace cajeta::buildtool {
         llvm::Error err(const std::string& msg) {
             return llvm::createStringError(
                 llvm::inconvertibleErrorCode(), msg);
-        }
-
-        // Read all available bytes from `fd` into `out` until EOF.
-        // Used for stdout/stderr capture.
-        void drainFd(int fd, std::string& out) {
-            char buf[4096];
-            for (;;) {
-                ssize_t n = ::read(fd, buf, sizeof(buf));
-                if (n > 0) {
-                    out.append(buf, static_cast<size_t>(n));
-                    continue;
-                }
-                if (n == 0) break;
-                if (errno == EINTR) continue;
-                break;
-            }
         }
 
     } // namespace
@@ -136,106 +114,33 @@ namespace cajeta::buildtool {
                 envEntries  = std::move(wrap->envEntries);
             }
 
-            // Build argv / envp arrays as null-terminated C strings.
-            std::vector<char*> argv;
-            argv.reserve(argStrings.size() + 1);
-            for (auto& a : argStrings) argv.push_back(a.data());
-            argv.push_back(nullptr);
-
-            std::vector<char*> envp;
-            if (!envEntries.empty()) {
-                envp.reserve(envEntries.size() + 1);
-                for (auto& e : envEntries) envp.push_back(e.data());
-                envp.push_back(nullptr);
-            }
-
-            // Pipes for stdout / stderr capture.
-            int outPipe[2], errPipe[2];
-            if (::pipe(outPipe) < 0) {
-                return err(std::string("exec: pipe(stdout): ") + std::strerror(errno));
-            }
-            if (::pipe(errPipe) < 0) {
-                ::close(outPipe[0]); ::close(outPipe[1]);
-                return err(std::string("exec: pipe(stderr): ") + std::strerror(errno));
-            }
-
-            pid_t pid = ::fork();
-            if (pid < 0) {
-                ::close(outPipe[0]); ::close(outPipe[1]);
-                ::close(errPipe[0]); ::close(errPipe[1]);
-                return err(std::string("exec: fork: ") + std::strerror(errno));
-            }
-
-            if (pid == 0) {
-                // Child. Wire pipe write-ends to stdout/stderr; close
-                // read-ends; chdir if requested; exec.
-                ::dup2(outPipe[1], STDOUT_FILENO);
-                ::dup2(errPipe[1], STDERR_FILENO);
-                ::close(outPipe[0]); ::close(outPipe[1]);
-                ::close(errPipe[0]); ::close(errPipe[1]);
-
-                if (!workingDir.empty()) {
-                    if (::chdir(workingDir.c_str()) != 0) {
-                        std::string msg = "exec: chdir('" + workingDir + "'): " +
-                                          std::strerror(errno) + "\n";
-                        ::write(STDERR_FILENO, msg.data(), msg.size());
-                        _exit(127);
-                    }
-                }
-
-                if (envp.empty()) {
-                    ::execvp(argv[0], argv.data());
-                } else {
-                    ::execvpe(argv[0], argv.data(), envp.data());
-                }
-                // execvp returns only on failure.
-                std::string msg = "exec: cannot execute '" +
-                                  argStrings[0] + "': " +
-                                  std::strerror(errno) + "\n";
-                ::write(STDERR_FILENO, msg.data(), msg.size());
-                _exit(127);
-            }
-
-            // Parent. Close write-ends; drain pipes; wait.
-            ::close(outPipe[1]);
-            ::close(errPipe[1]);
-
+            // Spawn the command, capturing stdout/stderr. cwd + env apply.
             std::string stdoutBuf;
             std::string stderrBuf;
-            drainFd(outPipe[0], stdoutBuf);
-            drainFd(errPipe[0], stderrBuf);
-            ::close(outPipe[0]);
-            ::close(errPipe[0]);
+            SubprocessOptions so;
+            so.argv = argStrings;
+            if (!workingDir.empty()) so.cwd = &workingDir;
+            if (!envEntries.empty()) so.env = &envEntries;
+            so.outData = &stdoutBuf;
+            so.errData = &stderrBuf;
+            SubprocessResult res = runSubprocess(so);
+            if (!res.launched) {
+                return err("exec: cannot execute '" + argStrings[0] + "': " +
+                           res.error);
+            }
 
             // Forward captured output to the parent's streams so the
             // developer sees what the action did. We still keep the
             // captures in the action's outputs for ${id.stdout} /
             // ${id.stderr} threading.
             if (!stdoutBuf.empty()) {
-                ::write(STDOUT_FILENO, stdoutBuf.data(), stdoutBuf.size());
+                std::fwrite(stdoutBuf.data(), 1, stdoutBuf.size(), stdout);
             }
             if (!stderrBuf.empty()) {
-                ::write(STDERR_FILENO, stderrBuf.data(), stderrBuf.size());
+                std::fwrite(stderrBuf.data(), 1, stderrBuf.size(), stderr);
             }
 
-            int status = 0;
-            for (;;) {
-                pid_t w = ::waitpid(pid, &status, 0);
-                if (w < 0) {
-                    if (errno == EINTR) continue;
-                    return err(std::string("exec: waitpid: ") + std::strerror(errno));
-                }
-                break;
-            }
-
-            int exitCode = 0;
-            if (WIFEXITED(status)) {
-                exitCode = WEXITSTATUS(status);
-            } else if (WIFSIGNALED(status)) {
-                exitCode = 128 + WTERMSIG(status);
-            } else {
-                exitCode = -1;
-            }
+            int exitCode = res.code();
 
             ActionResult r;
             r.stdoutLog = stdoutBuf;

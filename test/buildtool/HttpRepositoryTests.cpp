@@ -37,7 +37,7 @@
 #include <string>
 #include <vector>
 
-#include <unistd.h>
+#include "../PortableEnv.h"
 
 using cajeta::buildtool::HttpRepository;
 using cajeta::buildtool::loadManifestString;
@@ -68,7 +68,7 @@ namespace {
     std::filesystem::path makeTempDir(const std::string& tag) {
         auto p = std::filesystem::temp_directory_path() /
                  ("cajeta-http-test-" + tag + "-" +
-                  std::to_string(::getpid()) + "-" +
+                  std::to_string(cajeta_getpid()) + "-" +
                   std::to_string(::rand()));
         std::filesystem::create_directories(p);
         return p;

@@ -15,7 +15,6 @@
 
 #include <cctype>
 #include <fstream>
-#include <regex>
 #include <sstream>
 #include <string>
 
@@ -44,18 +43,56 @@ namespace cajeta::buildtool {
         };
 
         llvm::Expected<Semver> parseSemver(const std::string& s) {
-            // MAJOR.MINOR.PATCH[-prerelease][+build]
-            std::regex re(R"(^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+([0-9A-Za-z.-]+))?$)");
-            std::smatch m;
-            if (!std::regex_match(s, m, re)) {
+            // MAJOR.MINOR.PATCH[-prerelease][+build] — hand-parsed (std::regex
+            // is avoided here: its libstdc++ COMDAT symbols collide at link
+            // time with the prebuilt LLVM/lld archives on the mingw toolchain).
+            auto bad = [&]() {
                 return err("version: not a valid semver: '" + s + "'");
-            }
+            };
+            const size_t n = s.size();
+            size_t i = 0;
+            auto readNum = [&](unsigned& out) -> bool {
+                size_t start = i;
+                while (i < n && s[i] >= '0' && s[i] <= '9') ++i;
+                if (i == start) return false;
+                try {
+                    out = static_cast<unsigned>(std::stoul(s.substr(start, i - start)));
+                } catch (...) {
+                    return false;
+                }
+                return true;
+            };
+            // `-` and `.` are valid in prerelease/build identifiers, alongside
+            // alphanumerics. `+` separates build metadata, so it is excluded.
+            auto isIdent = [](char c) {
+                return std::isalnum(static_cast<unsigned char>(c)) ||
+                       c == '.' || c == '-';
+            };
+            auto readIdent = [&](std::string& out) -> bool {
+                size_t start = i;
+                while (i < n && isIdent(s[i])) ++i;
+                if (i == start) return false;  // empty run — invalid
+                out = s.substr(start, i - start);
+                return true;
+            };
+
             Semver v;
-            v.major = static_cast<unsigned>(std::stoul(m[1].str()));
-            v.minor = static_cast<unsigned>(std::stoul(m[2].str()));
-            v.patch = static_cast<unsigned>(std::stoul(m[3].str()));
-            v.prerelease = m[4].matched ? m[4].str() : "";
-            v.buildMeta  = m[5].matched ? m[5].str() : "";
+            if (!readNum(v.major)) return bad();
+            if (i >= n || s[i] != '.') return bad();
+            ++i;
+            if (!readNum(v.minor)) return bad();
+            if (i >= n || s[i] != '.') return bad();
+            ++i;
+            if (!readNum(v.patch)) return bad();
+            if (i < n && s[i] == '-') {
+                ++i;
+                if (!readIdent(v.prerelease)) return bad();
+            }
+            if (i < n && s[i] == '+') {
+                ++i;
+                if (!readIdent(v.buildMeta)) return bad();
+            }
+            if (i != n) return bad();
             return v;
         }
 
@@ -76,21 +113,38 @@ namespace cajeta::buildtool {
             if (detailsPos == std::string::npos) {
                 return err("version: manifest has no \"details\" block");
             }
-            // Look for the version field after that.
-            std::regex re(R"(("version"\s*:\s*")([^"]*)("))");
-            std::smatch m;
-            auto begin = src.cbegin() + static_cast<long>(detailsPos);
-            if (!std::regex_search(begin, src.cend(), m, re)) {
-                return err("version: no version field found after "
-                           "\"details\" in the manifest");
+            // Look for the first `"version" : "..."` field after `"details"`.
+            // Hand-scanned (see parseSemver for why std::regex is avoided): find
+            // each `"version"` key and accept the first one followed by the
+            // `\s*:\s*"value"` shape, capturing the value between the quotes.
+            auto isWs = [](char c) {
+                return std::isspace(static_cast<unsigned char>(c)) != 0;
+            };
+            size_t scan = detailsPos;
+            for (;;) {
+                size_t vpos = src.find("\"version\"", scan);
+                if (vpos == std::string::npos) {
+                    return err("version: no version field found after "
+                               "\"details\" in the manifest");
+                }
+                size_t j = vpos + 9;  // past the literal "version"
+                while (j < src.size() && isWs(src[j])) ++j;
+                if (j < src.size() && src[j] == ':') {
+                    ++j;
+                    while (j < src.size() && isWs(src[j])) ++j;
+                    if (j < src.size() && src[j] == '"') {
+                        size_t valStart = j + 1;
+                        size_t valEnd = src.find('"', valStart);
+                        if (valEnd != std::string::npos) {
+                            std::string previous =
+                                src.substr(valStart, valEnd - valStart);
+                            src.replace(valStart, valEnd - valStart, newVersion);
+                            return previous;
+                        }
+                    }
+                }
+                scan = vpos + 9;  // this key didn't fit the shape; keep scanning
             }
-            std::string previous = m[2].str();
-            // Replace the version value in place.
-            auto matchStart = static_cast<size_t>(m.position(2) +
-                              (begin - src.cbegin()));
-            auto matchLen   = static_cast<size_t>(m.length(2));
-            src.replace(matchStart, matchLen, newVersion);
-            return previous;
         }
 
     } // namespace
