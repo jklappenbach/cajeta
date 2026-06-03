@@ -125,6 +125,12 @@ TEST(TestActionTests, failingBinaryReportsFailed) {
 }
 
 TEST(TestActionTests, crashedBinaryReportsCrashed) {
+#if defined(_WIN32)
+    // Crash detection is signal-based (WIFSIGNALED). Windows has no signal
+    // model — a process that dies abnormally just yields a non-zero exit code,
+    // indistinguishable from a normal failure — so there is nothing to assert.
+    GTEST_SKIP() << "signal-based crash detection is POSIX-only";
+#else
     auto props = makeProps();
     ActionRegistry registry;
     TaskContext ctx(props);
@@ -140,6 +146,7 @@ TEST(TestActionTests, crashedBinaryReportsCrashed) {
     EXPECT_NE(errorText(r.takeError()).find("crashed"),
               std::string::npos);
     std::filesystem::remove_all(d);
+#endif
 }
 
 // ─── args / filter / parallel forwarded as flags ──────────────────

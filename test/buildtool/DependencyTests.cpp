@@ -9,13 +9,17 @@
 #include "cajeta/buildtool/Resolver.h"
 #include "cajeta/buildtool/repo/FilesystemRepository.h"
 
+#include "TempTeardown.h"
+
 #include <gtest/gtest.h>
 #include <llvm/Support/Error.h>
 
+#include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
 #include <string>
+#include <thread>
 #include <unistd.h>
 
 using cajeta::buildtool::ArtifactCache;
@@ -299,7 +303,7 @@ TEST(DependencyTests, filesystemRepoListsAndFetches) {
     std::ifstream in(*fetched, std::ios::binary);
     std::stringstream ss; ss << in.rdbuf();
     EXPECT_EQ(ss.str(), "foo-1.0.1-content");
-    std::filesystem::remove_all(root);
+    rmTree(root);
 }
 
 TEST(DependencyTests, filesystemRepoReturnsEmptyForUnknownPackage) {
@@ -308,7 +312,7 @@ TEST(DependencyTests, filesystemRepoReturnsEmptyForUnknownPackage) {
     auto versions = repo.listVersions("unknown.pkg");
     ASSERT_TRUE((bool)versions);
     EXPECT_TRUE(versions->empty());
-    std::filesystem::remove_all(root);
+    rmTree(root);
 }
 
 TEST(DependencyTests, filesystemRepoErrorsOnMissingArtifact) {
@@ -318,7 +322,7 @@ TEST(DependencyTests, filesystemRepoErrorsOnMissingArtifact) {
     ASSERT_FALSE((bool)r);
     auto msg = errorText(r.takeError());
     EXPECT_NE(msg.find("artifact not found"), std::string::npos);
-    std::filesystem::remove_all(root);
+    rmTree(root);
 }
 
 // ─── ArtifactCache ────────────────────────────────────────────────────
@@ -346,8 +350,8 @@ TEST(DependencyTests, artifactCacheRoundTrips) {
     auto wsPath = std::filesystem::path(cache.workstationCacheDir());
     EXPECT_TRUE(std::filesystem::exists(wsPath));
 
-    std::filesystem::remove_all(projectDir);
-    std::filesystem::remove_all(homeDir);
+    rmTree(projectDir);
+    rmTree(homeDir);
 }
 
 TEST(DependencyTests, artifactCacheReturnsNulloptOnMiss) {
@@ -355,8 +359,8 @@ TEST(DependencyTests, artifactCacheReturnsNulloptOnMiss) {
     auto homeDir    = makeTempDir("cache-miss-home");
     ArtifactCache cache(projectDir.string(), homeDir.string());
     EXPECT_FALSE(cache.lookup("sha256:0000000000000000000000000000000000000000000000000000000000000000").has_value());
-    std::filesystem::remove_all(projectDir);
-    std::filesystem::remove_all(homeDir);
+    rmTree(projectDir);
+    rmTree(homeDir);
 }
 
 // ─── direct resolver end-to-end ───────────────────────────────────────
@@ -386,9 +390,9 @@ TEST(DependencyTests, resolverPicksHighestSatisfyingFromRepoPriority) {
     EXPECT_FALSE((*resolved)[0].artifactPath.empty());
     EXPECT_FALSE((*resolved)[0].sha256.empty());
 
-    std::filesystem::remove_all(repoRoot);
-    std::filesystem::remove_all(projectDir);
-    std::filesystem::remove_all(homeDir);
+    rmTree(repoRoot);
+    rmTree(projectDir);
+    rmTree(homeDir);
 }
 
 TEST(DependencyTests, resolverErrorsWhenNoVersionSatisfies) {
@@ -408,9 +412,9 @@ TEST(DependencyTests, resolverErrorsWhenNoVersionSatisfies) {
     auto msg = errorText(r.takeError());
     EXPECT_NE(msg.find("not satisfied"), std::string::npos);
 
-    std::filesystem::remove_all(repoRoot);
-    std::filesystem::remove_all(projectDir);
-    std::filesystem::remove_all(homeDir);
+    rmTree(repoRoot);
+    rmTree(projectDir);
+    rmTree(homeDir);
 }
 
 TEST(DependencyTests, resolverHonorsFromRepoPin) {
@@ -434,10 +438,10 @@ TEST(DependencyTests, resolverHonorsFromRepoPin) {
     ASSERT_TRUE((bool)resolved);
     EXPECT_EQ((*resolved)[0].resolvedFromRepo, "B");
 
-    std::filesystem::remove_all(repoA);
-    std::filesystem::remove_all(repoB);
-    std::filesystem::remove_all(projectDir);
-    std::filesystem::remove_all(homeDir);
+    rmTree(repoA);
+    rmTree(repoB);
+    rmTree(projectDir);
+    rmTree(homeDir);
 }
 
 TEST(DependencyTests, resolverFallsThroughRepoPriorityWhenFirstLacksPackage) {
@@ -461,10 +465,10 @@ TEST(DependencyTests, resolverFallsThroughRepoPriorityWhenFirstLacksPackage) {
     EXPECT_EQ((*resolved)[0].version, "0.2.0");
     EXPECT_EQ((*resolved)[0].resolvedFromRepo, "hi");
 
-    std::filesystem::remove_all(repoHighPrio);
-    std::filesystem::remove_all(repoLowPrio);
-    std::filesystem::remove_all(projectDir);
-    std::filesystem::remove_all(homeDir);
+    rmTree(repoHighPrio);
+    rmTree(repoLowPrio);
+    rmTree(projectDir);
+    rmTree(homeDir);
 }
 
 // ─── filesystem sidecar manifest (Phase 6b) ───────────────────────────
@@ -480,7 +484,7 @@ TEST(DependencyTests, filesystemRepoReadsSidecarManifestJson) {
     ASSERT_TRUE(js->has_value());
     EXPECT_NE((*js)->find("com.example.foo"), std::string::npos);
     EXPECT_NE((*js)->find("com.example.bar"), std::string::npos);
-    std::filesystem::remove_all(root);
+    rmTree(root);
 }
 
 TEST(DependencyTests, filesystemRepoNoSidecarReturnsNullopt) {
@@ -490,7 +494,7 @@ TEST(DependencyTests, filesystemRepoNoSidecarReturnsNullopt) {
     auto js = repo.fetchManifestJson("com.example.foo", "1.0.0");
     ASSERT_TRUE((bool)js) << errorText(js.takeError());
     EXPECT_FALSE(js->has_value());
-    std::filesystem::remove_all(root);
+    rmTree(root);
 }
 
 // ─── transitive resolver ──────────────────────────────────────────────
@@ -523,9 +527,9 @@ TEST(DependencyTests, mvsResolverExpandsOneLevel) {
     EXPECT_EQ((*resolved)[1].name, "com.example.bar");
     EXPECT_EQ((*resolved)[1].version, "1.5.0");
 
-    std::filesystem::remove_all(root);
-    std::filesystem::remove_all(projectDir);
-    std::filesystem::remove_all(homeDir);
+    rmTree(root);
+    rmTree(projectDir);
+    rmTree(homeDir);
 }
 
 TEST(DependencyTests, mvsResolverThreeDeepGraph) {
@@ -557,9 +561,9 @@ TEST(DependencyTests, mvsResolverThreeDeepGraph) {
     EXPECT_EQ((*resolved)[1].name, "a.bar");
     EXPECT_EQ((*resolved)[2].name, "a.baz");
 
-    std::filesystem::remove_all(root);
-    std::filesystem::remove_all(projectDir);
-    std::filesystem::remove_all(homeDir);
+    rmTree(root);
+    rmTree(projectDir);
+    rmTree(homeDir);
 }
 
 TEST(DependencyTests, mvsResolverDeduplicatesDiamond) {
@@ -594,9 +598,9 @@ TEST(DependencyTests, mvsResolverDeduplicatesDiamond) {
     }
     EXPECT_EQ(sharedCount, 1);
 
-    std::filesystem::remove_all(root);
-    std::filesystem::remove_all(projectDir);
-    std::filesystem::remove_all(homeDir);
+    rmTree(root);
+    rmTree(projectDir);
+    rmTree(homeDir);
 }
 
 TEST(DependencyTests, mvsResolverBreaksCycles) {
@@ -623,9 +627,9 @@ TEST(DependencyTests, mvsResolverBreaksCycles) {
     ASSERT_TRUE((bool)resolved) << errorText(resolved.takeError());
     EXPECT_EQ(resolved->size(), 2u);
 
-    std::filesystem::remove_all(root);
-    std::filesystem::remove_all(projectDir);
-    std::filesystem::remove_all(homeDir);
+    rmTree(root);
+    rmTree(projectDir);
+    rmTree(homeDir);
 }
 
 TEST(DependencyTests, mvsResolverTreatsLeafAsTerminalWhenSidecarMissing) {
@@ -654,9 +658,9 @@ TEST(DependencyTests, mvsResolverTreatsLeafAsTerminalWhenSidecarMissing) {
     ASSERT_EQ(resolved->size(), 2u);
     EXPECT_EQ((*resolved)[1].name, "l.bar");
 
-    std::filesystem::remove_all(root);
-    std::filesystem::remove_all(projectDir);
-    std::filesystem::remove_all(homeDir);
+    rmTree(root);
+    rmTree(projectDir);
+    rmTree(homeDir);
 }
 
 TEST(DependencyTests, mvsResolverErrorsOnUnsatisfiableChildConstraint) {
@@ -685,9 +689,9 @@ TEST(DependencyTests, mvsResolverErrorsOnUnsatisfiableChildConstraint) {
     EXPECT_NE(msg.find("satisfies constraints"), std::string::npos)
         << "expected MVS unsatisfiable message, got: " << msg;
 
-    std::filesystem::remove_all(root);
-    std::filesystem::remove_all(projectDir);
-    std::filesystem::remove_all(homeDir);
+    rmTree(root);
+    rmTree(projectDir);
+    rmTree(homeDir);
 }
 
 // ─── MVS-specific behavior (Phase 6b acceptance criteria) ─────────────
@@ -718,9 +722,9 @@ TEST(DependencyTests, mvsPicksLowestSatisfyingFromRange) {
     ASSERT_EQ(resolved->size(), 1u);
     EXPECT_EQ((*resolved)[0].version, "1.2.0");
 
-    std::filesystem::remove_all(root);
-    std::filesystem::remove_all(projectDir);
-    std::filesystem::remove_all(homeDir);
+    rmTree(root);
+    rmTree(projectDir);
+    rmTree(homeDir);
 }
 
 TEST(DependencyTests, mvsRepicksOnTighterChildConstraint) {
@@ -768,9 +772,9 @@ TEST(DependencyTests, mvsRepicksOnTighterChildConstraint) {
     }
     EXPECT_EQ(sharedPick, "1.5.0");
 
-    std::filesystem::remove_all(root);
-    std::filesystem::remove_all(projectDir);
-    std::filesystem::remove_all(homeDir);
+    rmTree(root);
+    rmTree(projectDir);
+    rmTree(homeDir);
 }
 
 TEST(DependencyTests, mvsRejectsContradictoryExactRequirements) {
@@ -807,9 +811,9 @@ TEST(DependencyTests, mvsRejectsContradictoryExactRequirements) {
     EXPECT_NE(msg.find("2.0.0"), std::string::npos)
         << "error should cite both contributing constraints, got: " << msg;
 
-    std::filesystem::remove_all(root);
-    std::filesystem::remove_all(projectDir);
-    std::filesystem::remove_all(homeDir);
+    rmTree(root);
+    rmTree(projectDir);
+    rmTree(homeDir);
 }
 
 TEST(DependencyTests, mvsConflictingFromPinsError) {
@@ -839,10 +843,10 @@ TEST(DependencyTests, mvsConflictingFromPinsError) {
     EXPECT_NE(msg.find("conflicting 'from'"), std::string::npos)
         << "expected from-pin conflict error, got: " << msg;
 
-    std::filesystem::remove_all(rootA);
-    std::filesystem::remove_all(rootB);
-    std::filesystem::remove_all(projectDir);
-    std::filesystem::remove_all(homeDir);
+    rmTree(rootA);
+    rmTree(rootB);
+    rmTree(projectDir);
+    rmTree(homeDir);
 }
 
 // ─── settings.overrides parsing ───────────────────────────────────────
@@ -931,9 +935,9 @@ TEST(DependencyTests, mvsOverridePinsTransitive) {
     }
     EXPECT_EQ(barVersion, "1.5.0");
 
-    std::filesystem::remove_all(root);
-    std::filesystem::remove_all(projectDir);
-    std::filesystem::remove_all(homeDir);
+    rmTree(root);
+    rmTree(projectDir);
+    rmTree(homeDir);
 }
 
 TEST(DependencyTests, mvsOverrideIgnoredForDirectRootDep) {
@@ -967,9 +971,9 @@ TEST(DependencyTests, mvsOverrideIgnoredForDirectRootDep) {
     ASSERT_EQ(resolved->size(), 1u);
     EXPECT_EQ((*resolved)[0].version, "1.9.0");
 
-    std::filesystem::remove_all(root);
-    std::filesystem::remove_all(projectDir);
-    std::filesystem::remove_all(homeDir);
+    rmTree(root);
+    rmTree(projectDir);
+    rmTree(homeDir);
 }
 
 TEST(DependencyTests, mvsOverrideMajorDowngradeErrors) {
@@ -1007,9 +1011,9 @@ TEST(DependencyTests, mvsOverrideMajorDowngradeErrors) {
     EXPECT_NE(msg.find("allow-major-downgrade"), std::string::npos)
         << "expected guidance toward the escape hatch, got: " << msg;
 
-    std::filesystem::remove_all(root);
-    std::filesystem::remove_all(projectDir);
-    std::filesystem::remove_all(homeDir);
+    rmTree(root);
+    rmTree(projectDir);
+    rmTree(homeDir);
 }
 
 TEST(DependencyTests, mvsOverrideMajorDowngradeAllowed) {
@@ -1047,9 +1051,9 @@ TEST(DependencyTests, mvsOverrideMajorDowngradeAllowed) {
     }
     EXPECT_EQ(barVersion, "1.0.0");
 
-    std::filesystem::remove_all(root);
-    std::filesystem::remove_all(projectDir);
-    std::filesystem::remove_all(homeDir);
+    rmTree(root);
+    rmTree(projectDir);
+    rmTree(homeDir);
 }
 
 TEST(DependencyTests, mvsOverrideRangeNarrowsResolution) {
@@ -1090,9 +1094,9 @@ TEST(DependencyTests, mvsOverrideRangeNarrowsResolution) {
     }
     EXPECT_EQ(barVersion, "1.5.0");
 
-    std::filesystem::remove_all(root);
-    std::filesystem::remove_all(projectDir);
-    std::filesystem::remove_all(homeDir);
+    rmTree(root);
+    rmTree(projectDir);
+    rmTree(homeDir);
 }
 
 // Path + git overrides ship in Phase 6c (see PathOverrideTests.cpp +
@@ -1124,9 +1128,9 @@ TEST(DependencyTests, mvsRejectsGitOverrideMissingRev) {
                   "requires 'rev'"),
               std::string::npos);
 
-    std::filesystem::remove_all(root);
-    std::filesystem::remove_all(projectDir);
-    std::filesystem::remove_all(homeDir);
+    rmTree(root);
+    rmTree(projectDir);
+    rmTree(homeDir);
 }
 
 // ─── resolveProjectDependencies (manifest → resolved set) ─────────────
@@ -1141,8 +1145,8 @@ TEST(DependencyTests, projectResolutionEmptyWhenNoDepsDeclared) {
         m, projectDir.string(), homeDir.string());
     ASSERT_TRUE((bool)resolved) << errorText(resolved.takeError());
     EXPECT_TRUE(resolved->empty());
-    std::filesystem::remove_all(projectDir);
-    std::filesystem::remove_all(homeDir);
+    rmTree(projectDir);
+    rmTree(homeDir);
 }
 
 TEST(DependencyTests, projectResolutionEndToEnd) {
@@ -1160,7 +1164,7 @@ TEST(DependencyTests, projectResolutionEndToEnd) {
         "settings": {
             "repositories": [
                 { "name": "test", "type": "filesystem",
-                  "path": ")" << repoRoot.string() << R"(" }
+                  "path": ")" << repoRoot.generic_string() << R"(" }
             ],
             "dependencies": {
                 "p.foo": "1.0.0"
@@ -1183,9 +1187,9 @@ TEST(DependencyTests, projectResolutionEndToEnd) {
     EXPECT_TRUE(std::filesystem::exists((*resolved)[0].artifactPath));
     EXPECT_TRUE(std::filesystem::exists((*resolved)[1].artifactPath));
 
-    std::filesystem::remove_all(repoRoot);
-    std::filesystem::remove_all(projectDir);
-    std::filesystem::remove_all(homeDir);
+    rmTree(repoRoot);
+    rmTree(projectDir);
+    rmTree(homeDir);
 }
 
 TEST(DependencyTests, projectResolutionErrorsWhenDepsDeclaredButNoRepos) {
@@ -1203,8 +1207,8 @@ TEST(DependencyTests, projectResolutionErrorsWhenDepsDeclaredButNoRepos) {
     auto msg = errorText(resolved.takeError());
     EXPECT_NE(msg.find("repositories"), std::string::npos)
         << "expected guidance toward settings.repositories, got: " << msg;
-    std::filesystem::remove_all(projectDir);
-    std::filesystem::remove_all(homeDir);
+    rmTree(projectDir);
+    rmTree(homeDir);
 }
 
 TEST(DependencyTests, projectResolutionAppliesOverrides) {
@@ -1225,7 +1229,7 @@ TEST(DependencyTests, projectResolutionAppliesOverrides) {
         "settings": {
             "repositories": [
                 { "name": "test", "type": "filesystem",
-                  "path": ")" << repoRoot.string() << R"(" }
+                  "path": ")" << repoRoot.generic_string() << R"(" }
             ],
             "dependencies": { "o4.foo": "1.0.0" },
             "overrides":    { "o4.bar": "1.5.0" }
@@ -1247,7 +1251,7 @@ TEST(DependencyTests, projectResolutionAppliesOverrides) {
     // The override forces 1.5.0.
     EXPECT_EQ(barVersion, "1.5.0");
 
-    std::filesystem::remove_all(repoRoot);
-    std::filesystem::remove_all(projectDir);
-    std::filesystem::remove_all(homeDir);
+    rmTree(repoRoot);
+    rmTree(projectDir);
+    rmTree(homeDir);
 }

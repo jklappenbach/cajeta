@@ -258,7 +258,7 @@ TEST(PluginRuntimeTests, requestCarriesParamsAndCapabilities) {
     auto dir = tempDir("echo");
     auto echoFile = dir / "request.json";
     auto bin = stageScript(dir, "p.sh",
-        std::string("cat > '") + echoFile.string() + "'\n"
+        std::string("cat > '") + echoFile.generic_string() + "'\n"
         "printf '{\"kind\":\"result\",\"status\":\"ok\"}\\n'\n");
     auto m = makeManifest();
     auto props = makeProps(m);
