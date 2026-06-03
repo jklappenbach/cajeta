@@ -41,6 +41,15 @@ namespace vulkan {
         // without a prior init() (constructs + tears down a throwaway driver).
         static bool available();
 
+        // True iff the first compute-capable physical device also supports the
+        // ray-query path: VK_KHR_acceleration_structure + VK_KHR_ray_query +
+        // VK_KHR_deferred_host_operations + buffer-device-address, with the
+        // matching feature bits. Test gate for the BVH/ray-query exec path
+        // (cajeta-gpu Part C inc 3b); a plain compute device returns false.
+        // Self-contained: enumerates extensions/features without creating a
+        // logical device.
+        static bool rayQueryAvailable();
+
         VulkanDriver() = default;
         ~VulkanDriver();
         VulkanDriver(const VulkanDriver&) = delete;

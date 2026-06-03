@@ -285,6 +285,100 @@ bool VulkanDriver::available() {
     return probe.init();
 }
 
+bool VulkanDriver::rayQueryAvailable() {
+    // Self-contained probe: load libvulkan, create a throwaway 1.3 instance,
+    // and check the first compute-capable device for the ray-query extension +
+    // feature set. No logical device is created. Torn down before returning.
+    void* lib = nullptr;
+    for (const char* name : {"libvulkan.so.1", "libvulkan.so"}) {
+        lib = dlopen(name, RTLD_NOW | RTLD_LOCAL);
+        if (lib) break;
+    }
+    if (!lib) return false;
+    auto gipa = reinterpret_cast<PFN_vkGetInstanceProcAddr>(
+        dlsym(lib, "vkGetInstanceProcAddr"));
+    if (!gipa) { dlclose(lib); return false; }
+
+    auto createInstance = reinterpret_cast<PFN_vkCreateInstance>(
+        gipa(VK_NULL_HANDLE, "vkCreateInstance"));
+    if (!createInstance) { dlclose(lib); return false; }
+    VkApplicationInfo app{};
+    app.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
+    app.apiVersion = VK_API_VERSION_1_3;
+    VkInstanceCreateInfo ici{};
+    ici.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
+    ici.pApplicationInfo = &app;
+    VkInstance inst = VK_NULL_HANDLE;
+    if (createInstance(&ici, nullptr, &inst) != VK_SUCCESS) {
+        dlclose(lib);
+        return false;
+    }
+
+    auto destroyInstance = reinterpret_cast<PFN_vkDestroyInstance>(
+        gipa(inst, "vkDestroyInstance"));
+    auto enumDevs = reinterpret_cast<PFN_vkEnumeratePhysicalDevices>(
+        gipa(inst, "vkEnumeratePhysicalDevices"));
+    auto getQueueProps =
+        reinterpret_cast<PFN_vkGetPhysicalDeviceQueueFamilyProperties>(
+            gipa(inst, "vkGetPhysicalDeviceQueueFamilyProperties"));
+    auto enumExt = reinterpret_cast<PFN_vkEnumerateDeviceExtensionProperties>(
+        gipa(inst, "vkEnumerateDeviceExtensionProperties"));
+    auto getFeatures2 = reinterpret_cast<PFN_vkGetPhysicalDeviceFeatures2>(
+        gipa(inst, "vkGetPhysicalDeviceFeatures2"));
+
+    bool ok = false;
+    if (destroyInstance && enumDevs && getQueueProps && enumExt && getFeatures2) {
+        uint32_t count = 0;
+        enumDevs(inst, &count, nullptr);
+        std::vector<VkPhysicalDevice> devs(count);
+        if (count) enumDevs(inst, &count, devs.data());
+        for (VkPhysicalDevice pd : devs) {
+            // Require a compute queue (matches the device we'd actually pick).
+            uint32_t qn = 0;
+            getQueueProps(pd, &qn, nullptr);
+            std::vector<VkQueueFamilyProperties> qp(qn);
+            if (qn) getQueueProps(pd, &qn, qp.data());
+            bool compute = false;
+            for (auto& q : qp)
+                if (q.queueFlags & VK_QUEUE_COMPUTE_BIT) { compute = true; break; }
+            if (!compute) continue;
+
+            uint32_t en = 0;
+            enumExt(pd, nullptr, &en, nullptr);
+            std::vector<VkExtensionProperties> exts(en);
+            if (en) enumExt(pd, nullptr, &en, exts.data());
+            bool hasAccel = false, hasRayQ = false, hasDefer = false, hasBDA = false;
+            for (auto& e : exts) {
+                if (!std::strcmp(e.extensionName, VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME)) hasAccel = true;
+                else if (!std::strcmp(e.extensionName, VK_KHR_RAY_QUERY_EXTENSION_NAME)) hasRayQ = true;
+                else if (!std::strcmp(e.extensionName, VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME)) hasDefer = true;
+                else if (!std::strcmp(e.extensionName, VK_KHR_BUFFER_DEVICE_ADDRESS_EXTENSION_NAME)) hasBDA = true;
+            }
+            if (!(hasAccel && hasRayQ && hasDefer && hasBDA)) continue;
+
+            VkPhysicalDeviceRayQueryFeaturesKHR rqf{};
+            rqf.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_QUERY_FEATURES_KHR;
+            VkPhysicalDeviceAccelerationStructureFeaturesKHR asf{};
+            asf.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR;
+            asf.pNext = &rqf;
+            VkPhysicalDeviceBufferDeviceAddressFeatures bdaf{};
+            bdaf.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_BUFFER_DEVICE_ADDRESS_FEATURES;
+            bdaf.pNext = &asf;
+            VkPhysicalDeviceFeatures2 f2{};
+            f2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+            f2.pNext = &bdaf;
+            getFeatures2(pd, &f2);
+            if (rqf.rayQuery && asf.accelerationStructure && bdaf.bufferDeviceAddress) {
+                ok = true;
+                break;
+            }
+        }
+    }
+    if (destroyInstance) destroyInstance(inst, nullptr);
+    dlclose(lib);
+    return ok;
+}
+
 VulkanDriver::Buffer VulkanDriver::alloc(std::size_t bytes) {
     if (!impl || bytes == 0) return 0;
     Impl& d = *impl;
@@ -512,6 +606,7 @@ namespace vulkan {
 struct VulkanDriver::Impl {};
 VulkanDriver::~VulkanDriver() = default;
 bool VulkanDriver::available() { return false; }
+bool VulkanDriver::rayQueryAvailable() { return false; }
 bool VulkanDriver::init() { return false; }
 VulkanDriver::Buffer VulkanDriver::alloc(std::size_t) { return 0; }
 bool VulkanDriver::upload(Buffer, const void*, std::size_t) { return false; }

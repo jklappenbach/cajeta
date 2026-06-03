@@ -4204,6 +4204,7 @@ static int cajeta_xpu_hip_init_locked(void) {
 #define CAJETA_KP_BUFFER  1
 #define CAJETA_KP_TEXTURE 2
 #define CAJETA_KP_SAMPLER 3
+#define CAJETA_KP_ACCEL   4   // AccelerationStructure -> descriptor-bound BVH
 
 struct cajeta_kparams {
     char name[256];
@@ -4317,6 +4318,18 @@ struct cajeta_vk {
     PFN_vkCmdDispatch vkCmdDispatch;
     PFN_vkQueueSubmit vkQueueSubmit;
     PFN_vkQueueWaitIdle vkQueueWaitIdle;
+    // Ray-query / acceleration-structure path (cajeta-gpu Part C inc 3b).
+    // Resolved + the device extensions/features enabled only when the physical
+    // device supports VK_KHR_acceleration_structure + VK_KHR_ray_query +
+    // buffer-device-address; `rayQuery` stays 0 otherwise (and the AS natives
+    // no-op) so the compute buffer/texture path is unaffected on non-RT GPUs.
+    int rayQuery;                // 1 if AS/ray-query is usable on this device
+    PFN_vkGetBufferDeviceAddress vkGetBufferDeviceAddress;
+    PFN_vkGetAccelerationStructureBuildSizesKHR vkGetAccelerationStructureBuildSizesKHR;
+    PFN_vkCreateAccelerationStructureKHR vkCreateAccelerationStructureKHR;
+    PFN_vkDestroyAccelerationStructureKHR vkDestroyAccelerationStructureKHR;
+    PFN_vkCmdBuildAccelerationStructuresKHR vkCmdBuildAccelerationStructuresKHR;
+    PFN_vkGetAccelerationStructureDeviceAddressKHR vkGetAccelerationStructureDeviceAddressKHR;
 };
 static struct cajeta_vk g_xpu_vk;
 
@@ -4379,6 +4392,14 @@ static int cajeta_xpu_vulkan_init_locked(void) {
     CAJ_VKI(vkGetPhysicalDeviceMemoryProperties);
     CAJ_VKI(vkCreateDevice);
     CAJ_VKI(vkDestroyDevice);
+    // Optional (ray-query detection): present on any 1.1+ ICD. Resolved here so
+    // bring-up can probe AS/ray-query support before vkCreateDevice.
+    PFN_vkEnumerateDeviceExtensionProperties enumDevExt =
+        (PFN_vkEnumerateDeviceExtensionProperties) g_xpu_vk.getInstanceProcAddr(
+            g_xpu_vk.instance, "vkEnumerateDeviceExtensionProperties");
+    PFN_vkGetPhysicalDeviceFeatures2 getFeatures2 =
+        (PFN_vkGetPhysicalDeviceFeatures2) g_xpu_vk.getInstanceProcAddr(
+            g_xpu_vk.instance, "vkGetPhysicalDeviceFeatures2");
     #undef CAJ_VKI
     g_xpu_vk.getDeviceProcAddr = (PFN_vkGetDeviceProcAddr)
         g_xpu_vk.getInstanceProcAddr(g_xpu_vk.instance, "vkGetDeviceProcAddr");
@@ -4413,6 +4434,56 @@ static int cajeta_xpu_vulkan_init_locked(void) {
     g_xpu_vk.vkGetPhysicalDeviceMemoryProperties(g_xpu_vk.phys,
                                                  &g_xpu_vk.memProps);
 
+    // Ray-query probe: the BVH/ray-query path needs three device extensions
+    // (acceleration_structure pulls in deferred_host_operations;
+    // buffer_device_address backs the build's scratch/AABB addresses) AND the
+    // matching feature bits. Enable them only when ALL are present — turning on
+    // an unsupported extension fails vkCreateDevice outright, which would break
+    // the plain compute path on a non-RT GPU. Absent any of them, rayQuery stays
+    // 0 and the device is created exactly as before.
+    int wantRayQuery = 0;
+    if (enumDevExt && getFeatures2) {
+        uint32_t extCount = 0;
+        enumDevExt(g_xpu_vk.phys, NULL, &extCount, NULL);
+        if (extCount > 0 && extCount <= 4096) {
+            VkExtensionProperties* exts = (VkExtensionProperties*) malloc(
+                sizeof(VkExtensionProperties) * extCount);
+            if (exts) {
+                enumDevExt(g_xpu_vk.phys, NULL, &extCount, exts);
+                int hasAccel = 0, hasRayQ = 0, hasDefer = 0, hasBDA = 0;
+                for (uint32_t i = 0; i < extCount; ++i) {
+                    const char* en = exts[i].extensionName;
+                    if (!strcmp(en, VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME)) hasAccel = 1;
+                    else if (!strcmp(en, VK_KHR_RAY_QUERY_EXTENSION_NAME)) hasRayQ = 1;
+                    else if (!strcmp(en, VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME)) hasDefer = 1;
+                    else if (!strcmp(en, VK_KHR_BUFFER_DEVICE_ADDRESS_EXTENSION_NAME)) hasBDA = 1;
+                }
+                free(exts);
+                if (hasAccel && hasRayQ && hasDefer && hasBDA) {
+                    VkPhysicalDeviceRayQueryFeaturesKHR rqf;
+                    memset(&rqf, 0, sizeof(rqf));
+                    rqf.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_QUERY_FEATURES_KHR;
+                    VkPhysicalDeviceAccelerationStructureFeaturesKHR asf;
+                    memset(&asf, 0, sizeof(asf));
+                    asf.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR;
+                    asf.pNext = &rqf;
+                    VkPhysicalDeviceBufferDeviceAddressFeatures bdaf;
+                    memset(&bdaf, 0, sizeof(bdaf));
+                    bdaf.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_BUFFER_DEVICE_ADDRESS_FEATURES;
+                    bdaf.pNext = &asf;
+                    VkPhysicalDeviceFeatures2 f2;
+                    memset(&f2, 0, sizeof(f2));
+                    f2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+                    f2.pNext = &bdaf;
+                    getFeatures2(g_xpu_vk.phys, &f2);
+                    if (rqf.rayQuery && asf.accelerationStructure &&
+                        bdaf.bufferDeviceAddress)
+                        wantRayQuery = 1;
+                }
+            }
+        }
+    }
+
     float prio = 1.0f;
     VkDeviceQueueCreateInfo qci;
     memset(&qci, 0, sizeof(qci));
@@ -4425,6 +4496,34 @@ static int cajeta_xpu_vulkan_init_locked(void) {
     dci.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
     dci.queueCreateInfoCount = 1;
     dci.pQueueCreateInfos = &qci;
+
+    // Feature chain + extension list for the RT path (only when supported).
+    const char* rtExts[4] = {
+        VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME,
+        VK_KHR_RAY_QUERY_EXTENSION_NAME,
+        VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME,
+        VK_KHR_BUFFER_DEVICE_ADDRESS_EXTENSION_NAME,
+    };
+    VkPhysicalDeviceRayQueryFeaturesKHR enRqf;
+    VkPhysicalDeviceAccelerationStructureFeaturesKHR enAsf;
+    VkPhysicalDeviceBufferDeviceAddressFeatures enBdaf;
+    if (wantRayQuery) {
+        memset(&enRqf, 0, sizeof(enRqf));
+        enRqf.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_QUERY_FEATURES_KHR;
+        enRqf.rayQuery = VK_TRUE;
+        memset(&enAsf, 0, sizeof(enAsf));
+        enAsf.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR;
+        enAsf.accelerationStructure = VK_TRUE;
+        enAsf.pNext = &enRqf;
+        memset(&enBdaf, 0, sizeof(enBdaf));
+        enBdaf.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_BUFFER_DEVICE_ADDRESS_FEATURES;
+        enBdaf.bufferDeviceAddress = VK_TRUE;
+        enBdaf.pNext = &enAsf;
+        dci.pNext = &enBdaf;
+        dci.enabledExtensionCount = 4;
+        dci.ppEnabledExtensionNames = rtExts;
+    }
+
     if (g_xpu_vk.vkCreateDevice(g_xpu_vk.phys, &dci, NULL, &g_xpu_vk.device)
             != VK_SUCCESS)
         return 0;
@@ -4473,6 +4572,25 @@ static int cajeta_xpu_vulkan_init_locked(void) {
     CAJ_VKD(vkCmdDispatch);
     CAJ_VKD(vkQueueSubmit);
     CAJ_VKD(vkQueueWaitIdle);
+    // RT path: resolve the AS/device-address entry points only when the device
+    // was created with the ray-query extensions. vkGetBufferDeviceAddress is
+    // core 1.2; the AS builders are KHR. If any fails to resolve, drop back to
+    // the plain compute path (rayQuery stays 0).
+    if (wantRayQuery) {
+        CAJ_VKD(vkGetBufferDeviceAddress);
+        CAJ_VKD(vkGetAccelerationStructureBuildSizesKHR);
+        CAJ_VKD(vkCreateAccelerationStructureKHR);
+        CAJ_VKD(vkDestroyAccelerationStructureKHR);
+        CAJ_VKD(vkCmdBuildAccelerationStructuresKHR);
+        CAJ_VKD(vkGetAccelerationStructureDeviceAddressKHR);
+        g_xpu_vk.rayQuery =
+            g_xpu_vk.vkGetBufferDeviceAddress &&
+            g_xpu_vk.vkGetAccelerationStructureBuildSizesKHR &&
+            g_xpu_vk.vkCreateAccelerationStructureKHR &&
+            g_xpu_vk.vkDestroyAccelerationStructureKHR &&
+            g_xpu_vk.vkCmdBuildAccelerationStructuresKHR &&
+            g_xpu_vk.vkGetAccelerationStructureDeviceAddressKHR ? 1 : 0;
+    }
     #undef CAJ_VKD
 
     g_xpu_vk.vkGetDeviceQueue(g_xpu_vk.device, g_xpu_vk.queueFamily, 0,
@@ -4787,6 +4905,248 @@ static void cajeta_xpu_vk_destroy_sampler(int64_t handle) {
                               (VkSampler) (uintptr_t) handle, NULL);
 }
 
+// --- Vulkan acceleration-structure (BVH) table (Part C inc 3b) ---------------
+// An AccelerationStructure's device handle on Vulkan is a 1-based index into
+// this table. v1 builds a single bottom-level AS over AABB (procedural) geometry
+// — the spatial-index primitive the RayQuery walks. All build inputs/scratch are
+// device-address buffers (VK_KHR_buffer_device_address); the AS itself is bound
+// in a kernel as VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR (see the launch
+// path). Only reached when g_xpu_vk.rayQuery == 1.
+struct cajeta_vk_accel {
+    VkAccelerationStructureKHR accel;
+    VkBuffer asBuf;          // AS backing store (must outlive the AS)
+    VkDeviceMemory asMem;
+    int live;
+};
+#define CAJETA_VK_MAX_ACCELS 256
+static struct cajeta_vk_accel g_vk_accels[CAJETA_VK_MAX_ACCELS];
+static int g_vk_accel_count;
+
+static struct cajeta_vk_accel* cajeta_xpu_vk_accel_rec(int64_t handle) {
+    if (handle <= 0 || handle > g_vk_accel_count) return NULL;
+    struct cajeta_vk_accel* a = &g_vk_accels[handle - 1];
+    return a->live ? a : NULL;
+}
+
+// Create a host-visible/coherent buffer that also exposes a device address
+// (VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT + SHADER_DEVICE_ADDRESS usage). Used for
+// every AS build input/scratch/store. Returns 1 on success. `outMapped` may be
+// NULL when the caller doesn't need to fill the buffer from the host.
+static int cajeta_xpu_vk_make_addr_buffer(uint64_t bytes, VkBufferUsageFlags usage,
+                                          VkBuffer* outBuf, VkDeviceMemory* outMem,
+                                          void** outMapped) {
+    if (bytes == 0) return 0;
+    VkBufferCreateInfo bci;
+    memset(&bci, 0, sizeof(bci));
+    bci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    bci.size = bytes;
+    bci.usage = usage | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
+    bci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    VkBuffer buf = VK_NULL_HANDLE;
+    if (g_xpu_vk.vkCreateBuffer(g_xpu_vk.device, &bci, NULL, &buf) != VK_SUCCESS)
+        return 0;
+    VkMemoryRequirements req;
+    memset(&req, 0, sizeof(req));
+    g_xpu_vk.vkGetBufferMemoryRequirements(g_xpu_vk.device, buf, &req);
+    int mt = cajeta_xpu_vk_find_memory_type(
+        req.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                                VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    if (mt < 0) { g_xpu_vk.vkDestroyBuffer(g_xpu_vk.device, buf, NULL); return 0; }
+    VkMemoryAllocateFlagsInfo fi;
+    memset(&fi, 0, sizeof(fi));
+    fi.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO;
+    fi.flags = VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT;
+    VkMemoryAllocateInfo mai;
+    memset(&mai, 0, sizeof(mai));
+    mai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    mai.pNext = &fi;
+    mai.allocationSize = req.size;
+    mai.memoryTypeIndex = (uint32_t) mt;
+    VkDeviceMemory mem = VK_NULL_HANDLE;
+    if (g_xpu_vk.vkAllocateMemory(g_xpu_vk.device, &mai, NULL, &mem) != VK_SUCCESS) {
+        g_xpu_vk.vkDestroyBuffer(g_xpu_vk.device, buf, NULL);
+        return 0;
+    }
+    g_xpu_vk.vkBindBufferMemory(g_xpu_vk.device, buf, mem, 0);
+    if (outMapped) {
+        *outMapped = NULL;
+        if (g_xpu_vk.vkMapMemory(g_xpu_vk.device, mem, 0, VK_WHOLE_SIZE, 0,
+                                 outMapped) != VK_SUCCESS) {
+            g_xpu_vk.vkFreeMemory(g_xpu_vk.device, mem, NULL);
+            g_xpu_vk.vkDestroyBuffer(g_xpu_vk.device, buf, NULL);
+            return 0;
+        }
+    }
+    *outBuf = buf;
+    *outMem = mem;
+    return 1;
+}
+
+static VkDeviceAddress cajeta_xpu_vk_buf_addr(VkBuffer b) {
+    VkBufferDeviceAddressInfo i;
+    memset(&i, 0, sizeof(i));
+    i.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
+    i.buffer = b;
+    return g_xpu_vk.vkGetBufferDeviceAddress(g_xpu_vk.device, &i);
+}
+
+// Build a bottom-level AS over `count` AABBs, each packed as 6 float32
+// (minX,minY,minZ,maxX,maxY,maxZ) — byte-identical to VkAabbPositionsKHR, so the
+// cajeta float32[] uploads straight in. Returns a 1-based table handle (0 on
+// failure / no RT device). The AS + its backing store outlive this call; the
+// AABB input and scratch are transient and freed before returning.
+static int64_t cajeta_xpu_vk_accel_build_aabbs(const float* aabbs, uint32_t count) {
+    if (!g_xpu_vk.rayQuery || !aabbs || count == 0) return 0;
+
+    VkBuffer aabbBuf = VK_NULL_HANDLE, asBuf = VK_NULL_HANDLE,
+             scratchBuf = VK_NULL_HANDLE;
+    VkDeviceMemory aabbMem = VK_NULL_HANDLE, asMem = VK_NULL_HANDLE,
+                   scratchMem = VK_NULL_HANDLE;
+    VkAccelerationStructureKHR accel = VK_NULL_HANDLE;
+    VkCommandBuffer cmd = VK_NULL_HANDLE;
+    int64_t result = 0;
+
+    // 1. AABB input buffer (count * 24 bytes), filled from the host.
+    uint64_t aabbBytes = (uint64_t) count * sizeof(VkAabbPositionsKHR);
+    void* aabbMapped = NULL;
+    if (!cajeta_xpu_vk_make_addr_buffer(
+            aabbBytes,
+            VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR,
+            &aabbBuf, &aabbMem, &aabbMapped))
+        goto accel_done;
+    memcpy(aabbMapped, aabbs, (size_t) aabbBytes);
+
+    // 2. Geometry descriptor (opaque procedural AABBs).
+    VkAccelerationStructureGeometryKHR geom;
+    memset(&geom, 0, sizeof(geom));
+    geom.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR;
+    geom.geometryType = VK_GEOMETRY_TYPE_AABBS_KHR;
+    geom.flags = VK_GEOMETRY_OPAQUE_BIT_KHR;
+    geom.geometry.aabbs.sType =
+        VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_AABBS_DATA_KHR;
+    geom.geometry.aabbs.stride = sizeof(VkAabbPositionsKHR);
+    geom.geometry.aabbs.data.deviceAddress = cajeta_xpu_vk_buf_addr(aabbBuf);
+
+    // 3. Build-geometry info (sizes query needs geometry but not yet dst/scratch).
+    VkAccelerationStructureBuildGeometryInfoKHR bgi;
+    memset(&bgi, 0, sizeof(bgi));
+    bgi.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR;
+    bgi.type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
+    bgi.flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR;
+    bgi.mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;
+    bgi.geometryCount = 1;
+    bgi.pGeometries = &geom;
+
+    uint32_t primCount = count;
+    VkAccelerationStructureBuildSizesInfoKHR sizes;
+    memset(&sizes, 0, sizeof(sizes));
+    sizes.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR;
+    g_xpu_vk.vkGetAccelerationStructureBuildSizesKHR(
+        g_xpu_vk.device, VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR, &bgi,
+        &primCount, &sizes);
+    if (sizes.accelerationStructureSize == 0 || sizes.buildScratchSize == 0)
+        goto accel_done;
+
+    // 4. AS backing store + the AS object over it.
+    if (!cajeta_xpu_vk_make_addr_buffer(
+            sizes.accelerationStructureSize,
+            VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR,
+            &asBuf, &asMem, NULL))
+        goto accel_done;
+    VkAccelerationStructureCreateInfoKHR aci;
+    memset(&aci, 0, sizeof(aci));
+    aci.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_INFO_KHR;
+    aci.buffer = asBuf;
+    aci.size = sizes.accelerationStructureSize;
+    aci.type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
+    if (g_xpu_vk.vkCreateAccelerationStructureKHR(g_xpu_vk.device, &aci, NULL,
+                                                  &accel) != VK_SUCCESS)
+        goto accel_done;
+
+    // 5. Scratch buffer; complete the build-geometry info.
+    if (!cajeta_xpu_vk_make_addr_buffer(sizes.buildScratchSize,
+                                        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                                        &scratchBuf, &scratchMem, NULL))
+        goto accel_done;
+    bgi.dstAccelerationStructure = accel;
+    bgi.scratchData.deviceAddress = cajeta_xpu_vk_buf_addr(scratchBuf);
+
+    // 6. Record + submit the build.
+    VkAccelerationStructureBuildRangeInfoKHR range;
+    memset(&range, 0, sizeof(range));
+    range.primitiveCount = count;
+    const VkAccelerationStructureBuildRangeInfoKHR* pranges = &range;
+
+    VkCommandBufferAllocateInfo cbai;
+    memset(&cbai, 0, sizeof(cbai));
+    cbai.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    cbai.commandPool = g_xpu_vk.cmdPool;
+    cbai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    cbai.commandBufferCount = 1;
+    if (g_xpu_vk.vkAllocateCommandBuffers(g_xpu_vk.device, &cbai, &cmd)
+            != VK_SUCCESS)
+        goto accel_done;
+    VkCommandBufferBeginInfo cbbi;
+    memset(&cbbi, 0, sizeof(cbbi));
+    cbbi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    cbbi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    g_xpu_vk.vkBeginCommandBuffer(cmd, &cbbi);
+    g_xpu_vk.vkCmdBuildAccelerationStructuresKHR(cmd, 1, &bgi, &pranges);
+    g_xpu_vk.vkEndCommandBuffer(cmd);
+    VkSubmitInfo si;
+    memset(&si, 0, sizeof(si));
+    si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    si.commandBufferCount = 1;
+    si.pCommandBuffers = &cmd;
+    if (g_xpu_vk.vkQueueSubmit(g_xpu_vk.queue, 1, &si, VK_NULL_HANDLE)
+            != VK_SUCCESS)
+        goto accel_done;
+    g_xpu_vk.vkQueueWaitIdle(g_xpu_vk.queue);
+
+    // 7. Record the AS in the table (asBuf/asMem/accel survive; clear locals so
+    // the cleanup below doesn't tear them down).
+    {
+        int slot = -1;
+        for (int i = 0; i < g_vk_accel_count; ++i)
+            if (!g_vk_accels[i].live) { slot = i; break; }
+        if (slot < 0) {
+            if (g_vk_accel_count >= CAJETA_VK_MAX_ACCELS) goto accel_done;
+            slot = g_vk_accel_count++;
+        }
+        g_vk_accels[slot].accel = accel;
+        g_vk_accels[slot].asBuf = asBuf;
+        g_vk_accels[slot].asMem = asMem;
+        g_vk_accels[slot].live = 1;
+        result = (int64_t) (slot + 1);
+        accel = VK_NULL_HANDLE; asBuf = VK_NULL_HANDLE; asMem = VK_NULL_HANDLE;
+    }
+
+accel_done:
+    if (cmd) g_xpu_vk.vkFreeCommandBuffers(g_xpu_vk.device, g_xpu_vk.cmdPool, 1,
+                                           &cmd);
+    if (scratchBuf) g_xpu_vk.vkDestroyBuffer(g_xpu_vk.device, scratchBuf, NULL);
+    if (scratchMem) g_xpu_vk.vkFreeMemory(g_xpu_vk.device, scratchMem, NULL);
+    if (aabbBuf) g_xpu_vk.vkDestroyBuffer(g_xpu_vk.device, aabbBuf, NULL);
+    if (aabbMem) g_xpu_vk.vkFreeMemory(g_xpu_vk.device, aabbMem, NULL);
+    // On failure these are still set (success cleared them); tear them down.
+    if (accel) g_xpu_vk.vkDestroyAccelerationStructureKHR(g_xpu_vk.device, accel,
+                                                          NULL);
+    if (asBuf) g_xpu_vk.vkDestroyBuffer(g_xpu_vk.device, asBuf, NULL);
+    if (asMem) g_xpu_vk.vkFreeMemory(g_xpu_vk.device, asMem, NULL);
+    return result;
+}
+
+static void cajeta_xpu_vk_accel_free(int64_t handle) {
+    struct cajeta_vk_accel* a = cajeta_xpu_vk_accel_rec(handle);
+    if (!a) return;
+    if (a->accel)
+        g_xpu_vk.vkDestroyAccelerationStructureKHR(g_xpu_vk.device, a->accel, NULL);
+    if (a->asBuf) g_xpu_vk.vkDestroyBuffer(g_xpu_vk.device, a->asBuf, NULL);
+    if (a->asMem) g_xpu_vk.vkFreeMemory(g_xpu_vk.device, a->asMem, NULL);
+    a->accel = VK_NULL_HANDLE; a->asBuf = VK_NULL_HANDLE;
+    a->asMem = VK_NULL_HANDLE; a->live = 0;
+}
+
 // One dispatch: shader module + descriptor set (binding i = bindings[i]) +
 // pipeline + command buffer + submit + wait. `bindings` are 1-based table
 // handles, in kernel-parameter order. Mirrors VulkanDriver::launch.
@@ -4794,10 +5154,12 @@ static void cajeta_xpu_vk_destroy_sampler(int64_t handle) {
 #define CAJ_VKB_BUFFER  0   // bindings[i] = buffer-table handle  -> STORAGE_BUFFER
 #define CAJ_VKB_TEXTURE 1   // bindings[i] = texture-table handle -> SAMPLED_IMAGE
 #define CAJ_VKB_SAMPLER 2   // bindings[i] = (int64) VkSampler    -> SAMPLER
+#define CAJ_VKB_ACCEL   3   // bindings[i] = accel-table handle   -> ACCELERATION_STRUCTURE_KHR
 
 static VkDescriptorType cajeta_vkb_desc_type(uint8_t kind) {
     if (kind == CAJ_VKB_TEXTURE) return VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
     if (kind == CAJ_VKB_SAMPLER) return VK_DESCRIPTOR_TYPE_SAMPLER;
+    if (kind == CAJ_VKB_ACCEL) return VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
     return VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 }
 
@@ -4881,13 +5243,14 @@ static int cajeta_xpu_vk_launch(const void* spirv, uint64_t len,
 
     // Pool sized by the distinct descriptor types actually used (storage
     // buffer / sampled image / sampler), one entry per non-empty class.
-    uint32_t nBuf = 0, nImg = 0, nSamp = 0;
+    uint32_t nBuf = 0, nImg = 0, nSamp = 0, nAccel = 0;
     for (int i = 0; i < n; ++i) {
         if (kinds[i] == CAJ_VKB_TEXTURE) ++nImg;
         else if (kinds[i] == CAJ_VKB_SAMPLER) ++nSamp;
+        else if (kinds[i] == CAJ_VKB_ACCEL) ++nAccel;
         else ++nBuf;
     }
-    VkDescriptorPoolSize poolSizes[3];
+    VkDescriptorPoolSize poolSizes[4];
     uint32_t nPool = 0;
     if (nBuf) { poolSizes[nPool].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
                 poolSizes[nPool++].descriptorCount = nBuf; }
@@ -4895,6 +5258,8 @@ static int cajeta_xpu_vk_launch(const void* spirv, uint64_t len,
                 poolSizes[nPool++].descriptorCount = nImg; }
     if (nSamp){ poolSizes[nPool].type = VK_DESCRIPTOR_TYPE_SAMPLER;
                 poolSizes[nPool++].descriptorCount = nSamp; }
+    if (nAccel){ poolSizes[nPool].type = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
+                 poolSizes[nPool++].descriptorCount = nAccel; }
     VkDescriptorPoolCreateInfo dpci;
     memset(&dpci, 0, sizeof(dpci));
     dpci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
@@ -4917,15 +5282,29 @@ static int cajeta_xpu_vk_launch(const void* spirv, uint64_t len,
     VkDescriptorBufferInfo bufInfos[64];
     VkDescriptorImageInfo imgInfos[64];
     VkWriteDescriptorSet writes[64];
+    // Acceleration-structure writes chain their AS handle in via pNext; both the
+    // pNext struct and the handle it points at must outlive vkUpdateDescriptorSets.
+    VkWriteDescriptorSetAccelerationStructureKHR accelInfos[64];
+    VkAccelerationStructureKHR accelHandles[64];
     memset(writes, 0, sizeof(writes[0]) * n);
     memset(imgInfos, 0, sizeof(imgInfos[0]) * n);
+    memset(accelInfos, 0, sizeof(accelInfos[0]) * n);
     for (int i = 0; i < n; ++i) {
         writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         writes[i].dstSet = descSet;
         writes[i].dstBinding = (uint32_t) i;
         writes[i].descriptorCount = 1;
         writes[i].descriptorType = cajeta_vkb_desc_type(kinds[i]);
-        if (kinds[i] == CAJ_VKB_TEXTURE) {
+        if (kinds[i] == CAJ_VKB_ACCEL) {
+            struct cajeta_vk_accel* a = cajeta_xpu_vk_accel_rec(bindings[i]);
+            if (!a) goto done;
+            accelHandles[i] = a->accel;
+            accelInfos[i].sType =
+                VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR;
+            accelInfos[i].accelerationStructureCount = 1;
+            accelInfos[i].pAccelerationStructures = &accelHandles[i];
+            writes[i].pNext = &accelInfos[i];
+        } else if (kinds[i] == CAJ_VKB_TEXTURE) {
             struct cajeta_vk_tex* t = cajeta_xpu_vk_tex_rec(bindings[i]);
             if (!t) goto done;
             imgInfos[i].imageView = t->view;
@@ -5008,6 +5387,10 @@ static int64_t cajeta_xpu_vk_make_sampler(int32_t f, int32_t a) {
     (void) f; (void) a; return 0;
 }
 static void cajeta_xpu_vk_destroy_sampler(int64_t h) { (void) h; }
+static int64_t cajeta_xpu_vk_accel_build_aabbs(const float* a, uint32_t c) {
+    (void) a; (void) c; return 0;
+}
+static void cajeta_xpu_vk_accel_free(int64_t h) { (void) h; }
 static int cajeta_xpu_vk_launch(const void* s, uint64_t l, const char* e,
                                 const int64_t* b, const uint8_t* k, int n,
                                 unsigned gx, unsigned gy, unsigned gz,
@@ -5666,6 +6049,37 @@ void __cajeta_xpu_texture_free(void* self, int64_t handle) {
     }
 }
 
+// --- AccelerationStructure device-BVH primitives (Part C inc 3b) -------------
+// Instance @Native methods on AccelerationStructure.cajeta. The leading `self`
+// is the cajeta `this`, ignored — the device side is keyed on the returned
+// handle. Ray query / BVH build is a Vulkan-only capability for now; other
+// backends return 0 (build) / no-op (free), which the cajeta drop chain handles.
+
+// __cajeta_xpu_accel_build_aabbs(this, aabbs, count) -> int64 handle.
+// `aabbs` is a Cajeta float32[] header — { i64 count, [count x f32] data } — so
+// the box floats start at offset 8 (matches __cajeta_xpu_texture_upload). Each
+// box is 6 floats (minX,minY,minZ,maxX,maxY,maxZ); `count` is the box count.
+int64_t __cajeta_xpu_accel_build_aabbs(void* self, void* aabbs, uint32_t count) {
+    (void) self;
+    if (!aabbs || count == 0) return 0;
+    const float* boxes = (const float*) ((const char*) aabbs + 8);
+    switch (cajeta_xpu_active_backend()) {
+        case CAJ_XPU_VULKAN:
+            return cajeta_xpu_vk_accel_build_aabbs(boxes, count);
+        // CPU/HIP/CUDA BVH builds are follow-ups; no device AS today.
+        default: return 0;
+    }
+}
+
+void __cajeta_xpu_accel_free(void* self, int64_t handle) {
+    (void) self;
+    if (!handle) return;
+    switch (cajeta_xpu_active_backend()) {
+        case CAJ_XPU_VULKAN: cajeta_xpu_vk_accel_free(handle); return;
+        default: return;
+    }
+}
+
 // Address one axis: clamp-to-edge (addressMode 0) or repeat/wrap (1). `n` > 0.
 static inline int cajeta_tex_addr(int c, int n, int32_t addressMode) {
     if (addressMode == 1) {                 // repeat (wrap)
@@ -5882,6 +6296,13 @@ static void cajeta_xpu_launch_vulkan(const char* kernelName,
                 // argv slot holds the Texture2D deviceHandle = texture-table index.
                 bindings[i] = *(int64_t*) argv[i];
                 bkinds[i] = CAJ_VKB_TEXTURE;
+                break;
+            case CAJETA_KP_ACCEL:
+                // argv slot points at the AccelerationStructure POD; its first
+                // field (deviceHandle) is the accel-table index. Bind it as an
+                // acceleration-structure descriptor.
+                bindings[i] = *(int64_t*) argv[i];
+                bkinds[i] = CAJ_VKB_ACCEL;
                 break;
             case CAJETA_KP_SAMPLER: {
                 // argv slot points at the by-value Sampler POD: { i32 filterMode,
