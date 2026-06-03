@@ -159,29 +159,18 @@ jobs:
           echo "::notice::release mode = $MODE; tag = ${TAG:-<none>}"
 
       # ---- Linux dependency install (apt) -------------------------------
+      # Non-LLVM deps — always installed on every Linux leg.
       - name: Install dependencies (Linux)
         if: runner.os == 'Linux'
         run: |
           set -euo pipefail
-          # LLVM 22 isn't in Ubuntu's stock repos yet, so add the official
-          # apt.llvm.org source for this release's codename. It serves both
-          # amd64 and arm64 for noble, covering the x86_64 and aarch64
-          # runners. Adding it is idempotent if the image already has it.
-          . /etc/os-release
-          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key \
-            | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc >/dev/null
-          echo "deb http://apt.llvm.org/${VERSION_CODENAME}/ llvm-toolchain-${VERSION_CODENAME}-22 main" \
-            | sudo tee /etc/apt/sources.list.d/llvm-22.list >/dev/null
           sudo apt-get update
-          # Mirror setup.sh's install_linux_apt list. clang-22 builds the
-          # runtime bitcode; llvm-22-dev provides the headers/libs (the C++
-          # compiler itself is the system g++).
+          # Mirror setup.sh's install_linux_apt list, MINUS LLVM (provisioned
+          # separately below: the fork toolchain on x86_64-linux-gnu, distro
+          # LLVM 22 on the other legs).
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
             cmake \
             ninja-build \
-            clang-22 \
-            llvm-22-dev \
-            libllvm22 \
             libantlr4-runtime-dev \
             openjdk-17-jre \
             libgtest-dev \
@@ -190,6 +179,55 @@ jobs:
             vim-common \
             libxxhash-dev \
             libssl-dev
+
+      # x86_64-linux-gnu consumes the prebuilt fork toolchain (LLVM 23 + clang +
+      # lld) carrying the SPV_KHR_ray_query patches — see plans/c0/. This is the
+      # ONLY toolchain that can lower ray query; distro LLVM 22 cannot (and cajeta
+      # now references fork-only intrinsic enums, so it wouldn't even build against
+      # 22). Other Linux legs fall through to distro LLVM until their fork artifact
+      # is built (expand the gate as fork-build-llvm.yml adds host legs).
+      - name: Fetch prebuilt LLVM toolchain (from the cajeta-spirv fork)
+        if: runner.os == 'Linux' && matrix.target == 'x86_64-linux-gnu'
+        env:
+          # Bump when re-cutting the toolchain (new pinned base or new SPIR-V
+          # patches). r3 is the first release containing the ray-query lowering.
+          LLVM_RELEASE_TAG: cajeta-llvm-23-r3
+        run: |
+          set -euo pipefail
+          # The fork names assets by host (asset_os), NOT by cajeta's target triple:
+          # x86_64-linux-gnu -> linux-x64, aarch64-linux-gnu -> linux-arm64
+          # (see fork-build-llvm.yml matrix). Map before building the URL.
+          case "${{ matrix.target }}" in
+            x86_64-linux-gnu)  ASSET_OS=linux-x64 ;;
+            aarch64-linux-gnu) ASSET_OS=linux-arm64 ;;
+            *) echo "::error::no fork asset_os mapping for ${{ matrix.target }}"; exit 1 ;;
+          esac
+          ASSET="${LLVM_RELEASE_TAG}-${ASSET_OS}.tar.zst"
+          URL="https://github.com/jklappenbach/cajeta-llvm/releases/download/${LLVM_RELEASE_TAG}/${ASSET}"
+          mkdir -p "$HOME/cajeta-llvm"
+          curl -fsSL "$URL" -o /tmp/llvm.tar.zst
+          tar --zstd -xf /tmp/llvm.tar.zst -C "$HOME/cajeta-llvm" --strip-components=1
+          echo "LLVM_DIR=$HOME/cajeta-llvm/lib/cmake/llvm" >> "$GITHUB_ENV"
+          echo "$HOME/cajeta-llvm/bin" >> "$GITHUB_PATH"
+
+      # Legs without a fork artifact yet: distro LLVM 22 from apt.llvm.org. (These
+      # legs cannot lower ray query — release-only until their fork artifact lands.)
+      - name: Install distro LLVM 22 (Linux legs without a fork artifact)
+        if: runner.os == 'Linux' && matrix.target != 'x86_64-linux-gnu'
+        run: |
+          set -euo pipefail
+          # LLVM 22 isn't in Ubuntu's stock repos yet, so add the official
+          # apt.llvm.org source for this release's codename (serves amd64+arm64).
+          . /etc/os-release
+          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key \
+            | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc >/dev/null
+          echo "deb http://apt.llvm.org/${VERSION_CODENAME}/ llvm-toolchain-${VERSION_CODENAME}-22 main" \
+            | sudo tee /etc/apt/sources.list.d/llvm-22.list >/dev/null
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            clang-22 \
+            llvm-22-dev \
+            libllvm22
           sudo apt-get install -y lld-22-dev || \
             echo "::warning::lld-22-dev unavailable on this runner; --emit=exe will fall back to system linker"
 

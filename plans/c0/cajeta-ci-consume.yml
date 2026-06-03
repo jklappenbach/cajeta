@@ -1,25 +1,63 @@
-# cajeta-side consumption — add this STEP to cajeta's own CI job, BEFORE the cmake
-# configure step. It downloads the prebuilt toolchain from the fork's Release and
-# exposes it via LLVM_DIR (env) + PATH (for clang-23/lld). **No cajeta source change**:
-# cajeta's existing find_package(LLVM CONFIG) honors the LLVM_DIR env var, and
+# cajeta-side consumption — add this STEP to cajeta's `.github/workflows/release.yml`
+# build job, BEFORE the "Configure" step, REPLACING the distro-LLVM install on the
+# legs that have a fork artifact. It downloads the prebuilt LLVM/clang/lld toolchain
+# (which carries the SPIR-V ray-query patches) from the fork's Release and exposes it
+# via LLVM_DIR (env) + PATH (clang-23/lld). **No cajeta source change**: cajeta's
+# find_package(LLVM CONFIG) honors the LLVM_DIR env var and
 # find_program(clang-${LLVM_VERSION_MAJOR}) finds the bundled clang on PATH.
+#
+# ┌─────────────────────────────────────────────────────────────────────────────┐
+# │ PARKED — DO NOT ACTIVATE UNTIL RELEASE r3 EXISTS.                            │
+# │ The current latest release (r2, tag b1425f80) PREDATES the ray-query        │
+# │ lowering (commit 436a7fd6) — it contains NO SPIR-V ray-query codegen. This  │
+# │ step is pinned to r3, which must be cut from cajeta-spirv HEAD (>= 436a7fd6,│
+# │ ideally ad584d2d) FIRST. Activating before r3 is published 404s the         │
+# │ download and breaks the release. See plans/c0/README.md + the C0 audit.     │
+# └─────────────────────────────────────────────────────────────────────────────┘
+#
+# ARTIFACT COVERAGE (gate the `if:` to match what the fork has actually built):
+#   x86_64-linux-gnu   — artifact exists (the only LLVM-23 leg today). ENABLE.
+#   aarch64-linux-gnu  — enable once the fork builds its aarch64 artifact (runbook
+#                        priority #2; also serves Jetson/cradle). Until then this leg
+#                        stays on distro LLVM (and cannot lower ray-query — release-only).
+#   aarch64-apple-darwin / x86_64-w64-mingw32 — no fork artifact yet (deferred);
+#                        these legs keep their Homebrew / MSYS2 LLVM for now.
 
       - name: Fetch prebuilt LLVM toolchain (from the cajeta-spirv fork)
+        # Expand this gate as the fork publishes more host artifacts. Only the legs
+        # listed here skip the distro-LLVM install step above and use the fork tree.
+        if: matrix.target == 'x86_64-linux-gnu'
         env:
-          # Point at the asset published by fork-build-llvm.yml. Bump the tag when
-          # you cut a new toolchain (new pinned base or new SPIR-V patches).
-          LLVM_ASSET_URL: https://github.com/jklappenbach/cajeta-llvm/releases/download/cajeta-llvm-23-r2/cajeta-llvm-23-r2-linux-x64.tar.zst
+          # Asset published by fork-build-llvm.yml. The asset name is
+          # cajeta-llvm-<ver>-<target>.tar.zst; bump the tag (r4, r5, …) whenever you
+          # re-pin the base or add SPIR-V patches and re-cut the toolchain release.
+          LLVM_RELEASE_TAG: cajeta-llvm-23-r3
         run: |
           set -euo pipefail
+          # The fork names assets by host (asset_os), NOT by cajeta's target triple:
+          # x86_64-linux-gnu -> linux-x64, aarch64-linux-gnu -> linux-arm64.
+          case "${{ matrix.target }}" in
+            x86_64-linux-gnu)  ASSET_OS=linux-x64 ;;
+            aarch64-linux-gnu) ASSET_OS=linux-arm64 ;;
+            *) echo "::error::no fork asset_os mapping for ${{ matrix.target }}"; exit 1 ;;
+          esac
+          ASSET="${LLVM_RELEASE_TAG}-${ASSET_OS}.tar.zst"
+          URL="https://github.com/jklappenbach/cajeta-llvm/releases/download/${LLVM_RELEASE_TAG}/${ASSET}"
           mkdir -p "$HOME/cajeta-llvm"
-          curl -fsSL "$LLVM_ASSET_URL" -o /tmp/llvm.tar.zst
+          curl -fsSL "$URL" -o /tmp/llvm.tar.zst
           # --strip-components=1 drops the leading llvm-install/ dir from the tar.
           tar --zstd -xf /tmp/llvm.tar.zst -C "$HOME/cajeta-llvm" --strip-components=1
           echo "LLVM_DIR=$HOME/cajeta-llvm/lib/cmake/llvm" >> "$GITHUB_ENV"
           echo "$HOME/cajeta-llvm/bin" >> "$GITHUB_PATH"
 
-# Local-dev equivalent (no CI): same idea via build.sh / your shell —
+# When this step is active for a leg, REMOVE that leg from the distro-LLVM install
+# step ("Install dependencies (Linux)" apt clang-22/llvm-22-dev/…): two LLVMs on PATH
+# is the recipe for a version-mismatch link. The cleanest edit is to gate that apt
+# step `if: matrix.target != 'x86_64-linux-gnu'` (mirror of the gate above) so each
+# leg provisions LLVM exactly once.
+#
+# Local-dev equivalent (no CI): same idea via your shell —
 #   export LLVM_DIR="$HOME/cajeta-llvm/lib/cmake/llvm"
 #   export PATH="$HOME/cajeta-llvm/bin:$PATH"
-# then ./build.sh as usual. Your current local source build keeps working unchanged;
-# this only matters when you want the prebuilt toolchain instead.
+# then ./build.sh as usual. (Your current local build links the fork's build-cajeta
+# tree directly via LLVM_DIR; this is the release-artifact path instead.)
