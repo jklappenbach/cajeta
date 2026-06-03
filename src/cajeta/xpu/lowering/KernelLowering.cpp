@@ -1893,6 +1893,8 @@ std::vector<KernelParamInfo> collectKernelParamInfo(const MethodPtr& method,
             kind = KernelParamInfo::Texture;
         } else if (p.isSampler) {
             kind = KernelParamInfo::Sampler;
+        } else if (p.isAccelStruct) {
+            kind = KernelParamInfo::AccelStruct;
         } else if (p.isBuffer) {
             kind = KernelParamInfo::Buffer;
         } else if (p.type) {

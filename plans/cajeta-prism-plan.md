@@ -57,9 +57,11 @@ the `cajeta-gpu` ray-query primitive (Part C / Stage C3.3). The deep-research pa
 AABB-as-index-entry, custom intersection) is **library-internal** and never surfaced.
 
 ### Stage P1.0 — `SpatialIndex` primitive
-- [ ] `SpatialIndex` over points / AABBs with query verbs: `knn(k)`, `radius(r)`, `contains(p)`, `range(box)`, `countWithin(r)`
-- [ ] Internal encoding (hidden): wrap each datum in an AABB; issue a degenerate near-zero-length ray; visit candidate AABBs — the verified RTNN pattern
-- [ ] Lowers to `cajeta-gpu` ray query (Vulkan) / OptiX (NVIDIA) / compute fallback
+- [~] `SpatialIndex` over points / AABBs with query verbs: `knn(k)`, `radius(r)`, `contains(p)`, `range(box)`, `countWithin(r)` — **`countWithin` (fixed-radius, L-inf box neighbourhood) landed**; the other verbs are follow-ups.
+- [x] Internal encoding (hidden): wrap each datum in an AABB; issue a degenerate near-zero-length ray; visit candidate AABBs — the verified RTNN pattern. **Landed** in `src/prism/spatial/SpatialIndex.cajeta` (build BVH over half-extent boxes; internal `countWithinKernel` casts the degenerate ray + counts candidates; `countWithin` is the only public surface — rays never leak).
+- [~] Lowers to `cajeta-gpu` ray query (Vulkan) / OptiX (NVIDIA) / compute fallback — **Vulkan ray-query path done + exec-verified on a real RADV device** (via the cajeta-gpu 3a/3b foundation); OptiX + compute fallback are P1.3 follow-ups.
+
+> **P1.0 landed (2026-06-03):** first real Prism code. `SpatialIndex.cajeta` + `cajeta-prism` repo seed (README). Exec-verified through the cajeta JIT harness (`cajeta/test/xpu/PrismSpatialIndexDeviceTests.cpp`) on an **AMD Radeon 8060S (RADV STRIX_HALO)** — `idx.countWithin(...)` returns correct fixed-radius neighbour counts with the ray-tracing entirely hidden. Built on cajeta-gpu Part C inc 3a/3b (ray-query lowering + host BVH build), both now complete.
 
 ### Stage P1.1 — Custom-predicate callback
 - [ ] A kernel-lambda visitor for the candidate step (gather / count / accumulate) — the intersection/anyhit analog, surfaced ergonomically; the encode-as-rays trick stays hidden

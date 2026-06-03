@@ -428,3 +428,81 @@ TEST(XpuVulkanDispatchDeviceTests, bundledVulkanCpuForcedToCpu) {
     ASSERT_NE(fn, nullptr);
     EXPECT_FLOAT_EQ(result, 4096.0f);   // ran on the CPU rung
 }
+
+// Part C inc 3b — the full ray-query path on a real RT device: a host-built
+// bottom-level AS over one AABB ([0,1]^3), bound as a descriptor, walked by a
+// RayQuery inside the kernel. For each query point we cast a degenerate
+// near-zero-length ray and count AABB candidates (the RTNN spatial-index
+// pattern): a point inside the box reports 1 candidate, a point outside 0.
+// Gated on rayQueryAvailable() — skips on a plain compute device (the build
+// natives no-op there, so there is nothing meaningful to run).
+TEST(XpuVulkanDispatchDeviceTests, rayQuerySpatialIndexOnDevice) {
+    if (!VulkanDriver::rayQueryAvailable()) {
+        GTEST_SKIP() << "no Vulkan ray-query (acceleration-structure) device";
+    }
+    const char* src =
+        "package test;\n"
+        "import cajeta.xpu.core.Buffer;\n"
+        "import cajeta.xpu.core.AccelerationStructure;\n"
+        "import cajeta.xpu.core.RayQuery;\n"
+        "import cajeta.xpu.core.Stream;\n"
+        "import cajeta.xpu.core.Thread;\n"
+        "public class RQ {\n"
+        "    @Kernel\n"
+        "    public static void query(AccelerationStructure scene,\n"
+        "                             Buffer<float32> px, Buffer<float32> py,\n"
+        "                             Buffer<float32> pz, Buffer<uint32> out,\n"
+        "                             uint32 n) {\n"
+        "        uint32 i = Thread.globalIdX();\n"
+        "        if (i < n) {\n"
+        "            RayQuery rq;\n"
+        "            rq.initialize(scene, 0, 255,\n"
+        "                          px[i], py[i], pz[i], 0.0f,\n"
+        "                          0.0f, 0.0f, 1.0f, 0.001f);\n"
+        "            uint32 c = 0;\n"
+        "            while (rq.proceed()) {\n"
+        "                if (rq.candidateType() == 1) { c = c + 1; }\n"
+        "            }\n"
+        "            out[i] = c;\n"
+        "        }\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        float32[] boxes = new float32[6];\n"
+        "        boxes[0] = 0.0f; boxes[1] = 0.0f; boxes[2] = 0.0f;\n"
+        "        boxes[3] = 1.0f; boxes[4] = 1.0f; boxes[5] = 1.0f;\n"
+        "        AccelerationStructure scene = heap AccelerationStructure(boxes, 1);\n"
+        "        uint32 n = 2;\n"
+        "        float32[] hpx = new float32[n];\n"
+        "        float32[] hpy = new float32[n];\n"
+        "        float32[] hpz = new float32[n];\n"
+        "        hpx[0] = 0.5f; hpy[0] = 0.5f; hpz[0] = 0.5f;\n"   // inside box
+        "        hpx[1] = 5.0f; hpy[1] = 5.0f; hpz[1] = 5.0f;\n"   // outside box
+        "        uint32[] hout = new uint32[n];\n"
+        "        hout[0] = 99; hout[1] = 99;\n"
+        "        Buffer<float32> px = heap Buffer<float32>(0, n);\n"
+        "        Buffer<float32> py = heap Buffer<float32>(0, n);\n"
+        "        Buffer<float32> pz = heap Buffer<float32>(0, n);\n"
+        "        Buffer<uint32> out = heap Buffer<uint32>(0, n);\n"
+        "        px.allocate(); py.allocate(); pz.allocate(); out.allocate();\n"
+        "        px.upload(hpx); py.upload(hpy); pz.upload(hpz); out.upload(hout);\n"
+        "        Stream s = Stream.current();\n"
+        "        query.launch(s, grid: [1], block: [64])(scene, px, py, pz, out, n);\n"
+        "        s.sync();\n"
+        "        out.download(hout);\n"
+        "        px.free(); py.free(); pz.free(); out.free();\n"
+        "        if (hout[0] < 1) { return 101; }\n"   // inside: >=1 candidate
+        "        if (hout[1] != 0) { return 102; }\n"  // outside: no candidate
+        "        return 777;\n"
+        "    }\n"
+        "}\n";
+    CajetaJit::Options o;
+    o.xpuBackends = {cajeta::xpu::Backend::Spirv};
+    auto jit = CajetaJit::compile(src, "test.RQ", o);
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<int (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    int r = fn();
+    EXPECT_EQ(r, 777) << "fail code " << r
+                      << " (101: inside-box query saw no candidate; "
+                         "102: outside-box query saw a candidate)";
+}
