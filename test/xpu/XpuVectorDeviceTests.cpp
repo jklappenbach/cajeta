@@ -77,6 +77,26 @@ const char* kVecSource =
 // out[i] == 54 + i (see file header for the arithmetic).
 float expectedAt(uint32_t i) { return 54.0f + (float) i; }
 
+// S6 interop probe: a Buffer whose element type is itself a vector. Exercises
+// buffer-of-vector marshalling (16-byte stride) and a whole-vector store
+// `out[i] = <4 x float>` — distinct from the scalar-element buffer above.
+//   out[i] = (i, 1, 2, 3) * 2 = (2i, 2, 4, 6)
+const char* kVecBufSource =
+    "package test;\n"
+    "import cajeta.xpu.core.Buffer;\n"
+    "import cajeta.xpu.core.Thread;\n"
+    "public class MB {\n"
+    "    @Kernel\n"
+    "    public static void vecbuf(Buffer<Vector<float32,4>> out, uint32 n) {\n"
+    "        uint32 i = Thread.globalIdX();\n"
+    "        if (i < n) {\n"
+    "            Vector<float32,4> v = new Vector<float32,4>(\n"
+    "                (float32) i, 1.0f, 2.0f, 3.0f);\n"
+    "            out[i] = v * 2.0f;\n"
+    "        }\n"
+    "    }\n"
+    "}\n";
+
 CajetaModulePtr compileForInspection(Compiler& compiler,
                                      const std::string& source) {
     static std::mt19937_64 rng(std::random_device{}());
@@ -113,6 +133,10 @@ using VecFn = void (*)(float*, uint32_t,
                        int32_t, int32_t, int32_t,   // ctaid.{x,y,z}
                        int32_t, int32_t, int32_t,   // ntid.{x,y,z}
                        int32_t, int32_t, int32_t);  // nctaid.{x,y,z}
+
+// Same coord ABI; the buffer pointer addresses 16-byte `<4 x float>` elements,
+// so the caller backs it with 4 floats per element.
+using VecBufFn = VecFn;
 
 } // namespace
 
@@ -177,6 +201,51 @@ TEST(XpuVectorDeviceTests, runsOnCpu) {
 
     for (uint32_t i = 0; i < N; ++i)
         EXPECT_FLOAT_EQ(out[i], expectedAt(i)) << "element " << i;
+}
+
+// S6: a Buffer<Vector<float32,4>> — buffer element type is a vector. JIT the
+// kernel and run it; each 4-float element must equal (2i, 2, 4, 6). Proves the
+// 16-byte element stride and a whole-vector store through `out[i] =`.
+TEST(XpuVectorDeviceTests, bufferOfVectorRunsOnCpu) {
+    Compiler compiler;
+    auto module = compileForInspection(compiler, kVecBufSource);
+    auto k = findMethod(module->getStructures()["test.MB"], "vecbuf");
+    ASSERT_NE(k, nullptr);
+
+    auto tm = cajeta::xpu::cpu::createCpuTargetMachine();
+    ASSERT_NE(tm, nullptr) << "host target not registered";
+
+    auto ctx = std::make_unique<llvm::LLVMContext>();
+    auto host = std::make_unique<llvm::Module>("xpu_vecbuf_exec", *ctx);
+    cajeta::xpu::cpu::configureHostModule(*host, *tm);
+    ASSERT_NE(cajeta::xpu::cpu::lowerKernel(k, *host), nullptr);
+
+    auto jitOrErr = llvm::orc::LLJITBuilder().create();
+    ASSERT_TRUE(static_cast<bool>(jitOrErr))
+        << llvm::toString(jitOrErr.takeError());
+    auto jit = std::move(*jitOrErr);
+    auto err = jit->addIRModule(
+        llvm::orc::ThreadSafeModule(std::move(host), std::move(ctx)));
+    ASSERT_FALSE(static_cast<bool>(err)) << llvm::toString(std::move(err));
+    auto symOrErr = jit->lookup("vecbuf");
+    ASSERT_TRUE(static_cast<bool>(symOrErr))
+        << llvm::toString(symOrErr.takeError());
+    auto vecbuf = symOrErr->toPtr<VecBufFn>();
+
+    const int32_t B = 64, G = 4;
+    const uint32_t N = (uint32_t) (B * G);
+    std::vector<float> out(std::size_t(N) * 4, -1.0f);  // 4 floats per element
+    for (int32_t ctaid = 0; ctaid < G; ++ctaid)
+        for (int32_t tid = 0; tid < B; ++tid)
+            vecbuf(out.data(), N,
+                   tid, 0, 0, ctaid, 0, 0, B, 1, 1, G, 1, 1);
+
+    for (uint32_t i = 0; i < N; ++i) {
+        EXPECT_FLOAT_EQ(out[4 * i + 0], 2.0f * (float) i) << "elem " << i << " .x";
+        EXPECT_FLOAT_EQ(out[4 * i + 1], 2.0f) << "elem " << i << " .y";
+        EXPECT_FLOAT_EQ(out[4 * i + 2], 4.0f) << "elem " << i << " .z";
+        EXPECT_FLOAT_EQ(out[4 * i + 3], 6.0f) << "elem " << i << " .w";
+    }
 }
 
 // On a real GPU via Vulkan compute. Skips cleanly when no device is present.
