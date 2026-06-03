@@ -4831,6 +4831,9 @@ static void cajeta_xpu_vk_tex_upload(int64_t handle, const void* data,
     if (m) memcpy(m, data, (size_t) bytes);
     struct cajeta_vk_buf* sb = cajeta_xpu_vk_rec(staging);
 
+    // The staging copy submits to the shared VkQueue/VkCommandPool — serialize it
+    // against concurrent launches / AS builds (same external-sync requirement).
+    pthread_mutex_lock(&g_xpu_vk_submit_mu);
     VkCommandBufferAllocateInfo cbai;
     memset(&cbai, 0, sizeof(cbai));
     cbai.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
@@ -4893,6 +4896,7 @@ static void cajeta_xpu_vk_tex_upload(int64_t handle, const void* data,
         g_xpu_vk.vkQueueWaitIdle(g_xpu_vk.queue);
         g_xpu_vk.vkFreeCommandBuffers(g_xpu_vk.device, g_xpu_vk.cmdPool, 1, &cmd);
     }
+    pthread_mutex_unlock(&g_xpu_vk_submit_mu);
     cajeta_xpu_vk_free(staging);
 }
 
