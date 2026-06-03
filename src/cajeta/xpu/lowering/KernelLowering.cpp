@@ -1212,6 +1212,10 @@ private:
                 return target.waveReduceSum(builder, mod,
                                             lowerExpr(args[0].expression));
             }
+        } else if (recv == "Math") {
+            // Math.<fn>(...) inside a kernel — fully handled (returns a value or
+            // a clean diagnostic). Mirrors the host Math lowering.
+            return lowerMathCall(name, mc);
         }
         // Vector<T,N> instance methods: a.dot(b), v.length(), v.normalize().
         // `recv` names a vector local.
@@ -1271,6 +1275,111 @@ private:
         if (v->getType()->isFloatingPointTy())
             return builder.CreateFPCast(v, f32);
         return builder.CreateSIToFP(v, f32);
+    }
+
+    // Math.<fn>(...) inside a kernel — `cajeta-gpu` Stage B2, increment 1.
+    // Only the subset that lowers *natively* on every backend
+    // (NVPTX/AMDGPU/SPIR-V/CPU) with no device math-library link is admitted
+    // here: sqrt/floor/ceil/trunc/round, abs, min/max, fma. The transcendentals
+    // (sin/cos/tan/exp/log/pow) need per-backend device-lib linking (ocml on
+    // AMD, libdevice on NVPTX — the same shape as Item 8's ockl.bc) and get a
+    // clean diagnostic until that increment lands. Unlike the host path (which
+    // forces f64 for Java-Math parity), this operates in the argument's FP type
+    // — f32 is GPU-native and f64 would need the Vulkan Float64 capability.
+    llvm::Value* lowerMathCall(const std::string& name,
+                               const std::shared_ptr<MethodCallExpression>& mc) {
+        const auto& args = mc->getParameters();
+        llvm::Type* f32 = llvm::Type::getFloatTy(ctx);
+        auto asFp = [&](llvm::Value* v) -> llvm::Value* {
+            if (v->getType()->isFloatingPointTy()) return v;
+            return builder.CreateSIToFP(v, f32);          // int -> f32
+        };
+        // Unary float intrinsics, native on all four backends.
+        static const struct { const char* n; llvm::Intrinsic::ID id; } unary[] = {
+            {"sqrt",  llvm::Intrinsic::sqrt},
+            {"floor", llvm::Intrinsic::floor},
+            {"ceil",  llvm::Intrinsic::ceil},
+            {"trunc", llvm::Intrinsic::trunc},
+            {"round", llvm::Intrinsic::round},
+        };
+        for (const auto& u : unary) {
+            if (name == u.n) {
+                if (args.size() != 1)
+                    unsupported("Math." + name + " expects 1 argument");
+                llvm::Value* x = asFp(lowerExpr(args[0].expression));
+                llvm::Function* fn = llvm::Intrinsic::getOrInsertDeclaration(
+                    &mod, u.id, {x->getType()});
+                return builder.CreateCall(fn, {x});
+            }
+        }
+        if (name == "abs") {
+            if (args.size() != 1) unsupported("Math.abs expects 1 argument");
+            llvm::Value* x = lowerExpr(args[0].expression);
+            if (x->getType()->isFloatingPointTy()) {
+                llvm::Function* fn = llvm::Intrinsic::getOrInsertDeclaration(
+                    &mod, llvm::Intrinsic::fabs, {x->getType()});
+                return builder.CreateCall(fn, {x});
+            }
+            llvm::Function* fn = llvm::Intrinsic::getOrInsertDeclaration(
+                &mod, llvm::Intrinsic::abs, {x->getType()});
+            return builder.CreateCall(fn, {x, llvm::ConstantInt::getFalse(ctx)});
+        }
+        if (name == "min" || name == "max") {
+            if (args.size() != 2)
+                unsupported("Math." + name + " expects 2 arguments");
+            llvm::Value* a = lowerExpr(args[0].expression);
+            llvm::Value* b = lowerExpr(args[1].expression);
+            bool fp = a->getType()->isFloatingPointTy()
+                   || b->getType()->isFloatingPointTy();
+            if (fp) {
+                // Common FP type: f64 only if a double was used explicitly.
+                llvm::Type* ft = (a->getType()->isDoubleTy()
+                               || b->getType()->isDoubleTy())
+                                   ? llvm::Type::getDoubleTy(ctx) : f32;
+                auto toFt = [&](llvm::Value* v) -> llvm::Value* {
+                    if (v->getType() == ft) return v;
+                    if (v->getType()->isFloatingPointTy())
+                        return builder.CreateFPCast(v, ft);
+                    return builder.CreateSIToFP(v, ft);
+                };
+                a = toFt(a); b = toFt(b);
+                llvm::Intrinsic::ID id = name == "max"
+                    ? llvm::Intrinsic::maxnum : llvm::Intrinsic::minnum;
+                llvm::Function* fn =
+                    llvm::Intrinsic::getOrInsertDeclaration(&mod, id, {ft});
+                return builder.CreateCall(fn, {a, b});
+            }
+            // Integer min/max: unify to the wider operand width, signed.
+            llvm::Type* it =
+                a->getType()->getIntegerBitWidth()
+                    >= b->getType()->getIntegerBitWidth()
+                        ? a->getType() : b->getType();
+            if (a->getType() != it) a = builder.CreateSExt(a, it);
+            if (b->getType() != it) b = builder.CreateSExt(b, it);
+            llvm::Intrinsic::ID id = name == "max"
+                ? llvm::Intrinsic::smax : llvm::Intrinsic::smin;
+            llvm::Function* fn =
+                llvm::Intrinsic::getOrInsertDeclaration(&mod, id, {it});
+            return builder.CreateCall(fn, {a, b});
+        }
+        if (name == "fma") {
+            if (args.size() != 3) unsupported("Math.fma expects 3 arguments");
+            llvm::Value* a = asFp(lowerExpr(args[0].expression));
+            llvm::Value* b = asFp(lowerExpr(args[1].expression));
+            llvm::Value* c = asFp(lowerExpr(args[2].expression));
+            llvm::Type* ft = a->getType();
+            auto toA = [&](llvm::Value* v) -> llvm::Value* {
+                return v->getType() == ft ? v : builder.CreateFPCast(v, ft);
+            };
+            b = toA(b); c = toA(c);
+            llvm::Function* fn = llvm::Intrinsic::getOrInsertDeclaration(
+                &mod, llvm::Intrinsic::fma, {ft});
+            return builder.CreateCall(fn, {a, b, c});
+        }
+        unsupported("Math." + name + " is not yet available in a kernel on "
+                    "device — transcendentals (sin/cos/tan/exp/log/pow) need "
+                    "device-library linking (pending); the natively-lowering "
+                    "ops are sqrt/floor/ceil/trunc/round/abs/min/max/fma");
     }
 
     // Resolve a call `name(args)` / `Cls.name(args)` to a sibling @Device method
