@@ -587,8 +587,13 @@ void* __cajeta_args_make(int64_t argc, char** argv,
                          int64_t off_bytes, int64_t off_byte_len,
                          int64_t off_mode, int64_t off_cplen) {
     if (argc < 0) argc = 0;
-    void* arr = __cajeta_new_array_header(8, sizeof(void*), (uint64_t) argc);
-    void** elems = (void**) ((char*) arr + 8);
+    // cajeta `String[]` has array LLVM type `{ i64, [0 x %String] }`, so the
+    // element STRIDE is the full String struct size — but each slot holds a
+    // `String*` POINTER in its first 8 bytes (the codegen stores/loads a
+    // pointer per element; see the aggregate-init lowering). So: allocate the
+    // backing with `str_size` stride, then store one heap String* per slot.
+    void* arr = __cajeta_new_array_header(8, (uint64_t) str_size, (uint64_t) argc);
+    char* base = (char*) arr + 8;
     for (int64_t i = 0; i < argc; i++) {
         const char* s = (argv && argv[i]) ? argv[i] : "";
         int64_t len = (int64_t) strlen(s);
@@ -598,14 +603,15 @@ void* __cajeta_args_make(int64_t argc, char** argv,
         void* bytes = __cajeta_new_array_header(8, 1, (uint64_t) (len + 1));
         *((int64_t*) bytes) = len;                       // count excludes the NUL
         memcpy((char*) bytes + 8, s, (size_t) len + 1);  // copy incl. the NUL
-        // String instance: vtable is field 0 (offset 0 by construction).
+        // Heap String instance (vtable is field 0, offset 0 by construction).
         void* str = __cajeta_alloc((uint64_t) str_size);
         *(void**)   ((char*) str)                = string_vtable;
         *(void**)   ((char*) str + off_bytes)    = bytes;
         *(int32_t*) ((char*) str + off_byte_len) = (int32_t) len;
         *(int32_t*) ((char*) str + off_mode)     = 0;    // owned: drop reclaims bytes
         *(int32_t*) ((char*) str + off_cplen)    = -1;   // codepoint length uncomputed
-        elems[i] = str;
+        // Store the pointer at the (str_size-strided) element slot.
+        *(void**) (base + (size_t) i * (size_t) str_size) = str;
     }
     return arr;
 }
