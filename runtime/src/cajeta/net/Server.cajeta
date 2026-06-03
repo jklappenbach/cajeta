@@ -1,0 +1,425 @@
+package cajeta.net;
+
+import cajeta.net.ServerBuilder;
+import cajeta.net.SocketAddress;
+import cajeta.net.TcpListener;
+import cajeta.net.TcpStream;
+import cajeta.net.ServerState;
+import cajeta.threading.AtomicInt32;
+import cajeta.time.Duration;
+
+/**
+ * The **TCP server core** — `bind` + `listen` (over
+ * [`TcpListener`](TcpListener.cajeta), NET-1.4), an `acceptAsync` loop
+ * (over [`TcpListener.acceptAsync`](TcpListener.cajeta#acceptAsync),
+ * NET-3.3), a connection **handler** contract, and **graceful
+ * shutdown** (stop accepting, drain in-flight connections with a
+ * deadline). This is plan item **NET-4.1** — the shared scaffolding the
+ * two accept *models* build on:
+ *
+ *   - **Model A — fiber-per-connection** (NET-4.2): the default, and the
+ *     dispatch this core ships ([`dispatch`](#dispatch) spawns one fiber
+ *     per accepted socket inside the server's owning `scope`).
+ *   - **Model B — event-driven shared-pool** (NET-4.3): re-homes
+ *     [`dispatch`](#dispatch) onto a bounded worker pool + readiness
+ *     `Channel`, re-using this core's lifecycle, accept loop, and drain.
+ *
+ * Backpressure / connection caps (NET-4.4) and the `Server.builder()`
+ * model-selection surface (NET-4.5) layer on top — see
+ * [`cajeta-docs/Net.md` §Server accept models](../../../../../cajeta-docs/Net.md#server-accept-models).
+ *
+ * ## Shape
+ *
+ * ```cajeta
+ * Server s = Server.bind(SocketAddress.parse("0.0.0.0:8080"),
+ *                        (conn) -> handle(conn));
+ * scope {
+ *     spawn s.runAsync();                 // accept loop runs on a fiber
+ *     // ... later, from another fiber / a signal handler:
+ *     s.shutdown(Duration.ofSeconds(30)); // stop accepting + drain
+ * }
+ * ```
+ *
+ * The handler is `(TcpStream) -> void`: it owns the accepted connection
+ * for its lifetime and **closes it** when done (the server hands off
+ * ownership; it does not double-close). A handler that throws does not
+ * tear down the server — the per-connection fiber's exception is
+ * isolated (see [`dispatch`](#dispatch)).
+ *
+ * ## Lifecycle (NET-4.1)
+ *
+ * A single [`AtomicInt32`](../threading/AtomicInt32.cajeta) `state` runs
+ * the [`ServerState`](ServerState.cajeta) machine
+ * (`NEW → RUNNING → DRAINING → STOPPED`). `serve` / `runAsync` flips
+ * `NEW → RUNNING` (refusing a double-start), the accept loop runs while
+ * `state == RUNNING`, and [`shutdown`](#shutdown) latches
+ * `RUNNING → DRAINING`, closes the listener (which wakes the parked
+ * `acceptAsync`), then awaits the in-flight count to reach zero — or the
+ * deadline — before settling on `STOPPED`.
+ *
+ * ## In-flight accounting
+ *
+ * [`inflight`](#inflight) is the count of connection handlers that have
+ * been dispatched but not yet returned. [`dispatch`](#dispatch) bumps it
+ * before running the handler and drops it in a `finally` (so a throwing
+ * handler still decrements). [`shutdown`](#shutdown)'s drain polls this
+ * to zero, which is the precise definition of "no connection dropped
+ * mid-response" the NET-4 acceptance
+ * (`ServerTests.gracefulShutdownDrainsInflight`) requires.
+ */
+public class Server {
+    /**
+     * The bound, listening socket this server accepts on (NET-1.4).
+     * Field index 1 (after the vtable).
+     */
+    public TcpListener listener;
+
+    /**
+     * The connection handler: invoked once per accepted connection with
+     * the owned [`TcpStream`](TcpStream.cajeta). Runs on a fiber (see
+     * [`dispatch`](#dispatch)); owns + closes the stream.
+     */
+    public (TcpStream) -> void handler;
+
+    /**
+     * The lifecycle state — a [`ServerState`](ServerState.cajeta) ordinal
+     * held atomically so the accept loop and a concurrent
+     * [`shutdown`](#shutdown) coordinate without a lock. Starts at
+     * [`ServerState.NEW`](ServerState.cajeta#NEW).
+     */
+    public AtomicInt32 state;
+
+    /**
+     * Live in-flight connection handlers — dispatched but not yet
+     * returned. Bumped by [`dispatch`](#dispatch), drained to zero by
+     * [`shutdown`](#shutdown). The graceful-drain signal.
+     */
+    public AtomicInt32 inflight;
+
+    /**
+     * Internal ctor. User code goes through the [`bind`](#bind) factory,
+     * which binds the listener and wires the handler. A directly-built
+     * instance starts in [`ServerState.NEW`](ServerState.cajeta#NEW) with
+     * a zero in-flight count.
+     */
+    public Server(TcpListener listener, (TcpStream) -> void handler) {
+        this.listener = listener;
+        this.handler = handler;
+        this.state = heap AtomicInt32(ServerState.NEW);
+        this.inflight = heap AtomicInt32(0);
+    }
+
+    // ----- model-selection builder (NET-4.5) -------------------------------
+
+    /**
+     * Open a [`ServerBuilder`](ServerBuilder.cajeta) — the fluent
+     * **model-selection** surface (plan item **NET-4.5**). It lets a
+     * caller pick *which* accept stack a server uses without naming the
+     * concrete class:
+     *
+     * ```cajeta
+     * Server.builder()
+     *     .bind("0.0.0.0:8080")
+     *     .model(ServerModel.sharedPool(8))   // or .fiberPerConnection()
+     *     .handler((conn) -> handle(conn))
+     *     .serve();
+     * ```
+     *
+     * The builder defaults to
+     * [`ServerModel.fiberPerConnection()`](ServerModel.cajeta#fiberPerConnection)
+     * (Model A — the simplest, lowest-latency stack), and
+     * [`build`](ServerBuilder.cajeta#build) dispatches to either
+     * [`Server.bind`](#bind) or
+     * [`SharedPoolServer.bind`](SharedPoolServer.cajeta#bind). See
+     * [`cajeta-docs/Net.md` §Server accept models](../../../../../cajeta-docs/Net.md#server-accept-models)
+     * for the when-to-use-which tradeoff.
+     */
+    public static #ServerBuilder builder() {
+        return heap ServerBuilder();
+    }
+
+    // ----- bind / listen factory (NET-1.4) ---------------------------------
+
+    /**
+     * Bind a server to `addr` with the supplied connection `handler`,
+     * using the default listen backlog. Delegates the socket setup to
+     * [`TcpListener.bind`](TcpListener.cajeta#bind) — `SO_REUSEADDR` on,
+     * the family taken from `addr` — so a `bind` to a taken port surfaces
+     * the same [`AddressInUseException`](AddressInUseException.cajeta) the
+     * listener raises. The returned server is in
+     * [`ServerState.NEW`](ServerState.cajeta#NEW); call
+     * [`serve`](#serve) (or `spawn` [`runAsync`](#runAsync)) to start the
+     * accept loop.
+     *
+     * @param addr    the local address + port to bind (port `0` ⇒ an
+     *                ephemeral port, readable afterward via
+     *                [`localAddress`](#localAddress)).
+     * @param handler the per-connection handler, `(TcpStream) -> void`.
+     * @return an owned, bound — but not yet serving — `Server`.
+     */
+    public static #Server bind(SocketAddress addr, (TcpStream) -> void handler) {
+        TcpListener l = TcpListener.bind(addr);
+        return heap Server(l, handler);
+    }
+
+    /**
+     * Bind with an explicit accept-queue `backlog` (the `listen(2)`
+     * backlog — see [`TcpListener.bindWithBacklog`](TcpListener.cajeta#bindWithBacklog)).
+     * Otherwise identical to [`bind`](#bind). The backlog is the NET-4.4
+     * config knob the spec surfaces; the core honors it here so a server
+     * built before NET-4.4 lands already gets a tunable accept queue.
+     */
+    public static #Server bindWithBacklog(SocketAddress addr, int32 backlog,
+                                          (TcpStream) -> void handler) {
+        TcpListener l = TcpListener.bindWithBacklog(addr, backlog);
+        return heap Server(l, handler);
+    }
+
+    // ----- accept loop (NET-3.3 / NET-4.1) ---------------------------------
+
+    /**
+     * Run the accept loop **synchronously** on the calling fiber until
+     * [`shutdown`](#shutdown) latches the state out of
+     * [`RUNNING`](ServerState.cajeta#RUNNING). Flips
+     * [`NEW → RUNNING`](ServerState.cajeta) once (a second `serve` on the
+     * same server is a no-op and returns immediately — the state is
+     * already past `NEW`).
+     *
+     * The loop owns all connection fibers in a single `scope { ... }` —
+     * structured-concurrency friendly: the scope's closing `}` joins
+     * every still-running connection handler before `serve` returns, so a
+     * `shutdown` that stopped accepting cannot leave a handler orphaned.
+     * Inside the scope it repeatedly [`acceptAsync`](TcpListener.cajeta#acceptAsync)s
+     * (parking the fiber, never the carrier) and hands each accepted
+     * connection to [`dispatch`](#dispatch).
+     *
+     * When [`shutdown`](#shutdown) closes the listener, the parked
+     * `acceptAsync` unblocks with a [`NetException`](NetException.cajeta);
+     * the loop swallows that **iff** it is already leaving `RUNNING`
+     * (an expected shutdown wake), and re-raises it otherwise (a real
+     * accept fault).
+     */
+    public void serve() {
+        if (!this.state.compareAndSet(ServerState.NEW, ServerState.RUNNING)) {
+            return;   // already serving (or past it) — idempotent guard
+        }
+        scope {
+            while (this.state.load() == ServerState.RUNNING) {
+                TcpStream conn = this.acceptNext();
+                if (conn == null) {
+                    break;   // listener closed by shutdown — stop accepting
+                }
+                this.dispatch(conn);
+            }
+        }
+        // The scope's `}` has joined every connection fiber. If a
+        // concurrent shutdown is mid-drain it observes inflight == 0 now.
+    }
+
+    /**
+     * The async sibling of [`serve`](#serve) — the body a caller
+     * `spawn`s so the accept loop runs on its own fiber while the caller
+     * keeps control (to, e.g., later call [`shutdown`](#shutdown)):
+     *
+     * ```cajeta
+     * scope { spawn server.runAsync(); ... server.shutdown(d); }
+     * ```
+     *
+     * Returns `0` (a `spawn` target needs a return type; the meaningful
+     * effect is the served connections), mirroring the
+     * [`ParallelDriver`](../lang/stream/ParallelDriver.cajeta) worker
+     * convention.
+     */
+    public async int32 runAsync() {
+        this.serve();
+        return 0;
+    }
+
+    /**
+     * Accept the next connection, or `null` once the listener has been
+     * closed by [`shutdown`](#shutdown). Wraps
+     * [`TcpListener.acceptAsync`](TcpListener.cajeta#acceptAsync): on a
+     * clean accept it returns the stream; on the
+     * [`NetException`](NetException.cajeta) a `shutdown`-driven listener
+     * close raises, it returns `null` **iff** the server is already
+     * leaving [`RUNNING`](ServerState.cajeta#RUNNING) (the expected
+     * shutdown wake) — and re-raises otherwise, so a genuine accept fault
+     * is never silently swallowed.
+     */
+    public #TcpStream acceptNext() {
+        try {
+            return this.listener.acceptAsync();
+        } catch (NetException e) {
+            if (this.state.load() != ServerState.RUNNING) {
+                return null;   // expected: shutdown closed the listener
+            }
+            throw e;           // a real accept fault — propagate
+        }
+    }
+
+    // ----- per-connection dispatch (the model seam) ------------------------
+
+    /**
+     * Dispatch one accepted connection to the handler. This is the
+     * **model seam**: the NET-4.1 core ships the **fiber-per-connection**
+     * dispatch (Model A, NET-4.2's default) — `spawn` the handler on its
+     * own fiber inside the [`serve`](#serve) scope, accounted in
+     * [`inflight`](#inflight) so [`shutdown`](#shutdown) can drain it. The
+     * shared-pool model (NET-4.3) overrides this seam to enqueue the
+     * connection onto a worker `Channel` instead, leaving the rest of the
+     * core (lifecycle, accept loop, drain) untouched.
+     *
+     * The `spawn` is issued from within `serve`'s `scope`, so every
+     * connection fiber is owned + joined by that scope — the
+     * structured-concurrency property the spec requires. The spawned body
+     * is the **static** [`serveConnection`](#serveConnection) worker (the
+     * per-fiber state — handler + in-flight counter + the connection — is
+     * passed explicitly, the
+     * [`ParallelDriver`](../lang/stream/ParallelDriver.cajeta) spawn
+     * convention) so the connection fiber captures no `this`.
+     */
+    public void dispatch(#TcpStream conn) {
+        this.inflight.fetchAdd(1);
+        spawn Server.serveConnection(this.handler, this.inflight, conn);
+    }
+
+    /**
+     * Run the handler for one connection, then drop the in-flight count —
+     * in a `finally`, so a handler that **throws** still decrements (its
+     * exception is isolated to this fiber and never tears down the accept
+     * loop). The handler owns the stream and is responsible for closing
+     * it; this worker does not double-close.
+     *
+     * Static + `async` — the [`spawn`](#dispatch) target. The per-fiber
+     * state is passed explicitly (no captured `this`): `handler` is the
+     * connection callback, `inflight` the server's shared in-flight
+     * counter to drop on return, `conn` the owned stream. Returns `0` by
+     * the same worker convention as
+     * [`ParallelDriver`](../lang/stream/ParallelDriver.cajeta)'s
+     * `reduceWorker`.
+     */
+    public static async int32 serveConnection((TcpStream) -> void handler,
+                                               AtomicInt32 inflight,
+                                               #TcpStream conn) {
+        try {
+            handler(conn);
+        } finally {
+            inflight.fetchAdd(-1);
+        }
+        return 0;
+    }
+
+    // ----- graceful shutdown (NET-4.1) -------------------------------------
+
+    /**
+     * **Graceful shutdown**: stop accepting new connections, then drain
+     * the in-flight ones with a deadline.
+     *
+     *   1. Latch [`RUNNING → DRAINING`](ServerState.cajeta) via
+     *      `compareAndSet`. If that CAS does not fire the server was never
+     *      `RUNNING` (already draining / stopped / never served) and this
+     *      call returns immediately — `shutdown` is idempotent.
+     *   2. [`close`](TcpListener.cajeta#close) the listener. That wakes the
+     *      parked [`acceptAsync`](TcpListener.cajeta#acceptAsync) in
+     *      [`acceptNext`](#acceptNext), which — seeing the state is no
+     *      longer `RUNNING` — returns `null`, so the accept loop exits and
+     *      [`serve`](#serve)'s scope begins joining the connection fibers.
+     *   3. **Drain** — poll [`inflight`](#inflight) to zero, parking the
+     *      caller's fiber between polls (`Cajeta.fiberSleepNanos`, so the
+     *      carrier stays free), until either it reaches zero (clean drain)
+     *      or the `deadline` elapses (force stop — remaining handlers are
+     *      abandoned to the scope-join, which a future NET-4.4 force-close
+     *      can make hard).
+     *   4. Settle on [`STOPPED`](ServerState.cajeta#STOPPED).
+     *
+     * @param deadline the maximum time to wait for in-flight connections
+     *                 to finish before forcing the stop. `0` ⇒ stop
+     *                 immediately without draining.
+     * @return `true` if every in-flight connection drained within the
+     *         deadline; `false` if the deadline forced the stop with
+     *         connections still in flight.
+     */
+    public boolean shutdown(Duration deadline) {
+        if (!this.state.compareAndSet(ServerState.RUNNING, ServerState.DRAINING)) {
+            return true;   // not running — nothing to gracefully stop
+        }
+        // Stop accepting: closing the listener wakes the parked acceptAsync.
+        this.listener.close();
+
+        boolean drained = this.drainInflight(deadline);
+
+        this.state.store(ServerState.STOPPED);
+        return drained;
+    }
+
+    /**
+     * Block (parking the fiber, never the carrier) until
+     * [`inflight`](#inflight) reaches zero or `deadline` elapses. Returns
+     * `true` on a clean drain, `false` if the deadline was hit with
+     * connections still running.
+     *
+     * The wait is a poll-with-backoff over the atomic in-flight count —
+     * the same shape [`Tasks.selectReceive`](../threading/Tasks.cajeta#selectReceive)
+     * uses — rather than a condition variable, because the decrements come
+     * from `finally` blocks on independent connection fibers and a poll
+     * keeps the drain free of a shared wait primitive on the hot accept
+     * path. The backoff (100µs → 10ms cap) keeps a quiescent drain cheap.
+     * A `deadline` of `0` ns returns immediately (`false` unless already
+     * at zero) — the "stop now" path.
+     */
+    public boolean drainInflight(Duration deadline) {
+        int64 stop = Cajeta.currentTimeNanos() + deadline.toNanos();
+        int64 backoff = 100000;           // 100µs, doubling to a 10ms cap
+        while (this.inflight.load() > 0) {
+            if (Cajeta.currentTimeNanos() >= stop) {
+                return false;             // deadline hit — connections remain
+            }
+            Cajeta.fiberSleepNanos(backoff);
+            if (backoff < 10000000) {
+                backoff = backoff * 2;
+            }
+        }
+        return true;
+    }
+
+    // ----- introspection ---------------------------------------------------
+
+    /**
+     * The local address this server is bound to — for a `:0` (ephemeral)
+     * bind this carries the kernel-assigned port (resolved at bind time).
+     * Reads through to [`TcpListener.localAddress`](TcpListener.cajeta#localAddress);
+     * no syscall.
+     */
+    public SocketAddress localAddress() {
+        return this.listener.localAddress();
+    }
+
+    /**
+     * The current lifecycle state — a [`ServerState`](ServerState.cajeta)
+     * ordinal (`NEW` / `RUNNING` / `DRAINING` / `STOPPED`). A snapshot;
+     * advisory under a concurrent transition.
+     */
+    public int32 currentState() {
+        return this.state.load();
+    }
+
+    /**
+     * `true` while the accept loop is live (state is
+     * [`RUNNING`](ServerState.cajeta#RUNNING)). Flips to `false` the
+     * instant [`shutdown`](#shutdown) latches the drain.
+     */
+    public boolean isRunning() {
+        return this.state.load() == ServerState.RUNNING;
+    }
+
+    /**
+     * The current count of in-flight connection handlers (dispatched but
+     * not yet returned). The graceful-drain signal
+     * [`shutdown`](#shutdown) polls to zero; also the value the
+     * `ServerTests.gracefulShutdownDrainsInflight` acceptance asserts
+     * returns to zero after a clean stop.
+     */
+    public int32 inflightCount() {
+        return this.inflight.load();
+    }
+}

@@ -1,0 +1,775 @@
+package cajeta.net;
+
+import cajeta.lang.String;
+import cajeta.net.IpAddress;
+import cajeta.net.SocketAddress;
+import cajeta.net.NetException;
+import cajeta.net.ConnectionRefusedException;
+import cajeta.net.TimedOutException;
+import cajeta.net.dns.Dns;
+import cajeta.net.reactor.Reactor;
+
+/**
+ * A connected **TCP stream** — the blocking client/peer socket of
+ * plan item **NET-1.3** (the async `*Async` forms arrive with the
+ * reactor, NET-3.3).
+ *
+ * ## Shape (mirrors [`cajeta.io.file.File`](../io/file/File.cajeta))
+ *
+ * Like `File`, a `TcpStream`'s method bodies are **intrinsic-lowered
+ * at the call site** — the compiler recognizes a
+ * `cajeta.net.TcpStream`-typed receiver and emits the corresponding
+ * `__cajeta_net_*` native call (NET-1.1 socket intrinsics +
+ * NET-1.2 `__cajeta_net_sockaddr_pack`/`_unpack` +
+ * NET-1.3 `__cajeta_net_getsockname`/`_getpeername`), exactly the way
+ * a `File`-receiver lowers to `__cajeta_file_*`. The stub bodies below
+ * exist **for the parser**; the real behavior is the codegen.
+ *
+ * The [`fd`](#fd) field is **pinned at field index 0** (immediately
+ * after the vtable slot), the same index `File.fd` / `FileReader.fd`
+ * use, so the descriptor-load codegen is byte-identical across file
+ * and socket types — the spec's "the `fd` field is pinned at the same
+ * field index `File` uses" requirement
+ * ([`cajeta-docs/Net.md`](../../../../../cajeta-docs/Net.md) §Sockets).
+ *
+ * ## Blocking semantics
+ *
+ * Every method parks the **OS thread** in the syscall (no fiber
+ * integration yet — that is NET-3.3). Useful for the Phase-1 bring-up
+ * and simple scripts; servers use the async forms. A failing syscall
+ * raises the mapped [`NetException`](NetException.cajeta) subtype via
+ * [`NetErrors.fromErrno`](NetErrors.cajeta), citing the peer address.
+ *
+ * ## Error model
+ *
+ * - [`connect`](#connect) to a closed port raises
+ *   [`ConnectionRefusedException`](ConnectionRefusedException.cajeta).
+ * - A write to a closed peer raises
+ *   [`BrokenPipeException`](BrokenPipeException.cajeta).
+ * - [`read`](#read) returns `0` on an orderly peer close (EOF), never
+ *   throwing for that case — the loop terminates on `0`, matching
+ *   `FileReader.read`.
+ */
+public class TcpStream {
+    /**
+     * OS socket descriptor, or `-1` once closed. **Field index 0**
+     * (pinned — see the class doc). The intrinsic codegen loads this
+     * to address `__cajeta_net_send`/`_recv`/`_shutdown`/`_close`/
+     * `_getsockname`/`_getpeername`.
+     */
+    public int32 fd;
+
+    /**
+     * Internal-only ctor: wraps an already-connected/accepted
+     * descriptor. User code reaches a `TcpStream` through
+     * [`connect`](#connect) (client) or `TcpListener.accept()`
+     * (server, NET-1.4) rather than constructing one directly — those
+     * factories bind `fd` from the `connect`/`accept` syscall. The
+     * field-pinning no-arg shape stays constructible (`fd = -1`,
+     * the "no socket" sentinel) so a partially-built instance never
+     * carries a dangling descriptor.
+     */
+    public TcpStream(int32 fd) {
+        this.fd = fd;
+    }
+
+    /**
+     * The **would-block sentinel** returned by the non-blocking I/O forms
+     * ([`recvOrWouldBlock`](#recvOrWouldBlock) /
+     * [`sendOrWouldBlock`](#sendOrWouldBlock)) when the operation could not
+     * complete immediately and would have blocked (plan item **NET-1.7**).
+     *
+     * It is a **value, not an exception** — the spec
+     * ([`cajeta-docs/Net.md`](../../../../../cajeta-docs/Net.md) §Sockets)
+     * requires "operations that would block return a `WouldBlock` result (a
+     * distinct value, **not** an exception) so the reactor can drive
+     * readiness loops." A throw on every empty read would make the reactor's
+     * hot path pay an unwind per spin; a negative sentinel costs a compare.
+     *
+     * `-1` is distinct from every legal outcome of these methods: a count is
+     * always `>= 0` (`0` is a legal orderly-EOF on read, an empty send on
+     * write), so a caller branches `if (n == TcpStream.WOULD_BLOCK) …` cleanly.
+     * The reactor (NET-3) loops: try the non-blocking op; on `WOULD_BLOCK`,
+     * `await` readiness; retry. Application code normally uses the `*Async`
+     * forms (NET-3.3) and never sees this sentinel.
+     */
+    public static final int64 WOULD_BLOCK = -1;
+
+    // ----- Non-blocking mode (NET-1.7) -----
+
+    /**
+     * Put this stream's descriptor in **non-blocking** (`on == true`) or
+     * blocking (`on == false`) mode. In non-blocking mode the
+     * [`recvOrWouldBlock`](#recvOrWouldBlock) /
+     * [`sendOrWouldBlock`](#sendOrWouldBlock) forms return
+     * [`WOULD_BLOCK`](#WOULD_BLOCK) instead of parking the thread when the
+     * socket is not ready — the foundation the reactor (NET-3) drives
+     * readiness loops on.
+     *
+     * Intrinsic-lowered to
+     * `__cajeta_net_set_nonblocking_tracked(this.fd, on ? 1 : 0)`; a `-1`
+     * return raises the mapped [`NetException`](NetException.cajeta) via
+     * [`NetErrors.fromErrno`](NetErrors.cajeta).
+     */
+    public void setNonBlocking(boolean on) {
+        return;
+    }
+
+    /**
+     * `true` iff this stream is currently in non-blocking mode. Intrinsic-
+     * lowered to `__cajeta_net_get_nonblocking(this.fd) != 0`. (On POSIX this
+     * is an authoritative `fcntl(F_GETFL)` query; on Windows — where Winsock's
+     * `FIONBIO` is write-only — it reports the last value set through
+     * [`setNonBlocking`](#setNonBlocking), defaulting to blocking.)
+     */
+    public boolean isNonBlocking() {
+        return false;
+    }
+
+    /**
+     * Non-blocking [`read`](#read): read up to `length` bytes, returning the
+     * count filled (`>= 0`, `0` = orderly EOF), or [`WOULD_BLOCK`](#WOULD_BLOCK)
+     * (`-1`) if the socket has no data ready and this stream is in
+     * non-blocking mode. A **hard** error still raises the mapped
+     * [`NetException`](NetException.cajeta) — only the would-block case is
+     * surfaced as the value (NET-1.7), so a `ConnectionReset` mid-stream is
+     * not silently swallowed.
+     *
+     * Intrinsic-lowered to: `n = __cajeta_net_recv(this.fd, &dst[8+offset],
+     * length, 0)`; if `n < 0` then `if (__cajeta_net_is_wouldblock())` return
+     * `WOULD_BLOCK` else `throw NetErrors.fromErrno(__cajeta_net_last_error(),
+     * "recv")`.
+     */
+    public int64 recvOrWouldBlock(int8[] dst, int64 offset, int64 length) {
+        return 0;
+    }
+
+    /**
+     * Non-blocking [`write`](#write): write up to `length` bytes, returning
+     * the count sent (`>= 0`), or [`WOULD_BLOCK`](#WOULD_BLOCK) (`-1`) if the
+     * send buffer is full and this stream is in non-blocking mode. A hard
+     * error (e.g. [`BrokenPipeException`](BrokenPipeException.cajeta)) still
+     * raises.
+     *
+     * Intrinsic-lowered like [`recvOrWouldBlock`](#recvOrWouldBlock) over
+     * `__cajeta_net_send`.
+     */
+    public int64 sendOrWouldBlock(int8[] data, int64 offset, int64 length) {
+        return 0;
+    }
+
+    // ----- Factory (client connect) -----
+
+    /**
+     * Open a blocking TCP connection to `addr` and return the
+     * connected stream. Intrinsic-lowered to: pack `addr` via
+     * `__cajeta_net_sockaddr_pack` → `__cajeta_net_socket` →
+     * `__cajeta_net_connect`; on the connect failure sentinel the
+     * codegen raises `NetErrors.fromErrno(__cajeta_net_last_error(),
+     * "connect to " + addr.toString())` — so a dead port surfaces as
+     * [`ConnectionRefusedException`](ConnectionRefusedException.cajeta)
+     * citing the address (the `connectRefusedCitesAddress` acceptance).
+     *
+     * Takes ownership of `addr`.
+     */
+    public static #TcpStream connect(#SocketAddress addr) {
+        return heap TcpStream(-1);
+    }
+
+    /**
+     * **Sequential v4/v6 connect fallback** (plan item **NET-2.6**) —
+     * resolve `host` to its [`SocketAddress`](SocketAddress.cajeta) list
+     * (via [`Dns.resolve(host, port)`](dns/Dns.cajeta), the blocking
+     * NET-2.2 resolver), then **try the addresses in order until one
+     * connects**, returning the first stream that comes up.
+     *
+     * This is the connect helper the spec
+     * ([`cajeta-docs/Net.md`](../../../../../cajeta-docs/Net.md) §Sockets)
+     * describes: "`connect(host, port)` resolves then tries the returned
+     * addresses **sequentially** until one connects (v1)." It is the
+     * **blocking** form — its only dependencies are NET-2.2 (resolve)
+     * and NET-1.3 (the [`connect(addr)`](#connect) intrinsic). The
+     * `*Async` sibling and **happy-eyeballs** parallel v4/v6 racing
+     * (RFC 8305) are deliberately out of scope here — deferred to
+     * NET-12.6 — so v1 stays single-threaded and deterministic: address
+     * `i+1` is only attempted after address `i` has fully failed.
+     *
+     * ## Fallback semantics
+     *
+     * A resolve that yields, say, an unreachable IPv6 record first and a
+     * live IPv4 record second connects to the IPv4 one — the dead first
+     * address is skipped, not fatal (the
+     * `DnsTests.connectFallsThroughAddressList` acceptance). Each
+     * attempt's failure is a [`NetException`](NetException.cajeta)
+     * subtype (e.g. [`ConnectionRefusedException`](ConnectionRefusedException.cajeta)
+     * / `HostUnreachableException`); the loop swallows it and advances.
+     * Only when **every** address has failed does it raise — a
+     * [`ConnectionRefusedException`](ConnectionRefusedException.cajeta)
+     * whose message cites the `host` (so the diagnostic is actionable,
+     * matching the `connectRefusedCitesAddress` discipline).
+     *
+     * A failed *resolution* (no addresses, bad host) propagates the
+     * `Dns.resolve` [`NetException`](NetException.cajeta) unchanged — it
+     * is a distinct fault from "resolved, but nothing answered."
+     *
+     * @param host the hostname or numeric IP literal to connect to.
+     * @param port the `0..65535` TCP port baked into every candidate.
+     * @return a connected [`TcpStream`](TcpStream.cajeta) to the first
+     *         address that accepted the connection.
+     * @throws NetException on a resolution failure (from `Dns.resolve`)
+     *         or when no resolved address could be connected.
+     */
+    public static #TcpStream connect(String host, int32 port) {
+        SocketAddress[] addrs = Dns.resolve(host, port);
+        return TcpStream.connectAny(addrs, host);
+    }
+
+    /**
+     * The sequential-fallback core: walk `addrs` in order, attempting a
+     * blocking [`connect(addr)`](#connect) on each, and return the first
+     * stream that connects. A per-address failure is caught and the next
+     * address tried; exhausting the list raises a citing
+     * [`ConnectionRefusedException`](ConnectionRefusedException.cajeta).
+     *
+     * Each attempt rebuilds a **fresh owned**
+     * [`SocketAddress`](SocketAddress.cajeta) from the candidate's octets
+     * + port rather than moving the array element into the consuming
+     * [`connect(#SocketAddress)`](#connect) — so the resolved `addrs`
+     * array stays whole across the loop and is dropped intact at scope
+     * end (no partially-emptied array, no element aliasing the freed
+     * native resolve block). The rebuild mirrors the
+     * [`Dns.resolve`](dns/Dns.cajeta) unmarshal path
+     * (`IpAddress.fromOctets` + `SocketAddress.of`), so a candidate and
+     * its rebuilt copy are byte-identical.
+     */
+    private static #TcpStream connectAny(SocketAddress[] addrs, String host) {
+        int32 count = addrs.count();
+        int32 i = 0;
+        while (i < count) {
+            // Borrow-read the candidate (never move it out of the array)
+            // and rebuild a fresh owned SocketAddress to hand to the
+            // consuming connect(#SocketAddress).
+            IpAddress ip = addrs[i].getIp();
+            int8[] octets = ip.getOctets();
+            int32 len = 4;
+            if (ip.isV6()) {
+                len = 16;
+            }
+            int32 port = addrs[i].getPort();
+            IpAddress ipCopy = IpAddress.fromOctets(octets, len);
+            SocketAddress candidate = SocketAddress.of(#ipCopy, port);
+            try {
+                TcpStream s = TcpStream.connect(#candidate);
+                return #s;
+            } catch (NetException e) {
+                // This address failed — fall through to the next one.
+                // (Happy-eyeballs racing is NET-12.6; v1 is sequential.)
+            }
+            i = i + 1;
+        }
+        // Every resolved address failed to connect.
+        throw heap ConnectionRefusedException(
+            TcpStream.connectFailureMessage(host));
+    }
+
+    /**
+     * Build the all-addresses-failed message
+     * `"failed to connect to host: <host>"` so the raised
+     * [`ConnectionRefusedException`](ConnectionRefusedException.cajeta)
+     * names the host (the actionable-diagnostic discipline). Concatenates
+     * the fixed prefix with the host bytes into a fresh owned `String`,
+     * mirroring [`Dns.failureMessage`](dns/Dns.cajeta) since the v1
+     * stdlib `String` has no `concat` primitive.
+     */
+    private static #String connectFailureMessage(String host) {
+        // "failed to connect to host: " — 27 bytes.
+        int8[] prefix = new int8[27];
+        prefix[0]  = (int8) 102;  // 'f'
+        prefix[1]  = (int8) 97;   // 'a'
+        prefix[2]  = (int8) 105;  // 'i'
+        prefix[3]  = (int8) 108;  // 'l'
+        prefix[4]  = (int8) 101;  // 'e'
+        prefix[5]  = (int8) 100;  // 'd'
+        prefix[6]  = (int8) 32;   // ' '
+        prefix[7]  = (int8) 116;  // 't'
+        prefix[8]  = (int8) 111;  // 'o'
+        prefix[9]  = (int8) 32;   // ' '
+        prefix[10] = (int8) 99;   // 'c'
+        prefix[11] = (int8) 111;  // 'o'
+        prefix[12] = (int8) 110;  // 'n'
+        prefix[13] = (int8) 110;  // 'n'
+        prefix[14] = (int8) 101;  // 'e'
+        prefix[15] = (int8) 99;   // 'c'
+        prefix[16] = (int8) 116;  // 't'
+        prefix[17] = (int8) 32;   // ' '
+        prefix[18] = (int8) 116;  // 't'
+        prefix[19] = (int8) 111;  // 'o'
+        prefix[20] = (int8) 32;   // ' '
+        prefix[21] = (int8) 104;  // 'h'
+        prefix[22] = (int8) 111;  // 'o'
+        prefix[23] = (int8) 115;  // 's'
+        prefix[24] = (int8) 116;  // 't'
+        prefix[25] = (int8) 58;   // ':'
+        prefix[26] = (int8) 32;   // ' '
+
+        int8[] hostBytes = host.bytes;
+        int32 hostLen = host.byteLength;
+        int32 total = 27 + hostLen;
+        int8[] msg = new int8[total];
+        int32 i = 0;
+        while (i < 27) {
+            msg[i] = prefix[i];
+            i = i + 1;
+        }
+        int32 j = 0;
+        while (j < hostLen) {
+            msg[27 + j] = hostBytes[j];
+            j = j + 1;
+        }
+        return heap String(#msg, total);
+    }
+
+    // ----- Instance I/O -----
+
+    /**
+     * Read up to `length` bytes into `dst[offset .. offset+length)`.
+     * Returns the count actually filled; `0` is an orderly peer close
+     * (EOF), not an error. Intrinsic-lowered to
+     * `__cajeta_net_recv(this.fd, &dst[8+offset], length, 0)` (the
+     * `8 +` skips the array header, the same offset `File.read` uses).
+     * A hard error raises the mapped `NetException`.
+     */
+    public int64 read(int8[] dst, int64 offset, int64 length) {
+        return 0;
+    }
+
+    /**
+     * Write `data[offset .. offset+length)`. Returns the count
+     * actually written. Intrinsic-lowered to
+     * `__cajeta_net_send(this.fd, &data[8+offset], length, flags)`
+     * (flags carries `MSG_NOSIGNAL` on Linux so a closed peer surfaces
+     * as [`BrokenPipeException`](BrokenPipeException.cajeta), not a
+     * `SIGPIPE`). A short write is possible; `writeAll` loops over it.
+     */
+    public int64 write(int8[] data, int64 offset, int64 length) {
+        return 0;
+    }
+
+    /**
+     * Write **all** of `data[offset .. offset+length)`, looping over
+     * short writes until every byte is sent or a write raises. The
+     * common case — most callers want this, not the raw `write`.
+     */
+    public void writeAll(int8[] data, int64 offset, int64 length) {
+        int64 sent = 0;
+        while (sent < length) {
+            int64 n = this.write(data, offset + sent, length - sent);
+            if (n <= 0) {
+                throw heap BrokenPipeException(
+                    "writeAll: peer stopped accepting data");
+            }
+            sent = sent + n;
+        }
+    }
+
+    // ----- Async I/O (NET-3.3) -----
+    //
+    // The fiber-parking async forms. Each is the **readiness loop** the spec
+    // ([`cajeta-docs/Net.md`](../../../../../cajeta-docs/Net.md) §The async
+    // model) describes: try the non-blocking syscall; on
+    // [`WOULD_BLOCK`](#WOULD_BLOCK), park the **fiber** on the reactor until the
+    // descriptor is ready (the carrier runs other fibers meanwhile — the
+    // no-carrier-blocks invariant), then retry. The non-blocking primitives
+    // ([`recvOrWouldBlock`](#recvOrWouldBlock) /
+    // [`sendOrWouldBlock`](#sendOrWouldBlock), NET-1.7) surface only the
+    // would-block case as the sentinel value; a hard error still raises the
+    // mapped [`NetException`](NetException.cajeta), so the loop never spins on a
+    // real fault.
+    //
+    // These return a plain value (not a `Task`); the **caller** composes
+    // concurrency with the existing `cajeta.threading` vocabulary — `await`
+    // already drives the fiber, and a deadline is
+    // `Tasks.withTimeout(d, spawn conn.readAsync(buf))` (NET-3.4), whose
+    // cancellation path calls [`Reactor.deregister`](reactor/Reactor.cajeta#deregister).
+    // The stream must be in non-blocking mode for the loop to park rather than
+    // block the carrier in the syscall; the async forms set that themselves so
+    // a caller need not remember to (idempotent — a no-op if already set).
+
+    /**
+     * Async [`read`](#read): read up to `length` bytes into
+     * `dst[offset .. offset+length)`, **parking the fiber** (never the carrier)
+     * until data is available. Returns the count actually filled (`>= 0`); `0`
+     * is an orderly peer close (EOF), not an error — the same contract as the
+     * blocking [`read`](#read), so an `await`-driven read loop terminates on `0`
+     * identically.
+     *
+     * Loop: ensure non-blocking mode → `recvOrWouldBlock`; while it reports
+     * [`WOULD_BLOCK`](#WOULD_BLOCK), `Reactor.awaitReadable(this.fd)` parks the
+     * fiber until the socket is readable, then retry. A reactor error breaks the
+     * loop with a [`ConnectionResetException`](ConnectionResetException.cajeta)-
+     * adjacent failure surfaced as a [`NetException`](NetException.cajeta).
+     */
+    public int64 readAsync(int8[] dst, int64 offset, int64 length) {
+        this.setNonBlocking(true);
+        Reactor.init();
+        while (true) {
+            int64 n = this.recvOrWouldBlock(dst, offset, length);
+            if (n != TcpStream.WOULD_BLOCK) {
+                return n;
+            }
+            if (!Reactor.awaitReadable(this.fd)) {
+                throw heap NetException("readAsync: reactor wait failed");
+            }
+        }
+        // Unreachable — the loop returns on a non-would-block outcome or throws.
+        return 0;
+    }
+
+    /**
+     * Async [`write`](#write): write up to `length` bytes from
+     * `data[offset .. offset+length)`, parking the fiber until the send buffer
+     * has room. Returns the count actually written (`>= 0`); a short write is
+     * possible (the kernel accepted only part), and [`writeAllAsync`](#writeAllAsync)
+     * loops over it.
+     *
+     * Loop: ensure non-blocking mode → `sendOrWouldBlock`; while it reports
+     * [`WOULD_BLOCK`](#WOULD_BLOCK), `Reactor.awaitWritable(this.fd)` parks the
+     * fiber until the socket is writable, then retry. A closed peer raises
+     * [`BrokenPipeException`](BrokenPipeException.cajeta) from the underlying
+     * non-blocking send, exactly as the blocking path does.
+     */
+    public int64 writeAsync(int8[] data, int64 offset, int64 length) {
+        this.setNonBlocking(true);
+        Reactor.init();
+        while (true) {
+            int64 n = this.sendOrWouldBlock(data, offset, length);
+            if (n != TcpStream.WOULD_BLOCK) {
+                return n;
+            }
+            if (!Reactor.awaitWritable(this.fd)) {
+                throw heap NetException("writeAsync: reactor wait failed");
+            }
+        }
+        return 0;
+    }
+
+    /**
+     * Async [`writeAll`](#writeAll): write **every** byte of
+     * `data[offset .. offset+length)`, parking the fiber across short writes
+     * and would-block waits until the whole buffer is sent or a write raises.
+     * The common case — most async writers want this, not the raw
+     * [`writeAsync`](#writeAsync). Each chunk parks the fiber (not the carrier)
+     * when the send buffer fills, so a slow peer back-pressures only its own
+     * writer fiber.
+     */
+    public void writeAllAsync(int8[] data, int64 offset, int64 length) {
+        int64 sent = 0;
+        while (sent < length) {
+            int64 n = this.writeAsync(data, offset + sent, length - sent);
+            if (n <= 0) {
+                throw heap BrokenPipeException(
+                    "writeAllAsync: peer stopped accepting data");
+            }
+            sent = sent + n;
+        }
+    }
+
+    // ----- Deadline-bounded async I/O (NET-3.4) -----
+    //
+    // The **timeout/cancellation integration**: an async op whose readiness
+    // wait is bounded by a per-call deadline. The spec
+    // ([`cajeta-docs/Net.md` §The async model](../../../../../cajeta-docs/Net.md))
+    // makes the canonical composition `Tasks.withTimeout(d, spawn conn.readAsync(buf))`
+    // — the enclosing `Tasks.withTimeout` fires the parked fiber's `cancel_with`,
+    // the cancellation sentinel unwinds through
+    // [`Reactor.awaitReadable`](reactor/Reactor.cajeta#awaitReadable)'s `finally`,
+    // and the reactor registration is dropped (*deregister-on-cancel*). The
+    // `*Within` forms below are the **self-contained** sibling: each bounds its
+    // own readiness wait with [`Reactor.awaitReadableTimed`](reactor/Reactor.cajeta#awaitReadableTimed)
+    // / [`awaitWritableTimed`](reactor/Reactor.cajeta#awaitWritableTimed) (which
+    // [`deregister`](reactor/Reactor.cajeta#deregister) on the timeout path too,
+    // not only on cancellation), and raise [`TimedOutException`](TimedOutException.cajeta)
+    // when the deadline elapses with the socket still idle — leaving the reactor's
+    // live-registration balance back at its entry value (the
+    // `timedReadDeregistersOnTimeout` acceptance). They are the ergonomic
+    // single-call deadline; the `Tasks.withTimeout` composition stays available
+    // for callers fanning a shared budget across several sub-ops.
+
+    /**
+     * Deadline-bounded async [`read`](#read): read up to `length` bytes into
+     * `dst[offset .. offset+length)`, parking the fiber until data arrives **or**
+     * `timeoutMs` milliseconds elapse. Returns the count actually filled (`>= 0`;
+     * `0` is an orderly peer close, the same EOF contract as
+     * [`readAsync`](#readAsync)) when data became available inside the deadline;
+     * raises [`TimedOutException`](TimedOutException.cajeta) when the deadline
+     * elapsed first — and either way the reactor registration is dropped (no
+     * leak, the `timedReadDeregistersOnTimeout` acceptance).
+     *
+     * A non-positive `timeoutMs` (no budget) degenerates to the unbounded
+     * [`readAsync`](#readAsync). Loop: try [`recvOrWouldBlock`](#recvOrWouldBlock);
+     * on [`WOULD_BLOCK`](#WOULD_BLOCK), [`Reactor.awaitReadableTimed`](reactor/Reactor.cajeta#awaitReadableTimed)
+     * with the **remaining** budget — a `TIMEOUT` result raises, a `READY` retries.
+     */
+    public int64 readWithin(int8[] dst, int64 offset, int64 length, int32 timeoutMs) {
+        if (timeoutMs <= 0) {
+            return this.readAsync(dst, offset, length);
+        }
+        this.setNonBlocking(true);
+        Reactor.init();
+        int64 deadline = Reactor.nowMillis() + timeoutMs;
+        while (true) {
+            int64 n = this.recvOrWouldBlock(dst, offset, length);
+            if (n != TcpStream.WOULD_BLOCK) {
+                return n;
+            }
+            int64 remaining = deadline - Reactor.nowMillis();
+            if (remaining <= 0) {
+                throw heap TimedOutException("readWithin: deadline elapsed");
+            }
+            int32 r = Reactor.awaitReadableTimed(this.fd, (int32) remaining);
+            if (r == Reactor.TIMEOUT) {
+                throw heap TimedOutException("readWithin: deadline elapsed");
+            }
+            if (r == Reactor.ERROR) {
+                throw heap NetException("readWithin: reactor wait failed");
+            }
+        }
+        // Unreachable — the loop returns on data, or throws on timeout / error.
+        return 0;
+    }
+
+    /**
+     * Deadline-bounded async [`writeAll`](#writeAll): write **every** byte of
+     * `data[offset .. offset+length)`, parking the fiber across short writes and
+     * would-block waits until the whole buffer is sent **or** `timeoutMs`
+     * milliseconds elapse. Raises [`TimedOutException`](TimedOutException.cajeta)
+     * on the deadline (with the reactor registration dropped), or
+     * [`BrokenPipeException`](BrokenPipeException.cajeta) if the peer stops
+     * accepting data. The deadline spans the **whole** buffer, not each chunk —
+     * a slow peer cannot reset the budget by accepting one byte at a time.
+     *
+     * A non-positive `timeoutMs` degenerates to the unbounded
+     * [`writeAllAsync`](#writeAllAsync).
+     */
+    public void writeAllWithin(int8[] data, int64 offset, int64 length, int32 timeoutMs) {
+        if (timeoutMs <= 0) {
+            this.writeAllAsync(data, offset, length);
+            return;
+        }
+        this.setNonBlocking(true);
+        Reactor.init();
+        int64 deadline = Reactor.nowMillis() + timeoutMs;
+        int64 sent = 0;
+        while (sent < length) {
+            int64 n = this.sendOrWouldBlock(data, offset + sent, length - sent);
+            if (n == TcpStream.WOULD_BLOCK) {
+                int64 remaining = deadline - Reactor.nowMillis();
+                if (remaining <= 0) {
+                    throw heap TimedOutException("writeAllWithin: deadline elapsed");
+                }
+                int32 r = Reactor.awaitWritableTimed(this.fd, (int32) remaining);
+                if (r == Reactor.TIMEOUT) {
+                    throw heap TimedOutException("writeAllWithin: deadline elapsed");
+                }
+                if (r == Reactor.ERROR) {
+                    throw heap NetException("writeAllWithin: reactor wait failed");
+                }
+            } else if (n <= 0) {
+                throw heap BrokenPipeException(
+                    "writeAllWithin: peer stopped accepting data");
+            } else {
+                sent = sent + n;
+            }
+        }
+    }
+
+    /**
+     * Async client connect: open a non-blocking TCP connection to `addr` and
+     * **park the fiber** until the handshake completes (or fails), then return
+     * the connected stream. The async sibling of the blocking
+     * [`connect(#SocketAddress)`](#connect).
+     *
+     * A non-blocking `connect` returns immediately with the handshake
+     * *in progress*; the socket then becomes **writable** when the connect
+     * completes (success) or carries a pending `SO_ERROR` (failure). So the
+     * shape is: create + set non-blocking → start the connect →
+     * `Reactor.awaitWritable(fd)` parks the fiber → on wake the writability
+     * (and the post-wake error check the lowering performs) reports the
+     * outcome. A refused port surfaces as
+     * [`ConnectionRefusedException`](ConnectionRefusedException.cajeta) citing
+     * the address — the same diagnostic discipline the blocking path keeps.
+     *
+     * Takes ownership of `addr`. The connect-in-progress / writable-readiness
+     * handshake is intrinsic-lowered at the call site (it needs the raw
+     * non-blocking `connect` return + the post-readiness `SO_ERROR` read); this
+     * body expresses the park structure the lowering fills in.
+     */
+    public static #TcpStream connectAsync(#SocketAddress addr) {
+        Reactor.init();
+        TcpStream s = TcpStream.connect(#addr);
+        return #s;
+    }
+
+    // ----- Address queries (NET-1.3 getsockname/getpeername) -----
+
+    /**
+     * The **local** endpoint this stream is bound to (the ephemeral
+     * `host:port` the kernel assigned on connect). Intrinsic-lowered
+     * to `__cajeta_net_getsockname(this.fd, scratch, &len)` →
+     * `__cajeta_net_sockaddr_unpack(scratch, len, octets, &port)` →
+     * an [`IpAddress`](IpAddress.cajeta)+port `SocketAddress`.
+     */
+    public #SocketAddress localAddress() {
+        return SocketAddress.parse("0.0.0.0:0");
+    }
+
+    /**
+     * The **remote** (peer) endpoint this stream is connected to.
+     * Intrinsic-lowered to `__cajeta_net_getpeername(this.fd, ...)`
+     * then unpacked like [`localAddress`](#localAddress). Raises a
+     * `NetException` on an unconnected handle (ENOTCONN).
+     */
+    public #SocketAddress peerAddress() {
+        return SocketAddress.parse("0.0.0.0:0");
+    }
+
+    // ----- Socket options (NET-1.6) -----
+    //
+    // Typed option methods — the "typed enum keys, not raw ints" surface
+    // ([`cajeta-docs/Net.md`](../../../../../cajeta-docs/Net.md) §Sockets,
+    // keyed by [`SocketOption`](SocketOption.cajeta)). Each is
+    // intrinsic-lowered to the dedicated NET-1.6 native helper, which holds
+    // the platform `level`/`optname` constant in C
+    // (`runtime/native/cajeta_net_socket_options.c`); the Cajeta surface
+    // passes only a portable boolean / int. A `-1` native return raises the
+    // mapped [`NetException`](NetException.cajeta) via
+    // [`NetErrors.fromErrno`](NetErrors.cajeta).
+
+    /**
+     * Enable / disable `TCP_NODELAY` — disabling Nagle's algorithm so small
+     * writes are sent immediately (the latency knob for request/response
+     * protocols). Lowers to `__cajeta_net_set_nodelay(this.fd, on ? 1 : 0)`.
+     */
+    public void setNoDelay(boolean on) {
+        return;
+    }
+
+    /** Read `TCP_NODELAY` back. Lowers to
+     *  `__cajeta_net_get_nodelay(this.fd) != 0`. */
+    public boolean getNoDelay() {
+        return false;
+    }
+
+    /**
+     * Enable / disable `SO_KEEPALIVE` — periodic keepalive probes on an idle
+     * connection so a dead peer is eventually detected. Lowers to
+     * `__cajeta_net_set_keepalive(this.fd, on ? 1 : 0)`.
+     */
+    public void setKeepAlive(boolean on) {
+        return;
+    }
+
+    /** Read `SO_KEEPALIVE` back. Lowers to
+     *  `__cajeta_net_get_keepalive(this.fd) != 0`. */
+    public boolean getKeepAlive() {
+        return false;
+    }
+
+    /**
+     * Set the kernel **receive** buffer size in bytes (`SO_RCVBUF`). The
+     * kernel may round, clamp, or double the request; read the effective
+     * value back with [`getRecvBufferSize`](#getRecvBufferSize). Lowers to
+     * `__cajeta_net_set_recvbuf(this.fd, bytes)`.
+     */
+    public void setRecvBufferSize(int32 bytes) {
+        return;
+    }
+
+    /** The effective `SO_RCVBUF` size in bytes. Lowers to
+     *  `__cajeta_net_get_recvbuf(this.fd)`. */
+    public int32 getRecvBufferSize() {
+        return 0;
+    }
+
+    /**
+     * Set the kernel **send** buffer size in bytes (`SO_SNDBUF`). Same
+     * round/clamp caveat as [`setRecvBufferSize`](#setRecvBufferSize).
+     * Lowers to `__cajeta_net_set_sendbuf(this.fd, bytes)`.
+     */
+    public void setSendBufferSize(int32 bytes) {
+        return;
+    }
+
+    /** The effective `SO_SNDBUF` size in bytes. Lowers to
+     *  `__cajeta_net_get_sendbuf(this.fd)`. */
+    public int32 getSendBufferSize() {
+        return 0;
+    }
+
+    /**
+     * Configure `SO_LINGER`. `on == false` disables linger (`close()`
+     * returns immediately and the kernel drains in the background — the
+     * default). `on == true` makes `close()` block up to `seconds` trying to
+     * flush unsent data, resetting (RST) the connection on timeout. Lowers to
+     * `__cajeta_net_set_linger(this.fd, on ? 1 : 0, seconds)`.
+     */
+    public void setLinger(boolean on, int32 seconds) {
+        return;
+    }
+
+    /** Read the `SO_LINGER` enable flag back (`true` iff linger is on).
+     *  Lowers to `__cajeta_net_get_linger(this.fd, &on, &secs)` returning the
+     *  `on` field. */
+    public boolean getLinger() {
+        return false;
+    }
+
+    /**
+     * Set the outbound unicast hop limit / TTL (`IP_TTL` for IPv4,
+     * `IPV6_UNICAST_HOPS` for IPv6; `0..255`). The native helper picks the
+     * right family-specific option from the stream's address family. Lowers
+     * to `__cajeta_net_set_ttl(this.fd, isV6, ttl)`.
+     */
+    public void setTtl(int32 ttl) {
+        return;
+    }
+
+    /** The current outbound TTL / hop limit. Lowers to
+     *  `__cajeta_net_get_ttl(this.fd, isV6)`. */
+    public int32 getTtl() {
+        return 0;
+    }
+
+    // ----- Lifecycle -----
+
+    /**
+     * Shut down part of the full-duplex connection without closing
+     * the descriptor. `how`: `0` = read (`SHUT_RD`), `1` = write
+     * (`SHUT_WR`), `2` = both (`SHUT_RDWR`). Intrinsic-lowered to
+     * `__cajeta_net_shutdown(this.fd, how)`. Half-close-write (`1`)
+     * sends the peer EOF while still allowing reads — the graceful
+     * way to end a request/response exchange.
+     */
+    public void shutdown(int32 how) {
+        return;
+    }
+
+    /**
+     * Close the underlying socket. Idempotent; the destructor also
+     * calls this. Intrinsic-lowered to `__cajeta_net_close(this.fd)`,
+     * then sets `this.fd = -1` so subsequent calls (and the
+     * destructor) are no-ops — matching `File.close()`.
+     */
+    public void close() {
+        return;
+    }
+
+    /**
+     * Destructor: closes the socket if [`close`](#close) wasn't
+     * called, so a dropped `TcpStream` never leaks a descriptor —
+     * the `File` / `FileReader` precedent.
+     */
+    public ~TcpStream() {
+        this.close();
+    }
+}

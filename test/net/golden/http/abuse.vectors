@@ -1,0 +1,28 @@
+# HTTP parser abuse-case golden vectors (NET-7.3 hardening).
+#
+# These pin the parser's defensive limits: a conforming parser must
+# REJECT each generated message with the named failure before
+# buffering unboundedly. The messages are described generatively (so
+# the corpus stays small) and materialized by the loader.
+#
+# Format (fields '|'-separated):
+#   <name> | <generator> | <expected-failure>
+#
+#   generator grammar (see GoldenVectors.h::generateAbuseCase):
+#     header-flood:<count>         -> a request with <count> "X-N: v" headers
+#     long-header-line:<bytes>     -> one header value of <bytes> chars
+#     long-request-line:<bytes>    -> a request target of <bytes> chars
+#     missing-crlf-terminator      -> headers never terminated by a blank line
+#     bad-chunk-size:<text>        -> a chunked body whose size line is <text>
+#     truncated-body               -> Content-Length larger than the bytes sent
+#
+#   expected-failure -> the NET-7.7 HttpException subtype name the parser
+#                       must raise: HeadersTooLarge | MalformedMessage |
+#                       InvalidChunkEncoding | UnexpectedEof
+#
+header-flood-10k    | header-flood:10000        | HeadersTooLarge
+long-header-line    | long-header-line:1000000  | HeadersTooLarge
+long-request-line   | long-request-line:1000000 | HeadersTooLarge
+no-terminator       | missing-crlf-terminator   | UnexpectedEof
+bad-chunk-size      | bad-chunk-size:zzz        | InvalidChunkEncoding
+truncated-body      | truncated-body            | UnexpectedEof

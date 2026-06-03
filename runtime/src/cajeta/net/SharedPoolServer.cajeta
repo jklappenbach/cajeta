@@ -1,0 +1,414 @@
+package cajeta.net;
+
+import cajeta.lang.Optional;
+import cajeta.net.Server;
+import cajeta.net.ServerState;
+import cajeta.net.SocketAddress;
+import cajeta.net.TcpListener;
+import cajeta.net.TcpStream;
+import cajeta.threading.AtomicInt32;
+import cajeta.threading.Channel;
+import cajeta.time.Duration;
+
+/**
+ * **Model B — event-driven shared-pool** server (plan item **NET-4.3**).
+ * A bounded pool of `N` worker fibers drains a readiness/work queue: the
+ * NET-4.1 accept loop registers each accepted socket and pushes a
+ * "this connection is ready" event onto a **bounded**
+ * [`Channel`](../threading/Channel.cajeta); the pool workers pull events
+ * and run a handler turn. Where **Model A — fiber-per-connection**
+ * ([`Server.dispatch`](Server.cajeta#dispatch)) spends one ~64KB fiber
+ * stack **per connection**, this model caps the live connection-handling
+ * fibers at the pool size — bounded memory under C10K-style fan-in, at a
+ * slightly higher per-turn overhead (a [`Channel`](../threading/Channel.cajeta)
+ * hop). See [`cajeta-docs/Net.md` §Server accept models](../../../../../cajeta-docs/Net.md#server-accept-models)
+ * for the when-to-use-which tradeoff.
+ *
+ * ## What it re-uses from the core (NET-4.1)
+ *
+ * This is a thin **dispatch-seam override** on the [`Server`](Server.cajeta)
+ * core, *not* a re-implementation. It inherits — unchanged — the:
+ *
+ *   - lifecycle [`ServerState`](ServerState.cajeta) machine
+ *     (`NEW → RUNNING → DRAINING → STOPPED`) and its `compareAndSet`
+ *     transitions ([`state`](Server.cajeta#state)),
+ *   - [`acceptNext`](Server.cajeta#acceptNext) accept loop (parking on
+ *     [`TcpListener.acceptAsync`](TcpListener.cajeta#acceptAsync)), and its
+ *     shutdown-wake handling,
+ *   - in-flight accounting ([`inflight`](Server.cajeta#inflight)) +
+ *     [`drainInflight`](Server.cajeta#drainInflight) graceful-drain poll,
+ *   - [`bind`](Server.cajeta#bind) listener setup and the
+ *     [`localAddress`](Server.cajeta#localAddress) / [`isRunning`](Server.cajeta#isRunning)
+ *     introspection.
+ *
+ * It changes exactly two things:
+ *
+ *   1. [`dispatch`](#dispatch) **enqueues** the accepted connection onto
+ *      the bounded [`queue`](#queue) instead of spawning a fiber per
+ *      connection. A full queue **parks the accept loop's fiber** (the
+ *      `Channel.send` back-pressure) rather than admitting unbounded
+ *      fibers — the bounded-memory property.
+ *   2. [`serve`](#serve) spawns the `N` [`worker`](#worker) fibers
+ *      alongside the accept loop inside one owning `scope`, and tears the
+ *      pool down by [`close`](../threading/Channel.cajeta#close)-ing the
+ *      queue so the workers drain remaining events and exit.
+ *
+ * ## Shape
+ *
+ * ```cajeta
+ * SharedPoolServer s = SharedPoolServer.bind(
+ *     SocketAddress.parse("0.0.0.0:8080"),
+ *     8,                                  // 8 worker fibers
+ *     (conn) -> handle(conn));
+ * scope {
+ *     spawn s.runAsync();                 // accept loop + 8 workers
+ *     // ... later:
+ *     s.shutdown(Duration.ofSeconds(30)); // stop accepting + drain + join
+ * }
+ * ```
+ *
+ * As with Model A the handler is `(TcpStream) -> void`: it owns the
+ * accepted connection and **closes it** when done; a handler that throws
+ * is isolated to its worker turn and never tears the pool down (see
+ * [`runTurn`](#runTurn)).
+ *
+ * ## The work queue is bounded (back-pressure)
+ *
+ * [`queue`](#queue) is a fixed-capacity [`Channel`](../threading/Channel.cajeta)
+ * (capacity = `poolSize` by default, so the accept loop may stage one
+ * pending connection per worker). When every worker is busy and the queue
+ * fills, the accept loop's [`dispatch`](#dispatch) `send` **parks** — new
+ * connections wait in the kernel accept backlog (the `listen` backlog,
+ * NET-4.4's tunable) instead of being admitted into unbounded user-space
+ * fibers. That is the load-shed seam NET-4.4 layers a hard cap onto.
+ *
+ * ## Concurrency bound (the acceptance)
+ *
+ * Because the only fibers that run a handler are the `N` workers, the
+ * peak concurrent handler fibers is `≈ poolSize` regardless of how many
+ * clients connect — the
+ * `ServerTests.sharedPoolBoundsConcurrentFibers` acceptance: 500 clients,
+ * a pool of 8, peak concurrent handler fibers stays ≈ 8.
+ */
+public class SharedPoolServer extends Server {
+    /** Default worker-pool size when the caller does not pick one. */
+    public static final int32 DEFAULT_POOL_SIZE = 8;
+
+    /**
+     * The bounded work queue: the accept loop enqueues each accepted
+     * [`TcpStream`](TcpStream.cajeta) here ([`dispatch`](#dispatch)) and the
+     * [`worker`](#worker) fibers dequeue + handle them. Capacity bounds how
+     * many accepted-but-not-yet-handled connections may stage before the
+     * accept loop back-pressures. Owned; [`close`](../threading/Channel.cajeta#close)d
+     * on [`shutdown`](#shutdown) so the workers exit. Field index after the
+     * inherited [`Server`](Server.cajeta) fields.
+     */
+    public Channel<TcpStream> queue;
+
+    /**
+     * The number of worker fibers the pool runs — the cap on concurrent
+     * handler fibers. Set once at construction; never resized in v1.
+     */
+    public int32 poolSize;
+
+    /**
+     * Accepted-but-not-yet-dequeued connections currently **staged** in the
+     * work [`queue`](#queue). Bumped by [`dispatch`](#dispatch) on enqueue,
+     * dropped by [`worker`](#worker) the instant it dequeues one — so it is
+     * the depth of the back-pressure buffer (`0..capacity`). A dedicated
+     * counter rather than reaching into the [`Channel`](../threading/Channel.cajeta)'s
+     * internal `size`, so this stays inside the public `cajeta.net` surface.
+     * Distinct from [`inflight`](Server.cajeta#inflight): a connection is
+     * *queued* between [`dispatch`](#dispatch) and the worker's
+     * [`receive`](../threading/Channel.cajeta#receive), and *in-flight*
+     * (but no longer queued) while the handler runs.
+     */
+    public AtomicInt32 queued;
+
+    /**
+     * Internal ctor. User code goes through the [`bind`](#bind) factory.
+     * Wires the inherited [`Server`](Server.cajeta) core (listener +
+     * handler + a fresh [`ServerState.NEW`](ServerState.cajeta#NEW)
+     * lifecycle + zero in-flight count) and the Model-B additions: the
+     * worker count and the bounded work [`queue`](#queue) sized to
+     * `poolSize` (≥ 1).
+     *
+     * Sets the inherited [`Server`](Server.cajeta) fields **directly**
+     * rather than chaining a `super(...)` — the proven `cajeta.net`
+     * pattern (`super(...)` is `UnsupportedExpression` in the compiler;
+     * see [`NetException`](NetException.cajeta)), so each level sets the
+     * fields it owns. The four lines below mirror the
+     * [`Server`](Server.cajeta#Server) constructor body exactly.
+     */
+    public SharedPoolServer(TcpListener listener, int32 poolSize,
+                            (TcpStream) -> void handler) {
+        this.listener = listener;
+        this.handler = handler;
+        this.state = heap AtomicInt32(ServerState.NEW);
+        this.inflight = heap AtomicInt32(0);
+        int32 n = poolSize;
+        if (n < 1) {
+            n = 1;
+        }
+        this.poolSize = n;
+        this.queue = heap Channel<TcpStream>(n);
+        this.queued = heap AtomicInt32(0);
+    }
+
+    // ----- bind / listen factory (re-uses NET-1.4) -------------------------
+
+    /**
+     * Bind a shared-pool server to `addr` with `poolSize` worker fibers and
+     * the supplied connection `handler`, default listen backlog. Delegates
+     * the socket setup to [`TcpListener.bind`](TcpListener.cajeta#bind) — the
+     * same path [`Server.bind`](Server.cajeta#bind) uses, so a taken port
+     * surfaces the same [`AddressInUseException`](AddressInUseException.cajeta).
+     * The returned server is in [`ServerState.NEW`](ServerState.cajeta#NEW);
+     * call [`serve`](#serve) (or `spawn` [`runAsync`](Server.cajeta#runAsync))
+     * to start the accept loop **and** the worker pool.
+     *
+     * @param addr     the local address + port to bind (port `0` ⇒ an
+     *                 ephemeral port, readable via
+     *                 [`localAddress`](Server.cajeta#localAddress)).
+     * @param poolSize the number of worker fibers (≥ 1) — the cap on
+     *                 concurrent handler fibers.
+     * @param handler  the per-connection handler, `(TcpStream) -> void`.
+     * @return an owned, bound — but not yet serving — `SharedPoolServer`.
+     */
+    public static #SharedPoolServer bind(SocketAddress addr, int32 poolSize,
+                                         (TcpStream) -> void handler) {
+        TcpListener l = TcpListener.bind(addr);
+        return heap SharedPoolServer(l, poolSize, handler);
+    }
+
+    /**
+     * Bind with an explicit accept-queue `backlog` (the `listen(2)`
+     * backlog, see [`TcpListener.bindWithBacklog`](TcpListener.cajeta#bindWithBacklog)).
+     * Otherwise identical to [`bind`](#bind). With a bounded work
+     * [`queue`](#queue) the kernel backlog is what holds connections while
+     * the pool is saturated, so this knob and the pool size together size
+     * the server's fan-in tolerance.
+     */
+    public static #SharedPoolServer bindWithBacklog(SocketAddress addr,
+                                                    int32 backlog, int32 poolSize,
+                                                    (TcpStream) -> void handler) {
+        TcpListener l = TcpListener.bindWithBacklog(addr, backlog);
+        return heap SharedPoolServer(l, poolSize, handler);
+    }
+
+    // ----- accept loop + worker pool (the Model-B serve) -------------------
+
+    /**
+     * Run the shared-pool server **synchronously** on the calling fiber: a
+     * single owning `scope` spawns the `N` [`worker`](#worker) fibers
+     * *and* runs the accept loop, so the scope's closing `}` joins **every
+     * worker** before `serve` returns — the structured-concurrency property
+     * the spec requires of both models.
+     *
+     * Flips [`NEW → RUNNING`](ServerState.cajeta) once (a second `serve` on
+     * the same server is a no-op — the state is already past `NEW`), the
+     * same start-once guard the [`Server`](Server.cajeta) core uses. Then,
+     * inside the scope:
+     *
+     *   1. `spawn`s [`worker`](#worker) `poolSize` times — each pulls from
+     *      the bounded [`queue`](#queue) and runs handler turns until the
+     *      queue is closed + drained.
+     *   2. runs the accept loop: while [`RUNNING`](ServerState.cajeta#RUNNING),
+     *      [`acceptNext`](Server.cajeta#acceptNext) (inherited) parks on the
+     *      listener, and each accepted connection is handed to the overridden
+     *      [`dispatch`](#dispatch), which **enqueues** it (parking the accept
+     *      fiber if the pool is saturated and the queue is full).
+     *
+     * When [`shutdown`](#shutdown) closes the listener, `acceptNext` returns
+     * `null`, the accept loop exits, and `shutdown` closes the
+     * [`queue`](#queue) — so the workers, blocked in
+     * [`Channel.receive`](../threading/Channel.cajeta#receive), drain any
+     * staged connections then observe the closed-and-drained queue and
+     * return. The scope then joins them.
+     */
+    public void serve() {
+        if (!this.state.compareAndSet(ServerState.NEW, ServerState.RUNNING)) {
+            return;   // already serving (or past it) — idempotent guard
+        }
+        scope {
+            int32 i = 0;
+            while (i < this.poolSize) {
+                spawn SharedPoolServer.worker(this.handler, this.inflight,
+                                              this.queued, this.queue);
+                i = i + 1;
+            }
+            while (this.state.load() == ServerState.RUNNING) {
+                TcpStream conn = this.acceptNext();
+                if (conn == null) {
+                    break;   // listener closed by shutdown — stop accepting
+                }
+                this.dispatch(conn);
+            }
+            // Accept loop has exited (shutdown closed the listener). Close the
+            // work queue so the parked workers drain it and return — the scope
+            // then joins them here.
+            this.queue.close();
+        }
+        // Every worker fiber has been joined by the scope's `}`. A concurrent
+        // shutdown mid-drain observes inflight == 0 now.
+    }
+
+    // ----- the dispatch seam override --------------------------------------
+
+    /**
+     * **The Model-B seam.** Instead of [`Server.dispatch`](Server.cajeta#dispatch)'s
+     * one-fiber-per-connection `spawn`, enqueue `conn` onto the bounded
+     * [`queue`](#queue) for a worker to pick up. The in-flight count is
+     * bumped here (at admit time) and dropped by [`runTurn`](#runTurn) when
+     * the worker finishes the handler — so [`inflight`](Server.cajeta#inflight)
+     * counts every accepted-and-not-yet-completed connection, queued *or*
+     * in-handler, and the inherited [`drainInflight`](Server.cajeta#drainInflight)
+     * graceful drain still means exactly "no connection dropped
+     * mid-response."
+     *
+     * A **full queue parks this (the accept-loop) fiber** in
+     * [`Channel.send`](../threading/Channel.cajeta#send) until a worker frees
+     * a slot — the back-pressure that keeps the pool bounded: connections
+     * wait in the kernel accept backlog rather than spawning unbounded user
+     * fibers.
+     */
+    public void dispatch(#TcpStream conn) {
+        this.inflight.fetchAdd(1);
+        this.queued.fetchAdd(1);
+        this.queue.send(#conn);
+    }
+
+    /**
+     * One **worker fiber**: pull connections off the bounded `queue` and run
+     * a handler turn for each, until the queue is closed **and** drained.
+     * Static + `async` — the [`serve`](#serve) `spawn` target; the per-fiber
+     * state is passed explicitly (no captured `this`, the
+     * [`ParallelDriver`](../lang/stream/ParallelDriver.cajeta) /
+     * [`Server.serveConnection`](Server.cajeta#serveConnection) spawn
+     * convention): `handler` is the connection callback, `inflight` the
+     * server's shared in-flight counter each turn drops, `queued` the staged
+     * counter dropped on dequeue, `queue` the shared work queue.
+     *
+     * Loop: [`receive`](../threading/Channel.cajeta#receive) parks the worker
+     * fiber while the queue is empty and open; a present
+     * [`Optional`](../lang/Optional.cajeta) carries the next connection — the
+     * worker drops the [`queued`](#queued) counter (it is now in-handler, not
+     * staged) and runs the turn via [`runTurn`](#runTurn); an **empty**
+     * `Optional` means the queue is closed and drained — the worker returns,
+     * and the [`serve`](#serve) scope joins it. Because the only fibers that
+     * ever run a handler are these `poolSize` workers, peak concurrent handler
+     * fibers is bounded by the pool size (the
+     * `ServerTests.sharedPoolBoundsConcurrentFibers` acceptance).
+     *
+     * Returns `0` by the same worker convention as
+     * [`ParallelDriver`](../lang/stream/ParallelDriver.cajeta)'s `reduceWorker`.
+     */
+    public static async int32 worker((TcpStream) -> void handler,
+                                      AtomicInt32 inflight,
+                                      AtomicInt32 queued,
+                                      Channel<TcpStream> queue) {
+        while (true) {
+            Optional<TcpStream> next = queue.receive();
+            if (!next.isPresent()) {
+                return 0;   // queue closed and drained — this worker is done
+            }
+            TcpStream conn = next.get();
+            queued.fetchAdd(-1);   // dequeued: now in-handler, no longer staged
+            SharedPoolServer.runTurn(handler, inflight, #conn);
+        }
+        return 0;
+    }
+
+    /**
+     * Run the handler for one dequeued connection, then drop the in-flight
+     * count — in a `finally`, so a handler that **throws** still decrements
+     * (its exception is isolated to this worker turn and never tears the
+     * pool down; the worker loops on to the next connection). The handler
+     * owns the stream and closes it; this turn does not double-close.
+     *
+     * The per-turn analog of [`Server.serveConnection`](Server.cajeta#serveConnection),
+     * minus the `spawn` (a worker runs turns inline rather than spawning a
+     * fiber each) — the bounded-fiber property of Model B.
+     */
+    public static void runTurn((TcpStream) -> void handler,
+                               AtomicInt32 inflight,
+                               #TcpStream conn) {
+        try {
+            handler(conn);
+        } finally {
+            inflight.fetchAdd(-1);
+        }
+    }
+
+    // ----- graceful shutdown (re-uses the NET-4.1 drain) -------------------
+
+    /**
+     * **Graceful shutdown** for Model B: stop accepting, close the work
+     * queue so the worker pool drains + exits, then drain the in-flight
+     * connections with a deadline. Reuses the inherited
+     * [`Server`](Server.cajeta) lifecycle latch + drain, adding the one
+     * Model-B step (closing the [`queue`](#queue)):
+     *
+     *   1. Latch [`RUNNING → DRAINING`](ServerState.cajeta) via
+     *      `compareAndSet`. If it does not fire the server was never
+     *      `RUNNING` (already draining / stopped / never served) and this
+     *      returns immediately — `shutdown` is idempotent.
+     *   2. [`close`](TcpListener.cajeta#close) the listener — wakes the
+     *      parked [`acceptNext`](Server.cajeta#acceptNext), which (state no
+     *      longer `RUNNING`) returns `null`, so the accept loop exits.
+     *   3. [`close`](../threading/Channel.cajeta#close) the work
+     *      [`queue`](#queue) — wakes the workers parked in `receive`; they
+     *      drain any staged connections, then see the closed-and-drained
+     *      queue and exit. (The [`serve`](#serve) loop also closes the queue
+     *      when its accept loop ends; `Channel.close` is idempotent, so the
+     *      two closes are safe — whichever runs first wins.)
+     *   4. **Drain** — the inherited [`drainInflight`](Server.cajeta#drainInflight)
+     *      polls [`inflight`](Server.cajeta#inflight) to zero (parking the
+     *      caller, never the carrier) or until the `deadline` elapses.
+     *   5. Settle on [`STOPPED`](ServerState.cajeta#STOPPED).
+     *
+     * @param deadline the maximum time to wait for in-flight connections to
+     *                 finish before forcing the stop. `0` ⇒ stop immediately
+     *                 without draining.
+     * @return `true` if every in-flight connection drained within the
+     *         deadline; `false` if the deadline forced the stop with
+     *         connections still in flight.
+     */
+    public boolean shutdown(Duration deadline) {
+        if (!this.state.compareAndSet(ServerState.RUNNING, ServerState.DRAINING)) {
+            return true;   // not running — nothing to gracefully stop
+        }
+        // Stop accepting: closing the listener wakes the parked acceptAsync.
+        this.listener.close();
+        // Drain the pool: closing the queue wakes the parked workers; they
+        // finish staged connections then exit.
+        this.queue.close();
+
+        boolean drained = this.drainInflight(deadline);
+
+        this.state.store(ServerState.STOPPED);
+        return drained;
+    }
+
+    // ----- introspection ---------------------------------------------------
+
+    /**
+     * The worker-pool size — the cap on concurrent handler fibers. The value
+     * `ServerTests.sharedPoolBoundsConcurrentFibers` asserts the peak
+     * concurrent handler-fiber count stays at or below.
+     */
+    public int32 workerCount() {
+        return this.poolSize;
+    }
+
+    /**
+     * The number of accepted-but-not-yet-handled connections currently
+     * **staged** in the work queue (buffered, awaiting a free worker). A
+     * snapshot — advisory under concurrent enqueue/dequeue; together with
+     * [`inflightCount`](Server.cajeta#inflightCount) it distinguishes
+     * "queued, waiting for a worker" from "in a handler right now."
+     */
+    public int32 queuedCount() {
+        return this.queued.load();
+    }
+}

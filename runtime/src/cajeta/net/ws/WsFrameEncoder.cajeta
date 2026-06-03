@@ -1,0 +1,157 @@
+package cajeta.net.ws;
+
+/**
+ * Serializes a [`WsFrame`](WsFrame.cajeta) to its **RFC 6455 §5.2 wire
+ * form** — the encode half of the frame codec (**NET-10.3**). Pure logic
+ * over `int8[]` (no I/O), so it pins against the `ws/frames.vectors`
+ * golden corpus the same way the HTTP serializer pins its vectors; the
+ * async transport ([`AsyncWriter`](../AsyncWriter.cajeta), NET-3.5)
+ * emits the produced bytes later.
+ *
+ * ## The wire layout
+ *
+ * ```text
+ *  0                   1                   2                   3
+ *  0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
+ * +-+-+-+-+-------+-+-------------+-------------------------------+
+ * |F|R|R|R| op    |M| Payload len |   Extended payload length     |
+ * |I|S|S|S| code  |A|     (7)     |          (16/64)              |
+ * |N|V|V|V|       |S|             |                               |
+ * | |1|2|3|       |K|             |                               |
+ * +-+-+-+-+-------+-+-------------+ - - - - - - - - - - - - - - - +
+ * |  Masking-key (if MASK set)    |        Payload Data ...       |
+ * +-------------------------------+-------------------------------+
+ * ```
+ *
+ *   - byte 0: `FIN` (high bit) + three RSV bits (always `0` — no
+ *     extensions negotiated; `permessage-deflate` is deferred) + the
+ *     4-bit opcode.
+ *   - byte 1: the `MASK` bit (high) + a 7-bit length code: the payload
+ *     length directly when `<= 125`, `126` signalling a 16-bit
+ *     big-endian extended length, `127` signalling a 64-bit big-endian
+ *     extended length (RFC 6455 §5.2).
+ *   - the 4-byte masking key, present iff `MASK` is set.
+ *   - the payload, **XOR-masked** with the key (`payload[i] ^
+ *     key[i % 4]`) when masked — RFC 6455 §5.3.
+ *
+ * ## Masking direction (RFC 6455 §5.1)
+ *
+ * A **client→server** frame MUST be masked with a fresh, unpredictable
+ * 32-bit key; a **server→client** frame MUST NOT be masked. This encoder
+ * does not invent the masking *policy* — the caller passes the key
+ * (`null` for an unmasked server frame, a 4-byte array for a masked
+ * client frame), so the same encoder serves both directions and a test
+ * can pin the exact RFC §5.7 masked example by passing its fixed key.
+ * The [`WsFrame.payload`](WsFrame.cajeta) handed in is always the
+ * **unmasked** application bytes; this encoder applies the mask.
+ */
+public class WsFrameEncoder {
+    /**
+     * Encode `frame` to a fresh owned wire-bytes array. When `maskKey`
+     * is non-null it MUST be exactly 4 bytes; the frame is then masked
+     * (the `MASK` bit set, the key written after the header, and the
+     * payload XOR-masked). When `maskKey` is `null` the frame is emitted
+     * unmasked (the server-frame form).
+     *
+     * Note `frame.masked` is **ignored** as an input — the presence of
+     * `maskKey` is the single source of truth for the wire form, so a
+     * caller masks-or-not by passing-or-not a key (matching the
+     * direction policy: client supplies a key, server passes `null`).
+     */
+    public static #int8[] encode(WsFrame frame, int8[] maskKey) {
+        boolean masked = maskKey != null;
+        int8[] payload = frame.payload;
+        int32 payLen = payload.count();
+
+        // --- compute the header size ---
+        // byte0 + (1 | 3 | 9 length bytes) + (4 mask bytes if masked).
+        int32 lenBytes = 1;             // the 7-bit length byte itself
+        if (payLen > 65535) {
+            lenBytes = 9;               // 1 marker + 8 extended (64-bit)
+        } else if (payLen > 125) {
+            lenBytes = 3;               // 1 marker + 2 extended (16-bit)
+        }
+        int32 maskBytes = 0;
+        if (masked) {
+            maskBytes = 4;
+        }
+        int32 headerLen = 1 + lenBytes + maskBytes;
+        int32 total = headerLen + payLen;
+
+        int8[] out = new int8[total];
+        int32 w = 0;
+
+        // --- byte 0: FIN + RSV(000) + opcode ---
+        int32 b0 = frame.opcode & 15;
+        if (frame.fin) {
+            b0 = b0 | 128;              // 0x80 — FIN
+        }
+        out[w] = (int8) b0;
+        w = w + 1;
+
+        // --- byte 1 + extended length: MASK + 7-bit code ---
+        int32 maskBit = 0;
+        if (masked) {
+            maskBit = 128;              // 0x80 — MASK
+        }
+        if (payLen <= 125) {
+            out[w] = (int8) (maskBit | payLen);
+            w = w + 1;
+        } else if (payLen <= 65535) {
+            out[w] = (int8) (maskBit | 126);
+            w = w + 1;
+            out[w]     = (int8) ((payLen >> 8) & 255);
+            out[w + 1] = (int8) (payLen & 255);
+            w = w + 2;
+        } else {
+            out[w] = (int8) (maskBit | 127);
+            w = w + 1;
+            // 64-bit big-endian length. payLen is a non-negative int32, so
+            // the high four bytes are always zero.
+            int64 p = (int64) payLen;
+            out[w]     = (int8) 0;
+            out[w + 1] = (int8) 0;
+            out[w + 2] = (int8) 0;
+            out[w + 3] = (int8) 0;
+            out[w + 4] = (int8) ((int32) ((p >> 24) & ((int64) 255)));
+            out[w + 5] = (int8) ((int32) ((p >> 16) & ((int64) 255)));
+            out[w + 6] = (int8) ((int32) ((p >> 8) & ((int64) 255)));
+            out[w + 7] = (int8) ((int32) (p & ((int64) 255)));
+            w = w + 8;
+        }
+
+        // --- masking key (if masked) ---
+        if (masked) {
+            out[w]     = maskKey[0];
+            out[w + 1] = maskKey[1];
+            out[w + 2] = maskKey[2];
+            out[w + 3] = maskKey[3];
+            w = w + 4;
+        }
+
+        // --- payload (XOR-masked when masked, verbatim otherwise) ---
+        int32 i = 0;
+        while (i < payLen) {
+            int8 b = payload[i];
+            if (masked) {
+                int32 k = ((int32) maskKey[i & 3]) & 255;
+                int32 v = (((int32) b) & 255) ^ k;
+                out[w + i] = (int8) v;
+            } else {
+                out[w + i] = b;
+            }
+            i = i + 1;
+        }
+
+        return #out;
+    }
+
+    /**
+     * Encode `frame` **unmasked** — the server→client form (RFC 6455
+     * §5.1: a server MUST NOT mask). Equivalent to
+     * [`encode`](#encode)`(frame, null)`.
+     */
+    public static #int8[] encodeUnmasked(WsFrame frame) {
+        return WsFrameEncoder.encode(frame, null);
+    }
+}
