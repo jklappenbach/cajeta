@@ -1,0 +1,260 @@
+package cajeta.net.uri;
+
+import cajeta.lang.String;
+import cajeta.net.uri.UriComponent;
+import cajeta.net.uri.MalformedUriException;
+
+/**
+ * **Percent-encoding** (RFC 3986 §2.1) — `encode` / `decode` with the
+ * correct reserved/unreserved safe set per component (plan item
+ * **NET-6.2**).
+ *
+ * This is the addressing-layer codec the `Uri` builder (NET-6.4), the
+ * query-param map (NET-6.3), and the HTTP/WS clients use. It is **pure
+ * `cajeta.lang.String` logic** — no native intrinsics, no I/O — so it
+ * tests with golden vectors and a round-trip fuzz corpus, exactly like
+ * [`Uri.parse`](Uri.cajeta) (NET-6.1, which it composes onto).
+ *
+ * ## UTF-8 awareness
+ *
+ * Percent-encoding operates on **bytes**, and Cajeta `String`s are
+ * already UTF-8 byte sequences (`String.bytes`). So encoding is
+ * naturally UTF-8 aware *for free*: a multi-byte code point (`é` =
+ * `0xC3 0xA9`) encodes to `%C3%A9` because each of its bytes that is
+ * not in the component's safe set is emitted as `%XX`. Decoding is the
+ * exact inverse — `%XX` triples become the raw byte, and the resulting
+ * byte run is a valid UTF-8 string again. No code-point decoding is
+ * needed on either side; the byte view is the right granularity, and
+ * round-tripping is byte-identical.
+ *
+ * ## What is *not* done here
+ *
+ * `+`-for-space is an `application/x-www-form-urlencoded` convention
+ * (HTML forms), **not** RFC 3986 — a literal `+` is a sub-delim and is
+ * left alone by `PATH`/`QUERY` decode. The form-encoding `+`/space
+ * swap belongs to the query-param layer (NET-6.3) when it is told the
+ * input is form-encoded; keeping it out of the generic codec is what
+ * makes `encode`→`decode` a true identity over arbitrary bytes.
+ *
+ * @see [`UriComponent`](UriComponent.cajeta) for the per-component safe sets.
+ */
+public class PercentCodec {
+
+    // -- char-class helpers (RFC 3986 §2.3 / §3) ----------------------------
+
+    /** ALPHA = a-z / A-Z. */
+    private static boolean isAlpha(int32 c) {
+        return (c >= 65 && c <= 90) || (c >= 97 && c <= 122);
+    }
+
+    /** DIGIT = 0-9. */
+    private static boolean isDigit(int32 c) {
+        return c >= 48 && c <= 57;
+    }
+
+    /**
+     * `unreserved = ALPHA / DIGIT / "-" / "." / "_" / "~"`. Always raw
+     * in every component. `-`=45, `.`=46, `_`=95, `~`=126.
+     */
+    private static boolean isUnreserved(int32 c) {
+        return PercentCodec.isAlpha(c) || PercentCodec.isDigit(c)
+            || c == 45 || c == 46 || c == 95 || c == 126;
+    }
+
+    /**
+     * `sub-delims = "!" / "$" / "&" / "'" / "(" / ")" / "*" / "+" /
+     * "," / ";" / "="`. Codes: `!`=33, `$`=36, `&`=38, `'`=39, `(`=40,
+     * `)`=41, `*`=42, `+`=43, `,`=44, `;`=59, `=`=61.
+     */
+    private static boolean isSubDelim(int32 c) {
+        return c == 33 || c == 36 || c == 38 || c == 39 || c == 40
+            || c == 41 || c == 42 || c == 43 || c == 44 || c == 59
+            || c == 61;
+    }
+
+    /**
+     * Decide whether byte `c` (0..255) is allowed **raw** (un-encoded)
+     * in component `comp`. Everything else is percent-escaped. This is
+     * the single source of truth for the per-component safe sets
+     * documented on [`UriComponent`](UriComponent.cajeta).
+     *
+     * Char codes referenced below: `/`=47, `?`=63, `:`=58, `@`=64,
+     * `&`=38, `=`=61, `+`=43, `;`=59.
+     */
+    private static boolean isSafe(int32 c, UriComponent comp) {
+        if (PercentCodec.isUnreserved(c)) {
+            return true;
+        }
+        if (comp == UriComponent.HOST) {
+            // reg-name = unreserved / sub-delims  (no ':' or '@').
+            return PercentCodec.isSubDelim(c);
+        }
+        if (comp == UriComponent.USERINFO) {
+            // userinfo = unreserved / sub-delims / ":".
+            return PercentCodec.isSubDelim(c) || c == 58;
+        }
+        if (comp == UriComponent.SEGMENT) {
+            // single segment = pchar, but '/' IS encoded.
+            return PercentCodec.isSubDelim(c) || c == 58 || c == 64;
+        }
+        if (comp == UriComponent.PATH) {
+            // path = pchar plus the '/' separator left raw.
+            return PercentCodec.isSubDelim(c) || c == 58 || c == 64
+                || c == 47;
+        }
+        if (comp == UriComponent.QUERY_PARAM) {
+            // a single key/value: pchar + '/' + '?', but the param
+            // separators '&', '=', '+', ';' are encoded so the
+            // NET-6.3 parser can't mis-split.
+            boolean sep = (c == 38 || c == 61 || c == 43 || c == 59);
+            if (sep) {
+                return false;
+            }
+            return PercentCodec.isSubDelim(c) || c == 58 || c == 64
+                || c == 47 || c == 63;
+        }
+        // QUERY and FRAGMENT share the safe set: pchar / '/' / '?'.
+        // (comp == QUERY || comp == FRAGMENT)
+        return PercentCodec.isSubDelim(c) || c == 58 || c == 64
+            || c == 47 || c == 63;
+    }
+
+    // -- hex helpers --------------------------------------------------------
+
+    /** The 16 uppercase hex digits, ASCII. `%XX` uses uppercase (§2.1). */
+    private static int8 hexDigit(int32 v) {
+        // v in [0,15]. 0-9 → '0'..'9' (48..57); 10-15 → 'A'..'F' (65..70).
+        if (v < 10) {
+            return (int8) (48 + v);
+        }
+        return (int8) (65 + (v - 10));
+    }
+
+    /**
+     * Decode one hex digit byte (ASCII) → its 0..15 value, or `-1` if
+     * the byte is not a hex digit. Accepts both cases (`a-f`/`A-F`).
+     */
+    private static int32 hexValue(int32 c) {
+        if (c >= 48 && c <= 57) {        // '0'..'9'
+            return c - 48;
+        }
+        if (c >= 65 && c <= 70) {        // 'A'..'F'
+            return c - 55;               // 65 → 10
+        }
+        if (c >= 97 && c <= 102) {       // 'a'..'f'
+            return c - 87;               // 97 → 10
+        }
+        return -1;
+    }
+
+    /** Read byte `i` of `b` as an unsigned 0..255 int32. */
+    private static int32 byteAt(int8[] b, int32 i) {
+        return ((int32) b[i]) & 0xff;
+    }
+
+    // -- encode -------------------------------------------------------------
+
+    /**
+     * Percent-encode `input` for use in component `comp`, escaping
+     * every byte not in that component's safe set as `%XX` (uppercase
+     * hex). UTF-8 multi-byte code points escape byte-by-byte. The
+     * result is itself ASCII and re-parseable.
+     *
+     * `encode` then [`decode`](#decode) is the identity over arbitrary
+     * input (the round-trip property the fuzz corpus pins).
+     */
+    public static #String encode(String input, UriComponent comp) {
+        if (input == null) {
+            int8[] e = new int8[0];
+            return heap String(#e, 0);
+        }
+        int32 n = input.byteLength;
+        int8[] b = input.bytes;
+
+        // Worst case every byte expands to 3 ('%XX'); size for that and
+        // track the real length separately.
+        int8[] out = new int8[n * 3];
+        int32 w = 0;
+        int32 i = 0;
+        while (i < n) {
+            int32 c = PercentCodec.byteAt(b, i);
+            if (PercentCodec.isSafe(c, comp)) {
+                out[w] = (int8) c;
+                w = w + 1;
+            } else {
+                out[w] = (int8) 37;                          // '%'
+                out[w + 1] = PercentCodec.hexDigit((c >> 4) & 0xf);
+                out[w + 2] = PercentCodec.hexDigit(c & 0xf);
+                w = w + 3;
+            }
+            i = i + 1;
+        }
+
+        // Trim to the exact written length.
+        int8[] exact = new int8[w];
+        int32 k = 0;
+        while (k < w) {
+            exact[k] = out[k];
+            k = k + 1;
+        }
+        return heap String(#exact, w);
+    }
+
+    // -- decode -------------------------------------------------------------
+
+    /**
+     * Decode percent-escapes in `input`: every `%XX` triple becomes the
+     * byte with hex value `XX`; all other bytes pass through unchanged.
+     * Component-independent — decoding is unambiguous regardless of the
+     * source component, so there is no `UriComponent` parameter.
+     *
+     * Throws [`MalformedUriException`](MalformedUriException.cajeta)
+     * (citing the offending byte offset) on a truncated escape (a `%`
+     * with fewer than two following bytes) or a non-hex digit after
+     * `%` — a strict decoder, so malformed input is rejected rather
+     * than silently mis-decoded.
+     */
+    public static #String decode(String input) {
+        if (input == null) {
+            int8[] e = new int8[0];
+            return heap String(#e, 0);
+        }
+        int32 n = input.byteLength;
+        int8[] b = input.bytes;
+
+        // Decoding only ever shrinks (or keeps) length; size for n.
+        int8[] out = new int8[n];
+        int32 w = 0;
+        int32 i = 0;
+        while (i < n) {
+            int32 c = PercentCodec.byteAt(b, i);
+            if (c == 37) {                                    // '%'
+                if (i + 2 >= n) {
+                    throw heap MalformedUriException(
+                        "truncated percent-escape", (int64) i);
+                }
+                int32 hi = PercentCodec.hexValue(PercentCodec.byteAt(b, i + 1));
+                int32 lo = PercentCodec.hexValue(PercentCodec.byteAt(b, i + 2));
+                if (hi < 0 || lo < 0) {
+                    throw heap MalformedUriException(
+                        "non-hex digit in percent-escape", (int64) i);
+                }
+                out[w] = (int8) ((hi << 4) | lo);
+                w = w + 1;
+                i = i + 3;
+            } else {
+                out[w] = (int8) c;
+                w = w + 1;
+                i = i + 1;
+            }
+        }
+
+        int8[] exact = new int8[w];
+        int32 k = 0;
+        while (k < w) {
+            exact[k] = out[k];
+            k = k + 1;
+        }
+        return heap String(#exact, w);
+    }
+}

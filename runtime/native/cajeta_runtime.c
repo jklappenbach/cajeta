@@ -1097,6 +1097,14 @@ static int __cajeta_reactor_shutdown_requested = 0;
 static int __cajeta_reactor_epfd = -1;
 #endif
 
+// NET-3.2 — net-reactor lifecycle teardown hook (defined in
+// cajeta_net_reactor_lifecycle.c, #included at the bottom of this TU). Forward-
+// declared here so __cajeta_task_shutdown can drain + close the net reactor's
+// own lifecycle state (the `started` latch, the live-registration balance, the
+// shutdown wake pipe) once the carriers + R9.4 reactor thread are joined. It is
+// idempotent and a cheap no-op when no awaitable net op ever ran.
+int32_t __cajeta_net_reactor_shutdown(void);
+
 // R8.3 — multi-carrier pool, flag-gated N=1.
 //
 // Each carrier owns one Chase-Lev deque + a deque_mutex that protects
@@ -1466,6 +1474,14 @@ void __cajeta_task_shutdown(void) {
 #endif
     }
     pthread_mutex_unlock(&__cajeta_task_mutex);
+
+    // NET-3.2 — tear down the net-reactor lifecycle (separate from the R9.4
+    // engine above): wake any portable-path waiter, drain the live-registration
+    // balance, reset the lazy-init latch, and close the shutdown wake pipe. Done
+    // OUTSIDE __cajeta_task_mutex — it takes its own dedicated lifecycle mutex,
+    // and keeping the two lock domains disjoint avoids any ordering coupling.
+    // Idempotent + a no-op when no awaitable net op ever initialized it.
+    __cajeta_net_reactor_shutdown();
 }
 
 // Enqueue a trampoline-arg pair as a fresh fiber. The actual stack +
@@ -4368,6 +4384,13 @@ void __cajeta_md5_oneshot_hex_into(const void* data_hdr, int64_t len, void* out_
     }
 }
 
+// --- cajeta.hash.SHA-256 (NET-11.1, FIPS 180-4) ----------------------------
+// Kept in its own reviewable source file and #included here so it rides the
+// single-TU runtime -> bitcode -> embed build with NO CMake change (the build
+// compiles ONLY cajeta_runtime.c to bitcode; sibling .c files must be textually
+// included to be embedded + linker-merged into user modules).
+#include "cajeta_sha256.c"
+
 // --- cajeta.hash.SipHash (SipHash-2-4) -------------------------------------
 // SipHash-2-4 over arbitrary bytes with a 128-bit key. Designed for
 // hash-flooding resistance — exactly the right algorithm when keys
@@ -6854,3 +6877,83 @@ void __cajeta_xpu_register_module(const char* kernelName, const void* image,
     }
     pthread_mutex_unlock(&g_xpu_cuda_lock);
 }
+
+// ---------------------------------------------------------------------------
+// cajeta.net — NET-1.1 native socket intrinsics (BSD sockets / Winsock).
+//
+// Kept in its own reviewable source file and #included here so it rides the
+// single-TU runtime → bitcode → embed build without a CMake change (the build
+// compiles ONLY cajeta_runtime.c to bitcode; sibling .c files must be textually
+// included to be embedded + linker-merged into user modules). See the file
+// header in cajeta_net_socket.c for the full ABI + errno-shim rationale.
+// ---------------------------------------------------------------------------
+#include "cajeta_net_socket.c"
+
+// ---------------------------------------------------------------------------
+// cajeta.net — NET-1.7 non-blocking mode + WouldBlock-as-a-value intrinsics.
+// MUST be included AFTER cajeta_net_socket.c (reuses its fd-ABI helpers,
+// cajeta_net_raw_errno, and the CAJETA_NET_* ordinal contract).
+// ---------------------------------------------------------------------------
+#include "cajeta_net_nonblocking.c"
+
+// ---------------------------------------------------------------------------
+// cajeta.net — NET-1.2 native sockaddr marshalling intrinsics.
+// ---------------------------------------------------------------------------
+#include "cajeta_net_sockaddr.c"
+
+// ---------------------------------------------------------------------------
+// cajeta.net — NET-1.3 native getsockname/getpeername intrinsics.
+// MUST be included AFTER cajeta_net_socket.c (reuses its fd-ABI typedefs +
+// cajeta_net_from_fd helper).
+// ---------------------------------------------------------------------------
+#include "cajeta_net_getname.c"
+
+// ---------------------------------------------------------------------------
+// cajeta.net — NET-1.4 native TcpListener support intrinsics.
+// MUST be included AFTER cajeta_net_socket.c + cajeta_net_sockaddr.c (reuses
+// their fd narrowing helpers, SOL_SOCKET context, and storage-size helper).
+// ---------------------------------------------------------------------------
+#include "cajeta_net_listener.c"
+
+// ---------------------------------------------------------------------------
+// cajeta.net — NET-1.6 native typed socket-option surface. MUST be included
+// AFTER cajeta_net_socket.c (reuses its fd-ABI helpers).
+// ---------------------------------------------------------------------------
+#include "cajeta_net_socket_options.c"
+
+// ---------------------------------------------------------------------------
+// cajeta.net — NET-2.1 native getaddrinfo (name resolution) intrinsics.
+// MUST be included AFTER cajeta_net_socket.c (uses its file-static
+// cajeta_net_ensure_init() so WSAStartup ran on Windows).
+// ---------------------------------------------------------------------------
+#include "cajeta_net_getaddrinfo.c"
+
+// ---------------------------------------------------------------------------
+// cajeta.net.reactor — NET-3.1 reactor engine intrinsics (init/register/
+// deregister/await_readable/await_writable + portable select() probe).
+// MUST be included AFTER cajeta_net_socket.c (reuses its file-static
+// cajeta_net_from_fd / cajeta_net_ensure_init) AND after the R9.4 reactor
+// block that defines __cajeta_io_wait (which it delegates to on Linux).
+// ---------------------------------------------------------------------------
+#include "cajeta_net_reactor.c"
+
+// ---------------------------------------------------------------------------
+// cajeta.net.reactor — NET-3.2 reactor lifecycle (lazy init / clean shutdown).
+// MUST be included AFTER cajeta_net_reactor.c: its shutdown drains NET-3.1's
+// live-registration counter (__cajeta_net_reactor_active_reset) and its init is
+// the body NET-3.1's __cajeta_net_reactor_init delegates to. The runtime
+// teardown path (__cajeta_task_shutdown, far above) forward-declares + calls
+// __cajeta_net_reactor_shutdown from here.
+// ---------------------------------------------------------------------------
+#include "cajeta_net_reactor_lifecycle.c"
+
+// ---------------------------------------------------------------------------
+// cajeta.hash — NET-11.2 SHA-1 (FIPS 180-4), WebSocket handshake only.
+//
+// Kept in its own reviewable source file and #included here so it rides the
+// single-TU runtime -> bitcode -> embed build without a CMake change (the build
+// compiles ONLY cajeta_runtime.c to bitcode; sibling .c files must be textually
+// included to be embedded + linker-merged into user modules). See the file
+// header in cajeta_sha1.c for the not-for-security-use rationale.
+// ---------------------------------------------------------------------------
+#include "cajeta_sha1.c"

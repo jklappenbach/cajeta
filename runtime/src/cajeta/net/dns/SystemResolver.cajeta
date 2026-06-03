@@ -1,0 +1,37 @@
+package cajeta.net.dns;
+
+import cajeta.lang.String;
+import cajeta.net.SocketAddress;
+import cajeta.net.dns.Dns;
+import cajeta.net.dns.Resolver;
+import cajeta.net.dns.ResolveFamily;
+
+/**
+ * The **production** [`Resolver`](Resolver.cajeta) — a thin adapter onto
+ * the NET-2.2 blocking [`Dns.resolve`](Dns.cajeta) `getaddrinfo` path
+ * (plan item **NET-2.4**).
+ *
+ * This is the backend a [`DnsCache`](DnsCache.cajeta) wires by default:
+ * every cache **miss** funnels through here into the real libc/Winsock
+ * lookup. It carries no state — a single shared instance suffices — and
+ * adds nothing but the family-only signature the cache calls through
+ * (it forwards **port 0**, since the cache keys on `(host, family)` and
+ * bakes the caller's port at its own surface).
+ *
+ * Tests swap this for a counting fake to prove the cache elides the
+ * second lookup; production never sees anything else.
+ */
+public final class SystemResolver implements Resolver {
+
+    /**
+     * Resolve via [`Dns.resolve(host, 0, family)`](Dns.cajeta) — the
+     * exact blocking NET-2.2 path, with port 0 (the cache supplies the
+     * real port). Propagates the [`NetException`](../NetException.cajeta)
+     * `Dns.resolve` raises on failure unchanged, so the cache's
+     * negative-result handling sees the same taxonomy a direct call
+     * would.
+     */
+    public #SocketAddress[] resolve(String host, ResolveFamily family) {
+        return Dns.resolve(host, 0, family);
+    }
+}

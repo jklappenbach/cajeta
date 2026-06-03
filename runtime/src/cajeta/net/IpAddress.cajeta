@@ -1,0 +1,700 @@
+package cajeta.net;
+
+import cajeta.lang.String;
+import cajeta.net.AddressFamily;
+import cajeta.net.MalformedAddressException;
+
+/**
+ * An immutable **IP address** — IPv4 or IPv6 — with text `parse` and
+ * canonical `toString` (plan item **NET-1.2**).
+ *
+ * ## Storage model
+ *
+ * The address is held as a **16-byte** big-endian octet array
+ * (`octets`) regardless of family:
+ *
+ *   - **IPv4** (`family == AddressFamily.V4`) uses `octets[0..4)`; the
+ *     remaining twelve bytes are zero and ignored.
+ *   - **IPv6** (`family == AddressFamily.V6`) uses all sixteen.
+ *
+ * A single fixed-width buffer keeps the layout trivially constructible
+ * for the field-pinning no-arg ctor and lets the native
+ * `__cajeta_net_sockaddr_pack` intrinsic (NET-1.3+) read the octets at
+ * a stable offset without a variant union. The octets are stored in
+ * **network byte order** (the order they appear in the text form, most
+ * significant first), so packing into a `sockaddr` is a straight copy.
+ *
+ * ## Parsing
+ *
+ * [`parse`](#parse) accepts either form and auto-detects: a `'.'`
+ * before any `':'` selects the IPv4 dotted-quad grammar, a `':'`
+ * selects IPv6. Both are strict — a malformed octet/group, an
+ * out-of-range value, a doubled `::`, or trailing junk raises a
+ * citing [`MalformedAddressException`](MalformedAddressException.cajeta).
+ *
+ * IPv6 parsing supports the `::` zero-run compression (RFC 4291 §2.2)
+ * and the embedded-IPv4 tail form (`::ffff:127.0.0.1`). Zone-id
+ * suffixes (`%eth0`) and IPv4-in-IPv6 *output* shortening are out of
+ * scope for v1.
+ *
+ * ## Formatting
+ *
+ * [`toString`](#toString) reproduces the **canonical** text form:
+ * IPv4 dotted-quad; IPv6 per **RFC 5952** — lowercase hex, leading
+ * zeros suppressed in each group, and the **single longest** run of
+ * two-or-more zero groups collapsed to `::` (leftmost wins on a tie).
+ * `IpAddress.parse(s).toString()` round-trips a canonical input
+ * byte-identically, which is the property
+ * `NetAddressTests.v4AndV6ParseRoundTrip` pins.
+ */
+public class IpAddress {
+    /** Address family — `V4` or `V6`. Field index 0 (stable). */
+    public AddressFamily family;
+
+    /**
+     * 16-byte address in network byte order. IPv4 occupies
+     * `octets[0..4)`; IPv6 occupies all 16. Owned (mode-0); reclaimed
+     * by the normal array-drop when this address is dropped.
+     */
+    public int8[] octets;
+
+    /**
+     * Field-pinning no-arg constructor: the unspecified IPv4 `0.0.0.0`
+     * (all-zero octets, family V4). `parse` / the factory methods are
+     * the real entry points; this exists so the layout is
+     * constructible for tests and partially-built instances never
+     * carry dangling state.
+     */
+    public IpAddress() {
+        this.family = AddressFamily.V4;
+        this.octets = new int8[16];
+        int32 i = 0;
+        while (i < 16) {
+            this.octets[i] = (int8) 0;
+            i = i + 1;
+        }
+    }
+
+    // -- accessors ----------------------------------------------------------
+
+    /** This address's family (`V4` or `V6`). */
+    public AddressFamily getFamily() {
+        return this.family;
+    }
+
+    /** True iff this is an IPv4 address. */
+    public boolean isV4() {
+        return this.family == AddressFamily.V4;
+    }
+
+    /** True iff this is an IPv6 address. */
+    public boolean isV6() {
+        return this.family == AddressFamily.V6;
+    }
+
+    /**
+     * The raw 16-byte octet buffer (network byte order). IPv4 callers
+     * read the first four; IPv6 callers read all sixteen. The returned
+     * array is this address's live backing store — treat it as
+     * read-only.
+     */
+    public int8[] getOctets() {
+        return this.octets;
+    }
+
+    // -- factories ----------------------------------------------------------
+
+    /** The IPv4 loopback `127.0.0.1`. */
+    public static #IpAddress loopbackV4() {
+        IpAddress a = heap IpAddress();
+        a.family = AddressFamily.V4;
+        a.octets[0] = (int8) 127;
+        a.octets[1] = (int8) 0;
+        a.octets[2] = (int8) 0;
+        a.octets[3] = (int8) 1;
+        return #a;
+    }
+
+    /** The IPv6 loopback `::1`. */
+    public static #IpAddress loopbackV6() {
+        IpAddress a = heap IpAddress();
+        a.family = AddressFamily.V6;
+        a.octets[15] = (int8) 1;
+        return #a;
+    }
+
+    /** The IPv4 unspecified / wildcard `0.0.0.0`. */
+    public static #IpAddress anyV4() {
+        IpAddress a = heap IpAddress();
+        a.family = AddressFamily.V4;
+        return #a;
+    }
+
+    /** The IPv6 unspecified / wildcard `::`. */
+    public static #IpAddress anyV6() {
+        IpAddress a = heap IpAddress();
+        a.family = AddressFamily.V6;
+        return #a;
+    }
+
+    /**
+     * Build an `IpAddress` directly from four octet values
+     * (`a.b.c.d`). Each is masked to its low 8 bits.
+     */
+    public static #IpAddress fromV4(int32 a0, int32 a1, int32 a2, int32 a3) {
+        IpAddress a = heap IpAddress();
+        a.family = AddressFamily.V4;
+        a.octets[0] = (int8) (a0 & 0xff);
+        a.octets[1] = (int8) (a1 & 0xff);
+        a.octets[2] = (int8) (a2 & 0xff);
+        a.octets[3] = (int8) (a3 & 0xff);
+        return #a;
+    }
+
+    /**
+     * Build an `IpAddress` from a 16-byte (v6) or 4-byte (v4) octet
+     * buffer in network byte order — the inverse of
+     * [`getOctets`](#getOctets), used by the `sockaddr` *unpack*
+     * intrinsic path (NET-1.3+). `len` selects the family: 4 → V4,
+     * 16 → V6. Any other length raises a citing exception.
+     */
+    public static #IpAddress fromOctets(int8[] src, int32 len) {
+        if (src == null || (len != 4 && len != 16)) {
+            throw heap MalformedAddressException(
+                "octet buffer must be 4 (v4) or 16 (v6) bytes", (int64) -1);
+        }
+        IpAddress a = heap IpAddress();
+        if (len == 4) {
+            a.family = AddressFamily.V4;
+        } else {
+            a.family = AddressFamily.V6;
+        }
+        int32 i = 0;
+        while (i < len) {
+            a.octets[i] = src[i];
+            i = i + 1;
+        }
+        return #a;
+    }
+
+    // -- equality -----------------------------------------------------------
+
+    /**
+     * Two addresses are equal iff they share a family and the
+     * family-relevant octets match (4 for V4, 16 for V6).
+     */
+    public boolean equals(IpAddress other) {
+        if (other == null) {
+            return false;
+        }
+        if (this.family != other.family) {
+            return false;
+        }
+        int32 n = this.isV4() ? 4 : 16;
+        int32 i = 0;
+        while (i < n) {
+            if (this.octets[i] != other.octets[i]) {
+                return false;
+            }
+            i = i + 1;
+        }
+        return true;
+    }
+
+    // -- char-class helpers -------------------------------------------------
+
+    /** Read byte `i` of `b` as an unsigned 0..255 int32. */
+    private static int32 byteAt(int8[] b, int32 i) {
+        return ((int32) b[i]) & 0xff;
+    }
+
+    /** DIGIT = '0'..'9' → 0..9, else -1. */
+    private static int32 decDigit(int32 c) {
+        if (c >= 48 && c <= 57) {
+            return c - 48;
+        }
+        return -1;
+    }
+
+    /**
+     * Hex digit value of `c` ('0'..'9' / 'a'..'f' / 'A'..'F'), or -1
+     * if `c` is not a hex digit.
+     */
+    private static int32 hexDigit(int32 c) {
+        if (c >= 48 && c <= 57) {
+            return c - 48;
+        }
+        if (c >= 97 && c <= 102) {
+            return c - 97 + 10;
+        }
+        if (c >= 65 && c <= 70) {
+            return c - 65 + 10;
+        }
+        return -1;
+    }
+
+    // -- parse --------------------------------------------------------------
+
+    /**
+     * Parse `input` into an `IpAddress`. A `'.'` appearing before any
+     * `':'` selects the IPv4 grammar; a `':'` selects IPv6; anything
+     * else is malformed. Throws a citing
+     * [`MalformedAddressException`](MalformedAddressException.cajeta)
+     * on bad input.
+     */
+    public static #IpAddress parse(String input) {
+        if (input == null) {
+            throw heap MalformedAddressException("null IP address input",
+                (int64) -1);
+        }
+        int32 n = input.byteLength;
+        if (n == 0) {
+            throw heap MalformedAddressException("empty IP address",
+                (int64) -1);
+        }
+        int8[] b = input.bytes;
+
+        // Family detection: first ':' ⇒ v6, first '.' before any ':' ⇒ v4.
+        int32 firstColon = -1;
+        int32 firstDot = -1;
+        int32 i = 0;
+        while (i < n) {
+            int32 c = IpAddress.byteAt(b, i);
+            if (c == 58 && firstColon < 0) {        // ':'
+                firstColon = i;
+            }
+            if (c == 46 && firstDot < 0) {          // '.'
+                firstDot = i;
+            }
+            i = i + 1;
+        }
+
+        if (firstColon >= 0) {
+            return IpAddress.parseV6(b, 0, n);
+        }
+        if (firstDot >= 0) {
+            return IpAddress.parseV4(b, 0, n);
+        }
+        throw heap MalformedAddressException(
+            "not an IP address (no '.' or ':')", (int64) 0);
+    }
+
+    /**
+     * Parse the IPv4 dotted-quad in `b[begin, end)` (exactly four
+     * decimal octets 0..255 separated by '.'). Used both directly and
+     * as the embedded-IPv4 tail of an IPv6 literal.
+     */
+    private static #IpAddress parseV4(int8[] b, int32 begin, int32 end) {
+        IpAddress a = heap IpAddress();
+        a.family = AddressFamily.V4;
+
+        int32 octet = 0;        // which of the 4 octets we're filling
+        int32 value = 0;        // accumulated value of the current octet
+        int32 digits = 0;       // digit count in the current octet
+        int32 i = begin;
+        while (i < end) {
+            int32 c = IpAddress.byteAt(b, i);
+            int32 d = IpAddress.decDigit(c);
+            if (d >= 0) {
+                value = value * 10 + d;
+                digits = digits + 1;
+                if (digits > 3 || value > 255) {
+                    throw heap MalformedAddressException(
+                        "IPv4 octet out of range (0..255)", (int64) i);
+                }
+            } else if (c == 46) {                   // '.'
+                if (digits == 0) {
+                    throw heap MalformedAddressException(
+                        "empty IPv4 octet", (int64) i);
+                }
+                if (octet >= 3) {
+                    throw heap MalformedAddressException(
+                        "too many IPv4 octets", (int64) i);
+                }
+                a.octets[octet] = (int8) value;
+                octet = octet + 1;
+                value = 0;
+                digits = 0;
+            } else {
+                throw heap MalformedAddressException(
+                    "illegal character in IPv4 address", (int64) i);
+            }
+            i = i + 1;
+        }
+        if (digits == 0) {
+            throw heap MalformedAddressException(
+                "IPv4 address ends without a final octet", (int64) end);
+        }
+        if (octet != 3) {
+            throw heap MalformedAddressException(
+                "IPv4 address needs exactly four octets", (int64) end);
+        }
+        a.octets[3] = (int8) value;
+        return #a;
+    }
+
+    /**
+     * Parse the IPv6 literal in `b[begin, end)` per RFC 4291 §2.2,
+     * including `::` zero-run compression and the embedded-IPv4 tail
+     * form. Writes the 16 result octets into a fresh `IpAddress`.
+     *
+     * Algorithm: scan colon-separated 16-bit groups left to right.
+     * `::` (an empty group caused by a doubled colon) marks the
+     * zero-fill point; everything after it is parsed into a second
+     * buffer and right-aligned, with the gap zero-filled. A group that
+     * contains a '.' is an embedded IPv4 quad occupying the last two
+     * 16-bit groups (four octets).
+     */
+    private static #IpAddress parseV6(int8[] b, int32 begin, int32 end) {
+        IpAddress a = heap IpAddress();
+        a.family = AddressFamily.V6;
+
+        // head[] / tail[] hold parsed octets before / after the "::".
+        int8[] head = new int8[16];
+        int8[] tail = new int8[16];
+        int32 headLen = 0;      // octets written to head
+        int32 tailLen = 0;      // octets written to tail
+        boolean sawDoubleColon = false;
+        boolean inTail = false; // are we filling tail (post-"::") now?
+
+        int32 i = begin;
+
+        // Leading "::" — input starts with a colon. It must be "::".
+        if (i < end && IpAddress.byteAt(b, i) == 58) {      // ':'
+            if (i + 1 >= end || IpAddress.byteAt(b, i + 1) != 58) {
+                throw heap MalformedAddressException(
+                    "IPv6 address may not start with a single ':'",
+                    (int64) i);
+            }
+            sawDoubleColon = true;
+            inTail = true;
+            i = i + 2;
+        }
+
+        while (i < end) {
+            // Each iteration parses one group: hex (1..4 digits) or an
+            // embedded IPv4 quad, then consumes the following ':' (or
+            // detects the "::" zero-run marker).
+            int32 groupStart = i;
+            int32 hexVal = 0;
+            int32 hexDigits = 0;
+            boolean sawDot = false;
+            while (i < end) {
+                int32 c = IpAddress.byteAt(b, i);
+                if (c == 58) {                  // ':' terminates the group
+                    break;                      // leave i ON the ':'
+                }
+                if (c == 46) {                  // '.' ⇒ embedded IPv4 tail
+                    sawDot = true;
+                    break;
+                }
+                int32 h = IpAddress.hexDigit(c);
+                if (h < 0) {
+                    throw heap MalformedAddressException(
+                        "illegal character in IPv6 group", (int64) i);
+                }
+                hexVal = (hexVal << 4) | h;
+                hexDigits = hexDigits + 1;
+                if (hexDigits > 4) {
+                    throw heap MalformedAddressException(
+                        "IPv6 group has more than 4 hex digits", (int64) groupStart);
+                }
+                i = i + 1;
+            }
+
+            if (sawDot) {
+                // Embedded IPv4 quad spanning groupStart..(next ':' or end).
+                // The quad runs to `end` (IPv4 tail is always last).
+                IpAddress v4 = IpAddress.parseV4(b, groupStart, end);
+                if (inTail) {
+                    tail[tailLen] = v4.octets[0];
+                    tail[tailLen + 1] = v4.octets[1];
+                    tail[tailLen + 2] = v4.octets[2];
+                    tail[tailLen + 3] = v4.octets[3];
+                    tailLen = tailLen + 4;
+                } else {
+                    head[headLen] = v4.octets[0];
+                    head[headLen + 1] = v4.octets[1];
+                    head[headLen + 2] = v4.octets[2];
+                    head[headLen + 3] = v4.octets[3];
+                    headLen = headLen + 4;
+                }
+                i = end;        // the IPv4 tail consumes the remainder
+            } else {
+                if (hexDigits == 0) {
+                    // No hex digits before this ':' — only legal as the
+                    // start of a "::" zero-run (a second colon follows).
+                    if (i < end && IpAddress.byteAt(b, i) == 58) {
+                        // current char is ':'; check if previous made "::"
+                        // i.e. we are looking at the second colon.
+                        if (sawDoubleColon) {
+                            throw heap MalformedAddressException(
+                                "IPv6 address has more than one '::'",
+                                (int64) i);
+                        }
+                        sawDoubleColon = true;
+                        inTail = true;
+                        i = i + 1;      // consume the second colon
+                        // A trailing "::" at end is fine; loop will exit.
+                        continue;
+                    }
+                    throw heap MalformedAddressException(
+                        "empty IPv6 group", (int64) groupStart);
+                }
+                // Emit the 16-bit group as two big-endian octets.
+                int32 hi = (hexVal >> 8) & 0xff;
+                int32 lo = hexVal & 0xff;
+                if (inTail) {
+                    if (tailLen + 2 > 16) {
+                        throw heap MalformedAddressException(
+                            "IPv6 address has too many groups", (int64) groupStart);
+                    }
+                    tail[tailLen] = (int8) hi;
+                    tail[tailLen + 1] = (int8) lo;
+                    tailLen = tailLen + 2;
+                } else {
+                    if (headLen + 2 > 16) {
+                        throw heap MalformedAddressException(
+                            "IPv6 address has too many groups", (int64) groupStart);
+                    }
+                    head[headLen] = (int8) hi;
+                    head[headLen + 1] = (int8) lo;
+                    headLen = headLen + 2;
+                }
+                // Consume the group-terminating ':' if present.
+                if (i < end && IpAddress.byteAt(b, i) == 58) {
+                    if (i + 1 < end && IpAddress.byteAt(b, i + 1) == 58) {
+                        // "::" right here.
+                        if (sawDoubleColon) {
+                            throw heap MalformedAddressException(
+                                "IPv6 address has more than one '::'",
+                                (int64) i);
+                        }
+                        sawDoubleColon = true;
+                        inTail = true;
+                        i = i + 2;
+                    } else if (i + 1 >= end) {
+                        throw heap MalformedAddressException(
+                            "IPv6 address may not end with a single ':'",
+                            (int64) i);
+                    } else {
+                        i = i + 1;
+                    }
+                }
+            }
+        }
+
+        // Assemble: head occupies [0, headLen); tail is right-aligned to
+        // octet 16; the gap between is the zero-run that "::" stood for.
+        int32 total = headLen + tailLen;
+        if (sawDoubleColon) {
+            if (total >= 16) {
+                throw heap MalformedAddressException(
+                    "IPv6 '::' must compress at least one zero group",
+                    (int64) begin);
+            }
+        } else {
+            if (total != 16) {
+                throw heap MalformedAddressException(
+                    "IPv6 address must have exactly 8 groups (or use '::')",
+                    (int64) end);
+            }
+        }
+
+        int32 k = 0;
+        while (k < headLen) {
+            a.octets[k] = head[k];
+            k = k + 1;
+        }
+        // zero gap already present (octets default to 0).
+        int32 tailStart = 16 - tailLen;
+        k = 0;
+        while (k < tailLen) {
+            a.octets[tailStart + k] = tail[k];
+            k = k + 1;
+        }
+        return #a;
+    }
+
+    // -- format -------------------------------------------------------------
+
+    /** Append the decimal form of `value` (0..255) to `out` at `pos`,
+     *  returning the new position. */
+    private static int32 writeDecimal(int8[] out, int32 pos, int32 value) {
+        if (value >= 100) {
+            out[pos] = (int8) (48 + (value / 100));
+            pos = pos + 1;
+            out[pos] = (int8) (48 + ((value / 10) % 10));
+            pos = pos + 1;
+            out[pos] = (int8) (48 + (value % 10));
+            pos = pos + 1;
+        } else if (value >= 10) {
+            out[pos] = (int8) (48 + (value / 10));
+            pos = pos + 1;
+            out[pos] = (int8) (48 + (value % 10));
+            pos = pos + 1;
+        } else {
+            out[pos] = (int8) (48 + value);
+            pos = pos + 1;
+        }
+        return pos;
+    }
+
+    /** Lowercase hex digit for a 0..15 nibble. */
+    private static int8 hexChar(int32 nibble) {
+        if (nibble < 10) {
+            return (int8) (48 + nibble);            // '0'..'9'
+        }
+        return (int8) (97 + (nibble - 10));         // 'a'..'f'
+    }
+
+    /**
+     * Write one 16-bit IPv6 group `v` to `out` at `pos` in lowercase
+     * hex with leading zeros suppressed (RFC 5952 §4.1), returning the
+     * new position. A zero group prints as the single digit `0`.
+     */
+    private static int32 writeGroup(int8[] out, int32 pos, int32 v) {
+        int32 n0 = (v >> 12) & 0xf;
+        int32 n1 = (v >> 8) & 0xf;
+        int32 n2 = (v >> 4) & 0xf;
+        int32 n3 = v & 0xf;
+        boolean started = false;
+        if (n0 != 0) {
+            out[pos] = IpAddress.hexChar(n0); pos = pos + 1; started = true;
+        }
+        if (started || n1 != 0) {
+            out[pos] = IpAddress.hexChar(n1); pos = pos + 1; started = true;
+        }
+        if (started || n2 != 0) {
+            out[pos] = IpAddress.hexChar(n2); pos = pos + 1; started = true;
+        }
+        out[pos] = IpAddress.hexChar(n3); pos = pos + 1;
+        return pos;
+    }
+
+    /**
+     * Canonical text form: IPv4 dotted-quad, or IPv6 per RFC 5952
+     * (lowercase, zero-suppressed groups, longest zero-run as `::`).
+     */
+    public #String toString() {
+        if (this.isV4()) {
+            // Max "255.255.255.255" = 15 bytes.
+            int8[] out = new int8[15];
+            int32 pos = 0;
+            int32 g = 0;
+            while (g < 4) {
+                if (g > 0) {
+                    out[pos] = (int8) 46;           // '.'
+                    pos = pos + 1;
+                }
+                pos = IpAddress.writeDecimal(out, pos,
+                    IpAddress.byteAt(this.octets, g));
+                g = g + 1;
+            }
+            int8[] exact = new int8[pos];
+            int32 i = 0;
+            while (i < pos) {
+                exact[i] = out[i];
+                i = i + 1;
+            }
+            return heap String(#exact, pos);
+        }
+
+        // IPv6: build the eight 16-bit groups, find the longest run of
+        // >= 2 zero groups (leftmost on a tie), then format.
+        int32[] groups = new int32[8];
+        int32 gi = 0;
+        while (gi < 8) {
+            int32 hi = IpAddress.byteAt(this.octets, gi * 2);
+            int32 lo = IpAddress.byteAt(this.octets, gi * 2 + 1);
+            groups[gi] = (hi << 8) | lo;
+            gi = gi + 1;
+        }
+
+        // Longest zero-run.
+        int32 bestStart = -1;
+        int32 bestLen = 0;
+        int32 curStart = -1;
+        int32 curLen = 0;
+        gi = 0;
+        while (gi < 8) {
+            if (groups[gi] == 0) {
+                if (curStart < 0) {
+                    curStart = gi;
+                    curLen = 1;
+                } else {
+                    curLen = curLen + 1;
+                }
+                if (curLen > bestLen) {
+                    bestLen = curLen;
+                    bestStart = curStart;
+                }
+            } else {
+                curStart = -1;
+                curLen = 0;
+            }
+            gi = gi + 1;
+        }
+        // RFC 5952: only collapse a run of 2 or more.
+        if (bestLen < 2) {
+            bestStart = -1;
+        }
+
+        // Worst case "ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff" = 39 bytes;
+        // a leading-or-trailing "::" adds at most one more colon. 45 is
+        // comfortably above any canonical IPv6 string.
+        //
+        // The text is the unambiguous decomposition
+        //     <head groups joined by ':'> "::" <tail groups joined by ':'>
+        // when a zero-run is collapsed (e.g. "fe80" + "::" + "" = "fe80::",
+        // "" + "::" + "1" = "::1", "2001:db8" + "::" + "1"), or simply all
+        // eight groups joined by ':' when there is no run. `runEnd` is the
+        // exclusive end of the collapsed run (== bestStart when none).
+        int8[] out = new int8[45];
+        int32 pos = 0;
+        int32 runEnd = (bestStart >= 0) ? (bestStart + bestLen) : -1;
+
+        // Head: groups [0, bestStart) joined by ':' (all 8 when no run).
+        int32 headEnd = (bestStart >= 0) ? bestStart : 8;
+        gi = 0;
+        while (gi < headEnd) {
+            if (gi > 0) {
+                out[pos] = (int8) 58;               // ':'
+                pos = pos + 1;
+            }
+            pos = IpAddress.writeGroup(out, pos, groups[gi]);
+            gi = gi + 1;
+        }
+
+        if (bestStart >= 0) {
+            // The collapsed run prints as "::". The head supplied no
+            // trailing colon and the tail prints no leading colon, so the
+            // two colons here are exactly the "::".
+            out[pos] = (int8) 58;
+            pos = pos + 1;
+            out[pos] = (int8) 58;
+            pos = pos + 1;
+
+            // Tail: groups [runEnd, 8) joined by ':'.
+            gi = runEnd;
+            boolean firstTail = true;
+            while (gi < 8) {
+                if (!firstTail) {
+                    out[pos] = (int8) 58;           // ':'
+                    pos = pos + 1;
+                }
+                pos = IpAddress.writeGroup(out, pos, groups[gi]);
+                firstTail = false;
+                gi = gi + 1;
+            }
+        }
+
+        int8[] exact = new int8[pos];
+        int32 i = 0;
+        while (i < pos) {
+            exact[i] = out[i];
+            i = i + 1;
+        }
+        return heap String(#exact, pos);
+    }
+}

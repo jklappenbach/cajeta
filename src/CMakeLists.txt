@@ -395,7 +395,23 @@ set(CAJETA_STDLIB_DIRS
         ${CAJETA_STDLIB_ROOT}/cajeta/io/file
         ${CAJETA_STDLIB_ROOT}/cajeta/hash
         ${CAJETA_STDLIB_ROOT}/cajeta/collection
+        # ── cajeta.net (cajeta-net branch, NET-* plan) — STAGED, NOT YET in the
+        # eager built-in stdlib. Several net sources call socket/reactor
+        # intrinsics through compiler receiver-dispatch lowering that is not yet
+        # implemented (see plan NET-1.3 / MethodCallExpression.cpp), so eager
+        # compilation hard-crashes the stdlib build and craters every JIT test.
+        # Re-enable these dirs once that lowering lands and the net stdlib
+        # compiles clean. Source, native C, and tests remain on the branch.
+        #   ${CAJETA_STDLIB_ROOT}/cajeta/net
+        #   ${CAJETA_STDLIB_ROOT}/cajeta/net/reactor
+        #   ${CAJETA_STDLIB_ROOT}/cajeta/net/dns
+        #   ${CAJETA_STDLIB_ROOT}/cajeta/net/uri
+        #   ${CAJETA_STDLIB_ROOT}/cajeta/net/http
+        #   ${CAJETA_STDLIB_ROOT}/cajeta/net/ws
         ${CAJETA_STDLIB_ROOT}/cajeta/wire
+        # cajeta/codec parent (Base64, NET-11.3) — staged with net for the same
+        # reason; codec/json below predates this and stays enabled.
+        #   ${CAJETA_STDLIB_ROOT}/cajeta/codec
         ${CAJETA_STDLIB_ROOT}/cajeta/codec/json
         # Larger-than-memory collections. Listed after collection/wire/
         # io.file so its dependencies (BPlusTree shape, Encoder, File) are
@@ -598,7 +614,11 @@ target_link_libraries(${CMAKE_PROJECT_NAME}_lib
 # Only the test binary actually pulls the native runtime object; on
 # cajeta.exe this is a harmless unused import.
 if(WIN32)
-    target_link_libraries(${CMAKE_PROJECT_NAME}_lib PUBLIC bcrypt)
+    # bcrypt: __cajeta_alloc/random helpers. ws2_32: the cajeta.net native
+    # runtime (cajeta_net_*.c, #included into cajeta_runtime.c) calls Winsock —
+    # WSAStartup/socket/bind/getaddrinfo/select/etc. PUBLIC so every consumer
+    # (cajeta.exe, cajeta_test, cajeta_debug_test) inherits the import lib.
+    target_link_libraries(${CMAKE_PROJECT_NAME}_lib PUBLIC bcrypt ws2_32)
 endif()
 target_include_directories(${CMAKE_PROJECT_NAME}_lib PUBLIC
         ${PROJECT_SOURCE_DIR}/src

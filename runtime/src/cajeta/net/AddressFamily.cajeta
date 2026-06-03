@@ -1,0 +1,26 @@
+package cajeta.net;
+
+/**
+ * IP address family discriminator for [`IpAddress`](IpAddress.cajeta)
+ * and [`SocketAddress`](SocketAddress.cajeta).
+ *
+ * Ordinal values are **stable** and are the contract the native
+ * `sockaddr` marshalling intrinsics
+ * (`__cajeta_net_sockaddr_pack`/`_unpack`, see
+ * [`runtime/native/cajeta_net_sockaddr.c`](../../../native/cajeta_net_sockaddr.c))
+ * switch on:
+ *
+ *   - `0 V4` → a 32-bit IPv4 address, packed into a `sockaddr_in`.
+ *   - `1 V6` → a 128-bit IPv6 address, packed into a `sockaddr_in6`.
+ *
+ * These are the *cajeta-portable* ordinals, **not** the platform
+ * `AF_INET`/`AF_INET6` constants (those differ across OSes — e.g.
+ * `AF_INET6` is 10 on Linux, 23 on Windows, 30 on macOS). The native
+ * pack/unpack layer owns the ordinal → platform-constant mapping so
+ * the Cajeta surface never sees a platform value. Do **not** reorder
+ * without updating that C switch.
+ */
+public enum AddressFamily {
+    V4,
+    V6
+}

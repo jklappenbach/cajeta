@@ -1,0 +1,205 @@
+package cajeta.net.http;
+
+import cajeta.net.AsyncReader;
+import cajeta.net.http.BodyReader;
+import cajeta.net.http.HttpParser;
+
+/**
+ * The server-side **streaming request body reader** — plan item
+ * **NET-9.4** (the request half). For a large upload (`Content-Length`
+ * gigabytes, or `Transfer-Encoding: chunked`) a handler must read the
+ * body **incrementally**, never forcing the whole payload into memory the
+ * way the buffered [`HttpServer`](HttpServer.cajeta) baseline (NET-9.1)
+ * does. This handle wraps the framing-aware streaming
+ * [`BodyReader`](BodyReader.cajeta) (NET-7.4) over the connection's
+ * buffered [`AsyncReader`](../AsyncReader.cajeta) (NET-3.5): each
+ * [`read`](#read) pulls one socket-read worth of bytes, transfer-decodes
+ * them per the framing, and hands back **only the decoded body bytes**
+ * available so far — bounded by the reader's buffer regardless of the
+ * upload's size.
+ *
+ * ```cajeta
+ * // Inside a streaming handler, given the parser's framing + the conn reader:
+ * RequestBodyStream body = RequestBodyStream.forRequest(parser, reader);
+ * Sha256 sum = Sha256.create();
+ * while (true) {
+ *     int8[] piece = body.read();
+ *     if (piece.count() == 0) { break; }   // body fully consumed
+ *     sum.update(piece, piece.count());     // stream straight to the sink
+ * }
+ * ```
+ *
+ * ## The decode pump (per [`read`](#read))
+ *
+ *   1. Drain any **already-decoded** bytes the reader buffered on a prior
+ *      [`feed`](BodyReader.cajeta#feed) (the parser's leftover seeds the
+ *      first one) and return them — no socket touch when decoded bytes are
+ *      in hand.
+ *   2. Otherwise pull one [`AsyncReader.read`](../AsyncReader.cajeta#read)
+ *      worth of raw bytes, [`feed`](BodyReader.cajeta#feed) them to the
+ *      decoder, and return the freshly decoded slice.
+ *   3. A socket read of `0` (peer closed) calls
+ *      [`endInput`](BodyReader.cajeta#endInput): a close-delimited body
+ *      completes, a truncated `Content-Length`/`chunked` body raises
+ *      [`UnexpectedEofException`](UnexpectedEofException.cajeta).
+ *   4. Once the body is complete and its decoded bytes are drained,
+ *      [`read`](#read) returns an **empty** array — the terminal signal,
+ *      mirroring [`AsyncReader.read`](../AsyncReader.cajeta#read)'s
+ *      `0`-on-EOF contract.
+ *
+ * ## Pipelined-byte safety
+ *
+ * Bytes the underlying read pulled **past** the body boundary (the start
+ * of the next pipelined request on a keep-alive connection) are captured
+ * by the [`BodyReader`](BodyReader.cajeta) as
+ * [`leftover`](BodyReader.cajeta#leftover); [`drainToReader`](#drainToReader)
+ * pushes them back into the [`AsyncReader`](../AsyncReader.cajeta)'s
+ * staging ring so the connection loop parses them as the next request
+ * rather than dropping them. A handler that finishes the stream (reads to
+ * the empty terminal) leaves the connection correctly positioned; one
+ * that abandons it mid-body must not reuse the connection (the byte stream
+ * is no longer framed) — the [`isComplete`](#isComplete) flag lets the
+ * loop decide.
+ *
+ * ## Where this sits
+ *
+ * The socket-facing shim over the pure [`BodyReader`](BodyReader.cajeta)
+ * codec — the streaming counterpart of
+ * [`HttpServer.readBody`](HttpServer.cajeta#readBody), which buffers the
+ * whole body before dispatch. This type **borrows** both the
+ * [`BodyReader`](BodyReader.cajeta) it drives and the
+ * [`AsyncReader`](../AsyncReader.cajeta) the connection owns.
+ */
+public final class RequestBodyStream {
+    /** Default raw-pull size (bytes) per socket read when decoding. */
+    public static final int32 PULL = 2048;
+
+    /** The framing-aware streaming decoder. Owned. */
+    BodyReader body;
+
+    /** The connection's buffered reader. **Borrowed.** */
+    AsyncReader reader;
+
+    /** Scratch buffer the raw socket bytes land in before `feed`. Owned. */
+    int8[] pull;
+
+    /** True once the decoder reported the body complete. */
+    boolean complete;
+
+    /** True once the post-body leftover was pushed back to the reader. */
+    boolean drained;
+
+    /** Private ctor; construct through [`forRequest`](#forRequest). */
+    RequestBodyStream(BodyReader body, AsyncReader reader) {
+        this.body = body;
+        this.reader = reader;
+        this.pull = new int8[RequestBodyStream.PULL];
+        this.complete = body.isComplete();
+        this.drained = false;
+    }
+
+    /**
+     * Build a streaming reader for the parsed request's body: a
+     * [`BodyReader`](BodyReader.cajeta) for the parser's
+     * [`getFraming`](HttpParser.cajeta#getFraming) decision, seeded with
+     * the parser's leftover body bytes (those that arrived in the same
+     * read as the head terminator), driven over `reader`. A bodyless
+     * framing (`KIND_NONE`) yields an already-complete stream whose first
+     * [`read`](#read) returns empty.
+     */
+    public static #RequestBodyStream forRequest(HttpParser parser, AsyncReader reader) {
+        BodyReader br = BodyReader.forFraming(parser.getFraming());
+        int32 leftoverLen = parser.leftoverLength();
+        if (leftoverLen > 0) {
+            int8[] leftover = parser.leftover();
+            br.feed(leftover, leftoverLen);
+        }
+        RequestBodyStream s = heap RequestBodyStream(#br, reader);
+        return #s;
+    }
+
+    /**
+     * Build a streaming reader directly over an existing
+     * [`BodyReader`](BodyReader.cajeta) and [`AsyncReader`](../AsyncReader.cajeta)
+     * (the framing already chosen + any leftover already fed). The lower-
+     * level entry [`forRequest`](#forRequest) wraps; this one is the test
+     * seam and the building block for a caller that drives framing itself.
+     */
+    public static #RequestBodyStream over(BodyReader body, AsyncReader reader) {
+        RequestBodyStream s = heap RequestBodyStream(body, reader);
+        return #s;
+    }
+
+    /**
+     * Pull + decode the next slice of body bytes, returning a fresh owned
+     * `int8[]` of the decoded bytes available — or an **empty** array once
+     * the body is fully consumed (the terminal signal). Parks the fiber on
+     * the underlying [`AsyncReader.read`](../AsyncReader.cajeta#read) when
+     * a socket refill is needed.
+     *
+     * Raises [`UnexpectedEofException`](UnexpectedEofException.cajeta) (via
+     * [`BodyReader.endInput`](BodyReader.cajeta#endInput)) if the peer
+     * closes mid-body on a `Content-Length` / `chunked` framing, or
+     * [`InvalidChunkEncodingException`](InvalidChunkEncodingException.cajeta)
+     * on a malformed chunk stream.
+     */
+    public #int8[] read() {
+        // Already-decoded bytes buffered by a prior feed (incl. the seed).
+        if (this.body.decodedLength() > 0) {
+            int8[] ready = this.body.drain();
+            this.afterFeed();
+            return #ready;
+        }
+        if (this.complete) {
+            this.afterFeed();
+            return new int8[0];             // terminal: body consumed
+        }
+        // Pull one socket read worth and decode it.
+        int32 n = this.reader.read(this.pull, 0, RequestBodyStream.PULL);
+        if (n == 0) {
+            this.body.endInput();           // KIND_CLOSE completes; others throw
+            this.complete = true;
+            int8[] tail = this.body.drain();
+            this.afterFeed();
+            return #tail;
+        }
+        this.body.feed(this.pull, n);
+        if (this.body.isComplete()) {
+            this.complete = true;
+        }
+        int8[] decoded = this.body.drain();
+        this.afterFeed();
+        return #decoded;
+    }
+
+    /**
+     * Once the body is complete, push any post-body leftover bytes (the
+     * next pipelined request) back into the [`AsyncReader`](../AsyncReader.cajeta)'s
+     * staging ring so the connection loop reparses them. Idempotent.
+     */
+    void afterFeed() {
+        if (!this.complete || this.drained) {
+            return;
+        }
+        int32 tailLen = this.body.leftoverLength();
+        if (tailLen > 0) {
+            int8[] tail = this.body.leftover();
+            this.reader.stage(tail, tailLen);
+        }
+        this.drained = true;
+    }
+
+    /**
+     * Drain + re-stage the leftover explicitly (for a caller that wants to
+     * settle the connection without another [`read`](#read)). A no-op
+     * unless the body is complete.
+     */
+    public void drainToReader() {
+        this.afterFeed();
+    }
+
+    /** True once the whole request body has been decoded/consumed. */
+    public boolean isComplete() {
+        return this.complete;
+    }
+}

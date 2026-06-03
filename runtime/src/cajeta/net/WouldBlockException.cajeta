@@ -1,0 +1,28 @@
+package cajeta.net;
+
+import cajeta.lang.String;
+
+/**
+ * A non-blocking operation could not complete immediately and would
+ * have blocked. POSIX `EAGAIN`/`EWOULDBLOCK` / Winsock
+ * `WSAEWOULDBLOCK`. `kind == NetException.KIND_WOULD_BLOCK` (1).
+ *
+ * ## Surfaced as a value, not thrown, on the hot path
+ *
+ * Per the spec ([`cajeta-docs/Net.md`](../../../../../cajeta-docs/Net.md)
+ * §Sockets) the blocking socket primitives and the reactor (NET-3)
+ * surface "would block" as a **distinct return value**, never an
+ * exception, so the readiness loop costs no throw. This exception
+ * type exists for the cases where a caller has explicitly asked for
+ * the throwing variant (and so the taxonomy is complete + every
+ * `kind` ordinal has a corresponding subtype); the `*Async` forms
+ * and the reactor never raise it. See
+ * [`cajeta-docs/stdlib/net/Errors.md`](../../../../../cajeta-docs/stdlib/net/Errors.md).
+ */
+public class WouldBlockException extends NetException {
+    public WouldBlockException(String message) {
+        this.message = message;
+        this.cause = 0;
+        this.kind = 1;   // NetException.KIND_WOULD_BLOCK
+    }
+}

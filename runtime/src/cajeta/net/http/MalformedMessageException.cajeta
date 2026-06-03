@@ -1,0 +1,64 @@
+package cajeta.net.http;
+
+import cajeta.lang.String;
+
+/**
+ * Thrown by the incremental HTTP parser ([`HttpParser`](HttpParser.cajeta),
+ * NET-7.3) when the wire bytes are **syntactically not a valid HTTP/1.1
+ * message** — a malformed request-line or status-line, a header line
+ * with no `:` separator, a non-numeric `Content-Length`, an
+ * unparseable status code, and the like.
+ *
+ * The `position` field carries the 0-based byte offset (into the
+ * **accumulated head**, counting from the first byte fed) at which the
+ * parser noticed the problem, so a caller can point at the offending
+ * character — the same `(message, position)` shape
+ * [`MalformedUriException`](../uri/MalformedUriException.cajeta) and
+ * [`cajeta.codec.json.JsonParseException`](../../codec/json/JsonParseException.cajeta)
+ * carry.
+ *
+ * ## Hierarchy
+ *
+ * The spec ([`cajeta-docs/Net.md`](../../../../../cajeta-docs/Net.md))
+ * places the HTTP parse failures (`MalformedMessage`,
+ * `HeadersTooLarge`, `InvalidChunkEncoding`, `UnexpectedEof`) under
+ * `cajeta.net.NetException` as plan item **NET-7.7**. That item has now
+ * landed: this descends from the intermediate
+ * [`HttpException`](HttpException.cajeta) → `cajeta.net.NetException`
+ * root, so it is catchable as `HttpException` (every HTTP parse fault)
+ * or the `NetException` root (every networking fault) — exactly as
+ * [`MalformedUriException`](../uri/MalformedUriException.cajeta) was
+ * reparented for NET-6.5. (NET-7.3 originally rooted this on
+ * `cajeta.error.RecoverableException` as a placeholder, because the
+ * NET-7.7 base had not been built; NET-7.7 is that one-line reparent.)
+ * The NET-7.3 `(message, position)` constructor contract stays
+ * **identical** across the reparent; existing call sites and
+ * `e.position`-reading catch blocks keep working byte-for-byte.
+ *
+ * ## The inherited `kind`
+ *
+ * As a `NetException`, every instance carries the cross-platform
+ * [`kind`](../NetException.cajeta) ordinal. A malformed message is an
+ * *invalid-input* parse failure, not an errno-derived socket error, so
+ * it is classified to
+ * [`NetException.KIND_INVALID`](../NetException.cajeta) (12) — the whole
+ * HTTP family's bucket, the same one
+ * [`MalformedUriException`](../uri/MalformedUriException.cajeta) and
+ * `cajeta.codec.json.JsonParseException` use. The precise byte offset
+ * still lives in `position`.
+ */
+public class MalformedMessageException extends HttpException {
+    /**
+     * Byte offset (0-based) into the accumulated head at which the
+     * parser rejected the message. `-1` when the failure is not tied
+     * to a single position.
+     */
+    public int64 position;
+
+    public MalformedMessageException(String message, int64 position) {
+        this.message = message;
+        this.cause = 0;
+        this.kind = 12;   // NetException.KIND_INVALID (via HttpException)
+        this.position = position;
+    }
+}
