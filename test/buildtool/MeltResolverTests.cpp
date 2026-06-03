@@ -389,7 +389,7 @@ TEST(MeltResolverTests, projectResolutionAppliesStarFromMelt) {
         "settings": {
             "repositories": [
                 { "name": "local", "type": "filesystem",
-                  "path": ")" << root.string() << R"(" }
+                  "path": ")" << root.generic_string() << R"(" }
             ],
             "melts": [ "platform.melt@1.0.0" ],
             "dependencies": {
@@ -420,7 +420,7 @@ TEST(MeltResolverTests, projectResolutionStarWithNoMeltFails) {
         "settings": {
             "repositories": [
                 { "name": "local", "type": "filesystem",
-                  "path": ")" << root.string() << R"(" }
+                  "path": ")" << root.generic_string() << R"(" }
             ],
             "dependencies": {
                 "acme.lib": "*"
@@ -452,7 +452,7 @@ TEST(MeltResolverTests, projectResolutionExplicitOverridesMeltConstraint) {
         "settings": {
             "repositories": [
                 { "name": "local", "type": "filesystem",
-                  "path": ")" << root.string() << R"(" }
+                  "path": ")" << root.generic_string() << R"(" }
             ],
             "melts": [ "platform.melt@1.0.0" ],
             "dependencies": {
@@ -485,7 +485,7 @@ TEST(MeltResolverTests, meltRepositoriesAppendedToResolutionList) {
     meltBody << "\"dependencies\":{\"from.melt.repo\":\"1.0.0\"},"
              << "\"repositories\":[{\"name\":\"melt-repo\","
              << "\"type\":\"filesystem\","
-             << "\"path\":\"" << meltRepo.string() << "\","
+             << "\"path\":\"" << meltRepo.generic_string() << "\","
              << "\"priority\":100}]";
     stageMelt(consumerRepo, "platform.melt", "1.0.0", meltBody.str());
 
@@ -495,7 +495,7 @@ TEST(MeltResolverTests, meltRepositoriesAppendedToResolutionList) {
         "settings": {
             "repositories": [
                 { "name": "local", "type": "filesystem",
-                  "path": ")" << consumerRepo.string() << R"(" }
+                  "path": ")" << consumerRepo.generic_string() << R"(" }
             ],
             "melts": [ "platform.melt@1.0.0" ],
             "dependencies": {

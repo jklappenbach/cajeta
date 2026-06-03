@@ -298,14 +298,14 @@ TEST(TaskRunnerTests, dependsOnRunsDepFirst) {
             "build": {
                 "actions": [
                     { "action": "exec", "command": "touch",
-                      "args": [")") + tmpA.string() + R"("] }
+                      "args": [")") + tmpA.generic_string() + R"("] }
                 ]
             },
             "test":  {
                 "depends-on": ["build"],
                 "actions": [
                     { "action": "exec", "command": "test",
-                      "args": ["-f", ")" + tmpA.string() + R"("] }
+                      "args": ["-f", ")" + tmpA.generic_string() + R"("] }
                 ]
             }
         }

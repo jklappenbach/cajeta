@@ -3,6 +3,9 @@
 #include <cstring>
 
 #if defined(_WIN32)
+#  include <cstdlib>
+#  include <fstream>
+#  include <string>
 #  include <windows.h>
 #else
 #  include <cerrno>
@@ -237,6 +240,48 @@ std::string resolveExecutable(const std::string& prog) {
     return prog;  // let CreateProcess fail and report it
 }
 
+// The MSYS2 root the toolchain ships in; the POSIX shells live under usr\bin.
+std::string msys2Root() {
+    if (const char* r = std::getenv("MSYS2_ROOT")) {
+        if (*r) return r;
+    }
+    return "C:\\msys64";
+}
+
+// Windows CreateProcess can't launch a "#!"-script directly. Peek at `path`;
+// if it begins with a shebang, return the Windows interpreter to run it with
+// (the script then becomes the interpreter's first argument). Returns "" when
+// there is no shebang. POSIX interpreters map onto the MSYS2 shells the build
+// already depends on; this lets the build tool run shell-script plugins, test
+// binaries, and exec actions on Windows just as it does on POSIX.
+std::string shebangInterpreter(const std::string& path) {
+    std::ifstream in(path, std::ios::binary);
+    if (!in) return "";
+    char magic[2] = {0, 0};
+    in.read(magic, 2);
+    if (in.gcount() != 2 || magic[0] != '#' || magic[1] != '!') return "";
+    std::string line;
+    std::getline(in, line);
+    if (!line.empty() && line.back() == '\r') line.pop_back();
+    // line is the rest of the shebang, e.g. "/bin/sh" or "/usr/bin/env bash".
+    auto has = [&](const char* needle) {
+        return line.find(needle) != std::string::npos;
+    };
+    const std::string root = msys2Root();
+    if (has("bash")) return root + "\\usr\\bin\\bash.exe";
+    if (has("sh"))   return root + "\\usr\\bin\\sh.exe";
+    if (has("python")) return root + "\\usr\\bin\\python.exe";
+    if (has("perl")) return root + "\\usr\\bin\\perl.exe";
+    return root + "\\usr\\bin\\sh.exe";  // default to sh
+}
+
+// Convert a Windows path to forward slashes — the MSYS2 shells accept this form
+// for a script argument, whereas backslashes can be read as escapes.
+std::string toForwardSlashes(std::string s) {
+    for (char& c : s) if (c == '\\') c = '/';
+    return s;
+}
+
 // Double-null-terminated environment block from "KEY=VALUE" entries.
 std::string buildEnvBlock(const std::vector<std::string>& env) {
     std::string block;
@@ -293,8 +338,15 @@ SubprocessResult runSubprocess(const SubprocessOptions& opt) {
 
     auto fail = [&](const std::string& msg) {
         auto closeH = [](HANDLE h) { if (h && h != INVALID_HANDLE_VALUE) ::CloseHandle(h); };
-        closeH(inRd); closeH(inWr); closeH(outRd);
-        closeH(outWr); closeH(errRd); closeH(errWr);
+        // Close only handles we own: pipe ends we created, and the NUL
+        // fallbacks. NEVER an inherited real std handle (closing the process's
+        // own stdout/stderr/stdin corrupts it and crashes later output).
+        if (opt.stdinData) { closeH(inRd); closeH(inWr); }
+        else if (nulIn)    { closeH(inRd); }
+        if (opt.outData)   { closeH(outRd); closeH(outWr); }
+        else if (nulOut)   { closeH(outWr); }
+        if (opt.errData)   { closeH(errRd); closeH(errWr); }
+        else if (nulErr)   { closeH(errWr); }
         r.error = msg;
         return r;
     };
@@ -326,7 +378,20 @@ SubprocessResult runSubprocess(const SubprocessOptions& opt) {
     }
 
     std::string exe = resolveExecutable(opt.argv[0]);
-    std::string cmdLine = buildCommandLine(opt.argv);
+    // Shebang emulation: if the target is a "#!"-script, run it through the
+    // mapped interpreter (the script becomes the interpreter's first arg).
+    std::vector<std::string> launchArgv = opt.argv;
+    std::string interp = shebangInterpreter(exe);
+    if (!interp.empty()) {
+        launchArgv.clear();
+        launchArgv.push_back(interp);
+        launchArgv.push_back(toForwardSlashes(exe));  // the script
+        for (size_t k = 1; k < opt.argv.size(); ++k) {
+            launchArgv.push_back(opt.argv[k]);
+        }
+        exe = resolveExecutable(interp);
+    }
+    std::string cmdLine = buildCommandLine(launchArgv);
     std::vector<char> cmdMut(cmdLine.begin(), cmdLine.end());
     cmdMut.push_back('\0');
 
