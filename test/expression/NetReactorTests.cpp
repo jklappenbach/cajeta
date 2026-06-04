@@ -71,6 +71,12 @@ extern "C" {
     // The await intrinsics exist + link; on a non-fiber thread they fall
     // through to the portable probe, so we can smoke them too (off-fiber).
     int32_t __cajeta_net_await_writable(int32_t fd);
+
+    // NET-3.3 connectAsync native dance: non-blocking toggle, in-progress
+    // classifier, SO_ERROR outcome reader.
+    int32_t __cajeta_net_set_nonblocking(int32_t fd, int32_t nonblocking);
+    int32_t __cajeta_net_is_in_progress(void);
+    int32_t __cajeta_net_connect_result(int32_t fd);
 }
 
 namespace {
@@ -152,6 +158,58 @@ TEST(NetReactorTests, freshSocketIsWritable) {
     EXPECT_EQ(R_READY, __cajeta_net_reactor_poll_fd(cli, IO_WRITE, 1000));
     // And the await intrinsic (off-fiber → portable-probe fallback) agrees.
     EXPECT_EQ(R_READY, __cajeta_net_await_writable(cli));
+
+    __cajeta_net_close(srv);
+    __cajeta_net_close(cli);
+}
+
+// --- non-blocking connect dance (the connectAsync native sequence) --------
+// Drives exactly what the NET-3.3 connectAsync compiler lowering emits, at the
+// C level so a hang here localizes the bug to the native path (vs the IR):
+// socket → set_nonblocking → connect (loopback) → [immediate | in-progress →
+// poll-writable → connect_result]. A BOUNDED poll (1000 ms) is used instead of
+// the timeout-less await so this test can never hang the suite. SO_ERROR must
+// read back 0 (connected), and a byte must round-trip to prove the fd is live.
+TEST(NetReactorTests, nonblockingConnectCompletesAndIsWritable) {
+    ASSERT_EQ(0, __cajeta_net_reactor_init());
+
+    // Listener on an ephemeral loopback port.
+    int32_t lst = __cajeta_net_socket(AF_INET, SOCK_STREAM, 0);
+    ASSERT_GE(lst, 0);
+    sockaddr_in addr = loopbackV4(0);
+    ASSERT_EQ(0, __cajeta_net_bind(lst, &addr, (int32_t) sizeof(addr)));
+    ASSERT_EQ(0, __cajeta_net_listen(lst, 4));
+    sockaddr_in bound;
+    int32_t blen = (int32_t) sizeof(bound);
+    std::memset(&bound, 0, sizeof(bound));
+    ASSERT_EQ(0, __cajeta_net_getsockname(lst, &bound, &blen));
+
+    // Non-blocking client connect.
+    int32_t cli = __cajeta_net_socket(AF_INET, SOCK_STREAM, 0);
+    ASSERT_GE(cli, 0);
+    ASSERT_EQ(0, __cajeta_net_set_nonblocking(cli, 1));
+    int32_t rc = __cajeta_net_connect(cli, &bound, (int32_t) sizeof(bound));
+    if (rc != 0) {
+        // Must be the in-progress sentinel, not a hard failure.
+        ASSERT_EQ(1, __cajeta_net_is_in_progress())
+            << "non-blocking connect failed hard, err=" << __cajeta_net_last_error();
+        // Bounded wait for writability (connect-completed signal).
+        ASSERT_EQ(R_READY, __cajeta_net_reactor_poll_fd(cli, IO_WRITE, 1000))
+            << "connecting socket never became writable within 1s";
+    }
+    // SO_ERROR == 0 → the connect succeeded.
+    EXPECT_EQ(0, __cajeta_net_connect_result(cli))
+        << "SO_ERROR reported a connect failure";
+
+    int32_t srv = __cajeta_net_accept(lst, nullptr, nullptr);
+    __cajeta_net_close(lst);
+    ASSERT_GE(srv, 0);
+
+    // Prove the connected fd is live: a byte round-trips.
+    const char b = 'z';
+    ASSERT_EQ(1, (int) __cajeta_net_send(cli, &b, 1, 0))
+        << "send err=" << __cajeta_net_last_error();
+    EXPECT_EQ(R_READY, __cajeta_net_reactor_poll_fd(srv, IO_READ, 1000));
 
     __cajeta_net_close(srv);
     __cajeta_net_close(cli);

@@ -332,14 +332,24 @@ if(APPLE)
     list(APPEND CAJETA_RT_FLAGS "-fno-emulated-tls")
 endif()
 
+# cajeta_runtime.c is a single TU that `#include`s the per-subsystem native
+# sources (cajeta_net_*.c, cajeta_hash_*.c, …). A bare `DEPENDS` on the top
+# file would NOT rebuild the bitcode when one of those included .c files
+# changes — clang emits no dependency info without `-MD`. Emit a depfile and
+# wire it through `DEPFILE` so every transitive include is tracked (Ninja);
+# otherwise edits to an included runtime source silently ship a stale bitcode
+# (a real bug: a new intrinsic added to e.g. cajeta_net_socket.c would be
+# missing from the embedded runtime, so getRuntimeFunction can't find it).
 add_custom_command(
         OUTPUT ${CAJETA_RT_BC}
         COMMAND ${CAJETA_CLANG} -c -emit-llvm -O2 -fno-builtin
                 -ffunction-sections -fdata-sections
+                -MD -MF ${CAJETA_RT_BC}.d
                 -I${CAJETA_XXHASH_INCLUDE_DIR}
                 ${CAJETA_RT_FLAGS}
                 -o ${CAJETA_RT_BC} ${CAJETA_RT_SRC}
         DEPENDS ${CAJETA_RT_SRC}
+        DEPFILE ${CAJETA_RT_BC}.d
         COMMENT "Compiling Cajeta runtime to LLVM bitcode")
 
 # xxd -i derives the C variable name from the input filename, so we run it in

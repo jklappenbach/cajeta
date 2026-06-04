@@ -1511,11 +1511,18 @@ namespace cajeta {
                     && netCls->getQName()->toCanonical() == canonKey;
                 bool isConnect = wantStream && methodCallName == "connect"
                                  && parameters.size() == 1;
+                // NET-3.3 connectAsync: same sockaddr_pack + socket prologue as
+                // the blocking connect, but the socket is made non-blocking and
+                // an in-progress connect parks the fiber on the reactor's
+                // writable readiness, then reads SO_ERROR — a distinct control
+                // shape lowered below.
+                bool isConnectAsync = wantStream && methodCallName == "connectAsync"
+                                 && parameters.size() == 1;
                 bool isBind    = wantListener && methodCallName == "bind"
                                  && parameters.size() == 1;
                 bool isUdpBind = wantUdp && methodCallName == "bind"
                                  && parameters.size() == 1;
-                if (isOurNet && (isConnect || isBind || isUdpBind)) {
+                if (isOurNet && (isConnect || isConnectAsync || isBind || isUdpBind)) {
                     llvm::Type* ptrTy = llvm::PointerType::get(llvmCtx, 0);
                     llvm::Type* i32Ty = llvm::Type::getInt32Ty(llvmCtx);
                     llvm::Type* i64Ty = llvm::Type::getInt64Ty(llvmCtx);
@@ -1529,6 +1536,13 @@ namespace cajeta {
                     llvm::Function* reuseFn = module->getRuntimeFunction("__cajeta_net_set_reuseaddr");
                     llvm::Function* closeFn = module->getRuntimeFunction("__cajeta_net_close");
                     llvm::Function* throwFn = module->getRuntimeFunction("__cajeta_throw");
+                    // connectAsync (NET-3.3) intrinsics: toggle non-blocking,
+                    // classify the in-progress connect, park on writability,
+                    // and read the SO_ERROR outcome.
+                    llvm::Function* setNbFn   = module->getRuntimeFunction("__cajeta_net_set_nonblocking");
+                    llvm::Function* inProgFn  = module->getRuntimeFunction("__cajeta_net_is_in_progress");
+                    llvm::Function* awaitWrFn = module->getRuntimeFunction("__cajeta_net_await_writable");
+                    llvm::Function* connResFn = module->getRuntimeFunction("__cajeta_net_connect_result");
 
                     // Resolve the SocketAddress / IpAddress llvm struct types
                     // so we can GEP the ip / family / octets / port fields.
@@ -1547,6 +1561,8 @@ namespace cajeta {
 
                     if (sockFn && packFn
                             && (isConnect ? (connFn != nullptr)
+                                : isConnectAsync ? (connFn && setNbFn && inProgFn
+                                                    && awaitWrFn && connResFn)
                                 : isUdpBind ? (bindFn != nullptr)
                                             : (bindFn && listenFn))
                             && saCls && ipCls
@@ -1639,6 +1655,79 @@ namespace cajeta {
                             // connect failure: rc != 0 → close fd then throw.
                             throwIf(builder->CreateICmpNE(rc,
                                 llvm::ConstantInt::get(i32Ty, 0)), 0x102, fd);
+                        } else if (isConnectAsync) {
+                            // ----- non-blocking connect (NET-3.3 connectAsync) -----
+                            // Mirrors the C dance documented above
+                            // __cajeta_net_connect: make the socket non-blocking,
+                            // issue connect; rc==0 means it completed immediately
+                            // (loopback usually does). Otherwise distinguish the
+                            // in-progress case (EINPROGRESS / WSAEWOULDBLOCK) — for
+                            // which we park the fiber on reactor writability then
+                            // read SO_ERROR — from a hard connect failure.
+                            // is_in_progress() reads the errno set by connect, so
+                            // nothing may syscall between the two calls (only the
+                            // icmp/branch below).
+                            builder->CreateCall(setNbFn,
+                                {fd, llvm::ConstantInt::get(i32Ty, 1)});
+                            llvm::Value* rc = builder->CreateCall(connFn,
+                                {fd, scratch, addrlen}, "na.aconnect_rc");
+                            llvm::Value* immediate = builder->CreateICmpEQ(rc,
+                                llvm::ConstantInt::get(i32Ty, 0), "na.aconnect_now");
+                            llvm::BasicBlock* doneBB = llvm::BasicBlock::Create(
+                                llvmCtx, "na.aconnect_done", parentFn);
+                            llvm::BasicBlock* pendingBB = llvm::BasicBlock::Create(
+                                llvmCtx, "na.aconnect_pending", parentFn);
+                            builder->CreateCondBr(immediate, doneBB, pendingBB);
+
+                            // pending: connect returned -1; is it in-flight or a
+                            // hard error?
+                            builder->SetInsertPoint(pendingBB);
+                            llvm::Value* inProg = builder->CreateCall(inProgFn,
+                                {}, "na.aconnect_inprog");
+                            llvm::Value* isInProg = builder->CreateICmpNE(inProg,
+                                llvm::ConstantInt::get(i32Ty, 0), "na.aconnect_isinprog");
+                            llvm::BasicBlock* awaitBB = llvm::BasicBlock::Create(
+                                llvmCtx, "na.aconnect_await", parentFn);
+                            llvm::BasicBlock* hardFailBB = llvm::BasicBlock::Create(
+                                llvmCtx, "na.aconnect_hardfail", parentFn);
+                            builder->CreateCondBr(isInProg, awaitBB, hardFailBB);
+
+                            // hard connect failure (e.g. ECONNREFUSED returned
+                            // synchronously): close + throw.
+                            builder->SetInsertPoint(hardFailBB);
+                            if (closeFn) builder->CreateCall(closeFn, {fd});
+                            if (throwFn) {
+                                llvm::Value* tagPtr = builder->CreateIntToPtr(
+                                    llvm::ConstantInt::get(i64Ty, 0x106), ptrTy);
+                                builder->CreateCall(throwFn, {tagPtr});
+                            }
+                            builder->CreateUnreachable();
+
+                            // in-progress: park the fiber until the socket is
+                            // writable, then read SO_ERROR to learn the outcome.
+                            builder->SetInsertPoint(awaitBB);
+                            builder->CreateCall(awaitWrFn, {fd});
+                            llvm::Value* soerr = builder->CreateCall(connResFn,
+                                {fd}, "na.aconnect_soerr");
+                            llvm::Value* soOk = builder->CreateICmpEQ(soerr,
+                                llvm::ConstantInt::get(i32Ty, 0), "na.aconnect_sook");
+                            llvm::BasicBlock* soFailBB = llvm::BasicBlock::Create(
+                                llvmCtx, "na.aconnect_sofail", parentFn);
+                            builder->CreateCondBr(soOk, doneBB, soFailBB);
+
+                            // SO_ERROR != 0 → the connect failed after readiness.
+                            builder->SetInsertPoint(soFailBB);
+                            if (closeFn) builder->CreateCall(closeFn, {fd});
+                            if (throwFn) {
+                                llvm::Value* tagPtr = builder->CreateIntToPtr(
+                                    llvm::ConstantInt::get(i64Ty, 0x107), ptrTy);
+                                builder->CreateCall(throwFn, {tagPtr});
+                            }
+                            builder->CreateUnreachable();
+
+                            // converge: the socket is connected (non-blocking).
+                            // Fall through to the shared wrap code below.
+                            builder->SetInsertPoint(doneBB);
                         } else if (isUdpBind) {
                             // ----- UdpSocket.bind (b2): bind only, no listen.
                             // SO_REUSEADDR best-effort (multicast group sharing).

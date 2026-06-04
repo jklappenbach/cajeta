@@ -65,18 +65,26 @@ public class TcpStream {
         return heap TcpStream(-1);
     }
 
-    // TODO (NET-3.3 b3-deferred): `connectAsync(#SocketAddress) -> #TcpStream`.
-    // Unlike readAsync/writeAsync/acceptAsync — which loop over an already-
-    // intrinsic-lowered non-blocking op (recv/send/accept) — a non-blocking
-    // connect needs its OWN lowering: the b1 `connect` static lowering packs
-    // the addr and issues a *blocking* `__cajeta_net_connect`. The async form
-    // must instead create the socket non-blocking, issue the connect (which
-    // returns EINPROGRESS/WouldBlock), park on `Reactor.awaitWritable(fd)`,
-    // then read SO_ERROR to confirm. That is a new static-lowering shape, not a
-    // readiness loop over an existing lowered op, so it is deferred to keep b3
-    // scoped to the high-value read/write/accept path that unblocks AsyncReader/
-    // AsyncWriter + the HTTP server head-read loop. Blocks: plan item NET-3.3
-    // (connectAsync sub-item). The blocking `connect` above remains usable.
+    /**
+     * Open a TCP connection to `addr` **without blocking the carrier** and
+     * return the connected stream. Unlike [`readAsync`](#readAsync) /
+     * [`writeAsync`](#writeAsync) — readiness loops over an already-lowered
+     * non-blocking op — a non-blocking connect needs its own lowering: the
+     * codegen creates the socket non-blocking, issues `__cajeta_net_connect`
+     * (which returns the in-progress sentinel `EINPROGRESS`/`WSAEWOULDBLOCK`),
+     * parks the fiber on [`Reactor.awaitWritable`](reactor/Reactor.cajeta#awaitWritable),
+     * then reads `SO_ERROR` (`__cajeta_net_connect_result`) to confirm the
+     * connection succeeded. A loopback connect that completes synchronously
+     * skips the park. On a hard failure (e.g. `ConnectionRefused`) the codegen
+     * closes the fd and raises. Takes ownership of `addr`. *(NET-3.3.)*
+     *
+     * The body is a placeholder; the call is intrinsic-lowered in
+     * `MethodCallExpression` (the static `TcpStream.connect`/`connectAsync`
+     * block), so this returns through the codegen, never the stub.
+     */
+    public static #TcpStream connectAsync(#SocketAddress addr) {
+        return heap TcpStream(-1);
+    }
 
     // ----- Instance I/O -----
 
