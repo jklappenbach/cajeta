@@ -45,7 +45,9 @@ TEST(CompilerTests, canThrowOnInvalidInput) {
 // Event, Wave, …) into the implicitly-loaded stdlib — +22 structures.
 // 2026-06-01: bumped 96 → 98 — Item 8 added cajeta.xpu.core.Texture2D
 // and cajeta.xpu.core.Sampler to that prelude (+2 structures).
-static constexpr size_t STDLIB_STRUCTURE_COUNT = 98;
+// 2026-06-03: bumped 98 → 100 — cajeta-gpu Part C inc 3a added
+// cajeta.xpu.core.AccelerationStructure and cajeta.xpu.core.RayQuery (+2).
+static constexpr size_t STDLIB_STRUCTURE_COUNT = 100;
 
 TEST(CompilerTests, canParseOnValidShortPackage) {
     string inputPath = CAJETA_TEST_ROOT + string("/compile/code/src/cajeta/Test.cajeta");
