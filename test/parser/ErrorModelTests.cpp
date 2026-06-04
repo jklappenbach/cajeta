@@ -172,6 +172,31 @@ TEST(ErrorModelTests, scopeReraisesUnawaitedSpawnThrow) {
     EXPECT_EQ(runI32(src), 77);
 }
 
+// H2 (bugfix-plan): `try { } finally { }` with NO catch clause must not swallow a
+// throw — it runs the finally, then the exception propagates to the enclosing
+// catch. Today the empty-catch landing pad pops the frame and falls through,
+// swallowing it (run() would return 1 instead of 101).
+TEST(ErrorModelTests, tryFinallyNoCatchPropagatesThrow) {
+    auto src =
+        "package test;\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        int32 ran = 0;\n"
+        "        try {\n"
+        "            try {\n"
+        "                throw 5;\n"
+        "            } finally {\n"
+        "                ran = 1;\n"
+        "            }\n"
+        "        } catch (Exception e) {\n"
+        "            return ran + 100;\n"
+        "        }\n"
+        "        return ran;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 101);  // finally ran (ran=1) AND throw propagated
+}
+
 // R5-D: spawn at the function-body level (no explicit scope). The
 // implicit function-body scope picks up the throw at function exit
 // and re-raises into the function's caller. Here run() doesn't catch,
