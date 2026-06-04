@@ -59,11 +59,11 @@ reference).
 
 ## Wave 2 — Exception / unwind cluster (careful; spot-verify each)
 
-- [ ] **C1 — `return` inside `try` leaves a dangling exc frame → longjmp into a dead stack** *(critical)* —
+- [x] **C1 — `return` inside `try` leaves a dangling exc frame → longjmp into a dead stack** *(critical)* —
   `Statement.cpp:824-983` (Try) + `:1136-1156`/`:1591-1593` (Return); runtime longjmp `cajeta_runtime.c:2024`.
   *Trigger:* any `T f(){ try{…;return x;}catch{…} }` — pop emitted only on fall-through, `return` skips it.
   *Fix:* track open try-frames per method (like `dropFrameStack`); emit one `__cajeta_exc_pop` per open frame
-  (LIFO) before every `ret`, or route returns-in-try through the try `afterBB`.
+  (LIFO) before every `ret`, or route returns-in-try through the try `afterBB`. FIXED 2026-06-03: module tryFinallyStack of active try/catch frames; emitTryFinallyUnwind pops each + runs its finally at every return site (test returnInTryRunsFinally). break/continue-out-of-try is a remaining gap.
 - [ ] **C2 — scope cancellation write-after-free of an already-freed fiber** *(critical)* —
   `cajeta_runtime.c:982-988` / `:1027-1033`; fiber freed `:738-741`, slot written `:798` never cleared.
   *Trigger:* sibling B completes (fiber freed, slot dangling), sibling A throws → cancel loop writes `cancel_with`

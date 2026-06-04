@@ -224,6 +224,35 @@ TEST(ErrorModelTests, finallyRunsWhenCatchRethrows) {
     EXPECT_EQ(runI32(src), 201);  // finally ran (cleaned=1) before the rethrow propagated
 }
 
+// C1 (bugfix-plan): a `return` inside a `try` must run the enclosing finally (and
+// pop the exception frame) before returning. Today the frame pop + finally are
+// emitted only on the try's fall-through edge, so a `return` skips them — the
+// finally never runs (b.v stays 0 -> run() returns 100 instead of 101), and the
+// un-popped frame dangles (a later throw would longjmp into the dead frame).
+TEST(ErrorModelTests, returnInTryRunsFinally) {
+    auto src =
+        "package test;\n"
+        "public class Box {\n"
+        "    public int32 v;\n"
+        "    public Box() { this.v = 0; }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 produce(Box b) {\n"
+        "        try {\n"
+        "            return 100;\n"
+        "        } finally {\n"
+        "            b.v = 1;\n"
+        "        }\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        Box b = new Box();\n"
+        "        int32 r = produce(b);\n"
+        "        return r + b.v;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 101);  // finally ran on the return path (b.v=1)
+}
+
 // R5-D: spawn at the function-body level (no explicit scope). The
 // implicit function-body scope picks up the throw at function exit
 // and re-raises into the function's caller. Here run() doesn't catch,

@@ -899,7 +899,10 @@ namespace cajeta {
             }
             module->pushTryCatchContext(std::move(catchTypes));
         }
+        // C1: a return inside the try body must pop this frame + run finally.
+        module->pushTryFinally(finallyBlock);
         if (tryBlock) tryBlock->generateCode(module);
+        module->popTryFinally();
         module->popTryCatchContext();
         std::set<std::string> postTryNYA = preTryNYA;
         if (daScope) postTryNYA = daScope->snapshotNotYetAssigned();
@@ -978,7 +981,10 @@ namespace cajeta {
 
                 // Normal: run the catch body, pop its frame, join at afterBB.
                 builder->SetInsertPoint(catchBodyBB);
+                // C1: a return inside the catch body must pop catchFrame + finally.
+                module->pushTryFinally(finallyBlock);
                 emitCatchBody();
+                module->popTryFinally();
                 // Snapshot the catch body's DA state before the landing pad's
                 // finally regen mutates the (single, evolving) NYA set.
                 std::set<std::string> afterCatchBodyNYA;
@@ -1180,6 +1186,33 @@ namespace cajeta {
     // before BOTH the void-return path and the typed-return path so an
     // early return from inside an explicit `scope { }` still joins all
     // pending child tasks before the ret instruction.
+    // C1 (bugfix-plan): a `return` inside one or more enclosing try/catch bodies
+    // must pop each active exception frame (innermost first) and run its finally
+    // before the method's own scope-exit/drops/ret — otherwise the frame dangles
+    // (a later throw longjmps into the returned, dead stack) and the finally never
+    // runs. Emitted at every return site, after the return value is evaluated.
+    static void emitTryFinallyUnwind(CajetaModulePtr module) {
+        auto& stack = module->getTryFinallyStack();
+        if (stack.empty()) return;
+        auto* builder = module->getBuilder();
+        llvm::Function* pop = module->getRuntimeFunction("__cajeta_exc_pop");
+        // The finally regen below mutates the (single, evolving) definite-
+        // assignment set; the code after a return is unreachable, so snapshot and
+        // restore so the method's DA tracking is unaffected.
+        auto daScope = module->getScopeStack().peek();
+        std::set<std::string> savedNYA;
+        if (daScope) savedNYA = daScope->snapshotNotYetAssigned();
+        for (auto it = stack.rbegin(); it != stack.rend(); ++it) {
+            if (builder->GetInsertBlock()->hasTerminator()) break;
+            if (pop) builder->CreateCall(pop, {});
+            if (*it) {
+                auto fin = std::static_pointer_cast<Statement>(*it);
+                fin->generateCode(module);
+            }
+        }
+        if (daScope) daScope->restoreNotYetAssigned(savedNYA);
+    }
+
     static void emitScopeExitToWatermark(CajetaModulePtr module) {
         auto m = module->getCurrentMethod();
         if (!m) return;
@@ -1209,6 +1242,8 @@ namespace cajeta {
                 m->emitAfterReturningAdvice(module);
                 m->emitAfterThrowingTryPop(module);
             }
+            // C1: run enclosing try finallys + pop their frames first.
+            emitTryFinallyUnwind(module);
             // Pop any open scope frames before the value-less return so
             // every pending child task is joined first.
             emitScopeExitToWatermark(module);
@@ -1479,6 +1514,7 @@ namespace cajeta {
                                 curM->emitAfterReturningAdvice(module);
                                 curM->emitAfterThrowingTryPop(module);
                             }
+                            emitTryFinallyUnwind(module);   // C1
                             emitScopeExitToWatermark(module);
                             if (auto curM = module->getCurrentMethod())
                                 curM->emitOwnerDrops(module);
@@ -1650,6 +1686,7 @@ namespace cajeta {
         // Pop any open scope frames before the typed return — joins every
         // pending child task (function-body scope + any explicit scope
         // the return is lexically inside of).
+        emitTryFinallyUnwind(module);   // C1: run enclosing try finallys + pop frames
         emitScopeExitToWatermark(module);
         // Fire drops before the typed return so all owned locals are released.
         if (auto m = module->getCurrentMethod()) m->emitOwnerDrops(module);
