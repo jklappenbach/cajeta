@@ -115,20 +115,20 @@ reference).
 
 ## Wave 4 — GPU-driver robustness
 
-- [ ] **H9 — CUDA context never made current on the launching thread** *(high)* — `cajeta_runtime.c:4029`,`:6207-6234`,`:5724-5727`.
+- [x] **H9 — FIXED 2026-06-03: CUDA context never made current on the launching thread** *(high)* — `cajeta_runtime.c:4029`,`:6207-6234`,`:5724-5727`.
   No `cuCtxSetCurrent` anywhere; cross-thread launch → `CUDA_ERROR_INVALID_CONTEXT`, return discarded → silent no-op.
   *Fix:* `cuCtxSetCurrent` at each entry point (or primary-ctx retain); check the launch return value.
-- [ ] **M3 — `register_kernel_params` never dedups → re-registration appends, exhausts the 128-slot table** *(medium)* —
+- [x] **M3 — FIXED 2026-06-03: `register_kernel_params` never dedups → re-registration appends, exhausts the 128-slot table** *(medium)* —
   `cajeta_runtime.c:4219-4241`. *Fix:* find-then-overwrite under the lock.
-- [ ] **M4 — HIP launch passes raw texture-record pointers when kparams missing/oversized** *(medium)* — `:6276-6304`.
+- [~] **M4 — PARTIAL 2026-06-03: detectable bad-texture cases now skip the launch (via M5/M6's launchOk); a kp==NULL kernel with textures is undetectable. HIP launch passes raw texture-record pointers when kparams missing/oversized** *(medium)* — `:6276-6304`.
   *Fix:* mirror the Vulkan NULL/`count>64` guard (`:6342`).
-- [ ] **M5 — HIP `hipCreateTextureObject` failure still substitutes NULL texObj and launches** *(medium)* — `:6294-6310`.
+- [x] **M5 — FIXED 2026-06-03: HIP `hipCreateTextureObject` failure still substitutes NULL texObj and launches** *(medium)* — `:6294-6310`.
   *Fix:* on `obj==0`, diagnose + skip the launch.
-- [ ] **M6 — kernel with >8 textures passes raw handles for the 9th+** *(medium)* — `:6272-6301`. `texObjs/texObjVals` are `[8]`.
+- [x] **M6 — FIXED 2026-06-03: kernel with >8 textures passes raw handles for the 9th+** *(medium)* — `:6272-6301`. `texObjs/texObjVals` are `[8]`.
   *Fix:* size to the 64-param cap or abort over capacity.
 - [ ] **M7 — tex_upload leaves the image in UNDEFINED layout on cmd-alloc failure** *(medium)* — `:4844-4845`.
   *Fix:* track per-tex ready/layout; skip/re-issue or propagate the error.
-- [ ] **M9 — grid block-count overflows int32 → silent no-op / divide-by-zero** *(medium)* — `:5814-5826`,`:5759-5768`.
+- [x] **M9 — FIXED 2026-06-03: grid block-count overflows int32 → silent no-op / divide-by-zero** *(medium)* — `:5814-5826`,`:5759-5768`.
   *Fix:* compute `nblocks`/`gxy`/loop index in int64; validate dims.
 - [ ] **M10 — zero-parameter Vulkan kernel can never launch** *(medium)* — `VulkanRegistration.cpp:124-151` + `cajeta_runtime.c:6342-6348`.
   kparams emitted only `if (!info.empty())`; Vulkan launch hard-requires `count>0`. *Fix:* drop the guard or relax to `count<0`.
@@ -138,7 +138,7 @@ reference).
 - [ ] **L4 — init tri-state leaks instance/device on partial bring-up failure** — `cajeta_runtime.c:4369-4642`. *Fix: goto-cleanup destroy.*
 - [ ] **L5 — `vkBindBufferMemory`/`vkBindImageMemory` return ignored → live unbacked slot on bind OOM** — `:4677`,`:4783`. *Fix: check VkResult.*
 - [ ] **L7 — workgroup-size spec-constant skipped when SPIR-V has zero decorations** — `SpirvBackend.cpp:191-216`. *Fix: insert before first `OpFunction`.*
-- [ ] **L9 — `find_kparams` read lock-free while registration mutates** — `cajeta_runtime.c:6276`,`:6342` vs `:4219-4241`. *Fix: hold the lock across find / order the publish.*
+- [x] **L9 — FIXED 2026-06-03: `find_kparams` read lock-free while registration mutates** — `cajeta_runtime.c:6276`,`:6342` vs `:4219-4241`. *Fix: hold the lock across find / order the publish.*
 
 ## Wave 5 — Fiber / lock lifecycle
 
