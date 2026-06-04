@@ -491,6 +491,17 @@ private:
             emittedDynamicShared = true;
             isDynamic = true;
             if (target.dynamicSharedNeedsConcreteSize()) {
+                // H12: the runtime computes the dynamic-shared length spec constant
+                // as sharedBytes/4 — a hardcoded 4-byte element. Until that carries
+                // the real element size, reject a non-4-byte element rather than
+                // silently mis-size the array (e.g. Shared<half> -> OOB indices in
+                // [len/2, len); Shared<double> -> over-allocation + wrong count).
+                uint64_t elemBytes = mod.getDataLayout().getTypeAllocSize(elemTy);
+                if (elemBytes != 4)
+                    unsupported("dynamic Shared<T> currently requires a 4-byte "
+                                "element (the runtime's shared-length spec constant "
+                                "assumes 4 bytes); got a " +
+                                std::to_string(elemBytes) + "-byte element");
                 // Vulkan: a concrete INTERNAL [N x T] placeholder (N>1 so it
                 // stays an OpTypeArray, not a decayed scalar); the SPIR-V
                 // post-emit pass rewrites its length to a spec constant the
