@@ -172,6 +172,11 @@ namespace cajeta {
             llvm::BasicBlock* continueTarget;
             llvm::BasicBlock* breakTarget;
             std::string label;
+            // C1 follow-up: the tryFinallyStack depth at loop entry. A break/
+            // continue out of one or more try bodies inside the loop must run
+            // those tries' finallys (and pop their frames) down to this watermark,
+            // just like a return does for all enclosing tries.
+            size_t tryFinallyDepth;
         };
 
     private:
@@ -487,7 +492,8 @@ namespace cajeta {
         llvm::Constant* getOrCreateSourceFileConstant(const std::string& path);
 
         void pushLoopContext(llvm::BasicBlock* cont, llvm::BasicBlock* brk) {
-            loopContextStack.push_back({cont, brk, pendingLoopLabel});
+            loopContextStack.push_back(
+                {cont, brk, pendingLoopLabel, tryFinallyStack.size()});
             pendingLoopLabel.clear();
         }
         // Set by IdentifierLabel; consumed by the next pushLoopContext.

@@ -142,20 +142,20 @@ reference).
 
 ## Wave 5 — Fiber / lock lifecycle
 
-- [ ] **H6 — fibers stranded on park/lock queues leaked on shutdown; un-nulled `parked_head` → cross-run swapcontext into recycled context** *(high)* —
+- [x] **H6 — FIXED 2026-06-03: fibers stranded on park/lock queues leaked on shutdown; un-nulled `parked_head` → cross-run swapcontext into recycled context** *(high)* —
   `cajeta_runtime.c:756-772`,`:623`,`:1065-1066`. *Fix:* on shutdown, drain `parked_head` + lock wait queues (free stack+struct), null `parked_head`/`ready_head`/`ready_tail`.
-- [ ] **H7 — fiber parked on a Lock wait-queue ignores cancellation → deadlock or runs uncancelled** *(high)* —
+- [x] **H7 — FIXED 2026-06-03: fiber parked on a Lock wait-queue ignores cancellation → deadlock or runs uncancelled** *(high)* —
   `cajeta_runtime.c:1112-1131` vs `:1134-1167`, `:829-840`. *Fix:* check `cancel_with` after the swapcontext; dequeue + throw; cancellation unlinks lock waiters.
-- [ ] **H8 — `__cajeta_lock_destroy` with parked waiters: lock UAF, lost fibers, UB destroying a busy mutex/cond** *(high)* —
+- [x] **H8 — FIXED 2026-06-03: `__cajeta_lock_destroy` with parked waiters: lock UAF, lost fibers, UB destroying a busy mutex/cond** *(high)* —
   `cajeta_runtime.c:1185-1191`. *Fix:* lock `l->mutex`, refuse/drain when `held || wait_head`, check destroy return for EBUSY before free.
-- [ ] **H19 — Win32 fiber handle leaked for every completed task (no `DeleteFiber`)** *(high, Windows)* —
+- [x] **H19 — FIXED 2026-06-03: Win32 fiber handle leaked for every completed task (no `DeleteFiber`)** *(high, Windows)* —
   `cajeta_runtime.c:498` vs `:738-741`. *Fix:* `DeleteFiber(f->ctx.fiber)` in the DONE branch under `_WIN32`; skip the `f->stack` malloc on Windows.
-- [ ] **M2 — try_acquire / main-acquire bypass the FIFO fiber wait queue → starvation** *(medium)* — `cajeta_runtime.c:1172-1183`,`:1095-1106`. *Fix: real handoff; refuse to barge when `wait_head` non-empty.*
-- [ ] **L6 — dynamic shared byte count round-tripped through int32 + ZExt → ~4GB host alloca; no per-block bound** — `CpuBarrierFission.cpp:248-255`, `cajeta_runtime.c:6432-6434`. *Fix: keep unsigned end-to-end; bound-check before alloca.*
+- [~] **M2 — BY-DESIGN 2026-06-03: documented intentional wake-and-recheck; a fairness (starvation-under-contention) issue, not a correctness bug. try_acquire / main-acquire bypass the FIFO fiber wait queue → starvation** *(medium)* — `cajeta_runtime.c:1172-1183`,`:1095-1106`. *Fix: real handoff; refuse to barge when `wait_head` non-empty.*
+- [x] **L6 — FIXED 2026-06-03: dynamic shared byte count round-tripped through int32 + ZExt → ~4GB host alloca; no per-block bound** — `CpuBarrierFission.cpp:248-255`, `cajeta_runtime.c:6432-6434`. *Fix: keep unsigned end-to-end; bound-check before alloca.*
 
 ## Wave 6 — Nits
 
-- [ ] **L8 — `__cajeta_path_stat` fills `isSymlink` via `stat()` (follows links) → always false** — `cajeta_runtime.c:3783-3806`. *Fix: use `lstat()` (MinGW stubs it).*
+- [x] **L8 — FIXED 2026-06-03: `__cajeta_path_stat` fills `isSymlink` via `stat()` (follows links) → always false** — `cajeta_runtime.c:3783-3806`. *Fix: use `lstat()` (MinGW stubs it).*
 
 ---
 

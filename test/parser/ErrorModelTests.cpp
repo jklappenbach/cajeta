@@ -253,6 +253,30 @@ TEST(ErrorModelTests, returnInTryRunsFinally) {
     EXPECT_EQ(runI32(src), 101);  // finally ran on the return path (b.v=1)
 }
 
+// C1 follow-up: a `break` out of a `try { } finally { }` inside a loop must run
+// the finally before leaving the loop (the same gap return-in-try had).
+TEST(ErrorModelTests, breakOutOfTryRunsFinally) {
+    auto src =
+        "package test;\n"
+        "public class Box { public int32 v; public Box() { this.v = 0; } }\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Box b = new Box();\n"
+        "        uint32 i = 0;\n"
+        "        while (i < 3) {\n"
+        "            try {\n"
+        "                if (i == 1) { break; }\n"
+        "            } finally {\n"
+        "                b.v = b.v + 1;\n"
+        "            }\n"
+        "            i = i + 1;\n"
+        "        }\n"
+        "        return b.v;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 2);  // finally ran for i=0 and on the i=1 break
+}
+
 // H4 (bugfix-plan): a throw out of an open `scope { spawn ... }` must unwind the
 // scope — joining/cancelling its children — before propagating, not leak the
 // frame and orphan the child. With the fix the caught path joins the child
