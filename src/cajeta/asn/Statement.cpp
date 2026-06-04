@@ -954,6 +954,18 @@ namespace cajeta {
                 }
             }
             if (c.body) c.body->generateCode(module);
+        } else {
+            // H2 (bugfix-plan): try/finally with NO catch clause — the throw must
+            // propagate, not be swallowed. Run the finally on this unwinding edge
+            // (the grammar guarantees a finally here: `try` requires catch+ OR
+            // finally), then re-raise. afterBB runs the finally for the normal,
+            // non-throwing edge; this is the matching emission for the throw edge.
+            if (finallyBlock) finallyBlock->generateCode(module);
+            llvm::Function* throwFn = module->getRuntimeFunction("__cajeta_throw");
+            if (throwFn && !builder->GetInsertBlock()->hasTerminator()) {
+                builder->CreateCall(throwFn, {thrownValPtr});
+                builder->CreateUnreachable();
+            }
         }
         if (!builder->GetInsertBlock()->hasTerminator()) {
             builder->CreateBr(afterBB);
