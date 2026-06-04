@@ -53,6 +53,7 @@
 #  include <fcntl.h>         // fcntl / O_NONBLOCK
 #  include <unistd.h>        // close
 #  include <errno.h>
+#  include <signal.h>        // signal / SIG_IGN (SIGPIPE suppression)
 #endif
 
 // ---------------------------------------------------------------------------
@@ -195,14 +196,32 @@ static void cajeta_net_wsa_startup_once(void) {
 }
 #endif
 
+// One-time SIGPIPE suppression (POSIX only). Writing to a socket whose peer
+// has closed its read half raises SIGPIPE, whose default disposition is to
+// kill the process — invisible on Windows (no SIGPIPE) but a real Linux/POSIX
+// crash on any write to a closed peer. We ignore it process-wide once, at the
+// first socket-creating op (which always precedes any send), so a broken-pipe
+// write instead returns the EPIPE failure sentinel the cajeta layer already
+// maps to BrokenPipeException via __cajeta_net_last_error(). Idempotent via a
+// pthread_once guard. (Linux sends with MSG_NOSIGNAL too — see __cajeta_net_send
+// — but ignoring SIGPIPE is the portable belt-and-suspenders for platforms /
+// paths without MSG_NOSIGNAL, e.g. macOS sendto without SO_NOSIGPIPE.)
+#if !defined(_WIN32)
+static pthread_once_t g_cajeta_sigpipe_once = PTHREAD_ONCE_INIT;
+static void cajeta_net_ignore_sigpipe_once(void) {
+    signal(SIGPIPE, SIG_IGN);
+}
+#endif
+
 // Idempotent, thread-safe Winsock init. Returns 1 on success / already-up,
-// 0 if startup failed. POSIX always returns 1. Called at the top of every
-// socket-creating entry point.
+// 0 if startup failed. POSIX always returns 1 (after ignoring SIGPIPE once).
+// Called at the top of every socket-creating entry point.
 static int cajeta_net_ensure_init(void) {
 #if defined(_WIN32)
     pthread_once(&g_cajeta_wsa_once, cajeta_net_wsa_startup_once);
     return g_cajeta_wsa_ok;
 #else
+    pthread_once(&g_cajeta_sigpipe_once, cajeta_net_ignore_sigpipe_once);
     return 1;
 #endif
 }

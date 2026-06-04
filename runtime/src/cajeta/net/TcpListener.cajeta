@@ -3,13 +3,18 @@ package cajeta.net;
 import cajeta.lang.String;
 import cajeta.net.IpAddress;
 import cajeta.net.SocketAddress;
+import cajeta.net.TcpStream;
+import cajeta.net.NetErrors;
 import cajeta.net.NetException;
+import cajeta.net.reactor.Reactor;
 
-// NOTE (NET / b1 socket receiver-lowering): the **sync** listener surface.
-// `acceptAsync` depends on `cajeta.net.reactor.Reactor` (gated; un-gated by
-// b3), so it is omitted here for b1. `bind` / `accept` / `acceptFd` / `close`
-// are intrinsic-lowered at the call site (see MethodCallExpression.cpp,
-// `cajeta.net.TcpListener` block).
+// NOTE (NET / b1 socket receiver-lowering): the listener surface. `bind` /
+// `accept` / `acceptFd` / `boundPort` / `close` are intrinsic-lowered at the
+// call site (see MethodCallExpression.cpp, `cajeta.net.TcpListener` block).
+// `acceptAsync` (NET-3.3 / b3) is a pure-Cajeta readiness loop over the lowered
+// `acceptFd` + the WouldBlock classifier + `cajeta.net.reactor.Reactor` (which
+// b3 un-gates) — it parks the fiber on listener-readability instead of blocking
+// the carrier in `accept`.
 
 /**
  * A **passive TCP listening socket** — `bind` + `listen` + a blocking
@@ -71,6 +76,61 @@ public class TcpListener {
      */
     public int32 acceptFd() {
         return -1;
+    }
+
+    // ----- async accept (NET-3.3 / b3) -------------------------------------
+    //
+    // WouldBlock classifier + non-blocking toggle, bound to the NET-1.7 native
+    // shim (the same bridges `TcpStream` uses). `@Native` private static
+    // forwarders; static dispatch bypasses the vtable so there is no
+    // `final`-class gating concern.
+
+    /** 1 iff the last socket op failed with WouldBlock / in-progress. */
+    @Native("__cajeta_net_is_wouldblock")
+    private static int32 isWouldBlockNative();
+
+    /** The normalized `cajeta_net_err` ordinal of the last socket op. */
+    @Native("__cajeta_net_last_error")
+    private static int32 lastErrorNative();
+
+    /** Toggle non-blocking mode on `fd` (tracked form). Returns 0 / -1. */
+    @Native("__cajeta_net_set_nonblocking_tracked")
+    private static int32 setNonBlockingNative(int32 fd, int32 nonblocking);
+
+    /**
+     * Async accept — **park the fiber** (not the carrier) on the listening
+     * socket until a connection is pending, then return it as a
+     * [`TcpStream`](TcpStream.cajeta) (plan item **NET-3.3**). The async twin
+     * of [`accept`](#accept): the listener fd is put into non-blocking mode and
+     * the reactor initialized once; a non-blocking [`acceptFd`](#acceptFd)
+     * either returns a connection fd (`>= 0`) or `-1`. On `-1` the WouldBlock
+     * classifier parks via
+     * [`Reactor.awaitReadable`](reactor/Reactor.cajeta#awaitReadable) and
+     * retries; any other error raises the mapped
+     * [`NetException`](NetException.cajeta) subtype. The returned stream is
+     * **owned** by the caller.
+     */
+    public #TcpStream acceptAsync() {
+        int32 lfd = this.fd;
+        TcpListener.setNonBlockingNative(lfd, 1);
+        Reactor.init();
+        int32 connFd = -1;
+        boolean done = false;
+        while (!done) {
+            int32 c = this.acceptFd();
+            if (c >= 0) {
+                connFd = c;
+                done = true;
+            } else {
+                if (TcpListener.isWouldBlockNative() == 1) {
+                    Reactor.awaitReadable(lfd);   // park; retry on a pending conn
+                } else {
+                    int32 err = TcpListener.lastErrorNative();
+                    throw NetErrors.fromErrno(err, "acceptAsync");
+                }
+            }
+        }
+        return heap TcpStream(connFd);
     }
 
     // ----- address ---------------------------------------------------------

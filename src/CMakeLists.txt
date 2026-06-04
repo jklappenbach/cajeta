@@ -405,7 +405,16 @@ set(CAJETA_STDLIB_DIRS
         # socket-backed files of net/http + net/ws (see net/http/socket,
         # net/ws/socket). The embed glob is non-recursive, so listing net/http
         # picks up only its pure message-model files, not net/http/socket.
-        ${CAJETA_STDLIB_ROOT}/cajeta/net          # NetException + exception hierarchy + Headers (other data types gated under net/socket)
+        # cajeta.net core: NetException + exception hierarchy + Headers +
+        # TcpStream/TcpListener/UdpSocket (sync surface, b1/b2) + the async
+        # buffered-stream trio AsyncReader/AsyncWriter/RingBuffer (NET-3.5, b3).
+        # The async trio declares `package cajeta.net` and lives here (NOT under
+        # net/socket): the JIT compile path enforces package==dir, so a file
+        # under net/socket would have to declare `package cajeta.net.socket`.
+        # The b5 server stack (Server/SharedPoolServer/ConnectionLimiter/...)
+        # is isolated under net/socket/server (NOT listed) so it stays gated.
+        ${CAJETA_STDLIB_ROOT}/cajeta/net
+        ${CAJETA_STDLIB_ROOT}/cajeta/net/reactor  # async I/O reactor (NET-3.1 @Native bridges, b3)
         ${CAJETA_STDLIB_ROOT}/cajeta/net/uri      # RFC 3986 URI parse/build (NET-6)
         ${CAJETA_STDLIB_ROOT}/cajeta/net/http     # HTTP/1.1 message model (NET-7) — pure files; net/http/socket gated
         ${CAJETA_STDLIB_ROOT}/cajeta/net/ws       # WebSocket frame codec + protocol (NET-10) — pure files; net/ws/socket gated

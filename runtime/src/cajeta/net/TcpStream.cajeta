@@ -3,17 +3,24 @@ package cajeta.net;
 import cajeta.lang.String;
 import cajeta.net.IpAddress;
 import cajeta.net.SocketAddress;
+import cajeta.net.NetErrors;
 import cajeta.net.NetException;
 import cajeta.net.ConnectionRefusedException;
 import cajeta.net.TimedOutException;
 import cajeta.net.BrokenPipeException;
+import cajeta.net.reactor.Reactor;
 
-// NOTE (NET / b1 socket receiver-lowering): this is the **sync** surface of
-// `TcpStream`. The async/DNS-helper forms depend on `cajeta.net.reactor.Reactor`
-// and `cajeta.net.dns.Dns`, which are still gated (un-gated by b3/b4). For b1
-// those methods carry non-Reactor stub bodies so this file compiles as
-// built-in stdlib while the sync ops below are intrinsic-lowered at the call
-// site (see MethodCallExpression.cpp, `cajeta.net.TcpStream` blocks).
+// NOTE (NET / b1 socket receiver-lowering): this is the socket surface of
+// `TcpStream`. The **sync** ops (`read`/`write`/`close`/options) are
+// intrinsic-lowered at the call site (see MethodCallExpression.cpp,
+// `cajeta.net.TcpStream` blocks); the stub bodies exist for the parser.
+//
+// The **async** ops (`readAsync`/`writeAsync`/`writeAllAsync`/`readWithin`,
+// NET-3.3 / b3) are pure-Cajeta readiness loops written *over* those lowered
+// sync ops plus the WouldBlock classifier (`@Native` bridges below) and
+// `cajeta.net.reactor.Reactor` (un-gated by b3). They run on a fiber: a
+// WouldBlock parks the fiber on the reactor and retries when the fd is ready,
+// so the carrier never blocks on socket I/O (the no-carrier-blocks invariant).
 
 /**
  * A connected **TCP stream** — the blocking client/peer socket of plan item
@@ -58,6 +65,19 @@ public class TcpStream {
         return heap TcpStream(-1);
     }
 
+    // TODO (NET-3.3 b3-deferred): `connectAsync(#SocketAddress) -> #TcpStream`.
+    // Unlike readAsync/writeAsync/acceptAsync — which loop over an already-
+    // intrinsic-lowered non-blocking op (recv/send/accept) — a non-blocking
+    // connect needs its OWN lowering: the b1 `connect` static lowering packs
+    // the addr and issues a *blocking* `__cajeta_net_connect`. The async form
+    // must instead create the socket non-blocking, issue the connect (which
+    // returns EINPROGRESS/WouldBlock), park on `Reactor.awaitWritable(fd)`,
+    // then read SO_ERROR to confirm. That is a new static-lowering shape, not a
+    // readiness loop over an existing lowered op, so it is deferred to keep b3
+    // scoped to the high-value read/write/accept path that unblocks AsyncReader/
+    // AsyncWriter + the HTTP server head-read loop. Blocks: plan item NET-3.3
+    // (connectAsync sub-item). The blocking `connect` above remains usable.
+
     // ----- Instance I/O -----
 
     /**
@@ -93,6 +113,188 @@ public class TcpStream {
             }
             sent = sent + n;
         }
+    }
+
+    // ----- Async I/O readiness bridges (NET-3.3 / b3) -----------------------
+    //
+    // The non-throwing WouldBlock classifier + the normalized last-error
+    // ordinal + the non-blocking toggle, bound to the NET-1.7 native shim.
+    // These let the pure-Cajeta readiness loops below branch on "would-block
+    // (park + retry)" vs "real error (throw)" without constructing an
+    // exception on the hot path (`isWouldBlockNative` reads the platform error
+    // directly). `@Native` private static forwarders: static dispatch bypasses
+    // the vtable, so no `final`-class gating concern.
+
+    /** 1 iff the last socket op failed with WouldBlock / in-progress. */
+    @Native("__cajeta_net_is_wouldblock")
+    private static int32 isWouldBlockNative();
+
+    /** The normalized `cajeta_net_err` ordinal of the last socket op. */
+    @Native("__cajeta_net_last_error")
+    private static int32 lastErrorNative();
+
+    /** Toggle non-blocking mode on `fd` (tracked form). Returns 0 / -1. */
+    @Native("__cajeta_net_set_nonblocking_tracked")
+    private static int32 setNonBlockingNative(int32 fd, int32 nonblocking);
+
+    /**
+     * Put this stream's descriptor into non-blocking mode and ensure the net
+     * reactor is initialized — the idempotent one-time setup every async op
+     * runs before its first readiness loop. Cheap to repeat: the fcntl/
+     * ioctlsocket toggle is a no-op when already set, and
+     * [`Reactor.init`](reactor/Reactor.cajeta#init) is idempotent.
+     */
+    void ensureAsyncReady() {
+        int32 fd = this.fd;
+        TcpStream.setNonBlockingNative(fd, 1);
+        Reactor.init();
+    }
+
+    /**
+     * Async read up to `length` bytes into `buf[offset .. offset+length)`,
+     * **parking the fiber** (not the carrier) on the reactor until the socket
+     * is readable — plan item **NET-3.3**. Returns the count actually read
+     * (`>= 0`); `0` is an orderly peer close (EOF), the terminate-on-`0`
+     * contract [`AsyncReader`](socket/AsyncReader.cajeta) drives.
+     *
+     * The readiness loop: a non-blocking [`read`](#read) (lowered to `recv`)
+     * either returns `>= 0` (done — data or EOF), or `-1`. On `-1` the
+     * [`isWouldBlockNative`](#isWouldBlockNative) classifier decides: a
+     * would-block parks the fiber via
+     * [`Reactor.awaitReadable`](reactor/Reactor.cajeta#awaitReadable) and
+     * retries; any other error raises the mapped
+     * [`NetException`](NetException.cajeta) subtype.
+     */
+    public int64 readAsync(int8[] buf, int64 offset, int64 length) {
+        this.ensureAsyncReady();
+        int32 fd = this.fd;
+        int64 result = -1;
+        boolean done = false;
+        while (!done) {
+            int64 n = this.read(buf, offset, length);
+            if (n >= 0) {
+                result = n;          // data (n > 0) or orderly EOF (n == 0)
+                done = true;
+            } else {
+                if (TcpStream.isWouldBlockNative() == 1) {
+                    Reactor.awaitReadable(fd);    // park; retry on readiness
+                } else {
+                    int32 err = TcpStream.lastErrorNative();
+                    throw NetErrors.fromErrno(err, "readAsync");
+                }
+            }
+        }
+        return result;
+    }
+
+    /**
+     * Async write up to `length` bytes from `data[offset .. offset+length)`,
+     * **parking the fiber** until the socket's send buffer has room — plan
+     * item **NET-3.3**. Returns the count actually written (`> 0`). The
+     * writable twin of [`readAsync`](#readAsync): a would-block parks on
+     * [`Reactor.awaitWritable`](reactor/Reactor.cajeta#awaitWritable); any
+     * other error raises. A `0`-byte write (peer gone) raises
+     * [`BrokenPipeException`](BrokenPipeException.cajeta).
+     */
+    public int64 writeAsync(int8[] data, int64 offset, int64 length) {
+        this.ensureAsyncReady();
+        int32 fd = this.fd;
+        int64 result = -1;
+        boolean done = false;
+        while (!done) {
+            int64 n = this.write(data, offset, length);
+            if (n > 0) {
+                result = n;
+                done = true;
+            } else {
+                if (n == 0) {
+                    throw heap BrokenPipeException(
+                        "writeAsync: peer stopped accepting data");
+                }
+                if (TcpStream.isWouldBlockNative() == 1) {
+                    Reactor.awaitWritable(fd);    // park; retry on room
+                } else {
+                    int32 err = TcpStream.lastErrorNative();
+                    throw NetErrors.fromErrno(err, "writeAsync");
+                }
+            }
+        }
+        return result;
+    }
+
+    /**
+     * Async write **all** of `data[offset .. offset+length)`, looping
+     * [`writeAsync`](#writeAsync) over short writes (each parking the fiber
+     * until the send buffer drains) until every byte is on the wire — the
+     * flush primitive [`AsyncWriter`](socket/AsyncWriter.cajeta) drives. A
+     * write that cannot make progress raises
+     * [`BrokenPipeException`](BrokenPipeException.cajeta) (from
+     * [`writeAsync`](#writeAsync)).
+     */
+    public void writeAllAsync(int8[] data, int64 offset, int64 length) {
+        int64 sent = 0;
+        while (sent < length) {
+            int64 n = this.writeAsync(data, offset + sent, length - sent);
+            sent = sent + n;
+        }
+    }
+
+    /**
+     * Deadline-bounded async read (NET-3.4 / NET-9.6 slowloris mitigation):
+     * like [`readAsync`](#readAsync) but bounds the total wait by `timeoutMs`
+     * milliseconds. Returns the count read (`>= 0`, `0` = EOF); raises
+     * [`TimedOutException`](TimedOutException.cajeta) if the deadline elapses
+     * with the peer still idle, and drops the reactor registration on every
+     * exit path (no leak — the
+     * [`awaitReadableTimed`](reactor/Reactor.cajeta#awaitReadableTimed)
+     * bracket).
+     *
+     * The deadline is budgeted once (`Reactor.nowMillis() + timeoutMs`) and
+     * the *remaining* budget passed to each readiness wait, so a multi-wait
+     * read (short read, retry) cannot reset its own deadline (the NET-3.4
+     * monotonic-budget discipline). A non-positive `timeoutMs` degenerates to
+     * the unbounded [`readAsync`](#readAsync).
+     */
+    public int64 readWithin(int8[] buf, int64 offset, int64 length,
+                            int32 timeoutMs) {
+        if (timeoutMs <= 0) {
+            return this.readAsync(buf, offset, length);
+        }
+        this.ensureAsyncReady();
+        int32 fd = this.fd;
+        int64 deadline = Reactor.nowMillis() + (int64) timeoutMs;
+        int64 result = -1;
+        boolean done = false;
+        while (!done) {
+            int64 n = this.read(buf, offset, length);
+            if (n >= 0) {
+                result = n;
+                done = true;
+            } else {
+                if (TcpStream.isWouldBlockNative() == 1) {
+                    int64 remaining = deadline - Reactor.nowMillis();
+                    if (remaining <= (int64) 0) {
+                        throw heap TimedOutException(
+                            "readWithin: deadline elapsed before data arrived");
+                    }
+                    int32 budget = (int32) remaining;
+                    int32 probe = Reactor.awaitReadableTimed(fd, budget);
+                    if (probe == Reactor.TIMEOUT) {
+                        throw heap TimedOutException(
+                            "readWithin: deadline elapsed before data arrived");
+                    }
+                    if (probe == Reactor.ERROR) {
+                        int32 err = TcpStream.lastErrorNative();
+                        throw NetErrors.fromErrno(err, "readWithin");
+                    }
+                    // READY: loop and retry the recv.
+                } else {
+                    int32 err = TcpStream.lastErrorNative();
+                    throw NetErrors.fromErrno(err, "readWithin");
+                }
+            }
+        }
+        return result;
     }
 
     // ----- Socket options (NET-1.6 / b2) -----

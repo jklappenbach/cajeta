@@ -171,7 +171,7 @@ public final class Reactor {
      * Ensure the reactor engine is initialized. Idempotent; safe to call
      * before every await. Returns `true` on success.
      */
-    static bool init() {
+    static boolean init() {
         return Reactor.initNative() == 0;
     }
 
@@ -192,8 +192,16 @@ public final class Reactor {
      * @param interest [`READ`](#READ) and/or [`WRITE`](#WRITE).
      * @return `true` on success.
      */
-    static bool register(int32 fd, int32 interest) {
-        return Reactor.registerNative(fd, interest, null) == 0;
+    static boolean register(int32 fd, int32 interest) {
+        // Typed-null pointer local rather than a bare `null` arg: the @Native
+        // forwarder builds the call against `registerNative`'s declared
+        // `pointer` param, and a bare `null` literal in arg position can be
+        // typed as an object-ref null (mismatching the raw pointer the C
+        // `void* fiber_handle` expects). Binding it to a `pointer`-typed local
+        // pins the type. v1 ignores the handle (one-shot model), so null is
+        // the correct value.
+        pointer noHandle = null;
+        return Reactor.registerNative(fd, interest, noHandle) == 0;
     }
 
     /**
@@ -218,9 +226,9 @@ public final class Reactor {
      * @return `true` when the fd became readable, `false` on a reactor
      *         error.
      */
-    static bool awaitReadable(int32 fd) {
+    static boolean awaitReadable(int32 fd) {
         Reactor.register(fd, Reactor.READ);
-        bool ready = false;
+        boolean ready = false;
         try {
             ready = Reactor.awaitReadableNative(fd) == Reactor.READY;
         } finally {
@@ -246,9 +254,9 @@ public final class Reactor {
      * @return `true` when the fd became writable, `false` on a reactor
      *         error.
      */
-    static bool awaitWritable(int32 fd) {
+    static boolean awaitWritable(int32 fd) {
         Reactor.register(fd, Reactor.WRITE);
-        bool ready = false;
+        boolean ready = false;
         try {
             ready = Reactor.awaitWritableNative(fd) == Reactor.READY;
         } finally {
@@ -367,7 +375,7 @@ public final class Reactor {
      * @param fd the socket descriptor to disarm.
      * @return `true` on success.
      */
-    static bool deregister(int32 fd) {
+    static boolean deregister(int32 fd) {
         return Reactor.deregisterNative(fd) == 0;
     }
 
@@ -391,7 +399,7 @@ public final class Reactor {
      *
      * @return `true` once the reactor has initialized.
      */
-    static bool started() {
+    static boolean started() {
         return Reactor.startedNative() == 1;
     }
 
@@ -409,7 +417,7 @@ public final class Reactor {
      *
      * @return `true` (the teardown has nothing actionable to fail on).
      */
-    static bool shutdown() {
+    static boolean shutdown() {
         return Reactor.shutdownNative() == 0;
     }
 
