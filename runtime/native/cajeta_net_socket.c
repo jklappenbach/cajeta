@@ -315,6 +315,34 @@ int32_t __cajeta_net_connect(int32_t fd, const void* addr, int32_t addrlen) {
     return r == CAJETA_SOCKET_ERROR ? -1 : 0;
 }
 
+// Read the pending socket error on `fd` after a non-blocking connect has
+// signalled completion (the reactor saw the socket become writable). Returns
+// CAJETA_NET_OK (0) when the connect succeeded, otherwise the normalized
+// `cajeta_net_err` ordinal for the failure (ECONNREFUSED → CONNECTION_REFUSED,
+// ETIMEDOUT → TIMED_OUT, …). This is the post-readiness half of the
+// non-blocking connect dance described above __cajeta_net_connect: the caller
+// issues the connect, gets IN_PROGRESS, parks on `await_writable`, then calls
+// this to learn the outcome. Keeping the SO_ERROR / SOL_SOCKET platform
+// constants in the C layer matches the POSIX-native / Windows-shim convention
+// (the cajeta surface only ever sees the stable ordinal).
+int32_t __cajeta_net_connect_result(int32_t fd) {
+    if (fd < 0) return CAJETA_NET_INVALID;
+    int soerr = 0;
+    cajeta_socklen_t len = (cajeta_socklen_t) sizeof(soerr);
+    int r = getsockopt(cajeta_net_from_fd(fd), SOL_SOCKET, SO_ERROR,
+#if defined(_WIN32)
+                       (char*) &soerr,
+#else
+                       &soerr,
+#endif
+                       &len);
+    if (r == CAJETA_SOCKET_ERROR) {
+        return cajeta_net_map_errno(cajeta_net_raw_errno());
+    }
+    // soerr == 0 → connect succeeded (map_errno's case 0 → CAJETA_NET_OK).
+    return cajeta_net_map_errno(soerr);
+}
+
 // Send `len` bytes from `buf`. Returns the count sent (>= 0), or -1 on error
 // (caller reads `__cajeta_net_last_error()` — WouldBlock is a normal
 // non-blocking outcome). `flags` is the native send() flags value (0 in the

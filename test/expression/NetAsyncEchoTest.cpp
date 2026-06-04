@@ -171,3 +171,47 @@ TEST(NetAsyncEchoTest, bufferedReaderWriterRoundTrips) {
         "}\n"
         "return 1;")), 1);
 }
+
+// --- connectAsync: non-blocking connect static lowering (NET-3.3) -------
+// connectAsync makes the socket non-blocking, issues the connect, and — when
+// it doesn't complete synchronously — parks the fiber on reactor writability
+// then reads SO_ERROR. On loopback the connect completes immediately (the
+// kernel finishes the handshake into the listen backlog), so this primarily
+// exercises the immediate-success + wrap path of the new lowering; the await
+// + SO_ERROR blocks are verified well-formed at module-verify time. The
+// returned stream is a live, connected TcpStream: a full async echo round-trip
+// over it confirms the fd was wrapped correctly.
+TEST(NetAsyncEchoTest, connectAsyncLoopbackEchoRoundTrips) {
+    EXPECT_EQ(runI32(makeSource(
+        "IpAddress la = IpAddress.loopbackV4();\n"
+        "SocketAddress bindAddr = SocketAddress.of(#la, 0);\n"
+        "TcpListener listener = TcpListener.bind(bindAddr);\n"
+        "int32 port = listener.boundPort();\n"
+        "if (port <= 0) { return 0; }\n"
+        "IpAddress ca = IpAddress.loopbackV4();\n"
+        "SocketAddress connAddr = SocketAddress.of(#ca, port);\n"
+        "TcpStream client = TcpStream.connectAsync(#connAddr);\n"
+        "TcpStream server = listener.accept();\n"
+        "int8[] ping = new int8[4];\n"
+        "ping[0] = (int8) 112;\n"   // 'p'
+        "ping[1] = (int8) 105;\n"   // 'i'
+        "ping[2] = (int8) 110;\n"   // 'n'
+        "ping[3] = (int8) 103;\n"   // 'g'
+        "client.writeAsync(ping, (int64) 0, (int64) 4);\n"
+        "int8[] rbuf = new int8[4];\n"
+        "int64 got = server.readAsync(rbuf, (int64) 0, (int64) 4);\n"
+        "if (got != 4) { return 0; }\n"
+        "server.writeAllAsync(rbuf, (int64) 0, got);\n"
+        "int8[] echo = new int8[4];\n"
+        "int64 echoGot = client.readAsync(echo, (int64) 0, (int64) 4);\n"
+        "client.close();\n"
+        "server.close();\n"
+        "listener.close();\n"
+        "if (echoGot != 4) { return 0; }\n"
+        "int32 i = 0;\n"
+        "while (i < 4) {\n"
+        "    if (echo[i] != ping[i]) { return 0; }\n"
+        "    i = i + 1;\n"
+        "}\n"
+        "return 1;")), 1);
+}
