@@ -609,11 +609,14 @@ TEST(ErrorModelTests, uncaughtRecoverableExitsClean) {
         "        return 0;\n"
         "    }\n"
         "}\n";
+    // Assert the MESSAGE TEXT too, not just the "uncaught exception" prefix:
+    // Throwable.message is a Cajeta String object, and the runtime must extract
+    // its UTF-8 bytes (not print the object pointer through %s) — see H18.
     EXPECT_EXIT({
         auto jit = CajetaJit::compile(src, "test.D");
         auto fn = jit->lookup<int32_t (*)()>("run");
         fn();
-    }, ::testing::ExitedWithCode(1), "uncaught exception");
+    }, ::testing::ExitedWithCode(1), "uncaught exception: io failure");
 }
 
 // #209: a call site wrapped in a try whose catch arm catches the

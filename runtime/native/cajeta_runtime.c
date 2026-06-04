@@ -847,6 +847,15 @@ void __cajeta_task_run(void* arg, cajeta_task_trampoline_fn trampoline,
 void __cajeta_task_wait(int32_t* done_addr) {
     if (!done_addr) return;
     if (__cajeta_current_fiber) {
+        // Deliver a pending cancellation even when the awaited task is ALREADY
+        // done: the loop below only re-checks cancel_with after a park, which
+        // never happens if *done_addr is set on entry — so without this the
+        // scope's cancel would be silently swallowed and the fiber run on.
+        void* pending = __cajeta_current_fiber->cancel_with;
+        if (pending) {
+            __cajeta_current_fiber->cancel_with = NULL;
+            __cajeta_throw(pending);
+        }
         while (!*done_addr) {
             __cajeta_fiber_park();
             void* cancel = __cajeta_current_fiber->cancel_with;
@@ -1901,9 +1910,14 @@ struct cajeta_trace_entry {
 };
 
 static struct cajeta_trace_entry* __cajeta_trace_table = NULL;
+static int __cajeta_trace_count = 0;
 static pthread_mutex_t __cajeta_trace_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 #define CAJETA_TRACE_MAX_FRAMES 64
+// There is no "throwable caught/dropped" hook that frees a trace entry yet, so a
+// throw/catch loop would leak one node + frames array per throw. Bound the table:
+// dedup same-throwable on record, and evict the oldest past this cap.
+#define CAJETA_TRACE_TABLE_CAP 256
 
 // --stack-trace-capture flag (CompilerModes.md § --stack-trace-capture).
 // Defaults on so existing tests + the default ergonomic of "see the
@@ -1942,8 +1956,34 @@ static void __cajeta_trace_record(void* throwable) {
     e->frames = frames;
     e->frame_count = n;
     pthread_mutex_lock(&__cajeta_trace_mutex);
+    // Dedup: drop any prior entry for this same throwable address so a reused
+    // address can't surface a stale trace.
+    for (struct cajeta_trace_entry** pp = &__cajeta_trace_table; *pp; ) {
+        if ((*pp)->throwable == throwable) {
+            struct cajeta_trace_entry* dead = *pp;
+            *pp = dead->next;
+            free(dead->frames);
+            free(dead);
+            __cajeta_trace_count--;
+        } else {
+            pp = &(*pp)->next;
+        }
+    }
+    // Cap: evict the oldest (tail) entry when at capacity — bounds the leak.
+    if (__cajeta_trace_count >= CAJETA_TRACE_TABLE_CAP) {
+        struct cajeta_trace_entry** tail = &__cajeta_trace_table;
+        while (*tail && (*tail)->next) tail = &(*tail)->next;
+        if (*tail) {
+            struct cajeta_trace_entry* dead = *tail;
+            *tail = NULL;
+            free(dead->frames);
+            free(dead);
+            __cajeta_trace_count--;
+        }
+    }
     e->next = __cajeta_trace_table;
     __cajeta_trace_table = e;
+    __cajeta_trace_count++;
     pthread_mutex_unlock(&__cajeta_trace_mutex);
 }
 
@@ -1977,14 +2017,25 @@ void __cajeta_print_trace(void* throwable, int32_t fd) {
 // throw time regardless of whether the throwable carries a message.
 static void __cajeta_emit_uncaught(void* value, int is_unrec) {
     const char* kind = is_unrec ? "unrecoverable" : "uncaught";
-    void* msg = NULL;
-    // Same low-address guard as __cajeta_is_unrecoverable: legacy int
-    // throws produce non-pointer "throwables" that we must not
-    // dereference. Skip the message read in that case; print the bare
-    // value as a hex fallback. Reads on legitimate Throwable instances
-    // (heap-allocated, vtable + message at slots 0/1) work as expected.
+    // Throwable.message (slot 1) is a Cajeta String OBJECT, not a C string:
+    //   Throwable { vtable@0, String message@8 }
+    //   String    { vtable@0, int8[] bytes@8, int32 byteLength@16, ... }
+    //   int8[]    { i64 count@0, payload@8 }
+    // Extract the UTF-8 payload + byteLength and print bounded with %.*s. Every
+    // hop is null/low-address guarded (legacy int throws via IntToPtr, or a
+    // null/empty message); on any failure fall back to the bare hex value.
+    const char* mbytes = NULL;
+    int mlen = 0;
     if (value && (uintptr_t) value >= 4096) {
-        msg = ((void**) value)[1];
+        void* strObj = ((void**) value)[1];                 // Throwable.message
+        if (strObj && (uintptr_t) strObj >= 4096) {
+            void* bytesArr = ((void**) strObj)[1];           // String.bytes (int8[])
+            int32_t blen = *(int32_t*) ((char*) strObj + 16);  // String.byteLength
+            if (bytesArr && (uintptr_t) bytesArr >= 4096 && blen > 0) {
+                mbytes = (const char*) bytesArr + 8;         // skip the i64 count header
+                mlen = blen;
+            }
+        }
     }
     // write(2), not fprintf(stderr): the caller abort()s (unrecoverable) or
     // exit()s, and abort() doesn't flush stdio. On Windows stderr is block-
@@ -1993,9 +2044,9 @@ static void __cajeta_emit_uncaught(void* value, int is_unrec) {
     // raw bytes to fd 2 directly.
     char buf[1024];
     int n;
-    if (msg) {
-        n = snprintf(buf, sizeof(buf), "cajeta: %s exception: %s\n",
-                     kind, (const char*) msg);
+    if (mbytes) {
+        n = snprintf(buf, sizeof(buf), "cajeta: %s exception: %.*s\n",
+                     kind, mlen, mbytes);
     } else {
         n = snprintf(buf, sizeof(buf), "cajeta: %s exception (value=%p)\n",
                      kind, value);
