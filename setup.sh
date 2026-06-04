@@ -4,13 +4,15 @@
 # installed packages, and cmake re-configures in place.
 #
 # Knobs:
-#   CAJETA_LLVM_VERSION  — major LLVM version to target (default 22). Used to
+#   CAJETA_LLVM_VERSION  — major LLVM version to target (default 23). Used to
 #                          derive LLVM_DIR and the apt package set if neither
 #                          is overridden explicitly. Bump this when moving the
 #                          project's LLVM baseline.
-#                          Why 22: it's the current upstream baseline. LLVM 18
-#                          lacks znver5 host-CPU detection (reports Host CPU:
-#                          (unknown)), so don't go below 22.
+#                          Why 23: it's the current upstream baseline, and the
+#                          GPU/SPIR-V path (textures, ray query, cooperative
+#                          matrix — consumed from the cajeta-llvm fork) requires
+#                          it. LLVM 18 lacks znver5 host-CPU detection (reports
+#                          Host CPU: (unknown)); 22 is the hard floor.
 #                          Use a MAINLINE LLVM (the apt llvm-N-dev / Homebrew
 #                          llvm@N packages are upstream builds), NOT a vendor
 #                          fork. Vendor forks such as ROCm's /opt/rocm*/llvm are
@@ -28,12 +30,12 @@
 
 set -euo pipefail
 
-LLVM_VER="${CAJETA_LLVM_VERSION:-22}"
+LLVM_VER="${CAJETA_LLVM_VERSION:-23}"
 
 # macOS Homebrew formula for LLVM. Homebrew keeps the newest LLVM as the
 # unversioned `llvm` formula and only ships `llvm@N` for some older majors --
-# there is no `llvm@22` while 22 is current. Prefer the versioned formula when
-# it exists, else fall back to `llvm` (which tracks the latest, currently 22.x).
+# there is no `llvm@23` while 23 is current. Prefer the versioned formula when
+# it exists, else fall back to `llvm` (which tracks the latest, currently 23.x).
 # Only meaningful on macOS; harmless elsewhere.
 BREW_LLVM="llvm@${LLVM_VER}"
 if [[ "$(uname -s)" == "Darwin" ]] && command -v brew >/dev/null 2>&1; then
@@ -76,7 +78,7 @@ need_sudo() {
 install_linux_apt() {
     local SUDO; SUDO="$(need_sudo)"
 
-    # LLVM 22 isn't in every distro's stock repos yet. If the versioned llvm
+    # LLVM 23 isn't in every distro's stock repos yet. If the versioned llvm
     # package isn't visible to apt, add the official apt.llvm.org source for
     # this release's codename (it serves both amd64 and arm64). Skipped when
     # the package is already available -- distros that ship llvm-$LLVM_VER, or
@@ -96,7 +98,7 @@ install_linux_apt() {
     # cajeta.hash (runtime/native/cajeta_runtime.c includes <xxhash.h>).
     # Note: glog's Debian package is libgoogle-glog-dev, not libglog-dev.
     #
-    # LLVM-family packages are version-suffixed via $LLVM_VER (default 22, see
+    # LLVM-family packages are version-suffixed via $LLVM_VER (default 23, see
     # CAJETA_LLVM_VERSION). Each is probed via apt-cache below, so the script
     # gracefully skips any that don't exist on the current Ubuntu release
     # (e.g. lld-N-dev hasn't shipped in apt on 26.04+ for any N; the static-
@@ -199,7 +201,7 @@ install_deps() {
         MINGW*|MSYS*|CYGWIN*)
             echo "[deps] Windows detected. setup.sh does not auto-install on Windows." >&2
             echo "       Use scripts/install-xxhash-windows.ps1 for xxhash; install the" >&2
-            echo "       rest (LLVM 22, ANTLR4 runtime, glog, gtest) via vcpkg or your" >&2
+            echo "       rest (LLVM 23, ANTLR4 runtime, glog, gtest) via vcpkg or your" >&2
             echo "       preferred package manager." >&2
             return 1
             ;;

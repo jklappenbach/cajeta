@@ -42,7 +42,7 @@ matrix says so explicitly rather than pretending otherwise:
 
 | Column | Status | Basis |
 |--------|--------|-------|
-| **NVIDIA** | **Measured** — live backend, on-device | NVPTX → cubin, runs via CUDA driver. Emit + on-device tests green. |
+| **NVIDIA** | **Emit-only** — on-device pending B5 (WSL2 + CUDA runner) | NVPTX → cubin; emit tests green. The 5 CUDA-gated exec tests are **skipped** on this box (AMD-only, no NV hardware) — promote to "on-device measured" once the B5 runner lands. |
 | **AMD** | **Measured** — live backend, on-device | AMDGPU → hsaco, runs on gfx1151 (Strix Halo) via HIP. Emit + on-device tests green. |
 | **Vulkan** | **Measured** — live backend, on-device | SPIR-V (descriptor-set SSBOs) → `vkCmdDispatch`. Built 2026-05-30 (see [`cajeta-vulkan.md`](cajeta-vulkan.md)); SAXPY + static-shared tree reduction run on the Strix Halo APU via the radeon (RADV) ICD, and the emitted modules pass strict `spirv-val`. One build-discovered finding shaped the design: **BDA is unavailable**, so the buffer model is descriptor sets (§3). (LLVM 22's barrier emits Vulkan-invalid semantics; a post-emit fixup corrects it — §1.) |
 
@@ -331,7 +331,25 @@ and spec-valid.
 
 ---
 
-*Generated 2026-05-30; Vulkan column updated after the on-device build.
-NVIDIA/AMD/Vulkan: all three are measured on live backends (NVIDIA on-device
-gated on CUDA hardware). See [`cajeta-xpu.md`](cajeta-xpu.md) §"The NVIDIA∩AMD
-overlap reckoning" and [`cajeta-amd.md`](cajeta-amd.md).*
+## Part C cutting-edge SPIR-V (via the `cajeta-llvm` fork, LLVM 23)
+
+Both delivered on-device on the RADV / STRIX_HALO (Radeon 8060S) box (2026-06-04),
+through the fork's `cajeta-spirv` branch. Vulkan-flavor only; NVIDIA/AMD native
+paths for these are not yet wired.
+
+| Feature | Vulkan (Cajeta's flavor) | On-device |
+|---|---|---|
+| **Cooperative matrix** `CooperativeMatrix<T,Rows,Cols,Use>` | `OpTypeCooperativeMatrixKHR` + load/store/mul-add via `llvm.spv.cooperative.matrix.*`; mandates `OpMemoryModel Logical VulkanKHR`. CM1–CM5 + multi-tile GEMM | ✅ f16/f16→f32 16×16×16 bit-exact on RDNA3 WMMA cores; 64×64×64 tiled GEMM bit-exact (needed the `SPIRVFixupMergePlacement` backend fix). CM6 LDS-staging deferred |
+| **Ray query + accel structures** `RayQuery` / `AccelerationStructure` | `OpTypeRayQueryKHR` / `OpTypeAccelerationStructureKHR` + init/proceed/get via `llvm.spv.ray.query.*`; AS bound through the standard `handlefrombinding` path | ✅ spatial-index (RTNN) pattern over a BLAS, on-device; consumed by Prism `SpatialIndex` (3c) |
+
+`float16` is IEEE binary16 (`getHalfTy`, not bfloat) to match the device's
+`VK_COMPONENT_TYPE_FLOAT16_KHR` cooperative-matrix config.
+
+---
+
+*Generated 2026-05-30; updated 2026-06-04 with Part C cooperative-matrix (CM1–CM5 +
+GEMM) and ray-query (Inc 1–3c) on-device landings, and an emit-only-vs-on-device
+correction to the NVIDIA column. AMD + Vulkan are on-device-measured; **NVIDIA is
+emit-only** pending the B5 WSL2+CUDA runner. See [`cajeta-xpu.md`](cajeta-xpu.md)
+§"The NVIDIA∩AMD overlap reckoning", [`cajeta-amd.md`](cajeta-amd.md), and
+[`cajeta-gpu-plan.md`](plans/cajeta-gpu-plan.md) Part C.*
