@@ -4,7 +4,7 @@
 // The Vulkan analog of NvptxBackend / AmdgpuBackend (cajeta-xpu.md "Vulkan
 // third backend"). Where NVPTX goes LLVM → PTX → ptxas → cubin and AMDGPU goes
 // LLVM → AMDGCN object → lld → hsaco, SPIR-V is the SIMPLEST of the three:
-// LLVM 22's in-tree SPIR-V backend emits the final Khronos SPIR-V binary
+// LLVM 23's in-tree SPIR-V backend emits the final Khronos SPIR-V binary
 // directly — no external assembler or linker. SPIR-V text (emitSpirvText) is
 // the GPU-free Tier-0 hook the emit tests assert against; the binary
 // (emitSpirv) is what the on-device launch hands to vkCreateShaderModule.

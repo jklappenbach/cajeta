@@ -1,7 +1,7 @@
 //
 // CajetaXPU AMD bring-up (cajeta-amd.md Increment 1) — AMDGPU ISA emission.
 //
-// First AMD proof point: LLVM 22's in-tree AMDGPU backend can lower a device
+// First AMD proof point: LLVM 23's in-tree AMDGPU backend can lower a device
 // llvm::Module to AMDGCN ISA text in THIS build, and (if ld.lld is present)
 // link the relocatable object into an hsaco code object. This isolates the
 // toolchain risk (does AMDGPU emit at all?) from the later kernel-body
@@ -94,7 +94,7 @@ TEST(XpuAmdgpuEmitTests, emitsIsaForHandBuiltKernel) {
 }
 
 // ld.lld links the relocatable AMDGCN object into an hsaco code object —
-// proving LLVM 22's AMDGPU object is accepted by lld for gfx1151. Gated on an
+// proving LLVM 23's AMDGPU object is accepted by lld for gfx1151. Gated on an
 // actual ROCm/HIP device: the link needs ROCm's lld (a generic host ld.lld on
 // PATH cannot link an amdgpu object — it errors "incompatible with
 // elf64-x86-64"), so hardware presence is the reliable skip condition.

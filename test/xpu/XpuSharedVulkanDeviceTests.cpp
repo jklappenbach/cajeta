@@ -10,7 +10,7 @@
 // fixes the workgroup size at SPIR-V compile time.
 //
 // The barrier here is made Vulkan-spec-valid by SpirvBackend's post-emit fixup
-// (LLVM 22 emits forbidden SequentiallyConsistent semantics; see
+// (LLVM 23 emits forbidden SequentiallyConsistent semantics; see
 // XpuVulkanEmitTests.workgroupBarrierIsSpecValid). This test is the on-device
 // counterpart — it confirms the reduction's actual result on the GPU; gated on a
 // Vulkan device, and still tolerant of a driver that rejects the barrier.

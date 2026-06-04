@@ -5,7 +5,7 @@
 // thin wrapper over the shared xpu/lowering/KernelLowering.cpp AST walk; it
 // supplies the SPIR-V LoweringTarget. But Vulkan forks MORE than AMD did
 // (cajeta-xpu-matrix.md): not just the coordinate leaf reads, but the kernel
-// SIGNATURE and BUFFER ACCESS, because LLVM 22's SPIR-V backend has no
+// SIGNATURE and BUFFER ACCESS, because LLVM 23's SPIR-V backend has no
 // raw-pointer kernel ABI and no PhysicalStorageBuffer/BDA path — the only
 // Vulkan buffer model is descriptor-bound storage buffers.
 //

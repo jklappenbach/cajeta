@@ -285,7 +285,7 @@ const char* kGemmSource =
     "        uint32 ktiles = depth / 16;\n"
     // Precompute the loop-INVARIANT tile offsets into locals before the loop.
     // If these (mi*16, nj*16, ...) are left as subexpressions shared between the
-    // loop body and the post-loop store, LLVM 22's SPIR-V backend sinks them into
+    // loop body and the post-loop store, LLVM 23's SPIR-V backend sinks them into
     // the loop header *between* OpLoopMerge and its branch — an invalid structured
     // CFG that spirv-val rejects and RADV hangs on. Hoisting them out keeps the
     // header clean. (Backend-scheduling quirk; a fork-side fix could remove the need.)

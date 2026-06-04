@@ -109,7 +109,7 @@ bool emitToBuffer(llvm::Module& m, llvm::TargetMachine& tm,
 }
 
 // Rewrite every OpControlBarrier's memory-semantics operand to a Vulkan-valid
-// value. LLVM 22's only barrier intrinsic
+// value. LLVM 23's only barrier intrinsic
 // (llvm.spv.group.memory.barrier.with.group.sync) lowers to OpControlBarrier
 // with SequentiallyConsistent (0x10) semantics, which the Vulkan spec forbids
 // (VUID-StandaloneSpirv-MemorySemantics-10866) — so the module fails strict
@@ -172,7 +172,7 @@ bool fixupControlBarriers(std::vector<uint8_t>& bytes) {
 
 // Make the compute workgroup size a SPECIALIZATION CONSTANT so the launch's
 // `block` dims set it at pipeline creation, instead of the fixed `OpExecutionMode
-// LocalSize 64,1,1` baked by hlsl.numthreads (LLVM 22 has no IR path to a
+// LocalSize 64,1,1` baked by hlsl.numthreads (LLVM 23 has no IR path to a
 // spec-constant LocalSizeId). We add the classic `WorkgroupSize` builtin pattern:
 // three `OpSpecConstant uint` (SpecId 0/1/2, defaulting to the baked dims) + an
 // `OpSpecConstantComposite v3uint` decorated `BuiltIn WorkgroupSize` — which
@@ -388,7 +388,7 @@ std::vector<uint8_t> emitSpirv(llvm::Module& deviceModule,
         return {};
     }
     std::vector<uint8_t> spirv(buf.begin(), buf.end());
-    // Make any workgroup barrier Vulkan-spec-valid (LLVM 22 emits forbidden
+    // Make any workgroup barrier Vulkan-spec-valid (LLVM 23 emits forbidden
     // SequentiallyConsistent semantics). No-op for barrier-free kernels.
     fixupControlBarriers(spirv);
     // Make the workgroup size a spec constant so the launch's block dims set it
