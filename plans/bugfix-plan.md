@@ -80,14 +80,14 @@ reference).
   never `scope_top` → structured-concurrency invariant violated. *Fix:* snapshot a scope watermark in
   `cajeta_exception_frame` at try-entry; have throw / the trampoline catch arm / TryStatement catchBB call
   `__cajeta_scope_exit_to` to it.
-- [ ] **H5 — stack-trace side table grows unbounded; stale entries shadow reused addresses** *(high)* —
+- [x] **H5 — stack-trace side table grows unbounded; stale entries shadow reused addresses** *(high)* — FIXED 2026-06-03: trace_record dedups same-throwable + caps the table (CAJETA_TRACE_TABLE_CAP). —
   `cajeta_runtime.c:1885-1949`. Capture defaults on; every throw mallocs + prepends, nothing frees; pointer-match
   lookup surfaces a stale trace for a reused throwable address. *Fix:* free `e->frames`+`e` on catch/drop; drop a
   prior same-pointer entry before prepend; or LRU cap.
-- [ ] **H18 — uncaught-exception diagnostic prints a Cajeta `String` object through `%s`** *(high)* —
+- [x] **H18 — uncaught-exception diagnostic prints a Cajeta `String` object through `%s`** *(high)* —
   `cajeta_runtime.c:1969-1983`. Slot 1 is a `String` *object*, not a C string → prints vtable bytes + OOB scan.
   *Fix:* read slot 1 as `String*`, extract `bytes`+`byteLength`, print `%.*s`, guard null.
-- [ ] **M1 — cancellation marker never delivered when the awaited task is already done** *(medium)* —
+- [x] **M1 — cancellation marker never delivered when the awaited task is already done** *(medium)* — FIXED 2026-06-03: task_wait checks cancel_with on entry (before the park loop). —
   `cajeta_runtime.c:829-841`. `cancel_with` read only inside `while(!*done_addr)`. *Fix:* check `cancel_with` at the
   top of `task_wait`.
 
