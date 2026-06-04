@@ -161,18 +161,27 @@ namespace cajeta {
             // flows through the kernelParams slot, and the launch borrows it.
             bool isTexture = klass &&
                 klass->toCanonical() == "cajeta.xpu.core.Texture2D";
+            // AccelerationStructure (Part C): a descriptor-bound device BVH. It
+            // marshals via the POD-by-value path below (its deviceHandle is the
+            // first field), but the launch borrows it just like a Buffer/Texture2D.
+            bool isAccel = xpu::isAccelStructType(argExpr->getResolvedType());
 
-            llvm::Value* slot;
-            if (isBuffer || isTexture) {
-                // Launch borrow scope (CajetaXPU §3.5/§11): a launch borrows
-                // each Buffer/Texture2D arg until the next Stream.sync()/
-                // Event.waitHost(). Record the borrow so a free/reassign-before-
-                // sync is caught.
+            // Launch borrow scope (CajetaXPU §3.5/§11): a launch borrows each
+            // device-resource arg (Buffer / Texture2D / AccelerationStructure)
+            // until the next Stream.sync() / Event.waitHost(); record it so a
+            // free/reassign/drop-before-sync is caught (XPU-K02). Hoisted out of
+            // the kind-specific marshalling below so AS (a POD-marshalled handle)
+            // is covered too.
+            if (isBuffer || isTexture || isAccel) {
                 if (auto id = std::dynamic_pointer_cast<IdentifierExpression>(argExpr)) {
                     if (auto sc = module->getScopeStack().peek()) {
                         sc->recordLaunchBorrow(id->getTextValue());
                     }
                 }
+            }
+
+            llvm::Value* slot;
+            if (isBuffer || isTexture) {
                 auto& props = klass->getProperties();
                 auto it = props.find("deviceHandle");
                 if (it == props.end()) {
