@@ -210,7 +210,10 @@ void* __cajeta_net_getaddrinfo(const void* host, int32_t host_len,
             g_cajeta_resolve_errno = CAJETA_RESOLVE_NONAME;  // can't be a real name
             return NULL;
         }
-        memcpy(hostbuf, host, (size_t) host_len);
+        // `host` is a cajeta int8[] header — { i64 count, [N x i8] data }; the
+        // host bytes start at +8 (the @Native ABI passes the header, as
+        // __cajeta_sha256_update etc. expect).
+        memcpy(hostbuf, (const uint8_t*) host + 8, (size_t) host_len);
         hostbuf[host_len] = '\0';
         hostarg = hostbuf;
     }
@@ -347,7 +350,9 @@ int32_t __cajeta_net_getaddrinfo_octets(void* handle, int32_t index,
     }
     struct cajeta_addr_entry* e = &block->entries[index];
     int32_t n = (e->family == CAJETA_AF_V4) ? 4 : 16;
-    memcpy(octets_out, e->octets, (size_t) n);
+    // `octets_out` is a cajeta int8[] header; write the octets into its data
+    // region at +8 (same @Native header ABI as the host arg above).
+    memcpy((uint8_t*) octets_out + 8, e->octets, (size_t) n);
     return n;
 }
 

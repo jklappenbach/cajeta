@@ -1415,25 +1415,25 @@ out of `net/socket` back into `net` as they go green.
       `NetAsyncEchoTest.connectAsyncLoopbackEchoRoundTrips` (JIT loopback echo
       through a fiber). Net regression 68/69 (the 1 red is the pre-existing
       Windows `wouldBlockClassifiedNotAsHardError` flake). Completes NET-3.3.
-- [~] **b4 — DNS resolve lowering.** ATTEMPTED + REVERTED (2026-06-04) —
-      blocked on a compiler gap, not a lowering gap. `Dns.cajeta` already binds
-      the `__cajeta_net_getaddrinfo*` intrinsics via `@Native` (fully wired, like
-      the reactor), so no receiver-dispatch lowering is needed; un-gating
-      `net/dns` should have just worked. It surfaced two never-before-compiled
-      defects in the staged `Dns.cajeta`: (1) `getaddrinfoNative` (4-param
-      `@Native`, returns raw `pointer`) tripped `CAJETA_ERROR_BORROW_RETURN_MULTI_
-      PARAM` — fixable by `#pointer`; but (2) **the blocker:** `Dns.resolve`
-      declares `#SocketAddress[]` yet the borrow checker sees
-      `returnsOwnership=0` AND a return type of `pointer` (the unresolved
-      fallback) — i.e. a `#`-prefixed **array** return (`#T[]`) on a multi-param
-      static method neither resolves its element type nor sets the ownership
-      flag, while the scalar `#T` form works (cf. `Uri.resolve(Uri, String) ->
-      #Uri` in the un-gated `net/uri`, which compiles clean). This is a real
-      compiler gap in `#T[]` return-type handling (resolution + ownership),
-      upstream of DNS. Net/dns re-gated; the `__cajeta_net_getaddrinfo*` natives
-      + `NetResolveTests`/`DnsTests` stay staged. **Next:** fix `#T[]` owned-array
-      return lowering (resolve element type from the `REFERENCE? typeType`
-      subtree + set returnsOwnership), then re-attempt the un-gate.
+- [x] **b4 — DNS resolve lowering.** DONE (2026-06-04). `Dns.cajeta` already
+      binds the `__cajeta_net_getaddrinfo*` intrinsics via `@Native` (fully
+      wired, like the reactor), so no receiver-dispatch lowering was needed —
+      un-gating `net/dns` + fixing three never-before-compiled staged defects did
+      it. (NOTE: an earlier pass misdiagnosed a `#T[]` "compiler gap" — that was
+      a STALE embedded stdlib corrupted by a transient `#pointer`-local parse
+      error; `#T[]` owned-array returns compile fine, pinned by
+      `OwnedArrayReturnProbe`.) The real fixes: (1) `getaddrinfoNative` (4-param
+      `@Native`) + the `NetResolveTests` `resolve` bridge returned raw `pointer`
+      → tripped `CAJETA_ERROR_BORROW_RETURN_MULTI_PARAM`; marked `#pointer`
+      (owned handle). (2) **The runtime bug:** `__cajeta_net_getaddrinfo` and
+      `_octets` read/wrote the `int8[]` arg as raw data, but the `@Native` ABI
+      passes the CajetaArray **header** ({i64 count, data}) — every other bridge
+      (e.g. `__cajeta_sha256_update`) skips `+8` itself; getaddrinfo didn't, so
+      it fed the count field to getaddrinfo as the hostname → every resolve
+      failed. Fixed both to skip the 8-byte header. (The forwarder convention
+      stays header-passing; documented in `Method::emitNativeForwardingBody`.)
+      Un-gated `net/dns` in `CAJETA_STDLIB_DIRS`. Green: `NetResolveTests` 6/6,
+      `DnsTests` 8/8, `Sha256Tests` un-regressed. Completes NET-2.2.
 - [ ] **b5 — Server stacks.** Un-gate `Server`/`ServerBuilder`/`SharedPoolServer`/
       `ServerModel`/`ConnectionLimiter` + `net/http/socket`, `net/ws/socket`;
       both accept models (fiber-per-connection + shared-pool) over b1–b3.
