@@ -64,7 +64,8 @@ AABB-as-index-entry, custom intersection) is **library-internal** and never surf
 > **P1.0 landed (2026-06-03):** first real Prism code. `SpatialIndex.cajeta` + `cajeta-prism` repo seed (README). Exec-verified through the cajeta JIT harness (`cajeta/test/xpu/PrismSpatialIndexDeviceTests.cpp`) on an **AMD Radeon 8060S (RADV STRIX_HALO)** — `idx.countWithin(...)` returns correct fixed-radius neighbour counts with the ray-tracing entirely hidden. Built on cajeta-gpu Part C inc 3a/3b (ray-query lowering + host BVH build), both now complete.
 
 ### Stage P1.1 — Custom-predicate callback
-- [ ] A kernel-lambda visitor for the candidate step (gather / count / accumulate) — the intersection/anyhit analog, surfaced ergonomically; the encode-as-rays trick stays hidden
+- [~] **Enabling primitive landed (2026-06-04):** candidate **primitive index** wired end to end — `RayQuery.candidatePrimitiveIndex()` → `OpRayQueryGetIntersectionPrimitiveIndexKHR` (cajeta-llvm fork, opcode 6023) → a concrete `SpatialIndex.radiusExact` exact-L2 verb, exec-verified on a real RADV device (`exactL2RefinementOnDevice`) + a GPU-free spirv-val guard test. This proves the candidate step can recover the indexed datum and apply a true-distance predicate.
+- [ ] Still open — the **general** ergonomic form: a kernel-lambda visitor for the candidate step (gather / count / accumulate), so users supply a predicate without hand-writing a new kernel per query. `radiusExact` is currently one hardcoded predicate; generalize it. The intersection/anyhit analog, surfaced ergonomically; the encode-as-rays trick stays hidden.
 
 ### Stage P1.2 — Acceleration-structure lifecycle (first-class tunable)
 - [ ] `build` / `refit` / `rebuild` with an **auto refit-vs-rebuild amortization policy** (research: a real-time update/rebuild "gradient" optimizer gave up to 3.4×)
