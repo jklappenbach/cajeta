@@ -77,8 +77,8 @@ public final class Dns {
      * [`ResolveFamily`](ResolveFamily.cajeta) → filter mapping.
      */
     @Native("__cajeta_net_getaddrinfo")
-    private static pointer getaddrinfoNative(int8[] host, int32 hostLen,
-                                             int32 port, int32 familyFilter);
+    private static #pointer getaddrinfoNative(int8[] host, int32 hostLen,
+                                              int32 port, int32 familyFilter);
 
     /** Address count of a non-NULL handle (`0` for NULL). */
     @Native("__cajeta_net_getaddrinfo_count")

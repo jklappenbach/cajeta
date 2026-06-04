@@ -362,6 +362,10 @@ namespace cajeta {
 
         std::vector<llvm::Value*> args;
         args.reserve(llvmFunction->arg_size());
+        // @Native ABI convention: an `int8[]` (CajetaArray) argument is passed
+        // as its HEADER pointer ({ i64 count, [N x i8] data }); the C bridge
+        // skips the 8-byte length header itself (`hdr + 8`), as e.g.
+        // __cajeta_sha256_update does. So the forwarder passes args verbatim.
         for (auto& arg : llvmFunction->args()) {
             args.push_back(&arg);
         }

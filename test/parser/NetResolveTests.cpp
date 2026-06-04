@@ -37,7 +37,7 @@ namespace {
 // host bytes round-trip exactly, mirroring the Sha256Tests data-literal shape.
 const char* BRIDGES =
     "    @Native(\"__cajeta_net_getaddrinfo\")\n"
-    "    public static pointer resolve(int8[] host, int32 hostLen, int32 port, int32 family) { }\n"
+    "    public static #pointer resolve(int8[] host, int32 hostLen, int32 port, int32 family) { }\n"
     "    @Native(\"__cajeta_net_getaddrinfo_count\")\n"
     "    public static int32 count(pointer h) { }\n"
     "    @Native(\"__cajeta_net_getaddrinfo_error\")\n"
