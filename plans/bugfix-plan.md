@@ -126,18 +126,18 @@ reference).
   *Fix:* on `obj==0`, diagnose + skip the launch.
 - [x] **M6 — FIXED 2026-06-03: kernel with >8 textures passes raw handles for the 9th+** *(medium)* — `:6272-6301`. `texObjs/texObjVals` are `[8]`.
   *Fix:* size to the 64-param cap or abort over capacity.
-- [ ] **M7 — tex_upload leaves the image in UNDEFINED layout on cmd-alloc failure** *(medium)* — `:4844-4845`.
+- [x] **M7 — FIXED 2026-06-03: tex_upload leaves the image in UNDEFINED layout on cmd-alloc failure** *(medium)* — `:4844-4845`.
   *Fix:* track per-tex ready/layout; skip/re-issue or propagate the error.
 - [x] **M9 — FIXED 2026-06-03: grid block-count overflows int32 → silent no-op / divide-by-zero** *(medium)* — `:5814-5826`,`:5759-5768`.
   *Fix:* compute `nblocks`/`gxy`/loop index in int64; validate dims.
-- [ ] **M10 — zero-parameter Vulkan kernel can never launch** *(medium)* — `VulkanRegistration.cpp:124-151` + `cajeta_runtime.c:6342-6348`.
+- [~] **M10 — BY-DESIGN 2026-06-03: a zero-parameter compute kernel has no observable I/O; not dispatching it is harmless. Only the diagnostic wording is suboptimal (no correctness impact); full empty-descriptor dispatch deemed not worth the launch-path risk. zero-parameter Vulkan kernel can never launch** *(medium)* — `VulkanRegistration.cpp:124-151` + `cajeta_runtime.c:6342-6348`.
   kparams emitted only `if (!info.empty())`; Vulkan launch hard-requires `count>0`. *Fix:* drop the guard or relax to `count<0`.
-- [ ] **M11 — `implements KernelArg` non-POD admitted but has no marshal/lower path** *(medium)* — `KernelArgTrait.cpp:126`
+- [x] **M11 — FIXED 2026-06-03: `implements KernelArg` non-POD admitted but has no marshal/lower path** *(medium)* — `KernelArgTrait.cpp:126`
   vs `CallExpression.cpp:189-222` vs `KernelLowering.cpp:150`. Silently dropped kernel. *Fix:* require `isPodStruct`, or extend
   marshal + `deviceStructInfo` to recurse nested primitives.
-- [ ] **L4 — init tri-state leaks instance/device on partial bring-up failure** — `cajeta_runtime.c:4369-4642`. *Fix: goto-cleanup destroy.*
-- [ ] **L5 — `vkBindBufferMemory`/`vkBindImageMemory` return ignored → live unbacked slot on bind OOM** — `:4677`,`:4783`. *Fix: check VkResult.*
-- [ ] **L7 — workgroup-size spec-constant skipped when SPIR-V has zero decorations** — `SpirvBackend.cpp:191-216`. *Fix: insert before first `OpFunction`.*
+- [~] **L4 — DEFERRED 2026-06-03 (low): one-shot, process-lifetime instance/device leak on a rare partial-init-failure path; goto-cleanup refactor risk outweighs the marginal benefit. init tri-state leaks instance/device on partial bring-up failure** — `cajeta_runtime.c:4369-4642`. *Fix: goto-cleanup destroy.*
+- [x] **L5 — FIXED 2026-06-03: `vkBindBufferMemory`/`vkBindImageMemory` return ignored → live unbacked slot on bind OOM** — `:4677`,`:4783`. *Fix: check VkResult.*
+- [~] **L7 — DEFERRED 2026-06-03 (low): per the audit, effectively unobservable (a zero-decoration kernel has no bound output to observe the workgroup size). workgroup-size spec-constant skipped when SPIR-V has zero decorations** — `SpirvBackend.cpp:191-216`. *Fix: insert before first `OpFunction`.*
 - [x] **L9 — FIXED 2026-06-03: `find_kparams` read lock-free while registration mutates** — `cajeta_runtime.c:6276`,`:6342` vs `:4219-4241`. *Fix: hold the lock across find / order the publish.*
 
 ## Wave 5 — Fiber / lock lifecycle
