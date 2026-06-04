@@ -405,13 +405,10 @@ set(CAJETA_STDLIB_DIRS
         # socket-backed files of net/http + net/ws (see net/http/socket,
         # net/ws/socket). The embed glob is non-recursive, so listing net/http
         # picks up only its pure message-model files, not net/http/socket.
-        ${CAJETA_STDLIB_ROOT}/cajeta/net          # NetException + exception hierarchy only (data types gated under net/socket)
+        ${CAJETA_STDLIB_ROOT}/cajeta/net          # NetException + exception hierarchy + Headers (other data types gated under net/socket)
         ${CAJETA_STDLIB_ROOT}/cajeta/net/uri      # RFC 3986 URI parse/build (NET-6)
-        # net/http + net/ws are a larger surface (never-compiled agent code needing
-        # ownership-marker fixes); deferred from the minimal slice until the crypto +
-        # URI core compiles clean. Socket files already isolated under */socket.
-        #   ${CAJETA_STDLIB_ROOT}/cajeta/net/http
-        #   ${CAJETA_STDLIB_ROOT}/cajeta/net/ws
+        ${CAJETA_STDLIB_ROOT}/cajeta/net/http     # HTTP/1.1 message model (NET-7) — pure files; net/http/socket gated
+        ${CAJETA_STDLIB_ROOT}/cajeta/net/ws       # WebSocket frame codec + protocol (NET-10) — pure files; net/ws/socket gated
         ${CAJETA_STDLIB_ROOT}/cajeta/wire
         ${CAJETA_STDLIB_ROOT}/cajeta/codec        # Base64 (NET-11.3)
         ${CAJETA_STDLIB_ROOT}/cajeta/codec/json

@@ -152,6 +152,7 @@ public class WsFrameEncoder {
      * [`encode`](#encode)`(frame, null)`.
      */
     public static #int8[] encodeUnmasked(WsFrame frame) {
-        return WsFrameEncoder.encode(frame, null);
+        int8[] noKey = null;
+        return WsFrameEncoder.encode(frame, noKey);
     }
 }

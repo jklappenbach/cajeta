@@ -180,7 +180,9 @@ public class WsProtocol {
     public #WsReadAction onFrame(WsFrame frame) {
         // Terminal: a peer close was already observed. Stay closed.
         if (this.peerClosed) {
-            return WsReadAction.closed(WsProtocol.copyReason(this.closeReason), null);
+            WsCloseReason rc = WsProtocol.copyReason(this.closeReason);
+            WsFrame noReply = null;
+            return WsReadAction.closed(#rc, #noReply);
         }
 
         int32 op = frame.getOpcode();
@@ -233,19 +235,20 @@ public class WsProtocol {
         boolean alreadyClosing = this.localCloseSent;
         WsCloseReason reasonCopy = WsProtocol.copyReason(reason);
 
-        if (alreadyClosing) {
-            // We already sent our close: the handshake is complete, no reply.
-            // Retain the parsed reason for getCloseReason() (ownership moves
-            // into the field; `reason` is not read after this).
-            this.closeReason = #reason;
-            return WsReadAction.closed(#reasonCopy, null);
+        // Build the reciprocal reply (if needed) from `reason` *before* moving
+        // it into the retained field — a single move site (`#reason`) follows,
+        // after which the local is never read again on any path.
+        WsFrame reply = null;
+        if (!alreadyClosing) {
+            // Reply with the reciprocal close (RFC 6455 §5.5.1) and record the
+            // local close as (about to be) sent so a duplicate inbound close is
+            // idempotent.
+            reply = WsControlFrames.reciprocalClose(reason);
+            this.localCloseSent = true;
         }
-        // Reply with the reciprocal close (RFC 6455 §5.5.1) and record the
-        // local close as (about to be) sent so a duplicate inbound close is
-        // idempotent.
-        WsFrame reply = WsControlFrames.reciprocalClose(reason);
-        this.localCloseSent = true;
-        this.closeReason = #reason;     // retain (moved); not read after
+        // Retain the parsed reason for getCloseReason() (ownership moves into
+        // the field; `reason` is not read after this on any path).
+        this.closeReason = #reason;
         return WsReadAction.closed(#reasonCopy, #reply);
     }
 

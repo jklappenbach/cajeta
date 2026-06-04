@@ -177,7 +177,8 @@ public class HttpParser {
         if (this.complete) {
             // Head already parsed: everything is body. Append + return.
             while (i < length) {
-                this.appendBody(data[i]);
+                int8 bb = data[i];
+                this.appendBody(bb);
                 i = i + 1;
             }
             return true;
@@ -221,7 +222,8 @@ public class HttpParser {
                 // Drain the rest of this chunk into the body buffer.
                 int32 j = i + 1;
                 while (j < length) {
-                    this.appendBody(data[j]);
+                    int8 bb = data[j];
+                    this.appendBody(bb);
                     j = j + 1;
                 }
                 return true;
@@ -274,9 +276,10 @@ public class HttpParser {
      * A fresh owned copy of exactly [`leftoverLength`](#) bytes.
      */
     public #int8[] leftover() {
-        int8[] out = new int8[this.bodyLen];
+        int32 n = this.bodyLen;
+        int8[] out = new int8[n];
         int32 i = 0;
-        while (i < this.bodyLen) {
+        while (i < n) {
             out[i] = this.body[i];
             i = i + 1;
         }
@@ -370,9 +373,16 @@ public class HttpParser {
         }
 
         // --- header lines: each up to its CRLF, until `limit`.
-        Headers headers = this.isRequest
-            ? this.request.getHeaders()
-            : this.response.getHeaders();
+        // NB: select the head's headers with an if/else, not a ternary —
+        // exactly one of `this.request` / `this.response` is non-null here,
+        // so a ternary (whose codegen may evaluate both arms) would deref
+        // the null one.
+        Headers headers = null;
+        if (this.isRequest) {
+            headers = this.request.getHeaders();
+        } else {
+            headers = this.response.getHeaders();
+        }
         int32 pos = lineEnd + 2;        // skip the start-line CRLF
         while (pos < limit) {
             int32 hEnd = this.findCrlf(pos, limit);
@@ -581,8 +591,13 @@ public class HttpParser {
     }
 
     boolean versionIsHttp10() {
-        String v = this.isRequest ? this.request.version
-                                  : this.response.version;
+        // if/else, not a ternary: only one of request/response is non-null.
+        String v = null;
+        if (this.isRequest) {
+            v = this.request.version;
+        } else {
+            v = this.response.version;
+        }
         return v.equals("HTTP/1.0");
     }
 
