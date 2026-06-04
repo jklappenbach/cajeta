@@ -920,40 +920,90 @@ namespace cajeta {
         builder->CreateCall(pop, {});
         if (!catchClauses.empty()) {
             auto& c = catchClauses[0];  // single-clause for now
-            if (!c.variableName.empty()) {
-                auto type = c.type ? c.type : CajetaType::of("int64");
-                llvm::Type* bindTy = type->getLlvmType();
-                if (!bindTy) bindTy = i64Ty;
-                // Class-typed catch bindings (catch (Throwable e), etc.)
-                // hold a heap pointer, not a struct-by-value. The class's
-                // getLlvmType() returns the struct type, so we substitute
-                // `ptr` for the alloca's stored element. The thrown value
-                // is already a ptr, so it stores directly.
-                llvm::Type* ptrTy = llvm::PointerType::get(ctx, 0);
-                bool classTypedBinding =
-                    dynamic_pointer_cast<CajetaClass>(type) != nullptr;
-                if (classTypedBinding) bindTy = ptrTy;
-                llvm::Value* slot = entryBuilder.CreateAlloca(bindTy);
-                // Integer catch binding: PtrToInt to recover the legacy
-                // i64-throw shape. Pointer/class binding: store the ptr
-                // directly.
-                llvm::Value* storeVal = thrownValPtr;
-                if (bindTy->isIntegerTy()) {
-                    storeVal = builder->CreatePtrToInt(thrownValPtr, i64Ty);
-                    if (bindTy != i64Ty) {
-                        storeVal = builder->CreateIntCast(storeVal, bindTy,
-                            /*isSigned=*/true);
+            // The catch binding + body emission, factored so it can run either
+            // directly or inside a nested exception frame (H3 wrapping below).
+            auto emitCatchBody = [&]() {
+                if (!c.variableName.empty()) {
+                    auto type = c.type ? c.type : CajetaType::of("int64");
+                    llvm::Type* bindTy = type->getLlvmType();
+                    if (!bindTy) bindTy = i64Ty;
+                    // Class-typed catch bindings (catch (Throwable e), etc.)
+                    // hold a heap pointer, not a struct-by-value. The class's
+                    // getLlvmType() returns the struct type, so we substitute
+                    // `ptr` for the alloca's stored element. The thrown value
+                    // is already a ptr, so it stores directly.
+                    llvm::Type* ptrTy = llvm::PointerType::get(ctx, 0);
+                    bool classTypedBinding =
+                        dynamic_pointer_cast<CajetaClass>(type) != nullptr;
+                    if (classTypedBinding) bindTy = ptrTy;
+                    llvm::Value* slot = entryBuilder.CreateAlloca(bindTy);
+                    // Integer catch binding: PtrToInt to recover the legacy
+                    // i64-throw shape. Pointer/class binding: store the ptr
+                    // directly.
+                    llvm::Value* storeVal = thrownValPtr;
+                    if (bindTy->isIntegerTy()) {
+                        storeVal = builder->CreatePtrToInt(thrownValPtr, i64Ty);
+                        if (bindTy != i64Ty) {
+                            storeVal = builder->CreateIntCast(storeVal, bindTy,
+                                /*isSigned=*/true);
+                        }
+                    }
+                    builder->CreateStore(storeVal, slot);
+                    auto& scope = module->getScopeStack();
+                    if (!scope.isEmpty()) {
+                        auto field = make_shared<HeapField>(module, c.variableName, type);
+                        field->setAllocation(llvm::cast<llvm::AllocaInst>(slot));
+                        scope.peek()->putField(field);
                     }
                 }
-                builder->CreateStore(storeVal, slot);
-                auto& scope = module->getScopeStack();
-                if (!scope.isEmpty()) {
-                    auto field = make_shared<HeapField>(module, c.variableName, type);
-                    field->setAllocation(llvm::cast<llvm::AllocaInst>(slot));
-                    scope.peek()->putField(field);
+                if (c.body) c.body->generateCode(module);
+            };
+            if (finallyBlock) {
+                // H3 (bugfix-plan): a throw OUT of the catch body must still run
+                // the finally before propagating. Wrap the catch body in its own
+                // exception frame whose landing pad runs the finally + re-raises;
+                // the normal completion path runs the finally at afterBB.
+                llvm::Function* throwFn = module->getRuntimeFunction("__cajeta_throw");
+                llvm::Value* catchFrame = entryBuilder.CreateAlloca(
+                    llvm::ArrayType::get(i8Ty, frameBytes));
+                llvm::BasicBlock* catchBodyBB =
+                    llvm::BasicBlock::Create(ctx, "catch_body", parentFn);
+                llvm::BasicBlock* catchLandBB =
+                    llvm::BasicBlock::Create(ctx, "catch_finally", parentFn);
+                builder->CreateCall(push, {catchFrame});
+                llvm::Value* csj = builder->CreateCall(setjmpFn, {catchFrame});
+                llvm::Value* cthrew = builder->CreateICmpNE(
+                    csj, llvm::ConstantInt::get(i32Ty, 0));
+                builder->CreateCondBr(cthrew, catchLandBB, catchBodyBB);
+
+                // Normal: run the catch body, pop its frame, join at afterBB.
+                builder->SetInsertPoint(catchBodyBB);
+                emitCatchBody();
+                // Snapshot the catch body's DA state before the landing pad's
+                // finally regen mutates the (single, evolving) NYA set.
+                std::set<std::string> afterCatchBodyNYA;
+                if (daScope) afterCatchBodyNYA = daScope->snapshotNotYetAssigned();
+                if (!builder->GetInsertBlock()->hasTerminator()) {
+                    builder->CreateCall(pop, {});
+                    builder->CreateBr(afterBB);
                 }
+
+                // Landing: the catch body threw — pop its frame, run finally,
+                // re-raise the catch's exception.
+                builder->SetInsertPoint(catchLandBB);
+                llvm::Value* thrown2 = builder->CreateCall(getThrown, {});
+                builder->CreateCall(pop, {});
+                finallyBlock->generateCode(module);
+                if (throwFn && !builder->GetInsertBlock()->hasTerminator()) {
+                    builder->CreateCall(throwFn, {thrown2});
+                    builder->CreateUnreachable();
+                }
+                // Restore the catch-body DA state so the merge below is unaffected
+                // by the throw-path finally regen.
+                if (daScope) daScope->restoreNotYetAssigned(afterCatchBodyNYA);
+            } else {
+                emitCatchBody();
             }
-            if (c.body) c.body->generateCode(module);
         } else {
             // H2 (bugfix-plan): try/finally with NO catch clause — the throw must
             // propagate, not be swallowed. Run the finally on this unwinding edge

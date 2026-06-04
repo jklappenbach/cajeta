@@ -72,7 +72,7 @@ reference).
 - [x] **H2 — `try {} finally {}` (no catch) silently swallows the throw** *(high)* — FIXED 2026-06-03: empty-catch landing pad now runs finally + __cajeta_throw(thrown) + unreachable (test tryFinallyNoCatchPropagatesThrow). `Statement.cpp:914-960`.
   catchBB pops + branches to afterBB; with no catch clauses nothing re-raises. *Fix:* when `catchClauses` empty,
   run finally on the catch path then `__cajeta_throw` + `unreachable`.
-- [ ] **H3 — `finally` skipped when the `catch` handler throws/re-throws** *(high)* — `Statement.cpp:914-980`.
+- [x] **H3 — `finally` skipped when the `catch` handler throws/re-throws** *(high)* — `Statement.cpp:914-980`.
   catchBB pops the frame before the body runs, so `throw` in catch longjmps to the outer frame and `finally` never runs.
   *Fix:* emit finally on the abrupt path before propagating (extra frame around the catch body, or duplicate finally onto the throw edge).
 - [ ] **H4 — throw through open scope frames leaks them + orphans spawned children** *(high)* —

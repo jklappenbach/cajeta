@@ -197,6 +197,33 @@ TEST(ErrorModelTests, tryFinallyNoCatchPropagatesThrow) {
     EXPECT_EQ(runI32(src), 101);  // finally ran (ran=1) AND throw propagated
 }
 
+// H3 (bugfix-plan): `finally` must run even when the `catch` handler itself
+// throws/re-throws. Today the catch body runs after the frame is popped, so its
+// throw longjmps straight to the outer frame and the finally is skipped
+// (cleaned stays 0 -> run() returns 200 instead of 201).
+TEST(ErrorModelTests, finallyRunsWhenCatchRethrows) {
+    auto src =
+        "package test;\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        int32 cleaned = 0;\n"
+        "        try {\n"
+        "            try {\n"
+        "                throw 1;\n"
+        "            } catch (Exception e) {\n"
+        "                throw 2;\n"
+        "            } finally {\n"
+        "                cleaned = 1;\n"
+        "            }\n"
+        "        } catch (Exception e) {\n"
+        "            return cleaned + 200;\n"
+        "        }\n"
+        "        return cleaned;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 201);  // finally ran (cleaned=1) before the rethrow propagated
+}
+
 // R5-D: spawn at the function-body level (no explicit scope). The
 // implicit function-body scope picks up the throw at function exit
 // and re-raises into the function's caller. Here run() doesn't catch,
