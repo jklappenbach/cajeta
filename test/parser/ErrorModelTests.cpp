@@ -253,6 +253,39 @@ TEST(ErrorModelTests, returnInTryRunsFinally) {
     EXPECT_EQ(runI32(src), 101);  // finally ran on the return path (b.v=1)
 }
 
+// H4 (bugfix-plan): a throw out of an open `scope { spawn ... }` must unwind the
+// scope — joining/cancelling its children — before propagating, not leak the
+// frame and orphan the child. With the fix the caught path joins the child
+// (b.v=7 deterministically -> 17); without it the scope frame leaks and the child
+// is orphaned.
+TEST(ErrorModelTests, throwOutOfScopeJoinsChild) {
+    auto src =
+        "package test;\n"
+        "public class Box {\n"
+        "    public int32 v;\n"
+        "    public Box() { this.v = 0; }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static async int32 child(Box b) {\n"
+        "        b.v = 7;\n"
+        "        return 7;\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        Box b = new Box();\n"
+        "        try {\n"
+        "            scope {\n"
+        "                spawn child(b);\n"
+        "                throw 1;\n"
+        "            }\n"
+        "        } catch (Exception e) {\n"
+        "            return b.v + 10;\n"
+        "        }\n"
+        "        return b.v;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 17);  // scope unwound on throw -> child joined (b.v=7)
+}
+
 // R5-D: spawn at the function-body level (no explicit scope). The
 // implicit function-body scope picks up the throw at function exit
 // and re-raises into the function's caller. Here run() doesn't catch,
