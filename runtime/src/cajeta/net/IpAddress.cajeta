@@ -662,7 +662,8 @@ public class IpAddress {
                 out[pos] = (int8) 58;               // ':'
                 pos = pos + 1;
             }
-            pos = IpAddress.writeGroup(out, pos, groups[gi]);
+            int32 headGroup = groups[gi];
+            pos = IpAddress.writeGroup(out, pos, headGroup);
             gi = gi + 1;
         }
 
@@ -683,7 +684,8 @@ public class IpAddress {
                     out[pos] = (int8) 58;           // ':'
                     pos = pos + 1;
                 }
-                pos = IpAddress.writeGroup(out, pos, groups[gi]);
+                int32 tailGroup = groups[gi];
+                pos = IpAddress.writeGroup(out, pos, tailGroup);
                 firstTail = false;
                 gi = gi + 1;
             }

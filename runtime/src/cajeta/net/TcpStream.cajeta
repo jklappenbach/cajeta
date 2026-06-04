@@ -1,0 +1,124 @@
+package cajeta.net;
+
+import cajeta.lang.String;
+import cajeta.net.IpAddress;
+import cajeta.net.SocketAddress;
+import cajeta.net.NetException;
+import cajeta.net.ConnectionRefusedException;
+import cajeta.net.TimedOutException;
+import cajeta.net.BrokenPipeException;
+
+// NOTE (NET / b1 socket receiver-lowering): this is the **sync** surface of
+// `TcpStream`. The async/DNS-helper forms depend on `cajeta.net.reactor.Reactor`
+// and `cajeta.net.dns.Dns`, which are still gated (un-gated by b3/b4). For b1
+// those methods carry non-Reactor stub bodies so this file compiles as
+// built-in stdlib while the sync ops below are intrinsic-lowered at the call
+// site (see MethodCallExpression.cpp, `cajeta.net.TcpStream` blocks).
+
+/**
+ * A connected **TCP stream** — the blocking client/peer socket of plan item
+ * **NET-1.3**. The method bodies below are **intrinsic-lowered at the call
+ * site** (the compiler recognizes a `cajeta.net.TcpStream` receiver and emits
+ * the matching `__cajeta_net_*` native call), exactly the way a `File`
+ * receiver lowers to `__cajeta_file_*`. The stub bodies exist for the parser.
+ */
+public class TcpStream {
+    /**
+     * OS socket descriptor, or `-1` once closed. The first declared field, so
+     * after the vtable slot it is struct field index 1 — the same index
+     * `File.fd` uses, so the descriptor-load codegen is byte-identical.
+     */
+    public int32 fd;
+
+    /**
+     * Internal-only ctor: wraps an already-connected/accepted descriptor.
+     * User code reaches a `TcpStream` through [`connect`](#connect) (client)
+     * or `TcpListener.accept()` (server).
+     */
+    public TcpStream(int32 fd) {
+        this.fd = fd;
+    }
+
+    /**
+     * The **would-block sentinel** returned by the non-blocking I/O forms when
+     * the op could not complete immediately. A value, not an exception.
+     */
+    public static final int64 WOULD_BLOCK = -1;
+
+    // ----- Factory (client connect) -----
+
+    /**
+     * Open a blocking TCP connection to `addr` and return the connected
+     * stream. Intrinsic-lowered to: pack `addr` via
+     * `__cajeta_net_sockaddr_pack` → `__cajeta_net_socket` →
+     * `__cajeta_net_connect`; on the connect failure sentinel the codegen
+     * raises. Takes ownership of `addr`.
+     */
+    public static #TcpStream connect(#SocketAddress addr) {
+        return heap TcpStream(-1);
+    }
+
+    // ----- Instance I/O -----
+
+    /**
+     * Read up to `length` bytes into `dst[offset .. offset+length)`. Returns
+     * the count actually filled; `0` is an orderly peer close (EOF), not an
+     * error. Intrinsic-lowered to
+     * `__cajeta_net_recv(this.fd, &dst[8+offset], length, 0)`.
+     */
+    public int64 read(int8[] dst, int64 offset, int64 length) {
+        return 0;
+    }
+
+    /**
+     * Write `data[offset .. offset+length)`. Returns the count actually
+     * written. Intrinsic-lowered to
+     * `__cajeta_net_send(this.fd, &data[8+offset], length, 0)`.
+     */
+    public int64 write(int8[] data, int64 offset, int64 length) {
+        return 0;
+    }
+
+    /**
+     * Write **all** of `data[offset .. offset+length)`, looping over short
+     * writes until every byte is sent or a write raises.
+     */
+    public void writeAll(int8[] data, int64 offset, int64 length) {
+        int64 sent = 0;
+        while (sent < length) {
+            int64 n = this.write(data, offset + sent, length - sent);
+            if (n <= 0) {
+                throw heap BrokenPipeException(
+                    "writeAll: peer stopped accepting data");
+            }
+            sent = sent + n;
+        }
+    }
+
+    // ----- Lifecycle -----
+
+    /**
+     * Shut down part of the full-duplex connection without closing the
+     * descriptor. `how`: `0` = read, `1` = write, `2` = both. Intrinsic-
+     * lowered to `__cajeta_net_shutdown(this.fd, how)`.
+     */
+    public void shutdown(int32 how) {
+        return;
+    }
+
+    /**
+     * Close the underlying socket. Idempotent. Intrinsic-lowered to
+     * `__cajeta_net_close(this.fd)`, then sets `this.fd = -1`.
+     */
+    public void close() {
+        return;
+    }
+
+    /**
+     * Destructor: closes the socket if [`close`](#close) wasn't called, so a
+     * dropped `TcpStream` never leaks a descriptor.
+     */
+    public ~TcpStream() {
+        this.close();
+    }
+}

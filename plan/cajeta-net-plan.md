@@ -1351,3 +1351,44 @@ compilation + greening the `Net*`/`Http*`/`Ws*` JIT suites is the next stabiliza
 workstream; its true prerequisite is the async/net-receiver compiler lowering, which
 is upstream of most "done/partial" items above (their `.cajeta` cannot fully compile
 until it exists).
+
+### (b) Socket receiver-lowering workstream — the keystone, by increment
+
+The native `__cajeta_net_*` intrinsics are DONE + tested at the C level
+(`NetSocketTests.*` drive them via `extern "C"`). The gap is the **compiler
+lowering** of the Cajeta socket surface (`TcpStream`/`TcpListener`/`UdpSocket`
+method calls → those intrinsics), modelled exactly on the existing
+`cajeta.io.file.File`/`FileReader`/`FileWriter` lowering in
+`MethodCallExpression.cpp` (static block ~L1202, instance block ~L3561). Each
+increment also un-gates + compile-fixes the relevant socket `.cajeta` files (they
+were never compiled, same ownership/marker bugs as the pure slice), moving them
+out of `net/socket` back into `net` as they go green.
+
+- [ ] **b1 — Address stack + TcpStream sync I/O + loopback echo.** Un-gate +
+      compile-fix `AddressFamily`, `IpAddress`, `SocketAddress`. Lower
+      `TcpStream` instance `read`/`write`/`close`/`shutdown` (direct `File`
+      analogs: load `this.fd`, GEP `arr[8+offset]`, call intrinsic) + static
+      `connect(SocketAddress)` (sockaddr_pack → socket → connect) and
+      `TcpListener` `bind`/`listen`/`accept`/`close`. **Acceptance:** a
+      Cajeta-surface loopback echo JIT test (client connect → write → server
+      accept → echo → read) passes.
+- [ ] **b2 — Socket options + UdpSocket.** Lower the `setNoDelay`/`getKeepAlive`/
+      buffer/ttl/linger option pairs (get/setsockopt intrinsics) and `UdpSocket`
+      `send`/`recv`/`bind`/`close` (sendto/recvfrom). Un-gate `SocketOption`,
+      `UdpSocket`.
+- [ ] **b3 — Async reactor + fiber park/wake.** Lower `readAsync`/`writeAsync`/
+      `connectAsync`/`readWithin` via `__cajeta_net_await_readable/_writable`
+      (which park the fiber on the reactor and resume on readiness). Un-gate
+      `AsyncReader`/`AsyncWriter`/`Reactor`; wire the reactor lifecycle into the
+      carrier. Unblocks the deferred NET-3.x async ops + NET-2.3 (`Task<T>`
+      method return type — the async-lowering dependency).
+- [ ] **b4 — DNS resolve lowering.** Lower `Dns.resolve` via the
+      `__cajeta_net_getaddrinfo*` intrinsics; un-gate `net/dns`.
+- [ ] **b5 — Server stacks.** Un-gate `Server`/`ServerBuilder`/`SharedPoolServer`/
+      `ServerModel`/`ConnectionLimiter` + `net/http/socket`, `net/ws/socket`;
+      both accept models (fiber-per-connection + shared-pool) over b1–b3.
+- [ ] **b6 — TLS (NET-5).** Bundle BoringSSL; the largest separate effort.
+- [ ] **(parallel) Compiler-gap fixes** surfaced by the slices, independent of
+      sockets: RTTI catch-matching (a leaf caught by an unrelated sibling catch
+      clause), bare-`null`-literal-argument lowering to null, and the
+      non-deterministic JIT null-return flake under many-compiles-per-process.
