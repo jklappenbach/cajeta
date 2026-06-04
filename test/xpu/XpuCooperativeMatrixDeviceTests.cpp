@@ -64,13 +64,13 @@ const char* kMatmulSource =
     "    public static void matmul(Buffer<float16> a, Buffer<float16> b,\n"
     "                              Buffer<float32> c) {\n"
     "        CooperativeMatrix<float16,16,16,0> ma;\n"
-    "        ma.load(a, 0, 16);\n"           // layout 0 = row-major, stride 16
+    "        ma.load(a, 0, 0, 16);\n"           // layout 0 = row-major, stride 16
     "        CooperativeMatrix<float16,16,16,1> mb;\n"
-    "        mb.load(b, 0, 16);\n"
+    "        mb.load(b, 0, 0, 16);\n"
     "        CooperativeMatrix<float32,16,16,2> mc;\n"
     "        mc.splat(0.0f);\n"              // zero accumulator
     "        mc.mma(ma, mb);\n"             // C = A*B + C  (one tile FMA)
-    "        mc.store(c, 0, 16);\n"
+    "        mc.store(c, 0, 0, 16);\n"
     "    }\n"
     "}\n";
 
@@ -164,4 +164,99 @@ TEST(XpuCooperativeMatrixDeviceTests, mixedPrecisionMatmulOnDevice) {
         for (unsigned j = 0; j < N; ++j)
             EXPECT_EQ(out[i * N + j], ref[i * N + j])
                 << "tile mismatch at (" << i << "," << j << ")";
+}
+
+// GEMM-1 — K-accumulation across multiple tiles via OFFSET addressing. One 16x16
+// output tile, but K=32 so it sums two 16-wide K-tiles in a for-loop, each loaded
+// from a runtime offset into a larger row-major matrix: C[16x16] = A[16x32] *
+// B[32x16]. Proves the new `load(buf, offset, layout, stride)` offset arg + the
+// cooperative-matrix accumulator persisting across loop iterations (mma is
+// C = A*B + C in place) — the inner-K core of a real tiled GEMM. Still one
+// workgroup (M/N tiling is GEMM-2). Exact integer check.
+const char* kKAccumSource =
+    "package test;\n"
+    "import cajeta.xpu.core.Buffer;\n"
+    "import cajeta.xpu.core.CooperativeMatrix;\n"
+    "public class M {\n"
+    "    @Kernel\n"
+    "    public static void gemm2k(Buffer<float16> a, Buffer<float16> b,\n"
+    "                              Buffer<float32> c) {\n"
+    "        CooperativeMatrix<float32,16,16,2> mc;\n"
+    "        mc.splat(0.0f);\n"
+    "        CooperativeMatrix<float16,16,16,0> ma;\n"
+    "        CooperativeMatrix<float16,16,16,1> mb;\n"
+    "        for (uint32 kk = 0; kk < 2; kk += 1) {\n"
+    "            ma.load(a, kk * 16, 0, 32);\n"    // A tile (0,kk): row-major stride K=32
+    "            mb.load(b, kk * 256, 0, 16);\n"   // B tile (kk,0): row-major stride N=16
+    "            mc.mma(ma, mb);\n"               // C += A_k * B_k
+    "        }\n"
+    "        mc.store(c, 0, 0, 16);\n"
+    "    }\n"
+    "}\n";
+
+TEST(XpuCooperativeMatrixDeviceTests, kAccumulationMatmulOnDevice) {
+    if (!VulkanDriver::coopMatrixAvailable()) {
+        GTEST_SKIP() << "no Vulkan device with a 16x16x16 f16/f16->f32 "
+                        "cooperative-matrix config";
+    }
+
+    Compiler compiler;
+    auto module = compileForInspection(compiler, kKAccumSource);
+    auto k = findMethod(module->getStructures()["test.M"], "gemm2k");
+    ASSERT_NE(k, nullptr);
+
+    auto tm = cajeta::xpu::vulkan::createSpirvTargetMachine("vulkan1.3");
+    ASSERT_NE(tm, nullptr);
+    llvm::LLVMContext ctx;
+    llvm::Module dev("xpu_coopmat_kacc_vkdevice", ctx);
+    cajeta::xpu::vulkan::configureDeviceModule(dev, *tm);
+    cajeta::xpu::vulkan::lowerKernel(k, dev);
+    std::vector<uint8_t> spirv = cajeta::xpu::vulkan::emitSpirv(dev, *tm);
+    ASSERT_FALSE(spirv.empty());
+
+    // A is 16x32, B is 32x16, C is 16x16. Small integers exact in half (A,B in
+    // 0..2): per-term <= 4, the 32-term sum <= 128 — exact in half and float.
+    constexpr unsigned K = 32;
+    std::vector<_Float16> hostA(N * K), hostB(K * N);
+    std::vector<float> ref(N * N, 0.0f);
+    for (unsigned i = 0; i < N; ++i)
+        for (unsigned kk = 0; kk < K; ++kk)
+            hostA[i * K + kk] = (_Float16) ((i + 2 * kk) % 3);
+    for (unsigned kk = 0; kk < K; ++kk)
+        for (unsigned j = 0; j < N; ++j)
+            hostB[kk * N + j] = (_Float16) ((3 * kk + j) % 3);
+    for (unsigned i = 0; i < N; ++i)
+        for (unsigned j = 0; j < N; ++j) {
+            float acc = 0.0f;
+            for (unsigned kk = 0; kk < K; ++kk)
+                acc += (float) hostA[i * K + kk] * (float) hostB[kk * N + j];
+            ref[i * N + j] = acc;
+        }
+
+    VulkanDriver vk;
+    ASSERT_TRUE(vk.init());
+    auto dA = vk.alloc(N * K * sizeof(_Float16));
+    auto dB = vk.alloc(K * N * sizeof(_Float16));
+    auto dC = vk.alloc(N * N * sizeof(float));
+    ASSERT_NE(dA, 0u);
+    ASSERT_NE(dB, 0u);
+    ASSERT_NE(dC, 0u);
+    ASSERT_TRUE(vk.upload(dA, hostA.data(), N * K * sizeof(_Float16)));
+    ASSERT_TRUE(vk.upload(dB, hostB.data(), K * N * sizeof(_Float16)));
+    std::vector<float> zero(N * N, -1.0f);
+    ASSERT_TRUE(vk.upload(dC, zero.data(), N * N * sizeof(float)));
+
+    ASSERT_TRUE(vk.launch(spirv.data(), spirv.size(), "gemm2k", {dA, dB, dC},
+                          /*groupCountX=*/1));
+
+    std::vector<float> out(N * N, -2.0f);
+    ASSERT_TRUE(vk.download(out.data(), dC, N * N * sizeof(float)));
+    vk.free(dA);
+    vk.free(dB);
+    vk.free(dC);
+
+    for (unsigned i = 0; i < N; ++i)
+        for (unsigned j = 0; j < N; ++j)
+            EXPECT_EQ(out[i * N + j], ref[i * N + j])
+                << "K-accum mismatch at (" << i << "," << j << ")";
 }
