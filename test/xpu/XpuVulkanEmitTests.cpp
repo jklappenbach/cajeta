@@ -557,6 +557,78 @@ TEST(XpuVulkanEmitTests, lowersRayQueryPrimitiveIndexToSpirv) {
     }
 }
 
+// CooperativeMatrix<T,Rows,Cols,Use> (cajeta-gpu CM4): the cajeta device surface
+// for SPV_KHR_cooperative_matrix. A @Kernel doing one 16x16 f32 matmul tile —
+// load A (use 0) + B (use 1), splat-zero accumulator C (use 2), mma, store C —
+// lowers to the llvm.spv.cooperative.matrix.* intrinsics and emits a spirv-val-
+// clean module (OpTypeCooperativeMatrixKHR + the ops + OpMemoryModel Logical
+// VulkanKHR). GPU-free: this proves the surface + lowering, independent of any
+// driver's cooperative-matrix config support (which CM5 exec-checks on device).
+TEST(XpuVulkanEmitTests, lowersCooperativeMatrixToSpirv) {
+    auto src =
+        "package test;\n"
+        "import cajeta.xpu.core.Buffer;\n"
+        "import cajeta.xpu.core.CooperativeMatrix;\n"
+        "public class M {\n"
+        "    @Kernel\n"
+        "    public static void matmul(Buffer<float32> a, Buffer<float32> b,\n"
+        "                              Buffer<float32> c) {\n"
+        "        CooperativeMatrix<float32,16,16,0> ma;\n"
+        "        ma.load(a, 0, 16);\n"
+        "        CooperativeMatrix<float32,16,16,1> mb;\n"
+        "        mb.load(b, 0, 16);\n"
+        "        CooperativeMatrix<float32,16,16,2> mc;\n"
+        "        mc.splat(0.0f);\n"
+        "        mc.mma(ma, mb);\n"
+        "        mc.store(c, 0, 16);\n"
+        "    }\n"
+        "}\n";
+    Compiler compiler;
+    auto module = compileForInspection(compiler, src, "test.M");
+    auto k = findMethod(module->getStructures()["test.M"], "matmul");
+    ASSERT_NE(k, nullptr);
+
+    auto tmIr = createSpirvTargetMachine("vulkan1.3");
+    ASSERT_NE(tmIr, nullptr);
+    llvm::LLVMContext irCtx;
+    llvm::Module irModule("xpu_coopmat_ir", irCtx);
+    configureDeviceModule(irModule, *tmIr);
+    ASSERT_NE(lowerKernel(k, irModule), nullptr);
+    std::string ir = printModule(irModule);
+    EXPECT_NE(ir.find("llvm.spv.cooperative.matrix.load"), std::string::npos) << ir;
+    EXPECT_NE(ir.find("llvm.spv.cooperative.matrix.muladd"), std::string::npos) << ir;
+    EXPECT_NE(ir.find("llvm.spv.cooperative.matrix.store"), std::string::npos) << ir;
+
+    auto tmText = createSpirvTargetMachine("vulkan1.3");
+    ASSERT_NE(tmText, nullptr);
+    llvm::LLVMContext textCtx;
+    llvm::Module textModule("xpu_coopmat_text", textCtx);
+    configureDeviceModule(textModule, *tmText);
+    lowerKernel(k, textModule);
+    std::string text = emitSpirvText(textModule, *tmText);
+    ASSERT_FALSE(text.empty());
+    EXPECT_NE(text.find("OpCapability CooperativeMatrixKHR"), std::string::npos) << text;
+    EXPECT_NE(text.find("OpMemoryModel Logical Vulkan"), std::string::npos) << text;
+    EXPECT_NE(text.find("OpTypeCooperativeMatrixKHR"), std::string::npos) << text;
+    EXPECT_NE(text.find("OpCooperativeMatrixLoadKHR"), std::string::npos) << text;
+    EXPECT_NE(text.find("OpCooperativeMatrixMulAddKHR"), std::string::npos) << text;
+    EXPECT_NE(text.find("OpCooperativeMatrixStoreKHR"), std::string::npos) << text;
+
+    auto tmBin = createSpirvTargetMachine("vulkan1.3");
+    ASSERT_NE(tmBin, nullptr);
+    llvm::LLVMContext binCtx;
+    llvm::Module binModule("xpu_coopmat_bin", binCtx);
+    configureDeviceModule(binModule, *tmBin);
+    lowerKernel(k, binModule);
+    std::vector<uint8_t> spirv = emitSpirv(binModule, *tmBin);
+    ASSERT_FALSE(spirv.empty());
+    if (auto valid = validateSpirv(spirv)) {
+        EXPECT_TRUE(*valid) << "spirv-val rejected the cooperative-matrix module";
+    } else {
+        GTEST_SUCCEED() << "spirv-val not installed; skipped binary validation";
+    }
+}
+
 // A workgroup-shared kernel with a barrier emits a SPIR-V module that is
 // strictly Vulkan-VALID — proving the barrier post-pass (SpirvBackend's
 // fixupControlBarriers) rewrites LLVM 22's forbidden SequentiallyConsistent

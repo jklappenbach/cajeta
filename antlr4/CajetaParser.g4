@@ -102,6 +102,7 @@ typeParameters
 
 typeParameter
     : annotation* identifier (EXTENDS annotation* typeBound)?
+    | primitiveType identifier
     ;
 
 typeBound

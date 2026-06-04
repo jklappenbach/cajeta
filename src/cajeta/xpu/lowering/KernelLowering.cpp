@@ -283,6 +283,11 @@ private:
     // takes the alloca from rayQuerySlots.
     std::map<std::string, llvm::Value*> accelHandles;    // AS name -> descriptor
     std::map<std::string, llvm::Value*> rayQuerySlots;   // RayQuery name -> alloca
+    // CooperativeMatrix locals (CM4): the alloca slot holds the opaque tile
+    // value (an OpTypeCooperativeMatrixKHR loaded/stored as a whole object);
+    // matrixType is that device type, retained so ops can load/store the slot.
+    struct CoopMatrixSlot { llvm::Value* alloca; llvm::Type* matrixType; };
+    std::map<std::string, CoopMatrixSlot> coopMatrixSlots;
 
     std::vector<LoweringTarget::KernelParam> kparams;  // admitted params
     bool paramsAsArgs = false;  // true for @Device helpers (params are fn args)
@@ -400,6 +405,16 @@ private:
             // non-Vulkan backend (XPU-N02).
             if (isRayQueryType(declType)) {
                 rayQuerySlots[nm] = entryAlloca(target.rayQueryType(mod), nm);
+                continue;
+            }
+            // CooperativeMatrix local (CM4): a device-only subgroup tile. The
+            // alloca holds the opaque OpTypeCooperativeMatrixKHR value; load/
+            // splat/mma write it, store/mma read it. Backend-gated: coopMatrixType
+            // throws on a non-Vulkan backend (XPU-N03). A `stack CooperativeMatrix
+            // <...>()` initializer is just the construction — no value to store.
+            if (isCooperativeMatrixType(declType)) {
+                llvm::Type* matTy = buildCoopMatrixType(declType);
+                coopMatrixSlots[nm] = { entryAlloca(matTy, nm), matTy };
                 continue;
             }
             llvm::Type* slotTy = deviceScalarType(declType, ctx);
@@ -1312,6 +1327,12 @@ private:
         if (auto rq = rayQuerySlots.find(recv); rq != rayQuerySlots.end()) {
             return lowerRayQueryMethod(rq->second, name, mc);
         }
+        // CooperativeMatrix ops (CM4). `recv` names a CooperativeMatrix body
+        // local; load/splat/mma/store lower to the backend cooperative-matrix
+        // seams (Vulkan llvm.spv.cooperative.matrix.*).
+        if (auto cm = coopMatrixSlots.find(recv); cm != coopMatrixSlots.end()) {
+            return lowerCoopMatrixMethod(recv, name, mc);
+        }
         // Texture2D.sample(sampler, u, v) (Item 8). `recv` names a texture kernel
         // param; the first arg is a sampler kernel param, then the normalized
         // (u, v) coords. Lowered to the backend image-sample seam.
@@ -1420,6 +1441,112 @@ private:
         }
         unsupported("RayQuery.initialize: first argument must be an "
                     "AccelerationStructure kernel parameter");
+    }
+
+    // Build the device cooperative-matrix type for a
+    // `CooperativeMatrix<T, Rows, Cols, Use>` local from its declared type
+    // arguments: arg0 = element type, args 1-3 = the Rows/Cols/Use integer
+    // constants. Delegates the actual type to the backend seam (Vulkan emits
+    // OpTypeCooperativeMatrixKHR at Subgroup scope).
+    llvm::Type* buildCoopMatrixType(const CajetaTypePtr& declType) {
+        auto cls = std::dynamic_pointer_cast<CajetaClass>(declType);
+        if (!cls || cls->getTypeArguments().size() != 4)
+            unsupported("CooperativeMatrix requires <T, Rows, Cols, Use>");
+        const auto& targs = cls->getTypeArguments();
+        llvm::Type* elem = deviceScalarType(targs[0], ctx);
+        if (!elem)
+            unsupported("CooperativeMatrix element type must be a numeric primitive");
+        auto rows = std::dynamic_pointer_cast<CajetaConstantType>(targs[1]);
+        auto cols = std::dynamic_pointer_cast<CajetaConstantType>(targs[2]);
+        auto use  = std::dynamic_pointer_cast<CajetaConstantType>(targs[3]);
+        if (!rows || !cols || !use)
+            unsupported("CooperativeMatrix Rows/Cols/Use must be integer constants");
+        return target.coopMatrixType(mod, elem, (uint32_t) rows->getValue(),
+                                     (uint32_t) cols->getValue(),
+                                     (uint32_t) use->getValue());
+    }
+
+    // Resolve a CooperativeMatrix.load/store Buffer argument (a bare identifier
+    // naming a Buffer kernel param) to its element-0 device pointer — the base
+    // the cooperative-matrix load/store reads/writes Rows*Cols elements from.
+    llvm::Value* resolveBufferBaseArg(const ExpressionPtr& e) {
+        if (auto id = std::dynamic_pointer_cast<IdentifierExpression>(e)) {
+            auto bb = bufferBases.find(id->getTextValue());
+            if (bb != bufferBases.end()) {
+                auto be = bufferElems.find(id->getTextValue());
+                llvm::Type* elemTy = be != bufferElems.end() ? be->second : nullptr;
+                llvm::Value* zero =
+                    llvm::ConstantInt::get(llvm::Type::getInt64Ty(ctx), 0);
+                return target.bufferElementPtr(builder, mod, bb->second, elemTy,
+                                               zero);
+            }
+        }
+        unsupported("CooperativeMatrix load/store: argument must be a Buffer "
+                    "kernel parameter");
+    }
+
+    // Resolve a CooperativeMatrix.mma operand (a bare identifier naming a
+    // CooperativeMatrix local) to its slot.
+    CoopMatrixSlot resolveCoopMatrixArg(const ExpressionPtr& e) {
+        if (auto id = std::dynamic_pointer_cast<IdentifierExpression>(e)) {
+            auto it = coopMatrixSlots.find(id->getTextValue());
+            if (it != coopMatrixSlots.end()) return it->second;
+        }
+        unsupported("CooperativeMatrix.mma: operands must be CooperativeMatrix "
+                    "kernel locals");
+    }
+
+    // CooperativeMatrix op dispatch (CM4). The slot alloca holds the opaque tile;
+    // load/splat/mma write it, store/mma read it. Lowered to the backend
+    // cooperative-matrix seams (Vulkan llvm.spv.cooperative.matrix.*).
+    llvm::Value* lowerCoopMatrixMethod(
+            const std::string& recv, const std::string& name,
+            const std::shared_ptr<MethodCallExpression>& mc) {
+        const auto& args = mc->getParameters();
+        CoopMatrixSlot slot = coopMatrixSlots[recv];
+        llvm::Type* i32 = llvm::Type::getInt32Ty(ctx);
+        if (name == "load" || name == "store") {
+            if (args.size() != 3)
+                unsupported("CooperativeMatrix." + name +
+                            " expects (Buffer, layout, stride)");
+            llvm::Value* ptr = resolveBufferBaseArg(args[0].expression);
+            llvm::Value* layout = coerceTo(lowerExpr(args[1].expression), i32);
+            llvm::Value* stride = coerceTo(lowerExpr(args[2].expression), i32);
+            if (name == "load") {
+                llvm::Value* v = target.coopMatrixLoad(builder, mod, ptr, layout,
+                                                       stride, slot.matrixType);
+                builder.CreateStore(v, slot.alloca);
+            } else {
+                llvm::Value* v = builder.CreateLoad(slot.matrixType, slot.alloca,
+                                                    recv + ".val");
+                target.coopMatrixStore(builder, mod, ptr, v, layout, stride);
+            }
+            return llvm::ConstantInt::get(i32, 0);
+        }
+        if (name == "splat") {
+            if (args.size() != 1)
+                unsupported("CooperativeMatrix.splat expects (value)");
+            llvm::Value* val = lowerExpr(args[0].expression);
+            llvm::Value* v =
+                target.coopMatrixSplat(builder, mod, val, slot.matrixType);
+            builder.CreateStore(v, slot.alloca);
+            return llvm::ConstantInt::get(i32, 0);
+        }
+        if (name == "mma") {
+            if (args.size() != 2)
+                unsupported("CooperativeMatrix.mma expects (a, b)");
+            CoopMatrixSlot a = resolveCoopMatrixArg(args[0].expression);
+            CoopMatrixSlot b = resolveCoopMatrixArg(args[1].expression);
+            llvm::Value* aVal = builder.CreateLoad(a.matrixType, a.alloca, "cm.a");
+            llvm::Value* bVal = builder.CreateLoad(b.matrixType, b.alloca, "cm.b");
+            llvm::Value* cVal =
+                builder.CreateLoad(slot.matrixType, slot.alloca, "cm.c");
+            llvm::Value* v = target.coopMatrixMulAdd(builder, mod, aVal, bVal,
+                                                     cVal, slot.matrixType);
+            builder.CreateStore(v, slot.alloca);
+            return llvm::ConstantInt::get(i32, 0);
+        }
+        unsupported("CooperativeMatrix." + name + "()");
     }
 
     // Assemble a <3 x float> from three scalar expressions (ray origin /
@@ -1879,6 +2006,44 @@ llvm::Value* LoweringTarget::rayQueryIntersectionPrimitiveIndex(
     llvm::IRBuilderBase& /*b*/, llvm::Module& /*m*/, llvm::Value* /*rqPtr*/,
     llvm::Value* /*intersection*/) {
     throw rayQueryUnsupported(name());
+}
+
+static cajeta::Exception coopMatrixUnsupported(const char* backend) {
+    return cajeta::Exception(
+        "XPU kernel lowering: cooperative matrix (CooperativeMatrix<T,...>) is "
+        "supported only on the Vulkan backend, not '" + std::string(backend) +
+        "' (SPV_KHR_cooperative_matrix is wired for the Vulkan flavor)",
+        "XPU-N03");
+}
+
+llvm::Type* LoweringTarget::coopMatrixType(llvm::Module& /*m*/, llvm::Type* /*elem*/,
+                                           uint32_t /*rows*/, uint32_t /*cols*/,
+                                           uint32_t /*use*/) {
+    throw coopMatrixUnsupported(name());
+}
+
+llvm::Value* LoweringTarget::coopMatrixLoad(
+    llvm::IRBuilderBase& /*b*/, llvm::Module& /*m*/, llvm::Value* /*ptr*/,
+    llvm::Value* /*layout*/, llvm::Value* /*stride*/, llvm::Type* /*matrixType*/) {
+    throw coopMatrixUnsupported(name());
+}
+
+void LoweringTarget::coopMatrixStore(
+    llvm::IRBuilderBase& /*b*/, llvm::Module& /*m*/, llvm::Value* /*ptr*/,
+    llvm::Value* /*matrixVal*/, llvm::Value* /*layout*/, llvm::Value* /*stride*/) {
+    throw coopMatrixUnsupported(name());
+}
+
+llvm::Value* LoweringTarget::coopMatrixMulAdd(
+    llvm::IRBuilderBase& /*b*/, llvm::Module& /*m*/, llvm::Value* /*a*/,
+    llvm::Value* /*bMat*/, llvm::Value* /*c*/, llvm::Type* /*matrixType*/) {
+    throw coopMatrixUnsupported(name());
+}
+
+llvm::Value* LoweringTarget::coopMatrixSplat(
+    llvm::IRBuilderBase& /*b*/, llvm::Module& /*m*/, llvm::Value* /*value*/,
+    llvm::Type* /*matrixType*/) {
+    throw coopMatrixUnsupported(name());
 }
 
 llvm::Type* LoweringTarget::bufferParamType(llvm::Module& m,

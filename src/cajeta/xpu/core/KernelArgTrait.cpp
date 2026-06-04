@@ -50,6 +50,15 @@ bool isAccelStructCanonical(const std::string& canonical) {
 bool isRayQueryCanonical(const std::string& canonical) {
     return canonical == "cajeta.xpu.core.RayQuery";
 }
+// CooperativeMatrix (cajeta-gpu Part C) — like RayQuery, a device-only
+// kernel-local (a subgroup-cooperative matrix-core tile), NOT a kernel arg. It
+// is parameterized (`CooperativeMatrix<T, Rows, Cols, Use>`), so an instance's
+// canonical carries a `<...>` suffix; match the prefix. Recognized only by the
+// device lowerer when it appears as a kernel-body local.
+bool isCooperativeMatrixCanonical(const std::string& canonical) {
+    static const std::string kPrefix = "cajeta.xpu.core.CooperativeMatrix";
+    return canonical.compare(0, kPrefix.size(), kPrefix) == 0;
+}
 
 // A class implements the KernelArg marker interface if its
 // implemented-interfaces list contains cajeta.xpu.core.KernelArg.
@@ -157,6 +166,10 @@ bool isAccelStructType(const CajetaTypePtr& type) {
 
 bool isRayQueryType(const CajetaTypePtr& type) {
     return type && isRayQueryCanonical(type->toCanonical());
+}
+
+bool isCooperativeMatrixType(const CajetaTypePtr& type) {
+    return type && isCooperativeMatrixCanonical(type->toCanonical());
 }
 
 void validateKernelParams(const MethodPtr& method) {

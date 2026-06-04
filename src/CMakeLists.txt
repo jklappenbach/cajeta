@@ -122,6 +122,30 @@ else()
     message(STATUS "cajeta: LLVM lacks SPV_KHR_ray_query intrinsics (stock LLVM) -- ray query DISABLED (clean XPU-N02 diagnostic)")
 endif()
 
+# Same probe for the cooperative-matrix intrinsics (CM2). They live in the same
+# cajeta-llvm fork, but probe independently so the guard is honest about what it
+# gates (and a future split fork still works).
+unset(CAJETA_HAS_SPV_COOP_MATRIX CACHE)
+set(_CAJETA_CM_INCLUDES "${CMAKE_REQUIRED_INCLUDES}")
+set(_CAJETA_CM_FLAGS "${CMAKE_REQUIRED_FLAGS}")
+set(_CAJETA_CM_TTYPE "${CMAKE_TRY_COMPILE_TARGET_TYPE}")
+set(CMAKE_REQUIRED_INCLUDES ${LLVM_INCLUDE_DIRS})
+set(CMAKE_REQUIRED_FLAGS "-std=c++17 ${LLVM_DEFINITIONS}")
+set(CMAKE_TRY_COMPILE_TARGET_TYPE STATIC_LIBRARY)
+check_cxx_source_compiles("
+#include <llvm/IR/Intrinsics.h>
+#include <llvm/IR/IntrinsicsSPIRV.h>
+int probe() { return (int) llvm::Intrinsic::spv_cooperative_matrix_load; }
+" CAJETA_HAS_SPV_COOP_MATRIX)
+set(CMAKE_REQUIRED_INCLUDES "${_CAJETA_CM_INCLUDES}")
+set(CMAKE_REQUIRED_FLAGS "${_CAJETA_CM_FLAGS}")
+set(CMAKE_TRY_COMPILE_TARGET_TYPE "${_CAJETA_CM_TTYPE}")
+if(CAJETA_HAS_SPV_COOP_MATRIX)
+    message(STATUS "cajeta: LLVM has SPV_KHR_cooperative_matrix intrinsics (fork toolchain) -- cooperative matrix ENABLED")
+else()
+    message(STATUS "cajeta: LLVM lacks SPV_KHR_cooperative_matrix intrinsics (stock LLVM) -- cooperative matrix DISABLED (clean XPU-N03 diagnostic)")
+endif()
+
 find_package(ANTLR REQUIRED)
 
 # System antlr4 runtime headers + library. Portability: search across
@@ -500,6 +524,9 @@ if(CAJETA_HAS_LLD)
 endif()
 if(CAJETA_HAS_SPV_RAY_QUERY)
     target_compile_definitions(${CMAKE_PROJECT_NAME}_lib PUBLIC CAJETA_HAS_SPV_RAY_QUERY=1)
+endif()
+if(CAJETA_HAS_SPV_COOP_MATRIX)
+    target_compile_definitions(${CMAKE_PROJECT_NAME}_lib PUBLIC CAJETA_HAS_SPV_COOP_MATRIX=1)
 endif()
 
 add_executable(${CMAKE_PROJECT_NAME} main.cpp)

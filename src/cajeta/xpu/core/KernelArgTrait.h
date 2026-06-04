@@ -75,6 +75,9 @@ namespace xpu {
     // by the device lowerer when it declares a RayQuery local.
     bool isAccelStructType(const CajetaTypePtr& type);
     bool isRayQueryType(const CajetaTypePtr& type);
+    // CooperativeMatrix<T,Rows,Cols,Use> — also a device-only kernel-body local
+    // (a subgroup matrix-core tile), never a kernel arg.
+    bool isCooperativeMatrixType(const CajetaTypePtr& type);
 
     // Validate every parameter of `method`. Throws cajeta::Exception
     // (errorId "XPU-K01") with a clear diagnostic on the first non-

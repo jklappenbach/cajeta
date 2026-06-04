@@ -29,6 +29,17 @@ namespace cajeta {
         string name;
         list<QualifiedNamePtr> bounds;   // empty = unbounded
 
+        // Non-type (value) parameter — `<..., uint32 N>`. When true the
+        // parameter binds to a compile-time integer constant (a
+        // CajetaConstantType argument), not a type; `nonTypePrimitive` records
+        // the declared primitive (e.g. "uint32"). The built-in
+        // `CooperativeMatrix<T, uint32 Rows, uint32 Cols, uint32 Use>` and any
+        // future user template (`Matrix<T, uint32 R, uint32 C>`) use this.
+        // Non-type params carry no `bounds`, so the TPL-6 bound check skips
+        // them; the instantiator instead checks the arg is a constant.
+        bool isNonType = false;
+        string nonTypePrimitive;         // declared primitive name when isNonType
+
         TypeParameter() = default;
         TypeParameter(string name) : name(std::move(name)) {}
     };

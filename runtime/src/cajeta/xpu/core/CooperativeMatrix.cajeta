@@ -1,0 +1,92 @@
+package cajeta.xpu.core;
+
+import cajeta.xpu.core.Buffer;
+
+/**
+ * CooperativeMatrix — a tile of a matrix multiply held *cooperatively* by a
+ * subgroup (wavefront), mapping to the hardware matrix/tensor cores via
+ * `SPV_KHR_cooperative_matrix` (the `OpTypeCooperativeMatrixKHR` family). It is
+ * the single biggest ML lever: one `mma` is a full tile-sized fused multiply-add
+ * on the matrix-core register file.
+ *
+ * Parameterized by element type `T` and three compile-time integer constants —
+ * `Rows`, `Cols`, and `Use` (the SPIR-V cooperative-matrix "use": 0 = MatrixA,
+ * 1 = MatrixB, 2 = Accumulator). A `CooperativeMatrix<float32,16,16,0>` is a
+ * 16x16 f32 A-operand tile. Distinct `(T,Rows,Cols,Use)` are distinct device
+ * types, exactly as `Vector<T,N>` is per `(T,N)`.
+ *
+ * Like {@link RayQuery}, a CooperativeMatrix is NOT a host value: it is a
+ * device-only, kernel-local object. Its storage is not addressable memory — at
+ * Subgroup scope the tile lives *distributed across the wavefront's
+ * per-invocation registers* (the matrix-core register file), owned cooperatively
+ * by all invocations. You never take its address. Use it inside an `@Kernel`:
+ *
+ *     CooperativeMatrix<float32,16,16,0> a;
+ *     a.load(bufA, 0u, 16u);                 // layout 0 = row-major, stride 16
+ *     CooperativeMatrix<float32,16,16,1> b;
+ *     b.load(bufB, 0u, 16u);
+ *     CooperativeMatrix<float32,16,16,2> c;
+ *     c.splat(0.0f);                         // zero accumulator
+ *     c.mma(a, b);                           // c = a * b + c  (one tile FMA)
+ *     c.store(bufC, 0u, 16u);
+ *
+ * `load`/`store` move the tile to/from a global `Buffer<T>` (a StorageBuffer);
+ * the matrix VALUE never leaves the register file. (Loading from a
+ * workgroup-shared tile — the classic LDS-staged GEMM optimization — is a later
+ * increment; the type and ops are storage-class-agnostic.) For correctness the
+ * A and B `Use`/shape must form a valid product into this accumulator; v1 targets
+ * the square Rows == Cols == K tile (so A is `<...,0>` and B is `<...,1>` of the
+ * same `<T,Rows,Cols>`).
+ *
+ * COOPERATIVE MATRIX IS VULKAN-ONLY here: `SPV_KHR_cooperative_matrix` lowers on
+ * the Vulkan/SPIR-V backend (and forces the Vulkan memory model). On other
+ * backends a CooperativeMatrix in a kernel is a clean "not supported" diagnostic.
+ *
+ * The method bodies are resolution placeholders — never emitted as real calls.
+ * Each is lowered at its `@Kernel` call site to the backend cooperative-matrix
+ * op (`OpCooperativeMatrixLoadKHR` / `StoreKHR` / `MulAddKHR` / a splat
+ * `OpCompositeConstruct`, via the `llvm.spv.cooperative.matrix.*` intrinsics).
+ * Using a CooperativeMatrix on the host is unsupported.
+ */
+public final class CooperativeMatrix<T, uint32 Rows, uint32 Cols, uint32 Use> {
+    // Placeholder field. CooperativeMatrix is a device-only opaque (the device
+    // lowerer ignores this host class and allocates an OpTypeCooperativeMatrixKHR
+    // slot), but the host front-end still lays the class out — a zero-field class
+    // has no LLVM type. One reserved word gives it a valid (never-used) layout.
+    int32 reserved;
+
+    public CooperativeMatrix() {
+        this.reserved = 0;
+    }
+
+    /**
+     * Device-only intrinsic: load this tile from `src` (a global Buffer<T>),
+     * reading `Rows`x`Cols` elements with the given `layout` (0 = row-major,
+     * 1 = column-major) and row/column `stride` (in elements).
+     */
+    public void load(Buffer<T> src, uint32 layout, uint32 stride) {
+    }
+
+    /**
+     * Device-only intrinsic: broadcast `value` across every element of this tile
+     * — the zero/initial accumulator (`OpCompositeConstruct` of a single scalar).
+     */
+    public void splat(T value) {
+    }
+
+    /**
+     * Device-only intrinsic: fused multiply-add this accumulator tile in place —
+     * `this = a * b + this` — one matrix-core MMA. `a` is the MatrixA operand
+     * (Use 0), `b` the MatrixB operand (Use 1); `this` is the accumulator (Use 2).
+     */
+    public void mma(CooperativeMatrix<T, Rows, Cols, 0> a,
+                    CooperativeMatrix<T, Rows, Cols, 1> b) {
+    }
+
+    /**
+     * Device-only intrinsic: store this tile to `dst` (a global Buffer<T>) with
+     * the given `layout` and `stride`.
+     */
+    public void store(Buffer<T> dst, uint32 layout, uint32 stride) {
+    }
+}

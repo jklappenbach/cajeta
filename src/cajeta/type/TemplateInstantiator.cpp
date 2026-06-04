@@ -196,6 +196,27 @@ namespace cajeta {
         // demand a class/interface relationship.
         for (size_t i = 0; i < typeParameters.size(); ++i) {
             const auto& param = typeParameters[i];
+            // Parameter-kind check. A non-type (integer) parameter
+            // (`<..., uint32 N>`) requires a compile-time integer-constant
+            // argument (a CajetaConstantType, tagged CONSTANT_FLAG); a type
+            // parameter must NOT receive one. This is what lets
+            // `CooperativeMatrix<T, uint32 Rows, ...>` carry its shape in the
+            // type. Non-type params have empty bounds, so they fall through the
+            // TPL-6 bound check below — this is their only constraint.
+            bool argIsConst = args[i] && (args[i]->getTypeFlags() & CONSTANT_FLAG);
+            if (param.isNonType && !argIsConst) {
+                throw Exception(
+                    "template " + qName->toCanonical() + ": non-type parameter '"
+                        + param.name + "' (" + param.nonTypePrimitive
+                        + ") requires an integer-constant argument",
+                    "CAJETA_ERROR_TYPE_PARAMETER_KIND");
+            }
+            if (!param.isNonType && argIsConst) {
+                throw Exception(
+                    "template " + qName->toCanonical() + ": type parameter '"
+                        + param.name + "' cannot take an integer-constant argument",
+                    "CAJETA_ERROR_TYPE_PARAMETER_KIND");
+            }
             if (param.bounds.empty()) continue;
             // Wildcard args satisfy any bound by construction —
             // the unbounded `?` stands for some unknown T-that-fits;

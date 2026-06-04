@@ -47,7 +47,9 @@ TEST(CompilerTests, canThrowOnInvalidInput) {
 // and cajeta.xpu.core.Sampler to that prelude (+2 structures).
 // 2026-06-03: bumped 98 → 100 — cajeta-gpu Part C inc 3a added
 // cajeta.xpu.core.AccelerationStructure and cajeta.xpu.core.RayQuery (+2).
-static constexpr size_t STDLIB_STRUCTURE_COUNT = 100;
+// 2026-06-04: bumped 100 → 101 — cajeta-gpu Part C CM4 added
+// cajeta.xpu.core.CooperativeMatrix (+1).
+static constexpr size_t STDLIB_STRUCTURE_COUNT = 101;
 
 TEST(CompilerTests, canParseOnValidShortPackage) {
     string inputPath = CAJETA_TEST_ROOT + string("/compile/code/src/cajeta/Test.cajeta");
