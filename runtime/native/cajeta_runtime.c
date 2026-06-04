@@ -4576,8 +4576,17 @@ static int cajeta_xpu_vulkan_init_locked(void) {
         pthread_mutexattr_destroy(&attr);
     }
 
-    const char* libnames[2] = {"libvulkan.so.1", "libvulkan.so"};
-    for (int i = 0; i < 2 && !g_xpu_vk.lib; ++i)
+#if defined(__APPLE__)
+    // MV1: macOS has no native Vulkan ICD — load MoltenVK (Vulkan->Metal). The
+    // LunarG SDK installs libvulkan.1.dylib; a bare MoltenVK install ships
+    // libMoltenVK.dylib. (On-device validation is gated on Apple hardware.)
+    const char* libnames[] = {"libvulkan.1.dylib", "libvulkan.dylib",
+                              "libMoltenVK.dylib"};
+#else
+    const char* libnames[] = {"libvulkan.so.1", "libvulkan.so"};
+#endif
+    const int nlibs = (int) (sizeof(libnames) / sizeof(libnames[0]));
+    for (int i = 0; i < nlibs && !g_xpu_vk.lib; ++i)
         g_xpu_vk.lib = dlopen(libnames[i], RTLD_NOW | RTLD_LOCAL);
     if (!g_xpu_vk.lib) return 0;
     g_xpu_vk.getInstanceProcAddr =

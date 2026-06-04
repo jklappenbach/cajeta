@@ -1399,6 +1399,13 @@ private:
                 llvm::ConstantInt::get(i32, name == "committedType" ? 1 : 0);
             return target.rayQueryIntersectionType(builder, mod, rqPtr, which);
         }
+        if (name == "candidatePrimitiveIndex") {
+            if (!args.empty())
+                unsupported("RayQuery." + name + " takes no arguments");
+            // Candidate intersection (selector 0) primitive index.
+            return target.rayQueryIntersectionPrimitiveIndex(
+                builder, mod, rqPtr, llvm::ConstantInt::get(i32, 0));
+        }
         unsupported("RayQuery." + name + "()");
     }
 
@@ -1863,6 +1870,12 @@ llvm::Value* LoweringTarget::rayQueryProceed(llvm::IRBuilderBase& /*b*/,
 }
 
 llvm::Value* LoweringTarget::rayQueryIntersectionType(
+    llvm::IRBuilderBase& /*b*/, llvm::Module& /*m*/, llvm::Value* /*rqPtr*/,
+    llvm::Value* /*intersection*/) {
+    throw rayQueryUnsupported(name());
+}
+
+llvm::Value* LoweringTarget::rayQueryIntersectionPrimitiveIndex(
     llvm::IRBuilderBase& /*b*/, llvm::Module& /*m*/, llvm::Value* /*rqPtr*/,
     llvm::Value* /*intersection*/) {
     throw rayQueryUnsupported(name());

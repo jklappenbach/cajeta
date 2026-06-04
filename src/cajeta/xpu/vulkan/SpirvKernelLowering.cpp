@@ -298,6 +298,14 @@ public:
             &m, llvm::Intrinsic::spv_ray_query_get_intersection_type);
         return b.CreateCall(f, {rqPtr, intersection}, "rq.type");
     }
+    // OpRayQueryGetIntersectionPrimitiveIndexKHR rq, intersection — returns i32.
+    llvm::Value* rayQueryIntersectionPrimitiveIndex(
+            llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* rqPtr,
+            llvm::Value* intersection) override {
+        llvm::Function* f = llvm::Intrinsic::getOrInsertDeclaration(
+            &m, llvm::Intrinsic::spv_ray_query_get_intersection_primitive_index);
+        return b.CreateCall(f, {rqPtr, intersection}, "rq.primidx");
+    }
 #else
     // Stock-LLVM build: the ray-query ops need the fork intrinsics. Unnamed params
     // (no unused-arg warnings); each throws the clean fork-toolchain diagnostic.
@@ -312,6 +320,10 @@ public:
     }
     llvm::Value* rayQueryIntersectionType(llvm::IRBuilderBase&, llvm::Module&,
                                           llvm::Value*, llvm::Value*) override {
+        rayQueryNoForkToolchain();
+    }
+    llvm::Value* rayQueryIntersectionPrimitiveIndex(llvm::IRBuilderBase&,
+            llvm::Module&, llvm::Value*, llvm::Value*) override {
         rayQueryNoForkToolchain();
     }
 #endif

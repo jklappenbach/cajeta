@@ -482,6 +482,81 @@ TEST(XpuVulkanEmitTests, lowersRayQueryToSpirv) {
     }
 }
 
+// candidatePrimitiveIndex() (Prism P1.1 exact-L2 refinement) lowers to
+// llvm.spv.ray.query.get.intersection.primitive.index ->
+// OpRayQueryGetIntersectionPrimitiveIndexKHR (opcode 4487, intersection=Candidate).
+// This is a GPU-FREE check that the new op is structurally spirv-val-clean,
+// independent of any one driver's shader compiler accepting it at pipeline build.
+TEST(XpuVulkanEmitTests, lowersRayQueryPrimitiveIndexToSpirv) {
+    auto src =
+        "package test;\n"
+        "import cajeta.xpu.core.Buffer;\n"
+        "import cajeta.xpu.core.Thread;\n"
+        "import cajeta.xpu.core.AccelerationStructure;\n"
+        "import cajeta.xpu.core.RayQuery;\n"
+        "public class M {\n"
+        "    @Kernel\n"
+        "    public static void trace(AccelerationStructure scene,\n"
+        "                             Buffer<float32> dp,\n"
+        "                             Buffer<uint32> out, uint32 n) {\n"
+        "        uint32 i = Thread.globalIdX();\n"
+        "        if (i < n) {\n"
+        "            RayQuery rq;\n"
+        "            rq.initialize(scene, 0, 255,\n"
+        "                          0.0f, 0.0f, 0.0f, 0.0f,\n"
+        "                          0.0f, 0.0f, 1.0f, 1000.0f);\n"
+        "            float32 acc = 0.0f;\n"
+        "            while (rq.proceed()) {\n"
+        "                if (rq.candidateType() == 1) {\n"
+        "                    uint32 pi = rq.candidatePrimitiveIndex();\n"
+        "                    acc = acc + dp[pi];\n"
+        "                }\n"
+        "            }\n"
+        "            out[i] = (uint32) acc;\n"
+        "        }\n"
+        "    }\n"
+        "}\n";
+    Compiler compiler;
+    auto module = compileForInspection(compiler, src, "test.M");
+    auto k = findMethod(module->getStructures()["test.M"], "trace");
+    ASSERT_NE(k, nullptr);
+
+    auto tmIr = createSpirvTargetMachine("vulkan1.3");
+    ASSERT_NE(tmIr, nullptr);
+    llvm::LLVMContext irCtx;
+    llvm::Module irModule("xpu_rq_primidx_ir", irCtx);
+    configureDeviceModule(irModule, *tmIr);
+    ASSERT_NE(lowerKernel(k, irModule), nullptr);
+    std::string ir = printModule(irModule);
+    EXPECT_NE(ir.find("llvm.spv.ray.query.get.intersection.primitive.index"),
+              std::string::npos) << ir;
+
+    auto tmText = createSpirvTargetMachine("vulkan1.3");
+    ASSERT_NE(tmText, nullptr);
+    llvm::LLVMContext textCtx;
+    llvm::Module textModule("xpu_rq_primidx_text", textCtx);
+    configureDeviceModule(textModule, *tmText);
+    lowerKernel(k, textModule);
+    std::string text = emitSpirvText(textModule, *tmText);
+    ASSERT_FALSE(text.empty());
+    EXPECT_NE(text.find("OpRayQueryGetIntersectionPrimitiveIndexKHR"),
+              std::string::npos) << text;
+
+    auto tmBin = createSpirvTargetMachine("vulkan1.3");
+    ASSERT_NE(tmBin, nullptr);
+    llvm::LLVMContext binCtx;
+    llvm::Module binModule("xpu_rq_primidx_bin", binCtx);
+    configureDeviceModule(binModule, *tmBin);
+    lowerKernel(k, binModule);
+    std::vector<uint8_t> spirv = emitSpirv(binModule, *tmBin);
+    ASSERT_FALSE(spirv.empty());
+    if (auto valid = validateSpirv(spirv)) {
+        EXPECT_TRUE(*valid) << "spirv-val rejected the primitive-index module";
+    } else {
+        GTEST_SUCCEED() << "spirv-val not installed; skipped binary validation";
+    }
+}
+
 // A workgroup-shared kernel with a barrier emits a SPIR-V module that is
 // strictly Vulkan-VALID — proving the barrier post-pass (SpirvBackend's
 // fixupControlBarriers) rewrites LLVM 22's forbidden SequentiallyConsistent
