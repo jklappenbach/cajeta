@@ -21,14 +21,14 @@ import cajeta.xpu.core.Buffer;
  * per-invocation registers* (the matrix-core register file), owned cooperatively
  * by all invocations. You never take its address. Use it inside an `@Kernel`:
  *
- *     CooperativeMatrix<float32,16,16,0> a;
- *     a.load(bufA, 0u, 16u);                 // layout 0 = row-major, stride 16
- *     CooperativeMatrix<float32,16,16,1> b;
- *     b.load(bufB, 0u, 16u);
+ *     CooperativeMatrix<float16,16,16,0> a;
+ *     a.load(bufA, 0u, 0u, 16u);             // offset 0, layout 0 = row-major, stride 16
+ *     CooperativeMatrix<float16,16,16,1> b;
+ *     b.load(bufB, 0u, 0u, 16u);
  *     CooperativeMatrix<float32,16,16,2> c;
  *     c.splat(0.0f);                         // zero accumulator
  *     c.mma(a, b);                           // c = a * b + c  (one tile FMA)
- *     c.store(bufC, 0u, 16u);
+ *     c.store(bufC, 0u, 0u, 16u);
  *
  * `load`/`store` move the tile to/from a global `Buffer<T>` (a StorageBuffer);
  * the matrix VALUE never leaves the register file. (Loading from a
@@ -61,10 +61,13 @@ public final class CooperativeMatrix<T, uint32 Rows, uint32 Cols, uint32 Use> {
 
     /**
      * Device-only intrinsic: load this tile from `src` (a global Buffer<T>),
-     * reading `Rows`x`Cols` elements with the given `layout` (0 = row-major,
-     * 1 = column-major) and row/column `stride` (in elements).
+     * starting at element `offset` and reading a `Rows`x`Cols` tile with the
+     * given `layout` (0 = row-major, 1 = column-major) and row/column `stride`
+     * (in elements). `offset` selects a sub-tile of a larger matrix: for a
+     * row-major M×K matrix, tile (ti,tj) starts at `(ti*Rows)*K + tj*Cols` with
+     * stride `K` — the addressing a tiled GEMM walks over.
      */
-    public void load(Buffer<T> src, uint32 layout, uint32 stride) {
+    public void load(Buffer<T> src, uint32 offset, uint32 layout, uint32 stride) {
     }
 
     /**
@@ -84,9 +87,10 @@ public final class CooperativeMatrix<T, uint32 Rows, uint32 Cols, uint32 Use> {
     }
 
     /**
-     * Device-only intrinsic: store this tile to `dst` (a global Buffer<T>) with
-     * the given `layout` and `stride`.
+     * Device-only intrinsic: store this tile to `dst` (a global Buffer<T>),
+     * starting at element `offset`, with the given `layout` and `stride` — the
+     * write-side counterpart of `load`'s sub-tile addressing.
      */
-    public void store(Buffer<T> dst, uint32 layout, uint32 stride) {
+    public void store(Buffer<T> dst, uint32 offset, uint32 layout, uint32 stride) {
     }
 }

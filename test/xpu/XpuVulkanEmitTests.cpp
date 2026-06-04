@@ -574,13 +574,13 @@ TEST(XpuVulkanEmitTests, lowersCooperativeMatrixToSpirv) {
         "    public static void matmul(Buffer<float32> a, Buffer<float32> b,\n"
         "                              Buffer<float32> c) {\n"
         "        CooperativeMatrix<float32,16,16,0> ma;\n"
-        "        ma.load(a, 0, 16);\n"
+        "        ma.load(a, 0, 0, 16);\n"
         "        CooperativeMatrix<float32,16,16,1> mb;\n"
-        "        mb.load(b, 0, 16);\n"
+        "        mb.load(b, 0, 0, 16);\n"
         "        CooperativeMatrix<float32,16,16,2> mc;\n"
         "        mc.splat(0.0f);\n"
         "        mc.mma(ma, mb);\n"
-        "        mc.store(c, 0, 16);\n"
+        "        mc.store(c, 0, 0, 16);\n"
         "    }\n"
         "}\n";
     Compiler compiler;
@@ -649,13 +649,13 @@ TEST(XpuVulkanEmitTests, lowersMixedPrecisionCooperativeMatrixToSpirv) {
         "    public static void matmul(Buffer<float16> a, Buffer<float16> b,\n"
         "                              Buffer<float32> c) {\n"
         "        CooperativeMatrix<float16,16,16,0> ma;\n"
-        "        ma.load(a, 0, 16);\n"
+        "        ma.load(a, 0, 0, 16);\n"
         "        CooperativeMatrix<float16,16,16,1> mb;\n"
-        "        mb.load(b, 0, 16);\n"
+        "        mb.load(b, 0, 0, 16);\n"
         "        CooperativeMatrix<float32,16,16,2> mc;\n"
         "        mc.splat(0.0f);\n"
         "        mc.mma(ma, mb);\n"
-        "        mc.store(c, 0, 16);\n"
+        "        mc.store(c, 0, 0, 16);\n"
         "    }\n"
         "}\n";
     Compiler compiler;

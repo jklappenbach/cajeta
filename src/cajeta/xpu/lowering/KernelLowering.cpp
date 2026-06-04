@@ -1467,18 +1467,21 @@ private:
     }
 
     // Resolve a CooperativeMatrix.load/store Buffer argument (a bare identifier
-    // naming a Buffer kernel param) to its element-0 device pointer — the base
-    // the cooperative-matrix load/store reads/writes Rows*Cols elements from.
-    llvm::Value* resolveBufferBaseArg(const ExpressionPtr& e) {
+    // naming a Buffer kernel param) to a device pointer at element `offset` —
+    // the base the cooperative-matrix load/store reads/writes Rows*Cols elements
+    // from. `offset` selects a sub-tile of a larger row-major matrix (a tiled
+    // GEMM walks it over the M/N/K tiles); 0 is the whole-buffer base.
+    llvm::Value* resolveBufferTileArg(const ExpressionPtr& e,
+                                      llvm::Value* offset) {
         if (auto id = std::dynamic_pointer_cast<IdentifierExpression>(e)) {
             auto bb = bufferBases.find(id->getTextValue());
             if (bb != bufferBases.end()) {
                 auto be = bufferElems.find(id->getTextValue());
                 llvm::Type* elemTy = be != bufferElems.end() ? be->second : nullptr;
-                llvm::Value* zero =
-                    llvm::ConstantInt::get(llvm::Type::getInt64Ty(ctx), 0);
+                llvm::Value* idx = builder.CreateZExtOrTrunc(
+                    offset, llvm::Type::getInt64Ty(ctx), "cm.off");
                 return target.bufferElementPtr(builder, mod, bb->second, elemTy,
-                                               zero);
+                                               idx);
             }
         }
         unsupported("CooperativeMatrix load/store: argument must be a Buffer "
@@ -1506,12 +1509,13 @@ private:
         CoopMatrixSlot slot = coopMatrixSlots[recv];
         llvm::Type* i32 = llvm::Type::getInt32Ty(ctx);
         if (name == "load" || name == "store") {
-            if (args.size() != 3)
+            if (args.size() != 4)
                 unsupported("CooperativeMatrix." + name +
-                            " expects (Buffer, layout, stride)");
-            llvm::Value* ptr = resolveBufferBaseArg(args[0].expression);
-            llvm::Value* layout = coerceTo(lowerExpr(args[1].expression), i32);
-            llvm::Value* stride = coerceTo(lowerExpr(args[2].expression), i32);
+                            " expects (Buffer, offset, layout, stride)");
+            llvm::Value* offset = lowerExpr(args[1].expression);
+            llvm::Value* ptr = resolveBufferTileArg(args[0].expression, offset);
+            llvm::Value* layout = coerceTo(lowerExpr(args[2].expression), i32);
+            llvm::Value* stride = coerceTo(lowerExpr(args[3].expression), i32);
             if (name == "load") {
                 llvm::Value* v = target.coopMatrixLoad(builder, mod, ptr, layout,
                                                        stride, slot.matrixType);
