@@ -50,6 +50,15 @@ namespace vulkan {
         // logical device.
         static bool rayQueryAvailable();
 
+        // True iff the first compute-capable physical device supports the
+        // cooperative-matrix path AND exposes the specific config CM5 runs: a
+        // 16x16x16, Subgroup-scope, f16/f16 -> f32 multiply-add (A=B=float16,
+        // C=Result=float32). Gates the cooperative-matrix exec test
+        // (cajeta-gpu CM5): a plain compute device, or one whose WMMA configs
+        // don't include f16->f32, returns false. Self-contained: enumerates the
+        // VkCooperativeMatrixPropertiesKHR list without creating a logical device.
+        static bool coopMatrixAvailable();
+
         VulkanDriver() = default;
         ~VulkanDriver();
         VulkanDriver(const VulkanDriver&) = delete;

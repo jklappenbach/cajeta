@@ -629,6 +629,82 @@ TEST(XpuVulkanEmitTests, lowersCooperativeMatrixToSpirv) {
     }
 }
 
+// CM5b — the device-realistic MIXED-PRECISION config: A and B are float16
+// (IEEE half) tiles, the accumulator C is float32. This is the only float
+// cooperative-matrix config the RADV STRIX_HALO WMMA path actually supports
+// (f16/f16 -> f32, M=N=K=16) and the regime SPELA/Prism matmul runs in. The
+// CooperativeMatrix surface needs no change: the device lowerer keys each tile
+// off its own declared element type, and every seam (load/muladd/store) is
+// independently overloaded, so a half-input/float-accumulate mma lowers and
+// validates. Proves the emit half: OpTypeFloat 16 element (Float16 capability) +
+// f16/f16->f32 OpCooperativeMatrixMulAddKHR, spirv-val-clean. CM5c exec-checks
+// the same config on the real device.
+TEST(XpuVulkanEmitTests, lowersMixedPrecisionCooperativeMatrixToSpirv) {
+    auto src =
+        "package test;\n"
+        "import cajeta.xpu.core.Buffer;\n"
+        "import cajeta.xpu.core.CooperativeMatrix;\n"
+        "public class M {\n"
+        "    @Kernel\n"
+        "    public static void matmul(Buffer<float16> a, Buffer<float16> b,\n"
+        "                              Buffer<float32> c) {\n"
+        "        CooperativeMatrix<float16,16,16,0> ma;\n"
+        "        ma.load(a, 0, 16);\n"
+        "        CooperativeMatrix<float16,16,16,1> mb;\n"
+        "        mb.load(b, 0, 16);\n"
+        "        CooperativeMatrix<float32,16,16,2> mc;\n"
+        "        mc.splat(0.0f);\n"
+        "        mc.mma(ma, mb);\n"
+        "        mc.store(c, 0, 16);\n"
+        "    }\n"
+        "}\n";
+    Compiler compiler;
+    auto module = compileForInspection(compiler, src, "test.M");
+    auto k = findMethod(module->getStructures()["test.M"], "matmul");
+    ASSERT_NE(k, nullptr);
+
+    auto tmIr = createSpirvTargetMachine("vulkan1.3");
+    ASSERT_NE(tmIr, nullptr);
+    llvm::LLVMContext irCtx;
+    llvm::Module irModule("xpu_coopmat_mixed_ir", irCtx);
+    configureDeviceModule(irModule, *tmIr);
+    ASSERT_NE(lowerKernel(k, irModule), nullptr);
+    std::string ir = printModule(irModule);
+    // A/B loads are overloaded on the half matrix type; the muladd result is the
+    // float accumulator — the two element types coexist in one mma.
+    EXPECT_NE(ir.find("llvm.spv.cooperative.matrix.load"), std::string::npos) << ir;
+    EXPECT_NE(ir.find("llvm.spv.cooperative.matrix.muladd"), std::string::npos) << ir;
+    EXPECT_NE(ir.find("half"), std::string::npos) << ir;
+
+    auto tmText = createSpirvTargetMachine("vulkan1.3");
+    ASSERT_NE(tmText, nullptr);
+    llvm::LLVMContext textCtx;
+    llvm::Module textModule("xpu_coopmat_mixed_text", textCtx);
+    configureDeviceModule(textModule, *tmText);
+    lowerKernel(k, textModule);
+    std::string text = emitSpirvText(textModule, *tmText);
+    ASSERT_FALSE(text.empty());
+    EXPECT_NE(text.find("OpCapability Float16"), std::string::npos) << text;
+    EXPECT_NE(text.find("OpCapability CooperativeMatrixKHR"), std::string::npos) << text;
+    EXPECT_NE(text.find("OpMemoryModel Logical Vulkan"), std::string::npos) << text;
+    EXPECT_NE(text.find("OpTypeFloat 16"), std::string::npos) << text;
+    EXPECT_NE(text.find("OpCooperativeMatrixMulAddKHR"), std::string::npos) << text;
+
+    auto tmBin = createSpirvTargetMachine("vulkan1.3");
+    ASSERT_NE(tmBin, nullptr);
+    llvm::LLVMContext binCtx;
+    llvm::Module binModule("xpu_coopmat_mixed_bin", binCtx);
+    configureDeviceModule(binModule, *tmBin);
+    lowerKernel(k, binModule);
+    std::vector<uint8_t> spirv = emitSpirv(binModule, *tmBin);
+    ASSERT_FALSE(spirv.empty());
+    if (auto valid = validateSpirv(spirv)) {
+        EXPECT_TRUE(*valid) << "spirv-val rejected the mixed-precision cooperative-matrix module";
+    } else {
+        GTEST_SUCCEED() << "spirv-val not installed; skipped binary validation";
+    }
+}
+
 // A workgroup-shared kernel with a barrier emits a SPIR-V module that is
 // strictly Vulkan-VALID — proving the barrier post-pass (SpirvBackend's
 // fixupControlBarriers) rewrites LLVM 22's forbidden SequentiallyConsistent

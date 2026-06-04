@@ -1,7 +1,7 @@
 //
 // Floating-point work tests. Covers:
 //  - fp32 (float32) / fp64 (float64) arithmetic round-trips
-//  - fp16 (BFloat in the current implementation) declaration + storage
+//  - fp16 (IEEE-754 binary16, LLVM half) declaration + storage
 //  - fp8 variants stored as i8 — declare, assign, load round-trip
 //  - fp4 (i4 storage) declare + load round-trip
 //
@@ -89,10 +89,10 @@ TEST(FpTests, fpComparison) {
     EXPECT_TRUE(fn());
 }
 
-// --- fp16 (bfloat backing) storage --------------------------------------------
+// --- fp16 (IEEE half backing) storage -----------------------------------------
 
 TEST(FpTests, float16DeclareAndStore) {
-    // float16 currently maps to LLVM's BFloat. We can declare it and store a value;
+    // float16 maps to LLVM's IEEE half. We can declare it and store a value;
     // we can't easily return one to the C ABI directly, so cast to float32 before
     // returning so we exercise the storage path.
     auto jit = CajetaJit::compile(makeSource("float32",
