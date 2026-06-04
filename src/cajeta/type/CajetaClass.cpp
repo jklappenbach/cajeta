@@ -3778,8 +3778,19 @@ namespace cajeta {
         // *current* class; the parent walk below picks up inherited
         // methods via recursion, which itself triggers this fallback at
         // each level.
+        // Relax a bare `null` literal (resolved to the primitive `pointer`)
+        // to match any reference-typed formal — for CONSTRUCTORS and ordinary
+        // named methods alike, so `Box.take(null)` (take(String)) resolves
+        // instead of failing to a null codegen. OPERATOR methods stay strict:
+        // `String s == null` must keep its direct ptr-icmp lowering rather than
+        // resolving up to `Object::operator==(Object, Object)`, whose body
+        // dereferences the receiver via vtable lookup and SIGSEGVs on null
+        // (the original gating reason — see subtypeDistance's relaxNullToRef
+        // note). The distance is 1000, so any non-null candidate still wins.
+        bool relaxNull = isConstructor
+            || methodName.rfind("operator", 0) != 0;
         if (MethodPtr m = findSubtypeMatch(*genericMap, methodName, parameters,
-                /*relaxNullToRef=*/isConstructor)) {
+                /*relaxNullToRef=*/relaxNull)) {
             return m;
         }
 

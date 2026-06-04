@@ -72,3 +72,68 @@ TEST(NullHandlingTests, isEmptyOnNullIsTrue) {
         "if (s.isEmpty()) return 1;\n"
         "return 0;"), 1);
 }
+
+// --- bare null literal as a call argument (compiler-gap repros) ----------
+// A bare `null` passed directly in arg position (vs assigned to a typed local
+// first) must lower to a typed null matching the parameter. These pin the
+// "bare-null-literal-argument lowering" gap.
+
+namespace {
+int32_t runFull(const std::string& src) {
+    auto jit = CajetaJit::compile(src, "test.N");
+    auto fn = jit->lookup<int32_t (*)()>("run");
+    return fn();
+}
+} // namespace
+
+// class-ref parameter receiving a bare null
+TEST(NullHandlingTests, bareNullAsClassRefArg) {
+    EXPECT_EQ(runFull(
+        "package test;\n"
+        "public final class Box {\n"
+        "    public static int32 take(String s) {\n"
+        "        if (s == null) return 7;\n"
+        "        return 0;\n"
+        "    }\n"
+        "}\n"
+        "public final class N {\n"
+        "    public static int32 run() {\n"
+        "        return Box.take(null);\n"
+        "    }\n"
+        "}\n"), 7);
+}
+
+// `pointer`-typed parameter receiving a bare null (the Reactor.register case)
+TEST(NullHandlingTests, bareNullAsPointerArg) {
+    EXPECT_EQ(runFull(
+        "package test;\n"
+        "public final class Box {\n"
+        "    public static int32 take(pointer p) {\n"
+        "        return 5;\n"
+        "    }\n"
+        "}\n"
+        "public final class N {\n"
+        "    public static int32 run() {\n"
+        "        return Box.take(null);\n"
+        "    }\n"
+        "}\n"), 5);
+}
+
+// instance-method class-ref parameter receiving a bare null
+TEST(NullHandlingTests, bareNullAsInstanceMethodArg) {
+    EXPECT_EQ(runFull(
+        "package test;\n"
+        "public final class Box {\n"
+        "    public Box() { }\n"
+        "    public int32 take(String s) {\n"
+        "        if (s == null) return 9;\n"
+        "        return 0;\n"
+        "    }\n"
+        "}\n"
+        "public final class N {\n"
+        "    public static int32 run() {\n"
+        "        Box b = new Box();\n"
+        "        return b.take(null);\n"
+        "    }\n"
+        "}\n"), 9);
+}
