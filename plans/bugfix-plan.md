@@ -110,8 +110,8 @@ reference).
   Step-10 redirect misses GEP/bitcast/non-job users; `eraseFromParent` with live users → dangling IR. *Fix:* assert
   `use_empty()`/RAUW; handle GEP users; or `unsupported()` if a user is outside a job block.
 - [x] **L1 — malformed/out-of-range kernel literal crashes the compiler** (`std::out_of_range`) instead of XPU-N01 — `KernelLowering.cpp:811-820`. *Fix: parse via APInt/APFloat status, or `unsupported(...)`.* (folds in with H13–16)
-- [ ] **L2 — kernel `Math.min/max` on unsigned uses `smin/smax`** — `KernelLowering.cpp:1448-1459`. *Fix: pick `umin/umax` via `exprSigned`.*
-- [ ] **L3 — `Vector<T,0>` reaches `FixedVectorType::get(elem,0)` → abort/degenerate** — `KernelLowering.cpp:939-961`. *Fix: reject `lanes==0`.*
+- [x] **L2 — FIXED 2026-06-03: kernel `Math.min/max` on unsigned uses `smin/smax`** — `KernelLowering.cpp:1448-1459`. *Fix: pick `umin/umax` via `exprSigned`.*
+- [x] **L3 — FIXED 2026-06-03: `Vector<T,0>` reaches `FixedVectorType::get(elem,0)` → abort/degenerate** — `KernelLowering.cpp:939-961`. *Fix: reject `lanes==0`.*
 
 ## Wave 4 — GPU-driver robustness
 

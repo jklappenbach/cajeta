@@ -107,6 +107,12 @@ llvm::Type* deviceVectorType(const CajetaTypePtr& t, llvm::LLVMContext& ctx) {
     if (!vec) return nullptr;
     llvm::Type* elem = deviceScalarType(vec->getElementType(), ctx);
     if (!elem) return nullptr;
+    // L3: reject a zero-lane vector cleanly — FixedVectorType::get(elem, 0)
+    // asserts/aborts in a debug LLVM and yields degenerate IR otherwise.
+    if (vec->getLanes() == 0)
+        throw cajeta::Exception(
+            "XPU kernel lowering: Vector<T, 0> has no lanes — N must be > 0",
+            "XPU-N01");
     return llvm::FixedVectorType::get(elem, vec->getLanes());
 }
 
@@ -1493,15 +1499,23 @@ private:
                     llvm::Intrinsic::getOrInsertDeclaration(&mod, id, {ft});
                 return builder.CreateCall(fn, {a, b});
             }
-            // Integer min/max: unify to the wider operand width, signed.
+            // Integer min/max: unify to the wider operand width, then choose
+            // signed vs unsigned min/max + the matching extension by the operands'
+            // signedness — smin/smax on unsigned values is wrong, e.g.
+            // umin(0xFFFFFFFF, 1) must be 1, not 0xFFFFFFFF (L2).
             llvm::Type* it =
                 a->getType()->getIntegerBitWidth()
                     >= b->getType()->getIntegerBitWidth()
                         ? a->getType() : b->getType();
-            if (a->getType() != it) a = builder.CreateSExt(a, it);
-            if (b->getType() != it) b = builder.CreateSExt(b, it);
+            bool signedOp = exprSigned(args[0].expression) ||
+                            exprSigned(args[1].expression);
+            if (a->getType() != it)
+                a = signedOp ? builder.CreateSExt(a, it) : builder.CreateZExt(a, it);
+            if (b->getType() != it)
+                b = signedOp ? builder.CreateSExt(b, it) : builder.CreateZExt(b, it);
             llvm::Intrinsic::ID id = name == "max"
-                ? llvm::Intrinsic::smax : llvm::Intrinsic::smin;
+                ? (signedOp ? llvm::Intrinsic::smax : llvm::Intrinsic::umax)
+                : (signedOp ? llvm::Intrinsic::smin : llvm::Intrinsic::umin);
             llvm::Function* fn =
                 llvm::Intrinsic::getOrInsertDeclaration(&mod, id, {it});
             return builder.CreateCall(fn, {a, b});
