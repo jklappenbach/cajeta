@@ -123,7 +123,13 @@ bool isKernelArgAdmissible(const CajetaTypePtr& type) {
         if (isSamplerCanonical(canonical)) return true;
         if (isAccelStructCanonical(canonical)) return true;
         if (isPodStruct(klass)) return true;
-        if (implementsKernelArg(klass)) return true;
+        // A user type marked `implements KernelArg` is admissible only if it is
+        // ALSO a by-value POD (all-primitive fields) — that is the only shape the
+        // launch-site marshaller and the device deviceStructInfo can lower. A
+        // non-POD KernelArg would be admitted here but then silently dropped
+        // (the device lowerer throws XPU-N01, which the registration swallows).
+        // Rejecting it surfaces a clean diagnostic instead. (M11)
+        if (implementsKernelArg(klass) && isPodStruct(klass)) return true;
     }
 
     return false;

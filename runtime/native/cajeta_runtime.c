@@ -4804,7 +4804,11 @@ static int64_t cajeta_xpu_vk_alloc(uint64_t bytes) {
         g_xpu_vk.vkDestroyBuffer(g_xpu_vk.device, buf, NULL);
         return 0;
     }
-    g_xpu_vk.vkBindBufferMemory(g_xpu_vk.device, buf, mem, 0);
+    if (g_xpu_vk.vkBindBufferMemory(g_xpu_vk.device, buf, mem, 0) != VK_SUCCESS) {
+        g_xpu_vk.vkFreeMemory(g_xpu_vk.device, mem, NULL);   // L5: don't leave a
+        g_xpu_vk.vkDestroyBuffer(g_xpu_vk.device, buf, NULL);// live unbacked slot
+        return 0;
+    }
     void* mapped = NULL;
     if (g_xpu_vk.vkMapMemory(g_xpu_vk.device, mem, 0, VK_WHOLE_SIZE, 0, &mapped)
             != VK_SUCCESS) {
@@ -4927,7 +4931,11 @@ static int64_t cajeta_xpu_vk_tex_alloc(uint32_t w, uint32_t h) {
             != VK_SUCCESS) {
         g_xpu_vk.vkDestroyImage(g_xpu_vk.device, img, NULL); return 0;
     }
-    g_xpu_vk.vkBindImageMemory(g_xpu_vk.device, img, mem, 0);
+    if (g_xpu_vk.vkBindImageMemory(g_xpu_vk.device, img, mem, 0) != VK_SUCCESS) {
+        g_xpu_vk.vkFreeMemory(g_xpu_vk.device, mem, NULL);   // L5
+        g_xpu_vk.vkDestroyImage(g_xpu_vk.device, img, NULL);
+        return 0;
+    }
     VkImageViewCreateInfo vci;
     memset(&vci, 0, sizeof(vci));
     vci.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
@@ -4991,8 +4999,10 @@ static void cajeta_xpu_vk_tex_upload(int64_t handle, const void* data,
     cbai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
     cbai.commandBufferCount = 1;
     VkCommandBuffer cmd = VK_NULL_HANDLE;
+    int texUploaded = 0;
     if (g_xpu_vk.vkAllocateCommandBuffers(g_xpu_vk.device, &cbai, &cmd)
             == VK_SUCCESS && sb) {
+        texUploaded = 1;
         VkCommandBufferBeginInfo cbbi;
         memset(&cbbi, 0, sizeof(cbbi));
         cbbi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
@@ -5048,6 +5058,13 @@ static void cajeta_xpu_vk_tex_upload(int64_t handle, const void* data,
     }
     pthread_mutex_unlock(&g_xpu_vk_submit_mu);
     cajeta_xpu_vk_free(staging);
+    // M7: if the upload command buffer couldn't be allocated, the image stays in
+    // UNDEFINED layout but a later launch binds it as SHADER_READ_ONLY_OPTIMAL —
+    // a validation error / undefined texels. Surface it rather than fail silently.
+    if (!texUploaded)
+        fprintf(stderr, "cajeta.xpu: texture upload could not record/submit "
+                "(handle %lld); the image is left uninitialized\n",
+                (long long) handle);
 }
 
 static void cajeta_xpu_vk_tex_free(int64_t handle) {
@@ -5162,7 +5179,11 @@ static int cajeta_xpu_vk_make_addr_buffer(uint64_t bytes, VkBufferUsageFlags usa
         g_xpu_vk.vkDestroyBuffer(g_xpu_vk.device, buf, NULL);
         return 0;
     }
-    g_xpu_vk.vkBindBufferMemory(g_xpu_vk.device, buf, mem, 0);
+    if (g_xpu_vk.vkBindBufferMemory(g_xpu_vk.device, buf, mem, 0) != VK_SUCCESS) {
+        g_xpu_vk.vkFreeMemory(g_xpu_vk.device, mem, NULL);   // L5
+        g_xpu_vk.vkDestroyBuffer(g_xpu_vk.device, buf, NULL);
+        return 0;
+    }
     if (outMapped) {
         *outMapped = NULL;
         if (g_xpu_vk.vkMapMemory(g_xpu_vk.device, mem, 0, VK_WHOLE_SIZE, 0,
