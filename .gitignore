@@ -3,6 +3,7 @@
 .ninja_deps
 .ninja_log
 build/
+build-prebuilt/
 gen/
 cajeta.cbp
 Makefile
