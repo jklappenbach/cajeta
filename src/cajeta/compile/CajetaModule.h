@@ -190,6 +190,9 @@ namespace cajeta {
         // when an enclosing try would catch the throw.
         std::vector<std::vector<CajetaTypePtr>> tryCatchStack;
 
+        // See pushTryFinally — active try/catch exception frames a return unwinds.
+        std::vector<std::shared_ptr<void>> tryFinallyStack;
+
         // Type-parameter substitution stack for template instantiation. Each
         // frame is a map from parameter name (T, K, V, ...) to the concrete
         // CajetaTypePtr it resolves to during the current instantiation walk.
@@ -511,6 +514,24 @@ namespace cajeta {
         }
         const std::vector<std::vector<CajetaTypePtr>>& getTryCatchStack() const {
             return tryCatchStack;
+        }
+
+        // Stack of enclosing try/catch bodies (during their codegen) whose
+        // exception frame is currently active. A `return` must pop each frame
+        // (innermost first) and run its finally before returning — otherwise the
+        // frame dangles (longjmp into a dead stack) and the finally never runs
+        // (bugfix-plan C1). Each entry is the finally StatementPtr (null when the
+        // try has only catch clauses — just the pop is needed). Stored as
+        // shared_ptr<void> to avoid a Statement.h include here; Statement.cpp
+        // casts back. innermost = back().
+        void pushTryFinally(std::shared_ptr<void> finallyStmt) {
+            tryFinallyStack.push_back(std::move(finallyStmt));
+        }
+        void popTryFinally() {
+            if (!tryFinallyStack.empty()) tryFinallyStack.pop_back();
+        }
+        std::vector<std::shared_ptr<void>>& getTryFinallyStack() {
+            return tryFinallyStack;
         }
 
         void processMetadata(CajetaClassPtr structure);
