@@ -270,6 +270,17 @@ void* __cajeta_new_class_array(uint64_t elem_size, uint64_t total_count, cajeta_
 // with no padding, but the compiler queries DataLayout::getTypeAllocSize on the
 // header struct to be safe under alignment).
 void* __cajeta_new_array_header(uint64_t header_size, uint64_t elem_size, uint64_t count) {
+    // Overflow guard: total = header_size + count*elem_size in uint64 would wrap
+    // (e.g. `new int[-1]` arrives as count=0xFFFF...), and `calloc(1, total)`
+    // performs no nmemb*size check, so a wrapped `total` under-allocates and the
+    // count store + element writes overrun the heap. Reject before computing.
+    if (elem_size != 0 && count > (UINT64_MAX - header_size) / elem_size) {
+        fprintf(stderr, "cajeta: __cajeta_new_array_header overflow (header=%llu elem=%llu count=%llu)\n",
+                (unsigned long long) header_size,
+                (unsigned long long) elem_size,
+                (unsigned long long) count);
+        abort();
+    }
     uint64_t total = header_size + count * elem_size;
     if (total == 0) {
         return NULL;
@@ -328,6 +339,13 @@ void* __cajeta_array_view_to_owned(const void* data, int64_t count, int64_t elem
     if (count < 0) count = 0;
     if (elem_size <= 0) elem_size = 1;
     uint64_t header_size = 8;
+    // Same overflow guard as __cajeta_new_array_header (count/elem are clamped
+    // non-negative above but the product can still wrap uint64).
+    if ((uint64_t) count > (UINT64_MAX - header_size) / (uint64_t) elem_size) {
+        fprintf(stderr, "cajeta: __cajeta_array_view_to_owned overflow (count=%lld elem=%lld)\n",
+                (long long) count, (long long) elem_size);
+        abort();
+    }
     uint64_t total = header_size + (uint64_t) count * (uint64_t) elem_size;
     void* hdr = calloc(1, (size_t) total);
     if (hdr == NULL) {
@@ -4336,13 +4354,24 @@ struct cajeta_vk {
 };
 static struct cajeta_vk g_xpu_vk;
 
-// Serializes all VkQueue submits + VkCommandPool use + AS-table mutation (BVH
-// build, AS free, and kernel launch). A VkQueue and a VkCommandPool require
-// external host synchronization; the launch/build/free paths can be driven from
-// different OS threads (the program's main thread vs a carrier-fiber thread), so
-// without this they race the shared queue/pool/table. Distinct from
-// g_xpu_cuda_lock (which only guards backend init/load).
-static pthread_mutex_t g_xpu_vk_submit_mu = PTHREAD_MUTEX_INITIALIZER;
+// Serializes all VkQueue submits + VkCommandPool use AND every resource-table
+// mutation/read (the buffer g_vk_bufs, texture g_vk_texs, and AS g_vk_accels
+// tables). A VkQueue and a VkCommandPool require external host synchronization,
+// and the tables are plain arrays + counts; the launch/build/free/alloc paths can
+// be driven from different OS threads (the program's main thread vs a carrier-
+// fiber thread), so without this they race the shared queue/pool/tables.
+// RECURSIVE: the launch path holds this across the whole dispatch and calls the
+// table accessors (cajeta_xpu_vk_rec / _tex_rec) under it, so the accessors must
+// be able to re-lock. Distinct from g_xpu_cuda_lock (backend init/load only).
+// Initialized at runtime in cajeta_xpu_vulkan_init_locked (the portable static
+// recursive initializer needs _GNU_SOURCE, which this TU doesn't set); the glibc
+// recursive enum is the _NP spelling, macOS/Windows use the unsuffixed one.
+#if defined(__APPLE__) || defined(_WIN32)
+#  define CAJETA_MUTEX_RECURSIVE PTHREAD_MUTEX_RECURSIVE
+#else
+#  define CAJETA_MUTEX_RECURSIVE PTHREAD_MUTEX_RECURSIVE_NP
+#endif
+static pthread_mutex_t g_xpu_vk_submit_mu;
 
 struct cajeta_vk_buf {
     VkBuffer buffer;
@@ -4370,6 +4399,17 @@ static int cajeta_xpu_vulkan_init_locked(void) {
     if (g_xpu_vk.loaded == 1) return 1;
     if (g_xpu_vk.loaded == -1) return 0;
     g_xpu_vk.loaded = -1;
+
+    // One-time init of the recursive submit/table mutex (this runs exactly once —
+    // the tri-state above gates it — and before any buffer/texture/launch use,
+    // all of which go through this init first via cajeta_xpu_active_backend).
+    {
+        pthread_mutexattr_t attr;
+        pthread_mutexattr_init(&attr);
+        pthread_mutexattr_settype(&attr, CAJETA_MUTEX_RECURSIVE);
+        pthread_mutex_init(&g_xpu_vk_submit_mu, &attr);
+        pthread_mutexattr_destroy(&attr);
+    }
 
     const char* libnames[2] = {"libvulkan.so.1", "libvulkan.so"};
     for (int i = 0; i < 2 && !g_xpu_vk.lib; ++i)
@@ -4682,11 +4722,13 @@ static int64_t cajeta_xpu_vk_alloc(uint64_t bytes) {
         g_xpu_vk.vkDestroyBuffer(g_xpu_vk.device, buf, NULL);
         return 0;
     }
+    pthread_mutex_lock(&g_xpu_vk_submit_mu);   // g_vk_bufs table RMW
     int slot = -1;
     for (int i = 0; i < g_vk_buf_count; ++i)
         if (!g_vk_bufs[i].live) { slot = i; break; }
     if (slot < 0) {
         if (g_vk_buf_count >= CAJETA_VK_MAX_BUFFERS) {
+            pthread_mutex_unlock(&g_xpu_vk_submit_mu);
             g_xpu_vk.vkUnmapMemory(g_xpu_vk.device, mem);
             g_xpu_vk.vkFreeMemory(g_xpu_vk.device, mem, NULL);
             g_xpu_vk.vkDestroyBuffer(g_xpu_vk.device, buf, NULL);
@@ -4699,26 +4741,38 @@ static int64_t cajeta_xpu_vk_alloc(uint64_t bytes) {
     g_vk_bufs[slot].mapped = mapped;
     g_vk_bufs[slot].size = bytes;
     g_vk_bufs[slot].live = 1;
+    pthread_mutex_unlock(&g_xpu_vk_submit_mu);
     return (int64_t) (slot + 1);
 }
 
+// rec/mapped/free take g_xpu_vk_submit_mu (recursive) so the table is read/written
+// consistently even when called from a context that already holds it (vk_launch).
 static struct cajeta_vk_buf* cajeta_xpu_vk_rec(int64_t handle) {
-    if (handle <= 0 || handle > g_vk_buf_count) return NULL;
-    struct cajeta_vk_buf* r = &g_vk_bufs[handle - 1];
-    return r->live ? r : NULL;
+    pthread_mutex_lock(&g_xpu_vk_submit_mu);
+    struct cajeta_vk_buf* r = NULL;
+    if (handle > 0 && handle <= g_vk_buf_count && g_vk_bufs[handle - 1].live)
+        r = &g_vk_bufs[handle - 1];
+    pthread_mutex_unlock(&g_xpu_vk_submit_mu);
+    return r;
 }
 static void* cajeta_xpu_vk_mapped(int64_t handle) {
+    pthread_mutex_lock(&g_xpu_vk_submit_mu);
     struct cajeta_vk_buf* r = cajeta_xpu_vk_rec(handle);
-    return r ? r->mapped : NULL;
+    void* m = r ? r->mapped : NULL;
+    pthread_mutex_unlock(&g_xpu_vk_submit_mu);
+    return m;
 }
 static void cajeta_xpu_vk_free(int64_t handle) {
+    pthread_mutex_lock(&g_xpu_vk_submit_mu);
     struct cajeta_vk_buf* r = cajeta_xpu_vk_rec(handle);
-    if (!r) return;
-    if (r->mapped) g_xpu_vk.vkUnmapMemory(g_xpu_vk.device, r->memory);
-    if (r->buffer) g_xpu_vk.vkDestroyBuffer(g_xpu_vk.device, r->buffer, NULL);
-    if (r->memory) g_xpu_vk.vkFreeMemory(g_xpu_vk.device, r->memory, NULL);
-    r->live = 0; r->mapped = NULL; r->buffer = VK_NULL_HANDLE;
-    r->memory = VK_NULL_HANDLE;
+    if (r) {
+        if (r->mapped) g_xpu_vk.vkUnmapMemory(g_xpu_vk.device, r->memory);
+        if (r->buffer) g_xpu_vk.vkDestroyBuffer(g_xpu_vk.device, r->buffer, NULL);
+        if (r->memory) g_xpu_vk.vkFreeMemory(g_xpu_vk.device, r->memory, NULL);
+        r->live = 0; r->mapped = NULL; r->buffer = VK_NULL_HANDLE;
+        r->memory = VK_NULL_HANDLE;
+    }
+    pthread_mutex_unlock(&g_xpu_vk_submit_mu);
 }
 
 // --- Vulkan sampled-image (Texture2D) table (Item 8 Stage B) ----------------
@@ -4738,9 +4792,12 @@ static struct cajeta_vk_tex g_vk_texs[CAJETA_VK_MAX_TEXTURES];
 static int g_vk_tex_count;
 
 static struct cajeta_vk_tex* cajeta_xpu_vk_tex_rec(int64_t handle) {
-    if (handle <= 0 || handle > g_vk_tex_count) return NULL;
-    struct cajeta_vk_tex* t = &g_vk_texs[handle - 1];
-    return t->live ? t : NULL;
+    pthread_mutex_lock(&g_xpu_vk_submit_mu);   // g_vk_texs read (recursive)
+    struct cajeta_vk_tex* t = NULL;
+    if (handle > 0 && handle <= g_vk_tex_count && g_vk_texs[handle - 1].live)
+        t = &g_vk_texs[handle - 1];
+    pthread_mutex_unlock(&g_xpu_vk_submit_mu);
+    return t;
 }
 
 // Create a 2-D R32_SFLOAT sampled image + view; return a 1-based table handle
@@ -4797,11 +4854,13 @@ static int64_t cajeta_xpu_vk_tex_alloc(uint32_t w, uint32_t h) {
         g_xpu_vk.vkDestroyImage(g_xpu_vk.device, img, NULL);
         return 0;
     }
+    pthread_mutex_lock(&g_xpu_vk_submit_mu);   // g_vk_texs table RMW
     int slot = -1;
     for (int i = 0; i < g_vk_tex_count; ++i)
         if (!g_vk_texs[i].live) { slot = i; break; }
     if (slot < 0) {
         if (g_vk_tex_count >= CAJETA_VK_MAX_TEXTURES) {
+            pthread_mutex_unlock(&g_xpu_vk_submit_mu);
             g_xpu_vk.vkDestroyImageView(g_xpu_vk.device, view, NULL);
             g_xpu_vk.vkFreeMemory(g_xpu_vk.device, mem, NULL);
             g_xpu_vk.vkDestroyImage(g_xpu_vk.device, img, NULL);
@@ -4814,6 +4873,7 @@ static int64_t cajeta_xpu_vk_tex_alloc(uint32_t w, uint32_t h) {
     g_vk_texs[slot].view = view;
     g_vk_texs[slot].w = w; g_vk_texs[slot].h = h;
     g_vk_texs[slot].live = 1;
+    pthread_mutex_unlock(&g_xpu_vk_submit_mu);
     return (int64_t) (slot + 1);
 }
 
@@ -4901,13 +4961,16 @@ static void cajeta_xpu_vk_tex_upload(int64_t handle, const void* data,
 }
 
 static void cajeta_xpu_vk_tex_free(int64_t handle) {
+    pthread_mutex_lock(&g_xpu_vk_submit_mu);   // serialize vs launch + table
     struct cajeta_vk_tex* t = cajeta_xpu_vk_tex_rec(handle);
-    if (!t) return;
-    if (t->view) g_xpu_vk.vkDestroyImageView(g_xpu_vk.device, t->view, NULL);
-    if (t->image) g_xpu_vk.vkDestroyImage(g_xpu_vk.device, t->image, NULL);
-    if (t->memory) g_xpu_vk.vkFreeMemory(g_xpu_vk.device, t->memory, NULL);
-    t->live = 0; t->image = VK_NULL_HANDLE; t->view = VK_NULL_HANDLE;
-    t->memory = VK_NULL_HANDLE;
+    if (t) {
+        if (t->view) g_xpu_vk.vkDestroyImageView(g_xpu_vk.device, t->view, NULL);
+        if (t->image) g_xpu_vk.vkDestroyImage(g_xpu_vk.device, t->image, NULL);
+        if (t->memory) g_xpu_vk.vkFreeMemory(g_xpu_vk.device, t->memory, NULL);
+        t->live = 0; t->image = VK_NULL_HANDLE; t->view = VK_NULL_HANDLE;
+        t->memory = VK_NULL_HANDLE;
+    }
+    pthread_mutex_unlock(&g_xpu_vk_submit_mu);
 }
 
 // Create a transient VkSampler from a cajeta Sampler's modes: filterMode 0 =

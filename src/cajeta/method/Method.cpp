@@ -1481,12 +1481,21 @@ namespace cajeta {
                 FieldPtr f = sc->getField(name);
                 if (!f || !f->getDropEntry()) continue;
                 CajetaTypePtr t = f->getType();
-                if (!t || t->toCanonical().rfind("cajeta.xpu.core.Buffer", 0) != 0)
-                    continue;
+                if (!t) continue;
+                // Every borrowed device resource — Buffer, Texture2D, and
+                // AccelerationStructure — must outlive the launch. (Previously
+                // Buffer-only, so Texture2D/AS borrows were recorded but never
+                // enforced; AS in particular could free its device BVH mid-kernel.)
+                const string c = t->toCanonical();
+                bool isDeviceResource =
+                    c.rfind("cajeta.xpu.core.Buffer", 0) == 0 ||
+                    c == "cajeta.xpu.core.Texture2D" ||
+                    c == "cajeta.xpu.core.AccelerationStructure";
+                if (!isDeviceResource) continue;
                 throw Exception(
-                    "buffer '" + name + "' leaves scope while a launch still "
-                    "references it — sync the stream (Stream.sync()) before it "
-                    "is dropped", "XPU-K02");
+                    "device resource '" + name + "' leaves scope while a launch "
+                    "still references it — sync the stream (Stream.sync()) before "
+                    "it is dropped", "XPU-K02");
             }
         }
         module->getScopeStack().pop();
