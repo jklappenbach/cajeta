@@ -1394,18 +1394,45 @@ out of `net/socket` back into `net` as they go green.
       net/socket/server). Proven by `test/expression/NetAsyncEchoTest.cpp` (3
       JIT loopback tests through a `Tasks.runBlocking` fiber: async echo,
       acceptAsync, AsyncReader/AsyncWriter buffered round-trip — all green).
-      DEFERRED: `connectAsync` (needs its own non-blocking-connect static
-      lowering — EINPROGRESS + awaitWritable + SO_ERROR — not a readiness loop
-      over an existing lowered op; TODO in TcpStream.cajeta, blocks NET-3.3
-      connectAsync sub-item). Unblocks the deferred NET-3.x async ops + NET-2.3.
+      Unblocks the deferred NET-3.x async ops + NET-2.3.
+- [x] **b3.1 — connectAsync (non-blocking-connect static lowering).** DONE
+      (2026-06-04). The b3-deferred sub-item: `TcpStream.connectAsync` gets its
+      OWN static lowering (not a readiness loop over an existing op) in
+      `MethodCallExpression.cpp` — shared sockaddr_pack+socket prologue, then
+      `set_nonblocking → connect → {immediate-success | in-progress →
+      await_writable (fiber park) → connect_result/SO_ERROR} → shared wrap`,
+      reusing the b1 wrap/throw scaffolding. New native helper
+      `__cajeta_net_connect_result(fd)` reads SO_ERROR → normalized
+      `cajeta_net_err` ordinal (platform constants stay C-side). **Build fix
+      (the real blocker):** the runtime-bitcode custom command only `DEPENDS` on
+      `cajeta_runtime.c`, which `#include`s the per-subsystem native sources — so
+      adding `connect_result` to `cajeta_net_socket.c` did NOT rebuild the
+      embedded bitcode, `getRuntimeFunction` returned null, the availability
+      guard failed, and the lowering silently fell back to the stub (TcpStream
+      wrapping fd −1 → loopback accept hung). Fixed with `-MD -MF` + `DEPFILE` so
+      transitive includes are tracked. Proven: `NetReactorTests.
+      nonblockingConnectCompletesAndIsWritable` (native, bounded) +
+      `NetAsyncEchoTest.connectAsyncLoopbackEchoRoundTrips` (JIT loopback echo
+      through a fiber). Net regression 68/69 (the 1 red is the pre-existing
+      Windows `wouldBlockClassifiedNotAsHardError` flake). Completes NET-3.3.
 - [ ] **b4 — DNS resolve lowering.** Lower `Dns.resolve` via the
       `__cajeta_net_getaddrinfo*` intrinsics; un-gate `net/dns`.
 - [ ] **b5 — Server stacks.** Un-gate `Server`/`ServerBuilder`/`SharedPoolServer`/
       `ServerModel`/`ConnectionLimiter` + `net/http/socket`, `net/ws/socket`;
       both accept models (fiber-per-connection + shared-pool) over b1–b3.
 - [ ] **b6 — TLS (NET-5).** Bundle BoringSSL; the largest separate effort.
-- [ ] **(parallel) Compiler-gap fixes** surfaced by the slices, independent of
-      sockets: RTTI catch-matching (a leaf caught by an unrelated sibling catch
+- [~] **(parallel) Compiler-gap fixes** surfaced by the slices, independent of
+      sockets. DONE (2026-06-04, commit `0001ab0`): (a) **field-read as an array
+      dimension** — `new T[Klass.STATIC]` / `new T[this.field]` sext'd a pointer
+      (GlobalVariable / struct GEP slot) → invalid IR; routed through
+      `loadIfLValue` (the same fix ArrayIndexExpression carries). (b) **@Native-
+      class unresolved-field-type segfault** — an unresolved field type (e.g.
+      `bool`; canonical is `boolean`) on a class prototyped during prelude
+      codegen reached struct-layout with a null type and crashed; `fieldLayoutType`
+      now throws CAJETA_ERROR_UNKNOWN_TYPE. NOT-A-BUG: the b3 `heap Optional`-from-
+      interface-`next()` FRESH_RETURN_NEEDS_TRANSFER was correct — AsyncIterator.
+      next() deliberately has no `#`, `stack Optional` is the right surface code.
+      STILL TODO: RTTI catch-matching (a leaf caught by an unrelated sibling catch
       clause), bare-`null`-literal-argument lowering to null, and the
       non-deterministic JIT null-return flake under many-compiles-per-process.
 
