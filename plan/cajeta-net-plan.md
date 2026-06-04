@@ -1415,8 +1415,25 @@ out of `net/socket` back into `net` as they go green.
       `NetAsyncEchoTest.connectAsyncLoopbackEchoRoundTrips` (JIT loopback echo
       through a fiber). Net regression 68/69 (the 1 red is the pre-existing
       Windows `wouldBlockClassifiedNotAsHardError` flake). Completes NET-3.3.
-- [ ] **b4 — DNS resolve lowering.** Lower `Dns.resolve` via the
-      `__cajeta_net_getaddrinfo*` intrinsics; un-gate `net/dns`.
+- [~] **b4 — DNS resolve lowering.** ATTEMPTED + REVERTED (2026-06-04) —
+      blocked on a compiler gap, not a lowering gap. `Dns.cajeta` already binds
+      the `__cajeta_net_getaddrinfo*` intrinsics via `@Native` (fully wired, like
+      the reactor), so no receiver-dispatch lowering is needed; un-gating
+      `net/dns` should have just worked. It surfaced two never-before-compiled
+      defects in the staged `Dns.cajeta`: (1) `getaddrinfoNative` (4-param
+      `@Native`, returns raw `pointer`) tripped `CAJETA_ERROR_BORROW_RETURN_MULTI_
+      PARAM` — fixable by `#pointer`; but (2) **the blocker:** `Dns.resolve`
+      declares `#SocketAddress[]` yet the borrow checker sees
+      `returnsOwnership=0` AND a return type of `pointer` (the unresolved
+      fallback) — i.e. a `#`-prefixed **array** return (`#T[]`) on a multi-param
+      static method neither resolves its element type nor sets the ownership
+      flag, while the scalar `#T` form works (cf. `Uri.resolve(Uri, String) ->
+      #Uri` in the un-gated `net/uri`, which compiles clean). This is a real
+      compiler gap in `#T[]` return-type handling (resolution + ownership),
+      upstream of DNS. Net/dns re-gated; the `__cajeta_net_getaddrinfo*` natives
+      + `NetResolveTests`/`DnsTests` stay staged. **Next:** fix `#T[]` owned-array
+      return lowering (resolve element type from the `REFERENCE? typeType`
+      subtree + set returnsOwnership), then re-attempt the un-gate.
 - [ ] **b5 — Server stacks.** Un-gate `Server`/`ServerBuilder`/`SharedPoolServer`/
       `ServerModel`/`ConnectionLimiter` + `net/http/socket`, `net/ws/socket`;
       both accept models (fiber-per-connection + shared-pool) over b1–b3.
@@ -1464,3 +1481,86 @@ Cajeta side is platform-independent; getaddrinfo errors normalized (`EAI_*` + `W
 `WSAStartup` via a pthread-once guard (pthread already a hard dep). The b3 reactor is
 where real per-OS work lives: **epoll (Linux) / kqueue (macOS) are the native designs,
 IOCP (Windows) the adapter** — per [[platform-posix-native-windows-shim]].
+
+#### Linux / macOS verification checklist (everything net built+run on Windows-mingw ONLY)
+
+All of the items below have passed on the Windows-mingw host but have **never been
+built or executed on a *nix host**. The reactor especially diverges by OS (Windows
+takes a carrier-blocking `select` shim; Linux is the real epoll fiber-park; macOS
+kqueue is unwritten), so the Windows green is the *weakest* signal exactly where the
+platform work is heaviest. Each line item is a discrete Linux/macOS verification task.
+
+**Build / toolchain**
+- [ ] **L-1. Linux build (gcc/clang + LLVM).** Configure + build `cajeta`,
+      `cajeta_test`, runtime bitcode on Linux; the embedded-bitcode `clang -emit-llvm`
+      step + the new `-MD -MF`/`DEPFILE` dependency wiring (b3.1) must work with the
+      host clang. Confirm `ws2_32` link is Windows-only (no spurious link flag on *nix).
+- [ ] **L-2. macOS build (clang + LLVM).** Same, plus the kqueue branch (currently the
+      portable `select` fallback — see L-12).
+
+**Native socket layer (NET-1)**
+- [ ] **L-3. NetSocket / NetSockaddr / NetGetName / NetListener / NetUdpSocket native
+      suites** (`extern "C"` drivers) green on Linux + macOS — BSD-sockets path, not the
+      Winsock shim. Verifies socket/bind/listen/accept/connect/send/recv/sendto/recvfrom/
+      shutdown/close + `sockaddr_pack`/`_unpack` v4 **and v6** marshalling.
+- [ ] **L-4. errno normalization.** `cajeta_net_map_errno` POSIX branch: force each
+      mapped errno (ECONNREFUSED/ECONNRESET/EADDRINUSE/EHOSTUNREACH/ETIMEDOUT/EPIPE/…)
+      and assert the stable `cajeta_net_err` ordinal — the table is only exercised on
+      Winsock codes today.
+- [ ] **L-5. `SO_REUSEPORT`.** Present on Linux (absent on some BSD/macOS): verify
+      `__cajeta_net_has_reuseport()` reports true on Linux and the bind path sets it; the
+      `#if defined(SO_REUSEPORT)` no-op fallback holds where it's missing.
+- [ ] **L-6. WouldBlock classification.** `__cajeta_net_is_wouldblock` on `EAGAIN`/
+      `EWOULDBLOCK` (incl. the `EWOULDBLOCK != EAGAIN` guard). NOTE: the lone
+      pre-existing red `NetNonBlockingTests.wouldBlockClassifiedNotAsHardError` is a
+      **Windows-only** WSAGetLastError-clobber flake — confirm it PASSES on Linux.
+
+**Reactor / async (NET-3) — the heaviest per-OS divergence**
+- [ ] **L-7. epoll fiber-park (Linux).** `__cajeta_net_await_readable/_writable` route
+      to `__cajeta_io_wait` (epoll) on Linux, NOT the `select` probe. Verify a parked
+      fiber yields the carrier (the no-carrier-blocks invariant) — the Windows host
+      blocks the carrier in `select`, so this property is **untested**. Drive via
+      `NetAsyncEcho` + `ReactorHarness` + the NET-13.4 concurrency harness (interleave +
+      zero-registration-leak + 1000 concurrent connections).
+- [ ] **L-8. Reactor lifecycle on epoll.** Lazy init creates the epoll handle + reactor
+      thread; clean shutdown wakes it (self-pipe/eventfd) and closes the handle with no
+      fd leak (`NetReactorLifecycle`, `TimeoutDeregister`).
+- [ ] **L-9. connectAsync (b3.1) on epoll.** Non-blocking connect → `EINPROGRESS` →
+      `await_writable` (real epoll park) → `SO_ERROR` via `__cajeta_net_connect_result`.
+      The native `NetReactorTests.nonblockingConnectCompletesAndIsWritable` + the JIT
+      `connectAsyncLoopbackEchoRoundTrips` must pass on the epoll path (Windows used the
+      select shim). Also exercise the **failure** path (ECONNREFUSED via `SO_ERROR`).
+- [ ] **L-10. SIGPIPE.** The pthread_once `signal(SIGPIPE, SIG_IGN)` (b3) — actually
+      exercise a broken-pipe write on Linux/macOS and assert `BrokenPipeException`
+      (EPIPE), NOT a process kill. This is the one POSIX bug that was fixed but
+      **could not be exercised on Windows** (no SIGPIPE there).
+- [ ] **L-11. async read/write/accept readiness loops** (`NetAsyncOps`,
+      `NetCancellation`, `WithTimeout`/`WithDeadline` over socket ops) on epoll.
+- [ ] **L-12. macOS kqueue engine.** TODAY non-Linux falls back to the portable
+      carrier-blocking `select` probe (correct, not non-blocking). Either (a) verify the
+      `select` fallback is correct on macOS, or (b) write the kqueue
+      (`EVFILT_READ`/`_WRITE`, `EV_ONESHOT`) engine (NET-3.2 follow-up) and run L-7/L-11
+      against it. Tracked as the kqueue gap.
+
+**DNS (NET-2, b4)**
+- [ ] **L-13. getaddrinfo on POSIX.** `Dns.resolve` + the `__cajeta_net_getaddrinfo*`
+      bridges over the glibc/musl `getaddrinfo` (vs ws2_32). `NetResolveTests` + `DnsTests`
+      + `DnsExceptionTests` (UnknownHost/ResolutionFailed via `EAI_*` ordinals) +
+      `DnsCacheTests`. Note glibc vs musl `getaddrinfo` behavior differences (NODATA/
+      NONAME mapping, localhost resolution).
+
+**Server stacks (NET-4, b5) — when landed**
+- [ ] **L-14. fiber-per-connection + shared-pool servers on epoll** (`ServerLifecycle`,
+      `FiberPerConn`, `SharedPool`, `ConnectionLimiter`, `ModelSelection` harnesses);
+      backpressure + graceful drain; the shared-pool readiness queue on epoll, not select.
+
+**TLS (NET-5, b6) — when landed**
+- [ ] **L-15. BoringSSL static link + memory-BIO handshake on Linux + macOS**; OS
+      trust-store loading (`/etc/ssl/certs` on Linux, keychain export on macOS) for cert
+      validation; handshake parks on the epoll reactor.
+
+**Regression discipline**
+- [ ] **L-16. Full `run_tests` on Linux with the serial-retry pass.** The non-determ-
+      inistic many-compiles-per-process JIT crashes (e.g. `WsErrorHierarchyTests` in
+      isolation) are papered over by the retry on Windows; confirm the same harness keeps
+      the net suites green on Linux, and capture any Linux-only first-pass reds.
