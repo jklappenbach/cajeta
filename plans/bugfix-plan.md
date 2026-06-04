@@ -92,7 +92,7 @@ reference).
 
 ## Wave 3 — Device-kernel codegen correctness (contained)
 
-- [ ] **H11 — POD-struct/scalar `byteSize` from empty `DataLayout("")` → SSBO mis-size + OOB device read** *(high, default target)* —
+- [x] **H11 — FIXED 2026-06-03: threaded the host module DataLayout into collectKernelParamInfo. POD-struct/scalar `byteSize` from empty `DataLayout("")` → SSBO mis-size + OOB device read** *(high, default target)* —
   `KernelLowering.cpp:1900-1906`; consumed `cajeta_runtime.c:6385-6390`; host packs under real DL `CallExpression.cpp:200-218`.
   `{i32;i64}` sized 12 vs real 16 → device reads 4 bytes past the SSBO. *Fix:* thread the real module `DataLayout` into
   `collectKernelParamInfo`.

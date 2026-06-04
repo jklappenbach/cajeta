@@ -117,7 +117,7 @@ namespace amd {
             // Per-kernel parameter kinds (scalar/buffer/texture/sampler) so the
             // HIP launch path can translate Texture2D args into texture objects.
             std::vector<KernelParamInfo> info =
-                collectKernelParamInfo(method, ctx);
+                collectKernelParamInfo(method, ctx, hostModule.getDataLayout());
             if (!info.empty()) {
                 std::vector<uint8_t> kinds;
                 std::vector<uint32_t> sizes;

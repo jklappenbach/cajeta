@@ -33,6 +33,7 @@ namespace llvm {
     class Module;
     class Function;
     class LLVMContext;
+    class DataLayout;
 }
 
 namespace cajeta {
@@ -69,8 +70,13 @@ namespace xpu {
         uint8_t kind;
         unsigned byteSize;   // scalar/POD byte size (0 for buffer/texture/sampler)
     };
+    // `dl` MUST be the host module's DataLayout — the by-value POD/scalar byteSize
+    // it computes has to match the footprint the launch site packs the argv with
+    // (and the runtime memcpy's into the SSBO); an empty DataLayout mis-sizes
+    // mixed-width structs and the device then reads past the SSBO (H11).
     std::vector<KernelParamInfo> collectKernelParamInfo(const MethodPtr& method,
-                                                        llvm::LLVMContext& ctx);
+                                                        llvm::LLVMContext& ctx,
+                                                        const llvm::DataLayout& dl);
 
 } // namespace xpu
 } // namespace cajeta

@@ -1945,7 +1945,8 @@ static std::vector<LoweringTarget::KernelParam> collectParams(
 }
 
 std::vector<KernelParamInfo> collectKernelParamInfo(const MethodPtr& method,
-                                                    llvm::LLVMContext& ctx) {
+                                                    llvm::LLVMContext& ctx,
+                                                    const llvm::DataLayout& dl) {
     std::vector<KernelParamInfo> info;
     if (!method) return info;
     for (auto& p : collectParams(method, ctx)) {
@@ -1960,11 +1961,13 @@ std::vector<KernelParamInfo> collectKernelParamInfo(const MethodPtr& method,
         } else if (p.isBuffer) {
             kind = KernelParamInfo::Buffer;
         } else if (p.type) {
-            // POD struct: the marshalled by-value footprint (alloc size under
-            // natural alignment — identical across the host + device targets
-            // for an all-primitive struct). Scalars: their byte width.
+            // POD struct: the marshalled by-value footprint under the HOST
+            // module's real DataLayout — must match how the launch site packs the
+            // argv (an empty DataLayout under-sizes e.g. {i32,i64} to 12 vs 16, so
+            // the runtime memcpy'd too few bytes and the device read past the
+            // SSBO). Scalars: their byte width.
             bytes = p.type->isStructTy()
-                ? (unsigned) llvm::DataLayout("").getTypeAllocSize(p.type)
+                ? (unsigned) dl.getTypeAllocSize(p.type)
                 : (p.type->getScalarSizeInBits() + 7u) / 8u;
         }
         info.push_back({kind, bytes});

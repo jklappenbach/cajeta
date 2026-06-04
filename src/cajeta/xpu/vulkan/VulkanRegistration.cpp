@@ -122,7 +122,7 @@ namespace vulkan {
             // and the scalar byte sizes — so the runtime can bind buffers and
             // wrap scalars in single-element SSBOs at launch.
             std::vector<KernelParamInfo> info =
-                collectKernelParamInfo(method, ctx);
+                collectKernelParamInfo(method, ctx, hostModule.getDataLayout());
             if (!info.empty()) {
                 std::vector<uint8_t> kinds;
                 std::vector<uint32_t> sizes;
