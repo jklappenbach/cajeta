@@ -508,7 +508,18 @@ void fissionBarrierKernel(llvm::Function* linked, llvm::Function* wrapper,
         }
     }
 
-    for (auto& kv : ctxArray) kv.first->eraseFromParent();
+    for (auto& kv : ctxArray) {
+        // H17: the redirect above only rewrites direct Load/Store whose pointer is
+        // the alloca, and only inside J.blocks. A GEP/bitcast user, or a Load/Store
+        // in a non-job (loop-structural) block, is left pointing at the alloca —
+        // erasing it then leaves dangling IR (assert in debug, UAF/miscompile in
+        // release). Reject cleanly instead, mirroring the use_empty() guard above.
+        if (!kv.first->use_empty())
+            unsupported("a per-work-item local is accessed in a way barrier "
+                        "fission can't redirect (a derived/GEP pointer, or a "
+                        "use outside a per-work-item region)");
+        kv.first->eraseFromParent();
+    }
     phX->eraseFromParent();
     phY->eraseFromParent();
     phZ->eraseFromParent();

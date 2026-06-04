@@ -96,7 +96,7 @@ reference).
   `KernelLowering.cpp:1900-1906`; consumed `cajeta_runtime.c:6385-6390`; host packs under real DL `CallExpression.cpp:200-218`.
   `{i32;i64}` sized 12 vs real 16 → device reads 4 bytes past the SSBO. *Fix:* thread the real module `DataLayout` into
   `collectKernelParamInfo`.
-- [ ] **H12 — dynamic-shared spec constant hardcodes a 4-byte element** *(high)* — `SpirvBackend.cpp:265-337` +
+- [x] **H12 — FIXED 2026-06-03 (interim): reject non-4-byte dynamic Shared<T> (XPU-N01) until the runtime spec constant carries the element size. dynamic-shared spec constant hardcodes a 4-byte element** *(high)* — `SpirvBackend.cpp:265-337` +
   `cajeta_runtime.c:5280-5290`. SpecId 3 = `sharedBytes/4`, but the array uses the real elem type → `Shared<half>` OOB.
   *Fix:* emit the element byte size into per-kernel metadata; compute `sharedBytes/elemSize`; until then reject `elemSize!=4`.
 - [x] **H13 — kernel hex/binary/octal literals miscompiled** *(high)* — FIXED 2026-06-03: device literal lowering mirrors the host (radix/underscore/L + APInt; APFloat for floats; widen to i64 by L-suffix/magnitude; f32-by-suffix). Test lowersNumericLiteralsCorrectly. `KernelLowering.cpp:811-815`. `0xFF`→0, `0b1010`→0,
@@ -106,7 +106,7 @@ reference).
   *Fix:* materialize ints at i64, narrow via `unifyOperands`/`coerceTo`.
 - [x] **H16 — kernel `double` literals rounded through f32** *(high)* — `:816-820`. f64 precision lost (stod→FloatTy→FPExt).
   *Fix:* gate f32 on the f/F suffix, else `getDoubleTy` via `APFloat::convertFromString`.
-- [ ] **H17 — context-promoted alloca erased while GEP/non-job-block users remain** *(high)* — `CpuBarrierFission.cpp:371-392`,`:490-511`.
+- [x] **H17 — FIXED 2026-06-03: guard the promoted-alloca erase with use_empty(); reject (XPU-N02) when a user wasn't redirected. context-promoted alloca erased while GEP/non-job-block users remain** *(high)* — `CpuBarrierFission.cpp:371-392`,`:490-511`.
   Step-10 redirect misses GEP/bitcast/non-job users; `eraseFromParent` with live users → dangling IR. *Fix:* assert
   `use_empty()`/RAUW; handle GEP users; or `unsupported()` if a user is outside a job block.
 - [x] **L1 — malformed/out-of-range kernel literal crashes the compiler** (`std::out_of_range`) instead of XPU-N01 — `KernelLowering.cpp:811-820`. *Fix: parse via APInt/APFloat status, or `unsupported(...)`.* (folds in with H13–16)
