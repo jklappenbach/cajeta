@@ -224,6 +224,75 @@ By the shared-foundation rule (*if both xpu and gfx need it → gpu*):
 
 ---
 
+## Platforms — Apple / macOS (Metal)
+
+**The crux: macOS has no native Vulkan/SPIR-V — Apple is Metal-only.** Apple deprecated
+OpenGL/OpenCL and never shipped Vulkan; the GPU stack is **Metal** (API) + **MSL/AIR**
+(shader language / IR, AIR being Apple's closed LLVM-bitcode dialect). Our SPIR-V-centric
+design therefore needs a bridge to reach Apple GPUs. There are exactly two, and they form
+a natural two-tier strategy. **Note:** this is independent of C0 — SPIR-V codegen is
+host-agnostic, so the `aarch64-apple-darwin` *toolchain* artifact (deferred in C0) is a
+build-out task; the items below are about *device execution* on Apple hardware.
+
+### Tier 1 — MoltenVK (Vulkan→Metal). Works with ~no Cajeta backend changes.
+MoltenVK is a Khronos (Apache-2.0) Vulkan implementation layered on Metal. The fit is exact:
+our runtime **already loads Vulkan via `dlopen` with no link-time dependency**, so on macOS
+it loads MoltenVK's `libvulkan.dylib` instead of a native ICD — the SPIR-V emission path is
+unchanged. Baseline compute (`cajeta-xpu`) + graphics (`cajeta-gfx`) light up for ~the cost
+of bundling MoltenVK + a dlopen name.
+- The gap is **feature coverage** — MoltenVK is strong on core compute/graphics but weak/
+  partial on **exactly the Part C features we care about most**:
+  - **`VK_KHR_ray_query`** — only recently/partially mapped to Metal raytracing, M3+ only,
+    experimental → the Prism RT-as-compute story is shaky here.
+  - **`VK_KHR_cooperative_matrix`** — effectively **not** exposed (Metal's `simdgroup_matrix`
+    MMA isn't surfaced through this Vulkan extension). The single biggest gap.
+  - **`VK_KHR_buffer_device_address`** — partial, and our AS build relies on it.
+
+### Tier 2 — a native Metal backend. For what MoltenVK can't do.
+A new `metal` XPU backend alongside `cpu`/`spirv`/`cuda`/`hip`. The pragmatic path **reuses
+our SPIR-V emission**: SPIR-V → **SPIRV-Cross** → **MSL** → Metal runtime compile
+(`newLibraryWithSource` / precompiled `.metallib`), with a new `LoweringTarget` + a Metal
+driver via **`metal-cpp`** (Apple's official C++ headers). There is **no public LLVM→AIR/Metal
+backend** (Apple's Metal compiler is closed), so transpiling from SPIR-V is the realistic
+route — not a direct LLVM target. This unlocks the Apple hardware that matters:
+- **Metal raytracing** (M3/M4 hardware RT) → reliable ray query → Prism `SpatialIndex` on Apple.
+- **`simdgroup_matrix`** → cooperative-matrix / MMA → **SPELA forward training + Prism tensor
+  path on Apple Silicon's GPU**.
+
+### Per-spec
+| Spec | Tier 1 (MoltenVK, now) | Tier 2 (native Metal, later) |
+|---|---|---|
+| **cajeta-gpu** | value types, math, memory, textures, basic compute ✓ | ray query (Metal RT), cooperative matrix (`simdgroup_matrix`) |
+| **cajeta-xpu** | a Vulkan-via-MoltenVK device, reusing the SPIR-V backend ✓ | a first-class `metal` backend (full perf + features) |
+| **cajeta-gfx** | MoltenVK is mature for graphics (how most macOS games ship) ✓ | mesh shaders, native Metal RT pipeline, MetalFX upscaling |
+
+### Roadmap impact (why Tier 2 matters for us specifically)
+The two pillars of the ML/RT thesis — **Prism's RT-as-compute spatial index** and **SPELA
+cooperative-matrix training** — are exactly the two Tier-1 gaps (ray query + coop matrix).
+So MoltenVK makes Apple a *baseline* compute/graphics target but **not** a first-class home
+for the ML/RT work; cooperative matrix in particular is **Tier-2-only**.
+
+### Sequencing (mirrors the NVIDIA/AMD approach: Vulkan first, native later)
+- [ ] **MV1 — MoltenVK bring-up.** Bundle/`dlopen` MoltenVK on macOS; run SAXPY / textures /
+  Prism compute-fallback on Apple Silicon (Metal-via-Vulkan). ~zero backend work. The "it
+  works on a Mac today" milestone. *(First concrete increment.)*
+- [ ] **MV2 — MoltenVK capability probe** (same pattern as the Vulkan ray-query SPIR-V probe,
+  `test/gpu/GpuRayQueryProbeTests.cpp`): pin down *exactly* what `VK_KHR_ray_query` /
+  `cooperative_matrix` / `buffer_device_address` MoltenVK exposes on M3/M4, so Tier 2's scope
+  is measured, not guessed.
+- [ ] **MT1 — native Metal backend, cooperative matrix first** (the ML lever, Tier-2-only):
+  `LoweringTarget` + Metal driver (`metal-cpp`), SPIRV-Cross→MSL, `simdgroup_matrix`.
+- [ ] **MT2 — Metal raytracing** for ray query (improves on MoltenVK's partial support).
+
+### Unknowns to verify (de-risk before committing Tier-2 spend)
+- MoltenVK's **exact** ray-query + coop-matrix + BDA support on M3/M4 (→ probe MV2).
+- SPIRV-Cross fidelity for our compute SPIR-V (workgroup/subgroup ops, shared memory,
+  `<N×T>` vectors, atomics) → MSL — any constructs that don't round-trip cleanly.
+- Whether a precompiled-`.metallib` path is needed (vs runtime MSL compile) for startup cost.
+- Licensing/packaging: MoltenVK (Apache-2.0) + `metal-cpp` (Apple) are bundleable; confirm.
+
+---
+
 ## Definition of done for the foundation
 
 - [ ] A3/S6 closed (or deferred with a tracked reason); A5 NV fatbin done or deferred

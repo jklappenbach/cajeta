@@ -71,6 +71,7 @@ reusing the same SPIR-V backend and device layer.
 
 ### Stage G1.2 — Other backends (optional, later)
 - [ ] DX12 / Metal / WebGPU via the same `LoweringTarget`-style seam pattern that compute uses
+- [ ] **Apple/macOS graphics:** Tier 1 = **MoltenVK** (Vulkan→Metal; mature for graphics — how most macOS games ship) reuses this Vulkan rendering path as-is; Tier 2 = native **Metal** (mesh shaders, Metal RT pipeline, MetalFX). Shared strategy/sequencing lives in `cajeta-gpu-plan.md` § Platforms — Apple/macOS (the `metal` backend seam is gpu-foundation).
 
 ---
 

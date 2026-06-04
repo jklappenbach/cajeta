@@ -24,6 +24,10 @@ physical split is staged — see the refactor-strategy note in `cajeta-gpu-plan.
 Checkbox legend: `[x]` landed+tested · `[~]` partial · `[ ]` not started.
 Backends: **NV** NVPTX→cubin · **AMD** AMDGPU→hsaco · **VK** SPIR-V · **CPU** LLJIT.
 "on-device" = real hardware (AMD gfx1151 Strix Halo; VK RADV; NV gated on CUDA HW).
+**Apple/macOS:** Tier 1 = the VK backend via **MoltenVK** (Vulkan→Metal, ~zero
+backend work — the runtime already dlopen's Vulkan); Tier 2 = a native **`metal`**
+backend (SPIRV-Cross→MSL) for what MoltenVK can't do (cooperative matrix, reliable
+ray query). Full strategy + sequencing in `cajeta-gpu-plan.md` § Platforms — Apple/macOS.
 **Working agreement:** one increment at a time, tests + docs + commit checkpoint;
 never a miscompile; commit only when asked; **no attribution trailer**; stage files
 explicitly. Companion docs: `cajeta-xpu-matrix.md`, `xpu-plan.md`, `cajeta-xpu.md`,
