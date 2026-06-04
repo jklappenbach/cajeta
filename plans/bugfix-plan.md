@@ -99,17 +99,17 @@ reference).
 - [ ] **H12 — dynamic-shared spec constant hardcodes a 4-byte element** *(high)* — `SpirvBackend.cpp:265-337` +
   `cajeta_runtime.c:5280-5290`. SpecId 3 = `sharedBytes/4`, but the array uses the real elem type → `Shared<half>` OOB.
   *Fix:* emit the element byte size into per-kernel metadata; compute `sharedBytes/elemSize`; until then reject `elemSize!=4`.
-- [ ] **H13 — kernel hex/binary/octal literals miscompiled** *(high)* — `KernelLowering.cpp:811-815`. `0xFF`→0, `0b1010`→0,
+- [x] **H13 — kernel hex/binary/octal literals miscompiled** *(high)* — FIXED 2026-06-03: device literal lowering mirrors the host (radix/underscore/L + APInt; APFloat for floats; widen to i64 by L-suffix/magnitude; f32-by-suffix). Test lowersNumericLiteralsCorrectly. `KernelLowering.cpp:811-815`. `0xFF`→0, `0b1010`→0,
   `0777`→777. *Fix:* switch radix on `integerLiteralType`, build via `APInt(width,text,radix)`.
-- [ ] **H14 — kernel underscore separators miscompiled** *(high)* — `:811-815`,`:1689-1698`. `1_000_000`→1. *Fix:* strip `_`.
-- [ ] **H15 — kernel 64-bit / `L`-suffixed literals truncated to i32** *(high)* — `:811-815`. `5000000000`→705032704.
+- [x] **H14 — kernel underscore separators miscompiled** *(high)* — `:811-815`,`:1689-1698`. `1_000_000`→1. *Fix:* strip `_`.
+- [x] **H15 — kernel 64-bit / `L`-suffixed literals truncated to i32** *(high)* — `:811-815`. `5000000000`→705032704.
   *Fix:* materialize ints at i64, narrow via `unifyOperands`/`coerceTo`.
-- [ ] **H16 — kernel `double` literals rounded through f32** *(high)* — `:816-820`. f64 precision lost (stod→FloatTy→FPExt).
+- [x] **H16 — kernel `double` literals rounded through f32** *(high)* — `:816-820`. f64 precision lost (stod→FloatTy→FPExt).
   *Fix:* gate f32 on the f/F suffix, else `getDoubleTy` via `APFloat::convertFromString`.
 - [ ] **H17 — context-promoted alloca erased while GEP/non-job-block users remain** *(high)* — `CpuBarrierFission.cpp:371-392`,`:490-511`.
   Step-10 redirect misses GEP/bitcast/non-job users; `eraseFromParent` with live users → dangling IR. *Fix:* assert
   `use_empty()`/RAUW; handle GEP users; or `unsupported()` if a user is outside a job block.
-- [ ] **L1 — malformed/out-of-range kernel literal crashes the compiler** (`std::out_of_range`) instead of XPU-N01 — `KernelLowering.cpp:811-820`. *Fix: parse via APInt/APFloat status, or `unsupported(...)`.* (folds in with H13–16)
+- [x] **L1 — malformed/out-of-range kernel literal crashes the compiler** (`std::out_of_range`) instead of XPU-N01 — `KernelLowering.cpp:811-820`. *Fix: parse via APInt/APFloat status, or `unsupported(...)`.* (folds in with H13–16)
 - [ ] **L2 — kernel `Math.min/max` on unsigned uses `smin/smax`** — `KernelLowering.cpp:1448-1459`. *Fix: pick `umin/umax` via `exprSigned`.*
 - [ ] **L3 — `Vector<T,0>` reaches `FixedVectorType::get(elem,0)` → abort/degenerate** — `KernelLowering.cpp:939-961`. *Fix: reject `lanes==0`.*
 

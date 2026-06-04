@@ -809,14 +809,62 @@ private:
             return builder.CreateLoad(slotTypes[nm], it->second, nm);  // load slot
         }
         if (auto il = std::dynamic_pointer_cast<IntegerLiteralExpression>(expr)) {
-            return llvm::ConstantInt::get(
-                llvm::Type::getInt32Ty(ctx),
-                std::stoll(stripSuffix(il->getRawValue())), /*signed=*/true);
+            // Mirror the host literal lowering (LiteralExpression.cpp): honor the
+            // radix (hex/bin/oct), strip the prefix / trailing `L` / digit-group
+            // underscores, and parse via APInt — never std::stoll, which reads the
+            // wrong base, stops at `_`, and *throws* on overflow (crashing the
+            // compiler). Materialize at the literal's resolved width when known
+            // (so int64/L literals aren't truncated), else the i32 default; coerceTo
+            // narrows at the use site. Fixes H13-H16/L1.
+            uint8_t radix; size_t prefixLen = 0;
+            switch (il->getIntegerLiteralType()) {
+                case INTEGER_LITERAL_TYPE_BINARY: radix = 2;  prefixLen = 2; break;
+                case INTEGER_LITERAL_TYPE_OCT:    radix = 8;  prefixLen = 0; break;
+                case INTEGER_LITERAL_TYPE_HEX:    radix = 16; prefixLen = 2; break;
+                default:                          radix = 10; prefixLen = 0; break;
+            }
+            std::string text = il->getRawValue();
+            if (prefixLen && text.size() >= prefixLen) text.erase(0, prefixLen);
+            bool hasLSuffix = !text.empty() && (text.back() == 'l' || text.back() == 'L');
+            if (hasLSuffix) text.pop_back();
+            text.erase(std::remove(text.begin(), text.end(), '_'), text.end());
+            if (text.empty()) text = "0";
+            llvm::APInt full(64, text, radix);
+            // Default i32 (the kernel norm); widen to i64 when the resolved type is
+            // int64, the literal carries an `L` suffix, or the value simply needs
+            // more than 32 bits — otherwise it would be silently truncated (H15).
+            unsigned width = 32;
+            if (il->getResolvedType())
+                if (llvm::Type* rt = deviceScalarType(il->getResolvedType(), ctx))
+                    if (rt->isIntegerTy()) width = rt->getIntegerBitWidth();
+            if (hasLSuffix || full.getActiveBits() > 32) width = 64;
+            return llvm::ConstantInt::get(ctx, full.zextOrTrunc(width));
         }
         if (auto fl = std::dynamic_pointer_cast<FloatLiteralExpression>(expr)) {
-            return llvm::ConstantFP::get(
-                llvm::Type::getFloatTy(ctx),
-                std::stod(stripSuffix(fl->getRawValue())));
+            // Mirror the host: parse via APFloat (no std::stod overflow crash) and
+            // pick f32 vs f64 by suffix/resolved type instead of always f32 — a
+            // `double` literal otherwise loses its low bits (parsed then re-widened
+            // from an f32-rounded value). Default stays f32 (the device norm) so
+            // bare kernel literals don't silently become f64. Fixes H16/L1.
+            std::string text = fl->getRawValue();
+            bool wantF32 = true;
+            if (!text.empty()) {
+                char last = text.back();
+                if (last == 'd' || last == 'D') wantF32 = false;
+                else if (last == 'f' || last == 'F') wantF32 = true;
+                else if (fl->getResolvedType())
+                    if (llvm::Type* rt = deviceScalarType(fl->getResolvedType(), ctx))
+                        wantF32 = rt->isFloatTy();
+                if (last=='f'||last=='F'||last=='d'||last=='D') text.pop_back();
+            }
+            const llvm::fltSemantics& sem = wantF32 ? llvm::APFloat::IEEEsingle()
+                                                    : llvm::APFloat::IEEEdouble();
+            llvm::APFloat apf(sem);
+            if (!apf.convertFromString(text, llvm::APFloat::rmNearestTiesToEven))
+                return llvm::ConstantFP::getZero(
+                    wantF32 ? llvm::Type::getFloatTy(ctx)
+                            : llvm::Type::getDoubleTy(ctx));
+            return llvm::ConstantFP::get(ctx, apf);
         }
         if (auto ne = std::dynamic_pointer_cast<NewExpression>(expr)) {
             // Built-in Vector<T,N> construction -> SSA `<N x T>` (no alloc). The
