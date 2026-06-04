@@ -278,31 +278,28 @@ const char* kGemmSource =
     "    public static void gemm(Buffer<float16> a, Buffer<float16> b,\n"
     "                            Buffer<float32> c,\n"
     "                            uint32 rows, uint32 cols, uint32 depth) {\n"
+    // Tile offsets are written naturally inline (mi*16*depth etc.). The shared
+    // loop-invariant subexpressions (mi*16, nj*16) used in both the loop body and
+    // the post-loop store are exactly what MachineCSE commons into the loop header
+    // — which used to land *after* the OpLoopMerge and produce invalid structured
+    // CFG (spirv-val reject + RADV hang). The fork's SPIRVFixupMergePlacement pass
+    // now re-seats the merge, so the kernel needs no manual offset hoisting.
     "        uint32 ntiles = cols / 16;\n"
     "        uint32 wid = Workgroup.x();\n"
     "        uint32 mi = wid / ntiles;\n"        // output row-tile
     "        uint32 nj = wid % ntiles;\n"        // output col-tile
     "        uint32 ktiles = depth / 16;\n"
-    // Precompute the loop-INVARIANT tile offsets into locals before the loop.
-    // If these (mi*16, nj*16, ...) are left as subexpressions shared between the
-    // loop body and the post-loop store, LLVM 23's SPIR-V backend sinks them into
-    // the loop header *between* OpLoopMerge and its branch — an invalid structured
-    // CFG that spirv-val rejects and RADV hangs on. Hoisting them out keeps the
-    // header clean. (Backend-scheduling quirk; a fork-side fix could remove the need.)
-    "        uint32 aRowBase = mi * 16 * depth;\n"
-    "        uint32 bColBase = nj * 16;\n"
-    "        uint32 cBase = mi * 16 * cols + nj * 16;\n"
     "        CooperativeMatrix<float32,16,16,2> mc;\n"
     "        mc.splat(0.0f);\n"
     "        CooperativeMatrix<float16,16,16,0> ma;\n"
     "        CooperativeMatrix<float16,16,16,1> mb;\n"
     "        uint32 kk = 0;\n"
     "        for (kk = 0; kk < ktiles; kk += 1) {\n"
-    "            ma.load(a, aRowBase + kk * 16, 0, depth);\n"
-    "            mb.load(b, kk * 16 * cols + bColBase, 0, cols);\n"
+    "            ma.load(a, mi * 16 * depth + kk * 16, 0, depth);\n"
+    "            mb.load(b, kk * 16 * cols + nj * 16, 0, cols);\n"
     "            mc.mma(ma, mb);\n"
     "        }\n"
-    "        mc.store(c, cBase, 0, cols);\n"
+    "        mc.store(c, mi * 16 * cols + nj * 16, 0, cols);\n"
     "    }\n"
     "}\n";
 
