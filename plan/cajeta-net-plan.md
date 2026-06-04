@@ -1392,3 +1392,30 @@ out of `net/socket` back into `net` as they go green.
       sockets: RTTI catch-matching (a leaf caught by an unrelated sibling catch
       clause), bare-`null`-literal-argument lowering to null, and the
       non-deterministic JIT null-return flake under many-compiles-per-process.
+
+### Linux / POSIX readiness (review 2026-06-03; net built+run on Windows-mingw only so far)
+
+Native layer is structured POSIX-native / Windows-shim (the user's preference) and
+reviewed clean except one real POSIX bug:
+
+- [ ] **SIGPIPE (REAL bug for *nix).** `__cajeta_net_send` relies on the *caller*
+      passing `MSG_NOSIGNAL` in `flags` ("the cajeta layer supplies it"), but the
+      b1 `TcpStream.write` lowering passes `flags=0`. On Linux/macOS, writing to a
+      closed peer then raises `SIGPIPE` → process death (invisible on Windows — no
+      SIGPIPE). **Fix:** `signal(SIGPIPE, SIG_IGN)` once at net init (POSIX branch
+      of the WSAStartup-equivalent `cajeta_net_ensure_init`) — platform-uniform,
+      removes reliance on a per-call flag, covers macOS too. Do this with the b3
+      reactor/init work or a dedicated POSIX pass.
+- [ ] **Build + run the net suites on an actual Linux (and macOS) host.** Everything
+      below is correct-by-inspection but unverified off-Windows.
+
+Verified GOOD by inspection (POSIX paths): all Winsock-isms are inside
+`#if defined(_WIN32)`; `SO_REUSEPORT` is `#if defined(SO_REUSEPORT)`-guarded with a
+no-op fallback + `__cajeta_net_has_reuseport()`; would-block maps `EAGAIN`/
+`EWOULDBLOCK` (guarding `EWOULDBLOCK != EAGAIN`) + `WSAEWOULDBLOCK`; **error codes
+are normalized to a stable `cajeta_net_err` ordinal IN the C layer**
+(`__cajeta_net_last_error` = `cajeta_net_map_errno(cajeta_net_raw_errno())`), so the
+Cajeta side is platform-independent; getaddrinfo errors normalized (`EAI_*` + `WSA*`);
+`WSAStartup` via a pthread-once guard (pthread already a hard dep). The b3 reactor is
+where real per-OS work lives: **epoll (Linux) / kqueue (macOS) are the native designs,
+IOCP (Windows) the adapter** — per [[platform-posix-native-windows-shim]].
