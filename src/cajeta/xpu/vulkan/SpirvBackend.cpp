@@ -42,7 +42,13 @@ namespace {
 // parser also accepts "khr" (all KHR) / "all" — kept to an explicit allowlist so
 // emission stays deterministic and only the extensions we test are enabled.
 void enableSpirvExtensions() {
-    static const char* kExtensions = "+SPV_KHR_ray_query";
+    // Cooperative matrix (CM2) adds +SPV_KHR_cooperative_matrix and
+    // +SPV_KHR_vulkan_memory_model — the latter because a Shader module that
+    // declares CooperativeMatrixKHR must also declare VulkanMemoryModel
+    // (spirv-val), which the backend emits as OpMemoryModel Logical VulkanKHR.
+    static const char* kExtensions =
+        "+SPV_KHR_ray_query,+SPV_KHR_cooperative_matrix,"
+        "+SPV_KHR_vulkan_memory_model";
     auto& opts = llvm::cl::getRegisteredOptions();
     auto it = opts.find("spirv-ext");
     if (it != opts.end())

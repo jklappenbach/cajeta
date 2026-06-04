@@ -197,6 +197,42 @@ namespace xpu {
             llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* rqPtr,
             llvm::Value* intersection);
 
+        // Cooperative matrix (cajeta-gpu Part C, CM4). Device-only subgroup
+        // matrix-core tiles. Vulkan lowers these to the SPV_KHR_cooperative_matrix
+        // ops via the llvm.spv.cooperative.matrix.* intrinsics; every other
+        // backend's default throws (XPU-N03). All matrices are at Subgroup scope.
+
+        // The LLVM type to alloca for a `CooperativeMatrix<T,Rows,Cols,Use>`
+        // local: target("spirv.CooperativeMatrixKHR", elem, 3, rows, cols, use).
+        virtual llvm::Type* coopMatrixType(llvm::Module& m, llvm::Type* elem,
+                                           uint32_t rows, uint32_t cols,
+                                           uint32_t use);
+
+        // m.load(src, layout, stride) → the loaded tile value (result type
+        // `matrixType`). `ptr` is the Buffer<T> element-0 pointer; `layout`/
+        // `stride` are i32 (→ OpCooperativeMatrixLoadKHR).
+        virtual llvm::Value* coopMatrixLoad(
+            llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* ptr,
+            llvm::Value* layout, llvm::Value* stride, llvm::Type* matrixType);
+
+        // m.store(dst, layout, stride): store `matrixVal` to `ptr`. Void op
+        // (→ OpCooperativeMatrixStoreKHR).
+        virtual void coopMatrixStore(
+            llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* ptr,
+            llvm::Value* matrixVal, llvm::Value* layout, llvm::Value* stride);
+
+        // c.mma(a, b) → a*b+c (result type `matrixType`, the accumulator type)
+        // (→ OpCooperativeMatrixMulAddKHR).
+        virtual llvm::Value* coopMatrixMulAdd(
+            llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* a,
+            llvm::Value* bMat, llvm::Value* c, llvm::Type* matrixType);
+
+        // m.splat(value) → a tile with every element = `value` (the zero/initial
+        // accumulator), result type `matrixType` (→ OpCompositeConstruct).
+        virtual llvm::Value* coopMatrixSplat(
+            llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* value,
+            llvm::Type* matrixType);
+
         // The LLVM type of a Buffer<T> when passed BY VALUE as a @Device helper
         // argument — i.e. the type of the buffer base held in bufferBases. A
         // kernel buffer param arrives via the backend's mechanism (a pointer arg

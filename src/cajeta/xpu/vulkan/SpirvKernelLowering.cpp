@@ -47,6 +47,20 @@ constexpr unsigned kStorageBufferAS = 11;
 }
 #endif
 
+#ifndef CAJETA_HAS_SPV_COOP_MATRIX
+// As above, but for the SPV_KHR_cooperative_matrix operation intrinsics
+// (llvm.spv.cooperative.matrix.*). The OpTypeCooperativeMatrixKHR *type* lowers
+// on stock LLVM; only the ops need the fork. A CooperativeMatrix op in a kernel
+// becomes a clean lowering-time diagnostic on a non-fork toolchain.
+[[noreturn]] static void coopMatrixNoForkToolchain() {
+    throw cajeta::Exception(
+        "XPU kernel lowering: SPV_KHR_cooperative_matrix is unavailable in this "
+        "build — the Cajeta compiler was linked against an LLVM that lacks the "
+        "cooperative-matrix intrinsics. Rebuild against the cajeta-llvm fork "
+        "toolchain (plans/c0) to enable CooperativeMatrix.", "XPU-N03");
+}
+#endif
+
 // target("spirv.VulkanBuffer", [0 x elemTy], StorageBuffer, writable) — the
 // handle type llvm.spv.resource.handlefrombinding returns for a (RW)Structured
 // Buffer<elemTy>. Uniqued by LLVM, so rebuilding with the same args yields the
@@ -89,6 +103,17 @@ llvm::TargetExtType* vkAccelStructType(llvm::LLVMContext& ctx) {
 // OpVariable Function the ray-query ops mutate.
 llvm::TargetExtType* vkRayQueryType(llvm::LLVMContext& ctx) {
     return llvm::TargetExtType::get(ctx, "spirv.RayQueryKHR", {}, {});
+}
+
+// target("spirv.CooperativeMatrixKHR", elem, scope, rows, cols, use) — the
+// device cooperative-matrix tile type (→ OpTypeCooperativeMatrixKHR). Scope is
+// always Subgroup (3): the tile is held cooperatively across the wavefront.
+llvm::TargetExtType* vkCoopMatrixType(llvm::LLVMContext& ctx, llvm::Type* elem,
+                                      uint32_t rows, uint32_t cols,
+                                      uint32_t use) {
+    constexpr unsigned kSubgroupScope = 3;
+    return llvm::TargetExtType::get(ctx, "spirv.CooperativeMatrixKHR", {elem},
+                                    {kSubgroupScope, rows, cols, use});
 }
 
 // llvm.spv.resource.getpointer(handle, i32 index) -> ptr addrspace(11). `index`
@@ -267,6 +292,15 @@ public:
         return vkRayQueryType(m.getContext());
     }
 
+    // A CooperativeMatrix local is an alloca of the opaque tile type. Like the
+    // ray-query types, OpTypeCooperativeMatrixKHR lowers via the BuiltinType
+    // machinery on stock LLVM too, so the TYPE builder is unguarded; only the
+    // OPS need the fork intrinsics.
+    llvm::Type* coopMatrixType(llvm::Module& m, llvm::Type* elem, uint32_t rows,
+                               uint32_t cols, uint32_t use) override {
+        return vkCoopMatrixType(m.getContext(), elem, rows, cols, use);
+    }
+
 #if CAJETA_HAS_SPV_RAY_QUERY
     // OpRayQueryInitializeKHR rq, as, rayFlags, cullMask, origin, tMin, dir, tMax.
     // `as` is overloaded on the intrinsic (the AS handle type); origin/direction
@@ -325,6 +359,67 @@ public:
     llvm::Value* rayQueryIntersectionPrimitiveIndex(llvm::IRBuilderBase&,
             llvm::Module&, llvm::Value*, llvm::Value*) override {
         rayQueryNoForkToolchain();
+    }
+#endif
+
+#if CAJETA_HAS_SPV_COOP_MATRIX
+    // result = OpCooperativeMatrixLoadKHR ptr layout stride. The intrinsic is
+    // overloaded on (result matrix type, pointer type), in signature order.
+    llvm::Value* coopMatrixLoad(llvm::IRBuilderBase& b, llvm::Module& m,
+                                llvm::Value* ptr, llvm::Value* layout,
+                                llvm::Value* stride,
+                                llvm::Type* matrixType) override {
+        llvm::Function* f = llvm::Intrinsic::getOrInsertDeclaration(
+            &m, llvm::Intrinsic::spv_cooperative_matrix_load,
+            {matrixType, ptr->getType()});
+        return b.CreateCall(f, {ptr, layout, stride}, "cm.load");
+    }
+    // OpCooperativeMatrixStoreKHR ptr matrix layout stride (void; overloaded on
+    // pointer type then matrix type).
+    void coopMatrixStore(llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* ptr,
+                         llvm::Value* matrixVal, llvm::Value* layout,
+                         llvm::Value* stride) override {
+        llvm::Function* f = llvm::Intrinsic::getOrInsertDeclaration(
+            &m, llvm::Intrinsic::spv_cooperative_matrix_store,
+            {ptr->getType(), matrixVal->getType()});
+        b.CreateCall(f, {ptr, matrixVal, layout, stride});
+    }
+    // result = OpCooperativeMatrixMulAddKHR A B C (overloaded on result, A, B, C).
+    llvm::Value* coopMatrixMulAdd(llvm::IRBuilderBase& b, llvm::Module& m,
+                                  llvm::Value* a, llvm::Value* bMat,
+                                  llvm::Value* c, llvm::Type* matrixType) override {
+        llvm::Function* f = llvm::Intrinsic::getOrInsertDeclaration(
+            &m, llvm::Intrinsic::spv_cooperative_matrix_muladd,
+            {matrixType, a->getType(), bMat->getType(), c->getType()});
+        return b.CreateCall(f, {a, bMat, c}, "cm.mma");
+    }
+    // result = OpCompositeConstruct value (single-scalar splat; overloaded on
+    // result matrix type then scalar value type).
+    llvm::Value* coopMatrixSplat(llvm::IRBuilderBase& b, llvm::Module& m,
+                                 llvm::Value* value,
+                                 llvm::Type* matrixType) override {
+        llvm::Function* f = llvm::Intrinsic::getOrInsertDeclaration(
+            &m, llvm::Intrinsic::spv_cooperative_matrix_splat,
+            {matrixType, value->getType()});
+        return b.CreateCall(f, {value}, "cm.splat");
+    }
+#else
+    // Stock-LLVM build: the cooperative-matrix ops need the fork intrinsics.
+    llvm::Value* coopMatrixLoad(llvm::IRBuilderBase&, llvm::Module&, llvm::Value*,
+                                llvm::Value*, llvm::Value*, llvm::Type*) override {
+        coopMatrixNoForkToolchain();
+    }
+    void coopMatrixStore(llvm::IRBuilderBase&, llvm::Module&, llvm::Value*,
+                         llvm::Value*, llvm::Value*, llvm::Value*) override {
+        coopMatrixNoForkToolchain();
+    }
+    llvm::Value* coopMatrixMulAdd(llvm::IRBuilderBase&, llvm::Module&, llvm::Value*,
+                                  llvm::Value*, llvm::Value*, llvm::Type*) override {
+        coopMatrixNoForkToolchain();
+    }
+    llvm::Value* coopMatrixSplat(llvm::IRBuilderBase&, llvm::Module&, llvm::Value*,
+                                 llvm::Type*) override {
+        coopMatrixNoForkToolchain();
     }
 #endif
 

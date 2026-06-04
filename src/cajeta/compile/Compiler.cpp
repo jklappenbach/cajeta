@@ -187,7 +187,11 @@ namespace cajeta {
             std::vector<cajeta::TypeParameter> params;
             for (auto* tp : tps->typeParameter()) {
                 cajeta::TypeParameter param(tp->identifier()->getText());
-                if (auto* bound = tp->typeBound()) {
+                if (auto* pt = tp->primitiveType()) {
+                    // Non-type (integer-constant) parameter: `primitiveType identifier`.
+                    param.isNonType = true;
+                    param.nonTypePrimitive = pt->getText();
+                } else if (auto* bound = tp->typeBound()) {
                     for (auto* tt : bound->typeType()) {
                         if (auto* coi = tt->classOrInterfaceType()) {
                             param.bounds.push_back(cajeta::QualifiedName::fromContext(coi));
