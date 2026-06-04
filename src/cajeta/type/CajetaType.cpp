@@ -309,7 +309,13 @@ namespace cajeta {
         FP_OPAQUE_ENTRY("float8e4m3fnuz", 8, FLOAT8E4M3FNUZ_TYPE_ID);
         FP_OPAQUE_ENTRY("float8e5m2fnuz", 8, FLOAT8E5M2FNUZ_TYPE_ID);
         #undef FP_OPAQUE_ENTRY
-        NATIVE_TYPE_ENTRY("float16", llvm::Type::getBFloatTy(ctx), FLOAT16_TYPE_ID);
+        // `float16` is IEEE-754 binary16 (LLVM `half`) — the standard meaning of
+        // "float16", and the element format the hardware cooperative-matrix path
+        // (SPV_KHR_cooperative_matrix → OpTypeFloat 16) and the RADV WMMA f16→f32
+        // device config require. (bfloat16 is a *distinct* format with the same
+        // bit-width but a wider exponent; it gets its own future `bfloat16` keyword
+        // and maps to LLVM `bfloat`. Don't conflate the two.)
+        NATIVE_TYPE_ENTRY("float16", llvm::Type::getHalfTy(ctx), FLOAT16_TYPE_ID);
         NATIVE_TYPE_ENTRY("float32", llvm::Type::getFloatTy(ctx), FLOAT32_TYPE_ID);
         NATIVE_TYPE_ENTRY("float64", llvm::Type::getDoubleTy(ctx), FLOAT64_TYPE_ID);
         NATIVE_TYPE_ENTRY("float128", llvm::Type::getFP128Ty(ctx), FLOAT128_TYPE_ID);

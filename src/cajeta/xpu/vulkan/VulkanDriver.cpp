@@ -391,6 +391,91 @@ bool VulkanDriver::rayQueryAvailable() {
     return ok;
 }
 
+bool VulkanDriver::coopMatrixAvailable() {
+    // Self-contained probe (mirrors rayQueryAvailable): load libvulkan, make a
+    // throwaway 1.3 instance, and check the first compute device's
+    // cooperative-matrix config list for the exact shape CM5 dispatches —
+    // 16x16x16, Subgroup scope, A=B=f16, C=Result=f32. No logical device.
+    void* lib = nullptr;
+#if defined(__APPLE__)
+    for (const char* name : {"libvulkan.1.dylib", "libvulkan.dylib",
+                             "libMoltenVK.dylib"}) {
+#else
+    for (const char* name : {"libvulkan.so.1", "libvulkan.so"}) {
+#endif
+        lib = dlopen(name, RTLD_NOW | RTLD_LOCAL);
+        if (lib) break;
+    }
+    if (!lib) return false;
+    auto gipa = reinterpret_cast<PFN_vkGetInstanceProcAddr>(
+        dlsym(lib, "vkGetInstanceProcAddr"));
+    if (!gipa) { dlclose(lib); return false; }
+    auto createInstance = reinterpret_cast<PFN_vkCreateInstance>(
+        gipa(VK_NULL_HANDLE, "vkCreateInstance"));
+    if (!createInstance) { dlclose(lib); return false; }
+    VkApplicationInfo app{};
+    app.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
+    app.apiVersion = VK_API_VERSION_1_3;
+    VkInstanceCreateInfo ici{};
+    ici.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
+    ici.pApplicationInfo = &app;
+    VkInstance inst = VK_NULL_HANDLE;
+    if (createInstance(&ici, nullptr, &inst) != VK_SUCCESS) {
+        dlclose(lib);
+        return false;
+    }
+    auto destroyInstance = reinterpret_cast<PFN_vkDestroyInstance>(
+        gipa(inst, "vkDestroyInstance"));
+    auto enumDevs = reinterpret_cast<PFN_vkEnumeratePhysicalDevices>(
+        gipa(inst, "vkEnumeratePhysicalDevices"));
+    auto getQueueProps =
+        reinterpret_cast<PFN_vkGetPhysicalDeviceQueueFamilyProperties>(
+            gipa(inst, "vkGetPhysicalDeviceQueueFamilyProperties"));
+    auto getCoopProps =
+        reinterpret_cast<PFN_vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR>(
+            gipa(inst, "vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR"));
+
+    bool ok = false;
+    if (destroyInstance && enumDevs && getQueueProps && getCoopProps) {
+        uint32_t count = 0;
+        enumDevs(inst, &count, nullptr);
+        std::vector<VkPhysicalDevice> devs(count);
+        if (count) enumDevs(inst, &count, devs.data());
+        for (VkPhysicalDevice pd : devs) {
+            uint32_t qn = 0;
+            getQueueProps(pd, &qn, nullptr);
+            std::vector<VkQueueFamilyProperties> qp(qn);
+            if (qn) getQueueProps(pd, &qn, qp.data());
+            bool compute = false;
+            for (auto& q : qp)
+                if (q.queueFlags & VK_QUEUE_COMPUTE_BIT) { compute = true; break; }
+            if (!compute) continue;
+
+            uint32_t pn = 0;
+            if (getCoopProps(pd, &pn, nullptr) != VK_SUCCESS || pn == 0) continue;
+            std::vector<VkCooperativeMatrixPropertiesKHR> props(pn);
+            for (auto& p : props)
+                p.sType = VK_STRUCTURE_TYPE_COOPERATIVE_MATRIX_PROPERTIES_KHR;
+            if (getCoopProps(pd, &pn, props.data()) != VK_SUCCESS) continue;
+            for (auto& p : props) {
+                if (p.MSize == 16 && p.NSize == 16 && p.KSize == 16 &&
+                    p.scope == VK_SCOPE_SUBGROUP_KHR &&
+                    p.AType == VK_COMPONENT_TYPE_FLOAT16_KHR &&
+                    p.BType == VK_COMPONENT_TYPE_FLOAT16_KHR &&
+                    p.CType == VK_COMPONENT_TYPE_FLOAT32_KHR &&
+                    p.ResultType == VK_COMPONENT_TYPE_FLOAT32_KHR) {
+                    ok = true;
+                    break;
+                }
+            }
+            if (ok) break;
+        }
+    }
+    if (destroyInstance) destroyInstance(inst, nullptr);
+    dlclose(lib);
+    return ok;
+}
+
 VulkanDriver::Buffer VulkanDriver::alloc(std::size_t bytes) {
     if (!impl || bytes == 0) return 0;
     Impl& d = *impl;
@@ -619,6 +704,7 @@ struct VulkanDriver::Impl {};
 VulkanDriver::~VulkanDriver() = default;
 bool VulkanDriver::available() { return false; }
 bool VulkanDriver::rayQueryAvailable() { return false; }
+bool VulkanDriver::coopMatrixAvailable() { return false; }
 bool VulkanDriver::init() { return false; }
 VulkanDriver::Buffer VulkanDriver::alloc(std::size_t) { return 0; }
 bool VulkanDriver::upload(Buffer, const void*, std::size_t) { return false; }
