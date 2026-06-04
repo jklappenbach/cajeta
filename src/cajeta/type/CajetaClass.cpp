@@ -630,6 +630,21 @@ namespace cajeta {
         auto* lctx = module->getLlvmContext();
         auto fieldLayoutType = [&](const StructurePropertyPtr& p) -> llvm::Type* {
             CajetaTypePtr t = p->getType();
+            // A null field type at layout time means the declared type
+            // never resolved. visitFieldDeclaration's guard catches the
+            // common path, but a class carrying an @Native method is
+            // prototyped during prelude codegen — before that visitor
+            // guard runs — so an unresolved field type (e.g. `bool`, which
+            // isn't a primitive; the canonical name is `boolean`) reaches
+            // here and used to segfault at `t->getLlvmType()`. Emit the
+            // same diagnostic shape instead of crashing.
+            if (!t) {
+                throw Exception(
+                    "unknown type for field '" + p->getName()
+                        + "' in '" + toCanonical()
+                        + "'; not a primitive, native, or user-defined type",
+                    "CAJETA_ERROR_UNKNOWN_TYPE");
+            }
             if (dynamic_pointer_cast<CajetaArray>(t)) {
                 return llvm::PointerType::get(*lctx, 0);
             }

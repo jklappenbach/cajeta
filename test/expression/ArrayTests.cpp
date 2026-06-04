@@ -172,3 +172,55 @@ TEST(ArrayTests, twoDimSizeOfInner) {
     auto fn = jit->lookup<int64_t (*)()>("run");
     EXPECT_EQ(fn(), 3);
 }
+
+// --- field-read as array dimension (l-value → r-value coercion) ----------------
+// Regression: `new T[Klass.STATIC]` / `new T[this.field]` mis-lowered the
+// dimension. A static-final field read returns the GlobalVariable, an instance
+// field read returns a struct GEP — neither is an AllocaInst, so the old
+// alloca-only load in ArrayCreatorRest left the dimension a `ptr`, and the
+// CreateIntCast below it sext'd a pointer → "SExt only operates on integer"
+// IR-verify failure. Now routed through loadIfLValue, mirroring the same fix
+// ArrayIndexExpression needed (Expression.cpp). Surfaced by AsyncWriter's
+// `new int8[AsyncWriter.DEFAULT_BUFFER]` and AsyncReader's `new int8[this.chunkSize]`.
+
+TEST(ArrayTests, staticFinalFieldAsArrayDimension) {
+    auto src =
+        "package test;\n"
+        "public final class Cfg {\n"
+        "    public static final int32 CAP = 6;\n"
+        "}\n"
+        "public final class A {\n"
+        "    public static int64 run() {\n"
+        "        int32[] arr = new int32[Cfg.CAP];\n"
+        "        return arr.count();\n"
+        "    }\n"
+        "}\n";
+    auto jit = CajetaJit::compile(src, "test.A");
+    auto fn = jit->lookup<int64_t (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    EXPECT_EQ(fn(), 6);
+}
+
+TEST(ArrayTests, instanceFieldAsArrayDimension) {
+    auto src =
+        "package test;\n"
+        "public final class Buf {\n"
+        "    public int32 chunkSize;\n"
+        "    public Buf(int32 n) { this.chunkSize = n; }\n"
+        "    public int32 make() {\n"
+        "        int32[] arr = new int32[this.chunkSize];\n"
+        "        arr[this.chunkSize - 1] = 7;\n"
+        "        return arr[this.chunkSize - 1];\n"
+        "    }\n"
+        "}\n"
+        "public final class A {\n"
+        "    public static int32 run() {\n"
+        "        Buf b = new Buf(4);\n"
+        "        return b.make();\n"
+        "    }\n"
+        "}\n";
+    auto jit = CajetaJit::compile(src, "test.A");
+    auto fn = jit->lookup<int32_t (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    EXPECT_EQ(fn(), 7);
+}
