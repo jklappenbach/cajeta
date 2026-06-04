@@ -254,7 +254,11 @@ public final class HttpSerializer {
             boolean hasTe = headers.contains("Transfer-Encoding");
             if (!hasLen && !hasTe) {
                 String lenValue = HttpSerializer.decimalString(bodyLen);
-                this.writeHeaderLine("Content-Length", lenValue);
+                // The Headers map lowercases stored names, and the golden
+                // wire vectors are all-lowercase; emit the auto-supplied
+                // framing header lowercased to match (field names are
+                // case-insensitive — RFC 7230 §3.2).
+                this.writeHeaderLine("content-length", lenValue);
             }
         }
         this.appendCrlf();                      // blank line ends the head
@@ -269,7 +273,7 @@ public final class HttpSerializer {
         this.writeHeaderLines(headers);
         if (!headers.contains("Transfer-Encoding")) {
             String teValue = HttpSerializer.lit("chunked");
-            this.writeHeaderLine("Transfer-Encoding", teValue);
+            this.writeHeaderLine("transfer-encoding", teValue);
         }
         this.appendCrlf();
     }
@@ -350,13 +354,14 @@ public final class HttpSerializer {
      * for tests and for the text-protocol debug path.
      */
     public #String toStringValue() {
-        int8[] copy = new int8[this.size];
+        int32 n = this.size;
+        int8[] copy = new int8[n];
         int32 i = 0;
-        while (i < this.size) {
+        while (i < n) {
             copy[i] = this.buf[i];
             i = i + 1;
         }
-        return heap String(#copy, this.size);
+        return heap String(#copy, n);
     }
 
     // -- byte-buffer primitives -----------------------------------------------
@@ -370,7 +375,8 @@ public final class HttpSerializer {
     void appendBytes(int8[] bytes, int32 n) {
         int32 i = 0;
         while (i < n) {
-            this.append(bytes[i]);
+            int8 b = bytes[i];
+            this.append(b);
             i = i + 1;
         }
     }
@@ -407,7 +413,8 @@ public final class HttpSerializer {
         }
         while (nd > 0) {
             nd = nd - 1;
-            this.append(tmp[nd]);
+            int8 b = tmp[nd];
+            this.append(b);
         }
     }
 
@@ -438,7 +445,8 @@ public final class HttpSerializer {
         }
         while (nd > 0) {
             nd = nd - 1;
-            this.append(tmp[nd]);
+            int8 b = tmp[nd];
+            this.append(b);
         }
     }
 

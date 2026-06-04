@@ -365,7 +365,13 @@ public class WsFrameDecoder {
             // BufferPool.acquire hand-off discipline.
             int8[] pay = this.payBuf;
             this.payBuf = new int8[0];
-            WsFrame f = WsFrame.of(this.curFin, this.curOpcode, this.curMasked, #pay);
+            // Bind the boolean/int header fields to named locals before the
+            // call — a boolean field loaded directly into a call argument can
+            // mistype (the same family as the array-element-as-arg bug).
+            boolean fin = this.curFin;
+            int32 op = this.curOpcode;
+            boolean masked = this.curMasked;
+            WsFrame f = WsFrame.of(fin, op, masked, #pay);
             this.enqueue(f);
             // Reset header accumulators for the next frame.
             this.payRead = (int64) 0;

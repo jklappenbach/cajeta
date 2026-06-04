@@ -231,7 +231,8 @@ public class BodyReader {
         while (i < length) {
             if (this.complete) {
                 // Past the body boundary: everything is the next message.
-                this.appendTail(data[i]);
+                int8 tb = data[i];
+                this.appendTail(tb);
                 i = i + 1;
                 continue;
             }
@@ -454,9 +455,10 @@ public class BodyReader {
      * streaming consumption.
      */
     public #int8[] drain() {
-        int8[] piece = new int8[this.outLen];
+        int32 n = this.outLen;
+        int8[] piece = new int8[n];
         int32 i = 0;
-        while (i < this.outLen) {
+        while (i < n) {
             piece[i] = this.out[i];
             i = i + 1;
         }
@@ -472,9 +474,10 @@ public class BodyReader {
      * [`leftoverLength`](#) bytes.
      */
     public #int8[] leftover() {
-        int8[] lo = new int8[this.tailLen];
+        int32 n = this.tailLen;
+        int8[] lo = new int8[n];
         int32 i = 0;
-        while (i < this.tailLen) {
+        while (i < n) {
             lo[i] = this.tail[i];
             i = i + 1;
         }
