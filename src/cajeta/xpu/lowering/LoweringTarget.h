@@ -190,6 +190,13 @@ namespace xpu {
             llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* rqPtr,
             llvm::Value* intersection);
 
+        // rq.candidatePrimitiveIndex() → i32 — which indexed primitive the
+        // candidate intersection hit (RTNN exact-distance refinement).
+        // (→ OpRayQueryGetIntersectionPrimitiveIndexKHR.)
+        virtual llvm::Value* rayQueryIntersectionPrimitiveIndex(
+            llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* rqPtr,
+            llvm::Value* intersection);
+
         // The LLVM type of a Buffer<T> when passed BY VALUE as a @Device helper
         // argument — i.e. the type of the buffer base held in bufferBases. A
         // kernel buffer param arrives via the backend's mechanism (a pointer arg

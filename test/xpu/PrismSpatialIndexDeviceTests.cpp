@@ -89,6 +89,55 @@ const char* kDriver =
     "    }\n"
     "}\n";
 
+// Exact-L2 driver (P1.1): 3 points; the box (L-inf, half-extent 1.0) approximation
+// reports all 3 as neighbours of the origin, but only P0 is within Euclidean 0.7 —
+// radiusExact uses the candidate primitive index to refine to the true distance.
+const char* kExactDriver =
+    "package test;\n"
+    "import cajeta.xpu.core.Buffer;\n"
+    "import cajeta.xpu.core.Stream;\n"
+    "import prism.spatial.SpatialIndex;\n"
+    "public class PrismExact {\n"
+    "    public static int32 run() {\n"
+    "        uint32 np = 3;\n"
+    "        float32[] pts = new float32[np * 3];\n"
+    "        pts[0]=0.0f; pts[1]=0.0f; pts[2]=0.0f;\n"   // P0 origin
+    "        pts[3]=0.9f; pts[4]=0.0f; pts[5]=0.0f;\n"   // P1 L2=0.9
+    "        pts[6]=0.6f; pts[7]=0.6f; pts[8]=0.0f;\n"   // P2 L2~0.849
+    "        SpatialIndex idx = heap SpatialIndex(pts, np, 1.0f);\n"  // build radius 1.0
+    "        float32[] hdx = new float32[np]; float32[] hdy = new float32[np]; float32[] hdz = new float32[np];\n"
+    "        hdx[0]=0.0f; hdy[0]=0.0f; hdz[0]=0.0f;\n"
+    "        hdx[1]=0.9f; hdy[1]=0.0f; hdz[1]=0.0f;\n"
+    "        hdx[2]=0.6f; hdy[2]=0.6f; hdz[2]=0.0f;\n"
+    "        Buffer<float32> dx = heap Buffer<float32>(0, np);\n"
+    "        Buffer<float32> dy = heap Buffer<float32>(0, np);\n"
+    "        Buffer<float32> dz = heap Buffer<float32>(0, np);\n"
+    "        dx.allocate(); dy.allocate(); dz.allocate();\n"
+    "        dx.upload(hdx); dy.upload(hdy); dz.upload(hdz);\n"
+    "        uint32 n = 1;\n"
+    "        float32[] hq = new float32[n]; hq[0]=0.0f;\n"
+    "        Buffer<float32> qx = heap Buffer<float32>(0, n);\n"
+    "        Buffer<float32> qy = heap Buffer<float32>(0, n);\n"
+    "        Buffer<float32> qz = heap Buffer<float32>(0, n);\n"
+    "        qx.allocate(); qy.allocate(); qz.allocate();\n"
+    "        qx.upload(hq); qy.upload(hq); qz.upload(hq);\n"
+    "        uint32[] hb = new uint32[n]; hb[0]=99;\n"
+    "        Buffer<uint32> oExact = heap Buffer<uint32>(0, n);\n"
+    "        Buffer<uint32> oBox = heap Buffer<uint32>(0, n);\n"
+    "        oExact.allocate(); oBox.allocate();\n"
+    "        oExact.upload(hb); oBox.upload(hb);\n"
+    "        idx.radiusExact(dx, dy, dz, qx, qy, qz, oExact, n, 0.7f);\n"
+    "        idx.countWithin(qx, qy, qz, oBox, n);\n"
+    "        uint32[] hexact = new uint32[n]; uint32[] hbox = new uint32[n];\n"
+    "        oExact.download(hexact); oBox.download(hbox);\n"
+    "        dx.free(); dy.free(); dz.free(); qx.free(); qy.free(); qz.free();\n"
+    "        oExact.free(); oBox.free();\n"
+    "        if (hbox[0] != 3) { return 300 + (int32) hbox[0]; }\n"   // box approx over-counts
+    "        if (hexact[0] != 1) { return 200 + (int32) hexact[0]; }\n" // exact L2 0.7 -> only P0
+    "        return 888;\n"
+    "    }\n"
+    "}\n";
+
 } // namespace
 
 // The Prism SpatialIndex primitive, end to end on a real RT device: build a BVH
@@ -116,4 +165,31 @@ TEST(PrismSpatialIndexDeviceTests, fixedRadiusCountOnDevice) {
     int r = fn();
     EXPECT_EQ(r, 777) << "fail code " << r
                       << " (10x: countWithin returned the wrong neighbour count)";
+}
+
+// P1.1 — exact-L2 refinement via the candidate primitive index (the new
+// OpRayQueryGetIntersectionPrimitiveIndexKHR op). The box approximation over-counts
+// (3 of 3 boxes contain the origin); radiusExact recovers each candidate's data
+// point and keeps only the one within the true Euclidean radius (1).
+TEST(PrismSpatialIndexDeviceTests, exactL2RefinementOnDevice) {
+    if (!VulkanDriver::rayQueryAvailable()) {
+        GTEST_SKIP() << "no Vulkan ray-query (acceleration-structure) device";
+    }
+    std::string lib = readSpatialIndexSource();
+    if (lib.empty()) {
+        GTEST_SKIP() << "cajeta-prism SpatialIndex.cajeta not found beside checkout";
+    }
+    std::map<std::string, std::string> sources = {
+        {"prism.spatial.SpatialIndex", lib},
+        {"test.PrismExact", kExactDriver},
+    };
+    CajetaJit::Options o;
+    o.xpuBackends = {cajeta::xpu::Backend::Spirv};
+    auto jit = CajetaJit::compile(sources, "test.PrismExact", o);
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<int (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    int r = fn();
+    EXPECT_EQ(r, 888) << "fail code " << r
+                      << " (3xx: box approx != 3; 2xx: exact-L2 count != 1)";
 }

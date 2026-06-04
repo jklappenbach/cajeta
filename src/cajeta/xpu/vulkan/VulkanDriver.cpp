@@ -147,7 +147,13 @@ struct VulkanDriver::Impl {
 };
 
 bool VulkanDriver::Impl::bringUp(Impl& d) {
+    // MV1: macOS loads MoltenVK (Vulkan->Metal); no native Vulkan ICD there.
+#if defined(__APPLE__)
+    for (const char* name : {"libvulkan.1.dylib", "libvulkan.dylib",
+                             "libMoltenVK.dylib"}) {
+#else
     for (const char* name : {"libvulkan.so.1", "libvulkan.so"}) {
+#endif
         d.lib = dlopen(name, RTLD_NOW | RTLD_LOCAL);
         if (d.lib) break;
     }
@@ -290,7 +296,13 @@ bool VulkanDriver::rayQueryAvailable() {
     // and check the first compute-capable device for the ray-query extension +
     // feature set. No logical device is created. Torn down before returning.
     void* lib = nullptr;
+    // MV1: macOS loads MoltenVK (Vulkan->Metal); no native Vulkan ICD there.
+#if defined(__APPLE__)
+    for (const char* name : {"libvulkan.1.dylib", "libvulkan.dylib",
+                             "libMoltenVK.dylib"}) {
+#else
     for (const char* name : {"libvulkan.so.1", "libvulkan.so"}) {
+#endif
         lib = dlopen(name, RTLD_NOW | RTLD_LOCAL);
         if (lib) break;
     }

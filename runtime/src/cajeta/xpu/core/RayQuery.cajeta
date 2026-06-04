@@ -93,4 +93,15 @@ public final class RayQuery {
     public uint32 candidateType() {
         return 0;
     }
+
+    /**
+     * Device-only intrinsic: the primitive (AABB / triangle) index of the current
+     * CANDIDATE intersection — which indexed datum this candidate corresponds to.
+     * The RTNN exact-distance refinement reads this inside the proceed() loop to
+     * recover the data point and compute the true L2 distance (vs the AABB-overlap
+     * L-infinity approximation). Maps to OpRayQueryGetIntersectionPrimitiveIndexKHR.
+     */
+    public uint32 candidatePrimitiveIndex() {
+        return 0;
+    }
 }
