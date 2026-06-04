@@ -104,12 +104,20 @@ public class AsyncReader implements AsyncIterator<int8[]> {
      * closes it.
      */
     public AsyncReader(TcpStream stream) {
+        // Bind the static-final to a local before using it as an array
+        // dimension / ctor arg: a direct `new int8[AsyncReader.DEFAULT_BUFFER]`
+        // mis-lowers the static-field read as the global's *address* (`ptr`),
+        // which the array-size path `sext`s to i64 — an invalid-IR verify
+        // failure ("SExt only operates on integer"). A named int32 local pins
+        // the value load. (Compiler-gap workaround, same class as the
+        // documented `new T[this.field]` mistype.)
+        int32 c = AsyncReader.DEFAULT_BUFFER;
         this.stream = stream;
-        this.cap = AsyncReader.DEFAULT_BUFFER;
-        this.buf = heap RingBuffer(AsyncReader.DEFAULT_BUFFER, 0, AsyncReader.DEFAULT_BUFFER);
-        this.fill = new int8[AsyncReader.DEFAULT_BUFFER];
+        this.cap = c;
+        this.buf = heap RingBuffer(c, 0, c);
+        this.fill = new int8[c];
         this.eof = false;
-        this.chunkSize = AsyncReader.DEFAULT_BUFFER;
+        this.chunkSize = c;
     }
 
     /**
@@ -397,12 +405,20 @@ public class AsyncReader implements AsyncIterator<int8[]> {
      * actually read (`<= chunkSize`).
      */
     public Optional<int8[]> next() {
-        int8[] chunk = new int8[this.chunkSize];
-        int32 n = this.read(chunk, 0, this.chunkSize);
+        // `new int8[this.chunkSize]` mis-lowers the field read as a pointer
+        // (the `new T[this.field]` mistype) → bind to a local int32 first.
+        int32 sz = this.chunkSize;
+        int8[] chunk = new int8[sz];
+        int32 n = this.read(chunk, 0, sz);
         if (n == 0) {
-            return heap Optional<int8[]>(false, null);   // terminal: stream exhausted
+            // `stack` (not `heap`) Optional: the AsyncIterator.next() contract
+            // returns a *borrow* (no `#` on the interface signature), exactly
+            // as ArrayStream/Channel do — a `heap` allocation here would need a
+            // `#`-marked return the interface doesn't have
+            // (CAJETA_ERROR_FRESH_RETURN_NEEDS_TRANSFER).
+            return stack Optional<int8[]>(false, null);   // terminal: stream exhausted
         }
         int8[] piece = AsyncReader.copyExact(chunk, n);
-        return heap Optional<int8[]>(true, #piece);
+        return stack Optional<int8[]>(true, #piece);
     }
 }

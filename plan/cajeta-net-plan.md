@@ -1287,9 +1287,13 @@ Anything beyond that (Phase 12) is v1.x or v2.
 - **NET-9.6** — done. Limits + hardening on the NET-9.1/9.4 HttpServer: three new pure-logic stdlib types under `runtime/src/cajeta/net/http/` — `ServerLimits` (head-read deadline = slowloris mitigation, body-read deadline, max body size, Expect:100-continue toggle; `of()` treats non-positive as disabled), `PayloadTooLargeException` (413 leaf overriding virtual `httpStatus()`), `ExpectContinue` (PROCEED/SEND_CONTINUE/417/413 decision, HTTP/1.1-only, case-insensitive). Wired into HttpServer via a golden-testable pure path (`handleRequestWithLimits`/`expectAction`/`continueResponse`) and a live hardened loop (`serveConnectionWithLimits`/`serveLoopWithLimits`/`readExchangeWithLimits`/`readBodyWithLimits`) reading the head under a deadline, flushing interim 100 Continue, enforcing a running body-size cap on chunked uploads, dropping on TimedOutException (slowloris eviction). Deadline reads ride new `AsyncReader.readWithin` → existing `TcpStream.readWithin`. `bindAddressWithModel` now runs the hardened loop; no-limits primitives stay intact. 15 golden gtests in `test/parser/HttpServerHardeningTests.cpp`. Live slowloris round-trip awaits the same in-scheduler harness the other NET-4/9 live rows do. No build-file edits (CONFIGURE_DEPENDS-globbed). No full cmake build (Windows binary-lock hazard).
 - **NET-10.6** — partial (live fiber round-trip rows belong to NET-10.7). WebSocket API in `cajeta.net.ws` over NET-10.3/10.4/10.5: `WsProtocol` (pure read-side engine threading each WsFrame through the fragmentation reassembler + control-frame logic: auto-pong w/ opt-out, pong-swallow, bidirectional close handshake, terminal-after-close), `WsReadAction` (pure decision value NONE/MESSAGE/SEND_FRAME/PING/CLOSED with takeMessage/takeFrame detach), `WebSocket` façade (send/sendBinary/receive/close over borrowed AsyncReader/AsyncWriter, fiber-aware write Lock serializing every frame emission — the plan's write-mutex guarantee — role-aware masking). Protocol engine FULLY implemented + golden-tested: 12 JIT cases in `test/parser/WsProtocolTests.cpp`. Marked partial because the façade's LIVE concurrent-fiber rows (concurrentReadWriteFibers, textAndBinaryRoundTrip, wssOverTlsRoundTrips) need the NET-10.7 client/server entry points + a CSPRNG for RFC-6455 §5.3 client masking (placeholder key pending NET-10.1/10.7) — those end-to-end rows belong to NET-10.7. **Blocked on:** NET-10.7. No build-file edits. No full cmake build (Windows binary-lock hazard).
 
+### Wave 11 (socket-lowering increment b3 — async TCP surface)
+
+- **b3** — done (2026-06-03/04). Async TCP surface live end-to-end through the JIT. **Decision: `@Native` forwarders, not receiver-dispatch** — the compiler's `@Native` annotation is fully wired (`Method::emitNativeForwardingBody` emits a thin forwarding call to the named C symbol; `final`+static dispatch makes it direct), so `Reactor.cajeta` binds the 11 `__cajeta_net_reactor_*/_await_*` intrinsics directly. b1/b2 used receiver-dispatch only because the sync ops stub bodies needed call-site lowering on user-typed `TcpStream` receivers; the reactor intrinsics have no such receiver, so `@Native` is the natural fit. **Changes:** (1) added `readAsync`/`writeAsync`/`writeAllAsync`/`readWithin` to `TcpStream.cajeta` + `acceptAsync` to `TcpListener.cajeta` — pure-Cajeta readiness loops over the b1/b2-lowered recv/send/accept + `@Native` WouldBlock classifier (`__cajeta_net_is_wouldblock`/`_last_error`/`_set_nonblocking_tracked`) + `Reactor.awaitReadable/awaitWritable/awaitReadableTimed`; (2) un-gated `cajeta/net/reactor` (Reactor) and moved `AsyncReader`/`AsyncWriter`/`RingBuffer` from `net/socket` into `cajeta/net` (the JIT compile path enforces package==dir, unlike the embed glob — so they had to physically live where their `package cajeta.net` says); the b5 server stack stays gated under the new `net/socket/server` subdir; (3) SIGPIPE `SIG_IGN` at POSIX net init (see checklist). **Proof:** `test/expression/NetAsyncEchoTest.cpp` — 3 JIT loopback tests through a `Tasks.runBlocking` fiber (async echo, acceptAsync, AsyncReader/AsyncWriter buffered round-trip), all green. **Regression:** NetLoopbackEcho 2/2, NetOptionsUdp 2/2, ArrayTests 14/14, native NetReactor/NetReactorLifecycle/NetTimeoutDeregister/NetAsyncOps/NetSocket/NetSockaddr/NetUdpSocket all green (37 native). Pre-existing Windows-only flake `NetNonBlockingTests.wouldBlockClassifiedNotAsHardError` (WSAGetLastError clobber across calls) unaffected — b3's only native change is `#if !defined(_WIN32)`-guarded. **Deferred:** `connectAsync` (needs its own non-blocking-connect static lowering, not a readiness loop over an existing op — TODO in TcpStream.cajeta; blocks NET-3.3 connectAsync sub-item). **Compiler gaps hit + worked around (never-compiled-agent-code):** (a) **`bool` type alias + `@Native` forwarder in the same class → hard segfault in prelude codegen** — `boolean` works, `bool` crashes; fixed by `bool`→`boolean` throughout Reactor.cajeta (the only `bool` user). (b) **static-final / `this.field` as an array dimension (`new int8[AsyncWriter.DEFAULT_BUFFER]`, `new int8[this.chunkSize]`) mis-lowers the field read as the global's *address* → `sext ptr to i64` invalid-IR verify failure** — bound to a named int32 local. (c) **`heap Optional` returned from `AsyncReader.next()` whose `AsyncIterator.next()` interface signature has no `#`** → `FRESH_RETURN_NEEDS_TRANSFER`; switched to `stack Optional` (matching ArrayStream/Channel). All three are pre-existing compiler gaps the never-before-compiled async files surfaced.
+
 ### Run summary
 
-- **Waves executed:** 10.
+- **Waves executed:** 11.
 - **Completed / partial (56 line items):** NET-1.1, NET-6.1, NET-7.2, NET-11.1, NET-11.2, NET-11.3, NET-11.5, NET-13.2, NET-1.2, NET-1.8, NET-6.2, NET-6.4, NET-7.1, NET-1.3, NET-1.4, NET-1.5, NET-2.1, NET-6.3, NET-6.5, NET-7.3, NET-7.5, NET-11.6, NET-1.6, NET-1.7, NET-2.2, NET-7.4, NET-7.6, NET-7.7, NET-13.1, NET-2.4, NET-2.5, NET-2.6, NET-3.1, NET-13.3, NET-3.2, NET-3.3, NET-13.4, NET-3.5, NET-4.1, NET-11.4, NET-3.4, NET-4.2, NET-4.3, NET-9.1, NET-10.3, NET-4.4, NET-4.5, NET-9.2, NET-9.3, NET-9.4, NET-10.2, NET-10.4, NET-10.5, NET-10.8, NET-9.6, NET-10.6. (Of these, seven remain *partial* pending the live in-scheduler JIT harness / compiler net-receiver lowering: NET-1.3, NET-1.5, NET-2.6, NET-3.1, NET-3.3, NET-9.1, NET-10.6.)
 - **Deferred (28 line items, each with its blocking id):**
   - NET-12.1 — blocked on: post-v1 (plan-deferred)
@@ -1376,12 +1380,24 @@ out of `net/socket` back into `net` as they go green.
       buffer/ttl/linger option pairs (get/setsockopt intrinsics) and `UdpSocket`
       `send`/`recv`/`bind`/`close` (sendto/recvfrom). Un-gate `SocketOption`,
       `UdpSocket`.
-- [ ] **b3 — Async reactor + fiber park/wake.** Lower `readAsync`/`writeAsync`/
-      `connectAsync`/`readWithin` via `__cajeta_net_await_readable/_writable`
-      (which park the fiber on the reactor and resume on readiness). Un-gate
-      `AsyncReader`/`AsyncWriter`/`Reactor`; wire the reactor lifecycle into the
-      carrier. Unblocks the deferred NET-3.x async ops + NET-2.3 (`Task<T>`
-      method return type — the async-lowering dependency).
+- [x] **b3 — Async reactor + fiber park/wake.** DONE (2026-06-03). `readAsync`/
+      `writeAsync`/`writeAllAsync`/`readWithin` (TcpStream) + `acceptAsync`
+      (TcpListener) are pure-Cajeta readiness loops over the b1/b2-lowered
+      recv/send/accept + the WouldBlock classifier + `Reactor.awaitReadable/
+      awaitWritable/awaitReadableTimed`. The reactor binds the
+      `__cajeta_net_await_readable/_writable/_reactor_*` intrinsics via `@Native`
+      (NOT receiver-dispatch — `@Native` forwarders are fully wired; chosen
+      because Reactor is internal plumbing and `final`+static dispatch makes the
+      forwarder direct). Un-gated `Reactor` (net/reactor) + `AsyncReader`/
+      `AsyncWriter`/`RingBuffer` (moved into `cajeta/net` so package==dir holds
+      on the JIT compile path; the b5 server stack stays gated under
+      net/socket/server). Proven by `test/expression/NetAsyncEchoTest.cpp` (3
+      JIT loopback tests through a `Tasks.runBlocking` fiber: async echo,
+      acceptAsync, AsyncReader/AsyncWriter buffered round-trip — all green).
+      DEFERRED: `connectAsync` (needs its own non-blocking-connect static
+      lowering — EINPROGRESS + awaitWritable + SO_ERROR — not a readiness loop
+      over an existing lowered op; TODO in TcpStream.cajeta, blocks NET-3.3
+      connectAsync sub-item). Unblocks the deferred NET-3.x async ops + NET-2.3.
 - [ ] **b4 — DNS resolve lowering.** Lower `Dns.resolve` via the
       `__cajeta_net_getaddrinfo*` intrinsics; un-gate `net/dns`.
 - [ ] **b5 — Server stacks.** Un-gate `Server`/`ServerBuilder`/`SharedPoolServer`/
@@ -1398,14 +1414,16 @@ out of `net/socket` back into `net` as they go green.
 Native layer is structured POSIX-native / Windows-shim (the user's preference) and
 reviewed clean except one real POSIX bug:
 
-- [ ] **SIGPIPE (REAL bug for *nix).** `__cajeta_net_send` relies on the *caller*
-      passing `MSG_NOSIGNAL` in `flags` ("the cajeta layer supplies it"), but the
-      b1 `TcpStream.write` lowering passes `flags=0`. On Linux/macOS, writing to a
-      closed peer then raises `SIGPIPE` → process death (invisible on Windows — no
-      SIGPIPE). **Fix:** `signal(SIGPIPE, SIG_IGN)` once at net init (POSIX branch
-      of the WSAStartup-equivalent `cajeta_net_ensure_init`) — platform-uniform,
-      removes reliance on a per-call flag, covers macOS too. Do this with the b3
-      reactor/init work or a dedicated POSIX pass.
+- [x] **SIGPIPE (REAL bug for *nix).** FIXED with b3 (2026-06-03). Added a
+      pthread_once-guarded `signal(SIGPIPE, SIG_IGN)` in the POSIX branch of
+      `cajeta_net_ensure_init` (runtime/native/cajeta_net_socket.c), which runs
+      at the first socket-creating op (always before any send). `#if
+      !defined(_WIN32)`-guarded (no-op on Windows). A broken-pipe write now
+      returns the EPIPE sentinel the cajeta layer maps to BrokenPipeException
+      instead of killing the process — platform-uniform, removes reliance on the
+      per-call MSG_NOSIGNAL flag, covers macOS. (Could not be exercised on the
+      Windows test host — no SIGPIPE there — but the native net suite stays
+      green and the guard compiles to nothing on Windows.)
 - [ ] **Build + run the net suites on an actual Linux (and macOS) host.** Everything
       below is correct-by-inspection but unverified off-Windows.
 

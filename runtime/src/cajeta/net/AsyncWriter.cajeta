@@ -80,9 +80,17 @@ public class AsyncWriter {
      * owns and closes it.
      */
     public AsyncWriter(TcpStream stream) {
+        // Bind the static-final to a local before using it as an array
+        // dimension: `new int8[AsyncWriter.DEFAULT_BUFFER]` mis-lowers the
+        // static-field read as the global's *address* (a `ptr`), which the
+        // array-size path then `sext`s to i64 — an invalid-IR verify failure
+        // ("SExt only operates on integer"). A named int32 local pins the
+        // value load. (Compiler-gap workaround; same class as the documented
+        // `new T[this.field]` mistype.)
+        int32 c = AsyncWriter.DEFAULT_BUFFER;
         this.stream = stream;
-        this.cap = AsyncWriter.DEFAULT_BUFFER;
-        this.buf = new int8[AsyncWriter.DEFAULT_BUFFER];
+        this.cap = c;
+        this.buf = new int8[c];
         this.size = 0;
     }
 
