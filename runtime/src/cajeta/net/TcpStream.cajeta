@@ -95,6 +95,104 @@ public class TcpStream {
         }
     }
 
+    // ----- Socket options (NET-1.6 / b2) -----
+    //
+    // Typed option methods — each is intrinsic-lowered at the call site to the
+    // dedicated NET-1.6 native helper, which holds the platform `level`/
+    // `optname` constant in C (`runtime/native/cajeta_net_socket_options.c`);
+    // the Cajeta surface passes only a portable boolean / int.
+
+    /**
+     * Enable / disable `TCP_NODELAY` — disabling Nagle's algorithm so small
+     * writes are sent immediately. Lowers to
+     * `__cajeta_net_set_nodelay(this.fd, on ? 1 : 0)`.
+     */
+    public void setNoDelay(boolean on) {
+        return;
+    }
+
+    /** Read `TCP_NODELAY` back. Lowers to
+     *  `__cajeta_net_get_nodelay(this.fd) != 0`. */
+    public boolean getNoDelay() {
+        return false;
+    }
+
+    /**
+     * Enable / disable `SO_KEEPALIVE`. Lowers to
+     * `__cajeta_net_set_keepalive(this.fd, on ? 1 : 0)`.
+     */
+    public void setKeepAlive(boolean on) {
+        return;
+    }
+
+    /** Read `SO_KEEPALIVE` back. Lowers to
+     *  `__cajeta_net_get_keepalive(this.fd) != 0`. */
+    public boolean getKeepAlive() {
+        return false;
+    }
+
+    /**
+     * Set the kernel **receive** buffer size in bytes (`SO_RCVBUF`). The kernel
+     * may round/clamp; read the effective value back with
+     * [`getRecvBufferSize`](#getRecvBufferSize). Lowers to
+     * `__cajeta_net_set_recvbuf(this.fd, bytes)`.
+     */
+    public void setRecvBufferSize(int32 bytes) {
+        return;
+    }
+
+    /** The effective `SO_RCVBUF` size in bytes. Lowers to
+     *  `__cajeta_net_get_recvbuf(this.fd)`. */
+    public int32 getRecvBufferSize() {
+        return 0;
+    }
+
+    /**
+     * Set the kernel **send** buffer size in bytes (`SO_SNDBUF`). Same
+     * round/clamp caveat as [`setRecvBufferSize`](#setRecvBufferSize). Lowers
+     * to `__cajeta_net_set_sendbuf(this.fd, bytes)`.
+     */
+    public void setSendBufferSize(int32 bytes) {
+        return;
+    }
+
+    /** The effective `SO_SNDBUF` size in bytes. Lowers to
+     *  `__cajeta_net_get_sendbuf(this.fd)`. */
+    public int32 getSendBufferSize() {
+        return 0;
+    }
+
+    /**
+     * Configure `SO_LINGER`. `on == false` disables linger; `on == true` makes
+     * `close()` block up to `seconds` flushing unsent data. Lowers to
+     * `__cajeta_net_set_linger(this.fd, on ? 1 : 0, seconds)`.
+     */
+    public void setLinger(boolean on, int32 seconds) {
+        return;
+    }
+
+    /** Read the `SO_LINGER` enable flag back (`true` iff linger is on). Lowers
+     *  to `__cajeta_net_get_linger(this.fd, &on, &secs)` returning the `on`
+     *  field. */
+    public boolean getLinger() {
+        return false;
+    }
+
+    /**
+     * Set the outbound unicast hop limit / TTL (`IP_TTL` for IPv4,
+     * `IPV6_UNICAST_HOPS` for IPv6; `0..255`). Lowers to
+     * `__cajeta_net_set_ttl(this.fd, isV6, ttl)`.
+     */
+    public void setTtl(int32 ttl) {
+        return;
+    }
+
+    /** The current outbound TTL / hop limit. Lowers to
+     *  `__cajeta_net_get_ttl(this.fd, isV6)`. */
+    public int32 getTtl() {
+        return 0;
+    }
+
     // ----- Lifecycle -----
 
     /**
