@@ -3370,6 +3370,32 @@ int32_t __cajeta_is_unrecoverable(void* throwable) {
     return 0;
 }
 
+// __cajeta_exc_matches — does the thrown object's runtime type match (is-a)
+// the catch clause's declared type? Generalizes __cajeta_is_unrecoverable: the
+// caller passes the catch type's #VTable global; we walk the thrown object's
+// vtable parent chain (parent at CAJETA_VTABLE_PARENT_OFFSET, the same chain the
+// unrecoverable check uses) and return 1 iff `catch_vtable` appears anywhere in
+// it — i.e. the thrown class IS the catch class or a descendant of it. This is
+// the runtime half of try/catch type dispatch (TryStatement emits one call per
+// catch clause, in source order, first match wins). A null `catch_vtable`
+// (a non-class / catch-all clause) is handled at the codegen level, not here.
+int32_t __cajeta_exc_matches(void* throwable, void* catch_vtable) {
+    if (!throwable || !catch_vtable) return 0;
+    // Same low-address guard as the unrecoverable walk: a legacy `throw 42`
+    // int-as-pointer must never be dereferenced for its vtable slot.
+    if ((uintptr_t) throwable < 4096) return 0;
+    void* vtable = *(void**) throwable;   // instance slot 0 = vtable ptr
+    // Defensive walk: cap the depth and sanity-check each vtable pointer is a
+    // real (high) address before dereferencing its parent slot. A malformed or
+    // uninitialized chain returns no-match rather than segfaulting the matcher.
+    for (int depth = 0; depth < 256; ++depth) {
+        if ((uintptr_t) vtable < 4096) break;
+        if (vtable == catch_vtable) return 1;
+        vtable = *(void**) ((char*) vtable + CAJETA_VTABLE_PARENT_OFFSET);
+    }
+    return 0;
+}
+
 // Forward decl — defined alongside __cajeta_throw further down.
 static void __cajeta_emit_uncaught(void* value, int is_unrec);
 
