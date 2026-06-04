@@ -7,7 +7,7 @@
 // lowers the kernel body, but the SPIR-V LoweringTarget forks the kernel
 // SIGNATURE (a `void main()` GLCompute entry, no params) and BUFFER ACCESS
 // (descriptor-set storage buffers via resource.handlefrombinding/getpointer,
-// since LLVM 22's SPIR-V backend has no raw-pointer kernel ABI and no BDA).
+// since LLVM 23's SPIR-V backend has no raw-pointer kernel ABI and no BDA).
 //
 // Two assertion layers:
 //   - IR structure (deterministic): hlsl.shader compute marker, the SPIR-V
@@ -707,7 +707,7 @@ TEST(XpuVulkanEmitTests, lowersMixedPrecisionCooperativeMatrixToSpirv) {
 
 // A workgroup-shared kernel with a barrier emits a SPIR-V module that is
 // strictly Vulkan-VALID — proving the barrier post-pass (SpirvBackend's
-// fixupControlBarriers) rewrites LLVM 22's forbidden SequentiallyConsistent
+// fixupControlBarriers) rewrites LLVM 23's forbidden SequentiallyConsistent
 // OpControlBarrier semantics to WorkgroupMemory|AcquireRelease. Without the
 // fixup this module fails `spirv-val` (VUID-StandaloneSpirv-MemorySemantics).
 TEST(XpuVulkanEmitTests, workgroupBarrierIsSpecValid) {

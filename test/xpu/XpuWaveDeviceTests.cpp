@@ -88,7 +88,7 @@ constexpr unsigned kVerify = 32;    // verify the first wave window
 // summed, so a real per-lane operand is needed to exercise the reduction. Over
 // a fully-occupied wave, sum(1) == the wave width, so every lane sees the same
 // value W ∈ {32, 64}. Dispatch block=64 (a multiple of both widths) so every
-// wave/subgroup is fully occupied. We avoid Wave.width() here because LLVM 22's
+// wave/subgroup is fully occupied. We avoid Wave.width() here because LLVM 23's
 // SPIR-V backend cannot select llvm.spv.wave.get.lane.count — a separate latent
 // gap unrelated to reduce — so the check is "all lanes agree on a valid wave
 // size" instead of comparing against width().

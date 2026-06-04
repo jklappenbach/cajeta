@@ -1,7 +1,7 @@
 //
 // CajetaXPU step 8 (increment C) — NVPTX PTX emission.
 //
-// First proof point: LLVM 22's in-tree NVPTX backend can lower a device
+// First proof point: LLVM 23's in-tree NVPTX backend can lower a device
 // llvm::Module to PTX text in THIS build (monolithic libLLVM, MinGW).
 // This isolates the toolchain risk (does NVPTX emit at all?) from the
 // later kernel-body-lowering risk — so it hand-builds a minimal kernel
@@ -251,7 +251,7 @@ TEST(XpuNvptxEmitTests, lowersTextureSampleToPtxTex) {
     EXPECT_NE(ptx.find("tex.2d"), std::string::npos) << ptx;
 }
 
-// ptxas assembles the SAXPY PTX into a cubin — proving LLVM 22's PTX is
+// ptxas assembles the SAXPY PTX into a cubin — proving LLVM 23's PTX is
 // accepted by the CUDA 12.9 assembler for sm_89. No GPU needed (ptxas is
 // a host tool); skipped if ptxas isn't installed.
 TEST(XpuNvptxEmitTests, assemblesSaxpyPtxToCubin) {

@@ -27,7 +27,7 @@ namespace {
 
 // SPIR-V StorageBuffer: storage-class enum value 12; the LLVM SPIR-V backend
 // represents its pointers in address space 11. Function (private) allocas live
-// in address space 0. (Probed against LLVM 22 + spirv-val, 2026-05-30.)
+// in address space 0. (Probed against LLVM 23 + spirv-val, 2026-05-30.)
 constexpr unsigned kStorageBufferSC = 12;
 constexpr unsigned kStorageBufferAS = 11;
 
