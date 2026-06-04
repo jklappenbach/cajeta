@@ -260,3 +260,132 @@ TEST(XpuCooperativeMatrixDeviceTests, kAccumulationMatmulOnDevice) {
             EXPECT_EQ(out[i * N + j], ref[i * N + j])
                 << "K-accum mismatch at (" << i << "," << j << ")";
 }
+
+// GEMM-2 — a full tiled M×N×K GEMM: C[rows×cols] = A[rows×depth] * B[depth×cols].
+// Each workgroup owns one 16×16 output tile (decoded from Workgroup.x()), zeroes
+// an accumulator, and loops over the depth dimension issuing one mma per K-tile —
+// the canonical cooperative-matrix matmul. rows/cols/depth arrive as scalar args
+// (lowered to single-element storage buffers on Vulkan), so the kernel is generic
+// over size, not baked. Dispatched as (rows/16)*(cols/16) workgroups. This is the
+// matmul SPELA/Prism can call. Exact integer check over a 64×64×64 problem.
+const char* kGemmSource =
+    "package test;\n"
+    "import cajeta.xpu.core.Buffer;\n"
+    "import cajeta.xpu.core.CooperativeMatrix;\n"
+    "import cajeta.xpu.core.Workgroup;\n"
+    "public class M {\n"
+    "    @Kernel\n"
+    "    public static void gemm(Buffer<float16> a, Buffer<float16> b,\n"
+    "                            Buffer<float32> c,\n"
+    "                            uint32 rows, uint32 cols, uint32 depth) {\n"
+    "        uint32 ntiles = cols / 16;\n"
+    "        uint32 wid = Workgroup.x();\n"
+    "        uint32 mi = wid / ntiles;\n"        // output row-tile
+    "        uint32 nj = wid % ntiles;\n"        // output col-tile
+    "        uint32 ktiles = depth / 16;\n"
+    // Precompute the loop-INVARIANT tile offsets into locals before the loop.
+    // If these (mi*16, nj*16, ...) are left as subexpressions shared between the
+    // loop body and the post-loop store, LLVM 22's SPIR-V backend sinks them into
+    // the loop header *between* OpLoopMerge and its branch — an invalid structured
+    // CFG that spirv-val rejects and RADV hangs on. Hoisting them out keeps the
+    // header clean. (Backend-scheduling quirk; a fork-side fix could remove the need.)
+    "        uint32 aRowBase = mi * 16 * depth;\n"
+    "        uint32 bColBase = nj * 16;\n"
+    "        uint32 cBase = mi * 16 * cols + nj * 16;\n"
+    "        CooperativeMatrix<float32,16,16,2> mc;\n"
+    "        mc.splat(0.0f);\n"
+    "        CooperativeMatrix<float16,16,16,0> ma;\n"
+    "        CooperativeMatrix<float16,16,16,1> mb;\n"
+    "        uint32 kk = 0;\n"
+    "        for (kk = 0; kk < ktiles; kk += 1) {\n"
+    "            ma.load(a, aRowBase + kk * 16, 0, depth);\n"
+    "            mb.load(b, kk * 16 * cols + bColBase, 0, cols);\n"
+    "            mc.mma(ma, mb);\n"
+    "        }\n"
+    "        mc.store(c, cBase, 0, cols);\n"
+    "    }\n"
+    "}\n";
+
+TEST(XpuCooperativeMatrixDeviceTests, tiledGemmOnDevice) {
+    if (!VulkanDriver::coopMatrixAvailable()) {
+        GTEST_SKIP() << "no Vulkan device with a 16x16x16 f16/f16->f32 "
+                        "cooperative-matrix config";
+    }
+
+    Compiler compiler;
+    auto module = compileForInspection(compiler, kGemmSource);
+    auto k = findMethod(module->getStructures()["test.M"], "gemm");
+    ASSERT_NE(k, nullptr);
+
+    auto tm = cajeta::xpu::vulkan::createSpirvTargetMachine("vulkan1.3");
+    ASSERT_NE(tm, nullptr);
+    llvm::LLVMContext ctx;
+    llvm::Module dev("xpu_coopmat_gemm_vkdevice", ctx);
+    cajeta::xpu::vulkan::configureDeviceModule(dev, *tm);
+    cajeta::xpu::vulkan::lowerKernel(k, dev);
+    std::vector<uint8_t> spirv = cajeta::xpu::vulkan::emitSpirv(dev, *tm);
+    ASSERT_FALSE(spirv.empty());
+
+    // 64x64x64. Small integers exact in half (A in 0..1, B in 0..2): per-term
+    // <= 2, the 64-term sum <= 128 — exact in half and float.
+    constexpr uint32_t M = 64, NN = 64, K = 64;
+    std::vector<_Float16> hostA(M * K), hostB(K * NN);
+    std::vector<float> ref(M * NN, 0.0f);
+    for (uint32_t i = 0; i < M; ++i)
+        for (uint32_t kk = 0; kk < K; ++kk)
+            hostA[i * K + kk] = (_Float16) ((i * 3 + kk) % 2);
+    for (uint32_t kk = 0; kk < K; ++kk)
+        for (uint32_t j = 0; j < NN; ++j)
+            hostB[kk * NN + j] = (_Float16) ((2 * kk + j) % 3);
+    for (uint32_t i = 0; i < M; ++i)
+        for (uint32_t j = 0; j < NN; ++j) {
+            float acc = 0.0f;
+            for (uint32_t kk = 0; kk < K; ++kk)
+                acc += (float) hostA[i * K + kk] * (float) hostB[kk * NN + j];
+            ref[i * NN + j] = acc;
+        }
+
+    VulkanDriver vk;
+    ASSERT_TRUE(vk.init());
+    auto dA = vk.alloc(M * K * sizeof(_Float16));
+    auto dB = vk.alloc(K * NN * sizeof(_Float16));
+    auto dC = vk.alloc(M * NN * sizeof(float));
+    auto dRows = vk.alloc(sizeof(uint32_t));
+    auto dCols = vk.alloc(sizeof(uint32_t));
+    auto dDepth = vk.alloc(sizeof(uint32_t));
+    ASSERT_NE(dA, 0u);
+    ASSERT_NE(dB, 0u);
+    ASSERT_NE(dC, 0u);
+    ASSERT_NE(dRows, 0u);
+    ASSERT_NE(dCols, 0u);
+    ASSERT_NE(dDepth, 0u);
+    ASSERT_TRUE(vk.upload(dA, hostA.data(), M * K * sizeof(_Float16)));
+    ASSERT_TRUE(vk.upload(dB, hostB.data(), K * NN * sizeof(_Float16)));
+    std::vector<float> zero(M * NN, -1.0f);
+    ASSERT_TRUE(vk.upload(dC, zero.data(), M * NN * sizeof(float)));
+    uint32_t rows = M, cols = NN, depth = K;
+    ASSERT_TRUE(vk.upload(dRows, &rows, sizeof(uint32_t)));
+    ASSERT_TRUE(vk.upload(dCols, &cols, sizeof(uint32_t)));
+    ASSERT_TRUE(vk.upload(dDepth, &depth, sizeof(uint32_t)));
+
+    const unsigned grid = (M / 16) * (NN / 16);  // one workgroup per output tile
+    ASSERT_TRUE(vk.launch(spirv.data(), spirv.size(), "gemm",
+                          {dA, dB, dC, dRows, dCols, dDepth}, grid));
+
+    std::vector<float> out(M * NN, -2.0f);
+    ASSERT_TRUE(vk.download(out.data(), dC, M * NN * sizeof(float)));
+    vk.free(dA);
+    vk.free(dB);
+    vk.free(dC);
+    vk.free(dRows);
+    vk.free(dCols);
+    vk.free(dDepth);
+
+    size_t mismatches = 0;
+    for (uint32_t i = 0; i < M; ++i)
+        for (uint32_t j = 0; j < NN; ++j)
+            if (out[i * NN + j] != ref[i * NN + j] && mismatches++ < 8)
+                ADD_FAILURE() << "GEMM mismatch at (" << i << "," << j << "): got "
+                              << out[i * NN + j] << " want " << ref[i * NN + j];
+    EXPECT_EQ(mismatches, 0u) << "tiled GEMM had " << mismatches << " mismatches";
+}
