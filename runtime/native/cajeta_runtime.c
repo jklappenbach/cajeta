@@ -4059,6 +4059,7 @@ struct cajeta_cuda_api {
     int (*cuDeviceGetCount)(int*);
     int (*cuDeviceGet)(int*, int);
     int (*cuCtxCreate)(void**, unsigned, int);
+    int (*cuCtxSetCurrent)(void*);   // H9: bind the ctx to the launching thread
     int (*cuModuleLoadData)(void**, const void*);
     int (*cuModuleGetFunction)(void**, void*, const char*);
     int (*cuMemAlloc)(cajeta_cudeviceptr*, size_t);
@@ -4101,6 +4102,7 @@ static int cajeta_xpu_cuda_init_locked(void) {
     CAJ_BIND(cuDeviceGetCount, "cuDeviceGetCount");
     CAJ_BIND(cuDeviceGet, "cuDeviceGet");
     CAJ_BIND(cuCtxCreate, "cuCtxCreate_v2");
+    CAJ_BIND(cuCtxSetCurrent, "cuCtxSetCurrent");
     CAJ_BIND(cuModuleLoadData, "cuModuleLoadData");
     CAJ_BIND(cuModuleGetFunction, "cuModuleGetFunction");
     CAJ_BIND(cuMemAlloc, "cuMemAlloc_v2");
@@ -4309,14 +4311,32 @@ void __cajeta_xpu_register_kernel_params(const char* name, int32_t count,
                                          const uint32_t* byteSize) {
     if (!name) return;
     pthread_mutex_lock(&g_xpu_cuda_lock);
-    if (g_xpu_kparam_count < CAJETA_XPU_MAX_KPARAMS) {
-        struct cajeta_kparams* e = &g_xpu_kparams[g_xpu_kparam_count++];
-        strncpy(e->name, name, sizeof(e->name) - 1);
-        e->name[sizeof(e->name) - 1] = '\0';
-        e->count = count;
-        e->kind = kind;
-        e->byteSize = byteSize;
+    // M3: dedup by name — re-registration (e.g. a re-run or a second backend)
+    // overwrites the existing entry instead of appending a stale duplicate and
+    // exhausting the fixed table (M backends would otherwise fill it at
+    // CAJETA_XPU_MAX_KPARAMS/M kernels).
+    int idx = -1;
+    for (int i = 0; i < g_xpu_kparam_count; ++i)
+        if (strncmp(g_xpu_kparams[i].name, name,
+                    sizeof(g_xpu_kparams[i].name)) == 0) { idx = i; break; }
+    int isNew = 0;
+    if (idx < 0) {
+        if (g_xpu_kparam_count >= CAJETA_XPU_MAX_KPARAMS) {
+            pthread_mutex_unlock(&g_xpu_cuda_lock);
+            return;
+        }
+        idx = g_xpu_kparam_count;
+        isNew = 1;
     }
+    struct cajeta_kparams* e = &g_xpu_kparams[idx];
+    strncpy(e->name, name, sizeof(e->name) - 1);
+    e->name[sizeof(e->name) - 1] = '\0';
+    e->count = count;
+    e->kind = kind;
+    e->byteSize = byteSize;
+    // L9: publish a new slot only after its fields are fully written, so a
+    // lock-free find_kparams can't observe an entry with a stale field set.
+    if (isNew) g_xpu_kparam_count++;
     pthread_mutex_unlock(&g_xpu_cuda_lock);
 }
 
@@ -5892,11 +5912,12 @@ struct cajeta_cpu_grid_slice {
 static void cajeta_xpu_cpu_run_slice(const struct cajeta_cpu_grid_slice* s) {
     int32_t coord[13] = {0, 0, 0, 0, 0, 0, s->bx, s->by, s->bz,
                          s->gx, s->gy, s->gz, s->dynShared};
-    int32_t gxy = s->gx * s->gy;
+    int64_t gxy = (int64_t) s->gx * s->gy;   // M9: 64-bit — gx*gy can exceed i32,
+                                             // wrapping to 0 -> divide-by-zero below
     for (int32_t lin = s->bStart; lin < s->bEnd; ++lin) {
         coord[3] = lin % s->gx;            // ctaid.x
         coord[4] = (lin / s->gx) % s->gy;  // ctaid.y
-        coord[5] = lin / gxy;              // ctaid.z
+        coord[5] = (int32_t) (lin / gxy);  // ctaid.z
         s->fn(s->argv, coord);   // per-block; the wrapper loops work-items
     }
 }
@@ -5944,7 +5965,17 @@ static void cajeta_xpu_launch_cpu(const char* name,
     // Blocks fan out across threads (never the work-items of one block); the
     // 3-D grid is flattened to nblocks linear indices, decoded to ctaid.xyz in
     // run_slice.
-    int32_t nblocks = gridX * gridY * gridZ;
+    // M9: compute in 64-bit — gridX*gridY*gridZ in int32 wraps (negative ->
+    // serial loop never runs, a silent no-op; or to 0 -> divide-by-zero in
+    // run_slice). The CPU path indexes blocks with int32, so clamp an absurd grid
+    // (>2^31 blocks runs serially anyway) with a diagnostic rather than wrap.
+    int64_t nblocks64 = (int64_t) gridX * (int64_t) gridY * (int64_t) gridZ;
+    if (nblocks64 > INT32_MAX) {
+        fprintf(stderr, "cajeta.xpu: CPU grid block count %lld exceeds INT32_MAX; "
+                "clamping to %d\n", (long long) nblocks64, INT32_MAX);
+        nblocks64 = INT32_MAX;
+    }
+    int32_t nblocks = (int32_t) nblocks64;
     int64_t blockSize = (int64_t) (blockX > 0 ? blockX : 1) *
                         (int64_t) (blockY > 0 ? blockY : 1) *
                         (int64_t) (blockZ > 0 ? blockZ : 1);
@@ -6357,14 +6388,22 @@ static void cajeta_xpu_launch_cuda(const char* kernelName,
                 kernelName);
         return;
     }
+    // H9: the CUDA context is bound to the thread that created it (cuCtxCreate);
+    // a launch from a different thread (the carrier fiber vs the main thread) runs
+    // with no current context -> CUDA_ERROR_INVALID_CONTEXT and the launch is a
+    // silent no-op. Make the context current on this thread first, and surface a
+    // launch failure instead of discarding the return code.
+    if (g_xpu_cuda.cuCtxSetCurrent) g_xpu_cuda.cuCtxSetCurrent(g_xpu_cuda.ctx);
     // 3-D grid/block; default stream; kernelParams = the CUDA argv the launch
     // site marshalled (pointers to each arg value). sharedBytes sizes the
     // kernel's dynamic (extern) shared memory; 0 for static-only kernels.
-    g_xpu_cuda.cuLaunchKernel(fn, (unsigned) gridX, (unsigned) gridY,
-                              (unsigned) gridZ, (unsigned) blockX,
-                              (unsigned) blockY, (unsigned) blockZ,
-                              (unsigned) sharedBytes, /*stream=*/NULL,
-                              (void**) argv, /*extra=*/NULL);
+    int launchRc = g_xpu_cuda.cuLaunchKernel(
+        fn, (unsigned) gridX, (unsigned) gridY, (unsigned) gridZ,
+        (unsigned) blockX, (unsigned) blockY, (unsigned) blockZ,
+        (unsigned) sharedBytes, /*stream=*/NULL, (void**) argv, /*extra=*/NULL);
+    if (launchRc != 0)
+        fprintf(stderr, "cajeta.xpu: cuLaunchKernel('%s') failed (%d)\n",
+                kernelName, launchRc);
 }
 
 // HIP launch: lazily load the hsaco module + resolve the function (reusing the
@@ -6406,6 +6445,7 @@ static void cajeta_xpu_launch_hip(const char* kernelName,
     void* texObjVals[8];
     int64_t texObjs[8];
     int ntex = 0;
+    int launchOk = 1;
     struct cajeta_kparams* kp = cajeta_xpu_find_kparams(kernelName);
     if (kp && kp->count > 0 && kp->count <= 64) {
         int hasTex = 0;
@@ -6422,10 +6462,20 @@ static void cajeta_xpu_launch_hip(const char* kernelName,
                 }
             for (int i = 0; i < kp->count; ++i) {
                 subArgv[i] = argv[i];
-                if (kp->kind[i] == CAJETA_KP_TEXTURE && ntex < 8) {
+                if (kp->kind[i] == CAJETA_KP_TEXTURE) {
+                    if (ntex >= 8) {   // M6: more textures than the texObj buffers
+                        fprintf(stderr, "cajeta.xpu: HIP kernel '%s' uses more than "
+                                "8 textures (unsupported); not launching\n", kernelName);
+                        launchOk = 0; break;
+                    }
                     int64_t rec = *(int64_t*) argv[i];   // texture-record handle
                     int64_t obj = cajeta_xpu_hip_make_texobj(rec, filterMode,
                                                              addressMode);
+                    if (!obj) {        // M5: texture-object creation failed
+                        fprintf(stderr, "cajeta.xpu: HIP texture-object creation "
+                                "failed for kernel '%s'; not launching\n", kernelName);
+                        launchOk = 0; break;
+                    }
                     texObjs[ntex] = obj;
                     texObjVals[ntex] = (void*) (intptr_t) obj;
                     subArgv[i] = &texObjVals[ntex];      // arg = the texObj ptr
@@ -6436,14 +6486,16 @@ static void cajeta_xpu_launch_hip(const char* kernelName,
         }
     }
 
-    g_xpu_hip.hipModuleLaunchKernel(fn, (unsigned) gridX, (unsigned) gridY,
-                                    (unsigned) gridZ, (unsigned) blockX,
-                                    (unsigned) blockY, (unsigned) blockZ,
-                                    (unsigned) sharedBytes, /*stream=*/NULL,
-                                    useArgv, /*extra=*/NULL);
+    if (launchOk)
+        g_xpu_hip.hipModuleLaunchKernel(fn, (unsigned) gridX, (unsigned) gridY,
+                                        (unsigned) gridZ, (unsigned) blockX,
+                                        (unsigned) blockY, (unsigned) blockZ,
+                                        (unsigned) sharedBytes, /*stream=*/NULL,
+                                        useArgv, /*extra=*/NULL);
     if (ntex > 0) {
-        g_xpu_hip.hipDeviceSynchronize();   // finish before destroying objects
-        for (int i = 0; i < ntex; ++i)
+        if (launchOk)
+            g_xpu_hip.hipDeviceSynchronize();   // finish before destroying objects
+        for (int i = 0; i < ntex; ++i)          // also frees objs made before a skip
             if (texObjs[i] && g_xpu_hip.hipDestroyTextureObject)
                 g_xpu_hip.hipDestroyTextureObject((void*) (intptr_t) texObjs[i]);
     }
