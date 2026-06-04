@@ -871,6 +871,20 @@ namespace cajeta {
 
         // push + setjmp at the current block.
         builder->CreateCall(push, {framePtr});
+        // H4 (bugfix-plan): capture the scope-chain top at try-entry, so a throw
+        // caught here first unwinds/joins any `scope { spawn ... }` children
+        // spawned in the try body (otherwise the scope frame leaks and the child
+        // is orphaned). Stored in an alloca so it survives the setjmp/longjmp.
+        llvm::Function* scopeSaveTop =
+            module->getRuntimeFunction("__cajeta_scope_save_top");
+        llvm::Function* scopeExitTo =
+            module->getRuntimeFunction("__cajeta_scope_exit_to");
+        llvm::Value* scopeWmSlot = nullptr;
+        if (scopeSaveTop && scopeExitTo) {
+            scopeWmSlot =
+                entryBuilder.CreateAlloca(llvm::PointerType::get(ctx, 0));
+            builder->CreateStore(builder->CreateCall(scopeSaveTop, {}), scopeWmSlot);
+        }
         llvm::Value* sjResult = builder->CreateCall(setjmpFn, {framePtr});
         llvm::Value* threw = builder->CreateICmpNE(sjResult,
             llvm::ConstantInt::get(i32Ty, 0));
@@ -921,6 +935,14 @@ namespace cajeta {
         // type below.
         llvm::Value* thrownValPtr = builder->CreateCall(getThrown, {});
         builder->CreateCall(pop, {});
+        // H4: this try's frame is now popped, so unwinding the try body's open
+        // scopes here joins their children before the catch runs — and a re-raise
+        // (a child also threw) goes to the OUTER frame, not back to this one.
+        if (scopeWmSlot && scopeExitTo) {
+            llvm::Value* wm = builder->CreateLoad(
+                llvm::PointerType::get(ctx, 0), scopeWmSlot);
+            builder->CreateCall(scopeExitTo, {wm});
+        }
         if (!catchClauses.empty()) {
             auto& c = catchClauses[0];  // single-clause for now
             // The catch binding + body emission, factored so it can run either

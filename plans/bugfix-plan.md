@@ -64,22 +64,21 @@ reference).
   *Trigger:* any `T f(){ try{…;return x;}catch{…} }` — pop emitted only on fall-through, `return` skips it.
   *Fix:* track open try-frames per method (like `dropFrameStack`); emit one `__cajeta_exc_pop` per open frame
   (LIFO) before every `ret`, or route returns-in-try through the try `afterBB`. FIXED 2026-06-03: module tryFinallyStack of active try/catch frames; emitTryFinallyUnwind pops each + runs its finally at every return site (test returnInTryRunsFinally). break/continue-out-of-try is a remaining gap.
-- [ ] **C2 — scope cancellation write-after-free of an already-freed fiber** *(critical)* —
+- [x] **C2 — scope cancellation write-after-free of an already-freed fiber** *(critical)* —
   `cajeta_runtime.c:982-988` / `:1027-1033`; fiber freed `:738-741`, slot written `:798` never cleared.
   *Trigger:* sibling B completes (fiber freed, slot dangling), sibling A throws → cancel loop writes `cancel_with`
-  into freed heap. *Fix:* clear the Task fiber slot when the carrier frees the fiber, or gate cancellation on the
-  sibling's `done` flag still being 0.
+  into freed heap. FIXED 2026-06-03: fiber stores its slot_ptr; carrier nulls *slot_ptr under __cajeta_task_mutex before free; the scope-cancel read+cancel now also holds the mutex (race-free).
 - [x] **H2 — `try {} finally {}` (no catch) silently swallows the throw** *(high)* — FIXED 2026-06-03: empty-catch landing pad now runs finally + __cajeta_throw(thrown) + unreachable (test tryFinallyNoCatchPropagatesThrow). `Statement.cpp:914-960`.
   catchBB pops + branches to afterBB; with no catch clauses nothing re-raises. *Fix:* when `catchClauses` empty,
   run finally on the catch path then `__cajeta_throw` + `unreachable`.
 - [x] **H3 — `finally` skipped when the `catch` handler throws/re-throws** *(high)* — `Statement.cpp:914-980`.
   catchBB pops the frame before the body runs, so `throw` in catch longjmps to the outer frame and `finally` never runs.
   *Fix:* emit finally on the abrupt path before propagating (extra frame around the catch body, or duplicate finally onto the throw edge).
-- [ ] **H4 — throw through open scope frames leaks them + orphans spawned children** *(high)* —
+- [x] **H4 — throw through open scope frames leaks them + orphans spawned children** *(high)* —
   `cajeta_runtime.c:1992-2025`, trampoline `Expression.cpp:3426-3459`. `__cajeta_throw` unwinds only the drop chain,
   never `scope_top` → structured-concurrency invariant violated. *Fix:* snapshot a scope watermark in
   `cajeta_exception_frame` at try-entry; have throw / the trampoline catch arm / TryStatement catchBB call
-  `__cajeta_scope_exit_to` to it.
+  `__cajeta_scope_exit_to` to it. FIXED 2026-06-03: TryStatement captures the scope watermark at try-entry (alloca, survives setjmp) and calls __cajeta_scope_exit_to at catchBB after popping its frame, joining the try body's scope children before the catch (test throwOutOfScopeJoinsChild).
 - [x] **H5 — stack-trace side table grows unbounded; stale entries shadow reused addresses** *(high)* — FIXED 2026-06-03: trace_record dedups same-throwable + caps the table (CAJETA_TRACE_TABLE_CAP). —
   `cajeta_runtime.c:1885-1949`. Capture defaults on; every throw mallocs + prepends, nothing frees; pointer-match
   lookup surfaces a stale trace for a reused throwable address. *Fix:* free `e->frames`+`e` on catch/drop; drop a

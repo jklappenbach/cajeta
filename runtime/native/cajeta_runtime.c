@@ -628,6 +628,11 @@ struct cajeta_fiber {
     // first-throw escalation; cleared by the await re-raise path so
     // the same cancel doesn't fire twice on a fiber that survives.
     void* cancel_with;
+    // C2: address of the Task's fiber-ptr slot (same as fiber_slot passed to
+    // __cajeta_task_run). The carrier nulls *slot_ptr under __cajeta_task_mutex
+    // before freeing the fiber, so a concurrent scope-cancel that reads the slot
+    // (also under the mutex) never dereferences a freed fiber.
+    void** slot_ptr;
 };
 
 static pthread_mutex_t __cajeta_task_mutex = PTHREAD_MUTEX_INITIALIZER;
@@ -754,6 +759,12 @@ static void* __cajeta_carrier_loop(void* arg) {
         __cajeta_swapcontext(&__cajeta_carrier_ctx, &f->ctx);
         __cajeta_current_fiber = NULL;
         if (f->state == CAJETA_FIBER_DONE) {
+            // C2: null the Task's fiber slot before freeing, under the task mutex,
+            // so a concurrent scope-cancel reading the slot (also under the mutex)
+            // sees NULL instead of a dangling fiber pointer.
+            pthread_mutex_lock(&__cajeta_task_mutex);
+            if (f->slot_ptr) *f->slot_ptr = NULL;
+            pthread_mutex_unlock(&__cajeta_task_mutex);
             free(f->stack);
             free(f);
         }
@@ -813,6 +824,7 @@ void __cajeta_task_run(void* arg, cajeta_task_trampoline_fn trampoline,
     f->drop_top = NULL;
     f->exc_top = NULL;
     f->cancel_with = NULL;
+    f->slot_ptr = fiber_slot;   // C2: so the carrier can null it before free
     if (fiber_slot) *fiber_slot = f;
 
     pthread_mutex_lock(&__cajeta_task_mutex);
@@ -1006,6 +1018,9 @@ void __cajeta_scope_exit(void) {
         if (!trigger && f->entries[i].exception_addr
                 && *f->entries[i].exception_addr) {
             trigger = *f->entries[i].exception_addr;
+            // C2: read each sibling's fiber slot + cancel under the task mutex so
+            // it can't race the carrier nulling/freeing a completed fiber.
+            pthread_mutex_lock(&__cajeta_task_mutex);
             for (int j = i + 1; j < f->count; j++) {
                 if (f->entries[j].fiber_slot && *f->entries[j].fiber_slot) {
                     __cajeta_fiber_cancel(
@@ -1013,6 +1028,7 @@ void __cajeta_scope_exit(void) {
                         trigger);
                 }
             }
+            pthread_mutex_unlock(&__cajeta_task_mutex);
         }
     }
     *top = f->prev;
@@ -1051,6 +1067,8 @@ void __cajeta_scope_exit_to(void* watermark) {
             if (!frame_trigger && f->entries[i].exception_addr
                     && *f->entries[i].exception_addr) {
                 frame_trigger = *f->entries[i].exception_addr;
+                // C2: same mutex discipline as scope_exit's cancel loop.
+                pthread_mutex_lock(&__cajeta_task_mutex);
                 for (int j = i + 1; j < f->count; j++) {
                     if (f->entries[j].fiber_slot && *f->entries[j].fiber_slot) {
                         __cajeta_fiber_cancel(
@@ -1058,6 +1076,7 @@ void __cajeta_scope_exit_to(void* watermark) {
                             frame_trigger);
                     }
                 }
+                pthread_mutex_unlock(&__cajeta_task_mutex);
             }
         }
         if (!trigger && frame_trigger) trigger = frame_trigger;
