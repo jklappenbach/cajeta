@@ -153,6 +153,44 @@ TEST(XpuMathDeviceTests, lowersToMathIntrinsics) {
         EXPECT_NE(ir.find(tok), std::string::npos) << tok << "\n" << ir;
 }
 
+// Wave-3 bugfix (H13-H16): device-kernel numeric literals must honor the radix
+// (hex/bin/oct), digit-group underscores, and the declared width — the old path
+// used std::stoll (decimal-only, stops at '_', i32-truncating, throws on overflow).
+TEST(XpuMathDeviceTests, lowersNumericLiteralsCorrectly) {
+    const char* src =
+        "package test;\n"
+        "import cajeta.xpu.core.Buffer;\n"
+        "import cajeta.xpu.core.Thread;\n"
+        "public class L {\n"
+        "    @Kernel\n"
+        "    public static void litk(Buffer<int32> out, Buffer<int64> out64,\n"
+        "                            uint32 n) {\n"
+        "        uint32 i = Thread.globalIdX();\n"
+        "        if (i == 0) {\n"
+        "            out[0] = 0xDEAD;\n"          // hex     -> 57005 (bug: 0)
+        "            out[1] = 9_999_999;\n"       // _ group -> 9999999 (bug: 9)
+        "            out[2] = 0b1111000011110000;\n" // binary -> 61680 (bug: 0)
+        "            out64[0] = 5000000000L;\n"   // 64-bit  -> not i32-truncated
+        "        }\n"
+        "    }\n"
+        "}\n";
+    Compiler compiler;
+    auto module = compileForInspection(compiler, src, "L");
+    auto k = findMethod(module->getStructures()["test.L"], "litk");
+    ASSERT_NE(k, nullptr);
+    auto tm = cajeta::xpu::cpu::createCpuTargetMachine();
+    ASSERT_NE(tm, nullptr);
+    llvm::LLVMContext ctx;
+    llvm::Module host("xpu_lit_emit", ctx);
+    cajeta::xpu::cpu::configureHostModule(host, *tm);
+    ASSERT_NE(cajeta::xpu::cpu::lowerKernel(k, host), nullptr);
+    std::string ir = printModule(host);
+    for (const char* tok : {"57005", "9999999", "61680", "5000000000"})
+        EXPECT_NE(ir.find(tok), std::string::npos) << tok << "\n" << ir;
+    EXPECT_EQ(ir.find("705032704"), std::string::npos)  // i32-truncated 5e9
+        << "64-bit literal was truncated to i32\n" << ir;
+}
+
 // CPU oracle: JIT and run the kernel over a grid; every element must match the
 // reference math.
 TEST(XpuMathDeviceTests, runsOnCpu) {
