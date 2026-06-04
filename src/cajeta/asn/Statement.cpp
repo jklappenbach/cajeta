@@ -1213,22 +1213,26 @@ namespace cajeta {
     // before the method's own scope-exit/drops/ret — otherwise the frame dangles
     // (a later throw longjmps into the returned, dead stack) and the finally never
     // runs. Emitted at every return site, after the return value is evaluated.
-    static void emitTryFinallyUnwind(CajetaModulePtr module) {
+    // Unwinds the active try frames from the innermost down to `stopDepth` (the
+    // number of frames to KEEP): pop each + run its finally. `stopDepth == 0` is a
+    // return (unwind all enclosing tries); break/continue pass the loop's
+    // tryFinallyDepth so only the tries entered inside the loop are unwound.
+    static void emitTryFinallyUnwind(CajetaModulePtr module, size_t stopDepth = 0) {
         auto& stack = module->getTryFinallyStack();
-        if (stack.empty()) return;
+        if (stack.size() <= stopDepth) return;
         auto* builder = module->getBuilder();
         llvm::Function* pop = module->getRuntimeFunction("__cajeta_exc_pop");
         // The finally regen below mutates the (single, evolving) definite-
-        // assignment set; the code after a return is unreachable, so snapshot and
-        // restore so the method's DA tracking is unaffected.
+        // assignment set; the code after a break/continue/return is unreachable,
+        // so snapshot and restore so the method's DA tracking is unaffected.
         auto daScope = module->getScopeStack().peek();
         std::set<std::string> savedNYA;
         if (daScope) savedNYA = daScope->snapshotNotYetAssigned();
-        for (auto it = stack.rbegin(); it != stack.rend(); ++it) {
+        for (size_t i = stack.size(); i > stopDepth; --i) {
             if (builder->GetInsertBlock()->hasTerminator()) break;
             if (pop) builder->CreateCall(pop, {});
-            if (*it) {
-                auto fin = std::static_pointer_cast<Statement>(*it);
+            if (stack[i - 1]) {
+                auto fin = std::static_pointer_cast<Statement>(stack[i - 1]);
                 fin->generateCode(module);
             }
         }
@@ -1773,14 +1777,13 @@ namespace cajeta {
         // Cajeta block (if any) emit into a valid container — LLVM otherwise
         // complains about adding to a terminated block.
         auto* builder = module->getBuilder();
-        llvm::BasicBlock* target = nullptr;
-        if (!label.empty()) {
-            if (auto* lc = module->findLoopContext(label)) {
-                target = lc->breakTarget;
-            }
-        }
-        if (!target) target = module->currentLoopContext().breakTarget;
-        builder->CreateBr(target);
+        const auto* lc =
+            label.empty() ? nullptr : module->findLoopContext(label);
+        if (!lc) lc = &module->currentLoopContext();
+        // C1 follow-up: run + pop the finallys of any try bodies entered inside
+        // the loop before jumping out past them.
+        emitTryFinallyUnwind(module, lc->tryFinallyDepth);
+        builder->CreateBr(lc->breakTarget);
         llvm::BasicBlock* deadBB = llvm::BasicBlock::Create(
             *module->getLlvmContext(), "after_break",
             builder->GetInsertBlock()->getParent());
@@ -1793,14 +1796,12 @@ namespace cajeta {
             return nullptr;
         }
         auto* builder = module->getBuilder();
-        llvm::BasicBlock* target = nullptr;
-        if (!label.empty()) {
-            if (auto* lc = module->findLoopContext(label)) {
-                target = lc->continueTarget;
-            }
-        }
-        if (!target) target = module->currentLoopContext().continueTarget;
-        builder->CreateBr(target);
+        const auto* lc =
+            label.empty() ? nullptr : module->findLoopContext(label);
+        if (!lc) lc = &module->currentLoopContext();
+        // C1 follow-up: run + pop in-loop try finallys before jumping to the latch.
+        emitTryFinallyUnwind(module, lc->tryFinallyDepth);
+        builder->CreateBr(lc->continueTarget);
         llvm::BasicBlock* deadBB = llvm::BasicBlock::Create(
             *module->getLlvmContext(), "after_continue",
             builder->GetInsertBlock()->getParent());

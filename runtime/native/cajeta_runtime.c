@@ -765,6 +765,13 @@ static void* __cajeta_carrier_loop(void* arg) {
             pthread_mutex_lock(&__cajeta_task_mutex);
             if (f->slot_ptr) *f->slot_ptr = NULL;
             pthread_mutex_unlock(&__cajeta_task_mutex);
+#if defined(_WIN32)
+            // H19: on Windows the fiber is a Win32 fiber object (CreateFiber); the
+            // free() below reclaims the struct but not the OS fiber. Delete it
+            // (safe here — the fiber has returned to the carrier, it isn't current)
+            // to avoid leaking one OS fiber + its stack per completed task.
+            if (f->ctx.fiber) DeleteFiber(f->ctx.fiber);
+#endif
             free(f->stack);
             free(f);
         }
@@ -795,6 +802,24 @@ void __cajeta_task_shutdown(void) {
     // Reset state so a subsequent __cajeta_task_run (e.g. the next test's
     // first spawn) starts a fresh carrier with a clean queue.
     pthread_mutex_lock(&__cajeta_task_mutex);
+    // H6: free any fibers still on the ready/parked queues (a child that never
+    // completed, or one never woken) and null the heads. Otherwise their structs +
+    // 64KB stacks leak, and worse, a stale parked fiber surviving into the next run
+    // would be re-readied by that run's first task_complete and swapcontext'd into
+    // a recycled/unmapped JIT context.
+    for (struct cajeta_fiber* f = __cajeta_ready_head; f; ) {
+        struct cajeta_fiber* nx = f->next;
+        if (f->slot_ptr) *f->slot_ptr = NULL;
+        free(f->stack); free(f); f = nx;
+    }
+    for (struct cajeta_fiber* f = __cajeta_parked_head; f; ) {
+        struct cajeta_fiber* nx = f->next;
+        if (f->slot_ptr) *f->slot_ptr = NULL;
+        free(f->stack); free(f); f = nx;
+    }
+    __cajeta_ready_head = NULL;
+    __cajeta_ready_tail = NULL;
+    __cajeta_parked_head = NULL;
     __cajeta_task_shutdown_requested = 0;
     __cajeta_task_workers_started = 0;
     pthread_mutex_unlock(&__cajeta_task_mutex);
@@ -1157,12 +1182,42 @@ void __cajeta_lock_acquire(void* p) {
     // rather than assume we have the lock).
     for (;;) {
         pthread_mutex_lock(&l->mutex);
+        struct cajeta_fiber* self = __cajeta_current_fiber;
+        // H7: honor a cancellation delivered while parked on this lock — throw
+        // instead of acquiring and running the critical section uncancelled. If we
+        // were just handed the lock (held==0, i.e. a release woke us rather than
+        // another acquirer racing in), pass the handoff to the next waiter first
+        // so it isn't stranded.
+        if (self->cancel_with) {
+            void* cw = self->cancel_with;
+            self->cancel_with = NULL;
+            struct cajeta_fiber* nxt = NULL;
+            if (!l->held) {
+                nxt = l->wait_head;
+                if (nxt) {
+                    l->wait_head = nxt->next;
+                    if (!l->wait_head) l->wait_tail = NULL;
+                    nxt->next = NULL;
+                }
+            }
+            pthread_mutex_unlock(&l->mutex);
+            if (nxt) {
+                pthread_mutex_lock(&__cajeta_task_mutex);
+                nxt->state = CAJETA_FIBER_READY;
+                nxt->next = NULL;
+                if (__cajeta_ready_tail) { __cajeta_ready_tail->next = nxt;
+                    __cajeta_ready_tail = nxt; }
+                else { __cajeta_ready_head = nxt; __cajeta_ready_tail = nxt; }
+                pthread_cond_signal(&__cajeta_task_queue_cond);
+                pthread_mutex_unlock(&__cajeta_task_mutex);
+            }
+            __cajeta_throw(cw);
+        }
         if (!l->held) {
             l->held = 1;
             pthread_mutex_unlock(&l->mutex);
             return;
         }
-        struct cajeta_fiber* self = __cajeta_current_fiber;
         self->next = NULL;
         if (l->wait_tail) {
             l->wait_tail->next = self;
@@ -1231,8 +1286,23 @@ int32_t __cajeta_lock_try_acquire(void* p) {
 void __cajeta_lock_destroy(void* p) {
     if (!p) return;
     struct cajeta_async_lock* l = (struct cajeta_async_lock*) p;
-    pthread_cond_destroy(&l->released_cond);
-    pthread_mutex_destroy(&l->mutex);
+    // H8: destroying a lock that is still held or has parked waiters is UB
+    // (pthread_*_destroy on a busy primitive), strands the waiting fibers, and
+    // UAFs any in-flight/subsequent release that dereferences `l`. Refuse and leak
+    // it rather than corrupt — a destroy-while-busy is a program bug.
+    pthread_mutex_lock(&l->mutex);
+    int busy = l->held || l->wait_head != NULL;
+    pthread_mutex_unlock(&l->mutex);
+    if (busy) {
+        fprintf(stderr, "cajeta: Lock destroyed while held or with waiters; "
+                "leaking it to avoid undefined behavior\n");
+        return;
+    }
+    if (pthread_cond_destroy(&l->released_cond) != 0 ||
+        pthread_mutex_destroy(&l->mutex) != 0) {
+        fprintf(stderr, "cajeta: Lock primitive still busy at destroy; leaked\n");
+        return;
+    }
     free(l);
 }
 
@@ -3890,7 +3960,12 @@ int32_t __cajeta_path_stat(const char* path, void* fileInfo) {
 #endif
     fi->isFile = S_ISREG(st.st_mode) ? 1 : 0;
     fi->isDir = S_ISDIR(st.st_mode) ? 1 : 0;
-    fi->isSymlink = S_ISLNK(st.st_mode) ? 1 : 0;
+    // L8: stat() follows symlinks, so st.st_mode is the TARGET's and S_ISLNK would
+    // always be 0. lstat the path itself for the symlink flag (the other fields
+    // intentionally describe the resolved target). On MinGW lstat==stat (stubbed),
+    // preserving the existing "no symlinks" behavior there.
+    struct stat lst;
+    fi->isSymlink = (lstat(path, &lst) == 0 && S_ISLNK(lst.st_mode)) ? 1 : 0;
     fi->permissions = (int32_t) (st.st_mode & 07777);
     return 0;
 }
@@ -5976,6 +6051,14 @@ static void cajeta_xpu_launch_cpu(const char* name,
     }
     cajeta_cpu_launch_fn fn = (cajeta_cpu_launch_fn) p;
     if (gridX < 1) gridX = 1; if (gridY < 1) gridY = 1; if (gridZ < 1) gridZ = 1;
+    // L6: sharedBytes becomes a per-block alloca on the worker's stack; an absurd
+    // value (the launch's sharedBytes round-tripped through the spec constant)
+    // would blow the stack. Bound it — real GPU shared memory is well under this.
+    if (sharedBytes < 0 || (uint32_t) sharedBytes > (16u << 20)) {
+        fprintf(stderr, "cajeta.xpu: CPU launch sharedBytes %d out of range "
+                "(max 16 MiB); not launching '%s'\n", sharedBytes, name);
+        return;
+    }
 
 
     // CAJETA_XPU_CPU_SERIAL forces single-threaded execution — a deterministic
