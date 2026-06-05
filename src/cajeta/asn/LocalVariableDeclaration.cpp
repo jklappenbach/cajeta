@@ -151,9 +151,11 @@ namespace cajeta {
     llvm::Value* LocalVariableDeclaration::generateCode(CajetaModulePtr module) {
 
         // Arrays and class instances live on the heap; their local slot is a pointer.
-        // Only true primitives (int32, float64, bool, etc.) get an inline-value alloca.
+        // Only true primitives (int32, float64, bool, etc.) — and @ValueType POD
+        // values, which are by-value/Copy like primitives — get an inline-value
+        // alloca holding the struct itself. See plans/value-type-overloading-plan.md.
         bool isArray = dynamic_pointer_cast<CajetaArray>(type) != nullptr;
-        bool wantsInlineSlot = (type->getTypeFlags() & PRIMITIVE_FLAG) && !isArray;
+        bool wantsInlineSlot = type->hasValueSemantics() && !isArray;
         for (auto& declarator: variableDeclarators) {
             InitializerPtr initializer = declarator->getInitializer();
             // Array-literal initializer (`int32[] xs = {1, 2, 3}`): the
@@ -831,8 +833,14 @@ namespace cajeta {
             bool isCajetaString = klass && klass->getQName()
                 && klass->getQName()->getTypeName() == "String"
                 && klass->getQName()->getPackageName() == "cajeta.lang";
+            // @ValueType locals are Copy PODs living inline in their slot —
+            // never heap-backed, no owned fields, no destructor. They must NOT
+            // enter the drop chain: a drop-push here would load the slot's
+            // first word (the vtable pointer) and register the value-type body
+            // for a spurious stack/virtual drop at scope exit. Skip entirely.
             if (klass && !isArray && !isStructType && !klass->isInterface()
-                    && !initIsBorrow && initializer && !isCajetaString) {
+                    && !initIsBorrow && initializer && !isCajetaString
+                    && !klass->isValueType()) {
                 // P7.1/P7.2 — stack-allocated class locals (init via
                 // `stack ClassName(...)` or `stack ClassName { ... }`)
                 // get the stack-drop variant: walks owned class-ref

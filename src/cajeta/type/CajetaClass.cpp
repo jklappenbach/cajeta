@@ -581,6 +581,14 @@ namespace cajeta {
         canonicalMap[canonical] = static_pointer_cast<CajetaType>(shared_from_this());
         canonicalMap[qName->getTypeName()] = static_pointer_cast<CajetaType>(shared_from_this());
         typeFlags = STRUCT_FLAG | USER_DEFINED_FLAG;
+        // @ValueType (plans/value-type-overloading-plan.md): re-apply the by-value
+        // value-type marker AFTER the typeFlags reset above and BEFORE the methods
+        // below are prototyped — so the operator methods' borrow check (Method.cpp)
+        // and downstream dispatch see the class as a by-value value type, not a
+        // reference. POD validity is checked in the visitor once fields populate.
+        if (findAnnotation("ValueType")) {
+            typeFlags |= VALUE_TYPE_FLAG | BY_VALUE_FLAG;
+        }
         module->getScopeStack().add(make_shared<Scope>(toCanonical(), module));
 
         // Register self in the module's structure map BEFORE method/vtable

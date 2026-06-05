@@ -119,7 +119,14 @@ namespace cajeta {
 
         std::any visitClassDeclaration(
                 CajetaParser::ClassDeclarationContext* ctx) override {
-            registerAndRecurse(ctx->identifier()->getText(), ctx);
+            // markValueType so fromContext's placeholder synthesis builds a
+            // cross-file `Vec2 a;` declaration's type carrying VALUE_TYPE_FLAG |
+            // BY_VALUE_FLAG from birth — the stale-instance fix (mirrors
+            // markEnum). Detected here because the @ValueType annotation sits on
+            // the enclosing typeDeclaration's modifiers, not the class body.
+            registerAndRecurse(ctx->identifier()->getText(), ctx,
+                                /*markEnum=*/false,
+                                /*markValueType=*/classHasValueTypeAnnotation(ctx));
             captureTemplateMeta(ctx);
             return defaultResult();
         }
@@ -151,9 +158,32 @@ namespace cajeta {
         }
 
     private:
+        // True if the class declaration is annotated @ValueType. The
+        // annotation lives on the enclosing typeDeclaration's
+        // classOrInterfaceModifier list (the `@ValueType` precedes the
+        // `class` keyword), so reach up to the parent and scan modifiers.
+        static bool classHasValueTypeAnnotation(
+                CajetaParser::ClassDeclarationContext* ctx) {
+            auto* td = dynamic_cast<CajetaParser::TypeDeclarationContext*>(
+                ctx->parent);
+            if (!td) return false;
+            for (auto* mod : td->classOrInterfaceModifier()) {
+                auto* ann = mod->annotation();
+                if (!ann) continue;
+                auto* qn = ann->qualifiedName();
+                if (!qn) continue;
+                auto ids = qn->identifier();
+                if (!ids.empty() && ids.back()->getText() == "ValueType") {
+                    return true;
+                }
+            }
+            return false;
+        }
+
         void registerAndRecurse(const std::string& shortName,
                                  antlr4::tree::ParseTree* tree,
-                                 bool markEnum = false) {
+                                 bool markEnum = false,
+                                 bool markValueType = false) {
             // Compose canonical from package + enclosing class
             // stack + this short name. Mirrors CajetaLlvmVisitor's
             // visitClassDeclaration package-adjustment for nested
@@ -168,6 +198,7 @@ namespace cajeta {
             canonical += shortName;
             CajetaType::registerArchive(canonical, shortName);
             if (markEnum) CajetaType::markArchiveEnum(canonical);
+            if (markValueType) CajetaType::markArchiveValueType(canonical);
             lastCanonical = canonical;
             enclosingStack.push_back(shortName);
             visitChildren(tree);

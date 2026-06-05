@@ -308,6 +308,10 @@ namespace cajeta {
             if (structure->findAnnotation("Aspect")) {
                 CajetaModule::registerAspectClass(structure);
             }
+            // (@ValueType: the VALUE_TYPE_FLAG is applied inside
+            // CajetaClass::generatePrototype — after its typeFlags reset and before
+            // the methods are prototyped — so the operator borrow check sees it. POD
+            // validity is checked below once fields populate.)
             // Component registration (AspectModel.md § A8). @Component
             // and @Repository are sibling annotations — both register
             // as ordinary DI participants. @TestComponent registers
@@ -470,7 +474,11 @@ namespace cajeta {
                             + "' must declare at least one field",
                         "CAJETA_ERROR_VALUE_TYPE");
                 }
-                structure->addTypeFlags(VALUE_TYPE_FLAG);
+                // VALUE_TYPE_FLAG = the @ValueType kind (relaxes the operator-
+                // dispatch !PRIMITIVE_FLAG gate); BY_VALUE_FLAG = the storage
+                // axis (inline slot, Copy, no drop/borrow). Both born-correct on
+                // cross-file placeholders too — see markArchiveValueType.
+                structure->addTypeFlags(VALUE_TYPE_FLAG | BY_VALUE_FLAG);
             }
             pModule->getStructureStack().pop_back();
             CajetaModule::getStructureToModule()[structure->getQName()->toCanonical()] = pModule;
