@@ -106,6 +106,47 @@ public final class XpuTour {
         }
     }
 
+    // ---- Transforms: quaternions, determinant, inverse -----------------------
+    // 3-D rotation algebra and small-matrix solves, the same source on every
+    // backend. See cajeta-docs/Quaternions.md + MatrixDeterminantInverse.md.
+
+    // quatk: several quaternion ops per thread — rotate, compose, inverse-rotate,
+    // length. qz90 rotates (1,0,0) -> (0,1,0); q45*q45 == qz90; conjugate undoes
+    // a rotation; a unit quaternion has length 1.
+    //   out[i] = rot.y + comp.y + back.x + len = 1 + 1 + 1 + 1 = 4
+    @Kernel
+    public static void quatk(Buffer<float32> out, uint32 n) {
+        uint32 i = Thread.globalIdX();
+        if (i < n) {
+            Vector<float32,3> x = new Vector<float32,3>(1.0f, 0.0f, 0.0f);
+            Quaternion<float32> qz90 = new Quaternion<float32>(0.70710678f, 0.0f, 0.0f, 0.70710678f);
+            Vector<float32,3> rot = qz90 * x;                 // (0,1,0)
+            Quaternion<float32> q45 = new Quaternion<float32>(0.92387953f, 0.0f, 0.0f, 0.38268343f);
+            Quaternion<float32> comp = q45 * q45;             // == qz90
+            Vector<float32,3> comprot = comp * x;             // (0,1,0)
+            Quaternion<float32> qinv = qz90.conjugate();      // inverse rotation
+            Vector<float32,3> back = qinv * rot;              // (1,0,0)
+            out[i] = rot.y + comprot.y + back.x + qz90.length();
+        }
+    }
+
+    // linalgk: determinant + inverse + an inverse-based solve per thread.
+    // g = [4 7; 2 6]; det = 10; g*g^-1 = I; solve g*x = (18,14) -> x = (1,2).
+    //   out[i] = det + p[0][0] + p[1][1] + x[0] + x[1] = 10 + 1 + 1 + 1 + 2 = 15
+    @Kernel
+    public static void linalgk(Buffer<float32> out, uint32 n) {
+        uint32 i = Thread.globalIdX();
+        if (i < n) {
+            Matrix<float32,2,2> g = stack Matrix<float32,2,2>(4.0f, 7.0f, 2.0f, 6.0f);
+            float32 det = g.determinant();          // 10
+            Matrix<float32,2,2> gi = g.inverse();
+            Matrix<float32,2,2> p = g * gi;          // identity
+            Vector<float32,2> rhs = new Vector<float32,2>(18.0f, 14.0f);
+            Vector<float32,2> x = gi * rhs;          // (1,2)
+            out[i] = det + p[0][0] + p[1][1] + x[0] + x[1];
+        }
+    }
+
     // waveReduce: out[i] = sum of in over i's wave. A wave-cooperative kernel —
     // the wave is the warp on a GPU, the SIMD vector on the CPU. Width-agnostic:
     // it queries the environment (Wave.reduceSum / width() / laneId()) rather
@@ -130,6 +171,7 @@ public final class XpuTour {
         runVecAdd();
         runTransform();
         runMaskSelect();
+        runTransforms();
         runWave();
         System.stdout.println("");
         System.stdout.println("=== xpu tour complete ===");
@@ -272,6 +314,32 @@ public final class XpuTour {
                             + " sum[i=10]=" + (int32) hrelu[10] + "  (expect 3, 11)");
         System.stdout.println("  prune (w>1).select(w,0):  sum[i=0]=" + (int32) hprune[0]
                             + " sum[i=10]=" + (int32) hprune[10] + "  (expect 0, 10)");
+    }
+
+    // Quaternion rotation algebra + small-matrix determinant/inverse/solve, run
+    // per thread. Each output is a fixed checkable constant (the math is the same
+    // on every lane); see the kernels for the breakdown.
+    static void runTransforms() {
+        System.stdout.println("");
+        System.stdout.println("-- transforms: quaternions + determinant/inverse --");
+        uint32 n = 256;
+        float32[] hq = new float32[n];
+        float32[] hl = new float32[n];
+        for (uint32 i = 0; i < n; i = i + 1) { hq[i] = 0.0f; hl[i] = 0.0f; }
+        Buffer<float32> q = stack Buffer<float32>(n);
+        Buffer<float32> l = stack Buffer<float32>(n);
+        q.upload(hq);
+        l.upload(hl);
+        Stream s = Stream.current();
+        quatk.launch(s, grid: [(n + 63) / 64], block: [64])(q, n);
+        linalgk.launch(s, grid: [(n + 63) / 64], block: [64])(l, n);
+        s.sync();
+        q.download(hq);
+        l.download(hl);
+        System.stdout.println("  quaternion (rotate+compose+conjugate+length) sum = "
+                            + (int32)(hq[0] + 0.5f) + "   (expect 4)");
+        System.stdout.println("  matrix (det + g*g^-1 diag + solve x) sum = "
+                            + (int32)(hl[0] + 0.5f) + "   (expect 15)");
     }
 
     static void runWave() {

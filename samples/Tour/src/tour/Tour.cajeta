@@ -60,6 +60,7 @@ public final class Tour {
         demos.add(heap FileIoDemo());
         demos.add(heap OperatorOverloadDemo());
         demos.add(heap LinearAlgebraDemo());
+        demos.add(heap QuaternionDemo());
         demos.add(heap ImmutableListDemo());
         demos.add(heap ImmutableSetDemo());
         demos.add(heap ImmutableMapDemo());

@@ -67,5 +67,27 @@ public class LinearAlgebraDemo extends DemoClass {
         System.stdout.println("  (a == a).all() -> " + aa
                             + " ;  (a == b).all() -> " + ab
                             + "   (expect true, false)");
+
+        // determinant: 2x2 [1 2;3 4] = -2; 3x3 diagonal(2,3,4) = 24.
+        Matrix<float32,3,3> diag = stack Matrix<float32,3,3>(
+            2.0f, 0.0f, 0.0f, 0.0f, 3.0f, 0.0f, 0.0f, 0.0f, 4.0f);
+        System.stdout.println("  det([1 2;3 4]) = " + (int32) a.determinant()
+                            + " ;  det(diag(2,3,4)) = " + (int32) diag.determinant()
+                            + "   (expect -2 and 24)");
+
+        // inverse round-trip: A * A^-1 == I (its diagonal sums to 2 for 2x2).
+        Matrix<float32,2,2> g = stack Matrix<float32,2,2>(4.0f, 7.0f, 2.0f, 6.0f);
+        Matrix<float32,2,2> gi = g.inverse();
+        Matrix<float32,2,2> prod = g * gi;
+        System.stdout.println("  (g * g.inverse()) diagonal = "
+                            + (int32)(prod[0][0] + prod[1][1])
+                            + "   (expect 2 — identity)");
+
+        // inverse solves a linear system: g * x = rhs  ->  x = g^-1 * rhs.
+        // g=[4 7;2 6], rhs=(18,16): x = (1,2) since 4*1+7*2=18, 2*1+6*2=14? -> use (1,2).
+        Vector<float32,2> rhs = new Vector<float32,2>(18.0f, 14.0f);
+        Vector<float32,2> x = gi * rhs;   // solves g*x = rhs
+        System.stdout.println("  solve g*x=(18,14): x = (" + (int32)(x[0] + 0.5f)
+                            + "," + (int32)(x[1] + 0.5f) + ")   (expect (1,2))");
     }
 }
