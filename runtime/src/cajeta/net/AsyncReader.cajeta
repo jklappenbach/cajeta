@@ -2,6 +2,7 @@ package cajeta.net;
 
 import cajeta.lang.Optional;
 import cajeta.net.TcpStream;
+import cajeta.net.ByteChannel;
 import cajeta.net.RingBuffer;
 import cajeta.net.NetException;
 import cajeta.threading.AsyncIterator;
@@ -62,10 +63,13 @@ public class AsyncReader implements AsyncIterator<int8[]> {
     public static final int32 DEFAULT_BUFFER = 8192;
 
     /**
-     * The socket this reader pulls from. **Borrowed** — not owned, not
-     * closed here. Field index after the vtable slot.
+     * The channel this reader pulls from — a plaintext
+     * [`TcpStream`](TcpStream.cajeta) or a [`TlsStream`](tls/TlsStream.cajeta),
+     * via the [`ByteChannel`](ByteChannel.cajeta) seam (NET-8.1 / NET-9.5).
+     * **Borrowed** — not owned, not closed here. Field index after the vtable
+     * slot.
      */
-    TcpStream stream;
+    ByteChannel stream;
 
     /**
      * Staging ring: bytes pulled from the socket but not yet handed to a
@@ -103,7 +107,7 @@ public class AsyncReader implements AsyncIterator<int8[]> {
      * staging ring. The stream is **borrowed**; the caller still owns and
      * closes it.
      */
-    public AsyncReader(TcpStream stream) {
+    public AsyncReader(ByteChannel stream) {
         // Bind the static-final to a local before using it as an array
         // dimension / ctor arg: a direct `new int8[AsyncReader.DEFAULT_BUFFER]`
         // mis-lowers the static-field read as the global's *address* (`ptr`),
@@ -126,7 +130,7 @@ public class AsyncReader implements AsyncIterator<int8[]> {
      * fine for a line-oriented protocol, a large one amortizes syscalls
      * on a bulk download.
      */
-    public AsyncReader(TcpStream stream, int32 capacity) {
+    public AsyncReader(ByteChannel stream, int32 capacity) {
         int32 c = capacity;
         if (c < 1) {
             c = 1;

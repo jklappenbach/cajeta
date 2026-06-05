@@ -29,7 +29,7 @@ import cajeta.net.reactor.Reactor;
  * the matching `__cajeta_net_*` native call), exactly the way a `File`
  * receiver lowers to `__cajeta_file_*`. The stub bodies exist for the parser.
  */
-public class TcpStream {
+public class TcpStream implements ByteChannel {
     /**
      * OS socket descriptor, or `-1` once closed. The first declared field, so
      * after the vtable slot it is struct field index 1 — the same index

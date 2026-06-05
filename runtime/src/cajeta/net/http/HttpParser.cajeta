@@ -260,9 +260,38 @@ public class HttpParser {
         return this.request;
     }
 
+    /**
+     * **Detach** and return the parsed request, transferring ownership to the
+     * caller and nulling the parser's handle so its drop won't double-free it
+     * (the [`takeResponse`](#takeResponse) twin). The WebSocket server upgrade
+     * ([`WsUpgrade.acceptServer`](../ws/WsUpgrade.cajeta)) keeps the request
+     * after the short-lived parser drops. Returns `null` if parsing a
+     * response / not yet complete.
+     */
+    public HttpRequest takeRequest() {
+        HttpRequest r = this.request;
+        this.request = null;
+        return r;
+    }
+
     /** The parsed response (null until complete, or if parsing a request). */
     public HttpResponse getResponse() {
         return this.response;
+    }
+
+    /**
+     * **Detach** and return the parsed response, transferring ownership to the
+     * caller and nulling the parser's handle so its drop won't double-free it
+     * — the same hand-off discipline as
+     * [`WsReadAction.takeMessage`](../ws/WsReadAction.cajeta#takeMessage). The
+     * HTTP client ([`HttpClient.readResponse`](HttpClient.cajeta)) keeps the
+     * response after the short-lived parser drops, so it takes ownership here.
+     * Returns `null` if parsing a request / not yet complete.
+     */
+    public HttpResponse takeResponse() {
+        HttpResponse r = this.response;
+        this.response = null;
+        return r;
     }
 
     /** The body-framing decision (null until complete). */

@@ -22,6 +22,7 @@ import cajeta.net.http.HttpSerializer;
 import cajeta.net.http.KeepAlive;
 import cajeta.net.http.HttpException;
 import cajeta.net.http.Exchange;
+import cajeta.net.tls.TlsStream;
 import cajeta.time.Duration;
 
 /**
@@ -533,6 +534,36 @@ public class HttpServer {
         AsyncReader reader = heap AsyncReader(conn);
         AsyncWriter writer = heap AsyncWriter(conn);
         HttpServer.serveLoopWithLimits(handler, parseLimits, limits, reader, writer);
+    }
+
+    // ----- NET-9.5: HTTPS (TLS termination) --------------------------------
+
+    /**
+     * **The NET-9.5 HTTPS per-connection worker.** Serve one already-accepted,
+     * already-handshaked [`TlsStream`](../tls/TlsStream.cajeta) (from
+     * [`TlsListener.accept`](../tls/TlsListener.cajeta#accept)) with the exact
+     * same hardened keep-alive HTTP loop the plaintext server runs — TLS is
+     * pure *termination*, invisible above the [`ByteChannel`](../ByteChannel.cajeta)
+     * seam: the buffered [`AsyncReader`](../AsyncReader.cajeta) /
+     * [`AsyncWriter`](../AsyncWriter.cajeta) drive the encrypted transport with
+     * no protocol change. After the loop ends (the keep-alive policy closed the
+     * connection, or a stalled peer timed out) a clean TLS `close_notify` is
+     * flushed and the socket closed.
+     *
+     * Takes ownership of `tls` (the per-connection worker owns the accepted
+     * connection, mirroring the plaintext core's per-fiber stream ownership).
+     * The `http/1.1` ALPN selection is handled at
+     * [`TlsListener`](../tls/TlsListener.cajeta) bind time
+     * (`supportAlpn`).
+     */
+    public static void serveTlsStream((HttpRequest) -> #HttpResponse handler,
+                                      HttpParserLimits parseLimits,
+                                      ServerLimits limits,
+                                      #TlsStream tls) {
+        AsyncReader reader = heap AsyncReader(tls);
+        AsyncWriter writer = heap AsyncWriter(tls);
+        HttpServer.serveLoopWithLimits(handler, parseLimits, limits, reader, writer);
+        tls.close();
     }
 
     /**

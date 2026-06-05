@@ -1179,7 +1179,7 @@ below the table.
 | NET-7.5 | HTTP serializer | NET-7.1 NET-7.2 | done |
 | NET-7.6 | Keep-alive semantics | NET-7.3 NET-7.5 | done |
 | NET-7.7 | HttpException hierarchy | NET-1.8 NET-7.3 | done |
-| NET-8.1 | HttpClient core (send/recv) | NET-3.5 NET-5.2 NET-6.1 NET-7.5 NET-7.4 NET-2.6 | deferred |
+| NET-8.1 | HttpClient core (send/recv) | NET-3.5 NET-5.2 NET-6.1 NET-7.5 NET-7.4 NET-2.6 | surface (live blocked) |
 | NET-8.2 | Connection pool + keep-alive reuse | NET-8.1 NET-7.6 | deferred |
 | NET-8.3 | Redirect following | NET-8.1 NET-6.4 | deferred |
 | NET-8.4 | Timeouts + cancellation | NET-8.1 NET-3.4 NET-11.4 | deferred |
@@ -1190,15 +1190,15 @@ below the table.
 | NET-9.2 | HttpServer on both accept models | NET-9.1 NET-4.2 NET-4.3 | done (live 500-client row awaits NET-4 harness) |
 | NET-9.3 | Minimal router (path params) | NET-9.1 | done |
 | NET-9.4 | Streaming responses + requests | NET-9.1 NET-7.4 | done |
-| NET-9.5 | HTTPS server (TLS termination) | NET-9.1 NET-5.5 | deferred |
+| NET-9.5 | HTTPS server (TLS termination) | NET-9.1 NET-5.5 | surface (live blocked) |
 | NET-9.6 | Limits + hardening (slowloris/100-continue) | NET-9.1 NET-9.4 | done |
-| NET-10.1 | WS handshake — client | NET-8.1 NET-11.2 NET-11.3 | deferred |
+| NET-10.1 | WS handshake — client | NET-8.1 NET-11.2 NET-11.3 | done (pure) |
 | NET-10.2 | WS handshake — server | NET-9.1 NET-11.2 NET-11.3 | done |
 | NET-10.3 | WS frame codec | NET-3.5 | done |
 | NET-10.4 | WS message fragmentation | NET-10.3 | done |
 | NET-10.5 | WS control frames (ping/pong/close) | NET-10.3 | done |
 | NET-10.6 | WebSocket API (concurrent read/write) | NET-10.4 NET-10.5 | partial |
-| NET-10.7 | WS client + server entry points | NET-10.1 NET-10.2 NET-10.6 NET-5.2 | deferred |
+| NET-10.7 | WS client + server entry points | NET-10.1 NET-10.2 NET-10.6 NET-5.2 | surface (live blocked) |
 | NET-10.8 | WS error hierarchy | NET-1.8 NET-10.3 | done |
 | NET-11.1 | SHA-256 (FIPS 180-4) | — | done |
 | NET-11.2 | SHA-1 (WS handshake only) | — | done |
@@ -1364,6 +1364,57 @@ Anything beyond that (Phase 12) is v1.x or v2.
 
 - **NET-9.6** — done. Limits + hardening on the NET-9.1/9.4 HttpServer: three new pure-logic stdlib types under `runtime/src/cajeta/net/http/` — `ServerLimits` (head-read deadline = slowloris mitigation, body-read deadline, max body size, Expect:100-continue toggle; `of()` treats non-positive as disabled), `PayloadTooLargeException` (413 leaf overriding virtual `httpStatus()`), `ExpectContinue` (PROCEED/SEND_CONTINUE/417/413 decision, HTTP/1.1-only, case-insensitive). Wired into HttpServer via a golden-testable pure path (`handleRequestWithLimits`/`expectAction`/`continueResponse`) and a live hardened loop (`serveConnectionWithLimits`/`serveLoopWithLimits`/`readExchangeWithLimits`/`readBodyWithLimits`) reading the head under a deadline, flushing interim 100 Continue, enforcing a running body-size cap on chunked uploads, dropping on TimedOutException (slowloris eviction). Deadline reads ride new `AsyncReader.readWithin` → existing `TcpStream.readWithin`. `bindAddressWithModel` now runs the hardened loop; no-limits primitives stay intact. 15 golden gtests in `test/parser/HttpServerHardeningTests.cpp`. Live slowloris round-trip awaits the same in-scheduler harness the other NET-4/9 live rows do. No build-file edits (CONFIGURE_DEPENDS-globbed). No full cmake build (Windows binary-lock hazard).
 - **NET-10.6** — partial (live fiber round-trip rows belong to NET-10.7). WebSocket API in `cajeta.net.ws` over NET-10.3/10.4/10.5: `WsProtocol` (pure read-side engine threading each WsFrame through the fragmentation reassembler + control-frame logic: auto-pong w/ opt-out, pong-swallow, bidirectional close handshake, terminal-after-close), `WsReadAction` (pure decision value NONE/MESSAGE/SEND_FRAME/PING/CLOSED with takeMessage/takeFrame detach), `WebSocket` façade (send/sendBinary/receive/close over borrowed AsyncReader/AsyncWriter, fiber-aware write Lock serializing every frame emission — the plan's write-mutex guarantee — role-aware masking). Protocol engine FULLY implemented + golden-tested: 12 JIT cases in `test/parser/WsProtocolTests.cpp`. Marked partial because the façade's LIVE concurrent-fiber rows (concurrentReadWriteFibers, textAndBinaryRoundTrip, wssOverTlsRoundTrips) need the NET-10.7 client/server entry points + a CSPRNG for RFC-6455 §5.3 client masking (placeholder key pending NET-10.1/10.7) — those end-to-end rows belong to NET-10.7. **Blocked on:** NET-10.7. No build-file edits. No full cmake build (Windows binary-lock hazard).
+
+### Wave 12 (b7/b8/b9 — HTTP client, HTTPS server, WS entry points)
+
+- **KEYSTONE: `ByteChannel` transport interface** (`cajeta.net.ByteChannel`,
+  `readAsync`/`writeAllAsync`/`readWithin`/`close`). `TcpStream` and `TlsStream`
+  both `implement` it; `AsyncReader`/`AsyncWriter` repointed from a concrete
+  `TcpStream` field to `ByteChannel`. This is the seam that lets the **same**
+  HTTP/WS read-write code run over plaintext (`http`/`ws`) or TLS
+  (`https`/`wss`) — TLS termination becomes a *wrapping* concern, not a fork.
+  Verified live: all 5 `TlsLoopbackTest` rows stay green through the change, and
+  `byteChannelInterfaceDispatchEcho` round-trips a TcpStream-as-ByteChannel over
+  a real socket.
+
+- **NET-8.1 (HttpClient) — surface complete, live acceptance BLOCKED.**
+  `cajeta.net.http.HttpClient`: `send(Uri, HttpRequest)` / `get(url)` over the
+  `ByteChannel` seam — resolve (NET-2, IPv4 v1) → `connectAsync` → for `https`
+  wrap a verifying `TlsStream` (`clientSystemTrust` for OS trust, or a pinned
+  `trustAnchor`) offering ALPN `http/1.1` → serialize (NET-7.5) → parse
+  (NET-7.3/7.4). The exchange drives the channel **directly** with a local
+  scratch buffer (`ch.writeAllAsync` / `ch.readAsync` + the incremental parser),
+  deliberately NOT via `AsyncReader`/`AsyncWriter`. Added `HttpParser.takeRequest`/
+  `takeResponse` (ownership detach) + `TlsStream.clientSystemTrust`.
+  **Blocked:** the end-to-end loopback rows (`HttpClientTests.DISABLED_httpGetReturnsBody`,
+  `httpsGetReturnsBody`) **hang** — the composed live-socket HTTP closure
+  (`runBlocking` + `spawn` + the full URI/DNS/parser/serializer closure driving
+  the socket) hits a **pre-existing JIT codegen issue on the live networking
+  path**, the same class that left NET-9.1's live rows deferred. The transport
+  primitives each pass in isolation (see the `HttpClientTests` guards); the HTTP
+  protocol logic is covered by the pure-byte golden suites. See memory
+  `cajeta-interface-arg-field-offset-bug`.
+
+- **NET-9.5 (HTTPS server) — surface complete, live acceptance BLOCKED.**
+  `TlsListener.acceptAsync` (fiber-parking) + `HttpServer.serveTlsStream`
+  (per-connection worker: run the hardened keep-alive HTTP loop over a
+  TLS-terminated `ByteChannel`, then a clean `close_notify`). The wiring is in
+  place; `HttpsServerTests.DISABLED_httpsRequestEndToEnd` is gated by the same
+  live-socket JIT blocker (the server loop reads/writes through
+  `AsyncReader`/`AsyncWriter`).
+
+- **NET-10.1 (WS client handshake) — done (pure).** `WsClientHandshake`:
+  `buildRequest(uri, key)` (Upgrade request + `Sec-WebSocket-Key`),
+  `validateAccept`/`requireAccept` (verify `base64(SHA-1(key+GUID))`),
+  `placeholderKey(seed)` (non-CSPRNG, flagged). Validated **pure** against the
+  NET-10.2 server handshake: `WsEntryPointTests.clientHandshakeRoundTripsWithServer`
+  + `handshakeKeyBindingIsChecked`.
+
+- **NET-10.7 (WS entry points) — surface complete, live acceptance BLOCKED.**
+  `WsUpgrade.acceptServer` / `connectClient` run the handshake over a borrowed
+  `AsyncReader`/`AsyncWriter` and switch to `WebSocket.forServer`/`forClient`.
+  `WsEntryPointTests.DISABLED_clientServerEchoRoundTripOverLoopback` is gated by
+  the same live-socket JIT blocker (via `AsyncReader`/`AsyncWriter`).
 
 ### Wave 11 (socket-lowering increment b3 — async TCP surface)
 
