@@ -1,11 +1,25 @@
-Note: Google Test filter = TlsLoopbackTest.tlsListenerAcceptWithAlpnOverLoopback
-[==========] Running 1 test from 1 test suite.
+Note: Google Test filter = TlsEngineTests.*
+[==========] Running 8 tests from 1 test suite.
 [----------] Global test environment set-up.
-[----------] 1 test from TlsLoopbackTest
-[ RUN      ] TlsLoopbackTest.tlsListenerAcceptWithAlpnOverLoopback
-[       OK ] TlsLoopbackTest.tlsListenerAcceptWithAlpnOverLoopback (14485 ms)
-[----------] 1 test from TlsLoopbackTest (14486 ms total)
+[----------] 8 tests from TlsEngineTests
+[ RUN      ] TlsEngineTests.memoryBioHandshakeAndPlaintextRoundTrip
+[       OK ] TlsEngineTests.memoryBioHandshakeAndPlaintextRoundTrip (7 ms)
+[ RUN      ] TlsEngineTests.alpnServerSelectsOverlap
+[       OK ] TlsEngineTests.alpnServerSelectsOverlap (1 ms)
+[ RUN      ] TlsEngineTests.alpnNoOverlapNegotiatesNothing
+[       OK ] TlsEngineTests.alpnNoOverlapNegotiatesNothing (1 ms)
+[ RUN      ] TlsEngineTests.expiredCertRejected
+[       OK ] TlsEngineTests.expiredCertRejected (1 ms)
+[ RUN      ] TlsEngineTests.hostnameMismatchRejected
+[       OK ] TlsEngineTests.hostnameMismatchRejected (1 ms)
+[ RUN      ] TlsEngineTests.untrustedRootRejectedThenAcceptedWithAnchor
+[       OK ] TlsEngineTests.untrustedRootRejectedThenAcceptedWithAnchor (2 ms)
+[ RUN      ] TlsEngineTests.systemTrustLoadsWithoutError
+[       OK ] TlsEngineTests.systemTrustLoadsWithoutError (5 ms)
+[ RUN      ] TlsEngineTests.systemTrustStillRejectsSelfSigned
+[       OK ] TlsEngineTests.systemTrustStillRejectsSelfSigned (5 ms)
+[----------] 8 tests from TlsEngineTests (29 ms total)
 
 [----------] Global test environment tear-down
-[==========] 1 test from 1 test suite ran. (14487 ms total)
-[  PASSED  ] 1 test.
+[==========] 8 tests from 1 test suite ran. (29 ms total)
+[  PASSED  ] 8 tests.

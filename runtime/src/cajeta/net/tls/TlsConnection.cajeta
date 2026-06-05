@@ -73,6 +73,9 @@ public class TlsConnection {
     @Native("__cajeta_tls_ctx_add_trust_pem")
     private static int32 ctxAddTrust(pointer ctx, int8[] pem, int32 len);
 
+    @Native("__cajeta_tls_ctx_use_system_trust")
+    private static int32 useSystemTrustNative(pointer ctx);
+
     @Native("__cajeta_tls_conn_new")
     private static #pointer connNew(pointer ctx, int32 isServer);
 
@@ -173,6 +176,17 @@ public class TlsConnection {
     /** Add a trust-anchor (CA / root) from PEM bytes to this context's store. */
     public int32 addTrust(int8[] pem, int32 len) {
         return TlsConnection.ctxAddTrust(this.ctx, pem, len);
+    }
+
+    /**
+     * Trust the **operating-system** default CA store, so a real public cert
+     * validates without a caller-supplied anchor (NET-5.3). On POSIX this is
+     * OpenSSL's default verify paths (the distro CA bundle / `$SSL_CERT_*`); on
+     * Windows the system "ROOT" store. Returns 0 on success. Combine with a
+     * [`verifyingClient`](#verifyingClient) and [`setVerifyHost`](#setVerifyHost).
+     */
+    public int32 useSystemTrust() {
+        return TlsConnection.useSystemTrustNative(this.ctx);
     }
 
     /** Require the peer cert to match `host` (SAN, CN fallback, wildcards). */

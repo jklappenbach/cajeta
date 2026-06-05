@@ -646,9 +646,11 @@ target_link_libraries(${CMAKE_PROJECT_NAME}_lib
 if(WIN32)
     # bcrypt: __cajeta_alloc/random helpers. ws2_32: the cajeta.net native
     # runtime (cajeta_net_*.c, #included into cajeta_runtime.c) calls Winsock —
-    # WSAStartup/socket/bind/getaddrinfo/select/etc. PUBLIC so every consumer
-    # (cajeta.exe, cajeta_test, cajeta_debug_test) inherits the import lib.
-    target_link_libraries(${CMAKE_PROJECT_NAME}_lib PUBLIC bcrypt ws2_32)
+    # WSAStartup/socket/bind/getaddrinfo/select/etc. crypt32: the OS trust-store
+    # shim in cajeta_tls.c (CertOpenSystemStore / CertEnumCertificatesInStore,
+    # NET-5.3). PUBLIC so every consumer (cajeta.exe, cajeta_test,
+    # cajeta_debug_test) inherits the import lib.
+    target_link_libraries(${CMAKE_PROJECT_NAME}_lib PUBLIC bcrypt ws2_32 crypt32)
 endif()
 target_include_directories(${CMAKE_PROJECT_NAME}_lib PUBLIC
         ${PROJECT_SOURCE_DIR}/src
