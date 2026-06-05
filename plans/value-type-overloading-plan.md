@@ -181,10 +181,12 @@ The review's required fixes are folded into the stages below.
   instructions (size guard) so a large operator keeps a real call. `captureIr` snapshots
   post-AlwaysInline IR so tests can see the fold. Tests `ValueTypeInlineSizeTests` (small folds,
   large keeps a call).
-- **S5 — POD marshalling incl. nested (REQUIRED FIX #5).** Extend `isPodStruct`
-  (`KernelArgTrait.cpp:86-99`) + `deviceStructInfo` (`KernelLowering.cpp:145-165`) to
-  accept/recurse `VALUE_TYPE_FLAG` fields; marshal a value type (and a value-type-containing
-  struct) by value to a field-reading kernel (no operators yet).
+- **S5 — POD marshalling incl. nested (DONE 2026-06-05).** `isPodStruct` recurses into
+  `VALUE_TYPE_FLAG` fields (`KernelArgTrait.cpp`), so a `@ValueType` POD and a struct containing
+  value-type fields are kernel-arg admissible by value. `deviceStructInfo` builds nested device
+  struct types for value-type fields + records their sub-field map; `structFieldRead` resolves a
+  nested `param.vfield.subfield` read to a multi-index `extractvalue` (`KernelLowering.cpp`). Tests
+  `XpuValueTypeArgDeviceTests` (flat + nested field read + admissibility); 20 XPU tests green.
 - **S6 — Shared dispatch/derivation helper (DONE 2026-06-05).** New
   `src/cajeta/asn/expression/OperatorDispatch.h`: the op→symbol map, the `!=/>/>=/<=` derivation
   table, and `dispatchBinaryOperator()` (tries the direct operator then its derivation via two
@@ -198,12 +200,21 @@ The review's required fixes are folded into the stages below.
   through the user overloading mechanism. No templates, inference, or monomorphization. Element-wise
   multiply is the method `a.hadamard(b)`. See Decision #4 below and the retired sub-plan
   `plans/method-templated-operators-plan.md` (kept only as the record of why this was rejected).
-- **S8 — Device path (RISK; REQUIRED FIX #4).** In `lowerBinaryOp` (`KernelLowering.cpp:1761`):
-  on `VALUE_TYPE_FLAG` LHS, resolve via the S6 helper, lower the `@Device` (pure) operator
-  body — **with new aggregate-param/return support in `lowerDeviceFn`** — and emit a call the
-  backend `AlwaysInlinerPass` folds; else fall through to native IR. Purity check (no
-  alloca/GEP/heap) so SPIR-V logical addressing validates. Re-run S0 golden tests (existing
-  kernels byte-identical) + `spirv-val`.
+- **S8 — Device path (DONE 2026-06-05, scalar-returning slice; aggregate-returning deferred).**
+  `lowerBinaryOp` routes a `@ValueType` LHS through the S6 helper
+  (`opdispatch::dispatchBinaryOperator`) with device callbacks: resolve the operator, require
+  `@Device`, lower it via `lowerDeviceFn` (aggregate-param ABI already works — S5's
+  `deviceStructInfo` + the existing `alwaysinline` helper path), emit the call the backend inliner
+  folds; comparison derivations reuse the shared table. Kernel bodies aren't host-type-resolved, so
+  operand value types come from a `valueTypeNames` (param/local → type) map; a whole value-type
+  param reads as its materialized aggregate SSA (extractvalue-only, SPIR-V-safe). A value-type LHS
+  with no `@Device` operator now errors cleanly (was an ICmp-on-aggregate crash). Tests
+  `XpuValueTypeOperatorDeviceTests` (device `==` dispatch + derived `!=`); 24 XPU tests green.
+  **Deferred (next increment):** a value-type-RETURNING device operator (`Vec2 operator+`) needs
+  device-side aggregate construction (`stack Vec2(...)` → `insertvalue`), aggregate return in
+  `lowerDeviceFn`, and aggregate locals; scalar-RHS operators (`Vec2 * float`) need RHS-type
+  tracking; and `spirv-val` of a value-type-operator kernel (the bodies are pure SSA, so expected
+  to validate, but not yet asserted in CI).
 - **S9 — Vector signature surface + docs (DONE 2026-06-05).** `ValueTypeCatalog.md` already
   carried the Vector entry + operator-signature conventions; reconciled the Vector entry with the
   implemented mechanism — its operators are compiler intrinsics (signatures documentary), Vector is
