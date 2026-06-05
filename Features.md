@@ -129,7 +129,7 @@ stabilizes).
 | S-503 | `Duration` value type | Time-based amount | shipped — full arithmetic, compareTo, iso |
 | S-504 | `Period` value type | Calendar-based amount | shipped — Y/M/D, normalized, LocalDate.plus(Period) |
 | S-505 | `LocalDate` / `LocalTime` / `LocalDateTime` | Zone-naive date/time | shipped — Hinnant civil↔epoch-day, validation, carry arithmetic |
-| S-506 | `ZoneId` / `ZoneOffset` / `ZonedDateTime` | Time-zone resolution | partial — `ZoneOffset` + offset-based `ZonedDateTime` shipped; region `ZoneId` + tz database deferred |
+| S-506 | `ZoneId` / `ZoneOffset` / `ZonedDateTime` | Time-zone resolution | shipped — `ZoneOffset` + offset-based `ZonedDateTime`; region `ZoneId` resolves DST-aware offsets via native TZif parse of `/usr/share/zoneinfo` (`__cajeta_tz_offset`), UTC fast-path for static builds |
 | S-507 | `DateTimeFormatter` | Pattern-based formatting + parsing | designed — ISO-8601 output via `iso()`; pattern engine + parsing deferred |
 
 ## Stdlib — `cajeta.io` / `.file` / `.net`

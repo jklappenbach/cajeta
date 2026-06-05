@@ -275,8 +275,12 @@ negatives).
 - [ ] **Phase 4 — `Period`** (S-504) + `LocalDate.plus(Period)`.
 - [ ] **Phase 5 — `ZoneOffset` + offset-based `ZonedDateTime`.** (S-506a.)
       `Instant ↔ ZonedDateTime` round-trip via fixed offset.
-- [ ] **Phase 6 — region `ZoneId` + tz database.** (S-506b, **deferred / own
-      session**: native `__cajeta_tz_offset`, zoneinfo parsing, DST).
+- [x] **Phase 6 — region `ZoneId` + tz database.** (S-506b.) **Done.** Native
+      `__cajeta_tz_offset` parses TZif v1/v2 from `/usr/share/zoneinfo` and returns
+      the DST-aware offset at an epoch second; `ZoneId.of(name).offsetAt(instant)`
+      → `ZoneOffset`, `ZoneId.resolve(instant)` → `ZonedDateTime`. UTC/GMT/Z
+      fast-path works without the filesystem (static builds); unknown zones throw.
+      Tests: `test/time/ZoneIdTests.cpp` (DST straddle, half-hour offset, throw).
 - [ ] **Phase 7 — `DateTimeFormatter` pattern engine.** (S-507, **deferred**.)
 
 Phases 1–5 are the committed v1 of this branch; 6–7 are scoped here but
