@@ -96,8 +96,14 @@ The review's required fixes are folded into the stages below.
 ## Stages (each builds `./build.sh` + tests independently; TDD)
 
 - **S0 — Golden-IR baseline (no source change).** Capture post-codegen LLVM IR + SPIR-V for a
-  representative `Vector` workload (add/sub/mul/div, dot, length, normalize, index, broadcast)
-  as the regression oracle for the retrofit. Files: `test/codegen/`, `test/xpu/`.
+  representative `Vector` workload as the regression oracle for the retrofit.
+  **Status 2026-06-04: largely already covered.** The device side exists —
+  `XpuVectorDeviceTests.lowersToVectorIr` asserts `<4 x float>` / `fmul` / `extractelement` /
+  `insertelement` in the kernel IR, and `runsOnCpu`/`runsOn{Vulkan,Amd}Device` are the
+  behavioral oracle. The dedicated **host** golden-IR-diff harness is deferred — it needs a
+  host-IR-string accessor (the JIT helper only dumps to stderr via `CAJETA_DUMP_IR`), and its
+  consumer (the Vector retrofit, S9) is documentary-first and far off. Low priority; the
+  existing Vector device-emit + exec tests serve as the zero-regression oracle meanwhile.
 - **S1 — `VALUE_TYPE_FLAG` + `@ValueType` + POD validator.** Flag bit; visitor recognition;
   POD-validity check (reject base/interface/virtual/non-POD-field; **recurse into value-type
   fields**). Negative + positive tests. Files: `CajetaType.h`, `CajetaLlvmVisitor.h`,
@@ -105,10 +111,55 @@ The review's required fixes are folded into the stages below.
 - **S1b — Inliner-pass fix (REQUIRED FIX #1).** Add `AlwaysInlinerPass` to the JIT pipeline and
   the AOT-O0 path; test that an `AlwaysInline` function is folded at O0/JIT. Files:
   `JitTestHelper.cpp` / the JIT driver, `Optimizer.cpp`. **Prerequisite for S4/S5.**
-- **S2 — Host gate (binary + comparison derivations).** Gate clause edit at
-  `BinaryOpExpression.cpp:658-659`. `Vec2 @ValueType` with `operator+/-/* (scalar)/==/<`;
-  verify dispatch + `!=/>/<=/>=` derivation on JIT; confirm plain classes unaffected and
-  `CajetaArray` still excluded (negative test).
+- **S2 — Value-type by-value calling convention + Copy borrow exemptions (DONE 2026-06-04).**
+  **Finding (2026-06-04): the dispatch gate is NOT the blocker.** A `@ValueType` class carries
+  `VALUE_TYPE_FLAG` but not `PRIMITIVE_FLAG`, so it already passes the existing
+  `!(PRIMITIVE_FLAG)` gate like any non-primitive class — operators *resolve*. The real S2 work
+  is the **value-type by-value ABI + treating value types as Copy** in the borrow/ownership
+  checker. The flag must also be applied inside `CajetaClass::generatePrototype` (after its
+  `typeFlags` reset, before method prototypes) or the operator borrow check runs before the
+  flag is set. **Done so far (uncommitted):** (a) `CajetaClass.cpp:583` re-applies
+  `VALUE_TYPE_FLAG` after the reset; (b) `Method.cpp` multi-param-borrow-return rule exempts
+  value-type returns (Copy, not a borrow); (c) `Statement.cpp:1303` fresh-allocation-return
+  (`return stack Vec2(...)`) exempts value types (no `#` needed); (d) `Method.cpp:526`
+  return-signature is by-value (the aggregate) for value types, not by-pointer.
+
+  **DONE 2026-06-04 — all 4 `ValueTypeOperatorHostTests` green** (`+`, `-`/`* scalar`, `==`/`!=`,
+  `<`/`>`/`<=`/`>=`), via the genuine by-value calling convention (NOT an inlining crutch — the
+  operators are real cross-function calls passing/returning `Vec2` aggregates by value). 200+
+  regression tests across operator/vector/view/interface/multiclass/template/ctor/dtor/archive
+  suites stay green. Landed:
+  1. **`BY_VALUE_FLAG` (storage axis) + born-correct archive (flag-identity root cause).** A new
+     `BY_VALUE_FLAG` bit (`CajetaType.h`) names the storage axis explicitly: set on `@ValueType`
+     classes alongside `VALUE_TYPE_FLAG` (the "kind"); `hasValueSemantics()` is now a direct
+     two-bit test (`PRIMITIVE_FLAG | BY_VALUE_FLAG`), no canonical-map backstop in the hot path.
+     The stale-instance problem (canonical gets the flag in `generatePrototype`, parse-time
+     placeholders don't) is fixed AT THE SOURCE by `markArchiveValueType`/`isArchiveValueType`
+     (`CajetaType.cpp`) — the prescan (`Compiler.cpp`, `classHasValueTypeAnnotation`) detects
+     `@ValueType` and the placeholder-synthesis path sets `VALUE_TYPE_FLAG | BY_VALUE_FLAG` from
+     birth, exactly mirroring the proven `markArchiveEnum`/`isArchiveEnum` mechanism. `isValueType()`
+     keeps a cheap canonical-map fallback as belt-and-suspenders. The flag is also re-applied in
+     `CajetaClass::generatePrototype` after its `typeFlags` reset.
+  2. **By-value parameter ABI.** `Method.cpp` (both signature paths) and `ParameterField.cpp`
+     exempt `@ValueType` params from pass-by-pointer: the LLVM signature carries the aggregate,
+     the call site loads the inline slot, and the callee spills the by-value arg to an
+     aggregate-sized slot (was a `ptr`-sized slot — a by-value store overflowed it, corrupting
+     the adjacent operand → the original "garbage value" symptom). Return signature was already
+     by-value.
+  3. **Field-access on inline value-type slots.** `DotExpression.cpp` GEPs a value-type local's
+     alloca DIRECTLY (the slot holds the aggregate inline) instead of loading through it — gated
+     on `isValueType() && !allocatedType->isPointerTy()`, so a value-type METHOD's `this` (a
+     pointer spilled to a `ptr` slot — receiver is still by-reference) correctly loads through.
+  4. **Drop-chain bypass.** `LocalVariableDeclaration.cpp` skips drop-entry registration for
+     `@ValueType` locals — they are Copy PODs, never heap-backed, no destructor.
+
+  **Deferred (quality, not correctness — own follow-ups):**
+  - **Vtable-free POD layout.** `%test.Vec2` is still `{ vtable_ptr, float x, float y }` (16 bytes,
+    fields at index 1/2). True POD (`{ float x, float y }`, no vtable) is a separate layout change.
+  - **`AlwaysInline` on value-type operators (S4 / S1b register-residency intent).** Operators are
+    currently real calls (correct, ABI-proven). Marking them `alwaysinline` so they fold to flat
+    IR like an intrinsic is S4's job — the `Optimizer.cpp` O0 comment anticipates it, but the
+    attribute is not yet applied at function creation.
 - **S3 — `operator[]` read gate + mutating-operator policy (REQUIRED FIX #2).** Open the read
   gate (`Expression.cpp:532`). Decide+enforce instance mutating-operator policy: forbid on
   value types, or by-address receiver. Tests for indexed read + the chosen write policy.

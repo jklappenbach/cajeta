@@ -1300,7 +1300,14 @@ namespace cajeta {
             // returns a fresh value. When the lambda type syntax gains
             // `#R` support, this carve-out can drop.
             bool isLambda = m->getName().rfind("__cajeta_lambda_", 0) == 0;
-            if (!isLambda && !m->isReturnsOwnership()) {
+            // @ValueType returns are by-value (Copy): `return stack Vec2(...)`
+            // copies the value into the caller's slot like a primitive — no
+            // ownership transfer, no dangling-borrow hazard. Exempt them so static
+            // value-type operators (Vec2 operator+(Vec2,Vec2)) need no `#`.
+            // See plans/value-type-overloading-plan.md (value types are Copy).
+            auto rtype = m->getReturnType();
+            bool returnsValueType = rtype && rtype->isValueType();
+            if (!isLambda && !m->isReturnsOwnership() && !returnsValueType) {
                 auto newExpr = dynamic_pointer_cast<NewExpression>(expression);
                 auto aggExpr = dynamic_pointer_cast<AggregateInitializerExpression>(expression);
                 if (newExpr || aggExpr) {
@@ -1696,8 +1703,15 @@ namespace cajeta {
                 val = builder->CreateSIToFP(val, retTy);
             } else if (retTy->isIntegerTy() && valTy->isFloatingPointTy()) {
                 val = builder->CreateFPToSI(val, retTy);
+            } else if (retTy->isAggregateType() && valTy->isPointerTy()) {
+                // By-value aggregate return (e.g. an @ValueType `Vec2 operator+`):
+                // Method::generatePrototype set the function's return type to the
+                // struct itself, but the returned expression (`return stack
+                // Vec2(...)`) yielded a POINTER to it. Load the struct so the `ret`
+                // matches the by-value signature. See value-type-overloading-plan.md.
+                val = builder->CreateLoad(retTy, val);
             }
-            // Pointer / aggregate mismatches fall through; LLVM verifier will flag.
+            // Remaining pointer/aggregate mismatches fall through; verifier flags.
         }
         // A4: fire @After advice before scope-exit + drops on the
         // typed-return path too. Same ordering rule as the void-

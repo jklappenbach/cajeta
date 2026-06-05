@@ -500,7 +500,10 @@ namespace cajeta {
                 bool isArr = dynamic_pointer_cast<CajetaArray>(pt) != nullptr;
                 bool isClassLike = dynamic_pointer_cast<CajetaClass>(pt) != nullptr;
                 bool isPrim = pt && (pt->getTypeFlags() & PRIMITIVE_FLAG);
-                bool passByPointer = isClassLike && (isArr || !isPrim);
+                // @ValueType params pass by value (aggregate) — Copy semantics,
+                // matching the non-abstract path below.
+                bool passByPointer = isClassLike && (isArr || !isPrim)
+                    && !pt->isValueType();
                 if (passByPointer) {
                     ptLlvm = llvm::PointerType::get(*module->getLlvmContext(), 0);
                 }
@@ -523,8 +526,11 @@ namespace cajeta {
                 bool isClassLikeR = rtClass != nullptr;
                 bool isPrimR = rt && (rt->getTypeFlags() & PRIMITIVE_FLAG);
                 bool isInterfaceR = rtClass && rtClass->isInterface();
+                // @ValueType returns by value (the aggregate itself), like a POD
+                // primitive — not by pointer. See value-type-overloading-plan.md.
+                bool isValueTypeR = rt && rt->isValueType();
                 bool returnByPointer = isClassLikeR
-                    && (isArrR || !isPrimR) && !isInterfaceR;
+                    && (isArrR || !isPrimR) && !isInterfaceR && !isValueTypeR;
                 if (returnByPointer) {
                     llvmRetAbs = llvm::PointerType::get(
                         *module->getLlvmContext(), 0);
@@ -562,7 +568,13 @@ namespace cajeta {
         bool returnIsReferenceTyped = false;
         if (returnType) {
             if (auto rc = std::dynamic_pointer_cast<CajetaClass>(returnType)) {
-                if (!std::dynamic_pointer_cast<CajetaView>(returnType)) {
+                // Views and @ValueType classes are inline aggregates returned BY
+                // VALUE (Copy semantics) — not references — so a static operator
+                // like `Vec2 operator+(Vec2, Vec2)` returns an owned value, not a
+                // borrow, and is exempt from the multi-param-borrow rule. See
+                // plans/value-type-overloading-plan.md (value types are Copy).
+                if (!std::dynamic_pointer_cast<CajetaView>(returnType)
+                        && !returnType->isValueType()) {
                     returnIsReferenceTyped = true;
                 }
             } else if (returnType->getLlvmType()
@@ -614,7 +626,13 @@ namespace cajeta {
             bool isArr = dynamic_pointer_cast<CajetaArray>(pt) != nullptr;
             bool isClassLike = dynamic_pointer_cast<CajetaClass>(pt) != nullptr;
             bool isPrim = pt && (pt->getTypeFlags() & PRIMITIVE_FLAG);
-            bool passByPointer = isClassLike && (isArr || !isPrim);
+            // @ValueType params pass BY VALUE (the aggregate), like a POD
+            // primitive — they are Copy, so the callee gets its own copy and
+            // there is no aliasing to preserve. The call site loads the inline
+            // slot and the signature carries getLlvmType(). See
+            // plans/value-type-overloading-plan.md.
+            bool passByPointer = isClassLike && (isArr || !isPrim)
+                && !pt->isValueType();
             if (passByPointer) {
                 ptLlvm = llvm::PointerType::get(*module->getLlvmContext(), 0);
             }
@@ -643,8 +661,11 @@ namespace cajeta {
             bool isClassLikeR = rtClass != nullptr;
             bool isPrimR = rt && (rt->getTypeFlags() & PRIMITIVE_FLAG);
             bool isInterfaceR = rtClass && rtClass->isInterface();
+            // @ValueType returns by value (the aggregate), like a POD primitive —
+            // not by pointer. See plans/value-type-overloading-plan.md.
+            bool isValueTypeR = rt && rt->isValueType();
             bool returnByPointer = isClassLikeR && (isArrR || !isPrimR)
-                && !isInterfaceR;
+                && !isInterfaceR && !isValueTypeR;
             if (returnByPointer) {
                 llvmRet = llvm::PointerType::get(*module->getLlvmContext(), 0);
             } else {

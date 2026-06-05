@@ -53,6 +53,15 @@ namespace cajeta {
     // value. Additive — NOT PRIMITIVE_FLAG (which is exclusive to scalar/vector/array/
     // pointer and is wired into width/marshalling math). See plans/value-type-overloading-plan.md.
     #define VALUE_TYPE_FLAG         0b10000000000000000000
+    // The STORAGE AXIS, orthogonal to the scalar/kind axes above. Set on every
+    // type that lives INLINE in its slot and is copied whole (load/store the
+    // aggregate, no heap body, no drop/borrow): @ValueType PODs carry it
+    // EXPLICITLY (they are not PRIMITIVE_FLAG). Scalar primitives and Vector are
+    // by-value too, but already reliably marked PRIMITIVE_FLAG, so hasValueSemantics()
+    // tests both bits rather than retro-tagging every numeric. A future builtin
+    // by-value type (Matrix/Tensor) that does NOT borrow PRIMITIVE_FLAG sets this
+    // bit alone. Born-correct on cross-file placeholders via markArchiveValueType.
+    #define BY_VALUE_FLAG           0b100000000000000000000
     #define BIT_SIZE_MASK           0b00001111111000000000
 
 
@@ -205,6 +214,35 @@ class CajetaType : public Modifiable, public Annotatable,
             typeFlags |= bits;
         }
 
+        // Robust @ValueType test (plans/value-type-overloading-plan.md S2).
+        // VALUE_TYPE_FLAG is applied to the CANONICAL CajetaClass inside
+        // generatePrototype, but consumer sites (parse-time placeholders,
+        // un-refreshed local-variable type instances) may hold a DIFFERENT
+        // CajetaType object for the same class that never received the bit.
+        // Resolving through canonicalMap by canonical name makes every
+        // instance of a value-type class answer true once the class is
+        // prototyped. Prefer this over a raw `getTypeFlags() & VALUE_TYPE_FLAG`
+        // at any value-type ABI decision point.
+        bool isValueType();
+
+        // Storage axis (NOT the scalar axis). True for types with value /
+        // Copy semantics that live INLINE in an alloca and are loaded/stored
+        // whole: scalar primitives (ints/floats — PRIMITIVE_FLAG), the
+        // by-value device types (Vector/CooperativeMatrix, which borrow
+        // PRIMITIVE_FLAG for kernel-arg marshalling), and @ValueType PODs
+        // (BY_VALUE_FLAG — they are NOT primitives, and must not be, or they'd
+        // fail the `!(PRIMITIVE_FLAG)` operator-dispatch gate). The two bits
+        // together span the storage axis: PRIMITIVE_FLAG already marks every
+        // scalar/vector by-value type uniformly, BY_VALUE_FLAG marks the
+        // non-primitive ones. Both are born-correct on cross-file placeholders
+        // (PRIMITIVE_FLAG always, BY_VALUE_FLAG via markArchiveValueType), so
+        // this is a reliable direct flag test with no canonical-map backstop.
+        // Slot allocation, by-value load/store, and POD kernel marshalling key
+        // off THIS, not the scalar bit. See plans/value-type-overloading-plan.md.
+        bool hasValueSemantics() {
+            return (typeFlags & PRIMITIVE_FLAG) || (typeFlags & BY_VALUE_FLAG);
+        }
+
         QualifiedNamePtr getQName() const {
             return qName;
         }
@@ -294,6 +332,17 @@ class CajetaType : public Modifiable, public Annotatable,
         // registerArchive(canonical, shortName).
         static void markArchiveEnum(const string& canonical);
         static bool isArchiveEnum(const string& canonical);
+
+        // Mark a previously-registered archive entry as an @ValueType
+        // class. Read by fromContext's placeholder-synthesis path so a
+        // cross-file value-type-typed declaration (`Vec2 a;`) is born
+        // carrying VALUE_TYPE_FLAG | BY_VALUE_FLAG — eliminating the
+        // stale-instance gap where the canonical CajetaClass gets the
+        // flag in generatePrototype but earlier placeholders do not.
+        // Mirrors markArchiveEnum; called by the prescan visitor's
+        // visitClassDeclaration when the class is annotated @ValueType.
+        static void markArchiveValueType(const string& canonical);
+        static bool isArchiveValueType(const string& canonical);
 
         // Record template metadata for an archived class. Called by
         // the prescan visitor for any class/interface declaration

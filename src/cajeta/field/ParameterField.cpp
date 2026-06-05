@@ -21,6 +21,12 @@ namespace cajeta {
         if (alloca == nullptr) {
             alloca = this->getOrCreateAllocation();
         }
+        // @ValueType params travel by value: the slot holds the aggregate
+        // INLINE (sized to the type), so a whole-value load reads the type,
+        // not a pointer. Reference types load the `ptr` to the heap body.
+        if (type->isValueType()) {
+            return module->getBuilder()->CreateLoad(type->getLlvmType(), alloca);
+        }
         return module->getBuilder()->CreateLoad(
             llvm::PointerType::get(*module->getLlvmContext(), 0), alloca);
     }
@@ -46,11 +52,17 @@ namespace cajeta {
             bool isArr = dynamic_pointer_cast<CajetaArray>(type) != nullptr;
             bool isClassLike = dynamic_pointer_cast<CajetaClass>(type) != nullptr;
             bool isPrim = type && (type->getTypeFlags() & PRIMITIVE_FLAG);
-            bool passByPointer = (isClassLike && !isStruct) && (isArr || !isPrim);
+            // @ValueType params are passed BY VALUE (the aggregate), matching the
+            // signature Method::generatePrototype emits — so the slot must be the
+            // aggregate type, NOT `ptr`. A ptr-sized slot taking a by-value store
+            // overflows into the next param slot and corrupts both operands.
+            bool passByPointer = (isClassLike && !isStruct) && (isArr || !isPrim)
+                && !type->isValueType();
             llvm::Type* llvmType;
             if (passByPointer) {
                 llvmType = llvm::PointerType::get(*module->getLlvmContext(), 0);
-            } else if (type->getTypeFlags() & PRIMITIVE_FLAG) {
+            } else if ((type->getTypeFlags() & PRIMITIVE_FLAG)
+                    || type->isValueType()) {
                 llvmType = type->getLlvmType();
             } else {
                 llvmType = llvm::PointerType::get(*module->getLlvmContext(), 0);

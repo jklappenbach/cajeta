@@ -38,6 +38,12 @@ namespace cajeta {
     // class-shaped placeholder. Populated by the prescan visitor's
     // visitEnumDeclaration override.
     static set<string> g_enumArchive;
+    // Archive entries known to be @ValueType classes. Read by
+    // fromContext's placeholder-synthesis path so a cross-file
+    // value-type-typed declaration gets a placeholder born with
+    // VALUE_TYPE_FLAG | BY_VALUE_FLAG. Populated by the prescan
+    // visitor's visitClassDeclaration when it sees the annotation.
+    static set<string> g_valueTypeArchive;
     // Per-class template metadata captured by the prescan when the
     // class declaration carries `typeParameters`. Lets the placeholder-
     // synthesis path in fromContext below pre-populate enough state on
@@ -100,6 +106,7 @@ namespace cajeta {
         enumConstants.clear();
         g_archive.clear();
         g_enumArchive.clear();
+        g_valueTypeArchive.clear();
         g_archiveTemplateMeta.clear();
         g_wildcardInfo.clear();
         // Test override survives resetGlobals on purpose — a test
@@ -115,6 +122,14 @@ namespace cajeta {
 
     bool CajetaType::isArchiveEnum(const string& canonical) {
         return g_enumArchive.count(canonical) > 0;
+    }
+
+    void CajetaType::markArchiveValueType(const string& canonical) {
+        g_valueTypeArchive.insert(canonical);
+    }
+
+    bool CajetaType::isArchiveValueType(const string& canonical) {
+        return g_valueTypeArchive.count(canonical) > 0;
     }
 
     void CajetaType::registerArchiveTemplate(const string& canonical,
@@ -380,6 +395,22 @@ namespace cajeta {
 
     map<string, CajetaTypePtr>& CajetaType::getCanonicalMap() { return canonicalMap; }
 
+    bool CajetaType::isValueType() {
+        if (typeFlags & VALUE_TYPE_FLAG) {
+            return true;
+        }
+        // Stale instance: resolve to the canonical class object, which carries
+        // the bit once generatePrototype has run. See the header doc-comment.
+        if (!qName) {
+            return false;
+        }
+        auto it = canonicalMap.find(qName->toCanonical());
+        if (it != canonicalMap.end() && it->second && it->second.get() != this) {
+            return (it->second->getTypeFlags() & VALUE_TYPE_FLAG) != 0;
+        }
+        return false;
+    }
+
     CajetaTypePtr CajetaType::of(string typeName) {
         QualifiedNamePtr qName = QualifiedName::getOrCreate(typeName);
         return CajetaType::canonicalMap[qName->toCanonical()];
@@ -596,6 +627,20 @@ namespace cajeta {
                                 std::list<QualifiedNamePtr>{},
                                 std::list<QualifiedNamePtr>{});
                             placeholder->setPlaceholder(true);
+                            // Born-correct @ValueType: if the prescan saw
+                            // this class annotated @ValueType, the placeholder
+                            // gets VALUE_TYPE_FLAG | BY_VALUE_FLAG NOW, before
+                            // generatePrototype runs on the canonical. This is
+                            // the stale-instance fix: any AST node that captures
+                            // this placeholder (a `Vec2 a;` local-var type) sees
+                            // the by-value storage axis directly, so StackField /
+                            // LocalVariableDeclaration allocate an inline slot
+                            // without a canonical-map backstop. Mirrors the
+                            // isArchiveEnum i32 path above.
+                            if (isArchiveValueType(canonical)) {
+                                placeholder->addTypeFlags(
+                                    VALUE_TYPE_FLAG | BY_VALUE_FLAG);
+                            }
                             // Template-metadata seeding. If the prescan
                             // captured typeParameters + source for this
                             // class, install them on the placeholder now —

@@ -390,7 +390,20 @@ namespace cajeta {
         // the address the alloca stores; GEP'ing the alloca directly would
         // walk the slot, not the object.
         if (auto* a = llvm::dyn_cast<llvm::AllocaInst>(base)) {
-            base = module->getBuilder()->CreateLoad(a->getAllocatedType(), a);
+            // @ValueType receiver whose slot holds the aggregate INLINE
+            // (StackField allocates `alloca %ValueType`): the alloca address IS
+            // the object, so GEP it directly — loading would yield the aggregate
+            // VALUE, which can't be a GEP base. The allocated-type check is
+            // load-bearing: a value-type METHOD's `this` is still a POINTER
+            // spilled to an `alloca ptr` slot (receiver passed by reference even
+            // for value types), so that case must load through to the object.
+            // Reference types likewise keep a `ptr` slot → load through.
+            bool slotHoldsAggregate =
+                lhs->getResolvedType() && lhs->getResolvedType()->isValueType()
+                && !a->getAllocatedType()->isPointerTy();
+            if (!slotHoldsAggregate) {
+                base = module->getBuilder()->CreateLoad(a->getAllocatedType(), a);
+            }
         } else if (llvm::isa<llvm::GetElementPtrInst>(base)) {
             // Chained class-field access (`foo.bar.value`) or
             // implicit-this class-typed field access (`t.v` inside
