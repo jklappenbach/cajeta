@@ -153,13 +153,17 @@ The review's required fixes are folded into the stages below.
   4. **Drop-chain bypass.** `LocalVariableDeclaration.cpp` skips drop-entry registration for
      `@ValueType` locals — they are Copy PODs, never heap-backed, no destructor.
 
-  **Deferred (quality, not correctness — own follow-ups):**
-  - **Vtable-free POD layout.** `%test.Vec2` is still `{ vtable_ptr, float x, float y }` (16 bytes,
-    fields at index 1/2). True POD (`{ float x, float y }`, no vtable) is a separate layout change.
-  - **`AlwaysInline` on value-type operators (S4 / S1b register-residency intent).** Operators are
-    currently real calls (correct, ABI-proven). Marking them `alwaysinline` so they fold to flat
-    IR like an intrinsic is S4's job — the `Optimizer.cpp` O0 comment anticipates it, but the
-    attribute is not yet applied at function creation.
+  **Also landed 2026-06-04:**
+  - **Vtable-free POD layout.** `%test.Vec2` is now `{ float x, float y }` (8 bytes, fields at
+    index 0/1) — true register-friendly POD, no vtable slot. `hasVtablePointerAtSlotZero()` returns
+    `!isValueType()` (mirrors the `CajetaTask` precedent); the layout builder (`embedSubObject`),
+    `getFieldLlvmIndex`, and the construction-time vtable store (`CreatorRest.cpp`) all route through
+    it. Construction memsets 8 bytes with no vtable write; the (now unused) `#VTable`/RTTI globals are
+    still emitted but never stored into an instance — harmless, left for reflection.
+  - **`AlwaysInline` on value-type operators (S4 core).** `Method::generatePrototype` marks every
+    operator overload declared on an `@ValueType` class `alwaysinline`, so the O0 `AlwaysInlinerPass`
+    folds a dispatched value-type operator to the same flat, register-resident IR an intrinsic would —
+    host and device. (Size guard for an oversized operator body remains a future S4 refinement.)
 - **S3 — `operator[]` read gate + mutating-operator policy (REQUIRED FIX #2).** Open the read
   gate (`Expression.cpp:532`). Decide+enforce instance mutating-operator policy: forbid on
   value types, or by-address receiver. Tests for indexed read + the chosen write policy.

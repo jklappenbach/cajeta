@@ -700,6 +700,19 @@ namespace cajeta {
                 canonical, module->getLlvmModule());
         }
 
+        // S4 — force-inline @ValueType operators. The AlwaysInlinerPass runs
+        // even at O0 (Optimizer.cpp), so a dispatched value-type operator folds
+        // to the same flat, register-resident IR a compiler intrinsic would
+        // emit — on host AND device — instead of a real call passing the
+        // aggregate by value. Gate: the declaring class is @ValueType and the
+        // method is an operator overload (`operator+`, `operator==`, …).
+        // (Size guard for an oversized operator body is a future refinement —
+        // S4; today's value-type operators are small by construction.)
+        if (parent && parent->isValueType()
+                && name.rfind("operator", 0) == 0) {
+            llvmFunction->addFnAttr(llvm::Attribute::AlwaysInline);
+        }
+
         archive[canonical] = shared_from_this();
 
         module->getLlvmModule()->getOrInsertFunction(canonical, llvmFunctionType);

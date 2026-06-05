@@ -820,8 +820,10 @@ namespace cajeta {
             }
         }
 
+        // @ValueType PODs lay out flat with NO leading vtable slot (see
+        // hasVtablePointerAtSlotZero) — `{ field… }`, fields at index 0,1,….
         embedSubObject(static_pointer_cast<CajetaClass>(shared_from_this()),
-            /*ownVtable=*/true, /*enclosingStart=*/0);
+            /*ownVtable=*/hasVtablePointerAtSlotZero(), /*enclosingStart=*/0);
 
         ((llvm::StructType*) llvmType)->setBody(llvm::ArrayRef<llvm::Type*>(llvmMembers), false);
 
