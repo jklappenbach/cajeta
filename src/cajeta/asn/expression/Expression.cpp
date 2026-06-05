@@ -548,9 +548,18 @@ namespace cajeta {
                 }
                 // l-value coercion mirrors BinaryOpExpression: identifier
                 // expressions evaluate to allocas holding the heap
-                // pointer; we want the loaded value as `this`.
+                // pointer; we want the loaded value as `this`. EXCEPT a
+                // @ValueType receiver, whose slot holds the aggregate INLINE
+                // (alloca %ValueType, not alloca ptr) — its `this` is the alloca
+                // ADDRESS (instance methods take the receiver by reference even
+                // for value types), so loading would pass the aggregate VALUE.
+                // Mirrors the DotExpression value-type guard (S2).
                 if (auto* a = llvm::dyn_cast<llvm::AllocaInst>(lhsForOp)) {
-                    lhsForOp = builder->CreateLoad(a->getAllocatedType(), a);
+                    bool valueTypeReceiver = lhsClass->isValueType()
+                        && !a->getAllocatedType()->isPointerTy();
+                    if (!valueTypeReceiver) {
+                        lhsForOp = builder->CreateLoad(a->getAllocatedType(), a);
+                    }
                 }
                 if (auto* a = llvm::dyn_cast<llvm::AllocaInst>(idxForOp)) {
                     idxForOp = builder->CreateLoad(a->getAllocatedType(), a);

@@ -1710,6 +1710,15 @@ namespace cajeta {
                 // Vec2(...)`) yielded a POINTER to it. Load the struct so the `ret`
                 // matches the by-value signature. See value-type-overloading-plan.md.
                 val = builder->CreateLoad(retTy, val);
+            } else if ((retTy->isFloatingPointTy() || retTy->isIntegerTy())
+                    && valTy->isPointerTy()) {
+                // Scalar return whose expression yielded an l-value ADDRESS rather
+                // than the loaded value — e.g. `return this.x;` or a ternary of
+                // field accesses `(c) ? this.x : this.y` (the branches are field
+                // GEP pointers, the phi is a pointer). A scalar return type with a
+                // pointer operand can only mean "load the scalar from that
+                // address." Surfaced by @ValueType `operator[]` read (S3).
+                val = builder->CreateLoad(retTy, val);
             }
             // Remaining pointer/aggregate mismatches fall through; verifier flags.
         }
