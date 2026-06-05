@@ -93,21 +93,46 @@ bool linkRocmBitcode(llvm::Module& m, const std::string& path) {
 // kernels; every other AMD kernel is untouched (no device-lib dependency). If
 // the bitcode isn't installed, the declaration is left unresolved: codegen then
 // fails and the kernel falls back to the host stub, exactly like XPU-N01.
+// True if `m` references any declaration whose name starts with `prefix`.
+static bool referencesDeviceLib(llvm::Module& m, const char* prefix) {
+    for (llvm::Function& fn : m)
+        if (fn.isDeclaration() && fn.getName().starts_with(prefix))
+            return true;
+    return false;
+}
+
 void linkAmdDeviceLibsIfNeeded(llvm::Module& m, llvm::TargetMachine& tm) {
-    llvm::Function* f = m.getFunction("__ockl_image_sample_2D");
-    if (!f || !f->isDeclaration()) return;  // not sampled here
+    bool needsOckl = m.getFunction("__ockl_image_sample_2D") &&
+                     m.getFunction("__ockl_image_sample_2D")->isDeclaration();
+    bool needsOcml = referencesDeviceLib(m, "__ocml_");   // B2 transcendentals
+    if (!needsOckl && !needsOcml) return;
+
     std::string dir = findRocmBitcodeDir();
     if (dir.empty()) {
         llvm::errs() << "cajeta.xpu.amd: ROCm device bitcode not found "
-                        "(set ROCM_PATH); texture sampling needs ockl.bc\n";
+                        "(set ROCM_PATH); device math / texture sampling needs "
+                        "ocml.bc / ockl.bc\n";
         return;
     }
-    if (!linkRocmBitcode(m, dir + "/ockl.bc")) return;
-    // __ockl_image_sample_2D reads @__oclc_ISA_version (a constant the control
-    // library provides) to pick the gfx image-sample sequence.
+    if (needsOckl && !linkRocmBitcode(m, dir + "/ockl.bc")) return;
+    if (needsOcml) linkRocmBitcode(m, dir + "/ocml.bc");   // __ocml_<fn>_f32 defs
+
+    // Both ockl (image sample) and ocml (transcendentals) read the oclc control
+    // globals: the ISA version plus the math-option flags. Link the standard set
+    // (each only if present) so no `__oclc_*` constant is left undefined.
     std::string gfx = tm.getTargetCPU().str();          // e.g. "gfx1151"
     std::string isa = gfx.rfind("gfx", 0) == 0 ? gfx.substr(3) : gfx;
     linkRocmBitcode(m, dir + "/oclc_isa_version_" + isa + ".bc");
+    if (needsOcml) {
+        for (const char* ctrl : {"oclc_finite_only_off",
+                                 "oclc_unsafe_math_off",
+                                 "oclc_correctly_rounded_sqrt_on",
+                                 "oclc_daz_opt_off",
+                                 "oclc_wavefrontsize64_off"}) {
+            std::string p = dir + "/" + ctrl + ".bc";
+            if (llvm::sys::fs::exists(p)) linkRocmBitcode(m, p);
+        }
+    }
 }
 
 // Promote entry-block allocas (loop counters, accumulators, reassigned

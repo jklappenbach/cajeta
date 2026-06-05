@@ -74,17 +74,27 @@ const char* kMathSource =
 
 // A kernel using a transcendental — must lower to a clean diagnostic for now,
 // never a miscompile.
+// B2 increment 2 — transcendentals, chosen at exact-valued inputs:
+//   sin0=0 cos0=1 tan0=0 exp0=1 log1=0 pow(2,3)=8 sqrt16=4
+//   rsqrt(0.25)=2 acos1=0  -> sum 16 ;  out[i] = 16 + i
 const char* kTranscendentalSource =
     "package test;\n"
     "import cajeta.xpu.core.Buffer;\n"
     "import cajeta.xpu.core.Thread;\n"
     "public class T {\n"
     "    @Kernel\n"
-    "    public static void sink(Buffer<float32> out, uint32 n) {\n"
+    "    public static void trans(Buffer<float32> out, uint32 n) {\n"
     "        uint32 i = Thread.globalIdX();\n"
-    "        if (i < n) { out[i] = Math.sin((float32) i); }\n"
+    "        if (i < n) {\n"
+    "            out[i] = Math.sin(0.0f) + Math.cos(0.0f) + Math.tan(0.0f)\n"
+    "                   + Math.exp(0.0f) + Math.log(1.0f) + Math.pow(2.0f, 3.0f)\n"
+    "                   + Math.sqrt(16.0f) + Math.rsqrt(0.25f) + Math.acos(1.0f)\n"
+    "                   + (float32) i;\n"
+    "        }\n"
     "    }\n"
     "}\n";
+
+float transExpectedAt(uint32_t i) { return 16.0f + (float) i; }
 
 float expectedAt(uint32_t i) {
     float x = (float) i;
@@ -231,24 +241,115 @@ TEST(XpuMathDeviceTests, runsOnCpu) {
         EXPECT_NEAR(out[i], expectedAt(i), 1e-3f) << "element " << i;
 }
 
-// A transcendental in a kernel is rejected cleanly (XPU-N01), not miscompiled.
-TEST(XpuMathDeviceTests, transcendentalRejectedCleanly) {
+// B2 increment 2 — transcendentals lower to the llvm.* intrinsics (CPU -> libm,
+// Vulkan -> OpExtInst GLSL.std.450, AMD/NV -> device math library).
+TEST(XpuMathDeviceTests, transcendentalsLowerToIntrinsics) {
     Compiler compiler;
     auto module = compileForInspection(compiler, kTranscendentalSource, "T");
-    auto k = findMethod(module->getStructures()["test.T"], "sink");
+    auto k = findMethod(module->getStructures()["test.T"], "trans");
     ASSERT_NE(k, nullptr);
 
     auto tm = cajeta::xpu::cpu::createCpuTargetMachine();
     ASSERT_NE(tm, nullptr);
     llvm::LLVMContext ctx;
-    llvm::Module host("xpu_math_trans", ctx);
+    llvm::Module host("xpu_math_trans_emit", ctx);
     cajeta::xpu::cpu::configureHostModule(host, *tm);
-    try {
-        cajeta::xpu::cpu::lowerKernel(k, host);
-        FAIL() << "expected a clean XPU diagnostic for Math.sin on device";
-    } catch (cajeta::Exception& e) {
-        EXPECT_EQ(e.getErrorId(), "XPU-N01");
+    ASSERT_NE(cajeta::xpu::cpu::lowerKernel(k, host), nullptr);
+
+    std::string ir = printModule(host);
+    for (const char* tok : {"llvm.sin", "llvm.cos", "llvm.tan", "llvm.exp",
+                            "llvm.log", "llvm.pow", "llvm.acos"})
+        EXPECT_NE(ir.find(tok), std::string::npos) << tok << " missing\n" << ir;
+}
+
+// CPU oracle: the transcendental kernel runs via libm. out[i] == 16 + i.
+TEST(XpuMathDeviceTests, transcendentalsRunOnCpu) {
+    Compiler compiler;
+    auto module = compileForInspection(compiler, kTranscendentalSource, "T");
+    auto k = findMethod(module->getStructures()["test.T"], "trans");
+    ASSERT_NE(k, nullptr);
+
+    auto tm = cajeta::xpu::cpu::createCpuTargetMachine();
+    ASSERT_NE(tm, nullptr) << "host target not registered";
+    auto ctx = std::make_unique<llvm::LLVMContext>();
+    auto host = std::make_unique<llvm::Module>("xpu_math_trans_exec", *ctx);
+    cajeta::xpu::cpu::configureHostModule(*host, *tm);
+    ASSERT_NE(cajeta::xpu::cpu::lowerKernel(k, *host), nullptr);
+
+    auto jitOrErr = llvm::orc::LLJITBuilder().create();
+    ASSERT_TRUE(static_cast<bool>(jitOrErr)) << llvm::toString(jitOrErr.takeError());
+    auto jit = std::move(*jitOrErr);
+    auto err = jit->addIRModule(
+        llvm::orc::ThreadSafeModule(std::move(host), std::move(ctx)));
+    ASSERT_FALSE(static_cast<bool>(err)) << llvm::toString(std::move(err));
+    auto sym = jit->lookup("trans");
+    ASSERT_TRUE(static_cast<bool>(sym)) << llvm::toString(sym.takeError());
+    auto trans = sym->toPtr<MathFn>();
+
+    const int32_t B = 64, G = 4;
+    const uint32_t N = (uint32_t) (B * G);
+    std::vector<float> out(N, -1.0f);
+    for (int32_t ctaid = 0; ctaid < G; ++ctaid)
+        for (int32_t tid = 0; tid < B; ++tid)
+            trans(out.data(), N, tid, 0, 0, ctaid, 0, 0, B, 1, 1, G, 1, 1);
+
+    for (uint32_t i = 0; i < N; ++i)
+        EXPECT_NEAR(out[i], transExpectedAt(i), 1e-3f) << "element " << i;
+}
+
+// On a real GPU via Vulkan: the SPIR-V backend maps the intrinsics to
+// OpExtInst GLSL.std.450. out[i] == 16 + i.
+TEST(XpuMathDeviceTests, transcendentalsRunOnVulkanDevice) {
+    using namespace cajeta::xpu::vulkan;
+    if (!VulkanDriver::available()) {
+        GTEST_SKIP() << "no Vulkan compute device available";
     }
+    Compiler compiler;
+    auto module = compileForInspection(compiler, kTranscendentalSource, "T");
+    auto k = findMethod(module->getStructures()["test.T"], "trans");
+    ASSERT_NE(k, nullptr);
+
+    auto tm = createSpirvTargetMachine("vulkan1.3");
+    ASSERT_NE(tm, nullptr);
+    llvm::LLVMContext deviceCtx;
+    llvm::Module deviceModule("xpu_math_trans_vk", deviceCtx);
+    configureDeviceModule(deviceModule, *tm);
+    lowerKernel(k, deviceModule);
+    std::vector<uint8_t> spirv = emitSpirv(deviceModule, *tm);
+    ASSERT_FALSE(spirv.empty()) << "SPIR-V emission failed";
+
+    const uint32_t n = 1u << 16;
+    std::vector<float> out(n, -1.0f);
+
+    VulkanDriver vk;
+    ASSERT_TRUE(vk.init());
+    const std::size_t bytes = std::size_t(n) * sizeof(float);
+    VulkanDriver::Buffer dOut = vk.alloc(bytes);
+    VulkanDriver::Buffer dN = vk.alloc(sizeof(uint32_t));
+    ASSERT_NE(dOut, 0u);
+    ASSERT_NE(dN, 0u);
+    ASSERT_TRUE(vk.upload(dOut, out.data(), bytes));
+    ASSERT_TRUE(vk.upload(dN, &n, sizeof(uint32_t)));
+
+    const unsigned block = kVulkanLocalSizeX;
+    const unsigned grid = (n + block - 1) / block;
+    ASSERT_TRUE(vk.launch(spirv.data(), spirv.size(), "trans", {dOut, dN}, grid));
+
+    std::vector<float> result(n);
+    ASSERT_TRUE(vk.download(result.data(), dOut, bytes));
+    vk.free(dOut);
+    vk.free(dN);
+
+    size_t mismatches = 0;
+    for (uint32_t i = 0; i < n; ++i) {
+        if (std::abs(result[i] - transExpectedAt(i)) > 1e-2f) {
+            if (mismatches < 5)
+                ADD_FAILURE() << "i=" << i << " got " << result[i]
+                              << " expected " << transExpectedAt(i);
+            ++mismatches;
+        }
+    }
+    EXPECT_EQ(mismatches, 0u);
 }
 
 // On a real GPU via Vulkan compute. Skips cleanly when no device is present.
@@ -339,4 +440,53 @@ TEST(XpuMathDeviceTests, runsOnAmdDevice) {
     hip.free(dOut);
     for (uint32_t i = 0; i < n; ++i)
         EXPECT_NEAR(result[i], expectedAt(i), 1e-2f) << "element " << i;
+}
+
+// B2 increment 2 — transcendentals on a real AMD GPU via HIP. Probes whether the
+// AMDGPU backend needs ocml linking for sin/cos/etc. out[i] == 16 + i.
+TEST(XpuMathDeviceTests, transcendentalsRunOnAmdDevice) {
+    using namespace cajeta::xpu::amd;
+    if (!HipDriver::available()) GTEST_SKIP() << "no AMD HIP device available";
+
+    Compiler compiler;
+    auto module = compileForInspection(compiler, kTranscendentalSource, "T");
+    auto k = findMethod(module->getStructures()["test.T"], "trans");
+    ASSERT_NE(k, nullptr);
+
+    auto tm = createAmdgpuTargetMachine("gfx1151");
+    ASSERT_NE(tm, nullptr);
+    llvm::LLVMContext deviceCtx;
+    llvm::Module deviceModule("xpu_math_trans_amd", deviceCtx);
+    configureDeviceModule(deviceModule, *tm);
+    lowerKernel(k, deviceModule);
+    std::vector<uint8_t> hsaco = assembleHsaco(deviceModule, *tm, "gfx1151");
+    ASSERT_FALSE(hsaco.empty()) << "hsaco assembly failed — transcendentals may "
+                                   "need ocml linking on AMDGPU";
+
+    const uint32_t n = 1u << 12;
+    std::vector<float> out(n, -1.0f);
+
+    HipDriver hip;
+    ASSERT_TRUE(hip.init());
+    HipModule mod = hip.loadModule(hsaco.data(), hsaco.size());
+    ASSERT_NE(mod, nullptr) << "module load failed — undefined device math symbol?";
+    HipFunction fn = hip.getFunction(mod, "trans");
+    ASSERT_NE(fn, nullptr);
+
+    const std::size_t bytes = std::size_t(n) * sizeof(float);
+    HipDevicePtr dOut = hip.alloc(bytes);
+    ASSERT_NE(dOut, nullptr);
+    ASSERT_TRUE(hip.memcpyHtoD(dOut, out.data(), bytes));
+
+    void* params[] = {&dOut, (void*) &n};
+    const unsigned block = 64;
+    const unsigned grid = (n + block - 1) / block;
+    ASSERT_TRUE(hip.launch(fn, grid, block, params));
+    ASSERT_TRUE(hip.synchronize());
+
+    std::vector<float> result(n);
+    ASSERT_TRUE(hip.memcpyDtoH(result.data(), dOut, bytes));
+    hip.free(dOut);
+    for (uint32_t i = 0; i < n; ++i)
+        EXPECT_NEAR(result[i], transExpectedAt(i), 1e-2f) << "element " << i;
 }

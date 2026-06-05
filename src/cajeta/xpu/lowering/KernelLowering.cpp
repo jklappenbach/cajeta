@@ -2194,10 +2194,30 @@ private:
                 &mod, llvm::Intrinsic::fma, {ft});
             return builder.CreateCall(fn, {a, b, c});
         }
-        unsupported("Math." + name + " is not yet available in a kernel on "
-                    "device — transcendentals (sin/cos/tan/exp/log/pow) need "
-                    "device-library linking (pending); the natively-lowering "
-                    "ops are sqrt/floor/ceil/trunc/round/abs/min/max/fma");
+        // B2 increment 2 — transcendentals. Operate in the argument's FP type
+        // (f32-native, not the host's forced f64). These lower per backend: CPU
+        // -> libm (sinf/…); Vulkan -> the SPIR-V backend maps the llvm.* trig/
+        // exp/log intrinsics to OpExtInst GLSL.std.450 (Sin/Cos/Exp/Log/…); AMD/
+        // NV realize through the device math library when present.
+        static const std::set<std::string> unaryTransc = {
+            "sin", "cos", "tan", "asin", "acos", "atan",
+            "exp", "exp2", "log", "log2", "log10", "rsqrt"};
+        if (unaryTransc.count(name)) {
+            if (args.size() != 1)
+                unsupported("Math." + name + " expects 1 argument");
+            llvm::Value* x = asFp(lowerExpr(args[0].expression));
+            return target.transcendental(builder, mod, name, {x});
+        }
+        if (name == "pow" || name == "atan2") {
+            if (args.size() != 2)
+                unsupported("Math." + name + " expects 2 arguments");
+            llvm::Value* a = asFp(lowerExpr(args[0].expression));
+            llvm::Value* b = asFp(lowerExpr(args[1].expression));
+            if (b->getType() != a->getType())
+                b = builder.CreateFPCast(b, a->getType());
+            return target.transcendental(builder, mod, name, {a, b});
+        }
+        unsupported("Math." + name + " is not available in a kernel on device");
     }
 
     // Resolve a call `name(args)` / `Cls.name(args)` to a sibling @Device method
@@ -2638,6 +2658,36 @@ llvm::Value* LoweringTarget::sampleTexture(llvm::IRBuilderBase& /*b*/,
     throw cajeta::Exception(
         "XPU kernel lowering: texture sampling not supported on backend '" +
         std::string(name()) + "'", "XPU-N01");
+}
+
+// Default transcendental: the matching `llvm.*` intrinsic. Correct on CPU (libm)
+// and Vulkan (SPIR-V backend -> OpExtInst GLSL.std.450). AMD overrides this.
+llvm::Value* LoweringTarget::transcendental(
+    llvm::IRBuilderBase& b, llvm::Module& m, const std::string& name,
+    llvm::ArrayRef<llvm::Value*> args) {
+    llvm::Type* ft = args[0]->getType();
+    if (name == "rsqrt") {
+        llvm::Function* sq = llvm::Intrinsic::getOrInsertDeclaration(
+            &m, llvm::Intrinsic::sqrt, {ft});
+        return b.CreateFDiv(llvm::ConstantFP::get(ft, 1.0),
+                            b.CreateCall(sq, {args[0]}), "rsqrt");
+    }
+    static const std::map<std::string, llvm::Intrinsic::ID> ids = {
+        {"sin", llvm::Intrinsic::sin}, {"cos", llvm::Intrinsic::cos},
+        {"tan", llvm::Intrinsic::tan}, {"asin", llvm::Intrinsic::asin},
+        {"acos", llvm::Intrinsic::acos}, {"atan", llvm::Intrinsic::atan},
+        {"exp", llvm::Intrinsic::exp}, {"exp2", llvm::Intrinsic::exp2},
+        {"log", llvm::Intrinsic::log}, {"log2", llvm::Intrinsic::log2},
+        {"log10", llvm::Intrinsic::log10}, {"pow", llvm::Intrinsic::pow},
+        {"atan2", llvm::Intrinsic::atan2},
+    };
+    auto it = ids.find(name);
+    if (it == ids.end())
+        throw cajeta::Exception("XPU: unknown transcendental '" + name + "'",
+                                "XPU-N01");
+    llvm::Function* fn =
+        llvm::Intrinsic::getOrInsertDeclaration(&m, it->second, {ft});
+    return b.CreateCall(fn, std::vector<llvm::Value*>(args.begin(), args.end()));
 }
 
 // Ray query (SPV_KHR_ray_query) is Vulkan-only — only SpirvTarget overrides
