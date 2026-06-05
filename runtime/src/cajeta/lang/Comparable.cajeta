@@ -1,0 +1,24 @@
+package cajeta.lang;
+
+/**
+ * A total ordering over values of type `T`. Modeled on `java.lang.Comparable`.
+ *
+ * `compareTo` returns a negative int32 if `this` orders before `other`, zero if
+ * they order equally, and a positive int32 if `this` orders after `other`. The
+ * ordering must be total and consistent: `a.compareTo(b)` and `b.compareTo(a)`
+ * must report opposite signs, and the relation must be transitive.
+ *
+ * Implementors that also define equality (`operator==`) should keep the two
+ * consistent — `a == b` iff `a.compareTo(b) == 0` — though cajeta does not
+ * enforce this.
+ *
+ * Note (toolchain): templated-interface vtable instantiation for implementing
+ * classes is still maturing in the compiler, so the `cajeta.time` value types
+ * declare `compareTo` as a concrete method and call it directly (monomorphic
+ * dispatch) rather than relying on virtual dispatch through this interface.
+ * The interface is the documented contract and the seam for generic ordered
+ * algorithms once those vtables land.
+ */
+public interface Comparable<T> {
+    int32 compareTo(T other);
+}
