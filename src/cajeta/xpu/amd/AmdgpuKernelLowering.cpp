@@ -152,6 +152,18 @@ public:
                                 const std::string& name,
                                 llvm::ArrayRef<llvm::Value*> args) override {
         llvm::Type* ft = args[0]->getType();
+        // ocml is scalar-only — vectorized math scalarizes per lane.
+        if (auto* vt = llvm::dyn_cast<llvm::FixedVectorType>(ft)) {
+            llvm::Value* acc = llvm::UndefValue::get(vt);
+            for (unsigned i = 0; i < vt->getNumElements(); ++i) {
+                std::vector<llvm::Value*> lane;
+                for (llvm::Value* a : args)
+                    lane.push_back(b.CreateExtractElement(a, i));
+                acc = b.CreateInsertElement(acc,
+                    transcendental(b, m, name, lane), i);
+            }
+            return acc;
+        }
         if (name == "rsqrt") {
             llvm::Function* fn = llvm::Intrinsic::getOrInsertDeclaration(
                 &m, llvm::Intrinsic::amdgcn_rsq, {ft});
