@@ -370,6 +370,15 @@ list(APPEND GENERATED_SOURCES ${CAJETA_RT_EMBED})
 set_source_files_properties(${CAJETA_RT_SRC} PROPERTIES LANGUAGE C)
 list(APPEND GENERATED_SOURCES ${CAJETA_RT_SRC})
 
+# cajeta.net TLS engine (NET-5.1). Compiled as a STANDALONE native C object —
+# NOT #included into cajeta_runtime.c — so OpenSSL's headers stay out of the
+# embedded JIT bitcode (which is loaded into every JIT test). The `__cajeta_tls_*`
+# symbols land in libcajeta_lib, so the test binary calls them directly and the
+# JIT resolves them through its process-symbol generator at @Native call sites.
+set(CAJETA_TLS_SRC ${PROJECT_SOURCE_DIR}/runtime/native/cajeta_tls.c)
+set_source_files_properties(${CAJETA_TLS_SRC} PROPERTIES LANGUAGE C)
+list(APPEND GENERATED_SOURCES ${CAJETA_TLS_SRC})
+
 # Embed the cajeta stdlib `.cajeta` source files into the compiler binary.
 # The Compiler iterates the resulting cajeta::stdlib::g_files manifest at
 # parse time, treating each entry as a stdlib prelude source. Sources live
@@ -626,6 +635,7 @@ target_link_libraries(${CMAKE_PROJECT_NAME}_lib
         glog::glog
         zstd
         ZLIB::ZLIB
+        OpenSSL::SSL
         OpenSSL::Crypto
         CURL::libcurl)
 # The native runtime (cajeta_runtime.c, embedded in this lib) uses
