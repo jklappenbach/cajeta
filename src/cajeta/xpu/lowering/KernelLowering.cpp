@@ -480,6 +480,13 @@ private:
             if (declType && declType->isValueType()) {
                 DeviceStructInfo si = deviceStructInfo(declType, ctx);
                 if (si.type) {
+                    // The local's own type is constructible in this body — a
+                    // kernel that builds a value type directly (`Vec2 a = new
+                    // Vec2(...)`) needs it registered before the initializer is
+                    // lowered (params alone don't cover a locally-built type).
+                    if (auto dc =
+                            std::dynamic_pointer_cast<CajetaClass>(declType))
+                        valueTypeCtors[declType->getQName()->getTypeName()] = dc;
                     auto init = vd->getInitializer();
                     if (!init || init->getChildren().empty())
                         unsupported("uninitialized @ValueType local '" + nm + "'");
