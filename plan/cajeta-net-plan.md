@@ -501,15 +501,26 @@ portable path.
 
 ### Deliverables
 
-- [~] **NET-5.1** Vendor + statically link BoringSSL into the
-      runtime; expose `__cajeta_tls_*` intrinsics over **memory
-      BIOs** (no fd ownership): `_ctx_new`, `_conn_new`,
-      `_set_sni`, `_set_alpn`, `_feed_ciphertext`,
-      `_read_plaintext`, `_write_plaintext`, `_pull_ciphertext`,
-      `_handshake_step`, `_free`. The memory-BIO design is what
-      lets TLS sit on the async reactor: the Cajeta layer pumps
-      bytes between the socket (NET-3.5 `AsyncReader`/`Writer`)
-      and the TLS engine. `depends-on:` NET-11.1  — DEFERRED → blocked on scope
+- [x] **NET-5.1** TLS engine — `__cajeta_tls_*` intrinsics over **memory
+      BIOs** (no fd ownership). DONE (b6.1, 2026-06-04). `runtime/native/cajeta_tls.c`:
+      `_ctx_new`, `_ctx_use_cert_key_pem`, `_conn_new`, `_set_sni`, `_set_alpn`/
+      `_get_alpn`, `_feed_ciphertext`, `_pull_ciphertext`, `_pending_ciphertext`,
+      `_handshake_step`, `_write_plaintext`, `_read_plaintext`, `_shutdown`,
+      `_free` (+ `_ctx_free`). Normalized return codes (WANT_IO/-1, ZERO/-2,
+      ERROR/-3). **BACKEND DECISION REVISED — use the OpenSSL (3.6.2) already in
+      the mingw64 toolchain, not a from-scratch BoringSSL vendor.** OpenSSL is
+      the upstream BoringSSL forked from; its `SSL_*`/`BIO_*` memory-BIO surface
+      satisfies this design verbatim, and the build already linked
+      `OpenSSL::Crypto` — so the plan's biggest risk (static-linking BoringSSL on
+      mingw64) collapsed to adding `OpenSSL::SSL`. The `TlsBackend` seam keeps a
+      later static-BoringSSL swap mechanical for **distribution** (D2/installer),
+      where a self-contained binary matters; the dev/runtime path uses libssl.
+      Compiled as a standalone native object (NOT #included into the JIT bitcode,
+      so OpenSSL headers stay out of every JIT test's embedded runtime). Proven:
+      `TlsEngineTests.memoryBioHandshakeAndPlaintextRoundTrip` — a client+server
+      handshake completes purely over the two BIO pairs (no socket), then
+      plaintext round-trips both ways, against an in-test ephemeral self-signed
+      EC cert. `depends-on:` NET-11.1 (SHA — already built)
 - [ ] **NET-5.2** `TlsClient` wrapping a `TcpStream`/async stream:
       drive the handshake (feed/pull loop parking on the reactor),
       then expose `read`/`write` of plaintext. SNI set from the
