@@ -216,7 +216,7 @@ Canonical conventions the catalog/docs must follow (grounded in OperatorOverload
 | `operator[]` | instance-index-read | `public Vector<T,C> operator[] (uint32 row)` | Single-index access; multi-index [r,c] deferred |
 | `operator[]=` | instance-index-write | `public void operator[]= (uint32 row, Vector<T,C> value)` | Requires mutable borrow of receiver |
 
-**Methods (live):** `transpose()`, `identity()` (square), `row(i)`, `col(j)`, `hadamard(other)`. **Mask** (on a `Matrix<boolean,R,C>` from a comparison): `all()`/`any()` → `boolean`, `select(whenTrue, whenFalse)` → per-lane blend (`MaskSelect.md`). **Deferred:** `inverse()`, `determinant()`, `norm()`, `matmul()` method form (use the `*` intrinsic).
+**Methods (live):** `transpose()`, `identity()` (square), `row(i)`, `col(j)`, `hadamard(other)`; `determinant()` → scalar and `inverse()` → `Matrix<T,N,N>` (square 2×2/3×3/4×4, float). **Mask** (on a `Matrix<boolean,R,C>` from a comparison): `all()`/`any()` → `boolean`, `select(whenTrue, whenFalse)` → per-lane blend (`MaskSelect.md`). **Deferred:** `norm()`, `matmul()` method form (use the `*` intrinsic).
 
 ## Ray
 

@@ -191,5 +191,67 @@ namespace matops {
         return acc;
     }
 
+    // Determinant of an n x n matrix given as row-major element values, by
+    // cofactor expansion along row 0 (compile-time unrolled). Float element.
+    inline llvm::Value* detElems(llvm::IRBuilderBase& b,
+                                 const std::vector<llvm::Value*>& e, unsigned n) {
+        if (n == 1) return e[0];
+        if (n == 2)
+            return b.CreateFSub(b.CreateFMul(e[0], e[3]),
+                                b.CreateFMul(e[1], e[2]), "det2");
+        llvm::Value* acc = nullptr;
+        for (unsigned j = 0; j < n; ++j) {
+            std::vector<llvm::Value*> minor;       // drop row 0, col j
+            minor.reserve((n - 1) * (n - 1));
+            for (unsigned r = 1; r < n; ++r)
+                for (unsigned c = 0; c < n; ++c)
+                    if (c != j) minor.push_back(e[r * n + c]);
+            llvm::Value* term = b.CreateFMul(e[j], detElems(b, minor, n - 1));
+            if (j & 1u) term = b.CreateFNeg(term);
+            acc = acc ? b.CreateFAdd(acc, term, "det.acc") : term;
+        }
+        return acc;
+    }
+
+    // determinant(m) -> scalar. Square n in {2,3,4}; float element.
+    inline llvm::Value* determinant(llvm::IRBuilderBase& b, llvm::Value* m,
+                                    unsigned n) {
+        std::vector<llvm::Value*> e;
+        e.reserve(n * n);
+        for (unsigned i = 0; i < n * n; ++i)
+            e.push_back(vecops::extractLane(b, m, i));
+        return detElems(b, e, n);
+    }
+
+    // inverse(m) -> `<n*n x T>` = adjugate(m) / det(m). adjugate(i,j) =
+    // (-1)^(i+j) * minor(j,i) (the transposed cofactor). Square n in {2,3,4};
+    // float element. A singular matrix yields inf/nan (det == 0), not an error.
+    inline llvm::Value* inverse(llvm::IRBuilderBase& b, llvm::Value* m,
+                                unsigned n) {
+        std::vector<llvm::Value*> e;
+        e.reserve(n * n);
+        for (unsigned i = 0; i < n * n; ++i)
+            e.push_back(vecops::extractLane(b, m, i));
+        llvm::Type* elemTy = e[0]->getType();
+        llvm::Value* invDet = b.CreateFDiv(
+            llvm::ConstantFP::get(elemTy, 1.0), detElems(b, e, n), "inv.det");
+        auto* outTy = llvm::FixedVectorType::get(elemTy, n * n);
+        llvm::Value* acc = llvm::UndefValue::get(outTy);
+        for (unsigned i = 0; i < n; ++i) {
+            for (unsigned j = 0; j < n; ++j) {
+                std::vector<llvm::Value*> minor;   // drop row j, col i (adjugate)
+                minor.reserve((n - 1) * (n - 1));
+                for (unsigned r = 0; r < n; ++r)
+                    for (unsigned c = 0; c < n; ++c)
+                        if (r != j && c != i) minor.push_back(e[r * n + c]);
+                llvm::Value* cof = detElems(b, minor, n - 1);
+                if ((i + j) & 1u) cof = b.CreateFNeg(cof);
+                acc = vecops::insertLane(
+                    b, acc, b.CreateFMul(cof, invDet, "inv.elem"), i * n + j);
+            }
+        }
+        return acc;
+    }
+
 } // namespace matops
 } // namespace cajeta

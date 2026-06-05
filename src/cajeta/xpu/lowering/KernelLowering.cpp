@@ -1517,6 +1517,18 @@ private:
             llvm::Value* other = lowerExpr(args[0].expression);
             return matops::hadamard(builder, self, other, isFloat);
         }
+        // determinant() -> scalar, inverse() -> Matrix<T,N,N>. Square n in
+        // {2,3,4}, float element only.
+        if (name == "determinant" || name == "inverse") {
+            if (R != C || R < 2 || R > 4)
+                unsupported("Matrix." + name + " requires a square 2x2/3x3/4x4 matrix");
+            if (!isFloat)
+                unsupported("Matrix." + name + " requires a floating-point element type");
+            if (!args.empty())
+                unsupported("Matrix." + name + " takes no arguments");
+            return name == "determinant" ? matops::determinant(builder, self, R)
+                                         : matops::inverse(builder, self, R);
+        }
         unsupported("unknown Matrix method '" + name + "'");
     }
 

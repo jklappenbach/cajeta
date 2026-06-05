@@ -2120,6 +2120,34 @@ namespace cajeta {
                     resolvedType = matT;
                     return matops::hadamard(*builder, self, b, isFloat);
                 }
+                // determinant() -> scalar, inverse() -> Matrix<T,N,N>. Square
+                // n in {2,3,4}, float element only.
+                if (methodCallName == "determinant"
+                        || methodCallName == "inverse") {
+                    if (R != C || R < 2 || R > 4) {
+                        throw Exception(
+                            "Matrix." + methodCallName + " requires a square "
+                            "2x2, 3x3, or 4x4 matrix (got " + matT->toCanonical()
+                            + ")", "CAJETA_ERROR_MATRIX_METHOD");
+                    }
+                    if (!isFloat) {
+                        throw Exception(
+                            "Matrix." + methodCallName + " requires a "
+                            "floating-point element type",
+                            "CAJETA_ERROR_MATRIX_METHOD");
+                    }
+                    if (!parameters.empty()) {
+                        throw Exception(
+                            "Matrix." + methodCallName + " takes no arguments",
+                            "CAJETA_ERROR_MATRIX_METHOD");
+                    }
+                    if (methodCallName == "determinant") {
+                        resolvedType = matT->getElementType();
+                        return matops::determinant(*builder, self, R);
+                    }
+                    resolvedType = matT;
+                    return matops::inverse(*builder, self, R);
+                }
                 throw Exception(
                     "Matrix has no method '" + methodCallName + "'",
                     "CAJETA_ERROR_MATRIX_METHOD");
