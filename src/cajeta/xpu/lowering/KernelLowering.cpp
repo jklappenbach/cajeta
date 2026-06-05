@@ -1602,8 +1602,21 @@ private:
                 builder, lowerExpr(args[1].expression), vt->getElementType());
             return quatops::nlerp(builder, self, other, t);
         }
-        unsupported("unknown Quaternion method '" + name + "' (slerp is a "
-                    "follow-on; use nlerp)");
+        if (name == "slerp") {
+            if (args.size() != 2)
+                unsupported("Quaternion.slerp expects two arguments (other, t)");
+            llvm::Value* other = lowerExpr(args[0].expression);
+            llvm::Value* t = vecops::coerceScalar(
+                builder, lowerExpr(args[1].expression), vt->getElementType());
+            // Device: sin/acos route through the transcendental seam (AMD ocml).
+            quatops::TrigEmitter trig =
+                [&](const std::string& nm,
+                    llvm::ArrayRef<llvm::Value*> as) -> llvm::Value* {
+                    return target.transcendental(builder, mod, nm, as);
+                };
+            return quatops::slerp(builder, self, other, t, trig);
+        }
+        unsupported("unknown Quaternion method '" + name + "'");
     }
 
     // Decode `name.field` on a POD-struct kernel param to its field record, or

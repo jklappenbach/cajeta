@@ -44,6 +44,12 @@ public class QuaternionDemo extends DemoClass {
             + ")  nlerp(id,q90,1)->(" + r(n1.x) + "," + r(n1.y)
             + ")   (expect (1,0) and (0,1))");
 
+        // 4b. slerp halfway = a 45deg rotation: (1,0,0) -> (cos45, sin45, 0); the
+        // two equal components each round to 1.  (slerp uses acos/sin.)
+        Vector<float32,3> sMid = id.slerp(qz90, 0.5f) * xAxis;   // (0.707, 0.707, 0)
+        System.stdout.println("  slerp(id,q90,0.5) on (1,0,0) -> (" + r(sMid.x)
+            + "," + r(sMid.y) + ")   (expect (1,1) — 45deg, both ~0.707)");
+
         // 5. A unit quaternion has length 1; normalize re-units a scaled one.
         Quaternion<float32> scaled = new Quaternion<float32>(2.0f, 0.0f, 0.0f, 0.0f);
         System.stdout.println("  |qz90| = " + r(qz90.length())

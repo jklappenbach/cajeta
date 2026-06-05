@@ -32,14 +32,18 @@ For a unit quaternion the inverse is the conjugate `(w, -x, -y, -z)`:
 Vector<float32,3> back = q.conjugate() * (q * v);   // == v
 ```
 
-## Interpolate orientation — `nlerp(other, t)`
-Blend between two orientations along the shortest arc (`t` ∈ [0,1], re-normalized):
+## Interpolate orientation — `slerp(other, t)` / `nlerp(other, t)`
+Blend between two orientations along the shortest arc (`t` ∈ [0,1]):
 ```
-Quaternion<float32> mid = a.nlerp(b, 0.5f);    // halfway orientation
+Quaternion<float32> a_to_b = a.slerp(b, 0.5f);   // constant angular velocity
+Quaternion<float32> cheap  = a.nlerp(b, 0.5f);   // normalized lerp (faster)
 ```
-`nlerp` is branchless and runs on the GPU. (`slerp` — constant angular velocity —
-needs `acos`/`sin`, a device-transcendental follow-on; `nlerp` is the
-device-capable cousin and is what most real-time code uses anyway.)
+`slerp` interpolates at constant angular velocity (the "correct" rotation blend);
+`nlerp` is a cheaper normalized lerp that's very close for small angles. **Both
+run on CPU, Vulkan, and AMD** — `slerp` uses `acos`/`sin` (the device
+transcendentals) and falls back to `nlerp` automatically when the two
+orientations are nearly parallel (where the sin-divide would blow up). Both are
+branchless (the shortest-arc flip is a `select`).
 
 ## The rest
 `normalize()` (re-unit a quaternion that drifted under accumulation), `length()`,

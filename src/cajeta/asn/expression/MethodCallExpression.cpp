@@ -2198,9 +2198,34 @@ namespace cajeta {
                     resolvedType = qT;
                     return quatops::nlerp(*builder, self, other, t);
                 }
+                if (methodCallName == "slerp") {
+                    if (parameters.size() != 2) {
+                        throw Exception(
+                            "Quaternion.slerp expects 2 arguments (other, t)",
+                            "CAJETA_ERROR_QUATERNION_METHOD");
+                    }
+                    llvm::Value* other = loadIfLValue(module,
+                        parameters[0].expression->generateCode(module),
+                        parameters[0].expression);
+                    llvm::Value* t = vecops::coerceScalar(*builder,
+                        loadIfLValue(module,
+                            parameters[1].expression->generateCode(module),
+                            parameters[1].expression),
+                        qT->getElementType()->getLlvmType());
+                    // Host: sin/acos via the llvm intrinsics (libm under the JIT).
+                    quatops::TrigEmitter trig =
+                        [&](const std::string& nm,
+                            llvm::ArrayRef<llvm::Value*> as) -> llvm::Value* {
+                            return builder->CreateUnaryIntrinsic(
+                                nm == "sin" ? llvm::Intrinsic::sin
+                                            : llvm::Intrinsic::acos, as[0]);
+                        };
+                    resolvedType = qT;
+                    return quatops::slerp(*builder, self, other, t, trig);
+                }
                 throw Exception(
-                    "Quaternion has no method '" + methodCallName + "' (slerp is "
-                    "a follow-on; use nlerp)", "CAJETA_ERROR_QUATERNION_METHOD");
+                    "Quaternion has no method '" + methodCallName + "'",
+                    "CAJETA_ERROR_QUATERNION_METHOD");
             }
             // l-value -> r-value coercion. Local-variable receivers are AllocaInsts;
             // ArrayIndex receivers are slot addresses where the slot holds a `ptr` to

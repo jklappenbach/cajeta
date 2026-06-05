@@ -82,6 +82,30 @@ TEST(QuaternionTests, elementWiseAdd) {
         "        return (int32) s.dot(s);\n"), 54);  // 4+9+16+25
 }
 
+// slerp endpoints: slerp(a,b,0) rotates (1,0,0)->(1,0,0); slerp(a,b,1)->(0,1,0).
+//   a = identity, b = 90deg-about-z.  return r0.x*10 + r1.y = 10 + 1 = 11.
+TEST(QuaternionTests, slerpEndpoints) {
+    EXPECT_EQ(runI32(
+        "        Quaternion<float32> a = new Quaternion<float32>(1.0f, 0.0f, 0.0f, 0.0f);\n"
+        "        Quaternion<float32> b = new Quaternion<float32>(0.70710678f, 0.0f, 0.0f, 0.70710678f);\n"
+        "        Vector<float32,3> x = new Vector<float32,3>(1.0f, 0.0f, 0.0f);\n"
+        "        Vector<float32,3> r0 = a.slerp(b, 0.0f) * x;\n"   // (1,0,0)
+        "        Vector<float32,3> r1 = a.slerp(b, 1.0f) * x;\n"   // (0,1,0)
+        "        return (int32)(r0.x + 0.5f) * 10 + (int32)(r1.y + 0.5f);\n"), 11);
+}
+
+// slerp midpoint: halfway between identity and a 90deg-about-z rotation is a
+// 45deg rotation, which takes (1,0,0) -> (cos45, sin45, 0) ~ (0.707, 0.707, 0).
+//   (r.x + r.y) ~ 1.414 -> round(14.14) = 14.
+TEST(QuaternionTests, slerpMidpoint) {
+    EXPECT_EQ(runI32(
+        "        Quaternion<float32> a = new Quaternion<float32>(1.0f, 0.0f, 0.0f, 0.0f);\n"
+        "        Quaternion<float32> b = new Quaternion<float32>(0.70710678f, 0.0f, 0.0f, 0.70710678f);\n"
+        "        Vector<float32,3> x = new Vector<float32,3>(1.0f, 0.0f, 0.0f);\n"
+        "        Vector<float32,3> r = a.slerp(b, 0.5f) * x;\n"
+        "        return (int32)((r.x + r.y) * 10.0f + 0.5f);\n"), 14);
+}
+
 // A non-float element type is rejected.
 TEST(QuaternionTests, integerElementRejected) {
     try {

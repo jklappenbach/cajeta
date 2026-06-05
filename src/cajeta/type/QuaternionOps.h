@@ -6,10 +6,19 @@
 
 #pragma once
 
+#include <functional>
+
 #include "VectorOps.h"
 
 namespace cajeta {
 namespace quatops {
+
+    // A per-backend transcendental emitter: (name, args) -> value. Host passes a
+    // lambda emitting `llvm.<name>` intrinsics; the device passes one routing
+    // through LoweringTarget::transcendental (so AMD uses ocml). Only "sin" and
+    // "acos" (scalar) are requested by slerp.
+    using TrigEmitter =
+        std::function<llvm::Value*(const std::string&, llvm::ArrayRef<llvm::Value*>)>;
 
     inline llvm::Value* w(llvm::IRBuilderBase& b, llvm::Value* q) {
         return vecops::extractLane(b, q, 0u);
@@ -88,6 +97,48 @@ namespace quatops {
         llvm::Value* diff = b.CreateFSub(cAdj, a);
         llvm::Value* scaled = b.CreateFMul(vecops::splat(b, t, 4), diff);
         return vecops::normalize(b, b.CreateFAdd(a, scaled, "quat.nlerp"));
+    }
+
+    // slerp(a, c, t) -> spherical linear interpolation (constant angular
+    // velocity) along the shortest arc, t in [0,1]. Branchless: the shortest-arc
+    // flip is a select, and near-parallel inputs (where the sin-divide blows up)
+    // fall back to nlerp via a select. `trig` supplies sin/acos per backend.
+    //   d = |dot(a,c')| ; θ = acos(d) ; result =
+    //     sin((1-t)θ)/sinθ · a  +  sin(tθ)/sinθ · c'   (c' = shortest-arc c)
+    inline llvm::Value* slerp(llvm::IRBuilderBase& b, llvm::Value* a,
+                              llvm::Value* c, llvm::Value* t,
+                              const TrigEmitter& trig) {
+        llvm::Type* ft =
+            llvm::cast<llvm::FixedVectorType>(a->getType())->getElementType();
+        llvm::Value* one = llvm::ConstantFP::get(ft, 1.0);
+        unsigned lanes = vecops::laneCount(a);
+        // Shortest arc: if dot < 0, negate c.
+        llvm::Value* d = vecops::dot(b, a, c, /*isFloat=*/true);
+        llvm::Value* cAdj = b.CreateSelect(
+            b.CreateFCmpOLT(d, llvm::ConstantFP::get(ft, 0.0)),
+            b.CreateFNeg(c), c, "quat.slerp.adj");
+        // |d|, clamped to <= 1 so acos stays in domain.
+        llvm::Value* ad = b.CreateBinaryIntrinsic(
+            llvm::Intrinsic::minnum,
+            b.CreateUnaryIntrinsic(llvm::Intrinsic::fabs, d), one);
+        llvm::Value* theta = trig("acos", {ad});
+        llvm::Value* safeSin = b.CreateBinaryIntrinsic(
+            llvm::Intrinsic::maxnum, trig("sin", {theta}),
+            llvm::ConstantFP::get(ft, 1e-6));
+        llvm::Value* wa = b.CreateFDiv(
+            trig("sin", {b.CreateFMul(b.CreateFSub(one, t), theta)}), safeSin);
+        llvm::Value* wb = b.CreateFDiv(
+            trig("sin", {b.CreateFMul(t, theta)}), safeSin);
+        llvm::Value* slerpR = b.CreateFAdd(
+            b.CreateFMul(vecops::splat(b, wa, lanes), a),
+            b.CreateFMul(vecops::splat(b, wb, lanes), cAdj), "quat.slerp");
+        // Near-parallel (sinθ ~ 0): nlerp instead. The select discards the
+        // slerp lane's inf/nan.
+        llvm::Value* nlerpR = vecops::normalize(b, b.CreateFAdd(
+            a, b.CreateFMul(vecops::splat(b, t, lanes), b.CreateFSub(cAdj, a))));
+        return b.CreateSelect(
+            b.CreateFCmpOGT(ad, llvm::ConstantFP::get(ft, 0.9995f)),
+            nlerpR, slerpR, "quat.slerp.sel");
     }
 
 } // namespace quatops
