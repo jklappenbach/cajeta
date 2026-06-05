@@ -10,6 +10,7 @@
 #include "llvm/Passes/PassBuilder.h"
 #include "llvm/Target/TargetMachine.h"
 
+#include "llvm/Transforms/IPO/AlwaysInliner.h"
 #include "llvm/Transforms/InstCombine/InstCombine.h"
 #include "llvm/Transforms/Scalar/LoopPassManager.h"
 #include "llvm/Transforms/Scalar/LoopRotation.h"
@@ -42,7 +43,21 @@ struct PassEnv {
 } // namespace
 
 void optimizeModule(llvm::Module& m, llvm::TargetMachine* tm, OptLevel level) {
-    if (level == OptLevel::O0) return;   // unoptimized by default
+    if (level == OptLevel::O0) {
+        // Unoptimized by default — but still honor `alwaysinline`. It is an
+        // attribute, not a transform: it only takes effect when an
+        // AlwaysInlinerPass actually runs, and the O0 pipeline runs nothing.
+        // @ValueType operators (and @Device helpers) are marked alwaysinline so a
+        // dispatched value-type operator folds to the same flat IR an intrinsic
+        // would; without this they stay real calls at O0/JIT, spilling aggregates
+        // through byval/sret and defeating register residency. See
+        // plans/value-type-overloading-plan.md (S1b / review fix #1).
+        PassEnv env(tm);
+        llvm::ModulePassManager mpm;
+        mpm.addPass(llvm::AlwaysInlinerPass());
+        mpm.run(m, env.mam);
+        return;
+    }
     llvm::OptimizationLevel lv;
     switch (level) {
         case OptLevel::O1: lv = llvm::OptimizationLevel::O1; break;

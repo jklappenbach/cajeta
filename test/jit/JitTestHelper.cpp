@@ -12,6 +12,7 @@
 
 #include "cajeta/compile/Compiler.h"
 #include "cajeta/compile/CajetaModule.h"
+#include "cajeta/compile/Optimizer.h"   // optimizeModule — runs AlwaysInlinerPass at O0
 #include "cajeta/error/Exception.h"
 #include "cajeta/method/Method.h"
 #include "cajeta/xpu/core/XpuAttributes.h"
@@ -379,6 +380,11 @@ std::unique_ptr<CajetaJit> CajetaJit::compile(
         std::string err = cajeta::jittest::toString(parsed.takeError());
         throw std::runtime_error("JIT bitcode reparse failed: " + err);
     }
+    // Honor `alwaysinline` before handing the module to LLJIT. A bare LLJIT runs
+    // no inliner, so @ValueType operators / @Device helpers marked alwaysinline
+    // would otherwise stay real calls in JIT execution. optimizeModule at O0 runs
+    // exactly the AlwaysInlinerPass (see Optimizer.cpp / value-type plan S1b).
+    cajeta::optimizeModule(**parsed, nullptr, cajeta::OptLevel::O0);
     llvm::orc::ThreadSafeModule tsModule(std::move(*parsed), std::move(tsContext));
 
     auto jitOrErr = llvm::orc::LLJITBuilder().create();
