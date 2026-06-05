@@ -200,7 +200,7 @@ The review's required fixes are folded into the stages below.
   through the user overloading mechanism. No templates, inference, or monomorphization. Element-wise
   multiply is the method `a.hadamard(b)`. See Decision #4 below and the retired sub-plan
   `plans/method-templated-operators-plan.md` (kept only as the record of why this was rejected).
-- **S8 — Device path (DONE 2026-06-05, scalar-returning slice; aggregate-returning deferred).**
+- **S8 — Device path (DONE 2026-06-05; aggregate-returning + spirv-val closed same day).**
   `lowerBinaryOp` routes a `@ValueType` LHS through the S6 helper
   (`opdispatch::dispatchBinaryOperator`) with device callbacks: resolve the operator, require
   `@Device`, lower it via `lowerDeviceFn` (aggregate-param ABI already works — S5's
@@ -209,12 +209,17 @@ The review's required fixes are folded into the stages below.
   operand value types come from a `valueTypeNames` (param/local → type) map; a whole value-type
   param reads as its materialized aggregate SSA (extractvalue-only, SPIR-V-safe). A value-type LHS
   with no `@Device` operator now errors cleanly (was an ICmp-on-aggregate crash). Tests
-  `XpuValueTypeOperatorDeviceTests` (device `==` dispatch + derived `!=`); 24 XPU tests green.
-  **Deferred (next increment):** a value-type-RETURNING device operator (`Vec2 operator+`) needs
-  device-side aggregate construction (`stack Vec2(...)` → `insertvalue`), aggregate return in
-  `lowerDeviceFn`, and aggregate locals; scalar-RHS operators (`Vec2 * float`) need RHS-type
-  tracking; and `spirv-val` of a value-type-operator kernel (the bodies are pure SSA, so expected
-  to validate, but not yet asserted in CI).
+  `XpuValueTypeOperatorDeviceTests` (device `==` dispatch + derived `!=`).
+  **Aggregate-returning (DONE 2026-06-05):** a value-type-RETURNING `@Device` operator (`Vec2
+  operator+`) now lowers — `new Vec2(...)` builds the result as an SSA aggregate (`insertvalue`
+  chain into `deviceStructInfo`'s struct, `lowerNewValueType`), `lowerDeviceFn` returns the device
+  struct by value, and a value-type kernel local holds the aggregate SSA (no alloca, registered in
+  `structValues`/`structFields`/`valueTypeNames`; its own class registered in `valueTypeCtors` so a
+  kernel can build value types directly). **spirv-val (DONE 2026-06-05):** a kernel that constructs
+  Vec2s, dispatches `operator+`, and reads the result emits a Vulkan module `spirv-val` accepts
+  (`deviceOperatorKernelValidatesAsSpirv`) — value types stay register-resident OpCompositeInsert/
+  Extract aggregates, no pointer-to-aggregate in Function storage. **Still deferred:** scalar-RHS
+  operators (`Vec2 * float`) need RHS-type tracking in the device lowerer.
 - **S9 — Vector signature surface + docs (DONE 2026-06-05).** `ValueTypeCatalog.md` already
   carried the Vector entry + operator-signature conventions; reconciled the Vector entry with the
   implemented mechanism — its operators are compiler intrinsics (signatures documentary), Vector is
