@@ -223,7 +223,7 @@ class CajetaType : public Modifiable, public Annotatable,
         // instance of a value-type class answer true once the class is
         // prototyped. Prefer this over a raw `getTypeFlags() & VALUE_TYPE_FLAG`
         // at any value-type ABI decision point.
-        bool isValueType();
+        bool isValueType() const;
 
         // Storage axis (NOT the scalar axis). True for types with value /
         // Copy semantics that live INLINE in an alloca and are loaded/stored

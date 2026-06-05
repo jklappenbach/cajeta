@@ -405,7 +405,8 @@ namespace cajeta {
                         slot += (int) cls->vbaseAncestors.size();
                     }
                 };
-            walk(this, /*ownVtable=*/true);
+            // @ValueType PODs have no slot 0 vtable — fields start at index 0.
+            walk(this, /*ownVtable=*/hasVtablePointerAtSlotZero());
             return result;
         }
 
@@ -561,7 +562,13 @@ namespace cajeta {
         // (CajetaTask<T>'s { fn, arg, done, ... } body has no vtable
         // slot) override to return false so callers fall back to static
         // dispatch through getOrCreateDropFunction.
-        virtual bool hasVtablePointerAtSlotZero() const { return true; }
+        //
+        // @ValueType PODs are true value types: a flat `{ field… }` struct
+        // with NO vtable slot (final, no virtual dispatch, operators are
+        // static, Copy semantics → no drop). Returning false here makes the
+        // layout builder + getFieldLlvmIndex + construction skip the slot 0
+        // vtable, so fields live at indices 0,1,… — register-friendly POD.
+        virtual bool hasVtablePointerAtSlotZero() const { return !isValueType(); }
 
         // Synthesize a per-(class, interface) vtable global for every
         // interface this class implements. Called from generatePrototype

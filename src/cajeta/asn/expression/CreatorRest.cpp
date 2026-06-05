@@ -75,6 +75,10 @@ namespace cajeta {
         // instance's vtable pointer is zero from the memset above, and the
         // first virtual call segfaults.
         if (auto klass = dynamic_pointer_cast<CajetaClass>(targetType)) {
+          // @ValueType PODs have no slot 0 vtable — skip every vtable store
+          // (primary + secondary) and the drop-fn patch. The flat layout has
+          // a user field at index 0, so a vtable store would clobber it.
+          if (klass->hasVtablePointerAtSlotZero()) {
             if (llvm::GlobalVariable* vtable = klass->getVirtualTableGlobal()) {
                 // Cross-module: when targetType lives in a different
                 // llvm::Module than where the `new` is being emitted
@@ -127,6 +131,7 @@ namespace cajeta {
             if (!stackAlloc && klass->hasVtablePointerAtSlotZero()) {
                 klass->patchVirtualTableDropFn();
             }
+          }
         }
 
         // Lambda-as-ctor-arg expectedType propagation. Mirror the

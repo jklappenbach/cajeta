@@ -395,7 +395,7 @@ namespace cajeta {
 
     map<string, CajetaTypePtr>& CajetaType::getCanonicalMap() { return canonicalMap; }
 
-    bool CajetaType::isValueType() {
+    bool CajetaType::isValueType() const {
         if (typeFlags & VALUE_TYPE_FLAG) {
             return true;
         }
