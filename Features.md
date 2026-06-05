@@ -114,17 +114,23 @@ Status legend:
 
 ## Stdlib — `cajeta.time`
 
-All `cajeta.time` is **designed, unimplemented**. See `cajeta-docs/stdlib/Time.md`.
+Core `cajeta.time` is **implemented** (v1, `feature/time`); tz database + pattern
+formatter deferred. Plan: `plans/time/cajeta-time-plan.md`. Spec:
+`cajeta-docs/stdlib/Time.md`. Tests: `test/time/` (JIT). All value types are
+pure stack types (single canonical field, structural `operator==`, `int32
+compareTo` via `cajeta.lang.Comparable<T>`); ISO-8601 text via per-type `iso()`
+returning an owned `#String` (no `toString` override until the String surface
+stabilizes).
 
 | ID | Name | Description | Status |
 |----|------|-------------|--------|
-| S-501 | `Clock` static surface | nanoTime / millisTime / now | designed |
-| S-502 | `Instant` value type | UTC moment, ns precision | designed |
-| S-503 | `Duration` value type | Time-based amount | designed |
-| S-504 | `Period` value type | Calendar-based amount | designed |
-| S-505 | `LocalDate` / `LocalTime` / `LocalDateTime` | Zone-naive date/time | designed |
-| S-506 | `ZoneId` / `ZoneOffset` / `ZonedDateTime` | Time-zone resolution | designed |
-| S-507 | `DateTimeFormatter` | Pattern-based formatting + parsing | designed |
+| S-501 | `Clock` static surface | nanoTime / millisTime / now | shipped — `@Native` CLOCK_MONOTONIC/REALTIME binding |
+| S-502 | `Instant` value type | UTC moment, ns precision | shipped — epoch round-trips, plus/minus, between |
+| S-503 | `Duration` value type | Time-based amount | shipped — full arithmetic, compareTo, iso |
+| S-504 | `Period` value type | Calendar-based amount | shipped — Y/M/D, normalized, LocalDate.plus(Period) |
+| S-505 | `LocalDate` / `LocalTime` / `LocalDateTime` | Zone-naive date/time | shipped — Hinnant civil↔epoch-day, validation, carry arithmetic |
+| S-506 | `ZoneId` / `ZoneOffset` / `ZonedDateTime` | Time-zone resolution | partial — `ZoneOffset` + offset-based `ZonedDateTime` shipped; region `ZoneId` + tz database deferred |
+| S-507 | `DateTimeFormatter` | Pattern-based formatting + parsing | designed — ISO-8601 output via `iso()`; pattern engine + parsing deferred |
 
 ## Stdlib — `cajeta.io` / `.file` / `.net`
 

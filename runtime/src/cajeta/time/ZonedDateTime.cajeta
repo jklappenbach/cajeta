@@ -1,0 +1,264 @@
+package cajeta.time;
+
+import cajeta.lang.Comparable;
+
+/**
+ * A date-time with a fixed UTC offset — modeled on the offset-backed subset of
+ * `java.time.ZonedDateTime` (region `ZoneId` lookups via the system tz database
+ * are deferred; a [[ZoneOffset]] is the zone for now).
+ *
+ * Stored canonically as the underlying UTC instant (`int64 epochSecond` +
+ * `int32 nano`) plus the `int32 offsetSeconds`, so it round-trips losslessly to
+ * and from [[Instant]]. The wall-clock [[LocalDateTime]] is derived by shifting
+ * the instant by the offset. A pure stack value type.
+ */
+public class ZonedDateTime implements Comparable<ZonedDateTime> {
+    int64 epochSecond;
+    int32 nano;
+    int32 offsetSeconds;
+
+    public ZonedDateTime(int64 epochSecond, int32 nano, int32 offsetSeconds) {
+        this.epochSecond = epochSecond;
+        this.nano = nano;
+        this.offsetSeconds = offsetSeconds;
+    }
+
+    /** The instant `instant` observed at `offset`. */
+    public static ZonedDateTime ofInstant(Instant instant, ZoneOffset offset) {
+        return stack ZonedDateTime(instant.getEpochSecond(), instant.getNano(),
+                                   offset.getTotalSeconds());
+    }
+
+    /** The local date-time `ldt` interpreted as being at `offset`. */
+    public static ZonedDateTime ofLocal(LocalDateTime ldt, ZoneOffset offset) {
+        return stack ZonedDateTime(ldt.toEpochSecond(offset), ldt.getNano(),
+                                   offset.getTotalSeconds());
+    }
+
+    // Floor-divide localSec by 86400 (seconds/day); 86400 > 0 so only a
+    // negative dividend needs the floor correction.
+    static int64 localEpochDay(int64 epochSecond, int32 offsetSeconds) {
+        int64 localSec = epochSecond + (int64) offsetSeconds;
+        int64 q = localSec / 86400;
+        if (localSec % 86400 != 0 && localSec < 0) {
+            q = q - 1;
+        }
+        return q;
+    }
+
+    static int64 localNanoOfDay(int64 epochSecond, int32 nano, int32 offsetSeconds) {
+        int64 localSec = epochSecond + (int64) offsetSeconds;
+        int64 ed = ZonedDateTime.localEpochDay(epochSecond, offsetSeconds);
+        int64 secOfDay = localSec - ed * 86400;
+        return secOfDay * 1000000000 + (int64) nano;
+    }
+
+    /** The underlying UTC instant. */
+    public Instant toInstant() {
+        return stack Instant(this.epochSecond, this.nano);
+    }
+
+    /** The offset from UTC. */
+    public ZoneOffset getOffset() {
+        return stack ZoneOffset(this.offsetSeconds);
+    }
+
+    /** The wall-clock date-time at this zone's offset. */
+    public LocalDateTime toLocalDateTime() {
+        int64 ed = ZonedDateTime.localEpochDay(this.epochSecond, this.offsetSeconds);
+        int64 nod = ZonedDateTime.localNanoOfDay(this.epochSecond, this.nano, this.offsetSeconds);
+        return stack LocalDateTime(ed, nod);
+    }
+
+    /** Seconds since the epoch of the underlying instant. */
+    public int64 getEpochSecond() {
+        return this.epochSecond;
+    }
+
+    /** Nanosecond-of-second of the underlying instant. */
+    public int32 getNano() {
+        return this.nano;
+    }
+
+    public int32 getYear() {
+        return LocalDate.civilYear(
+            ZonedDateTime.localEpochDay(this.epochSecond, this.offsetSeconds));
+    }
+
+    public int32 getMonthValue() {
+        return LocalDate.civilMonth(
+            ZonedDateTime.localEpochDay(this.epochSecond, this.offsetSeconds));
+    }
+
+    public int32 getDayOfMonth() {
+        return LocalDate.civilDay(
+            ZonedDateTime.localEpochDay(this.epochSecond, this.offsetSeconds));
+    }
+
+    public int32 getHour() {
+        int64 nod = ZonedDateTime.localNanoOfDay(this.epochSecond, this.nano, this.offsetSeconds);
+        return (int32) (nod / 3600000000000);
+    }
+
+    public int32 getMinute() {
+        int64 nod = ZonedDateTime.localNanoOfDay(this.epochSecond, this.nano, this.offsetSeconds);
+        return (int32) ((nod / 60000000000) % 60);
+    }
+
+    public int32 getSecond() {
+        int64 nod = ZonedDateTime.localNanoOfDay(this.epochSecond, this.nano, this.offsetSeconds);
+        return (int32) ((nod / 1000000000) % 60);
+    }
+
+    /** This zoned date-time advanced by a [[Duration]] (keeps the same offset). */
+    public ZonedDateTime plus(Duration d) {
+        int64 total = (int64) this.nano + d.toNanos();
+        int64 s = this.epochSecond + total / 1000000000;
+        int32 n = (int32) (total % 1000000000);
+        if (n < 0) {
+            n = n + 1000000000;
+            s = s - 1;
+        }
+        return stack ZonedDateTime(s, n, this.offsetSeconds);
+    }
+
+    /**
+     * Total order by the underlying instant (epochSecond, then nano). Two zoned
+     * date-times at different offsets but the same instant compare equal here;
+     * `operator==` additionally distinguishes the offset.
+     */
+    public int32 compareTo(ZonedDateTime other) {
+        if (this.epochSecond < other.epochSecond) {
+            return -1;
+        }
+        if (this.epochSecond > other.epochSecond) {
+            return 1;
+        }
+        if (this.nano < other.nano) {
+            return -1;
+        }
+        if (this.nano > other.nano) {
+            return 1;
+        }
+        return 0;
+    }
+
+    /** True iff this precedes `other` on the timeline. */
+    public boolean isBefore(ZonedDateTime other) {
+        return this.compareTo(other) < 0;
+    }
+
+    /** True iff this is after `other` on the timeline. */
+    public boolean isAfter(ZonedDateTime other) {
+        return this.compareTo(other) > 0;
+    }
+
+    /** Structural equality by instant AND offset. */
+    public static boolean operator== (ZonedDateTime a, ZonedDateTime b) {
+        return a.epochSecond == b.epochSecond && a.nano == b.nano
+            && a.offsetSeconds == b.offsetSeconds;
+    }
+
+    /** Content hash mixing the instant and offset. */
+    public int64 hash() {
+        int64 h = this.epochSecond * 1000000007 + (int64) this.nano;
+        h = h * 31 + (int64) this.offsetSeconds;
+        return h;
+    }
+
+    /**
+     * ISO-8601 `yyyy-MM-ddTHH:mm:ss[.nnnnnnnnn]` followed by the offset
+     * (`Z` or `±HH:mm`). Returns an owned `#String`.
+     */
+    public #String iso() {
+        int64 led = ZonedDateTime.localEpochDay(this.epochSecond, this.offsetSeconds);
+        int64 lnod = ZonedDateTime.localNanoOfDay(this.epochSecond, this.nano, this.offsetSeconds);
+        int32 y = LocalDate.civilYear(led);
+        int32 mo = LocalDate.civilMonth(led);
+        int32 d = LocalDate.civilDay(led);
+        int32 h = (int32) (lnod / 3600000000000);
+        int32 mi = (int32) ((lnod / 60000000000) % 60);
+        int32 s = (int32) ((lnod / 1000000000) % 60);
+        int32 na = (int32) (lnod % 1000000000);
+
+        boolean neg = y < 0;
+        int32 ay = y;
+        if (neg) {
+            ay = -y;
+        }
+        int32 yw = Fmt.width((int64) ay);
+        if (yw < 4) {
+            yw = 4;
+        }
+        int32 dateLen = yw + 6;
+        if (neg) {
+            dateLen = dateLen + 1;
+        }
+        int32 timeLen = 5;
+        if (na > 0) {
+            timeLen = 18;
+        } else {
+            if (s > 0) {
+                timeLen = 8;
+            }
+        }
+        // offset part length
+        int32 off = this.offsetSeconds;
+        int32 offLen = 1; // 'Z'
+        if (off != 0) {
+            int32 at = off;
+            if (at < 0) {
+                at = -at;
+            }
+            offLen = 6; // +HH:mm
+            if (at % 60 != 0) {
+                offLen = 9; // +HH:mm:ss
+            }
+        }
+        int32 len = dateLen + 1 + timeLen + offLen;
+        int8[] buf = new int8[len];
+        int32 p = 0;
+        if (neg) {
+            p = Fmt.writeChar(buf, p, 45);
+        }
+        p = Fmt.writeUint(buf, p, (int64) ay, 4);
+        p = Fmt.writeChar(buf, p, 45);
+        p = Fmt.writeUint(buf, p, (int64) mo, 2);
+        p = Fmt.writeChar(buf, p, 45);
+        p = Fmt.writeUint(buf, p, (int64) d, 2);
+        p = Fmt.writeChar(buf, p, 84); // 'T'
+        p = Fmt.writeUint(buf, p, (int64) h, 2);
+        p = Fmt.writeChar(buf, p, 58);
+        p = Fmt.writeUint(buf, p, (int64) mi, 2);
+        if (timeLen > 5) {
+            p = Fmt.writeChar(buf, p, 58);
+            p = Fmt.writeUint(buf, p, (int64) s, 2);
+        }
+        if (na > 0) {
+            p = Fmt.writeChar(buf, p, 46);
+            p = Fmt.writeUint(buf, p, (int64) na, 9);
+        }
+        if (off == 0) {
+            p = Fmt.writeChar(buf, p, 90); // 'Z'
+        } else {
+            int32 sign = 43; // '+'
+            int32 at = off;
+            if (at < 0) {
+                sign = 45; // '-'
+                at = -at;
+            }
+            int32 oh = at / 3600;
+            int32 om = (at % 3600) / 60;
+            int32 os = at % 60;
+            p = Fmt.writeChar(buf, p, sign);
+            p = Fmt.writeUint(buf, p, (int64) oh, 2);
+            p = Fmt.writeChar(buf, p, 58);
+            p = Fmt.writeUint(buf, p, (int64) om, 2);
+            if (os > 0) {
+                p = Fmt.writeChar(buf, p, 58);
+                p = Fmt.writeUint(buf, p, (int64) os, 2);
+            }
+        }
+        return heap String(#buf, len);
+    }
+}
