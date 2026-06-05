@@ -40,6 +40,7 @@
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Target/TargetMachine.h"
 
+#include <cmath>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -189,6 +190,44 @@ const char* kVecSwizSource =
     "}\n";
 
 float swizExpectedAt(uint32_t i) { return 7.0f + (float) i; }
+
+// B2 — half / bfloat16 vector element types (ML/graphics dtypes). Each thread
+// does <4 x half> / <4 x bfloat> arithmetic, casting the result back to f32.
+//   a=(1,2,3,4) b=(10,20,30,40); c=a+b=(11,22,33,44); out = c.x + c.w = 55
+const char* kF16Source =
+    "package test;\n"
+    "import cajeta.xpu.core.Buffer;\n"
+    "import cajeta.xpu.core.Thread;\n"
+    "public class HF {\n"
+    "    @Kernel\n"
+    "    public static void f16k(Buffer<float32> out, uint32 n) {\n"
+    "        uint32 i = Thread.globalIdX();\n"
+    "        if (i < n) {\n"
+    "            Vector<float16,4> a = new Vector<float16,4>(1.0f, 2.0f, 3.0f, 4.0f);\n"
+    "            Vector<float16,4> b = new Vector<float16,4>(10.0f, 20.0f, 30.0f, 40.0f);\n"
+    "            Vector<float16,4> c = a + b;\n"
+    "            out[i] = (float32) c.x + (float32) c.w + (float32) i;\n"
+    "        }\n"
+    "    }\n"
+    "}\n";
+const char* kBf16Source =
+    "package test;\n"
+    "import cajeta.xpu.core.Buffer;\n"
+    "import cajeta.xpu.core.Thread;\n"
+    "public class HB {\n"
+    "    @Kernel\n"
+    "    public static void bf16k(Buffer<float32> out, uint32 n) {\n"
+    "        uint32 i = Thread.globalIdX();\n"
+    "        if (i < n) {\n"
+    "            Vector<bfloat16,4> a = new Vector<bfloat16,4>(1.0f, 2.0f, 3.0f, 4.0f);\n"
+    "            Vector<bfloat16,4> b = new Vector<bfloat16,4>(10.0f, 20.0f, 30.0f, 40.0f);\n"
+    "            Vector<bfloat16,4> c = a + b;\n"
+    "            out[i] = (float32) c.x + (float32) c.w + (float32) i;\n"
+    "        }\n"
+    "    }\n"
+    "}\n";
+
+float halfExpectedAt(uint32_t i) { return 55.0f + (float) i; }
 
 // S6 interop probe: a Buffer whose element type is itself a vector. Exercises
 // buffer-of-vector marshalling (16-byte stride) and a whole-vector store
@@ -827,3 +866,126 @@ TEST(XpuVectorDeviceTests, swizzleRunsOnVulkanDevice) {
     }
     EXPECT_EQ(mismatches, 0u);
 }
+
+// half/bfloat16 vector arithmetic on the CPU oracle (cls = "HF" or "HB").
+static void runHalfOnCpu(const char* src, const char* cls, const char* kern) {
+    Compiler compiler;
+    auto module = compileForInspection(compiler, src);
+    auto k = findMethod(module->getStructures()[std::string("test.") + cls], kern);
+    ASSERT_NE(k, nullptr);
+    auto tm = cajeta::xpu::cpu::createCpuTargetMachine();
+    ASSERT_NE(tm, nullptr);
+    auto ctx = std::make_unique<llvm::LLVMContext>();
+    auto host = std::make_unique<llvm::Module>("xpu_half_exec", *ctx);
+    cajeta::xpu::cpu::configureHostModule(*host, *tm);
+    ASSERT_NE(cajeta::xpu::cpu::lowerKernel(k, *host), nullptr);
+    auto jitOrErr = llvm::orc::LLJITBuilder().create();
+    ASSERT_TRUE(static_cast<bool>(jitOrErr)) << llvm::toString(jitOrErr.takeError());
+    auto jit = std::move(*jitOrErr);
+    auto err = jit->addIRModule(
+        llvm::orc::ThreadSafeModule(std::move(host), std::move(ctx)));
+    ASSERT_FALSE(static_cast<bool>(err)) << llvm::toString(std::move(err));
+    auto sym = jit->lookup(kern);
+    ASSERT_TRUE(static_cast<bool>(sym)) << llvm::toString(sym.takeError());
+    auto fn = sym->toPtr<VecFn>();
+    const int32_t B = 32, G = 2;
+    const uint32_t N = (uint32_t) (B * G);
+    std::vector<float> out(N, -1.0f);
+    for (int32_t ctaid = 0; ctaid < G; ++ctaid)
+        for (int32_t tid = 0; tid < B; ++tid)
+            fn(out.data(), N, tid, 0, 0, ctaid, 0, 0, B, 1, 1, G, 1, 1);
+    for (uint32_t i = 0; i < N; ++i)
+        EXPECT_NEAR(out[i], halfExpectedAt(i), 0.5f) << "element " << i;
+}
+
+TEST(XpuVectorDeviceTests, float16RunsOnCpu)  { runHalfOnCpu(kF16Source, "HF", "f16k"); }
+TEST(XpuVectorDeviceTests, bfloat16RunsOnCpu) { runHalfOnCpu(kBf16Source, "HB", "bf16k"); }
+
+// half/bfloat16 vector arithmetic on a real GPU via Vulkan (Float16 capability).
+static void runHalfOnVulkan(const char* src, const char* cls, const char* kern) {
+    using namespace cajeta::xpu::vulkan;
+    if (!VulkanDriver::available()) GTEST_SKIP() << "no Vulkan compute device";
+    Compiler compiler;
+    auto module = compileForInspection(compiler, src);
+    auto k = findMethod(module->getStructures()[std::string("test.") + cls], kern);
+    ASSERT_NE(k, nullptr);
+    auto tm = createSpirvTargetMachine("vulkan1.3");
+    ASSERT_NE(tm, nullptr);
+    llvm::LLVMContext deviceCtx;
+    llvm::Module deviceModule("xpu_half_vk", deviceCtx);
+    configureDeviceModule(deviceModule, *tm);
+    lowerKernel(k, deviceModule);
+    std::vector<uint8_t> spirv = emitSpirv(deviceModule, *tm);
+    ASSERT_FALSE(spirv.empty()) << "SPIR-V emission failed";
+    const uint32_t n = 1u << 14;
+    std::vector<float> out(n, -1.0f);
+    VulkanDriver vk;
+    ASSERT_TRUE(vk.init());
+    const std::size_t bytes = std::size_t(n) * sizeof(float);
+    VulkanDriver::Buffer dOut = vk.alloc(bytes);
+    VulkanDriver::Buffer dN = vk.alloc(sizeof(uint32_t));
+    ASSERT_NE(dOut, 0u);
+    ASSERT_NE(dN, 0u);
+    ASSERT_TRUE(vk.upload(dOut, out.data(), bytes));
+    ASSERT_TRUE(vk.upload(dN, &n, sizeof(uint32_t)));
+    const unsigned block = kVulkanLocalSizeX;
+    const unsigned grid = (n + block - 1) / block;
+    ASSERT_TRUE(vk.launch(spirv.data(), spirv.size(), kern, {dOut, dN}, grid));
+    std::vector<float> result(n);
+    ASSERT_TRUE(vk.download(result.data(), dOut, bytes));
+    vk.free(dOut); vk.free(dN);
+    size_t mismatches = 0;
+    for (uint32_t i = 0; i < n; ++i)
+        if (std::abs(result[i] - halfExpectedAt(i)) > 0.5f) {
+            if (mismatches < 5) ADD_FAILURE() << "i=" << i << " got " << result[i];
+            ++mismatches;
+        }
+    EXPECT_EQ(mismatches, 0u);
+}
+
+TEST(XpuVectorDeviceTests, float16RunsOnVulkanDevice) { runHalfOnVulkan(kF16Source, "HF", "f16k"); }
+// bfloat16 is portable via the storage+f32-compute model: SPV_KHR_bfloat16 gives
+// the type+conversions; the device computes in f32 (no native bfloat arithmetic,
+// which is Intel-only) — so it runs on RADV too.
+TEST(XpuVectorDeviceTests, bfloat16RunsOnVulkanDevice) { runHalfOnVulkan(kBf16Source, "HB", "bf16k"); }
+
+// half/bfloat16 vector arithmetic on AMD via HIP.
+static void runHalfOnAmd(const char* src, const char* cls, const char* kern) {
+    using namespace cajeta::xpu::amd;
+    if (!HipDriver::available()) GTEST_SKIP() << "no AMD HIP device available";
+    Compiler compiler;
+    auto module = compileForInspection(compiler, src);
+    auto k = findMethod(module->getStructures()[std::string("test.") + cls], kern);
+    ASSERT_NE(k, nullptr);
+    auto tm = createAmdgpuTargetMachine("gfx1151");
+    ASSERT_NE(tm, nullptr);
+    llvm::LLVMContext deviceCtx;
+    llvm::Module deviceModule("xpu_half_amd", deviceCtx);
+    configureDeviceModule(deviceModule, *tm);
+    lowerKernel(k, deviceModule);
+    std::vector<uint8_t> hsaco = assembleHsaco(deviceModule, *tm, "gfx1151");
+    ASSERT_FALSE(hsaco.empty()) << "hsaco assembly failed";
+    const uint32_t n = 1u << 12;
+    std::vector<float> out(n, -1.0f);
+    HipDriver hip;
+    ASSERT_TRUE(hip.init());
+    HipModule mod = hip.loadModule(hsaco.data(), hsaco.size());
+    ASSERT_NE(mod, nullptr);
+    HipFunction fn = hip.getFunction(mod, kern);
+    ASSERT_NE(fn, nullptr);
+    const std::size_t bytes = std::size_t(n) * sizeof(float);
+    HipDevicePtr dOut = hip.alloc(bytes);
+    ASSERT_NE(dOut, nullptr);
+    ASSERT_TRUE(hip.memcpyHtoD(dOut, out.data(), bytes));
+    void* params[] = {&dOut, (void*) &n};
+    ASSERT_TRUE(hip.launch(fn, (n + 63) / 64, 64, params));
+    ASSERT_TRUE(hip.synchronize());
+    std::vector<float> result(n);
+    ASSERT_TRUE(hip.memcpyDtoH(result.data(), dOut, bytes));
+    hip.free(dOut);
+    for (uint32_t i = 0; i < n; ++i)
+        EXPECT_NEAR(result[i], halfExpectedAt(i), 0.5f) << "element " << i;
+}
+
+TEST(XpuVectorDeviceTests, float16RunsOnAmdDevice)  { runHalfOnAmd(kF16Source, "HF", "f16k"); }
+TEST(XpuVectorDeviceTests, bfloat16RunsOnAmdDevice) { runHalfOnAmd(kBf16Source, "HB", "bf16k"); }

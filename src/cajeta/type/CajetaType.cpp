@@ -333,6 +333,9 @@ namespace cajeta {
         // bit-width but a wider exponent; it gets its own future `bfloat16` keyword
         // and maps to LLVM `bfloat`. Don't conflate the two.)
         NATIVE_TYPE_ENTRY("float16", llvm::Type::getHalfTy(ctx), FLOAT16_TYPE_ID);
+        // bfloat16 — the brain-float ML dtype (LLVM `bfloat`): 16-bit, float32's
+        // 8-bit exponent, fewer mantissa bits. Distinct from float16 (binary16).
+        NATIVE_TYPE_ENTRY("bfloat16", llvm::Type::getBFloatTy(ctx), BFLOAT16_TYPE_ID);
         NATIVE_TYPE_ENTRY("float32", llvm::Type::getFloatTy(ctx), FLOAT32_TYPE_ID);
         NATIVE_TYPE_ENTRY("float64", llvm::Type::getDoubleTy(ctx), FLOAT64_TYPE_ID);
         NATIVE_TYPE_ENTRY("float128", llvm::Type::getFP128Ty(ctx), FLOAT128_TYPE_ID);
@@ -1015,6 +1018,7 @@ namespace cajeta {
                     // standard FP types need runtime conversion helpers (not yet implemented).
                     throw Exception(string("Casts to sub-fp16 float types require runtime conversion helpers (not yet implemented)."), string("101"));
                 case FLOAT16_TYPE_ID:
+                case BFLOAT16_TYPE_ID:
                 case FLOAT32_TYPE_ID:
                 case FLOAT64_TYPE_ID:
                 case FLOAT128_TYPE_ID:

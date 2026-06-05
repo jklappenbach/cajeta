@@ -310,6 +310,18 @@ TEST(VectorTests, maskScalarBroadcastRelu) {
         "        return (int32)(y.x + y.y + y.z);\n"), 2);  // ReLU -> (0,2,0)
 }
 
+// B2 — half (float16) and bfloat16 vector element types (ML/graphics dtypes).
+// c = (1,2)+(10,20) = (11,22); e = (3,4)+(3,4) = (6,8). c.y + e.x = 22 + 6 = 28.
+TEST(VectorTests, halfAndBfloat16Elements) {
+    EXPECT_EQ(runI32(
+        "        Vector<float16,2> a = new Vector<float16,2>(1.0f, 2.0f);\n"
+        "        Vector<float16,2> b = new Vector<float16,2>(10.0f, 20.0f);\n"
+        "        Vector<float16,2> c = a + b;\n"
+        "        Vector<bfloat16,2> d = new Vector<bfloat16,2>(3.0f, 4.0f);\n"
+        "        Vector<bfloat16,2> e = d + d;\n"
+        "        return (int32)(float32) c.y + (int32)(float32) e.x;\n"), 28);
+}
+
 // A component beyond the lane count is rejected (.w on N=3).
 TEST(VectorTests, componentOutOfRangeRejected) {
     try {
