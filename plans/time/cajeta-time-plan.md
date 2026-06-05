@@ -1,6 +1,18 @@
 # `cajeta.time` — Standard Library Implementation Plan (TDD)
 
-> Status: **Plan / design — awaiting review.**
+> Status: **v1 implemented on `feature/time`** (Phases 0–5). Shipped: Comparable,
+> DateTimeException/DateTimeParseException, Clock, Duration, Instant, LocalTime,
+> LocalDate, LocalDateTime, Period, ZoneOffset, ZonedDateTime — all with JIT
+> tests under `test/time/`. Deferred (scoped below): Phase 6 region `ZoneId` +
+> tz database, Phase 7 `DateTimeFormatter` pattern engine + parsing. Resolved
+> decisions (§8): created `cajeta.lang.Comparable<T>`; no `equals` (structural
+> `operator==` only); time-specific exceptions on the recoverable branch;
+> `@Native` clock binding (no compiler change); `iso()` instead of a `toString`
+> override; day-of-week as ISO int (1=Mon..7=Sun); Phases 6–7 deferred.
+> Implementation constraints learned: value types use a single canonical field
+> and inline `return stack` literals only — see the memory note "cajeta value-type rules".
+>
+> Original status: **Plan / design — awaiting review.**
 > Scope: implement the `cajeta.time` package, a `java.time` (JSR-310)-style
 > date/time library, in cajeta source (`runtime/src/cajeta/time/`) plus the
 > small native clock surface it needs.

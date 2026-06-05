@@ -1,0 +1,292 @@
+package cajeta.time;
+
+import cajeta.lang.Comparable;
+
+/**
+ * An immutable date-time without a time-zone — a [[LocalDate]] paired with a
+ * [[LocalTime]] (`yyyy-MM-ddTHH:mm:ss.nnnnnnnnn`), modeled on
+ * `java.time.LocalDateTime`.
+ *
+ * Stored canonically as `int64 epochDay` + `int64 nanoOfDay`; a pure stack
+ * value type. Arithmetic carries correctly between the time and date parts
+ * (adding hours can roll the date forward). Combine with a [[ZoneOffset]] to
+ * obtain an [[Instant]] / [[ZonedDateTime]].
+ */
+public class LocalDateTime implements Comparable<LocalDateTime> {
+    int64 epochDay;
+    int64 nanoOfDay;
+
+    public LocalDateTime(int64 epochDay, int64 nanoOfDay) {
+        this.epochDay = epochDay;
+        this.nanoOfDay = nanoOfDay;
+    }
+
+    /** From date and time parts down to minutes. */
+    public static LocalDateTime of(int32 year, int32 month, int32 day, int32 hour, int32 minute) {
+        int64 ed = LocalDate.daysFromCivil(year, month, day);
+        if (month < 1 || month > 12) {
+            throw heap DateTimeException("LocalDateTime: month out of range");
+        }
+        if (day < 1 || day > LocalDate.lengthOfMonth(year, month)) {
+            throw heap DateTimeException("LocalDateTime: day out of range for month");
+        }
+        if (hour < 0 || hour > 23) {
+            throw heap DateTimeException("LocalDateTime: hour out of range");
+        }
+        if (minute < 0 || minute > 59) {
+            throw heap DateTimeException("LocalDateTime: minute out of range");
+        }
+        int64 nod = (int64) hour * 3600000000000 + (int64) minute * 60000000000;
+        return stack LocalDateTime(ed, nod);
+    }
+
+    /** From date and time parts down to nanoseconds. */
+    public static LocalDateTime ofFull(int32 year, int32 month, int32 day,
+                                       int32 hour, int32 minute, int32 second, int32 nano) {
+        if (month < 1 || month > 12) {
+            throw heap DateTimeException("LocalDateTime: month out of range");
+        }
+        if (day < 1 || day > LocalDate.lengthOfMonth(year, month)) {
+            throw heap DateTimeException("LocalDateTime: day out of range for month");
+        }
+        if (hour < 0 || hour > 23) {
+            throw heap DateTimeException("LocalDateTime: hour out of range");
+        }
+        if (minute < 0 || minute > 59) {
+            throw heap DateTimeException("LocalDateTime: minute out of range");
+        }
+        if (second < 0 || second > 59) {
+            throw heap DateTimeException("LocalDateTime: second out of range");
+        }
+        if (nano < 0 || nano > 999999999) {
+            throw heap DateTimeException("LocalDateTime: nano out of range");
+        }
+        int64 ed = LocalDate.daysFromCivil(year, month, day);
+        int64 nod = (int64) hour * 3600000000000;
+        nod = nod + (int64) minute * 60000000000;
+        nod = nod + (int64) second * 1000000000;
+        nod = nod + (int64) nano;
+        return stack LocalDateTime(ed, nod);
+    }
+
+    /** Combine a date and a time. */
+    public static LocalDateTime ofDateTime(LocalDate date, LocalTime time) {
+        return stack LocalDateTime(date.toEpochDay(), time.toNanoOfDay());
+    }
+
+    public int32 getYear() {
+        return LocalDate.civilYear(this.epochDay);
+    }
+
+    public int32 getMonthValue() {
+        return LocalDate.civilMonth(this.epochDay);
+    }
+
+    public int32 getDayOfMonth() {
+        return LocalDate.civilDay(this.epochDay);
+    }
+
+    /** ISO day-of-week: Monday = 1 … Sunday = 7. */
+    public int32 getDayOfWeek() {
+        int64 dow = (this.epochDay + 3) % 7;
+        if (dow < 0) {
+            dow = dow + 7;
+        }
+        return (int32) (dow + 1);
+    }
+
+    public int32 getHour() {
+        return (int32) (this.nanoOfDay / 3600000000000);
+    }
+
+    public int32 getMinute() {
+        return (int32) ((this.nanoOfDay / 60000000000) % 60);
+    }
+
+    public int32 getSecond() {
+        return (int32) ((this.nanoOfDay / 1000000000) % 60);
+    }
+
+    public int32 getNano() {
+        return (int32) (this.nanoOfDay % 1000000000);
+    }
+
+    /** The date part. */
+    public LocalDate toLocalDate() {
+        return stack LocalDate(this.epochDay);
+    }
+
+    /** The time part. */
+    public LocalTime toLocalTime() {
+        return stack LocalTime(this.nanoOfDay);
+    }
+
+    /** This date-time plus `days` days. */
+    public LocalDateTime plusDays(int64 days) {
+        return stack LocalDateTime(this.epochDay + days, this.nanoOfDay);
+    }
+
+    /** This date-time plus `nanos` nanoseconds, carrying into the date. */
+    public LocalDateTime plusNanos(int64 nanos) {
+        int64 day = 86400000000000;
+        int64 total = this.nanoOfDay + nanos;
+        int64 carry = total / day;
+        int64 nod = total % day;
+        if (nod < 0) {
+            nod = nod + day;
+            carry = carry - 1;
+        }
+        return stack LocalDateTime(this.epochDay + carry, nod);
+    }
+
+    /** This date-time plus `seconds` seconds, carrying into the date. */
+    public LocalDateTime plusSeconds(int64 seconds) {
+        int64 day = 86400000000000;
+        int64 total = this.nanoOfDay + seconds * 1000000000;
+        int64 carry = total / day;
+        int64 nod = total % day;
+        if (nod < 0) {
+            nod = nod + day;
+            carry = carry - 1;
+        }
+        return stack LocalDateTime(this.epochDay + carry, nod);
+    }
+
+    /** This date-time plus `minutes` minutes, carrying into the date. */
+    public LocalDateTime plusMinutes(int64 minutes) {
+        int64 day = 86400000000000;
+        int64 total = this.nanoOfDay + minutes * 60000000000;
+        int64 carry = total / day;
+        int64 nod = total % day;
+        if (nod < 0) {
+            nod = nod + day;
+            carry = carry - 1;
+        }
+        return stack LocalDateTime(this.epochDay + carry, nod);
+    }
+
+    /** This date-time plus `hours` hours, carrying into the date. */
+    public LocalDateTime plusHours(int64 hours) {
+        int64 day = 86400000000000;
+        int64 total = this.nanoOfDay + hours * 3600000000000;
+        int64 carry = total / day;
+        int64 nod = total % day;
+        if (nod < 0) {
+            nod = nod + day;
+            carry = carry - 1;
+        }
+        return stack LocalDateTime(this.epochDay + carry, nod);
+    }
+
+    /** Seconds since the epoch when this local date-time is read at `offset`. */
+    public int64 toEpochSecond(ZoneOffset offset) {
+        int64 secs = this.epochDay * 86400 + this.nanoOfDay / 1000000000;
+        return secs - (int64) offset.getTotalSeconds();
+    }
+
+    /** The [[Instant]] this local date-time denotes at `offset`. */
+    public Instant toInstant(ZoneOffset offset) {
+        int64 es = this.toEpochSecond(offset);
+        int32 n = (int32) (this.nanoOfDay % 1000000000);
+        return stack Instant(es, n);
+    }
+
+    /**
+     * Total order: compares the date part, then the time part.
+     */
+    public int32 compareTo(LocalDateTime other) {
+        if (this.epochDay < other.epochDay) {
+            return -1;
+        }
+        if (this.epochDay > other.epochDay) {
+            return 1;
+        }
+        if (this.nanoOfDay < other.nanoOfDay) {
+            return -1;
+        }
+        if (this.nanoOfDay > other.nanoOfDay) {
+            return 1;
+        }
+        return 0;
+    }
+
+    /** True iff this date-time is strictly before `other`. */
+    public boolean isBefore(LocalDateTime other) {
+        return this.compareTo(other) < 0;
+    }
+
+    /** True iff this date-time is strictly after `other`. */
+    public boolean isAfter(LocalDateTime other) {
+        return this.compareTo(other) > 0;
+    }
+
+    /** Structural equality by (epochDay, nanoOfDay). */
+    public static boolean operator== (LocalDateTime a, LocalDateTime b) {
+        return a.epochDay == b.epochDay && a.nanoOfDay == b.nanoOfDay;
+    }
+
+    /** Content hash mixing the date and time. */
+    public int64 hash() {
+        return this.epochDay * 1000000007 + this.nanoOfDay;
+    }
+
+    /**
+     * ISO-8601 `yyyy-MM-ddTHH:mm:ss[.nnnnnnnnn]` — the date, a `T`, then the
+     * time (seconds shown when present, 9 fractional digits when nanos present).
+     */
+    public #String iso() {
+        int32 y = LocalDate.civilYear(this.epochDay);
+        int32 mo = LocalDate.civilMonth(this.epochDay);
+        int32 d = LocalDate.civilDay(this.epochDay);
+        int32 h = this.getHour();
+        int32 mi = this.getMinute();
+        int32 s = this.getSecond();
+        int32 na = this.getNano();
+
+        boolean neg = y < 0;
+        int32 ay = y;
+        if (neg) {
+            ay = -y;
+        }
+        int32 yw = Fmt.width((int64) ay);
+        if (yw < 4) {
+            yw = 4;
+        }
+        int32 dateLen = yw + 6;
+        if (neg) {
+            dateLen = dateLen + 1;
+        }
+        int32 timeLen = 5;
+        if (na > 0) {
+            timeLen = 18;
+        } else {
+            if (s > 0) {
+                timeLen = 8;
+            }
+        }
+        int32 len = dateLen + 1 + timeLen;
+        int8[] buf = new int8[len];
+        int32 p = 0;
+        if (neg) {
+            p = Fmt.writeChar(buf, p, 45); // '-'
+        }
+        p = Fmt.writeUint(buf, p, (int64) ay, 4);
+        p = Fmt.writeChar(buf, p, 45); // '-'
+        p = Fmt.writeUint(buf, p, (int64) mo, 2);
+        p = Fmt.writeChar(buf, p, 45); // '-'
+        p = Fmt.writeUint(buf, p, (int64) d, 2);
+        p = Fmt.writeChar(buf, p, 84); // 'T'
+        p = Fmt.writeUint(buf, p, (int64) h, 2);
+        p = Fmt.writeChar(buf, p, 58); // ':'
+        p = Fmt.writeUint(buf, p, (int64) mi, 2);
+        if (timeLen > 5) {
+            p = Fmt.writeChar(buf, p, 58); // ':'
+            p = Fmt.writeUint(buf, p, (int64) s, 2);
+        }
+        if (na > 0) {
+            p = Fmt.writeChar(buf, p, 46); // '.'
+            p = Fmt.writeUint(buf, p, (int64) na, 9);
+        }
+        return heap String(#buf, len);
+    }
+}

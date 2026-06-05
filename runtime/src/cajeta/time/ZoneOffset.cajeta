@@ -1,0 +1,122 @@
+package cajeta.time;
+
+import cajeta.lang.Comparable;
+
+/**
+ * A fixed offset from UTC, e.g. `+05:30`, `-08:00`, or `Z` (UTC). Modeled on
+ * `java.time.ZoneOffset`. Stored as a single `int32` total-seconds value in
+ * `[-64800, 64800]` (±18 hours). A pure stack value type.
+ *
+ * This is the v1 backbone for zoned date-times: region `ZoneId` lookups against
+ * the system tz database are deferred, but fixed offsets fully support
+ * `Instant` ↔ `ZonedDateTime` conversion.
+ */
+public class ZoneOffset implements Comparable<ZoneOffset> {
+    int32 totalSeconds;
+
+    public ZoneOffset(int32 totalSeconds) {
+        this.totalSeconds = totalSeconds;
+    }
+
+    /** Offset of `totalSeconds` seconds from UTC (±18h). */
+    public static ZoneOffset ofTotalSeconds(int32 totalSeconds) {
+        if (totalSeconds < -64800 || totalSeconds > 64800) {
+            throw heap DateTimeException("ZoneOffset: out of range +/-18:00");
+        }
+        return stack ZoneOffset(totalSeconds);
+    }
+
+    /** Offset of a whole number of hours from UTC. */
+    public static ZoneOffset ofHours(int32 hours) {
+        if (hours < -18 || hours > 18) {
+            throw heap DateTimeException("ZoneOffset: hours out of range +/-18");
+        }
+        return stack ZoneOffset(hours * 3600);
+    }
+
+    /** Offset of hours and minutes; both parts must share the offset's sign. */
+    public static ZoneOffset ofHoursMinutes(int32 hours, int32 minutes) {
+        if (hours < -18 || hours > 18) {
+            throw heap DateTimeException("ZoneOffset: hours out of range +/-18");
+        }
+        if (minutes < -59 || minutes > 59) {
+            throw heap DateTimeException("ZoneOffset: minutes out of range");
+        }
+        if (hours < 0 && minutes > 0) {
+            throw heap DateTimeException("ZoneOffset: sign mismatch between hours and minutes");
+        }
+        if (hours > 0 && minutes < 0) {
+            throw heap DateTimeException("ZoneOffset: sign mismatch between hours and minutes");
+        }
+        int32 total = hours * 3600 + minutes * 60;
+        if (total < -64800 || total > 64800) {
+            throw heap DateTimeException("ZoneOffset: out of range +/-18:00");
+        }
+        return stack ZoneOffset(total);
+    }
+
+    /** The UTC offset (zero). */
+    public static ZoneOffset utc() {
+        return stack ZoneOffset(0);
+    }
+
+    /** Total offset in seconds from UTC (may be negative). */
+    public int32 getTotalSeconds() {
+        return this.totalSeconds;
+    }
+
+    /** Total order by offset seconds (java.time orders larger offsets first;
+        we use natural ascending order on the second count). */
+    public int32 compareTo(ZoneOffset other) {
+        if (this.totalSeconds < other.totalSeconds) {
+            return -1;
+        }
+        if (this.totalSeconds > other.totalSeconds) {
+            return 1;
+        }
+        return 0;
+    }
+
+    /** Structural equality by offset seconds. */
+    public static boolean operator== (ZoneOffset a, ZoneOffset b) {
+        return a.totalSeconds == b.totalSeconds;
+    }
+
+    /** Content hash of the offset seconds. */
+    public int64 hash() {
+        return (int64) this.totalSeconds;
+    }
+
+    /** The ISO offset id: `Z` for UTC, else `+HH:mm` / `-HH:mm` (`:ss` if needed). */
+    public #String iso() {
+        if (this.totalSeconds == 0) {
+            int8[] z = new int8[1];
+            z[0] = (int8) 90; // 'Z'
+            return heap String(#z, 1);
+        }
+        int32 t = this.totalSeconds;
+        int32 sign = 43; // '+'
+        if (t < 0) {
+            sign = 45; // '-'
+            t = -t;
+        }
+        int32 hh = t / 3600;
+        int32 mm = (t % 3600) / 60;
+        int32 ss = t % 60;
+        int32 len = 6;
+        if (ss > 0) {
+            len = 9;
+        }
+        int8[] buf = new int8[len];
+        int32 p = 0;
+        p = Fmt.writeChar(buf, p, sign);
+        p = Fmt.writeUint(buf, p, (int64) hh, 2);
+        p = Fmt.writeChar(buf, p, 58); // ':'
+        p = Fmt.writeUint(buf, p, (int64) mm, 2);
+        if (ss > 0) {
+            p = Fmt.writeChar(buf, p, 58); // ':'
+            p = Fmt.writeUint(buf, p, (int64) ss, 2);
+        }
+        return heap String(#buf, len);
+    }
+}

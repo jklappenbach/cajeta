@@ -1,0 +1,159 @@
+package cajeta.time;
+
+/**
+ * An immutable calendar-based amount of time — years, months, and days —
+ * modeled on `java.time.Period`. Distinct from [[Duration]] because months and
+ * years are not fixed-length. A pure stack value type.
+ *
+ * Each field is independent and signed; `Period.of(1, 2, 3)` is "1 year, 2
+ * months and 3 days". No automatic normalization between days and months (a
+ * month is not a fixed number of days); `normalized()` only rolls months into
+ * years.
+ */
+public class Period {
+    int32 years;
+    int32 months;
+    int32 days;
+
+    public Period(int32 years, int32 months, int32 days) {
+        this.years = years;
+        this.months = months;
+        this.days = days;
+    }
+
+    /** A period of `years` years, `months` months and `days` days. */
+    public static Period of(int32 years, int32 months, int32 days) {
+        return stack Period(years, months, days);
+    }
+
+    /** A period of `years` years. */
+    public static Period ofYears(int32 years) {
+        return stack Period(years, 0, 0);
+    }
+
+    /** A period of `months` months. */
+    public static Period ofMonths(int32 months) {
+        return stack Period(0, months, 0);
+    }
+
+    /** A period of `weeks` weeks (stored as `weeks * 7` days). */
+    public static Period ofWeeks(int32 weeks) {
+        return stack Period(0, 0, weeks * 7);
+    }
+
+    /** A period of `days` days. */
+    public static Period ofDays(int32 days) {
+        return stack Period(0, 0, days);
+    }
+
+    /** The zero period. */
+    public static Period zero() {
+        return stack Period(0, 0, 0);
+    }
+
+    public int32 getYears() {
+        return this.years;
+    }
+
+    public int32 getMonths() {
+        return this.months;
+    }
+
+    public int32 getDays() {
+        return this.days;
+    }
+
+    /** Total months this period represents (years * 12 + months). */
+    public int64 toTotalMonths() {
+        return (int64) this.years * 12 + (int64) this.months;
+    }
+
+    /** True iff every field is zero. */
+    public boolean isZero() {
+        return this.years == 0 && this.months == 0 && this.days == 0;
+    }
+
+    /** True iff any field is negative. */
+    public boolean isNegative() {
+        return this.years < 0 || this.months < 0 || this.days < 0;
+    }
+
+    /** Field-wise sum with `other`. */
+    public Period plus(Period other) {
+        return stack Period(this.years + other.years, this.months + other.months,
+                            this.days + other.days);
+    }
+
+    /** Field-wise difference with `other`. */
+    public Period minus(Period other) {
+        return stack Period(this.years - other.years, this.months - other.months,
+                            this.days - other.days);
+    }
+
+    /** Each field negated. */
+    public Period negated() {
+        return stack Period(-this.years, -this.months, -this.days);
+    }
+
+    /** Months rolled into years so the month part lands in [-11, 11]; days untouched. */
+    public Period normalized() {
+        int64 total = this.toTotalMonths();
+        int64 y = total / 12;
+        int64 m = total % 12;
+        return stack Period((int32) y, (int32) m, this.days);
+    }
+
+    /** Structural equality across all three fields. */
+    public static boolean operator== (Period a, Period b) {
+        return a.years == b.years && a.months == b.months && a.days == b.days;
+    }
+
+    /** Content hash mixing the three fields. */
+    public int64 hash() {
+        int64 h = (int64) this.years;
+        h = h * 31 + (int64) this.months;
+        h = h * 31 + (int64) this.days;
+        return h;
+    }
+
+    /** ISO-8601 `PnYnMnD` (e.g. `P1Y2M3D`); `P0D` for the zero period. */
+    public #String iso() {
+        if (this.years == 0 && this.months == 0 && this.days == 0) {
+            int8[] z = new int8[2];
+            z[0] = (int8) 80; // 'P'
+            z[1] = (int8) 48; // '0'
+            int8[] z2 = new int8[3];
+            z2[0] = (int8) 80; // 'P'
+            z2[1] = (int8) 48; // '0'
+            z2[2] = (int8) 68; // 'D'
+            return heap String(#z2, 3);
+        }
+        // Worst case: 'P' + each of Y/M/D with a sign and up to 10 digits + letter.
+        int8[] buf = new int8[40];
+        int32 p = 0;
+        p = Fmt.writeChar(buf, p, 80); // 'P'
+        if (this.years != 0) {
+            p = Period.writeField(buf, p, this.years, 89); // 'Y'
+        }
+        if (this.months != 0) {
+            p = Period.writeField(buf, p, this.months, 77); // 'M'
+        }
+        if (this.days != 0) {
+            p = Period.writeField(buf, p, this.days, 68); // 'D'
+        }
+        return heap String(#buf, p);
+    }
+
+    // Write a signed field value followed by its unit letter; returns new pos.
+    static int32 writeField(int8[] buf, int32 pos, int32 value, int32 letter) {
+        int32 p = pos;
+        int32 v = value;
+        if (v < 0) {
+            p = Fmt.writeChar(buf, p, 45); // '-'
+            v = -v;
+        }
+        p = Fmt.writeUint(buf, p, (int64) v, 1);
+        p = Fmt.writeChar(buf, p, letter);
+        return p;
+    }
+}
