@@ -36,6 +36,13 @@
 #define CAJETA_TLS_ZERO    (-2)
 #define CAJETA_TLS_ERROR   (-3)
 
+// @Native ABI: an int8[] argument arrives as its CajetaArray HEADER
+// ({ i64 count; data... }), so every buffer pointer below is advanced past the
+// 8-byte header to reach the element data — the same convention __cajeta_sha256_
+// update and the getaddrinfo bridges follow. The explicit length arg is the
+// authoritative byte count; the header's count field is not re-read here.
+#define CAJETA_ARR_DATA(hdr) ((hdr) ? ((char*) (hdr)) + 8 : (char*) 0)
+
 // One-time library init. OpenSSL 3.x auto-inits on first use, but doing it
 // explicitly (and idempotently) keeps the engine self-contained and avoids
 // relying on lazy-init ordering under the JIT.
@@ -70,11 +77,13 @@ void* __cajeta_tls_ctx_new(int is_server) {
 }
 
 // Server-side: load a certificate (chain) + private key from in-memory PEM
-// bytes. Returns 0 on success, CAJETA_TLS_ERROR otherwise.
+// bytes (int8[] headers). Returns 0 on success, CAJETA_TLS_ERROR otherwise.
 int __cajeta_tls_ctx_use_cert_key_pem(void* ctxv,
-                                      const char* cert_pem, int cert_len,
-                                      const char* key_pem, int key_len) {
+                                      const void* cert_hdr, int cert_len,
+                                      const void* key_hdr, int key_len) {
     SSL_CTX* ctx = (SSL_CTX*) ctxv;
+    const char* cert_pem = CAJETA_ARR_DATA(cert_hdr);
+    const char* key_pem = CAJETA_ARR_DATA(key_hdr);
     if (!ctx || !cert_pem || !key_pem) return CAJETA_TLS_ERROR;
 
     BIO* cbio = BIO_new_mem_buf(cert_pem, cert_len);
@@ -131,17 +140,23 @@ void* __cajeta_tls_conn_new(void* ctxv, int is_server) {
 }
 
 // Client-side SNI: the server name to request (also used for hostname
-// verification at the Cajeta layer). Returns 0 / CAJETA_TLS_ERROR.
-int __cajeta_tls_set_sni(void* connv, const char* host) {
+// verification at the Cajeta layer), passed as host bytes (int8[]) + length.
+// Copied into a NUL-terminated buffer for the OpenSSL API. 0 / CAJETA_TLS_ERROR.
+int __cajeta_tls_set_sni(void* connv, const void* host_hdr, int host_len) {
     cajeta_tls_conn* c = (cajeta_tls_conn*) connv;
-    if (!c || !host) return CAJETA_TLS_ERROR;
-    return SSL_set_tlsext_host_name(c->ssl, host) == 1 ? 0 : CAJETA_TLS_ERROR;
+    const char* host = CAJETA_ARR_DATA(host_hdr);
+    if (!c || !host || host_len <= 0 || host_len > 255) return CAJETA_TLS_ERROR;
+    char name[256];
+    memcpy(name, host, (size_t) host_len);
+    name[host_len] = '\0';
+    return SSL_set_tlsext_host_name(c->ssl, name) == 1 ? 0 : CAJETA_TLS_ERROR;
 }
 
 // Offer an ALPN protocol list (wire format: each entry is a 1-byte length
 // followed by that many bytes, e.g. "\x08http/1.1"). Returns 0 / error.
-int __cajeta_tls_set_alpn(void* connv, const char* protos, int len) {
+int __cajeta_tls_set_alpn(void* connv, const void* protos_hdr, int len) {
     cajeta_tls_conn* c = (cajeta_tls_conn*) connv;
+    const char* protos = CAJETA_ARR_DATA(protos_hdr);
     if (!c || !protos || len <= 0) return CAJETA_TLS_ERROR;
     // SSL_set_alpn_protos returns 0 on SUCCESS (note the inverted convention).
     return SSL_set_alpn_protos(c->ssl, (const unsigned char*) protos,
@@ -150,9 +165,10 @@ int __cajeta_tls_set_alpn(void* connv, const char* protos, int len) {
 
 // The negotiated ALPN protocol after handshake. Writes up to `max` bytes into
 // `out` and returns the length, or 0 if none negotiated.
-int __cajeta_tls_get_alpn(void* connv, char* out, int max) {
+int __cajeta_tls_get_alpn(void* connv, void* out_hdr, int max) {
     cajeta_tls_conn* c = (cajeta_tls_conn*) connv;
-    if (!c) return 0;
+    char* out = CAJETA_ARR_DATA(out_hdr);
+    if (!c || !out) return 0;
     const unsigned char* proto = NULL;
     unsigned int plen = 0;
     SSL_get0_alpn_selected(c->ssl, &proto, &plen);
@@ -166,8 +182,9 @@ int __cajeta_tls_get_alpn(void* connv, char* out, int max) {
 
 // Feed ciphertext received from the network into the TLS engine.
 // Returns bytes consumed (== len on success) or CAJETA_TLS_ERROR.
-int __cajeta_tls_feed_ciphertext(void* connv, const char* buf, int len) {
+int __cajeta_tls_feed_ciphertext(void* connv, const void* buf_hdr, int len) {
     cajeta_tls_conn* c = (cajeta_tls_conn*) connv;
+    const char* buf = CAJETA_ARR_DATA(buf_hdr);
     if (!c || (len > 0 && !buf)) return CAJETA_TLS_ERROR;
     if (len == 0) return 0;
     int n = BIO_write(c->rbio, buf, len);
@@ -176,8 +193,9 @@ int __cajeta_tls_feed_ciphertext(void* connv, const char* buf, int len) {
 
 // Pull ciphertext the engine wants written to the network. Returns the number
 // of bytes copied into `out` (0 if none pending).
-int __cajeta_tls_pull_ciphertext(void* connv, char* out, int max) {
+int __cajeta_tls_pull_ciphertext(void* connv, void* out_hdr, int max) {
     cajeta_tls_conn* c = (cajeta_tls_conn*) connv;
+    char* out = CAJETA_ARR_DATA(out_hdr);
     if (!c || !out || max <= 0) return 0;
     int n = BIO_read(c->wbio, out, max);
     return n > 0 ? n : 0;
@@ -218,8 +236,9 @@ int __cajeta_tls_handshake_step(void* connv) {
 
 // Encrypt + queue `len` plaintext bytes (the ciphertext lands in wbio for the
 // caller to pull). Returns bytes written, CAJETA_TLS_WANT_IO, or error.
-int __cajeta_tls_write_plaintext(void* connv, const char* buf, int len) {
+int __cajeta_tls_write_plaintext(void* connv, const void* buf_hdr, int len) {
     cajeta_tls_conn* c = (cajeta_tls_conn*) connv;
+    const char* buf = CAJETA_ARR_DATA(buf_hdr);
     if (!c || (len > 0 && !buf)) return CAJETA_TLS_ERROR;
     if (len == 0) return 0;
     int n = SSL_write(c->ssl, buf, len);
@@ -230,8 +249,9 @@ int __cajeta_tls_write_plaintext(void* connv, const char* buf, int len) {
 // Decrypt available application data into `out`. Returns bytes read,
 // CAJETA_TLS_WANT_IO (feed more ciphertext), CAJETA_TLS_ZERO (peer sent
 // close-notify), or CAJETA_TLS_ERROR.
-int __cajeta_tls_read_plaintext(void* connv, char* out, int max) {
+int __cajeta_tls_read_plaintext(void* connv, void* out_hdr, int max) {
     cajeta_tls_conn* c = (cajeta_tls_conn*) connv;
+    char* out = CAJETA_ARR_DATA(out_hdr);
     if (!c || !out || max <= 0) return CAJETA_TLS_ERROR;
     int n = SSL_read(c->ssl, out, max);
     if (n > 0) return n;
