@@ -7,6 +7,8 @@
 #include "cajeta/type/CajetaArray.h"
 #include "cajeta/type/CajetaVector.h"
 #include "cajeta/type/VectorOps.h"
+#include "cajeta/type/CajetaMatrix.h"
+#include "cajeta/type/MatrixOps.h"
 #include "cajeta/type/CajetaClass.h"
 #include "cajeta/type/CajetaView.h"
 #include "cajeta/type/CajetaFunctionType.h"
@@ -1861,6 +1863,70 @@ namespace cajeta {
                 throw Exception(
                     "Vector has no method '" + methodCallName + "'",
                     "CAJETA_ERROR_VECTOR_METHOD");
+            }
+            // Matrix methods (B1): m.transpose() -> Matrix<T,C,R>, m.identity()
+            // (R==C) -> Matrix<T,R,C>, m.row(r) -> Vector<T,C>, m.col(c) ->
+            // Vector<T,R>, m.hadamard(b) -> Matrix<T,R,C>. Intercepted on a
+            // CajetaMatrix receiver before the generic class dispatch (the
+            // declared Matrix class's bodies are placeholders).
+            if (auto matT = dynamic_pointer_cast<CajetaMatrix>(receiverType)) {
+                llvm::Value* self = loadIfLValue(module, receiver, exprChild);
+                bool isFloat = matT->getElementType()->getLlvmType()
+                                   ->isFloatingPointTy();
+                unsigned R = matT->getRows(), C = matT->getCols();
+                if (methodCallName == "transpose") {
+                    resolvedType = CajetaMatrix::getOrCreate(
+                        module, matT->getElementType(), C, R);
+                    return matops::transpose(*builder, self, R, C);
+                }
+                if (methodCallName == "identity") {
+                    if (R != C) {
+                        throw Exception(
+                            "Matrix.identity requires a square matrix (got "
+                            + matT->toCanonical() + ")",
+                            "CAJETA_ERROR_MATRIX_METHOD");
+                    }
+                    resolvedType = matT;
+                    return matops::identity(
+                        *builder, matT->getElementType()->getLlvmType(), R);
+                }
+                if (methodCallName == "row" || methodCallName == "col") {
+                    if (parameters.size() != 1) {
+                        throw Exception(
+                            "Matrix." + methodCallName + " expects 1 argument",
+                            "CAJETA_ERROR_MATRIX_METHOD");
+                    }
+                    llvm::Value* idx = loadIfLValue(module,
+                        parameters[0].expression->generateCode(module),
+                        parameters[0].expression);
+                    llvm::Type* i32Ty =
+                        llvm::Type::getInt32Ty(*module->getLlvmContext());
+                    if (idx->getType() != i32Ty)
+                        idx = builder->CreateIntCast(idx, i32Ty, false,
+                                                     "mat.meth.idx");
+                    if (methodCallName == "row") {
+                        resolvedType = CajetaVector::getOrCreate(
+                            module, matT->getElementType(), C);
+                        return matops::row(*builder, self, R, C, idx);
+                    }
+                    resolvedType = CajetaVector::getOrCreate(
+                        module, matT->getElementType(), R);
+                    return matops::col(*builder, self, R, C, idx);
+                }
+                if (methodCallName == "hadamard") {
+                    if (parameters.size() != 1) {
+                        throw Exception("Matrix.hadamard expects 1 argument",
+                                        "CAJETA_ERROR_MATRIX_METHOD");
+                    }
+                    auto other = parameters[0].expression;
+                    llvm::Value* b = loadIfLValue(module,
+                        other->generateCode(module), other);
+                    resolvedType = matT;
+                    return matops::hadamard(*builder, self, b, isFloat);
+                }
+                throw Exception(
+                    "Matrix has no method '" + methodCallName + "'",
+                    "CAJETA_ERROR_MATRIX_METHOD");
             }
             // l-value -> r-value coercion. Local-variable receivers are AllocaInsts;
             // ArrayIndex receivers are slot addresses where the slot holds a `ptr` to
