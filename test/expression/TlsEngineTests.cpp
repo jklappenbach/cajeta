@@ -41,6 +41,7 @@ void  __cajeta_tls_ctx_free(void* ctx);
 void* __cajeta_tls_conn_new(void* ctx, int is_server);
 int   __cajeta_tls_ctx_set_verify(void* ctx, int mode);
 int   __cajeta_tls_ctx_add_trust_pem(void* ctx, const void* pem_hdr, int len);
+int   __cajeta_tls_ctx_use_system_trust(void* ctx);
 int   __cajeta_tls_set_verify_host(void* conn, const void* host_hdr, int host_len);
 int   __cajeta_tls_verify_result(void* conn);
 int   __cajeta_tls_set_sni(void* conn, const void* host_hdr, int host_len);
@@ -362,4 +363,35 @@ TEST(TlsEngineTests, untrustedRootRejectedThenAcceptedWithAnchor) {
         __cajeta_tls_free(client); __cajeta_tls_free(server);
         __cajeta_tls_ctx_free(cctx); __cajeta_tls_ctx_free(sctx);
     }
+}
+
+// OS trust store (NET-5.3): loading it succeeds (the system has CAs).
+TEST(TlsEngineTests, systemTrustLoadsWithoutError) {
+    void* ctx = __cajeta_tls_ctx_new(/*is_server=*/0);
+    ASSERT_NE(ctx, nullptr);
+    EXPECT_EQ(__cajeta_tls_ctx_use_system_trust(ctx), 0);
+    __cajeta_tls_ctx_free(ctx);
+}
+
+// The OS trust store is actually USED for verification: a verifying client that
+// trusts only the system store still rejects our self-signed test cert (which
+// no public CA issued) as untrusted — proving useSystemTrust isn't a no-op that
+// blindly accepts.
+TEST(TlsEngineTests, systemTrustStillRejectsSelfSigned) {
+    std::string cert, key;
+    ASSERT_TRUE(makeSelfSigned("localhost", cert, key));
+    void* sctx; void* server = makeServer(cert, key, &sctx);
+
+    void* cctx = __cajeta_tls_ctx_new(/*is_server=*/0);
+    __cajeta_tls_ctx_set_verify(cctx, 1);
+    ASSERT_EQ(__cajeta_tls_ctx_use_system_trust(cctx), 0);
+    void* client = __cajeta_tls_conn_new(cctx, 0);
+    Arr h("localhost", 9);
+    __cajeta_tls_set_verify_host(client, h.hdr(), 9);
+
+    EXPECT_FALSE(pumpHandshake(client, server)) << "self-signed not in OS store";
+    EXPECT_EQ(__cajeta_tls_verify_result(client), 3 /*UNTRUSTED*/);
+
+    __cajeta_tls_free(client); __cajeta_tls_free(server);
+    __cajeta_tls_ctx_free(cctx); __cajeta_tls_ctx_free(sctx);
 }

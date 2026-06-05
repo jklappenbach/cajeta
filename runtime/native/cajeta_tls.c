@@ -32,6 +32,26 @@
 #include <string.h>
 #include <stdlib.h>
 
+// Windows shim for the OS trust store (NET-5.3): wincrypt.h provides
+// CertOpenSystemStore / CertEnumCertificatesInStore but #defines a handful of
+// identifiers (X509_NAME, OCSP_REQUEST, …) that collide with OpenSSL's types.
+// Include it after the OpenSSL headers and drop the colliding macros so the
+// OpenSSL meanings below win. (POSIX needs none of this — see use_system_trust.)
+#if defined(_WIN32)
+#  ifndef WIN32_LEAN_AND_MEAN
+#    define WIN32_LEAN_AND_MEAN 1
+#  endif
+#  include <windows.h>
+#  include <wincrypt.h>
+#  undef X509_NAME
+#  undef X509_EXTENSIONS
+#  undef X509_CERT_PAIR
+#  undef PKCS7_ISSUER_AND_SERIAL
+#  undef PKCS7_SIGNER_INFO
+#  undef OCSP_REQUEST
+#  undef OCSP_RESPONSE
+#endif
+
 #define CAJETA_TLS_WANT_IO (-1)
 #define CAJETA_TLS_ZERO    (-2)
 #define CAJETA_TLS_ERROR   (-3)
@@ -153,6 +173,37 @@ int __cajeta_tls_ctx_add_trust_pem(void* ctxv, const void* pem_hdr, int len) {
     }
     BIO_free(bio);
     return added > 0 ? 0 : CAJETA_TLS_ERROR;
+}
+
+// Load the OPERATING SYSTEM's default trust store into the (client) context, so
+// a real public certificate validates without a caller-supplied anchor
+// (NET-5.3). POSIX-native: OpenSSL's default verify paths (the distro CA bundle
+// / $SSL_CERT_FILE / $SSL_CERT_DIR). Windows shim: enumerate the system "ROOT"
+// store and add each cert to the context's X509_STORE. Returns 0 on success
+// (at least one anchor available), CAJETA_TLS_ERROR otherwise.
+int __cajeta_tls_ctx_use_system_trust(void* ctxv) {
+    SSL_CTX* ctx = (SSL_CTX*) ctxv;
+    if (!ctx) return CAJETA_TLS_ERROR;
+#if defined(_WIN32)
+    X509_STORE* store = SSL_CTX_get_cert_store(ctx);
+    if (!store) return CAJETA_TLS_ERROR;
+    HCERTSTORE hStore = CertOpenSystemStoreA(0, "ROOT");
+    if (!hStore) return CAJETA_TLS_ERROR;
+    PCCERT_CONTEXT pctx = NULL;
+    int added = 0;
+    while ((pctx = CertEnumCertificatesInStore(hStore, pctx)) != NULL) {
+        const unsigned char* enc = (const unsigned char*) pctx->pbCertEncoded;
+        X509* x = d2i_X509(NULL, &enc, (long) pctx->cbCertEncoded);
+        if (x) {
+            if (X509_STORE_add_cert(store, x) == 1) added++;
+            X509_free(x);
+        }
+    }
+    CertCloseStore(hStore, 0);
+    return added > 0 ? 0 : CAJETA_TLS_ERROR;
+#else
+    return SSL_CTX_set_default_verify_paths(ctx) == 1 ? 0 : CAJETA_TLS_ERROR;
+#endif
 }
 
 void __cajeta_tls_ctx_free(void* ctxv) {
