@@ -46,6 +46,29 @@ public final class XpuTour {
         }
     }
 
+    // transform: out[i] = M * p[i] + t — a per-point 2-D affine transform.
+    // Showcases the intrinsic linear-algebra value types ON the device: a
+    // `Matrix<float32,2,2>` passed BY VALUE as a kernel parameter (marshalled
+    // like a POD — the host packs its 4 floats, the device reads them back),
+    // `Matrix * Vector` (matrix-vector multiply, NOT element-wise), and
+    // `Vector + Vector`. The same source lowers to a `<4 x float>` matrix and a
+    // `<2 x float>` vector on every backend; the matmul/matVec is honest
+    // extract/insert/fma IR, so the result is bit-exact on CPU, Vulkan, and AMD.
+    @Kernel
+    public static void transform(Buffer<float32> outx, Buffer<float32> outy,
+                                 Buffer<float32> px, Buffer<float32> py,
+                                 Matrix<float32,2,2> m,
+                                 float32 tx, float32 ty, uint32 n) {
+        uint32 i = Thread.globalIdX();
+        if (i < n) {
+            Vector<float32,2> p = stack Vector<float32,2>(px[i], py[i]);
+            Vector<float32,2> t = stack Vector<float32,2>(tx, ty);
+            Vector<float32,2> r = m * p + t;   // matVec, then element-wise add
+            outx[i] = r[0];
+            outy[i] = r[1];
+        }
+    }
+
     // waveReduce: out[i] = sum of in over i's wave. A wave-cooperative kernel —
     // the wave is the warp on a GPU, the SIMD vector on the CPU. Width-agnostic:
     // it queries the environment (Wave.reduceSum / width() / laneId()) rather
@@ -68,6 +91,7 @@ public final class XpuTour {
         System.stdout.println("  bundled+available backend (CPU when no GPU).");
         runSaxpy();
         runVecAdd();
+        runTransform();
         runWave();
         System.stdout.println("");
         System.stdout.println("=== xpu tour complete ===");
@@ -142,6 +166,46 @@ public final class XpuTour {
                             + " c[10]=" + (int32) hc[10]
                             + " c[255]=" + (int32) hc[255]
                             + "  (expect 3, 30, 765)");
+    }
+
+    // M = [[0 -1][1 0]] (a 90 deg rotation); points p[i] = (i, 1); t = (100, 200).
+    // r = M*(i,1) + t = (-1, i) + (100, 200) = (99, i + 200) — the matrix is a
+    // by-value kernel arg, the matVec + add happen on the device.
+    static void runTransform() {
+        System.stdout.println("");
+        System.stdout.println("-- transform: out = M*p + t, M=rot90, p[i]=(i,1), t=(100,200) --");
+        uint32 n = 256;
+        float32[] hpx = new float32[n];
+        float32[] hpy = new float32[n];
+        float32[] hox = new float32[n];
+        float32[] hoy = new float32[n];
+        for (uint32 i = 0; i < n; i = i + 1) {
+            hpx[i] = (float32) i;
+            hpy[i] = 1.0f;
+            hox[i] = 0.0f;
+            hoy[i] = 0.0f;
+        }
+        Buffer<float32> px = stack Buffer<float32>(n);
+        Buffer<float32> py = stack Buffer<float32>(n);
+        Buffer<float32> outx = stack Buffer<float32>(n);
+        Buffer<float32> outy = stack Buffer<float32>(n);
+        px.upload(hpx);
+        py.upload(hpy);
+        outx.upload(hox);
+        outy.upload(hoy);
+        // The matrix is a value: stack-constructed, then passed BY VALUE to the
+        // kernel launch alongside the buffers and the translation scalars.
+        Matrix<float32,2,2> m = stack Matrix<float32,2,2>(0.0f, -1.0f, 1.0f, 0.0f);
+        Stream s = Stream.current();
+        transform.launch(s, grid: [(n + 63) / 64], block: [64])(
+            outx, outy, px, py, m, 100.0f, 200.0f, n);
+        s.sync();
+        outx.download(hox);
+        outy.download(hoy);
+        // (i=10) -> (99, 210);  (i=255) -> (99, 455)
+        System.stdout.println("  (i=10) -> (" + (int32) hox[10] + ", " + (int32) hoy[10]
+                            + ")  (i=255) -> (" + (int32) hox[255] + ", " + (int32) hoy[255]
+                            + ")  (expect (99,210) and (99,455))");
     }
 
     static void runWave() {

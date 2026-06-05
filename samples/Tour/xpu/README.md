@@ -42,6 +42,8 @@ reports 16 on an AVX-512 CPU, 8 on AVX2, and 32/64 on a GPU:
   y[0]=1 y[1]=3 y[10]=21 y[255]=511  (expect 1, 3, 21, 511)
 -- vecAdd: c = a + b, a[i]=i, b[i]=2*i --
   c[1]=3 c[10]=30 c[255]=765  (expect 3, 30, 765)
+-- transform: out = M*p + t, M=rot90, p[i]=(i,1), t=(100,200) --
+  (i=10) -> (99, 210)  (i=255) -> (99, 455)  (expect (99,210) and (99,455))
 -- waveReduce: sum across each wave, in[i]=1 --
   wave width (queried, not hardcoded) = 16        # 64 on an AMD GPU, 32 on NVIDIA
   every lane of a wave agrees: sums[0]=16 sums[1]=16
@@ -84,13 +86,23 @@ diagnostic instead of crashing (explicit-only bundling is a build-time contract)
 
 ## The kernels
 
-`XpuTour.cajeta` has two data-parallel kernels (identical results everywhere) and
-one wave-cooperative kernel (correct everywhere, at the hardware's wave width):
+`XpuTour.cajeta` has three data-parallel kernels (identical results everywhere)
+and one wave-cooperative kernel (correct everywhere, at the hardware's wave width):
 
 - `saxpy(y, x, a, n)` — `y[i] = a*x[i] + y[i]`, the canonical accelerator
   "hello world". Uses **`heap Buffer<T>(n)`**.
 - `vecAdd(c, a, b, n)` — `c[i] = a[i] + b[i]`, element-wise. Uses
   **`stack Buffer<T>(n)`**.
+- `transform(outx, outy, px, py, m, tx, ty, n)` — `out[i] = M·p[i] + t`, a 2-D
+  affine transform that showcases the **intrinsic linear-algebra value types on
+  the device**: a `Matrix<float32,2,2>` passed **by value** as a kernel parameter
+  (marshalled like a POD — the host packs its 4 floats, the device reads them
+  back), `Matrix * Vector` (matrix-vector multiply, *not* element-wise), and
+  `Vector + Vector`. The matrix lowers to a `<4 x float>` and the vector to a
+  `<2 x float>` on every backend, and the matVec is honest extract/insert/fma IR,
+  so the result is **bit-exact on CPU, Vulkan, and AMD** (verified on RADV +
+  gfx1151). `Matrix<T,R,C>` also supports `m[r][c]`, `*`=matmul, `+ - /`
+  element-wise, `==`, and `transpose`/`identity`/`row`/`col`/`hadamard` in a kernel.
 - `waveReduce(sums, in, n)` — `sums[i] =` the sum of `in` across `i`'s **wave**
   (the warp/wavefront/subgroup on a GPU; the SIMD vector on the CPU — Inc 5C).
   Written **width-agnostically**: it queries the environment (`Wave.reduceSum`,
