@@ -1,21 +1,11 @@
-Note: Google Test filter = TlsEngineTests.*
-[==========] Running 6 tests from 1 test suite.
+Note: Google Test filter = TlsLoopbackTest.tlsListenerAcceptWithAlpnOverLoopback
+[==========] Running 1 test from 1 test suite.
 [----------] Global test environment set-up.
-[----------] 6 tests from TlsEngineTests
-[ RUN      ] TlsEngineTests.memoryBioHandshakeAndPlaintextRoundTrip
-[       OK ] TlsEngineTests.memoryBioHandshakeAndPlaintextRoundTrip (6 ms)
-[ RUN      ] TlsEngineTests.alpnServerSelectsOverlap
-[       OK ] TlsEngineTests.alpnServerSelectsOverlap (1 ms)
-[ RUN      ] TlsEngineTests.alpnNoOverlapNegotiatesNothing
-[       OK ] TlsEngineTests.alpnNoOverlapNegotiatesNothing (1 ms)
-[ RUN      ] TlsEngineTests.expiredCertRejected
-[       OK ] TlsEngineTests.expiredCertRejected (1 ms)
-[ RUN      ] TlsEngineTests.hostnameMismatchRejected
-[       OK ] TlsEngineTests.hostnameMismatchRejected (1 ms)
-[ RUN      ] TlsEngineTests.untrustedRootRejectedThenAcceptedWithAnchor
-[       OK ] TlsEngineTests.untrustedRootRejectedThenAcceptedWithAnchor (2 ms)
-[----------] 6 tests from TlsEngineTests (16 ms total)
+[----------] 1 test from TlsLoopbackTest
+[ RUN      ] TlsLoopbackTest.tlsListenerAcceptWithAlpnOverLoopback
+[       OK ] TlsLoopbackTest.tlsListenerAcceptWithAlpnOverLoopback (14485 ms)
+[----------] 1 test from TlsLoopbackTest (14486 ms total)
 
 [----------] Global test environment tear-down
-[==========] 6 tests from 1 test suite ran. (17 ms total)
-[  PASSED  ] 6 tests.
+[==========] 1 test from 1 test suite ran. (14487 ms total)
+[  PASSED  ] 1 test.
