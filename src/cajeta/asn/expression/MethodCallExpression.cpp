@@ -1938,7 +1938,20 @@ namespace cajeta {
             // static-dispatch path picks up targetClass.
             if (receiver) {
                 if (auto* a = llvm::dyn_cast<llvm::AllocaInst>(receiver)) {
-                    receiver = builder->CreateLoad(a->getAllocatedType(), a);
+                    // A @ValueType receiver's slot holds the aggregate INLINE
+                    // (alloca %VtPoint, not alloca ptr). Its instance methods take
+                    // `this` BY POINTER (the slot address), so loading here would
+                    // pass the aggregate by value and mismatch the `this:pointer`
+                    // signature — the JIT-verify failure. Pass the slot address
+                    // instead. Mirrors the value-type guards in the operator[]
+                    // dispatch (Expression.cpp) and DotExpression (S2). A non-
+                    // value receiver's alloca holds a `ptr` to the instance — load
+                    // that pointer as before.
+                    auto recvCls = dynamic_pointer_cast<CajetaClass>(receiverType);
+                    bool valueTypeReceiver = recvCls && recvCls->isValueType()
+                        && !a->getAllocatedType()->isPointerTy();
+                    if (!valueTypeReceiver)
+                        receiver = builder->CreateLoad(a->getAllocatedType(), a);
                 } else if (dynamic_pointer_cast<ArrayIndexExpression>(exprChild)) {
                     receiver = builder->CreateLoad(
                         llvm::PointerType::get(*module->getLlvmContext(), 0), receiver);
