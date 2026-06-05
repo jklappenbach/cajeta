@@ -1434,9 +1434,58 @@ out of `net/socket` back into `net` as they go green.
       stays header-passing; documented in `Method::emitNativeForwardingBody`.)
       Un-gated `net/dns` in `CAJETA_STDLIB_DIRS`. Green: `NetResolveTests` 6/6,
       `DnsTests` 8/8, `Sha256Tests` un-regressed. Completes NET-2.2.
-- [ ] **b5 — Server stacks.** Un-gate `Server`/`ServerBuilder`/`SharedPoolServer`/
-      `ServerModel`/`ConnectionLimiter` + `net/http/socket`, `net/ws/socket`;
-      both accept models (fiber-per-connection + shared-pool) over b1–b3.
+- [x] **b5 — Server stacks.** DONE (2026-06-04). Un-gated `Server`/`ServerBuilder`/
+      `SharedPoolServer`/`ServerModel`/`ConnectionLimiter`/`BufferPool`/`ByteBuffer`/… +
+      `HttpServer`/`RequestBodyStream`/`ResponseBodyWriter` + `WebSocket`. **Gating
+      mechanism replaced:** the `socket/server`, `http/socket`, `ws/socket` subdirs
+      were `git mv`'d UP into their package-matching dirs (`net/`, `net/http/`,
+      `net/ws/`) — the embed's package==dir check (which DNS/uri/etc. satisfy) is
+      incompatible with gating a `package cajeta.net` file under a deeper path, so
+      the subdir-gating idiom can't coexist with the eager stdlib compile. They join
+      the already-globbed dirs; no CMake change.
+      **Staged stdlib defects fixed (8):** `BufferPool.acquire()`→`#ByteBuffer`;
+      `spawn Server.serveConnection`/`spawn SharedPoolServer.worker` → bare `spawn
+      serveConnection`/`spawn worker` (a class-qualified spawn target is misread as
+      instance dispatch — only the bare class-method form is supported);
+      `this.dispatch(#conn)` transfer at both serve loops; a `TcpListener.localAddress()`
+      placeholder stub (the object-materializing `getsockname` lowering is still a
+      later increment) threaded `#SocketAddress` through `Server`/`HttpServer`;
+      `rejectExchange(#HttpResponse)` transfer; `build()`'s reassigned lambda param
+      annotated (`(HttpRequest req)`).
+      **Compiler fixes (2 — both verified no-regression):**
+      (A) **Function-typed borrow captures** (`Expression.cpp` L2-capture analysis):
+      lambdas capturing a function-typed local were unconditionally skipped, so the
+      capture was unresolved → null arg → `dyn_cast` crash. A function value is a
+      single `ptr` to a closure record, so a *borrow* capture is the usual
+      pointer-copy; only a `#`-*transfer* of a closure stays deferred (clear throw).
+      Unblocked `HttpServer.bindAddressWithModel`.
+      (B) **THE KEYSTONE — double-load of a `#`-move into a class field**
+      (`BinaryOpExpression.cpp loadIfLValue`): `this.classField = #param` stored the
+      object's **vtable word** instead of the object pointer — `MoveExpression`
+      already loads its operand to the r-value, but `loadIfLValue`'s class-ref
+      catch-all loaded through it AGAIN (the exact failure its NewExpression/
+      MethodCall/String carve-outs guard against; `MoveExpression` was simply missing
+      from that carve-out list). Symptom: every `Exchange`-returning server method
+      (and the HTTP serving path) read a garbage/null vtable and SIGSEGV'd
+      (`frame #0 = 0x0`). Added the `MoveExpression` carve-out. Diagnosed by
+      bisecting the serving crash through ~12 JIT probes down to `heap Exchange(#resp,
+      false)` → `ex.response` reading a slot address, then dumping the store IR
+      (`rhsVal = load ptr, ptr %11` — the tell-tale second load).
+      **Green:** `HttpServerTests` 20/20, `ServerModelTests` 8/8, `WsServerHandshakeTests`,
+      `HttpServerHardeningTests`, and all NET-4 harnesses (`FiberPerConn`,
+      `SharedPool`, `ConnectionLimiter`, `ModelSelection`, `ServerLifecycle`,
+      `HttpModelParity`) — 73/73. Regression-clean: 93 `#`/ownership/drop-heavy tests
+      pass (NetSockaddr, Optional, Pair, NetAddress, BinaryOp, FieldOwnershipAliasing,
+      ClassDrop, Destructor, CallerSideTransfer, UseAfterMove, OwnedStringDrop).
+      Completes NET-4.x + NET-9.1/9.2 + NET-10.1/10.2 pure surface.
+      **Two known follow-up gaps (tracked, not b5 blockers):** (1) bare-param lambda
+      inference doesn't fire for an arg of a *fluent-chained* call
+      (`.model(...).handler((req)->...)`) — annotate the param as a workaround;
+      (2) storing a closure in a builder field then dropping the builder
+      (`builderModelThreadsSharedPool` with `.handler`) trips a SEPARATE codegen
+      defect (closure-typed field on a dropped heap object), distinct from the
+      double-load — that test pins the model-threading contract without the
+      incidental handler.
 - [ ] **b6 — TLS (NET-5).** Bundle BoringSSL; the largest separate effort.
 - [~] **(parallel) Compiler-gap fixes** surfaced by the slices, independent of
       sockets. DONE (2026-06-04, commit `0001ab0`): (a) **field-read as an array

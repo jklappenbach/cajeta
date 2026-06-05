@@ -326,7 +326,7 @@ public class HttpServer {
     }
 
     /** The bound local address (carries the ephemeral port for a `:0` bind). */
-    public SocketAddress localAddress() {
+    public #SocketAddress localAddress() {
         return this.server.localAddress();
     }
 
@@ -897,7 +897,7 @@ public class HttpServer {
      * reuse the connection) and report `keepAlive == false`. The single exit
      * for every NET-9.6 rejection (`413` / `417`) and every parse-fault path.
      */
-    static #Exchange rejectExchange(HttpResponse response) {
+    static #Exchange rejectExchange(#HttpResponse response) {
         KeepAlive.applyConnectionHeader(response.getHeaders(),
                                         response.getVersion(), false);
         return heap Exchange(#response, false);
@@ -1129,7 +1129,7 @@ public class HttpServerBuilder {
     public #HttpServer build() {
         (HttpRequest) -> #HttpResponse h = this.handler;
         if (h == null) {
-            h = (req) -> HttpResponse.of(500);
+            h = (HttpRequest req) -> HttpResponse.of(500);
         }
         return HttpServer.bindAddressWithModel(SocketAddress.parse(this.addr),
                                                this.model, h);

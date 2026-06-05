@@ -104,7 +104,7 @@ public class BufferPool {
      * fresh `slabSize` buffer (and bumps `allocations()`). The
      * returned buffer's cursors are at the front.
      */
-    public ByteBuffer acquire() {
+    public #ByteBuffer acquire() {
         if (this.idleCount > 0) {
             this.idleCount = this.idleCount - 1;
             ByteBuffer reused = this.freeList[this.idleCount];

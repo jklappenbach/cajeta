@@ -209,7 +209,7 @@ public class Server {
                 if (conn == null) {
                     break;   // listener closed by shutdown — stop accepting
                 }
-                this.dispatch(conn);
+                this.dispatch(#conn);
             }
         }
         // The scope's `}` has joined every connection fiber. If a
@@ -280,7 +280,7 @@ public class Server {
      */
     public void dispatch(#TcpStream conn) {
         this.inflight.fetchAdd(1);
-        spawn Server.serveConnection(this.handler, this.inflight, conn);
+        spawn serveConnection(this.handler, this.inflight, conn);
     }
 
     /**
@@ -390,7 +390,7 @@ public class Server {
      * Reads through to [`TcpListener.localAddress`](TcpListener.cajeta#localAddress);
      * no syscall.
      */
-    public SocketAddress localAddress() {
+    public #SocketAddress localAddress() {
         return this.listener.localAddress();
     }
 
