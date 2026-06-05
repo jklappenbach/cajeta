@@ -15,15 +15,22 @@
 
 namespace cajetadoc {
 
+class SymbolIndex;
+
 // Render a single type page (fragment-and-shell) to a complete HTML document.
-// `cssHref` is the relative path from this page to the stylesheet.
-std::string renderTypePage(const Type& type, const std::string& cssHref);
+// `cssHref` is the relative path from this page to the stylesheet. `index` (if
+// non-null) supplies cross-reference links; `pkg` (if non-null) supplies the
+// sibling-type nav chrome.
+std::string renderTypePage(const Type& type, const std::string& cssHref,
+                           const SymbolIndex* index = nullptr, const Package* pkg = nullptr);
 
 // Render a package index page listing the package's types.
-std::string renderPackageIndex(const Package& pkg, const std::string& cssHref);
+std::string renderPackageIndex(const Package& pkg, const std::string& cssHref,
+                               const SymbolIndex* index = nullptr);
 
 // Render the project overview index listing all packages.
-std::string renderOverview(const Model& model, const std::string& cssHref);
+std::string renderOverview(const Model& model, const std::string& cssHref,
+                           const SymbolIndex* index = nullptr);
 
 // The built-in themeable stylesheet (cascade layers + :where() + tokens).
 std::string defaultStylesheet();

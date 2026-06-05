@@ -12,6 +12,7 @@
 #include "cajetadoc/Markdown.h"
 #include "cajetadoc/Model.h"
 #include "cajetadoc/Render.h"
+#include "cajetadoc/Resolve.h"
 
 namespace fs = std::filesystem;
 using namespace cajetadoc;
@@ -301,6 +302,104 @@ TEST(Render, SiteGenerationDeterministic) {
 // ---------------------------------------------------------------------------
 // §1.1.1 — golden-file runner (inline markdown golden, byte-exact)
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// §5 — cross-reference resolution
+// ---------------------------------------------------------------------------
+TEST(Resolve, FqnSimpleAndMember) {
+    IngestResult r;
+    ingestSource("package cajeta.lang;\npublic class Object { public int64 hash(); }\n",
+                 "Object.cajeta", IngestOptions{}, r);
+    ingestSource("package cajeta.hash;\n"
+                 "public class Hash { public static int64 identity(Object obj); }\n",
+                 "Hash.cajeta", IngestOptions{}, r);
+    SymbolIndex idx;
+    idx.build(r.model);
+
+    auto fqn = idx.resolve("cajeta.lang.Object", "cajeta.hash");
+    ASSERT_TRUE(fqn.has_value());
+    EXPECT_EQ(fqn->page, "cajeta/lang/Object.html");
+    EXPECT_EQ(fqn->anchor, "");
+
+    auto simple = idx.resolve("Hash", "cajeta.hash");
+    ASSERT_TRUE(simple.has_value());
+    EXPECT_EQ(simple->page, "cajeta/hash/Hash.html");
+
+    auto overload = idx.resolve("Hash.identity(pointer)", "cajeta.hash");
+    ASSERT_TRUE(overload.has_value());
+    EXPECT_EQ(overload->anchor, "identity"); // args stripped
+
+    auto hashForm = idx.resolve("Object#hash", "cajeta.hash");
+    ASSERT_TRUE(hashForm.has_value());
+    EXPECT_EQ(hashForm->page, "cajeta/lang/Object.html");
+    EXPECT_EQ(hashForm->anchor, "hash");
+
+    EXPECT_FALSE(idx.resolve("Nonexistent", "cajeta.hash").has_value());
+}
+
+TEST(Resolve, HrefDepth) {
+    SymbolIndex idx;
+    ResolvedRef r{"cajeta/hash/Hash.html", "identity"};
+    EXPECT_EQ(idx.href(r, 2), "../../cajeta/hash/Hash.html#identity");
+    EXPECT_EQ(idx.href(r, 0), "cajeta/hash/Hash.html#identity");
+}
+
+TEST(Render, CrossReferenceLinksAndTypeLevelSee) {
+    IngestResult r;
+    ingestSource("package cajeta.lang;\npublic class Object {}\n", "Object.cajeta",
+                 IngestOptions{}, r);
+    ingestSource("package cajeta.hash;\n"
+                 "/**\n * Uses `cajeta.lang.Object`.\n * @See cajeta.lang.Object\n"
+                 " * @Since 0.1.0\n */\npublic class Hash {}\n",
+                 "Hash.cajeta", IngestOptions{}, r);
+    SymbolIndex idx;
+    idx.build(r.model);
+    const Type* h = findType(r.model, "cajeta.hash.Hash");
+    ASSERT_NE(h, nullptr);
+    std::string html = renderTypePage(*h, "cajetadoc.css", &idx);
+    // backtick code span auto-linked to the resolved page
+    EXPECT_NE(html.find("../../cajeta/lang/Object.html"), std::string::npos);
+    // type-level @See and @Since now render (previously dropped)
+    EXPECT_NE(html.find("See Also"), std::string::npos);
+    EXPECT_NE(html.find("Since:"), std::string::npos);
+}
+
+TEST(Render, NavChromeBreadcrumbsAndSidebar) {
+    IngestResult r;
+    ingestSource("package cajeta.hash;\n/** A. */ public class Hash {}\n", "Hash.cajeta",
+                 IngestOptions{}, r);
+    ingestSource("package cajeta.hash;\n/** B. */ public class XXHash3 {}\n", "XXHash3.cajeta",
+                 IngestOptions{}, r);
+    SymbolIndex idx;
+    idx.build(r.model);
+    Package* pkg = r.model.findPackage("cajeta.hash");
+    const Type* h = findType(r.model, "cajeta.hash.Hash");
+    ASSERT_NE(pkg, nullptr);
+    ASSERT_NE(h, nullptr);
+    std::string html = renderTypePage(*h, "../../cajetadoc.css", &idx, pkg);
+    EXPECT_NE(html.find("class=\"crumbs\""), std::string::npos);  // breadcrumbs
+    EXPECT_NE(html.find("class=\"pkg-nav\""), std::string::npos); // sidebar nav
+    EXPECT_NE(html.find("XXHash3.html"), std::string::npos);      // sibling/next link
+}
+
+TEST(Render, OverviewTypeCountFallback) {
+    IngestResult r;
+    ingestSource("package cajeta.hash;\npublic class Hash {}\n", "Hash.cajeta", IngestOptions{}, r);
+    SymbolIndex idx;
+    idx.build(r.model);
+    std::string html = renderOverview(r.model, "cajetadoc.css", &idx);
+    EXPECT_NE(html.find("1 type"), std::string::npos); // blank summary -> type count
+}
+
+TEST(Ingest, PackageLevelDoc) {
+    IngestResult r;
+    ingestSource("/** The hashing package. */\npackage cajeta.hash;\npublic class Hash {}\n",
+                 "package.cajeta", IngestOptions{}, r);
+    Package* p = r.model.findPackage("cajeta.hash");
+    ASSERT_NE(p, nullptr);
+    ASSERT_TRUE(p->doc != nullptr);
+    EXPECT_EQ(p->doc->summary, "The hashing package.");
+}
+
 TEST(Golden, InlineMarkdownSnippet) {
     std::string produced = renderMarkdown(
         "Hello **world**.\n\n- a\n- b\n\n`code` and a [link](http://x).\n");
