@@ -145,6 +145,31 @@ public:
         return b.CreateExtractValue(rgba, {0}, "tex.sample");
     }
 
+    // Transcendentals via NVIDIA libdevice: `__nv_<fn>f` (f32) / `__nv_<fn>`
+    // (f64). NVPTX, like AMDGPU, has no IEEE transcendental instructions; the
+    // libdevice call is the canonical path (linked at cubin time). Emit-only
+    // until the NVIDIA runner lands (B5); rsqrt is the native nvvm intrinsic.
+    llvm::Value* transcendental(llvm::IRBuilderBase& b, llvm::Module& m,
+                                const std::string& name,
+                                llvm::ArrayRef<llvm::Value*> args) override {
+        llvm::Type* ft = args[0]->getType();
+        if (name == "rsqrt") {
+            llvm::Function* fn = llvm::Intrinsic::getOrInsertDeclaration(
+                &m, llvm::Intrinsic::nvvm_rsqrt_approx_f, {});
+            // nvvm_rsqrt_approx_f is f32; cast in/out if a double slipped through.
+            llvm::Value* x = ft->isFloatTy() ? args[0]
+                : b.CreateFPCast(args[0], llvm::Type::getFloatTy(m.getContext()));
+            llvm::Value* r = b.CreateCall(fn, {x});
+            return ft->isFloatTy() ? r : b.CreateFPCast(r, ft);
+        }
+        std::string sym = "__nv_" + name + (ft->isDoubleTy() ? "" : "f");
+        std::vector<llvm::Type*> params(args.size(), ft);
+        auto* fnTy = llvm::FunctionType::get(ft, params, false);
+        llvm::FunctionCallee fn = m.getOrInsertFunction(sym, fnTy);
+        return b.CreateCall(fn,
+            std::vector<llvm::Value*>(args.begin(), args.end()), "nv.math");
+    }
+
 private:
     static llvm::Value* readSreg(llvm::IRBuilderBase& b, llvm::Module& m,
                                  llvm::Intrinsic::ID id) {

@@ -144,6 +144,28 @@ public:
         return b.CreateExtractElement(rgba, uint64_t(0), "tex.sample");
     }
 
+    // Transcendentals via the ROCm OpenCL math library (ocml): `__ocml_<fn>_f32`
+    // (or `_f64`). AMDGPU mis-lowers `llvm.sin`/etc. (no range reduction), so we
+    // emit the ocml call directly; AmdgpuBackend links ocml.bc when these
+    // `__ocml_` declarations are present. rsqrt is a native amdgcn intrinsic.
+    llvm::Value* transcendental(llvm::IRBuilderBase& b, llvm::Module& m,
+                                const std::string& name,
+                                llvm::ArrayRef<llvm::Value*> args) override {
+        llvm::Type* ft = args[0]->getType();
+        if (name == "rsqrt") {
+            llvm::Function* fn = llvm::Intrinsic::getOrInsertDeclaration(
+                &m, llvm::Intrinsic::amdgcn_rsq, {ft});
+            return b.CreateCall(fn, {args[0]});
+        }
+        const char* suffix = ft->isDoubleTy() ? "_f64" : "_f32";
+        std::string sym = "__ocml_" + name + suffix;
+        std::vector<llvm::Type*> params(args.size(), ft);
+        auto* fnTy = llvm::FunctionType::get(ft, params, false);
+        llvm::FunctionCallee fn = m.getOrInsertFunction(sym, fnTy);
+        return b.CreateCall(fn,
+            std::vector<llvm::Value*>(args.begin(), args.end()), "ocml.call");
+    }
+
     // Wave ops. Wavefront size is target-/feature-dependent (32 or 64 on
     // RDNA; default 32 for compute here). readlane is shuffle-by-index; ballot
     // returns the wave-width mask (i32 in the wave32 default), widened to i64.

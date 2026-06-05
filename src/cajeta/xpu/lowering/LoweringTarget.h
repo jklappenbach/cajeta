@@ -22,6 +22,8 @@
 #include <string>
 #include <vector>
 
+#include "llvm/ADT/ArrayRef.h"
+
 namespace llvm {
     class Value;
     class Type;
@@ -154,6 +156,18 @@ namespace xpu {
             llvm::IRBuilderBase& b, llvm::Module& m,
             llvm::Value* texHandle, llvm::Value* samplerHandle,
             llvm::Value* u, llvm::Value* v);
+
+        // --- transcendental math (B2 increment 2) ---------------------------
+        // sin/cos/tan/asin/acos/atan (unary), pow/atan2 (binary), rsqrt. The
+        // DEFAULT emits the matching `llvm.*` intrinsic — correct on CPU (libm)
+        // and Vulkan (the SPIR-V backend maps it to OpExtInst GLSL.std.450). The
+        // AMD backend OVERRIDES it to emit `__ocml_<name>_f32` device-library
+        // calls (AMDGPU mis-lowers `llvm.sin` without ocml range reduction); the
+        // AMD backend then links ocml.bc. `name` is the cajeta Math name; `args`
+        // is 1 element (unary/rsqrt) or 2 (pow/atan2), already in an FP type.
+        virtual llvm::Value* transcendental(
+            llvm::IRBuilderBase& b, llvm::Module& m, const std::string& name,
+            llvm::ArrayRef<llvm::Value*> args);
 
         // --- ray query (SPV_KHR_ray_query) — the Vulkan-only fork ------------
         //
