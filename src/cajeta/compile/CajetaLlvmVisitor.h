@@ -429,6 +429,49 @@ namespace cajeta {
             // fixed-point, so deferred classes get prototyped once their
             // parents fill in.
             structure->tryGeneratePrototype();
+            // @ValueType (plans/value-type-overloading-plan.md): mark a by-value POD
+            // class as a value type — eligible for operator-overload dispatch (the
+            // !PRIMITIVE_FLAG gate is relaxed for VALUE_TYPE_FLAG) while still
+            // marshalling by value through the existing POD path. Run AFTER
+            // tryGeneratePrototype so fields are populated. Validate POD-ness (mirrors
+            // isPodStruct, KernelArgTrait.cpp:86-99): no inherited fields, and every
+            // non-static field a scalar primitive, a Vector (PRIMITIVE_FLAG), or
+            // another @ValueType (VALUE_TYPE_FLAG — the recursion: that field's class
+            // was validated when it was declared). On success OR the flag in.
+            // (Non-template path only; a template @ValueType — e.g. Matrix<T,R,C> —
+            // has placeholder fields and must validate at instantiation: future work.
+            // Interfaces are rejected in visitInterfaceDeclaration.)
+            if (structure->findAnnotation("ValueType")) {
+                if (structure->countInheritedFields() != 0) {
+                    throw Exception(
+                        "@ValueType class '" + structure->toCanonical()
+                            + "' must not inherit fields — value types are flat POD",
+                        "CAJETA_ERROR_VALUE_TYPE");
+                }
+                bool sawField = false;
+                for (auto& prop : structure->getPropertyList()) {
+                    if (!prop || prop->isStatic()) continue;
+                    sawField = true;
+                    auto ft = prop->getType();
+                    bool ok = ft
+                        && (((ft->getTypeFlags() & PRIMITIVE_FLAG) != 0)
+                            || ((ft->getTypeFlags() & VALUE_TYPE_FLAG) != 0));
+                    if (!ok) {
+                        throw Exception(
+                            "@ValueType field '" + prop->getName()
+                                + "' must be a primitive, Vector, or another "
+                                  "@ValueType (got a non-POD type)",
+                            "CAJETA_ERROR_VALUE_TYPE");
+                    }
+                }
+                if (!sawField) {
+                    throw Exception(
+                        "@ValueType class '" + structure->toCanonical()
+                            + "' must declare at least one field",
+                        "CAJETA_ERROR_VALUE_TYPE");
+                }
+                structure->addTypeFlags(VALUE_TYPE_FLAG);
+            }
             pModule->getStructureStack().pop_back();
             CajetaModule::getStructureToModule()[structure->getQName()->toCanonical()] = pModule;
             return structure;
@@ -590,6 +633,21 @@ namespace cajeta {
             CajetaClassPtr interface = make_shared<CajetaClass>(
                 pModule, qName, qExtended, qImplemented);
             interface->setIsInterface(true);
+            // @ValueType is meaningless on an interface (value types are by-value
+            // POD). The interface path never attaches annotations to the structure,
+            // so check the enclosing typeDeclaration's modifiers directly and reject.
+            if (auto* td = dynamic_cast<CajetaParser::TypeDeclarationContext*>(ctx->parent)) {
+                for (auto* mod : td->classOrInterfaceModifier()) {
+                    if (!mod->annotation()) continue;
+                    auto inst = parseAnnotationInstance(mod->annotation());
+                    if (inst && inst->getName()
+                            && inst->getName()->getTypeName() == "ValueType") {
+                        throw Exception(
+                            "@ValueType cannot be applied to an interface",
+                            "CAJETA_ERROR_VALUE_TYPE");
+                    }
+                }
+            }
 
             // Templated interfaces (`interface Foo<T> { ... }`): mirror
             // the class-template handling at line 169. Capture the
