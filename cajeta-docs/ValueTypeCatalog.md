@@ -203,7 +203,7 @@ Canonical conventions the catalog/docs must follow (grounded in OperatorOverload
 | `operator*` | static-binary | `public static Matrix<T,R,N> operator* (Matrix<T,R,K> a, Matrix<T,K,C> b)` | K-GENERIC requires method-templated operators (forbidden in OperatorOverloading.md 8). **CANNOT BE EXPRESSED TODAY**. Deferred; workaround: static matmul(a,b) method instead |
 | `operator/ (element-wise)` | static-binary | `public static Matrix<T,R,C> operator/ (Matrix<T,R,C> a, Matrix<T,R,C> b)` | Distinct from matrix inverse (which is a method) |
 | `operator-` | static-unary | `public static Matrix<T,R,C> operator- (Matrix<T,R,C> m)` | Returns fresh matrix |
-| `operator==` | static-binary | `public static boolean operator== (Matrix<T,R,C> a, Matrix<T,R,C> b)` | Returns single boolean, not element-wise mask |
+| `operator== != < <= > >=` | static-binary | `public static Matrix<boolean,R,C> operator<cmp> (Matrix<T,R,C> a, Matrix<T,R,C> b)` | **Per-lane `<R*C x i1>` mask** (value-type comparison rule), NOT a reduced boolean. Same-shape matrix or broadcast scalar RHS. Whole-matrix equality is `(a == b).all()`; blend with `.select(a,b)`. See `MaskSelect.md`. |
 | `operator[]` | instance-index-read | `public Vector<T,C> operator[] (uint32 rowIdx)` | Single-index returns i-th row. Multi-index m[r,c] deferred to future language extension (OperatorOverloading.md 5 'Future extension') |
 | `operator[]=` | instance-index-write | `public void operator[]= (uint32 rowIdx, Vector<T,C> row)` | Accepts whole Vector<T,C> as new row; requires mutable borrow |
 | `operator*` | static-binary | `public static Matrix<T,R,C2> operator* (Matrix<T,R,C1> a, Matrix<T,C1,C2> b)` | Method-templated — **BLOCKING GAP**. Same decision needed as Tensor<T,...> matmul. On Vulkan with matching CooperativeMatrix tile sizes, device lowering targets hardware MMA. |
@@ -216,7 +216,7 @@ Canonical conventions the catalog/docs must follow (grounded in OperatorOverload
 | `operator[]` | instance-index-read | `public Vector<T,C> operator[] (uint32 row)` | Single-index access; multi-index [r,c] deferred |
 | `operator[]=` | instance-index-write | `public void operator[]= (uint32 row, Vector<T,C> value)` | Requires mutable borrow of receiver |
 
-**Methods:** `public Matrix<T,C,R> transpose()`, `public static Matrix<T,N,N> identity()`, `public Vector<T,C> row(uint32 i)`, `public Vector<T,R> col(uint32 j)`, `public Matrix<T,R,C> hadamard(Matrix<T,R,C> other)`, `public T dot(Matrix<T,R,C> other)`, `public T norm()`, `public Matrix<T,R,C2> matmul(Matrix<T,C,C2> other)`, `public Matrix<T,R,R> inverse()`, `public T determinant()`, `public Vector<T,C> getRow(uint32 r)`, `public Vector<T,R> getColumn(uint32 c)`, `public void setRow(uint32 r, Vector<T,C> v)`, `public void setColumn(uint32 c, Vector<T,R> v)`
+**Methods (live):** `transpose()`, `identity()` (square), `row(i)`, `col(j)`, `hadamard(other)`. **Mask** (on a `Matrix<boolean,R,C>` from a comparison): `all()`/`any()` → `boolean`, `select(whenTrue, whenFalse)` → per-lane blend (`MaskSelect.md`). **Deferred:** `inverse()`, `determinant()`, `norm()`, `matmul()` method form (use the `*` intrinsic).
 
 ## Ray
 
@@ -315,11 +315,13 @@ Canonical conventions the catalog/docs must follow (grounded in OperatorOverload
 | `operator* (reversed)` | static-binary | `public static Vector<T,N> operator* (T k, Vector<T,N> v)` | Two-overload pattern avoids reverse dispatch |
 | `operator/` | static-binary | `public static Vector<T,N> operator/ (Vector<T,N> a, Vector<T,N> b)` | Signedness flag inherited from element type (CajetaVector.cpp:54) |
 | `operator-` | static-unary | `public static Vector<T,N> operator- (Vector<T,N> v)` | Lowers to <N x T> fneg or sub-from-zero |
-| `operator==` | static-binary | `public static boolean operator== (Vector<T,N> a, Vector<T,N> b)` | Returns single boolean (all-lanes-equal reduction), not a mask vector |
+| `operator== != < <= > >=` | static-binary | `public static Vector<boolean,N> operator<cmp> (Vector<T,N> a, Vector<T,N> b)` | **Per-lane `<N x i1>` mask** (value-type comparison rule), NOT a reduced boolean. Scalar RHS broadcasts. Reduce with `.all()`/`.any()`, blend with `.select(a,b)`. See `MaskSelect.md`. |
 | `operator[]` | instance-index-read | `public T operator[] (uint32 i)` | Instance form per OperatorOverloading.md 5; i must be <N |
 | `operator[]=` | instance-index-write | `public void operator[]= (uint32 i, T value)` | Requires mutable borrow at call site; v is mutable borrow receiver |
 
-**Methods:** `public T dot(Vector<T,N> other)`, `public T length()`, `public Vector<T,N> normalize()`
+**Methods:**
+- geometry/math: `dot(other)`, `length()`, `normalize()`; `cross(other)` (3-D), `reflect(n)`, `refract(n, eta)`, `distance(other)`; `min(b)`, `max(b)`, `clamp(lo, hi)`, `lerp(b, t)` — *float element, v1; integer min/max deferred*.
+- **mask** (on a `Vector<boolean,N>` from a comparison): `all()`/`any()` → `boolean`, `select(whenTrue, whenFalse)` → per-lane blend. **Masks are register-only** — `Buffer<Vector<boolean,N>>` / bool-vector kernel args stay ABI-rejected.
 
 ## BFloat16
 

@@ -247,6 +247,21 @@ TEST(MatrixTests, equalsMaskAllAny) {
     EXPECT_EQ(runI32(src), 101);
 }
 
+// Ordering comparison with a broadcast scalar -> mask; select prunes small
+// weights. w > 1: (F,T,F,F) -> select(w, 0) keeps only the large weight = 2.
+TEST(MatrixTests, thresholdScalarMaskSelect) {
+    std::string src = std::string("package test;\n") +
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Matrix<float32,2,2> w = stack Matrix<float32,2,2>(0.1f, 2.0f, -3.0f, 0.05f);\n"
+        "        Matrix<float32,2,2> z = stack Matrix<float32,2,2>(0.0f, 0.0f, 0.0f, 0.0f);\n"
+        "        Matrix<float32,2,2> pruned = (w > 1.0f).select(w, z);\n"
+        "        return (int32)(pruned[0][0] + pruned[0][1] + pruned[1][0] + pruned[1][1]);\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 2);   // (0,2,0,0)
+}
+
 // select on a matrix mask: pick element-wise between two matrices.
 //   mask = (a == b) (lanes: 1,1,1,0);  m = mask.select(a, c)
 //   -> a where equal, c where not = [1 2; 3 9] -> m[1][1] = 9.

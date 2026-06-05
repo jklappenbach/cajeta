@@ -714,9 +714,67 @@ namespace cajeta {
                     ->isFloatingPointTy();
                 bool isSigned =
                     (lhsM->getElementType()->getTypeFlags() & SIGNED_FLAG) != 0;
+                // Comparisons (`== != < <= > >=`) -> a per-lane `<R*C x i1>`
+                // mask typed Matrix<boolean,R,C> (the value-type comparison
+                // rule). RHS is a same-shape matrix or a broadcast scalar.
+                bool isCmp = binaryOp == BINARY_OP_EQ || binaryOp == BINARY_OP_NE
+                    || binaryOp == BINARY_OP_LT || binaryOp == BINARY_OP_LE
+                    || binaryOp == BINARY_OP_GT || binaryOp == BINARY_OP_GE;
+                if (isCmp) {
+                    llvm::Value* l = loadIfLValue(module, lhs, lhsAst);
+                    llvm::Value* r = loadIfLValue(module, rhs, rhsAst);
+                    if (rhsM) {
+                        if (rhsM->getRows() != lhsM->getRows()
+                                || rhsM->getCols() != lhsM->getCols()) {
+                            throw Exception(
+                                "Matrix comparison requires same-shape operands "
+                                "(got " + lhsM->toCanonical() + " and "
+                                + rhsM->toCanonical() + ")",
+                                "CAJETA_ERROR_MATRIX_SHAPE");
+                        }
+                    } else {
+                        auto* vt = llvm::cast<llvm::FixedVectorType>(l->getType());
+                        r = vecops::splat(*builder,
+                            vecops::coerceScalar(*builder, r, vt->getElementType()),
+                            vt->getNumElements());
+                    }
+                    llvm::Value* cmp = nullptr;
+                    switch (binaryOp) {
+                        case BINARY_OP_EQ: cmp = isFloat
+                            ? builder->CreateFCmpOEQ(l, r, "mat.cmp")
+                            : builder->CreateICmpEQ(l, r, "mat.cmp"); break;
+                        case BINARY_OP_NE: cmp = isFloat
+                            ? builder->CreateFCmpONE(l, r, "mat.cmp")
+                            : builder->CreateICmpNE(l, r, "mat.cmp"); break;
+                        case BINARY_OP_LT: cmp = isFloat
+                            ? builder->CreateFCmpOLT(l, r, "mat.cmp")
+                            : (isSigned ? builder->CreateICmpSLT(l, r, "mat.cmp")
+                                        : builder->CreateICmpULT(l, r, "mat.cmp"));
+                            break;
+                        case BINARY_OP_LE: cmp = isFloat
+                            ? builder->CreateFCmpOLE(l, r, "mat.cmp")
+                            : (isSigned ? builder->CreateICmpSLE(l, r, "mat.cmp")
+                                        : builder->CreateICmpULE(l, r, "mat.cmp"));
+                            break;
+                        case BINARY_OP_GT: cmp = isFloat
+                            ? builder->CreateFCmpOGT(l, r, "mat.cmp")
+                            : (isSigned ? builder->CreateICmpSGT(l, r, "mat.cmp")
+                                        : builder->CreateICmpUGT(l, r, "mat.cmp"));
+                            break;
+                        case BINARY_OP_GE: cmp = isFloat
+                            ? builder->CreateFCmpOGE(l, r, "mat.cmp")
+                            : (isSigned ? builder->CreateICmpSGE(l, r, "mat.cmp")
+                                        : builder->CreateICmpUGE(l, r, "mat.cmp"));
+                            break;
+                        default: break;
+                    }
+                    resolvedType = CajetaMatrix::getOrCreate(
+                        module, CajetaType::of("boolean"),
+                        lhsM->getRows(), lhsM->getCols());
+                    return cmp;
+                }
                 bool elementwise = binaryOp == BINARY_OP_ADD
-                    || binaryOp == BINARY_OP_SUB || binaryOp == BINARY_OP_DIV
-                    || binaryOp == BINARY_OP_EQ || binaryOp == BINARY_OP_NE;
+                    || binaryOp == BINARY_OP_SUB || binaryOp == BINARY_OP_DIV;
                 if (elementwise && rhsM) {
                     if (rhsM->getRows() != lhsM->getRows()
                             || rhsM->getCols() != lhsM->getCols()) {
@@ -744,22 +802,6 @@ namespace cajeta {
                                 : (isSigned
                                     ? builder->CreateSDiv(l, r, "mat.div")
                                     : builder->CreateUDiv(l, r, "mat.div"));
-                        case BINARY_OP_EQ:
-                        case BINARY_OP_NE: {
-                            // Per-lane mask (the value-type comparison rule): a
-                            // `<R*C x i1>` typed Matrix<boolean,R,C>. Whole-matrix
-                            // equality is `(a == b).all()`. (Overturned B1 S4's
-                            // reduce-to-boolean — see the comparison-mask memo.)
-                            llvm::Value* cmp = binaryOp == BINARY_OP_NE
-                                ? (isFloat ? builder->CreateFCmpONE(l, r, "mat.cmp")
-                                           : builder->CreateICmpNE(l, r, "mat.cmp"))
-                                : (isFloat ? builder->CreateFCmpOEQ(l, r, "mat.cmp")
-                                           : builder->CreateICmpEQ(l, r, "mat.cmp"));
-                            resolvedType = CajetaMatrix::getOrCreate(
-                                module, CajetaType::of("boolean"),
-                                lhsM->getRows(), lhsM->getCols());
-                            return cmp;
-                        }
                         default: break;
                     }
                 }

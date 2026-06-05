@@ -44,6 +44,9 @@ reports 16 on an AVX-512 CPU, 8 on AVX2, and 32/64 on a GPU:
   c[1]=3 c[10]=30 c[255]=765  (expect 3, 30, 765)
 -- transform: out = M*p + t, M=rot90, p[i]=(i,1), t=(100,200) --
   (i=10) -> (99, 210)  (i=255) -> (99, 455)  (expect (99,210) and (99,455))
+-- mask/select: branchless per-lane conditionals --
+  ReLU  (v>0).select(v,0):  sum[i=0]=3 sum[i=10]=11  (expect 3, 11)
+  prune (w>1).select(w,0):  sum[i=0]=0 sum[i=10]=10  (expect 0, 10)
 -- waveReduce: sum across each wave, in[i]=1 --
   wave width (queried, not hardcoded) = 16        # 64 on an AMD GPU, 32 on NVIDIA
   every lane of a wave agrees: sums[0]=16 sums[1]=16
@@ -102,7 +105,15 @@ and one wave-cooperative kernel (correct everywhere, at the hardware's wave widt
   `<2 x float>` on every backend, and the matVec is honest extract/insert/fma IR,
   so the result is **bit-exact on CPU, Vulkan, and AMD** (verified on RADV +
   gfx1151). `Matrix<T,R,C>` also supports `m[r][c]`, `*`=matmul, `+ - /`
-  element-wise, `==`, and `transpose`/`identity`/`row`/`col`/`hadamard` in a kernel.
+  element-wise, comparisons (`== != < <= > >=`), and `transpose`/`identity`/
+  `row`/`col`/`hadamard` in a kernel.
+- `reluReg` / `pruneReg` — **branchless per-lane conditionals (mask → select)**.
+  A comparison on a `Vector`/`Matrix` yields a per-lane `<N x i1>` mask;
+  `mask.select(a, b)` blends per lane (`mask[i] ? a[i] : b[i]`) with no branch —
+  a vector ReLU `(v > 0).select(v, 0)` and a matrix weight-prune
+  `(w > 1).select(w, 0)`. `.all()`/`.any()` reduce a mask to a `boolean`. The
+  per-element decision stays in flat `<N x T>` ops, so it never diverges the warp.
+  Full walkthrough + the alternatives it replaces: `cajeta-docs/MaskSelect.md`.
 - `waveReduce(sums, in, n)` — `sums[i] =` the sum of `in` across `i`'s **wave**
   (the warp/wavefront/subgroup on a GPU; the SIMD vector on the CPU — Inc 5C).
   Written **width-agnostically**: it queries the environment (`Wave.reduceSum`,

@@ -69,6 +69,43 @@ public final class XpuTour {
         }
     }
 
+    // ---- Branchless per-lane conditionals: comparison masks + select --------
+    // A `Vector`/`Matrix` holds many values in one register; you cannot `if` a
+    // single lane (and a data-dependent branch diverges the warp on a GPU). The
+    // mask->select pattern expresses a per-element conditional as data:
+    //   mask = a OP b   (a per-lane <N x i1>)   result = mask.select(a, b)
+    // See cajeta-docs/MaskSelect.md.
+
+    // reluReg: per-thread ReLU on a 4-vector via (v > 0).select(v, zeros).
+    // v = (i-2, -1, 3, -4)  ->  relu = (max(i-2,0), 0, 3, 0).
+    @Kernel
+    public static void reluReg(Buffer<float32> out, uint32 n) {
+        uint32 i = Thread.globalIdX();
+        if (i < n) {
+            Vector<float32,4> v = new Vector<float32,4>(
+                (float32) i - 2.0f, -1.0f, 3.0f, -4.0f);
+            Vector<float32,4> zeros = new Vector<float32,4>(0.0f, 0.0f, 0.0f, 0.0f);
+            Vector<float32,4> relu = (v > 0.0f).select(v, zeros);   // branchless
+            out[i] = relu.x + relu.y + relu.z + relu.w;
+        }
+    }
+
+    // pruneReg: per-thread weight pruning on a 2x2 matrix via a thresholded mask
+    // (w > 1).select(w, 0) — keep only the large-magnitude weights.
+    // w = [0.1 i; -3 0.05]  ->  pruned keeps i only when i > 1.
+    @Kernel
+    public static void pruneReg(Buffer<float32> out, uint32 n) {
+        uint32 i = Thread.globalIdX();
+        if (i < n) {
+            Matrix<float32,2,2> w = stack Matrix<float32,2,2>(
+                0.1f, (float32) i, -3.0f, 0.05f);
+            Matrix<float32,2,2> zeros = stack Matrix<float32,2,2>(
+                0.0f, 0.0f, 0.0f, 0.0f);
+            Matrix<float32,2,2> pruned = (w > 1.0f).select(w, zeros);
+            out[i] = pruned[0][0] + pruned[0][1] + pruned[1][0] + pruned[1][1];
+        }
+    }
+
     // waveReduce: out[i] = sum of in over i's wave. A wave-cooperative kernel —
     // the wave is the warp on a GPU, the SIMD vector on the CPU. Width-agnostic:
     // it queries the environment (Wave.reduceSum / width() / laneId()) rather
@@ -92,6 +129,7 @@ public final class XpuTour {
         runSaxpy();
         runVecAdd();
         runTransform();
+        runMaskSelect();
         runWave();
         System.stdout.println("");
         System.stdout.println("=== xpu tour complete ===");
@@ -206,6 +244,34 @@ public final class XpuTour {
         System.stdout.println("  (i=10) -> (" + (int32) hox[10] + ", " + (int32) hoy[10]
                             + ")  (i=255) -> (" + (int32) hox[255] + ", " + (int32) hoy[255]
                             + ")  (expect (99,210) and (99,455))");
+    }
+
+    // Branchless per-lane conditionals on the device: a vector ReLU and a matrix
+    // weight-prune, each via (cond).select(...). The per-element decision runs in
+    // flat <N x T> ops with no branch — see cajeta-docs/MaskSelect.md.
+    static void runMaskSelect() {
+        System.stdout.println("");
+        System.stdout.println("-- mask/select: branchless per-lane conditionals --");
+        uint32 n = 256;
+        float32[] hrelu = new float32[n];
+        float32[] hprune = new float32[n];
+        for (uint32 i = 0; i < n; i = i + 1) { hrelu[i] = 0.0f; hprune[i] = 0.0f; }
+        Buffer<float32> relu = stack Buffer<float32>(n);
+        Buffer<float32> prune = stack Buffer<float32>(n);
+        relu.upload(hrelu);
+        prune.upload(hprune);
+        Stream s = Stream.current();
+        // ReLU: v=(i-2,-1,3,-4) -> (max(i-2,0),0,3,0); sum = max(i-2,0)+3.
+        reluReg.launch(s, grid: [(n + 63) / 64], block: [64])(relu, n);
+        // Prune: keep w>1 -> i kept only when i>1; sum = (i>1 ? i : 0).
+        pruneReg.launch(s, grid: [(n + 63) / 64], block: [64])(prune, n);
+        s.sync();
+        relu.download(hrelu);
+        prune.download(hprune);
+        System.stdout.println("  ReLU  (v>0).select(v,0):  sum[i=0]=" + (int32) hrelu[0]
+                            + " sum[i=10]=" + (int32) hrelu[10] + "  (expect 3, 11)");
+        System.stdout.println("  prune (w>1).select(w,0):  sum[i=0]=" + (int32) hprune[0]
+                            + " sum[i=10]=" + (int32) hprune[10] + "  (expect 0, 10)");
     }
 
     static void runWave() {
