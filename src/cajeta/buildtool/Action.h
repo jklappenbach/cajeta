@@ -4,7 +4,7 @@
 // Action ships its own implementation; the registry holds the
 // catalog by name (`exec`, `build`, `copy`, ...). Phase 3a
 // ships the infrastructure + `exec`; the rest of the catalog
-// lands in subsequent phases per plan/build-tool-plan.md.
+// lands in subsequent phases per plans/buildtool/build-tool-plan.md.
 
 #pragma once
 

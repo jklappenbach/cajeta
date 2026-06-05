@@ -1,6 +1,6 @@
 // Regression tests for the build-tool manifest loader.
 // See src/cajeta/buildtool/Manifest.h and
-// plan/build-tool-plan.md Phase 0.
+// plans/buildtool/build-tool-plan.md Phase 0.
 
 #include "cajeta/buildtool/Manifest.h"
 

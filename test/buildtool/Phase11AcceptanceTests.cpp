@@ -1,5 +1,5 @@
 // Phase 11 — Sandboxing + reproducible builds. Pins the four
-// acceptance criteria from plan/build-tool-plan.md "Phase 11 —
+// acceptance criteria from plans/buildtool/build-tool-plan.md "Phase 11 —
 // Sandboxing + reproducible builds":
 //
 //   1. Same source + lockfile + compiler builds byte-identical

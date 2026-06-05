@@ -1,5 +1,5 @@
 // Phase 14 — Toolchain provisioning + dispatch. Pins the relevant
-// acceptance criteria from plan/build-tool-plan.md "Phase 14":
+// acceptance criteria from plans/buildtool/build-tool-plan.md "Phase 14":
 //
 //   - .cajeta-toolchain override file precedes manifest pin
 //   - CAJETA_NO_DISPATCH runs PATH binary regardless of pin

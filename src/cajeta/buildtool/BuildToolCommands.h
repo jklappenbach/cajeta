@@ -10,7 +10,7 @@
 //
 // Phase 0 implements only `cajeta info`. Task invocation,
 // `cajeta build`, `cajeta tasks`, etc. follow in later phases per
-// plan/build-tool-plan.md.
+// plans/buildtool/build-tool-plan.md.
 
 #pragma once
 

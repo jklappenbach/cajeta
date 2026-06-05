@@ -11,7 +11,7 @@
 //                              every member's dependency view.
 //
 // See cajeta-docs/BuildTool.md "Workspaces" for the spec,
-// plan/build-tool-plan.md Phase 12 for context.
+// plans/buildtool/build-tool-plan.md Phase 12 for context.
 //
 // The workspace surfaces three uses to callers:
 //

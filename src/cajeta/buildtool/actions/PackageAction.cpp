@@ -225,7 +225,7 @@ namespace cajeta::buildtool {
             if (deferredFormats.count(format)) {
                 return err("package: format '" + format +
                            "' is a Phase 9 deferred slice (not yet "
-                           "implemented in v1; see plan/build-tool-plan.md "
+                           "implemented in v1; see plans/buildtool/build-tool-plan.md "
                            "'Phase 9 — package action — deferred slices')");
             }
 

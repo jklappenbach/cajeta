@@ -185,7 +185,7 @@ targets.
 
 Inter-version compatibility (which toolchain N can consume archives built
 by toolchain M) is the **N±k window** open decision in
-`plan/build-tool-plan.md`. The current lean is N±2 against the
+`plans/buildtool/build-tool-plan.md`. The current lean is N±2 against the
 `cajeta-lang-version` field carried in `index.json`.
 
 ## Reference implementation

@@ -2,7 +2,7 @@
 //
 // Forwards to the shared cajetadoc CLI (cajetadoc::runCli), the same engine
 // that backs the standalone `cajetadoc` binary. See tools/cajetadoc/ and
-// plans/cajetadoc-tool.md.
+// plans/docs/cajetadoc-tool.md.
 #ifndef CAJETA_CLI_DOCCOMMAND_H
 #define CAJETA_CLI_DOCCOMMAND_H
 

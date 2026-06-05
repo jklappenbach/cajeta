@@ -1,5 +1,5 @@
 // Phase 10 — Archive signing + launcher verification. Pins the
-// six acceptance criteria from plan/build-tool-plan.md "Phase 10 —
+// six acceptance criteria from plans/buildtool/build-tool-plan.md "Phase 10 —
 // Archive signing + launcher verification":
 //
 //   1. Signed archive verifies under `strict` mode.

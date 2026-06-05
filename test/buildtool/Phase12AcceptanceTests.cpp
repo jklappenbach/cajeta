@@ -1,5 +1,5 @@
 // Phase 12 — Workspaces. Pins the three acceptance criteria from
-// plan/build-tool-plan.md "Phase 12 — Workspaces":
+// plans/buildtool/build-tool-plan.md "Phase 12 — Workspaces":
 //
 //   1. A 3-member workspace builds in one invocation.
 //   2. Changing one member rebuilds only that member + downstream

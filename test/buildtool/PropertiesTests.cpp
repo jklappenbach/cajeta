@@ -1,6 +1,6 @@
 // Regression tests for the build-tool property resolver.
 // See src/cajeta/buildtool/Properties.h and
-// plan/build-tool-plan.md Phase 1.
+// plans/buildtool/build-tool-plan.md Phase 1.
 
 #include "cajeta/buildtool/Manifest.h"
 #include "cajeta/buildtool/Properties.h"

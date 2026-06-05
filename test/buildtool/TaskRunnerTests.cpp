@@ -1,6 +1,6 @@
 // Regression tests for the Phase 3a task runner. See
 // src/cajeta/buildtool/TaskRunner.h and
-// plan/build-tool-plan.md Phase 3a.
+// plans/buildtool/build-tool-plan.md Phase 3a.
 
 #include "cajeta/buildtool/Action.h"
 #include "cajeta/buildtool/Manifest.h"

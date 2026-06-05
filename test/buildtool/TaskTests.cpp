@@ -1,5 +1,5 @@
 // Regression tests for the task model + parsing. See
-// src/cajeta/buildtool/Task.h and plan/build-tool-plan.md Phase 3a.
+// src/cajeta/buildtool/Task.h and plans/buildtool/build-tool-plan.md Phase 3a.
 
 #include "cajeta/buildtool/Manifest.h"
 #include "cajeta/buildtool/Task.h"

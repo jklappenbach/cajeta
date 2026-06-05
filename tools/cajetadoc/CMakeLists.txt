@@ -1,4 +1,4 @@
-# cajetadoc — cajeta documentation generator (plan: plans/cajetadoc-tool.md).
+# cajetadoc — cajeta documentation generator (plan: plans/docs/cajetadoc-tool.md).
 #
 # The doc engine is a reusable OBJECT library (`cajetadoc_core`) so the same
 # objects embed into BOTH the standalone `cajetadoc` binary and the main
