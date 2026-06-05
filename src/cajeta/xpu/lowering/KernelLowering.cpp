@@ -2113,9 +2113,16 @@ private:
                                const std::shared_ptr<MethodCallExpression>& mc) {
         const auto& args = mc->getParameters();
         llvm::Type* f32 = llvm::Type::getFloatTy(ctx);
+        // Vectorized math: a `Vector<T,N>` argument flows as `<N x T>`, so the
+        // intrinsics/seam operate elementwise. asFp passes an FP scalar/vector
+        // through and widens an int scalar/vector to f32 (matching lane count).
         auto asFp = [&](llvm::Value* v) -> llvm::Value* {
-            if (v->getType()->isFloatingPointTy()) return v;
-            return builder.CreateSIToFP(v, f32);          // int -> f32
+            llvm::Type* ty = v->getType();
+            if (ty->isFPOrFPVectorTy()) return v;
+            llvm::Type* target = f32;
+            if (auto* vt = llvm::dyn_cast<llvm::FixedVectorType>(ty))
+                target = llvm::FixedVectorType::get(f32, vt->getNumElements());
+            return builder.CreateSIToFP(v, target);       // int -> f32
         };
         // Unary float intrinsics, native on all four backends.
         static const struct { const char* n; llvm::Intrinsic::ID id; } unary[] = {
@@ -2226,7 +2233,14 @@ private:
                 unsupported("Math." + name + " expects 2 arguments");
             llvm::Value* a = asFp(lowerExpr(args[0].expression));
             llvm::Value* b = asFp(lowerExpr(args[1].expression));
-            if (b->getType() != a->getType())
+            // Broadcast a scalar exponent/operand to a vectorized base.
+            if (a->getType()->isVectorTy() && !b->getType()->isVectorTy())
+                b = vecops::splat(builder, b,
+                    llvm::cast<llvm::FixedVectorType>(a->getType())->getNumElements());
+            else if (b->getType()->isVectorTy() && !a->getType()->isVectorTy())
+                a = vecops::splat(builder, a,
+                    llvm::cast<llvm::FixedVectorType>(b->getType())->getNumElements());
+            else if (b->getType() != a->getType())
                 b = builder.CreateFPCast(b, a->getType());
             return target.transcendental(builder, mod, name, {a, b});
         }
