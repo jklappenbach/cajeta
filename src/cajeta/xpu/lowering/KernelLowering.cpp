@@ -279,6 +279,17 @@ public:
             if (p->getType() && p->getType()->isValueType())
                 valueTypeNames[p->getName()] = p->getType();
         }
+        // S8: value-type classes this body can construct (`new Vec2(...)`),
+        // keyed by simple name — the operand value types plus the declaring
+        // class itself (a value-type-returning @Device operator builds its own
+        // type by value). Registered for the construction interception below.
+        auto registerCtor = [&](const std::shared_ptr<CajetaClass>& c) {
+            if (c && c->isValueType())
+                valueTypeCtors[c->getQName()->getTypeName()] = c;
+        };
+        for (auto& [n, t] : valueTypeNames)
+            registerCtor(std::dynamic_pointer_cast<CajetaClass>(t));
+        registerCtor(method->getParent());
         lowerStatement(method->getBlock());
         // Kernels return void; close any open block.
         if (!builder.GetInsertBlock()->hasTerminator()) {
@@ -334,6 +345,13 @@ private:
     // getResolvedType() is null in the device lowerer; this is how a value-type
     // operand of `a OP b` recovers its class to resolve the @Device operator.
     std::map<std::string, CajetaTypePtr> valueTypeNames;
+    // @ValueType classes constructible in this body (`new/stack Vec2(...)`),
+    // keyed by simple type name (S8 aggregate-returning operators). A
+    // value-type-returning @Device operator builds its result by value — an
+    // `insertvalue` chain into the device struct — so the lowerer needs the
+    // class's layout by the source-written name. Populated from the operand
+    // value types and the declaring class.
+    std::map<std::string, std::shared_ptr<CajetaClass>> valueTypeCtors;
     std::shared_ptr<CajetaClass> cls;              // declaring class (helper resolution)
     DeviceFnCache* deviceFns = nullptr;            // shared @Device function cache
     // A dynamic shared array kept TYPED (Vulkan): name -> {array global, array
@@ -452,6 +470,27 @@ private:
                 llvm::Type* matTy = buildCoopMatrixType(declType);
                 coopMatrixSlots[nm] = { entryAlloca(matTy, nm), matTy };
                 continue;
+            }
+            // S8: a @ValueType local holds a flat aggregate SSA value (NO alloca
+            // — an aggregate store to a Function-storage pointer is invalid under
+            // SPIR-V logical addressing, the same reason POD-struct params stay
+            // SSA). It must have an initializer (`Vec2 c = a + b;`); field reads
+            // go through structFieldRead. Read-only in v1 (value types don't
+            // mutate — the S3 mutating-operator ban guarantees it).
+            if (declType && declType->isValueType()) {
+                DeviceStructInfo si = deviceStructInfo(declType, ctx);
+                if (si.type) {
+                    auto init = vd->getInitializer();
+                    if (!init || init->getChildren().empty())
+                        unsupported("uninitialized @ValueType local '" + nm + "'");
+                    auto initExpr = std::dynamic_pointer_cast<Expression>(
+                        init->getChildren()[0]);
+                    llvm::Value* v = coerceTo(lowerExpr(initExpr), si.type);
+                    structValues[nm] = v;
+                    structFields[nm] = si;
+                    valueTypeNames[nm] = declType;
+                    continue;
+                }
             }
             llvm::Type* slotTy = deviceScalarType(declType, ctx);
             if (!slotTy) slotTy = deviceVectorType(declType, ctx);  // Vector<T,N>
@@ -940,8 +979,11 @@ private:
             return llvm::ConstantFP::get(ctx, apf);
         }
         if (auto ne = std::dynamic_pointer_cast<NewExpression>(expr)) {
-            // Built-in Vector<T,N> construction -> SSA `<N x T>` (no alloc). The
-            // only `new` form admitted in a kernel body.
+            // A value-type-returning @Device operator builds its result by value
+            // (S8): `new/stack Vec2(...)` -> SSA aggregate. Tried before Vector so
+            // a user value type can't be mistaken for the builtin.
+            if (llvm::Value* vt = lowerNewValueType(ne)) return vt;
+            // Built-in Vector<T,N> construction -> SSA `<N x T>` (no alloc).
             return lowerNewVector(ne);
         }
         if (auto mc = std::dynamic_pointer_cast<MethodCallExpression>(expr)) {
@@ -1048,6 +1090,39 @@ private:
     // element type + lane count straight off the NewExpression's captured type
     // arguments. All IR is built through the shared vecops helpers, so the lane
     // mapping / dot-reduce logic stays identical to the host path.
+
+    // `new/stack Vec2(f0, f1, ...)` for a @ValueType constructible in this body
+    // (S8) -> SSA aggregate built by an `insertvalue` chain into the device
+    // struct. Returns nullptr when the type name isn't a known value type (so the
+    // caller falls through to Vector). v1 maps constructor arguments positionally
+    // to fields in declaration order — the shape every @ValueType POD's canonical
+    // constructor has (`Vec2(x, y){ this.x=x; this.y=y; }`), mirroring how
+    // lowerNewVector maps positional lanes; a reordering/computing constructor is
+    // out of scope (the operators are interception placeholders).
+    llvm::Value* lowerNewValueType(const std::shared_ptr<NewExpression>& ne) {
+        auto cit = valueTypeCtors.find(ne->getTypeName());
+        if (cit == valueTypeCtors.end()) return nullptr;
+        DeviceStructInfo si = deviceStructInfo(cit->second, ctx);
+        if (!si.type) return nullptr;
+        auto ccr = std::dynamic_pointer_cast<ClassCreatorRest>(
+            ne->getCreatorRest());
+        if (!ccr)
+            unsupported("@ValueType '" + ne->getTypeName() +
+                        "' construction needs a (a, b, ...) argument list");
+        const auto& params = ccr->getParameters();
+        unsigned nfields = si.type->getNumElements();
+        if (params.size() != nfields)
+            unsupported("@ValueType '" + ne->getTypeName() + "' needs " +
+                        std::to_string(nfields) + " constructor arguments (got " +
+                        std::to_string(params.size()) + ")");
+        llvm::Value* agg = llvm::UndefValue::get(si.type);
+        for (unsigned i = 0; i < nfields; ++i) {
+            llvm::Value* fv = coerceTo(lowerExpr(params[i].expression),
+                                       si.type->getElementType(i));
+            agg = builder.CreateInsertValue(agg, fv, {i});
+        }
+        return agg;
+    }
 
     // `new Vector<T,N>(a, b, ...)` -> SSA `<N x T>`. Rejects any other `new`.
     llvm::Value* lowerNewVector(const std::shared_ptr<NewExpression>& ne) {
@@ -1803,9 +1878,16 @@ private:
             tys.push_back(p.isBuffer ? target.bufferParamType(mod, p.type)
                                      : p.type);
         }
-        llvm::Type* retTy = m->getReturnType()
-                                ? deviceScalarType(m->getReturnType(), ctx)
-                                : nullptr;
+        llvm::Type* retTy = nullptr;
+        if (auto rt = m->getReturnType()) {
+            retTy = deviceScalarType(rt, ctx);
+            if (!retTy) retTy = deviceVectorType(rt, ctx);     // Vector<T,N>-returning
+            // S8: a value-type-returning @Device operator returns its flat device
+            // struct by value (built by lowerNewValueType, returned as an SSA
+            // aggregate — no pointer, SPIR-V-logical-safe).
+            if (!retTy && rt->isValueType())
+                retTy = deviceStructInfo(rt, ctx).type;
+        }
         if (!retTy) retTy = llvm::Type::getVoidTy(ctx);
         auto* fnTy = llvm::FunctionType::get(retTy, tys, /*vararg=*/false);
         std::string fname = "__cajeta_xpu_dev." +
