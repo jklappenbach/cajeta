@@ -25,6 +25,7 @@
 #include "../../asn/expression/Identifier.h"
 #include "../../asn/expression/MethodCallExpression.h"
 #include "../../asn/expression/BinaryOpExpression.h"
+#include "../../asn/expression/OperatorDispatch.h"
 #include "../../asn/expression/LiteralExpression.h"
 #include "../../asn/expression/NewExpression.h"
 #include "../../asn/expression/CreatorRest.h"
@@ -273,6 +274,10 @@ public:
             if (!p || p->getName() == "this") continue;
             DeviceStructInfo si = deviceStructInfo(p->getType(), ctx);
             if (si.type) structFields[p->getName()] = std::move(si);
+            // S8: record value-type-typed param names so `a OP b` can recover
+            // the operand's class for @Device operator resolution.
+            if (p->getType() && p->getType()->isValueType())
+                valueTypeNames[p->getName()] = p->getType();
         }
         lowerStatement(method->getBlock());
         // Kernels return void; close any open block.
@@ -324,6 +329,11 @@ private:
     // alloca (keeps it valid in SPIR-V logical addressing). Read-only in v1.
     std::map<std::string, llvm::Value*> structValues;       // name -> struct value
     std::map<std::string, DeviceStructInfo> structFields;   // name -> field map
+    // @ValueType-typed names (params/locals) -> their CajetaType (S8). Kernel
+    // bodies aren't host-type-resolved, so an operand expression's
+    // getResolvedType() is null in the device lowerer; this is how a value-type
+    // operand of `a OP b` recovers its class to resolve the @Device operator.
+    std::map<std::string, CajetaTypePtr> valueTypeNames;
     std::shared_ptr<CajetaClass> cls;              // declaring class (helper resolution)
     DeviceFnCache* deviceFns = nullptr;            // shared @Device function cache
     // A dynamic shared array kept TYPED (Vulkan): name -> {array global, array
@@ -863,8 +873,13 @@ private:
             auto bb = bufferBases.find(nm);
             if (bb != bufferBases.end()) return bb->second;  // buffer base ptr
             auto it = values.find(nm);
-            if (it == values.end()) unsupported("unbound identifier '" + nm + "'");
-            return builder.CreateLoad(slotTypes[nm], it->second, nm);  // load slot
+            if (it != values.end())
+                return builder.CreateLoad(slotTypes[nm], it->second, nm);  // load slot
+            // Whole POD/@ValueType param read by name (S8): the materialized
+            // aggregate SSA value (no alloca — extractvalue-only, SPIR-V-safe).
+            auto sv = structValues.find(nm);
+            if (sv != structValues.end()) return sv->second;
+            unsupported("unbound identifier '" + nm + "'");
         }
         if (auto il = std::dynamic_pointer_cast<IntegerLiteralExpression>(expr)) {
             // Mirror the host literal lowering (LiteralExpression.cpp): honor the
@@ -1812,12 +1827,92 @@ private:
         return hfn;
     }
 
+    // S8 device operator dispatch. When the LHS resolves to a @ValueType, route
+    // `a OP b` to the class's static @Device operator (or a comparison derived
+    // from it) instead of the native scalar/vector path. Reuses the SAME S6
+    // dispatch/derivation policy as the host (opdispatch::dispatchBinaryOperator)
+    // — only the resolve+invoke and negate callbacks are device-specific: resolve
+    // the operator method, require @Device (pure), lower it via lowerDeviceFn
+    // (alwaysinline aggregate-param/scalar-return helper), and emit the call.
+    // Returns nullptr (fall through) when the LHS isn't a value type or no
+    // matching @Device operator exists. v1 covers operators that RETURN a scalar
+    // (e.g. ==, < and their derivations) — a value-type-returning device operator
+    // (aggregate construction + return inside a kernel) is the next S8 increment.
+    // The @ValueType of an operand expression in the device lowerer: a bare
+    // value-type-typed name (param/local, tracked in valueTypeNames) or the AST
+    // resolvedType when available. Returns null for non-value-type operands.
+    CajetaTypePtr operandValueType(const ExpressionPtr& e) {
+        if (auto id = std::dynamic_pointer_cast<IdentifierExpression>(e)) {
+            auto it = valueTypeNames.find(id->getTextValue());
+            if (it != valueTypeNames.end()) return it->second;
+        }
+        return e ? e->getResolvedType() : nullptr;
+    }
+
+    llvm::Value* lowerValueTypeBinaryOp(
+            const std::shared_ptr<BinaryOpExpression>& bin,
+            const ExpressionPtr& le, const ExpressionPtr& re, BinaryOp op) {
+        // Kernel bodies aren't host-type-resolved, so prefer the device
+        // lowerer's own value-type-name map (params/locals), falling back to the
+        // AST resolvedType when present. isValueType() resolves through
+        // canonicalMap (born-correct archive makes the flag reliable).
+        CajetaTypePtr lhsType = operandValueType(le);
+        if (!lhsType || !lhsType->isValueType()) return nullptr;
+        auto lhsClass = std::dynamic_pointer_cast<CajetaClass>(lhsType);
+        if (!lhsClass) return nullptr;
+        if (!opdispatch::binaryOpSymbol(op)) return nullptr;
+        CajetaTypePtr rhsType = operandValueType(re);
+        if (!rhsType) rhsType = lhsType;   // homogeneous op is the common case
+        // Lower both operands once (whole aggregate values).
+        llvm::Value* lv = lowerExpr(le);
+        llvm::Value* rv = lowerExpr(re);
+
+        auto tryInvoke = [&](std::string name, bool swap)
+                -> std::pair<bool, llvm::Value*> {
+            std::vector<cajeta::ParameterEntry> ents;
+            if (swap) {
+                ents.emplace_back(rhsType, "", nullptr);
+                ents.emplace_back(lhsType, "", nullptr);
+            } else {
+                ents.emplace_back(lhsType, "", nullptr);
+                ents.emplace_back(rhsType, "", nullptr);
+            }
+            MethodPtr m = lhsClass->resolveMethod(
+                name, ents, /*isConstructor=*/false, /*floatingParams=*/false);
+            if (!m || !isDevice(*m)) return {false, nullptr};
+            llvm::Function* opFn = lowerDeviceFn(m);
+            std::vector<llvm::Value*> args =
+                swap ? std::vector<llvm::Value*>{rv, lv}
+                     : std::vector<llvm::Value*>{lv, rv};
+            return {true, builder.CreateCall(opFn, args)};
+        };
+        auto negate = [&](llvm::Value* v) -> llvm::Value* {
+            return builder.CreateNot(toI1(v), "derived.not");
+        };
+        std::pair<bool, llvm::Value*> disp =
+            opdispatch::dispatchBinaryOperator(op, tryInvoke, negate);
+        if (disp.first) return disp.second;
+        // The LHS IS a value type but no @Device operator (direct or derived)
+        // applied — falling through to the scalar path would emit an ICmp on the
+        // aggregate and crash. Surface a clear diagnostic instead.
+        unsupported("no @Device 'operator" +
+                    std::string(opdispatch::binaryOpSymbol(op)) +
+                    "' for value type '" + lhsType->toCanonical() +
+                    "' in kernel (declare it @Device, or the comparison it "
+                    "derives from)");
+    }
+
     llvm::Value* lowerBinaryOp(const std::shared_ptr<BinaryOpExpression>& bin) {
         BinaryOp op = bin->getBinaryOp();
         // && / || evaluate lazily — control flow, not eager operands.
         if (op == BINARY_OP_LOGAND || op == BINARY_OP_LOGOR)
             return lowerLogical(bin);
         ExpressionPtr le = exprChild(bin, 0), re = exprChild(bin, 1);
+        // S8: a @ValueType operand dispatches to the (pure) @Device operator on
+        // its class — emitted as an alwaysinline call the backend inliner folds
+        // to flat SSA. Falls through to the native scalar/vector path otherwise.
+        if (llvm::Value* vt = lowerValueTypeBinaryOp(bin, le, re, op))
+            return vt;
         llvm::Value* l = lowerExpr(le);
         llvm::Value* r = lowerExpr(re);
         // The LHS drives the operation's signedness — matches the language's
