@@ -36,6 +36,13 @@ namespace cajeta {
     // class-shaped placeholder. Populated by the prescan visitor's
     // visitEnumDeclaration override.
     static set<string> g_enumArchive;
+    // Side set marking which archived canonical names are INTERFACE
+    // declarations. Read by fromContext's placeholder-synthesis path so
+    // a forward-referenced interface type (referenced by a field/param/
+    // local before its own declaration is visited) is born as a fat
+    // 24-byte interface pointer instead of a thin class pointer.
+    // Populated by the prescan visitor's visitInterfaceDeclaration.
+    static set<string> g_interfaceArchive;
     // Per-class template metadata captured by the prescan when the
     // class declaration carries `typeParameters`. Lets the placeholder-
     // synthesis path in fromContext below pre-populate enough state on
@@ -98,6 +105,7 @@ namespace cajeta {
         enumConstants.clear();
         g_archive.clear();
         g_enumArchive.clear();
+        g_interfaceArchive.clear();
         g_archiveTemplateMeta.clear();
         g_wildcardInfo.clear();
         // Test override survives resetGlobals on purpose — a test
@@ -113,6 +121,14 @@ namespace cajeta {
 
     bool CajetaType::isArchiveEnum(const string& canonical) {
         return g_enumArchive.count(canonical) > 0;
+    }
+
+    void CajetaType::markArchiveInterface(const string& canonical) {
+        g_interfaceArchive.insert(canonical);
+    }
+
+    bool CajetaType::isArchiveInterface(const string& canonical) {
+        return g_interfaceArchive.count(canonical) > 0;
     }
 
     void CajetaType::registerArchiveTemplate(const string& canonical,
@@ -593,6 +609,59 @@ namespace cajeta {
                                     /*shareLlvmType=*/false);
                                 canonicalMap[shortName] = type;
                             }
+                        } else if (isArchiveInterface(canonical)
+                                   && lookupArchiveTemplateParameters(canonical)
+                                          == nullptr
+                                   && module) {
+                            // Forward-referenced NON-generic interface: born
+                            // FAT. A field/param/local declared at this
+                            // interface type before the interface's own
+                            // declaration is visited must lay out as a 24-byte
+                            // fat pointer `{ ptr data, ptr vtable, i64 kind }`,
+                            // not a thin 8-byte class pointer — otherwise the
+                            // owning class's layout reserves the wrong width and
+                            // interface dispatch through the member is silently
+                            // dropped at codegen (no `call` emitted → garbage
+                            // result). Build the named struct body eagerly here
+                            // (keyed by canonical, so the interface's real
+                            // generatePrototype reuses the SAME StructType) and
+                            // tag the placeholder isInterface=true so
+                            // fieldLayoutType + the interface-dispatch path take
+                            // the fat branch. The real visitInterfaceDeclaration
+                            // later fills this SAME shared_ptr with the method
+                            // set (placeholder reuse), so every earlier
+                            // reference picks up the dispatch slots.
+                            // (Generic interfaces fall through to the class
+                            // placeholder path below, which handles
+                            // typeParameters / instantiation.)
+                            auto placeholder = std::make_shared<CajetaClass>(
+                                module, phName,
+                                std::list<QualifiedNamePtr>{},
+                                std::list<QualifiedNamePtr>{});
+                            placeholder->setPlaceholder(true);
+                            placeholder->setIsInterface(true);
+                            llvm::LLVMContext* ictx = module->getLlvmContext();
+                            llvm::StructType* body =
+                                CajetaType::getOrCreateLlvmType(ictx, canonical);
+                            if (body->isOpaque()) {
+                                llvm::Type* ptrTy =
+                                    llvm::PointerType::get(*ictx, 0);
+                                llvm::Type* i64Ty =
+                                    llvm::Type::getInt64Ty(*ictx);
+                                std::vector<llvm::Type*> members{
+                                    ptrTy, ptrTy, i64Ty };
+                                body->setBody(
+                                    llvm::ArrayRef<llvm::Type*>(members), false);
+                            }
+                            placeholder->setLlvmType(body);
+                            // getOrCreateLlvmType inserted a plain CajetaType
+                            // for `canonical`; overwrite both keys so name
+                            // lookups land the interface CajetaClass (a
+                            // class→interface upcast at a call site needs the
+                            // formal's type to dynamic_cast to CajetaClass).
+                            canonicalMap[canonical] = placeholder;
+                            canonicalMap[shortName] = placeholder;
+                            type = placeholder;
                         } else {
                             auto placeholder = std::make_shared<CajetaClass>(
                                 module, phName,

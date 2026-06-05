@@ -140,20 +140,21 @@ TEST(NetAsyncEchoTest, acceptAsyncReturnsPendingConnection) {
 // and flushes it async; an AsyncReader buffers the async reads and serves a
 // readExact. Proves the buffered seam composes over the b3 readiness loops.
 //
-// DISABLED (REGRESSED at commit 887ca39): this was green at b3 (eb8651f) when
+// This had REGRESSED at commit 887ca39: it was green at b3 (eb8651f) when
 // AsyncReader/AsyncWriter held a CONCRETE `TcpStream stream` field. The b7-b9
 // ByteChannel keystone repointed that field to the `ByteChannel` INTERFACE so
 // the same buffered layer could run over TLS — but `ByteChannel` is forward-
-// referenced relative to AsyncReader, so the field is laid out as a thin class
-// pointer instead of a fat interface pointer, and the interface-dispatch call
-// `this.stream.readAsync(...)` is silently dropped at codegen (no `call`
-// emitted → uninitialized result → readExact reads garbage). Same compiler bug
-// that gates the HTTPS-server + WS live rows; root-caused in detail in memory
-// `cajeta-interface-arg-field-offset-bug`. Re-enable once the structural
-// forward-referenced-interface reconciliation lands. (The non-buffered async
-// echo + connectAsync rows below stay green — they call TcpStream directly, no
-// interface field.)
-TEST(NetAsyncEchoTest, DISABLED_bufferedReaderWriterRoundTrips) {
+// referenced relative to AsyncReader, so the field had been laid out as a thin
+// class pointer instead of a fat interface pointer and the interface-dispatch
+// call `this.stream.readAsync(...)` was silently dropped at codegen (Bug 2).
+// That compiler bug is now FIXED: a prescan marks interface declarations
+// (g_interfaceArchive) so CajetaType::fromContext synthesizes a forward-
+// referenced interface placeholder that is born FAT (24-byte {ptr,ptr,i64})
+// and isInterface()=true, and visitInterfaceDeclaration REUSES that placeholder
+// (fillFromDeclaration) so its method set lands on the same object every field
+// captured — see memory `cajeta-interface-arg-field-offset-bug`. This row
+// (the direct repro) is green again.
+TEST(NetAsyncEchoTest, bufferedReaderWriterRoundTrips) {
     EXPECT_EQ(runI32(makeSource(
         "IpAddress la = IpAddress.loopbackV4();\n"
         "SocketAddress bindAddr = SocketAddress.of(#la, 0);\n"
