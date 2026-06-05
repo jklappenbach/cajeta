@@ -370,7 +370,11 @@ namespace cajeta {
 
     string CajetaType::toGeneric() {
         if (typeFlags & PRIMITIVE_FLAG) {
-            switch (llvmType->getTypeID()) {
+            // getLlvmType() (not the raw llvmType field) so a lazily-built type
+            // is resolved rather than dereferenced null — the intrinsic
+            // aggregate value types CajetaVector / CajetaMatrix start with a
+            // null llvmType and only build it on demand.
+            switch (getLlvmType()->getTypeID()) {
                 case llvm::Type::HalfTyID:
                 case llvm::Type::BFloatTyID:
                 case llvm::Type::FloatTyID:
@@ -386,6 +390,11 @@ namespace cajeta {
                     return "function";
                 case llvm::Type::PointerTyID:
                     return "pointer";
+                case llvm::Type::FixedVectorTyID:
+                case llvm::Type::ScalableVectorTyID:
+                    // Vector<T,N> / Matrix<T,R,C>: distinct shapes are distinct
+                    // generic tokens (their canonical name), not all "number".
+                    return toCanonical();
                 default:
                     return "unknown";
             }
