@@ -1291,6 +1291,28 @@ namespace cajeta {
         if (hasAroundWrapper) {
             emitAroundWrapper();
         }
+
+        // S4 size guard. A @ValueType operator is marked `alwaysinline` at
+        // prototype time (see generatePrototype) so it folds to flat,
+        // intrinsic-like IR at O0. But force-inlining a LARGE operator body at
+        // every call site bloats code without the register-residency payoff.
+        // Now that the body is emitted we can measure it: if it exceeds the
+        // threshold, drop the attribute so the operator keeps a real call.
+        // Plain (no-@Around) path only — there the body lives in llvmFunction.
+        // See value-type-overloading-plan.md Decision #5 (threshold).
+        if (!hasAroundWrapper && llvmFunction
+                && llvmFunction->hasFnAttribute(llvm::Attribute::AlwaysInline)) {
+            unsigned instrs = 0;
+            for (auto& bb : *llvmFunction) instrs += (unsigned) bb.size();
+            // Chosen so typical value-type operators (a handful of field loads +
+            // scalar/vector ops + return — well under 100 IR instructions, even
+            // for a 4x4 matrix add) still inline, while a genuinely large body
+            // keeps a call.
+            static const unsigned kValueOpInlineMaxInstrs = 100;
+            if (instrs > kValueOpInlineMaxInstrs) {
+                llvmFunction->removeFnAttr(llvm::Attribute::AlwaysInline);
+            }
+        }
     }
 
     void Method::emitAroundWrapper() {

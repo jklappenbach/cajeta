@@ -339,14 +339,6 @@ std::unique_ptr<CajetaJit> CajetaJit::compile(
     if (std::getenv("CAJETA_DUMP_IR")) {
         llvmModule->print(llvm::errs(), nullptr);
     }
-    // Golden-IR baseline capture (S0): stash the post-codegen, pre-optimization
-    // host IR string so a test can assert the Vector lowering shape. Opt-in via
-    // Options::captureIr so the normal JIT path pays nothing.
-    if (opts.captureIr) {
-        llvm::raw_string_ostream irStream(jitState->moduleIr);
-        llvmModule->print(irStream, nullptr);
-        irStream.flush();
-    }
     // Verify before handing to JIT — gives clearer errors when codegen produced
     // malformed IR.
     std::string verifyErr;
@@ -393,6 +385,16 @@ std::unique_ptr<CajetaJit> CajetaJit::compile(
     // would otherwise stay real calls in JIT execution. optimizeModule at O0 runs
     // exactly the AlwaysInlinerPass (see Optimizer.cpp / value-type plan S1b).
     cajeta::optimizeModule(**parsed, nullptr, cajeta::OptLevel::O0);
+    // IR capture (S0/S4): stash the post-codegen, post-AlwaysInline (O0) host IR
+    // so a test can assert the lowered shape — the flat <N x T> Vector intrinsics
+    // (S0, unaffected by an inline-only O0 pass) AND whether a @ValueType operator
+    // folded to its caller (S4). Captured AFTER optimizeModule so the fold is
+    // visible. Opt-in via Options::captureIr so the normal JIT path pays nothing.
+    if (opts.captureIr) {
+        llvm::raw_string_ostream irStream(jitState->moduleIr);
+        (*parsed)->print(irStream, nullptr);
+        irStream.flush();
+    }
     llvm::orc::ThreadSafeModule tsModule(std::move(*parsed), std::move(tsContext));
 
     auto jitOrErr = llvm::orc::LLJITBuilder().create();
