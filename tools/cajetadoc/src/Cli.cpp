@@ -39,7 +39,12 @@ void usage(const char* prog) {
         "  --emit-model-json     print the declaration model as JSON and exit\n"
         "  --include-private     include private declarations\n"
         "  --include-internal    include package-private/internal declarations\n"
-        "  --exclude-dir <name>  skip a directory by name (repeatable)\n";
+        "  --exclude-dir <name>  skip a directory by name (repeatable)\n"
+        "  --project-title <s>   header title (default: Cajeta)\n"
+        "  --project-version <s> header version, shown as v<s>\n"
+        "  --date-published <s>  header publish date\n"
+        "  --project-license <s> header license type\n"
+        "  --project-icon <url>  header icon (default: built-in placeholder)\n";
 }
 } // namespace
 
@@ -49,6 +54,7 @@ int runCli(int argc, const char* const* argv) {
     std::string outDir = "build/docs";
     bool emitModel = false;
     IngestOptions opts;
+    SiteMeta meta;
 
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
@@ -65,6 +71,11 @@ int runCli(int argc, const char* const* argv) {
         else if (a == "--include-private") opts.includePrivate = true;
         else if (a == "--include-internal") opts.includeInternal = true;
         else if (a == "--exclude-dir") { if (i + 1 < argc) opts.excludeDirs.push_back(argv[++i]); }
+        else if (a == "--project-title") { if (i + 1 < argc) meta.title = argv[++i]; }
+        else if (a == "--project-version") { if (i + 1 < argc) meta.version = argv[++i]; }
+        else if (a == "--date-published") { if (i + 1 < argc) meta.datePublished = argv[++i]; }
+        else if (a == "--project-license") { if (i + 1 < argc) meta.license = argv[++i]; }
+        else if (a == "--project-icon") { if (i + 1 < argc) meta.iconHref = argv[++i]; }
         else if (!a.empty() && a[0] == '-') {
             std::cerr << prog << ": unknown option " << a << "\n";
             usage(prog);
@@ -89,7 +100,7 @@ int runCli(int argc, const char* const* argv) {
     }
 
     std::string error;
-    int pages = generateSite(res.model, outDir, error);
+    int pages = generateSite(res.model, outDir, error, meta);
     if (!error.empty()) {
         std::cerr << prog << ": " << error << "\n";
         return 1;
