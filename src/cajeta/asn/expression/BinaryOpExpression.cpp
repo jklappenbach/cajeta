@@ -3,6 +3,7 @@
 //
 
 #include "BinaryOpExpression.h"
+#include "OperatorDispatch.h"
 #include "../../error/CajetaExceptions.h"
 #include "../../error/Exception.h"
 #include "../../compile/CajetaModule.h"
@@ -634,30 +635,14 @@ namespace cajeta {
         // expression's value. The lookup falls back through hierarchy via
         // resolveMethod (same machinery dispatch uses), so an operator
         // defined on a base class is visible to its subclasses.
-        const char* opSym = nullptr;
-        switch (binaryOp) {
-            case BINARY_OP_ADD: opSym = "+"; break;
-            case BINARY_OP_SUB: opSym = "-"; break;
-            case BINARY_OP_MUL: opSym = "*"; break;
-            case BINARY_OP_DIV: opSym = "/"; break;
-            case BINARY_OP_MOD: opSym = "%"; break;
-            case BINARY_OP_EQ:  opSym = "=="; break;
-            case BINARY_OP_NE:  opSym = "!="; break;
-            case BINARY_OP_LT:  opSym = "<";  break;
-            case BINARY_OP_GT:  opSym = ">";  break;
-            case BINARY_OP_LE:  opSym = "<="; break;
-            case BINARY_OP_GE:  opSym = ">="; break;
-            case BINARY_OP_BITAND: opSym = "&"; break;
-            case BINARY_OP_BITOR:  opSym = "|"; break;
-            case BINARY_OP_BITXOR: opSym = "^"; break;
-            default: break;
-        }
+        // S6: the op→symbol map lives in OperatorDispatch.h (shared with device
+        // lowering). nullptr ⇒ no overloadable static form → skip to built-in.
+        const char* opSym = opdispatch::binaryOpSymbol(binaryOp);
         if (opSym && lhsAst) {
             if (!lhsAst->getResolvedType()) lhsAst->resolveTypes(module);
             auto lhsClass = dynamic_pointer_cast<CajetaClass>(lhsAst->getResolvedType());
             if (lhsClass && !lhsClass->isInterface()
                     && !(lhsClass->getTypeFlags() & PRIMITIVE_FLAG)) {
-                string opName = string("operator") + opSym;
                 const bool fp = false;
                 if (rhsAst && !rhsAst->getResolvedType()) {
                     rhsAst->resolveTypes(module);
@@ -672,84 +657,59 @@ namespace cajeta {
                 if (!rhsType || !lhsType) {
                     goto fallthrough_to_builtin;
                 }
-                // l-value coercion (same shape that single-arg dispatch
-                // used): identifier expressions evaluate to the alloca
-                // holding the heap pointer; array-index / dot-field
-                // expressions evaluate to a GEP whose slot holds the
-                // heap pointer. Static `operator+(LHS, RHS)` expects the
-                // language-level instance values; route both through
-                // loadIfLValue so neither operand passes through as a
-                // slot pointer.
-                llvm::Value* lhsVal = loadIfLValue(module, lhs, lhsAst);
-                llvm::Value* rhsVal = loadIfLValue(module, rhs, rhsAst);
-                // Cajeta binary operator overloads are static (per
-                // cajeta-docs/OperatorOverloading.md §2): both operands
-                // are explicit parameters, no `this`. Build the entries
-                // vector with LHS first, RHS second, and invoke with a
-                // null receiver — invokeMethod's `isStatic` branch
-                // (CajetaClass.cpp ~line 3863) skips the implicit
-                // `this` prepend when the resolved method carries the
-                // STATIC modifier.
-                vector<ParameterEntry> entries;
-                entries.push_back(ParameterEntry(lhsType, "", lhsVal));
-                entries.push_back(ParameterEntry(rhsType, "", rhsVal));
-                if (auto m = lhsClass->resolveMethod(opName, entries,
-                        /*isConstructor=*/false, /*floatingParams=*/fp)) {
-                    return lhsClass->invokeMethod(opName, entries,
-                        /*isConstructor=*/false,
-                        /*thisInstance=*/nullptr,
-                        /*callerModule=*/module);
-                }
-
-                // Comparison derivations — when the direct lookup misses,
-                // synthesize the result from a related operator. Per
-                // cajeta-docs/OperatorOverloading.md §7:
-                //   - `a != b`  ≡  !(a == b)
-                //   - `a >  b`  ≡  (b <  a)            [swap operands]
-                //   - `a >= b`  ≡  !(a <  b)
-                //   - `a <= b`  ≡  !(b <  a)
-                // The < / > / <= / >= derivations assume the user's `<`
-                // defines a total order; users with partial orderings
-                // declare each operator explicitly. (Same assumption
-                // C++ and Rust make for std::less / Ord.)
-                auto tryDerivation = [&](const char* baseSym,
-                                         bool swapOperands,
-                                         bool negateResult) -> llvm::Value* {
-                    std::string baseName = std::string("operator") + baseSym;
-                    vector<ParameterEntry> ents;
-                    if (swapOperands) {
-                        ents.push_back(ParameterEntry(rhsType, "", rhsVal));
-                        ents.push_back(ParameterEntry(lhsType, "", lhsVal));
-                    } else {
-                        ents.push_back(ParameterEntry(lhsType, "", lhsVal));
-                        ents.push_back(ParameterEntry(rhsType, "", rhsVal));
-                    }
-                    if (!lhsClass->resolveMethod(baseName, ents,
-                            /*isConstructor=*/false, /*floatingParams=*/fp)) {
-                        return nullptr;
-                    }
-                    llvm::Value* baseResult = lhsClass->invokeMethod(
-                        baseName, ents,
-                        /*isConstructor=*/false,
-                        /*thisInstance=*/nullptr,
-                        /*callerModule=*/module);
-                    if (!baseResult) return nullptr;
-                    if (negateResult) {
-                        // The base operator returns boolean (i1).
-                        // CreateNot on i1 is the boolean negation.
-                        return builder->CreateNot(baseResult,
+                {
+                    // l-value coercion (same shape that single-arg dispatch
+                    // used): identifier expressions evaluate to the alloca
+                    // holding the heap pointer; array-index / dot-field
+                    // expressions evaluate to a GEP whose slot holds the
+                    // heap pointer. Static `operator+(LHS, RHS)` expects the
+                    // language-level instance values; route both through
+                    // loadIfLValue so neither operand passes through as a
+                    // slot pointer.
+                    llvm::Value* lhsVal = loadIfLValue(module, lhs, lhsAst);
+                    llvm::Value* rhsVal = loadIfLValue(module, rhs, rhsAst);
+                    // S6: direct lookup + comparison derivation (!=/>/>=/<=) is
+                    // the shared opdispatch policy. The host supplies the two
+                    // representation-specific callbacks: resolve+invoke a static
+                    // operator (Cajeta binary overloads are static per
+                    // OperatorOverloading.md §2 — both operands explicit, no
+                    // `this`, so invokeMethod gets a null receiver and its
+                    // `isStatic` branch skips the implicit prepend), and boolean
+                    // negation. Device lowering (S8) reuses dispatchBinaryOperator
+                    // with its own callbacks.
+                    // `name` by value (mutable) — resolveMethod/invokeMethod take
+                    // a non-const string&.
+                    auto tryInvoke = [&](std::string name, bool swap)
+                            -> std::pair<bool, llvm::Value*> {
+                        vector<ParameterEntry> ents;
+                        if (swap) {
+                            ents.push_back(ParameterEntry(rhsType, "", rhsVal));
+                            ents.push_back(ParameterEntry(lhsType, "", lhsVal));
+                        } else {
+                            ents.push_back(ParameterEntry(lhsType, "", lhsVal));
+                            ents.push_back(ParameterEntry(rhsType, "", rhsVal));
+                        }
+                        if (!lhsClass->resolveMethod(name, ents,
+                                /*isConstructor=*/false, /*floatingParams=*/fp)) {
+                            return {false, nullptr};
+                        }
+                        return {true, lhsClass->invokeMethod(name, ents,
+                            /*isConstructor=*/false,
+                            /*thisInstance=*/nullptr,
+                            /*callerModule=*/module)};
+                    };
+                    auto negate = [&](llvm::Value* v) -> llvm::Value* {
+                        // The base comparison returns boolean (i1); CreateNot is
+                        // the boolean negation.
+                        return builder->CreateNot(v,
                             std::string("derived.") + opSym);
+                    };
+                    std::pair<bool, llvm::Value*> disp =
+                        opdispatch::dispatchBinaryOperator(
+                            binaryOp, tryInvoke, negate);
+                    if (disp.first) {
+                        return disp.second;
                     }
-                    return baseResult;
-                };
-                if (binaryOp == BINARY_OP_NE) {
-                    if (auto* v = tryDerivation("==", /*swap=*/false, /*neg=*/true)) return v;
-                } else if (binaryOp == BINARY_OP_GT) {
-                    if (auto* v = tryDerivation("<",  /*swap=*/true,  /*neg=*/false)) return v;
-                } else if (binaryOp == BINARY_OP_GE) {
-                    if (auto* v = tryDerivation("<",  /*swap=*/false, /*neg=*/true)) return v;
-                } else if (binaryOp == BINARY_OP_LE) {
-                    if (auto* v = tryDerivation("<",  /*swap=*/true,  /*neg=*/true)) return v;
                 }
             }
         }
