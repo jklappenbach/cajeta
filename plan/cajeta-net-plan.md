@@ -541,14 +541,23 @@ portable path.
       pump over `AsyncReader`/`AsyncWriter` with reactor parking — its live
       loopback row needs the same scheduler+loopback harness the NET-4/5
       acceptance rows await.)_
-- [ ] **NET-5.3** Certificate validation: hostname match (SAN +
+- [~] **NET-5.3** Certificate validation: hostname match (SAN +
       CN fallback, wildcard rules), chain verification against a
-      trust store, expiry/not-before checks. **Needs SHA-256**
-      (NET-11.1) for cert fingerprinting + the verifier. Default
-      trust roots: load the OS trust store
-      (`/etc/ssl/certs`, macOS keychain export, Windows cert
-      store) with a bundled CA fallback. `depends-on:` NET-5.2,
+      trust store, expiry/not-before checks. `depends-on:` NET-5.2,
       NET-11.1
+      _(CORE DONE, b6.3. Engine verify intrinsics — `ctx_set_verify`
+      (SSL_VERIFY_PEER), `ctx_add_trust_pem` (X509_STORE), `set_verify_host`
+      (SSL_set1_host → SAN/CN/wildcard match), `verify_result` (X509_V_* →
+      normalized EXPIRED/HOSTNAME/UNTRUSTED/OTHER ordinal). Cajeta surface:
+      `TlsConnection.verifyingClient()` + `addTrust`/`setVerifyHost`/
+      `verifyResult` + `CERT_*` constants. Verified at BOTH levels: native
+      `TlsEngineTests.{expiredCertRejected, hostnameMismatchRejected,
+      untrustedRootRejectedThenAcceptedWithAnchor}` and through the Cajeta
+      JIT surface `TlsConnectionTests.verifyingClientRejectsUntrustedAccepts-
+      Trusted`. STILL TODO: loading the **OS default trust store**
+      (`/etc/ssl/certs`, Windows cert store, macOS keychain) so a real public
+      cert validates without an explicit anchor — currently anchors are
+      caller-supplied PEM.)_
 - [ ] **NET-5.4** SNI + ALPN surface: client sends SNI from the
       connect host; ALPN offers a caller-supplied protocol list
       (`["http/1.1"]` for HTTPS, `["http/1.1"]` for WSS handshake)
@@ -568,14 +577,15 @@ portable path.
 - [ ] TLS 1.3 handshake completes against a loopback test server
       presenting a test cert; plaintext round-trips.
       → `TlsTests.tls13HandshakeRoundTripsLoopback`.
-- [ ] An expired cert is rejected with `CertificateInvalid`
-      (reason=expired). → `TlsTests.expiredCertRejected`.
-- [ ] A hostname mismatch is rejected (cert for `a.test`,
-      connect to `b.test`).
-      → `TlsTests.hostnameMismatchRejected`.
-- [ ] A self-signed / untrusted-root cert is rejected unless the
-      caller opts into the test trust anchor.
-      → `TlsTests.untrustedRootRejectedThenAcceptedWithAnchor`.
+- [x] An expired cert is rejected (reason=expired).
+      → `TlsEngineTests.expiredCertRejected` (b6.3).
+- [x] A hostname mismatch is rejected (cert for `good.test`,
+      connect to `wrong.test`).
+      → `TlsEngineTests.hostnameMismatchRejected` (b6.3).
+- [x] A self-signed / untrusted-root cert is rejected unless the
+      caller opts into the trust anchor.
+      → `TlsEngineTests.untrustedRootRejectedThenAcceptedWithAnchor`
+      + `TlsConnectionTests.verifyingClientRejectsUntrustedAcceptsTrusted` (b6.3).
 - [ ] ALPN negotiates `http/1.1` and the client reads back the
       negotiated protocol. → `TlsTests.alpnNegotiatesHttp11`.
 - [ ] SNI is sent and a multi-host test server routes on it.

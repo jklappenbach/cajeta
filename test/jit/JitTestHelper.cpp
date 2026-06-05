@@ -50,7 +50,11 @@ extern "C" {
     int   __cajeta_tls_ctx_use_cert_key_pem(void* ctx, const void* cert, int cl,
                                             const void* key, int kl);
     void  __cajeta_tls_ctx_free(void* ctx);
+    int   __cajeta_tls_ctx_set_verify(void* ctx, int mode);
+    int   __cajeta_tls_ctx_add_trust_pem(void* ctx, const void* pem, int len);
     void* __cajeta_tls_conn_new(void* ctx, int isServer);
+    int   __cajeta_tls_set_verify_host(void* conn, const void* host, int len);
+    int   __cajeta_tls_verify_result(void* conn);
     int   __cajeta_tls_set_sni(void* conn, const void* host, int hostLen);
     int   __cajeta_tls_set_alpn(void* conn, const void* protos, int len);
     int   __cajeta_tls_get_alpn(void* conn, void* out, int max);
@@ -471,7 +475,11 @@ std::unique_ptr<CajetaJit> CajetaJit::compile(
         bind("__cajeta_tls_ctx_new", (void*) &__cajeta_tls_ctx_new);
         bind("__cajeta_tls_ctx_use_cert_key_pem", (void*) &__cajeta_tls_ctx_use_cert_key_pem);
         bind("__cajeta_tls_ctx_free", (void*) &__cajeta_tls_ctx_free);
+        bind("__cajeta_tls_ctx_set_verify", (void*) &__cajeta_tls_ctx_set_verify);
+        bind("__cajeta_tls_ctx_add_trust_pem", (void*) &__cajeta_tls_ctx_add_trust_pem);
         bind("__cajeta_tls_conn_new", (void*) &__cajeta_tls_conn_new);
+        bind("__cajeta_tls_set_verify_host", (void*) &__cajeta_tls_set_verify_host);
+        bind("__cajeta_tls_verify_result", (void*) &__cajeta_tls_verify_result);
         bind("__cajeta_tls_set_sni", (void*) &__cajeta_tls_set_sni);
         bind("__cajeta_tls_set_alpn", (void*) &__cajeta_tls_set_alpn);
         bind("__cajeta_tls_get_alpn", (void*) &__cajeta_tls_get_alpn);
