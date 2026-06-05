@@ -13,6 +13,8 @@
 #include "../../type/CajetaVector.h"
 #include "../../type/VectorOps.h"
 #include "../../type/CajetaMatrix.h"
+#include "../../type/CajetaQuaternion.h"
+#include "../../type/QuaternionOps.h"
 #include "../../type/MatrixOps.h"
 #include "../../util/MemoryManager.h"
 #include "Expression.h"
@@ -871,6 +873,47 @@ namespace cajeta {
                     resolvedType = CajetaVector::getOrCreate(
                         module, CajetaType::of("boolean"), lhsV->getLanes());
                     return cmp;
+                }
+            }
+        }
+
+        // Quaternion operators: `*` is the Hamilton product (Quaternion *
+        // Quaternion) or vector rotation (Quaternion * Vector<T,3>); `+ -` are
+        // element-wise (lerp setup). All lower as quatops intrinsics.
+        if (lhsAst) {
+            if (!lhsAst->getResolvedType()) lhsAst->resolveTypes(module);
+            if (auto lhsQ = dynamic_pointer_cast<CajetaQuaternion>(
+                    lhsAst->getResolvedType())) {
+                if (rhsAst && !rhsAst->getResolvedType())
+                    rhsAst->resolveTypes(module);
+                CajetaTypePtr rhsType = rhsAst ? rhsAst->getResolvedType() : nullptr;
+                llvm::Value* l = loadIfLValue(module, lhs, lhsAst);
+                if (binaryOp == BINARY_OP_MUL) {
+                    if (dynamic_pointer_cast<CajetaQuaternion>(rhsType)) {
+                        llvm::Value* r = loadIfLValue(module, rhs, rhsAst);
+                        resolvedType = lhsQ;
+                        return quatops::multiply(*builder, l, r);
+                    }
+                    if (auto rhsV = dynamic_pointer_cast<CajetaVector>(rhsType)) {
+                        if (rhsV->getLanes() != 3) {
+                            throw Exception(
+                                "Quaternion * Vector rotation requires a "
+                                "3-component vector (got " + rhsV->toCanonical()
+                                + ")", "CAJETA_ERROR_QUATERNION_METHOD");
+                        }
+                        llvm::Value* r = loadIfLValue(module, rhs, rhsAst);
+                        resolvedType = CajetaVector::getOrCreate(
+                            module, lhsQ->getElementType(), 3);
+                        return quatops::rotate(*builder, l, r);
+                    }
+                }
+                if ((binaryOp == BINARY_OP_ADD || binaryOp == BINARY_OP_SUB)
+                        && dynamic_pointer_cast<CajetaQuaternion>(rhsType)) {
+                    llvm::Value* r = loadIfLValue(module, rhs, rhsAst);
+                    resolvedType = lhsQ;
+                    return binaryOp == BINARY_OP_ADD
+                        ? builder->CreateFAdd(l, r, "quat.add")
+                        : builder->CreateFSub(l, r, "quat.sub");
                 }
             }
         }

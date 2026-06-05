@@ -15,6 +15,7 @@
 #include "CajetaConstantType.h"
 #include "CajetaVector.h"
 #include "CajetaMatrix.h"
+#include "CajetaQuaternion.h"
 #include "CajetaFunctionType.h"
 #include "../error/InvalidOperandException.h"
 #include "../error/Exception.h"
@@ -771,6 +772,21 @@ namespace cajeta {
                     int64_t c = CajetaConstantType::parseLiteral(
                         colArg->integerLiteral());
                     type = CajetaMatrix::validateAndCreate(module, elemT, r, c);
+                } else if (qName->getTypeName() == "Quaternion"
+                        && targs->typeArgument().size() == 1) {
+                    // Built-in Quaternion<T> — a value quaternion lowering to
+                    // `<4 x T>` (w, x, y, z). arg0: a floating-point element
+                    // type. Synthesized here (like Vector/Matrix); the
+                    // float-element constraint is checked in validateAndCreate.
+                    auto* elemArg = targs->typeArgument()[0];
+                    if (!elemArg->typeType()) {
+                        throw Exception(
+                            "Quaternion element type must be a floating-point "
+                            "primitive type",
+                            "CAJETA_ERROR_QUATERNION_ELEMENT_TYPE");
+                    }
+                    CajetaTypePtr elemT = fromContext(elemArg->typeType(), module);
+                    type = CajetaQuaternion::validateAndCreate(module, elemT);
                 } else if (qName->getTypeName() == "Task"
                         && targs->typeArgument().size() == 1) {
                     auto* singleArg = targs->typeArgument()[0];

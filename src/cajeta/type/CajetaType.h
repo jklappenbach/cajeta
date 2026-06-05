@@ -68,6 +68,12 @@ namespace cajeta {
     // codegen path (construction, m[r][c], element-wise, * = matmul) recognizes
     // it. See CajetaMatrix and plans/fluttering-sparking-lantern.md (B1).
     #define MATRIX_FLAG             0b1000000000000000000000
+    // Unit quaternion `Quaternion<T>` -> llvm `<4 x T>` = (w, x, y, z), w the
+    // scalar part. Like VECTOR_FLAG it rides PRIMITIVE_FLAG for by-value
+    // marshalling; the dedicated quaternion codegen path (construction, `*` =
+    // Hamilton product / vector rotation, normalize/conjugate/slerp) recognizes
+    // it. See CajetaQuaternion.
+    #define QUATERNION_FLAG         0b10000000000000000000000
     #define BIT_SIZE_MASK           0b00001111111000000000
 
 
