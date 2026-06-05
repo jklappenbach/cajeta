@@ -297,3 +297,83 @@ TEST(TlsLoopbackTest, tlsHandshakeAndEchoOverLoopback) {
 
     EXPECT_EQ(runI32(src), 1);
 }
+
+// NET-5.5 + NET-5.4 acceptance — server-side TLS via TlsListener, with ALPN
+// negotiated end-to-end over the loopback socket. A spawned server fiber
+// TlsListener.accept()s (which terminates TLS — accept + handshake), reads one
+// record and echoes it; the client TlsStream offers ["h2","http/1.1"], the
+// listener supports only "http/1.1", so both negotiate "http/1.1".
+TEST(TlsLoopbackTest, tlsListenerAcceptWithAlpnOverLoopback) {
+    std::string cert, key;
+    ASSERT_TRUE(makeSelfSigned("localhost", cert, key));
+    std::string serverProtos = std::string("\x08", 1) + "http/1.1";          // 9
+    std::string clientProtos = std::string("\x02", 1) + "h2" +
+                               std::string("\x08", 1) + "http/1.1";          // 12
+
+    std::string src =
+        "package test;\n"
+        "import cajeta.net.IpAddress;\n"
+        "import cajeta.net.SocketAddress;\n"
+        "import cajeta.net.TcpStream;\n"
+        "import cajeta.net.tls.TlsStream;\n"
+        "import cajeta.net.tls.TlsListener;\n"
+        "import cajeta.threading.Tasks;\n"
+        "public final class M {\n"
+        "    public static async int32 serveOne(#TlsListener listener) {\n"
+        "        TlsStream s = listener.accept();\n"   // accept + server handshake
+        "        int8[] buf = new int8[256];\n"
+        "        int32 n = s.read(buf, 256);\n"
+        "        s.write(buf, n);\n"
+        "        return n;\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        () -> int32 body = () -> {\n"
+        + emitBytes("cert", cert)
+        + emitBytes("key", key)
+        + emitBytes("sproto", serverProtos)
+        + emitBytes("cproto", clientProtos) +
+        "            int8[] host = new int8[9];\n"   // \"localhost\"
+        "            host[0L]=(int8)108; host[1L]=(int8)111; host[2L]=(int8)99;\n"
+        "            host[3L]=(int8)97; host[4L]=(int8)108; host[5L]=(int8)104;\n"
+        "            host[6L]=(int8)111; host[7L]=(int8)115; host[8L]=(int8)116;\n"
+        "            int32 cl = " + std::to_string(cert.size()) + ";\n"
+        "            int32 kl = " + std::to_string(key.size()) + ";\n"
+        "            IpAddress la = IpAddress.loopbackV4();\n"
+        "            SocketAddress bindAddr = SocketAddress.of(#la, 0);\n"
+        "            TlsListener listener = TlsListener.bind(bindAddr, cert, cl, key, kl);\n"
+        "            listener.supportAlpn(sproto, 9);\n"
+        "            int32 port = listener.boundPort();\n"
+        "            if (port <= 0) { return -1; }\n"
+        "            IpAddress ca = IpAddress.loopbackV4();\n"
+        "            SocketAddress connAddr = SocketAddress.of(#ca, port);\n"
+        "            TcpStream client = TcpStream.connect(#connAddr);\n"
+        "            Task<int32> serverTask = spawn serveOne(#listener);\n"
+        "            TlsStream ct = TlsStream.client(#client, host, 9, cert, cl);\n"
+        "            ct.offerAlpn(cproto, 12);\n"
+        "            ct.handshake();\n"
+        "            int8[] neg = new int8[64];\n"
+        "            int32 nlen = ct.negotiatedAlpn(neg, 64);\n"
+        "            int8[] ping = new int8[4];\n"
+        "            ping[0L]=(int8)112; ping[1L]=(int8)105; ping[2L]=(int8)110; ping[3L]=(int8)103;\n"
+        "            ct.write(ping, 4);\n"
+        "            int8[] echo = new int8[256];\n"
+        "            int32 got = ct.read(echo, 256);\n"
+        "            int32 sret = await serverTask;\n"
+        "            if (sret != 4) { return -2; }\n"
+        "            if (got != 4) { return -3; }\n"
+        "            if (nlen != 8) { return -4; }\n"             // \"http/1.1\" len
+        "            if (neg[0L] != (int8) 104) { return -6; }\n"  // 'h'
+        "            if (neg[7L] != (int8) 49) { return -7; }\n"   // '1'
+        "            int32 i = 0;\n"
+        "            while (i < 4) {\n"
+        "                if (echo[(int64) i] != ping[(int64) i]) { return -5; }\n"
+        "                i = i + 1;\n"
+        "            }\n"
+        "            return 1;\n"
+        "        };\n"
+        "        return Tasks.runBlocking<int32>(body);\n"
+        "    }\n"
+        "}\n";
+
+    EXPECT_EQ(runI32(src), 1);
+}

@@ -52,6 +52,27 @@ public class TlsStream {
         return heap TlsStream(#stream, #tls);
     }
 
+    // --- ALPN (NET-5.4), set before the handshake ---------------------------
+
+    /** Client: offer an ALPN protocol list (wire format: 1-byte length + bytes
+     *  each, e.g. `\x08http/1.1`). Call before [`handshake`](#handshake). */
+    public void offerAlpn(int8[] protos, int32 len) {
+        this.tls.setAlpn(protos, len);
+    }
+
+    /** Server: the ALPN protocols this side supports (same wire format). The
+     *  handshake picks the first the client also offered. Call before
+     *  [`handshake`](#handshake). */
+    public void supportAlpn(int8[] protos, int32 len) {
+        this.tls.setServerAlpn(protos, len);
+    }
+
+    /** The negotiated ALPN protocol bytes into `out` (post-handshake); returns
+     *  the length, or 0 if none was negotiated. */
+    public int32 negotiatedAlpn(int8[] out, int32 max) {
+        return this.tls.negotiatedAlpn(out, max);
+    }
+
     // --- the socket pump ----------------------------------------------------
 
     /** Drain queued ciphertext to the socket (parks on a non-writable socket). */
